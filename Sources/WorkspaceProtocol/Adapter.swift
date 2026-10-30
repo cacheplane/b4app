@@ -127,7 +127,7 @@ public struct StopReceipt: Sendable, Equatable {
   }
 }
 
-public enum RuntimeDecision: String, Sendable, Equatable {
+public enum RuntimeDecision: String, Codable, Sendable, Equatable, CaseIterable {
   case allowOnce = "allow_once"
   case allowAlways = "allow_always"
   case deny
@@ -163,7 +163,8 @@ public protocol AgentAdapter: Sendable {
   func sendTurn(_ ref: NativeSessionRef, input: TurnInput) async throws -> SubmissionReceipt
   func interrupt(_ ref: NativeSessionRef, turn: ActiveTurnRef) async throws -> StopReceipt
   func respond(_ ref: RuntimeRequestRef, response: RuntimeResponse) async throws
-  func reconcile(_ ref: NativeSessionRef) async throws -> ReconcileResult
+  /// Ask the runtime what became of `turn` (nil: just refresh). Never assumes success.
+  func reconcile(_ ref: NativeSessionRef, turn: ActiveTurnRef?) async throws -> ReconcileResult
   func events() -> AsyncStream<AdapterEvent>
   /// Closes adapter resources. Never an implicit remote cancel.
   func dispose() async

@@ -9,6 +9,7 @@ public actor Router {
     public var database: WorkspaceDatabase
     public var eventLog: EventLog
     public var diagnostics: DiagnosticsService
+    public var sessions: SessionService
     public var startedAt: String
   }
 
@@ -67,6 +68,7 @@ public actor Router {
   private func handle(_ command: ParsedCommand) async throws -> JSONValue {
     let db = context.database
     let events = context.eventLog
+    let sessions = context.sessions
     switch command.method {
     case .systemPing:
       return try JSONValue(
@@ -113,6 +115,33 @@ public actor Router {
           details: ["epoch": .string(events.epoch), "sequence": .number(Double(await events.sequence))])
       }
       return try JSONValue(encoding: EventsReplay.Result(events: replayed))
+    case .connectionAdd:
+      return try JSONValue(
+        encoding: try await sessions.connectionAdd(try command.params(for: ConnectionAdd.self)))
+    case .connectionInspect:
+      return try JSONValue(
+        encoding: try await sessions.connectionInspect(try command.params(for: ConnectionInspect.self)))
+    case .connectionLogin:
+      return try JSONValue(
+        encoding: try await sessions.connectionLogin(try command.params(for: ConnectionLogin.self)))
+    case .threadCreate:
+      return try JSONValue(
+        encoding: try await sessions.threadCreate(try command.params(for: ThreadCreate.self)))
+    case .threadRead:
+      return try JSONValue(encoding: try await sessions.threadRead(try command.params(for: ThreadRead.self)))
+    case .threadUpdate:
+      return try JSONValue(
+        encoding: try await sessions.threadUpdate(try command.params(for: ThreadUpdate.self)))
+    case .turnSend:
+      return try JSONValue(
+        encoding: try await sessions.turnSend(
+          try command.params(for: TurnSend.self), operationId: command.envelope.operationId ?? ""))
+    case .turnInterrupt:
+      return try JSONValue(
+        encoding: try await sessions.turnInterrupt(try command.params(for: TurnInterrupt.self)))
+    case .requestRespond:
+      return try JSONValue(
+        encoding: try await sessions.requestRespond(try command.params(for: RequestRespond.self)))
     }
   }
 }

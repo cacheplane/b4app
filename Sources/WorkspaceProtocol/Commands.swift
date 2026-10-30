@@ -11,11 +11,24 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case draftSave = "draft.save"
   case eventsSnapshot = "events.snapshot"
   case eventsReplay = "events.replay"
+  case connectionAdd = "connection.add"
+  case connectionInspect = "connection.inspect"
+  case connectionLogin = "connection.login"
+  case threadCreate = "thread.create"
+  case threadRead = "thread.read"
+  case threadUpdate = "thread.update"
+  case turnSend = "turn.send"
+  case turnInterrupt = "turn.interrupt"
+  case requestRespond = "request.respond"
 
   public var isMutation: Bool {
     switch self {
-    case .draftSave: return true
-    default: return false
+    case .draftSave, .connectionAdd, .connectionInspect, .connectionLogin, .threadCreate, .threadUpdate,
+      .turnSend, .turnInterrupt, .requestRespond:
+      return true
+    case .systemPing, .diagnosticsRead, .connectionList, .threadList, .draftRead, .eventsSnapshot,
+      .eventsReplay, .threadRead:
+      return false
     }
   }
 }
@@ -148,6 +161,168 @@ public enum EventsReplay: WorkspaceCommand {
     public init(events: [EventEnvelope]) { self.events = events }
   }
   public static let method = Method.eventsReplay
+}
+
+// MARK: - M1 conversation methods
+
+/// Register a connection for an installed harness. For Codex the executable is located on PATH
+/// unless `executablePath` is given; the connection is inspected before it is stored.
+public enum ConnectionAdd: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var kind: ConnectionKind
+    public var label: String?
+    public var executablePath: String?
+    public init(kind: ConnectionKind, label: String? = nil, executablePath: String? = nil) {
+      self.kind = kind
+      self.label = label
+      self.executablePath = executablePath
+    }
+  }
+  public struct Result: Codable, Sendable, Equatable {
+    public var connection: Connection
+    public var inspection: ConnectionInspection
+    public init(connection: Connection, inspection: ConnectionInspection) {
+      self.connection = connection
+      self.inspection = inspection
+    }
+  }
+  public static let method = Method.connectionAdd
+}
+
+/// Re-inspect a connection (executable, version, account) and store the result.
+public enum ConnectionInspect: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var connectionId: String
+    public init(connectionId: String) { self.connectionId = connectionId }
+  }
+  public typealias Result = ConnectionAdd.Result
+  public static let method = Method.connectionInspect
+}
+
+/// Start the runtime's official sign-in. The caller opens `authUrl`; completion arrives as an event.
+public enum ConnectionLogin: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var connectionId: String
+    public init(connectionId: String) { self.connectionId = connectionId }
+  }
+  public struct Result: Codable, Sendable, Equatable {
+    public var authUrl: String
+    public var loginId: String
+    public init(authUrl: String, loginId: String) {
+      self.authUrl = authUrl
+      self.loginId = loginId
+    }
+  }
+  public static let method = Method.connectionLogin
+}
+
+public enum ThreadCreate: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var connectionId: String
+    public var workingDirectory: String
+    public var title: String?
+    public init(connectionId: String, workingDirectory: String, title: String? = nil) {
+      self.connectionId = connectionId
+      self.workingDirectory = workingDirectory
+      self.title = title
+    }
+  }
+  public struct Result: Codable, Sendable, Equatable {
+    public var thread: ConversationThread
+    public init(thread: ConversationThread) { self.thread = thread }
+  }
+  public static let method = Method.threadCreate
+}
+
+/// Everything a viewer needs to render one thread from the local cache. No network.
+public enum ThreadRead: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var threadId: String
+    public init(threadId: String) { self.threadId = threadId }
+  }
+  public struct Result: Codable, Sendable, Equatable {
+    public var thread: ConversationThread
+    public var turns: [Turn]
+    public var items: [DisplayItem]
+    public var requests: [RuntimeRequest]
+    public init(thread: ConversationThread, turns: [Turn], items: [DisplayItem], requests: [RuntimeRequest]) {
+      self.thread = thread
+      self.turns = turns
+      self.items = items
+      self.requests = requests
+    }
+  }
+  public static let method = Method.threadRead
+}
+
+/// Local title, pin, and archive changes. Never rewrites native provider history.
+public enum ThreadUpdate: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var threadId: String
+    public var title: String?
+    public var pinned: Bool?
+    public var archived: Bool?
+    public init(threadId: String, title: String? = nil, pinned: Bool? = nil, archived: Bool? = nil) {
+      self.threadId = threadId
+      self.title = title
+      self.pinned = pinned
+      self.archived = archived
+    }
+  }
+  public typealias Result = ThreadCreate.Result
+  public static let method = Method.threadUpdate
+}
+
+/// Dispatch one user turn. The envelope's operationId is the turn's operation id, so a retried
+/// command returns the original turn instead of dispatching again.
+public enum TurnSend: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var threadId: String
+    public var text: String
+    public init(threadId: String, text: String) {
+      self.threadId = threadId
+      self.text = text
+    }
+  }
+  public struct Result: Codable, Sendable, Equatable {
+    public var turn: Turn
+    public init(turn: Turn) { self.turn = turn }
+  }
+  public static let method = Method.turnSend
+}
+
+public enum TurnInterrupt: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var threadId: String
+    public init(threadId: String) { self.threadId = threadId }
+  }
+  public typealias Result = TurnSend.Result
+  public static let method = Method.turnInterrupt
+}
+
+/// Answer a pending runtime request exactly once. `decision` answers approvals; `answers` answers
+/// user questions; neither (or `decline: true`) sends an explicit decline.
+public enum RequestRespond: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var requestId: String
+    public var decision: RuntimeDecision?
+    public var answers: [String: [String]]?
+    public var decline: Bool?
+    public init(
+      requestId: String, decision: RuntimeDecision? = nil, answers: [String: [String]]? = nil,
+      decline: Bool? = nil
+    ) {
+      self.requestId = requestId
+      self.decision = decision
+      self.answers = answers
+      self.decline = decline
+    }
+  }
+  public struct Result: Codable, Sendable, Equatable {
+    public var request: RuntimeRequest
+    public init(request: RuntimeRequest) { self.request = request }
+  }
+  public static let method = Method.requestRespond
 }
 
 public struct ParsedCommand: Sendable, Equatable {

@@ -167,7 +167,7 @@ private func makeAdapter() -> CodexAdapter {
     let ref = try await adapter.createSession(NewSessionInput(workingDirectory: "/tmp/work"))
     let receipt = try await adapter.sendTurn(ref, input: TurnInput(operationId: "op1", text: "hang around"))
     try await collector.waitFor { $0.kind == .turnAcknowledged }
-    let reconcile = try await adapter.reconcile(ref)
+    let reconcile = try await adapter.reconcile(ref, turn: ActiveTurnRef(nativeTurnId: receipt.nativeTurnId!))
     #expect(reconcile.activeTurnOutcome == .unknown)
     let stop = try await adapter.interrupt(ref, turn: ActiveTurnRef(nativeTurnId: receipt.nativeTurnId!))
     #expect(stop.confirmed)

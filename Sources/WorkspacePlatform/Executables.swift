@@ -9,8 +9,15 @@ public struct ExecutableMatch: Sendable, Equatable {
 /// Finds executables without a shell. A Finder launch does not inherit the interactive shell's
 /// PATH, so common user-level install locations are checked after PATH.
 public enum ExecutableLocator {
-  static func fallbackDirectories(home: String) -> [String] {
-    [
+  /// Colon-separated override of the fallback directories. Set (even empty) it replaces the defaults;
+  /// tests use an empty value to stay isolated from whatever is installed on the machine.
+  public static let fallbackOverrideVariable = "B4APP_EXECUTABLE_FALLBACK_DIRS"
+
+  static func fallbackDirectories(home: String, environment env: [String: String] = [:]) -> [String] {
+    if let override = env[fallbackOverrideVariable] {
+      return override.split(separator: ":").map(String.init).filter { !$0.isEmpty }
+    }
+    return [
       "\(home)/.local/bin",
       "/opt/homebrew/bin",
       "/usr/local/bin",
@@ -44,7 +51,7 @@ public enum ExecutableLocator {
       if isExecutableFile(candidate) { return ExecutableMatch(path: candidate, source: .path) }
     }
     let home = env["HOME"] ?? NSHomeDirectory()
-    for dir in fallbackDirectories(home: home) {
+    for dir in fallbackDirectories(home: home, environment: env) {
       let candidate = (dir as NSString).appendingPathComponent(name)
       if isExecutableFile(candidate) { return ExecutableMatch(path: candidate, source: .fallback) }
     }

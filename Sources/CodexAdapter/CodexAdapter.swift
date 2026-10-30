@@ -322,7 +322,7 @@ public actor CodexAdapter: AgentAdapter {
     pendingRequests[ref.nativeRequestId] = nil
   }
 
-  public func reconcile(_ ref: NativeSessionRef) async throws -> ReconcileResult {
+  public func reconcile(_ ref: NativeSessionRef, turn: ActiveTurnRef?) async throws -> ReconcileResult {
     let server = try await ensureStarted()
     _ = try await ensureLoaded(ref, cwd: nil, server: server)
     let read = try await server.request(
@@ -333,7 +333,11 @@ public actor CodexAdapter: AgentAdapter {
     let page = try await server.request(
       "thread/turns/list",
       ["threadId": .string(ref.nativeSessionId), "sortDirection": "desc", "limit": 1, "itemsView": "summary"])
-    switch page["data"]?.arrayValue?.first?["status"]?.stringValue {
+    let last = page["data"]?.arrayValue?.first
+    guard let turn, last?["id"]?.stringValue == turn.nativeTurnId else {
+      return ReconcileResult(snapshot: nil, activeTurnOutcome: .unknown)
+    }
+    switch last?["status"]?.stringValue {
     case "completed": return ReconcileResult(snapshot: nil, activeTurnOutcome: .known(.completed))
     case "interrupted": return ReconcileResult(snapshot: nil, activeTurnOutcome: .known(.cancelled))
     case "failed": return ReconcileResult(snapshot: nil, activeTurnOutcome: .known(.failed))

@@ -7,14 +7,17 @@ public struct CoordinatorOptions: Sendable {
   public var paths: PlatformPaths
   public var environment: [String: String]
   public var secretStore: any SecretStore
+  /// Overrides the per-connection adapter construction (tests inject a fake runtime).
+  public var adapterFactory: SessionService.AdapterFactory?
 
   public init(
     paths: PlatformPaths? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
-    secretStore: (any SecretStore)? = nil
+    secretStore: (any SecretStore)? = nil, adapterFactory: SessionService.AdapterFactory? = nil
   ) {
     self.environment = environment
     self.paths = paths ?? PlatformPaths.resolve(environment: environment)
     self.secretStore = secretStore ?? KeychainSecretStore()
+    self.adapterFactory = adapterFactory
   }
 }
 
@@ -30,6 +33,7 @@ public final class RunningCoordinator: Sendable {
   public let database: WorkspaceDatabase
   public let eventLog: EventLog
   public let diagnostics: DiagnosticsService
+  public let sessions: SessionService
   public let router: Router
   public let server: SocketServer
   private let lock: SingletonLock
@@ -39,7 +43,7 @@ public final class RunningCoordinator: Sendable {
 
   init(
     paths: PlatformPaths, startedAt: String, database: WorkspaceDatabase, eventLog: EventLog,
-    diagnostics: DiagnosticsService,
+    diagnostics: DiagnosticsService, sessions: SessionService,
     router: Router, server: SocketServer, lock: SingletonLock
   ) {
     self.paths = paths
@@ -47,6 +51,7 @@ public final class RunningCoordinator: Sendable {
     self.database = database
     self.eventLog = eventLog
     self.diagnostics = diagnostics
+    self.sessions = sessions
     self.router = router
     self.server = server
     self.lock = lock
@@ -60,6 +65,7 @@ public final class RunningCoordinator: Sendable {
   public func close() async {
     guard await closed.setIfClear() else { return }
     await server.close()
+    await sessions.shutdown()
     await eventLog.finish()
     try? database.close()
     lock.release()
@@ -110,9 +116,15 @@ public enum Coordinator {
       context: DiagnosticsService.Context(
         paths: paths, startedAt: startedAt, environment: options.environment, database: database,
         secretStore: options.secretStore, eventLog: eventLog))
+    let sessions = SessionService(
+      context: SessionService.Context(
+        database: database, eventLog: eventLog, diagnostics: diagnostics, environment: options.environment,
+        clientVersion: CoordinatorVersion.current, adapterFactory: options.adapterFactory))
+    await sessions.start()
     let router = Router(
       context: Router.Context(
-        database: database, eventLog: eventLog, diagnostics: diagnostics, startedAt: startedAt))
+        database: database, eventLog: eventLog, diagnostics: diagnostics, sessions: sessions,
+        startedAt: startedAt))
     let server: SocketServer
     do {
       server = try await SocketServer.start(socketPath: paths.socketPath, router: router, eventLog: eventLog)
@@ -127,6 +139,6 @@ public enum Coordinator {
     return .running(
       RunningCoordinator(
         paths: paths, startedAt: startedAt, database: database, eventLog: eventLog, diagnostics: diagnostics,
-        router: router, server: server, lock: lock))
+        sessions: sessions, router: router, server: server, lock: lock))
   }
 }
