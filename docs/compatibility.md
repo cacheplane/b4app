@@ -1,6 +1,6 @@
 # Compatibility manifest
 
-Recorded on 2026-10-30 (M0 baseline). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
+Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
 
 ## Target machine
 
@@ -30,19 +30,21 @@ Exact resolved versions are in `Package.resolved`.
 
 | Runtime | Installed on target Mac | Published | Verified behavior | Limits and gates |
 | --- | --- | --- | --- | --- |
-| Codex CLI (`@openai/codex`) | Not installed | 0.166.0 (2026-10-29) | None live. App-server protocol, `generate-json-schema`, and auth docs reviewed (`docs/research/2026-10-30-codex-app-server.md`). | Blocked: install the CLI and sign in before M1 live checks. Adapter minimum: 0.166.0. |
+| Codex CLI (`@openai/codex`) | 0.166.0 at `/opt/homebrew/bin/codex` (Homebrew cask, upgraded from a broken 0.128.0 install on 2026-10-30) | 0.166.0 (2026-10-29) | Live: `codex app-server` handshake, `account/read` (ChatGPT, `promax`), `account/login/start`, `thread/start`, `thread/resume`, `thread/turns/list`, `turn/start` with streamed `item/*` notifications, a tool turn (`commandExecution`), `turn/interrupt` ending as `interrupted`, reopen with history. Schema generated with `codex app-server generate-json-schema --out <dir>` from this binary and hand-typed (D-010). | Adapter minimum: 0.166.0. App-server is labelled experimental; regenerate the schema and re-run `B4APP_LIVE_CODEX=1 swift test --filter CodexLive` after every upgrade. Not exercised live: a real approval request (the user's config did not ask for one during `cat README.txt`), `item/tool/requestUserInput`, sign-in completion from a signed-out state. |
 | Claude Code | 2.1.282 at `~/.local/bin/claude` | Agent SDK 0.3.314 (bundles 2.1.314) | `claude auth status --json` parsed live; the stream-json `initialize` handshake verified live with no inference. The adapter reported `authenticated` while the Mac was signed in and `auth_required` after the session signed out later the same day. | The control protocol is undocumented (D-002); re-diff on CLI upgrades. Adapter minimum: 2.1.200. `interrupt` does not clear queued input. |
 | B4 (`@b4run/cli`) | Not installed; no trusted project chosen | 0.15.7 (2026-10-28), Node `>=24` | None live. Routes, SSE frames, resume body, and launch flags reviewed at commit `547c4ecbf3f7f7bf5662ed78522fbe8f6fe0b522` (equals `main` on 2026-10-30). | Blocked: choose a trusted local project with one `agent()` route. `b4 start` binds `0.0.0.0` and loads no `.env`; the supervisor must pass `--host 127.0.0.1` and an explicit environment. |
 
 ## Protocol observations captured for adapters
 
-- Codex app-server: newline-delimited JSON-RPC without the `jsonrpc` field; `initialize` then `initialized`; `account/read` distinguishes `chatgpt` from `apiKey`; `item/tool/requestUserInput` is experimental. Docs and generated schema disagree on policy string casing; generate from the pinned binary.
+- Codex app-server (verified live on 0.166.0): newline-delimited JSON-RPC without the `jsonrpc` field; `initialize` then `initialized`; the server emits `configWarning`, `remoteControl/status/changed`, and `account/updated` right after the handshake and clients must ignore unknown methods. `account/read` distinguishes `chatgpt` from `apiKey`. A turn echoes the user message as an `item/started` + `item/completed` `userMessage` pair before the agent items; reasoning arrives as a `reasoning` item. `turn/completed.turn.status` is `completed | interrupted | failed`. Notification params for `thread/status/changed` use `{ type, activeFlags }`. Generated schema policy strings are `untrusted | on-request | never` and `read-only | workspace-write | danger-full-access`.
 - Claude Code: write `control_request initialize` before any user message and wait for its `control_response`; `system/init` arrives per turn; strip `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`; never pass `--bare`; `AskUserQuestion` arrives through `can_use_tool`; end a session by closing stdin after `interrupt`.
 - B4: no thread-list endpoint; `done` carries several outcomes; `interrupted` means cancelled or parked (check `pending_interrupts`); no built-in endpoint auth middleware.
 
 ## Known limits of the shell
 
-- No provider conversation exists yet. Every adapter method except `inspectConnection()` throws `unsupported_capability`.
+- Codex is the only runtime with a conversation adapter. Claude Code and B4 adapter session methods throw `unsupported_capability` (M2, M3). Model selection, `turn/steer`, image input, and importing native Codex threads are not implemented.
+- Runtime request kinds the app cannot present (`item/permissions/requestApproval`, `mcpServer/elicitation/request`, `item/tool/call`, token refresh, attestation) are declined automatically with a valid response and shown as resolved.
+- A turn whose `codex app-server` process exits stays `reconciling` until the thread is reopened and Codex reports the turn's final status; the composer refuses a new turn until then.
 - The macOS app hosts the coordinator in-process; a LaunchAgent replaces that in M6. The coordinator has no idle shutdown.
 - iOS renders the shell with an unavailable transport; the relay is a follow-on design.
 - Keychain uses the file-based login keychain; the data-protection keychain needs signing (M6).

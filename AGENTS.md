@@ -8,7 +8,8 @@ This repository is the Personal Agent Workspace: a native Swift macOS app, an iO
 - `swift format lint --strict --recursive Sources Tests Apps Package.swift` before committing; `swift format format --in-place --recursive ...` fixes layout.
 - `./Scripts/generate-project.sh` regenerates `B4App.xcodeproj` (gitignored) from `project.yml`; needs `brew install xcodegen`.
 - `xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'platform=macOS'` and the same with `-scheme B4App-iOS -destination 'generic/platform=iOS Simulator'`.
-- `.build/debug/agent-workspace doctor --json` runs the CLI; it spawns `.build/debug/b4app-coordinator` beside it when no coordinator is listening. Set `B4APP_RUNTIME_DIR` and `B4APP_DATA_DIR` to keep experiments out of the real data directory.
+- `.build/debug/agent-workspace doctor --json` runs the CLI; it spawns `.build/debug/b4app-coordinator` beside it when no coordinator is listening. Set `B4APP_RUNTIME_DIR` and `B4APP_DATA_DIR` to keep experiments out of the real data directory; keep the runtime dir under `$TMPDIR`, since a Unix socket path is limited to 104 bytes.
+- `B4APP_LIVE_CODEX=1 swift test --filter CodexLive` runs the opt-in live Codex check (real inference, needs `codex login`). CI never sets it. Fixture tests use `Tests/CodexAdapterTests/Fixtures/fake-codex.py`.
 
 ## Layout
 
@@ -18,6 +19,7 @@ This repository is the Personal Agent Workspace: a native Swift macOS app, an iO
 - `Sources/WorkspaceStorage` is the only module that opens SQLite, and only the coordinator uses it.
 - `Sources/Coordinator` is the service both the app and the CLI talk to over the Unix socket; `Sources/CoordinatorMain` is its executable.
 - `Sources/CodexAdapter`, `ClaudeAdapter`, `B4Adapter`: one per native runtime. `Apps/` holds the two thin app targets.
+- `Sources/Coordinator/SessionService.swift` is the only writer of turns, display items, and runtime requests; adapters emit `AdapterEvent`s with native ids and the session service maps them to app ids.
 
 ## Rules
 
