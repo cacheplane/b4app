@@ -10,7 +10,7 @@ public enum CodexInspector {
     "Install the Codex CLI with `npm install -g @openai/codex` or `brew install --cask codex`, or set an explicit executable path."
 
   /// Inspect the Codex executable without starting the app server or issuing inference.
-  /// Account status (`account/read`) needs the app-server handshake and lands in M1.
+  /// Account status (`account/read`) needs the app-server handshake; `CodexAdapter.inspectConnection` adds it.
   public static func inspect(
     explicitPath: String? = nil, environment env: [String: String] = ProcessInfo.processInfo.environment
   ) async -> ConnectionInspection {
@@ -48,6 +48,6 @@ public enum CodexInspector {
     }
     return ConnectionInspection(
       status: .ready, authStatus: .unknown, executablePath: found.path, version: version,
-      message: "Executable available. Account status is checked through the app server (M1).")
+      message: "Executable available. Account status is read through the app server per connection.")
   }
 }

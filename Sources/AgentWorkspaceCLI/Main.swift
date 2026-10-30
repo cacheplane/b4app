@@ -53,7 +53,10 @@ struct AgentWorkspace: AsyncParsableCommand {
     commandName: "agent-workspace",
     abstract: "Manage the Personal Agent Workspace coordinator, local B4 servers, and connections.",
     version: CoordinatorVersion.current,
-    subcommands: [Doctor.self, Server.self, ConnectionCommand.self, Credential.self])
+    subcommands: [
+      Doctor.self, ConnectionCommand.self, ThreadCommand.self, TurnCommand.self, RequestCommand.self,
+      Server.self, Credential.self,
+    ])
 }
 
 struct Doctor: AsyncParsableCommand {
@@ -121,15 +124,8 @@ struct Server: AsyncParsableCommand {
 
 struct ConnectionCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
-    commandName: "connection", abstract: "Manage connections (M3).", subcommands: [Add.self])
-
-  struct Add: AsyncParsableCommand {
-    @OptionGroup var global: GlobalOptions
-    @Option var name: String?
-    @Option var url: String?
-    @Option var route: String?
-    func run() async throws { Output.notImplemented("connection add", milestone: "M3", json: global.json) }
-  }
+    commandName: "connection", abstract: "Manage connections.",
+    subcommands: [AddHarness.self, List.self, Inspect.self, Login.self])
 }
 
 struct Credential: AsyncParsableCommand {
