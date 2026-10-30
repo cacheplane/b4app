@@ -101,9 +101,11 @@ public struct SessionSnapshot: Codable, Sendable, Equatable {
 public struct TurnInput: Sendable, Equatable {
   public var operationId: String
   public var text: String
-  public init(operationId: String, text: String) {
+  public var workingDirectory: String?
+  public init(operationId: String, text: String, workingDirectory: String? = nil) {
     self.operationId = operationId
     self.text = text
+    self.workingDirectory = workingDirectory
   }
 }
 
