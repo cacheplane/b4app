@@ -1,0 +1,112 @@
+# XcodeGen definition for the two thin app targets. Everything else lives in Package.swift.
+# Regenerate with Scripts/generate-project.sh; the .xcodeproj and the generated Info.plist files are
+# gitignored (decision D-003). Info.plist keys live under `info.properties` below.
+name: B4App
+options:
+  bundleIdPrefix: com.cacheplane
+  deploymentTarget:
+    macOS: "26.0"
+    iOS: "26.0"
+  xcodeVersion: "26.6"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    SWIFT_UPCOMING_FEATURE_NONISOLATED_NONSENDING_BY_DEFAULT: YES
+    SWIFT_UPCOMING_FEATURE_INFER_ISOLATED_CONFORMANCES: YES
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+    MARKETING_VERSION: "0.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+packages:
+  b4app:
+    path: .
+targets:
+  B4App-macOS:
+    type: application
+    platform: macOS
+    sources:
+      - path: Apps/macOS/B4App
+    info:
+      path: Apps/macOS/B4App/Info.plist
+      properties:
+        CFBundleDisplayName: Agent Workspace
+        CFBundleShortVersionString: "0.0.0"
+        CFBundleVersion: "1"
+        LSApplicationCategoryType: public.app-category.developer-tools
+        NSHumanReadableCopyright: Personal tool. Not for distribution.
+    entitlements:
+      path: Apps/macOS/B4App/B4App.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cacheplane.b4app
+        PRODUCT_NAME: Agent Workspace
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: NO
+        INFOPLIST_FILE: Apps/macOS/B4App/Info.plist
+    dependencies:
+      - package: b4app
+        product: WorkspaceUI
+      - package: b4app
+        product: WorkspaceClient
+      - package: b4app
+        product: WorkspaceProtocol
+      - package: b4app
+        product: WorkspacePlatform
+      - package: b4app
+        product: NIOTransport
+      - package: b4app
+        product: Coordinator
+  B4App-iOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: Apps/iOS/B4App
+    info:
+      path: Apps/iOS/B4App/Info.plist
+      properties:
+        CFBundleDisplayName: Agent Workspace
+        CFBundleShortVersionString: "0.0.0"
+        CFBundleVersion: "1"
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cacheplane.b4app.ios
+        PRODUCT_NAME: Agent Workspace
+        INFOPLIST_FILE: Apps/iOS/B4App/Info.plist
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+    dependencies:
+      - package: b4app
+        product: WorkspaceUI
+      - package: b4app
+        product: WorkspaceClient
+      - package: b4app
+        product: WorkspaceProtocol
+schemes:
+  B4App-macOS:
+    build:
+      targets:
+        B4App-macOS: all
+    run:
+      config: Debug
+  B4App-iOS:
+    build:
+      targets:
+        B4App-iOS: all
+    run:
+      config: Debug

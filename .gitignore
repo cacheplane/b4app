@@ -1,0 +1,26 @@
+# SwiftPM
+.build/
+.swiftpm/
+*.xcodeproj
+Apps/**/Info.plist
+!Scripts/**
+Package.resolved.lock
+
+# Xcode
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+.spm/
+
+# local data
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
