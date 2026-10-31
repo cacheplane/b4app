@@ -7,10 +7,13 @@ import WorkspaceProtocol
 
 @testable import Coordinator
 
-/// The fake app-server shipped with the Codex adapter tests.
+/// The fake runtimes shipped with the adapter tests.
 private let fakeCodex =
   URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
   .appendingPathComponent("CodexAdapterTests/Fixtures/fake-codex.py").path
+private let fakeClaude =
+  URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+  .appendingPathComponent("ClaudeAdapterTests/Fixtures/fake-claude.py").path
 
 private func temporaryPaths() throws -> PlatformPaths {
   let base = NSTemporaryDirectory() + "b4s-\(UUID().uuidString.prefix(8))"
@@ -29,6 +32,8 @@ private struct Harness {
     // The fixture is a Python script, so the child needs the real PATH; Node lookups stay isolated.
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = "/nonexistent/node"
+    env["FAKE_CLAUDE_PROJECTS"] = (paths.dataDir as NSString).deletingLastPathComponent + "/claude-projects"
+    env["ANTHROPIC_API_KEY"] = nil
     let outcome = try await Coordinator.start(
       options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
     guard case .running(let coordinator) = outcome else {
@@ -45,6 +50,14 @@ private struct Harness {
   func addCodex() async throws -> Connection {
     let result = try await client.request(
       ConnectionAdd.self, ConnectionAdd.Params(kind: .codex, label: "Fake Codex", executablePath: fakeCodex),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    return result.connection
+  }
+
+  func addClaude() async throws -> Connection {
+    let result = try await client.request(
+      ConnectionAdd.self,
+      ConnectionAdd.Params(kind: .claude, label: "Fake Claude", executablePath: fakeClaude),
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
     return result.connection
   }
@@ -262,5 +275,82 @@ actor EventCollector {
     #expect(read.turns.first { $0.id == turn.id }?.status == .reconciling)
     await client.close()
     await restarted.close()
+  }
+}
+
+@Suite(.serialized) struct ClaudeSessionServiceTests {
+  @Test func runsAClaudeConversationBesideACodexThread() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let claude = try await h.addClaude()
+    #expect(claude.kind == .claude)
+    #expect(claude.status == .ready)
+    #expect(claude.authStatus == .authenticated)
+    let codexThread = try await h.newThread(codex)
+    let claudeThread = try await h.newThread(claude)
+    #expect(claudeThread.nativeScope == "owner@example.com")
+    #expect(claudeThread.nativeThreadId != codexThread.nativeThreadId)
+
+    let turn = try await h.send(claudeThread, "hello claude")
+    #expect(turn.submission == .acknowledged)
+    let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    #expect(finished.payload["outcome"]?.stringValue == "completed")
+    #expect(finished.threadId == claudeThread.id)
+    let read = try await h.read(claudeThread)
+    #expect(read.items.map(\.role) == [.user, .assistant])
+    #expect(read.items[1].payload["text"]?.stringValue == "Hello from fake Claude.")
+    #expect(read.turns[0].nativeTurnId != nil)
+
+    let listed = try await h.client.request(ThreadList.self, ThreadList.Params())
+    #expect(Set(listed.threads.map(\.connectionId)) == [codex.id, claude.id])
+    await h.stop()
+  }
+
+  @Test func answersAClaudeToolPermissionThroughTheCoordinator() async throws {
+    let h = try await Harness.start()
+    let claude = try await h.addClaude()
+    let thread = try await h.newThread(claude)
+    let turn = try await h.send(thread, "use a tool")
+    let opened = try await h.events.waitFor { $0.kind == .runtimeRequestOpened && $0.threadId == thread.id }
+    let request = try #require(try opened.payload["runtimeRequest"]?.decode(RuntimeRequest.self))
+    #expect(request.kind == .toolPermission)
+    #expect(request.payload["request"]?["toolName"]?.stringValue == "Bash")
+    let answered = try await h.client.request(
+      RequestRespond.self, RequestRespond.Params(requestId: request.id, decision: .allowOnce),
+      options: RequestOptions(operationId: UUID().uuidString))
+    #expect(answered.request.state == .resolved)
+    let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    #expect(finished.payload["outcome"]?.stringValue == "completed")
+    let read = try await h.read(thread)
+    let tool = try #require(read.items.first { $0.role == .tool })
+    #expect(tool.type == "toolUse")
+    #expect(tool.payload["status"]?.stringValue == "completed")
+    #expect(read.items.last?.payload["text"]?.stringValue == "The directory is empty.")
+    await h.stop()
+  }
+
+  @Test func claudeCrashIsScopedToItsThread() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let claude = try await h.addClaude()
+    let codexThread = try await h.newThread(codex)
+    let claudeThread = try await h.newThread(claude)
+    let pending = try await h.send(codexThread, "please approve this")
+    try await h.events.waitFor { $0.kind == .runtimeRequestOpened && $0.threadId == codexThread.id }
+    let crashed = try await h.send(claudeThread, "crash now")
+    let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == crashed.id }
+    #expect(finished.payload["outcome"]?.stringValue == "failed")
+    let connections = try await h.client.request(ConnectionList.self, ConnectionList.Params())
+    #expect(connections.connections.first { $0.id == codex.id }?.status == .ready)
+    #expect(connections.connections.first { $0.id == claude.id }?.status == .ready)
+    let codexRead = try await h.read(codexThread)
+    #expect(codexRead.requests.count == 1)
+    #expect(codexRead.turns.first { $0.id == pending.id }?.status == .waitingForUser)
+    let claudeRead = try await h.read(claudeThread)
+    #expect(claudeRead.turns[0].status == .terminal)
+    #expect(claudeRead.turns[0].outcome == .failed)
+    let again = try await h.send(claudeThread, "hello again")
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == again.id }
+    await h.stop()
   }
 }

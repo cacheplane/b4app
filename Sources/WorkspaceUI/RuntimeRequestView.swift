@@ -29,8 +29,13 @@ struct RuntimeRequestCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       Label(title, systemImage: "hand.raised").font(.headline)
+      if let toolName = details?["toolName"]?.stringValue {
+        Text(toolName).font(.caption.bold()).foregroundStyle(.secondary)
+      }
       if let command = details?["command"]?.stringValue {
         Text(command).font(.callout.monospaced()).textSelection(.enabled)
+      } else if let path = details?["path"]?.stringValue {
+        Text(path).font(.callout.monospaced()).textSelection(.enabled)
       }
       if let cwd = details?["cwd"]?.stringValue {
         Text("in \(cwd)").font(.caption).foregroundStyle(.secondary)
@@ -66,10 +71,10 @@ struct RuntimeRequestCard: View {
 
   private var title: String {
     switch request.kind {
-    case .commandApproval: return "Codex wants to run a command"
-    case .fileChangeApproval: return "Codex wants to change files"
-    case .userQuestion: return "Codex has a question"
-    case .toolPermission: return "Codex asked for extra permissions"
+    case .commandApproval: return "The agent wants to run a command"
+    case .fileChangeApproval: return "The agent wants to change files"
+    case .userQuestion: return "The agent has a question"
+    case .toolPermission: return "The agent wants to use a tool"
     case .elicitation: return "An MCP server asked for input"
     case .unknown: return "Unsupported runtime request"
     }
