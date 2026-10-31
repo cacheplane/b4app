@@ -123,6 +123,23 @@ public final class WorkspaceModel {
   /// Set after `connection.login`; the view opens it in the system browser and clears it.
   public var pendingLoginURL: URL?
 
+  /// How the coordinator is hosted, in the app's words (M6): a LaunchAgent that needs approval, or
+  /// nothing. The app sets these; the UI only shows them. The action runs when its title is shown.
+  public var hostNote: String?
+  public var hostActionTitle: String?
+  public var hostAction: (@MainActor () async -> Void)?
+  /// The coordinator version this app was built with; a running coordinator that reports another
+  /// version is an upgrade left behind, and `restartCoordinator` (set by the app) replaces it.
+  public var expectedCoordinatorVersion: String?
+  public var restartCoordinator: (@MainActor () async -> Void)?
+
+  public var versionMismatch: String? {
+    guard let expected = expectedCoordinatorVersion, let running = diagnostics?.coordinator.version,
+      running != expected
+    else { return nil }
+    return "The running coordinator is \(running); this app is \(expected)."
+  }
+
   private let transportProvider: TransportProvider
   private var client: WorkspaceClient?
   private var connectTask: Task<Void, Never>?

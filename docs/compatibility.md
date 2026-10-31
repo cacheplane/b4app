@@ -1,6 +1,6 @@
 # Compatibility manifest
 
-Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 and M3 on 2026-10-31). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
+Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 on 2026-10-31). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
 
 ## Target machine
 
@@ -10,7 +10,10 @@ Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 and M3 on 2
 | macOS | 26.5 (Darwin 25.5.0) |
 | Xcode | 26.6 (17F113), Swift 6.3.3 |
 | XcodeGen | 2.46.0 |
-| Node (for B4 servers only) | v24.20.0 at `~/.nvm/versions/node/v24.20.0/bin/node` (found on `PATH` by `NodeLocator`; `B4APP_NODE_PATH` overrides) |
+| Node (for B4 servers only) | v24.20.0 at `~/.nvm/versions/node/v24.20.0/bin/node` (found on `PATH` by `NodeLocator`, or without a shell through the nvm layout, D-040; `B4APP_NODE_PATH` overrides) |
+| Code-signing identity | none installed (`security find-identity -v -p codesigning`: 0 valid); packages are signed ad hoc (D-039) |
+| Fonts bundled | Hanken Grotesk Regular and SemiBold (OFL, from the LiveLoveApp repository), JetBrains Mono variable (OFL); registered per process with CoreText |
+| App version | 0.1.0 (`CoordinatorVersion.current`, stamped into the bundle by `Scripts/package.sh`) |
 
 Xcode 27 (Swift 6.4) requires macOS 26.6; the package uses `swift-tools-version: 6.2` so either toolchain builds it.
 
@@ -47,7 +50,7 @@ Exact resolved versions are in `Package.resolved`.
 - Claude `allow_always` is sent as a plain allow (D-018); Claude history comes from the transcript file (D-017); a Claude process exit ends its turn as failed (D-016).
 - Runtime request kinds the app cannot present (`item/permissions/requestApproval`, `mcpServer/elicitation/request`, `item/tool/call`, token refresh, attestation) are declined automatically with a valid response and shown as resolved.
 - A turn whose `codex app-server` process exits stays `reconciling` until the thread is reopened and Codex reports the turn's final status; the composer refuses a new turn until then.
-- The macOS app hosts the coordinator in-process; a LaunchAgent replaces that in M6. The coordinator has no idle shutdown.
+- The packaged app registers a LaunchAgent (`SMAppService`) that hosts the coordinator; an Xcode-run app, an unapproved agent, or a failed registration falls back to in-process hosting (D-038). The coordinator has no idle shutdown. `coordinator restart` and the app's Coordinator menu replace a coordinator left behind by an upgrade.
 - iOS renders the shell with an unavailable transport; the relay is a follow-on design.
-- Keychain uses the file-based login keychain; the data-protection keychain needs signing (M6).
-- Packaging, Finder launch, signing, and notarization are untested.
+- Keychain uses the file-based login keychain; the data-protection keychain needs a provisioning profile, which needs a signing identity (D-008, D-039).
+- Packaging is ad hoc: the app runs on the Mac that built it. Developer ID signing and notarisation are untested (no certificate). Removing a registration and changing a server's port are still missing.

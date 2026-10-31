@@ -272,6 +272,33 @@ struct LinkStatusView: View {
       }
       .padding(.horizontal, 14)
       .padding(.vertical, 10)
+      if let note = model.hostNote {
+        HStack(alignment: .top, spacing: LLA.Space.s) {
+          Text(note).font(LLAFont.caption).foregroundStyle(LLA.Color.muted).fixedSize(
+            horizontal: false, vertical: true)
+          Spacer()
+          if let title = model.hostActionTitle, let action = model.hostAction {
+            Button(title) { Task { await action() } }.buttonStyle(.llaLink).font(LLAFont.caption)
+          }
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 10)
+        .accessibilityIdentifier("host-note")
+      }
+      if let mismatch = model.versionMismatch {
+        HStack(alignment: .top, spacing: LLA.Space.s) {
+          Text(mismatch).font(LLAFont.caption).foregroundStyle(LLA.Color.muted).fixedSize(
+            horizontal: false, vertical: true)
+          Spacer()
+          if let restart = model.restartCoordinator {
+            Button("Restart coordinator") { Task { await restart() } }.buttonStyle(.llaLink).font(
+              LLAFont.caption)
+          }
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 10)
+        .accessibilityIdentifier("version-note")
+      }
     }
     .background(LLA.Color.surface)
     .accessibilityIdentifier("link-status")

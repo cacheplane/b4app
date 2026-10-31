@@ -12,19 +12,63 @@ public enum CoordinatorLauncher {
     public var spawned: Bool
   }
 
+  /// The app bundle's helper folder (M6 layout); the packaged CLI lives there too.
+  public static let bundledHelperPath = "Agent Workspace.app/Contents/Helpers/b4app-coordinator"
+
   /// Locate the `b4app-coordinator` executable: B4APP_COORDINATOR_PATH, beside the current
-  /// executable (CLI and coordinator share a build directory), then PATH.
+  /// executable with symlinks resolved (the CLI and the coordinator share a build directory or the
+  /// app's `Contents/Helpers`), the installed app in `/Applications` or `~/Applications`, then PATH
+  /// and the fallback directories.
   public static func executablePath(
-    environment env: [String: String] = ProcessInfo.processInfo.environment
+    environment env: [String: String] = ProcessInfo.processInfo.environment,
+    executableURL: URL? = Bundle.main.executableURL
   ) -> String? {
-    if let explicit = env["B4APP_COORDINATOR_PATH"], FileManager.default.isExecutableFile(atPath: explicit) {
-      return explicit
+    for candidate in candidatePaths(environment: env, executableURL: executableURL)
+    where FileManager.default.isExecutableFile(atPath: candidate) {
+      return candidate
     }
-    let sibling = Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent(
-      "b4app-coordinator"
-    ).path
-    if let sibling, FileManager.default.isExecutableFile(atPath: sibling) { return sibling }
     return ExecutableLocator.find("b4app-coordinator", environment: env)?.path
+  }
+
+  static func candidatePaths(environment env: [String: String], executableURL: URL?) -> [String] {
+    var candidates: [String] = []
+    if let explicit = env["B4APP_COORDINATOR_PATH"], !explicit.isEmpty { candidates.append(explicit) }
+    if let executableURL {
+      let resolved = executableURL.resolvingSymlinksInPath().deletingLastPathComponent()
+      candidates.append(resolved.appendingPathComponent("b4app-coordinator").path)
+    }
+    let home = env["HOME"] ?? NSHomeDirectory()
+    candidates.append("/Applications/\(bundledHelperPath)")
+    candidates.append("\(home)/Applications/\(bundledHelperPath)")
+    return candidates
+  }
+
+  /// The live holder of the coordinator lock, or nil when no coordinator is running.
+  public static func runningRecord(paths: PlatformPaths? = nil) -> LockRecord? {
+    SingletonLock.peek(path: (paths ?? PlatformPaths.resolve()).lockPath)
+  }
+
+  /// Ask the running coordinator to exit (SIGTERM, which it treats as an orderly close) and wait for
+  /// the lock to clear. Returns the record that was stopped, or nil when nothing was running. Never
+  /// escalates to SIGKILL: an owned runtime process must get its orderly shutdown.
+  @discardableResult public static func stop(
+    paths: PlatformPaths? = nil, timeout: Duration = .seconds(10)
+  ) async throws -> LockRecord? {
+    let paths = paths ?? PlatformPaths.resolve()
+    guard let record = runningRecord(paths: paths) else { return nil }
+    if kill(record.pid, SIGTERM) != 0, errno != ESRCH {
+      throw WorkspaceError(
+        .endpointUnavailable,
+        "Could not signal coordinator pid \(record.pid): \(String(cString: strerror(errno)))")
+    }
+    let deadline = ContinuousClock.now + timeout
+    while ContinuousClock.now < deadline {
+      if SingletonLock.peek(path: paths.lockPath) == nil { return record }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    throw WorkspaceError(
+      .endpointUnavailable, "Coordinator pid \(record.pid) did not exit within \(timeout); it was not killed."
+    )
   }
 
   public static func tryConnect(socketPath: String) async -> WorkspaceClient? {

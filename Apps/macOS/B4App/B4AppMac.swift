@@ -1,6 +1,7 @@
 import AppKit
 import Coordinator
 import NIOTransport
+import ServiceManagement
 import SwiftUI
 import WorkspaceClient
 import WorkspacePlatform
@@ -18,10 +19,18 @@ struct B4AppMac: App {
     WindowGroup("Personal Agent Workspace") {
       WorkspaceRootView(model: sharedModel)
         .frame(minWidth: 900, minHeight: 600)
+        .task { CoordinatorHost.wire(sharedModel) }
     }
     .defaultSize(width: 1200, height: 800)
     .commands {
       CommandGroup(replacing: .newItem) {}
+      CommandMenu("Coordinator") {
+        Button("Restart Coordinator") { Task { await CoordinatorHost.restartAndReconnect(sharedModel) } }
+        Button("Open Login Items…") { SMAppService.openSystemSettingsLoginItems() }
+        Divider()
+        Button("Remove Background Agent…") { Task { await CoordinatorHost.removeAgent(sharedModel) } }
+          .disabled(!LaunchAgent.isBundled)
+      }
     }
   }
 }
@@ -31,6 +40,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var wakeObserver: (any NSObjectProtocol)?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    // `Agent Workspace --remove-agent` unregisters the Login Item without a window, for uninstall
+    // scripts and for checks that must leave the Mac as they found it.
+    if CommandLine.arguments.contains("--remove-agent") {
+      Task { @MainActor in
+        do {
+          try await LaunchAgent.remove()
+          print("removed \(LaunchAgentControl.label)")
+        } catch {
+          FileHandle.standardError.write(
+            Data("could not remove the agent: \(error.localizedDescription)\n".utf8))
+        }
+        exit(0)
+      }
+      return
+    }
     // Spec 10.3 sleep/wake: reconnect and reconcile; remote execution may have continued.
     wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
       forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
@@ -130,11 +154,56 @@ enum QuitDialog {
   }
 }
 
-/// Connects to an existing coordinator or hosts one in-process (decision D-004). Either way the
-/// socket is the only channel, so the CLI and this app always share one coordinator.
+/// How the packaged app's LaunchAgent stands (M6, D-038). Dev builds from Xcode carry no agent.
+enum LaunchAgent {
+  nonisolated enum State: Sendable, Equatable { case notBundled, enabled, requiresApproval, failed(String) }
+
+  static var plistURL: URL {
+    Bundle.main.bundleURL.appendingPathComponent(
+      "Contents/Library/LaunchAgents/\(LaunchAgentControl.plistName)")
+  }
+  static var helperURL: URL {
+    Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/b4app-coordinator")
+  }
+  static var isBundled: Bool {
+    FileManager.default.fileExists(atPath: plistURL.path)
+      && FileManager.default.isExecutableFile(atPath: helperURL.path)
+  }
+
+  /// Register the agent (a one-time Login Items entry) or report why it cannot run.
+  static func enable() -> State {
+    guard isBundled else { return .notBundled }
+    let service = SMAppService.agent(plistName: LaunchAgentControl.plistName)
+    switch service.status {
+    case .enabled: return .enabled
+    case .requiresApproval: return .requiresApproval
+    case .notRegistered, .notFound: break
+    @unknown default: break
+    }
+    do {
+      try service.register()
+    } catch {
+      return .failed(error.localizedDescription)
+    }
+    switch service.status {
+    case .enabled: return .enabled
+    case .requiresApproval: return .requiresApproval
+    default: return .failed("launchd status \(service.status.rawValue)")
+    }
+  }
+
+  static func remove() async throws {
+    try await SMAppService.agent(plistName: LaunchAgentControl.plistName).unregister()
+  }
+}
+
+/// Connects to an existing coordinator, starts the bundled LaunchAgent, or hosts one in-process
+/// (decisions D-004 and D-038). Either way the socket is the only channel, so the CLI and this app
+/// always share one coordinator.
 actor CoordinatorHost {
   static let shared = CoordinatorHost()
   private var running: RunningCoordinator?
+  private(set) var agentState: LaunchAgent.State = .notBundled
 
   /// True while this process hosts the coordinator (and so owns local runtime processes).
   var isHosting: Bool { running != nil }
@@ -143,10 +212,29 @@ actor CoordinatorHost {
     try await shared.makeTransport()
   }
 
+  private func connect(_ paths: PlatformPaths, within timeout: Duration) async -> (any WorkspaceTransport)? {
+    let deadline = ContinuousClock.now + timeout
+    repeat {
+      if let transport = try? await UnixSocketTransport.connect(path: paths.socketPath, timeout: .seconds(2))
+      {
+        return transport
+      }
+      try? await Task.sleep(for: .milliseconds(150))
+    } while ContinuousClock.now < deadline
+    return nil
+  }
+
   private func makeTransport() async throws -> any WorkspaceTransport {
     let paths = PlatformPaths.resolve()
     if let transport = try? await UnixSocketTransport.connect(path: paths.socketPath, timeout: .seconds(2)) {
       return transport
+    }
+    if running == nil {
+      let state = await LaunchAgent.enable()
+      agentState = state
+      if state == .enabled, let transport = await connect(paths, within: .seconds(6)) {
+        return transport
+      }
     }
     if running == nil {
       switch try await Coordinator.start(options: CoordinatorOptions(paths: paths)) {
@@ -160,5 +248,75 @@ actor CoordinatorHost {
   func shutdown() async {
     await running?.close()
     running = nil
+  }
+
+  /// Replace the running coordinator: through launchd when the agent hosts it, by closing our own
+  /// when we host it, otherwise by asking the other process to exit. The next connect starts anew.
+  func restart() async throws {
+    if running != nil {
+      await shutdown()
+    } else if await LaunchAgentControl.isLoaded() {
+      try await LaunchAgentControl.kickstart()
+    } else {
+      _ = try await CoordinatorLauncher.stop()
+    }
+  }
+
+  /// Hand the model the strings and actions the UI shows for hosting (the UI never touches launchd).
+  @MainActor static func wire(_ model: WorkspaceModel) {
+    model.expectedCoordinatorVersion = CoordinatorVersion.current
+    model.restartCoordinator = { await restartAndReconnect(model) }
+    Task {
+      let state = await shared.agentState
+      switch state {
+      case .requiresApproval:
+        model.hostNote =
+          "Allow Agent Workspace under Login Items so conversations keep running when the window closes. Until then this window hosts the coordinator."
+        model.hostActionTitle = "Open Login Items"
+        model.hostAction = { SMAppService.openSystemSettingsLoginItems() }
+      case .failed(let reason):
+        model.hostNote =
+          "The background coordinator could not be registered (\(reason)); this window hosts it."
+        model.hostActionTitle = nil
+        model.hostAction = nil
+      case .enabled, .notBundled:
+        model.hostNote = nil
+        model.hostActionTitle = nil
+        model.hostAction = nil
+      }
+    }
+  }
+
+  @MainActor static func restartAndReconnect(_ model: WorkspaceModel) async {
+    await model.persistDraftNow()
+    await model.disconnect()
+    do {
+      try await shared.restart()
+    } catch {
+      model.hostNote = "Restart failed: \(error.localizedDescription)"
+    }
+    model.connect()
+    wire(model)
+  }
+
+  @MainActor static func removeAgent(_ model: WorkspaceModel) async {
+    let alert = NSAlert()
+    alert.messageText = "Remove the background coordinator?"
+    alert.informativeText =
+      "The Login Items entry is removed and the coordinator stops hosting conversations in the background. This window will host it while the app is open. Nothing stored is deleted."
+    alert.addButton(withTitle: "Remove")
+    alert.addButton(withTitle: "Cancel")
+    guard alert.runModal() == .alertFirstButtonReturn else { return }
+    do {
+      try await LaunchAgent.remove()
+      _ = try? await CoordinatorLauncher.stop()
+      await model.disconnect()
+      model.connect()
+      model.hostNote = "Background agent removed; this window hosts the coordinator."
+      model.hostActionTitle = nil
+      model.hostAction = nil
+    } catch {
+      model.hostNote = "Could not remove the agent: \(error.localizedDescription)"
+    }
   }
 }

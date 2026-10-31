@@ -111,3 +111,42 @@ import Testing
     again.release()
   }
 }
+
+@Suite struct FallbackDirectoryTests {
+  @Test func findsNvmNodeNewestFirstWithoutPath() throws {
+    let home = NSTemporaryDirectory() + "b4home-\(UUID().uuidString.prefix(8))"
+    for version in ["v22.14.0", "v24.9.0", "v24.20.0", "v12.21.0"] {
+      let bin = "\(home)/.nvm/versions/node/\(version)/bin"
+      try FileManager.default.createDirectory(atPath: bin, withIntermediateDirectories: true)
+      FileManager.default.createFile(
+        atPath: bin + "/node", contents: Data("#!/bin/sh\necho \(version)\n".utf8),
+        attributes: [.posixPermissions: 0o755])
+    }
+    let dirs = ExecutableLocator.fallbackDirectories(home: home)
+    #expect(dirs.contains("\(home)/.nvm/versions/node/v24.20.0/bin"))
+    #expect(
+      dirs.firstIndex(of: "\(home)/.nvm/versions/node/v24.20.0/bin")!
+        < dirs.firstIndex(of: "\(home)/.nvm/versions/node/v24.9.0/bin")!)
+    #expect(dirs.contains("\(home)/.local/share/fnm/aliases/default/bin"))
+    #expect(dirs.last == "/usr/bin")
+    let match = ExecutableLocator.find("node", environment: ["PATH": "/nonexistent", "HOME": home])
+    #expect(match?.path == "\(home)/.nvm/versions/node/v24.20.0/bin/node")
+    #expect(match?.source == .fallback)
+  }
+
+  @Test func peekReportsOnlyLiveHolders() throws {
+    let path = NSTemporaryDirectory() + "b4lock-\(UUID().uuidString.prefix(8))"
+    #expect(SingletonLock.peek(path: path) == nil)
+    guard case .acquired(let lock) = try SingletonLock.acquire(path: path, socketPath: "/tmp/s.sock") else {
+      Issue.record("expected to acquire")
+      return
+    }
+    #expect(SingletonLock.peek(path: path)?.pid == ProcessInfo.processInfo.processIdentifier)
+    lock.release()
+    #expect(SingletonLock.peek(path: path) == nil)
+    // A record left by a dead process reads as nil.
+    let stale = LockRecord(pid: 2_147_000_000, startedAt: "x", socketPath: "/tmp/s.sock")
+    try JSONEncoder().encode(stale).write(to: URL(fileURLWithPath: path))
+    #expect(SingletonLock.peek(path: path) == nil)
+  }
+}
