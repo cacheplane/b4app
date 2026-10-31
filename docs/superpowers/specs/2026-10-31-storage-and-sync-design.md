@@ -31,7 +31,8 @@ The owner chose option 1 over the recommendation: Postgres on every Mac as the c
 - **One migrator.** Versioned SQL files `Sources/WorkspaceStorage/Migrations/NNNN_name.sql` with a `schema_migrations` table, applied in a transaction, used unchanged for the local cluster and the hub. A `pg_dump` to `<data dir>/backups/pre-NNNN.sql` precedes every local migration. `agent-workspace db status|migrate|backup|restore`.
 - **Existing data moves once.** On first start with a `workspace.sqlite` present, the coordinator imports it (connections, threads, turns, items, requests, drafts, servers, event epochs) and renames the file `.imported`; `agent-workspace db import-sqlite` does the same by hand.
 - **Major versions.** The bundled version is pinned in `docs/compatibility.md`; a new major ships with a `pg_upgrade` step run by the coordinator before it opens the cluster, with the old data directory kept until the next successful start.
-- **iOS has no Postgres**, so the companion reads the hub directly (or through the sync service, if that transport is chosen) and is online-only; it never hosts data of its own.
+- **iOS keeps SQLite** (owner's direction, later the same day): the companion persists threads locally in SQLite and syncs with the hub through the same change log, so it works offline and may ship a limited feature subset only if and when that becomes necessary. The change log is therefore engine-agnostic by requirement, not just by design: Postgres writes it with triggers on the Mac, Swift writes it on the phone.
+- **The hub is multi-tenant and multi-user** (owner's direction; detailed later): every synced row carries a tenant and a user, the hub enforces row-level isolation, and devices authenticate as a user, which makes a sync service with its own auth the likely transport rather than devices holding Postgres credentials. M8's open transport decision should be read in that light.
 - **Sync stays a change log**, now written by Postgres triggers on the synced tables rather than by Swift, which removes a class of bugs; the apply step is SQL (`INSERT ... ON CONFLICT` with the hybrid clock as the tie-breaker).
 
 ## Options for the local store
@@ -60,11 +61,11 @@ One set of SQL files and one migrator (see the decision above). The local cluste
 ## Decisions still open (with the defaults the plan assumes)
 
 1. Remote host: Neon (assumed; already in use for other projects), or self-hosted.
-2. Transport: the coordinator and the phone talk to the hub directly over TLS (assumed for v1), or a small sync service sits in front of it.
+2. Transport: a sync service with per-user auth in front of the hub (now the likely answer, since the hub is multi-tenant), or devices talking to Postgres directly over TLS for a single-user v1.
 3. First device beyond this Mac: the iPhone reading transcripts (assumed), or a second Mac.
 4. Transcript cache: sync every display item including tool output (assumed; the data is small and bounded per item), or the index and turns with items fetched on demand.
 
 ## Proposed milestones
 
 - **M7 Postgres store.** Fetched and bundled Postgres, the private cluster and its LaunchAgent, the storage rewrite on PostgresNIO behind the existing API, the single migrator with backups, the SQLite import, `db` CLI commands, trigger-written change log, schema documentation. Exit: the packaged app starts its cluster from nothing and from an imported `workspace.sqlite`; every existing test passes against Postgres; a migration leaves a dump behind; every synced write produces a change row.
-- **M8 Multi-device sync.** Remote schema and migrator, device identity, direct Postgres sync, device-aware connections in the UI, the iOS companion reading the synced index and transcripts, conflict tests (two devices editing offline then converging), a secret-boundary audit of the sync path. Exit: two devices show one list; offline edits converge; no credential value crosses the wire except the Postgres credential itself over TLS.
+- **M8 Multi-device sync.** Remote schema and migrator with tenant and user columns, device identity, sync through the chosen transport, device-aware connections in the UI, the iOS companion with its own SQLite store syncing the index and transcripts, conflict tests (two devices editing offline then converging), a secret-boundary audit of the sync path. Exit: two devices show one list; offline edits converge; no credential value crosses the wire except the Postgres credential itself over TLS.
