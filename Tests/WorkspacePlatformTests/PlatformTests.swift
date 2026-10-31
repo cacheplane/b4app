@@ -131,7 +131,8 @@ import Testing
         < dirs.firstIndex(of: "\(home)/.nvm/versions/node/v24.9.0/bin")!)
     #expect(dirs.contains("\(home)/.local/share/fnm/aliases/default/bin"))
     #expect(dirs.last == "/usr/bin")
-    let match = ExecutableLocator.find("b4app-fake-node", environment: ["PATH": "/nonexistent", "HOME": home])
+    let match = ExecutableLocator.find(
+      "b4app-fake-node", environment: ["PATH": "/nonexistent", "HOME": home])
     #expect(match?.path == "\(home)/.nvm/versions/node/v24.20.0/bin/b4app-fake-node")
     #expect(match?.source == .fallback)
   }
