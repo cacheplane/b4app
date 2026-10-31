@@ -41,16 +41,33 @@ struct ConnectionsView: View {
         } else {
           ForEach(model.connections) { connection in
             GroupBox {
-              VStack(alignment: .leading, spacing: 4) {
+              VStack(alignment: .leading, spacing: 6) {
                 HStack {
                   Text(connection.label).bold()
                   Text(connection.kind.rawValue).foregroundStyle(.secondary)
                   Spacer()
                   StatusBadge(status: connection.status)
                 }
-                Text(connection.target).font(.caption.monospaced()).foregroundStyle(.secondary)
+                Text(connection.target.isEmpty ? "(executable not found)" : connection.target)
+                  .font(.caption.monospaced()).foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                  Text("Auth: \(connection.authStatus.rawValue.replacingOccurrences(of: "_", with: " "))")
+                    .font(.caption)
+                  Spacer()
+                  Button("Check") { Task { await model.inspectConnection(id: connection.id) } }
+                    .disabled(model.busy)
+                  if connection.kind == .codex, connection.authStatus != .authenticated {
+                    Button("Sign in with ChatGPT") { Task { await model.login(connectionId: connection.id) } }
+                      .buttonStyle(.borderedProminent)
+                      .disabled(model.busy || connection.status == .error)
+                      .accessibilityIdentifier("sign-in")
+                  }
+                }
               }
             }
+          }
+          if let error = model.lastError, model.surface == .connections {
+            Text(error).font(.callout).foregroundStyle(.red)
           }
         }
         Text("Add connection").font(.headline)
@@ -64,9 +81,16 @@ struct ConnectionsView: View {
                   runtime: model.diagnostics?.runtimes.first { $0.kind == runtime },
                   loading: model.diagnosticsLoading)
               }
-              Button("Add \(info.title) (planned for \(info.milestone))") {}
-                .disabled(true)
-                .help("Connection setup lands in \(info.milestone)")
+              if info.kind == .codex {
+                Button("Add Codex connection") { Task { await model.addConnection(kind: .codex) } }
+                  .buttonStyle(.borderedProminent)
+                  .disabled(model.busy)
+                  .accessibilityIdentifier("add-codex")
+              } else {
+                Button("Add \(info.title) (planned for \(info.milestone))") {}
+                  .disabled(true)
+                  .help("Connection setup lands in \(info.milestone)")
+              }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
           }

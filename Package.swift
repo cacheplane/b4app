@@ -103,7 +103,9 @@ let package = Package(
       name: "WorkspacePlatformTests", dependencies: ["WorkspacePlatform"], swiftSettings: concurrency),
     .testTarget(
       name: "WorkspaceStorageTests", dependencies: ["WorkspaceStorage"], swiftSettings: concurrency),
-    .testTarget(name: "CodexAdapterTests", dependencies: ["CodexAdapter"], swiftSettings: concurrency),
+    .testTarget(
+      name: "CodexAdapterTests", dependencies: ["CodexAdapter"], exclude: ["Fixtures"],
+      swiftSettings: concurrency),
     .testTarget(name: "ClaudeAdapterTests", dependencies: ["ClaudeAdapter"], swiftSettings: concurrency),
     .testTarget(name: "B4AdapterTests", dependencies: ["B4Adapter"], swiftSettings: concurrency),
     .testTarget(

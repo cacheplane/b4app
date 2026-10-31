@@ -16,7 +16,10 @@ private func temporaryPaths() throws -> PlatformPaths {
 /// Isolated environment: no PATH lookups succeed and HOME has no fallback installs, so the
 /// provider inspections report "missing" deterministically.
 private func isolatedEnvironment(_ paths: PlatformPaths) -> [String: String] {
-  ["PATH": "/nonexistent", "HOME": paths.dataDir, "B4APP_NODE_PATH": "/nonexistent/node"]
+  [
+    "PATH": "/nonexistent", "HOME": paths.dataDir, "B4APP_NODE_PATH": "/nonexistent/node",
+    ExecutableLocator.fallbackOverrideVariable: "",
+  ]
 }
 
 private func startIsolated() async throws -> RunningCoordinator {

@@ -37,7 +37,7 @@ public struct ClaudeAdapter: AgentAdapter {
     throw WorkspaceError.unsupported("claude.respond", plannedFor: "M2")
   }
 
-  public func reconcile(_ ref: NativeSessionRef) async throws -> ReconcileResult {
+  public func reconcile(_ ref: NativeSessionRef, turn: ActiveTurnRef?) async throws -> ReconcileResult {
     throw WorkspaceError.unsupported("claude.reconcile", plannedFor: "M2")
   }
 

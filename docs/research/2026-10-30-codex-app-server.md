@@ -57,3 +57,17 @@ Credentials live in `~/.codex/auth.json` (`$CODEX_HOME/auth.json`) or the OS key
 `codex app-server` is labelled experimental and may change without notice. Pin an exact `@openai/codex` version, regenerate types from that binary, leave `experimentalApi` off unless `requestUserInput` or dynamic tools are needed.
 
 Not verified: the exact JSON of a complete streamed turn, `thread/resume` live-session result fields beyond the example, and whether the docs' camelCase policy strings are accepted on the wire.
+
+## Live verification (2026-10-30, codex-cli 0.166.0 via Homebrew cask)
+
+Run through `Sources/CodexAdapter` and recorded in `docs/verification.md`:
+
+- `initialize` result: `{ userAgent: "agent_workspace/0.166.0 (Mac OS 26.5.0; arm64) unknown (agent_workspace; 0.0.0)", codexHome, platformFamily: "unix", platformOs: "macos" }`. Followed immediately by unsolicited `configWarning`, `remoteControl/status/changed`, and `account/updated { authMode: "chatgpt", planType }` notifications.
+- `account/read { refreshToken: false }` result includes `account { type: "chatgpt", email, planType, workspaceName }`, `requiresOpenaiAuth: true`, and a `workspaceRouting` object. Only type, email, and plan leave the adapter.
+- `thread/list { limit }` works without a thread loaded and returns full `Thread` records with `status { type: "notLoaded" }`, `cwd`, `cliVersion`, `source`, `preview`, and `path` (the rollout file). `model/list` returns the account's model catalog with reasoning-effort options.
+- A real turn produced, in order: `turn/started`, `item/started` + `item/completed` for the echoed `userMessage`, `item/started agentMessage`, `item/agentMessage/delta` ×n, `item/completed agentMessage`, `thread/status/changed`, `turn/completed { status: "completed" }`. A tool turn added a `reasoning` item and a `commandExecution` item whose completed form carried `command`, `cwd`, `status`, `exitCode`, `aggregatedOutput`, and `commandActions`. `cat README.txt` ran without an approval request under the user's configuration.
+- `turn/interrupt` on a running turn returned `{}` and the turn finished with `status: "interrupted"` after the in-flight deltas drained.
+- `thread/resume { threadId, excludeTurns: true }` followed by `thread/turns/list { itemsView: "full", sortDirection: "asc" }` on a fresh process returned the earlier turns and items; `thread.name` was null for an unnamed thread.
+- `generate-json-schema` from this binary: 282 files under `v2/` plus the combined `codex_app_server_protocol.v2.schemas.json` (677 definitions). Request and response shapes used by the adapter are summarized in `docs/superpowers/specs/2026-10-30-m1-codex-conversation-design.md`.
+
+Still unverified live: a real `item/commandExecution/requestApproval` or `item/fileChange/requestApproval` round trip, `item/tool/requestUserInput`, `account/login/completed` from a signed-out state, and app-server behavior across a Mac sleep/wake.

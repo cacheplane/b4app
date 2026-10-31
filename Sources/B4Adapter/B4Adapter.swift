@@ -40,7 +40,7 @@ public struct B4Adapter: AgentAdapter {
     throw WorkspaceError.unsupported("b4.respond", plannedFor: "M3")
   }
 
-  public func reconcile(_ ref: NativeSessionRef) async throws -> ReconcileResult {
+  public func reconcile(_ ref: NativeSessionRef, turn: ActiveTurnRef?) async throws -> ReconcileResult {
     throw WorkspaceError.unsupported("b4.reconcile", plannedFor: "M3")
   }
 

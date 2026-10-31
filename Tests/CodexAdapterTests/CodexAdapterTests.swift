@@ -122,16 +122,4 @@ private func kinds(_ messages: [RpcMessage]) -> [String] {
     #expect(result.error?.code == .incompatibleVersion)
   }
 
-  @Test func unimplementedMethodsThrowUnsupportedCapability() async {
-    let adapter = CodexAdapter(executablePath: nil)
-    do {
-      _ = try await adapter.createSession(NewSessionInput())
-      Issue.record("expected throw")
-    } catch let error as WorkspaceError {
-      #expect(error.code == .unsupportedCapability)
-      #expect(error.details?["milestone"]?.stringValue == "M1")
-    } catch {
-      Issue.record("unexpected \(error)")
-    }
-  }
 }

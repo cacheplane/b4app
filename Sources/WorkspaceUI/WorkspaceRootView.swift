@@ -18,7 +18,15 @@ public struct WorkspaceRootView: View {
       detail
     }
     .task { model.connect() }
+    .sheet(isPresented: $model.showNewThread) { NewThreadSheet(model: model) }
+    .onChange(of: model.pendingLoginURL) { _, url in
+      guard let url else { return }
+      openURL(url)
+      model.pendingLoginURL = nil
+    }
   }
+
+  @Environment(\.openURL) private var openURL
 
   @ViewBuilder private var detail: some View {
     switch model.surface {
@@ -63,8 +71,7 @@ struct SidebarView: View {
         }
         ForEach(model.visibleThreads) { thread in
           Button {
-            model.selectedThreadId = thread.id
-            model.surface = .threads
+            Task { await model.openThread(id: thread.id) }
           } label: {
             VStack(alignment: .leading, spacing: 2) {
               HStack(spacing: 4) {
@@ -82,6 +89,17 @@ struct SidebarView: View {
     }
     .searchable(text: $model.searchText, prompt: "Search titles")
     .navigationTitle("Agent Workspace")
+    .toolbar {
+      ToolbarItem {
+        Button("New thread", systemImage: "square.and.pencil") { model.showNewThread = true }
+          .disabled(model.conversationReadyConnections.isEmpty)
+          .help(
+            model.conversationReadyConnections.isEmpty
+              ? "Add a ready Codex connection first" : "Start a new thread"
+          )
+          .accessibilityIdentifier("new-thread-toolbar")
+      }
+    }
     .safeAreaInset(edge: .bottom) { LinkStatusView(model: model) }
   }
 }
