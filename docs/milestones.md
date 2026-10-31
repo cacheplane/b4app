@@ -29,13 +29,13 @@ Exit gate status: open on two items. (1) A real runtime request has not been tri
 ## M2: Claude Code
 
 - [x] Official auth status and login with consistent executable and environment selection. Status `live-tested` (`connection add --kind claude` → `ready / auth_required` on the signed-out Mac); login start `fixture-tested` (`claude auth login --claudeai` URL capture), not run live because it opens the owner's browser.
-- [x] Session creation, streaming input, `session_id` persistence, native resume, final-result handling, stop. `fixture-tested` end to end (adapter and coordinator suites); handshake, `--session-id`, `system/init`, error `result`, and `--resume` of an unknown id `live-tested` without inference. **Blocked for a live inference turn**: run `claude auth login`, then `B4APP_LIVE_CLAUDE=1 swift test --filter ClaudeLive`.
+- [x] Session creation, streaming input, `session_id` persistence, native resume, final-result handling, stop. `fixture-tested` end to end (adapter and coordinator suites); handshake, `--session-id`, `system/init`, error `result`, and `--resume` of an unknown id `live-tested` without inference. `live-tested` on 2026-10-31 after the owner signed in: a real turn, an interrupt (the CLI reports a requested stop as an error result with reason `aborted_streaming`, now mapped to `cancelled`), and a native resume.
 - [x] Tool permission and user-question bridges; explicit decline of unsupported elicitation. `fixture-tested` (allow, deny, answers keyed by synthetic question ids, elicitation auto-declined, hook/MCP requests answered with an error response).
 - [x] Auth-mode conflict detection before execution. `fixture-tested`; `system/init.apiKeySource` is also checked per turn.
 - [x] Drafts remain unsent while a turn runs and after interruption. The composer refuses a second turn (`protocol_invalid` / `turn_active`) and keeps the draft locally; `fixture-tested` through the coordinator for both runtimes.
 - [x] Codex and Claude threads side by side with separate native identities. `fixture-tested` (both connections, both threads listed, a Claude crash leaves the Codex request pending and its connection `ready`).
 
-Exit gate status: open on the live inference turn (sign-in needed) and on interactive use of the window.
+Exit gate status: closed on 2026-10-31 (live inference turn passed; the window was driven on screen in M6).
 
 ## M3: B4 local and remote adapters
 
@@ -104,7 +104,7 @@ Design: `docs/superpowers/specs/2026-10-31-m6-package-and-accept-design.md`. Pla
 - [x] Verify Finder launch with executable paths outside the interactive shell PATH. `implemented` (D-040 fallback directories, `fixture-tested` with a fake nvm tree); `live-tested` by launching the packaged app through LaunchServices with no shell: see `docs/verification.md`.
 - [x] LaunchAgent hosting per D-004. `implemented` (`SMAppService` registration with in-process fallback, Login Items note, restart and removal, `coordinator status|stop|restart|plist`); CLI lifecycle `live-tested` against a CLI-spawned coordinator; agent registration `live-tested` as recorded in `docs/verification.md`.
 - [x] Document prerequisites, build/run/package commands, first sign-in, B4 environment setup, and CLI use. `README.md`.
-- [ ] Run the release acceptance matrix on the target Mac. Rows and their status are in `docs/verification.md`; A03 (Claude live), A10 (remote B4), and the on-screen rows A01/A17 are open or partial as recorded there.
+- [ ] Run the release acceptance matrix on the target Mac. Rows and their status are in `docs/verification.md`; A10 (remote B4) and the on-screen rows A01/A17 are open or partial as recorded there; A03 passed live on 2026-10-31.
 - [ ] Developer ID signing and notarisation. `blocked`: no signing identity on this Mac (D-039).
 - [x] Record exact versions, performed checks, known limits, and blocked live checks. `docs/verification.md`, `docs/compatibility.md`.
 
