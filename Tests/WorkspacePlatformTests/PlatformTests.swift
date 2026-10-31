@@ -118,8 +118,10 @@ import Testing
     for version in ["v22.14.0", "v24.9.0", "v24.20.0", "v12.21.0"] {
       let bin = "\(home)/.nvm/versions/node/\(version)/bin"
       try FileManager.default.createDirectory(atPath: bin, withIntermediateDirectories: true)
+      // A name no real install directory holds, so the assertion is about the nvm order alone
+      // (CI runners have Homebrew's `node`, which rightly comes earlier in the list).
       FileManager.default.createFile(
-        atPath: bin + "/node", contents: Data("#!/bin/sh\necho \(version)\n".utf8),
+        atPath: bin + "/b4app-fake-node", contents: Data("#!/bin/sh\necho \(version)\n".utf8),
         attributes: [.posixPermissions: 0o755])
     }
     let dirs = ExecutableLocator.fallbackDirectories(home: home)
@@ -129,8 +131,8 @@ import Testing
         < dirs.firstIndex(of: "\(home)/.nvm/versions/node/v24.9.0/bin")!)
     #expect(dirs.contains("\(home)/.local/share/fnm/aliases/default/bin"))
     #expect(dirs.last == "/usr/bin")
-    let match = ExecutableLocator.find("node", environment: ["PATH": "/nonexistent", "HOME": home])
-    #expect(match?.path == "\(home)/.nvm/versions/node/v24.20.0/bin/node")
+    let match = ExecutableLocator.find("b4app-fake-node", environment: ["PATH": "/nonexistent", "HOME": home])
+    #expect(match?.path == "\(home)/.nvm/versions/node/v24.20.0/bin/b4app-fake-node")
     #expect(match?.source == .fallback)
   }
 
