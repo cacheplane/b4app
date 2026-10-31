@@ -26,8 +26,10 @@ public actor DiagnosticsService {
     self.context = context
   }
 
+  /// Recent errors are shown to the user and copied into bug reports: known secret shapes are
+  /// masked here, whatever the caller passed (D-035).
   public func recordError(scope: String, code: String, message: String) {
-    recentErrors.append(RecentError(scope: scope, code: code, message: message))
+    recentErrors.append(RecentError(scope: scope, code: code, message: LogRedactor.redact(message)))
     if recentErrors.count > 100 { recentErrors.removeFirst(recentErrors.count - 100) }
   }
 

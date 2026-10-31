@@ -163,8 +163,8 @@ extension ConnectionCommand {
 
 struct ThreadCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
-    commandName: "thread", abstract: "Create, list, and read conversation threads.",
-    subcommands: [New.self, List.self, Show.self])
+    commandName: "thread", abstract: "Create, list, read, and organize conversation threads.",
+    subcommands: [New.self, List.self, Show.self, Update.self])
 
   struct New: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Start a new native thread on a connection.")
@@ -215,16 +215,61 @@ struct ThreadCommand: AsyncParsableCommand {
     }
   }
 
-  struct Show: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Print a thread's cached transcript and state.")
+  struct Update: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+      abstract: "Rename, pin, or archive a thread. Local only; the runtime's history is untouched.")
     @OptionGroup var global: GlobalOptions
     @Argument var threadId: String
+    @Option var title: String?
+    @Flag var pin = false
+    @Flag var unpin = false
+    @Flag var archive = false
+    @Flag var unarchive = false
+    func validate() throws {
+      if pin && unpin { throw ValidationError("Pass --pin or --unpin, not both.") }
+      if archive && unarchive { throw ValidationError("Pass --archive or --unarchive, not both.") }
+      if title == nil, !pin, !unpin, !archive, !unarchive {
+        throw ValidationError("Nothing to change: pass --title, --pin/--unpin, or --archive/--unarchive.")
+      }
+    }
     func run() async throws {
       do {
         let client = try await Link.open()
         let result = try await client.request(
-          ThreadRead.self, ThreadRead.Params(threadId: threadId),
-          options: RequestOptions(timeout: .seconds(60)))
+          ThreadUpdate.self,
+          ThreadUpdate.Params(
+            threadId: threadId, title: title, pinned: pin ? true : (unpin ? false : nil),
+            archived: archive ? true : (unarchive ? false : nil)),
+          options: Link.mutation())
+        let connection = try? await Link.connection(client, matching: result.thread.connectionId)
+        await client.close()
+        print(global.json ? try Format.jsonOk(result) : Format.thread(result.thread, connection: connection))
+      } catch {
+        Output.fail(error, json: global.json)
+      }
+    }
+  }
+
+  struct Show: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Print a thread's cached transcript and state.")
+    @OptionGroup var global: GlobalOptions
+    @Argument var threadId: String
+    @Flag(
+      help:
+        "Ask the runtime first: settle an unresolved turn, merge native history into the cache, and check that the thread can still be continued. Never re-sends."
+    )
+    var reconcile = false
+    func run() async throws {
+      do {
+        let client = try await Link.open()
+        let result =
+          reconcile
+          ? try await client.request(
+            ThreadReconcile.self, ThreadReconcile.Params(threadId: threadId),
+            options: Link.mutation(timeout: .seconds(120)))
+          : try await client.request(
+            ThreadRead.self, ThreadRead.Params(threadId: threadId),
+            options: RequestOptions(timeout: .seconds(60)))
         await client.close()
         print(global.json ? try Format.jsonOk(result) : Format.transcript(result))
       } catch {
@@ -236,8 +281,9 @@ struct ThreadCommand: AsyncParsableCommand {
 
 struct TurnCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
-    commandName: "turn", abstract: "Send a message to a thread or stop its active turn.",
-    subcommands: [Send.self, Interrupt.self])
+    commandName: "turn",
+    abstract: "Send a message to a thread, stop its active turn, or abandon an unknown outcome.",
+    subcommands: [Send.self, Interrupt.self, Abandon.self])
 
   struct Send: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -303,6 +349,30 @@ struct TurnCommand: AsyncParsableCommand {
         await client.close()
         print(
           global.json ? try Format.jsonOk(result) : "turn \(result.turn.id) \(result.turn.status.rawValue)")
+      } catch {
+        Output.fail(error, json: global.json)
+      }
+    }
+  }
+
+  struct Abandon: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+      abstract:
+        "Give up on a turn whose outcome the runtime never reported (status reconciling). It ends failed with a note; nothing is re-sent. Use `thread show --reconcile` first to ask the runtime again."
+    )
+    @OptionGroup var global: GlobalOptions
+    @Argument var threadId: String
+    func run() async throws {
+      do {
+        let client = try await Link.open()
+        let result = try await client.request(
+          TurnAbandon.self, TurnInterrupt.Params(threadId: threadId), options: Link.mutation())
+        await client.close()
+        print(
+          global.json
+            ? try Format.jsonOk(result)
+            : "turn \(result.turn.id) \(result.turn.status.rawValue) \(result.turn.outcome?.rawValue ?? "") (abandoned)"
+        )
       } catch {
         Output.fail(error, json: global.json)
       }

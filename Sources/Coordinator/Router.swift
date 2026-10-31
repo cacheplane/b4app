@@ -107,7 +107,8 @@ public actor Router {
         encoding: EventsSnapshot.Result(
           epoch: events.epoch, sequence: await events.sequence,
           connections: try db.listConnections(includeDisabled: true),
-          threads: try db.listThreads(ThreadFilter(includeArchived: true))))
+          threads: try db.listThreads(ThreadFilter(includeArchived: true)),
+          activeTurns: try db.unresolvedTurns()))
     case .eventsReplay:
       let params = try command.params(for: EventsReplay.self)
       guard let replayed = await events.replay(epoch: params.epoch, afterSequence: params.afterSequence)
@@ -134,6 +135,9 @@ public actor Router {
     case .threadUpdate:
       return try JSONValue(
         encoding: try await sessions.threadUpdate(try command.params(for: ThreadUpdate.self)))
+    case .threadReconcile:
+      return try JSONValue(
+        encoding: try await sessions.threadReconcile(try command.params(for: ThreadReconcile.self)))
     case .turnSend:
       return try JSONValue(
         encoding: try await sessions.turnSend(
@@ -141,6 +145,9 @@ public actor Router {
     case .turnInterrupt:
       return try JSONValue(
         encoding: try await sessions.turnInterrupt(try command.params(for: TurnInterrupt.self)))
+    case .turnAbandon:
+      return try JSONValue(
+        encoding: try await sessions.turnAbandon(try command.params(for: TurnAbandon.self)))
     case .credentialAdd:
       return try JSONValue(
         encoding: try await sessions.credentialAdd(try command.params(for: CredentialAdd.self)))
@@ -170,6 +177,13 @@ public actor Router {
       let params = try command.params(for: ServerRestart.self)
       return try JSONValue(
         encoding: try await servers.restart(id: params.serverId, force: params.force ?? false))
+    case .workspaceActiveWork:
+      return try JSONValue(encoding: try await sessions.activeWork())
+    case .workspaceStopLocalWork:
+      return try JSONValue(encoding: try await sessions.stopLocalWork())
+    case .workspaceReconcile:
+      let params = try command.params(for: WorkspaceReconcile.self)
+      return try JSONValue(encoding: await sessions.reconcileAll(reason: params.reason ?? "request"))
     }
   }
 }

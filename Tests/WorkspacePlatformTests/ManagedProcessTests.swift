@@ -104,6 +104,25 @@ private func scratchFile(_ name: String) -> String {
     #expect(LogRedactor.redact("Loaded 1 variable(s) from .env") == "Loaded 1 variable(s) from .env")
   }
 
+  @Test func redactorMasksHeaderLinesAndUrlParameters() {
+    #expect(LogRedactor.redact("Authorization: Basic dXNlcjpwYXNz") == "Authorization: [redacted]")
+    #expect(
+      LogRedactor.redact("open https://auth.example/cb?code=SECRET&state=xyz&access_token=tok123#frag")
+        == "open https://auth.example/cb?code=[redacted]&state=[redacted]&access_token=[redacted]#frag")
+    #expect(
+      LogRedactor.redact("GET /threads?limit=5&after=abc") == "GET /threads?limit=5&after=abc")
+    let payload: JSONValue = [
+      "message": "upstream: Bearer abc.def key sk-proj-ABCDEFGHIJKLMNOP",
+      "error": ["message": "see https://x.example/?token=t0k3n", "code": 401],
+      "status": "failed",
+    ]
+    let redacted = LogRedactor.redactMessages(in: payload)
+    #expect(redacted["message"]?.stringValue == "upstream: Bearer [redacted] key [redacted]")
+    #expect(redacted["error"]?["message"]?.stringValue == "see https://x.example/?token=[redacted]")
+    #expect(redacted["error"]?["code"]?.numberValue == 401)
+    #expect(redacted["status"]?.stringValue == "failed")
+  }
+
   @Test func tailAndBoundKeepTheEnd() throws {
     let log = scratchFile("big.log")
     let handle = FileManager.default.createFile(atPath: log, contents: nil)

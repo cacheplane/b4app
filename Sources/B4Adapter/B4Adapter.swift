@@ -270,6 +270,13 @@ public actor B4Adapter: AgentAdapter {
   public func reconcile(_ ref: NativeSessionRef, turn: ActiveTurnRef?) async throws -> ReconcileResult {
     let threadId = ref.nativeSessionId
     if let run = runs[threadId], run.consuming {
+      // The stream may already have delivered its terminal frame while the pump's bookkeeping is
+      // still behind; the translator knows the outcome, so report it instead of "unknown".
+      if case .finished(let outcome) = run.translator.phase,
+        turn?.nativeTurnId ?? run.translator.turnId == run.translator.turnId
+      {
+        return ReconcileResult(snapshot: nil, activeTurnOutcome: .known(outcome))
+      }
       return ReconcileResult(snapshot: nil, activeTurnOutcome: .unknown)
     }
     guard let turn else { return ReconcileResult(snapshot: nil, activeTurnOutcome: nil) }

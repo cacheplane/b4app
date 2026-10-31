@@ -335,6 +335,98 @@ public final class WorkspaceDatabase: Sendable {
     }
   }
 
+  /// Outcome of a snapshot merge, for the reconcile result and tests.
+  public struct SnapshotMerge: Sendable, Equatable {
+    public var inserted: Int
+    public var updated: Int
+    public var skipped: Int
+    public var removed: Int
+    public init(inserted: Int = 0, updated: Int = 0, skipped: Int = 0, removed: Int = 0) {
+      self.inserted = inserted
+      self.updated = updated
+      self.skipped = skipped
+      self.removed = removed
+    }
+  }
+
+  /// Merge native history into the cache (D-031). The snapshot's order is the native order, so the
+  /// result is: every snapshot item in snapshot order (an item whose native id is cached keeps that
+  /// row; a live row keeps its payload, a snapshot row takes the new one; an id-less item that
+  /// matches a cached item of the same role and text reuses that row), then the cached live items
+  /// nothing matched (the turn in flight), renumbered in one transaction. Snapshot and cache rows the
+  /// snapshot no longer contains are removed. Live rows are never removed or duplicated.
+  @discardableResult
+  public func mergeSnapshotItems(threadId: String, items: [SnapshotItem]) throws -> SnapshotMerge {
+    try pool.write { db in
+      let cached = try DisplayItem.filter(Column("threadId") == threadId).order(Column("sequence")).fetchAll(
+        db)
+      var summary = SnapshotMerge()
+      var ordered: [DisplayItem] = []
+      var usedRows = Set<String>()
+      for item in items {
+        let role = DisplayItemRole(rawValue: item.role) ?? .tool
+        let match: DisplayItem?
+        if let nativeId = item.nativeItemId {
+          match = cached.first { $0.nativeItemId == nativeId && !usedRows.contains($0.id) }
+        } else if let text = Self.matchText(item.payload), !text.isEmpty {
+          match = cached.first {
+            $0.role == role && !usedRows.contains($0.id) && Self.matchText($0.payload) == text
+          }
+        } else {
+          match = nil
+        }
+        if var row = match {
+          usedRows.insert(row.id)
+          if row.provenance == .live {
+            summary.skipped += 1
+          } else {
+            row.payload = item.payload
+            row.type = item.type
+            row.role = role
+            row.provenance = .snapshot
+            summary.updated += 1
+          }
+          ordered.append(row)
+        } else {
+          ordered.append(
+            DisplayItem(
+              id: UUID().uuidString.lowercased(), threadId: threadId, turnId: nil,
+              nativeItemId: item.nativeItemId,
+              role: role, type: item.type, payload: item.payload, sequence: 0, provenance: .snapshot))
+          summary.inserted += 1
+        }
+      }
+      for row in cached where !usedRows.contains(row.id) {
+        if row.provenance == .live {
+          ordered.append(row)
+        } else {
+          try row.delete(db)
+          summary.removed += 1
+        }
+      }
+      // (threadId, sequence) is unique: park the existing rows below zero before renumbering so no
+      // intermediate state collides.
+      for (index, var row) in ordered.enumerated() where usedRows.contains(row.id) || row.provenance == .live
+      {
+        row.sequence = -(index + 1)
+        try row.update(db)
+      }
+      for (index, var row) in ordered.enumerated() {
+        row.sequence = index
+        try row.save(db)
+      }
+      return summary
+    }
+  }
+
+  /// The user-visible text of an item for id-less matching: `text`, or joined `content` text parts.
+  static func matchText(_ payload: JSONValue) -> String? {
+    if let text = payload["text"]?.stringValue { return text }
+    let parts = payload["content"]?.arrayValue?.compactMap { $0["text"]?.stringValue ?? $0.stringValue }
+    guard let parts, !parts.isEmpty else { return nil }
+    return parts.joined(separator: "\n")
+  }
+
   /// Replace cached items that came from a snapshot while keeping live items of unresolved turns.
   public func replaceSnapshotItems(threadId: String, with items: [DisplayItem]) throws {
     try pool.write { db in
@@ -394,6 +486,23 @@ public final class WorkspaceDatabase: Sendable {
         sql: "state = 'pending' AND threadId IN (SELECT id FROM threads WHERE connectionId = ?)",
         arguments: [connectionId]
       ).fetchAll(db)
+    }
+  }
+
+  /// Non-terminal turns of harness threads (Codex, Claude) with their threads, for the directory lock
+  /// (spec 10.1.5). Derived from stored state, so it survives restarts and holds through `reconciling`.
+  public func activeHarnessTurns() throws -> [(turn: Turn, thread: ConversationThread)] {
+    try pool.read { db in
+      let turns = try Turn.filter(
+        sql: """
+          status != 'terminal' AND threadId IN (
+            SELECT t.id FROM threads t JOIN connections c ON c.id = t.connectionId
+            WHERE c.kind IN ('codex', 'claude'))
+          """
+      ).order(Column("createdAt")).fetchAll(db)
+      return try turns.compactMap { turn in
+        try ConversationThread.fetchOne(db, key: turn.threadId).map { (turn: turn, thread: $0) }
+      }
     }
   }
 

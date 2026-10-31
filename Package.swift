@@ -113,6 +113,10 @@ let package = Package(
       name: "B4AdapterTests", dependencies: ["B4Adapter"], exclude: ["Fixtures"], swiftSettings: concurrency),
     .testTarget(
       name: "CoordinatorTests", dependencies: ["Coordinator", "NIOTransport"], swiftSettings: concurrency),
+    // Model-level tests of the shared UI against a real in-process coordinator (macOS only).
+    .testTarget(
+      name: "WorkspaceUITests", dependencies: ["WorkspaceUI", "Coordinator", "NIOTransport"],
+      swiftSettings: mainActorDefault),
   ],
   swiftLanguageModes: [.v6]
 )

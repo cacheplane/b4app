@@ -74,7 +74,11 @@ def stream_message(thread_id, turn_id, text):
                               "item": {"id": item_id, "type": "agentMessage", "text": text}, "completedAtMs": 2})
 
 
+finished = {}
+
+
 def finish_turn(thread_id, turn_id, status, error=None):
+    finished.setdefault(thread_id, []).append((turn_id, status))
     notify("turn/completed", {"threadId": thread_id,
                               "turn": {"id": turn_id, "status": status, "items": [], "error": error}})
     notify("thread/status/changed", {"threadId": thread_id, "status": {"type": "idle"}})
@@ -82,6 +86,9 @@ def finish_turn(thread_id, turn_id, status, error=None):
 
 turn_counter = 0
 thread_counter = 0
+# Real runtimes mint unique ids across restarts; a restarted fixture would reuse thr_1 and turn_1,
+# so tests that restart it pass a prefix.
+ID_PREFIX = os.environ.get("FAKE_CODEX_ID_PREFIX", "")
 loaded = {}
 hanging = None
 
@@ -97,7 +104,7 @@ while True:
     elif method == "initialized":
         pass
     elif method == "account/read":
-        send({"id": req_id, "result": {"account": {"type": "chatgpt", "email": "owner@example.com",
+        send({"id": req_id, "result": {"account": {"type": "chatgpt", "email": os.environ.get("FAKE_CODEX_EMAIL", "owner@example.com"),
                                                    "planType": "plus", "workspaceName": None},
                                        "requiresOpenaiAuth": True}})
     elif method == "account/login/start":
@@ -105,7 +112,7 @@ while True:
                                        "loginId": "login_1"}})
     elif method == "thread/start":
         thread_counter += 1
-        thread_id = "thr_%d" % thread_counter
+        thread_id = "thr_%s%d" % (ID_PREFIX, thread_counter)
         cwd = params.get("cwd") or "/tmp"
         loaded[thread_id] = cwd
         notify("thread/started", {"thread": thread_record(thread_id, cwd)})
@@ -135,6 +142,7 @@ while True:
             {"id": "u_h1", "type": "userMessage", "content": [{"type": "text", "text": "earlier question"}]},
             {"id": "a_h1", "type": "agentMessage", "text": "earlier answer"},
         ]}]
+        turns += [{"id": t, "status": s, "error": None, "items": []} for (t, s) in finished.get(thread_id, [])]
         if params.get("sortDirection") == "desc":
             turns = list(reversed(turns))[: params.get("limit") or 50]
         send({"id": req_id, "result": {"data": turns, "nextCursor": None}})
@@ -143,10 +151,17 @@ while True:
         if thread_id not in loaded:
             send({"id": req_id, "error": {"code": -32600, "message": "thread %s is not loaded" % thread_id}})
             continue
-        turn_counter += 1
-        turn_id = "turn_%d" % turn_counter
         text = params["input"][0]["text"]
-        send({"id": req_id, "result": {"turn": {"id": turn_id, "status": "inProgress", "items": [], "error": None}}})
+        if "swallow" in text:
+            # Lost request: no acknowledgement, nothing started. The adapter must report an unknown
+            # submission and nothing may be re-sent.
+            log("swallowing turn/start")
+            continue
+        turn_counter += 1
+        turn_id = "turn_%s%d" % (ID_PREFIX, turn_counter)
+        if "late ack" not in text:
+            send({"id": req_id, "result": {"turn": {"id": turn_id, "status": "inProgress", "items": [], "error": None}}})
+        # "late ack": the turn runs and its notifications flow, but the RPC response is lost.
         notify("turn/started", {"threadId": thread_id, "turn": {"id": turn_id, "status": "inProgress", "items": [], "error": None}})
         if "crash" in text:
             log("crashing on request")
@@ -185,6 +200,14 @@ while True:
             notify("serverRequest/resolved", {"threadId": thread_id, "requestId": 9})
             answers = ((response.get("result") or {}).get("answers") or {}).get("color", {}).get("answers", [])
             reply = "You chose %s." % (answers[0] if answers else "nothing")
+        if "signout" in text:
+            finish_turn(thread_id, turn_id, "failed", {"message": "401 Unauthorized: token expired", "codexErrorInfo": "unauthorized"})
+            continue
+        if "leak" in text:
+            finish_turn(thread_id, turn_id, "failed", {
+                "message": "upstream said no: Authorization: Bearer abc.def.ghi; key sk-proj-ABCDEFGHIJKLMNOP; see https://auth.example/cb?code=SECRETCODE&state=xyz&access_token=tok123",
+                "codexErrorInfo": "usageLimitExceeded"})
+            continue
         if "fail" in text:
             finish_turn(thread_id, turn_id, "failed", {"message": "usage limit reached", "codexErrorInfo": "usageLimitExceeded"})
             continue

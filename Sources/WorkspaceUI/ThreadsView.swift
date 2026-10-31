@@ -34,6 +34,8 @@ struct ThreadsView: View {
 struct ThreadDetailView: View {
   @Bindable var model: WorkspaceModel
   let thread: ConversationThread
+  @State private var renaming = false
+  @State private var newTitle = ""
 
   private var connection: Connection? { model.connection(id: thread.connectionId) }
 
@@ -48,6 +50,10 @@ struct ThreadDetailView: View {
           RuntimeRequestList(model: model, requests: detail.requests)
         }
         Divider()
+        if thread.continuity != .available {
+          ContinuityBanner(model: model, thread: thread)
+          Divider()
+        }
         ComposerView(model: model, detail: detail)
       } else if model.detailLoading {
         ProgressView("Loading thread…").frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -62,16 +68,30 @@ struct ThreadDetailView: View {
     }
     .toolbar {
       ToolbarItemGroup {
+        Button("Rename", systemImage: "pencil") {
+          newTitle = thread.title
+          renaming = true
+        }
+        .accessibilityIdentifier("rename")
         Button(thread.pinned ? "Unpin" : "Pin", systemImage: thread.pinned ? "pin.slash" : "pin") {
           Task { await model.updateThread(id: thread.id, pinned: !thread.pinned) }
         }
-        Button("Archive", systemImage: "archivebox") {
-          Task {
-            await model.updateThread(id: thread.id, archived: true)
-            model.selectedThreadId = nil
-          }
+        .accessibilityIdentifier("pin")
+        Button(
+          thread.archived ? "Unarchive" : "Archive",
+          systemImage: thread.archived ? "tray.and.arrow.up" : "archivebox"
+        ) {
+          Task { await model.updateThread(id: thread.id, archived: !thread.archived) }
         }
+        .accessibilityIdentifier("archive")
       }
+    }
+    .alert("Rename thread", isPresented: $renaming) {
+      TextField("Title", text: $newTitle)
+      Button("Rename") { Task { await model.updateThread(id: thread.id, title: newTitle) } }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("The title is local to this app; the runtime's own history is not changed.")
     }
   }
 
@@ -79,6 +99,10 @@ struct ThreadDetailView: View {
     VStack(alignment: .leading, spacing: 4) {
       HStack {
         Text(thread.title.isEmpty ? "Untitled" : thread.title).font(.title3).bold()
+        if thread.archived {
+          Text("Archived").font(.caption).padding(.horizontal, 6).padding(.vertical, 2)
+            .background(.quaternary, in: Capsule())
+        }
         Spacer()
         if let turn = model.detail?.activeTurn, model.detail?.thread.id == thread.id {
           TurnStatusBadge(turn: turn)
@@ -91,6 +115,45 @@ struct ThreadDetailView: View {
     }
     .padding(.horizontal)
     .padding(.vertical, 10)
+  }
+}
+
+/// Spec 3.3: when the native session is gone or belongs to another identity, keep the cached view,
+/// say so, and offer a new thread. The composer stays disabled.
+struct ContinuityBanner: View {
+  @Bindable var model: WorkspaceModel
+  let thread: ConversationThread
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 10) {
+      Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+      VStack(alignment: .leading, spacing: 4) {
+        Text("Continuation is unavailable").font(.headline)
+        Text(explanation).font(.callout).fixedSize(horizontal: false, vertical: true)
+      }
+      Spacer()
+      Button("Check again") { Task { await model.reconcileThread(id: thread.id) } }
+        .disabled(model.busy)
+      Button("New thread") { model.showNewThread = true }
+        .buttonStyle(.borderedProminent)
+        .disabled(model.conversationReadyConnections.isEmpty)
+    }
+    .padding()
+    .background(Color.orange.opacity(0.08))
+    .accessibilityIdentifier("continuity-banner")
+  }
+
+  private var explanation: String {
+    switch thread.continuity {
+    case .available: return ""
+    case .missing:
+      return
+        "The runtime no longer has this thread's native session. The cached transcript stays; nothing was re-sent."
+    case .identityChanged:
+      let now = model.connection(id: thread.connectionId)?.nativeScope ?? "another identity"
+      return
+        "This thread was created under \(thread.nativeScope); the connection is now \(now). Old threads are never retargeted to a different account or server."
+    }
   }
 }
 
