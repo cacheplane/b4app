@@ -1,4 +1,4 @@
-//! Organisations and their users: the operator-side `seed` command.
+//! Organisations and their users: the operator-side `seed` and `enroll` commands.
 
 use b4hub_core::ids::new_uuid;
 use sqlx::types::Uuid;
@@ -80,4 +80,48 @@ pub async fn seed(
         user_id,
         created: new_org.is_some() || new_user.is_some(),
     })
+}
+
+/// How `--org` resolved against the orgs that exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrgChoice {
+    Found(Uuid),
+    /// A slug was given and no org has it.
+    UnknownSlug,
+    /// No slug was given and more than one org exists.
+    Ambiguous,
+    /// No slug was given and no org exists.
+    NoOrgs,
+}
+
+/// Resolves an org for an operator command: by `slug` when given, otherwise the only org when
+/// exactly one exists. `orgs` carries no row-level security, so this needs no tenant context.
+pub async fn resolve_org(db: &Db, slug: Option<&str>) -> Result<OrgChoice> {
+    if let Some(slug) = slug {
+        let id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM orgs WHERE slug = $1")
+            .bind(slug)
+            .fetch_optional(&db.pool)
+            .await?;
+        return Ok(id.map_or(OrgChoice::UnknownSlug, OrgChoice::Found));
+    }
+    let ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM orgs ORDER BY created_at LIMIT 2")
+        .fetch_all(&db.pool)
+        .await?;
+    Ok(match ids.as_slice() {
+        [] => OrgChoice::NoOrgs,
+        [only] => OrgChoice::Found(*only),
+        _ => OrgChoice::Ambiguous,
+    })
+}
+
+/// The id of `username` within `org_id`, read under that org's tenant context.
+pub async fn find_user(db: &Db, org_id: Uuid, username: &str) -> Result<Option<Uuid>> {
+    let mut tx = db.tenant_tx(org_id).await?;
+    let id = sqlx::query_scalar("SELECT id FROM users WHERE org_id = $1 AND username = $2")
+        .bind(org_id)
+        .bind(username)
+        .fetch_optional(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(id)
 }

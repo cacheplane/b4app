@@ -13,10 +13,7 @@ impl Db {
     /// device token, never from the request.
     pub async fn tenant_tx(&self, org_id: Uuid) -> Result<Transaction<'_, Postgres>> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query("SELECT set_config('b4hub.org_id', $1::text, true)")
-            .bind(org_id.to_string())
-            .execute(&mut *tx)
-            .await?;
+        set_tenant(&mut tx, org_id).await?;
         Ok(tx)
     }
 
@@ -27,4 +24,14 @@ impl Db {
     pub async fn untenanted_tx(&self) -> Result<Transaction<'_, Postgres>> {
         Ok(self.pool.begin().await?)
     }
+}
+
+/// Sets `b4hub.org_id` for the rest of `tx`. For a transaction that had to look something up
+/// untenanted first (a token or code, to learn the org) and then needs tenant-secured tables.
+pub(crate) async fn set_tenant(tx: &mut Transaction<'_, Postgres>, org_id: Uuid) -> Result<()> {
+    sqlx::query("SELECT set_config('b4hub.org_id', $1::text, true)")
+        .bind(org_id.to_string())
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }

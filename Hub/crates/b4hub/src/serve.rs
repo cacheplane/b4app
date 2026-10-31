@@ -4,14 +4,15 @@ use std::future::{Future, IntoFuture};
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::routing::get;
+use axum::routing::{delete, get, post};
 use axum::Router;
 use b4hub_db::Db;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
 
+use crate::auth::LastTouched;
 use crate::error::ApiError;
-use crate::routes::health;
+use crate::routes::{devices, enroll, health};
 
 /// How long the listener stays open, answering `/readyz` 503, after shutdown begins, so a load
 /// balancer polling readiness stops routing here before connections are refused. Capped at a
@@ -23,6 +24,8 @@ const READINESS_GRACE_MAX: Duration = Duration::from_millis(500);
 pub struct AppState {
     pub db: Db,
     pub shutdown: Shutdown,
+    /// When each device last had `last_seen_at` written (throttle: once a minute).
+    pub last_touched: LastTouched,
     // Task 4 adds the change-feed `Notify` here.
 }
 
@@ -31,6 +34,7 @@ impl AppState {
         AppState {
             db,
             shutdown: Shutdown::default(),
+            last_touched: LastTouched::default(),
         }
     }
 }
@@ -64,6 +68,10 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
+        .route("/v1/enroll", post(enroll::enroll))
+        .route("/v1/me", get(devices::me))
+        .route("/v1/devices/self", delete(devices::revoke_self))
+        .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
         .fallback(|| async { ApiError::not_found() })
         .with_state(state)
 }

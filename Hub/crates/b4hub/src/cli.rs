@@ -1,4 +1,5 @@
-//! Command line, environment settings, and the three commands (`serve`, `migrate`, `seed`).
+//! Command line, environment settings, and the four commands (`serve`, `migrate`, `seed`,
+//! `enroll`).
 //!
 //! A missing or malformed setting is a [`ConfigError`] that names the setting and never echoes
 //! its value (the database URLs carry passwords); `main` prints it on one line and exits 2.
@@ -13,12 +14,16 @@ use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
-use b4hub_db::Db;
+use b4hub_db::orgs::{self, OrgChoice};
+use b4hub_db::{devices, Db};
 
 use crate::serve::{self, AppState};
 
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_SHUTDOWN_WAIT_MS: u64 = 30_000;
+
+/// How long an enrollment code stays redeemable.
+const ENROLLMENT_TTL: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -43,6 +48,18 @@ pub enum Command {
     Migrate,
     /// Create an org and a user in it if they do not exist (connects with DATABASE_ADMIN_URL).
     Seed(SeedArgs),
+    /// Print a one-time enrollment code for a user (connects with DATABASE_ADMIN_URL).
+    Enroll(EnrollArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct EnrollArgs {
+    /// Username of the user the device will belong to.
+    #[arg(long = "user", value_parser = parse_non_empty)]
+    pub user: String,
+    /// Org slug; optional when exactly one org exists.
+    #[arg(long = "org", value_parser = parse_slug)]
+    pub org: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -273,6 +290,7 @@ pub async fn run(cli: Cli, settings: &Settings) -> Result<(), CliError> {
         Command::Serve { bind } => serve_command(bind, settings).await,
         Command::Migrate => migrate_command(settings).await,
         Command::Seed(args) => seed_command(args, settings).await,
+        Command::Enroll(args) => enroll_command(args, settings).await,
     }
 }
 
@@ -334,6 +352,46 @@ async fn seed_command(args: SeedArgs, settings: &Settings) -> Result<(), CliErro
         outcome.user_id,
     );
     Ok(())
+}
+
+async fn enroll_command(args: EnrollArgs, settings: &Settings) -> Result<(), CliError> {
+    let db = Db::connect(&settings.admin_url()?).await?;
+    let code = issue_enrollment_code(&db, &args.user, args.org.as_deref()).await?;
+    println!(
+        "Enrollment code: {code} (expires in {} minutes)",
+        ENROLLMENT_TTL.as_secs() / 60
+    );
+    Ok(())
+}
+
+/// Resolves the org (by `org`, or the only org when there is exactly one) and the user in it,
+/// then mints a code for that user. A missing, unknown, or ambiguous org and an unknown user are
+/// configuration errors naming the flag to fix.
+pub async fn issue_enrollment_code(
+    db: &Db,
+    username: &str,
+    org: Option<&str>,
+) -> Result<String, CliError> {
+    let org_id = match orgs::resolve_org(db, org).await? {
+        OrgChoice::Found(id) => id,
+        OrgChoice::UnknownSlug => {
+            return Err(ConfigError::new("--org", "no org has that slug").into())
+        }
+        OrgChoice::Ambiguous => {
+            return Err(ConfigError::new(
+                "--org",
+                "several orgs exist; pass --org <slug> to choose one",
+            )
+            .into())
+        }
+        OrgChoice::NoOrgs => {
+            return Err(ConfigError::new("--org", "no org exists; run `b4hub seed` first").into())
+        }
+    };
+    let user_id = orgs::find_user(db, org_id, username)
+        .await?
+        .ok_or_else(|| ConfigError::new("--user", "no such user in that org"))?;
+    Ok(devices::create_enrollment_code(db, org_id, user_id, ENROLLMENT_TTL).await?)
 }
 
 #[cfg(test)]

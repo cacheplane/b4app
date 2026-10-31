@@ -153,12 +153,16 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "uuid",
 ]
 
 [[package]]
 name = "b4hub-core"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "getrandom 0.4.3",
+ "sha2",
  "uuid",
 ]
 

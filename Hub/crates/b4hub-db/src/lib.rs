@@ -5,6 +5,7 @@ use std::time::Duration;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
+pub mod devices;
 pub mod migrate;
 pub mod orgs;
 mod tenant;
@@ -20,6 +21,8 @@ pub enum Error {
     InvalidUrl(&'static str),
     #[error("the operating system has no source of randomness")]
     Entropy,
+    #[error("the enrollment code is invalid, expired, or already used")]
+    InvalidCode,
     #[error("the b4hub_app role has SUPERUSER or BYPASSRLS; refusing to continue")]
     PrivilegedRole,
 }
