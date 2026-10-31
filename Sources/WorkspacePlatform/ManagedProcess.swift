@@ -39,7 +39,21 @@ public final class ManagedProcess: Sendable {
     var attributes: posix_spawnattr_t?
     posix_spawnattr_init(&attributes)
     defer { posix_spawnattr_destroy(&attributes) }
-    posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
+    // The child must not inherit this process's signal state: the coordinator ignores SIGTERM,
+    // SIGINT, SIGHUP, and SIGPIPE (dispositions survive exec), and the spawning thread may have
+    // signals blocked (the mask survives exec too). Either would leave a server that cannot be
+    // stopped with SIGTERM.
+    var defaults = sigset_t()
+    sigemptyset(&defaults)
+    for sig in [SIGTERM, SIGINT, SIGHUP, SIGPIPE, SIGQUIT, SIGCHLD] { sigaddset(&defaults, sig) }
+    posix_spawnattr_setsigdefault(&attributes, &defaults)
+    var empty = sigset_t()
+    sigemptyset(&empty)
+    posix_spawnattr_setsigmask(&attributes, &empty)
+    posix_spawnattr_setflags(
+      &attributes,
+      Int16(
+        POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
     posix_spawnattr_setpgroup(&attributes, 0)
 
     let argv = ([executable] + arguments).map { strdup($0) } + [nil]
@@ -81,29 +95,31 @@ public final class ManagedProcess: Sendable {
 
   /// SIGTERM to the process group, wait up to `gracePeriod`, then SIGKILL to the group. Returns
   /// whether the leader is gone. The caller verifies ownership before calling this (D-025).
-  public static func terminateGroup(pid: Int32, gracePeriod: Duration) async -> Bool {
+  public static func terminateGroup(
+    pid: Int32, gracePeriod: Duration, process: ManagedProcess? = nil
+  ) async -> Bool {
     guard pid > 1 else { return true }
     kill(-pid, SIGTERM)
     let deadline = ContinuousClock.now + gracePeriod
     while ContinuousClock.now < deadline {
-      reap(pid)
-      if !ProcessInspector.isAlive(pid: pid) { return true }
+      if gone(pid, process: process) { return true }
       try? await Task.sleep(for: .milliseconds(100))
     }
     kill(-pid, SIGKILL)
     for _ in 0..<20 {
-      reap(pid)
-      if !ProcessInspector.isAlive(pid: pid) { return true }
+      if gone(pid, process: process) { return true }
       try? await Task.sleep(for: .milliseconds(100))
     }
-    return !ProcessInspector.isAlive(pid: pid)
+    return gone(pid, process: process)
   }
 
-  /// Collect the exit of a child of this process so it does not linger as a zombie; harmless for a
-  /// process that is not our child.
-  private static func reap(_ pid: Int32) {
+  /// Our own child is reaped through its instance so the exit status stays known; any other
+  /// process is checked through the kernel (a stray zombie of ours is collected either way).
+  private static func gone(_ pid: Int32, process: ManagedProcess?) -> Bool {
+    if let process, process.pid == pid { return process.exitStatus() != nil }
     var status: Int32 = 0
     _ = waitpid(pid, &status, WNOHANG)
+    return !ProcessInspector.isAlive(pid: pid)
   }
 
   private static func errnoText() -> String { String(cString: strerror(errno)) }

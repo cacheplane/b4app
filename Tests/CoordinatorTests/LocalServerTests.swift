@@ -171,3 +171,197 @@ struct ServerHarness {
     #expect(!encoded.contains("secret-mark"))
   }
 }
+
+/// Owned-server lifecycle against the fake project CLI.
+@Suite(.serialized) struct LocalServerLifecycleTests {
+  private func waitForHealth(
+    _ h: ServerHarness, _ server: LocalServer, _ health: LocalServerHealth, timeout: Duration = .seconds(10)
+  ) async throws -> LocalServer {
+    let deadline = ContinuousClock.now + timeout
+    while ContinuousClock.now < deadline {
+      let current = try await h.status(server)
+      if current.health == health { return current }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    return try await h.status(server)
+  }
+
+  @Test func startsToReadyInSourceModeAndIsIdempotent() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let added = try await h.add(try h.project())
+    let started = try await h.start(added)
+    #expect(started.health == .ready)
+    #expect(started.actualPort == added.requestedPort)
+    #expect((started.pid ?? 0) > 0)
+    #expect(started.ownershipVerified)
+    #expect(started.generation == 1)
+    #expect(started.statusMessage?.contains("ready on http://127.0.0.1:\(added.requestedPort ?? 0)") == true)
+    let log = try String(contentsOfFile: started.logPath!, encoding: .utf8)
+    #expect(log.contains("b4 start listening on http://127.0.0.1:\(added.requestedPort ?? 0)"))
+    let again = try await h.start(started)
+    #expect(again.generation == 1 && again.pid == started.pid)
+    let stopped = try await h.stop(started)
+    #expect(stopped.health == .stopped && stopped.pid == nil)
+    #expect(Ports.isFree(added.requestedPort!))
+    #expect(!ProcessInspector.isAlive(pid: started.pid!))
+    try await h.events.waitFor {
+      $0.kind == .serverChanged && $0.payload["server"]?["health"]?.stringValue == "stopped"
+    }
+  }
+
+  @Test func startsInDevelopmentModeWithTheEnvFile() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let path = try h.project()
+    try "FAKE_B4_MARK=mark-1\n".write(toFile: path + "/.env", atomically: true, encoding: .utf8)
+    let added = try await h.add(path, mode: .development)
+    let started = try await h.start(added)
+    #expect(started.health == .ready)
+    let log = try String(contentsOfFile: started.logPath!, encoding: .utf8)
+    #expect(log.contains("Loaded 1 variable(s)"))
+    #expect(log.contains("FAKE_B4_MARK=mark-1"))
+    #expect(log.contains("B4.run dev ready at http://127.0.0.1:\(added.requestedPort ?? 0)"))
+    for row in [added, started, try await h.status(started)] {
+      let encoded = String(decoding: try JSONCoding.encoder.encode(row), as: UTF8.self)
+      #expect(!encoded.contains("mark-1"))
+    }
+    _ = try await h.stop(started)
+  }
+
+  @Test func portConflictIsReportedAndNothingIsKilled() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let port = try Ports.allocate()
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    defer { close(fd) }
+    var address = sockaddr_in()
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = in_port_t(port).bigEndian
+    address.sin_addr.s_addr = inet_addr("127.0.0.1")
+    let bound = withUnsafePointer(to: &address) {
+      $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+        bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+      }
+    }
+    #expect(bound == 0 && listen(fd, 1) == 0)
+    let added = try await h.add(try h.project(), port: port)
+    let failure = await h.failure { try await h.start(added) }
+    #expect(failure?.code == .ownedProcessConflict)
+    #expect(failure?.message.contains("nothing was stopped") == true)
+    #expect(try await h.status(added).health == .stopped)
+    #expect(!Ports.isFree(port))
+  }
+
+  @Test func restartKeepsTheGenerationSequence() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let started = try await h.start(try await h.add(try h.project()))
+    let restarted = try await h.client.request(
+      ServerRestart.self, ServerLifecycleParams(serverId: started.id), options: h.mutation(.seconds(150))
+    ).server
+    #expect(restarted.health == .ready)
+    #expect(restarted.generation == 2)
+    #expect(restarted.pid != started.pid)
+    _ = try await h.stop(restarted)
+  }
+
+  @Test func concurrentStartsJoinTheSameLaunch() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let added = try await h.add(try h.project())
+    async let first = h.start(added)
+    async let second = h.start(added)
+    let (a, b) = try await (first, second)
+    #expect(a.health == .ready && b.health == .ready)
+    #expect(a.generation == 1 && b.generation == 1)
+    #expect(a.pid == b.pid)
+    _ = try await h.stop(a)
+  }
+
+  @Test func exitIsDetectedByTheMonitor() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let started = try await h.start(try await h.add(try h.project()))
+    kill(started.pid!, SIGKILL)
+    let stopped = try await waitForHealth(h, started, .stopped)
+    #expect(stopped.health == .stopped)
+    #expect(stopped.pid == nil)
+    #expect(stopped.statusMessage?.contains("exited") == true)
+  }
+
+  @Test func stopReachesARuntimeGrandchild() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let path = try h.project()
+    try "FAKE_B4_GRANDCHILD=1\nFAKE_B4_HANG_ON_TERM=30\n".write(
+      toFile: path + "/.env", atomically: true, encoding: .utf8)
+    let added = try await h.add(path, mode: .development)
+    let started = try await h.start(added)
+    #expect(started.health == .ready)
+    let clock = ContinuousClock()
+    let elapsed = try await clock.measure { _ = try await h.stop(started) }
+    #expect(elapsed < .seconds(20))
+    #expect(Ports.isFree(added.requestedPort!))
+    #expect(!ProcessInspector.isAlive(pid: started.pid!))
+  }
+
+  @Test func liveServerIsReAdoptedAfterACoordinatorRestart() async throws {
+    let h = try await ServerHarness.start()
+    let started = try await h.start(try await h.add(try h.project()))
+    await h.close()
+    #expect(ProcessInspector.isAlive(pid: started.pid!))
+    let h2 = try await ServerHarness.start(paths: h.paths)
+    defer { Task { await h2.close() } }
+    let adopted = try await h2.status(started)
+    #expect(adopted.health == .ready)
+    #expect(adopted.ownershipVerified)
+    #expect(adopted.pid == started.pid)
+    let stopped = try await h2.stop(adopted)
+    #expect(stopped.health == .stopped)
+    #expect(!ProcessInspector.isAlive(pid: started.pid!))
+  }
+
+  @Test func stalePidIsLeftAloneOnCoordinatorStart() async throws {
+    let h = try await ServerHarness.start()
+    let added = try await h.add(try h.project())
+    let sleeper = try ManagedProcess.spawn(
+      executable: "/bin/sleep", arguments: ["60"], environment: ["PATH": "/bin"], workingDirectory: "/",
+      outputPath: h.base + "/sleeper.log")
+    _ = try h.coordinator.database.updateLocalServer(id: added.id) {
+      $0.pid = sleeper.pid
+      $0.processStartedAt = sleeper.identity.startedAt - 100
+      $0.health = .ready
+      $0.ownershipVerified = true
+    }
+    await h.close()
+    let h2 = try await ServerHarness.start(paths: h.paths)
+    defer {
+      Task {
+        await h2.close()
+        _ = await ManagedProcess.terminateGroup(pid: sleeper.pid, gracePeriod: .seconds(1))
+      }
+    }
+    let row = try await h2.status(added)
+    #expect(row.health == .stopped)
+    #expect(row.pid == nil)
+    #expect(row.ownershipVerified == false)
+    #expect(row.statusMessage?.contains("left untouched") == true)
+    #expect(ProcessInspector.isAlive(pid: sleeper.pid))
+  }
+
+  @Test func unreadyServerFailsHonestly() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let path = try h.project()
+    try "FAKE_B4_FAIL_START=1\n".write(toFile: path + "/.env", atomically: true, encoding: .utf8)
+    let added = try await h.add(path)
+    let failure = await h.failure { try await h.start(added) }
+    #expect(failure?.code == .endpointUnavailable)
+    #expect(failure?.message.contains("exited with status 2") == true)
+    #expect(
+      failure?.details?["logTail"]?.arrayValue?.contains { $0.stringValue?.contains("boot failed") == true }
+        == true)
+    #expect(try await h.status(added).health == .stopped)
+  }
+}

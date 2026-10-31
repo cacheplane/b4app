@@ -19,6 +19,10 @@ public enum Ports {
     let fd = socket(AF_INET, SOCK_STREAM, 0)
     guard fd >= 0 else { throw WorkspaceError(.internalError, "socket() failed: \(errno)") }
     defer { close(fd) }
+    // A Node listener binds with SO_REUSEADDR, so lingering TIME_WAIT sockets are not a conflict; a
+    // live listener still is.
+    var one: Int32 = 1
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, socklen_t(MemoryLayout<Int32>.size))
     var address = sockaddr_in()
     address.sin_family = sa_family_t(AF_INET)
     address.sin_port = in_port_t(port).bigEndian
