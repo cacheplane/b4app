@@ -21,6 +21,8 @@ struct CoordinatorCommand: AsyncParsableCommand {
     var version: String?
     var cliVersion: String
     var launchAgentLoaded: Bool
+    var launchAgentState: String?
+    var launchAgentLastExit: String?
     var executable: String?
   }
 
@@ -36,10 +38,11 @@ struct CoordinatorCommand: AsyncParsableCommand {
       ).coordinator.version
       await client.close()
     }
+    let job = await LaunchAgentControl.jobState()
     return Report(
       running: record != nil, pid: record?.pid, startedAt: record?.startedAt, socketPath: paths.socketPath,
       answering: answering, version: version, cliVersion: CoordinatorVersion.current,
-      launchAgentLoaded: await LaunchAgentControl.isLoaded(),
+      launchAgentLoaded: job != nil, launchAgentState: job?.state, launchAgentLastExit: job?.lastExitCode,
       executable: CoordinatorLauncher.executablePath())
   }
 
@@ -57,7 +60,17 @@ struct CoordinatorCommand: AsyncParsableCommand {
     } else {
       lines.append("no coordinator running (socket \(r.socketPath))")
     }
-    lines.append("launch agent: \(r.launchAgentLoaded ? "loaded" : "not loaded")")
+    if r.launchAgentLoaded {
+      var agent = "launch agent: loaded"
+      if let state = r.launchAgentState { agent += ", \(state)" }
+      if let exit = r.launchAgentLastExit { agent += ", last exit \(exit)" }
+      if r.launchAgentState?.contains("spawn") == true {
+        agent += " (launchd cannot start the bundled coordinator; relaunch the app to re-register the agent)"
+      }
+      lines.append(agent)
+    } else {
+      lines.append("launch agent: not loaded")
+    }
     lines.append("executable: \(r.executable ?? "not found")")
     return lines.joined(separator: "\n")
   }

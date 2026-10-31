@@ -48,4 +48,22 @@ import WorkspaceProtocol
       try PropertyListSerialization.propertyList(from: Data(plist.utf8), format: nil) as? [String: Any]
     #expect(parsed?["RunAtLoad"] as? Bool == true)
   }
+
+  @Test func userAgentPlistCarriesTheAbsoluteProgramAndReadsBack() throws {
+    let home = NSTemporaryDirectory() + "b4agent-\(UUID().uuidString.prefix(6))"
+    let program = "/Applications/Agent Workspace.app/Contents/Helpers/b4app-coordinator"
+    let path = LaunchAgentControl.userPlistPath(home: home)
+    try FileManager.default.createDirectory(
+      atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+    try LaunchAgentControl.userPlist(programPath: program).write(
+      toFile: path, atomically: true, encoding: .utf8)
+    #expect(LaunchAgentControl.installedProgramPath(home: home) == program)
+    let parsed =
+      try PropertyListSerialization.propertyList(
+        from: Data(contentsOf: URL(fileURLWithPath: path)), format: nil) as? [String: Any]
+    #expect(parsed?["Label"] as? String == LaunchAgentControl.label)
+    #expect(parsed?["RunAtLoad"] as? Bool == true)
+    #expect((parsed?["KeepAlive"] as? [String: Any])?["SuccessfulExit"] as? Bool == false)
+    #expect(LaunchAgentControl.installedProgramPath(home: home + "/nowhere") == nil)
+  }
 }
