@@ -27,15 +27,18 @@ enum FakeB4Project {
     for route in routes {
       let dir = root + "/src/app/" + route.name
       try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-      try "export default \(route.kind)({})\n".write(toFile: dir + "/index.ts", atomically: true, encoding: .utf8)
+      try "export default \(route.kind)({})\n".write(
+        toFile: dir + "/index.ts", atomically: true, encoding: .utf8)
     }
     if let cliVersion {
       let cli = root + "/node_modules/@b4run/cli"
       try fm.createDirectory(atPath: cli + "/dist", withIntermediateDirectories: true)
-      try #"{"name": "@b4run/cli", "version": "\#(cliVersion)", "type": "module", "bin": {"b4": "dist/index.js"}}"#
+      try
+        #"{"name": "@b4run/cli", "version": "\#(cliVersion)", "type": "module", "bin": {"b4": "dist/index.js"}}"#
         .write(toFile: cli + "/package.json", atomically: true, encoding: .utf8)
       try fm.copyItem(
-        atPath: fixturesDirectory.appendingPathComponent("fake-b4-cli.py").path, toPath: cli + "/dist/index.js")
+        atPath: fixturesDirectory.appendingPathComponent("fake-b4-cli.py").path,
+        toPath: cli + "/dist/index.js")
       try fm.copyItem(
         atPath: fixturesDirectory.appendingPathComponent("fake-b4.py").path, toPath: cli + "/dist/fake_b4.py")
     }
