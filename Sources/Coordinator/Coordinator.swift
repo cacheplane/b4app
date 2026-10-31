@@ -119,15 +119,15 @@ public enum Coordinator {
       context: DiagnosticsService.Context(
         paths: paths, startedAt: startedAt, environment: options.environment, database: database,
         secretStore: options.secretStore, eventLog: eventLog))
+    let servers = LocalServerService(
+      context: LocalServerService.Context(
+        database: database, eventLog: eventLog, environment: options.environment, paths: paths))
     let sessions = SessionService(
       context: SessionService.Context(
         database: database, eventLog: eventLog, diagnostics: diagnostics, environment: options.environment,
         clientVersion: CoordinatorVersion.current, secretStore: options.secretStore,
-        adapterFactory: options.adapterFactory))
+        adapterFactory: options.adapterFactory, servers: servers))
     await sessions.start()
-    let servers = LocalServerService(
-      context: LocalServerService.Context(
-        database: database, eventLog: eventLog, environment: options.environment, paths: paths))
     await servers.startAll()
     let router = Router(
       context: Router.Context(

@@ -407,3 +407,137 @@ struct ServerHarness {
     #expect(row.message?.contains("stopped on port \(added.requestedPort ?? 0)") == true)
   }
 }
+
+@Suite(.serialized) struct ManagedConnectionTests {
+  private func connect(
+    _ h: ServerHarness, _ server: LocalServer, route: String = "/chat#agent"
+  ) async throws -> ConnectionAdd.Result {
+    try await h.client.request(
+      ConnectionAdd.self, ConnectionAdd.Params(kind: .b4, route: route, serverId: server.id),
+      options: h.mutation())
+  }
+
+  private func thread(_ h: ServerHarness, _ connection: Connection) async throws -> ConversationThread {
+    try await h.client.request(
+      ThreadCreate.self, ThreadCreate.Params(connectionId: connection.id), options: h.mutation()
+    ).thread
+  }
+
+  private func send(_ h: ServerHarness, _ thread: ConversationThread, _ text: String) async throws -> Turn {
+    try await h.client.request(
+      TurnSend.self, TurnSend.Params(threadId: thread.id, text: text), options: h.mutation()
+    ).turn
+  }
+
+  @Test func managedConnectionRefusesWhileStopped() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let server = try await h.add(try h.project())
+    let result = try await connect(h, server)
+    #expect(result.connection.b4Mode == .managedLocal)
+    #expect(result.connection.localServerId == server.id)
+    #expect(result.connection.target == "http://127.0.0.1:\(server.requestedPort ?? 0)")
+    #expect(result.connection.routeKey == "/chat#agent")
+    #expect(result.connection.status == .offline)
+    #expect(result.inspection.message?.contains("server start proj") == true)
+    let failure = await h.failure { try await thread(h, result.connection) }
+    #expect(failure?.code == .endpointUnavailable)
+    #expect(failure?.message.contains("agent-workspace server start proj") == true)
+    #expect(try await h.client.request(ThreadList.self, ThreadList.Params()).threads.isEmpty)
+    let both = await h.failure {
+      try await h.client.request(
+        ConnectionAdd.self,
+        ConnectionAdd.Params(kind: .b4, url: "http://127.0.0.1:1", route: "/chat#agent", serverId: server.id),
+        options: h.mutation())
+    }
+    #expect(both?.code == .protocolInvalid)
+    let again = try await connect(h, server)
+    #expect(again.connection.id == result.connection.id)
+  }
+
+  @Test func conversesThroughAManagedServer() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let server = try await h.start(try await h.add(try h.project()))
+    let result = try await connect(h, server)
+    #expect(result.connection.status == .ready)
+    let inspected = try await h.client.request(
+      ConnectionInspect.self, ConnectionInspect.Params(connectionId: result.connection.id),
+      options: h.mutation()
+    )
+    #expect(inspected.connection.status == .ready)
+    let created = try await thread(h, result.connection)
+    #expect(created.context == "/chat#agent")
+    let turn = try await send(h, created, "hello there")
+    let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    #expect(finished.payload["outcome"]?.stringValue == "completed")
+    let read = try await h.client.request(ThreadRead.self, ThreadRead.Params(threadId: created.id))
+    #expect(read.items.contains { $0.payload["text"]?.stringValue == "Hello from fake B4." })
+    _ = try await h.stop(server)
+    let offline = try await h.client.request(ConnectionList.self, ConnectionList.Params()).connections
+    #expect(offline.first { $0.id == result.connection.id }?.status == .offline)
+  }
+
+  @Test func stopRefusesWhileATurnIsRunningUnlessForced() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let server = try await h.start(try await h.add(try h.project()))
+    let connection = try await connect(h, server).connection
+    let created = try await thread(h, connection)
+    let turn = try await send(h, created, "hang around")
+    try await h.events.waitFor {
+      $0.kind == .turnStateChanged && $0.turnId == turn.id && $0.payload["status"]?.stringValue == "running"
+    }
+    let refused = await h.failure { try await h.stop(server) }
+    #expect(refused?.code == .ownedProcessConflict)
+    #expect(refused?.details?["reason"]?.stringValue == "turn_active")
+    #expect(refused?.details?["threadIds"]?.arrayValue?.first?.stringValue == created.id)
+    #expect(try await h.status(server).health == .ready)
+    let stopped = try await h.stop(server, force: true)
+    #expect(stopped.health == .stopped)
+    try await Task.sleep(for: .seconds(2))
+    let read = try await h.client.request(
+      ThreadRead.self, ThreadRead.Params(threadId: created.id), options: RequestOptions(timeout: .seconds(30))
+    )
+    let final = try #require(read.turns.first { $0.id == turn.id })
+    #expect(final.outcome != .completed)
+    #expect(final.status == .reconciling || final.outcome == .failed || final.outcome == .cancelled)
+  }
+
+  @Test func serverExitMarksRouteConnectionsOffline() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let server = try await h.start(try await h.add(try h.project()))
+    let connection = try await connect(h, server).connection
+    let created = try await thread(h, connection)
+    let turn = try await send(h, created, "hang around")
+    try await h.events.waitFor {
+      $0.kind == .turnStateChanged && $0.turnId == turn.id && $0.payload["status"]?.stringValue == "running"
+    }
+    kill(server.pid!, SIGKILL)
+    try await h.events.waitFor(timeout: .seconds(10)) {
+      $0.kind == .connectionChanged && $0.connectionId == connection.id
+        && $0.payload["status"]?.stringValue == "offline"
+    }
+    #expect(try await h.status(server).health == .stopped)
+    let read = try await h.client.request(
+      ThreadRead.self, ThreadRead.Params(threadId: created.id), options: RequestOptions(timeout: .seconds(30))
+    )
+    let final = try #require(read.turns.first { $0.id == turn.id })
+    #expect(final.outcome != .completed)
+    let failure = await h.failure { try await send(h, created, "again") }
+    #expect(failure?.code == .endpointUnavailable || failure?.code == .protocolInvalid)
+  }
+
+  @Test func workflowRouteOnAManagedServerIsIncompatible() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let server = try await h.start(try await h.add(try h.project()))
+    let result = try await connect(h, server, route: "/dispatch#workflow")
+    #expect(result.connection.status == .incompatible)
+    #expect(result.inspection.message?.contains("workflow") == true)
+    let unknown = await h.failure { try await connect(h, server, route: "/nope#agent") }
+    #expect(unknown?.code == .notFound)
+    _ = try await h.stop(server)
+  }
+}
