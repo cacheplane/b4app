@@ -167,7 +167,11 @@ name = "b4hub-db"
 version = "0.1.0"
 dependencies = [
  "b4hub-core",
+ "base64",
+ "getrandom 0.4.3",
+ "hmac",
  "percent-encoding",
+ "sha2",
  "sqlx",
  "thiserror",
  "tokio",

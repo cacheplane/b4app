@@ -220,6 +220,15 @@ impl Settings {
         self.secret_url("DATABASE_URL")
     }
 
+    /// `DATABASE_URL` as `migrate` needs it: the connection must be as `b4hub_app` with a usable
+    /// password, because `migrate` provisions that role from it.
+    pub fn provisioning_url(&self) -> Result<String, ConfigError> {
+        let url = self.database_url()?;
+        b4hub_db::migrate::validate_app_url(&url)
+            .map_err(|reason| ConfigError::new("DATABASE_URL", reason))?;
+        Ok(url)
+    }
+
     /// `DATABASE_ADMIN_URL` (or `DATABASE_ADMIN_URL_FILE`): the owner connection.
     pub fn admin_url(&self) -> Result<String, ConfigError> {
         self.secret_url("DATABASE_ADMIN_URL")
@@ -289,7 +298,7 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
 
 async fn migrate_command(settings: &Settings) -> Result<(), CliError> {
     let admin_url = settings.admin_url()?;
-    let app_url = settings.database_url()?;
+    let app_url = settings.provisioning_url()?;
     b4hub_db::migrate::run(&admin_url, &app_url).await?;
     let db = Db::connect(&admin_url).await?;
     let status = b4hub_db::migrate::status(&db).await?;
@@ -413,6 +422,41 @@ mod tests {
             .unwrap_err();
         assert_eq!(missing.name, "DATABASE_URL_FILE");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn provisioning_url_must_be_b4hub_app_with_a_password() {
+        let ok = settings(&[("DATABASE_URL", "postgres://b4hub_app:pw@db/b4hub")]);
+        assert!(ok.provisioning_url().is_ok());
+
+        for url in [
+            "postgres://postgres:hunter2@db/b4hub",
+            "postgres://b4hub_app@db/b4hub",
+            "postgres://b4hub_app:@db/b4hub",
+            "postgres://b4hub_app:p%C3%A9@db/b4hub",
+        ] {
+            let error = settings(&[("DATABASE_URL", url)])
+                .provisioning_url()
+                .unwrap_err();
+            assert_eq!(error.name, "DATABASE_URL", "{url}");
+            assert!(!error.to_string().contains("hunter2"));
+        }
+    }
+
+    #[tokio::test]
+    async fn migrate_with_a_bad_app_url_is_a_configuration_error_before_any_connection() {
+        let cli = Cli::try_parse_from(["b4hub", "migrate"]).unwrap();
+        let settings = settings(&[
+            ("DATABASE_ADMIN_URL", "postgres://admin@127.0.0.1:1/none"),
+            (
+                "DATABASE_URL",
+                "postgres://postgres:hunter2@127.0.0.1:1/none",
+            ),
+        ]);
+        let error = run(cli, &settings).await.unwrap_err();
+        assert!(matches!(error, CliError::Config(_)), "{error}");
+        assert_eq!(error.exit_code(), 2);
+        assert!(!error.to_string().contains("hunter2"));
     }
 
     #[test]

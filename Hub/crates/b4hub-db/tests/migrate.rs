@@ -18,12 +18,17 @@ fn admin_url(pool: &PgPool) -> String {
     url.to_string()
 }
 
-/// The same database reached as the application role.
-fn app_url(pool: &PgPool, password: &str) -> String {
+/// The same database reached as `user`.
+fn url_as(pool: &PgPool, user: &str, password: &str) -> String {
     let mut url = Url::parse(&admin_url(pool)).unwrap();
-    url.set_username("b4hub_app").unwrap();
+    url.set_username(user).unwrap();
     url.set_password(Some(password)).unwrap();
     url.to_string()
+}
+
+/// The same database reached as the application role.
+fn app_url(pool: &PgPool, password: &str) -> String {
+    url_as(pool, "b4hub_app", password)
 }
 
 #[sqlx::test(migrations = false)]
@@ -59,6 +64,67 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
             .unwrap();
     assert!(!row.get::<bool, _>("rolbypassrls"));
     assert!(!row.get::<bool, _>("rolsuper"));
+
+    // The server holds a SCRAM verifier, never the plaintext password.
+    let stored: String =
+        sqlx::query_scalar("SELECT rolpassword FROM pg_authid WHERE rolname = 'b4hub_app'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(stored.starts_with("SCRAM-SHA-256$4096:"), "{stored}");
+    assert!(!stored.contains("pw-test"));
+}
+
+#[sqlx::test(migrations = false)]
+async fn migrate_reruns_as_a_non_superuser_owner(pool: PgPool) {
+    // A typical deployment's owner is `LOGIN CREATEROLE` without SUPERUSER. Roles are
+    // cluster-global and other tests provision `b4hub_app` concurrently, so both roles are
+    // created idempotently and the owner is given ADMIN on `b4hub_app` (as it would be as its
+    // creator).
+    for statement in [
+        "DO $$ BEGIN CREATE ROLE b4hub_test_owner LOGIN CREATEROLE PASSWORD 'owner-pw'; \
+         EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$",
+        "DO $$ BEGIN CREATE ROLE b4hub_app LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'pw-test'; \
+         EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$",
+        "GRANT b4hub_app TO b4hub_test_owner WITH ADMIN OPTION",
+        "GRANT ALL ON SCHEMA public TO b4hub_test_owner",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+    let owner_url = url_as(&pool, "b4hub_test_owner", "owner-pw");
+    let app_url = app_url(&pool, "pw-test");
+
+    b4hub_db::migrate::run(&owner_url, &app_url).await.unwrap();
+    // The second run takes the ALTER ROLE path, which a non-superuser may only use for LOGIN
+    // and PASSWORD.
+    b4hub_db::migrate::run(&owner_url, &app_url).await.unwrap();
+
+    let owner: String =
+        sqlx::query_scalar("SELECT tableowner FROM pg_tables WHERE tablename = 'orgs'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(owner, "b4hub_test_owner");
+    let app = Db::connect(&app_url).await.unwrap();
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM orgs")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+    app.pool.close().await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn migrate_rejects_an_app_url_that_is_not_b4hub_app_with_a_password(pool: PgPool) {
+    let admin = admin_url(&pool);
+    for url in [
+        url_as(&pool, "postgres", "pw-test"),
+        admin.clone(), // no password
+    ] {
+        let error = b4hub_db::migrate::run(&admin, &url).await.unwrap_err();
+        assert!(matches!(error, b4hub_db::Error::InvalidUrl(_)), "{error}");
+        assert!(!error.to_string().contains("pw-test"));
+    }
 }
 
 #[sqlx::test(migrations = false)]

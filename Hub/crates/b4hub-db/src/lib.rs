@@ -15,8 +15,12 @@ pub enum Error {
     Sqlx(#[from] sqlx::Error),
     #[error("migration error: {0}")]
     Migrate(#[from] sqlx::migrate::MigrateError),
-    #[error("{0}")]
+    #[error("DATABASE_URL {0}")]
     InvalidUrl(&'static str),
+    #[error("the operating system has no source of randomness")]
+    Entropy,
+    #[error("the b4hub_app role has SUPERUSER or BYPASSRLS; refusing to continue")]
+    PrivilegedRole,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
