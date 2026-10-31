@@ -15,6 +15,8 @@ let package = Package(
   products: [
     .library(name: "WorkspaceProtocol", targets: ["WorkspaceProtocol"]),
     .library(name: "WorkspaceClient", targets: ["WorkspaceClient"]),
+    .library(name: "WorkspaceSecrets", targets: ["WorkspaceSecrets"]),
+    .library(name: "WorkspaceSync", targets: ["WorkspaceSync"]),
     .library(name: "WorkspacePlatform", targets: ["WorkspacePlatform"]),
     .library(name: "WorkspaceStorage", targets: ["WorkspaceStorage"]),
     .library(name: "CodexAdapter", targets: ["CodexAdapter"]),
@@ -37,11 +39,16 @@ let package = Package(
     .target(name: "WorkspaceProtocol", swiftSettings: concurrency),
     .target(name: "WorkspaceClient", dependencies: ["WorkspaceProtocol"], swiftSettings: concurrency),
 
+    // Keychain-backed secret store: Foundation and Security only, links on both platforms.
+    .target(name: "WorkspaceSecrets", swiftSettings: concurrency),
+    // The hub wire types and HTTP client: Foundation only, links on both platforms.
+    .target(name: "WorkspaceSync", dependencies: ["WorkspaceProtocol"], swiftSettings: concurrency),
+
     // macOS-only infrastructure.
     .target(
       name: "WorkspacePlatform",
       dependencies: [
-        "WorkspaceProtocol",
+        "WorkspaceProtocol", "WorkspaceSecrets",
         .product(name: "Subprocess", package: "swift-subprocess"),
       ],
       swiftSettings: concurrency),
@@ -102,6 +109,9 @@ let package = Package(
     .testTarget(
       name: "WorkspaceProtocolTests", dependencies: ["WorkspaceProtocol"], swiftSettings: concurrency),
     .testTarget(name: "WorkspaceClientTests", dependencies: ["WorkspaceClient"], swiftSettings: concurrency),
+    .testTarget(
+      name: "WorkspaceSyncTests", dependencies: ["WorkspaceSync"],
+      swiftSettings: concurrency),
     .testTarget(
       name: "WorkspacePlatformTests", dependencies: ["WorkspacePlatform"], swiftSettings: concurrency),
     .testTarget(
