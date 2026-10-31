@@ -10,6 +10,7 @@ public actor Router {
     public var eventLog: EventLog
     public var diagnostics: DiagnosticsService
     public var sessions: SessionService
+    public var servers: LocalServerService
     public var startedAt: String
   }
 
@@ -69,6 +70,7 @@ public actor Router {
     let db = context.database
     let events = context.eventLog
     let sessions = context.sessions
+    let servers = context.servers
     switch command.method {
     case .systemPing:
       return try JSONValue(
@@ -145,9 +147,29 @@ public actor Router {
     case .requestRespond:
       return try JSONValue(
         encoding: try await sessions.requestRespond(try command.params(for: RequestRespond.self)))
-    case .serverAdd, .serverList, .serverStart, .serverStatus, .serverLogs, .serverRestart, .serverStop,
-      .serverInspect:
-      throw WorkspaceError(.notImplemented, "Managed servers are wired in M4 task 4.")
+    case .serverAdd:
+      return try JSONValue(encoding: try await servers.add(try command.params(for: ServerAdd.self)))
+    case .serverList:
+      return try JSONValue(encoding: try await servers.list())
+    case .serverStart:
+      return try JSONValue(
+        encoding: try await servers.start(id: try command.params(for: ServerStart.self).serverId))
+    case .serverStatus:
+      return try JSONValue(
+        encoding: try await servers.status(id: try command.params(for: ServerStatus.self).serverId))
+    case .serverInspect:
+      return try JSONValue(
+        encoding: try await servers.inspect(id: try command.params(for: ServerInspect.self).serverId))
+    case .serverLogs:
+      return try JSONValue(encoding: try await servers.logs(try command.params(for: ServerLogs.self)))
+    case .serverStop:
+      let params = try command.params(for: ServerStop.self)
+      return try JSONValue(
+        encoding: try await servers.stop(id: params.serverId, force: params.force ?? false))
+    case .serverRestart:
+      let params = try command.params(for: ServerRestart.self)
+      return try JSONValue(
+        encoding: try await servers.restart(id: params.serverId, force: params.force ?? false))
     }
   }
 }

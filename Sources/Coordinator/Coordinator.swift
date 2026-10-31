@@ -34,6 +34,7 @@ public final class RunningCoordinator: Sendable {
   public let eventLog: EventLog
   public let diagnostics: DiagnosticsService
   public let sessions: SessionService
+  public let servers: LocalServerService
   public let router: Router
   public let server: SocketServer
   private let lock: SingletonLock
@@ -43,7 +44,7 @@ public final class RunningCoordinator: Sendable {
 
   init(
     paths: PlatformPaths, startedAt: String, database: WorkspaceDatabase, eventLog: EventLog,
-    diagnostics: DiagnosticsService, sessions: SessionService,
+    diagnostics: DiagnosticsService, sessions: SessionService, servers: LocalServerService,
     router: Router, server: SocketServer, lock: SingletonLock
   ) {
     self.paths = paths
@@ -52,6 +53,7 @@ public final class RunningCoordinator: Sendable {
     self.eventLog = eventLog
     self.diagnostics = diagnostics
     self.sessions = sessions
+    self.servers = servers
     self.router = router
     self.server = server
     self.lock = lock
@@ -66,6 +68,7 @@ public final class RunningCoordinator: Sendable {
     guard await closed.setIfClear() else { return }
     await server.close()
     await sessions.shutdown()
+    await servers.shutdown()
     await eventLog.finish()
     try? database.close()
     lock.release()
@@ -122,9 +125,14 @@ public enum Coordinator {
         clientVersion: CoordinatorVersion.current, secretStore: options.secretStore,
         adapterFactory: options.adapterFactory))
     await sessions.start()
+    let servers = LocalServerService(
+      context: LocalServerService.Context(
+        database: database, eventLog: eventLog, environment: options.environment, paths: paths))
+    await servers.startAll()
     let router = Router(
       context: Router.Context(
         database: database, eventLog: eventLog, diagnostics: diagnostics, sessions: sessions,
+        servers: servers,
         startedAt: startedAt))
     let server: SocketServer
     do {
@@ -140,6 +148,6 @@ public enum Coordinator {
     return .running(
       RunningCoordinator(
         paths: paths, startedAt: startedAt, database: database, eventLog: eventLog, diagnostics: diagnostics,
-        sessions: sessions, router: router, server: server, lock: lock))
+        sessions: sessions, servers: servers, router: router, server: server, lock: lock))
   }
 }
