@@ -119,6 +119,42 @@ enum Format {
     return lines.joined(separator: "\n")
   }
 
+  static func server(_ server: LocalServer, connections: [Connection]) -> String {
+    var lines = [
+      "\(server.name)  \(server.health.rawValue)  (\(server.launchMode.rawValue))  \(server.id)",
+      "  project  \(server.projectPath)",
+      "  port     \(server.requestedPort.map(String.init) ?? "-")"
+        + (server.pid.map { "  pid \($0)" } ?? "")
+        + (server.ownershipVerified ? "  (owned)" : ""),
+      "  node     \(server.nodePath)",
+      "  cli      \(server.cliPath) (\(server.cliVersion ?? "?"))",
+    ]
+    if let envFile = server.envFilePath { lines.append("  env      \(envFile)") }
+    if let logPath = server.logPath { lines.append("  log      \(logPath)") }
+    if server.routes.isEmpty {
+      lines.append("  routes   (none found)")
+    } else {
+      lines.append("  routes")
+      for route in server.routes {
+        let connected = connections.first { $0.localServerId == server.id && $0.routeKey == route.key }
+        var line = "    \(route.key)  \(route.entryFile)"
+        if let connected { line += "  → connection \(connected.label) (\(connected.status.rawValue))" }
+        lines.append(line)
+      }
+    }
+    if let message = server.statusMessage { lines.append("  \(message)") }
+    return lines.joined(separator: "\n")
+  }
+
+  static func servers(_ servers: [LocalServer]) -> String {
+    if servers.isEmpty {
+      return "No managed servers. Register a project with `agent-workspace server add <dir>`."
+    }
+    return servers.map {
+      "\(pad($0.name, 16)) \(pad($0.health.rawValue, 10)) \(pad($0.launchMode.rawValue, 12)) port \(pad($0.requestedPort.map(String.init) ?? "-", 6)) \($0.projectPath)"
+    }.joined(separator: "\n")
+  }
+
   static func pad(_ value: String, _ width: Int) -> String {
     value.count >= width ? value : value + String(repeating: " ", count: width - value.count)
   }

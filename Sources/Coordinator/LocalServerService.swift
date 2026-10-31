@@ -249,7 +249,7 @@ public actor LocalServerService {
   public func stop(id: String, force: Bool) async throws -> ServerAdd.Result {
     if let inFlight = startTasks[id] { _ = try? await inFlight.value }
     var server = try require(id)
-    if !force {
+    if !force, server.pid != nil {
       let active = try activeThreadIds(serverId: id)
       if !active.isEmpty {
         throw WorkspaceError(
@@ -440,12 +440,15 @@ public actor LocalServerService {
   }
 
   /// Threads on this server's route connections with a turn that stopping would lose. A parked
-  /// (`waiting_for_user`) turn is durable in `.b4` and does not count.
+  /// (`waiting_for_user`) turn is durable in `.b4`, and a `reconciling` one is already lost; neither
+  /// counts.
   private func activeThreadIds(serverId: String) throws -> [String] {
     var ids: [String] = []
     for connection in try db.connections(localServerId: serverId) {
       for thread in try db.listThreads(ThreadFilter(connectionId: connection.id, includeArchived: true)) {
-        if let turn = try db.activeTurn(threadId: thread.id), turn.status != .waitingForUser {
+        if let turn = try db.activeTurn(threadId: thread.id),
+          [.submitting, .running, .stopping].contains(turn.status)
+        {
           ids.append(thread.id)
         }
       }

@@ -502,6 +502,14 @@ struct ServerHarness {
     let final = try #require(read.turns.first { $0.id == turn.id })
     #expect(final.outcome != .completed)
     #expect(final.status == .reconciling || final.outcome == .failed || final.outcome == .cancelled)
+    // Nothing more can be lost: a stopped server stops again without force, and a reconciling turn
+    // does not block a restart.
+    #expect(try await h.stop(server).health == .stopped)
+    let restarted = try await h.client.request(
+      ServerRestart.self, ServerLifecycleParams(serverId: server.id), options: h.mutation(.seconds(150))
+    ).server
+    #expect(restarted.health == .ready)
+    _ = try await h.stop(restarted, force: true)
   }
 
   @Test func serverExitMarksRouteConnectionsOffline() async throws {

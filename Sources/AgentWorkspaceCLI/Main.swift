@@ -79,49 +79,6 @@ struct Doctor: AsyncParsableCommand {
   }
 }
 
-struct Server: AsyncParsableCommand {
-  static let configuration = CommandConfiguration(
-    abstract: "Manage owned local B4 servers (M4).",
-    subcommands: [Add.self, List.self, Start.self, Status.self, Logs.self, Restart.self, Stop.self])
-
-  struct Add: AsyncParsableCommand {
-    @OptionGroup var global: GlobalOptions
-    @Argument var projectDir: String
-    @Option var name: String?
-    func run() async throws { Output.notImplemented("server add", milestone: "M4", json: global.json) }
-  }
-  struct List: AsyncParsableCommand {
-    @OptionGroup var global: GlobalOptions
-    func run() async throws { Output.notImplemented("server list", milestone: "M4", json: global.json) }
-  }
-  struct Start: AsyncParsableCommand {
-    @OptionGroup var global: GlobalOptions
-    @Argument var name: String
-    func run() async throws { Output.notImplemented("server start", milestone: "M4", json: global.json) }
-  }
-  struct Status: AsyncParsableCommand {
-    @OptionGroup var global: GlobalOptions
-    @Argument var name: String
-    func run() async throws { Output.notImplemented("server status", milestone: "M4", json: global.json) }
-  }
-  struct Logs: AsyncParsableCommand {
-    @OptionGroup var global: GlobalOptions
-    @Argument var name: String
-    @Flag var follow = false
-    func run() async throws { Output.notImplemented("server logs", milestone: "M4", json: global.json) }
-  }
-  struct Restart: AsyncParsableCommand {
-    @OptionGroup var global: GlobalOptions
-    @Argument var name: String
-    func run() async throws { Output.notImplemented("server restart", milestone: "M4", json: global.json) }
-  }
-  struct Stop: AsyncParsableCommand {
-    @OptionGroup var global: GlobalOptions
-    @Argument var name: String
-    func run() async throws { Output.notImplemented("server stop", milestone: "M4", json: global.json) }
-  }
-}
-
 struct ConnectionCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "connection", abstract: "Manage connections.",
