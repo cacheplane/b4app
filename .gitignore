@@ -24,3 +24,8 @@ xcuserdata/
 .vscode/*
 !.vscode/settings.json
 !.vscode/extensions.json
+
+# secrets (never committed)
+.env
+.env.*
+!.env.example

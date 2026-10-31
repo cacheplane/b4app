@@ -142,6 +142,13 @@ struct ToolCard: View {
       if let command = item.payload["command"]?.stringValue { return "\(name): \(command)" }
       if let path = item.payload["path"]?.stringValue { return "\(name): \(path)" }
       return name
+    case "toolCall":
+      let name = item.payload["name"]?.stringValue ?? "Tool"
+      if let input = item.payload["input"], !input.isNull {
+        let preview = input.stringValue ?? String(describing: input)
+        return "\(name): \(preview.prefix(80))"
+      }
+      return name
     default: return item.type
     }
   }

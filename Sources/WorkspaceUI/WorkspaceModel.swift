@@ -107,7 +107,7 @@ public final class WorkspaceModel {
 
   /// Connections that can start a thread right now.
   public var conversationReadyConnections: [Connection] {
-    connections.filter { $0.enabled && ($0.kind == .codex || $0.kind == .claude) && $0.status == .ready }
+    connections.filter { $0.enabled && $0.status == .ready }
   }
 
   public func connect() {
@@ -166,13 +166,17 @@ public final class WorkspaceModel {
 
   @discardableResult
   public func addConnection(
-    kind: ConnectionKind, label: String? = nil, executablePath: String? = nil
+    kind: ConnectionKind, label: String? = nil, executablePath: String? = nil, url: String? = nil,
+    route: String? = nil, authReference: String? = nil
   ) async
     -> Connection?
   {
     await perform {
       let result = try await $0.request(
-        ConnectionAdd.self, ConnectionAdd.Params(kind: kind, label: label, executablePath: executablePath),
+        ConnectionAdd.self,
+        ConnectionAdd.Params(
+          kind: kind, label: label, executablePath: executablePath, url: url, route: route,
+          authReference: authReference),
         options: Self.mutation(timeout: .seconds(60)))
       self.merge(result.connection)
       if result.connection.status != .ready, let message = result.inspection.message {
@@ -203,7 +207,7 @@ public final class WorkspaceModel {
 
   // MARK: - Threads
 
-  public func createThread(connectionId: String, directory: String, title: String?) async {
+  public func createThread(connectionId: String, directory: String?, title: String?) async {
     let created: ConversationThread? = await perform {
       try await $0.request(
         ThreadCreate.self,

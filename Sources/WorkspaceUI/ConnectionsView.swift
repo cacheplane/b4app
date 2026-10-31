@@ -26,7 +26,7 @@ struct ConnectionsView: View {
     KindInfo(
       kind: .b4, title: "B4 agent",
       summary:
-        "A managed local project, an attached local server, or a remote HTTPS endpoint with an exact route.",
+        "Attach a running B4 server (local HTTP on loopback, or a remote HTTPS endpoint) at one exact agent route. Managed local servers arrive in M4.",
       milestone: "M3", runtime: nil),
   ]
 
@@ -51,6 +51,12 @@ struct ConnectionsView: View {
                 }
                 Text(connection.target.isEmpty ? "(executable not found)" : connection.target)
                   .font(.caption.monospaced()).foregroundStyle(.secondary)
+                if let route = connection.routeKey {
+                  Text(
+                    "route \(route) · \(connection.b4Mode?.rawValue.replacingOccurrences(of: "_", with: " ") ?? "b4")"
+                  )
+                  .font(.caption.monospaced()).foregroundStyle(.secondary)
+                }
                 HStack(spacing: 10) {
                   Text("Auth: \(connection.authStatus.rawValue.replacingOccurrences(of: "_", with: " "))")
                     .font(.caption)
@@ -90,9 +96,7 @@ struct ConnectionsView: View {
                   .disabled(model.busy)
                   .accessibilityIdentifier("add-\(info.kind.rawValue)")
               } else {
-                Button("Add \(info.title) (planned for \(info.milestone))") {}
-                  .disabled(true)
-                  .help("Connection setup lands in \(info.milestone)")
+                B4AttachForm(model: model)
               }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -110,6 +114,39 @@ struct ConnectionsView: View {
     }
     .task(id: model.link) {
       if model.link == .ready, model.diagnostics == nil { await model.refreshDiagnostics() }
+    }
+  }
+}
+
+/// Attach-endpoint form. It collects a credential *reference*, never a secret (spec 3.2, D-022).
+struct B4AttachForm: View {
+  @Bindable var model: WorkspaceModel
+  @State private var url = "http://127.0.0.1:8000"
+  @State private var route = "/chat#agent"
+  @State private var label = ""
+  @State private var reference = ""
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      TextField("Base URL (https://host, or http://127.0.0.1:port)", text: $url).textFieldStyle(
+        .roundedBorder)
+      TextField("Route key, for example /chat#agent", text: $route).textFieldStyle(.roundedBorder)
+      TextField("Label (optional)", text: $label).textFieldStyle(.roundedBorder)
+      TextField("Credential reference (optional, secret:…)", text: $reference).textFieldStyle(.roundedBorder)
+      Text(
+        "Remote endpoints must use HTTPS. Create a secret with `agent-workspace credential add <label>` and paste only its reference here; it is sent as a bearer to this origin only. The check confirms the server is reachable, not that its model credentials work."
+      )
+      .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+      Button("Attach B4 endpoint") {
+        Task {
+          await model.addConnection(
+            kind: .b4, label: label.isEmpty ? nil : label, url: url, route: route,
+            authReference: reference.isEmpty ? nil : reference)
+        }
+      }
+      .buttonStyle(.borderedProminent)
+      .disabled(model.busy || url.isEmpty || route.isEmpty)
+      .accessibilityIdentifier("add-b4")
     }
   }
 }

@@ -16,7 +16,7 @@ Exit gate status: open only for B4 (no trusted project chosen). Codex baseline c
 
 ## M1: one real Codex desktop conversation
 
-- [x] Codex handshake, account status, sign-in, start/resume, stream, stop, history, runtime requests. Handshake, account, thread start/resume, streaming, stop, and history `live-tested` (CLI and the opt-in `CodexLive` test). Command and file-change approvals and user questions `fixture-tested` through the coordinator and UI; not yet triggered by the real runtime. Sign-in start `live-tested` (URL returned); completion from a signed-out state not exercised.
+- [x] Codex handshake, account status, sign-in, start/resume, stream, stop, history, runtime requests. Handshake, account, thread start/resume, streaming, stop, and history `live-tested` (CLI and the opt-in `CodexLive` test). Command approval `live-tested` on 2026-10-31 (a real `item/commandExecution/requestApproval` answered through the adapter under a stricter per-thread policy, since the owner's config is `never`); file-change approvals and user questions `fixture-tested` through the coordinator and UI, not yet triggered by the real runtime. Sign-in start `live-tested` (URL returned); completion from a signed-out state not exercised.
 - [x] App, client, and coordinator boundaries over the shared socket. `live-tested` (macOS app hosts the coordinator; CLI shares it and streamed a real turn while the app was open).
 - [x] Initial SQLite migration, connection registry, thread/native-ID mapping, turn record, cached display items. `fixture-tested`; JSON payload columns now round-trip as JSON.
 - [x] Threads, conversation/composer, connection setup, runtime request UI. `implemented`; transcript rows, request cards, composer, and status badge rendered through `ImageRenderer` for a visual check; both apps build. Not driven interactively on screen (screen-recording permission declined).
@@ -39,10 +39,19 @@ Exit gate status: open on the live inference turn (sign-in needed) and on intera
 
 ## M3: B4 local and remote adapters
 
-- [x] Endpoint reachability without inference, HTTPS enforcement for non-loopback. `fixture-tested` with a URLProtocol stub.
+Design: `docs/superpowers/specs/2026-10-31-m3-b4-conversation-design.md`. Plan: `docs/superpowers/plans/2026-10-31-m3-b4-conversation.md`.
+
+- [x] Endpoint reachability without inference, HTTPS enforcement for non-loopback. `fixture-tested` with a URLProtocol stub and the fixture server.
 - [x] SSE parsing across chunk boundaries with parked, failed, cancelled, snapshot-only, and reattach outcomes. `fixture-tested`.
-- [ ] Endpoint profiles, route binding, secret references, `credential add`. SecretStore `implemented`; CLI command exits 3 `not_implemented`.
-- [ ] Thread operations and live tests. `blocked`: no project or endpoint selected.
+- [x] Endpoint profiles, exact route binding, endpoint secret references, capability checks, `credential add` with a hidden prompt. `implemented`, `fixture-tested` (coordinator suite), `live-tested` through the CLI against the fixture (keychain-backed secret store, piped stdin path; the TTY prompt path was not exercised).
+- [x] Native thread creation, streaming input, state and turn reads, permission resolution (`once`, `always`, `deny`, cancel), explicit cancellation. `fixture-tested` end to end (adapter and coordinator suites).
+- [x] Read-only reattachment with reconciliation and unknown-submission handling. `fixture-tested`: a dropped stream reattaches and finishes with one server-side turn; a parked prompt survives a server restart and a coordinator restart; a server restart mid-run fails the turn honestly; an unrecorded ordinal is reported as `submission_unknown` and never resubmitted.
+- [x] Unsupported route kinds surface as a compatibility result. `fixture-tested` and `live-tested` via the CLI (`/dispatch#workflow` → `incompatible`, exit 2).
+- [x] Test against an existing local standard-agent server. `live-tested` on 2026-10-31 against `b4 dev` 0.15.8 serving a `gpt-5-mini` `agent()` route (scratch project, `OPENAI_API_KEY` from the gitignored `.env`): streamed reply, real `runBash` permission prompt parked and approved through the CLI, tool card with the server's step label, cancel → `cancelled`, history and reconciliation. The live run found and fixed two shape differences (nested `turns.turns`, `usage`/`step`/`ToolMessage` events).
+- [ ] Then a compatible remote HTTPS endpoint with its real endpoint credential. `blocked`: none deployed yet.
+- [x] Standard-agent persistence across a real B4 server restart with its stores preserved. `live-tested` on 2026-10-31: a parked permission survived a `b4 dev` restart on the real `.b4/*.sqlite` stores and a coordinator restart, was re-opened from `pending_interrupts`, and completed on accept.
+
+Exit gate status: local B4 threads coexist with harness threads live; stream loss and parked versus cancelled are live- and fixture-verified; open on a real remote HTTPS endpoint.
 
 ## M4: managed B4 execution and the shared CLI
 

@@ -83,7 +83,8 @@ public actor DiagnosticsService {
     for connection in try context.database.listConnections() where connection.kind == .b4 {
       var authorization: String?
       if let reference = connection.authReference, let ref = SecretRef(rawValue: reference) {
-        authorization = try? await context.secretStore.read(ref)
+        authorization = (try? await context.secretStore.read(ref)).map(
+          B4HTTPClient.authorizationHeader(secret:))
       }
       let result = await B4Inspector.inspect(baseURL: connection.target, authorization: authorization)
       runtimes.append(

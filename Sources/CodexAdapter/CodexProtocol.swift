@@ -24,9 +24,26 @@ public enum CodexProtocol {
 
   public static func loginStartParams() -> JSONValue { ["type": "chatgpt"] }
 
-  public static func threadStartParams(cwd: String?) -> JSONValue {
+  /// Per-thread policy override (generated-schema strings: `AskForApproval` is `untrusted |
+  /// on-request | never`, `SandboxMode` is `read-only | workspace-write | danger-full-access`).
+  /// The app never passes one (D-012); the live approval test asks for a stricter policy than the
+  /// owner's configuration so a real approval request can be exercised.
+  public struct ThreadPolicy: Sendable, Equatable {
+    public var approvalPolicy: String
+    public var sandbox: String
+    public init(approvalPolicy: String, sandbox: String) {
+      self.approvalPolicy = approvalPolicy
+      self.sandbox = sandbox
+    }
+  }
+
+  public static func threadStartParams(cwd: String?, policy: ThreadPolicy? = nil) -> JSONValue {
     var params: [String: JSONValue] = ["serviceName": .string(clientName)]
     if let cwd { params["cwd"] = .string(cwd) }
+    if let policy {
+      params["approvalPolicy"] = .string(policy.approvalPolicy)
+      params["sandbox"] = .string(policy.sandbox)
+    }
     return .object(params)
   }
 

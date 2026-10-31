@@ -84,7 +84,10 @@ private func parseAll(_ text: String, chunkSize: Int = Int.max) -> [B4StreamEven
       parked[1]
         == .interrupt(
           interruptId: "int_1", type: "permission-request", kind: "tool", detail: ["name": "shell"],
-          grant: nil))
+          grant: nil,
+          raw: [
+            "interruptId": "int_1", "type": "permission-request", "kind": "tool", "detail": ["name": "shell"],
+          ]))
     #expect(parked[2] == .done(.snapshotOnly, output: .null, error: nil))
     #expect(
       parseAll("event: done\ndata: {\"output\":{\"error\":\"boom\"}}\n\n")[0]

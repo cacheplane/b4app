@@ -11,6 +11,11 @@ public actor CodexAdapter: AgentAdapter, LoginCapable {
   /// Answer requests the app cannot present (permissions, elicitation, dynamic tools) with an explicit
   /// decline instead of leaving Codex waiting. Off only in tests that assert the raw request.
   public var autoDeclineUnsupported = true
+  /// Stricter-than-configured policy for new threads. Nil in the app (D-012: the user's Codex
+  /// configuration decides); the live approval test sets `on-request` + `workspace-write`.
+  public var threadPolicy: CodexProtocol.ThreadPolicy?
+
+  public func setThreadPolicy(_ policy: CodexProtocol.ThreadPolicy?) { threadPolicy = policy }
 
   private struct PendingRequest {
     var id: RpcId
@@ -195,7 +200,7 @@ public actor CodexAdapter: AgentAdapter, LoginCapable {
     let server = try await ensureStarted()
     let account = try await requireAccount()
     let result = try await server.request(
-      "thread/start", CodexProtocol.threadStartParams(cwd: input.workingDirectory))
+      "thread/start", CodexProtocol.threadStartParams(cwd: input.workingDirectory, policy: threadPolicy))
     guard let threadId = result["thread"]?["id"]?.stringValue else {
       throw WorkspaceError(.protocolInvalid, "thread/start returned no thread id.")
     }
