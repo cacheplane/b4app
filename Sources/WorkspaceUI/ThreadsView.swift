@@ -8,21 +8,19 @@ struct ThreadsView: View {
     if let thread = model.threads.first(where: { $0.id == model.selectedThreadId }) {
       ThreadDetailView(model: model, thread: thread)
     } else {
-      ContentUnavailableView {
-        Label("Threads", systemImage: "bubble.left.and.bubble.right")
-      } description: {
-        Text(
-          model.connections.isEmpty
-            ? "Add a connection to start a conversation with Codex, Claude Code, or a B4 agent."
-            : "Select a thread, or start a new one.")
-      } actions: {
+      LLAEmptyState(
+        "Threads",
+        text: model.connections.isEmpty
+          ? "Add a connection to start a conversation with Codex, Claude Code, or a B4 agent."
+          : "Select a thread in the sidebar, or start a new one."
+      ) {
         if model.conversationReadyConnections.isEmpty {
           Button("Add connection") { model.surface = .connections }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.llaPrimary)
             .accessibilityIdentifier("add-connection")
         } else {
           Button("New thread") { model.showNewThread = true }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.llaPrimary)
             .accessibilityIdentifier("new-thread")
         }
       }
@@ -42,23 +40,22 @@ struct ThreadDetailView: View {
   var body: some View {
     VStack(spacing: 0) {
       header
-      Divider()
+      Hairline()
       if let detail = model.detail, detail.thread.id == thread.id {
         TranscriptView(detail: detail)
         if !detail.requests.isEmpty {
-          Divider()
+          Hairline()
           RuntimeRequestList(model: model, requests: detail.requests)
         }
-        Divider()
+        Hairline()
         if thread.continuity != .available {
           ContinuityBanner(model: model, thread: thread)
-          Divider()
         }
         ComposerView(model: model, detail: detail)
       } else if model.detailLoading {
-        ProgressView("Loading thread…").frame(maxWidth: .infinity, maxHeight: .infinity)
+        ProgressView("Loading thread…").llaSmallMuted().frame(maxWidth: .infinity, maxHeight: .infinity)
       } else {
-        Text(model.lastError ?? "Thread not loaded.").foregroundStyle(.secondary)
+        Text(model.lastError ?? "Thread not loaded.").llaMuted()
           .frame(maxWidth: .infinity, maxHeight: .infinity)
       }
     }
@@ -96,13 +93,10 @@ struct ThreadDetailView: View {
   }
 
   private var header: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      HStack {
-        Text(thread.title.isEmpty ? "Untitled" : thread.title).font(.title3).bold()
-        if thread.archived {
-          Text("Archived").font(.caption).padding(.horizontal, 6).padding(.vertical, 2)
-            .background(.quaternary, in: Capsule())
-        }
+    VStack(alignment: .leading, spacing: LLA.Space.xs) {
+      HStack(alignment: .firstTextBaseline, spacing: LLA.Space.m) {
+        Text(thread.title.isEmpty ? "Untitled" : thread.title).llaDisplay().lineLimit(1)
+        if thread.archived { LLABadge("Archived") }
         Spacer()
         if let turn = model.detail?.activeTurn, model.detail?.thread.id == thread.id {
           TurnStatusBadge(turn: turn)
@@ -111,10 +105,11 @@ struct ThreadDetailView: View {
       Text(
         "\(connection?.label ?? "Unknown connection") · \(connection?.kind.rawValue ?? "?") · \(connection?.kind == .b4 ? "route \(thread.context ?? "?")" : (thread.context ?? "no directory"))"
       )
-      .font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+      .llaSmallMuted().lineLimit(1).truncationMode(.middle)
     }
-    .padding(.horizontal)
-    .padding(.vertical, 10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.horizontal, LLA.Space.xl)
+    .padding(.vertical, LLA.Space.l)
   }
 }
 
@@ -125,21 +120,25 @@ struct ContinuityBanner: View {
   let thread: ConversationThread
 
   var body: some View {
-    HStack(alignment: .top, spacing: 10) {
-      Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
-      VStack(alignment: .leading, spacing: 4) {
-        Text("Continuation is unavailable").font(.headline)
-        Text(explanation).font(.callout).fixedSize(horizontal: false, vertical: true)
+    LLACard(fill: .surface) {
+      HStack(alignment: .top, spacing: LLA.Space.l) {
+        VStack(alignment: .leading, spacing: LLA.Space.xs) {
+          Text("Continuation is unavailable").font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
+          Text(explanation).llaSmallMuted().fixedSize(horizontal: false, vertical: true)
+        }
+        Spacer()
+        Button("Check again") { Task { await model.reconcileThread(id: thread.id) } }
+          .buttonStyle(.llaSecondary)
+          .disabled(model.busy)
+        Button("New thread") { model.showNewThread = true }
+          .buttonStyle(.llaPrimary)
+          .disabled(model.conversationReadyConnections.isEmpty)
       }
-      Spacer()
-      Button("Check again") { Task { await model.reconcileThread(id: thread.id) } }
-        .disabled(model.busy)
-      Button("New thread") { model.showNewThread = true }
-        .buttonStyle(.borderedProminent)
-        .disabled(model.conversationReadyConnections.isEmpty)
     }
-    .padding()
-    .background(Color.orange.opacity(0.08))
+    .padding(.horizontal, LLA.Space.xl)
+    .padding(.top, LLA.Space.l)
+    .frame(maxWidth: LLA.Metrics.column)
+    .frame(maxWidth: .infinity)
     .accessibilityIdentifier("continuity-banner")
   }
 
@@ -163,25 +162,16 @@ struct TurnStatusBadge: View {
   var body: some View {
     HStack(spacing: 6) {
       if turn.status == .running || turn.status == .submitting || turn.status == .stopping {
-        ProgressView().controlSize(.small)
-      } else {
-        Image(systemName: icon)
+        ProgressView().controlSize(.mini)
       }
       Text(text)
     }
-    .font(.caption)
-    .padding(.horizontal, 8)
+    .font(LLAFont.caption)
+    .foregroundStyle(turn.status == .waitingForUser ? LLA.Color.accent : LLA.Color.ink)
+    .padding(.horizontal, 10)
     .padding(.vertical, 4)
-    .background(.quaternary, in: Capsule())
+    .background(Capsule().fill(LLA.Color.surface))
     .accessibilityIdentifier("turn-status")
-  }
-
-  private var icon: String {
-    switch turn.status {
-    case .waitingForUser: return "questionmark.bubble"
-    case .reconciling: return "exclamationmark.triangle"
-    default: return "circle"
-    }
   }
 
   private var text: String {

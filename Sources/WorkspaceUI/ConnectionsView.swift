@@ -32,59 +32,29 @@ struct ConnectionsView: View {
 
   var body: some View {
     ScrollView {
-      VStack(alignment: .leading, spacing: 20) {
+      VStack(alignment: .leading, spacing: LLA.Space.xl) {
         if let error = model.diagnosticsError {
-          Text(error).foregroundStyle(.red)
+          Text(error).font(LLAFont.small).foregroundStyle(LLA.Color.danger)
         }
-        Text("Configured").font(.headline)
+        LLASectionHead(
+          "Configured",
+          intro: "Each connection is one runtime and one identity. Threads never move between them.")
         if model.connections.isEmpty {
-          Text("No connections configured.").foregroundStyle(.secondary)
+          Text("No connections configured.").llaMuted()
         } else {
           ForEach(model.connections) { connection in
-            GroupBox {
-              VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                  Text(connection.label).bold()
-                  Text(connection.kind.rawValue).foregroundStyle(.secondary)
-                  Spacer()
-                  StatusBadge(status: connection.status)
-                }
-                Text(connection.target.isEmpty ? "(executable not found)" : connection.target)
-                  .font(.caption.monospaced()).foregroundStyle(.secondary)
-                if let route = connection.routeKey {
-                  Text(
-                    "route \(route) · \(connection.b4Mode?.rawValue.replacingOccurrences(of: "_", with: " ") ?? "b4")"
-                  )
-                  .font(.caption.monospaced()).foregroundStyle(.secondary)
-                }
-                HStack(spacing: 10) {
-                  Text("Auth: \(connection.authStatus.rawValue.replacingOccurrences(of: "_", with: " "))")
-                    .font(.caption)
-                  Spacer()
-                  Button("Check") { Task { await model.inspectConnection(id: connection.id) } }
-                    .disabled(model.busy)
-                  if connection.kind != .b4, connection.authStatus != .authenticated {
-                    Button(connection.kind == .codex ? "Sign in with ChatGPT" : "Sign in to Claude") {
-                      Task { await model.login(connectionId: connection.id) }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.busy || connection.status == .error)
-                    .accessibilityIdentifier("sign-in")
-                  }
-                }
-              }
-            }
+            ConnectionCard(model: model, connection: connection)
           }
           if let error = model.lastError, model.surface == .connections {
-            Text(error).font(.callout).foregroundStyle(.red)
+            Text(error).font(LLAFont.small).foregroundStyle(LLA.Color.danger)
           }
         }
-        Text("Add connection").font(.headline)
+        LLASectionHead("Add a connection").padding(.top, LLA.Space.l)
         ForEach(kinds, id: \.kind) { info in
-          GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-              Text(info.title).bold()
-              Text(info.summary).foregroundStyle(.secondary)
+          LLACard {
+            VStack(alignment: .leading, spacing: LLA.Space.s) {
+              Text(info.title).font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
+              Text(info.summary).llaSmallMuted().fixedSize(horizontal: false, vertical: true)
               if let runtime = info.runtime {
                 RuntimeStatusView(
                   runtime: model.diagnostics?.runtimes.first { $0.kind == runtime },
@@ -92,19 +62,22 @@ struct ConnectionsView: View {
               }
               if info.kind != .b4 {
                 Button("Add \(info.title) connection") { Task { await model.addConnection(kind: info.kind) } }
-                  .buttonStyle(.borderedProminent)
+                  .buttonStyle(.llaPrimary)
                   .disabled(model.busy)
+                  .padding(.top, LLA.Space.xs)
                   .accessibilityIdentifier("add-\(info.kind.rawValue)")
               } else {
                 B4AttachForm(model: model)
               }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
           }
         }
       }
-      .padding()
+      .padding(LLA.Space.xl)
+      .frame(maxWidth: 820, alignment: .leading)
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
+    .background(LLA.Color.bg)
     .navigationTitle("Connections")
     .toolbar {
       ToolbarItem {
@@ -118,6 +91,49 @@ struct ConnectionsView: View {
   }
 }
 
+struct ConnectionCard: View {
+  @Bindable var model: WorkspaceModel
+  let connection: Connection
+
+  var body: some View {
+    LLACard {
+      VStack(alignment: .leading, spacing: LLA.Space.s) {
+        HStack(spacing: LLA.Space.s) {
+          Text(connection.label).font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
+          Text(connection.kind.rawValue).llaSmallMuted()
+          Spacer()
+          StatusBadge(status: connection.status)
+        }
+        Text(connection.target.isEmpty ? "(executable not found)" : connection.target).llaCodeMuted()
+        if let route = connection.routeKey {
+          Text(
+            "route \(route) · \(connection.b4Mode?.rawValue.replacingOccurrences(of: "_", with: " ") ?? "b4")"
+          )
+          .llaCodeMuted()
+        }
+        HStack(spacing: LLA.Space.s) {
+          Text("Signed in as: \(connection.authStatus.rawValue.replacingOccurrences(of: "_", with: " "))")
+            .llaSmallMuted()
+          if let scope = connection.nativeScope { Text(scope).llaCodeMuted().lineLimit(1) }
+          Spacer()
+          Button("Check") { Task { await model.inspectConnection(id: connection.id) } }
+            .buttonStyle(.llaSecondary)
+            .disabled(model.busy)
+          if connection.kind != .b4, connection.authStatus != .authenticated {
+            Button(connection.kind == .codex ? "Sign in with ChatGPT" : "Sign in to Claude") {
+              Task { await model.login(connectionId: connection.id) }
+            }
+            .buttonStyle(.llaPrimary)
+            .disabled(model.busy || connection.status == .error)
+            .accessibilityIdentifier("sign-in")
+          }
+        }
+        .padding(.top, LLA.Space.xs)
+      }
+    }
+  }
+}
+
 /// Attach-endpoint form. It collects a credential *reference*, never a secret (spec 3.2, D-022).
 struct B4AttachForm: View {
   @Bindable var model: WorkspaceModel
@@ -127,16 +143,15 @@ struct B4AttachForm: View {
   @State private var reference = ""
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      TextField("Base URL (https://host, or http://127.0.0.1:port)", text: $url).textFieldStyle(
-        .roundedBorder)
-      TextField("Route key, for example /chat#agent", text: $route).textFieldStyle(.roundedBorder)
-      TextField("Label (optional)", text: $label).textFieldStyle(.roundedBorder)
-      TextField("Credential reference (optional, secret:…)", text: $reference).textFieldStyle(.roundedBorder)
+    VStack(alignment: .leading, spacing: LLA.Space.s) {
+      LLAField("Base URL (https://host, or http://127.0.0.1:port)", text: $url)
+      LLAField("Route key, for example /chat#agent", text: $route)
+      LLAField("Label (optional)", text: $label)
+      LLAField("Credential reference (optional, secret:…)", text: $reference)
       Text(
         "Remote endpoints must use HTTPS. Create a secret with `agent-workspace credential add <label>` and paste only its reference here; it is sent as a bearer to this origin only. The check confirms the server is reachable, not that its model credentials work."
       )
-      .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+      .llaCaption().fixedSize(horizontal: false, vertical: true)
       Button("Attach B4 endpoint") {
         Task {
           await model.addConnection(
@@ -144,7 +159,7 @@ struct B4AttachForm: View {
             authReference: reference.isEmpty ? nil : reference)
         }
       }
-      .buttonStyle(.borderedProminent)
+      .buttonStyle(.llaPrimary)
       .disabled(model.busy || url.isEmpty || route.isEmpty)
       .accessibilityIdentifier("add-b4")
     }
@@ -157,33 +172,32 @@ struct RuntimeStatusView: View {
 
   var body: some View {
     if let runtime {
-      Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
+      Grid(alignment: .leading, horizontalSpacing: LLA.Space.l, verticalSpacing: LLA.Space.xs) {
         GridRow {
-          Text("Status").foregroundStyle(.secondary)
+          Text("Status").llaSmallMuted()
           StatusBadge(status: runtime.status)
         }
         GridRow {
-          Text("Auth").foregroundStyle(.secondary)
-          Text(runtime.authStatus.rawValue)
+          Text("Signed in").llaSmallMuted()
+          Text(runtime.authStatus.rawValue.replacingOccurrences(of: "_", with: " ")).llaSmall()
         }
         GridRow {
-          Text("Version").foregroundStyle(.secondary)
-          Text(runtime.version ?? "unknown")
+          Text("Version").llaSmallMuted()
+          Text(runtime.version ?? "unknown").llaSmall()
         }
         GridRow {
-          Text("Executable").foregroundStyle(.secondary)
-          Text(runtime.executablePath ?? "not found").font(.caption.monospaced())
+          Text("Executable").llaSmallMuted()
+          Text(runtime.executablePath ?? "not found").llaCodeMuted()
         }
         if let message = runtime.message {
           GridRow {
-            Text("Note").foregroundStyle(.secondary)
-            Text(message).fixedSize(horizontal: false, vertical: true)
+            Text("Note").llaSmallMuted()
+            Text(message).llaSmall().fixedSize(horizontal: false, vertical: true)
           }
         }
       }
-      .font(.callout)
     } else {
-      Text(loading ? "Checking…" : "Not checked yet.").foregroundStyle(.secondary).font(.callout)
+      Text(loading ? "Checking…" : "Not checked yet.").llaSmallMuted()
     }
   }
 }
@@ -192,19 +206,14 @@ struct StatusBadge: View {
   let status: ConnectionStatus
 
   var body: some View {
-    Text(status.rawValue)
-      .font(.caption)
-      .padding(.horizontal, 8)
-      .padding(.vertical, 2)
-      .background(color.opacity(0.15), in: Capsule())
-      .foregroundStyle(color)
+    LLABadge(status.rawValue, tone: tone, raised: true)
   }
 
-  private var color: Color {
+  private var tone: LLABadge.Tone {
     switch status {
-    case .ready: return .green
-    case .error, .incompatible, .offline: return .red
-    case .connecting, .unconfigured: return .orange
+    case .ready: return .neutral
+    case .error, .incompatible, .offline: return .danger
+    case .connecting, .unconfigured: return .muted
     }
   }
 }

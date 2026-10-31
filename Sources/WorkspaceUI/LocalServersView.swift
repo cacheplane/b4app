@@ -9,24 +9,29 @@ struct LocalServersView: View {
 
   var body: some View {
     ScrollView {
-      VStack(alignment: .leading, spacing: 20) {
-        Text("Registered projects").font(.headline)
+      VStack(alignment: .leading, spacing: LLA.Space.xl) {
+        LLASectionHead(
+          "Registered projects",
+          intro:
+            "B4 projects this app runs on loopback. Attached servers and remote endpoints live under Connections."
+        )
         if model.servers.isEmpty {
-          Text("No projects registered. Register a local B4 project below to run it from here.")
-            .foregroundStyle(.secondary)
+          Text("No projects registered. Register a local B4 project below to run it from here.").llaMuted()
         }
         ForEach(model.servers) { server in
           ServerCard(model: model, server: server)
         }
         if let error = model.lastError, model.surface == .servers {
-          Text(error).font(.callout).foregroundStyle(.red)
+          Text(error).font(LLAFont.small).foregroundStyle(LLA.Color.danger)
         }
-        Text("Add project").font(.headline)
+        LLASectionHead("Add a project").padding(.top, LLA.Space.l)
         AddProjectForm(model: model)
       }
-      .padding()
+      .padding(LLA.Space.xl)
+      .frame(maxWidth: 820, alignment: .leading)
       .frame(maxWidth: .infinity, alignment: .leading)
     }
+    .background(LLA.Color.bg)
     .navigationTitle("Local servers")
     .alert(
       "Stop while a turn is running?", isPresented: forceBinding,
@@ -62,67 +67,72 @@ struct ServerCard: View {
   @State private var showLogs = false
 
   var body: some View {
-    GroupBox {
-      VStack(alignment: .leading, spacing: 8) {
-        HStack {
-          Text(server.name).bold()
-          Text(server.launchMode.rawValue).foregroundStyle(.secondary)
+    LLACard {
+      VStack(alignment: .leading, spacing: LLA.Space.s) {
+        HStack(spacing: LLA.Space.s) {
+          Text(server.name).font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
+          Text(server.launchMode.rawValue).llaSmallMuted()
           Spacer()
           ServerHealthBadge(health: server.health)
         }
-        Text(server.projectPath).font(.caption.monospaced()).foregroundStyle(.secondary)
-        HStack(spacing: 12) {
+        Text(server.projectPath).llaCodeMuted()
+        HStack(spacing: LLA.Space.m) {
           Text("port \(server.requestedPort.map(String.init) ?? "-")")
           if let pid = server.pid { Text("pid \(pid)") }
-          if server.ownershipVerified { Text("owned").foregroundStyle(.green) }
-          Text("@b4run/cli \(server.cliVersion ?? "?")").foregroundStyle(.secondary)
+          if server.ownershipVerified { Text("owned") }
+          Text("@b4run/cli \(server.cliVersion ?? "?")")
         }
-        .font(.caption)
+        .llaCaption()
         if let message = server.statusMessage {
-          Text(message).font(.callout).fixedSize(horizontal: false, vertical: true)
+          Text(message).llaSmall().fixedSize(horizontal: false, vertical: true)
         }
-        HStack(spacing: 10) {
+        HStack(spacing: LLA.Space.s) {
           Button("Start") { Task { await model.startServer(id: server.id) } }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.llaPrimary)
             .disabled(model.busy || server.pid != nil)
             .accessibilityIdentifier("server-start-\(server.name)")
           Button("Stop") { Task { await model.stopServer(id: server.id) } }
+            .buttonStyle(.llaSecondary)
             .disabled(model.busy || server.pid == nil)
             .accessibilityIdentifier("server-stop-\(server.name)")
           Button("Restart") { Task { await model.restartServer(id: server.id) } }
+            .buttonStyle(.llaSecondary)
             .disabled(model.busy || server.pid == nil)
           Button("Inspect routes") { Task { await model.inspectServer(id: server.id) } }
+            .buttonStyle(.llaSecondary)
             .disabled(model.busy || server.pid != nil && server.health == .starting)
           Spacer()
-          Toggle("Logs", isOn: $showLogs).toggleStyle(.button)
+          Button(showLogs ? "Hide log" : "Show log") { showLogs.toggle() }.buttonStyle(.llaLink)
         }
-        Divider()
-        Text("Routes").font(.subheadline).bold()
+        .padding(.top, LLA.Space.xs)
+        Hairline().padding(.vertical, LLA.Space.xs)
+        Text("Routes").font(LLAFont.smallStrong).foregroundStyle(LLA.Color.ink)
         if server.routes.isEmpty {
-          Text("No routes found. Inspect again after adding one under src/app.").font(.caption)
-            .foregroundStyle(.secondary)
+          Text("No routes found. Inspect again after adding one under src/app.").llaCaption()
         }
-        ForEach(server.routes, id: \.key) { route in
-          HStack {
-            Text(route.key).font(.callout.monospaced())
-            Text(route.entryFile).font(.caption).foregroundStyle(.secondary)
+        ForEach(Array(server.routes.enumerated()), id: \.element.key) { index, route in
+          if index > 0 { Hairline() }
+          HStack(spacing: LLA.Space.s) {
+            Text(route.key).llaCode()
+            Text(route.entryFile).llaCaption()
             Spacer()
             if let connection = model.connection(serverId: server.id, route: route.key) {
-              Text("Connected: \(connection.label)").font(.caption)
+              Text("Connected: \(connection.label)").llaCaption()
               StatusBadge(status: connection.status)
             } else {
               Button("Connect") { Task { await model.connectRoute(serverId: server.id, route: route.key) } }
+                .buttonStyle(.llaSecondary)
                 .disabled(model.busy)
                 .accessibilityIdentifier("connect-\(server.name)-\(route.id)")
             }
           }
+          .padding(.vertical, LLA.Space.xs)
         }
         if showLogs {
-          Divider()
+          Hairline().padding(.vertical, LLA.Space.xs)
           ServerLogPanel(model: model, server: server)
         }
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
     }
   }
 }
@@ -133,23 +143,16 @@ struct ServerLogPanel: View {
   let server: LocalServer
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      HStack {
-        Text("Log").font(.subheadline).bold()
+    VStack(alignment: .leading, spacing: LLA.Space.xs) {
+      HStack(spacing: LLA.Space.s) {
+        Text("Log").font(LLAFont.smallStrong).foregroundStyle(LLA.Color.ink)
         if let path = server.logPath {
-          Text(path).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(
-            .middle)
+          Text(path).llaCodeMuted().lineLimit(1).truncationMode(.middle)
         }
       }
-      ScrollView {
-        Text((model.serverLogs[server.id]?.lines ?? ["(no output yet)"]).joined(separator: "\n"))
-          .font(.caption.monospaced())
-          .textSelection(.enabled)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
-      .frame(maxHeight: 220)
-      Text("Known credential shapes are masked before the text leaves the coordinator.").font(.caption2)
-        .foregroundStyle(.secondary)
+      LLACodeBlock(
+        (model.serverLogs[server.id]?.lines ?? ["(no output yet)"]).joined(separator: "\n"), maxHeight: 220)
+      Text("Known credential shapes are masked before the text leaves the coordinator.").llaCaption()
     }
     .task(id: server.id) {
       while !Task.isCancelled {
@@ -164,20 +167,14 @@ struct ServerHealthBadge: View {
   let health: LocalServerHealth
 
   var body: some View {
-    Text(health.rawValue)
-      .font(.caption)
-      .padding(.horizontal, 8)
-      .padding(.vertical, 2)
-      .background(color.opacity(0.15), in: Capsule())
-      .foregroundStyle(color)
+    LLABadge(health.rawValue, tone: tone, raised: true)
   }
 
-  private var color: Color {
+  private var tone: LLABadge.Tone {
     switch health {
-    case .ready: return .green
-    case .starting, .unknown: return .orange
-    case .stopped: return .gray
-    case .unhealthy: return .red
+    case .ready: return .neutral
+    case .starting, .unknown, .stopped: return .muted
+    case .unhealthy: return .danger
     }
   }
 }
@@ -194,25 +191,28 @@ struct AddProjectForm: View {
   @State private var choosing = false
 
   var body: some View {
-    GroupBox {
-      VStack(alignment: .leading, spacing: 8) {
-        HStack {
-          TextField("Project directory (the B4 app root)", text: $projectPath).textFieldStyle(.roundedBorder)
-          Button("Choose…") { choosing = true }
+    LLACard {
+      VStack(alignment: .leading, spacing: LLA.Space.s) {
+        HStack(spacing: LLA.Space.s) {
+          LLAField("Project directory (the B4 app root)", text: $projectPath)
+          Button("Choose…") { choosing = true }.buttonStyle(.llaSecondary)
         }
-        TextField("Name (optional, defaults to the directory name)", text: $name).textFieldStyle(
-          .roundedBorder)
-        Picker("Mode", selection: $mode) {
-          Text("Source (b4 start, no reload)").tag(LocalServerLaunchMode.source)
-          Text("Development (b4 dev, hot reload)").tag(LocalServerLaunchMode.development)
+        LLAField("Name (optional, defaults to the directory name)", text: $name)
+        HStack(spacing: LLA.Space.s) {
+          Text("Mode").llaSmallMuted()
+          Picker("Mode", selection: $mode) {
+            Text("Source (b4 start, no reload)").tag(LocalServerLaunchMode.source)
+            Text("Development (b4 dev, hot reload)").tag(LocalServerLaunchMode.development)
+          }
+          .labelsHidden()
+          .font(LLAFont.small)
         }
-        TextField("Env file (optional, defaults to <project>/.env when present)", text: $envFilePath)
-          .textFieldStyle(.roundedBorder)
-        TextField("Port (optional, allocated once when empty)", text: $port).textFieldStyle(.roundedBorder)
+        LLAField("Env file (optional, defaults to <project>/.env when present)", text: $envFilePath)
+        LLAField("Port (optional, allocated once when empty)", text: $port)
         Text(
           "Registering runs the project's b4.config and route modules with Node to discover routes, and starting it runs the project; register only projects you trust. The server binds 127.0.0.1; the env file is passed to the server and never read into the app. Development mode can replace the runtime mid-turn when a file changes."
         )
-        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        .llaCaption().fixedSize(horizontal: false, vertical: true)
         Button("Register project") {
           Task {
             await model.addServer(
@@ -220,11 +220,10 @@ struct AddProjectForm: View {
               envFilePath: envFilePath.isEmpty ? nil : envFilePath, port: Int(port))
           }
         }
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(.llaPrimary)
         .disabled(model.busy || projectPath.isEmpty || (!port.isEmpty && Int(port) == nil))
         .accessibilityIdentifier("add-server")
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
     }
     .fileImporter(isPresented: $choosing, allowedContentTypes: [.folder]) { result in
       if case .success(let url) = result { projectPath = url.path }

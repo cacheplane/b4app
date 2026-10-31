@@ -2,21 +2,25 @@ import SwiftUI
 import WorkspaceProtocol
 
 /// Sidebar plus detail on both platforms. The sidebar holds the surfaces and the thread list;
-/// the detail shows the selected surface or thread.
+/// the detail shows the selected surface or thread. Styling comes from `Theme/` (LLA visual system).
 public struct WorkspaceRootView: View {
   @Bindable var model: WorkspaceModel
 
   public init(model: WorkspaceModel) {
+    LLAFonts.register()
     self.model = model
   }
 
   public var body: some View {
     NavigationSplitView {
       SidebarView(model: model)
-        .navigationSplitViewColumnWidth(min: 240, ideal: 280)
+        .navigationSplitViewColumnWidth(min: 240, ideal: 290)
     } detail: {
       detail
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(LLA.Color.bg)
     }
+    .tint(LLA.Color.accent)
     .task { model.connect() }
     .sheet(isPresented: $model.showNewThread) { NewThreadSheet(model: model) }
     .onChange(of: model.pendingLoginURL) { _, url in
@@ -41,22 +45,33 @@ public struct WorkspaceRootView: View {
 struct SidebarView: View {
   @Bindable var model: WorkspaceModel
 
+  private static let rowInsets = EdgeInsets(top: 1, leading: 10, bottom: 1, trailing: 10)
+
   var body: some View {
     List {
-      Section("Workspace") {
-        ForEach(Surface.allCases) { surface in
-          Button {
-            model.surface = surface
-            if surface != .threads { model.selectedThreadId = nil }
-          } label: {
-            Label(surface.title, systemImage: surface.systemImage)
-              .foregroundStyle(
-                model.surface == surface && model.selectedThreadId == nil ? Color.accentColor : Color.primary)
-          }
-          .buttonStyle(.plain)
-        }
+      HStack(spacing: LLA.Space.s) {
+        LLAMarkView(height: 20)
+        Text("Agent Workspace").font(LLAFont.smallStrong).foregroundStyle(LLA.Color.ink)
       }
-      Section("Threads") {
+      .padding(.horizontal, 10)
+      .padding(.top, LLA.Space.s)
+      .padding(.bottom, LLA.Space.m)
+      .listRowInsets(Self.rowInsets)
+      .listRowBackground(Color.clear)
+      .listRowSeparator(.hidden)
+
+      ForEach(Surface.allCases) { surface in
+        let selected = model.surface == surface && model.selectedThreadId == nil
+        SidebarTextRow(title: surface.title, selected: selected) {
+          model.surface = surface
+          if surface != .threads { model.selectedThreadId = nil }
+        }
+        .listRowInsets(Self.rowInsets)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+      }
+
+      Section {
         if model.connections.count > 1 {
           Picker("Connection", selection: $model.connectionFilter) {
             Text("All connections").tag(String?.none)
@@ -65,34 +80,56 @@ struct SidebarView: View {
             }
           }
           .labelsHidden()
+          .font(LLAFont.small)
+          .listRowInsets(Self.rowInsets)
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
         }
         if model.visibleThreads.isEmpty {
-          Text("No threads yet.").foregroundStyle(.secondary)
+          Text("No threads yet.").llaSmallMuted().padding(.horizontal, 10)
+            .listRowInsets(Self.rowInsets).listRowBackground(Color.clear).listRowSeparator(.hidden)
         }
         ForEach(model.visibleThreads) { thread in
           ThreadRow(model: model, thread: thread)
+            .listRowInsets(Self.rowInsets)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
         }
+      } header: {
+        SidebarGroupLabel("Threads")
       }
+
       if model.showArchived || !model.archivedThreads.isEmpty {
         Section {
           if model.showArchived {
             if model.archivedThreads.isEmpty {
-              Text("No archived threads.").foregroundStyle(.secondary)
+              Text("No archived threads.").llaSmallMuted().padding(.horizontal, 10)
+                .listRowInsets(Self.rowInsets).listRowBackground(Color.clear).listRowSeparator(.hidden)
             }
             ForEach(model.archivedThreads) { thread in
               ThreadRow(model: model, thread: thread)
+                .listRowInsets(Self.rowInsets)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             }
           }
         } header: {
           Toggle(isOn: $model.showArchived) {
-            Text("Archived (\(model.archivedThreads.count))")
+            Text("Archived (\(model.archivedThreads.count))").font(LLAFont.small).foregroundStyle(
+              LLA.Color.muted)
           }
           .toggleStyle(.switch)
           .controlSize(.mini)
+          .padding(.horizontal, 10)
+          .padding(.top, LLA.Space.m)
+          .textCase(nil)
           .accessibilityIdentifier("show-archived")
         }
       }
     }
+    .listStyle(.plain)
+    .scrollContentBackground(.hidden)
+    .background(LLA.Color.surface)
     .searchable(text: $model.searchText, prompt: "Search titles")
     .navigationTitle("Agent Workspace")
     .toolbar {
@@ -106,7 +143,45 @@ struct SidebarView: View {
           .accessibilityIdentifier("new-thread-toolbar")
       }
     }
-    .safeAreaInset(edge: .bottom) { LinkStatusView(model: model) }
+    .safeAreaInset(edge: .bottom, spacing: 0) { LinkStatusView(model: model) }
+  }
+}
+
+/// A group label in the sidebar: small, muted, sentence case.
+struct SidebarGroupLabel: View {
+  let title: String
+  init(_ title: String) { self.title = title }
+
+  var body: some View {
+    Text(title).font(LLAFont.small).foregroundStyle(LLA.Color.muted)
+      .padding(.horizontal, 10)
+      .padding(.top, LLA.Space.m)
+      .padding(.bottom, LLA.Space.xs)
+      .textCase(nil)
+  }
+}
+
+/// A surface row: text only, ink, raised when selected.
+struct SidebarTextRow: View {
+  let title: String
+  let selected: Bool
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      Text(title)
+        .font(selected ? LLAFont.smallStrong : LLAFont.small)
+        .foregroundStyle(LLA.Color.ink)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+          RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
+            .fill(selected ? LLA.Color.surfaceRaised : .clear)
+        )
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
   }
 }
 
@@ -120,27 +195,40 @@ struct ThreadRow: View {
 
   var body: some View {
     let state = model.threadState(thread)
+    let selected = model.selectedThreadId == thread.id
     Button {
       Task { await model.openThread(id: thread.id) }
     } label: {
-      HStack(alignment: .top, spacing: 8) {
-        ThreadStateDot(state: state).padding(.top, 5)
+      HStack(alignment: .top, spacing: LLA.Space.s) {
+        LLAStateDot(state: state).padding(.top, 3)
         VStack(alignment: .leading, spacing: 2) {
           HStack(spacing: 4) {
-            if thread.pinned { Image(systemName: "pin.fill").font(.caption2) }
-            Text(thread.title.isEmpty ? "Untitled" : thread.title).fontWeight(.medium).lineLimit(1)
+            if thread.pinned {
+              Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(LLA.Color.muted)
+            }
+            Text(thread.title.isEmpty ? "Untitled" : thread.title)
+              .font(selected ? LLAFont.smallStrong : LLAFont.small)
+              .foregroundStyle(LLA.Color.ink)
+              .lineLimit(1)
           }
           Text(
             state == .idle
               ? (model.connection(id: thread.connectionId)?.label ?? "Unknown connection")
               : "\(model.connection(id: thread.connectionId)?.label ?? "Unknown connection") · \(state.label)"
           )
-          .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+          .font(LLAFont.caption).foregroundStyle(LLA.Color.muted).lineLimit(1)
         }
+        Spacer(minLength: 0)
       }
+      .padding(.horizontal, 10)
+      .padding(.vertical, 6)
+      .background(
+        RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
+          .fill(selected ? LLA.Color.surfaceRaised : .clear)
+      )
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .listRowBackground(model.selectedThreadId == thread.id ? Color.accentColor.opacity(0.15) : nil)
     .accessibilityIdentifier("thread-row")
     .accessibilityValue(state.rawValue)
     .contextMenu {
@@ -168,54 +256,32 @@ struct ThreadRow: View {
   }
 }
 
-struct ThreadStateDot: View {
-  let state: ThreadRowState
-
-  var body: some View {
-    Circle().fill(color).frame(width: 8, height: 8)
-      .overlay {
-        if state == .running || state == .stopping {
-          Circle().stroke(color.opacity(0.4), lineWidth: 2).frame(width: 12, height: 12)
-        }
-      }
-      .help(state.label)
-  }
-
-  private var color: Color {
-    switch state {
-    case .idle: return .secondary.opacity(0.35)
-    case .running, .stopping: return .blue
-    case .waiting: return .orange
-    case .unknown: return .yellow
-    case .reconnecting: return .gray
-    case .error: return .red
-    }
-  }
-}
-
 struct LinkStatusView: View {
   let model: WorkspaceModel
 
   var body: some View {
-    HStack(spacing: 6) {
-      Circle().fill(color).frame(width: 8, height: 8)
-      Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-      Spacer()
-      if model.link == .unavailable {
-        Button("Retry") { model.connect() }.font(.caption).buttonStyle(.borderless)
+    VStack(spacing: 0) {
+      Hairline()
+      HStack(spacing: LLA.Space.s) {
+        Circle().fill(color).frame(width: 7, height: 7)
+        Text(text).font(LLAFont.caption).foregroundStyle(LLA.Color.muted).lineLimit(2)
+        Spacer()
+        if model.link == .unavailable {
+          Button("Retry") { model.connect() }.buttonStyle(.llaLink).font(LLAFont.caption)
+        }
       }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 10)
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 8)
-    .background(.bar)
+    .background(LLA.Color.surface)
     .accessibilityIdentifier("link-status")
   }
 
   private var color: Color {
     switch model.link {
-    case .ready: return .green
-    case .connecting: return .orange
-    case .unavailable: return .red
+    case .ready: return LLA.Color.ink
+    case .connecting: return LLA.Color.muted
+    case .unavailable: return LLA.Color.danger
     }
   }
 

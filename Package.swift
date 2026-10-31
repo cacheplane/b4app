@@ -93,6 +93,7 @@ let package = Package(
     // SwiftUI shared by the macOS and iOS apps.
     .target(
       name: "WorkspaceUI", dependencies: ["WorkspaceProtocol", "WorkspaceClient"],
+      resources: [.copy("Resources/Fonts"), .copy("Resources/Brand")],
       swiftSettings: mainActorDefault),
 
     // Tests.

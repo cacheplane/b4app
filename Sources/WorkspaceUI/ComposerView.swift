@@ -14,67 +14,83 @@ struct ComposerView: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: LLA.Space.s) {
       if let error = model.lastError {
         let remedy = model.remediation
-        HStack(alignment: .top) {
-          VStack(alignment: .leading, spacing: 2) {
-            Text(remedy?.message ?? error).font(.callout).foregroundStyle(.red)
-              .fixedSize(horizontal: false, vertical: true)
-            if remedy != nil, let code = model.lastFailure?.code {
-              Text(code.rawValue).font(.caption.monospaced()).foregroundStyle(.secondary)
+        LLACard(fill: .surface, padding: LLA.Space.m) {
+          HStack(alignment: .top, spacing: LLA.Space.m) {
+            VStack(alignment: .leading, spacing: 2) {
+              Text(remedy?.message ?? error).font(LLAFont.small).foregroundStyle(LLA.Color.danger)
+                .fixedSize(horizontal: false, vertical: true)
+              if remedy != nil, let code = model.lastFailure?.code {
+                Text(code.rawValue).llaCodeMuted()
+              }
             }
+            Spacer()
+            if let remedy, let title = remedy.actionTitle, remedy.action != .none {
+              Button(title) { Task { await model.perform(remedy.action) } }
+                .buttonStyle(.llaSecondary)
+                .accessibilityIdentifier("remediation")
+            }
+            Button("Dismiss") { model.lastError = nil }.buttonStyle(.llaLink)
           }
-          Spacer()
-          if let remedy, let title = remedy.actionTitle, remedy.action != .none {
-            Button(title) { Task { await model.perform(remedy.action) } }
-              .buttonStyle(.bordered).font(.caption)
-              .accessibilityIdentifier("remediation")
-          }
-          Button("Dismiss") { model.lastError = nil }.buttonStyle(.borderless).font(.caption)
         }
         .accessibilityIdentifier("error-banner")
       }
-      TextEditor(text: $model.composerText)
-        .font(.body)
-        .frame(minHeight: 60, maxHeight: 160)
-        .padding(6)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
-        .accessibilityIdentifier("composer")
-      HStack {
-        Text(
-          activeTurn == nil
-            ? "Enter sends; Shift-Enter for a new line."
-            : "A turn is \(activeTurn!.status.rawValue). Your draft stays here until it finishes."
-        )
-        .font(.caption).foregroundStyle(.secondary)
-        Spacer()
-        if let turn = activeTurn, turn.status == .reconciling {
-          Button("Check again", systemImage: "arrow.clockwise") {
-            Task { await model.reconcileThread(id: detail.thread.id) }
-          }
-          .disabled(model.busy)
-          .accessibilityIdentifier("check-again")
-          Button("Abandon turn", systemImage: "xmark.circle", role: .destructive) {
-            Task { await model.abandonTurn(threadId: detail.thread.id) }
-          }
-          .disabled(model.busy)
-          .help(
-            "Give up on this turn's unknown outcome so the thread can take a new message. Nothing is re-sent."
+      VStack(alignment: .leading, spacing: 0) {
+        TextEditor(text: $model.composerText)
+          .font(LLAFont.body)
+          .foregroundStyle(LLA.Color.ink)
+          .scrollContentBackground(.hidden)
+          .frame(minHeight: 56, maxHeight: 160)
+          .padding(.horizontal, LLA.Space.m)
+          .padding(.top, LLA.Space.m)
+          .accessibilityIdentifier("composer")
+        HStack(spacing: LLA.Space.s) {
+          Text(
+            activeTurn == nil
+              ? "Enter sends; Shift-Enter for a new line."
+              : "A turn is \(activeTurn!.status.rawValue). Your draft stays here until it finishes."
           )
-          .accessibilityIdentifier("abandon")
-        } else if let turn = activeTurn {
-          Button("Stop", systemImage: "stop.fill") { Task { await model.stop() } }
-            .disabled(turn.nativeTurnId == nil || turn.status == .stopping)
-            .accessibilityIdentifier("stop")
+          .llaCaption().lineLimit(2)
+          Spacer()
+          if let turn = activeTurn, turn.status == .reconciling {
+            Button("Check again") { Task { await model.reconcileThread(id: detail.thread.id) } }
+              .buttonStyle(.llaSecondary)
+              .disabled(model.busy)
+              .accessibilityIdentifier("check-again")
+            Button("Abandon turn", role: .destructive) {
+              Task { await model.abandonTurn(threadId: detail.thread.id) }
+            }
+            .buttonStyle(.llaDanger)
+            .disabled(model.busy)
+            .help(
+              "Give up on this turn's unknown outcome so the thread can take a new message. Nothing is re-sent."
+            )
+            .accessibilityIdentifier("abandon")
+          } else if let turn = activeTurn {
+            Button("Stop") { Task { await model.stop() } }
+              .buttonStyle(.llaSecondary)
+              .disabled(turn.nativeTurnId == nil || turn.status == .stopping)
+              .accessibilityIdentifier("stop")
+          }
+          Button("Send") { Task { await model.send() } }
+            .keyboardShortcut(.return, modifiers: [])
+            .buttonStyle(.llaPrimary)
+            .disabled(!canSend)
+            .accessibilityIdentifier("send")
         }
-        Button("Send", systemImage: "paperplane.fill") { Task { await model.send() } }
-          .keyboardShortcut(.return, modifiers: [])
-          .buttonStyle(.borderedProminent)
-          .disabled(!canSend)
-          .accessibilityIdentifier("send")
+        .padding(.horizontal, LLA.Space.m)
+        .padding(.vertical, LLA.Space.s)
       }
+      .background(RoundedRectangle(cornerRadius: LLA.Radius.card, style: .continuous).fill(LLA.Color.surface))
+      .overlay(
+        RoundedRectangle(cornerRadius: LLA.Radius.card, style: .continuous).stroke(
+          LLA.Color.rule, lineWidth: 1))
     }
-    .padding()
+    .padding(.horizontal, LLA.Space.xl)
+    .padding(.vertical, LLA.Space.l)
+    .frame(maxWidth: LLA.Metrics.column)
+    .frame(maxWidth: .infinity)
   }
 }

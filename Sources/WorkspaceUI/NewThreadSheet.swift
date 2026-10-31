@@ -13,33 +13,46 @@ struct NewThreadSheet: View {
   @State private var creating = false
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      Text("New thread").font(.title2).bold()
-      Picker("Connection", selection: $connectionId) {
-        ForEach(model.conversationReadyConnections) { connection in
-          Text("\(connection.label) (\(connection.kind.rawValue))").tag(connection.id)
+    VStack(alignment: .leading, spacing: LLA.Space.l) {
+      Text("New thread").llaDisplay()
+      VStack(alignment: .leading, spacing: LLA.Space.xs) {
+        Text("Connection").llaSmallMuted()
+        Picker("Connection", selection: $connectionId) {
+          ForEach(model.conversationReadyConnections) { connection in
+            Text("\(connection.label) (\(connection.kind.rawValue))").tag(connection.id)
+          }
         }
+        .labelsHidden()
+        .font(LLAFont.body)
       }
       if needsDirectory {
-        HStack {
-          TextField("Working directory", text: $directory).textFieldStyle(.roundedBorder)
-          Button("Choose…") { choosing = true }
+        VStack(alignment: .leading, spacing: LLA.Space.xs) {
+          Text("Working directory").llaSmallMuted()
+          HStack(spacing: LLA.Space.s) {
+            LLAField("Working directory", text: $directory)
+            Button("Choose…") { choosing = true }.buttonStyle(.llaSecondary)
+          }
         }
       }
-      TextField("Title (optional)", text: $title).textFieldStyle(.roundedBorder)
+      VStack(alignment: .leading, spacing: LLA.Space.xs) {
+        Text("Title (optional)").llaSmallMuted()
+        LLAField("Title", text: $title)
+      }
       if needsDirectory {
-        Text("The directory is fixed for the life of the thread and is sent with every turn.")
-          .font(.caption).foregroundStyle(.secondary)
+        Text("The directory is fixed for the life of the thread and is sent with every turn.").llaCaption()
       } else if let connection = selectedConnection {
         Text(
           "Runs route \(connection.routeKey ?? "?") on \(connection.target). The route is fixed for the life of the thread."
         )
-        .font(.caption).foregroundStyle(.secondary)
+        .llaCaption()
       }
-      if let error = model.lastError { Text(error).font(.callout).foregroundStyle(.red) }
-      HStack {
+      if let error = model.lastError {
+        Text(error).font(LLAFont.small).foregroundStyle(LLA.Color.danger).fixedSize(
+          horizontal: false, vertical: true)
+      }
+      HStack(spacing: LLA.Space.s) {
         Spacer()
-        Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+        Button("Cancel") { dismiss() }.buttonStyle(.llaSecondary).keyboardShortcut(.cancelAction)
         Button("Create") {
           creating = true
           Task {
@@ -50,14 +63,15 @@ struct NewThreadSheet: View {
             if model.lastError == nil { dismiss() }
           }
         }
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(.llaPrimary)
         .keyboardShortcut(.defaultAction)
         .disabled(connectionId.isEmpty || (needsDirectory && directory.isEmpty) || creating)
         .accessibilityIdentifier("create-thread")
       }
     }
-    .padding(20)
-    .frame(minWidth: 460)
+    .padding(LLA.Space.xl)
+    .frame(minWidth: 480)
+    .background(LLA.Color.bg)
     .onAppear {
       if connectionId.isEmpty { connectionId = model.conversationReadyConnections.first?.id ?? "" }
       model.lastError = nil
