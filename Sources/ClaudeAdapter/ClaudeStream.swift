@@ -158,6 +158,7 @@ public enum ClaudeStream {
     public var durationMs: Int?
     public var totalCostUsd: Double?
     public var stopReason: String?
+    public var terminalReason: String?
     public var result: String?
     public var errors: [String]
     public var userMessageUuid: String?
@@ -228,7 +229,9 @@ public enum ClaudeStream {
           numTurns: value["num_turns"]?.numberValue.map(Int.init),
           durationMs: value["duration_ms"]?.numberValue.map(Int.init),
           totalCostUsd: value["total_cost_usd"]?.numberValue,
-          stopReason: value["stop_reason"]?.stringValue, result: value["result"]?.stringValue,
+          stopReason: value["stop_reason"]?.stringValue,
+          terminalReason: value["terminal_reason"]?.stringValue,
+          result: value["result"]?.stringValue,
           errors: value["errors"]?.arrayValue?.compactMap(\.stringValue) ?? [],
           userMessageUuid: value["user_message_uuid"]?.stringValue))
     case "control_request":

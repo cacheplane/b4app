@@ -106,7 +106,9 @@ let package = Package(
     .testTarget(
       name: "CodexAdapterTests", dependencies: ["CodexAdapter"], exclude: ["Fixtures"],
       swiftSettings: concurrency),
-    .testTarget(name: "ClaudeAdapterTests", dependencies: ["ClaudeAdapter"], swiftSettings: concurrency),
+    .testTarget(
+      name: "ClaudeAdapterTests", dependencies: ["ClaudeAdapter"], exclude: ["Fixtures"],
+      swiftSettings: concurrency),
     .testTarget(name: "B4AdapterTests", dependencies: ["B4Adapter"], swiftSettings: concurrency),
     .testTarget(
       name: "CoordinatorTests", dependencies: ["Coordinator", "NIOTransport"], swiftSettings: concurrency),
