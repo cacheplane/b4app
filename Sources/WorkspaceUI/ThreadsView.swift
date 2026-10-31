@@ -85,7 +85,7 @@ struct ThreadDetailView: View {
         }
       }
       Text(
-        "\(connection?.label ?? "Unknown connection") · \(connection?.kind.rawValue ?? "?") · \(thread.context ?? "no directory")"
+        "\(connection?.label ?? "Unknown connection") · \(connection?.kind.rawValue ?? "?") · \(connection?.kind == .b4 ? "route \(thread.context ?? "?")" : (thread.context ?? "no directory"))"
       )
       .font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
     }

@@ -36,6 +36,10 @@ enum Format {
       "  status   \(result.connection.status.rawValue)  auth=\(result.connection.authStatus.rawValue)",
       "  target   \(result.connection.target.isEmpty ? "(not found)" : result.connection.target)",
     ]
+    if let route = result.connection.routeKey {
+      lines.append("  route    \(route)  (\(result.connection.b4Mode?.rawValue ?? "b4"))")
+    }
+    if let reference = result.connection.authReference { lines.append("  auth     \(reference)") }
     if let version = result.inspection.version { lines.append("  version  \(version)") }
     if let message = result.inspection.message { lines.append("  \(message)") }
     return lines.joined(separator: "\n")
@@ -51,7 +55,11 @@ enum Format {
   }
 
   static func thread(_ thread: ConversationThread, connection: Connection?) -> String {
-    "\(thread.id)  \(thread.title)\n  connection \(connection?.label ?? thread.connectionId)  native \(thread.nativeThreadId)  cwd \(thread.context ?? "-")"
+    let isRoute =
+      connection?.kind == .b4
+      || (thread.context?.hasPrefix("/") == true && thread.context?.contains("#") == true)
+    return
+      "\(thread.id)  \(thread.title)\n  connection \(connection?.label ?? thread.connectionId)  native \(thread.nativeThreadId)  \(isRoute ? "route" : "cwd") \(thread.context ?? "-")"
   }
 
   static func threads(_ threads: [ConversationThread], connections: [Connection]) -> String {

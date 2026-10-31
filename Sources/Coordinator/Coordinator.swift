@@ -119,7 +119,8 @@ public enum Coordinator {
     let sessions = SessionService(
       context: SessionService.Context(
         database: database, eventLog: eventLog, diagnostics: diagnostics, environment: options.environment,
-        clientVersion: CoordinatorVersion.current, adapterFactory: options.adapterFactory))
+        clientVersion: CoordinatorVersion.current, secretStore: options.secretStore,
+        adapterFactory: options.adapterFactory))
     await sessions.start()
     let router = Router(
       context: Router.Context(

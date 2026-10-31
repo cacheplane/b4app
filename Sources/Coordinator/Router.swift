@@ -139,6 +139,9 @@ public actor Router {
     case .turnInterrupt:
       return try JSONValue(
         encoding: try await sessions.turnInterrupt(try command.params(for: TurnInterrupt.self)))
+    case .credentialAdd:
+      return try JSONValue(
+        encoding: try await sessions.credentialAdd(try command.params(for: CredentialAdd.self)))
     case .requestRespond:
       return try JSONValue(
         encoding: try await sessions.requestRespond(try command.params(for: RequestRespond.self)))

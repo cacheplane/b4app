@@ -1,3 +1,4 @@
+import B4Adapter
 import ClaudeAdapter
 import CodexAdapter
 import Foundation
@@ -9,7 +10,7 @@ import WorkspaceStorage
 /// It is the only writer of turns, display items, and runtime requests (spec sections 6 and 10).
 public actor SessionService {
   public typealias AdapterFactory =
-    @Sendable (Connection, [String: String], String) throws -> any AgentAdapter
+    @Sendable (Connection, [String: String], String, any SecretStore) throws -> any AgentAdapter
 
   public struct Context: Sendable {
     public var database: WorkspaceDatabase
@@ -17,28 +18,31 @@ public actor SessionService {
     public var diagnostics: DiagnosticsService
     public var environment: [String: String]
     public var clientVersion: String
+    public var secretStore: any SecretStore
     public var adapterFactory: AdapterFactory
 
     public init(
       database: WorkspaceDatabase, eventLog: EventLog, diagnostics: DiagnosticsService,
-      environment: [String: String], clientVersion: String, adapterFactory: AdapterFactory? = nil
+      environment: [String: String], clientVersion: String, secretStore: any SecretStore,
+      adapterFactory: AdapterFactory? = nil
     ) {
       self.database = database
       self.eventLog = eventLog
       self.diagnostics = diagnostics
       self.environment = environment
       self.clientVersion = clientVersion
+      self.secretStore = secretStore
       self.adapterFactory = adapterFactory ?? SessionService.defaultAdapterFactory
     }
   }
 
-  /// Codex and Claude Code have conversation adapters; B4 throws `unsupported_capability` until M3.
-  public static let defaultAdapterFactory: AdapterFactory = { connection, environment, version in
+  /// One adapter per connection kind. B4 reads its endpoint secret from the credential store.
+  public static let defaultAdapterFactory: AdapterFactory = { connection, environment, version, secrets in
     switch connection.kind {
     case .codex: return CodexAdapter(connection: connection, environment: environment, clientVersion: version)
     case .claude:
       return ClaudeAdapter(connection: connection, environment: environment, clientVersion: version)
-    case .b4: throw WorkspaceError.unsupported("b4.conversation", plannedFor: "M3")
+    case .b4: return B4Adapter(connection: connection, secretStore: secrets, clientVersion: version)
     }
   }
 
@@ -78,7 +82,8 @@ public actor SessionService {
 
   private func adapter(for connection: Connection) throws -> any AgentAdapter {
     if let existing = adapters[connection.id] { return existing }
-    let adapter = try context.adapterFactory(connection, context.environment, context.clientVersion)
+    let adapter = try context.adapterFactory(
+      connection, context.environment, context.clientVersion, context.secretStore)
     adapters[connection.id] = adapter
     let connectionId = connection.id
     pumps[connectionId] = Task { [weak self] in
@@ -118,7 +123,7 @@ public actor SessionService {
       executableName = "claude"
       defaultLabel = "Claude Code"
     case .b4:
-      throw WorkspaceError.unsupported("b4.connection", plannedFor: "M3")
+      return try await addB4Connection(params)
     }
     let located = ExecutableLocator.find(
       executableName, explicitPath: params.executablePath, environment: context.environment)
@@ -131,6 +136,61 @@ public actor SessionService {
         id: UUID().uuidString.lowercased(), kind: params.kind, label: params.label ?? defaultLabel,
         target: target, status: .connecting))
     return try await connectionInspect(ConnectionInspect.Params(connectionId: connection.id))
+  }
+
+  /// Attach a B4 endpoint: base URL (HTTPS, or HTTP on loopback), exact route key, optional
+  /// credential reference. A non-agent route is stored and inspected as `incompatible` (D-023).
+  private func addB4Connection(_ params: ConnectionAdd.Params) async throws -> ConnectionAdd.Result {
+    guard var url = params.url?.trimmingCharacters(in: .whitespacesAndNewlines), !url.isEmpty else {
+      throw WorkspaceError(.protocolInvalid, "A B4 connection needs url, the endpoint base URL.")
+    }
+    let base = try B4HTTPClient.assertAllowedOrigin(url)
+    while url.hasSuffix("/") { url.removeLast() }
+    guard let routeText = params.route?.trimmingCharacters(in: .whitespacesAndNewlines),
+      let route = B4RouteKey(routeText)
+    else {
+      throw WorkspaceError(
+        .protocolInvalid, "A B4 connection needs route in the form /<path>#agent.",
+        details: ["route": .string(params.route ?? "")])
+    }
+    if let reference = params.authReference {
+      guard let ref = SecretRef(rawValue: reference) else {
+        throw WorkspaceError(
+          .protocolInvalid, "authReference must be a secret: reference returned by `credential add`.",
+          details: ["authReference": .string(reference)])
+      }
+      guard try await context.secretStore.read(ref) != nil else {
+        throw WorkspaceError(
+          .notFound, "Credential \(reference) is not in the credential store.",
+          details: ["authReference": .string(reference)])
+      }
+    }
+    // Same endpoint, route, and credential: the same profile. A different credential is a different
+    // account context and gets its own connection (spec 5.2).
+    if let existing = try db.connections(kind: .b4).first(where: {
+      $0.target == url && $0.routeKey == route.key && $0.authReference == params.authReference
+    }) {
+      return try await connectionInspect(ConnectionInspect.Params(connectionId: existing.id))
+    }
+    let mode: B4Mode = B4HTTPClient.isLoopback(base.host ?? "") ? .attachedLocal : .remote
+    let connection = try db.insertConnection(
+      Connection(
+        id: UUID().uuidString.lowercased(), kind: .b4,
+        label: params.label ?? "\(route.displayName) @ \(base.host ?? url)", target: url, routeKey: route.key,
+        b4Mode: mode, authReference: params.authReference, status: .connecting))
+    return try await connectionInspect(ConnectionInspect.Params(connectionId: connection.id))
+  }
+
+  /// Store an endpoint secret and hand back its reference. The value is never logged or echoed.
+  public func credentialAdd(_ params: CredentialAdd.Params) async throws -> CredentialAdd.Result {
+    let label = params.label.trimmingCharacters(in: .whitespaces)
+    guard !label.isEmpty else { throw WorkspaceError(.protocolInvalid, "A credential needs a label.") }
+    guard !params.value.isEmpty else {
+      throw WorkspaceError(.protocolInvalid, "The credential value is empty.")
+    }
+    let ref = SecretRef.make()
+    try await context.secretStore.put(ref, value: params.value)
+    return CredentialAdd.Result(reference: ref.rawValue, label: label)
   }
 
   public func connectionInspect(_ params: ConnectionInspect.Params) async throws -> ConnectionAdd.Result {
@@ -164,22 +224,39 @@ public actor SessionService {
 
   public func threadCreate(_ params: ThreadCreate.Params) async throws -> ThreadCreate.Result {
     let (connection, adapter) = try connectionAndAdapter(id: params.connectionId)
-    var isDirectory: ObjCBool = false
-    let directory = (params.workingDirectory as NSString).expandingTildeInPath
-    guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory), isDirectory.boolValue
-    else {
-      throw WorkspaceError(
-        .protocolInvalid, "Working directory \(params.workingDirectory) does not exist.",
-        details: ["workingDirectory": .string(params.workingDirectory)])
+    let input: NewSessionInput
+    let threadContext: String?
+    let defaultTitle: String
+    if connection.kind == .b4 {
+      // A B4 thread is bound to the connection's route, not a directory (spec 3.3, D-013 analog).
+      input = NewSessionInput(routeKey: connection.routeKey)
+      threadContext = connection.routeKey
+      defaultTitle = connection.routeKey.flatMap(B4RouteKey.init)?.displayName ?? connection.label
+    } else {
+      guard let requested = params.workingDirectory, !requested.isEmpty else {
+        throw WorkspaceError(
+          .protocolInvalid, "A \(connection.kind.rawValue) thread needs a workingDirectory.")
+      }
+      var isDirectory: ObjCBool = false
+      let directory = (requested as NSString).expandingTildeInPath
+      guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory),
+        isDirectory.boolValue
+      else {
+        throw WorkspaceError(
+          .protocolInvalid, "Working directory \(requested) does not exist.",
+          details: ["workingDirectory": .string(requested)])
+      }
+      input = NewSessionInput(workingDirectory: directory)
+      threadContext = directory
+      defaultTitle = (directory as NSString).lastPathComponent
     }
-    let ref = try await adapter.createSession(NewSessionInput(workingDirectory: directory))
+    let ref = try await adapter.createSession(input)
     let title = params.title?.trimmingCharacters(in: .whitespaces)
     let thread = try db.insertThread(
       ConversationThread(
         id: UUID().uuidString.lowercased(), connectionId: connection.id, nativeThreadId: ref.nativeSessionId,
-        nativeScope: ref.nativeScope,
-        title: (title?.isEmpty == false ? title : nil) ?? (directory as NSString).lastPathComponent,
-        context: directory))
+        nativeScope: ref.nativeScope, title: (title?.isEmpty == false ? title : nil) ?? defaultTitle,
+        context: threadContext))
     await context.eventLog.publish(
       AdapterEvent(
         kind: .sessionCreated, connectionId: connection.id, threadId: thread.id,
@@ -205,9 +282,16 @@ public actor SessionService {
   private func reconcile(_ turn: Turn, thread: ConversationThread) async {
     guard let (_, _, adapter) = try? threadContext(id: thread.id) else { return }
     let ref = NativeSessionRef(nativeSessionId: thread.nativeThreadId, nativeScope: thread.nativeScope)
-    guard let result = try? await adapter.reconcile(ref, turn: turn.nativeTurnId.map(ActiveTurnRef.init)),
-      case .known(let outcome)? = result.activeTurnOutcome
+    guard let result = try? await adapter.reconcile(ref, turn: turn.nativeTurnId.map(ActiveTurnRef.init))
     else { return }
+    if case .parked? = result.activeTurnOutcome {
+      // The runtime is waiting on a durable prompt the adapter re-opened; the turn is answerable again.
+      if let updated = try? db.updateTurn(id: turn.id, { $0.status = .waitingForUser }) {
+        await publishTurn(.turnStateChanged, updated, thread: thread, payload: ["source": "reconcile"])
+      }
+      return
+    }
+    guard case .known(let outcome)? = result.activeTurnOutcome else { return }
     if let updated = try? db.updateTurn(
       id: turn.id,
       {
@@ -451,7 +535,7 @@ public actor SessionService {
           RuntimeRequest(
             id: UUID().uuidString.lowercased(), nativeRequestId: nativeRequestId, threadId: thread.id,
             turnId: turn?.id, adapterGeneration: raw.adapterGeneration, kind: kind, payload: raw.payload))
-        if let turn, turn.status == .running {
+        if let turn, turn.status == .running || turn.status == .reconciling {
           _ = try db.updateTurn(id: turn.id) { $0.status = .waitingForUser }
         }
         event.payload = merge(raw.payload, ["runtimeRequest": try JSONValue(encoding: request)])
@@ -471,7 +555,8 @@ public actor SessionService {
         }
       case .adapterError:
         await context.diagnostics.recordError(
-          scope: "codex", code: raw.payload["errorCode"]?.stringValue ?? "internal",
+          scope: raw.payload["scope"]?.stringValue ?? "adapter",
+          code: raw.payload["errorCode"]?.stringValue ?? "internal",
           message: raw.payload["message"]?.stringValue ?? "adapter error")
       default:
         break

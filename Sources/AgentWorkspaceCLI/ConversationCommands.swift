@@ -38,23 +38,37 @@ enum Link {
 extension ConnectionCommand {
   struct AddHarness: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-      commandName: "add", abstract: "Register an installed harness (codex) or, in M3, a B4 endpoint.")
+      commandName: "add",
+      abstract:
+        "Register an installed harness (codex, claude) or attach a B4 endpoint (b4 with --url and --route).")
     @OptionGroup var global: GlobalOptions
-    @Option(help: "codex (claude and b4 arrive in M2 and M3).") var kind: ConnectionKind = .codex
+    @Option(help: "codex, claude, or b4.") var kind: ConnectionKind = .codex
     @Option var name: String?
     @Option(help: "Explicit executable path; otherwise PATH and common install directories are searched.")
     var path: String?
-    @Option var url: String?
-    @Option var route: String?
+    @Option(help: "B4 endpoint base URL: https://…, or http://127.0.0.1:<port> for a local server.") var url:
+      String?
+    @Option(help: "B4 route key, for example /chat#agent.") var route: String?
+    @Option(
+      name: .customLong("auth-ref"),
+      help: "Credential reference from `credential add` (secret:…), sent as a bearer."
+    )
+    var authRef: String?
 
     func run() async throws {
       do {
-        if url != nil || route != nil {
-          Output.notImplemented("connection add --url", milestone: "M3", json: global.json)
+        if kind == .b4, url == nil || route == nil {
+          throw WorkspaceError(
+            .protocolInvalid, "A B4 connection needs --url and --route (for example /chat#agent).")
+        }
+        if kind != .b4, url != nil || route != nil || authRef != nil {
+          throw WorkspaceError(.protocolInvalid, "--url, --route, and --auth-ref apply to --kind b4 only.")
         }
         let client = try await Link.open()
         let result = try await client.request(
-          ConnectionAdd.self, ConnectionAdd.Params(kind: kind, label: name, executablePath: path),
+          ConnectionAdd.self,
+          ConnectionAdd.Params(
+            kind: kind, label: name, executablePath: path, url: url, route: route, authReference: authRef),
           options: Link.mutation())
         await client.close()
         print(global.json ? try Format.jsonOk(result) : Format.connection(result))
@@ -141,13 +155,14 @@ struct ThreadCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Start a new native thread on a connection.")
     @OptionGroup var global: GlobalOptions
     @Option(help: "Connection id, label, or kind.") var connection: String?
-    @Option(help: "Working directory for the agent (default: current directory).") var cwd: String?
+    @Option(help: "Working directory for the agent (default: current directory; ignored for B4 routes).")
+    var cwd: String?
     @Option var title: String?
     func run() async throws {
       do {
         let client = try await Link.open()
         let target = try await Link.connection(client, matching: connection)
-        let directory = cwd ?? FileManager.default.currentDirectoryPath
+        let directory: String? = target.kind == .b4 ? nil : (cwd ?? FileManager.default.currentDirectoryPath)
         let result = try await client.request(
           ThreadCreate.self,
           ThreadCreate.Params(connectionId: target.id, workingDirectory: directory, title: title),

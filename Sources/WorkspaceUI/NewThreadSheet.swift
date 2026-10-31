@@ -20,13 +20,22 @@ struct NewThreadSheet: View {
           Text("\(connection.label) (\(connection.kind.rawValue))").tag(connection.id)
         }
       }
-      HStack {
-        TextField("Working directory", text: $directory).textFieldStyle(.roundedBorder)
-        Button("Choose…") { choosing = true }
+      if needsDirectory {
+        HStack {
+          TextField("Working directory", text: $directory).textFieldStyle(.roundedBorder)
+          Button("Choose…") { choosing = true }
+        }
       }
       TextField("Title (optional)", text: $title).textFieldStyle(.roundedBorder)
-      Text("The directory is fixed for the life of the thread and is sent with every turn.")
+      if needsDirectory {
+        Text("The directory is fixed for the life of the thread and is sent with every turn.")
+          .font(.caption).foregroundStyle(.secondary)
+      } else if let connection = selectedConnection {
+        Text(
+          "Runs route \(connection.routeKey ?? "?") on \(connection.target). The route is fixed for the life of the thread."
+        )
         .font(.caption).foregroundStyle(.secondary)
+      }
       if let error = model.lastError { Text(error).font(.callout).foregroundStyle(.red) }
       HStack {
         Spacer()
@@ -35,14 +44,15 @@ struct NewThreadSheet: View {
           creating = true
           Task {
             await model.createThread(
-              connectionId: connectionId, directory: directory, title: title.isEmpty ? nil : title)
+              connectionId: connectionId, directory: needsDirectory ? directory : nil,
+              title: title.isEmpty ? nil : title)
             creating = false
             if model.lastError == nil { dismiss() }
           }
         }
         .buttonStyle(.borderedProminent)
         .keyboardShortcut(.defaultAction)
-        .disabled(connectionId.isEmpty || directory.isEmpty || creating)
+        .disabled(connectionId.isEmpty || (needsDirectory && directory.isEmpty) || creating)
         .accessibilityIdentifier("create-thread")
       }
     }
@@ -56,4 +66,8 @@ struct NewThreadSheet: View {
       if case .success(let url) = result { directory = url.path }
     }
   }
+
+  private var selectedConnection: Connection? { model.connection(id: connectionId) }
+  /// Harness threads bind to a directory; B4 threads bind to the connection's route.
+  private var needsDirectory: Bool { selectedConnection?.kind != .b4 }
 }
