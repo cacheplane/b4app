@@ -634,6 +634,20 @@ All items below start unchecked. The milestones are dependency gates, not elapse
 
 **Exit gate:** Every mandatory acceptance row passes on the target Mac. If a required live check is unavailable, deliver the implementation with that gate clearly open; do not label the release fully validated.
 
+### M7 — Storage hardening and multi-device sync (added 2026-10-31 at the owner's request)
+
+**Dependencies:** M6.  
+**Purpose:** Move the store to Postgres end to end (a private cluster bundled with the app on every Mac, a remote Postgres hub; decision D-041), with versioned migrations, backups, and tooling, and let several devices show one workspace by syncing the index and transcripts through the hub. Design and the owner's open decisions: `docs/superpowers/specs/2026-10-31-storage-and-sync-design.md`; plan: `docs/superpowers/plans/2026-10-31-storage-and-sync.md`.
+
+- [ ] Bundled, pinned Postgres; a private cluster per Mac on a Unix socket under its own LaunchAgent; the storage layer rewritten on PostgresNIO behind the existing API; the existing SQLite data imported once.
+- [ ] One migrator for the cluster and the hub, a `pg_dump` before every local migration, `db status|migrate|backup|restore|import-sqlite` in the CLI, schema documentation.
+- [ ] A change log written by triggers for every synced write, ordered by a hybrid logical clock, with replay tests.
+- [ ] Remote Postgres schema and migrator, device identity, a per-device credential held as a Keychain reference.
+- [ ] Two-way sync from the coordinator with last-writer-wins per column, tombstones, offline convergence tests.
+- [ ] Device-aware connections (owned elsewhere are read-only; remote B4 connections usable wherever the credential exists) and the iOS companion reading the synced workspace.
+
+**Exit gate:** Two devices show one thread list and the same transcripts; edits made offline on both converge; no secret value crosses the wire except the Postgres credential itself over TLS; a migration of a copy of the real database leaves a backup behind.
+
 ## 14. Verification and release acceptance
 
 ### 14.1 Test strategy
