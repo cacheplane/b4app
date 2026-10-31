@@ -5,6 +5,7 @@ use std::time::Duration;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
+pub mod changes;
 pub mod devices;
 pub mod migrate;
 pub mod orgs;

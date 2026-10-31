@@ -28,6 +28,9 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
 sqlx.workspace = true
 tower.workspace = true
 

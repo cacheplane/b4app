@@ -77,6 +77,19 @@ impl ApiError {
         ApiError::request(StatusCode::BAD_REQUEST, "invalid_request", message)
     }
 
+    pub fn payload_too_large(message: impl Into<String>) -> ApiError {
+        ApiError::request(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large", message)
+    }
+
+    /// The caller's cursor is older than the feed still holds; it must start over.
+    pub fn resync_required() -> ApiError {
+        ApiError::request(
+            StatusCode::GONE,
+            "resync_required",
+            "the cursor is older than the retained changes; start again from the beginning",
+        )
+    }
+
     pub fn method_not_allowed() -> ApiError {
         ApiError::request(
             StatusCode::METHOD_NOT_ALLOWED,
@@ -145,11 +158,7 @@ where
 
 fn json_rejection(rejection: &JsonRejection) -> ApiError {
     if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
-        ApiError::request(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "payload_too_large",
-            "the request body is too large",
-        )
+        ApiError::payload_too_large("the request body is too large")
     } else {
         ApiError::invalid_request("the request body is not valid JSON for this endpoint")
     }

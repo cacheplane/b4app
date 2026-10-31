@@ -12,7 +12,8 @@ use tokio::sync::{oneshot, watch};
 
 use crate::auth::LastTouched;
 use crate::error::ApiError;
-use crate::routes::{devices, enroll, health};
+use crate::notify::Notifier;
+use crate::routes::{changes, devices, enroll, health};
 
 /// How long the listener stays open, answering `/readyz` 503, after shutdown begins, so a load
 /// balancer polling readiness stops routing here before connections are refused. Capped at a
@@ -26,7 +27,8 @@ pub struct AppState {
     pub shutdown: Shutdown,
     /// When each device last had `last_seen_at` written (throttle: once a minute).
     pub last_touched: LastTouched,
-    // Task 4 adds the change-feed `Notify` here.
+    /// Wakes long-polling pulls when a push commits (single replica in M8a).
+    pub notifier: Notifier,
 }
 
 impl AppState {
@@ -35,6 +37,7 @@ impl AppState {
             db,
             shutdown: Shutdown::default(),
             last_touched: LastTouched::default(),
+            notifier: Notifier::default(),
         }
     }
 }
@@ -69,6 +72,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
         .route("/v1/enroll", post(enroll::enroll))
+        .route("/v1/changes", changes::route())
         .route("/v1/me", get(devices::me))
         .route("/v1/devices/self", delete(devices::revoke_self))
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
