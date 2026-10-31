@@ -66,13 +66,16 @@ private struct Harness {
   let workDir: String
   let events: EventCollector
 
-  static func start() async throws -> Harness {
-    let paths = try temporaryPaths()
+  static func start(
+    paths: PlatformPaths? = nil, extraEnvironment: [String: String] = [:]
+  ) async throws -> Harness {
+    let paths = try paths ?? temporaryPaths()
     // The fixture is a Python script, so the child needs the real PATH; Node lookups stay isolated.
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = "/nonexistent/node"
     env["FAKE_CLAUDE_PROJECTS"] = (paths.dataDir as NSString).deletingLastPathComponent + "/claude-projects"
     env["ANTHROPIC_API_KEY"] = nil
+    for (key, value) in extraEnvironment { env[key] = value }
     let outcome = try await Coordinator.start(
       options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
     guard case .running(let coordinator) = outcome else {
@@ -682,5 +685,135 @@ actor EventCollector {
     let after = try await h.client.request(EventsSnapshot.self, EmptyParams())
     #expect(after.activeTurns.isEmpty)
     await h.stop()
+  }
+}
+
+@Suite(.serialized) struct ContinuityTests {
+  private let mutation = { RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)) }
+
+  /// A13 and A11: after a restart with the display cache gone, reconciliation rebuilds history from
+  /// the runtime; with a partial cache it merges without duplicating the live rows.
+  @Test func reconcileMergesNativeHistoryWithoutDuplicates() async throws {
+    let h = try await Harness.start()
+    let connection = try await h.addCodex()
+    let thread = try await h.newThread(connection)
+    let turn = try await h.send(thread, "hello there")
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    let cached = try await h.read(thread).items
+    #expect(cached.map(\.role) == [.user, .assistant])
+
+    // Partial cache: the fixture's history (one earlier turn) goes before the live rows, nothing twice.
+    let merged = try await h.client.request(
+      ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id), options: mutation())
+    #expect(merged.thread.continuity == .available)
+    #expect(merged.items.map(\.nativeItemId) == ["u_h1", "a_h1", nil, cached[1].nativeItemId])
+    #expect(merged.items.map(\.id)[2...] == cached.map(\.id)[...])
+    #expect(merged.items.map(\.sequence) == [0, 1, 2, 3])
+    #expect(merged.items.filter { $0.payload["text"]?.stringValue == "hello there" }.count == 1)
+    let snapshotEvent = try await h.events.waitFor {
+      $0.kind == .reconciliationSnapshot && $0.threadId == thread.id
+    }
+    #expect(snapshotEvent.payload["inserted"]?.numberValue == 2)
+
+    // Lost cache: a restart with the items wiped rebuilds history on a plain read, and a repeated
+    // reconcile changes nothing.
+    let paths = h.coordinator.paths
+    await h.stop()
+    let restarted = try await Harness.start(paths: paths)
+    try restarted.coordinator.database.write { db in
+      try db.execute(sql: "DELETE FROM displayItems WHERE threadId = ?", arguments: [thread.id])
+    }
+    let rebuilt = try await restarted.read(thread)
+    #expect(rebuilt.items.map(\.nativeItemId) == ["u_h1", "a_h1"])
+    #expect(rebuilt.items.allSatisfy { $0.provenance == .snapshot })
+    let again = try await restarted.client.request(
+      ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id), options: mutation())
+    #expect(again.items.map(\.id) == rebuilt.items.map(\.id))
+    await restarted.stop()
+  }
+
+  /// Spec 3.3: a missing native session keeps the cache, refuses continuation, and never claims a resume.
+  @Test func missingNativeSessionIsReportedAndRefusesNewTurns() async throws {
+    let h = try await Harness.start()
+    let connection = try await h.addCodex()
+    let thread = try h.coordinator.database.insertThread(
+      ConversationThread(
+        id: "ghost", connectionId: connection.id, nativeThreadId: "thr_missing",
+        nativeScope: "owner@example.com",
+        title: "ghost", context: h.workDir))
+    _ = try h.coordinator.database.insertTurn(
+      Turn(
+        id: "ghost-turn", threadId: thread.id, operationId: "ghost-op", nativeTurnId: "turn_0",
+        status: .terminal,
+        submission: .acknowledged, outcome: .completed))
+    _ = try h.coordinator.database.upsertDisplayItem(
+      threadId: thread.id, turnId: "ghost-turn", nativeItemId: nil, role: .user, type: "userMessage",
+      payload: ["text": "from before"], provenance: .live)
+
+    let read = try await h.client.request(
+      ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id), options: mutation())
+    #expect(read.thread.continuity == .missing)
+    #expect(read.items.map { $0.payload["text"]?.stringValue } == ["from before"])
+    try await h.events.waitFor {
+      $0.kind == .threadUpdated && $0.threadId == thread.id
+        && (try? $0.payload["thread"]?.decode(ConversationThread.self))?.continuity == .missing
+    }
+    do {
+      _ = try await h.send(thread, "are you there")
+      Issue.record("a missing native session must refuse new turns")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .nativeSessionMissing)
+      #expect(error.details?["reason"]?.stringValue == "missing")
+    }
+    #expect(try h.coordinator.database.turns(threadId: thread.id).count == 1)
+    let plain = try await h.read(thread)
+    #expect(plain.thread.continuity == .missing)
+    await h.stop()
+  }
+
+  /// Spec 5.1: a connection that now presents another account keeps old threads readable but never
+  /// retargets them; the original identity coming back restores continuity.
+  @Test func identityChangeBlocksOldThreadsUntilTheIdentityReturns() async throws {
+    let h = try await Harness.start()
+    let connection = try await h.addCodex()
+    let thread = try await h.newThread(connection)
+    #expect(thread.nativeScope == "owner@example.com")
+    let turn = try await h.send(thread, "hello there")
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    let listed = try await h.client.request(ConnectionList.self, ConnectionList.Params())
+    #expect(listed.connections[0].nativeScope == "owner@example.com")
+    let paths = h.coordinator.paths
+    await h.stop()
+
+    let other = try await Harness.start(
+      paths: paths, extraEnvironment: ["FAKE_CODEX_EMAIL": "other@example.com", "FAKE_CODEX_ID_PREFIX": "o"])
+    let inspected = try await other.client.request(
+      ConnectionInspect.self, ConnectionInspect.Params(connectionId: connection.id), options: mutation())
+    #expect(inspected.connection.nativeScope == "other@example.com")
+    let read = try await other.client.request(
+      ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id), options: mutation())
+    #expect(read.thread.continuity == .identityChanged)
+    #expect(read.items.count == 2)
+    do {
+      _ = try await other.send(thread, "still me?")
+      Issue.record("an identity change must refuse new turns on old threads")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .identityChanged)
+      #expect(error.details?["connectionScope"]?.stringValue == "other@example.com")
+    }
+    // A new thread on the same connection belongs to the new identity.
+    let fresh = try await other.newThread(connection)
+    #expect(fresh.nativeScope == "other@example.com")
+    await other.stop()
+
+    let back = try await Harness.start(paths: paths, extraEnvironment: ["FAKE_CODEX_ID_PREFIX": "b"])
+    _ = try await back.client.request(
+      ConnectionInspect.self, ConnectionInspect.Params(connectionId: connection.id), options: mutation())
+    let restored = try await back.client.request(
+      ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id), options: mutation())
+    #expect(restored.thread.continuity == .available)
+    let next = try await back.send(thread, "welcome back")
+    try await back.events.waitFor { $0.kind == .turnFinished && $0.turnId == next.id }
+    await back.stop()
   }
 }

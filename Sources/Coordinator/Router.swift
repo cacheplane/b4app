@@ -135,6 +135,9 @@ public actor Router {
     case .threadUpdate:
       return try JSONValue(
         encoding: try await sessions.threadUpdate(try command.params(for: ThreadUpdate.self)))
+    case .threadReconcile:
+      return try JSONValue(
+        encoding: try await sessions.threadReconcile(try command.params(for: ThreadReconcile.self)))
     case .turnSend:
       return try JSONValue(
         encoding: try await sessions.turnSend(

@@ -17,6 +17,7 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case threadCreate = "thread.create"
   case threadRead = "thread.read"
   case threadUpdate = "thread.update"
+  case threadReconcile = "thread.reconcile"
   case turnSend = "turn.send"
   case turnInterrupt = "turn.interrupt"
   case requestRespond = "request.respond"
@@ -33,7 +34,8 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   public var isMutation: Bool {
     switch self {
     case .draftSave, .connectionAdd, .connectionInspect, .connectionLogin, .threadCreate, .threadUpdate,
-      .turnSend, .turnInterrupt, .requestRespond, .credentialAdd, .serverAdd, .serverStart, .serverRestart,
+      .threadReconcile, .turnSend, .turnInterrupt, .requestRespond, .credentialAdd, .serverAdd, .serverStart,
+      .serverRestart,
       .serverStop, .serverInspect:
       return true
     case .systemPing, .diagnosticsRead, .connectionList, .threadList, .draftRead, .eventsSnapshot,
@@ -315,6 +317,18 @@ public enum ThreadUpdate: WorkspaceCommand {
   }
   public typealias Result = ThreadCreate.Result
   public static let method = Method.threadUpdate
+}
+
+/// Ask the runtime about a thread: settle an unresolved turn, load native history and merge it into
+/// the cache without duplicates (D-031), and record whether the native session can still be
+/// continued (missing history, changed identity). Never re-sends anything.
+public enum ThreadReconcile: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var threadId: String
+    public init(threadId: String) { self.threadId = threadId }
+  }
+  public typealias Result = ThreadRead.Result
+  public static let method = Method.threadReconcile
 }
 
 /// Dispatch one user turn. The envelope's operationId is the turn's operation id, so a retried

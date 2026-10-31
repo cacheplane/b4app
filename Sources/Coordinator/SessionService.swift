@@ -273,6 +273,8 @@ public actor SessionService {
         $0.authStatus = inspection.authStatus
         $0.capabilities = inspection.capabilities
         if let path = inspection.executablePath, $0.target.isEmpty { $0.target = path }
+        // The identity the runtime presents now; nil (signed out, unreachable) keeps the last known one.
+        if let scope = inspection.nativeScope, !scope.isEmpty { $0.nativeScope = scope }
       } ?? connection
     await context.eventLog.publish(
       AdapterEvent.connectionChanged(
@@ -323,6 +325,9 @@ public actor SessionService {
       defaultTitle = (directory as NSString).lastPathComponent
     }
     let ref = try await adapter.createSession(input)
+    if !ref.nativeScope.isEmpty, connection.nativeScope != ref.nativeScope {
+      _ = try db.updateConnection(id: connection.id) { $0.nativeScope = ref.nativeScope }
+    }
     let title = params.title?.trimmingCharacters(in: .whitespaces)
     let thread = try db.insertThread(
       ConversationThread(
@@ -337,17 +342,101 @@ public actor SessionService {
     return ThreadCreate.Result(thread: thread)
   }
 
+  /// A plain read is cheap and offline-safe: it reconciles an unresolved turn and, when the cache
+  /// is empty although turns were recorded (the cache was lost), loads native history once.
   public func threadRead(_ params: ThreadRead.Params) async throws -> ThreadRead.Result {
-    guard let thread = try db.thread(id: params.threadId) else {
+    guard var thread = try db.thread(id: params.threadId) else {
       throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.")
     }
     if let reconciling = try db.activeTurn(threadId: thread.id), reconciling.status == .reconciling {
       await reconcile(reconciling, thread: thread)
     }
-    return ThreadRead.Result(
-      thread: thread, turns: try db.turns(threadId: thread.id),
+    if try db.displayItems(threadId: thread.id).isEmpty, !(try db.turns(threadId: thread.id)).isEmpty {
+      thread = await loadHistory(thread)
+    }
+    return try readResult(thread)
+  }
+
+  /// Deliberate reconciliation (spec 10.1.4, 10.3): identity check, unresolved turn, native history
+  /// merged without duplicates (D-031), continuity recorded. Nothing is re-sent.
+  public func threadReconcile(_ params: ThreadReconcile.Params) async throws -> ThreadRead.Result {
+    guard var thread = try db.thread(id: params.threadId) else {
+      throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.")
+    }
+    guard let connection = try db.connection(id: thread.connectionId) else {
+      throw WorkspaceError(.notFound, "Connection \(thread.connectionId) does not exist.")
+    }
+    if Self.identityChanged(thread: thread, connection: connection) {
+      thread = await setContinuity(thread, .identityChanged)
+      return try readResult(thread)
+    }
+    if let active = try db.activeTurn(threadId: thread.id), active.status != .submitting {
+      await reconcile(active, thread: thread)
+    }
+    thread = await loadHistory(thread)
+    return try readResult(thread)
+  }
+
+  private func readResult(_ thread: ConversationThread) throws -> ThreadRead.Result {
+    ThreadRead.Result(
+      thread: try db.thread(id: thread.id) ?? thread, turns: try db.turns(threadId: thread.id),
       items: try db.displayItems(threadId: thread.id),
       requests: try db.pendingRuntimeRequests(threadId: thread.id))
+  }
+
+  /// A thread created under one native identity never continues under another (spec 5.1).
+  static func identityChanged(thread: ConversationThread, connection: Connection) -> Bool {
+    guard !thread.nativeScope.isEmpty, let scope = connection.nativeScope, !scope.isEmpty else {
+      return false
+    }
+    return scope != thread.nativeScope
+  }
+
+  /// Record a continuity change and tell viewers; a no-op when nothing changed.
+  @discardableResult
+  private func setContinuity(
+    _ thread: ConversationThread, _ state: ThreadContinuity
+  ) async -> ConversationThread {
+    guard thread.continuity != state,
+      let updated = try? db.updateThread(id: thread.id, { $0.continuity = state })
+    else { return thread }
+    if let event = try? AdapterEvent.threadUpdated(updated) { await context.eventLog.publish(event) }
+    return updated
+  }
+
+  /// Load native history through `loadSession` and merge it into the cache. A missing native
+  /// session marks the thread `missing` only once a turn was recorded; a fresh thread has nothing to
+  /// resume yet. Transport failures leave the cache and the continuity as they were.
+  private func loadHistory(_ thread: ConversationThread) async -> ConversationThread {
+    guard let (_, connection, adapter) = try? threadContext(id: thread.id) else { return thread }
+    if await managedServerOutage(connection) != nil { return thread }
+    if Self.identityChanged(thread: thread, connection: connection) {
+      return await setContinuity(thread, .identityChanged)
+    }
+    let ref = NativeSessionRef(nativeSessionId: thread.nativeThreadId, nativeScope: thread.nativeScope)
+    do {
+      let snapshot = try await adapter.loadSession(ref)
+      let merge = try db.mergeSnapshotItems(threadId: thread.id, items: snapshot.items)
+      if merge.inserted + merge.updated + merge.removed > 0 {
+        await context.eventLog.publish(
+          AdapterEvent(
+            kind: .reconciliationSnapshot, connectionId: connection.id, threadId: thread.id,
+            nativeIds: ["threadId": thread.nativeThreadId],
+            payload: [
+              "inserted": .number(Double(merge.inserted)), "updated": .number(Double(merge.updated)),
+              "removed": .number(Double(merge.removed)), "truncated": .bool(snapshot.truncated),
+            ]))
+      }
+      return await setContinuity(thread, .available)
+    } catch {
+      let failure = WorkspaceError.from(error)
+      if failure.code == .nativeSessionMissing, !((try? db.turns(threadId: thread.id)) ?? []).isEmpty {
+        return await setContinuity(thread, .missing)
+      }
+      logger.info(
+        "history load for \(thread.id, privacy: .public) skipped: \(failure.code.rawValue, privacy: .public)")
+      return thread
+    }
   }
 
   /// Ask the runtime what became of a turn whose outcome is unknown. Never assumes success.
@@ -356,8 +445,13 @@ public actor SessionService {
     // A stopped managed server cannot answer; the turn stays reconciling until it is back.
     if await managedServerOutage(connection) != nil { return }
     let ref = NativeSessionRef(nativeSessionId: thread.nativeThreadId, nativeScope: thread.nativeScope)
-    guard let result = try? await adapter.reconcile(ref, turn: turn.nativeTurnId.map(ActiveTurnRef.init))
-    else { return }
+    let result: ReconcileResult
+    do {
+      result = try await adapter.reconcile(ref, turn: turn.nativeTurnId.map(ActiveTurnRef.init))
+    } catch {
+      if WorkspaceError.from(error).code == .nativeSessionMissing { await setContinuity(thread, .missing) }
+      return
+    }
     if case .parked? = result.activeTurnOutcome {
       // The runtime is waiting on a durable prompt the adapter re-opened; the turn is answerable again.
       if let updated = try? db.updateTurn(id: turn.id, { $0.status = .waitingForUser }) {
@@ -401,6 +495,7 @@ public actor SessionService {
     if let existing = try db.turn(operationId: operationId) { return TurnSend.Result(turn: existing) }
     let (thread, connection, adapter) = try threadContext(id: params.threadId)
     if let outage = await managedServerOutage(connection) { throw outage }
+    try await assertContinuable(thread, connection: connection)
     if let active = try db.activeTurn(threadId: thread.id) {
       throw WorkspaceError(
         .protocolInvalid,
@@ -437,6 +532,7 @@ public actor SessionService {
     } catch {
       let failure = WorkspaceError.from(error)
       let unknown = failure.code == .submissionUnknown
+      if failure.code == .nativeSessionMissing { await setContinuity(thread, .missing) }
       turn =
         try db.updateTurn(id: turn.id) {
           if unknown {
@@ -456,6 +552,32 @@ public actor SessionService {
       throw WorkspaceError(
         failure.code, failure.message,
         details: ["turnId": .string(turn.id), "cause": failure.details ?? .null])
+    }
+  }
+
+  /// Refuse a turn on a thread whose native session cannot be continued (spec 3.3, 5.1). The cached
+  /// transcript stays; the remedy is a new thread.
+  private func assertContinuable(_ thread: ConversationThread, connection: Connection) async throws {
+    if Self.identityChanged(thread: thread, connection: connection) {
+      await setContinuity(thread, .identityChanged)
+      throw WorkspaceError(
+        .identityChanged,
+        "This thread belongs to \(thread.nativeScope); the connection is now \(connection.nativeScope ?? "another identity"). Start a new thread to continue with the current account or server.",
+        details: [
+          "threadScope": .string(thread.nativeScope),
+          "connectionScope": .string(connection.nativeScope ?? ""),
+        ])
+    }
+    switch thread.continuity {
+    case .available: return
+    case .identityChanged:
+      // The connection presents the thread's identity again: continuity is back.
+      await setContinuity(thread, .available)
+    case .missing:
+      throw WorkspaceError(
+        .nativeSessionMissing,
+        "The runtime no longer has this thread's native session. The cached transcript stays; start a new thread to continue.",
+        details: ["reason": "missing", "threadId": .string(thread.id)])
     }
   }
 

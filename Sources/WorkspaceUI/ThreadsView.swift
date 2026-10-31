@@ -50,6 +50,10 @@ struct ThreadDetailView: View {
           RuntimeRequestList(model: model, requests: detail.requests)
         }
         Divider()
+        if thread.continuity != .available {
+          ContinuityBanner(model: model, thread: thread)
+          Divider()
+        }
         ComposerView(model: model, detail: detail)
       } else if model.detailLoading {
         ProgressView("Loading thread…").frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -111,6 +115,45 @@ struct ThreadDetailView: View {
     }
     .padding(.horizontal)
     .padding(.vertical, 10)
+  }
+}
+
+/// Spec 3.3: when the native session is gone or belongs to another identity, keep the cached view,
+/// say so, and offer a new thread. The composer stays disabled.
+struct ContinuityBanner: View {
+  @Bindable var model: WorkspaceModel
+  let thread: ConversationThread
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 10) {
+      Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+      VStack(alignment: .leading, spacing: 4) {
+        Text("Continuation is unavailable").font(.headline)
+        Text(explanation).font(.callout).fixedSize(horizontal: false, vertical: true)
+      }
+      Spacer()
+      Button("Check again") { Task { await model.reconcileThread(id: thread.id) } }
+        .disabled(model.busy)
+      Button("New thread") { model.showNewThread = true }
+        .buttonStyle(.borderedProminent)
+        .disabled(model.conversationReadyConnections.isEmpty)
+    }
+    .padding()
+    .background(Color.orange.opacity(0.08))
+    .accessibilityIdentifier("continuity-banner")
+  }
+
+  private var explanation: String {
+    switch thread.continuity {
+    case .available: return ""
+    case .missing:
+      return
+        "The runtime no longer has this thread's native session. The cached transcript stays; nothing was re-sent."
+    case .identityChanged:
+      let now = model.connection(id: thread.connectionId)?.nativeScope ?? "another identity"
+      return
+        "This thread was created under \(thread.nativeScope); the connection is now \(now). Old threads are never retargeted to a different account or server."
+    }
   }
 }
 

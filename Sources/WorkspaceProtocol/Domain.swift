@@ -78,6 +78,10 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
   public var b4Mode: B4Mode?
   public var localServerId: String?
   public var authReference: String?
+  /// The native identity the connection last presented (account email, endpoint origin). Threads
+  /// carry the scope they were created under; a different scope means another account or server
+  /// and old threads are never retargeted (spec 5.1).
+  public var nativeScope: String?
   public var capabilities: Capabilities
   public var status: ConnectionStatus
   public var authStatus: AuthStatus
@@ -87,7 +91,7 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
   public init(
     id: String, kind: ConnectionKind, label: String, enabled: Bool = true, profileRevision: Int = 0,
     target: String, routeKey: String? = nil, b4Mode: B4Mode? = nil, localServerId: String? = nil,
-    authReference: String? = nil, capabilities: Capabilities = .unverified,
+    authReference: String? = nil, nativeScope: String? = nil, capabilities: Capabilities = .unverified,
     status: ConnectionStatus = .unconfigured, authStatus: AuthStatus = .unknown,
     createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now()
   ) {
@@ -101,6 +105,7 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
     self.b4Mode = b4Mode
     self.localServerId = localServerId
     self.authReference = authReference
+    self.nativeScope = nativeScope
     self.capabilities = capabilities
     self.status = status
     self.authStatus = authStatus
@@ -189,6 +194,16 @@ public struct LocalServer: Codable, Sendable, Equatable, Identifiable {
   }
 }
 
+/// Whether the native session behind a thread can still be continued (spec 3.3, 5.1). The cached
+/// transcript stays readable in every state; only `available` threads accept a new turn.
+public enum ThreadContinuity: String, Codable, Sendable, CaseIterable {
+  case available
+  /// The runtime no longer has the native session (thread, transcript, or checkpoint).
+  case missing
+  /// The connection now presents another native identity (account or server) than the thread's.
+  case identityChanged = "identity_changed"
+}
+
 public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
   public var id: String
   public var connectionId: String
@@ -200,12 +215,14 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
   public var context: String?
   public var pinned: Bool
   public var archived: Bool
+  public var continuity: ThreadContinuity
   public var createdAt: String
   public var updatedAt: String
 
   public init(
     id: String, connectionId: String, nativeThreadId: String, nativeScope: String = "", title: String = "",
     context: String? = nil, pinned: Bool = false, archived: Bool = false,
+    continuity: ThreadContinuity = .available,
     createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now()
   ) {
     self.id = id
@@ -216,6 +233,7 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
     self.context = context
     self.pinned = pinned
     self.archived = archived
+    self.continuity = continuity
     self.createdAt = createdAt
     self.updatedAt = updatedAt
   }

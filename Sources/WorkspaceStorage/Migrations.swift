@@ -111,6 +111,17 @@ enum Migrations {
       }
       try db.create(index: "localServersByName", on: "localServers", columns: ["name"], unique: true)
     }
+    // M5: connections remember the native identity they last presented; threads record whether
+    // their native session can still be continued.
+    migrator.registerMigration("v3") { db in
+      try db.alter(table: "connections") { t in
+        t.add(column: "nativeScope", .text)
+      }
+      try db.alter(table: "threads") { t in
+        t.add(column: "continuity", .text).notNull().defaults(to: "available")
+          .check { ["available", "missing", "identity_changed"].contains($0) }
+      }
+    }
     return migrator
   }
 }

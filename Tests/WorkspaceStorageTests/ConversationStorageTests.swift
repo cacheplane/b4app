@@ -85,3 +85,64 @@ private func seeded() throws -> WorkspaceDatabase {
     try db.close()
   }
 }
+
+@Suite struct SnapshotMergeTests {
+  private func snapshot(_ id: String?, _ role: String, _ text: String) -> SnapshotItem {
+    SnapshotItem(
+      nativeItemId: id, role: role, type: role == "user" ? "userMessage" : "agentMessage",
+      payload: ["text": .string(text)])
+  }
+
+  @Test func emptyCacheTakesTheSnapshotInOrderAndASecondMergeChangesNothing() throws {
+    let db = try seeded()
+    let first = try db.mergeSnapshotItems(
+      threadId: "t1",
+      items: [snapshot("u1", "user", "earlier question"), snapshot("a1", "assistant", "answer")])
+    #expect(first == .init(inserted: 2))
+    let items = try db.displayItems(threadId: "t1")
+    #expect(items.map(\.nativeItemId) == ["u1", "a1"])
+    #expect(items.map(\.sequence) == [0, 1])
+    #expect(items.allSatisfy { $0.provenance == .snapshot })
+    let second = try db.mergeSnapshotItems(
+      threadId: "t1",
+      items: [snapshot("u1", "user", "earlier question"), snapshot("a1", "assistant", "answer (edited)")])
+    #expect(second == .init(updated: 2))
+    let after = try db.displayItems(threadId: "t1")
+    #expect(after.map(\.id) == items.map(\.id))
+    #expect(after[1].payload["text"]?.stringValue == "answer (edited)")
+    try db.close()
+  }
+
+  @Test func liveItemsAreKeptMatchedByIdOrTextAndNeverDuplicated() throws {
+    let db = try seeded()
+    let liveUser = try db.upsertDisplayItem(
+      threadId: "t1", turnId: nil, nativeItemId: nil, role: .user, type: "userMessage",
+      payload: ["text": "hello there"], provenance: .live)
+    let liveReply = try db.upsertDisplayItem(
+      threadId: "t1", turnId: nil, nativeItemId: "a2", role: .assistant, type: "agentMessage",
+      payload: ["text": "live reply"], provenance: .live)
+    let inFlight = try db.upsertDisplayItem(
+      threadId: "t1", turnId: nil, nativeItemId: nil, role: .user, type: "userMessage",
+      payload: ["text": "still running"], provenance: .live)
+    let stale = try db.upsertDisplayItem(
+      threadId: "t1", turnId: nil, nativeItemId: "gone", role: .assistant, type: "agentMessage",
+      payload: ["text": "no longer in history"], provenance: .snapshot)
+    let summary = try db.mergeSnapshotItems(
+      threadId: "t1",
+      items: [
+        snapshot("u0", "user", "earlier question"), snapshot("a0", "assistant", "earlier answer"),
+        snapshot(nil, "user", "hello there"), snapshot("a2", "assistant", "live reply (native copy)"),
+      ])
+    #expect(summary == .init(inserted: 2, updated: 0, skipped: 2, removed: 1))
+    let items = try db.displayItems(threadId: "t1")
+    #expect(items.map(\.nativeItemId) == ["u0", "a0", nil, "a2", nil])
+    #expect(items.map(\.id)[2...] == [liveUser.id, liveReply.id, inFlight.id][...])
+    #expect(items[3].payload["text"]?.stringValue == "live reply")
+    #expect(items.map(\.sequence) == [0, 1, 2, 3, 4])
+    #expect(!items.contains { $0.id == stale.id })
+    #expect(items.filter { Self.text($0) == "hello there" }.count == 1)
+    try db.close()
+  }
+
+  private static func text(_ item: DisplayItem) -> String? { item.payload["text"]?.stringValue }
+}

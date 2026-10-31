@@ -97,6 +97,16 @@ enum Format {
     for turn in result.turns where turn.status != .terminal {
       lines.append("\n[turn \(turn.id) is \(turn.status.rawValue); submission \(turn.submission.rawValue)]")
     }
+    switch result.thread.continuity {
+    case .available: break
+    case .missing:
+      lines.append(
+        "\n[continuation unavailable: the runtime no longer has this native session; start a new thread]")
+    case .identityChanged:
+      lines.append(
+        "\n[continuation unavailable: created under \(result.thread.nativeScope), the connection now presents another identity; start a new thread]"
+      )
+    }
     for request in result.requests { lines.append("\n" + runtimeRequest(request)) }
     return lines.joined(separator: "\n")
   }

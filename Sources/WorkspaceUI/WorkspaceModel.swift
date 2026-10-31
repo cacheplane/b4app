@@ -448,6 +448,23 @@ public final class WorkspaceModel {
     await saveDraft(threadId: threadId)
   }
 
+  /// Deliberate reconciliation of one thread: unresolved turn, native history, continuity.
+  public func reconcileThread(id: String) async {
+    let read: ThreadRead.Result? = await perform {
+      try await $0.request(
+        ThreadReconcile.self, ThreadReconcile.Params(threadId: id),
+        options: Self.mutation(timeout: .seconds(60)))
+    }
+    guard let read else { return }
+    threads.removeAll { $0.id == read.thread.id }
+    threads.insert(read.thread, at: 0)
+    if detail?.thread.id == id {
+      detail = ThreadDetail(
+        thread: read.thread, turns: read.turns, items: read.items, requests: read.requests)
+    }
+    activeTurns[id] = read.turns.last { $0.status != .terminal }
+  }
+
   public func updateThread(id: String, title: String? = nil, pinned: Bool? = nil, archived: Bool? = nil) async
   {
     _ = await perform {

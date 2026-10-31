@@ -19,7 +19,7 @@ private func thread(
 @Suite struct DatabaseTests {
   @Test func createsSchemaWithWalForeignKeysAndPrivateMode() throws {
     let db = try WorkspaceDatabase.temporary()
-    #expect(try db.appliedMigrations() == ["v1", "v2"])
+    #expect(try db.appliedMigrations() == ["v1", "v2", "v3"])
     #expect(try db.journalMode() == "wal")
     let mode = try FileManager.default.attributesOfItem(atPath: db.path)[.posixPermissions] as? Int
     #expect(mode == 0o600)
@@ -31,7 +31,7 @@ private func thread(
     let path = first.path
     try first.close()
     let second = try WorkspaceDatabase(path: path)
-    #expect(try second.appliedMigrations() == ["v1", "v2"])
+    #expect(try second.appliedMigrations() == ["v1", "v2", "v3"])
     try second.close()
   }
 

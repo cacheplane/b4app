@@ -254,12 +254,22 @@ struct ThreadCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Print a thread's cached transcript and state.")
     @OptionGroup var global: GlobalOptions
     @Argument var threadId: String
+    @Flag(
+      help:
+        "Ask the runtime first: settle an unresolved turn, merge native history into the cache, and check that the thread can still be continued. Never re-sends."
+    )
+    var reconcile = false
     func run() async throws {
       do {
         let client = try await Link.open()
-        let result = try await client.request(
-          ThreadRead.self, ThreadRead.Params(threadId: threadId),
-          options: RequestOptions(timeout: .seconds(60)))
+        let result =
+          reconcile
+          ? try await client.request(
+            ThreadReconcile.self, ThreadReconcile.Params(threadId: threadId),
+            options: Link.mutation(timeout: .seconds(120)))
+          : try await client.request(
+            ThreadRead.self, ThreadRead.Params(threadId: threadId),
+            options: RequestOptions(timeout: .seconds(60)))
         await client.close()
         print(global.json ? try Format.jsonOk(result) : Format.transcript(result))
       } catch {

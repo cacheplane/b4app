@@ -82,6 +82,9 @@ def finish_turn(thread_id, turn_id, status, error=None):
 
 turn_counter = 0
 thread_counter = 0
+# Real runtimes mint unique ids across restarts; a restarted fixture would reuse thr_1 and turn_1,
+# so tests that restart it pass a prefix.
+ID_PREFIX = os.environ.get("FAKE_CODEX_ID_PREFIX", "")
 loaded = {}
 hanging = None
 
@@ -97,7 +100,7 @@ while True:
     elif method == "initialized":
         pass
     elif method == "account/read":
-        send({"id": req_id, "result": {"account": {"type": "chatgpt", "email": "owner@example.com",
+        send({"id": req_id, "result": {"account": {"type": "chatgpt", "email": os.environ.get("FAKE_CODEX_EMAIL", "owner@example.com"),
                                                    "planType": "plus", "workspaceName": None},
                                        "requiresOpenaiAuth": True}})
     elif method == "account/login/start":
@@ -105,7 +108,7 @@ while True:
                                        "loginId": "login_1"}})
     elif method == "thread/start":
         thread_counter += 1
-        thread_id = "thr_%d" % thread_counter
+        thread_id = "thr_%s%d" % (ID_PREFIX, thread_counter)
         cwd = params.get("cwd") or "/tmp"
         loaded[thread_id] = cwd
         notify("thread/started", {"thread": thread_record(thread_id, cwd)})
@@ -144,7 +147,7 @@ while True:
             send({"id": req_id, "error": {"code": -32600, "message": "thread %s is not loaded" % thread_id}})
             continue
         turn_counter += 1
-        turn_id = "turn_%d" % turn_counter
+        turn_id = "turn_%s%d" % (ID_PREFIX, turn_counter)
         text = params["input"][0]["text"]
         send({"id": req_id, "result": {"turn": {"id": turn_id, "status": "inProgress", "items": [], "error": None}}})
         notify("turn/started", {"threadId": thread_id, "turn": {"id": turn_id, "status": "inProgress", "items": [], "error": None}})

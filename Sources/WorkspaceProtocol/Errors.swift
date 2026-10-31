@@ -10,6 +10,8 @@ public enum ErrorCode: String, Codable, Sendable, CaseIterable {
   case endpointUnavailable = "endpoint_unavailable"
   case unsupportedCapability = "unsupported_capability"
   case nativeSessionMissing = "native_session_missing"
+  /// The connection now presents a different native identity than the thread was created under.
+  case identityChanged = "identity_changed"
   case staleRuntimeRequest = "stale_runtime_request"
   case submissionUnknown = "submission_unknown"
   case ownedProcessConflict = "owned_process_conflict"

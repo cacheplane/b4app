@@ -9,7 +9,7 @@ struct ComposerView: View {
 
   private var activeTurn: Turn? { detail.activeTurn }
   private var canSend: Bool {
-    activeTurn == nil && !model.busy
+    activeTurn == nil && !model.busy && detail.thread.continuity == .available
       && !model.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
