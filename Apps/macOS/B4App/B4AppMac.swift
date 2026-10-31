@@ -42,6 +42,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationDidFinishLaunching(_ notification: Notification) {
     // `Agent Workspace --remove-agent` unregisters the Login Item without a window, for uninstall
     // scripts and for checks that must leave the Mac as they found it.
+    if CommandLine.arguments.contains("--register-agent") {
+      Task { @MainActor in
+        let state = await LaunchAgent.enable()
+        print("agent: \(state)")
+        exit(0)
+      }
+      return
+    }
     if CommandLine.arguments.contains("--remove-agent") {
       Task { @MainActor in
         do {
@@ -170,30 +178,31 @@ enum LaunchAgent {
       && FileManager.default.isExecutableFile(atPath: helperURL.path)
   }
 
-  /// Register the agent (a one-time Login Items entry) or report why it cannot run.
-  static func enable() -> State {
+  /// Install (or refresh) the per-user LaunchAgent that runs the bundled coordinator (D-042): the
+  /// plist is rewritten whenever it points elsewhere or launchd reports a spawn failure, and a
+  /// leftover managed registration from the earlier design is unregistered once.
+  static func enable() async -> State {
     guard isBundled else { return .notBundled }
-    let service = SMAppService.agent(plistName: LaunchAgentControl.plistName)
-    switch service.status {
-    case .enabled: return .enabled
-    case .requiresApproval: return .requiresApproval
-    case .notRegistered, .notFound: break
-    @unknown default: break
+    let managed = SMAppService.agent(plistName: LaunchAgentControl.plistName)
+    if managed.status == .enabled || managed.status == .requiresApproval {
+      try? await managed.unregister()
     }
+    let program = helperURL.path
+    let job = await LaunchAgentControl.jobState()
+    let current = LaunchAgentControl.installedProgramPath()
+    let stale = current != program || job == nil || (job?.state.contains("spawn") ?? false)
     do {
-      try service.register()
+      if stale { try await LaunchAgentControl.install(programPath: program) }
+      return .enabled
     } catch {
       return .failed(error.localizedDescription)
-    }
-    switch service.status {
-    case .enabled: return .enabled
-    case .requiresApproval: return .requiresApproval
-    default: return .failed("launchd status \(service.status.rawValue)")
     }
   }
 
   static func remove() async throws {
-    try await SMAppService.agent(plistName: LaunchAgentControl.plistName).unregister()
+    let managed = SMAppService.agent(plistName: LaunchAgentControl.plistName)
+    if managed.status != .notRegistered, managed.status != .notFound { try? await managed.unregister() }
+    await LaunchAgentControl.remove()
   }
 }
 
@@ -232,7 +241,7 @@ actor CoordinatorHost {
     if running == nil {
       let state = await LaunchAgent.enable()
       agentState = state
-      if state == .enabled, let transport = await connect(paths, within: .seconds(6)) {
+      if state == .enabled, let transport = await connect(paths, within: .seconds(10)) {
         return transport
       }
     }

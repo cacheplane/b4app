@@ -55,7 +55,7 @@ xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generi
 ./Scripts/package.sh
 ```
 
-That builds `dist/Agent Workspace.app` (version from `Sources/Coordinator/Version.swift`) with the coordinator and the CLI inside `Contents/Helpers` and the coordinator's LaunchAgent plist, signs it ad hoc, verifies, and zips it. Copy the app to `/Applications` and open it. On first launch the app registers its background coordinator as a Login Item; macOS may show "Agent Workspace added items that can run in the background". If the link status at the bottom of the sidebar says approval is needed, allow it under System Settings › General › Login Items & Extensions (the app offers to open that pane); until then the window hosts the coordinator itself and local turns end with the app.
+That builds `dist/Agent Workspace.app` (version from `Sources/Coordinator/Version.swift`) with the coordinator and the CLI inside `Contents/Helpers`, the PostgreSQL server under `Contents/SharedSupport`, signs it ad hoc, verifies, and zips it. Copy the app to `/Applications` and open it. On first launch the app writes `~/Library/LaunchAgents/com.cacheplane.b4app.coordinator.plist`, pointing at the coordinator inside the app, and loads it; macOS may show "Agent Workspace added items that can run in the background". The coordinator then outlives the window. If launchd cannot start it, the link status at the bottom of the sidebar says so and the window hosts the coordinator itself until the next launch repairs the agent.
 
 Put the CLI on your PATH as a link to the bundled one, so the app and the CLI always agree on a version:
 
@@ -95,9 +95,11 @@ agent-workspace db backup
 
 Replace the app in `/Applications`. The running coordinator keeps the old version until it is restarted; the sidebar shows "The running coordinator is X; this app is Y" with a Restart coordinator link, the Coordinator menu has the same, and so does `agent-workspace coordinator restart`.
 
+Launching the new app once refreshes the agent when the app has moved; `agent-workspace coordinator status` shows launchd's view of the job and `coordinator restart` starts the new coordinator in place of the old one.
+
 ### Uninstall
 
-Coordinator menu › "Remove Background Agent…" (unregisters the Login Item), quit, then delete the app, `~/Library/Application Support/b4app` (the database and logs), the `agent-workspace` symlink, and the Keychain items whose service starts with `com.cacheplane.b4app`. Registered B4 projects are not touched.
+Coordinator menu › "Remove Background Agent…" (boots the agent out and deletes its plist from `~/Library/LaunchAgents`), quit, then delete the app, `~/Library/Application Support/b4app` (the database and logs), the `agent-workspace` symlink, and the Keychain items whose service starts with `com.cacheplane.b4app`. Registered B4 projects are not touched.
 
 ## CLI
 

@@ -2,6 +2,16 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-10-31: switching the running app to the M7 build
+
+| Step | Result |
+| --- | --- |
+| First switch (package built from the M7 branch) | Quit, `coordinator restart` through launchd, the new coordinator imported the real store (2 connections, 1 thread, 1 server, 5 items, 1 draft) and retired the SQLite files; the app relaunched against it. |
+| Second switch (after #13) | `coordinator restart` timed out at its 10 s limit; `launchctl kickstart -k` by hand returned after 16 s but the old coordinator kept its pid, and `launchctl print` showed `spawn scheduled`, `last exit code = 78: EX_CONFIG`, 193 runs, and `needs LWCR update`. The helper ran fine by hand under launchd's environment, so launchd was refusing to spawn it: the rebuilt, re-signed ad hoc binary no longer matched the pinned code requirement. Unregistering and relaunching did not clear it either, because the app skipped `register` for an already-enabled agent. |
+| Re-registering the managed agent | Registering again from the rebuilt app changed nothing (`needs LWCR update`, 47 runs, still EX_CONFIG), and neither did unregister-and-register. The same helper bootstrapped under a throwaway label with `launchctl bootstrap` ran at once, so launchd could exec the file; the managed registration was refusing it. |
+| Fix (D-042) | The app now writes and bootstraps a per-user LaunchAgent plist with the coordinator's absolute path, rewriting it when the path changes or launchd reports a spawn failure, and unregisters the old managed agent once. `coordinator status` prints launchd's state and last exit; `coordinator restart` allows 90 s. |
+| Outcome | `Agent Workspace --register-agent` from the rebuilt bundle: launchd `running`, 1 run, pid 11713 from `Contents/Helpers`; the store intact (2 connections, 1 thread, 18 change-log rows); `coordinator restart` replaced it with pid 11944 in about ten seconds; the relaunched app connected to it. |
+
 ## 2026-10-31: Claude Code live gate (A03) closed
 
 Target: the same MacBook Pro, after the owner signed in to Claude Code 2.1.282 (claude.ai, Max plan). `B4APP_LIVE_CLAUDE=1 swift test --filter ClaudeLive`, real inference, run twice.
