@@ -39,7 +39,7 @@ Not exercised: an upgrade (a 0.0.0 coordinator was not running when the test sta
 | A01 | Finder launch | Pass (live) | This section, "Finder launch" |
 | A02 | Codex login and use | Pass (live, M1 and M4) | `connection login` browser flow and real turns under the owner's account; the same native thread continued across restarts (M1, M4 records) |
 | A03 | Claude login and use | Open: live inference needs `claude auth login` on this Mac | Fixture-verified end to end (M2); `B4APP_LIVE_CLAUDE=1 swift test --filter ClaudeLive` once signed in |
-| A04 | Shared thread list | Pass (fixtures; live for Codex and both B4 modes) | Codex, Claude, managed and attached B4 threads listed with distinct connections and labels (M2, M3, M4 records; `SnapshotTests` render) |
+| A04 | Shared thread list | Pass (fixtures; live for Codex and both B4 modes; a Codex thread created from the window on screen) | Codex, Claude, managed and attached B4 threads listed with distinct connections and labels (M2, M3, M4 records; `SnapshotTests` render) |
 | A05 | Thread organization | Pass (integration) | Rename, pin, title search, archive and unarchive, drafts across a coordinator restart (`ThreadOrganizationTests`, `WorkspaceModelTests`, M5 CLI smoke) |
 | A06 | Runtime decisions | Pass (fixtures; one live Codex approval) | Single transition per request, stale generations expire, unsupported kinds declined (M1 to M3); live `item/commandExecution/requestApproval` approved once (M3 record) |
 | A07 | Explicit Stop | Pass (fixtures; live B4 cancel) | Interrupt reaches the native turn, outcome confirmed or left `reconciling`, drafts kept (M1 to M4) |
@@ -52,7 +52,7 @@ Not exercised: an upgrade (a 0.0.0 coordinator was not running when the test sta
 | A14 | Process ownership | Pass (process integration) | Concurrent starts converge on the lock; pid plus start time plus argv ownership; port conflicts stop nothing (M0, M4) |
 | A15 | Auth and usage errors | Pass (fixtures) | Expired login → `auth_required` with a sign-in action; allowance failures surfaced; no billing-mode switch (M2, M5); not forced live by the spec's instruction |
 | A16 | Renderer/secret boundaries | Pass (code review and focused checks) | `WorkspaceUI` imports no process, socket, file, or Keychain API (still true with `Theme/`: SwiftUI, CoreText, AppKit/UIKit for dynamic colours only); redaction at the coordinator boundary (M5 audit) |
-| A17 | Window/Quit/wake | Partial (live Quit with the agent hosting; window close and wake code paths unchanged since M5) | This section, "Quit with the agent hosting"; the Quit dialog for in-process hosting and a real sleep remain unclicked |
+| A17 | Window/Quit/wake | Partial (live Quit with the agent hosting; the window seen and driven on screen after the layout fix; the Quit dialog for in-process hosting and wake not driven) | This section, "Quit with the agent hosting"; the Quit dialog for in-process hosting and a real sleep remain unclicked |
 | A18 | Project concurrency | Pass (integration) | Directory lock across two Codex threads and a Claude thread, held through a crash, released by abandon (`RecoveryTests`) |
 
 ### Open after M6
@@ -82,9 +82,9 @@ Target: the same MacBook Pro. Screen control for the app was requested and decli
 - Cards are hairline-bordered with radius 16, buttons are pills, no shadow or gradient anywhere; dark mode keeps every pairing above 4.5:1.
 - The composer grows with its draft and the request card sits above it in the 720 pt reading column.
 
-### Open
+### Clicked later the same day (screen control granted)
 
-- Not clicked: hover states, the context menu, the rename alert, the new-thread sheet, the Quit dialog, the continuity banner, and the toolbar in the real `NavigationSplitView` chrome (the snapshot renders the sidebar and detail side by side because the split view's sidebar only draws for a window the user can see).
+The packaged window at first showed only its toolbar: the root's ideal height was 1458 pt in an 800 pt window (an infinite-height frame inside a split-view column) and the window centred the oversized view, so the sidebar and detail sat outside the visible area; `IdealSizeTests` now pins the root's ideal height. After the fix, seen and driven on screen: the sidebar (mark, surfaces, thread rows, link status), the Threads empty state and its button, the new-thread sheet (connection picker, directory, title, Create), and a thread created on the real Codex connection with the composer, toolbar Rename, Pin, Archive. Still not clicked: hover states, the context menu, the rename alert, the Quit dialog, the continuity banner, a sent turn.
 
 ## 2026-10-31: M5 daily-use behavior and recovery
 
