@@ -17,8 +17,7 @@ public struct WorkspaceRootView: View {
         .navigationSplitViewColumnWidth(min: 240, ideal: 290)
     } detail: {
       detail
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(LLA.Color.bg)
+        .containerBackground(LLA.Color.bg, for: .window)
     }
     .tint(LLA.Color.accent)
     .task { model.connect() }
@@ -45,33 +44,28 @@ public struct WorkspaceRootView: View {
 struct SidebarView: View {
   @Bindable var model: WorkspaceModel
 
-  private static let rowInsets = EdgeInsets(top: 1, leading: 10, bottom: 1, trailing: 10)
-
   var body: some View {
-    List {
-      HStack(spacing: LLA.Space.s) {
-        LLAMarkView(height: 20)
-        Text("Agent Workspace").font(LLAFont.smallStrong).foregroundStyle(LLA.Color.ink)
-      }
-      .padding(.horizontal, 10)
-      .padding(.top, LLA.Space.s)
-      .padding(.bottom, LLA.Space.m)
-      .listRowInsets(Self.rowInsets)
-      .listRowBackground(Color.clear)
-      .listRowSeparator(.hidden)
-
-      ForEach(Surface.allCases) { surface in
-        let selected = model.surface == surface && model.selectedThreadId == nil
-        SidebarTextRow(title: surface.title, selected: selected) {
-          model.surface = surface
-          if surface != .threads { model.selectedThreadId = nil }
+    // A scroll view and stacks rather than `List`: inside the split view's sidebar column a List drew
+    // nothing on macOS 26 (seen in the app and reproduced by `SnapshotTests` in root mode).
+    ScrollView {
+      VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: LLA.Space.s) {
+          LLAMarkView(height: 20)
+          Text("Agent Workspace").font(LLAFont.smallStrong).foregroundStyle(LLA.Color.ink)
         }
-        .listRowInsets(Self.rowInsets)
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-      }
+        .padding(.horizontal, 10)
+        .padding(.top, LLA.Space.s)
+        .padding(.bottom, LLA.Space.m)
 
-      Section {
+        ForEach(Surface.allCases) { surface in
+          let selected = model.surface == surface && model.selectedThreadId == nil
+          SidebarTextRow(title: surface.title, selected: selected) {
+            model.surface = surface
+            if surface != .threads { model.selectedThreadId = nil }
+          }
+        }
+
+        SidebarGroupLabel("Threads")
         if model.connections.count > 1 {
           Picker("Connection", selection: $model.connectionFilter) {
             Text("All connections").tag(String?.none)
@@ -81,39 +75,17 @@ struct SidebarView: View {
           }
           .labelsHidden()
           .font(LLAFont.small)
-          .listRowInsets(Self.rowInsets)
-          .listRowBackground(Color.clear)
-          .listRowSeparator(.hidden)
+          .padding(.horizontal, 10)
+          .padding(.bottom, LLA.Space.xs)
         }
         if model.visibleThreads.isEmpty {
-          Text("No threads yet.").llaSmallMuted().padding(.horizontal, 10)
-            .listRowInsets(Self.rowInsets).listRowBackground(Color.clear).listRowSeparator(.hidden)
+          Text("No threads yet.").llaSmallMuted().padding(.horizontal, 10).padding(.vertical, 6)
         }
         ForEach(model.visibleThreads) { thread in
           ThreadRow(model: model, thread: thread)
-            .listRowInsets(Self.rowInsets)
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
         }
-      } header: {
-        SidebarGroupLabel("Threads")
-      }
 
-      if model.showArchived || !model.archivedThreads.isEmpty {
-        Section {
-          if model.showArchived {
-            if model.archivedThreads.isEmpty {
-              Text("No archived threads.").llaSmallMuted().padding(.horizontal, 10)
-                .listRowInsets(Self.rowInsets).listRowBackground(Color.clear).listRowSeparator(.hidden)
-            }
-            ForEach(model.archivedThreads) { thread in
-              ThreadRow(model: model, thread: thread)
-                .listRowInsets(Self.rowInsets)
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-            }
-          }
-        } header: {
+        if model.showArchived || !model.archivedThreads.isEmpty {
           Toggle(isOn: $model.showArchived) {
             Text("Archived (\(model.archivedThreads.count))").font(LLAFont.small).foregroundStyle(
               LLA.Color.muted)
@@ -122,13 +94,22 @@ struct SidebarView: View {
           .controlSize(.mini)
           .padding(.horizontal, 10)
           .padding(.top, LLA.Space.m)
-          .textCase(nil)
+          .padding(.bottom, LLA.Space.xs)
           .accessibilityIdentifier("show-archived")
+          if model.showArchived {
+            if model.archivedThreads.isEmpty {
+              Text("No archived threads.").llaSmallMuted().padding(.horizontal, 10).padding(.vertical, 6)
+            }
+            ForEach(model.archivedThreads) { thread in
+              ThreadRow(model: model, thread: thread)
+            }
+          }
         }
       }
+      .padding(.horizontal, 10)
+      .padding(.bottom, LLA.Space.l)
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .listStyle(.plain)
-    .scrollContentBackground(.hidden)
     .background(LLA.Color.surface)
     .searchable(text: $model.searchText, prompt: "Search titles")
     .navigationTitle("Agent Workspace")

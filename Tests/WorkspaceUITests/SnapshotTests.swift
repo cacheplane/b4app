@@ -59,6 +59,16 @@ private let fakeClaude =
     model.composerText = "Ship it once the tests are green."
 
     let window = SnapshotWindow(rootView: SnapshotShell(model: model))
+    // B4APP_SNAPSHOT_ROOT=1 renders the real NavigationSplitView root on screen instead (debugging aid).
+    if ProcessInfo.processInfo.environment["B4APP_SNAPSHOT_ROOT"] == "1" {
+      let real = SnapshotWindow(rootView: SnapshotShell(model: model, useRoot: true), onScreen: true)
+      try await real.capture(to: "\(dir)/root-light.png")
+      model.selectedThreadId = nil
+      try await real.capture(to: "\(dir)/root-empty-light.png")
+      model.selectedThreadId = release.id
+      await model.openThread(id: release.id)
+      real.close()
+    }
     for (appearance, suffix) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
       window.appearance = NSAppearance(named: appearance)
       try await window.capture(to: "\(dir)/threads-\(suffix).png")
@@ -83,8 +93,17 @@ private let fakeClaude =
 /// draws for a window the user can see. Every piece is the app's own view.
 struct SnapshotShell: View {
   @Bindable var model: WorkspaceModel
+  var useRoot = false
 
   var body: some View {
+    if useRoot {
+      WorkspaceRootView(model: model).frame(width: 1200, height: 800)
+    } else {
+      shell
+    }
+  }
+
+  private var shell: some View {
     HStack(spacing: 0) {
       SidebarView(model: model).frame(width: 290)
       Rectangle().fill(LLA.Color.rule).frame(width: 1)
@@ -110,7 +129,7 @@ struct SnapshotShell: View {
   let window: NSWindow
   let host: NSHostingView<SnapshotShell>
 
-  init(rootView: SnapshotShell) {
+  init(rootView: SnapshotShell, onScreen: Bool = false) {
     host = NSHostingView(rootView: rootView)
     window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
@@ -119,8 +138,10 @@ struct SnapshotShell: View {
     window.contentView = host
     // AppKit populates the split view's sidebar only once the window is on screen, so the window is
     // ordered in beneath the desktop picture: the window server draws it, nobody sees it.
-    window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) - 1)
-    window.collectionBehavior = [.ignoresCycle, .stationary]
+    if !onScreen {
+      window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) - 1)
+      window.collectionBehavior = [.ignoresCycle, .stationary]
+    }
     window.setFrameOrigin(NSPoint(x: 0, y: 0))
     window.orderFrontRegardless()
     window.layoutIfNeeded()
