@@ -8,14 +8,14 @@ import WorkspaceProtocol
 @testable import WorkspaceUI
 
 /// The fake Codex runtime shipped with the adapter tests.
-private let fakeCodex =
+let fakeCodex =
   URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
   .appendingPathComponent("CodexAdapterTests/Fixtures/fake-codex.py").path
 
 /// A real coordinator on temporary directories with the model connected over its socket, so model
 /// tests exercise the same snapshot, event, and command paths the apps use.
 @MainActor
-private struct ModelHarness {
+struct ModelHarness {
   let coordinator: RunningCoordinator
   let model: WorkspaceModel
   let workDir: String
@@ -47,7 +47,7 @@ private struct ModelHarness {
 }
 
 @MainActor
-private func waitUntil(
+func waitUntil(
   _ what: String, timeout: Duration = .seconds(15), _ condition: @MainActor () -> Bool
 ) async throws {
   let deadline = ContinuousClock.now + timeout

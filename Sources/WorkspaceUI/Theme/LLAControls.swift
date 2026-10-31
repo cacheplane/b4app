@@ -144,7 +144,8 @@ public struct LLAStateDot: View {
   public var body: some View {
     ZStack {
       if state == .running || state == .stopping {
-        Circle().stroke(LLA.Color.ink.opacity(pulse ? 0.15 : 0.4), lineWidth: 2).frame(width: 14, height: 14)
+        Circle().stroke(LLA.Color.ink.opacity(pulse ? 0.08 : 0.3), lineWidth: 1.5).frame(
+          width: 14, height: 14)
       }
       if state == .unknown {
         Circle().stroke(LLA.Color.danger, lineWidth: 1.5).frame(width: 8, height: 8)

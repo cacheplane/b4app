@@ -94,7 +94,7 @@ Design: `docs/superpowers/specs/2026-10-31-lla-visual-system-design.md`. Plan: `
 - [x] Tokens, type scale, bundled fonts, the mark, and the shared controls (`Sources/WorkspaceUI/Theme/`). `implemented`, `fixture-tested` (`ThemeTests`: SVG parsing and fit, font registration and fallback, palette contrast in both appearances).
 - [x] Sidebar, thread detail, transcript, composer, approvals, continuity banner, connections, local servers, diagnostics, new-thread sheet, and empty states restyled; accessibility identifiers unchanged. `implemented`; both app targets build.
 - [x] App icon from the brand tile for macOS and iOS. `implemented`.
-- [ ] Seen on screen in light and dark appearance. See `docs/verification.md`.
+- [x] Rendered offscreen in light and dark over a real coordinator (`SnapshotTests`, `docs/screenshots`); not clicked on screen (control declined). See `docs/verification.md`.
 
 ## M6: package and accept the personal v0
 

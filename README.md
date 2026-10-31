@@ -2,6 +2,10 @@
 
 A native Swift app for running Codex, Claude Code, and B4 agent conversations side by side on one Mac, with an iOS companion built from the same code. Everything is local: no accounts, no cloud sync, no telemetry.
 
+The interface follows the LiveLoveApp visual system (`docs/superpowers/specs/2026-10-31-lla-visual-system-design.md`): ink on white, one cobalt accent, Hanken Grotesk and JetBrains Mono, hairlines and pills, with a derived dark appearance.
+
+![Agent Workspace: a thread with a pending command approval, light appearance](docs/screenshots/threads-light.png)
+
 Status: M5. Codex and B4 conversations are live-verified from the CLI (Codex also from the macOS app); Claude Code conversations use the same transcript, approvals, stop, and resume through the CLI's stream-json protocol and are fixture-verified end to end, awaiting a signed-in Mac for the live inference check. B4 attaches a running local server or a remote HTTPS endpoint at one `agent()` route, or registers a local project and runs its server itself (`b4 start` or `b4 dev` on loopback) with the GUI and the CLI sharing one owned registration. Threads can be renamed, pinned, archived, and searched, keep their drafts across restarts, show their state in the sidebar, and say plainly when a native session is gone or belongs to another account; unknown outcomes stay unknown until a runtime answers or you abandon the turn; two harness turns never write one directory at once; Quit asks before stopping local work; wake and reconnect reconcile instead of guessing. See `docs/milestones.md`.
 
 ## Prerequisites
@@ -17,6 +21,12 @@ swift build
 
 ```bash
 swift test
+```
+
+Render every screen of the app offscreen (both appearances) into PNGs, over a real coordinator and the fixture runtimes:
+
+```bash
+B4APP_SNAPSHOT_DIR=docs/screenshots swift test --filter SnapshotTests
 ```
 
 ```bash

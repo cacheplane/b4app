@@ -6,6 +6,7 @@ import WorkspaceProtocol
 struct ComposerView: View {
   @Bindable var model: WorkspaceModel
   let detail: ThreadDetail
+  @State private var editorHeight: CGFloat = 24
 
   private var activeTurn: Turn? { detail.activeTurn }
   private var canSend: Bool {
@@ -38,14 +39,25 @@ struct ComposerView: View {
         .accessibilityIdentifier("error-banner")
       }
       VStack(alignment: .leading, spacing: 0) {
-        TextEditor(text: $model.composerText)
-          .font(LLAFont.body)
-          .foregroundStyle(LLA.Color.ink)
-          .scrollContentBackground(.hidden)
-          .frame(minHeight: 56, maxHeight: 160)
-          .padding(.horizontal, LLA.Space.m)
-          .padding(.top, LLA.Space.m)
-          .accessibilityIdentifier("composer")
+        // The editor grows with the draft: a hidden copy of the text sets the height, clamped.
+        ZStack(alignment: .topLeading) {
+          Text(model.composerText.isEmpty ? " " : model.composerText + " ")
+            .font(LLAFont.body)
+            .padding(.horizontal, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .opacity(0)
+            .accessibilityHidden(true)
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { editorHeight = $0 }
+          TextEditor(text: $model.composerText)
+            .font(LLAFont.body)
+            .foregroundStyle(LLA.Color.ink)
+            .scrollContentBackground(.hidden)
+            .accessibilityIdentifier("composer")
+        }
+        .frame(height: min(max(editorHeight + 6, 24), 160))
+        .padding(.horizontal, LLA.Space.m)
+        .padding(.top, LLA.Space.m)
         HStack(spacing: LLA.Space.s) {
           Text(
             activeTurn == nil
