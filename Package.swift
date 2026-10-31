@@ -83,7 +83,7 @@ let package = Package(
     .target(
       name: "Coordinator",
       dependencies: [
-        "WorkspaceProtocol", "WorkspaceClient", "WorkspacePlatform", "WorkspaceStorage",
+        "WorkspaceProtocol", "WorkspaceClient", "WorkspacePlatform", "WorkspaceStorage", "WorkspaceSync",
         "CodexAdapter", "ClaudeAdapter", "B4Adapter", "NIOTransport",
         .product(name: "NIOCore", package: "swift-nio"),
         .product(name: "NIOPosix", package: "swift-nio"),

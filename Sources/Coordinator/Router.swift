@@ -12,6 +12,7 @@ public actor Router {
     public var diagnostics: DiagnosticsService
     public var sessions: SessionService
     public var servers: LocalServerService
+    public var hub: HubSync
     public var startedAt: String
     public var paths: PlatformPaths
   }
@@ -201,6 +202,16 @@ public actor Router {
       let params = try command.params(for: DatabaseImportSQLite.self)
       let summary = try SQLiteImporter.importFile(at: params.path, into: context.database)
       return try JSONValue(encoding: DatabaseImportSQLite.Result(rows: summary.rows))
+    case .hubJoin:
+      let params = try command.params(for: HubJoin.self)
+      return try JSONValue(
+        encoding: try await context.hub.join(
+          url: params.url, code: params.code, deviceName: params.deviceName ?? HubSync.defaultDeviceName()))
+    case .hubStatus:
+      return try JSONValue(encoding: try await context.hub.status())
+    case .hubLeave:
+      try await context.hub.leave()
+      return try JSONValue(encoding: try await context.hub.status())
     }
   }
 
