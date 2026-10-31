@@ -656,6 +656,10 @@ public final class WorkspaceModel {
     case .serverChanged:
       if let server = try? event.payload["server"]?.decode(LocalServer.self) { merge(server) }
     case .connectionChanged:
+      // A connection this client has not seen (added by the CLI or another window): refetch.
+      if !connections.contains(where: { $0.id == event.connectionId }) {
+        Task { try? await refreshSnapshot() }
+      }
       if let index = connections.firstIndex(where: { $0.id == event.connectionId }) {
         if let status = event.payload["status"]?.stringValue.flatMap(ConnectionStatus.init(rawValue:)) {
           connections[index].status = status
