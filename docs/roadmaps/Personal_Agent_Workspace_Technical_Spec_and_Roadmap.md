@@ -634,6 +634,19 @@ All items below start unchecked. The milestones are dependency gates, not elapse
 
 **Exit gate:** Every mandatory acceptance row passes on the target Mac. If a required live check is unavailable, deliver the implementation with that gate clearly open; do not label the release fully validated.
 
+### M7 — Storage hardening and multi-device sync (added 2026-10-31 at the owner's request)
+
+**Dependencies:** M6.  
+**Purpose:** Make the local store robust (versioned migrations with backups, tooling, schema documentation) and let several devices show one workspace by syncing the index and transcripts through a remote Postgres hub. Design and the owner's open decisions: `docs/superpowers/specs/2026-10-31-storage-and-sync-design.md`; plan: `docs/superpowers/plans/2026-10-31-storage-and-sync.md`.
+
+- [ ] Migration safety: a file backup before any local migration, `db status|migrate|backup` in the CLI, schema documentation.
+- [ ] A change log for every synced write, ordered by a hybrid logical clock, with replay tests.
+- [ ] Remote Postgres schema and migrator, device identity, a per-device credential held as a Keychain reference.
+- [ ] Two-way sync from the coordinator with last-writer-wins per column, tombstones, offline convergence tests.
+- [ ] Device-aware connections (owned elsewhere are read-only; remote B4 connections usable wherever the credential exists) and the iOS companion reading the synced workspace.
+
+**Exit gate:** Two devices show one thread list and the same transcripts; edits made offline on both converge; no secret value crosses the wire except the Postgres credential itself over TLS; a migration of a copy of the real database leaves a backup behind.
+
 ## 14. Verification and release acceptance
 
 ### 14.1 Test strategy

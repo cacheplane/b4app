@@ -109,3 +109,7 @@ Design: `docs/superpowers/specs/2026-10-31-m6-package-and-accept-design.md`. Pla
 - [x] Record exact versions, performed checks, known limits, and blocked live checks. `docs/verification.md`, `docs/compatibility.md`.
 
 Exit gate status: open. The implementation ships with the gate clearly open on the live rows that need the owner (Claude sign-in, a remote endpoint, a screen click-through) and on Developer ID signing; nothing is labelled fully validated.
+
+## M7: storage hardening and multi-device sync
+
+Proposed on 2026-10-31. Design (brainstorm, with the five decisions the owner must make): `docs/superpowers/specs/2026-10-31-storage-and-sync-design.md`. Plan outline: `docs/superpowers/plans/2026-10-31-storage-and-sync.md`. Not started.
