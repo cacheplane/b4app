@@ -1,5 +1,6 @@
 import Foundation
-import GRDB
+import Synchronization
+import WorkspacePlatform
 import WorkspaceProtocol
 
 public struct ThreadFilter: Sendable, Equatable {
@@ -13,86 +14,159 @@ public struct ThreadFilter: Sendable, Equatable {
   }
 }
 
-/// The workspace index. Opened only by the coordinator; WAL mode, foreign keys, private file mode.
+/// The workspace index on the private PostgreSQL cluster (decision D-041). Opened only by the
+/// coordinator. Every method is synchronous and each write runs in one transaction, so the
+/// coordinator's actors keep their atomic sequences.
 public final class WorkspaceDatabase: Sendable {
-  public let path: String
-  private let pool: DatabasePool
+  public let endpoint: PostgresEndpoint
+  private let pool: ConnectionPool
+  private let adminConnectionString: String
+  private let columnCache = Mutex<[String: [String]]>([:])
 
-  public init(path: String) throws {
-    self.path = path
-    let directory = (path as NSString).deletingLastPathComponent
-    try FileManager.default.createDirectory(
-      atPath: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-    var configuration = Configuration()
-    configuration.foreignKeysEnabled = true
-    configuration.busyMode = .timeout(5)
-    pool = try DatabasePool(path: path, configuration: configuration)
-    try Migrations.migrator.migrate(pool)
-    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+  /// Connect to a running cluster, create the database when it is missing, and migrate.
+  public init(endpoint: PostgresEndpoint, binDir: String) throws {
+    self.endpoint = endpoint
+    let lib = try LibPQ.load(binDir: binDir)
+    let base = "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) application_name=b4app"
+    adminConnectionString = base + " dbname=postgres"
+    let admin = try PostgresConnection(lib: lib, connectionString: adminConnectionString)
+    let exists = try admin.execute("SELECT 1 FROM pg_database WHERE datname = $1", [endpoint.database]).rows
+    if exists.isEmpty { try admin.execute("CREATE DATABASE \(Rows.quote(endpoint.database))") }
+    pool = try ConnectionPool(lib: lib, connectionString: base + " dbname=\(endpoint.database)", size: 4)
+    try pool.withConnection { try Migrator.migrate($0) }
   }
 
-  /// An in-memory database for tests (DatabaseQueue semantics are not needed; a temp file keeps WAL).
+  /// A fresh database on the shared ephemeral test cluster.
   public static func temporary() throws -> WorkspaceDatabase {
-    let dir = NSTemporaryDirectory() + "b4app-db-\(UUID().uuidString)"
-    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-    return try WorkspaceDatabase(path: dir + "/workspace.sqlite")
+    let endpoint = try EphemeralPostgres.endpoint()
+    return try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
   }
 
   public func appliedMigrations() throws -> [String] {
-    try pool.read { db in try Migrations.migrator.appliedIdentifiers(db).sorted() }
+    try pool.withConnection { try Migrator.applied($0) }
   }
 
-  public func journalMode() throws -> String {
-    try pool.read { db in try String.fetchOne(db, sql: "PRAGMA journal_mode") ?? "" }
+  public func close() throws { pool.close() }
+
+  // MARK: - Plumbing
+
+  private func read<T>(_ body: (PostgresConnection) throws -> T) throws -> T {
+    do { return try pool.withConnection(body) } catch { throw Self.mapped(error) }
   }
 
-  public func read<T: Sendable>(_ block: @Sendable (Database) throws -> T) throws -> T {
-    try pool.read(block)
+  private func write<T>(_ body: (PostgresConnection) throws -> T) throws -> T {
+    do {
+      return try pool.withConnection { c in
+        try c.execute("BEGIN")
+        do {
+          let value = try body(c)
+          try c.execute("COMMIT")
+          return value
+        } catch {
+          try? c.execute("ROLLBACK")
+          throw error
+        }
+      }
+    } catch { throw Self.mapped(error) }
   }
 
-  public func write<T: Sendable>(_ block: @Sendable (Database) throws -> T) throws -> T {
-    try pool.write(block)
+  private static func mapped(_ error: any Error) -> any Error {
+    if let pg = error as? PostgresError {
+      return WorkspaceError(
+        pg.isConstraintViolation ? .protocolInvalid : .internalError, "PostgreSQL: \(pg.description)")
+    }
+    return error
   }
 
-  public func close() throws {
-    try pool.close()
+  private func one<T: Decodable>(
+    _ c: PostgresConnection, _ type: T.Type, _ sql: String, _ params: [String?] = []
+  ) throws -> T? {
+    try c.execute(sql, params).rows.first.map { try Rows.decode(T.self, from: $0) }
+  }
+
+  private func all<T: Decodable>(
+    _ c: PostgresConnection, _ type: T.Type, _ sql: String, _ params: [String?] = []
+  ) throws -> [T] {
+    try c.execute(sql, params).rows.map { try Rows.decode(T.self, from: $0) }
+  }
+
+  private func insert<T: Encodable>(_ c: PostgresConnection, _ table: String, _ value: T) throws {
+    let statement = Rows.insert(table, try Rows.encode(value))
+    try c.execute(statement.sql, statement.params)
+  }
+
+  private func update<T: Encodable>(
+    _ c: PostgresConnection, _ table: String, _ value: T, key: String = "id"
+  ) throws {
+    let statement = Rows.update(
+      table, try Rows.encode(value), key: key, allColumns: try columns(c, of: table))
+    try c.execute(statement.sql, statement.params)
+  }
+
+  private func save<T: Encodable>(
+    _ c: PostgresConnection, _ table: String, _ value: T, key: String = "id"
+  ) throws {
+    let statement = Rows.upsert(
+      table, try Rows.encode(value), key: key, allColumns: try columns(c, of: table))
+    try c.execute(statement.sql, statement.params)
+  }
+
+  /// The table's columns in order, from the catalog, cached for the life of this store.
+  private func columns(_ c: PostgresConnection, of table: String) throws -> [String] {
+    if let cached = columnCache.withLock({ $0[table] }) { return cached }
+    let names = try c.execute(
+      "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position",
+      [table]
+    ).rows.compactMap { $0.text("column_name") }
+    guard !names.isEmpty else { throw WorkspaceError(.internalError, "Unknown table \(table)") }
+    columnCache.withLock { $0[table] = names }
+    return names
+  }
+
+  private func byId<T: Decodable>(
+    _ c: PostgresConnection, _ type: T.Type, _ table: String, _ id: String, key: String = "id"
+  ) throws -> T? {
+    try one(c, T.self, "SELECT * FROM \(Rows.quote(table)) WHERE \(Rows.quote(key)) = $1", [id])
   }
 
   // MARK: - Connections
 
   public func listConnections(includeDisabled: Bool = false) throws -> [Connection] {
-    try pool.read { db in
-      var request = Connection.order(Column("createdAt"))
-      if !includeDisabled { request = request.filter(Column("enabled") == true) }
-      return try request.fetchAll(db)
+    try read { c in
+      try all(
+        c, Connection.self,
+        "SELECT * FROM \"connections\"" + (includeDisabled ? "" : " WHERE \"enabled\" = true")
+          + " ORDER BY \"createdAt\"")
     }
   }
 
   public func connection(id: String) throws -> Connection? {
-    try pool.read { db in try Connection.fetchOne(db, key: id) }
+    try read { try byId($0, Connection.self, "connections", id) }
   }
 
   public func connections(kind: ConnectionKind) throws -> [Connection] {
-    try pool.read { db in
-      try Connection.filter(Column("kind") == kind.rawValue).order(Column("createdAt")).fetchAll(db)
+    try read {
+      try all(
+        $0, Connection.self, "SELECT * FROM \"connections\" WHERE \"kind\" = $1 ORDER BY \"createdAt\"",
+        [kind.rawValue])
     }
   }
 
   public func updateConnection(
     id: String, _ mutate: @Sendable (inout Connection) -> Void
   ) throws -> Connection? {
-    try pool.write { db in
-      guard var connection = try Connection.fetchOne(db, key: id) else { return nil }
+    try write { c in
+      guard var connection = try byId(c, Connection.self, "connections", id) else { return nil }
       mutate(&connection)
       connection.updatedAt = Timestamp.now()
-      try connection.update(db)
+      try update(c, "connections", connection)
       return connection
     }
   }
 
   public func insertConnection(_ connection: Connection) throws -> Connection {
-    try pool.write { db in
-      try connection.insert(db)
+    try write { c in
+      try insert(c, "connections", connection)
       return connection
     }
   }
@@ -100,95 +174,104 @@ public final class WorkspaceDatabase: Sendable {
   public func updateConnectionStatus(
     id: String, status: ConnectionStatus, authStatus: AuthStatus, capabilities: Capabilities
   ) throws {
-    try pool.write { db in
-      guard var connection = try Connection.fetchOne(db, key: id) else { return }
-      connection.status = status
-      connection.authStatus = authStatus
-      connection.capabilities = capabilities
-      connection.updatedAt = Timestamp.now()
-      try connection.update(db)
+    _ = try updateConnection(id: id) {
+      $0.status = status
+      $0.authStatus = authStatus
+      $0.capabilities = capabilities
     }
   }
 
   // MARK: - Local servers
 
   public func listLocalServers() throws -> [LocalServer] {
-    try pool.read { db in try LocalServer.order(Column("createdAt")).fetchAll(db) }
+    try read { try all($0, LocalServer.self, "SELECT * FROM \"localServers\" ORDER BY \"createdAt\"") }
   }
 
   public func insertLocalServer(_ server: LocalServer) throws -> LocalServer {
-    try pool.write { db in
-      try server.insert(db)
+    try write { c in
+      try insert(c, "localServers", server)
       return server
     }
   }
 
   public func localServer(id: String) throws -> LocalServer? {
-    try pool.read { db in try LocalServer.fetchOne(db, key: id) }
+    try read { try byId($0, LocalServer.self, "localServers", id) }
   }
 
   public func localServer(name: String) throws -> LocalServer? {
-    try pool.read { db in try LocalServer.filter(Column("name") == name).fetchOne(db) }
+    try read { try one($0, LocalServer.self, "SELECT * FROM \"localServers\" WHERE \"name\" = $1", [name]) }
   }
 
   public func localServer(projectPath: String) throws -> LocalServer? {
-    try pool.read { db in try LocalServer.filter(Column("projectPath") == projectPath).fetchOne(db) }
+    try read {
+      try one(
+        $0, LocalServer.self, "SELECT * FROM \"localServers\" WHERE \"projectPath\" = $1", [projectPath])
+    }
   }
 
   public func updateLocalServer(
     id: String, _ mutate: @Sendable (inout LocalServer) -> Void
   ) throws -> LocalServer? {
-    try pool.write { db in
-      guard var server = try LocalServer.fetchOne(db, key: id) else { return nil }
+    try write { c in
+      guard var server = try byId(c, LocalServer.self, "localServers", id) else { return nil }
       mutate(&server)
       server.updatedAt = Timestamp.now()
-      try server.update(db)
+      try update(c, "localServers", server)
       return server
     }
   }
 
   public func connections(localServerId: String) throws -> [Connection] {
-    try pool.read { db in
-      try Connection.filter(Column("localServerId") == localServerId).order(Column("createdAt")).fetchAll(db)
+    try read {
+      try all(
+        $0, Connection.self,
+        "SELECT * FROM \"connections\" WHERE \"localServerId\" = $1 ORDER BY \"createdAt\"", [localServerId])
     }
   }
 
   // MARK: - Threads
 
   public func listThreads(_ filter: ThreadFilter = ThreadFilter()) throws -> [ConversationThread] {
-    try pool.read { db in
-      var request = ConversationThread.order(Column("pinned").desc, Column("updatedAt").desc)
+    try read { c in
+      var clauses: [String] = []
+      var params: [String?] = []
       if let connectionId = filter.connectionId {
-        request = request.filter(Column("connectionId") == connectionId)
+        params.append(connectionId)
+        clauses.append("\"connectionId\" = $\(params.count)")
       }
-      if !filter.includeArchived { request = request.filter(Column("archived") == false) }
+      if !filter.includeArchived { clauses.append("\"archived\" = false") }
       if let query = filter.query?.trimmingCharacters(in: .whitespaces), !query.isEmpty {
         let escaped = query.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(
           of: "%", with: "\\%"
         )
         .replacingOccurrences(of: "_", with: "\\_")
-        request = request.filter(sql: "title LIKE ? ESCAPE '\\'", arguments: ["%\(escaped)%"])
+        params.append("%\(escaped)%")
+        clauses.append("\"title\" ILIKE $\(params.count) ESCAPE '\\'")
       }
-      return try request.fetchAll(db)
+      let whereSQL = clauses.isEmpty ? "" : " WHERE " + clauses.joined(separator: " AND ")
+      return try all(
+        c, ConversationThread.self,
+        "SELECT * FROM \"threads\"" + whereSQL + " ORDER BY \"pinned\" DESC, \"updatedAt\" DESC", params)
     }
   }
 
   public func thread(id: String) throws -> ConversationThread? {
-    try pool.read { db in try ConversationThread.fetchOne(db, key: id) }
+    try read { try byId($0, ConversationThread.self, "threads", id) }
   }
 
   /// Resolve a native thread id within one connection (newest first if scopes ever overlap).
   public func thread(connectionId: String, nativeThreadId: String) throws -> ConversationThread? {
-    try pool.read { db in
-      try ConversationThread.filter(
-        Column("connectionId") == connectionId && Column("nativeThreadId") == nativeThreadId
-      ).order(Column("createdAt").desc).fetchOne(db)
+    try read {
+      try one(
+        $0, ConversationThread.self,
+        "SELECT * FROM \"threads\" WHERE \"connectionId\" = $1 AND \"nativeThreadId\" = $2 ORDER BY \"createdAt\" DESC LIMIT 1",
+        [connectionId, nativeThreadId])
     }
   }
 
   public func insertThread(_ thread: ConversationThread) throws -> ConversationThread {
-    try pool.write { db in
-      try thread.insert(db)
+    try write { c in
+      try insert(c, "threads", thread)
       return thread
     }
   }
@@ -196,11 +279,11 @@ public final class WorkspaceDatabase: Sendable {
   public func updateThread(
     id: String, _ mutate: @Sendable (inout ConversationThread) -> Void
   ) throws -> ConversationThread? {
-    try pool.write { db in
-      guard var thread = try ConversationThread.fetchOne(db, key: id) else { return nil }
+    try write { c in
+      guard var thread = try byId(c, ConversationThread.self, "threads", id) else { return nil }
       mutate(&thread)
       thread.updatedAt = Timestamp.now()
-      try thread.update(db)
+      try update(c, "threads", thread)
       return thread
     }
   }
@@ -208,53 +291,57 @@ public final class WorkspaceDatabase: Sendable {
   // MARK: - Turns
 
   public func insertTurn(_ turn: Turn) throws -> Turn {
-    try pool.write { db in
-      try turn.insert(db)
+    try write { c in
+      try insert(c, "turns", turn)
       return turn
     }
   }
 
   public func turn(operationId: String) throws -> Turn? {
-    try pool.read { db in try Turn.filter(Column("operationId") == operationId).fetchOne(db) }
+    try read { try one($0, Turn.self, "SELECT * FROM \"turns\" WHERE \"operationId\" = $1", [operationId]) }
   }
 
   public func turn(id: String) throws -> Turn? {
-    try pool.read { db in try Turn.fetchOne(db, key: id) }
+    try read { try byId($0, Turn.self, "turns", id) }
   }
 
   public func turns(threadId: String) throws -> [Turn] {
-    try pool.read { db in
-      try Turn.filter(Column("threadId") == threadId).order(Column("createdAt")).fetchAll(db)
+    try read {
+      try all(
+        $0, Turn.self, "SELECT * FROM \"turns\" WHERE \"threadId\" = $1 ORDER BY \"createdAt\"", [threadId])
     }
   }
 
   /// The one non-terminal turn of a thread, if any (spec 10.1: at most one active turn per session).
   public func activeTurn(threadId: String) throws -> Turn? {
-    try pool.read { db in
-      try Turn.filter(Column("threadId") == threadId && Column("status") != TurnStatus.terminal.rawValue)
-        .order(Column("createdAt").desc).fetchOne(db)
+    try read {
+      try one(
+        $0, Turn.self,
+        "SELECT * FROM \"turns\" WHERE \"threadId\" = $1 AND \"status\" <> 'terminal' ORDER BY \"createdAt\" DESC LIMIT 1",
+        [threadId])
     }
   }
 
   public func turn(threadId: String, nativeTurnId: String) throws -> Turn? {
-    try pool.read { db in
-      try Turn.filter(Column("threadId") == threadId && Column("nativeTurnId") == nativeTurnId).fetchOne(db)
+    try read {
+      try one(
+        $0, Turn.self, "SELECT * FROM \"turns\" WHERE \"threadId\" = $1 AND \"nativeTurnId\" = $2 LIMIT 1",
+        [threadId, nativeTurnId])
     }
   }
 
   public func unresolvedTurns() throws -> [Turn] {
-    try pool.read { db in
-      try Turn.filter(Column("status") != TurnStatus.terminal.rawValue).order(Column("createdAt")).fetchAll(
-        db)
+    try read {
+      try all($0, Turn.self, "SELECT * FROM \"turns\" WHERE \"status\" <> 'terminal' ORDER BY \"createdAt\"")
     }
   }
 
   public func updateTurn(id: String, _ mutate: @Sendable (inout Turn) -> Void) throws -> Turn? {
-    try pool.write { db in
-      guard var turn = try Turn.fetchOne(db, key: id) else { return nil }
+    try write { c in
+      guard var turn = try byId(c, Turn.self, "turns", id) else { return nil }
       mutate(&turn)
       turn.updatedAt = Timestamp.now()
-      try turn.update(db)
+      try update(c, "turns", turn)
       return turn
     }
   }
@@ -262,22 +349,28 @@ public final class WorkspaceDatabase: Sendable {
   // MARK: - Display items
 
   public func displayItems(threadId: String) throws -> [DisplayItem] {
-    try pool.read { db in
-      try DisplayItem.filter(Column("threadId") == threadId).order(Column("sequence")).fetchAll(db)
+    try read {
+      try all(
+        $0, DisplayItem.self, "SELECT * FROM \"displayItems\" WHERE \"threadId\" = $1 ORDER BY \"sequence\"",
+        [threadId])
     }
   }
 
   public func nextDisplaySequence(threadId: String) throws -> Int {
-    try pool.read { db in
-      (try Int.fetchOne(
-        db, sql: "SELECT MAX(sequence) FROM displayItems WHERE threadId = ?", arguments: [threadId]) ?? -1)
-        + 1
-    }
+    try read { try Self.nextSequence($0, threadId: threadId) }
+  }
+
+  private static func nextSequence(_ c: PostgresConnection, threadId: String) throws -> Int {
+    let rows = try c.execute(
+      "SELECT COALESCE(MAX(\"sequence\"), -1) + 1 AS \"next\" FROM \"displayItems\" WHERE \"threadId\" = $1",
+      [threadId]
+    ).rows
+    return rows.first?.int("next") ?? 0
   }
 
   public func insertDisplayItem(_ item: DisplayItem) throws -> DisplayItem {
-    try pool.write { db in
-      try item.insert(db)
+    try write { c in
+      try insert(c, "displayItems", item)
       return item
     }
   }
@@ -288,49 +381,47 @@ public final class WorkspaceDatabase: Sendable {
     threadId: String, turnId: String?, nativeItemId: String?, role: DisplayItemRole, type: String,
     payload: JSONValue, provenance: DisplayProvenance
   ) throws -> DisplayItem {
-    try pool.write { db in
+    try write { c in
       if let nativeItemId,
-        var existing = try DisplayItem.filter(
-          Column("threadId") == threadId && Column("nativeItemId") == nativeItemId
-        ).fetchOne(db)
+        var existing = try one(
+          c, DisplayItem.self,
+          "SELECT * FROM \"displayItems\" WHERE \"threadId\" = $1 AND \"nativeItemId\" = $2 ORDER BY \"sequence\" LIMIT 1",
+          [threadId, nativeItemId])
       {
         existing.payload = payload
         existing.type = type
         existing.role = role
         existing.provenance = provenance
         if existing.turnId == nil { existing.turnId = turnId }
-        try existing.update(db)
+        try update(c, "displayItems", existing)
         return existing
       }
-      let next =
-        (try Int.fetchOne(
-          db, sql: "SELECT MAX(sequence) FROM displayItems WHERE threadId = ?", arguments: [threadId]) ?? -1)
-        + 1
       let item = DisplayItem(
         id: UUID().uuidString.lowercased(), threadId: threadId, turnId: turnId, nativeItemId: nativeItemId,
-        role: role, type: type, payload: payload, sequence: next, provenance: provenance)
-      try item.insert(db)
+        role: role, type: type, payload: payload, sequence: try Self.nextSequence(c, threadId: threadId),
+        provenance: provenance)
+      try insert(c, "displayItems", item)
       return item
     }
   }
 
   /// The first user item of a turn that has no native id yet (the composer stored it before dispatch).
   public func unlinkedUserItem(threadId: String, turnId: String) throws -> DisplayItem? {
-    try pool.read { db in
-      try DisplayItem.filter(
-        Column("threadId") == threadId && Column("turnId") == turnId
-          && Column("role") == DisplayItemRole.user.rawValue && Column("nativeItemId") == nil
-      ).order(Column("sequence")).fetchOne(db)
+    try read {
+      try one(
+        $0, DisplayItem.self,
+        "SELECT * FROM \"displayItems\" WHERE \"threadId\" = $1 AND \"turnId\" = $2 AND \"role\" = 'user' AND \"nativeItemId\" IS NULL ORDER BY \"sequence\" LIMIT 1",
+        [threadId, turnId])
     }
   }
 
   public func updateDisplayItem(
     id: String, _ mutate: @Sendable (inout DisplayItem) -> Void
   ) throws -> DisplayItem? {
-    try pool.write { db in
-      guard var item = try DisplayItem.fetchOne(db, key: id) else { return nil }
+    try write { c in
+      guard var item = try byId(c, DisplayItem.self, "displayItems", id) else { return nil }
       mutate(&item)
-      try item.update(db)
+      try update(c, "displayItems", item)
       return item
     }
   }
@@ -357,9 +448,10 @@ public final class WorkspaceDatabase: Sendable {
   /// snapshot no longer contains are removed. Live rows are never removed or duplicated.
   @discardableResult
   public func mergeSnapshotItems(threadId: String, items: [SnapshotItem]) throws -> SnapshotMerge {
-    try pool.write { db in
-      let cached = try DisplayItem.filter(Column("threadId") == threadId).order(Column("sequence")).fetchAll(
-        db)
+    try write { c in
+      let cached = try all(
+        c, DisplayItem.self, "SELECT * FROM \"displayItems\" WHERE \"threadId\" = $1 ORDER BY \"sequence\"",
+        [threadId])
       var summary = SnapshotMerge()
       var ordered: [DisplayItem] = []
       var usedRows = Set<String>()
@@ -400,7 +492,7 @@ public final class WorkspaceDatabase: Sendable {
         if row.provenance == .live {
           ordered.append(row)
         } else {
-          try row.delete(db)
+          try c.execute("DELETE FROM \"displayItems\" WHERE \"id\" = $1", [row.id])
           summary.removed += 1
         }
       }
@@ -409,11 +501,11 @@ public final class WorkspaceDatabase: Sendable {
       for (index, var row) in ordered.enumerated() where usedRows.contains(row.id) || row.provenance == .live
       {
         row.sequence = -(index + 1)
-        try row.update(db)
+        try update(c, "displayItems", row)
       }
       for (index, var row) in ordered.enumerated() {
         row.sequence = index
-        try row.save(db)
+        try save(c, "displayItems", row)
       }
       return summary
     }
@@ -427,140 +519,141 @@ public final class WorkspaceDatabase: Sendable {
     return parts.joined(separator: "\n")
   }
 
+  /// Drop a thread's whole transcript cache (a lost cache; the next read rebuilds it from the runtime).
+  public func deleteDisplayItems(threadId: String) throws -> Int {
+    try write { try $0.execute("DELETE FROM \"displayItems\" WHERE \"threadId\" = $1", [threadId]).affected }
+  }
+
   /// Replace cached items that came from a snapshot while keeping live items of unresolved turns.
   public func replaceSnapshotItems(threadId: String, with items: [DisplayItem]) throws {
-    try pool.write { db in
-      try db.execute(
-        sql: "DELETE FROM displayItems WHERE threadId = ? AND provenance IN ('snapshot', 'cache')",
-        arguments: [threadId])
-      for item in items { try item.save(db) }
+    try write { c in
+      try c.execute(
+        "DELETE FROM \"displayItems\" WHERE \"threadId\" = $1 AND \"provenance\" IN ('snapshot', 'cache')",
+        [threadId])
+      for item in items { try save(c, "displayItems", item) }
     }
   }
 
   // MARK: - Runtime requests
 
   public func pendingRuntimeRequests(threadId: String) throws -> [RuntimeRequest] {
-    try pool.read { db in
-      try RuntimeRequest.filter(
-        Column("threadId") == threadId && Column("state") == RuntimeRequestState.pending.rawValue
-      )
-      .order(Column("createdAt")).fetchAll(db)
+    try read {
+      try all(
+        $0, RuntimeRequest.self,
+        "SELECT * FROM \"runtimeRequests\" WHERE \"threadId\" = $1 AND \"state\" = 'pending' ORDER BY \"createdAt\"",
+        [threadId])
     }
   }
 
   public func insertRuntimeRequest(_ request: RuntimeRequest) throws -> RuntimeRequest {
-    try pool.write { db in
-      try request.insert(db)
+    try write { c in
+      try insert(c, "runtimeRequests", request)
       return request
     }
   }
 
   public func runtimeRequest(id: String) throws -> RuntimeRequest? {
-    try pool.read { db in try RuntimeRequest.fetchOne(db, key: id) }
+    try read { try byId($0, RuntimeRequest.self, "runtimeRequests", id) }
   }
 
   public func runtimeRequest(
     threadId: String, nativeRequestId: String, adapterGeneration: Int
   ) throws -> RuntimeRequest? {
-    try pool.read { db in
-      try RuntimeRequest.filter(
-        Column("threadId") == threadId && Column("nativeRequestId") == nativeRequestId
-          && Column("adapterGeneration") == adapterGeneration
-      ).fetchOne(db)
+    try read {
+      try one(
+        $0, RuntimeRequest.self,
+        "SELECT * FROM \"runtimeRequests\" WHERE \"threadId\" = $1 AND \"nativeRequestId\" = $2 AND \"adapterGeneration\" = $3::int LIMIT 1",
+        [threadId, nativeRequestId, String(adapterGeneration)])
     }
   }
 
   /// Expire every pending request (coordinator restart: no runtime process survived).
   public func expireAllRuntimeRequests() throws -> Int {
-    try pool.write { db in
-      try db.execute(
-        sql: "UPDATE runtimeRequests SET state = 'expired', updatedAt = ? WHERE state = 'pending'",
-        arguments: [Timestamp.now()])
-      return db.changesCount
+    try write {
+      try $0.execute(
+        "UPDATE \"runtimeRequests\" SET \"state\" = 'expired', \"updatedAt\" = $1 WHERE \"state\" = 'pending'",
+        [Timestamp.now()]
+      ).affected
     }
   }
 
   public func pendingRuntimeRequests(connectionId: String) throws -> [RuntimeRequest] {
-    try pool.read { db in
-      try RuntimeRequest.filter(
-        sql: "state = 'pending' AND threadId IN (SELECT id FROM threads WHERE connectionId = ?)",
-        arguments: [connectionId]
-      ).fetchAll(db)
+    try read {
+      try all(
+        $0, RuntimeRequest.self,
+        "SELECT * FROM \"runtimeRequests\" WHERE \"state\" = 'pending' AND \"threadId\" IN (SELECT \"id\" FROM \"threads\" WHERE \"connectionId\" = $1)",
+        [connectionId])
     }
   }
 
   /// Non-terminal turns of harness threads (Codex, Claude) with their threads, for the directory lock
   /// (spec 10.1.5). Derived from stored state, so it survives restarts and holds through `reconciling`.
   public func activeHarnessTurns() throws -> [(turn: Turn, thread: ConversationThread)] {
-    try pool.read { db in
-      let turns = try Turn.filter(
-        sql: """
-          status != 'terminal' AND threadId IN (
-            SELECT t.id FROM threads t JOIN connections c ON c.id = t.connectionId
-            WHERE c.kind IN ('codex', 'claude'))
-          """
-      ).order(Column("createdAt")).fetchAll(db)
+    try read { c in
+      let turns = try all(
+        c, Turn.self,
+        """
+        SELECT * FROM "turns" WHERE "status" <> 'terminal' AND "threadId" IN (
+          SELECT t."id" FROM "threads" t JOIN "connections" c ON c."id" = t."connectionId"
+          WHERE c."kind" IN ('codex', 'claude')) ORDER BY "createdAt"
+        """)
       return try turns.compactMap { turn in
-        try ConversationThread.fetchOne(db, key: turn.threadId).map { (turn: turn, thread: $0) }
+        try byId(c, ConversationThread.self, "threads", turn.threadId).map { (turn: turn, thread: $0) }
       }
     }
   }
 
   public func unresolvedTurns(connectionId: String) throws -> [Turn] {
-    try pool.read { db in
-      try Turn.filter(
-        sql: "status != 'terminal' AND threadId IN (SELECT id FROM threads WHERE connectionId = ?)",
-        arguments: [connectionId]
-      ).fetchAll(db)
+    try read {
+      try all(
+        $0, Turn.self,
+        "SELECT * FROM \"turns\" WHERE \"status\" <> 'terminal' AND \"threadId\" IN (SELECT \"id\" FROM \"threads\" WHERE \"connectionId\" = $1)",
+        [connectionId])
     }
   }
 
   /// Expire every pending request of every thread on a connection (its runtime process is gone).
   public func expireRuntimeRequests(connectionId: String) throws -> Int {
-    try pool.write { db in
-      try db.execute(
-        sql: """
-          UPDATE runtimeRequests SET state = 'expired', updatedAt = ?
-          WHERE state = 'pending' AND threadId IN (SELECT id FROM threads WHERE connectionId = ?)
-          """,
-        arguments: [Timestamp.now(), connectionId])
-      return db.changesCount
+    try write {
+      try $0.execute(
+        "UPDATE \"runtimeRequests\" SET \"state\" = 'expired', \"updatedAt\" = $1 WHERE \"state\" = 'pending' AND \"threadId\" IN (SELECT \"id\" FROM \"threads\" WHERE \"connectionId\" = $2)",
+        [Timestamp.now(), connectionId]
+      ).affected
     }
   }
 
   /// Transition a pending request exactly once; false if it was already resolved or expired.
   public func transitionRuntimeRequest(id: String, to state: RuntimeRequestState) throws -> Bool {
-    try pool.write { db in
-      try db.execute(
-        sql: "UPDATE runtimeRequests SET state = ?, updatedAt = ? WHERE id = ? AND state = 'pending'",
-        arguments: [state.rawValue, Timestamp.now(), id])
-      return db.changesCount == 1
+    try write {
+      try $0.execute(
+        "UPDATE \"runtimeRequests\" SET \"state\" = $1, \"updatedAt\" = $2 WHERE \"id\" = $3 AND \"state\" = 'pending'",
+        [state.rawValue, Timestamp.now(), id]
+      ).affected == 1
     }
   }
 
   public func expireRuntimeRequests(threadId: String, olderThanGeneration generation: Int) throws -> Int {
-    try pool.write { db in
-      try db.execute(
-        sql:
-          "UPDATE runtimeRequests SET state = 'expired', updatedAt = ? WHERE threadId = ? AND adapterGeneration < ? AND state = 'pending'",
-        arguments: [Timestamp.now(), threadId, generation])
-      return db.changesCount
+    try write {
+      try $0.execute(
+        "UPDATE \"runtimeRequests\" SET \"state\" = 'expired', \"updatedAt\" = $1 WHERE \"threadId\" = $2 AND \"adapterGeneration\" < $3::int AND \"state\" = 'pending'",
+        [Timestamp.now(), threadId, String(generation)]
+      ).affected
     }
   }
 
   // MARK: - Drafts
 
   public func draft(threadId: String) throws -> Draft? {
-    try pool.read { db in try Draft.fetchOne(db, key: threadId) }
+    try read { try byId($0, Draft.self, "drafts", threadId, key: "threadId") }
   }
 
   public func saveDraft(threadId: String, text: String) throws -> Draft {
     let draft = Draft(threadId: threadId, text: text)
-    try pool.write { db in try draft.save(db) }
+    try write { try save($0, "drafts", draft, key: "threadId") }
     return draft
   }
 
   public func deleteDraft(threadId: String) throws {
-    _ = try pool.write { db in try Draft.deleteOne(db, key: threadId) }
+    try write { _ = try $0.execute("DELETE FROM \"drafts\" WHERE \"threadId\" = $1", [threadId]) }
   }
 }

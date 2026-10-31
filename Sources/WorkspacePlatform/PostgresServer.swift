@@ -11,10 +11,12 @@ public struct PostgresCluster: Sendable, Equatable {
   /// Only names the socket file (`.s.PGSQL.<port>`); no TCP port is ever opened.
   public var port: Int
   public var user: String
+  /// 20 suits one coordinator; the shared test cluster serves many at once.
+  public var maxConnections: Int
 
   public init(
     binDir: String, dataDir: String, socketDir: String, logPath: String, port: Int = 5432,
-    user: String = NSUserName()
+    user: String = NSUserName(), maxConnections: Int = 20
   ) {
     self.binDir = binDir
     self.dataDir = dataDir
@@ -22,6 +24,7 @@ public struct PostgresCluster: Sendable, Equatable {
     self.logPath = logPath
     self.port = port
     self.user = user
+    self.maxConnections = maxConnections
   }
 
   public var socketPath: String { (socketDir as NSString).appendingPathComponent(".s.PGSQL.\(port)") }
@@ -32,10 +35,10 @@ public struct PostgresCluster: Sendable, Equatable {
 
   /// The server options every start uses: socket directory, no TCP, stderr logging (pg_ctl's `-l`
   /// file receives it), and a conservative footprint for a single-user store.
-  var serverOptions: [String] {
+  public var serverOptions: [String] {
     [
       "-k", socketDir, "-c", "listen_addresses=", "-c", "port=\(port)", "-c", "log_destination=stderr",
-      "-c", "logging_collector=off", "-c", "max_connections=20", "-c", "shared_buffers=32MB",
+      "-c", "logging_collector=off", "-c", "max_connections=\(maxConnections)", "-c", "shared_buffers=32MB",
     ]
   }
 }
@@ -49,14 +52,22 @@ public enum PostgresLocator {
 
   public static func binDir(
     environment env: [String: String] = ProcessInfo.processInfo.environment,
-    executableURL: URL? = Bundle.main.executableURL
+    executableURL: URL? = Bundle.main.executableURL, anchors: [URL] = []
   ) -> String? {
     var candidates: [String] = []
     if let explicit = env[environmentVariable], !explicit.isEmpty { candidates.append(explicit) }
-    if let executableURL {
-      let dir = executableURL.resolvingSymlinksInPath().deletingLastPathComponent()
-      candidates.append(dir.appendingPathComponent("postgres/bin").path)
-      candidates.append(dir.deletingLastPathComponent().appendingPathComponent("postgres/bin").path)
+    // `postgres/bin` (or `Helpers/postgres/bin`) beside the executable or a resource bundle, or in
+    // any ancestor up to the package's `.build`: covers Contents/Helpers in the app, a SwiftPM build
+    // directory, and the test bundle inside it.
+    for anchor in ([executableURL].compactMap { $0 } + anchors) {
+      var dir = anchor.resolvingSymlinksInPath().deletingLastPathComponent()
+      for _ in 0..<8 {
+        candidates.append(dir.appendingPathComponent("postgres/bin").path)
+        candidates.append(dir.appendingPathComponent("Helpers/postgres/bin").path)
+        let parent = dir.deletingLastPathComponent()
+        if parent.path == dir.path { break }
+        dir = parent
+      }
     }
     let home = env["HOME"] ?? NSHomeDirectory()
     candidates.append("/Applications/Agent Workspace.app/Contents/Helpers/postgres/bin")

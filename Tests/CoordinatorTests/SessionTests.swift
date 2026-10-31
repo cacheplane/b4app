@@ -4,6 +4,7 @@ import Testing
 import WorkspaceClient
 import WorkspacePlatform
 import WorkspaceProtocol
+import WorkspaceStorage
 
 @testable import Coordinator
 
@@ -57,7 +58,7 @@ private final class FakeB4: Sendable {
 private func temporaryPaths() throws -> PlatformPaths {
   let base = NSTemporaryDirectory() + "b4s-\(UUID().uuidString.prefix(8))"
   try FileManager.default.createDirectory(atPath: base + "/work", withIntermediateDirectories: true)
-  return PlatformPaths(runtimeDir: base + "/rt", dataDir: base + "/data")
+  return try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
 }
 
 private struct Harness {
@@ -726,9 +727,7 @@ actor EventCollector {
     let paths = h.coordinator.paths
     await h.stop()
     let restarted = try await Harness.start(paths: paths)
-    try restarted.coordinator.database.write { db in
-      try db.execute(sql: "DELETE FROM displayItems WHERE threadId = ?", arguments: [thread.id])
-    }
+    _ = try restarted.coordinator.database.deleteDisplayItems(threadId: thread.id)
     let rebuilt = try await restarted.read(thread)
     #expect(rebuilt.items.map(\.nativeItemId) == ["u_h1", "a_h1"])
     #expect(rebuilt.items.allSatisfy { $0.provenance == .snapshot })

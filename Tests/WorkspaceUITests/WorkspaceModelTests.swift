@@ -3,6 +3,7 @@ import NIOTransport
 import Testing
 import WorkspacePlatform
 import WorkspaceProtocol
+import WorkspaceStorage
 
 @testable import Coordinator
 @testable import WorkspaceUI
@@ -23,7 +24,7 @@ struct ModelHarness {
   static func start() async throws -> ModelHarness {
     let base = NSTemporaryDirectory() + "b4ui-\(UUID().uuidString.prefix(8))"
     try FileManager.default.createDirectory(atPath: base + "/work", withIntermediateDirectories: true)
-    let paths = PlatformPaths(runtimeDir: base + "/rt", dataDir: base + "/data")
+    let paths = try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = "/nonexistent/node"
     env["ANTHROPIC_API_KEY"] = nil

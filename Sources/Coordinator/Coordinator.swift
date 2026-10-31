@@ -38,6 +38,8 @@ public final class RunningCoordinator: Sendable {
   public let router: Router
   public let server: SocketServer
   public let sleepWatcher: SleepWatcher
+  /// The PostgreSQL cluster this coordinator started (nil when it adopted a running one).
+  public let postgres: PostgresServer?
   private let lock: SingletonLock
   private let closed = Flag()
 
@@ -46,7 +48,8 @@ public final class RunningCoordinator: Sendable {
   init(
     paths: PlatformPaths, startedAt: String, database: WorkspaceDatabase, eventLog: EventLog,
     diagnostics: DiagnosticsService, sessions: SessionService, servers: LocalServerService,
-    router: Router, server: SocketServer, sleepWatcher: SleepWatcher, lock: SingletonLock
+    router: Router, server: SocketServer, sleepWatcher: SleepWatcher, postgres: PostgresServer?,
+    lock: SingletonLock
   ) {
     self.paths = paths
     self.startedAt = startedAt
@@ -58,6 +61,7 @@ public final class RunningCoordinator: Sendable {
     self.router = router
     self.server = server
     self.sleepWatcher = sleepWatcher
+    self.postgres = postgres
     self.lock = lock
   }
 
@@ -74,6 +78,7 @@ public final class RunningCoordinator: Sendable {
     await servers.shutdown()
     await eventLog.finish()
     try? database.close()
+    if let postgres { try? await postgres.stop() }
     lock.release()
     Log.logger("coordinator").info(
       "stopped pid \(ProcessInfo.processInfo.processIdentifier, privacy: .public)")
@@ -110,13 +115,14 @@ public enum Coordinator {
     }
 
     let startedAt = Timestamp.now()
-    let database: WorkspaceDatabase
+    let store: StoreBoot
     do {
-      database = try WorkspaceDatabase(path: paths.databasePath)
+      store = try await StoreBoot.open(paths: paths, environment: options.environment)
     } catch {
       lock.release()
       throw error
     }
+    let database = store.database
     let eventLog = EventLog()
     let diagnostics = DiagnosticsService(
       context: DiagnosticsService.Context(
@@ -155,6 +161,6 @@ public enum Coordinator {
       RunningCoordinator(
         paths: paths, startedAt: startedAt, database: database, eventLog: eventLog, diagnostics: diagnostics,
         sessions: sessions, servers: servers, router: router, server: server, sleepWatcher: sleepWatcher,
-        lock: lock))
+        postgres: store.ownedServer, lock: lock))
   }
 }

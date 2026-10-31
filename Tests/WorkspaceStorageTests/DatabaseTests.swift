@@ -17,22 +17,16 @@ private func thread(
 }
 
 @Suite struct DatabaseTests {
-  @Test func createsSchemaWithWalForeignKeysAndPrivateMode() throws {
+  @Test func appliesTheBundledMigrationsOnce() throws {
     let db = try WorkspaceDatabase.temporary()
-    #expect(try db.appliedMigrations() == ["v1", "v2", "v3"])
-    #expect(try db.journalMode() == "wal")
-    let mode = try FileManager.default.attributesOfItem(atPath: db.path)[.posixPermissions] as? Int
-    #expect(mode == 0o600)
+    #expect(try db.appliedMigrations() == ["0001_init"])
+    // Reopening the same database applies nothing further and keeps the data.
+    _ = try db.insertConnection(connection("c1"))
     try db.close()
-  }
-
-  @Test func isIdempotentOnReopen() throws {
-    let first = try WorkspaceDatabase.temporary()
-    let path = first.path
-    try first.close()
-    let second = try WorkspaceDatabase(path: path)
-    #expect(try second.appliedMigrations() == ["v1", "v2", "v3"])
-    try second.close()
+    let again = try WorkspaceDatabase(endpoint: db.endpoint, binDir: db.endpoint.binDir!)
+    #expect(try again.appliedMigrations() == ["0001_init"])
+    #expect(try again.connection(id: "c1")?.label == "c1")
+    try again.close()
   }
 
   @Test func allowsSameNativeIdUnderDifferentConnections() throws {
