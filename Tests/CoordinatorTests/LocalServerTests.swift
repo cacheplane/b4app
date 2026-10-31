@@ -365,3 +365,45 @@ struct ServerHarness {
     #expect(try await h.status(added).health == .stopped)
   }
 }
+
+@Suite(.serialized) struct LocalServerLogTests {
+  @Test func logsAreTailedRedactedAndFollowable() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let path = try h.project()
+    try "OPENAI_API_KEY=sk-proj-abcdefghijklmnop\nFAKE_B4_ECHO_ENV=1\n".write(
+      toFile: path + "/.env", atomically: true, encoding: .utf8)
+    let started = try await h.start(try await h.add(path))
+    let first = try await h.logs(started)
+    #expect(first.logPath == started.logPath)
+    #expect(first.lines.contains("OPENAI_API_KEY=[redacted]"))
+    #expect(!first.lines.joined(separator: "\n").contains("sk-proj-"))
+    #expect(first.lines.contains("b4 start listening on http://127.0.0.1:\(started.actualPort ?? 0)"))
+    #expect(first.offset > 0 && !first.truncated)
+    let raw = try String(contentsOfFile: started.logPath!, encoding: .utf8)
+    #expect(raw.contains("sk-proj-abcdefghijklmnop"))
+    _ = try await URLSession.shared.data(
+      from: URL(string: "http://127.0.0.1:\(started.actualPort ?? 0)/readyz")!)
+    try await Task.sleep(for: .milliseconds(200))
+    let more = try await h.logs(started, afterOffset: first.offset)
+    #expect(more.lines == ["fake-b4: GET /readyz"])
+    #expect(more.offset > first.offset)
+    let two = try await h.logs(started, lines: 2)
+    #expect(two.lines.count == 2 && two.truncated)
+    _ = try await h.stop(started)
+  }
+
+  @Test func doctorListsManagedServers() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let added = try await h.add(try h.project("doctor-proj"))
+    let report = try await h.client.request(
+      DiagnosticsRead.self, EmptyParams(), options: RequestOptions(timeout: .seconds(60)))
+    let row = try #require(
+      report.runtimes.first { $0.kind == .b4 && $0.message?.hasPrefix("doctor-proj:") == true })
+    #expect(row.status == .offline)
+    #expect(row.version == "0.15.8")
+    #expect(row.executablePath == added.cliPath)
+    #expect(row.message?.contains("stopped on port \(added.requestedPort ?? 0)") == true)
+  }
+}

@@ -299,8 +299,17 @@ public actor LocalServerService {
     return try await start(id: id)
   }
 
+  /// A redacted tail of the log file the child writes (D-029); the file is bounded first.
   public func logs(_ params: ServerLogs.Params) throws -> ServerLogs.Result {
-    throw WorkspaceError(.notImplemented, "server.logs is wired in M4 task 6.")
+    let server = try require(params.serverId)
+    guard let logPath = server.logPath else {
+      return ServerLogs.Result(lines: [], offset: 0, truncated: false, logPath: "")
+    }
+    try LogRedactor.bound(path: logPath)
+    let tail = try LogRedactor.tail(
+      path: logPath, lines: params.lines ?? 200, afterOffset: params.afterOffset)
+    return ServerLogs.Result(
+      lines: tail.lines, offset: tail.offset, truncated: tail.truncated, logPath: logPath)
   }
 
   public func isReady(id: String) -> Bool {
