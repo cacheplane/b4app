@@ -87,6 +87,15 @@ Exit gate: critical recovery and ownership cases pass fixture tests (235 tests i
 - A real Mac sleep across a live turn has not been exercised; the wake path is fixture-tested through `workspace.reconcile` and the clock-gap watcher.
 - Expired login and allowance exhaustion were fixture-tested only, as the spec requires.
 
+## Visual system (LLA)
+
+Design: `docs/superpowers/specs/2026-10-31-lla-visual-system-design.md`. Plan: `docs/superpowers/plans/2026-10-31-lla-design-and-m6.md`.
+
+- [x] Tokens, type scale, bundled fonts, the mark, and the shared controls (`Sources/WorkspaceUI/Theme/`). `implemented`, `fixture-tested` (`ThemeTests`: SVG parsing and fit, font registration and fallback, palette contrast in both appearances).
+- [x] Sidebar, thread detail, transcript, composer, approvals, continuity banner, connections, local servers, diagnostics, new-thread sheet, and empty states restyled; accessibility identifiers unchanged. `implemented`; both app targets build.
+- [x] App icon from the brand tile for macOS and iOS. `implemented`.
+- [x] Rendered offscreen in light and dark over a real coordinator (`SnapshotTests`, `docs/screenshots`); not clicked on screen (control declined). See `docs/verification.md`.
+
 ## M6: package and accept the personal v0
 
 Not started. See the spec.

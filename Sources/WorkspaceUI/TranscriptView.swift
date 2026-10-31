@@ -8,9 +8,9 @@ struct TranscriptView: View {
   var body: some View {
     ScrollViewReader { proxy in
       ScrollView {
-        LazyVStack(alignment: .leading, spacing: 14) {
+        LazyVStack(alignment: .leading, spacing: LLA.Space.l) {
           if detail.items.isEmpty {
-            Text("No messages yet. Say something below.").foregroundStyle(.secondary)
+            Text("No messages yet. Say something below.").llaMuted()
           }
           ForEach(detail.items) { item in
             TranscriptRow(item: item, liveText: item.nativeItemId.flatMap { detail.liveText[$0] })
@@ -20,16 +20,20 @@ struct TranscriptView: View {
             TurnNoteRow(turn: turn)
           }
           if let turn = detail.activeTurn, turn.status == .reconciling {
-            Label(
-              "The runtime stopped before this turn finished. Its outcome is unknown; reopen the thread to reconcile or start a new thread.",
-              systemImage: "exclamationmark.triangle"
-            )
-            .font(.callout).foregroundStyle(.orange)
+            HStack(alignment: .top, spacing: LLA.Space.s) {
+              LLAStateDot(state: .unknown).padding(.top, 2)
+              Text(
+                "The runtime stopped before this turn finished. Its outcome is unknown; check again below, or abandon the turn to continue."
+              )
+              .llaSmall().fixedSize(horizontal: false, vertical: true)
+            }
           }
           Color.clear.frame(height: 1).id("bottom")
         }
-        .padding()
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, LLA.Space.xl)
+        .padding(.vertical, LLA.Space.xl)
+        .frame(maxWidth: LLA.Metrics.column, alignment: .leading)
+        .frame(maxWidth: .infinity)
       }
       .onChange(of: detail.items.count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
       .onChange(of: detail.liveText) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
@@ -47,9 +51,12 @@ struct TranscriptRow: View {
       HStack {
         Spacer(minLength: 60)
         Text(item.payload["text"]?.stringValue ?? "")
+          .llaBody()
           .textSelection(.enabled)
-          .padding(10)
-          .background(Color.accentColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 10))
+          .padding(.horizontal, LLA.Space.l)
+          .padding(.vertical, LLA.Space.m)
+          .background(
+            RoundedRectangle(cornerRadius: LLA.Radius.card, style: .continuous).fill(LLA.Color.surface))
       }
     case .assistant:
       if item.type == "agentMessage" {
@@ -60,13 +67,14 @@ struct TranscriptRow: View {
           title: item.type == "reasoning" || item.type == "thinking" ? "Reasoning" : item.type.capitalized,
           status: nil
         ) {
-          Text(reasoningText).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+          Text(reasoningText).llaSmallMuted().textSelection(.enabled).fixedSize(
+            horizontal: false, vertical: true)
         }
       }
     case .tool:
       ToolCard(item: item)
     case .system:
-      Text(item.type).font(.caption).foregroundStyle(.secondary)
+      Text(item.type).llaCaption()
     }
   }
 
@@ -84,14 +92,19 @@ struct MarkdownText: View {
   let text: String
 
   var body: some View {
-    if let attributed = try? AttributedString(
-      markdown: text,
-      options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace))
-    {
-      Text(attributed).textSelection(.enabled)
-    } else {
-      Text(text).textSelection(.enabled)
+    Group {
+      if let attributed = try? AttributedString(
+        markdown: text,
+        options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace))
+      {
+        Text(attributed)
+      } else {
+        Text(text)
+      }
     }
+    .llaBody()
+    .lineSpacing(4)
+    .textSelection(.enabled)
   }
 }
 
@@ -100,28 +113,24 @@ struct ToolCard: View {
 
   var body: some View {
     CollapsibleCard(title: title, status: item.payload["status"]?.stringValue) {
-      VStack(alignment: .leading, spacing: 6) {
+      VStack(alignment: .leading, spacing: LLA.Space.s) {
         if let cwd = item.payload["cwd"]?.stringValue {
-          Text(cwd).font(.caption.monospaced()).foregroundStyle(.secondary)
+          Text(cwd).llaCodeMuted()
         }
         if let output = item.payload["aggregatedOutput"]?.stringValue ?? item.payload["output"]?.stringValue,
           !output.isEmpty
         {
-          ScrollView(.horizontal) {
-            Text(output).font(.caption.monospaced()).textSelection(.enabled)
-          }
-          .frame(maxHeight: 240)
+          LLACodeBlock(output)
         }
         ForEach(Array((item.payload["changes"]?.arrayValue ?? []).enumerated()), id: \.offset) { _, change in
-          Text(change["path"]?.stringValue ?? "").font(.caption.bold())
+          Text(change["path"]?.stringValue ?? "").font(LLAFont.mono(12, weight: .semibold)).foregroundStyle(
+            LLA.Color.ink)
           if let diff = change["diff"]?.stringValue {
-            ScrollView(.horizontal) { Text(diff).font(.caption.monospaced()).textSelection(.enabled) }
-              .frame(maxHeight: 240)
+            LLACodeBlock(diff)
           }
         }
         if item.payload["aggregatedOutput"] == nil, item.payload["changes"] == nil {
-          Text(String(describing: item.payload).prefix(2_000)).font(.caption.monospaced()).textSelection(
-            .enabled)
+          Text(String(describing: item.payload).prefix(2_000)).llaCodeMuted().textSelection(.enabled)
         }
       }
     }
@@ -154,6 +163,7 @@ struct ToolCard: View {
   }
 }
 
+/// A bordered row with a mono title that opens to its detail. No icon; the title says what it is.
 struct CollapsibleCard<Content: View>: View {
   let title: String
   let status: String?
@@ -161,26 +171,33 @@ struct CollapsibleCard<Content: View>: View {
   @State private var expanded = false
 
   var body: some View {
-    DisclosureGroup(isExpanded: $expanded) {
-      content().padding(.top, 6)
-    } label: {
-      HStack(spacing: 8) {
-        Image(systemName: "terminal").foregroundStyle(.secondary)
-        Text(title).font(.callout.monospaced()).lineLimit(1).truncationMode(.middle)
-        Spacer()
-        if let status { Text(status).font(.caption).foregroundStyle(statusColor(status)) }
+    LLACard(fill: .bg, padding: LLA.Space.m) {
+      VStack(alignment: .leading, spacing: 0) {
+        Button {
+          withAnimation(.none) { expanded.toggle() }
+        } label: {
+          HStack(spacing: LLA.Space.s) {
+            Text(title).llaCode().lineLimit(1).truncationMode(.middle)
+            Spacer()
+            if let status { LLABadge(status, tone: statusTone(status)) }
+            Text(expanded ? "Hide" : "Show").font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
+          }
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        if expanded {
+          content().padding(.top, LLA.Space.m)
+        }
       }
     }
-    .padding(10)
-    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
   }
 
-  private func statusColor(_ status: String) -> Color {
+  private func statusTone(_ status: String) -> LLABadge.Tone {
     switch status {
-    case "completed": return .green
-    case "failed", "declined": return .red
-    case "inProgress": return .orange
-    default: return .secondary
+    case "completed": return .neutral
+    case "failed", "declined": return .danger
+    case "inProgress": return .accent
+    default: return .muted
     }
   }
 }
@@ -189,10 +206,8 @@ struct TurnNoteRow: View {
   let turn: Turn
 
   var body: some View {
-    Label(
-      turn.outcome == .cancelled ? "Turn stopped." : "Turn failed.",
-      systemImage: turn.outcome == .cancelled ? "stop.circle" : "xmark.octagon"
-    )
-    .font(.caption).foregroundStyle(turn.outcome == .cancelled ? Color.secondary : Color.red)
+    Text(turn.outcome == .cancelled ? "Turn stopped." : "Turn failed.")
+      .font(LLAFont.caption)
+      .foregroundStyle(turn.outcome == .cancelled ? LLA.Color.muted : LLA.Color.danger)
   }
 }

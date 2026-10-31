@@ -6,13 +6,15 @@ struct RuntimeRequestList: View {
   let requests: [RuntimeRequest]
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: LLA.Space.m) {
       ForEach(requests) { request in
         RuntimeRequestCard(model: model, request: request)
       }
     }
-    .padding()
-    .background(Color.orange.opacity(0.08))
+    .padding(.horizontal, LLA.Space.xl)
+    .padding(.vertical, LLA.Space.l)
+    .frame(maxWidth: LLA.Metrics.column)
+    .frame(maxWidth: .infinity)
   }
 }
 
@@ -27,46 +29,49 @@ struct RuntimeRequestCard: View {
   private var answerable: Bool { request.payload["answerable"]?.boolValue ?? false }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Label(title, systemImage: "hand.raised").font(.headline)
-      if let toolName = details?["toolName"]?.stringValue {
-        Text(toolName).font(.caption.bold()).foregroundStyle(.secondary)
-      }
-      if let command = details?["command"]?.stringValue {
-        Text(command).font(.callout.monospaced()).textSelection(.enabled)
-      } else if let path = details?["path"]?.stringValue {
-        Text(path).font(.callout.monospaced()).textSelection(.enabled)
-      }
-      if let cwd = details?["cwd"]?.stringValue {
-        Text("in \(cwd)").font(.caption).foregroundStyle(.secondary)
-      }
-      if let reason = details?["reason"]?.stringValue {
-        Text(reason).font(.callout)
-      }
-      if request.kind == .userQuestion {
-        questions
-      } else if answerable {
-        HStack {
-          Button("Allow once") { Task { await model.respond(requestId: request.id, decision: .allowOnce) } }
-            .buttonStyle(.borderedProminent).accessibilityIdentifier("allow-once")
-          Button("Allow for session") {
-            Task { await model.respond(requestId: request.id, decision: .allowAlways) }
-          }
-          Button("Deny", role: .destructive) {
-            Task { await model.respond(requestId: request.id, decision: .deny) }
-          }
-          .accessibilityIdentifier("deny")
+    LLACard(fill: .surface) {
+      VStack(alignment: .leading, spacing: LLA.Space.s) {
+        HStack(spacing: LLA.Space.s) {
+          LLAStateDot(state: .waiting)
+          Text(title).font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
         }
-        .disabled(model.busy)
-      } else {
-        Text("This request type cannot be answered here and was declined automatically.")
-          .font(.caption).foregroundStyle(.secondary)
+        if let toolName = details?["toolName"]?.stringValue {
+          Text(toolName).llaCaption()
+        }
+        if let command = details?["command"]?.stringValue {
+          Text(command).llaCode().textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+        } else if let path = details?["path"]?.stringValue {
+          Text(path).llaCode().textSelection(.enabled)
+        }
+        if let cwd = details?["cwd"]?.stringValue {
+          Text("in \(cwd)").llaCaption()
+        }
+        if let reason = details?["reason"]?.stringValue {
+          Text(reason).llaSmall().fixedSize(horizontal: false, vertical: true)
+        }
+        if request.kind == .userQuestion {
+          questions
+        } else if answerable {
+          HStack(spacing: LLA.Space.s) {
+            Button("Allow once") { Task { await model.respond(requestId: request.id, decision: .allowOnce) } }
+              .buttonStyle(.llaPrimary).accessibilityIdentifier("allow-once")
+            Button("Allow for session") {
+              Task { await model.respond(requestId: request.id, decision: .allowAlways) }
+            }
+            .buttonStyle(.llaSecondary)
+            Button("Deny", role: .destructive) {
+              Task { await model.respond(requestId: request.id, decision: .deny) }
+            }
+            .buttonStyle(.llaDanger)
+            .accessibilityIdentifier("deny")
+          }
+          .padding(.top, LLA.Space.xs)
+          .disabled(model.busy)
+        } else {
+          Text("This request type cannot be answered here and was declined automatically.").llaCaption()
+        }
       }
     }
-    .padding(12)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(.background, in: RoundedRectangle(cornerRadius: 10))
-    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.orange.opacity(0.5)))
   }
 
   private var title: String {
@@ -84,9 +89,9 @@ struct RuntimeRequestCard: View {
     let list = details?["questions"]?.arrayValue ?? []
     ForEach(Array(list.enumerated()), id: \.offset) { _, question in
       let id = question["id"]?.stringValue ?? ""
-      VStack(alignment: .leading, spacing: 4) {
-        Text(question["header"]?.stringValue ?? id).font(.subheadline.bold())
-        Text(question["question"]?.stringValue ?? "")
+      VStack(alignment: .leading, spacing: LLA.Space.xs) {
+        Text(question["header"]?.stringValue ?? id).font(LLAFont.smallStrong).foregroundStyle(LLA.Color.ink)
+        Text(question["question"]?.stringValue ?? "").llaSmall().fixedSize(horizontal: false, vertical: true)
         let options = question["options"]?.arrayValue ?? []
         if !options.isEmpty {
           Picker("Answer", selection: binding(for: id)) {
@@ -97,13 +102,10 @@ struct RuntimeRequestCard: View {
             }
           }
           .labelsHidden()
+          .font(LLAFont.small)
         }
         if options.isEmpty || question["isOther"]?.boolValue == true {
-          if question["isSecret"]?.boolValue == true {
-            SecureField("Answer", text: binding(for: id))
-          } else {
-            TextField("Answer", text: binding(for: id))
-          }
+          LLAField("Answer", text: binding(for: id), secure: question["isSecret"]?.boolValue == true)
         }
       }
     }
@@ -111,7 +113,7 @@ struct RuntimeRequestCard: View {
       let payload = answers.filter { !$0.value.isEmpty }.mapValues { [$0] }
       Task { await model.answer(requestId: request.id, answers: payload) }
     }
-    .buttonStyle(.borderedProminent)
+    .buttonStyle(.llaPrimary)
     .disabled(model.busy || answers.values.allSatisfy(\.isEmpty))
   }
 
