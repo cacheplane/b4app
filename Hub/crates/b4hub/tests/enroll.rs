@@ -514,6 +514,87 @@ async fn each_device_belongs_to_the_org_and_user_of_its_code(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
 }
 
+/// Enrolls a fresh device for `seeded` and returns its token and id.
+async fn enroll_device(admin: &Db, state: &AppState, seeded: &orgs::SeedOutcome) -> (String, Uuid) {
+    let code = devices::create_enrollment_code(admin, seeded.org_id, seeded.user_id, TEN_MINUTES)
+        .await
+        .unwrap();
+    let (status, body) = send(state, "POST", "/v1/enroll", None, Some(&enroll_body(&code))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    (
+        body["token"].as_str().unwrap().to_string(),
+        body["deviceId"].as_str().unwrap().parse().unwrap(),
+    )
+}
+
+/// `authenticate` refuses a token whose own row is revoked and a token whose device is revoked,
+/// each on its own: the first leaves the device live, the second leaves the token row in place.
+/// (`revoke_self` deletes the token rows, so it exercises neither filter.)
+#[sqlx::test(migrations = false)]
+async fn a_revoked_token_or_a_revoked_device_is_refused_on_its_own(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let seeded = seed_blove(&admin).await;
+    let (_, reference) = send(&state, "GET", "/v1/me", Some("wrong"), None).await;
+
+    // Device one: only the token row is revoked.
+    let (token_one, device_one) = enroll_device(&admin, &state, &seeded).await;
+    let (status, _) = send(&state, "GET", "/v1/me", Some(&token_one), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let revoked = sqlx::query("UPDATE device_tokens SET revoked_at = now() WHERE device_id = $1")
+        .bind(device_one)
+        .execute(&admin.pool)
+        .await
+        .unwrap()
+        .rows_affected();
+    assert_eq!(revoked, 1);
+    // Asserted on `authenticate` itself: a route that re-reads the device (`/v1/me`) could mask
+    // a missing filter here.
+    assert_eq!(
+        devices::authenticate(&state.db, &token_one).await.unwrap(),
+        None
+    );
+    let (status, body) = send(&state, "GET", "/v1/me", Some(&token_one), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body, reference);
+    let mut tx = admin.tenant_tx(seeded.org_id).await.unwrap();
+    let live: bool = sqlx::query_scalar("SELECT revoked_at IS NULL FROM devices WHERE id = $1")
+        .bind(device_one)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    assert!(live, "only the token was revoked");
+
+    // Device two: only the device is revoked; its token row stays, unrevoked.
+    let (token_two, device_two) = enroll_device(&admin, &state, &seeded).await;
+    let (status, _) = send(&state, "GET", "/v1/me", Some(&token_two), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let mut tx = admin.tenant_tx(seeded.org_id).await.unwrap();
+    let revoked = sqlx::query("UPDATE devices SET revoked_at = now() WHERE id = $1")
+        .bind(device_two)
+        .execute(&mut *tx)
+        .await
+        .unwrap()
+        .rows_affected();
+    tx.commit().await.unwrap();
+    assert_eq!(revoked, 1);
+    let kept: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM device_tokens WHERE device_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(device_two)
+    .fetch_one(&admin.pool)
+    .await
+    .unwrap();
+    assert_eq!(kept, 1, "the token row is still there and unrevoked");
+    assert_eq!(
+        devices::authenticate(&state.db, &token_two).await.unwrap(),
+        None
+    );
+    let (status, body) = send(&state, "GET", "/v1/me", Some(&token_two), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body, reference);
+}
+
 #[sqlx::test(migrations = false)]
 async fn last_seen_is_recorded_and_throttled_to_once_a_minute(pool: PgPool) {
     let (admin, state) = migrated(&pool).await;
