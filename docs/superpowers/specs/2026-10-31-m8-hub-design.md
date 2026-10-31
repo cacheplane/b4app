@@ -133,9 +133,13 @@ One image, `b4hub`, built by a multi-stage `Hub/Dockerfile` onto a distroless ba
 
 ### Rust stack
 
-My calls, open to override: edition 2024; `axum` 0.8 with `tokio`; `sqlx` 0.8 (`postgres`, `runtime-tokio`, `tls-rustls`, offline query metadata checked in so CI builds without a database); `serde`/`serde_json`; `clap` for subcommands; `tracing` with JSON output; `uuid` with the v7 feature; `sha2` for token hashes; `tokio-tungstenite` through axum's WebSocket support for the relay. Tests use `#[sqlx::test]` against `DATABASE_URL`; on the Mac that is the same bundled Postgres the Swift tests boot (`Scripts/fetch-postgres.sh`, then a cluster under `$TMPDIR` started by `Hub/scripts/test-db.sh`), and in CI a `postgres:17` service container. `cargo fmt --check` and `cargo clippy -- -D warnings` gate like `swift format lint` does.
+My calls, open to override: edition 2021 (matching `~/repos/b4`); `axum` 0.8 with `tokio`; `sqlx` 0.8 (`postgres`, `runtime-tokio`, `tls-rustls`, offline query metadata checked in so CI builds without a database); `serde`/`serde_json`; `clap` for subcommands; `tracing` with JSON output; `uuid` with the v7 feature; `sha2` for token hashes; `tokio-tungstenite` through axum's WebSocket support for the relay. Tests use `#[sqlx::test]` against `DATABASE_URL`; on the Mac that is the same bundled Postgres the Swift tests boot (`Scripts/fetch-postgres.sh`, then a cluster under `$TMPDIR` started by `Hub/scripts/test-db.sh`), and in CI a `postgres:17` service container. `cargo fmt --check` and `cargo clippy -- -D warnings` gate like `swift format lint` does.
 
 Layout: `Hub/Cargo.toml` is a workspace with `crates/b4hub` (the binary), `crates/b4hub-core` (domain, auth, sync application, pure functions testable without a server), `crates/b4hub-db` (sqlx queries, migrations), and `Hub/migrations/`. The HTTP API is described in `Hub/API.md` and the JSON shapes mirror the Swift `WorkspaceProtocol` types field for field, so one `ChangeRecord` serialises identically in both languages; a fixture file of change rows under `Tests/Fixtures/sync/` is decoded by both test suites.
+
+### Conventions shared with the b4 Rust rewrite
+
+`~/repos/b4` (the native Rust B4 runtime, surveyed 2026-10-31) is the other cacheplane Rust codebase, and the hub follows its engineering conventions so one toolchain and one set of habits serve both: edition 2021 on Rust 1.93.1 with a minimal pinned toolchain; exact `=` crate pins, `Cargo.lock` committed, `--locked` builds; `unsafe_code = "forbid"`; B4's error envelope (`error.kind`, `error.message`, `error.details.code`) so the Swift client decodes both services with one type; authentication before body parsing with a generic 404 for missing and inaccessible resources alike; `deny_unknown_fields` on request bodies; a non-root container with a `HEALTHCHECK` on `/readyz`, `STOPSIGNAL SIGTERM`, and a bounded drain (`B4HUB_SHUTDOWN_WAIT_MS`) that fails readiness first; configuration errors exit 2; black-box tests over a real loopback listener; subscribers registered before the snapshot cut, the rule b4 states as ATTACH-001, applied here to the long-poll in M8a and to the relay in M8c. What is deliberately not carried over: b4's requirements register, evidence classes, and hashed qualification receipts, which suit a runtime making crash-safety claims; the hub's `docs/verification.md` and `docs/milestones.md` entries are the proportionate record. Nothing is shared as code yet; `b4-contract` becomes reusable when the relay carries B4 remote threads.
 
 ## Slices
 
@@ -171,7 +175,7 @@ A reviewer read this document as the engineer who would plan from it. Everything
 
 ## Left to the builder
 
-- Exact Rust crate versions (newest stable at build time, recorded in `docs/compatibility.md`), module layout inside the crates, and the error type.
+- Exact Rust crate versions (pinned with `=`, newest stable when the task is executed, recorded in `docs/compatibility.md`), module layout inside the crates, and the error type.
 - The SQLite schema's exact DDL on iOS, provided the column names match Postgres and `apply` matches `WorkspaceDatabase.replay` semantics, which the shared fixture tests enforce.
 - How `HubSync` sits inside the coordinator (an actor beside `SessionService` that observes commits is the obvious shape) and how it is told about writes without the storage layer learning about the hub.
 - The enrollment screen's layout, within the LLA visual system.
