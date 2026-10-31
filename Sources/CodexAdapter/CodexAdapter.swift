@@ -5,7 +5,7 @@ import WorkspaceProtocol
 /// Codex adapter over `codex app-server` (spec section 7). Owns one app-server process, keeps the
 /// set of threads resumed in the current process generation, and tracks pending server requests so
 /// every one of them gets an explicit answer.
-public actor CodexAdapter: AgentAdapter {
+public actor CodexAdapter: AgentAdapter, LoginCapable {
   public nonisolated let kind = ConnectionKind.codex
   public nonisolated let connectionId: String
   /// Answer requests the app cannot present (permissions, elicitation, dynamic tools) with an explicit
@@ -154,13 +154,13 @@ public actor CodexAdapter: AgentAdapter {
 
   /// Start the official ChatGPT sign-in. The caller opens `authUrl` in the system browser; completion
   /// arrives as a `connection.changed` event.
-  public func startLogin() async throws -> (authUrl: String, loginId: String) {
+  public func startLogin() async throws -> LoginStart {
     let server = try await ensureStarted()
     let result = try await server.request("account/login/start", CodexProtocol.loginStartParams())
     guard let url = result["authUrl"]?.stringValue, let loginId = result["loginId"]?.stringValue else {
       throw WorkspaceError(.protocolInvalid, "account/login/start returned no authUrl.", details: result)
     }
-    return (url, loginId)
+    return LoginStart(authUrl: url, loginId: loginId)
   }
 
   // MARK: - AgentAdapter

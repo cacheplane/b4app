@@ -1,3 +1,4 @@
+import ClaudeAdapter
 import CodexAdapter
 import Foundation
 import WorkspacePlatform
@@ -31,11 +32,12 @@ public actor SessionService {
     }
   }
 
-  /// Codex is the only runtime with a conversation adapter in M1; the others throw `unsupported_capability`.
+  /// Codex and Claude Code have conversation adapters; B4 throws `unsupported_capability` until M3.
   public static let defaultAdapterFactory: AdapterFactory = { connection, environment, version in
     switch connection.kind {
     case .codex: return CodexAdapter(connection: connection, environment: environment, clientVersion: version)
-    case .claude: throw WorkspaceError.unsupported("claude.conversation", plannedFor: "M2")
+    case .claude:
+      return ClaudeAdapter(connection: connection, environment: environment, clientVersion: version)
     case .b4: throw WorkspaceError.unsupported("b4.conversation", plannedFor: "M3")
     }
   }
@@ -106,20 +108,28 @@ public actor SessionService {
   // MARK: - Connections
 
   public func connectionAdd(_ params: ConnectionAdd.Params) async throws -> ConnectionAdd.Result {
-    guard params.kind == .codex else {
-      throw WorkspaceError.unsupported(
-        "\(params.kind.rawValue).connection", plannedFor: params.kind == .claude ? "M2" : "M3")
+    let executableName: String
+    let defaultLabel: String
+    switch params.kind {
+    case .codex:
+      executableName = "codex"
+      defaultLabel = "Codex"
+    case .claude:
+      executableName = "claude"
+      defaultLabel = "Claude Code"
+    case .b4:
+      throw WorkspaceError.unsupported("b4.connection", plannedFor: "M3")
     }
     let located = ExecutableLocator.find(
-      "codex", explicitPath: params.executablePath, environment: context.environment)
+      executableName, explicitPath: params.executablePath, environment: context.environment)
     let target = params.executablePath ?? located?.path ?? ""
-    if let existing = try db.connections(kind: .codex).first(where: { $0.target == target }) {
+    if let existing = try db.connections(kind: params.kind).first(where: { $0.target == target }) {
       return try await connectionInspect(ConnectionInspect.Params(connectionId: existing.id))
     }
     let connection = try db.insertConnection(
       Connection(
-        id: UUID().uuidString.lowercased(), kind: .codex, label: params.label ?? "Codex", target: target,
-        status: .connecting))
+        id: UUID().uuidString.lowercased(), kind: params.kind, label: params.label ?? defaultLabel,
+        target: target, status: .connecting))
     return try await connectionInspect(ConnectionInspect.Params(connectionId: connection.id))
   }
 
@@ -142,10 +152,10 @@ public actor SessionService {
 
   public func connectionLogin(_ params: ConnectionLogin.Params) async throws -> ConnectionLogin.Result {
     let (_, adapter) = try connectionAndAdapter(id: params.connectionId)
-    guard let codex = adapter as? CodexAdapter else {
-      throw WorkspaceError.unsupported("login", plannedFor: "M2")
+    guard let capable = adapter as? any LoginCapable else {
+      throw WorkspaceError.unsupported("login", plannedFor: "M3")
     }
-    let login = try await codex.startLogin()
+    let login = try await capable.startLogin()
     _ = try db.updateConnection(id: params.connectionId) { $0.authStatus = .authenticating }
     return ConnectionLogin.Result(authUrl: login.authUrl, loginId: login.loginId)
   }
@@ -503,13 +513,41 @@ public actor SessionService {
   }
 
   private func projectConnectionChanged(_ raw: AdapterEvent) async throws {
+    let disconnected = raw.payload["transport"]?.stringValue == TransportStatus.disconnected.rawValue
+    // A per-thread runtime (Claude: one process per session) reports exits with the native thread id.
+    // Only that thread is affected; the connection itself stays as it was.
+    if disconnected, let nativeThreadId = raw.nativeIds["threadId"] {
+      guard let thread = try db.thread(connectionId: raw.connectionId, nativeThreadId: nativeThreadId) else {
+        return
+      }
+      for request in try db.pendingRuntimeRequests(threadId: thread.id) {
+        _ = try db.transitionRuntimeRequest(id: request.id, to: .expired)
+        await context.eventLog.publish(
+          AdapterEvent(
+            kind: .runtimeRequestExpired, connectionId: raw.connectionId, threadId: thread.id,
+            turnId: request.turnId, nativeIds: ["requestId": request.nativeRequestId],
+            adapterGeneration: request.adapterGeneration,
+            payload: ["runtimeRequest": try JSONValue(encoding: request), "reason": "runtime_exited"]))
+      }
+      if let turn = try db.activeTurn(threadId: thread.id),
+        let updated = try db.updateTurn(
+          id: turn.id,
+          {
+            $0.status = .reconciling
+            $0.submission = .unknown
+          })
+      {
+        await publishTurn(.turnStateChanged, updated, thread: thread, payload: ["reason": "runtime_exited"])
+      }
+      return
+    }
     let status = raw.payload["status"]?.stringValue.flatMap(ConnectionStatus.init(rawValue:))
     let auth = raw.payload["authStatus"]?.stringValue.flatMap(AuthStatus.init(rawValue:))
     _ = try db.updateConnection(id: raw.connectionId) {
       if let status { $0.status = status }
       if let auth { $0.authStatus = auth }
     }
-    guard raw.payload["transport"]?.stringValue == TransportStatus.disconnected.rawValue else { return }
+    guard disconnected else { return }
     // The runtime process is gone: its pending requests can never be answered and running turns are
     // of unknown outcome until reconciled. Never assume success or cancellation.
     for request in try db.pendingRuntimeRequests(connectionId: raw.connectionId) {

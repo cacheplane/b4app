@@ -66,3 +66,15 @@ AskUserQuestion arrives as `can_use_tool` with `tool_name: "AskUserQuestion"` an
 3. Version gates: `--permission-prompts` needs 2.1.259+, allow without `updatedInput` needs 2.1.207+.
 4. `system/init` is not a startup event; block on the initialize response instead.
 5. After stdin EOF the CLI may linger up to ten minutes for background work; use `interrupt` then graceful teardown.
+
+## Live probe, 2026-10-31 (2.1.282, signed out, no inference)
+
+Launched with the adapter's argv plus `--session-id <uuid>`, one `initialize` and one `user` message on stdin:
+
+- `--session-id` is honored: every frame's `session_id`, the replayed `user` frame's `uuid`, and `command_lifecycle.command_uuid` carried the uuid.
+- Before the `initialize` response: `system/hook_started` and `system/hook_response` for each `SessionStart` hook the user has configured (setting sources include `user`), so clients must tolerate arbitrary `system` subtypes before the handshake completes.
+- After the user message: `command_lifecycle { state: queued }`, `command_lifecycle { state: started }`, `system/init` (with `claude_code_version`, `apiKeySource: "none"`, `capabilities: [interrupt_receipt_v1, interrupt_cancel_queued_v1, msg_lifecycle_v1, mcp_read_resource_v1, mcp_tool_ui_meta_v1]`, `memory_paths`, `plugins`, `skills`), `system/status { status: "requesting" }`, the replayed `user` frame (`isReplay: true`), a synthetic `assistant` frame (`message.model: "<synthetic>"`, `error: "authentication_failed"`, `is_api_error_message: true`, text "Failed to authenticate: OAuth session expired and could not be refreshed"), then `result { subtype: "success", is_error: true, terminal_reason: "api_error", result: <same text>, user_message_uuid, num_turns: 1 }`, then `command_lifecycle { state: cancelled }`. Exit 1.
+- `--resume` of an unknown id: one `result { subtype: "error_during_execution", is_error: true, num_turns: 0 }` on stdout, `No conversation found with session ID: …` on stderr, exit 1.
+- `claude auth login` flags: `--claudeai` (default), `--console`, `--email`, `--sso`. The CLI opens the browser itself and prints the URL.
+
+Still unverified live: a streamed inference turn, `can_use_tool`, `AskUserQuestion`, the `result` shape after `interrupt`, and the transcript JSONL layout for a session created through this adapter.

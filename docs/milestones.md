@@ -28,11 +28,14 @@ Exit gate status: open on two items. (1) A real runtime request has not been tri
 
 ## M2: Claude Code
 
-- [x] Auth status with consistent executable and environment selection. `live-tested` through `agent-workspace doctor`.
-- [x] Stream-json control protocol types: initialize, user message, can_use_tool allow/deny, AskUserQuestion answer, interrupt, system init, result. `fixture-tested` against shapes read from the SDK and a live handshake.
-- [ ] Session lifecycle, streaming, `session_id` persistence, resume, stop. Not started.
-- [x] Auth-mode conflict detection. `fixture-tested`.
-- [ ] Drafts remain unsent while a turn runs. Draft persistence `fixture-tested`; turns not started.
+- [x] Official auth status and login with consistent executable and environment selection. Status `live-tested` (`connection add --kind claude` → `ready / auth_required` on the signed-out Mac); login start `fixture-tested` (`claude auth login --claudeai` URL capture), not run live because it opens the owner's browser.
+- [x] Session creation, streaming input, `session_id` persistence, native resume, final-result handling, stop. `fixture-tested` end to end (adapter and coordinator suites); handshake, `--session-id`, `system/init`, error `result`, and `--resume` of an unknown id `live-tested` without inference. **Blocked for a live inference turn**: run `claude auth login`, then `B4APP_LIVE_CLAUDE=1 swift test --filter ClaudeLive`.
+- [x] Tool permission and user-question bridges; explicit decline of unsupported elicitation. `fixture-tested` (allow, deny, answers keyed by synthetic question ids, elicitation auto-declined, hook/MCP requests answered with an error response).
+- [x] Auth-mode conflict detection before execution. `fixture-tested`; `system/init.apiKeySource` is also checked per turn.
+- [x] Drafts remain unsent while a turn runs and after interruption. The composer refuses a second turn (`protocol_invalid` / `turn_active`) and keeps the draft locally; `fixture-tested` through the coordinator for both runtimes.
+- [x] Codex and Claude threads side by side with separate native identities. `fixture-tested` (both connections, both threads listed, a Claude crash leaves the Codex request pending and its connection `ready`).
+
+Exit gate status: open on the live inference turn (sign-in needed) and on interactive use of the window.
 
 ## M3: B4 local and remote adapters
 

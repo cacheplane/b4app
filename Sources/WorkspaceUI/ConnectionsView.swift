@@ -20,7 +20,8 @@ struct ConnectionsView: View {
       milestone: "M1", runtime: .codex),
     KindInfo(
       kind: .claude, title: "Claude Code",
-      summary: "Uses the installed Claude Code executable and `claude auth login`. Plan allowances apply.",
+      summary:
+        "Uses the installed Claude Code executable and its Claude plan sign-in. Plan allowances apply.",
       milestone: "M2", runtime: .claude),
     KindInfo(
       kind: .b4, title: "B4 agent",
@@ -56,11 +57,13 @@ struct ConnectionsView: View {
                   Spacer()
                   Button("Check") { Task { await model.inspectConnection(id: connection.id) } }
                     .disabled(model.busy)
-                  if connection.kind == .codex, connection.authStatus != .authenticated {
-                    Button("Sign in with ChatGPT") { Task { await model.login(connectionId: connection.id) } }
-                      .buttonStyle(.borderedProminent)
-                      .disabled(model.busy || connection.status == .error)
-                      .accessibilityIdentifier("sign-in")
+                  if connection.kind != .b4, connection.authStatus != .authenticated {
+                    Button(connection.kind == .codex ? "Sign in with ChatGPT" : "Sign in to Claude") {
+                      Task { await model.login(connectionId: connection.id) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.busy || connection.status == .error)
+                    .accessibilityIdentifier("sign-in")
                   }
                 }
               }
@@ -81,11 +84,11 @@ struct ConnectionsView: View {
                   runtime: model.diagnostics?.runtimes.first { $0.kind == runtime },
                   loading: model.diagnosticsLoading)
               }
-              if info.kind == .codex {
-                Button("Add Codex connection") { Task { await model.addConnection(kind: .codex) } }
+              if info.kind != .b4 {
+                Button("Add \(info.title) connection") { Task { await model.addConnection(kind: info.kind) } }
                   .buttonStyle(.borderedProminent)
                   .disabled(model.busy)
-                  .accessibilityIdentifier("add-codex")
+                  .accessibilityIdentifier("add-\(info.kind.rawValue)")
               } else {
                 Button("Add \(info.title) (planned for \(info.milestone))") {}
                   .disabled(true)

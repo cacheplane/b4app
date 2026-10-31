@@ -56,7 +56,10 @@ struct TranscriptRow: View {
         MarkdownText(text: liveText ?? item.payload["text"]?.stringValue ?? "")
           .frame(maxWidth: .infinity, alignment: .leading)
       } else {
-        CollapsibleCard(title: item.type == "reasoning" ? "Reasoning" : item.type.capitalized, status: nil) {
+        CollapsibleCard(
+          title: item.type == "reasoning" || item.type == "thinking" ? "Reasoning" : item.type.capitalized,
+          status: nil
+        ) {
           Text(reasoningText).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
         }
       }
@@ -68,6 +71,7 @@ struct TranscriptRow: View {
   }
 
   private var reasoningText: String {
+    if let text = item.payload["text"]?.stringValue, !text.isEmpty { return text }
     let summary = item.payload["summary"]?.arrayValue?.compactMap(\.stringValue) ?? []
     if !summary.isEmpty { return summary.joined(separator: "\n") }
     return item.payload["text"]?.stringValue ?? item.payload["content"]?.arrayValue?.compactMap(\.stringValue)
@@ -100,7 +104,9 @@ struct ToolCard: View {
         if let cwd = item.payload["cwd"]?.stringValue {
           Text(cwd).font(.caption.monospaced()).foregroundStyle(.secondary)
         }
-        if let output = item.payload["aggregatedOutput"]?.stringValue, !output.isEmpty {
+        if let output = item.payload["aggregatedOutput"]?.stringValue ?? item.payload["output"]?.stringValue,
+          !output.isEmpty
+        {
           ScrollView(.horizontal) {
             Text(output).font(.caption.monospaced()).textSelection(.enabled)
           }
@@ -131,6 +137,11 @@ struct ToolCard: View {
       return
         "\(item.payload["server"]?.stringValue ?? "mcp") / \(item.payload["tool"]?.stringValue ?? "tool")"
     case "webSearch": return "Web search"
+    case "toolUse":
+      let name = item.payload["name"]?.stringValue ?? "Tool"
+      if let command = item.payload["command"]?.stringValue { return "\(name): \(command)" }
+      if let path = item.payload["path"]?.stringValue { return "\(name): \(path)" }
+      return name
     default: return item.type
     }
   }

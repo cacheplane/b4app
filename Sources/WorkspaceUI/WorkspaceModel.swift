@@ -107,7 +107,7 @@ public final class WorkspaceModel {
 
   /// Connections that can start a thread right now.
   public var conversationReadyConnections: [Connection] {
-    connections.filter { $0.enabled && $0.kind == .codex && $0.status == .ready }
+    connections.filter { $0.enabled && ($0.kind == .codex || $0.kind == .claude) && $0.status == .ready }
   }
 
   public func connect() {
