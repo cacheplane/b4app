@@ -6,7 +6,8 @@
 #   ./Scripts/install-cli.sh /usr/local/bin
 set -eu
 TARGET_DIR="${1:-$HOME/.local/bin}"
-for candidate in "/Applications/Agent Workspace.app" "$HOME/Applications/Agent Workspace.app" "$(dirname "$0")/../dist/Agent Workspace.app"; do
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+for candidate in "/Applications/Agent Workspace.app" "$HOME/Applications/Agent Workspace.app" "$REPO/dist/Agent Workspace.app"; do
   if [ -x "$candidate/Contents/Helpers/agent-workspace" ]; then
     APP="$candidate"
     break
