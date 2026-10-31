@@ -20,11 +20,12 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case turnSend = "turn.send"
   case turnInterrupt = "turn.interrupt"
   case requestRespond = "request.respond"
+  case credentialAdd = "credential.add"
 
   public var isMutation: Bool {
     switch self {
     case .draftSave, .connectionAdd, .connectionInspect, .connectionLogin, .threadCreate, .threadUpdate,
-      .turnSend, .turnInterrupt, .requestRespond:
+      .turnSend, .turnInterrupt, .requestRespond, .credentialAdd:
       return true
     case .systemPing, .diagnosticsRead, .connectionList, .threadList, .draftRead, .eventsSnapshot,
       .eventsReplay, .threadRead:
@@ -165,17 +166,28 @@ public enum EventsReplay: WorkspaceCommand {
 
 // MARK: - M1 conversation methods
 
-/// Register a connection for an installed harness. For Codex the executable is located on PATH
-/// unless `executablePath` is given; the connection is inspected before it is stored.
+/// Register a connection. For Codex and Claude the executable is located on PATH unless
+/// `executablePath` is given. For B4, `url` is the endpoint base URL (HTTPS, or HTTP on loopback),
+/// `route` the exact route key such as `/chat#agent`, and `authReference` an optional `secret:` id
+/// from `credential.add`. The connection is inspected before it is returned.
 public enum ConnectionAdd: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
     public var kind: ConnectionKind
     public var label: String?
     public var executablePath: String?
-    public init(kind: ConnectionKind, label: String? = nil, executablePath: String? = nil) {
+    public var url: String?
+    public var route: String?
+    public var authReference: String?
+    public init(
+      kind: ConnectionKind, label: String? = nil, executablePath: String? = nil, url: String? = nil,
+      route: String? = nil, authReference: String? = nil
+    ) {
       self.kind = kind
       self.label = label
       self.executablePath = executablePath
+      self.url = url
+      self.route = route
+      self.authReference = authReference
     }
   }
   public struct Result: Codable, Sendable, Equatable {
@@ -216,12 +228,14 @@ public enum ConnectionLogin: WorkspaceCommand {
   public static let method = Method.connectionLogin
 }
 
+/// Create a native thread. Harness threads need a `workingDirectory`; B4 threads ignore it and bind
+/// to the connection's route instead.
 public enum ThreadCreate: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
     public var connectionId: String
-    public var workingDirectory: String
+    public var workingDirectory: String?
     public var title: String?
-    public init(connectionId: String, workingDirectory: String, title: String? = nil) {
+    public init(connectionId: String, workingDirectory: String? = nil, title: String? = nil) {
       self.connectionId = connectionId
       self.workingDirectory = workingDirectory
       self.title = title
@@ -323,6 +337,28 @@ public enum RequestRespond: WorkspaceCommand {
     public init(request: RuntimeRequest) { self.request = request }
   }
   public static let method = Method.requestRespond
+}
+
+/// Store an endpoint secret in the coordinator's credential store and return its reference. The
+/// value travels only over the local socket; it is never echoed in the result, an event, or a log.
+public enum CredentialAdd: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var label: String
+    public var value: String
+    public init(label: String, value: String) {
+      self.label = label
+      self.value = value
+    }
+  }
+  public struct Result: Codable, Sendable, Equatable {
+    public var reference: String
+    public var label: String
+    public init(reference: String, label: String) {
+      self.reference = reference
+      self.label = label
+    }
+  }
+  public static let method = Method.credentialAdd
 }
 
 public struct ParsedCommand: Sendable, Equatable {

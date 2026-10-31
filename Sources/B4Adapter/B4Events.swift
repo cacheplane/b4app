@@ -9,7 +9,9 @@ public enum B4StreamEvent: Sendable, Equatable {
   case toolCallArgs(id: String, name: String, delta: String)
   case toolResult(id: String?, name: String, output: JSONValue)
   case messageEnd(messageId: String?)
-  case interrupt(interruptId: String, type: String, kind: String?, detail: JSONValue, grant: String?)
+  /// `raw` keeps the whole envelope (`toolCallId`, `allowAlways`, `step`, …) for the request payload.
+  case interrupt(
+    interruptId: String, type: String, kind: String?, detail: JSONValue, grant: String?, raw: JSONValue)
   case state(status: String, live: Bool, raw: JSONValue)
   case detached(reason: String)
   case done(DoneOutcome, output: JSONValue, error: String?)
@@ -70,7 +72,7 @@ public enum B4StreamEvent: Sendable, Equatable {
         self = .interrupt(
           interruptId: interruptId, type: type, kind: data["kind"]?.stringValue,
           detail: data["detail"] ?? .null,
-          grant: data["grant"]?.stringValue)
+          grant: data["grant"]?.stringValue, raw: data)
         return
       }
     case "state":

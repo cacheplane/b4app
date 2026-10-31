@@ -142,6 +142,8 @@ public enum RuntimeResponse: Sendable, Equatable {
 public enum ActiveTurnOutcome: Sendable, Equatable {
   case known(TurnOutcome)
   case unknown
+  /// The runtime is waiting on a durable prompt the adapter has re-opened as runtime requests.
+  case parked
 }
 
 public struct ReconcileResult: Sendable, Equatable {

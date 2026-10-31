@@ -16,6 +16,14 @@ public enum B4Inspector {
       return ConnectionInspection(
         status: .error, authStatus: authStatus, message: failure.message, error: failure)
     }
+    return await inspect(client: client, authConfigured: authorization != nil)
+  }
+
+  /// The same check over an existing client. `authConfigured` only chooses between `not_required`
+  /// and `unknown`: no non-inference path exercises the app's middleware, so a secret is verified on
+  /// the first turn, not here.
+  public static func inspect(client: B4HTTPClient, authConfigured: Bool) async -> ConnectionInspection {
+    let authStatus: AuthStatus = authConfigured ? .unknown : .notRequired
     do {
       let health = try await client.health()
       guard health.status == "ready" else {

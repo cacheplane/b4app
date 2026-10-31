@@ -28,7 +28,7 @@ private func parse(_ json: String) throws -> ParsedCommand { try parseCommand(Da
   @Test func everyNewMethodDeclaresItsMutationFlag() {
     let mutations: Set<WorkspaceProtocol.Method> = [
       .connectionAdd, .connectionInspect, .connectionLogin, .threadCreate, .threadUpdate, .turnSend,
-      .turnInterrupt, .requestRespond, .draftSave,
+      .turnInterrupt, .requestRespond, .draftSave, .credentialAdd,
     ]
     for method in WorkspaceProtocol.Method.allCases {
       #expect(method.isMutation == mutations.contains(method), "\(method)")
@@ -48,5 +48,29 @@ private func parse(_ json: String) throws -> ParsedCommand { try parseCommand(Da
       #"{"protocolVersion":1,"kind":"command","requestId":"r","operationId":"op","method":"request.respond","params":{"requestId":"q","decision":"maybe"}}"#
     )
     #expect(throws: WorkspaceError.self) { try bad.params(for: RequestRespond.self) }
+  }
+
+  @Test func b4ConnectionParamsAndOptionalWorkingDirectoryRoundTrip() throws {
+    let add = try parse(
+      #"{"protocolVersion":1,"kind":"command","requestId":"r","operationId":"op","method":"connection.add","params":{"kind":"b4","url":"http://127.0.0.1:8000","route":"/chat#agent","authReference":"secret:abc"}}"#
+    )
+    let params = try add.params(for: ConnectionAdd.self)
+    #expect(params.kind == .b4)
+    #expect(params.url == "http://127.0.0.1:8000")
+    #expect(params.route == "/chat#agent")
+    #expect(params.authReference == "secret:abc")
+    #expect(params.executablePath == nil)
+    let create = try parse(
+      #"{"protocolVersion":1,"kind":"command","requestId":"r","operationId":"op","method":"thread.create","params":{"connectionId":"c"}}"#
+    )
+    #expect(try create.params(for: ThreadCreate.self) == ThreadCreate.Params(connectionId: "c"))
+    do {
+      _ = try parse(
+        #"{"protocolVersion":1,"kind":"command","requestId":"r","method":"credential.add","params":{"label":"x","value":"y"}}"#
+      )
+      Issue.record("credential.add without operationId must be rejected")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .protocolInvalid)
+    }
   }
 }
