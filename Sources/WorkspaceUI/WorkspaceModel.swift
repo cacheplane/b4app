@@ -421,13 +421,16 @@ public final class WorkspaceModel {
     do {
       let read = try await client.request(
         ThreadRead.self, ThreadRead.Params(threadId: id), options: RequestOptions(timeout: .seconds(60)))
-      // Read the draft before publishing the detail: once `detail` is set the composer is live, and
-      // a restore after that would overwrite text typed in the meantime (and the save it scheduled
-      // would then persist the overwrite).
-      let draft = try? await client.request(DraftRead.self, DraftRead.Params(threadId: id)).draft
-      restoringDraft = true
-      composerText = draft?.text ?? ""
-      restoringDraft = false
+      // The saved draft is restored only when switching threads, and before the detail is published
+      // so the composer is live only once it is settled. A refresh of the open thread (snapshot,
+      // wake, a connection change) keeps whatever is being typed: restoring from disk there would
+      // overwrite it, and the save already scheduled would then persist the overwrite.
+      if detail?.thread.id != id {
+        let draft = try? await client.request(DraftRead.self, DraftRead.Params(threadId: id)).draft
+        restoringDraft = true
+        composerText = draft?.text ?? ""
+        restoringDraft = false
+      }
       detail = ThreadDetail(
         thread: read.thread, turns: read.turns, items: read.items, requests: read.requests)
       if let active = read.turns.last(where: { $0.status != .terminal }) {
