@@ -123,6 +123,36 @@ public final class WorkspaceDatabase: Sendable {
     }
   }
 
+  public func localServer(id: String) throws -> LocalServer? {
+    try pool.read { db in try LocalServer.fetchOne(db, key: id) }
+  }
+
+  public func localServer(name: String) throws -> LocalServer? {
+    try pool.read { db in try LocalServer.filter(Column("name") == name).fetchOne(db) }
+  }
+
+  public func localServer(projectPath: String) throws -> LocalServer? {
+    try pool.read { db in try LocalServer.filter(Column("projectPath") == projectPath).fetchOne(db) }
+  }
+
+  public func updateLocalServer(
+    id: String, _ mutate: @Sendable (inout LocalServer) -> Void
+  ) throws -> LocalServer? {
+    try pool.write { db in
+      guard var server = try LocalServer.fetchOne(db, key: id) else { return nil }
+      mutate(&server)
+      server.updatedAt = Timestamp.now()
+      try server.update(db)
+      return server
+    }
+  }
+
+  public func connections(localServerId: String) throws -> [Connection] {
+    try pool.read { db in
+      try Connection.filter(Column("localServerId") == localServerId).order(Column("createdAt")).fetchAll(db)
+    }
+  }
+
   // MARK: - Threads
 
   public func listThreads(_ filter: ThreadFilter = ThreadFilter()) throws -> [ConversationThread] {

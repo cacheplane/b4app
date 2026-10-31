@@ -74,6 +74,11 @@ public final class WorkspaceModel {
   public private(set) var diagnostics: DiagnosticsReport?
   public private(set) var diagnosticsError: String?
   public private(set) var diagnosticsLoading = false
+  public private(set) var servers: [LocalServer] = []
+  /// Latest redacted log tail per server id, replaced on each poll.
+  public private(set) var serverLogs: [String: ServerLogs.Result] = [:]
+  /// A stop or restart the coordinator refused because a turn is running; the view confirms force.
+  public var pendingForceStop: (serverId: String, restart: Bool, threadIds: [String])?
   public private(set) var detail: ThreadDetail?
   public private(set) var detailLoading = false
   public private(set) var busy = false
@@ -142,6 +147,7 @@ public final class WorkspaceModel {
     let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
     connections = snapshot.connections
     threads = snapshot.threads
+    servers = (try? await client.request(ServerList.self, EmptyParams()).servers) ?? []
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
     if let id = selectedThreadId, detail != nil { await loadDetail(id: id) }
   }
@@ -162,12 +168,117 @@ public final class WorkspaceModel {
     }
   }
 
+  // MARK: - Managed servers
+
+  public func server(id: String) -> LocalServer? { servers.first { $0.id == id } }
+
+  /// The route connection on a managed server, when one exists.
+  public func connection(serverId: String, route: String) -> Connection? {
+    connections.first { $0.localServerId == serverId && $0.routeKey == route }
+  }
+
+  private static let serverOperation: Duration = .seconds(150)
+
+  public func addServer(
+    projectPath: String, name: String?, mode: LocalServerLaunchMode, envFilePath: String?, port: Int?
+  ) async {
+    _ = await perform {
+      let result = try await $0.request(
+        ServerAdd.self,
+        ServerAdd.Params(
+          projectPath: projectPath, name: name, launchMode: mode, envFilePath: envFilePath, port: port),
+        options: Self.mutation(timeout: Self.serverOperation))
+      self.merge(result.server)
+      return result.server
+    }
+  }
+
+  public func startServer(id: String) async {
+    _ = await perform {
+      let result = try await $0.request(
+        ServerStart.self, ServerRef(serverId: id), options: Self.mutation(timeout: Self.serverOperation))
+      self.merge(result.server)
+      return result.server
+    }
+  }
+
+  public func inspectServer(id: String) async {
+    _ = await perform {
+      let result = try await $0.request(
+        ServerInspect.self, ServerRef(serverId: id), options: Self.mutation(timeout: Self.serverOperation))
+      self.merge(result.server)
+      return result.server
+    }
+  }
+
+  public func stopServer(id: String, force: Bool = false) async {
+    await lifecycle(ServerStop.self, id: id, force: force, restart: false)
+  }
+
+  public func restartServer(id: String, force: Bool = false) async {
+    await lifecycle(ServerRestart.self, id: id, force: force, restart: true)
+  }
+
+  private func lifecycle<C: WorkspaceCommand>(_ command: C.Type, id: String, force: Bool, restart: Bool) async
+  where C.Params == ServerLifecycleParams, C.Result == ServerAdd.Result {
+    guard let client else {
+      lastError = "Coordinator is not connected."
+      return
+    }
+    busy = true
+    defer { busy = false }
+    do {
+      let result = try await client.request(
+        command, ServerLifecycleParams(serverId: id, force: force ? true : nil),
+        options: Self.mutation(timeout: Self.serverOperation))
+      merge(result.server)
+      lastError = nil
+    } catch {
+      let failure = WorkspaceError.from(error)
+      if failure.details?["reason"]?.stringValue == "turn_active" {
+        pendingForceStop = (
+          id, restart, failure.details?["threadIds"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        )
+      } else {
+        lastError = Self.describe(error)
+      }
+    }
+  }
+
+  public func refreshServerLogs(id: String, lines: Int = 200) async {
+    guard let client else { return }
+    let previous = serverLogs[id]
+    guard
+      let result = try? await client.request(
+        ServerLogs.self, ServerLogs.Params(serverId: id, lines: lines, afterOffset: previous?.offset))
+    else { return }
+    if var previous, result.offset >= previous.offset, !result.truncated {
+      previous.lines = Array((previous.lines + result.lines).suffix(lines))
+      previous.offset = result.offset
+      serverLogs[id] = previous
+    } else {
+      serverLogs[id] = result
+    }
+  }
+
+  public func connectRoute(serverId: String, route: String) async {
+    await addConnection(kind: .b4, route: route, serverId: serverId)
+  }
+
+  private func merge(_ server: LocalServer) {
+    if let index = servers.firstIndex(where: { $0.id == server.id }) {
+      servers[index] = server
+    } else {
+      servers.append(server)
+    }
+  }
+
   // MARK: - Connections
 
   @discardableResult
   public func addConnection(
     kind: ConnectionKind, label: String? = nil, executablePath: String? = nil, url: String? = nil,
-    route: String? = nil, authReference: String? = nil
+    route: String? = nil, authReference: String? = nil, serverId: String? = nil
   ) async
     -> Connection?
   {
@@ -176,7 +287,7 @@ public final class WorkspaceModel {
         ConnectionAdd.self,
         ConnectionAdd.Params(
           kind: kind, label: label, executablePath: executablePath, url: url, route: route,
-          authReference: authReference),
+          authReference: authReference, serverId: serverId),
         options: Self.mutation(timeout: .seconds(60)))
       self.merge(result.connection)
       if result.connection.status != .ready, let message = result.inspection.message {
@@ -362,6 +473,8 @@ public final class WorkspaceModel {
         threads.insert(thread, at: 0)
         if detail?.thread.id == thread.id { detail?.thread = thread }
       }
+    case .serverChanged:
+      if let server = try? event.payload["server"]?.decode(LocalServer.self) { merge(server) }
     case .connectionChanged:
       if let index = connections.firstIndex(where: { $0.id == event.connectionId }) {
         if let status = event.payload["status"]?.stringValue.flatMap(ConnectionStatus.init(rawValue:)) {

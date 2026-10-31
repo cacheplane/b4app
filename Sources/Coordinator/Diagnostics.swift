@@ -80,7 +80,25 @@ public actor DiagnosticsService {
         version: claude.version, status: claude.status, authStatus: claude.authStatus, message: claude.message
       ),
     ]
-    for connection in try context.database.listConnections() where connection.kind == .b4 {
+    for server in try context.database.listLocalServers() {
+      let status: ConnectionStatus
+      switch server.health {
+      case .ready: status = .ready
+      case .stopped: status = .offline
+      case .starting: status = .connecting
+      case .unhealthy, .unknown: status = .error
+      }
+      runtimes.append(
+        RuntimeDiagnostic(
+          kind: .b4, executablePath: server.cliPath, source: .explicit, version: server.cliVersion,
+          status: status,
+          authStatus: .notRequired,
+          message:
+            "\(server.name): \(server.health.rawValue) on port \(server.requestedPort ?? 0) (\(server.launchMode.rawValue), \(server.projectPath))"
+        ))
+    }
+    for connection in try context.database.listConnections()
+    where connection.kind == .b4 && connection.b4Mode != .managedLocal {
       var authorization: String?
       if let reference = connection.authReference, let ref = SecretRef(rawValue: reference) {
         authorization = (try? await context.secretStore.read(ref)).map(

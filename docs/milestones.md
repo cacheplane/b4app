@@ -8,11 +8,11 @@ States: `implemented` (code exists), `fixture-tested` (covered by tests with fix
 - [x] Record target Mac/OS/architecture, Node, provider executables, Claude SDK, and B4 versions. `implemented` in `docs/compatibility.md`.
 - [x] Check the selected Codex schema and official local sign-in path. `live-tested`: codex-cli 0.166.0 installed; schema generated from the binary; `account/read` and `account/login/start` verified (D-010).
 - [x] Check Claude auth status and the executable pairing without reading credential contents. `live-tested`: `claude auth status --json` on 2.1.282; stream-json `initialize` handshake verified with no inference.
-- [ ] Identify a trusted local B4 project with one standard agent route. `blocked`: none chosen yet.
+- [x] Identify a trusted local B4 project with one standard agent route. Chosen by the owner on 2026-10-31: `~/repos/b4app-live-check` (the M3 scratch project copied out of `/tmp`; `@b4run/cli` 0.15.8, one `/chat#agent` route on `gpt-5-mini`, `OPENAI_API_KEY` from this repository's gitignored `.env` via `--env-file`). Registered and `live-tested` as the M4 managed server `research`.
 - [x] Establish a fixture-test runner, strict type check, and minimal coordinator entry point. `fixture-tested`: 87 tests in 19 suites; the coordinator integration test runs a real socket server on temporary directories.
 - [x] Write `docs/compatibility.md`. `implemented`.
 
-Exit gate status: open only for B4 (no trusted project chosen). Codex baseline closed on 2026-10-30.
+Exit gate status: closed. Codex baseline closed on 2026-10-30; the trusted B4 project was chosen on 2026-10-31.
 
 ## M1: one real Codex desktop conversation
 
@@ -55,9 +55,20 @@ Exit gate status: local B4 threads coexist with harness threads live; stream los
 
 ## M4: managed B4 execution and the shared CLI
 
+Design: `docs/superpowers/specs/2026-10-31-m4-managed-b4-design.md`. Plan: `docs/superpowers/plans/2026-10-31-m4-managed-b4.md`.
+
 - [x] One coordinator shared by GUI and CLI with a singleton lock. `fixture-tested` and `live-tested`.
-- [x] `agent-workspace doctor --json` with stable exit codes. `live-tested` (0 ok, 3 not implemented).
-- [ ] Project registration, route inspection, server lifecycle, logs, child ownership. Not started.
+- [x] `agent-workspace doctor --json` with stable exit codes. `live-tested`; managed servers appear as their own rows.
+- [x] Local project registration, trusted route inspection (`b4 routes --json --cwd`), shared server and route records. `fixture-tested` (fake project CLI) and `live-tested` on 2026-10-31 against the M3 scratch project in place and then against its durable copy `~/repos/b4app-live-check` (the owner's chosen project, registered as `research`) with `@b4run/cli` 0.15.8: registration found `/chat#agent`, refused projects without the CLI, below 0.15.7, or without `b4.config.ts`.
+- [x] Explicit Node and CLI paths, environment resolution (dotenv without shell evaluation), loopback binding, readiness via `/healthz`, redacted bounded logs, child ownership (`kinfo_proc` identity, own process group). `fixture-tested` and `live-tested` (Node v24.20.0 from `PATH`, the project-installed `dist/index.js`, the model key passed by env file and never read into app state).
+- [x] Development (`b4 dev --port --env-file`) and source (`b4 start --host 127.0.0.1 --port`) launch profiles with their flag and environment differences. `live-tested` in both modes, including a `restart` that preserved `.b4/*.sqlite` (the thread recalled its earlier reply) and a `b4 dev` process group stop that took its runtime child.
+- [x] GUI server controls and the CLI of section 11 (`server add|list|start|status|logs|restart|stop|inspect`, `connection add --server`). CLI `live-tested`; the Local servers view (`implemented`) builds on macOS and iOS and reacts to the same `server.changed` events, but its buttons were not clicked in this session (no screen control).
+- [x] Concurrent GUI and CLI starts converge on one coordinator and one owned registration. `fixture-tested` (two simultaneous `server.start` requests share one launch) and `live-tested`: the macOS app hosted the coordinator (lock pid = app pid) while the CLI started, inspected, logged, and conversed through the same registration; the reverse order (CLI-spawned coordinator, then the app) also shared the row.
+- [x] Attached local servers stay alive after disconnect, Quit, and coordinator restarts; owned-server controls never reach them. `live-tested`: a `b4 dev` started by hand on port 3102 and attached by URL survived a coordinator kill, the app's Quit, and a new coordinator; it never appeared in `server list`.
+- [x] Port conflicts and stale ownership records never kill unrelated processes. `fixture-tested` (a foreign listener survives a refused start; a stale pid with a mismatched start time is left alone on coordinator start) and `live-tested` (a Python `http.server` on 3101 survived `server start` with `owned_process_conflict`).
+- [x] Managed servers survive an app Quit and a coordinator restart and are re-adopted by the next coordinator. `fixture-tested` and `live-tested` (the server started under the app kept running after Quit, the CLI's coordinator adopted it by verified identity, ran a turn, and stopped it).
+
+Exit gate status: closed for the CLI and the app-hosted coordinator on 2026-10-31. Open: clicking the Local servers view on screen; the M5 Quit dialog (keep running versus stop owned work, spec 10.3) is not built, so Quit always keeps managed servers running.
 
 ## M5 and M6
 

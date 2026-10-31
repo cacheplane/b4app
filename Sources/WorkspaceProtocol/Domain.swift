@@ -117,39 +117,72 @@ public enum LocalServerHealth: String, Codable, Sendable, CaseIterable {
   case stopped, starting, ready, unhealthy, unknown
 }
 
+/// One route of an inspected project, from `b4 routes --json`. The protocol route key is `id#kind`.
+public struct LocalServerRoute: Codable, Sendable, Equatable, Hashable {
+  public var id: String
+  public var kind: String
+  public var entryFile: String
+
+  public init(id: String, kind: String, entryFile: String) {
+    self.id = id
+    self.kind = kind
+    self.entryFile = entryFile
+  }
+
+  public var key: String { "\(id)#\(kind)" }
+}
+
+/// A registered local B4 project and its launch profile (spec 9.4). `pid` and `processStartedAt`
+/// together with the argv are the verified child identity; a pid alone never establishes ownership.
 public struct LocalServer: Codable, Sendable, Equatable, Identifiable {
   public var id: String
+  /// CLI handle; unique. Defaults to the project directory name.
+  public var name: String
   public var projectPath: String
   public var nodePath: String
   public var cliPath: String
+  public var cliVersion: String?
   public var launchMode: LocalServerLaunchMode
   public var envFilePath: String?
   public var requestedPort: Int?
   public var actualPort: Int?
   public var generation: Int
+  public var pid: Int32?
+  /// Seconds since the epoch at which the owned process started, read from the kernel.
+  public var processStartedAt: Double?
   public var ownershipVerified: Bool
   public var health: LocalServerHealth
+  public var statusMessage: String?
+  public var routes: [LocalServerRoute]
   public var logPath: String?
   public var createdAt: String
   public var updatedAt: String
 
   public init(
-    id: String, projectPath: String, nodePath: String, cliPath: String, launchMode: LocalServerLaunchMode,
-    envFilePath: String? = nil, requestedPort: Int? = nil, actualPort: Int? = nil, generation: Int = 0,
-    ownershipVerified: Bool = false, health: LocalServerHealth = .stopped, logPath: String? = nil,
+    id: String, name: String, projectPath: String, nodePath: String, cliPath: String,
+    cliVersion: String? = nil, launchMode: LocalServerLaunchMode, envFilePath: String? = nil,
+    requestedPort: Int? = nil, actualPort: Int? = nil, generation: Int = 0, pid: Int32? = nil,
+    processStartedAt: Double? = nil, ownershipVerified: Bool = false, health: LocalServerHealth = .stopped,
+    statusMessage: String? = nil, routes: [LocalServerRoute] = [], logPath: String? = nil,
     createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now()
   ) {
     self.id = id
+    self.name = name
     self.projectPath = projectPath
     self.nodePath = nodePath
     self.cliPath = cliPath
+    self.cliVersion = cliVersion
     self.launchMode = launchMode
     self.envFilePath = envFilePath
     self.requestedPort = requestedPort
     self.actualPort = actualPort
     self.generation = generation
+    self.pid = pid
+    self.processStartedAt = processStartedAt
     self.ownershipVerified = ownershipVerified
     self.health = health
+    self.statusMessage = statusMessage
+    self.routes = routes
     self.logPath = logPath
     self.createdAt = createdAt
     self.updatedAt = updatedAt

@@ -21,14 +21,23 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case turnInterrupt = "turn.interrupt"
   case requestRespond = "request.respond"
   case credentialAdd = "credential.add"
+  case serverAdd = "server.add"
+  case serverList = "server.list"
+  case serverStart = "server.start"
+  case serverStatus = "server.status"
+  case serverLogs = "server.logs"
+  case serverRestart = "server.restart"
+  case serverStop = "server.stop"
+  case serverInspect = "server.inspect"
 
   public var isMutation: Bool {
     switch self {
     case .draftSave, .connectionAdd, .connectionInspect, .connectionLogin, .threadCreate, .threadUpdate,
-      .turnSend, .turnInterrupt, .requestRespond, .credentialAdd:
+      .turnSend, .turnInterrupt, .requestRespond, .credentialAdd, .serverAdd, .serverStart, .serverRestart,
+      .serverStop, .serverInspect:
       return true
     case .systemPing, .diagnosticsRead, .connectionList, .threadList, .draftRead, .eventsSnapshot,
-      .eventsReplay, .threadRead:
+      .eventsReplay, .threadRead, .serverList, .serverStatus, .serverLogs:
       return false
     }
   }
@@ -178,9 +187,11 @@ public enum ConnectionAdd: WorkspaceCommand {
     public var url: String?
     public var route: String?
     public var authReference: String?
+    /// A managed server id: the connection targets that server's loopback origin (M4).
+    public var serverId: String?
     public init(
       kind: ConnectionKind, label: String? = nil, executablePath: String? = nil, url: String? = nil,
-      route: String? = nil, authReference: String? = nil
+      route: String? = nil, authReference: String? = nil, serverId: String? = nil
     ) {
       self.kind = kind
       self.label = label
@@ -188,6 +199,7 @@ public enum ConnectionAdd: WorkspaceCommand {
       self.url = url
       self.route = route
       self.authReference = authReference
+      self.serverId = serverId
     }
   }
   public struct Result: Codable, Sendable, Equatable {
@@ -359,6 +371,120 @@ public enum CredentialAdd: WorkspaceCommand {
     }
   }
   public static let method = Method.credentialAdd
+}
+
+// MARK: - M4 managed server methods
+
+/// Register a local B4 project. Inspection (`b4 routes --json`) runs the project's config and route
+/// modules, so registration is the trust decision. `port` is allocated once when omitted.
+public enum ServerAdd: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var projectPath: String
+    public var name: String?
+    public var launchMode: LocalServerLaunchMode?
+    public var envFilePath: String?
+    public var port: Int?
+    public init(
+      projectPath: String, name: String? = nil, launchMode: LocalServerLaunchMode? = nil,
+      envFilePath: String? = nil, port: Int? = nil
+    ) {
+      self.projectPath = projectPath
+      self.name = name
+      self.launchMode = launchMode
+      self.envFilePath = envFilePath
+      self.port = port
+    }
+  }
+  public struct Result: Codable, Sendable, Equatable {
+    public var server: LocalServer
+    public init(server: LocalServer) { self.server = server }
+  }
+  public static let method = Method.serverAdd
+}
+
+public enum ServerList: WorkspaceCommand {
+  public typealias Params = EmptyParams
+  public struct Result: Codable, Sendable, Equatable {
+    public var servers: [LocalServer]
+    public init(servers: [LocalServer]) { self.servers = servers }
+  }
+  public static let method = Method.serverList
+}
+
+public struct ServerRef: Codable, Sendable, Equatable {
+  public var serverId: String
+  public init(serverId: String) { self.serverId = serverId }
+}
+
+/// Start an owned server and wait for `/healthz`; idempotent for a ready server.
+public enum ServerStart: WorkspaceCommand {
+  public typealias Params = ServerRef
+  public typealias Result = ServerAdd.Result
+  public static let method = Method.serverStart
+}
+
+public enum ServerStatus: WorkspaceCommand {
+  public typealias Params = ServerRef
+  public typealias Result = ServerAdd.Result
+  public static let method = Method.serverStatus
+}
+
+/// Re-run route discovery for a registered project.
+public enum ServerInspect: WorkspaceCommand {
+  public typealias Params = ServerRef
+  public typealias Result = ServerAdd.Result
+  public static let method = Method.serverInspect
+}
+
+/// Stop or restart. Refused with `owned_process_conflict` (`reason: turn_active`) while a route
+/// connection has a running turn unless `force` is set (D-030).
+public struct ServerLifecycleParams: Codable, Sendable, Equatable {
+  public var serverId: String
+  public var force: Bool?
+  public init(serverId: String, force: Bool? = nil) {
+    self.serverId = serverId
+    self.force = force
+  }
+}
+
+public enum ServerStop: WorkspaceCommand {
+  public typealias Params = ServerLifecycleParams
+  public typealias Result = ServerAdd.Result
+  public static let method = Method.serverStop
+}
+
+public enum ServerRestart: WorkspaceCommand {
+  public typealias Params = ServerLifecycleParams
+  public typealias Result = ServerAdd.Result
+  public static let method = Method.serverRestart
+}
+
+/// A redacted tail of the server's log file. Pass the returned `offset` back as `afterOffset` to
+/// read only what was appended since.
+public enum ServerLogs: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var serverId: String
+    public var lines: Int?
+    public var afterOffset: Int?
+    public init(serverId: String, lines: Int? = nil, afterOffset: Int? = nil) {
+      self.serverId = serverId
+      self.lines = lines
+      self.afterOffset = afterOffset
+    }
+  }
+  public struct Result: Codable, Sendable, Equatable {
+    public var lines: [String]
+    public var offset: Int
+    public var truncated: Bool
+    public var logPath: String
+    public init(lines: [String], offset: Int, truncated: Bool, logPath: String) {
+      self.lines = lines
+      self.offset = offset
+      self.truncated = truncated
+      self.logPath = logPath
+    }
+  }
+  public static let method = Method.serverLogs
 }
 
 public struct ParsedCommand: Sendable, Equatable {

@@ -20,11 +20,13 @@ public actor SessionService {
     public var clientVersion: String
     public var secretStore: any SecretStore
     public var adapterFactory: AdapterFactory
+    /// Managed B4 servers (M4); a managed route connection is usable only while its server is ready.
+    public var servers: LocalServerService?
 
     public init(
       database: WorkspaceDatabase, eventLog: EventLog, diagnostics: DiagnosticsService,
       environment: [String: String], clientVersion: String, secretStore: any SecretStore,
-      adapterFactory: AdapterFactory? = nil
+      adapterFactory: AdapterFactory? = nil, servers: LocalServerService? = nil
     ) {
       self.database = database
       self.eventLog = eventLog
@@ -33,6 +35,7 @@ public actor SessionService {
       self.clientVersion = clientVersion
       self.secretStore = secretStore
       self.adapterFactory = adapterFactory ?? SessionService.defaultAdapterFactory
+      self.servers = servers
     }
   }
 
@@ -59,6 +62,14 @@ public actor SessionService {
   /// Coordinator start: no runtime process survived, so pending requests expire and non-terminal
   /// turns become `reconciling` with an unknown outcome until a viewer reconciles them.
   public func start() {
+    if let servers = context.servers {
+      pumps["managed-servers"] = Task { [weak self] in
+        for await event in servers.events() {
+          guard let self else { return }
+          await self.project(event)
+        }
+      }
+    }
     do {
       _ = try db.expireAllRuntimeRequests()
       for turn in try db.unresolvedTurns() where turn.status != .reconciling {
@@ -141,6 +152,7 @@ public actor SessionService {
   /// Attach a B4 endpoint: base URL (HTTPS, or HTTP on loopback), exact route key, optional
   /// credential reference. A non-agent route is stored and inspected as `incompatible` (D-023).
   private func addB4Connection(_ params: ConnectionAdd.Params) async throws -> ConnectionAdd.Result {
+    if let serverId = params.serverId { return try await addManagedConnection(params, serverId: serverId) }
     guard var url = params.url?.trimmingCharacters(in: .whitespacesAndNewlines), !url.isEmpty else {
       throw WorkspaceError(.protocolInvalid, "A B4 connection needs url, the endpoint base URL.")
     }
@@ -181,6 +193,59 @@ public actor SessionService {
     return try await connectionInspect(ConnectionInspect.Params(connectionId: connection.id))
   }
 
+  /// A route connection on a managed server: the target is the server's loopback origin, which is
+  /// stable for the life of the registration (D-027). The route must be one the inspection found.
+  private func addManagedConnection(
+    _ params: ConnectionAdd.Params, serverId: String
+  ) async throws -> ConnectionAdd.Result {
+    guard let servers = context.servers else {
+      throw WorkspaceError.unsupported("managed servers", plannedFor: "M4")
+    }
+    if params.url != nil || params.authReference != nil {
+      throw WorkspaceError(
+        .protocolInvalid, "A managed route connection takes a server and a route, not a url or a credential.")
+    }
+    let server = try await servers.resolve(serverId)
+    guard let routeText = params.route?.trimmingCharacters(in: .whitespacesAndNewlines),
+      let route = B4RouteKey(routeText)
+    else {
+      throw WorkspaceError(
+        .protocolInvalid, "A route connection needs route in the form /<path>#agent.",
+        details: ["route": .string(params.route ?? "")])
+    }
+    guard server.routes.contains(where: { $0.key == route.key }) else {
+      throw WorkspaceError(
+        .notFound,
+        "Server \(server.name) has no route \(route.key). Known: \(server.routes.map(\.key).joined(separator: ", ")). Run `agent-workspace server inspect \(server.name)` after adding routes.",
+        details: ["route": .string(route.key), "serverId": .string(server.id)])
+    }
+    guard let port = server.requestedPort else {
+      throw WorkspaceError(.internalError, "Server \(server.name) has no port.")
+    }
+    if let existing = try db.connections(localServerId: server.id).first(where: { $0.routeKey == route.key })
+    {
+      return try await connectionInspect(ConnectionInspect.Params(connectionId: existing.id))
+    }
+    let connection = try db.insertConnection(
+      Connection(
+        id: UUID().uuidString.lowercased(), kind: .b4,
+        label: params.label ?? "\(route.displayName) @ \(server.name)", target: "http://127.0.0.1:\(port)",
+        routeKey: route.key, b4Mode: .managedLocal, localServerId: server.id, status: .connecting))
+    return try await connectionInspect(ConnectionInspect.Params(connectionId: connection.id))
+  }
+
+  /// A managed route connection is reachable only while its server is ready; nothing is auto-started.
+  private func managedServerOutage(_ connection: Connection) async -> WorkspaceError? {
+    guard connection.b4Mode == .managedLocal, let serverId = connection.localServerId,
+      let servers = context.servers
+    else { return nil }
+    if await servers.isReady(id: serverId) { return nil }
+    let name = (try? await servers.resolve(serverId))?.name ?? serverId
+    return WorkspaceError(
+      .endpointUnavailable, "Server \(name) is stopped. Run `agent-workspace server start \(name)`.",
+      details: ["serverId": .string(serverId), "reason": "server_stopped"])
+  }
+
   /// Store an endpoint secret and hand back its reference. The value is never logged or echoed.
   public func credentialAdd(_ params: CredentialAdd.Params) async throws -> CredentialAdd.Result {
     let label = params.label.trimmingCharacters(in: .whitespaces)
@@ -195,7 +260,13 @@ public actor SessionService {
 
   public func connectionInspect(_ params: ConnectionInspect.Params) async throws -> ConnectionAdd.Result {
     let (connection, adapter) = try connectionAndAdapter(id: params.connectionId)
-    let inspection = try await adapter.inspectConnection()
+    let inspection: ConnectionInspection
+    if let outage = await managedServerOutage(connection) {
+      inspection = ConnectionInspection(
+        status: .offline, authStatus: .notRequired, message: outage.message, error: outage)
+    } else {
+      inspection = try await adapter.inspectConnection()
+    }
     let updated =
       try db.updateConnection(id: connection.id) {
         $0.status = inspection.status
@@ -224,6 +295,7 @@ public actor SessionService {
 
   public func threadCreate(_ params: ThreadCreate.Params) async throws -> ThreadCreate.Result {
     let (connection, adapter) = try connectionAndAdapter(id: params.connectionId)
+    if let outage = await managedServerOutage(connection) { throw outage }
     let input: NewSessionInput
     let threadContext: String?
     let defaultTitle: String
@@ -280,7 +352,9 @@ public actor SessionService {
 
   /// Ask the runtime what became of a turn whose outcome is unknown. Never assumes success.
   private func reconcile(_ turn: Turn, thread: ConversationThread) async {
-    guard let (_, _, adapter) = try? threadContext(id: thread.id) else { return }
+    guard let (_, connection, adapter) = try? threadContext(id: thread.id) else { return }
+    // A stopped managed server cannot answer; the turn stays reconciling until it is back.
+    if await managedServerOutage(connection) != nil { return }
     let ref = NativeSessionRef(nativeSessionId: thread.nativeThreadId, nativeScope: thread.nativeScope)
     guard let result = try? await adapter.reconcile(ref, turn: turn.nativeTurnId.map(ActiveTurnRef.init))
     else { return }
@@ -326,6 +400,7 @@ public actor SessionService {
     guard !text.isEmpty else { throw WorkspaceError(.protocolInvalid, "Turn text must not be empty.") }
     if let existing = try db.turn(operationId: operationId) { return TurnSend.Result(turn: existing) }
     let (thread, connection, adapter) = try threadContext(id: params.threadId)
+    if let outage = await managedServerOutage(connection) { throw outage }
     if let active = try db.activeTurn(threadId: thread.id) {
       throw WorkspaceError(
         .protocolInvalid,

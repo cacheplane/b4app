@@ -54,21 +54,36 @@ extension ConnectionCommand {
       help: "Credential reference from `credential add` (secret:…), sent as a bearer."
     )
     var authRef: String?
+    @Option(help: "A managed server (name or id) from `server add`; the route runs on that server.")
+    var server: String?
 
     func run() async throws {
       do {
-        if kind == .b4, url == nil || route == nil {
+        if kind == .b4, server != nil, url != nil || authRef != nil {
           throw WorkspaceError(
-            .protocolInvalid, "A B4 connection needs --url and --route (for example /chat#agent).")
+            .protocolInvalid, "--server takes --route only; --url and --auth-ref do not apply.")
         }
-        if kind != .b4, url != nil || route != nil || authRef != nil {
-          throw WorkspaceError(.protocolInvalid, "--url, --route, and --auth-ref apply to --kind b4 only.")
+        if kind == .b4, server == nil, url == nil || route == nil {
+          throw WorkspaceError(
+            .protocolInvalid,
+            "A B4 connection needs --url and --route (for example /chat#agent), or --server and --route.")
+        }
+        if kind == .b4, server != nil, route == nil {
+          throw WorkspaceError(
+            .protocolInvalid, "A managed route connection needs --route (for example /chat#agent).")
+        }
+        if kind != .b4, url != nil || route != nil || authRef != nil || server != nil {
+          throw WorkspaceError(
+            .protocolInvalid, "--url, --route, --auth-ref, and --server apply to --kind b4 only.")
         }
         let client = try await Link.open()
+        var serverId: String?
+        if let server { serverId = try await Server.resolve(client, server).id }
         let result = try await client.request(
           ConnectionAdd.self,
           ConnectionAdd.Params(
-            kind: kind, label: name, executablePath: path, url: url, route: route, authReference: authRef),
+            kind: kind, label: name, executablePath: path, url: url, route: route, authReference: authRef,
+            serverId: serverId),
           options: Link.mutation())
         await client.close()
         print(global.json ? try Format.jsonOk(result) : Format.connection(result))
