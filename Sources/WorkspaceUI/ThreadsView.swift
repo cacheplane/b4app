@@ -53,10 +53,11 @@ struct ThreadDetailView: View {
         }
         ComposerView(model: model, detail: detail)
       } else if model.detailLoading {
-        ProgressView("Loading thread…").llaSmallMuted().frame(maxWidth: .infinity, maxHeight: .infinity)
+        ProgressView("Loading thread…").llaSmallMuted().padding(LLA.Space.xxl)
+        Spacer(minLength: 0)
       } else {
-        Text(model.lastError ?? "Thread not loaded.").llaMuted()
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
+        Text(model.lastError ?? "Thread not loaded.").llaMuted().padding(LLA.Space.xxl)
+        Spacer(minLength: 0)
       }
     }
     .navigationTitle(thread.title.isEmpty ? "Untitled" : thread.title)

@@ -206,14 +206,18 @@ public struct LLAEmptyState<Actions: View>: View {
   }
 
   public var body: some View {
-    VStack(alignment: .leading, spacing: LLA.Space.m) {
-      Text(title).llaDisplay()
-      Text(text).llaMuted().fixedSize(horizontal: false, vertical: true)
-      HStack(spacing: LLA.Space.s) { actions() }.padding(.top, LLA.Space.xs)
+    // A scroll view, not a fill-the-column frame: inside a NavigationSplitView column an infinite
+    // frame inflates the window's ideal height and the content lands outside the window.
+    ScrollView {
+      VStack(alignment: .leading, spacing: LLA.Space.m) {
+        Text(title).llaDisplay()
+        Text(text).llaMuted().fixedSize(horizontal: false, vertical: true)
+        HStack(spacing: LLA.Space.s) { actions() }.padding(.top, LLA.Space.xs)
+      }
+      .frame(maxWidth: 440, alignment: .leading)
+      .padding(LLA.Space.xxl)
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .frame(maxWidth: 440, alignment: .leading)
-    .padding(LLA.Space.xxl)
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
   }
 }
 
