@@ -64,10 +64,12 @@ private struct Rig {
     #expect(receipt.nativeTurnId == "turn-1")
     let finished = try await rig.finished(receipt)
     #expect(finished.payload["outcome"]?.stringValue == "completed")
+    #expect(finished.payload["usage"]?["model"]?.stringValue == "fake-1")
     #expect(await rig.collector.deltas(turnId: "turn-1") == "Hello from fake B4.")
     let kinds = await rig.collector.events.map(\.kind)
     #expect(kinds.first == .messageStarted)
     #expect(kinds.contains(.messageCompleted))
+    #expect(!kinds.contains(.toolCompleted), "usage must not become a transcript item")
     let second = try await rig.turn(ref, "hello again")
     #expect(second.nativeTurnId == "turn-2")
     try await rig.finished(second)
@@ -82,7 +84,17 @@ private struct Rig {
     let tool = try await rig.collector.waitFor { $0.kind == .toolCompleted }
     #expect(tool.nativeIds["itemId"] == "call_1")
     #expect(tool.payload["item"]?["name"]?.stringValue == "search")
-    #expect(tool.payload["item"]?["output"] == ["hits": 2])
+    #expect(tool.payload["item"]?["output"]?.stringValue == "{\"hits\":2}")
+    #expect(tool.payload["item"]?["label"]?.stringValue == "Searched b4")
+    #expect(tool.payload["item"]?["input"] == ["q": "b4"])
+    let toolEvents = await rig.collector.events.filter { $0.nativeIds["itemId"] == "call_1" }.map(\.kind)
+    #expect(
+      toolEvents == [.toolStarted, .toolStarted, .toolCompleted], "args, call, step, result → one card")
+    let finishedTool = try await rig.collector.waitFor {
+      $0.kind == .turnFinished && $0.nativeIds["turnId"] == "turn-1"
+    }
+    #expect(finishedTool.payload["usage"]?["usage_metadata"]?["total_tokens"]?.numberValue == 15)
+    #expect(await rig.collector.events.contains { $0.payload["type"]?.stringValue == "step" } == false)
     let snapshot = try await rig.adapter.loadSession(ref)
     #expect(snapshot.items.map(\.type) == ["userMessage", "agentMessage", "toolCall", "agentMessage"])
     #expect(snapshot.items[0].payload["text"]?.stringValue == "use a tool")
@@ -126,7 +138,7 @@ private struct Rig {
       #expect(error.code == .staleRuntimeRequest)
     }
     let turns = try await rig.server.get("/threads/\(ref.nativeSessionId)/turns")
-    #expect(turns?["turns"]?.arrayValue?.count == 1)
+    #expect(B4Protocol.turnList(turns)?.count == 1)
     #expect(turns?["status"]?.stringValue == "idle")
     await rig.stop()
   }
@@ -215,7 +227,7 @@ private struct Rig {
     #expect(finished.payload["outcome"]?.stringValue == "completed")
     #expect(await rig.collector.deltas(turnId: "turn-1") == "Part one. Part two.")
     let turns = try await rig.server.get("/threads/\(ref.nativeSessionId)/turns")
-    #expect(turns?["turns"]?.arrayValue?.count == 1)
+    #expect(B4Protocol.turnList(turns)?.count == 1)
     #expect(rig.server.process.recentStderr().contains("GET /threads/\(ref.nativeSessionId)/runs/stream"))
     await rig.stop()
   }

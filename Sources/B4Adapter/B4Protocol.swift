@@ -137,6 +137,12 @@ public enum B4Protocol {
     }
   }
 
+  /// The turn list from `GET /threads/:id/turns`. The live server nests it (`turns: { threadId,
+  /// turns: [...] }`, the `TurnsView` object); the flat form is accepted too.
+  public static func turnList(_ body: JSONValue?) -> [JSONValue]? {
+    body?["turns"]?["turns"]?.arrayValue ?? body?["turns"]?.arrayValue
+  }
+
   /// `TurnView.status` from `GET /threads/:id/turns` onto a turn outcome; `working` and `awaiting`
   /// are not outcomes.
   public static func turnOutcome(turnStatus: String?) -> TurnOutcome? {

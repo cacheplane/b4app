@@ -545,7 +545,7 @@ public actor B4Adapter: AgentAdapter {
 
   private func turnCount(threadId: String) async -> Int? {
     guard let client, let (status, body) = try? await client.json("GET", "/threads/\(threadId)/turns"),
-      status == 200, let turns = body?["turns"]?.arrayValue
+      status == 200, let turns = B4Protocol.turnList(body)
     else { return nil }
     return turns.count
   }
@@ -617,7 +617,7 @@ public actor B4Adapter: AgentAdapter {
       if !prompts.isEmpty { return .parked(prompts) }
     }
     let (turnsStatus, body) = try await client.json("GET", "/threads/\(threadId)/turns")
-    guard turnsStatus == 200, let turns = body?["turns"]?.arrayValue else {
+    guard turnsStatus == 200, let turns = B4Protocol.turnList(body) else {
       if threadStatus == "interrupted" { return .outcome(.cancelled, reason: "cancelled") }
       return .unknown
     }

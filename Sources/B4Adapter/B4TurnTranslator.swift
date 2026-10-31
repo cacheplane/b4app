@@ -25,11 +25,13 @@ public struct B4TurnTranslator: Sendable {
   private var messageIndex = 0
   private var currentMessage: (id: String, text: String)?
   private var currentReasoning: (id: String, text: String)?
-  private var toolCalls: [String: (name: String, input: JSONValue, args: String)] = [:]
+  private var toolCalls: [String: (name: String, input: JSONValue, args: String, label: String?)] = [:]
   private var toolOrder: [String] = []
   private var sawInterrupt = false
   private var streamedText = false
   private var capabilityIndex = 0
+  /// The last `usage` event (provider, model, token counts); reported with `turn.finished`, not as an item.
+  private var usage: JSONValue?
 
   public init(connectionId: String, threadId: String, turnId: String, generation: Int) {
     self.connectionId = connectionId
@@ -90,11 +92,31 @@ public struct B4TurnTranslator: Sendable {
     var body: [String: JSONValue] = ["name": .string(call?.name ?? "tool"), "status": .string(status)]
     if let call {
       body["input"] = call.input.isNull && !call.args.isEmpty ? .string(call.args) : call.input
+      if let label = call.label { body["label"] = .string(label) }
+      if let command = call.input["command"]?.stringValue { body["command"] = .string(command) }
     }
-    if let output {
-      body["output"] = output.stringValue.map(JSONValue.string) ?? output
-    }
+    if let output { body["output"] = Self.toolOutput(output) }
     return item("toolCall", role: .tool, body)
+  }
+
+  /// A live `tool_result.output` is a serialized LangChain `ToolMessage`; its `content` is the result.
+  static func toolOutput(_ output: JSONValue) -> JSONValue {
+    if output["lc"] != nil, let content = output["kwargs"]?["content"] {
+      return content.stringValue.map(JSONValue.string) ?? content
+    }
+    return output.stringValue.map(JSONValue.string) ?? output
+  }
+
+  static func toolFailed(_ output: JSONValue) -> Bool {
+    if output["lc"] != nil { return output["kwargs"]?["status"]?.stringValue == "error" }
+    return output["error"] != nil
+  }
+
+  private mutating func track(_ id: String, name: String) {
+    if toolCalls[id] == nil {
+      toolCalls[id] = (name, .null, "", nil)
+      toolOrder.append(id)
+    }
   }
 
   public mutating func translate(_ incoming: B4StreamEvent) -> [AdapterEvent] {
@@ -128,25 +150,20 @@ public struct B4TurnTranslator: Sendable {
     case .toolCall(let id, let name, let input, _):
       var events = closeMessage()
       let callId = id ?? "\(turnId):t\(toolOrder.count + 1)"
-      toolCalls[callId] = (name, input, "")
-      toolOrder.append(callId)
+      track(callId, name: name)
+      toolCalls[callId]?.name = name
+      toolCalls[callId]?.input = input
       events.append(event(.toolStarted, toolPayload(id: callId, status: "inProgress"), itemId: callId))
       return events
     case .toolCallArgs(let id, let name, let delta):
-      if toolCalls[id] == nil {
-        toolCalls[id] = (name, .null, "")
-        toolOrder.append(id)
-      }
+      track(id, name: name)
       toolCalls[id]?.args += delta
       return []
     case .toolResult(let id, let name, let output):
       let callId =
         id ?? toolOrder.last(where: { toolCalls[$0]?.name == name }) ?? "\(turnId):t\(toolOrder.count + 1)"
-      if toolCalls[callId] == nil {
-        toolCalls[callId] = (name, .null, "")
-        toolOrder.append(callId)
-      }
-      let failed = output["error"] != nil
+      track(callId, name: name)
+      let failed = Self.toolFailed(output)
       return [
         event(
           .toolCompleted, toolPayload(id: callId, status: failed ? "failed" : "completed", output: output),
@@ -185,13 +202,13 @@ public struct B4TurnTranslator: Sendable {
         events.append(
           event(
             .turnFinished,
-            [
+            withUsage([
               "outcome": "failed", "status": "failed",
               "error": ["message": .string(error ?? "The B4 run failed.")],
-            ]))
+            ])))
       case .cancelled:
         phase = .finished(.cancelled)
-        events.append(event(.turnFinished, ["outcome": "cancelled", "status": "cancelled"]))
+        events.append(event(.turnFinished, withUsage(["outcome": "cancelled", "status": "cancelled"])))
       case .completed, .snapshotOnly:
         if sawInterrupt {
           phase = .parked
@@ -210,10 +227,22 @@ public struct B4TurnTranslator: Sendable {
             )
           }
           phase = .finished(.completed)
-          events.append(event(.turnFinished, ["outcome": "completed", "status": "idle"]))
+          events.append(event(.turnFinished, withUsage(["outcome": "completed", "status": "idle"])))
         }
       }
       return events
+    case .unknown("usage", let data):
+      usage = Self.accumulate(usage, data)
+      return []
+    case .unknown("step", let data):
+      // A tool step display update (`b4_step`): label and status for a running call. It refreshes
+      // the call's card instead of becoming an item of its own.
+      guard let callId = data["toolCallId"]?.stringValue, let call = toolCalls[callId] else { return [] }
+      toolCalls[callId]?.label = data["label"]?.stringValue ?? call.label
+      if data["status"]?.stringValue == "running" {
+        return [event(.toolStarted, toolPayload(id: callId, status: "inProgress"), itemId: callId)]
+      }
+      return []
     case .unknown(let name, let data):
       guard let name, !name.isEmpty else { return [] }
       capabilityIndex += 1
@@ -225,6 +254,28 @@ public struct B4TurnTranslator: Sendable {
           itemId: id)
       ]
     }
+  }
+
+  /// Sum token counts across the model calls of one turn; provider and model come from the last.
+  static func accumulate(_ total: JSONValue?, _ next: JSONValue) -> JSONValue {
+    guard let total else {
+      return next.objectValue.map { .object($0.merging(["calls": 1]) { _, new in new }) } ?? next
+    }
+    var merged = next.objectValue ?? [:]
+    var counts = next["usage_metadata"]?.objectValue ?? [:]
+    for key in ["input_tokens", "output_tokens", "total_tokens"] {
+      let previous = total["usage_metadata"]?[key]?.numberValue ?? 0
+      counts[key] = .number(previous + (counts[key]?.numberValue ?? 0))
+    }
+    merged["usage_metadata"] = .object(counts)
+    merged["calls"] = .number((total["calls"]?.numberValue ?? 1) + 1)
+    return .object(merged)
+  }
+
+  private func withUsage(_ payload: [String: JSONValue]) -> JSONValue {
+    var body = payload
+    if let usage { body["usage"] = usage }
+    return .object(body)
   }
 
   /// The run is known to be over with the given outcome (from `reconcile`).

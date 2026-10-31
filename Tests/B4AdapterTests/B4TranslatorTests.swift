@@ -50,6 +50,53 @@ private let completedOutput: JSONValue = ["messages": [["role": "assistant", "co
     #expect(events[5].nativeIds["itemId"] == "turn-1:m2")
   }
 
+  @Test func foldsStepsUsageAndToolMessagesIntoTheToolCard() {
+    let toolMessage: JSONValue = [
+      "lc": 1, "type": "constructor", "id": ["langchain_core", "messages", "ToolMessage"],
+      "kwargs": [
+        "tool_call_id": "call_1", "name": "runBash", "status": "error", "content": "{\"stdout\":\"\"}",
+      ],
+    ]
+    let usage1: JSONValue = [
+      "provider": "openai", "model": "gpt-5-mini",
+      "usage_metadata": ["input_tokens": 10, "output_tokens": 2, "total_tokens": 12],
+    ]
+    let usage2: JSONValue = [
+      "provider": "openai", "model": "gpt-5-mini",
+      "usage_metadata": ["input_tokens": 20, "output_tokens": 3, "total_tokens": 23],
+    ]
+    let (events, _) = run([
+      .toolCallArgs(id: "call_1", name: "runBash", delta: "{\"command\":"),
+      .toolCallArgs(id: "call_1", name: "runBash", delta: "\"pwd\"}"),
+      .unknown(event: "usage", data: usage1),
+      .toolCall(id: "call_1", name: "runBash", input: ["command": "pwd"], messageId: "m"),
+      .unknown(
+        event: "step",
+        data: ["v": 1, "kind": "server", "toolCallId": "call_1", "status": "running", "label": "Running pwd"]),
+      .unknown(
+        event: "step",
+        data: ["v": 1, "kind": "server", "toolCallId": "call_1", "status": "completed", "label": "Ran pwd"]),
+      .toolResult(id: "call_1", name: "runBash", output: toolMessage),
+      .unknown(event: "usage", data: usage2),
+      .chunk("done"), .done(.completed, output: completedOutput, error: nil),
+    ])
+    let kinds = events.map(\.kind)
+    #expect(
+      kinds == [
+        .toolStarted, .toolStarted, .toolCompleted, .messageStarted, .messageDelta, .messageCompleted,
+        .turnFinished,
+      ])
+    #expect(events[1].payload["item"]?["label"]?.stringValue == "Running pwd")
+    #expect(events[1].payload["item"]?["command"]?.stringValue == "pwd")
+    #expect(events[2].payload["item"]?["label"]?.stringValue == "Ran pwd")
+    #expect(events[2].payload["item"]?["status"]?.stringValue == "failed")
+    #expect(events[2].payload["item"]?["output"]?.stringValue == "{\"stdout\":\"\"}")
+    let usage = events.last?.payload["usage"]
+    #expect(usage?["usage_metadata"]?["total_tokens"]?.numberValue == 35)
+    #expect(usage?["calls"]?.numberValue == 2)
+    #expect(usage?["model"]?.stringValue == "gpt-5-mini")
+  }
+
   @Test func aParkKeepsTheTurnOpenUntilTheResumeStreamFinishes() {
     var translator = B4TurnTranslator(connectionId: "c1", threadId: "thr_1", turnId: "turn-1", generation: 3)
     var events: [AdapterEvent] = []
@@ -178,6 +225,16 @@ private let completedOutput: JSONValue = ["messages": [["role": "assistant", "co
 }
 
 @Suite struct B4ProtocolTests {
+  @Test func readsNestedAndFlatTurnLists() {
+    let nested: JSONValue = [
+      "threadId": "t", "status": "idle", "turns": ["threadId": "t", "turns": [["status": "done"]]],
+    ]
+    #expect(B4Protocol.turnList(nested)?.count == 1)
+    #expect(B4Protocol.turnList(["turns": [["status": "done"], ["status": "failed"]]])?.count == 2)
+    #expect(B4Protocol.turnList(["turns": "nope"]) == nil)
+    #expect(B4Protocol.turnList(nil) == nil)
+  }
+
   @Test func parsesRouteKeys() {
     let chat = B4RouteKey("/chat#agent")
     #expect(chat?.id == "/chat")

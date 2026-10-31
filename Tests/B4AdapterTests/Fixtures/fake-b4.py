@@ -203,12 +203,26 @@ def execute(run):
         if "tool" in text:
             say("Checking.")
             run.emit("message_end", {"messageId": next_id("m")})
-            run.emit("tool_call", {"id": "call_1", "name": "search", "input": {"q": "b4"}})
+            # Live 0.15.8 order: tool_call_args deltas, usage, tool_call, step running, step completed,
+            # tool_result whose output is a serialized ToolMessage.
+            run.emit("tool_call_args", {"id": "call_1", "name": "search", "delta": "{\"q\":", "messageId": "m_x"})
+            run.emit("tool_call_args", {"id": "call_1", "name": "search", "delta": "\"b4\"}", "messageId": "m_x"})
+            run.emit("usage", {"provider": "fake", "model": "fake-1",
+                               "usage_metadata": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}})
+            run.emit("tool_call", {"id": "call_1", "name": "search", "input": {"q": "b4"}, "messageId": "m_x"})
+            started = int(time.time() * 1000)
+            run.emit("step", {"v": 1, "kind": "server", "toolCallId": "call_1", "status": "running",
+                              "startedAt": started, "icon": "search", "label": "Searching b4"})
             turn["steps"].append({"kind": "tool", "id": "call_1", "name": "search", "status": "done",
-                                  "args": "{\"q\":\"b4\"}", "result": "{\"hits\":2}",
-                                  "startedAt": int(time.time() * 1000)})
+                                  "args": "{\"q\":\"b4\"}", "result": "{\"hits\":2}", "startedAt": started})
             time.sleep(0.05)
-            run.emit("tool_result", {"id": "call_1", "name": "search", "output": {"hits": 2}})
+            run.emit("step", {"v": 1, "kind": "server", "toolCallId": "call_1", "status": "completed",
+                              "startedAt": started, "settledAt": int(time.time() * 1000), "icon": "search",
+                              "label": "Searched b4"})
+            run.emit("tool_result", {"id": "call_1", "name": "search", "output": lc("ToolMessage", {
+                "tool_call_id": "call_1", "name": "search", "status": "success", "content": "{\"hits\":2}",
+                "additional_kwargs": {"b4_step": {"v": 1, "kind": "server", "status": "completed",
+                                                  "label": "Searched b4"}}})})
             with LOCK:
                 thread["messages"].append(lc("AIMessage", {"content": "Checking.", "id": next_id("msg"),
                                                            "tool_calls": [{"id": "call_1", "name": "search",
@@ -222,6 +236,8 @@ def execute(run):
         for chunk in ("Hello ", "from ", "fake B4."):
             say(chunk)
             time.sleep(0.02)
+        run.emit("usage", {"provider": "fake", "model": "fake-1",
+                           "usage_metadata": {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7}})
         run.emit("message_end", {"messageId": next_id("m")})
         return finish("done")
     except Exception as error:  # pragma: no cover - fixture bug surface
@@ -350,8 +366,10 @@ class Handler(BaseHTTPRequestHandler):
                     {"interruptId": p["interruptId"], "resumeKey": p["resumeKey"], "value": p["value"],
                      "grant": p["grant"]} for p in thread["pending"]]})
             if tail == "turns":
+                # Live 0.15.8 nests the TurnsView object under `turns`.
                 return self.send_json(200, {"threadId": thread_id, "status": thread["status"],
-                                            "turns": thread["turns"], "warnings": [], "truncated": False})
+                                            "turns": {"threadId": thread_id, "turns": thread["turns"]},
+                                            "warnings": [], "truncated": False})
             if tail == "state":
                 if not thread["messages"]:
                     return self.send_json(404, error_body("No checkpoint for thread"))
