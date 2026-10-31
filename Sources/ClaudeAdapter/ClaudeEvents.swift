@@ -228,12 +228,16 @@ public struct ClaudeTurnTracker: Sendable {
   }
 
   private mutating func finish(_ result: ClaudeStream.ResultFrame) -> [AdapterEvent] {
-    let reason = result.terminalReason ?? ""
+    let reason = (result.terminalReason ?? "").lowercased()
     let outcome: TurnOutcome
-    if result.isError {
-      outcome = .failed
-    } else if interruptRequested || reason.contains("interrupt") || reason.contains("cancel") {
+    // A stop we asked for is a cancellation even though the real CLI reports it as an error result
+    // (seen live with Claude Code 2.1.282); only an unrequested error is a failure.
+    if interruptRequested || reason.contains("interrupt") || reason.contains("cancel")
+      || reason.contains("abort")
+    {
       outcome = .cancelled
+    } else if result.isError {
+      outcome = .failed
     } else {
       outcome = .completed
     }

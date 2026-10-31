@@ -184,7 +184,8 @@ while True:
                 send({"type": "control_response", "response": {"subtype": "success", "request_id": pending["request_id"],
                                                                "response": {"still_queued": 0, "cancelled": True}}})
                 break
-        result(user_uuid, text="Counting 1", terminal_reason="interrupted")
+        # As Claude Code 2.1.282 does live: a requested stop is an error result with reason aborted_streaming.
+        result(user_uuid, is_error=True, text="Counting 1", terminal_reason="aborted_streaming", subtype="error_during_execution")
         continue
     reply = "Hello from fake Claude."
     if "tool" in text:
