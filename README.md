@@ -2,7 +2,7 @@
 
 A native Swift app for running Codex, Claude Code, and B4 agent conversations side by side on one Mac, with an iOS companion built from the same code. Everything is local: no accounts, no cloud sync, no telemetry.
 
-Status: M3. Codex conversations are live-verified from the macOS app and the CLI; Claude Code conversations (stream-json protocol) and B4 conversations (Agent Protocol over HTTP and SSE, attached local server or remote HTTPS endpoint) share the same transcript, approvals, stop, and resume and are fixture-verified end to end, each awaiting a live inference check (a signed-in Claude; a running B4 agent route with model credentials). Managed B4 servers are M4. See `docs/milestones.md`.
+Status: M3. Codex and B4 conversations are live-verified from the CLI (Codex also from the macOS app); Claude Code conversations use the same transcript, approvals, stop, and resume through the CLI's stream-json protocol and are fixture-verified end to end, awaiting a signed-in Mac for the live inference check. B4 attaches a running local server or a remote HTTPS endpoint at one `agent()` route; managed B4 servers are M4. See `docs/milestones.md`.
 
 ## Prerequisites
 
@@ -86,6 +86,8 @@ B4APP_LIVE_CLAUDE=1 swift test --filter ClaudeLive
 ```bash
 B4APP_LIVE_B4_URL=http://127.0.0.1:3001 B4APP_LIVE_B4_ROUTE=/chat#agent swift test --filter B4Live
 ```
+
+The B4 live check needs a server you run yourself: a B4 project with one `agent()` route, started with `b4 dev --port 3001 --env-file .env` where that `.env` holds the model provider key. This repo's `.env` is gitignored for exactly that; B4 keeps the provider key, the app never sees it.
 
 ## Layout
 

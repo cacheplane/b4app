@@ -47,10 +47,11 @@ Design: `docs/superpowers/specs/2026-10-31-m3-b4-conversation-design.md`. Plan: 
 - [x] Native thread creation, streaming input, state and turn reads, permission resolution (`once`, `always`, `deny`, cancel), explicit cancellation. `fixture-tested` end to end (adapter and coordinator suites).
 - [x] Read-only reattachment with reconciliation and unknown-submission handling. `fixture-tested`: a dropped stream reattaches and finishes with one server-side turn; a parked prompt survives a server restart and a coordinator restart; a server restart mid-run fails the turn honestly; an unrecorded ordinal is reported as `submission_unknown` and never resubmitted.
 - [x] Unsupported route kinds surface as a compatibility result. `fixture-tested` and `live-tested` via the CLI (`/dispatch#workflow` → `incompatible`, exit 2).
-- [ ] Test against an existing local standard-agent server, then a compatible remote HTTPS endpoint. **Blocked**: no local `agent()` project with model credentials on this Mac (hashbrown's B4 projects are `workflow` routes; `examples/chat` needs `OPENAI_API_KEY`). Opt-in test ready: `B4APP_LIVE_B4_URL`/`B4APP_LIVE_B4_ROUTE`.
+- [x] Test against an existing local standard-agent server. `live-tested` on 2026-10-31 against `b4 dev` 0.15.8 serving a `gpt-5-mini` `agent()` route (scratch project, `OPENAI_API_KEY` from the gitignored `.env`): streamed reply, real `runBash` permission prompt parked and approved through the CLI, tool card with the server's step label, cancel → `cancelled`, history and reconciliation. The live run found and fixed two shape differences (nested `turns.turns`, `usage`/`step`/`ToolMessage` events).
+- [ ] Then a compatible remote HTTPS endpoint with its real endpoint credential. `blocked`: none deployed yet.
 - [ ] Standard-agent persistence across a real B4 server restart. `fixture-tested` only (fixture persists its stores to a JSON file).
 
-Exit gate status: local and remote B4 threads coexist with harness threads, stream loss does not resubmit, parked is distinguishable from cancelled (all fixture-verified); open on live inference and on a real remote HTTPS endpoint with its real credential.
+Exit gate status: local B4 threads coexist with harness threads live; stream loss, parked versus cancelled, and restarts are fixture-verified; open on a real remote HTTPS endpoint.
 
 ## M4: managed B4 execution and the shared CLI
 
