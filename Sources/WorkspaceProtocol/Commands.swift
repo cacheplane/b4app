@@ -139,6 +139,8 @@ public enum DraftSave: WorkspaceCommand {
   public static let method = Method.draftSave
 }
 
+/// Everything a viewer needs to start: connections, every thread (archived included), and every
+/// non-terminal turn so the sidebar can show per-thread state before any event arrives (spec 3.1).
 public enum EventsSnapshot: WorkspaceCommand {
   public typealias Params = EmptyParams
   public struct Result: Codable, Sendable, Equatable {
@@ -146,11 +148,27 @@ public enum EventsSnapshot: WorkspaceCommand {
     public var sequence: Int
     public var connections: [Connection]
     public var threads: [ConversationThread]
-    public init(epoch: String, sequence: Int, connections: [Connection], threads: [ConversationThread]) {
+    public var activeTurns: [Turn]
+    public init(
+      epoch: String, sequence: Int, connections: [Connection], threads: [ConversationThread],
+      activeTurns: [Turn] = []
+    ) {
       self.epoch = epoch
       self.sequence = sequence
       self.connections = connections
       self.threads = threads
+      self.activeTurns = activeTurns
+    }
+
+    private enum CodingKeys: String, CodingKey { case epoch, sequence, connections, threads, activeTurns }
+
+    public init(from decoder: any Decoder) throws {
+      let container = try decoder.container(keyedBy: CodingKeys.self)
+      epoch = try container.decode(String.self, forKey: .epoch)
+      sequence = try container.decode(Int.self, forKey: .sequence)
+      connections = try container.decode([Connection].self, forKey: .connections)
+      threads = try container.decode([ConversationThread].self, forKey: .threads)
+      activeTurns = try container.decodeIfPresent([Turn].self, forKey: .activeTurns) ?? []
     }
   }
   public static let method = Method.eventsSnapshot

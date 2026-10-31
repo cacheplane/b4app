@@ -614,3 +614,73 @@ actor EventCollector {
     await server.stop()
   }
 }
+
+// MARK: - M5
+
+@Suite(.serialized) struct ThreadOrganizationTests {
+  /// Spec A05: rename, pin, archive/unarchive, title search, and draft state survive a restart.
+  @Test func organizationAndDraftsSurviveACoordinatorRestart() async throws {
+    let h = try await Harness.start()
+    let connection = try await h.addCodex()
+    let first = try await h.newThread(connection)
+    let second = try await h.newThread(connection)
+    let mutation = { RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)) }
+    _ = try await h.client.request(
+      ThreadUpdate.self, ThreadUpdate.Params(threadId: first.id, title: "Release notes", pinned: true),
+      options: mutation())
+    _ = try await h.client.request(
+      ThreadUpdate.self, ThreadUpdate.Params(threadId: second.id, archived: true), options: mutation())
+    _ = try await h.client.request(
+      DraftSave.self, DraftSave.Params(threadId: first.id, text: "unsent words"), options: mutation())
+    try await h.events.waitFor {
+      $0.kind == .threadUpdated && $0.threadId == second.id
+        && ((try? $0.payload["thread"]?.decode(ConversationThread.self))?.archived ?? false)
+    }
+    let paths = h.coordinator.paths
+    await h.stop()
+
+    var env = ProcessInfo.processInfo.environment
+    env["B4APP_NODE_PATH"] = "/nonexistent/node"
+    guard
+      case .running(let restarted) = try await Coordinator.start(
+        options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
+    else { throw WorkspaceError(.internalError, "expected running") }
+    let client = try await UnixSocketTransport.client(path: paths.socketPath)
+    let visible = try await client.request(ThreadList.self, ThreadList.Params())
+    #expect(visible.threads.map(\.id) == [first.id])
+    #expect(visible.threads[0].title == "Release notes")
+    #expect(visible.threads[0].pinned)
+    let all = try await client.request(ThreadList.self, ThreadList.Params(includeArchived: true))
+    #expect(Set(all.threads.map(\.id)) == [first.id, second.id])
+    let searched = try await client.request(
+      ThreadList.self, ThreadList.Params(includeArchived: true, query: "release"))
+    #expect(searched.threads.map(\.id) == [first.id])
+    let draft = try await client.request(DraftRead.self, DraftRead.Params(threadId: first.id)).draft
+    #expect(draft?.text == "unsent words")
+    let unarchived = try await client.request(
+      ThreadUpdate.self, ThreadUpdate.Params(threadId: second.id, archived: false), options: mutation())
+    #expect(!unarchived.thread.archived)
+    let again = try await client.request(ThreadList.self, ThreadList.Params())
+    #expect(Set(again.threads.map(\.id)) == [first.id, second.id])
+    await client.close()
+    await restarted.close()
+  }
+
+  /// The snapshot carries non-terminal turns so a fresh viewer can show per-thread state (spec 3.1).
+  @Test func snapshotListsActiveTurns() async throws {
+    let h = try await Harness.start()
+    let connection = try await h.addCodex()
+    let thread = try await h.newThread(connection)
+    let turn = try await h.send(thread, "hang around")
+    let snapshot = try await h.client.request(EventsSnapshot.self, EmptyParams())
+    #expect(snapshot.activeTurns.map(\.id) == [turn.id])
+    #expect(snapshot.activeTurns.first?.threadId == thread.id)
+    _ = try await h.client.request(
+      TurnInterrupt.self, TurnInterrupt.Params(threadId: thread.id),
+      options: RequestOptions(operationId: UUID().uuidString))
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    let after = try await h.client.request(EventsSnapshot.self, EmptyParams())
+    #expect(after.activeTurns.isEmpty)
+    await h.stop()
+  }
+}

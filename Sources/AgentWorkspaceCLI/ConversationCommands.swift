@@ -163,8 +163,8 @@ extension ConnectionCommand {
 
 struct ThreadCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
-    commandName: "thread", abstract: "Create, list, and read conversation threads.",
-    subcommands: [New.self, List.self, Show.self])
+    commandName: "thread", abstract: "Create, list, read, and organize conversation threads.",
+    subcommands: [New.self, List.self, Show.self, Update.self])
 
   struct New: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Start a new native thread on a connection.")
@@ -209,6 +209,41 @@ struct ThreadCommand: AsyncParsableCommand {
           global.json
             ? try Format.jsonOk(result) : Format.threads(result.threads, connections: connections.connections)
         )
+      } catch {
+        Output.fail(error, json: global.json)
+      }
+    }
+  }
+
+  struct Update: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+      abstract: "Rename, pin, or archive a thread. Local only; the runtime's history is untouched.")
+    @OptionGroup var global: GlobalOptions
+    @Argument var threadId: String
+    @Option var title: String?
+    @Flag var pin = false
+    @Flag var unpin = false
+    @Flag var archive = false
+    @Flag var unarchive = false
+    func validate() throws {
+      if pin && unpin { throw ValidationError("Pass --pin or --unpin, not both.") }
+      if archive && unarchive { throw ValidationError("Pass --archive or --unarchive, not both.") }
+      if title == nil, !pin, !unpin, !archive, !unarchive {
+        throw ValidationError("Nothing to change: pass --title, --pin/--unpin, or --archive/--unarchive.")
+      }
+    }
+    func run() async throws {
+      do {
+        let client = try await Link.open()
+        let result = try await client.request(
+          ThreadUpdate.self,
+          ThreadUpdate.Params(
+            threadId: threadId, title: title, pinned: pin ? true : (unpin ? false : nil),
+            archived: archive ? true : (unarchive ? false : nil)),
+          options: Link.mutation())
+        let connection = try? await Link.connection(client, matching: result.thread.connectionId)
+        await client.close()
+        print(global.json ? try Format.jsonOk(result) : Format.thread(result.thread, connection: connection))
       } catch {
         Output.fail(error, json: global.json)
       }

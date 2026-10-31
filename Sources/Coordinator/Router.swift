@@ -107,7 +107,8 @@ public actor Router {
         encoding: EventsSnapshot.Result(
           epoch: events.epoch, sequence: await events.sequence,
           connections: try db.listConnections(includeDisabled: true),
-          threads: try db.listThreads(ThreadFilter(includeArchived: true))))
+          threads: try db.listThreads(ThreadFilter(includeArchived: true)),
+          activeTurns: try db.unresolvedTurns()))
     case .eventsReplay:
       let params = try command.params(for: EventsReplay.self)
       guard let replayed = await events.replay(epoch: params.epoch, afterSequence: params.afterSequence)

@@ -34,6 +34,8 @@ struct ThreadsView: View {
 struct ThreadDetailView: View {
   @Bindable var model: WorkspaceModel
   let thread: ConversationThread
+  @State private var renaming = false
+  @State private var newTitle = ""
 
   private var connection: Connection? { model.connection(id: thread.connectionId) }
 
@@ -62,16 +64,30 @@ struct ThreadDetailView: View {
     }
     .toolbar {
       ToolbarItemGroup {
+        Button("Rename", systemImage: "pencil") {
+          newTitle = thread.title
+          renaming = true
+        }
+        .accessibilityIdentifier("rename")
         Button(thread.pinned ? "Unpin" : "Pin", systemImage: thread.pinned ? "pin.slash" : "pin") {
           Task { await model.updateThread(id: thread.id, pinned: !thread.pinned) }
         }
-        Button("Archive", systemImage: "archivebox") {
-          Task {
-            await model.updateThread(id: thread.id, archived: true)
-            model.selectedThreadId = nil
-          }
+        .accessibilityIdentifier("pin")
+        Button(
+          thread.archived ? "Unarchive" : "Archive",
+          systemImage: thread.archived ? "tray.and.arrow.up" : "archivebox"
+        ) {
+          Task { await model.updateThread(id: thread.id, archived: !thread.archived) }
         }
+        .accessibilityIdentifier("archive")
       }
+    }
+    .alert("Rename thread", isPresented: $renaming) {
+      TextField("Title", text: $newTitle)
+      Button("Rename") { Task { await model.updateThread(id: thread.id, title: newTitle) } }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("The title is local to this app; the runtime's own history is not changed.")
     }
   }
 
@@ -79,6 +95,10 @@ struct ThreadDetailView: View {
     VStack(alignment: .leading, spacing: 4) {
       HStack {
         Text(thread.title.isEmpty ? "Untitled" : thread.title).font(.title3).bold()
+        if thread.archived {
+          Text("Archived").font(.caption).padding(.horizontal, 6).padding(.vertical, 2)
+            .background(.quaternary, in: Capsule())
+        }
         Spacer()
         if let turn = model.detail?.activeTurn, model.detail?.thread.id == thread.id {
           TurnStatusBadge(turn: turn)

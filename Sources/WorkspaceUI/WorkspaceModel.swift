@@ -7,6 +7,23 @@ public enum LinkState: Sendable, Equatable {
   case connecting, ready, unavailable
 }
 
+/// What the sidebar dot says about a thread (spec 3.1: idle, running, waiting, reconnecting, error).
+public enum ThreadRowState: String, Sendable, Equatable, CaseIterable {
+  case idle, running, waiting, stopping, unknown, reconnecting, error
+
+  public var label: String {
+    switch self {
+    case .idle: return "Idle"
+    case .running: return "Running"
+    case .waiting: return "Waiting for you"
+    case .stopping: return "Stopping"
+    case .unknown: return "Outcome unknown"
+    case .reconnecting: return "Runtime offline"
+    case .error: return "Connection error"
+    }
+  }
+}
+
 public enum Surface: String, CaseIterable, Identifiable, Sendable {
   case threads, connections, servers, diagnostics
 
@@ -82,13 +99,27 @@ public final class WorkspaceModel {
   public private(set) var detail: ThreadDetail?
   public private(set) var detailLoading = false
   public private(set) var busy = false
-  public var lastError: String?
-  public var composerText = ""
+  /// Every non-terminal turn by thread id, from the snapshot and then from turn events, so the
+  /// sidebar shows per-thread state without opening each thread (spec 3.1).
+  public private(set) var activeTurns: [String: Turn] = [:]
+  public var lastError: String? {
+    didSet { if lastError == nil { lastFailure = nil } }
+  }
+  /// The typed error behind `lastError`, when the failure came from the coordinator.
+  public private(set) var lastFailure: WorkspaceError?
+  public var composerText = "" {
+    didSet { if composerText != oldValue, !restoringDraft { scheduleDraftSave() } }
+  }
   public var surface: Surface = .threads
   public var selectedThreadId: String?
   public var searchText = ""
   public var connectionFilter: String?
+  public var showArchived = false
   public var showNewThread = false
+  /// Draft writes are debounced; the pending one is flushed by `persistDraftNow()`.
+  public private(set) var draftSaveTask: Task<Void, Never>?
+  private var restoringDraft = false
+  public static var draftSaveDelay: Duration = .milliseconds(600)
   /// Set after `connection.login`; the view opens it in the system browser and clears it.
   public var pendingLoginURL: URL?
 
@@ -100,12 +131,36 @@ public final class WorkspaceModel {
     self.transportProvider = transportProvider
   }
 
-  public var visibleThreads: [ConversationThread] {
+  public var visibleThreads: [ConversationThread] { filtered(archived: false) }
+
+  /// Archived threads under the same search and connection filter, shown when `showArchived` is on.
+  public var archivedThreads: [ConversationThread] { filtered(archived: true) }
+
+  private func filtered(archived: Bool) -> [ConversationThread] {
     let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
-    return threads.filter { !$0.archived }
+    return threads.filter { $0.archived == archived }
       .filter { connectionFilter == nil || $0.connectionId == connectionFilter }
       .filter { query.isEmpty || $0.title.lowercased().contains(query) }
       .sorted { ($0.pinned ? 1 : 0, $0.updatedAt) > ($1.pinned ? 1 : 0, $1.updatedAt) }
+  }
+
+  /// Sidebar state for one thread: the connection's availability wins over an idle thread, and a
+  /// non-terminal turn wins over both (spec 3.1 indicators).
+  public func threadState(_ thread: ConversationThread) -> ThreadRowState {
+    if let turn = activeTurns[thread.id] {
+      switch turn.status {
+      case .submitting, .running: return .running
+      case .waitingForUser: return .waiting
+      case .stopping: return .stopping
+      case .reconciling: return .unknown
+      case .terminal: break
+      }
+    }
+    switch connection(id: thread.connectionId)?.status {
+    case .offline?, .connecting?: return .reconnecting
+    case .error?, .incompatible?: return .error
+    default: return .idle
+    }
   }
 
   public func connection(id: String) -> Connection? { connections.first { $0.id == id } }
@@ -147,6 +202,8 @@ public final class WorkspaceModel {
     let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
     connections = snapshot.connections
     threads = snapshot.threads
+    activeTurns = Dictionary(
+      snapshot.activeTurns.map { ($0.threadId, $0) }, uniquingKeysWith: { _, new in new })
     servers = (try? await client.request(ServerList.self, EmptyParams()).servers) ?? []
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
     if let id = selectedThreadId, detail != nil { await loadDetail(id: id) }
@@ -349,8 +406,15 @@ public final class WorkspaceModel {
         ThreadRead.self, ThreadRead.Params(threadId: id), options: RequestOptions(timeout: .seconds(60)))
       detail = ThreadDetail(
         thread: read.thread, turns: read.turns, items: read.items, requests: read.requests)
+      if let active = read.turns.last(where: { $0.status != .terminal }) {
+        activeTurns[id] = active
+      } else {
+        activeTurns[id] = nil
+      }
       let draft = try? await client.request(DraftRead.self, DraftRead.Params(threadId: id)).draft
+      restoringDraft = true
       composerText = draft?.text ?? ""
+      restoringDraft = false
       lastError = nil
     } catch {
       lastError = Self.describe(error)
@@ -362,6 +426,26 @@ public final class WorkspaceModel {
     let text = composerText
     _ = try? await client.request(
       DraftSave.self, DraftSave.Params(threadId: threadId, text: text), options: Self.mutation())
+  }
+
+  /// Save the open thread's draft shortly after typing stops, so a crash or Quit keeps the text.
+  private func scheduleDraftSave() {
+    draftSaveTask?.cancel()
+    guard let threadId = detail?.thread.id else { return }
+    draftSaveTask = Task { [weak self] in
+      try? await Task.sleep(for: Self.draftSaveDelay)
+      guard !Task.isCancelled, let self, self.detail?.thread.id == threadId else { return }
+      await self.saveDraft(threadId: threadId)
+      self.draftSaveTask = nil
+    }
+  }
+
+  /// Flush the pending draft write now (app termination, window close).
+  public func persistDraftNow() async {
+    draftSaveTask?.cancel()
+    draftSaveTask = nil
+    guard let threadId = detail?.thread.id else { return }
+    await saveDraft(threadId: threadId)
   }
 
   public func updateThread(id: String, title: String? = nil, pinned: Bool? = nil, archived: Bool? = nil) async
@@ -438,6 +522,7 @@ public final class WorkspaceModel {
       lastError = nil
       return value
     } catch {
+      lastFailure = WorkspaceError.from(error)
       lastError = Self.describe(error)
       return nil
     }
@@ -484,6 +569,11 @@ public final class WorkspaceModel {
           connections[index].authStatus = auth
         }
       }
+    case .turnAcknowledged, .turnStateChanged, .turnFinished:
+      if let threadId = event.threadId, let turn = try? event.payload["turn"]?.decode(Turn.self) {
+        activeTurns[threadId] = turn.status == .terminal ? nil : turn
+      }
+      applyToDetail(event)
     default:
       applyToDetail(event)
     }

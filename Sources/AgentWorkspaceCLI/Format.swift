@@ -58,8 +58,11 @@ enum Format {
     let isRoute =
       connection?.kind == .b4
       || (thread.context?.hasPrefix("/") == true && thread.context?.contains("#") == true)
+    var flags: [String] = []
+    if thread.pinned { flags.append("pinned") }
+    if thread.archived { flags.append("archived") }
     return
-      "\(thread.id)  \(thread.title)\n  connection \(connection?.label ?? thread.connectionId)  native \(thread.nativeThreadId)  \(isRoute ? "route" : "cwd") \(thread.context ?? "-")"
+      "\(thread.id)  \(thread.title)\(flags.isEmpty ? "" : "  [\(flags.joined(separator: ", "))]")\n  connection \(connection?.label ?? thread.connectionId)  native \(thread.nativeThreadId)  \(isRoute ? "route" : "cwd") \(thread.context ?? "-")"
   }
 
   static func threads(_ threads: [ConversationThread], connections: [Connection]) -> String {
@@ -68,7 +71,8 @@ enum Format {
     }
     return threads.map { thread in
       let label = connections.first { $0.id == thread.connectionId }?.label ?? thread.connectionId
-      return "\(thread.id)  \(pad(thread.pinned ? "*" : " ", 1)) \(pad(label, 12)) \(thread.title)"
+      return
+        "\(thread.id)  \(pad(thread.pinned ? "*" : " ", 1)) \(pad(label, 12)) \(thread.title)\(thread.archived ? "  [archived]" : "")"
     }.joined(separator: "\n")
   }
 
