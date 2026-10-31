@@ -32,6 +32,7 @@ let package = Package(
     .package(url: "https://github.com/apple/swift-nio-extras.git", from: "1.35.0"),
     .package(url: "https://github.com/swiftlang/swift-subprocess.git", from: "1.0.2"),
     .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.8.2"),
+    .package(url: "https://github.com/vapor/postgres-nio.git", from: "1.24.0"),
   ],
   targets: [
     // Runtime-neutral: Foundation only, links on iOS.
@@ -48,7 +49,11 @@ let package = Package(
       swiftSettings: concurrency),
     .target(
       name: "WorkspaceStorage",
-      dependencies: ["WorkspaceProtocol", .product(name: "GRDB", package: "GRDB.swift")],
+      dependencies: [
+        "WorkspaceProtocol", "WorkspacePlatform",
+        .product(name: "GRDB", package: "GRDB.swift"),
+        .product(name: "PostgresNIO", package: "postgres-nio"),
+      ],
       swiftSettings: concurrency),
     .target(
       name: "NIOTransport",
