@@ -7,6 +7,7 @@ use sqlx::PgPool;
 
 pub mod migrate;
 pub mod orgs;
+mod tenant;
 
 /// Everything that can go wrong in this crate. Messages never include a connection URL.
 #[derive(Debug, thiserror::Error)]

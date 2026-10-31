@@ -1,35 +1,11 @@
 //! Migration, role provisioning, and seed behaviour against a real PostgreSQL. Run with
 //! `source <(./scripts/test-db.sh)` first; `#[sqlx::test]` creates one database per test.
 
+mod common;
+
 use b4hub_db::{orgs, Db};
+use common::{admin_url, app_url, url_as};
 use sqlx::{PgPool, Row};
-use url::Url;
-
-/// The test pool's database, reached as the `DATABASE_URL` user.
-fn admin_url(pool: &PgPool) -> String {
-    let base = std::env::var("DATABASE_URL").expect("DATABASE_URL is set by test-db.sh");
-    let mut url = Url::parse(&base).unwrap();
-    let database = pool
-        .connect_options()
-        .get_database()
-        .expect("test pool has a database")
-        .to_string();
-    url.set_path(&format!("/{database}"));
-    url.to_string()
-}
-
-/// The same database reached as `user`.
-fn url_as(pool: &PgPool, user: &str, password: &str) -> String {
-    let mut url = Url::parse(&admin_url(pool)).unwrap();
-    url.set_username(user).unwrap();
-    url.set_password(Some(password)).unwrap();
-    url.to_string()
-}
-
-/// The same database reached as the application role.
-fn app_url(pool: &PgPool, password: &str) -> String {
-    url_as(pool, "b4hub_app", password)
-}
 
 #[sqlx::test(migrations = false)]
 async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
