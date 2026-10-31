@@ -98,6 +98,19 @@ enum Migrations {
         t.column("updatedAt", .text).notNull()
       }
     }
+    // M4: managed server registrations gain a CLI handle, the verified child identity, the inspected
+    // routes, and a status message.
+    migrator.registerMigration("v2") { db in
+      try db.alter(table: "localServers") { t in
+        t.add(column: "name", .text).notNull().defaults(to: "")
+        t.add(column: "cliVersion", .text)
+        t.add(column: "pid", .integer)
+        t.add(column: "processStartedAt", .double)
+        t.add(column: "statusMessage", .text)
+        t.add(column: "routes", .text).notNull().defaults(to: "[]")
+      }
+      try db.create(index: "localServersByName", on: "localServers", columns: ["name"], unique: true)
+    }
     return migrator
   }
 }

@@ -28,7 +28,8 @@ private func parse(_ json: String) throws -> ParsedCommand { try parseCommand(Da
   @Test func everyNewMethodDeclaresItsMutationFlag() {
     let mutations: Set<WorkspaceProtocol.Method> = [
       .connectionAdd, .connectionInspect, .connectionLogin, .threadCreate, .threadUpdate, .turnSend,
-      .turnInterrupt, .requestRespond, .draftSave, .credentialAdd,
+      .turnInterrupt, .requestRespond, .draftSave, .credentialAdd, .serverAdd, .serverStart, .serverRestart,
+      .serverStop, .serverInspect,
     ]
     for method in WorkspaceProtocol.Method.allCases {
       #expect(method.isMutation == mutations.contains(method), "\(method)")

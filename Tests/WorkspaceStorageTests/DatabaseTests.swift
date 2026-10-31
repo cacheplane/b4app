@@ -19,7 +19,7 @@ private func thread(
 @Suite struct DatabaseTests {
   @Test func createsSchemaWithWalForeignKeysAndPrivateMode() throws {
     let db = try WorkspaceDatabase.temporary()
-    #expect(try db.appliedMigrations() == ["v1"])
+    #expect(try db.appliedMigrations() == ["v1", "v2"])
     #expect(try db.journalMode() == "wal")
     let mode = try FileManager.default.attributesOfItem(atPath: db.path)[.posixPermissions] as? Int
     #expect(mode == 0o600)
@@ -31,7 +31,7 @@ private func thread(
     let path = first.path
     try first.close()
     let second = try WorkspaceDatabase(path: path)
-    #expect(try second.appliedMigrations() == ["v1"])
+    #expect(try second.appliedMigrations() == ["v1", "v2"])
     try second.close()
   }
 
@@ -119,5 +119,35 @@ private func thread(
       $0.outcome = .completed
     }
     #expect(try db.unresolvedTurns().isEmpty)
+  }
+
+  @Test func localServersRoundTripUpdateAndUniqueName() throws {
+    let db = try WorkspaceDatabase.temporary()
+    let route = LocalServerRoute(id: "/chat", kind: "agent", entryFile: "src/app/chat/index.ts")
+    let server = try db.insertLocalServer(
+      LocalServer(
+        id: "s1", name: "research", projectPath: "/p", nodePath: "/n", cliPath: "/p/cli.js",
+        launchMode: .source, requestedPort: 3101, routes: [route]))
+    #expect(try db.localServer(name: "research") == server)
+    #expect(try db.localServer(projectPath: "/p")?.routes == [route])
+    let updated = try db.updateLocalServer(id: "s1") {
+      $0.pid = 42
+      $0.health = .ready
+    }
+    #expect(updated?.pid == 42)
+    #expect(try db.localServer(id: "s1")?.health == .ready)
+    #expect(updated!.updatedAt >= server.updatedAt)
+    #expect(throws: (any Error).self) {
+      try db.insertLocalServer(
+        LocalServer(
+          id: "s2", name: "research", projectPath: "/q", nodePath: "/n", cliPath: "/q/cli.js",
+          launchMode: .source))
+    }
+    _ = try db.insertConnection(
+      Connection(
+        id: "c1", kind: .b4, label: "chat", target: "http://127.0.0.1:3101", routeKey: "/chat#agent",
+        b4Mode: .managedLocal, localServerId: "s1"))
+    #expect(try db.connections(localServerId: "s1").map(\.id) == ["c1"])
+    try db.close()
   }
 }

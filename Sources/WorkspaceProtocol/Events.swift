@@ -18,6 +18,7 @@ public enum EventKind: String, Codable, Sendable, CaseIterable {
   case reconciliationSnapshot = "reconciliation.snapshot"
   case adapterError = "adapter.error"
   case threadUpdated = "thread.updated"
+  case serverChanged = "server.changed"
 }
 
 /// One normalized adapter event. Identity fields are always present; the payload shape depends on `kind`.
@@ -56,6 +57,11 @@ public struct AdapterEvent: Codable, Sendable, Equatable {
         "status": .string(status.rawValue), "authStatus": .string(authStatus.rawValue),
         "transport": .string(transport.rawValue), "message": message.map(JSONValue.string) ?? .null,
       ])
+  }
+
+  /// A managed server row changed (health, pid, port, routes). Not tied to a connection.
+  public static func serverChanged(_ server: LocalServer) throws -> AdapterEvent {
+    AdapterEvent(kind: .serverChanged, connectionId: "", payload: ["server": try JSONValue(encoding: server)])
   }
 
   public static func threadUpdated(_ thread: ConversationThread) throws -> AdapterEvent {

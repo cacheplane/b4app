@@ -145,6 +145,9 @@ public actor Router {
     case .requestRespond:
       return try JSONValue(
         encoding: try await sessions.requestRespond(try command.params(for: RequestRespond.self)))
+    case .serverAdd, .serverList, .serverStart, .serverStatus, .serverLogs, .serverRestart, .serverStop,
+      .serverInspect:
+      throw WorkspaceError(.notImplemented, "Managed servers are wired in M4 task 4.")
     }
   }
 }
