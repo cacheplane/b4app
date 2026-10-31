@@ -1,0 +1,58 @@
+# The hub and its database for local use and as a reference deployment.
+#
+#   cp .env.example .env     # then fill in both passwords (see the file)
+#   docker compose build && docker compose up -d
+#   curl -fsS localhost:8080/readyz
+#   docker compose run --rm migrate seed --org cacheplane --org-name cacheplane \
+#     --user blove --name "Brian Love" --email brian@brianflove.com
+#   docker compose run --rm migrate enroll --user blove
+#
+# `seed` and `enroll` are operator commands: they connect with DATABASE_ADMIN_URL, which only the
+# `migrate` service carries (same image, different command). `hub`, the HTTP service, gets
+# DATABASE_URL (the b4hub_app role) and nothing else.
+
+x-b4hub: &b4hub
+  build: .
+  image: b4hub:local
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in Hub/.env (see .env.example)}
+      POSTGRES_DB: b4hub
+    volumes:
+      - b4hub-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d b4hub"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    <<: *b4hub
+    command: ["migrate"]
+    environment:
+      DATABASE_ADMIN_URL: postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in Hub/.env (see .env.example)}@db:5432/b4hub
+      DATABASE_URL: postgres://b4hub_app:${B4HUB_APP_PASSWORD:?set B4HUB_APP_PASSWORD in Hub/.env (see .env.example)}@db:5432/b4hub
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  hub:
+    <<: *b4hub
+    command: ["serve"]
+    environment:
+      DATABASE_URL: postgres://b4hub_app:${B4HUB_APP_PASSWORD:?set B4HUB_APP_PASSWORD in Hub/.env (see .env.example)}@db:5432/b4hub
+    ports:
+      - "8080:8080"
+    # The hub drains open long-polls for up to B4HUB_SHUTDOWN_WAIT_MS (30 s); Compose's default
+    # 10 s stop timeout would SIGKILL it first.
+    stop_grace_period: 35s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  b4hub-db:
