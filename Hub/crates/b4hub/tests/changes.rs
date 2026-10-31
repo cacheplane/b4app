@@ -552,8 +552,8 @@ async fn http(
 /// 0 to 1.95 ms in 50 microsecond steps (three sweeps, to cross the pull's query window), and
 /// every round must come back inside a second even though the pull is willing to wait five. The
 /// window is a few hundred microseconds wide, so this catches taking the wake-up future after
-/// the query only some of the time; the deterministic half of the guarantee is the `notify`
-/// unit test, and the ordering is the first thing the handler does.
+/// the query only some of the time; the deterministic check of the ordering is the
+/// `long_poll` unit test in `routes/changes.rs`.
 #[sqlx::test(migrations = false)]
 async fn pull_over_real_tcp_does_not_miss_a_push_in_the_gap(pool: PgPool) {
     let (admin, state) = migrated(&pool).await;
