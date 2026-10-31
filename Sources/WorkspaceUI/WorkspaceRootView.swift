@@ -17,7 +17,7 @@ public struct WorkspaceRootView: View {
         .navigationSplitViewColumnWidth(min: 240, ideal: 290)
     } detail: {
       detail
-        .containerBackground(LLA.Color.bg, for: .window)
+        .modifier(WorkspaceWindowBackground())
     }
     .tint(LLA.Color.accent)
     .task { model.connect() }
@@ -38,6 +38,17 @@ public struct WorkspaceRootView: View {
     case .servers: LocalServersView(model: model)
     case .diagnostics: DiagnosticsView(model: model)
     }
+  }
+}
+
+/// The window's own background in the theme colour on macOS; iOS has no window container.
+struct WorkspaceWindowBackground: ViewModifier {
+  func body(content: Content) -> some View {
+    #if os(macOS)
+      content.containerBackground(LLA.Color.bg, for: .window)
+    #else
+      content.background(LLA.Color.bg)
+    #endif
   }
 }
 

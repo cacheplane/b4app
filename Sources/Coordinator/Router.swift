@@ -1,4 +1,5 @@
 import Foundation
+import WorkspacePlatform
 import WorkspaceProtocol
 import WorkspaceStorage
 
@@ -12,6 +13,7 @@ public actor Router {
     public var sessions: SessionService
     public var servers: LocalServerService
     public var startedAt: String
+    public var paths: PlatformPaths
   }
 
   private let context: Context
@@ -184,6 +186,39 @@ public actor Router {
     case .workspaceReconcile:
       let params = try command.params(for: WorkspaceReconcile.self)
       return try JSONValue(encoding: await sessions.reconcileAll(reason: params.reason ?? "request"))
+    case .databaseStatus:
+      return try JSONValue(encoding: try storeStatus())
+    case .databaseBackup:
+      let params = try command.params(for: DatabaseBackup.self)
+      let path = params.path ?? defaultBackupPath()
+      let summary = try context.database.export(to: path)
+      return try JSONValue(encoding: DatabaseBackup.Result(path: summary.path, rows: summary.rows))
+    case .databaseRestore:
+      let params = try command.params(for: DatabaseRestore.self)
+      let summary = try context.database.restore(from: params.path, replace: params.replace)
+      return try JSONValue(encoding: DatabaseBackup.Result(path: summary.path, rows: summary.rows))
+    case .databaseImportSQLite:
+      let params = try command.params(for: DatabaseImportSQLite.self)
+      let summary = try SQLiteImporter.importFile(at: params.path, into: context.database)
+      return try JSONValue(encoding: DatabaseImportSQLite.Result(rows: summary.rows))
     }
+  }
+
+  // MARK: - Store commands (M7)
+
+  private var backupsDir: String { (context.paths.dataDir as NSString).appendingPathComponent("backups") }
+
+  private func defaultBackupPath() -> String {
+    let stamp = Timestamp.now().replacingOccurrences(of: ":", with: "-")
+    return (backupsDir as NSString).appendingPathComponent("workspace-\(stamp).jsonl")
+  }
+
+  private func storeStatus() throws -> DatabaseStatus.Result {
+    let endpoint = context.paths.postgres
+    return DatabaseStatus.Result(
+      endpoint: "postgresql:///\(endpoint.database)?host=\(endpoint.socketDir)&port=\(endpoint.port)",
+      dataDir: endpoint.dataDir, migrations: try context.database.appliedMigrations(),
+      rows: try context.database.tableCounts(), unsyncedChanges: try context.database.unsyncedChangeCount(),
+      backupsDir: backupsDir)
   }
 }

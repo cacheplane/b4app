@@ -110,6 +110,16 @@ Design: `docs/superpowers/specs/2026-10-31-m6-package-and-accept-design.md`. Pla
 
 Exit gate status: open. The implementation ships with the gate clearly open on the live rows that need the owner (Claude sign-in, a remote endpoint, a screen click-through) and on Developer ID signing; nothing is labelled fully validated.
 
-## M7: storage hardening and multi-device sync
+## M7: PostgreSQL store (D-041)
 
-Proposed on 2026-10-31. Design (brainstorm, with the five decisions the owner must make): `docs/superpowers/specs/2026-10-31-storage-and-sync-design.md`. Plan outline: `docs/superpowers/plans/2026-10-31-storage-and-sync.md`. Not started.
+Design: `docs/superpowers/specs/2026-10-31-storage-and-sync-design.md`. Plan: `docs/superpowers/plans/2026-10-31-storage-and-sync.md`.
+
+- [x] Bundled, pinned PostgreSQL 17.11 (`Scripts/fetch-postgres.sh`, `Contents/SharedSupport/postgres`), a private cluster per Mac on a Unix socket, started and stopped by the coordinator. `implemented`, `fixture-tested` (`PostgresServerTests`: initdb, start, adopt, stop, stale pid), `live-tested` (the packaged app started its cluster from the bundle).
+- [x] The store rewritten on libpq behind the existing API; one migrator with versioned SQL files; every existing test passes on Postgres. `implemented`, `fixture-tested` (261 tests).
+- [x] The pre-0.2 SQLite store imported once and retired. `fixture-tested` (`SQLiteImportTests`), `live-tested` on a copy of the owner's real store.
+- [x] `db status|migrate|backup|restore|import-sqlite` through the coordinator; JSON-lines export and restore. `fixture-tested` (`ChangeLogTests`), `live-tested` through the CLI.
+- [x] Change log written by triggers, read and replayed by the store (`changes(after:)`, `replay`). `fixture-tested`: every write leaves rows and the log replays into an equal store.
+- [ ] Hybrid logical clock and device identity (M8 sets them; the log carries the device id and wall clock now).
+- [ ] Schema documentation (`docs/schema.md`).
+
+Exit gate status: the store runs on Postgres end to end; sync (M8) has not started.

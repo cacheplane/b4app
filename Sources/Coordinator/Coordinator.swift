@@ -142,7 +142,7 @@ public enum Coordinator {
       context: Router.Context(
         database: database, eventLog: eventLog, diagnostics: diagnostics, sessions: sessions,
         servers: servers,
-        startedAt: startedAt))
+        startedAt: startedAt, paths: paths))
     let server: SocketServer
     do {
       server = try await SocketServer.start(socketPath: paths.socketPath, router: router, eventLog: eventLog)

@@ -16,6 +16,9 @@ DERIVED=.build/DerivedData
 DIST=dist
 APP="$DIST/Agent Workspace.app"
 
+echo "==> Fetching the pinned PostgreSQL binaries"
+./Scripts/fetch-postgres.sh
+
 echo "==> Building the coordinator and the CLI (release)"
 swift build -c release --product b4app-coordinator
 swift build -c release --product agent-workspace
@@ -35,6 +38,11 @@ mkdir -p "$APP/Contents/Helpers" "$APP/Contents/Library/LaunchAgents"
 cp "$BIN/b4app-coordinator" "$BIN/agent-workspace" "$APP/Contents/Helpers/"
 "$BIN/agent-workspace" coordinator plist > "$APP/Contents/Library/LaunchAgents/com.cacheplane.b4app.coordinator.plist"
 plutil -lint "$APP/Contents/Library/LaunchAgents/com.cacheplane.b4app.coordinator.plist"
+# The private PostgreSQL cluster's server, initdb, pg_ctl, libraries, and share tree (D-041) go
+# under SharedSupport: Helpers accepts only nested code and this tree carries SQL and share files.
+# The coordinator starts and stops the cluster itself; there is no second LaunchAgent.
+mkdir -p "$APP/Contents/SharedSupport"
+cp -R .build/postgres "$APP/Contents/SharedSupport/postgres"
 
 echo "==> Signing with identity: $IDENTITY"
 if [ "$IDENTITY" = "-" ]; then
@@ -42,8 +50,15 @@ if [ "$IDENTITY" = "-" ]; then
 else
   OPTIONS="--options runtime --timestamp"
 fi
-# Nested code first, then the bundle; never --deep, which signs in the wrong order.
-for helper in "$APP/Contents/Helpers/"*; do
+# Nested code first, then the bundle; never --deep, which signs in the wrong order. Every Mach-O in
+# the PostgreSQL tree is signed individually (symlinks are skipped; their targets are signed).
+find "$APP/Contents/SharedSupport/postgres" -type f \( -perm -u+x -o -name "*.dylib" \) | while read -r f; do
+  if file "$f" | grep -q "Mach-O"; then
+    # shellcheck disable=SC2086
+    codesign --force --sign "$IDENTITY" $OPTIONS "$f" 2>&1 | grep -v "replacing existing signature" || true
+  fi
+done
+for helper in "$APP/Contents/Helpers/b4app-coordinator" "$APP/Contents/Helpers/agent-workspace"; do
   # shellcheck disable=SC2086
   codesign --force --sign "$IDENTITY" $OPTIONS "$helper"
 done

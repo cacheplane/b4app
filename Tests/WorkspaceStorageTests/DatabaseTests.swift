@@ -19,12 +19,12 @@ private func thread(
 @Suite struct DatabaseTests {
   @Test func appliesTheBundledMigrationsOnce() throws {
     let db = try WorkspaceDatabase.temporary()
-    #expect(try db.appliedMigrations() == ["0001_init"])
+    #expect(try db.appliedMigrations() == ["0001_init", "0002_changes"])
     // Reopening the same database applies nothing further and keeps the data.
     _ = try db.insertConnection(connection("c1"))
     try db.close()
     let again = try WorkspaceDatabase(endpoint: db.endpoint, binDir: db.endpoint.binDir!)
-    #expect(try again.appliedMigrations() == ["0001_init"])
+    #expect(try again.appliedMigrations() == ["0001_init", "0002_changes"])
     #expect(try again.connection(id: "c1")?.label == "c1")
     try again.close()
   }

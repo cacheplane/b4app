@@ -50,11 +50,11 @@ public final class WorkspaceDatabase: Sendable {
 
   // MARK: - Plumbing
 
-  private func read<T>(_ body: (PostgresConnection) throws -> T) throws -> T {
+  func read<T>(_ body: (PostgresConnection) throws -> T) throws -> T {
     do { return try pool.withConnection(body) } catch { throw Self.mapped(error) }
   }
 
-  private func write<T>(_ body: (PostgresConnection) throws -> T) throws -> T {
+  func write<T>(_ body: (PostgresConnection) throws -> T) throws -> T {
     do {
       return try pool.withConnection { c in
         try c.execute("BEGIN")
@@ -78,13 +78,13 @@ public final class WorkspaceDatabase: Sendable {
     return error
   }
 
-  private func one<T: Decodable>(
+  func one<T: Decodable>(
     _ c: PostgresConnection, _ type: T.Type, _ sql: String, _ params: [String?] = []
   ) throws -> T? {
     try c.execute(sql, params).rows.first.map { try Rows.decode(T.self, from: $0) }
   }
 
-  private func all<T: Decodable>(
+  func all<T: Decodable>(
     _ c: PostgresConnection, _ type: T.Type, _ sql: String, _ params: [String?] = []
   ) throws -> [T] {
     try c.execute(sql, params).rows.map { try Rows.decode(T.self, from: $0) }
@@ -112,7 +112,7 @@ public final class WorkspaceDatabase: Sendable {
   }
 
   /// The table's columns in order, from the catalog, cached for the life of this store.
-  private func columns(_ c: PostgresConnection, of table: String) throws -> [String] {
+  func columns(_ c: PostgresConnection, of table: String) throws -> [String] {
     if let cached = columnCache.withLock({ $0[table] }) { return cached }
     let names = try c.execute(
       "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position",
@@ -127,6 +127,44 @@ public final class WorkspaceDatabase: Sendable {
     _ c: PostgresConnection, _ type: T.Type, _ table: String, _ id: String, key: String = "id"
   ) throws -> T? {
     try one(c, T.self, "SELECT * FROM \(Rows.quote(table)) WHERE \(Rows.quote(key)) = $1", [id])
+  }
+
+  // MARK: - Raw access (the one-time SQLite import)
+
+  /// The table's columns, from the catalog.
+  func tableColumns(_ table: String) throws -> [String] {
+    try read { try columns($0, of: table) }
+  }
+
+  func rowCount(table: String) throws -> Int {
+    try read {
+      try $0.execute("SELECT count(*) AS \"n\" FROM \(Rows.quote(table))").rows.first?.int("n") ?? 0
+    }
+  }
+
+  /// Insert text rows as they are, one INSERT per row in one transaction; PostgreSQL casts each value
+  /// by its column's type (booleans from `true`/`false`, `jsonb` from JSON text).
+  func insertRaw(table: String, columns: [String], rows: [[String?]]) throws {
+    try insertRaw(batches: [(table, columns, rows)])
+  }
+
+  /// Several tables' rows in one transaction, each batch one `INSERT` per row.
+  func insertRaw(batches: [(table: String, columns: [String], rows: [[String?]])]) throws {
+    try write { c in
+      for batch in batches where !batch.rows.isEmpty && !batch.columns.isEmpty {
+        let names = batch.columns.map(Rows.quote).joined(separator: ", ")
+        let placeholders = (1...batch.columns.count).map { "$\($0)" }.joined(separator: ", ")
+        let sql = "INSERT INTO \(Rows.quote(batch.table)) (\(names)) VALUES (\(placeholders))"
+        for row in batch.rows {
+          guard row.count == batch.columns.count else {
+            throw WorkspaceError(
+              .internalError,
+              "Row of \(batch.table) has \(row.count) values for \(batch.columns.count) columns")
+          }
+          try c.execute(sql, row)
+        }
+      }
+    }
   }
 
   // MARK: - Connections

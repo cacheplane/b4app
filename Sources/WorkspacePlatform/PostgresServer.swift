@@ -43,9 +43,10 @@ public struct PostgresCluster: Sendable, Equatable {
   }
 }
 
-/// Finds the bundled PostgreSQL binaries: `B4APP_POSTGRES_BIN`, `postgres/bin` beside the current
-/// executable (the app's `Contents/Helpers`), `../postgres/bin` (a SwiftPM build directory next to
-/// `.build/postgres`), then the installed app.
+/// Finds the bundled PostgreSQL binaries: `B4APP_POSTGRES_BIN`, then `postgres/bin` or
+/// `SharedSupport/postgres/bin` beside the executable or a resource bundle or any ancestor up to the
+/// package's `.build` (the app's `Contents/SharedSupport`, a SwiftPM build directory, the test
+/// bundle), then the installed app.
 public enum PostgresLocator {
   public static let environmentVariable = "B4APP_POSTGRES_BIN"
   static let required = ["postgres", "initdb", "pg_ctl"]
@@ -63,15 +64,15 @@ public enum PostgresLocator {
       var dir = anchor.resolvingSymlinksInPath().deletingLastPathComponent()
       for _ in 0..<8 {
         candidates.append(dir.appendingPathComponent("postgres/bin").path)
-        candidates.append(dir.appendingPathComponent("Helpers/postgres/bin").path)
+        candidates.append(dir.appendingPathComponent("SharedSupport/postgres/bin").path)
         let parent = dir.deletingLastPathComponent()
         if parent.path == dir.path { break }
         dir = parent
       }
     }
     let home = env["HOME"] ?? NSHomeDirectory()
-    candidates.append("/Applications/Agent Workspace.app/Contents/Helpers/postgres/bin")
-    candidates.append("\(home)/Applications/Agent Workspace.app/Contents/Helpers/postgres/bin")
+    candidates.append("/Applications/Agent Workspace.app/Contents/SharedSupport/postgres/bin")
+    candidates.append("\(home)/Applications/Agent Workspace.app/Contents/SharedSupport/postgres/bin")
     return candidates.first(where: complete)
   }
 

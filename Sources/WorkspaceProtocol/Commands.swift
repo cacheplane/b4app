@@ -34,6 +34,10 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case workspaceActiveWork = "workspace.activeWork"
   case workspaceStopLocalWork = "workspace.stopLocalWork"
   case workspaceReconcile = "workspace.reconcile"
+  case databaseStatus = "database.status"
+  case databaseBackup = "database.backup"
+  case databaseRestore = "database.restore"
+  case databaseImportSQLite = "database.importSqlite"
 
   public var isMutation: Bool {
     switch self {
@@ -41,10 +45,13 @@ public enum Method: String, Codable, Sendable, CaseIterable {
       .threadReconcile, .turnSend, .turnInterrupt, .turnAbandon, .requestRespond, .credentialAdd, .serverAdd,
       .serverStart,
       .serverRestart,
-      .serverStop, .serverInspect, .workspaceStopLocalWork, .workspaceReconcile:
+      .serverStop, .serverInspect, .workspaceStopLocalWork, .workspaceReconcile, .databaseBackup,
+      .databaseRestore,
+      .databaseImportSQLite:
       return true
     case .systemPing, .diagnosticsRead, .connectionList, .threadList, .draftRead, .eventsSnapshot,
-      .eventsReplay, .threadRead, .serverList, .serverStatus, .serverLogs, .workspaceActiveWork:
+      .eventsReplay, .threadRead, .serverList, .serverStatus, .serverLogs, .workspaceActiveWork,
+      .databaseStatus:
       return false
     }
   }
@@ -628,6 +635,77 @@ public enum WorkspaceReconcile: WorkspaceCommand {
     }
   }
   public static let method = Method.workspaceReconcile
+}
+
+// MARK: - Store (M7, D-041)
+
+/// Where the store is, what schema it has, how big it is, and how much of its change log is unsynced.
+public enum DatabaseStatus: WorkspaceCommand {
+  public typealias Params = EmptyParams
+  public struct Result: Codable, Sendable, Equatable {
+    public var endpoint: String
+    public var dataDir: String?
+    public var migrations: [String]
+    public var rows: [String: Int]
+    public var unsyncedChanges: Int
+    public var backupsDir: String
+    public init(
+      endpoint: String, dataDir: String?, migrations: [String], rows: [String: Int], unsyncedChanges: Int,
+      backupsDir: String
+    ) {
+      self.endpoint = endpoint
+      self.dataDir = dataDir
+      self.migrations = migrations
+      self.rows = rows
+      self.unsyncedChanges = unsyncedChanges
+      self.backupsDir = backupsDir
+    }
+  }
+  public static let method = Method.databaseStatus
+}
+
+/// Write every table to a JSON-lines archive (default: `<data dir>/backups/<timestamp>.jsonl`).
+public enum DatabaseBackup: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var path: String?
+    public init(path: String? = nil) { self.path = path }
+  }
+  public struct Result: Codable, Sendable, Equatable {
+    public var path: String
+    public var rows: Int
+    public init(path: String, rows: Int) {
+      self.path = path
+      self.rows = rows
+    }
+  }
+  public static let method = Method.databaseBackup
+}
+
+/// Load an archive into an empty store, or over the current one with `replace`.
+public enum DatabaseRestore: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var path: String
+    public var replace: Bool
+    public init(path: String, replace: Bool = false) {
+      self.path = path
+      self.replace = replace
+    }
+  }
+  public typealias Result = DatabaseBackup.Result
+  public static let method = Method.databaseRestore
+}
+
+/// Import a pre-0.2 `workspace.sqlite` into an empty store.
+public enum DatabaseImportSQLite: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var path: String
+    public init(path: String) { self.path = path }
+  }
+  public struct Result: Codable, Sendable, Equatable {
+    public var rows: [String: Int]
+    public init(rows: [String: Int]) { self.rows = rows }
+  }
+  public static let method = Method.databaseImportSQLite
 }
 
 public struct ParsedCommand: Sendable, Equatable {
