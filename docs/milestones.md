@@ -39,10 +39,18 @@ Exit gate status: open on the live inference turn (sign-in needed) and on intera
 
 ## M3: B4 local and remote adapters
 
-- [x] Endpoint reachability without inference, HTTPS enforcement for non-loopback. `fixture-tested` with a URLProtocol stub.
+Design: `docs/superpowers/specs/2026-10-31-m3-b4-conversation-design.md`. Plan: `docs/superpowers/plans/2026-10-31-m3-b4-conversation.md`.
+
+- [x] Endpoint reachability without inference, HTTPS enforcement for non-loopback. `fixture-tested` with a URLProtocol stub and the fixture server.
 - [x] SSE parsing across chunk boundaries with parked, failed, cancelled, snapshot-only, and reattach outcomes. `fixture-tested`.
-- [ ] Endpoint profiles, route binding, secret references, `credential add`. SecretStore `implemented`; CLI command exits 3 `not_implemented`.
-- [ ] Thread operations and live tests. `blocked`: no project or endpoint selected.
+- [x] Endpoint profiles, exact route binding, endpoint secret references, capability checks, `credential add` with a hidden prompt. `implemented`, `fixture-tested` (coordinator suite), `live-tested` through the CLI against the fixture (keychain-backed secret store, piped stdin path; the TTY prompt path was not exercised).
+- [x] Native thread creation, streaming input, state and turn reads, permission resolution (`once`, `always`, `deny`, cancel), explicit cancellation. `fixture-tested` end to end (adapter and coordinator suites).
+- [x] Read-only reattachment with reconciliation and unknown-submission handling. `fixture-tested`: a dropped stream reattaches and finishes with one server-side turn; a parked prompt survives a server restart and a coordinator restart; a server restart mid-run fails the turn honestly; an unrecorded ordinal is reported as `submission_unknown` and never resubmitted.
+- [x] Unsupported route kinds surface as a compatibility result. `fixture-tested` and `live-tested` via the CLI (`/dispatch#workflow` → `incompatible`, exit 2).
+- [ ] Test against an existing local standard-agent server, then a compatible remote HTTPS endpoint. **Blocked**: no local `agent()` project with model credentials on this Mac (hashbrown's B4 projects are `workflow` routes; `examples/chat` needs `OPENAI_API_KEY`). Opt-in test ready: `B4APP_LIVE_B4_URL`/`B4APP_LIVE_B4_ROUTE`.
+- [ ] Standard-agent persistence across a real B4 server restart. `fixture-tested` only (fixture persists its stores to a JSON file).
+
+Exit gate status: local and remote B4 threads coexist with harness threads, stream loss does not resubmit, parked is distinguishable from cancelled (all fixture-verified); open on live inference and on a real remote HTTPS endpoint with its real credential.
 
 ## M4: managed B4 execution and the shared CLI
 

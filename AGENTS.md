@@ -19,6 +19,7 @@ This repository is the Personal Agent Workspace: a native Swift macOS app, an iO
 - `Sources/WorkspaceStorage` is the only module that opens SQLite, and only the coordinator uses it.
 - `Sources/Coordinator` is the service both the app and the CLI talk to over the Unix socket; `Sources/CoordinatorMain` is its executable.
 - `Sources/CodexAdapter`, `ClaudeAdapter`, `B4Adapter`: one per native runtime. `Apps/` holds the two thin app targets.
+- Fake runtimes for tests live under `Tests/<Adapter>Tests/Fixtures/` (`fake-codex.py`, `fake-claude.py`, `fake-b4.py`); the coordinator tests reuse them by path. Live tests are gated by `B4APP_LIVE_CODEX`, `B4APP_LIVE_CLAUDE`, and `B4APP_LIVE_B4_URL`.
 - `Sources/Coordinator/SessionService.swift` is the only writer of turns, display items, and runtime requests; adapters emit `AdapterEvent`s with native ids and the session service maps them to app ids.
 
 ## Rules
