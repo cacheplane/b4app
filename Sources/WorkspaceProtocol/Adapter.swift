@@ -169,3 +169,19 @@ public protocol AgentAdapter: Sendable {
   /// Closes adapter resources. Never an implicit remote cancel.
   func dispose() async
 }
+
+/// Result of starting a runtime's official sign-in. The caller opens `authUrl`; completion arrives as
+/// a `connection.changed` event. Never carries tokens.
+public struct LoginStart: Codable, Sendable, Equatable {
+  public var authUrl: String
+  public var loginId: String
+  public init(authUrl: String, loginId: String) {
+    self.authUrl = authUrl
+    self.loginId = loginId
+  }
+}
+
+/// Adapters whose runtime offers an official browser sign-in the app can start.
+public protocol LoginCapable: Sendable {
+  func startLogin() async throws -> LoginStart
+}

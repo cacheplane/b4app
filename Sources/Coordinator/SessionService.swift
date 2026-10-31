@@ -142,10 +142,10 @@ public actor SessionService {
 
   public func connectionLogin(_ params: ConnectionLogin.Params) async throws -> ConnectionLogin.Result {
     let (_, adapter) = try connectionAndAdapter(id: params.connectionId)
-    guard let codex = adapter as? CodexAdapter else {
-      throw WorkspaceError.unsupported("login", plannedFor: "M2")
+    guard let capable = adapter as? any LoginCapable else {
+      throw WorkspaceError.unsupported("login", plannedFor: "M3")
     }
-    let login = try await codex.startLogin()
+    let login = try await capable.startLogin()
     _ = try db.updateConnection(id: params.connectionId) { $0.authStatus = .authenticating }
     return ConnectionLogin.Result(authUrl: login.authUrl, loginId: login.loginId)
   }

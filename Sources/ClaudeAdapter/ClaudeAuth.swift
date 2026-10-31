@@ -12,6 +12,7 @@ public struct ClaudeAuthStatus: Decodable, Sendable, Equatable {
   public var orgId: String?
   public var orgName: String?
   public var subscriptionType: String?
+  public var projectsDirectory: String?
 
   public static func parse(_ json: String) -> ClaudeAuthStatus? {
     try? JSONDecoder().decode(ClaudeAuthStatus.self, from: Data(json.utf8))
