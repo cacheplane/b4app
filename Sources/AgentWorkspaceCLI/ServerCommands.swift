@@ -24,6 +24,14 @@ struct Server: AsyncParsableCommand {
       details: ["server": .string(nameOrId)])
   }
 
+  static func absolute(_ path: String) -> String {
+    let expanded = (path as NSString).expandingTildeInPath
+    if expanded.hasPrefix("/") { return (expanded as NSString).standardizingPath }
+    return
+      ((FileManager.default.currentDirectoryPath as NSString).appendingPathComponent(expanded) as NSString)
+      .standardizingPath
+  }
+
   static func exitCode(for server: LocalServer) -> Int32 {
     server.health == .ready ? Exit.ok : Exit.unavailable
   }
@@ -51,10 +59,12 @@ struct Server: AsyncParsableCommand {
           )
           fflush(stdout)
         }
+        // The coordinator's working directory is not the shell's; resolve relative paths here.
         let result = try await client.request(
           ServerAdd.self,
           ServerAdd.Params(
-            projectPath: projectDir, name: name, launchMode: mode, envFilePath: envFile, port: port),
+            projectPath: Server.absolute(projectDir), name: name, launchMode: mode,
+            envFilePath: envFile.map(Server.absolute), port: port),
           options: Link.mutation(timeout: Server.longOperation))
         let connections = try await client.request(
           ConnectionList.self, ConnectionList.Params(includeDisabled: true))

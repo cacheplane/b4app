@@ -142,6 +142,9 @@ private func scratchFile(_ name: String) -> String {
     #expect(Ports.isFree(port))
     let fd = socket(AF_INET, SOCK_STREAM, 0)
     defer { close(fd) }
+    // A Node listener sets SO_REUSEADDR; the probe must still see it.
+    var one: Int32 = 1
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, socklen_t(MemoryLayout<Int32>.size))
     var address = sockaddr_in()
     address.sin_family = sa_family_t(AF_INET)
     address.sin_port = in_port_t(port).bigEndian
@@ -154,5 +157,11 @@ private func scratchFile(_ name: String) -> String {
     #expect(bound == 0)
     #expect(listen(fd, 1) == 0)
     #expect(!Ports.isFree(port))
+    // A listener that never accepts saturates its backlog; the probe must still answer quickly.
+    let clock = ContinuousClock()
+    let elapsed = clock.measure {
+      for _ in 0..<3 { #expect(!Ports.isFree(port)) }
+    }
+    #expect(elapsed < .seconds(2))
   }
 }

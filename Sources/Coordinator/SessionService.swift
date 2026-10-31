@@ -62,6 +62,14 @@ public actor SessionService {
   /// Coordinator start: no runtime process survived, so pending requests expire and non-terminal
   /// turns become `reconciling` with an unknown outcome until a viewer reconciles them.
   public func start() {
+    if let servers = context.servers {
+      pumps["managed-servers"] = Task { [weak self] in
+        for await event in servers.events() {
+          guard let self else { return }
+          await self.project(event)
+        }
+      }
+    }
     do {
       _ = try db.expireAllRuntimeRequests()
       for turn in try db.unresolvedTurns() where turn.status != .reconciling {

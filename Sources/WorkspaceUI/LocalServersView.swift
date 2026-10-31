@@ -84,7 +84,7 @@ struct ServerCard: View {
         HStack(spacing: 10) {
           Button("Start") { Task { await model.startServer(id: server.id) } }
             .buttonStyle(.borderedProminent)
-            .disabled(model.busy || server.health == .ready || server.health == .starting)
+            .disabled(model.busy || server.pid != nil)
             .accessibilityIdentifier("server-start-\(server.name)")
           Button("Stop") { Task { await model.stopServer(id: server.id) } }
             .disabled(model.busy || server.pid == nil)

@@ -16,7 +16,8 @@ Commands, with the real CLI's observable behavior:
 Env knobs: FAKE_B4_MARK (echoed as "FAKE_B4_MARK=<value>" at boot so a test can see an env-file value
 reached the child), FAKE_B4_ECHO_ENV=1 (echoes OPENAI_API_KEY=… at boot for redaction tests),
 FAKE_B4_HANG_ON_TERM=<s> (ignore SIGTERM for that long), FAKE_B4_FAIL_START=1 (print "boot failed"
-and exit 2 instead of listening). Never a substitute for the real CLI in anything the docs call
+and exit 2 instead of listening), FAKE_B4_ROUTES_FAIL=1 (routes fails and echoes OPENAI_API_KEY on
+stderr for redaction tests). Never a substitute for the real CLI in anything the docs call
 live-tested."""
 import json
 import os
@@ -62,6 +63,9 @@ def app_root(cwd):
 
 
 def routes(args):
+    if os.environ.get("FAKE_B4_ROUTES_FAIL") == "1":
+        err("Failed to discover routes: config dump OPENAI_API_KEY=%s" % os.environ.get("OPENAI_API_KEY", ""))
+        return 2
     cwd = option(args, "--cwd") or os.getcwd()
     root = app_root(cwd)
     if root is None:

@@ -133,19 +133,33 @@ public actor LocalServerService {
     var monitor: Task<Void, Never>?
   }
 
+  private enum Operation { case start, stop }
+
   private var running: [String: Running] = [:]
-  private var startTasks: [String: Task<ServerAdd.Result, any Error>] = [:]
+  /// One lifecycle operation per server at a time: a start joins a start in flight and waits for a
+  /// stop in flight; a stop waits for either. Nothing else may touch `running[id]` meanwhile.
+  private var inFlight: [String: (kind: Operation, task: Task<ServerAdd.Result, any Error>)] = [:]
+  private let (connectionEvents, connectionContinuation) = AsyncStream<AdapterEvent>.makeStream()
   private static let readinessTimeout: Duration = .seconds(90)
   private static let stopGracePeriod: Duration = .seconds(10)
 
-  /// Idempotent: a ready server returns its row; a start in flight is joined.
+  /// Connection-level events for route connections on managed servers (`ready` when the server
+  /// answers, `offline` with a disconnected transport otherwise). The session service projects them
+  /// like an adapter's, so a server exit marks running turns `reconciling` and expires prompts.
+  public nonisolated func events() -> AsyncStream<AdapterEvent> { connectionEvents }
+
+  /// Idempotent: a ready server returns its row; a start in flight is joined; a stop in flight is
+  /// waited for first.
   public func start(id: String) async throws -> ServerAdd.Result {
+    while let current = inFlight[id] {
+      if current.kind == .start { return try await current.task.value }
+      _ = try? await current.task.value
+    }
     let server = try require(id)
     if server.health == .ready, running[id] != nil { return ServerAdd.Result(server: server) }
-    if let inFlight = startTasks[id] { return try await inFlight.value }
     let task = Task { try await self.launch(server) }
-    startTasks[id] = task
-    defer { startTasks[id] = nil }
+    inFlight[id] = (.start, task)
+    defer { inFlight[id] = nil }
     return try await task.value
   }
 
@@ -153,8 +167,15 @@ public actor LocalServerService {
     guard let port = server.requestedPort, let logPath = server.logPath else {
       throw WorkspaceError(.internalError, "Server \(server.name) has no port or log path.")
     }
-    if let stale = running[server.id] {
-      stale.monitor?.cancel()
+    if let live = running[server.id] {
+      // An owned instance we still recognize is never discarded by a start; restart handles it.
+      if verifyOwnership(server) {
+        throw WorkspaceError(
+          .ownedProcessConflict,
+          "Server \(server.name) is already running as pid \(live.identity.pid) (\(server.health.rawValue)). Use `agent-workspace server restart \(server.name)` to replace it.",
+          details: ["serverId": .string(server.id), "pid": .number(Double(live.identity.pid))])
+      }
+      live.monitor?.cancel()
       running[server.id] = nil
     }
     guard Ports.isFree(port) else {
@@ -247,7 +268,14 @@ public actor LocalServerService {
   /// Stop a verified owned instance. Refused while a route connection has a running turn unless
   /// forced (D-030); never signals a process whose identity does not match (D-025).
   public func stop(id: String, force: Bool) async throws -> ServerAdd.Result {
-    if let inFlight = startTasks[id] { _ = try? await inFlight.value }
+    while let current = inFlight[id] { _ = try? await current.task.value }
+    let task = Task { try await self.performStop(id: id, force: force) }
+    inFlight[id] = (.stop, task)
+    defer { inFlight[id] = nil }
+    return try await task.value
+  }
+
+  private func performStop(id: String, force: Bool) async throws -> ServerAdd.Result {
     var server = try require(id)
     if !force, server.pid != nil {
       let active = try activeThreadIds(serverId: id)
@@ -456,13 +484,16 @@ public actor LocalServerService {
     return ids
   }
 
-  /// Route connections follow their server: `ready` while it answers, `offline` otherwise.
+  /// Route connections follow their server: `ready` while it answers, `offline` otherwise. The row
+  /// is updated here so a caller reads the new status as soon as the operation returns; the event
+  /// goes through the session service's projection (`events()`), which also marks running turns
+  /// `reconciling` and expires prompts when the transport is gone, exactly as for a harness exit.
   private func notifyConnections(serverId: String, ready: Bool) async {
     for connection in (try? db.connections(localServerId: serverId)) ?? [] {
       let status: ConnectionStatus = ready ? .ready : .offline
       guard connection.status != status || !ready else { continue }
       _ = try? db.updateConnection(id: connection.id) { $0.status = status }
-      await context.eventLog.publish(
+      connectionContinuation.yield(
         AdapterEvent.connectionChanged(
           connectionId: connection.id, status: status, authStatus: connection.authStatus,
           transport: ready ? .connected : .disconnected,

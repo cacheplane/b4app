@@ -143,6 +143,18 @@ struct ServerHarness {
     #expect(try await h.client.request(ServerList.self, EmptyParams()).servers.isEmpty)
   }
 
+  @Test func inspectionFailureOutputIsRedacted() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let path = try h.project()
+    try "OPENAI_API_KEY=sk-proj-abcdefghijklmnop\nFAKE_B4_ROUTES_FAIL=1\n".write(
+      toFile: path + "/.env", atomically: true, encoding: .utf8)
+    let failure = await h.failure { try await h.add(path) }
+    #expect(failure?.code == .incompatibleVersion)
+    #expect(failure?.message.contains("OPENAI_API_KEY=[redacted]") == true)
+    #expect(failure?.message.contains("sk-proj-") == false)
+  }
+
   @Test func reAddingTheSameProjectReturnsTheSameRowOrUpdatesTheProfile() async throws {
     let h = try await ServerHarness.start()
     defer { Task { await h.close() } }
@@ -350,6 +362,45 @@ struct ServerHarness {
     #expect(ProcessInspector.isAlive(pid: sleeper.pid))
   }
 
+  @Test func startOnAnUnhealthyOwnedServerRefusesAndKeepsItStoppable() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let started = try await h.start(try await h.add(try h.project()))
+    _ = try h.coordinator.database.updateLocalServer(id: started.id) { $0.health = .unhealthy }
+    let refused = await h.failure { try await h.start(started) }
+    #expect(refused?.code == .ownedProcessConflict)
+    #expect(refused?.message.contains("pid \(started.pid!)") == true)
+    #expect(refused?.message.contains("restart") == true)
+    #expect(ProcessInspector.isAlive(pid: started.pid!))
+    let stopped = try await h.stop(started)
+    #expect(stopped.health == .stopped)
+    #expect(!ProcessInspector.isAlive(pid: started.pid!))
+    #expect(stopped.statusMessage == "stopped")
+  }
+
+  @Test func stopRacingStartNeverOrphansAnOwnedServer() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let path = try h.project()
+    try "FAKE_B4_HANG_ON_TERM=1\n".write(toFile: path + "/.env", atomically: true, encoding: .utf8)
+    let started = try await h.start(try await h.add(path))
+    async let stopping = h.stop(started)
+    try await Task.sleep(for: .milliseconds(50))
+    async let starting = h.start(started)
+    let (afterStop, afterStart) = try await (stopping, starting)
+    #expect(afterStop.health == .stopped)
+    #expect(afterStart.health == .ready)
+    #expect(afterStart.generation == 2)
+    let row = try await h.status(started)
+    #expect(row.health == .ready && row.pid == afterStart.pid)
+    #expect(ProcessInspector.isAlive(pid: row.pid!))
+    #expect(!ProcessInspector.isAlive(pid: started.pid!))
+    let final = try await h.stop(row)
+    #expect(final.health == .stopped)
+    #expect(!ProcessInspector.isAlive(pid: row.pid!))
+    #expect(Ports.isFree(started.requestedPort!))
+  }
+
   @Test func unreadyServerFailsHonestly() async throws {
     let h = try await ServerHarness.start()
     defer { Task { await h.close() } }
@@ -532,9 +583,10 @@ struct ServerHarness {
       ThreadRead.self, ThreadRead.Params(threadId: created.id), options: RequestOptions(timeout: .seconds(30))
     )
     let final = try #require(read.turns.first { $0.id == turn.id })
-    #expect(final.outcome != .completed)
+    #expect(final.status == .reconciling || final.outcome == .failed)
     let failure = await h.failure { try await send(h, created, "again") }
-    #expect(failure?.code == .endpointUnavailable || failure?.code == .protocolInvalid)
+    #expect(failure?.code == .endpointUnavailable)
+    #expect(failure?.details?["reason"]?.stringValue == "server_stopped")
   }
 
   @Test func workflowRouteOnAManagedServerIsIncompatible() async throws {

@@ -97,9 +97,13 @@ enum B4ProjectInspector {
         .endpointUnavailable, "`b4 routes` in \(project.root) did not finish within 60 seconds.")
     }
     guard result.succeeded else {
+      // The project's modules ran with the env-file values in their environment and may have
+      // printed them; redact before the text reaches a result.
+      let output = String(result.stderr.suffix(2000)).trimmingCharacters(in: .whitespacesAndNewlines)
+        .split(separator: "\n").map { LogRedactor.redact(String($0)) }.joined(separator: "\n")
       throw WorkspaceError(
         .incompatibleVersion,
-        "`b4 routes` in \(project.root) failed (exit \(result.exitCode.map(String.init) ?? "signal")): \(String(result.stderr.suffix(2000)).trimmingCharacters(in: .whitespacesAndNewlines))",
+        "`b4 routes` in \(project.root) failed (exit \(result.exitCode.map(String.init) ?? "signal")): \(output)",
         details: ["exitCode": result.exitCode.map { .number(Double($0)) } ?? .null])
     }
     guard let manifest = try? JSONCoding.decoder.decode(JSONValue.self, from: Data(result.stdout.utf8)),
