@@ -1,0 +1,2 @@
+# rustfmt defaults; the file exists so tools find the workspace root.
+edition = "2021"
