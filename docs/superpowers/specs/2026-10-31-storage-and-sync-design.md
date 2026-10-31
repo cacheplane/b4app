@@ -1,6 +1,6 @@
-# Storage and multi-device sync (brainstorm, awaiting the owner's decisions)
+# Storage and multi-device sync
 
-Date: 2026-10-31. Status: proposed. Brian asked for a more robust database with proper migrations, Postgres, and a local store that syncs with a remote so the workspace works across devices. This document lays out what the data is, what can and cannot follow a person between devices, the options, a recommendation, and the decisions only the owner can make. Nothing here is built.
+Date: 2026-10-31. Status: the store is decided (Postgres on every Mac and as the hub, D-041); four smaller decisions remain below. Brian asked for a more robust database with proper migrations, Postgres, and a local store that syncs with a remote so the workspace works across devices. This document lays out what the data is, what can and cannot follow a person between devices, the options, a recommendation, and the decisions only the owner can make. Nothing here is built.
 
 ## What the store holds today
 
@@ -20,6 +20,20 @@ A thread is bound to one native session (spec 3.3). Where that session lives dec
 
 So sync buys: one thread list everywhere, transcripts readable everywhere (the iOS companion's first real purpose), organisation and drafts that follow you, and remote B4 threads continuable from any device. It does not make a Codex thread continuable from a phone; that is the relay, a separate design.
 
+## Decision: Postgres everywhere (2026-10-31)
+
+The owner chose option 1 over the recommendation: Postgres on every Mac as the coordinator's store, Postgres as the remote hub, one engine and one migration toolchain end to end. What follows from that:
+
+- **The app carries a Postgres server.** Pinned binaries (server, `initdb`, `pg_ctl`, `pg_dump`, `pg_upgrade`, their libraries and share files, with their licences) are fetched by `Scripts/fetch-postgres.sh` from a checksummed release and copied into `Contents/Helpers/postgres` by `Scripts/package.sh`. Expect 40 to 80 MB. Development and tests use the same fetched tree under `.build/postgres`; CI fetches it too, so no test depends on a machine-installed Postgres.
+- **The cluster is private to the app.** `initdb` on first start into `~/Library/Application Support/b4app/pg` (mode 0700, UTF-8, the owner's macOS user as the superuser, trust auth on the socket only); `listen_addresses = ''`; the only endpoint is a Unix socket in the runtime directory next to the coordinator's socket. Nothing listens on TCP. Logs under the data directory's `logs`, bounded like the server logs.
+- **A second LaunchAgent in the packaged app**, `com.cacheplane.b4app.postgres`, runs `postgres -D <data dir>` under launchd with `KeepAlive`; the coordinator's agent waits for the socket. Outside the package (Xcode runs, tests, a CLI-spawned coordinator) the coordinator starts and owns the server itself with the same ownership rules as managed B4 servers (pid plus start time plus argv, D-025) and stops it when it exits.
+- **The storage layer is rewritten on PostgresNIO.** `WorkspaceDatabase` keeps its public surface (the coordinator barely changes) but every query becomes SQL against Postgres; GRDB leaves the package. The coordinator remains the only process that opens the store.
+- **One migrator.** Versioned SQL files `Sources/WorkspaceStorage/Migrations/NNNN_name.sql` with a `schema_migrations` table, applied in a transaction, used unchanged for the local cluster and the hub. A `pg_dump` to `<data dir>/backups/pre-NNNN.sql` precedes every local migration. `agent-workspace db status|migrate|backup|restore`.
+- **Existing data moves once.** On first start with a `workspace.sqlite` present, the coordinator imports it (connections, threads, turns, items, requests, drafts, servers, event epochs) and renames the file `.imported`; `agent-workspace db import-sqlite` does the same by hand.
+- **Major versions.** The bundled version is pinned in `docs/compatibility.md`; a new major ships with a `pg_upgrade` step run by the coordinator before it opens the cluster, with the old data directory kept until the next successful start.
+- **iOS has no Postgres**, so the companion reads the hub directly (or through the sync service, if that transport is chosen) and is online-only; it never hosts data of its own.
+- **Sync stays a change log**, now written by Postgres triggers on the synced tables rather than by Swift, which removes a class of bugs; the apply step is SQL (`INSERT ... ON CONFLICT` with the hybrid clock as the tie-breaker).
+
 ## Options for the local store
 
 1. **Local Postgres on each Mac, Postgres remote.** A second daemon per Mac (Postgres.app or Homebrew, or binaries bundled into the app with their own LaunchAgent and `pg_upgrade` on major versions); impossible on iOS, which would become a thin client of the remote; Postgres-to-Postgres bidirectional sync is not built in (logical replication is one way; multi-master needs BDR-class tooling or a change log of our own anyway). Gain: one SQL dialect and one migration toolchain on both ends.
@@ -27,33 +41,30 @@ So sync buys: one thread list everywhere, transcripts readable everywhere (the i
 3. **A sync engine on top of option 2.** PowerSync (Postgres to SQLite replicas, writes through our own backend, Swift SDK), ElectricSQL (Postgres shapes to clients, TypeScript first), Turso/libSQL embedded replicas (remote primary is SQLite, not Postgres), CloudKit (Apple only, no Postgres). Each adds a service or a vendor between the devices and the data.
 4. **Remote only.** Every read and write goes to Postgres. Breaks offline use and the coordinator's own need for a local store while a turn runs. Rejected.
 
-## Recommendation
+## The recommendation that was not taken, for the record
 
-Option 2, with Postgres as the single remote truth for synced data: SQLite stays the device store (GRDB, on macOS and iOS), Postgres on Neon (already in use for other projects) is the hub, and sync is a change log replicated both ways by the coordinator (and, later, read by the iOS app). Why not Postgres locally: it adds a daemon and an upgrade path to every Mac and buys nothing a single-user embedded store needs; the robustness Brian is after comes from migrations, backups, and tests, which SQLite supports as well as Postgres does. If the owner still prefers Postgres on the Mac, option 1 is feasible with bundled binaries and a second LaunchAgent; the sync design below is the same either way, because the change log is what moves, not the engine.
+Option 2 (SQLite on each device, Postgres as the hub) was recommended because a single-user embedded store needs no daemon or major-version upgrades and runs on iOS. The owner weighed one engine and one toolchain end to end higher, and chose option 1. The sync design below is unchanged by that choice: the change log is what moves, not the engine.
 
 ### Sync model
 
 - **Change log.** Every write to a synced table also appends a row to `changes(id, device_id, hlc, table, row_id, column, value, deleted)`. A hybrid logical clock orders changes across devices; last writer wins per column. Turns and display items are append-only facts keyed by their origin, so they never conflict; titles, pins, archive, and drafts are per-column LWW; deletes are tombstones.
-- **Transport.** The coordinator speaks to Postgres directly over TLS with PostgresNIO (pure Swift, runs on iOS too), using a per-device credential stored through `credential add`, never in the database or arguments. Pull, then push, on a timer, after local writes, and on wake. Offline queues and converges later. A thin sync service (a B4 route, say) can replace the direct connection later without changing the log.
+- **Transport.** The coordinator speaks to the hub directly over TLS with PostgresNIO (the same client it uses for the local cluster), using a per-device credential stored through `credential add`, never in the database or arguments. Pull, then push, on a timer, after local writes, and on wake. Offline queues and converges later. A thin sync service (a B4 route, say) can replace the direct connection later without changing the log.
 - **What syncs.** threads, turns, display items, drafts, and connections *as descriptions* with their owning device: a Codex connection owned by Brian's MacBook appears on the phone as read-only "on MacBook Pro"; a B4 remote connection is usable on any device that holds the credential reference and prompts to add it otherwise. Runtime requests sync read-only (answering stays on the owning device until the relay exists).
 - **What never syncs.** Secrets, executable paths, pids, ports, sockets, log paths, process identities, local server registrations, the event log, diagnostics.
 - **Identity.** A device id generated once and kept in the Keychain; a device name shown in the UI; the remote keeps a `devices` table.
 
 ### Migrations, both ends
 
-- Local: keep GRDB's forward-only migrator, add a schema-version check at coordinator start, an automatic copy of the database file before any migration (`workspace.sqlite.pre-v4`), and `agent-workspace db status|migrate|backup`.
-- Remote: SQL files in `Sources/WorkspaceStorage/Remote/migrations/NNNN_name.sql` applied in order inside a transaction by a migrator in the package (a `schema_migrations` table), run by `agent-workspace db remote migrate`, never automatically from a phone.
-- A test asserts that the synced tables' columns match on both ends, so the two schemas cannot drift silently.
+One set of SQL files and one migrator (see the decision above). The local cluster migrates at coordinator start after a `pg_dump`; the hub migrates only on `agent-workspace db remote migrate` from a Mac, never from a phone. The hub carries the synced tables plus `devices` and the server-side change log; local-only tables (local servers, event log, diagnostics) exist only in the local cluster, so the migration files mark each table local, hub, or both and the migrator applies the right subset.
 
-## Decisions for the owner
+## Decisions still open (with the defaults the plan assumes)
 
-1. Local store: SQLite with a Postgres hub (recommended), or Postgres on every Mac as well?
-2. Remote host: Neon, or something self-hosted?
-3. Transport: the coordinator talking to Postgres directly, or a small sync service in front of it?
-4. First device beyond this Mac: a second Mac, or the iPhone reading transcripts?
-5. Transcript cache: sync every display item (tool output included), or the index and turns with items fetched on demand?
+1. Remote host: Neon (assumed; already in use for other projects), or self-hosted.
+2. Transport: the coordinator and the phone talk to the hub directly over TLS (assumed for v1), or a small sync service sits in front of it.
+3. First device beyond this Mac: the iPhone reading transcripts (assumed), or a second Mac.
+4. Transcript cache: sync every display item including tool output (assumed; the data is small and bounded per item), or the index and turns with items fetched on demand.
 
 ## Proposed milestones
 
-- **M7 Storage hardening.** Migration tooling and backups, `db` CLI commands, schema documentation, a drift test between local and remote schemas, the change-log table populated locally (no network yet). Exit: a migration from a copied real database with a backup present; every write produces a change row; tests cover replay.
+- **M7 Postgres store.** Fetched and bundled Postgres, the private cluster and its LaunchAgent, the storage rewrite on PostgresNIO behind the existing API, the single migrator with backups, the SQLite import, `db` CLI commands, trigger-written change log, schema documentation. Exit: the packaged app starts its cluster from nothing and from an imported `workspace.sqlite`; every existing test passes against Postgres; a migration leaves a dump behind; every synced write produces a change row.
 - **M8 Multi-device sync.** Remote schema and migrator, device identity, direct Postgres sync, device-aware connections in the UI, the iOS companion reading the synced index and transcripts, conflict tests (two devices editing offline then converging), a secret-boundary audit of the sync path. Exit: two devices show one list; offline edits converge; no credential value crosses the wire except the Postgres credential itself over TLS.
