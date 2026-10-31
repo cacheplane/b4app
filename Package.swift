@@ -27,7 +27,6 @@ let package = Package(
     .executable(name: "agent-workspace", targets: ["AgentWorkspaceCLI"]),
   ],
   dependencies: [
-    .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.11.1"),
     .package(url: "https://github.com/apple/swift-nio.git", from: "2.104.0"),
     .package(url: "https://github.com/apple/swift-nio-extras.git", from: "1.35.0"),
     .package(url: "https://github.com/swiftlang/swift-subprocess.git", from: "1.0.2"),
@@ -46,9 +45,12 @@ let package = Package(
         .product(name: "Subprocess", package: "swift-subprocess"),
       ],
       swiftSettings: concurrency),
+    // The workspace store on the private PostgreSQL cluster (D-041): libpq bound at runtime from
+    // the bundled binaries, versioned SQL migrations as resources.
     .target(
       name: "WorkspaceStorage",
-      dependencies: ["WorkspaceProtocol", .product(name: "GRDB", package: "GRDB.swift")],
+      dependencies: ["WorkspaceProtocol", "WorkspacePlatform"],
+      resources: [.copy("SQL")],
       swiftSettings: concurrency),
     .target(
       name: "NIOTransport",

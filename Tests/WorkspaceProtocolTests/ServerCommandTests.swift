@@ -19,7 +19,8 @@ private func parse(_ json: String) throws -> ParsedCommand { try parseCommand(Da
     )
     #expect(try logs.params(for: ServerLogs.self) == ServerLogs.Params(serverId: "s", lines: 50))
     let mutations: Set<WorkspaceProtocol.Method> = [
-      .serverAdd, .serverStart, .serverRestart, .serverStop, .serverInspect,
+      .serverAdd, .serverStart, .serverRestart, .serverStop, .serverInspect, .databaseBackup,
+      .databaseRestore, .databaseImportSQLite,
     ]
     for method in [
       Method.serverAdd, .serverList, .serverStart, .serverStatus, .serverLogs, .serverRestart,

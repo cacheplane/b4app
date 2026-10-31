@@ -14,6 +14,7 @@ Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 on 20
 | Code-signing identity | none installed (`security find-identity -v -p codesigning`: 0 valid); packages are signed ad hoc (D-039) |
 | Fonts bundled | Hanken Grotesk Regular and SemiBold (OFL, from the LiveLoveApp repository), JetBrains Mono variable (OFL); registered per process with CoreText |
 | App version | 0.1.0 (`CoordinatorVersion.current`, stamped into the bundle by `Scripts/package.sh`) |
+| PostgreSQL | 17.11 (zonky `embedded-postgres-binaries-darwin-arm64v8` 17.11.0, SHA-256 pinned in `Scripts/fetch-postgres.sh`; server, initdb, pg_ctl, libpq, PL/pgSQL, dict_snowball; 62 MB after thinning); the cluster listens only on a Unix socket in the runtime directory |
 
 Xcode 27 (Swift 6.4) requires macOS 26.6; the package uses `swift-tools-version: 6.2` so either toolchain builds it.
 
@@ -53,4 +54,5 @@ Exact resolved versions are in `Package.resolved`.
 - The packaged app registers a LaunchAgent (`SMAppService`) that hosts the coordinator; an Xcode-run app, an unapproved agent, or a failed registration falls back to in-process hosting (D-038). The coordinator has no idle shutdown. `coordinator restart` and the app's Coordinator menu replace a coordinator left behind by an upgrade.
 - iOS renders the shell with an unavailable transport; the relay is a follow-on design.
 - Keychain uses the file-based login keychain; the data-protection keychain needs a provisioning profile, which needs a signing identity (D-008, D-039).
+- The store is a private PostgreSQL cluster per Mac (D-041); the schema is `0001_init` and `0002_changes`; backups are JSON-lines archives from `db backup`, not `pg_dump`; a pre-0.2 `workspace.sqlite` is imported once and retired. Nothing syncs yet (M8).
 - Packaging is ad hoc: the app runs on the Mac that built it. Developer ID signing and notarisation are untested (no certificate). Removing a registration and changing a server's port are still missing.

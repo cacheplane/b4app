@@ -4,13 +4,14 @@ import Testing
 import WorkspaceClient
 import WorkspacePlatform
 import WorkspaceProtocol
+import WorkspaceStorage
 
 @testable import Coordinator
 
 private func temporaryPaths() throws -> PlatformPaths {
   let base = NSTemporaryDirectory() + "b4c-\(UUID().uuidString.prefix(8))"
   try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
-  return PlatformPaths(runtimeDir: base + "/rt", dataDir: base + "/data")
+  return try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
 }
 
 /// Isolated environment: no PATH lookups succeed and HOME has no fallback installs, so the

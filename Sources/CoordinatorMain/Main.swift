@@ -10,7 +10,14 @@ struct CoordinatorMain {
     // The launcher starts us detached from a terminal; a closing terminal must not take us down.
     signal(SIGHUP, SIG_IGN)
     signal(SIGPIPE, SIG_IGN)
-    let outcome = try await Coordinator.start()
+    let outcome: StartOutcome
+    do {
+      outcome = try await Coordinator.start()
+    } catch {
+      // A clear line and exit status, not a Swift trap: the launcher shows this log to the user.
+      FileHandle.standardError.write(Data("coordinator failed to start: \(error)\n".utf8))
+      exit(1)
+    }
     switch outcome {
     case .alreadyRunning(let record, let paths):
       print("already running (pid \(record?.pid ?? -1)) at \(paths.socketPath)")

@@ -5,6 +5,7 @@ import Testing
 import WorkspaceClient
 import WorkspacePlatform
 import WorkspaceProtocol
+import WorkspaceStorage
 
 @testable import Coordinator
 
@@ -24,7 +25,7 @@ struct ServerHarness {
       base = (existing.runtimeDir as NSString).deletingLastPathComponent
     } else {
       base = NSTemporaryDirectory() + "b4srv-\(UUID().uuidString.prefix(8))"
-      paths = PlatformPaths(runtimeDir: base + "/rt", dataDir: base + "/data")
+      paths = try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
     }
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = fakeNodePath()

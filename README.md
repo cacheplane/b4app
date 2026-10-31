@@ -15,6 +15,12 @@ Status: M6 (packaging). Codex and B4 conversations are live-verified from the CL
 
 ## Build and test
 
+The store is a private PostgreSQL cluster (decision D-041). Fetch the pinned server once; tests boot an ephemeral cluster from it:
+
+```bash
+./Scripts/fetch-postgres.sh
+```
+
 ```bash
 swift build
 ```
@@ -70,6 +76,20 @@ Signing: with no Developer ID certificate the build is ad hoc and runs on the Ma
 - A local project: under Local servers, register the project directory (the B4 app root with `b4.config` and `node_modules/@b4run/cli`), optionally its env file, and start it; connect one of its discovered routes to get a connection you can start threads on. Registration runs the project's config and route modules with Node to discover routes, so register only projects you trust. Node is found on PATH, in nvm/fnm/Volta/Bun/Homebrew layouts, or via `B4APP_NODE_PATH`.
 - An already running local server: Connections › B4 agent, base URL `http://127.0.0.1:<port>` and the route key.
 - A remote endpoint: HTTPS only; store the credential with `agent-workspace credential add <label>` and paste the printed reference into the form. Values never appear in arguments, logs, or results.
+
+### The store
+
+Each Mac keeps its workspace in a private PostgreSQL cluster under `~/Library/Application Support/b4app/pg`, reachable only through a Unix socket in the runtime directory; the app's bundle carries the server under `Contents/SharedSupport/postgres`. The coordinator starts the cluster when it starts and stops it when it stops cleanly; a cluster left running is adopted next time. A `workspace.sqlite` from an earlier version is imported on the first start and renamed `.imported`.
+
+```bash
+agent-workspace db status
+```
+
+```bash
+agent-workspace db backup
+```
+
+`db backup` writes every table to a JSON-lines archive under the data directory's `backups`; `db restore <archive>` loads one into an empty store, or over the current one with `--replace`; `db import-sqlite <file>` imports an old store by hand. The coordinator is the only process that opens the cluster; the CLI goes through it.
 
 ### Upgrade
 

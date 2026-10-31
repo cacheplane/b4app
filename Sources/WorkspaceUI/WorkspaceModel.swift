@@ -421,6 +421,13 @@ public final class WorkspaceModel {
     do {
       let read = try await client.request(
         ThreadRead.self, ThreadRead.Params(threadId: id), options: RequestOptions(timeout: .seconds(60)))
+      // Read the draft before publishing the detail: once `detail` is set the composer is live, and
+      // a restore after that would overwrite text typed in the meantime (and the save it scheduled
+      // would then persist the overwrite).
+      let draft = try? await client.request(DraftRead.self, DraftRead.Params(threadId: id)).draft
+      restoringDraft = true
+      composerText = draft?.text ?? ""
+      restoringDraft = false
       detail = ThreadDetail(
         thread: read.thread, turns: read.turns, items: read.items, requests: read.requests)
       if let active = read.turns.last(where: { $0.status != .terminal }) {
@@ -428,10 +435,6 @@ public final class WorkspaceModel {
       } else {
         activeTurns[id] = nil
       }
-      let draft = try? await client.request(DraftRead.self, DraftRead.Params(threadId: id)).draft
-      restoringDraft = true
-      composerText = draft?.text ?? ""
-      restoringDraft = false
       lastError = nil
     } catch {
       lastError = Self.describe(error)
