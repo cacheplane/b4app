@@ -2,7 +2,7 @@
 
 A native Swift app for running Codex, Claude Code, and B4 agent conversations side by side on one Mac, with an iOS companion built from the same code. Everything is local: no accounts, no cloud sync, no telemetry.
 
-Status: M4. Codex and B4 conversations are live-verified from the CLI (Codex also from the macOS app); Claude Code conversations use the same transcript, approvals, stop, and resume through the CLI's stream-json protocol and are fixture-verified end to end, awaiting a signed-in Mac for the live inference check. B4 attaches a running local server or a remote HTTPS endpoint at one `agent()` route, or registers a local project and runs its server itself (`b4 start` or `b4 dev` on loopback) with the GUI and the CLI sharing one owned registration. See `docs/milestones.md`.
+Status: M5. Codex and B4 conversations are live-verified from the CLI (Codex also from the macOS app); Claude Code conversations use the same transcript, approvals, stop, and resume through the CLI's stream-json protocol and are fixture-verified end to end, awaiting a signed-in Mac for the live inference check. B4 attaches a running local server or a remote HTTPS endpoint at one `agent()` route, or registers a local project and runs its server itself (`b4 start` or `b4 dev` on loopback) with the GUI and the CLI sharing one owned registration. Threads can be renamed, pinned, archived, and searched, keep their drafts across restarts, show their state in the sidebar, and say plainly when a native session is gone or belongs to another account; unknown outcomes stay unknown until a runtime answers or you abandon the turn; two harness turns never write one directory at once; Quit asks before stopping local work; wake and reconnect reconcile instead of guessing. See `docs/milestones.md`.
 
 ## Prerequisites
 
@@ -53,7 +53,7 @@ A conversation from the terminal (Codex CLI 0.166.0 or newer signed in with `cod
 .build/debug/agent-workspace turn send <thread-id> Run the test suite and summarize the failures.
 ```
 
-`turn send` streams the reply, prints tool cards and any runtime request with the `request respond` command that answers it, and exits 0 when the turn completes, 1 when it fails, 130 when it was stopped. Flags go before the message text. `turn interrupt <thread-id>` stops the active turn; `thread show <thread-id>` prints the cached transcript; every command takes `--json`.
+`turn send` streams the reply, prints tool cards and any runtime request with the `request respond` command that answers it, and exits 0 when the turn completes, 1 when it fails, 130 when it was stopped. Flags go before the message text. `turn interrupt <thread-id>` stops the active turn; `thread show <thread-id>` prints the cached transcript and `thread show --reconcile <thread-id>` first asks the runtime about an unresolved turn, merges native history into the cache, and reports whether the thread can still be continued; `turn abandon <thread-id>` gives up on a turn whose outcome the runtime never reported (nothing is re-sent); `thread update <thread-id> --title T | --pin | --unpin | --archive | --unarchive` organizes threads locally; every command takes `--json`.
 
 A B4 agent route on a server you already run (`b4 dev` in the project; remote endpoints must be HTTPS):
 

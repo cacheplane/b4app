@@ -52,6 +52,8 @@ public enum CoordinatorLauncher {
     if !FileManager.default.fileExists(atPath: logPath) {
       FileManager.default.createFile(atPath: logPath, contents: nil, attributes: [.posixPermissions: 0o600])
     }
+    // Bounded like the server logs (D-029): keep the last 1 MiB once the file passes 4 MiB.
+    try? LogRedactor.bound(path: logPath)
     let logHandle = try FileHandle(forWritingTo: URL(fileURLWithPath: logPath))
     logHandle.seekToEndOfFile()
     let process = Process()

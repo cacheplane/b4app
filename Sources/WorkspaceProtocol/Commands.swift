@@ -31,6 +31,9 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case serverRestart = "server.restart"
   case serverStop = "server.stop"
   case serverInspect = "server.inspect"
+  case workspaceActiveWork = "workspace.activeWork"
+  case workspaceStopLocalWork = "workspace.stopLocalWork"
+  case workspaceReconcile = "workspace.reconcile"
 
   public var isMutation: Bool {
     switch self {
@@ -38,10 +41,10 @@ public enum Method: String, Codable, Sendable, CaseIterable {
       .threadReconcile, .turnSend, .turnInterrupt, .turnAbandon, .requestRespond, .credentialAdd, .serverAdd,
       .serverStart,
       .serverRestart,
-      .serverStop, .serverInspect:
+      .serverStop, .serverInspect, .workspaceStopLocalWork, .workspaceReconcile:
       return true
     case .systemPing, .diagnosticsRead, .connectionList, .threadList, .draftRead, .eventsSnapshot,
-      .eventsReplay, .threadRead, .serverList, .serverStatus, .serverLogs:
+      .eventsReplay, .threadRead, .serverList, .serverStatus, .serverLogs, .workspaceActiveWork:
       return false
     }
   }
@@ -528,6 +531,103 @@ public enum ServerLogs: WorkspaceCommand {
     }
   }
   public static let method = Method.serverLogs
+}
+
+// MARK: - M5 lifecycle methods
+
+/// One non-terminal turn as the Quit dialog and wake handling see it. `local` is true for work this
+/// coordinator's process tree owns (Codex, Claude, managed B4); attached and remote B4 runs continue
+/// on their server when the app quits, so the app detaches from them rather than cancelling.
+public struct ActiveTurnSummary: Codable, Sendable, Equatable, Identifiable {
+  public var id: String { turnId }
+  public var threadId: String
+  public var threadTitle: String
+  public var turnId: String
+  public var status: TurnStatus
+  public var connectionId: String
+  public var connectionLabel: String
+  public var kind: ConnectionKind
+  public var b4Mode: B4Mode?
+  public var local: Bool
+
+  public init(
+    threadId: String, threadTitle: String, turnId: String, status: TurnStatus, connectionId: String,
+    connectionLabel: String, kind: ConnectionKind, b4Mode: B4Mode?, local: Bool
+  ) {
+    self.threadId = threadId
+    self.threadTitle = threadTitle
+    self.turnId = turnId
+    self.status = status
+    self.connectionId = connectionId
+    self.connectionLabel = connectionLabel
+    self.kind = kind
+    self.b4Mode = b4Mode
+    self.local = local
+  }
+}
+
+/// What is running right now: every non-terminal turn and every owned server that is up.
+public enum WorkspaceActiveWork: WorkspaceCommand {
+  public typealias Params = EmptyParams
+  public struct Result: Codable, Sendable, Equatable {
+    public var turns: [ActiveTurnSummary]
+    public var servers: [LocalServer]
+    public init(turns: [ActiveTurnSummary], servers: [LocalServer]) {
+      self.turns = turns
+      self.servers = servers
+    }
+    public var localTurns: [ActiveTurnSummary] { turns.filter(\.local) }
+    public var remoteTurns: [ActiveTurnSummary] { turns.filter { !$0.local } }
+  }
+  public static let method = Method.workspaceActiveWork
+}
+
+/// Spec 10.3 "stop owned local work and quit": interrupt every local turn, wait briefly for the
+/// runtime to confirm, force-stop owned servers. Remote and attached runs are left alone (detached).
+public enum WorkspaceStopLocalWork: WorkspaceCommand {
+  public typealias Params = EmptyParams
+  public struct Result: Codable, Sendable, Equatable {
+    /// Local turns the runtime confirmed as finished (cancelled, completed, or failed).
+    public var stopped: [ActiveTurnSummary]
+    /// Local turns whose end the runtime did not confirm in time; they reconcile on the next launch.
+    public var unconfirmed: [ActiveTurnSummary]
+    /// Remote and attached runs left running on their server.
+    public var detached: [ActiveTurnSummary]
+    public var serversStopped: [String]
+    public var serverErrors: [String]
+    public init(
+      stopped: [ActiveTurnSummary] = [], unconfirmed: [ActiveTurnSummary] = [],
+      detached: [ActiveTurnSummary] = [], serversStopped: [String] = [], serverErrors: [String] = []
+    ) {
+      self.stopped = stopped
+      self.unconfirmed = unconfirmed
+      self.detached = detached
+      self.serversStopped = serversStopped
+      self.serverErrors = serverErrors
+    }
+  }
+  public static let method = Method.workspaceStopLocalWork
+}
+
+/// Spec 10.3 wake and reconnect: ask every runtime about every unresolved turn and re-check
+/// offline connections. Never re-sends; what stays unknown stays visibly unknown.
+public enum WorkspaceReconcile: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var reason: String?
+    public init(reason: String? = nil) { self.reason = reason }
+  }
+  public struct Result: Codable, Sendable, Equatable {
+    /// Turns whose state changed (finished, parked, or back to running).
+    public var reconciled: Int
+    public var stillUnknown: Int
+    public var connectionsRechecked: Int
+    public init(reconciled: Int, stillUnknown: Int, connectionsRechecked: Int) {
+      self.reconciled = reconciled
+      self.stillUnknown = stillUnknown
+      self.connectionsRechecked = connectionsRechecked
+    }
+  }
+  public static let method = Method.workspaceReconcile
 }
 
 public struct ParsedCommand: Sendable, Equatable {

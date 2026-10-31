@@ -70,6 +70,23 @@ Design: `docs/superpowers/specs/2026-10-31-m4-managed-b4-design.md`. Plan: `docs
 
 Exit gate status: closed for the CLI and the app-hosted coordinator on 2026-10-31. Open: clicking the Local servers view on screen; the M5 Quit dialog (keep running versus stop owned work, spec 10.3) is not built, so Quit always keeps managed servers running.
 
-## M5 and M6
+## M5: daily-use behavior and recovery
+
+- [x] Complete rename, pin, archive/unarchive, title search, connection filtering, and local draft persistence. `fixture-tested`: rename, pin, archive, unarchive, query, and the draft survive a coordinator restart; the sidebar shows archived threads behind a toggle and a state dot per thread (running, waiting, stopping, outcome unknown, runtime offline, connection error) fed by the snapshot's active turns; drafts are saved 600 ms after typing stops and flushed at Quit; `agent-workspace thread update` covers the CLI. `live-tested` through the CLI on this Mac; the GUI controls build on macOS and iOS and were not clicked on screen.
+- [x] Add safe account/endpoint identity changes, expired auth, allowance errors, and compatibility errors. `fixture-tested`: a Codex account change across restarts marks old threads `identity_changed` (readable, no new turns, new threads bind to the new identity, continuity returns with the original account); a missing native session marks the thread `missing`; an expired login during a turn flips the connection to `auth_required` with a `connection.changed` event; allowance and auth-mode failures are recorded under the connection label; `Remediation` maps every stable code to a sentence and one action. Not exercised live: a real expired login or allowance exhaustion (the spec forbids forcing one).
+- [x] Implement all lifecycle outcomes from Section 10, including full Quit and wake reconciliation. `implemented` and `fixture-tested`: `workspace.activeWork` names local turns, remote turns, and owned servers; `workspace.stopLocalWork` cancels local turns, waits for the runtime's confirmation, force-stops owned servers, and detaches from attached and remote runs; `workspace.reconcile` settles a turn that finished while the coordinator was down; the coordinator's `SleepWatcher` and the app's wake observer both trigger it (D-034). The macOS Quit dialog (D-032) is `implemented` and was not clicked on screen; `applicationShouldTerminate` is exercised only by the build.
+- [x] Test coordinator/runtime crash paths, ambiguous sends, stale decisions, and snapshot deduplication. `fixture-tested`: `swallow` (no acknowledgement) becomes `submission_unknown`, reconciles to still-unknown, blocks further sends until `turn.abandon`; `late ack` (response lost, notifications live) completes once with one native turn; a lost cache is rebuilt from `thread/turns/list` and a partial cache merges without duplicates (D-031); crash and stale-decision cases from M1 to M3 still pass.
+- [x] Verify workspace write locks across local harness threads in the same directory. `fixture-tested`: two Codex threads and a Claude thread in one canonical directory (one through a `..`-containing path) are serialized across connections, a different directory runs, the lock holds through a crash (`reconciling`) and releases on `turn.abandon` (D-033).
+- [x] Complete diagnostic redaction and bounded logs; inspect renderer IPC and credential boundaries. `fixture-tested`: a runtime failure carrying a bearer, an `sk-` key, and a callback URL with `code`, `state`, and `access_token` reaches the event, the thread read, and `doctor` masked; header lines and URL parameters are covered by unit tests; the CLI-spawned coordinator log is bounded. Boundary audit recorded in `docs/verification.md`.
+
+Exit gate: critical recovery and ownership cases pass fixture tests (235 tests in 53 suites); the live Mac matrix rows that this Mac can run are recorded in `docs/verification.md`; every uncertain native outcome stays `reconciling` until a runtime answers or the owner abandons it.
+
+### Open after M5
+
+- The macOS Quit dialog, the continuity banner, the remediation button, and the rename alert were not clicked on screen (no screen control in this session).
+- A real Mac sleep across a live turn has not been exercised; the wake path is fixture-tested through `workspace.reconcile` and the clock-gap watcher.
+- Expired login and allowance exhaustion were fixture-tested only, as the spec requires.
+
+## M6: package and accept the personal v0
 
 Not started. See the spec.

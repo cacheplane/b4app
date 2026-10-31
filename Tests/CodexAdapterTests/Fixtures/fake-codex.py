@@ -206,7 +206,7 @@ while True:
         if "leak" in text:
             finish_turn(thread_id, turn_id, "failed", {
                 "message": "upstream said no: Authorization: Bearer abc.def.ghi; key sk-proj-ABCDEFGHIJKLMNOP; see https://auth.example/cb?code=SECRETCODE&state=xyz&access_token=tok123",
-                "codexErrorInfo": "other"})
+                "codexErrorInfo": "usageLimitExceeded"})
             continue
         if "fail" in text:
             finish_turn(thread_id, turn_id, "failed", {"message": "usage limit reached", "codexErrorInfo": "usageLimitExceeded"})

@@ -503,6 +503,34 @@ public final class WorkspaceModel {
     }
   }
 
+  // MARK: - Lifecycle (spec 10.3)
+
+  /// What the coordinator is running now, for the Quit choice. Nil when the coordinator is unreachable.
+  public func activeWork() async -> WorkspaceActiveWork.Result? {
+    guard let client else { return nil }
+    return try? await client.request(
+      WorkspaceActiveWork.self, EmptyParams(), options: RequestOptions(timeout: .seconds(10)))
+  }
+
+  /// Stop owned local work (local turns, owned servers); remote runs are detached, not cancelled.
+  public func stopLocalWork() async -> WorkspaceStopLocalWork.Result? {
+    await perform {
+      try await $0.request(
+        WorkspaceStopLocalWork.self, EmptyParams(), options: Self.mutation(timeout: .seconds(90)))
+    }
+  }
+
+  /// After the Mac wakes or the link comes back: fresh snapshot, then ask every runtime about every
+  /// unresolved turn. Nothing is re-sent.
+  public func reconcileAfter(_ reason: String) async {
+    try? await refreshSnapshot()
+    guard let client else { return }
+    _ = try? await client.request(
+      WorkspaceReconcile.self, WorkspaceReconcile.Params(reason: reason),
+      options: Self.mutation(timeout: .seconds(120)))
+    if let id = selectedThreadId, detail != nil { await loadDetail(id: id) }
+  }
+
   /// The next action for the last failure, in the context of the open thread's connection.
   public var remediation: Remediation? {
     guard let failure = lastFailure else { return nil }
@@ -590,7 +618,7 @@ public final class WorkspaceModel {
     let events = await client.events()
     let desync = await client.desync()
     let desyncTask = Task { @MainActor in
-      for await _ in desync { try? await self.refreshSnapshot() }
+      for await _ in desync { await self.reconcileAfter("reconnect") }
     }
     for await envelope in events { apply(envelope.event) }
     desyncTask.cancel()

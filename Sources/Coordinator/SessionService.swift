@@ -531,7 +531,8 @@ public actor SessionService {
       await publishTurn(.turnStateChanged, turn, thread: thread)
       return TurnSend.Result(turn: turn)
     } catch {
-      let failure = WorkspaceError.from(error)
+      var failure = WorkspaceError.from(error)
+      failure.message = LogRedactor.redact(failure.message)
       let unknown = failure.code == .submissionUnknown
       if failure.code == .nativeSessionMissing { await setContinuity(thread, .missing) }
       // The runtime's own notifications may already have acknowledged or finished the turn while the
@@ -715,6 +716,92 @@ public actor SessionService {
     return TurnSend.Result(turn: turn)
   }
 
+  // MARK: - Lifecycle (spec 10.3)
+
+  private func summary(_ turn: Turn) throws -> ActiveTurnSummary? {
+    guard let thread = try db.thread(id: turn.threadId),
+      let connection = try db.connection(id: thread.connectionId)
+    else { return nil }
+    let local = connection.kind != .b4 || connection.b4Mode == .managedLocal
+    return ActiveTurnSummary(
+      threadId: thread.id, threadTitle: thread.title, turnId: turn.id, status: turn.status,
+      connectionId: connection.id, connectionLabel: connection.label, kind: connection.kind,
+      b4Mode: connection.b4Mode, local: local)
+  }
+
+  /// Every non-terminal turn and every owned server that is up, for the Quit dialog (D-032).
+  public func activeWork() async throws -> WorkspaceActiveWork.Result {
+    let turns = try db.unresolvedTurns().compactMap(summary)
+    var servers: [LocalServer] = []
+    if let service = context.servers {
+      servers = try await service.list().servers.filter { $0.health == .ready || $0.health == .starting }
+    }
+    return WorkspaceActiveWork.Result(turns: turns, servers: servers)
+  }
+
+  /// "Stop owned local work and quit": interrupt local turns, wait briefly for the runtime's word,
+  /// force-stop owned servers. Attached and remote runs are detached, never cancelled.
+  public func stopLocalWork() async throws -> WorkspaceStopLocalWork.Result {
+    var result = WorkspaceStopLocalWork.Result()
+    for entry in try db.unresolvedTurns().compactMap(summary) {
+      guard entry.local else {
+        result.detached.append(entry)
+        continue
+      }
+      if entry.status == .running || entry.status == .waitingForUser || entry.status == .stopping {
+        _ = try? await turnInterrupt(TurnInterrupt.Params(threadId: entry.threadId))
+      }
+      let deadline = ContinuousClock.now + .seconds(5)
+      var settled = false
+      while ContinuousClock.now < deadline {
+        if (try? db.turn(id: entry.turnId))?.status == .terminal {
+          settled = true
+          break
+        }
+        try? await Task.sleep(for: .milliseconds(50))
+      }
+      var final = entry
+      final.status = (try? db.turn(id: entry.turnId))?.status ?? entry.status
+      if settled { result.stopped.append(final) } else { result.unconfirmed.append(final) }
+    }
+    if let service = context.servers {
+      for server in try await service.list().servers
+      where server.health == .ready || server.health == .starting {
+        do {
+          _ = try await service.stop(id: server.id, force: true)
+          result.serversStopped.append(server.name)
+        } catch {
+          result.serverErrors.append("\(server.name): \(WorkspaceError.from(error).message)")
+        }
+      }
+    }
+    return result
+  }
+
+  /// Wake, reconnect, or an explicit request: reconcile every unresolved turn and re-check offline
+  /// connections. Turns still `submitting` are mid-dispatch and left to their own path.
+  public func reconcileAll(reason: String) async -> WorkspaceReconcile.Result {
+    var reconciled = 0
+    var unknown = 0
+    var rechecked = 0
+    for turn in (try? db.unresolvedTurns()) ?? [] where turn.status != .submitting {
+      guard let thread = try? db.thread(id: turn.threadId) else { continue }
+      await reconcile(turn, thread: thread)
+      let after = (try? db.turn(id: turn.id))?.status ?? turn.status
+      if after != turn.status { reconciled += 1 } else if after == .reconciling { unknown += 1 }
+    }
+    for connection in (try? db.listConnections()) ?? [] where connection.status == .offline {
+      if (try? await connectionInspect(ConnectionInspect.Params(connectionId: connection.id))) != nil {
+        rechecked += 1
+      }
+    }
+    logger.info(
+      "reconcile (\(reason, privacy: .public)): \(reconciled) changed, \(unknown) unknown, \(rechecked) connections rechecked"
+    )
+    return WorkspaceReconcile.Result(
+      reconciled: reconciled, stillUnknown: unknown, connectionsRechecked: rechecked)
+  }
+
   // MARK: - Runtime requests
 
   public func requestRespond(_ params: RequestRespond.Params) async throws -> RequestRespond.Result {
@@ -770,7 +857,14 @@ public actor SessionService {
         payload: .object(body)))
   }
 
-  private func project(_ raw: AdapterEvent) async {
+  private func project(_ incoming: AdapterEvent) async {
+    // D-035: the coordinator is the redaction boundary. Adapters forward what runtimes say (stderr
+    // tails, error messages); nothing of that leaves here unmasked.
+    let raw: AdapterEvent = {
+      var copy = incoming
+      copy.payload = LogRedactor.redactMessages(in: incoming.payload)
+      return copy
+    }()
     var event = raw
     var thread: ConversationThread?
     var turn: Turn?

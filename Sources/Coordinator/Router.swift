@@ -177,6 +177,13 @@ public actor Router {
       let params = try command.params(for: ServerRestart.self)
       return try JSONValue(
         encoding: try await servers.restart(id: params.serverId, force: params.force ?? false))
+    case .workspaceActiveWork:
+      return try JSONValue(encoding: try await sessions.activeWork())
+    case .workspaceStopLocalWork:
+      return try JSONValue(encoding: try await sessions.stopLocalWork())
+    case .workspaceReconcile:
+      let params = try command.params(for: WorkspaceReconcile.self)
+      return try JSONValue(encoding: await sessions.reconcileAll(reason: params.reason ?? "request"))
     }
   }
 }

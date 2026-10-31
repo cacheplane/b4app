@@ -37,6 +37,7 @@ public final class RunningCoordinator: Sendable {
   public let servers: LocalServerService
   public let router: Router
   public let server: SocketServer
+  public let sleepWatcher: SleepWatcher
   private let lock: SingletonLock
   private let closed = Flag()
 
@@ -45,7 +46,7 @@ public final class RunningCoordinator: Sendable {
   init(
     paths: PlatformPaths, startedAt: String, database: WorkspaceDatabase, eventLog: EventLog,
     diagnostics: DiagnosticsService, sessions: SessionService, servers: LocalServerService,
-    router: Router, server: SocketServer, lock: SingletonLock
+    router: Router, server: SocketServer, sleepWatcher: SleepWatcher, lock: SingletonLock
   ) {
     self.paths = paths
     self.startedAt = startedAt
@@ -56,6 +57,7 @@ public final class RunningCoordinator: Sendable {
     self.servers = servers
     self.router = router
     self.server = server
+    self.sleepWatcher = sleepWatcher
     self.lock = lock
   }
 
@@ -66,6 +68,7 @@ public final class RunningCoordinator: Sendable {
 
   public func close() async {
     guard await closed.setIfClear() else { return }
+    await sleepWatcher.stop()
     await server.close()
     await sessions.shutdown()
     await servers.shutdown()
@@ -142,12 +145,16 @@ public enum Coordinator {
       lock.release()
       throw error
     }
+    // Spec 10.3 sleep/wake: a CLI-spawned coordinator has no app to tell it the Mac woke up.
+    let sleepWatcher = SleepWatcher { [sessions] _ in _ = await sessions.reconcileAll(reason: "wake") }
+    await sleepWatcher.start()
     logger.info(
       "started pid \(ProcessInfo.processInfo.processIdentifier, privacy: .public) epoch \(eventLog.epoch, privacy: .public)"
     )
     return .running(
       RunningCoordinator(
         paths: paths, startedAt: startedAt, database: database, eventLog: eventLog, diagnostics: diagnostics,
-        sessions: sessions, servers: servers, router: router, server: server, lock: lock))
+        sessions: sessions, servers: servers, router: router, server: server, sleepWatcher: sleepWatcher,
+        lock: lock))
   }
 }

@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import WorkspaceProtocol
 
 /// Reads bounded, redacted tails of a server log the child writes directly (D-029). Redaction masks
 /// the credential shapes we know; it is not proof that arbitrary project output holds no secret.
@@ -14,6 +15,18 @@ public enum LogRedactor {
 
   private static let patterns: [(NSRegularExpression, String)] = [
     (try! NSRegularExpression(pattern: #"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"#), "Bearer [redacted]"),
+    // Whole Authorization header lines of any other scheme (the bearer rule above keeps its scheme).
+    (
+      try! NSRegularExpression(pattern: #"(?i)\bauthorization\s*:(?!\s*bearer\s+\[redacted\])\s*[^\r\n;,]+"#),
+      "Authorization: [redacted]"
+    ),
+    // Sensitive URL query parameters (sign-in callbacks, signed links).
+    (
+      try! NSRegularExpression(
+        pattern:
+          #"(?i)([?&](?:token|access_token|refresh_token|id_token|code|state|key|api_key|apikey|secret|password|session|sig|signature)=)[^&\s#"']+"#
+      ), "$1[redacted]"
+    ),
     (try! NSRegularExpression(pattern: #"\bsk-[A-Za-z0-9_-]{8,}"#), "[redacted]"),
     (
       try! NSRegularExpression(
@@ -22,6 +35,22 @@ public enum LogRedactor {
       ), "$1$2[redacted]"
     ),
   ]
+
+  /// Redact the string values a payload may carry out of the coordinator: `message`, `stderr`, and
+  /// `error.message` (D-035). Other fields are left alone; adapters do not place raw output elsewhere.
+  public static func redactMessages(in payload: JSONValue) -> JSONValue {
+    guard var object = payload.objectValue else { return payload }
+    for key in ["message", "stderr", "stderrTail", "detail"] {
+      if let text = object[key]?.stringValue { object[key] = .string(redact(text)) }
+    }
+    if var error = object["error"]?.objectValue {
+      for key in ["message", "details"] where error[key]?.stringValue != nil {
+        error[key] = .string(redact(error[key]!.stringValue!))
+      }
+      object["error"] = .object(error)
+    }
+    return .object(object)
+  }
 
   public static func redact(_ line: String) -> String {
     var text = line

@@ -996,3 +996,103 @@ actor EventCollector {
     await h.stop()
   }
 }
+
+@Suite(.serialized) struct LifecycleTests {
+  private let mutation = { RequestOptions(operationId: UUID().uuidString, timeout: .seconds(120)) }
+
+  /// Spec 10.3 Quit: local work is named and can be stopped; attached and remote runs are detached,
+  /// never cancelled by the app.
+  @Test func activeWorkNamesLocalAndRemoteTurnsAndStopLocalWorkDetachesRemote() async throws {
+    let server = try await FakeB4.start()
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let b4 = try await h.addB4(server).connection
+    let codexThread = try await h.newThread(codex)
+    let b4Thread = try await h.newB4Thread(b4)
+    let localTurn = try await h.send(codexThread, "hang around")
+    let remoteTurn = try await h.send(b4Thread, "hang around")
+
+    let work = try await h.client.request(WorkspaceActiveWork.self, EmptyParams())
+    #expect(Set(work.turns.map(\.turnId)) == [localTurn.id, remoteTurn.id])
+    #expect(work.localTurns.map(\.turnId) == [localTurn.id])
+    #expect(work.remoteTurns.map(\.turnId) == [remoteTurn.id])
+    #expect(work.remoteTurns.first?.b4Mode == .attachedLocal)
+    #expect(work.servers.isEmpty)
+
+    let stopped = try await h.client.request(WorkspaceStopLocalWork.self, EmptyParams(), options: mutation())
+    #expect(stopped.stopped.map(\.turnId) == [localTurn.id])
+    #expect(stopped.stopped.first?.status == .terminal)
+    #expect(stopped.detached.map(\.turnId) == [remoteTurn.id])
+    #expect(stopped.unconfirmed.isEmpty)
+    #expect(try h.coordinator.database.turn(id: localTurn.id)?.outcome == .cancelled)
+    // The attached B4 run is still in flight on its server until the test stops it itself.
+    #expect(try h.coordinator.database.turn(id: remoteTurn.id)?.status == .running)
+    let after = try await h.client.request(WorkspaceActiveWork.self, EmptyParams())
+    #expect(after.turns.map(\.turnId) == [remoteTurn.id])
+    _ = try await h.client.request(
+      TurnInterrupt.self, TurnInterrupt.Params(threadId: b4Thread.id), options: mutation())
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == remoteTurn.id }
+    await h.stop()
+    await server.stop()
+  }
+
+  /// Spec 10.3 wake: a turn that finished on its server while the coordinator was down is settled by
+  /// `workspace.reconcile`, with no re-send.
+  @Test func reconcileSettlesATurnThatFinishedWhileTheCoordinatorWasDown() async throws {
+    let server = try await FakeB4.start()
+    let h = try await Harness.start()
+    let b4 = try await h.addB4(server).connection
+    let thread = try await h.newB4Thread(b4)
+    let turn = try await h.send(thread, "slow please")
+    #expect(turn.status == .running)
+    let paths = h.coordinator.paths
+    await h.stop()
+    try await Task.sleep(for: .seconds(4))
+
+    let back = try await Harness.start(paths: paths)
+    let before = try back.coordinator.database.turn(id: turn.id)
+    #expect(before?.status == .reconciling)
+    let result = try await back.client.request(
+      WorkspaceReconcile.self, WorkspaceReconcile.Params(reason: "test-wake"), options: mutation())
+    #expect(result.reconciled == 1)
+    #expect(result.stillUnknown == 0)
+    let read = try await back.read(thread)
+    #expect(read.turns.map(\.outcome) == [.completed])
+    // Exactly one server-side turn: reconciliation never re-sent the prompt (A12).
+    let (data, _) = try await URLSession.shared.data(
+      from: URL(string: "\(server.baseURL)/threads/\(thread.nativeThreadId)/turns")!)
+    let body = try JSONCoding.decoder.decode(JSONValue.self, from: data)
+    #expect((body["turns"]?["turns"]?.arrayValue ?? body["turns"]?.arrayValue)?.count == 1)
+    await back.stop()
+    await server.stop()
+  }
+}
+
+@Suite(.serialized) struct RedactionTests {
+  /// A16 and spec 12: runtime error text with credential shapes is masked before it reaches an event,
+  /// a thread read, or `doctor`.
+  @Test func runtimeErrorsAreRedactedBeforeTheyLeaveTheCoordinator() async throws {
+    let h = try await Harness.start()
+    let connection = try await h.addCodex()
+    let thread = try await h.newThread(connection)
+    let turn = try await h.send(thread, "leak the secrets")
+    let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    let message = finished.payload["error"]?["message"]?.stringValue ?? ""
+    #expect(message.contains("[redacted]"))
+    for secret in ["abc.def.ghi", "sk-proj-ABCDEFGHIJKLMNOP", "SECRETCODE", "tok123"] {
+      #expect(!message.contains(secret), "event leaked \(secret)")
+    }
+    let doctor = try await h.client.request(
+      DiagnosticsRead.self, EmptyParams(), options: RequestOptions(timeout: .seconds(60)))
+    let recorded = try #require(doctor.recentErrors.last { $0.code == "allowance_exceeded" })
+    #expect(recorded.message.contains("[redacted]"))
+    for secret in ["abc.def.ghi", "sk-proj-ABCDEFGHIJKLMNOP", "SECRETCODE", "tok123"] {
+      #expect(!recorded.message.contains(secret), "doctor leaked \(secret)")
+    }
+    // The whole event log of this session carries none of the values either.
+    let everything = await h.events.events.map { String(describing: $0.event.payload) }.joined()
+    #expect(!everything.contains("sk-proj-ABCDEFGHIJKLMNOP"))
+    #expect(!everything.contains("SECRETCODE"))
+    await h.stop()
+  }
+}
