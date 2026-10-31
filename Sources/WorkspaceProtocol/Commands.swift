@@ -20,6 +20,7 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case threadReconcile = "thread.reconcile"
   case turnSend = "turn.send"
   case turnInterrupt = "turn.interrupt"
+  case turnAbandon = "turn.abandon"
   case requestRespond = "request.respond"
   case credentialAdd = "credential.add"
   case serverAdd = "server.add"
@@ -34,7 +35,8 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   public var isMutation: Bool {
     switch self {
     case .draftSave, .connectionAdd, .connectionInspect, .connectionLogin, .threadCreate, .threadUpdate,
-      .threadReconcile, .turnSend, .turnInterrupt, .requestRespond, .credentialAdd, .serverAdd, .serverStart,
+      .threadReconcile, .turnSend, .turnInterrupt, .turnAbandon, .requestRespond, .credentialAdd, .serverAdd,
+      .serverStart,
       .serverRestart,
       .serverStop, .serverInspect:
       return true
@@ -356,6 +358,15 @@ public enum TurnInterrupt: WorkspaceCommand {
   }
   public typealias Result = TurnSend.Result
   public static let method = Method.turnInterrupt
+}
+
+/// Deliberate recovery for a turn whose outcome the runtime never established (spec 10.1.4): only a
+/// `reconciling` turn can be abandoned. It ends `failed` with a visible note; nothing is re-sent and
+/// the runtime is not told anything.
+public enum TurnAbandon: WorkspaceCommand {
+  public typealias Params = TurnInterrupt.Params
+  public typealias Result = TurnSend.Result
+  public static let method = Method.turnAbandon
 }
 
 /// Answer a pending runtime request exactly once. `decision` answers approvals; `answers` answers

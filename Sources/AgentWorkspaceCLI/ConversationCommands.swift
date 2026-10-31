@@ -281,8 +281,9 @@ struct ThreadCommand: AsyncParsableCommand {
 
 struct TurnCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
-    commandName: "turn", abstract: "Send a message to a thread or stop its active turn.",
-    subcommands: [Send.self, Interrupt.self])
+    commandName: "turn",
+    abstract: "Send a message to a thread, stop its active turn, or abandon an unknown outcome.",
+    subcommands: [Send.self, Interrupt.self, Abandon.self])
 
   struct Send: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -348,6 +349,30 @@ struct TurnCommand: AsyncParsableCommand {
         await client.close()
         print(
           global.json ? try Format.jsonOk(result) : "turn \(result.turn.id) \(result.turn.status.rawValue)")
+      } catch {
+        Output.fail(error, json: global.json)
+      }
+    }
+  }
+
+  struct Abandon: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+      abstract:
+        "Give up on a turn whose outcome the runtime never reported (status reconciling). It ends failed with a note; nothing is re-sent. Use `thread show --reconcile` first to ask the runtime again."
+    )
+    @OptionGroup var global: GlobalOptions
+    @Argument var threadId: String
+    func run() async throws {
+      do {
+        let client = try await Link.open()
+        let result = try await client.request(
+          TurnAbandon.self, TurnInterrupt.Params(threadId: threadId), options: Link.mutation())
+        await client.close()
+        print(
+          global.json
+            ? try Format.jsonOk(result)
+            : "turn \(result.turn.id) \(result.turn.status.rawValue) \(result.turn.outcome?.rawValue ?? "") (abandoned)"
+        )
       } catch {
         Output.fail(error, json: global.json)
       }

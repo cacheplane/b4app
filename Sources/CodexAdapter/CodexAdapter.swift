@@ -66,9 +66,15 @@ public actor CodexAdapter: AgentAdapter, LoginCapable {
     else {
       throw WorkspaceError(.missingExecutable, "Codex CLI not found. \(CodexInspector.installGuidance)")
     }
+    // `B4APP_CODEX_REQUEST_TIMEOUT` (seconds) shortens the RPC timeout; fixture tests of lost
+    // acknowledgements use it so an unknown submission shows up in a second instead of thirty.
+    let requestTimeout =
+      environment["B4APP_CODEX_REQUEST_TIMEOUT"].flatMap(Double.init).map { Duration.seconds($0) }
+      ?? .seconds(30)
     let server = CodexAppServer(
       options: CodexAppServer.Options(
-        executablePath: found.path, environment: environment, clientVersion: clientVersion))
+        executablePath: found.path, environment: environment, clientVersion: clientVersion,
+        requestTimeout: requestTimeout))
     self.server = server
     pumpTask = Task { [weak self] in
       for await inbound in server.inbound {

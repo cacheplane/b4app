@@ -29,7 +29,8 @@ private func parse(_ json: String) throws -> ParsedCommand { try parseCommand(Da
     let mutations: Set<WorkspaceProtocol.Method> = [
       .connectionAdd, .connectionInspect, .connectionLogin, .threadCreate, .threadUpdate, .threadReconcile,
       .turnSend,
-      .turnInterrupt, .requestRespond, .draftSave, .credentialAdd, .serverAdd, .serverStart, .serverRestart,
+      .turnInterrupt, .turnAbandon, .requestRespond, .draftSave, .credentialAdd, .serverAdd, .serverStart,
+      .serverRestart,
       .serverStop, .serverInspect,
     ]
     for method in WorkspaceProtocol.Method.allCases {

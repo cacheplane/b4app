@@ -503,6 +503,39 @@ public final class WorkspaceModel {
     }
   }
 
+  /// The next action for the last failure, in the context of the open thread's connection.
+  public var remediation: Remediation? {
+    guard let failure = lastFailure else { return nil }
+    let connection = detail.flatMap { self.connection(id: $0.thread.connectionId) }
+    return Remediation.for(failure, connection: connection)
+  }
+
+  /// Carry out a remediation's action. Each one is an ordinary command the user could issue by hand.
+  public func perform(_ action: Remediation.Action) async {
+    switch action {
+    case .none: break
+    case .signIn(let connectionId): await login(connectionId: connectionId)
+    case .openConnections: surface = .connections
+    case .openServers: surface = .servers
+    case .newThread: showNewThread = true
+    case .checkAgain: if let id = detail?.thread.id { await reconcileThread(id: id) }
+    case .abandonTurn: if let id = detail?.thread.id { await abandonTurn(threadId: id) }
+    case .openThread(let threadId): await openThread(id: threadId)
+    }
+    if case .none = action { return }
+    lastError = nil
+  }
+
+  /// Deliberate recovery for an outcome-unknown turn (spec 10.1.4). Nothing is re-sent.
+  public func abandonTurn(threadId: String) async {
+    _ = await perform {
+      try await $0.request(
+        TurnAbandon.self, TurnInterrupt.Params(threadId: threadId), options: Self.mutation()
+      )
+      .turn
+    }
+  }
+
   public func respond(requestId: String, decision: RuntimeDecision) async {
     _ = await perform {
       try await $0.request(

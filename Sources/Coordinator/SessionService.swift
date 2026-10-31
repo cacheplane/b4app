@@ -496,6 +496,7 @@ public actor SessionService {
     let (thread, connection, adapter) = try threadContext(id: params.threadId)
     if let outage = await managedServerOutage(connection) { throw outage }
     try await assertContinuable(thread, connection: connection)
+    try assertDirectoryFree(thread, connection: connection)
     if let active = try db.activeTurn(threadId: thread.id) {
       throw WorkspaceError(
         .protocolInvalid,
@@ -533,8 +534,14 @@ public actor SessionService {
       let failure = WorkspaceError.from(error)
       let unknown = failure.code == .submissionUnknown
       if failure.code == .nativeSessionMissing { await setContinuity(thread, .missing) }
+      // The runtime's own notifications may already have acknowledged or finished the turn while the
+      // request's response was lost (a late ack). State the events established wins over the error.
+      if let current = try db.turn(id: turn.id), current.status != .submitting {
+        return TurnSend.Result(turn: current)
+      }
       turn =
         try db.updateTurn(id: turn.id) {
+          guard $0.status == .submitting else { return }
           if unknown {
             $0.status = .reconciling
             $0.submission = .unknown
@@ -549,9 +556,40 @@ public actor SessionService {
           "outcome": unknown ? .null : "failed", "errorCode": .string(failure.code.rawValue),
           "error": ["message": .string(failure.message)],
         ])
+      await noteTurnFailure(code: failure.code, message: failure.message, connection: connection)
       throw WorkspaceError(
         failure.code, failure.message,
         details: ["turnId": .string(turn.id), "cause": failure.details ?? .null])
+    }
+  }
+
+  /// Spec 12 and A15: a failed turn that reveals an auth, allowance, or compatibility problem updates
+  /// the connection's state and the diagnostics so the user gets a specific next action. Nothing is
+  /// retried and no billing mode changes.
+  private func noteTurnFailure(code: ErrorCode, message: String, connection: Connection) async {
+    let scope = "\(connection.kind.rawValue):\(connection.label)"
+    switch code {
+    case .authRequired:
+      if let updated = try? db.updateConnection(id: connection.id, { $0.authStatus = .required }) {
+        await context.eventLog.publish(
+          AdapterEvent.connectionChanged(
+            connectionId: updated.id, status: updated.status, authStatus: .required, transport: .connected,
+            message: "Sign-in expired or was revoked: \(message)"))
+      }
+      await context.diagnostics.recordError(scope: scope, code: code.rawValue, message: message)
+    case .incompatibleVersion:
+      if let updated = try? db.updateConnection(id: connection.id, { $0.status = .incompatible }) {
+        await context.eventLog.publish(
+          AdapterEvent.connectionChanged(
+            connectionId: updated.id, status: .incompatible, authStatus: updated.authStatus,
+            transport: .connected, message: message))
+      }
+      await context.diagnostics.recordError(scope: scope, code: code.rawValue, message: message)
+    case .allowanceExceeded, .authModeConflict, .nativeSessionMissing, .identityChanged, .endpointUnavailable,
+      .submissionUnknown:
+      await context.diagnostics.recordError(scope: scope, code: code.rawValue, message: message)
+    default:
+      break
     }
   }
 
@@ -579,6 +617,76 @@ public actor SessionService {
         "The runtime no longer has this thread's native session. The cached transcript stays; start a new thread to continue.",
         details: ["reason": "missing", "threadId": .string(thread.id)])
     }
+  }
+
+  /// Spec 10.1.5: writable Codex and Claude runs in one canonical directory are serialized through
+  /// this app, across connections, and the lock holds through waiting and unknown states (D-033).
+  private func assertDirectoryFree(_ thread: ConversationThread, connection: Connection) throws {
+    guard connection.kind != .b4, let directory = thread.context else { return }
+    let canonical = Self.canonicalDirectory(directory)
+    for entry in try db.activeHarnessTurns() where entry.thread.id != thread.id {
+      guard let other = entry.thread.context, Self.canonicalDirectory(other) == canonical else { continue }
+      throw WorkspaceError(
+        .protocolInvalid,
+        "Another thread (\(entry.thread.title.isEmpty ? entry.thread.id : entry.thread.title)) has a turn \(entry.turn.status.rawValue) in \(canonical). Wait for it, stop it, or resolve its outcome first; two agents must not write the same directory at once.",
+        details: [
+          "reason": "directory_locked", "threadId": .string(entry.thread.id),
+          "turnId": .string(entry.turn.id),
+          "status": .string(entry.turn.status.rawValue), "directory": .string(canonical),
+        ])
+    }
+  }
+
+  /// Symlinks resolved, `..` collapsed, no trailing slash: the identity of a working directory.
+  static func canonicalDirectory(_ path: String) -> String {
+    let expanded = (path as NSString).expandingTildeInPath
+    var resolved = URL(fileURLWithPath: expanded).standardizedFileURL.resolvingSymlinksInPath().path
+    while resolved.count > 1, resolved.hasSuffix("/") { resolved.removeLast() }
+    return resolved
+  }
+
+  /// Deliberate recovery (spec 10.1.4): the user gives up on a turn whose outcome the runtime never
+  /// established. The turn ends `failed`, a system note says why, and nothing is sent anywhere.
+  public func turnAbandon(_ params: TurnAbandon.Params) async throws -> TurnSend.Result {
+    guard let thread = try db.thread(id: params.threadId) else {
+      throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.")
+    }
+    guard let active = try db.activeTurn(threadId: thread.id) else {
+      throw WorkspaceError(.notFound, "No turn is active on this thread.")
+    }
+    guard active.status == .reconciling else {
+      throw WorkspaceError(
+        .protocolInvalid,
+        "Turn \(active.id) is \(active.status.rawValue), not reconciling. Stop it instead; only an unknown outcome can be abandoned.",
+        details: [
+          "reason": "turn_active", "turnId": .string(active.id), "status": .string(active.status.rawValue),
+        ])
+    }
+    for request in try db.pendingRuntimeRequests(threadId: thread.id) {
+      _ = try db.transitionRuntimeRequest(id: request.id, to: .expired)
+    }
+    let note = try db.upsertDisplayItem(
+      threadId: thread.id, turnId: active.id, nativeItemId: nil, role: .system, type: "turnAbandoned",
+      payload: [
+        "text":
+          "The runtime never reported how this turn ended, and you chose to abandon it. The agent may or may not have acted on the request; nothing was re-sent.",
+        "submission": .string(active.submission.rawValue),
+      ], provenance: .live)
+    await context.eventLog.publish(
+      AdapterEvent(
+        kind: .messageCompleted, connectionId: thread.connectionId, threadId: thread.id, turnId: active.id,
+        payload: ["displayItem": try JSONValue(encoding: note), "role": "system"]))
+    let turn =
+      try db.updateTurn(id: active.id) {
+        $0.status = .terminal
+        $0.outcome = .failed
+      } ?? active
+    await publishTurn(
+      .turnFinished, turn, thread: thread, payload: ["outcome": "failed", "source": "abandoned"])
+    if let touched = try db.updateThread(id: thread.id, { _ in }) {
+      await context.eventLog.publish(try AdapterEvent.threadUpdated(touched))
+    }
+    return TurnSend.Result(turn: turn)
   }
 
   public func turnInterrupt(_ params: TurnInterrupt.Params) async throws -> TurnSend.Result {
@@ -713,6 +821,14 @@ public actor SessionService {
         if let updated { event.payload = merge(raw.payload, ["turn": try JSONValue(encoding: updated)]) }
         if let touched = try db.updateThread(id: thread.id, { _ in }) {
           await context.eventLog.publish(try AdapterEvent.threadUpdated(touched))
+        }
+        if outcome == .failed,
+          let code = raw.payload["errorCode"]?.stringValue.flatMap(ErrorCode.init(rawValue:)),
+          let connection = try db.connection(id: thread.connectionId)
+        {
+          await noteTurnFailure(
+            code: code, message: raw.payload["error"]?["message"]?.stringValue ?? code.rawValue,
+            connection: connection)
         }
       case .turnStateChanged:
         guard let turn, turn.status != .terminal else { break }

@@ -16,11 +16,24 @@ struct ComposerView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       if let error = model.lastError {
-        HStack {
-          Text(error).font(.callout).foregroundStyle(.red).lineLimit(3)
+        let remedy = model.remediation
+        HStack(alignment: .top) {
+          VStack(alignment: .leading, spacing: 2) {
+            Text(remedy?.message ?? error).font(.callout).foregroundStyle(.red)
+              .fixedSize(horizontal: false, vertical: true)
+            if remedy != nil, let code = model.lastFailure?.code {
+              Text(code.rawValue).font(.caption.monospaced()).foregroundStyle(.secondary)
+            }
+          }
           Spacer()
+          if let remedy, let title = remedy.actionTitle, remedy.action != .none {
+            Button(title) { Task { await model.perform(remedy.action) } }
+              .buttonStyle(.bordered).font(.caption)
+              .accessibilityIdentifier("remediation")
+          }
           Button("Dismiss") { model.lastError = nil }.buttonStyle(.borderless).font(.caption)
         }
+        .accessibilityIdentifier("error-banner")
       }
       TextEditor(text: $model.composerText)
         .font(.body)
@@ -36,7 +49,21 @@ struct ComposerView: View {
         )
         .font(.caption).foregroundStyle(.secondary)
         Spacer()
-        if let turn = activeTurn, turn.status != .reconciling {
+        if let turn = activeTurn, turn.status == .reconciling {
+          Button("Check again", systemImage: "arrow.clockwise") {
+            Task { await model.reconcileThread(id: detail.thread.id) }
+          }
+          .disabled(model.busy)
+          .accessibilityIdentifier("check-again")
+          Button("Abandon turn", systemImage: "xmark.circle", role: .destructive) {
+            Task { await model.abandonTurn(threadId: detail.thread.id) }
+          }
+          .disabled(model.busy)
+          .help(
+            "Give up on this turn's unknown outcome so the thread can take a new message. Nothing is re-sent."
+          )
+          .accessibilityIdentifier("abandon")
+        } else if let turn = activeTurn {
           Button("Stop", systemImage: "stop.fill") { Task { await model.stop() } }
             .disabled(turn.nativeTurnId == nil || turn.status == .stopping)
             .accessibilityIdentifier("stop")

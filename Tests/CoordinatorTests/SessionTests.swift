@@ -393,7 +393,13 @@ actor EventCollector {
     let codex = try await h.addCodex()
     let claude = try await h.addClaude()
     let codexThread = try await h.newThread(codex)
-    let claudeThread = try await h.newThread(claude)
+    // A second directory: the directory lock (spec 10.1.5) would otherwise serialize the two turns.
+    let claudeDir = (h.workDir as NSString).deletingLastPathComponent + "/claude-work"
+    try FileManager.default.createDirectory(atPath: claudeDir, withIntermediateDirectories: true)
+    let claudeThread = try await h.client.request(
+      ThreadCreate.self, ThreadCreate.Params(connectionId: claude.id, workingDirectory: claudeDir),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30))
+    ).thread
     let pending = try await h.send(codexThread, "please approve this")
     try await h.events.waitFor { $0.kind == .runtimeRequestOpened && $0.threadId == codexThread.id }
     let crashed = try await h.send(claudeThread, "crash now")
@@ -815,5 +821,178 @@ actor EventCollector {
     let next = try await back.send(thread, "welcome back")
     try await back.events.waitFor { $0.kind == .turnFinished && $0.turnId == next.id }
     await back.stop()
+  }
+}
+
+@Suite(.serialized) struct RecoveryTests {
+  private let mutation = { RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)) }
+
+  private func expectRefusal(
+    _ body: () async throws -> Turn, code: ErrorCode, reason: String,
+    sourceLocation: SourceLocation = #_sourceLocation
+  ) async -> WorkspaceError? {
+    do {
+      _ = try await body()
+      Issue.record("expected \(code.rawValue) / \(reason)", sourceLocation: sourceLocation)
+      return nil
+    } catch let error as WorkspaceError {
+      #expect(error.code == code, sourceLocation: sourceLocation)
+      #expect(error.details?["reason"]?.stringValue == reason, sourceLocation: sourceLocation)
+      return error
+    } catch {
+      Issue.record("unexpected \(error)", sourceLocation: sourceLocation)
+      return nil
+    }
+  }
+
+  /// A18 and spec 10.1.5: one writable harness turn per canonical directory through this app, across
+  /// connections, held through an unknown outcome and released by a deliberate abandon.
+  @Test func directoryLockSerializesHarnessTurnsAcrossConnections() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let claude = try await h.addClaude()
+    let first = try await h.newThread(codex)
+    let second = try await h.newThread(codex)
+    let viaLink = try await h.client.request(
+      ThreadCreate.self,
+      ThreadCreate.Params(connectionId: claude.id, workingDirectory: h.workDir + "/../work/"),
+      options: mutation()
+    ).thread
+    let elsewhere = (h.workDir as NSString).deletingLastPathComponent + "/other"
+    try FileManager.default.createDirectory(atPath: elsewhere, withIntermediateDirectories: true)
+    let other = try await h.client.request(
+      ThreadCreate.self, ThreadCreate.Params(connectionId: codex.id, workingDirectory: elsewhere),
+      options: mutation()
+    ).thread
+
+    let running = try await h.send(first, "hang around")
+    let refused = await expectRefusal(
+      { try await h.send(second, "me too") }, code: .protocolInvalid, reason: "directory_locked")
+    #expect(refused?.details?["threadId"]?.stringValue == first.id)
+    #expect(refused?.details?["turnId"]?.stringValue == running.id)
+    _ = await expectRefusal(
+      { try await h.send(viaLink, "claude in the same place") }, code: .protocolInvalid,
+      reason: "directory_locked")
+    let free = try await h.send(other, "different directory")
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == free.id }
+    #expect(try h.coordinator.database.turns(threadId: second.id).isEmpty)
+
+    // The lock survives the runtime crashing under the first turn (outcome unknown).
+    _ = try await h.client.request(
+      TurnInterrupt.self, TurnInterrupt.Params(threadId: first.id), options: mutation())
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == running.id }
+    let crashed = try await h.send(first, "crash now")
+    try await h.events.waitFor {
+      $0.kind == .turnStateChanged && $0.turnId == crashed.id
+        && $0.payload["status"]?.stringValue == "reconciling"
+    }
+    _ = await expectRefusal(
+      { try await h.send(second, "still locked?") }, code: .protocolInvalid, reason: "directory_locked")
+    do {
+      _ = try await h.client.request(
+        TurnAbandon.self, TurnInterrupt.Params(threadId: second.id), options: mutation())
+      Issue.record("abandon needs a reconciling turn")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .notFound)
+    }
+    let abandoned = try await h.client.request(
+      TurnAbandon.self, TurnInterrupt.Params(threadId: first.id), options: mutation())
+    #expect(abandoned.turn.status == .terminal)
+    #expect(abandoned.turn.outcome == .failed)
+    let read = try await h.read(first)
+    #expect(read.items.last?.role == .system)
+    #expect(read.items.last?.type == "turnAbandoned")
+    let unlocked = try await h.send(second, "finally")
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == unlocked.id }
+    await h.stop()
+  }
+
+  /// A12: a lost acknowledgement becomes an unknown submission; reconciliation is attempted and
+  /// nothing is re-sent until the user abandons the turn. A lost response with a live stream still
+  /// completes exactly once.
+  @Test func lostAcknowledgementsAreNeverRetried() async throws {
+    let h = try await Harness.start(extraEnvironment: ["B4APP_CODEX_REQUEST_TIMEOUT": "1"])
+    let connection = try await h.addCodex()
+    let thread = try await h.newThread(connection)
+
+    var swallowed: Turn?
+    do {
+      _ = try await h.send(thread, "please swallow this")
+      Issue.record("a swallowed request must not look acknowledged")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .submissionUnknown)
+      swallowed = try h.coordinator.database.turn(id: error.details?["turnId"]?.stringValue ?? "")
+    }
+    let unknown = try #require(swallowed)
+    #expect(unknown.status == .reconciling)
+    #expect(unknown.submission == .unknown)
+    let reconciled = try await h.client.request(
+      ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id), options: mutation())
+    #expect(reconciled.turns.first { $0.id == unknown.id }?.status == .reconciling)
+    _ = await expectRefusal(
+      { try await h.send(thread, "again?") }, code: .protocolInvalid, reason: "turn_active")
+    do {
+      _ = try await h.client.request(
+        TurnAbandon.self, TurnInterrupt.Params(threadId: thread.id), options: mutation())
+    }
+    let late = try await h.send(thread, "late ack please")
+    let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == late.id }
+    #expect(finished.payload["outcome"]?.stringValue == "completed")
+    let read = try await h.read(thread)
+    #expect(read.turns.map(\.outcome) == [.failed, .completed])
+    #expect(read.turns[1].submission == .acknowledged)
+    #expect(read.turns[1].nativeTurnId == "turn_1")
+    // The reconcile above merged the fixture's canned history (snapshot rows); the live turn produced
+    // exactly one reply and its user message is cached once.
+    #expect(read.items.filter { $0.role == .assistant && $0.provenance == .live }.count == 1)
+    #expect(read.items.filter { $0.payload["text"]?.stringValue == "late ack please" }.count == 1)
+    await h.stop()
+  }
+}
+
+@Suite(.serialized) struct FailureTests {
+  /// A15: an expired login during a turn is actionable: the turn fails with `auth_required`, the
+  /// connection reports `required`, viewers get `connection.changed`, and nothing is re-sent.
+  @Test func expiredLoginFlipsTheConnectionToAuthRequired() async throws {
+    let h = try await Harness.start()
+    let connection = try await h.addCodex()
+    #expect(connection.authStatus == .authenticated)
+    let thread = try await h.newThread(connection)
+    let turn = try await h.send(thread, "signout now")
+    let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    #expect(finished.payload["errorCode"]?.stringValue == "auth_required")
+    let changed = try await h.events.waitFor {
+      $0.kind == .connectionChanged && $0.connectionId == connection.id
+        && $0.payload["authStatus"]?.stringValue == "required"
+    }
+    #expect(changed.payload["status"]?.stringValue == "ready")
+    let listed = try await h.client.request(ConnectionList.self, ConnectionList.Params())
+    #expect(listed.connections[0].authStatus == .required)
+    #expect(listed.connections[0].status == .ready)
+    let doctor = try await h.client.request(
+      DiagnosticsRead.self, EmptyParams(), options: RequestOptions(timeout: .seconds(60)))
+    #expect(doctor.recentErrors.contains { $0.code == "auth_required" && $0.scope.contains("Fake Codex") })
+    #expect(try h.coordinator.database.turns(threadId: thread.id).count == 1)
+    // A later successful turn restores the auth state through the normal path.
+    let again = try await h.send(thread, "hello again")
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == again.id }
+    await h.stop()
+  }
+
+  /// A15: an allowance failure is recorded with the connection's label and never retried.
+  @Test func allowanceFailuresAreRecordedNotRetried() async throws {
+    let h = try await Harness.start()
+    let connection = try await h.addCodex()
+    let thread = try await h.newThread(connection)
+    let turn = try await h.send(thread, "fail please")
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    let doctor = try await h.client.request(
+      DiagnosticsRead.self, EmptyParams(), options: RequestOptions(timeout: .seconds(60)))
+    #expect(
+      doctor.recentErrors.contains { $0.code == "allowance_exceeded" && $0.scope.contains("Fake Codex") })
+    let listed = try await h.client.request(ConnectionList.self, ConnectionList.Params())
+    #expect(listed.connections[0].authStatus == .authenticated)
+    #expect(try h.coordinator.database.turns(threadId: thread.id).count == 1)
+    await h.stop()
   }
 }

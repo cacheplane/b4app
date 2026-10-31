@@ -489,6 +489,23 @@ public final class WorkspaceDatabase: Sendable {
     }
   }
 
+  /// Non-terminal turns of harness threads (Codex, Claude) with their threads, for the directory lock
+  /// (spec 10.1.5). Derived from stored state, so it survives restarts and holds through `reconciling`.
+  public func activeHarnessTurns() throws -> [(turn: Turn, thread: ConversationThread)] {
+    try pool.read { db in
+      let turns = try Turn.filter(
+        sql: """
+          status != 'terminal' AND threadId IN (
+            SELECT t.id FROM threads t JOIN connections c ON c.id = t.connectionId
+            WHERE c.kind IN ('codex', 'claude'))
+          """
+      ).order(Column("createdAt")).fetchAll(db)
+      return try turns.compactMap { turn in
+        try ConversationThread.fetchOne(db, key: turn.threadId).map { (turn: turn, thread: $0) }
+      }
+    }
+  }
+
   public func unresolvedTurns(connectionId: String) throws -> [Turn] {
     try pool.read { db in
       try Turn.filter(
