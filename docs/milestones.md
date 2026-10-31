@@ -98,4 +98,14 @@ Design: `docs/superpowers/specs/2026-10-31-lla-visual-system-design.md`. Plan: `
 
 ## M6: package and accept the personal v0
 
-Not started. See the spec.
+Design: `docs/superpowers/specs/2026-10-31-m6-package-and-accept-design.md`. Plan: `docs/superpowers/plans/2026-10-31-lla-design-and-m6.md`.
+
+- [x] Produce a local `.app` bundle and package/locate the coordinator and companion CLI predictably. `implemented`: `Scripts/package.sh` builds `dist/Agent Workspace.app` with `Contents/Helpers/{b4app-coordinator,agent-workspace}` and the LaunchAgent plist, signs (ad hoc, or `B4APP_SIGN_IDENTITY`), verifies, and zips; `Scripts/install-cli.sh` links the bundled CLI onto PATH; the CLI finds the bundled coordinator (D-038, D-040). `live-tested` on this Mac: see `docs/verification.md`.
+- [x] Verify Finder launch with executable paths outside the interactive shell PATH. `implemented` (D-040 fallback directories, `fixture-tested` with a fake nvm tree); `live-tested` by launching the packaged app through LaunchServices with no shell: see `docs/verification.md`.
+- [x] LaunchAgent hosting per D-004. `implemented` (`SMAppService` registration with in-process fallback, Login Items note, restart and removal, `coordinator status|stop|restart|plist`); CLI lifecycle `live-tested` against a CLI-spawned coordinator; agent registration `live-tested` as recorded in `docs/verification.md`.
+- [x] Document prerequisites, build/run/package commands, first sign-in, B4 environment setup, and CLI use. `README.md`.
+- [ ] Run the release acceptance matrix on the target Mac. Rows and their status are in `docs/verification.md`; A03 (Claude live), A10 (remote B4), and the on-screen rows A01/A17 are open or partial as recorded there.
+- [ ] Developer ID signing and notarisation. `blocked`: no signing identity on this Mac (D-039).
+- [x] Record exact versions, performed checks, known limits, and blocked live checks. `docs/verification.md`, `docs/compatibility.md`.
+
+Exit gate status: open. The implementation ships with the gate clearly open on the live rows that need the owner (Claude sign-in, a remote endpoint, a screen click-through) and on Developer ID signing; nothing is labelled fully validated.

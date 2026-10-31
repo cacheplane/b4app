@@ -2,7 +2,7 @@ import Foundation
 import os
 
 public enum CoordinatorVersion {
-  public static let current = "0.0.0"
+  public static let current = "0.1.0"
 }
 
 /// One logging subsystem for every process; categories per component.

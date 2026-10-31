@@ -55,7 +55,7 @@ struct AgentWorkspace: AsyncParsableCommand {
     version: CoordinatorVersion.current,
     subcommands: [
       Doctor.self, ConnectionCommand.self, ThreadCommand.self, TurnCommand.self, RequestCommand.self,
-      Server.self, Credential.self,
+      Server.self, Credential.self, CoordinatorCommand.self,
     ])
 }
 

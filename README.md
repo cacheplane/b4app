@@ -6,7 +6,7 @@ The interface follows the LiveLoveApp visual system (`docs/superpowers/specs/202
 
 ![Agent Workspace: a thread with a pending command approval, light appearance](docs/screenshots/threads-light.png)
 
-Status: M5. Codex and B4 conversations are live-verified from the CLI (Codex also from the macOS app); Claude Code conversations use the same transcript, approvals, stop, and resume through the CLI's stream-json protocol and are fixture-verified end to end, awaiting a signed-in Mac for the live inference check. B4 attaches a running local server or a remote HTTPS endpoint at one `agent()` route, or registers a local project and runs its server itself (`b4 start` or `b4 dev` on loopback) with the GUI and the CLI sharing one owned registration. Threads can be renamed, pinned, archived, and searched, keep their drafts across restarts, show their state in the sidebar, and say plainly when a native session is gone or belongs to another account; unknown outcomes stay unknown until a runtime answers or you abandon the turn; two harness turns never write one directory at once; Quit asks before stopping local work; wake and reconnect reconcile instead of guessing. See `docs/milestones.md`.
+Status: M6 (packaging). Codex and B4 conversations are live-verified from the CLI (Codex also from the macOS app); Claude Code conversations use the same transcript, approvals, stop, and resume through the CLI's stream-json protocol and are fixture-verified end to end, awaiting a signed-in Mac for the live inference check. B4 attaches a running local server or a remote HTTPS endpoint at one `agent()` route, or registers a local project and runs its server itself (`b4 start` or `b4 dev` on loopback) with the GUI and the CLI sharing one owned registration. Threads can be renamed, pinned, archived, and searched, keep their drafts across restarts, show their state in the sidebar, and say plainly when a native session is gone or belongs to another account; unknown outcomes stay unknown until a runtime answers or you abandon the turn; two harness turns never write one directory at once; Quit asks before stopping local work; wake and reconnect reconcile instead of guessing. See `docs/milestones.md`.
 
 ## Prerequisites
 
@@ -43,11 +43,53 @@ xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'plat
 xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'
 ```
 
+## Install (packaged app)
+
+```bash
+./Scripts/package.sh
+```
+
+That builds `dist/Agent Workspace.app` (version from `Sources/Coordinator/Version.swift`) with the coordinator and the CLI inside `Contents/Helpers` and the coordinator's LaunchAgent plist, signs it ad hoc, verifies, and zips it. Copy the app to `/Applications` and open it. On first launch the app registers its background coordinator as a Login Item; macOS may show "Agent Workspace added items that can run in the background". If the link status at the bottom of the sidebar says approval is needed, allow it under System Settings › General › Login Items & Extensions (the app offers to open that pane); until then the window hosts the coordinator itself and local turns end with the app.
+
+Put the CLI on your PATH as a link to the bundled one, so the app and the CLI always agree on a version:
+
+```bash
+./Scripts/install-cli.sh
+```
+
+Signing: with no Developer ID certificate the build is ad hoc and runs on the Mac that built it. `B4APP_SIGN_IDENTITY="Developer ID Application: …" ./Scripts/package.sh` signs with the hardened runtime; notarisation is a separate step and not part of this release.
+
+### First sign-in
+
+- Codex: install the Codex CLI (`brew install --cask codex`), then under Connections add a Codex connection and press "Sign in with ChatGPT"; the official browser flow runs and the connection shows the account it is signed in as. Or from a terminal: `agent-workspace connection add --kind codex` and `agent-workspace connection login codex`.
+- Claude Code: install the `claude` executable, then add a Claude connection and press "Sign in to Claude" (or run `claude auth login` in a terminal). Plan allowances apply; the app never switches to API-key billing on its own.
+- Nothing is typed into this app: both runtimes keep their own credentials.
+
+### B4 environment setup
+
+- A local project: under Local servers, register the project directory (the B4 app root with `b4.config` and `node_modules/@b4run/cli`), optionally its env file, and start it; connect one of its discovered routes to get a connection you can start threads on. Registration runs the project's config and route modules with Node to discover routes, so register only projects you trust. Node is found on PATH, in nvm/fnm/Volta/Bun/Homebrew layouts, or via `B4APP_NODE_PATH`.
+- An already running local server: Connections › B4 agent, base URL `http://127.0.0.1:<port>` and the route key.
+- A remote endpoint: HTTPS only; store the credential with `agent-workspace credential add <label>` and paste the printed reference into the form. Values never appear in arguments, logs, or results.
+
+### Upgrade
+
+Replace the app in `/Applications`. The running coordinator keeps the old version until it is restarted; the sidebar shows "The running coordinator is X; this app is Y" with a Restart coordinator link, the Coordinator menu has the same, and so does `agent-workspace coordinator restart`.
+
+### Uninstall
+
+Coordinator menu › "Remove Background Agent…" (unregisters the Login Item), quit, then delete the app, `~/Library/Application Support/b4app` (the database and logs), the `agent-workspace` symlink, and the Keychain items whose service starts with `com.cacheplane.b4app`. Registered B4 projects are not touched.
+
 ## CLI
 
 ```bash
 .build/debug/agent-workspace doctor --json
 ```
+
+```bash
+agent-workspace coordinator status
+```
+
+`coordinator status|stop|restart` inspect and control the one coordinator process; `restart` goes through launchd when the app's agent hosts it.
 
 A conversation from the terminal (Codex CLI 0.166.0 or newer signed in with `codex login`, or Claude Code 2.1.200 or newer signed in with `claude auth login`; use `--kind claude` and `--connection claude` for Claude):
 

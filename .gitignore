@@ -29,3 +29,6 @@ xcuserdata/
 .env
 .env.*
 !.env.example
+
+# packaging output
+dist/

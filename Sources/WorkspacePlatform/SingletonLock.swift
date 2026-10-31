@@ -43,6 +43,16 @@ public final class SingletonLock: Sendable {
     return .acquired(SingletonLock(path: path, descriptor: fd))
   }
 
+  /// The record of a live holder without touching the lock: the file's record whose pid still exists.
+  /// A stale file (crash without cleanup) reads as nil.
+  public static func peek(path: String) -> LockRecord? {
+    guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+      let record = try? JSONDecoder().decode(LockRecord.self, from: data), record.pid > 0,
+      kill(record.pid, 0) == 0 || errno == EPERM
+    else { return nil }
+    return record
+  }
+
   /// Release and remove the lock file. Safe to call once; the descriptor is closed.
   public func release() {
     flock(descriptor, LOCK_UN)

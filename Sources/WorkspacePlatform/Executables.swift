@@ -13,6 +13,9 @@ public enum ExecutableLocator {
   /// tests use an empty value to stay isolated from whatever is installed on the machine.
   public static let fallbackOverrideVariable = "B4APP_EXECUTABLE_FALLBACK_DIRS"
 
+  /// Directories a Finder- or launchd-started process should still search. Version managers that
+  /// rely on shell hooks (nvm, fnm) are covered by their on-disk layouts: nvm's newest installed
+  /// version first, fnm's `default` alias. `launchctl` gives agents only `/usr/bin:/bin:/usr/sbin:/sbin`.
   static func fallbackDirectories(home: String, environment env: [String: String] = [:]) -> [String] {
     if let override = env[fallbackOverrideVariable] {
       return override.split(separator: ":").map(String.init).filter { !$0.isEmpty }
@@ -24,8 +27,25 @@ public enum ExecutableLocator {
       "\(home)/.npm-global/bin",
       "\(home)/.volta/bin",
       "\(home)/.bun/bin",
+    ] + nvmDirectories(home: home) + [
+      "\(home)/.local/share/fnm/aliases/default/bin",
+      "\(home)/Library/Application Support/fnm/aliases/default/bin",
+      "/opt/homebrew/opt/node/bin",
+      "/usr/local/opt/node/bin",
       "/usr/bin",
     ]
+  }
+
+  /// `~/.nvm/versions/node/v*/bin`, newest version first, so a packaged app picks the Node a shell would.
+  static func nvmDirectories(home: String) -> [String] {
+    let root = "\(home)/.nvm/versions/node"
+    guard let names = try? FileManager.default.contentsOfDirectory(atPath: root) else { return [] }
+    func parts(_ name: String) -> [Int] {
+      name.drop(while: { $0 == "v" }).split(separator: ".").map { Int($0) ?? 0 }
+    }
+    return names.filter { $0.hasPrefix("v") }
+      .sorted { parts($0).lexicographicallyPrecedes(parts($1)) == false && parts($0) != parts($1) }
+      .map { "\(root)/\($0)/bin" }
   }
 
   static func isExecutableFile(_ path: String) -> Bool {
