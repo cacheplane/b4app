@@ -2,6 +2,13 @@
 
 Material implementation decisions, newest first. The spec (`docs/roadmaps/Personal_Agent_Workspace_Technical_Spec_and_Roadmap.md`) is the requirement source; this log records deviations and choices the spec left open.
 
+## 2026-10-31
+
+- **D-015 One `claude` process per native session, started on `createSession` and kept alive between turns.** The stream-json protocol has no session API: the CLI process is the session. Starting it at creation validates the executable, the `initialize` handshake, and sign-in before a thread row exists; `--session-id <uuid>` fixes the native id up front; after a coordinator restart the next turn spawns with `--resume <uuid>`.
+- **D-016 A Claude process that exits mid-turn ends that turn as `failed`.** Unlike Codex, where the app-server owns the thread and a turn's final status can be read back, nothing continues once the `claude` process is gone, so the adapter emits `turn.finished failed` with the exit status, and `reconcile` after a coordinator restart reports `failed` for a turn with no live process. The disconnect is scoped to that thread; the connection and other threads are untouched.
+- **D-017 Claude history is read from the transcript JSONL Claude Code writes under `projectsDirectory`, best-effort and read-only.** The app cache stays the display source; a missing file is `native_session_missing`, never a reconstructed session.
+- **D-018 `allow_always` on a Claude tool permission is sent as a plain allow.** Writing per-session rules into the user's Claude settings is out of scope; the UI still offers the button so both runtimes present the same choices.
+
 ## 2026-10-30
 
 - **D-001 Native Swift instead of Electron + React + TypeScript.** The spec chose Electron; the owner directed pure Swift with macOS and iOS targets. An Electron shell was built, verified, and discarded the same day. Consequences: no Node coordinator, no TypeScript adapters, and the Claude integration cannot use the TypeScript Agent SDK (D-002).

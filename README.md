@@ -2,7 +2,7 @@
 
 A native Swift app for running Codex, Claude Code, and B4 agent conversations side by side on one Mac, with an iOS companion built from the same code. Everything is local: no accounts, no cloud sync, no telemetry.
 
-Status: M1. Real Codex conversations work from the macOS app and the CLI: create a thread in a directory, stream the reply, answer command and file-change approvals, stop a turn, and reopen the same native thread later. Claude Code and B4 conversations are M2 and M3. See `docs/milestones.md`.
+Status: M2. Codex conversations are live-verified from the macOS app and the CLI; Claude Code conversations use the same transcript, approvals, stop, and resume through the CLI's stream-json protocol and are fixture-verified end to end, awaiting a signed-in Mac for the live inference check. B4 conversations are M3. See `docs/milestones.md`.
 
 ## Prerequisites
 
@@ -39,7 +39,7 @@ xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generi
 .build/debug/agent-workspace doctor --json
 ```
 
-A Codex conversation from the terminal (Codex CLI 0.166.0 or newer, signed in with `codex login`):
+A conversation from the terminal (Codex CLI 0.166.0 or newer signed in with `codex login`, or Claude Code 2.1.200 or newer signed in with `claude auth login`; use `--kind claude` and `--connection claude` for Claude):
 
 ```bash
 .build/debug/agent-workspace connection add --kind codex
@@ -63,6 +63,10 @@ Live provider tests are opt-in and never run in CI:
 B4APP_LIVE_CODEX=1 swift test --filter CodexLive
 ```
 
+```bash
+B4APP_LIVE_CLAUDE=1 swift test --filter ClaudeLive
+```
+
 ## Layout
 
 ```
@@ -84,7 +88,7 @@ docs/                       spec, design, decisions, compatibility, verification
 ## Documents
 
 - Spec: `docs/roadmaps/Personal_Agent_Workspace_Technical_Spec_and_Roadmap.md`
-- Design: `docs/superpowers/specs/2026-10-30-swift-monorepo-shell-design.md`, `docs/superpowers/specs/2026-10-30-m1-codex-conversation-design.md`
+- Design: `docs/superpowers/specs/2026-10-30-swift-monorepo-shell-design.md`, `docs/superpowers/specs/2026-10-30-m1-codex-conversation-design.md`, `docs/superpowers/specs/2026-10-31-m2-claude-conversation-design.md`
 - Decisions: `docs/decisions.md`
 - Compatibility: `docs/compatibility.md`
 - Verification: `docs/verification.md`
