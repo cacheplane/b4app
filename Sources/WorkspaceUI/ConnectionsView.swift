@@ -26,7 +26,7 @@ struct ConnectionsView: View {
     KindInfo(
       kind: .b4, title: "B4 agent",
       summary:
-        "Attach a running B4 server (local HTTP on loopback, or a remote HTTPS endpoint) at one exact agent route. Managed local servers arrive in M4.",
+        "Attach a running B4 server (local HTTP on loopback, or a remote HTTPS endpoint) at one exact agent route. To run a local project from here, register it under Local servers and connect one of its routes.",
       milestone: "M3", runtime: nil),
   ]
 

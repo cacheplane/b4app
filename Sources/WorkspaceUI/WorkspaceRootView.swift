@@ -32,7 +32,7 @@ public struct WorkspaceRootView: View {
     switch model.surface {
     case .threads: ThreadsView(model: model)
     case .connections: ConnectionsView(model: model)
-    case .servers: LocalServersView()
+    case .servers: LocalServersView(model: model)
     case .diagnostics: DiagnosticsView(model: model)
     }
   }

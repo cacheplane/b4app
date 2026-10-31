@@ -73,16 +73,3 @@ struct DiagnosticsView: View {
     }
   }
 }
-
-struct LocalServersView: View {
-  var body: some View {
-    ContentUnavailableView {
-      Label("Local servers", systemImage: "server.rack")
-    } description: {
-      Text(
-        "Managed B4 servers (start, stop, restart, routes, redacted logs) arrive in M4. Attached servers are never stopped from here."
-      )
-    }
-    .navigationTitle("Local servers")
-  }
-}
