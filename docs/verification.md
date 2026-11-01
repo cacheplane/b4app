@@ -12,10 +12,10 @@ Target: the same MacBook Pro (macOS 26.5, Xcode 26.6), Docker 27.4.0 for the hub
 | --- | --- | --- |
 | Rust format | `cd Hub && source <(./scripts/test-db.sh) && cargo fmt --all -- --check` | Pass |
 | Rust lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
-| Rust tests | `cargo test --workspace --locked` (then `./scripts/test-db.sh --stop`) | Pass: 76 tests against a real PostgreSQL 17.11: `b4hub` 42 (unit 20, `changes` 8, `enroll` 10, `health` 4), `b4hub-core` 12, `b4hub-db` 22 (unit 3, `changes` 10, `migrate` 6, `rls` 3) |
+| Rust tests | `cargo test --workspace --locked` (then `./scripts/test-db.sh --stop`) | Pass: 77 tests against a real PostgreSQL 17.11: `b4hub` 43 (unit 20, `changes` 8, `enroll` 10, `health` 5), `b4hub-core` 12, `b4hub-db` 22 (unit 3, `changes` 10, `migrate` 6, `rls` 3) |
 | Swift format | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass |
 | Build | `swift build` | Pass |
-| Tests | `swift test` | Pass: 319 tests in 74 suites (262 before M8a) |
+| Tests | `swift test` | Pass: 324 tests in 74 suites (262 before M8a; 319 before the final-review fixes) |
 | macOS app | `./Scripts/generate-project.sh`, then `xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO` | Pass |
 | iOS app | the same with `-scheme B4App-iOS -destination 'generic/platform=iOS Simulator'` | Pass |
 | CI | the `hub` job (Ubuntu, `postgres:17` service) | Recorded in the draft PR cacheplane/b4app#17 (base `design/m8-hub`), not here: the controller observed all three checks (the Swift package job, the apps job, which runs both app builds, and the Ubuntu `hub` job) green at commit a6d9a2a (end of Task 6) and partially green on later heads; later heads, including the docs commit, were still pending when this was written. The final head's result is in the PR |
