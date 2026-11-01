@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
+use b4hub::cli::CliError;
 use b4hub::serve::{self, AppState};
 use b4hub_db::Db;
 use serde_json::{json, Value};
@@ -40,6 +41,31 @@ async fn migrated_state(pool: &PgPool) -> AppState {
         .await
         .unwrap();
     AppState::new(Db::connect(&app_url(pool)).await.unwrap())
+}
+
+#[sqlx::test(migrations = false)]
+async fn serve_refuses_a_privileged_database_url(pool: PgPool) {
+    // The test pool connects as the cluster superuser, as an admin URL in DATABASE_URL would.
+    b4hub_db::migrate::run(&admin_url(&pool), &app_url(&pool))
+        .await
+        .unwrap();
+    let admin = Db::connect(&admin_url(&pool)).await.unwrap();
+    match b4hub::cli::refuse_privileged_connection(&admin).await {
+        Err(CliError::Config(e)) => {
+            assert_eq!(e.name, "DATABASE_URL");
+            assert!(!e.to_string().contains("pw-test"));
+        }
+        other => panic!("expected a configuration error, got {other:?}"),
+    }
+    let err = b4hub::cli::refuse_privileged_connection(&admin)
+        .await
+        .unwrap_err();
+    assert_eq!(err.exit_code(), 2);
+
+    let app = Db::connect(&app_url(&pool)).await.unwrap();
+    b4hub::cli::refuse_privileged_connection(&app)
+        .await
+        .expect("b4hub_app is not privileged");
 }
 
 async fn get(state: AppState, path: &str) -> (StatusCode, Value) {

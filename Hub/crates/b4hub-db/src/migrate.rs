@@ -218,6 +218,21 @@ async fn refuse_privileged_role(conn: &mut PgConnection) -> Result<()> {
     Ok(())
 }
 
+/// Whether the pool's own role would escape row-level security: a superuser, a `BYPASSRLS` role,
+/// or the owner of the tables (the policies are forced, but an owner can still alter or disable
+/// them). `serve` refuses to start on such a connection.
+pub async fn connected_role_is_privileged(db: &Db) -> Result<bool> {
+    let privileged: bool = sqlx::query_scalar(
+        "SELECT coalesce((SELECT rolsuper OR rolbypassrls FROM pg_roles \
+             WHERE rolname = current_user), false) \
+         OR EXISTS (SELECT 1 FROM pg_tables \
+             WHERE tablename = 'changes' AND tableowner = current_user)",
+    )
+    .fetch_one(&db.pool)
+    .await?;
+    Ok(privileged)
+}
+
 /// Table access for the application role: read and write everything the migrations created,
 /// except the migration ledger, which it may only read (readiness reports from it). Default
 /// privileges cover the tables later migrations create as this owner.

@@ -302,6 +302,7 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
     let wait = settings.shutdown_wait()?;
     let public_url = settings.public_url()?;
     let db = Db::connect(&settings.database_url()?).await?;
+    refuse_privileged_connection(&db).await?;
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(
         %addr,
@@ -311,6 +312,21 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
     );
     serve::run(listener, AppState::new(db), wait, serve::os_signal()).await?;
     tracing::info!("stopped");
+    Ok(())
+}
+
+/// `serve`'s startup check: the service must connect as `b4hub_app`, never as a role that the
+/// tenant policies do not bind (a superuser, a `BYPASSRLS` role, or the table owner, such as the
+/// admin URL pasted into `DATABASE_URL`). A configuration error, so `serve` exits 2 before binding.
+pub async fn refuse_privileged_connection(db: &Db) -> Result<(), CliError> {
+    if b4hub_db::migrate::connected_role_is_privileged(db).await? {
+        return Err(ConfigError::new(
+            "DATABASE_URL",
+            "connects as a superuser, a BYPASSRLS role, or the table owner; \
+             serve must connect as b4hub_app",
+        )
+        .into());
+    }
     Ok(())
 }
 
