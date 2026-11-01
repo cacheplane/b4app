@@ -36,7 +36,7 @@ extension SecretStore {
 /// Run Locally") is enough there (M8a Task 9 gate, Simulator), while an unsigned build fails with
 /// -34018.
 ///
-/// On macOS (D-048) a process whose signature claims the shared access group, a Developer ID build
+/// On macOS (D-051) a process whose signature claims the shared access group, a Developer ID build
 /// whose embedded provisioning profile authorises `<team>.com.cacheplane.b4app.shared`, uses the
 /// data-protection keychain in that group, so the app and the coordinator share items and nothing
 /// prompts. Everything else (`swift build`, tests, ad hoc packages) has no profile and so no group,
@@ -177,7 +177,7 @@ public struct KeychainError: Error, CustomStringConvertible {
     let message = (SecCopyErrorMessageString(status, nil) as String?) ?? "unknown"
     if status == errSecMissingEntitlement {
       return
-        "Keychain error \(status): \(message) The signature does not claim the keychain access group its provisioning profile authorises (D-048)."
+        "Keychain error \(status): \(message) The signature does not claim the keychain access group its provisioning profile authorises (D-051)."
     }
     return "Keychain error \(status): \(message)"
   }

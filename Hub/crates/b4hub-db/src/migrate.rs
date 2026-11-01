@@ -220,13 +220,17 @@ async fn refuse_privileged_role(conn: &mut PgConnection) -> Result<()> {
 
 /// Whether the pool's own role would escape row-level security: a superuser, a `BYPASSRLS` role,
 /// or the owner of the tables (the policies are forced, but an owner can still alter or disable
-/// them). `serve` refuses to start on such a connection.
+/// them), either itself or through a role it is a member of with `INHERIT` (`pg_has_role(...,
+/// 'USAGE')` follows the membership chain and honours `NOINHERIT`). `serve` refuses to start on
+/// such a connection.
 pub async fn connected_role_is_privileged(db: &Db) -> Result<bool> {
     let privileged: bool = sqlx::query_scalar(
-        "SELECT coalesce((SELECT rolsuper OR rolbypassrls FROM pg_roles \
-             WHERE rolname = current_user), false) \
-         OR EXISTS (SELECT 1 FROM pg_tables \
-             WHERE tablename = 'changes' AND tableowner = current_user)",
+        "SELECT EXISTS ( \
+             SELECT 1 FROM pg_roles r \
+             WHERE pg_has_role(current_user, r.oid, 'USAGE') \
+               AND (r.rolsuper OR r.rolbypassrls OR EXISTS ( \
+                   SELECT 1 FROM pg_tables \
+                   WHERE tablename = 'changes' AND tableowner = r.rolname)))",
     )
     .fetch_one(&db.pool)
     .await?;

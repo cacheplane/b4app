@@ -71,7 +71,7 @@ B4APP_SIGN_IDENTITY="Developer ID Application: <name> (<team-id>)" ./Scripts/pac
 
 It signs every PostgreSQL binary and library, the CLI, the coordinator bundle, and the app with the hardened runtime and a secure timestamp, verifies, submits the zip to the notary service and waits, staples the ticket to the app, re-zips the stapled app, and fails unless `spctl -a -vv` reports `source=Notarized Developer ID`. A rejected submission prints notarytool's log. `B4APP_NOTARY_PROFILE` names another profile; `B4APP_SKIP_NOTARIZE=1` signs without submitting. The team id comes from the certificate, so the repository stores none (`Config/Signing.xcconfig` includes a gitignored `Config/Signing.local.xcconfig` for Xcode).
 
-A Developer ID build also keeps secrets in the data-protection keychain, shared by the app and the coordinator (D-048). That needs two provisioning profiles, made once at developer.apple.com:
+A Developer ID build also keeps secrets in the data-protection keychain, shared by the app and the coordinator (D-051). That needs two provisioning profiles, made once at developer.apple.com:
 
 1. Identifiers: register the macOS App IDs `com.cacheplane.b4app` and `com.cacheplane.b4app.coordinator`, each with **Keychain Sharing**.
 2. Profiles: create a **Developer ID** profile for each with your Developer ID Application certificate, and save them as `~/.b4app/signing/app.provisionprofile` and `~/.b4app/signing/coordinator.provisionprofile` (or point `B4APP_APP_PROFILE` and `B4APP_COORDINATOR_PROFILE` at them).
@@ -80,7 +80,7 @@ The script checks each profile's App ID, team, keychain group, and expiry, embed
 
 ### TestFlight (iOS)
 
-The Mac app is not eligible for TestFlight or the Mac App Store: both require App Sandbox, which cannot run your own CLIs, the bundled PostgreSQL, or the LaunchAgent (D-048). The iOS companion ships through TestFlight with Xcode's cloud-managed signing:
+The Mac app is not eligible for TestFlight or the Mac App Store: both require App Sandbox, which cannot run your own CLIs, the bundled PostgreSQL, or the LaunchAgent (D-051). The iOS companion ships through TestFlight with Xcode's cloud-managed signing:
 
 1. App Store Connect → Users and Access → Integrations → App Store Connect API: create a **Team** key with the **Admin** role, and save the `.p8` file as `~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8` (it downloads once; never commit it).
 2. App Store Connect → Apps → New App: iOS, bundle id `com.cacheplane.b4app.ios`.
@@ -208,7 +208,7 @@ The B4 live check needs a server you run yourself: a B4 project with one `agent(
 
 ## Hub (optional)
 
-The hub (`Hub/`, a Rust service backed by PostgreSQL) mirrors conversations created in the app from a Mac to the iOS app, read-only (M8a, decisions D-043 to D-046). The phone shows threads and transcripts; it cannot write, send turns, or answer approvals yet (M8b, M8c). Only threads created in the app sync: nothing is read from `~/.codex`, `~/.claude`, or a B4 server's history, and connection credentials, executable paths, and local-server records never leave the Mac. The hub's wire reference is `Hub/API.md`.
+The hub (`Hub/`, a Rust service backed by PostgreSQL) mirrors conversations created in the app from a Mac to the iOS app (M8a, decisions D-043 to D-046) and, since M8b, carries the phone's own edits back (decisions D-048 to D-050). The phone shows threads and transcripts in the same attention order as the Mac, and can rename, pin, archive, and mark threads read or unread, rename projects, and edit a thread's shared draft; each edit applies on the phone at once, waits in an outbox while offline, and merges on the Mac and the hub column by column by hybrid logical clock. Only those columns are phone-writable, and the hub and the Mac both refuse anything else from a phone. Projects are created and their folders changed only on the Mac; the phone cannot yet create threads, send turns, or answer approvals (M8c). Only threads created in the app sync: nothing is read from `~/.codex`, `~/.claude`, or a B4 server's history, and connection credentials, executable paths, and local-server records never leave the Mac. The hub's wire reference is `Hub/API.md`.
 
 Start a local hub (needs Docker). Compose publishes the hub as `127.0.0.1:8080:8080`: plain HTTP on the Mac's loopback interface only, which the Mac and the Simulator reach as `localhost` (any other device needs a hub behind TLS, since the clients refuse plain HTTP for any host but `localhost`); the database is not published:
 

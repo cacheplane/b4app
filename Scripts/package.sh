@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build the distributable macOS app (M6): the SwiftUI app plus the CLI and the coordinator (a
-# minimal app-like bundle, D-048) inside Contents/Helpers and the coordinator's LaunchAgent plist,
+# minimal app-like bundle, D-051) inside Contents/Helpers and the coordinator's LaunchAgent plist,
 # signed and zipped under dist/.
 #
 #   ./Scripts/package.sh                      ad hoc signature (runs on this Mac only)

@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import WorkspacePlatform
 
-/// Which keychain a process uses (D-048). These never touch keychain items: an unsigned test
+/// Which keychain a process uses (D-051). These never touch keychain items: an unsigned test
 /// binary has no profile, so it must stay on the file-based login keychain.
 @Suite struct KeychainStoreSelectionTests {
   @Test func anUnsignedProcessUsesTheLoginKeychain() {

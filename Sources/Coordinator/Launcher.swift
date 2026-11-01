@@ -12,7 +12,7 @@ public enum CoordinatorLauncher {
     public var spawned: Bool
   }
 
-  /// The coordinator inside the app bundle (D-048): a minimal app-like bundle in `Contents/Helpers`,
+  /// The coordinator inside the app bundle (D-051): a minimal app-like bundle in `Contents/Helpers`,
   /// so a Developer ID build can embed the provisioning profile that authorises its keychain access
   /// group. The packaged CLI stays a bare tool in `Contents/Helpers`.
   public static let helperWrapper = "B4AppCoordinator.app/Contents/MacOS/b4app-coordinator"

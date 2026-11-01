@@ -17,6 +17,18 @@ impl Db {
         Ok(tx)
     }
 
+    /// Begins a read-only `REPEATABLE READ` transaction with the tenant context set: every
+    /// statement in it sees the one snapshot taken by its first. For reads that must agree with
+    /// each other (the horizon with the feed, the snapshot's tables with its cursor).
+    pub async fn read_tx(&self, org_id: Uuid) -> Result<Transaction<'_, Postgres>> {
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .await?;
+        set_tenant(&mut tx, org_id).await?;
+        Ok(tx)
+    }
+
     /// Begins a transaction with no tenant context. Only for `device_tokens` and
     /// `enrollment_codes`, which have no row-level security because they are looked up by the
     /// hash of a presented secret before the org is known. Against any tenant-secured table such

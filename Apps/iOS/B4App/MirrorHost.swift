@@ -7,10 +7,11 @@ import WorkspaceSecrets
 import WorkspaceSync
 import WorkspaceUI
 
-/// The phone's side of the hub (M8a): the SQLite mirror, the device token in the Keychain, and the
-/// pull loop that keeps the mirror current. The shared `WorkspaceModel` reads the mirror through a
-/// `MirrorTransport`, exactly as the Mac's reads the coordinator through its socket; the UI never
-/// sees the store, the token, or the network.
+/// The phone's side of the hub (M8a, M8b): the SQLite mirror, the device token in the Keychain, and the
+/// loop that keeps the mirror and the hub in step (it pulls the Mac's changes and pushes the phone's own
+/// edits). The shared `WorkspaceModel` reads and writes the mirror through a `MirrorTransport`, exactly
+/// as the Mac's talks to the coordinator through its socket; the UI never sees the store, the token, or
+/// the network.
 @MainActor @Observable final class MirrorHost {
   static let shared = MirrorHost()
 
@@ -24,6 +25,9 @@ import WorkspaceUI
   private(set) var isLinked = false
   /// Why the mirror could not be opened, if it could not.
   private(set) var storeError: String?
+  /// Set when the mirror file is a schema this build cannot read but holds edits not yet uploaded: the
+  /// file is kept as it is, nothing syncs, and Diagnostics and the status line say so.
+  @ObservationIgnored private var unreadableReason: String?
   /// The pull loop's last outcome; `lastError` is set while the mirror is not keeping up with the hub.
   private(set) var syncStatus = MirrorSyncStatus()
 
@@ -37,18 +41,37 @@ import WorkspaceUI
   }
 
   private init() {
-    var link: MirrorLink?
+    var opened: MirrorStore?
+    var fromSnapshot = false
+    var unreadable: String?
+    var failure: String?
     do {
-      let store = try MirrorStore(path: try Self.directory().appendingPathComponent("mirror.sqlite").path)
-      link = try store.link()
-      self.store = store
+      let path = try Self.directory().appendingPathComponent("mirror.sqlite").path
+      do {
+        opened = try MirrorStore(path: path)
+      } catch MirrorStoreError.needsRebuild(outboxEmpty: true) {
+        // Nothing unsent is lost. The rebuilt file keeps the link and the sequence counter, and its
+        // rows come from the hub's snapshot rather than a pull of the whole feed.
+        opened = try MirrorStore.rebuild(path: path)
+        fromSnapshot = true
+      } catch let error as MirrorStoreError {
+        // Unsent edits are in a file this build cannot read: keep it and do not sync. It can only
+        // have been linked, so the shell shows over an empty mirror, with the reason in Diagnostics.
+        unreadable = error.description
+      }
     } catch {
-      self.store = nil
-      storeError = Self.describe(error)
+      failure = Self.describe(error)
     }
-    if let link {
+    store = opened
+    unreadableReason = unreadable
+    storeError = unreadable ?? failure
+    if let unreadable {
       isLinked = true
-      startSync(link)
+      syncStatus = MirrorSyncStatus(lastError: unreadable)
+    }
+    if let link = try? opened?.link() {
+      isLinked = true
+      startSync(link, fromSnapshot: fromSnapshot)
     }
   }
 
@@ -68,12 +91,24 @@ import WorkspaceUI
   }
 
   private func makeTransport() throws -> any WorkspaceTransport {
-    guard let store else {
+    let transport: MirrorTransport
+    if let store {
+      transport = MirrorTransport(
+        store: store, version: Self.version, onLocalWrite: { Task { await MirrorHost.shared.nudge() } })
+    } else if let unreadableReason {
+      // An empty stand-in that answers reads, refuses writes, and puts the reason in Diagnostics.
+      transport = MirrorTransport(
+        store: try MirrorStore.inMemory(), version: Self.version, unavailable: unreadableReason)
+    } else {
       throw WorkspaceError(.endpointUnavailable, storeError ?? "The mirror could not be opened.")
     }
-    let transport = MirrorTransport(store: store, version: Self.version)
     self.transport = transport
     return transport
+  }
+
+  /// A local write was made: have the sync loop push it now.
+  private func nudge() async {
+    await sync?.nudge()
   }
 
   private func publish(_ batch: AppliedBatch) {
@@ -114,7 +149,7 @@ import WorkspaceUI
       try? await HTTPHubAPI(baseURL: base, token: { token }).revokeSelf()
       throw error
     }
-    startSync(link)
+    startSync(link, fromSnapshot: false)
     isLinked = true
   }
 
@@ -134,14 +169,14 @@ import WorkspaceUI
     isLinked = false
   }
 
-  private func startSync(_ link: MirrorLink) {
+  private func startSync(_ link: MirrorLink, fromSnapshot: Bool) {
     guard let store, let base = try? HubURL.validate(link.hubURL),
       let ref = SecretRef(rawValue: link.tokenRef)
     else { return }
     let sync = MirrorSync(
       store: store, api: Self.api(base: base, ref: ref, secrets: secrets),
       onBatch: { batch in await MirrorHost.shared.publish(batch) },
-      onStatus: { status in await MirrorHost.shared.update(status) })
+      onStatus: { status in await MirrorHost.shared.update(status) }, startFromSnapshot: fromSnapshot)
     self.sync = sync
     syncStatus = MirrorSyncStatus()
     Task { await sync.run() }

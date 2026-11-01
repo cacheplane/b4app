@@ -13,6 +13,7 @@ public actor Router {
     public var sessions: SessionService
     public var servers: LocalServerService
     public var hub: HubSync
+    public var projects: ProjectService
     public var startedAt: String
     public var paths: PlatformPaths
   }
@@ -138,6 +139,23 @@ public actor Router {
     case .threadUpdate:
       return try JSONValue(
         encoding: try await sessions.threadUpdate(try command.params(for: ThreadUpdate.self)))
+    case .threadMarkRead:
+      return try JSONValue(
+        encoding: try await sessions.threadMarkRead(try command.params(for: ThreadMarkRead.self)))
+    case .projectList:
+      return try JSONValue(encoding: try await context.projects.list())
+    case .projectCreate:
+      return try JSONValue(
+        encoding: try await context.projects.create(try command.params(for: ProjectCreate.self)))
+    case .projectUpdate:
+      return try JSONValue(
+        encoding: try await context.projects.update(try command.params(for: ProjectUpdate.self)))
+    case .projectRename:
+      return try JSONValue(
+        encoding: try await context.projects.rename(try command.params(for: ProjectRename.self)))
+    case .projectDelete:
+      return try JSONValue(
+        encoding: try await context.projects.delete(try command.params(for: ProjectDelete.self)))
     case .threadReconcile:
       return try JSONValue(
         encoding: try await sessions.threadReconcile(try command.params(for: ThreadReconcile.self)))

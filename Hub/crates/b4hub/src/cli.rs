@@ -1,5 +1,5 @@
-//! Command line, environment settings, and the four commands (`serve`, `migrate`, `seed`,
-//! `enroll`).
+//! Command line, environment settings, and the five commands (`serve`, `migrate`, `seed`,
+//! `enroll`, `prune`).
 //!
 //! A missing or malformed setting is a [`ConfigError`] that names the setting and never echoes
 //! its value (the database URLs carry passwords); `main` prints it on one line and exits 2.
@@ -21,6 +21,8 @@ use crate::serve::{self, AppState};
 
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_SHUTDOWN_WAIT_MS: u64 = 30_000;
+const DEFAULT_RETENTION_DAYS: u32 = 30;
+const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 
 /// How long an enrollment code stays redeemable.
 const ENROLLMENT_TTL: Duration = Duration::from_secs(600);
@@ -50,6 +52,19 @@ pub enum Command {
     Seed(SeedArgs),
     /// Print a one-time enrollment code for a user (connects with DATABASE_ADMIN_URL).
     Enroll(EnrollArgs),
+    /// Delete change-log entries older than a number of days, once (connects with
+    /// DATABASE_ADMIN_URL). `serve` does this itself every 24 hours.
+    Prune(PruneArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct PruneArgs {
+    /// Keep changes received within this many days; delete older ones.
+    #[arg(long = "older-than-days", value_parser = clap::value_parser!(u32).range(1..))]
+    pub older_than_days: u32,
+    /// Org slug; every org when omitted.
+    #[arg(long = "org", value_parser = parse_slug)]
+    pub org: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -209,6 +224,25 @@ impl Settings {
         }
     }
 
+    /// `B4HUB_RETENTION_DAYS`, default 30: how long `serve` keeps the change log. A whole number
+    /// of days, at least 1 (0 would delete the feed on every pass).
+    pub fn retention(&self) -> Result<Duration, ConfigError> {
+        let days = match self.var("B4HUB_RETENTION_DAYS") {
+            None => DEFAULT_RETENTION_DAYS,
+            Some(raw) => raw
+                .parse::<u32>()
+                .ok()
+                .filter(|days| *days >= 1)
+                .ok_or_else(|| {
+                    ConfigError::new(
+                        "B4HUB_RETENTION_DAYS",
+                        "must be a whole number of days, at least 1",
+                    )
+                })?,
+        };
+        Ok(Duration::from_secs(u64::from(days) * SECONDS_PER_DAY))
+    }
+
     /// `B4HUB_PUBLIC_URL`, when set: the URL clients reach the hub at.
     pub fn public_url(&self) -> Result<Option<Url>, ConfigError> {
         match self.var("B4HUB_PUBLIC_URL") {
@@ -291,6 +325,7 @@ pub async fn run(cli: Cli, settings: &Settings) -> Result<(), CliError> {
         Command::Migrate => migrate_command(settings).await,
         Command::Seed(args) => seed_command(args, settings).await,
         Command::Enroll(args) => enroll_command(args, settings).await,
+        Command::Prune(args) => prune_command(args, settings).await,
     }
 }
 
@@ -301,6 +336,7 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
     };
     let wait = settings.shutdown_wait()?;
     let public_url = settings.public_url()?;
+    let retention = settings.retention()?;
     let db = Db::connect(&settings.database_url()?).await?;
     refuse_privileged_connection(&db).await?;
     let listener = TcpListener::bind(addr).await?;
@@ -308,9 +344,22 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
         %addr,
         public_url = public_url.as_ref().map(Url::as_str),
         shutdown_wait_ms = wait.as_millis() as u64,
+        retention_days = retention.as_secs() / SECONDS_PER_DAY,
         "serving"
     );
-    serve::run(listener, AppState::new(db), wait, serve::os_signal()).await?;
+    let state = AppState::new(db.clone());
+    let pruning = tokio::spawn(serve::prune_loop(
+        db,
+        retention,
+        serve::PRUNE_INTERVAL,
+        state.shutdown.clone(),
+    ));
+    let shutdown = state.shutdown.clone();
+    let served = serve::run(listener, state, wait, serve::os_signal()).await;
+    // However `run` ended, the prune task stops with it; it ends at once on the flag.
+    shutdown.trigger();
+    let _ = tokio::time::timeout(Duration::from_secs(2), pruning).await;
+    served?;
     tracing::info!("stopped");
     Ok(())
 }
@@ -341,6 +390,26 @@ async fn migrate_command(settings: &Settings) -> Result<(), CliError> {
         status.applied.len(),
         status.pending
     );
+    Ok(())
+}
+
+async fn prune_command(args: PruneArgs, settings: &Settings) -> Result<(), CliError> {
+    let db = Db::connect(&settings.admin_url()?).await?;
+    let retention = Duration::from_secs(u64::from(args.older_than_days) * SECONDS_PER_DAY);
+    let orgs = match args.org.as_deref() {
+        Some(slug) => match orgs::resolve_org(&db, Some(slug)).await? {
+            OrgChoice::Found(id) => vec![(id, slug.to_string())],
+            _ => return Err(ConfigError::new("--org", "no org has that slug").into()),
+        },
+        None => orgs::list(&db).await?,
+    };
+    for (org_id, slug) in orgs {
+        let horizon = b4hub_db::prune::prune(&db, org_id, retention).await?;
+        println!(
+            "pruned org {slug}: changes up to hubSeq {horizon} are gone ({} days kept)",
+            args.older_than_days
+        );
+    }
     Ok(())
 }
 
@@ -424,7 +493,31 @@ mod tests {
         assert_eq!(s.port().unwrap(), 8080);
         assert_eq!(s.shutdown_wait().unwrap(), Duration::from_millis(30_000));
         assert_eq!(s.public_url().unwrap(), None);
+        assert_eq!(s.retention().unwrap(), Duration::from_secs(30 * 86_400));
         assert!(s.log_filter().is_ok());
+    }
+
+    #[test]
+    fn retention_is_a_whole_number_of_days() {
+        let days = |raw: &str| settings(&[("B4HUB_RETENTION_DAYS", raw)]).retention();
+        assert_eq!(days("7").unwrap(), Duration::from_secs(7 * 86_400));
+        for bad in ["0", "-3", "1.5", "thirty", "30d"] {
+            let error = days(bad).unwrap_err();
+            assert_eq!(error.name, "B4HUB_RETENTION_DAYS", "{bad}");
+        }
+        assert!(!days("thirty").unwrap_err().to_string().contains("thirty"));
+    }
+
+    #[tokio::test]
+    async fn serve_with_a_bad_retention_is_a_configuration_error() {
+        let cli = Cli::try_parse_from(["b4hub", "serve", "--bind", "127.0.0.1:0"]).unwrap();
+        let settings = settings(&[
+            ("DATABASE_URL", "postgres://b4hub_app:pw@127.0.0.1:1/none"),
+            ("B4HUB_RETENTION_DAYS", "soon"),
+        ]);
+        let error = run(cli, &settings).await.unwrap_err();
+        assert!(matches!(error, CliError::Config(_)), "{error}");
+        assert_eq!(error.exit_code(), 2);
     }
 
     #[test]

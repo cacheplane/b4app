@@ -17,6 +17,34 @@ use sqlx::{Postgres, Transaction};
 use crate::tenant::set_tenant;
 use crate::{Db, Error, Result};
 
+/// What kind of device enrolled, which decides what it may write: a `macos` device writes any
+/// column, an `ios` or `cli` device only the phone-writable ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    Macos,
+    Ios,
+    Cli,
+}
+
+impl Platform {
+    pub fn parse(text: &str) -> Option<Platform> {
+        match text {
+            "macos" => Some(Platform::Macos),
+            "ios" => Some(Platform::Ios),
+            "cli" => Some(Platform::Cli),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Platform::Macos => "macos",
+            Platform::Ios => "ios",
+            Platform::Cli => "cli",
+        }
+    }
+}
+
 /// A device that proved its token: the principal of every protected request. It comes only from
 /// the verified token row and the device row it points at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +52,7 @@ pub struct AuthedDevice {
     pub org_id: Uuid,
     pub user_id: Uuid,
     pub device_id: Uuid,
+    pub platform: Platform,
 }
 
 /// What redeeming a code yields. `token` is shown to the caller once and stored nowhere.
@@ -64,6 +93,18 @@ pub struct DeviceInfo {
     pub org_name: String,
     pub username: String,
     pub display_name: String,
+}
+
+/// One of a user's devices as `GET /v1/devices` lists it. Timestamps are RFC 3339 in UTC with
+/// microseconds, rendered by the database; `last_seen_at` is `None` for a device never seen and
+/// `revoked_at` for one not revoked.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct DeviceSummary {
+    pub id: Uuid,
+    pub name: String,
+    pub platform: String,
+    pub last_seen_at: Option<String>,
+    pub revoked_at: Option<String>,
 }
 
 /// Mints an enrollment code for `user_id` in `org_id` that stays redeemable for `ttl`, and
@@ -173,16 +214,24 @@ pub async fn authenticate(db: &Db, token: &str) -> Result<Option<AuthedDevice>> 
     };
 
     set_tenant(&mut tx, org_id).await?;
-    let user_id: Option<Uuid> =
-        sqlx::query_scalar("SELECT user_id FROM devices WHERE id = $1 AND revoked_at IS NULL")
-            .bind(device_id)
-            .fetch_optional(&mut *tx)
-            .await?;
+    let device: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT user_id, platform FROM devices WHERE id = $1 AND revoked_at IS NULL",
+    )
+    .bind(device_id)
+    .fetch_optional(&mut *tx)
+    .await?;
     tx.commit().await?;
-    Ok(user_id.map(|user_id| AuthedDevice {
+    let Some((user_id, platform)) = device else {
+        return Ok(None);
+    };
+    // The `devices` table only holds the three platforms.
+    let platform = Platform::parse(&platform)
+        .ok_or_else(|| sqlx::Error::Decode("unknown device platform".into()))?;
+    Ok(Some(AuthedDevice {
         org_id,
         user_id,
         device_id,
+        platform,
     }))
 }
 
@@ -192,6 +241,25 @@ pub async fn me(db: &Db, org_id: Uuid, device_id: Uuid) -> Result<Option<DeviceI
     let info = describe(&mut tx, device_id).await?;
     tx.commit().await?;
     Ok(info)
+}
+
+/// The user's devices, revoked ones included, oldest first.
+pub async fn list(db: &Db, org_id: Uuid, user_id: Uuid) -> Result<Vec<DeviceSummary>> {
+    const RFC3339: &str = "'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'";
+    let mut tx = db.tenant_tx(org_id).await?;
+    let devices = sqlx::query_as(&format!(
+        "SELECT id, name, platform, \
+                to_char(last_seen_at AT TIME ZONE 'UTC', {RFC3339}) AS last_seen_at, \
+                to_char(revoked_at AT TIME ZONE 'UTC', {RFC3339}) AS revoked_at \
+         FROM devices WHERE org_id = $1 AND user_id = $2 \
+         ORDER BY created_at, id"
+    ))
+    .bind(org_id)
+    .bind(user_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(devices)
 }
 
 /// Revokes the device: deletes its token rows and sets `devices.revoked_at`. Uploaded history is

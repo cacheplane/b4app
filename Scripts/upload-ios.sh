@@ -1,5 +1,5 @@
 #!/bin/sh
-# Archive the iOS companion and upload it to App Store Connect for TestFlight (D-048).
+# Archive the iOS companion and upload it to App Store Connect for TestFlight (D-051).
 #
 #   B4APP_ASC_KEY_ID=… B4APP_ASC_ISSUER_ID=… ./Scripts/upload-ios.sh
 #   B4APP_UPLOAD=0 …                 export and validate the .ipa under dist/ios, upload nothing
@@ -9,7 +9,7 @@
 # profile, and signs with an Apple Distribution certificate Apple manages, authorised by a Team App
 # Store Connect API key with the Admin role. altool then validates and uploads the .ipa with the same
 # key (Xcode 26.6's own `destination: upload` failed here with "Cannot verify client's JWT headers"
-# while altool, with the same key, succeeded; D-048). The key file stays outside the repository, by default at
+# while altool, with the same key, succeeded; D-051). The key file stays outside the repository, by default at
 # ~/.appstoreconnect/private_keys/AuthKey_<key id>.p8 (B4APP_ASC_KEY_PATH overrides it); this script
 # never prints it. The team id comes from B4APP_TEAM_ID or the Developer ID identity in the login
 # keychain. The build number is B4APP_BUILD_NUMBER or the UTC time as yymmddHHMM, so each upload is
