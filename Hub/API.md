@@ -50,9 +50,22 @@ answer the same generic `404 not_found`.
 | 405 | `method_not_allowed` | request | The route exists but not for that method. |
 | 410 | `resync_required` | request | The pull cursor is older than the retention horizon: the hub has pruned the changes after it. Restore from `GET /v1/snapshot` (see *Horizon*). |
 | 413 | `payload_too_large` | request | A push body over 32 MiB. (A change whose `value` is over 2 MiB is rejected per change instead; see `POST /v1/changes`.) |
+| 429 | `rate_limited` | request | A device opened too many relay links in a minute (the upgrade is refused before it happens). On the link it is also an `error` frame or a `reply` error, with `details.retryAfterMs`. |
 | 500 | `internal_error` | execution | Any unexpected failure; the cause is logged on the hub, never sent. |
 | 503 | `not_ready` | execution | `/readyz`: the database is unreachable or migrations are pending. |
 | 503 | `shutting_down` | execution | `/readyz` after SIGTERM. |
+
+Six more codes exist only on the relay link, never as an HTTP status. They arrive in an `error`
+frame (a problem with the link or a frame) or in a `reply`'s `error` (a problem with one command):
+
+| `code` | `kind` | When |
+| --- | --- | --- |
+| `device_offline` | execution | The Mac that owns the thread has no open link. `details: { deviceId, deviceName, lastSeenAt }`. |
+| `command_expired` | execution | The command's deadline passed before the Mac ran it. |
+| `relay_timeout` | execution | The Mac did not reply within the reply wait. |
+| `link_replaced` | request | A newer link from the same device closed this one (close code 4000). |
+| `client_too_old` | request | The client's `B4-Protocol` is below the hub's minimum. |
+| `watch_limit` | request | The link already watches four threads. |
 
 ### Limits
 

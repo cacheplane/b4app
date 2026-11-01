@@ -22,6 +22,21 @@ public enum ErrorCode: String, Codable, Sendable, CaseIterable {
   case notImplemented = "not_implemented"
   case notFound = "not_found"
   case internalError = "internal"
+  // The relay (M8c). They travel in `error` frames and in a relayed `reply`'s `error`.
+  /// The Mac that owns the thread has no open link. `details`: `deviceId`, `deviceName`, `lastSeenAt`.
+  case deviceOffline = "device_offline"
+  /// The command's deadline passed before the Mac ran it.
+  case commandExpired = "command_expired"
+  /// The Mac did not reply within the hub's reply wait.
+  case relayTimeout = "relay_timeout"
+  /// Over a relay rate limit. `details.retryAfterMs` says when to try again.
+  case rateLimited = "rate_limited"
+  /// A newer link from the same device closed this one.
+  case linkReplaced = "link_replaced"
+  /// The client's protocol version is below the hub's minimum.
+  case clientTooOld = "client_too_old"
+  /// The link already watches the most threads it may.
+  case watchLimit = "watch_limit"
 }
 
 public struct WorkspaceError: Error, Codable, Sendable, Equatable, CustomStringConvertible {

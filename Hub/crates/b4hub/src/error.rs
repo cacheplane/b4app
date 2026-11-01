@@ -11,6 +11,30 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::json;
 
+/// The error codes the relay adds. They travel in `error` frames and in a `reply`'s `error` on the
+/// link; only `rate_limited` is also an HTTP status (429, before a link upgrade). `not_found` and
+/// `stale_runtime_request` are reused from the table above.
+pub mod relay_code {
+    pub const DEVICE_OFFLINE: &str = "device_offline";
+    pub const COMMAND_EXPIRED: &str = "command_expired";
+    pub const RELAY_TIMEOUT: &str = "relay_timeout";
+    pub const RATE_LIMITED: &str = "rate_limited";
+    pub const LINK_REPLACED: &str = "link_replaced";
+    pub const CLIENT_TOO_OLD: &str = "client_too_old";
+    pub const WATCH_LIMIT: &str = "watch_limit";
+
+    /// Every code above, for tests and for validating a host's `reply`.
+    pub const ALL: [&str; 7] = [
+        DEVICE_OFFLINE,
+        COMMAND_EXPIRED,
+        RELAY_TIMEOUT,
+        RATE_LIMITED,
+        LINK_REPLACED,
+        CLIENT_TOO_OLD,
+        WATCH_LIMIT,
+    ];
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorKind {
@@ -87,6 +111,15 @@ impl ApiError {
             StatusCode::GONE,
             "resync_required",
             "the cursor is older than the retained changes; start again from the beginning",
+        )
+    }
+
+    /// A caller is over a rate limit; used before a link upgrade, where the answer is HTTP.
+    pub fn rate_limited() -> ApiError {
+        ApiError::request(
+            StatusCode::TOO_MANY_REQUESTS,
+            relay_code::RATE_LIMITED,
+            "too many requests; try again shortly",
         )
     }
 
@@ -198,6 +231,25 @@ mod tests {
                 "details": {"code": "not_ready"},
             }})
         );
+    }
+
+    #[test]
+    fn relay_codes_are_the_swift_wire_strings() {
+        assert_eq!(
+            relay_code::ALL,
+            [
+                "device_offline",
+                "command_expired",
+                "relay_timeout",
+                "rate_limited",
+                "link_replaced",
+                "client_too_old",
+                "watch_limit",
+            ]
+        );
+        let error = ApiError::rate_limited();
+        assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(error.code, "rate_limited");
     }
 
     #[test]
