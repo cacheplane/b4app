@@ -104,7 +104,8 @@ struct ConnectionCard: View {
           Spacer()
           StatusBadge(status: connection.status)
         }
-        Text(connection.target.isEmpty ? "(executable not found)" : connection.target).llaCodeMuted()
+        // A mirrored connection carries no path (the Mac never uploads it), so there is no row.
+        if !connection.target.isEmpty { Text(connection.target).llaCodeMuted() }
         if let route = connection.routeKey {
           Text(
             "route \(route) · \(connection.b4Mode?.rawValue.replacingOccurrences(of: "_", with: " ") ?? "b4")"

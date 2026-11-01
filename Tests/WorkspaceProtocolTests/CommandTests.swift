@@ -135,3 +135,23 @@ private func failure(_ json: String) -> WorkspaceError? {
     #expect(String(decoding: line, as: UTF8.self) == "{\"a\":1}\n")
   }
 }
+
+@Suite struct DiagnosticsReportTests {
+  @Test func aReportWithoutSyncStillDecodesAndOmitsIt() throws {
+    let json = Data(
+      #"""
+      {"coordinator":{"version":"0.2.0","pid":1,"startedAt":"s","epoch":"e","sequence":0,"runtimeDir":"r",
+       "dataDir":"d","socketPath":"p","databasePath":"db","host":"h"},
+       "host":{"platform":"darwin","arch":"arm64","release":"26"},"runtimes":[],"recentErrors":[]}
+      """#.utf8)
+    let report = try JSONCoding.decoder.decode(DiagnosticsReport.self, from: json)
+    #expect(report.sync == nil)
+    #expect(!String(decoding: try JSONCoding.encoder.encode(report), as: UTF8.self).contains("sync"))
+
+    var linked = report
+    linked.sync = SyncDiagnostic(
+      hubURL: "http://localhost:8080", deviceName: "Phone", cursor: 3, lastSyncAt: nil, lastError: "x")
+    let again = try JSONCoding.decoder.decode(DiagnosticsReport.self, from: JSONCoding.encoder.encode(linked))
+    #expect(again == linked)
+  }
+}

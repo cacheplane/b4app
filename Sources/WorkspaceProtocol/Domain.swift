@@ -449,19 +449,41 @@ public struct RecentError: Codable, Sendable, Equatable {
   }
 }
 
+/// A device's link to the hub as its diagnostics show it (M8a). The token is never part of it.
+public struct SyncDiagnostic: Codable, Sendable, Equatable {
+  public var hubURL: String
+  public var deviceName: String
+  /// The hub sequence this device has applied through.
+  public var cursor: Int
+  public var lastSyncAt: String?
+  public var lastError: String?
+
+  public init(hubURL: String, deviceName: String, cursor: Int, lastSyncAt: String?, lastError: String?) {
+    self.hubURL = hubURL
+    self.deviceName = deviceName
+    self.cursor = cursor
+    self.lastSyncAt = lastSyncAt
+    self.lastError = lastError
+  }
+}
+
 public struct DiagnosticsReport: Codable, Sendable, Equatable {
   public var coordinator: CoordinatorInfo
   public var host: HostInfo
   public var runtimes: [RuntimeDiagnostic]
   public var recentErrors: [RecentError]
+  /// The hub link of a mirroring device; nil from the coordinator and absent in older reports.
+  public var sync: SyncDiagnostic?
 
   public init(
-    coordinator: CoordinatorInfo, host: HostInfo, runtimes: [RuntimeDiagnostic], recentErrors: [RecentError]
+    coordinator: CoordinatorInfo, host: HostInfo, runtimes: [RuntimeDiagnostic], recentErrors: [RecentError],
+    sync: SyncDiagnostic? = nil
   ) {
     self.coordinator = coordinator
     self.host = host
     self.runtimes = runtimes
     self.recentErrors = recentErrors
+    self.sync = sync
   }
 }
 

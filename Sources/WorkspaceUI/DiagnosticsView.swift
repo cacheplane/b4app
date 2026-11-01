@@ -20,6 +20,16 @@ struct DiagnosticsView: View {
             row("Database", report.coordinator.databasePath, mono: true)
             row("Host", "\(report.host.platform) \(report.host.arch) (\(report.host.release))")
           }
+          if let sync = report.sync {
+            LLASectionHead("Sync").padding(.top, LLA.Space.l)
+            Grid(alignment: .leading, horizontalSpacing: LLA.Space.l, verticalSpacing: LLA.Space.xs) {
+              row("Hub", sync.hubURL, mono: true)
+              row("Device", sync.deviceName)
+              row("Cursor", "\(sync.cursor)", mono: true)
+              row("Last sync", sync.lastSyncAt ?? "never")
+              if let error = sync.lastError { row("Last error", error) }
+            }
+          }
           LLASectionHead("Runtimes").padding(.top, LLA.Space.l)
           ForEach(Array(report.runtimes.enumerated()), id: \.offset) { _, runtime in
             LLACard {

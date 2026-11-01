@@ -140,7 +140,7 @@ let package = Package(
     // Model-level tests of the shared UI against a real in-process coordinator (macOS only).
     .testTarget(
       name: "WorkspaceUITests",
-      dependencies: ["WorkspaceUI", "Coordinator", "NIOTransport"],
+      dependencies: ["WorkspaceUI", "Coordinator", "NIOTransport", "WorkspaceMirror"],
       swiftSettings: mainActorDefault),
   ],
   swiftLanguageModes: [.v6]
