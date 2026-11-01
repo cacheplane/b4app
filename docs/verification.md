@@ -2,6 +2,22 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-11-01: Composer (D-061, fixture gates, Simulator, and Mac snapshots)
+
+Run from `blove/ios-mobile-fit` after the merge of `main` (#31) on macOS 26.5 with Xcode 26.6, iPhone 17 Pro Simulator (iOS 26.5).
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Lint | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Clean |
+| Tests | `swift test` | 573 tests in 99 suites pass, including `ThemeTests.composerChoosesLineOrBox`. The first run failed `DetailMinimumSizeTests` (the Mac detail's minimum height 1317 pt against 548): the turn caption above the field wrapped a character per line at zero width; it is two lines at most on the Mac now |
+| Mac app | `xcodebuild build … -scheme B4App-macOS -destination 'platform=macOS'` | `** BUILD SUCCEEDED **` |
+| iPhone app | `xcodebuild build … -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'` | `** BUILD SUCCEEDED **` |
+| Phone geometry | 3x screenshots scanned pixel by pixel | Box with one line 74.3 pt tall; send 32 pt, 6.0 pt from the trailing and bottom edges; text 16 pt in, its cap-height centre 21.5 pt from the top (22 is the centre of a 44 pt line); three lines 116 pt, the fourth scrolls |
+| Mac geometry | `B4APP_SNAPSHOT_DIR=… swift test --filter SnapshotTests`, 2x | One-line capsule 44 pt; stop 32 pt, 6 pt from the top, trailing, and bottom edges; text 16 pt in, cap centre at 21.3. The first capture showed flattened capsule ends (continuous corners); circular corners fixed it |
+| Behaviour | Simulator | Typing grows the field a line at a time to three, then scrolls; Return adds a line; the field rides 8 pt above the on-screen keyboard; the caret is cobalt; the transcript scrolls under the field behind the soft edge; at AX3 the button grows to 48 pt and stays concentric; dark mode reads on the theme's surface and rule |
+
+`docs/screenshots/composer.png` shows the phone empty, at three lines, with the keyboard, and at AX3 in dark, and the Mac's line. Open: the iPad's one-line shape was checked through the Mac (the same code path); no iPad Simulator is enrolled with the hub. Test drafts typed on the phone were cleared afterwards.
+
 ## 2026-11-01: iPhone sizes, targets, and accessibility text sizes (D-060, fixture gates and Simulator)
 
 Run from `blove/ios-mobile-fit` (on `main` at `2e05bad`) on macOS 26.5 with Xcode 26.6; the iPhone 17 Pro Simulator (iOS 26.5) showed the mirror of the Mac's threads through the local Compose hub.

@@ -97,6 +97,27 @@ import Testing
     #expect(LLA.Metrics.row == 0 && LLA.Metrics.margin == LLA.Space.xl && LLA.Metrics.control == 30)
   }
 
+  @Test func composerChoosesLineOrBox() {
+    // D-061: one line only on a wide screen, for a draft that fits beside the 32 pt button with no
+    // line break, and never at an accessibility size. A 400 pt field leaves 400 - 16 - 8 - 32 - 6.
+    let room: CGFloat = 400 - 16 - 8 - 32 - 6
+    func shape(
+      wide: Bool = true, ax: Bool = false, draft: String = "Ship it", width: CGFloat
+    ) -> ComposerView.Shape {
+      ComposerView.shape(wide: wide, accessibilitySize: ax, draft: draft, draftWidth: width, fieldWidth: 400)
+    }
+    #expect(shape(width: room) == .line)
+    #expect(shape(width: room + 1) == .box)
+    #expect(shape(wide: false, width: 10) == .box)
+    #expect(shape(ax: true, width: 10) == .box)
+    #expect(shape(draft: "two\nlines", width: 10) == .box)
+    #expect(
+      ComposerView.shape(wide: true, accessibilitySize: false, draft: "", draftWidth: 50, fieldWidth: 0)
+        == .line)
+    // The button is concentric with the 44 pt line's corner: equal gaps on every side it touches.
+    #expect(ComposerView.inset * 2 + ComposerView.control == ComposerView.line)
+  }
+
   @Test func contrast() {
     // `ghost` is exempt from the 3:1 graphics floor: the runtime marks it draws are supplementary,
     // and the row's accessibility label names the runtime.

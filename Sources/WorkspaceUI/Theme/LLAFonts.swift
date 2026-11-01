@@ -126,6 +126,9 @@ public enum LLAFont {
   /// Sidebar, menu, and search rows: dense on the Mac, the size of a system list row on the phone.
   public static var row: Font { sans(scale.row, relativeTo: scale.rowStyle) }
   public static var rowStrong: Font { sans(scale.row, weight: .semibold, relativeTo: scale.rowStyle) }
+  /// The composer's draft text: body on the Mac, a step under body on the phone (16 pt, `.callout`),
+  /// so a draft reads lighter than the replies above it (D-061).
+  public static var composer: Font { sans(scale.composer, relativeTo: scale.composerStyle) }
   /// Pill button titles.
   public static var button: Font { sans(scale.button, weight: .semibold, relativeTo: scale.buttonStyle) }
 
@@ -155,17 +158,23 @@ public struct LLATypeScale: Sendable, Equatable {
   public var buttonStyle: Font.TextStyle
   public var row: CGFloat
   public var rowStyle: Font.TextStyle
+  public var composer: CGFloat
+  public var composerStyle: Font.TextStyle
 
   public static let mac = LLATypeScale(
     display: 26, title: 19, body: 15, small: 13, caption: 12, code: 13, codeSmall: 12, button: 13,
-    buttonStyle: .subheadline, row: 13, rowStyle: .subheadline)
+    buttonStyle: .subheadline, row: 13, rowStyle: .subheadline,
+    composer: 15, composerStyle: .body)
   /// Mono runs a point or two under its sans neighbour: JetBrains Mono is wider and taller per point.
   public static let phone = LLATypeScale(
     display: 28, title: 20, body: 17, small: 15, caption: 12, code: 15, codeSmall: 13, button: 17,
-    buttonStyle: .body, row: 17, rowStyle: .body)
+    buttonStyle: .body, row: 17, rowStyle: .body,
+    composer: 16, composerStyle: .callout)
 
   /// Every size, for checks against a floor.
-  public var all: [CGFloat] { [display, title, body, small, caption, code, codeSmall, button, row] }
+  public var all: [CGFloat] {
+    [display, title, body, small, caption, code, codeSmall, button, row, composer]
+  }
 }
 
 extension View {

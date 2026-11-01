@@ -43,16 +43,16 @@ struct ThreadDetailView: View {
       header
       Hairline()
       if let detail = model.detail, detail.thread.id == thread.id {
-        TranscriptView(detail: detail)
-        if !detail.requests.isEmpty {
+        #if os(iOS)
+          // The transcript scrolls on under the composer, behind the system's soft scroll edge, as in
+          // Messages; a rule or a hard cut above the field is not needed.
+          TranscriptView(detail: detail)
+            .safeAreaBar(edge: .bottom, spacing: 0) { bottom(detail) }
+        #else
+          TranscriptView(detail: detail)
           Hairline()
-          RuntimeRequestList(model: model, requests: detail.requests)
-        }
-        Hairline()
-        if thread.continuity != .available {
-          ContinuityBanner(model: model, thread: thread)
-        }
-        ComposerView(model: model, detail: detail)
+          bottom(detail)
+        #endif
       } else if model.detailLoading {
         ProgressView("Loading thread…").llaSmallMuted().padding(LLA.Space.xxl)
         Spacer(minLength: 0)
@@ -88,6 +88,20 @@ struct ThreadDetailView: View {
       Button("Cancel", role: .cancel) {}
     } message: {
       Text("The title is local to this app; the runtime's own history is not changed.")
+    }
+  }
+
+  /// Pending requests, the continuity banner, and the composer, under the transcript.
+  @ViewBuilder private func bottom(_ detail: ThreadDetail) -> some View {
+    VStack(spacing: 0) {
+      if !detail.requests.isEmpty {
+        RuntimeRequestList(model: model, requests: detail.requests)
+        Hairline()
+      }
+      if thread.continuity != .available {
+        ContinuityBanner(model: model, thread: thread)
+      }
+      ComposerView(model: model, detail: detail)
     }
   }
 
