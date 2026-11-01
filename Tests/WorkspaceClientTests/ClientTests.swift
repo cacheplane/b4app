@@ -17,12 +17,42 @@ final class FakeTransport: WorkspaceTransport, @unchecked Sendable {
     self.continuation = continuation
   }
 
+  private var sentWaiters: [(count: Int, continuation: CheckedContinuation<[Data], Never>)] = []
+
   var sent: [Data] {
     lock.withLock { sentLines }
   }
 
+  /// The lines sent so far, as soon as there are at least `count`. The timeout only ends a test that
+  /// would otherwise hang; it then returns what was sent.
+  func sent(atLeast count: Int, timeout: Duration = .seconds(60)) async -> [Data] {
+    let alarm = Task { [weak self] in
+      guard (try? await Task.sleep(for: timeout)) != nil else { return }
+      self?.resumeWaiters(all: true)
+    }
+    defer { alarm.cancel() }
+    return await withCheckedContinuation { continuation in
+      let ready: [Data]? = lock.withLock {
+        if sentLines.count >= count { return sentLines }
+        sentWaiters.append((count, continuation))
+        return nil
+      }
+      if let ready { continuation.resume(returning: ready) }
+    }
+  }
+
   func send(_ line: Data) async throws {
     lock.withLock { sentLines.append(line) }
+    resumeWaiters(all: false)
+  }
+
+  private func resumeWaiters(all: Bool) {
+    let (lines, due): ([Data], [CheckedContinuation<[Data], Never>]) = lock.withLock {
+      let due = sentWaiters.filter { all || sentLines.count >= $0.count }.map(\.continuation)
+      sentWaiters.removeAll { all || sentLines.count >= $0.count }
+      return (sentLines, due)
+    }
+    for waiter in due { waiter.resume(returning: lines) }
   }
 
   func receive(_ envelope: ServerEnvelope) throws {
@@ -55,11 +85,7 @@ private let hello = HelloEnvelope(
 
 @Suite struct WorkspaceClientTests {
   private func waitForSent(_ transport: FakeTransport, count: Int) async throws -> [Data] {
-    for _ in 0..<200 {
-      if transport.sent.count >= count { return transport.sent }
-      try await Task.sleep(for: .milliseconds(5))
-    }
-    return transport.sent
+    await transport.sent(atLeast: count)
   }
 
   @Test func sendsCommandEnvelopeAndDecodesTypedResult() async throws {
