@@ -3,7 +3,9 @@ import Foundation
 /// The mirror's SQLite schema: the Mac's six synced tables (`Sources/WorkspaceStorage/SQL/0001_init.sql`)
 /// with the same quoted camelCase column names, as `STRICT` tables. JSON columns are `TEXT` holding
 /// JSON; booleans are `INTEGER` 0 or 1. `localServers` is never synced, so `connections` has no
-/// reference to it. `syncState` holds the feed cursor and the hub link in one row.
+/// reference to it. `syncState` holds the feed cursor and the hub link in one row; `undecodableRows`
+/// names the stored rows this build cannot decode, kept current by every write, so diagnostics count
+/// them without reading the row tables.
 enum MirrorSchema {
   /// `PRAGMA user_version` once `ddl` has run.
   static let version = 1
@@ -132,5 +134,12 @@ enum MirrorSchema {
     ) STRICT
     """,
     #"INSERT INTO "syncState" ("id", "cursor", "link") VALUES (1, 0, NULL)"#,
+    """
+    CREATE TABLE "undecodableRows" (
+      "table" TEXT NOT NULL,
+      "rowId" TEXT NOT NULL,
+      PRIMARY KEY ("table", "rowId")
+    ) STRICT
+    """,
   ]
 }

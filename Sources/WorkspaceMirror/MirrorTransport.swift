@@ -44,13 +44,35 @@ public final class MirrorTransport: WorkspaceTransport {
   }
 
   public func send(_ line: Data) async throws {
-    try state.withLock { state in
-      guard !state.closed else {
-        throw WorkspaceError(.endpointUnavailable, "The mirror transport is closed.")
+    // Diagnostics read the store (link, cursor, the undecodable count) without holding the lock, so
+    // they never hold up other commands or `publish`; only the sequence is read under it.
+    if let command = try? parseCommand(line), command.method == .diagnosticsRead {
+      let sequence = try state.withLock { state in
+        guard !state.closed else { throw Self.closedError }
+        return state.sequence
       }
+      let response: ResponseEnvelope
+      do {
+        response = .success(
+          command.envelope.requestId, result: try JSONValue(encoding: try diagnostics(sequence: sequence)))
+      } catch {
+        response = .failure(command.envelope.requestId, error: WorkspaceError.from(error))
+      }
+      try state.withLock { state in
+        guard !state.closed else { throw Self.closedError }
+        continuation.yield(try NDJSON.encodeLine(response))
+      }
+      return
+    }
+    try state.withLock { state in
+      guard !state.closed else { throw Self.closedError }
       let response = respond(to: line, state: &state)
       continuation.yield(try NDJSON.encodeLine(response))
     }
+  }
+
+  private static var closedError: WorkspaceError {
+    WorkspaceError(.endpointUnavailable, "The mirror transport is closed.")
   }
 
   public func close() async {
@@ -178,9 +200,8 @@ public final class MirrorTransport: WorkspaceTransport {
       return try JSONValue(encoding: ServerList.Result(servers: []))
     case .workspaceActiveWork:
       return try JSONValue(encoding: WorkspaceActiveWork.Result(turns: [], servers: []))
-    case .diagnosticsRead:
-      return try JSONValue(encoding: try diagnostics(sequence: state.sequence))
     default:
+      // `diagnostics.read` is answered in `send`, outside the lock.
       throw WorkspaceError(
         .unsupportedCapability, Self.refusal, details: ["method": .string(command.method.rawValue)])
     }

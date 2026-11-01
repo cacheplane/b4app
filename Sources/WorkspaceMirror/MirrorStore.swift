@@ -109,6 +109,7 @@ public final class MirrorStore: @unchecked Sendable {
       var batch = AppliedBatch()
       var itemIds: [String] = []
       var written: [(table: String, rowId: String)] = []
+      var deleted: [(table: String, rowId: String)] = []
       try exec("BEGIN IMMEDIATE")
       do {
         for change in changes {
@@ -116,7 +117,10 @@ public final class MirrorStore: @unchecked Sendable {
             batch.skipped += 1
             continue
           }
-          if change.op != "delete", !written.contains(where: { $0 == (change.table, change.rowId) }) {
+          if change.op == "delete" {
+            written.removeAll { $0 == (change.table, change.rowId) }
+            deleted.append((change.table, change.rowId))
+          } else if !written.contains(where: { $0 == (change.table, change.rowId) }) {
             written.append((change.table, change.rowId))
           }
           switch change.table {
@@ -127,6 +131,7 @@ public final class MirrorStore: @unchecked Sendable {
           default: break
           }
         }
+        batch.undecodableRows = try trackDecodability(written: written, deleted: deleted)
         try exec("COMMIT")
       } catch {
         try? exec("ROLLBACK")
@@ -136,14 +141,44 @@ public final class MirrorStore: @unchecked Sendable {
         try one(
           DisplayItem.self, "displayItems", #"SELECT * FROM "displayItems" WHERE "id" = ?"#, [.text($0)])
       }
-      for (table, rowId) in written {
-        guard let key = MirrorSchema.syncedTables.first(where: { $0.table == table })?.key else { continue }
-        let rows = try query(
-          "SELECT * FROM \(Self.quote(table)) WHERE \(Self.quote(key)) = ?", [.text(rowId)])
-        batch.undecodableRows += rows.filter { !decodes(table: table, $0) }.count
-      }
       return batch
     }
+  }
+
+  /// Inside the open transaction: decodes each row the batch wrote (one at a time) and records it in
+  /// `undecodableRows` or clears it there; forgets deleted rows and rows a delete cascaded away.
+  /// Returns how many written rows do not decode.
+  private func trackDecodability(
+    written: [(table: String, rowId: String)], deleted: [(table: String, rowId: String)]
+  ) throws -> Int {
+    var undecodable = 0
+    for (table, rowId) in written {
+      guard let key = MirrorSchema.syncedTables.first(where: { $0.table == table })?.key else { continue }
+      let row = try query("SELECT * FROM \(Self.quote(table)) WHERE \(Self.quote(key)) = ?", [.text(rowId)])
+        .first
+      if let row, !decodes(table: table, row) {
+        undecodable += 1
+        try run(
+          #"INSERT INTO "undecodableRows" ("table", "rowId") VALUES (?, ?) ON CONFLICT DO NOTHING"#,
+          [.text(table), .text(rowId)])
+      } else {
+        try run(
+          #"DELETE FROM "undecodableRows" WHERE "table" = ? AND "rowId" = ?"#, [.text(table), .text(rowId)])
+      }
+    }
+    for (table, rowId) in deleted {
+      try run(
+        #"DELETE FROM "undecodableRows" WHERE "table" = ? AND "rowId" = ?"#, [.text(table), .text(rowId)])
+    }
+    if !deleted.isEmpty {
+      for (table, key) in MirrorSchema.syncedTables {
+        try run(
+          #"DELETE FROM "undecodableRows" WHERE "table" = ? AND NOT EXISTS (SELECT 1 FROM "#
+            + Self.quote(table) + " WHERE " + Self.quote(key) + #" = "undecodableRows"."rowId")"#,
+          [.text(table)])
+      }
+    }
+    return undecodable
   }
 
   /// Applies one change inside the open transaction. False when it was not applied: an unknown table,
@@ -282,14 +317,13 @@ public final class MirrorStore: @unchecked Sendable {
   }
 
   /// Stored rows of every synced table that this build cannot decode, so reads leave them out.
+  /// Served from `undecodableRows`, which `apply` keeps current; the row tables are not read.
   public func undecodableRowCount() throws -> Int {
     try locked {
-      try MirrorSchema.syncedTables.reduce(0) { total, entry in
-        total
-          + (try query("SELECT * FROM \(Self.quote(entry.table))")).filter {
-            !decodes(table: entry.table, $0)
-          }.count
+      if case .integer(let count) = try query(#"SELECT count(*) AS "n" FROM "undecodableRows""#).first?["n"] {
+        return Int(count)
       }
+      return 0
     }
   }
 
@@ -334,6 +368,7 @@ public final class MirrorStore: @unchecked Sendable {
         for (table, _) in MirrorSchema.syncedTables.reversed() {
           try exec("DELETE FROM \(Self.quote(table))")
         }
+        try exec(#"DELETE FROM "undecodableRows""#)
         try exec(#"UPDATE "syncState" SET "cursor" = 0 WHERE "id" = 1"#)
         try exec("COMMIT")
       } catch {
@@ -481,7 +516,14 @@ public final class MirrorStore: @unchecked Sendable {
     }
   }
 
+  /// Every statement text run while set (tests).
+  private var statementLog: [String]?
+
+  func recordStatements() { queue.sync { statementLog = [] } }
+  func recordedStatements() -> [String] { queue.sync { statementLog ?? [] } }
+
   private func exec(_ sql: String) throws {
+    statementLog?.append(sql)
     var message: UnsafeMutablePointer<CChar>?
     let status = sqlite3_exec(db, sql, nil, nil, &message)
     guard status == SQLITE_OK else {
@@ -496,6 +538,7 @@ public final class MirrorStore: @unchecked Sendable {
   private func query(_ sql: String, _ binds: [Bind] = []) throws -> [Row] { try statement(sql, binds) }
 
   private func statement(_ sql: String, _ binds: [Bind]) throws -> [Row] {
+    statementLog?.append(sql)
     var prepared: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &prepared, nil) == SQLITE_OK, let prepared else {
       throw SQLiteError(code: sqlite3_extended_errcode(db), message: String(cString: sqlite3_errmsg(db)))

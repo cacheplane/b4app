@@ -181,6 +181,30 @@ import WorkspaceSync
     await client.close()
   }
 
+  @Test func diagnosticsCountUndecodableRowsWithoutReadingTheRowTables() async throws {
+    let store = try MirrorStore.inMemory()
+    _ = try store.apply(try fixtureAsStored())
+    var future = try #require(try fixtureAsStored()[3].value?.objectValue)
+    future["status"] = "teleporting"
+    _ = try store.apply([change("turns", "turn-2", "insert", value: .object(future))])
+    try store.saveLink(
+      MirrorLink(
+        hubURL: "http://localhost:8080", deviceId: "phone-1", deviceName: "Test Phone", tokenRef: "secret:t",
+        orgSlug: "o", username: "u"))
+    let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0"))
+    _ = try await client.ready()
+
+    store.recordStatements()
+    let report = try await client.request(DiagnosticsRead.self, EmptyParams())
+    #expect(report.sync?.undecodableRows == 1)
+    let statements = store.recordedStatements()
+    #expect(statements.contains { $0.contains(#""undecodableRows""#) })
+    for table in ["connections", "threads", "turns", "displayItems", "runtimeRequests", "drafts"] {
+      #expect(!statements.contains { $0.contains("\"\(table)\"") }, "diagnostics read \(table)")
+    }
+    await client.close()
+  }
+
   @Test func closeEndsTheStreamAndPublishAfterCloseIsANoOp() async throws {
     let store = try MirrorStore.inMemory()
     let transport = MirrorTransport(store: store, version: "0.2.0")

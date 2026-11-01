@@ -248,6 +248,38 @@ func change(
     #expect(try store.undecodableRowCount() == 0)
   }
 
+  @Test func theUndecodableCountFollowsCascadesClearsAndReopens() throws {
+    let path = NSTemporaryDirectory() + "mirror-\(UUID().uuidString.prefix(8)).sqlite"
+    defer { Self.remove(path) }
+    let fixture = try fixtureAsStored()
+    var future = try #require(fixture[3].value?.objectValue)
+    future["submission"] = "teleported"
+    do {
+      let store = try MirrorStore(path: path)
+      _ = try store.apply(
+        Array(fixture.prefix(3)) + [change("turns", "turn-2", "insert", value: .object(future))])
+      #expect(try store.undecodableRowCount() == 1)
+      // Writing it again does not count it twice.
+      _ = try store.apply([change("turns", "turn-2", "update", column: "inputRef", value: "x")])
+      #expect(try store.undecodableRowCount() == 1)
+    }
+    let store = try MirrorStore(path: path)
+    #expect(try store.undecodableRowCount() == 1)
+    // Deleting the thread cascades to the turn, and the count follows.
+    _ = try store.apply([change("threads", "thread-1", "delete")])
+    #expect(try store.rowCount("turns") == 0)
+    #expect(try store.undecodableRowCount() == 0)
+
+    _ = try store.apply(
+      Array(fixture.prefix(3)) + [change("turns", "turn-2", "insert", value: .object(future))])
+    #expect(try store.undecodableRowCount() == 1)
+    _ = try store.apply([change("turns", "turn-2", "delete")])
+    #expect(try store.undecodableRowCount() == 0)
+    _ = try store.apply([change("turns", "turn-2", "insert", value: .object(future))])
+    try store.clearRows()
+    #expect(try store.undecodableRowCount() == 0)
+  }
+
   static func remove(_ path: String) {
     for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: path + suffix) }
   }
