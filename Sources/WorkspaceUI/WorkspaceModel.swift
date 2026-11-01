@@ -157,6 +157,20 @@ public final class WorkspaceModel {
   public var expectedCoordinatorVersion: String?
   public var restartCoordinator: (@MainActor () async -> Void)?
 
+  /// The hub user this device is signed in as; nil reads "Not signed in".
+  public var account: WorkspaceAccount?
+  /// `.host` when the app around the model owns the account (the phone); `refreshAccount()` then
+  /// leaves it alone and `logOut()` calls `hostLogOut`.
+  public var accountSource: AccountSource = .coordinator
+  public var hostLogOut: (@MainActor () async -> Void)?
+  /// The phone's mirror has no joined Mac left: the thread list gives way to a notice.
+  public var hostDisconnected = false
+
+  /// Whether the profile menu offers Log out.
+  public var canLogOut: Bool {
+    account != nil && (accountSource == .coordinator || hostLogOut != nil)
+  }
+
   public var versionMismatch: String? {
     guard let expected = expectedCoordinatorVersion, let running = diagnostics?.coordinator.version,
       running != expected
@@ -305,6 +319,7 @@ public final class WorkspaceModel {
         self.client = client
         _ = try await client.ready()
         try await refreshSnapshot()
+        await refreshAccount()
         link = .ready
         settleLink()
         await observe(client)
@@ -335,6 +350,28 @@ public final class WorkspaceModel {
     client = nil
     link = .unavailable
     settleLink()
+  }
+
+  /// Ask the coordinator which hub user it has joined as. A failure keeps the account as it was.
+  public func refreshAccount() async {
+    guard accountSource == .coordinator, let client else { return }
+    guard let status = try? await client.request(HubStatus.self, EmptyParams()) else { return }
+    account = WorkspaceAccount(status: status)
+  }
+
+  /// Leave the hub (the Mac) or unlink (the phone, through `hostLogOut`). A failure keeps the account
+  /// and sets `lastError`.
+  public func logOut() async {
+    if accountSource == .host {
+      await hostLogOut?()
+      return
+    }
+    guard
+      await perform({ client in
+        try await client.request(HubLeave.self, EmptyParams(), options: Self.mutation())
+      }) != nil
+    else { return }
+    await refreshAccount()
   }
 
   public func refreshSnapshot() async throws {
