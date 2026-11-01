@@ -258,6 +258,56 @@ final class TokenSequence: @unchecked Sendable {
     #expect(tokenCalls.value == 0)
   }
 
+  @Test func httpHubAPIDecodesSnapshotAndDevices() async throws {
+    let recorder = Recorder()
+    let api = make(host: "snapshot-devices.test") { captured in
+      recorder.add(captured)
+      if captured.request.url?.path == "/v1/snapshot" {
+        return .json(
+          200,
+          #"""
+          {"changes":[{"hubSeq":0,"deviceId":"d","deviceSeq":0,"wall":0,"table":"threads","rowId":"t","op":"insert","column":null,"value":{"id":"t","title":null},"hlc":"000000000000-0000-d"}],
+           "clocks":[{"table":"threads","rowId":"t","column":"title","hlc":"019a396c76e8-0000-d"}],"next":12}
+          """#)
+      }
+      return .json(
+        200,
+        #"""
+        {"devices":[
+          {"id":"d","name":"Mac","platform":"macos","lastSeenAt":"2026-10-31T12:00:00.000000Z","revokedAt":null},
+          {"id":"p","name":"iPhone","platform":"ios","lastSeenAt":null,"revokedAt":"2026-10-31T13:00:00.000000Z"}]}
+        """#)
+    }
+
+    let snapshot = try await api.snapshot()
+    #expect(snapshot.next == 12)
+    #expect(snapshot.changes.count == 1 && snapshot.changes[0].hlc == "000000000000-0000-d")
+    #expect(snapshot.changes[0].column == nil && snapshot.changes[0].value?["title"] == .some(.null))
+    #expect(
+      snapshot.clocks == [
+        ColumnClock(table: "threads", rowId: "t", column: "title", hlc: "019a396c76e8-0000-d")
+      ])
+
+    let devices = try await api.devices()
+    #expect(devices.map(\.id) == ["d", "p"])
+    #expect(devices[0].lastSeenAt == "2026-10-31T12:00:00.000000Z" && devices[0].revokedAt == nil)
+    #expect(devices[1].lastSeenAt == nil && devices[1].revokedAt == "2026-10-31T13:00:00.000000Z")
+
+    let requests = recorder.all.map(\.request)
+    #expect(requests.map { $0.url?.path } == ["/v1/snapshot", "/v1/devices"])
+    #expect(requests.allSatisfy { $0.httpMethod == "GET" })
+    #expect(requests.allSatisfy { $0.value(forHTTPHeaderField: "Authorization") == "Bearer t0k" })
+  }
+
+  @Test func aPushResponseWithRejectionsDecodesOverHTTP() async throws {
+    let api = make(host: "rejected.test") { _ in
+      .json(200, #"{"acceptedThrough":3,"rejected":[{"deviceSeq":2,"code":"payload_too_large"}]}"#)
+    }
+    let response = try await api.push([])
+    #expect(response.acceptedThrough == 3)
+    #expect(response.rejected == [RejectedChange(deviceSeq: 2, code: "payload_too_large")])
+  }
+
   @Test func revokeSelfDeletesAndAcceptsNoContent() async throws {
     let recorder = Recorder()
     let api = make(host: "revoke.test") { captured in

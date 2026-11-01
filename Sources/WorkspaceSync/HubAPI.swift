@@ -7,5 +7,9 @@ public protocol HubAPI: Sendable {
   func me() async throws -> MeResponse
   func push(_ changes: [SyncChange]) async throws -> PushResponse
   func pull(after: Int, limit: Int, wait: Int) async throws -> PullResponse
+  /// `GET /v1/snapshot`: the user's state, for a reader whose cursor the hub has pruned past.
+  func snapshot() async throws -> SnapshotResponse
+  /// `GET /v1/devices`: this user's devices, oldest enrolled first, revoked ones included.
+  func devices() async throws -> [DeviceInfo]
   func revokeSelf() async throws
 }
