@@ -18,7 +18,7 @@ struct B4AppMac: App {
   var body: some Scene {
     WindowGroup("Personal Agent Workspace") {
       WorkspaceRootView(model: sharedModel)
-        .frame(minWidth: 900, minHeight: 600)
+        .frame(minWidth: LLA.Metrics.minimumWindow.width, minHeight: LLA.Metrics.minimumWindow.height)
         .task { CoordinatorHost.wire(sharedModel) }
     }
     .defaultSize(width: 1200, height: 800)
