@@ -64,7 +64,10 @@ struct SearchPalette: View {
             } label: {
               row(thread, highlighted: false)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.llaRow)
+            // The sidebar's row: no separators, the same 6 pt inset and 44 pt height.
+            .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 6))
+            .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
           }
         }

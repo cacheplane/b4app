@@ -122,10 +122,14 @@ struct ConnectionCard: View {
           .llaCodeMuted()
         }
         row {
-          Text("Signed in as: \(connection.authStatus.rawValue.replacingOccurrences(of: "_", with: " "))")
-            .llaSmallMuted()
-          if let scope = connection.nativeScope { Text(scope).llaCodeMuted().lineLimit(stacked ? 3 : 1) }
-          if !stacked { Spacer() }
+          // The account on its own line under the state, so neither wraps into the buttons.
+          VStack(alignment: .leading, spacing: 2) {
+            Text(signInText).llaSmallMuted()
+            if let scope = connection.nativeScope {
+              Text(scope).llaCodeMuted().lineLimit(stacked ? 3 : 1).truncationMode(.middle)
+            }
+          }
+          if !stacked { Spacer(minLength: LLA.Space.s) }
           Button("Check") { Task { await model.inspectConnection(id: connection.id) } }
             .buttonStyle(.llaSecondary)
             .disabled(model.busy)
@@ -141,6 +145,14 @@ struct ConnectionCard: View {
         .padding(.top, LLA.Space.xs)
       }
     }
+  }
+}
+
+extension ConnectionCard {
+  /// "Signed in as" when an account follows, otherwise the state in words ("Signed in: not authenticated").
+  var signInText: String {
+    if connection.authStatus == .authenticated, connection.nativeScope != nil { return "Signed in as" }
+    return "Signed in: \(connection.authStatus.rawValue.replacingOccurrences(of: "_", with: " "))"
   }
 }
 

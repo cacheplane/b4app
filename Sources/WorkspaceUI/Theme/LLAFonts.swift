@@ -41,6 +41,35 @@ public enum LLAFonts {
   }
 }
 
+#if os(iOS)
+  /// Navigation-bar titles in Hanken Grotesk SemiBold rather than SF Pro, so a pushed title, a
+  /// sheet's title, and Settings' large title carry the same face as the rest of the app (D-036). Set
+  /// on the appearance proxy, which leaves the bar's own background and glass alone; `UIFontMetrics`
+  /// scales the faces with Dynamic Type as the system titles do.
+  @MainActor enum LLANavigationBar {
+    private static var applied = false
+
+    static func apply() {
+      guard !applied, LLAFonts.register(),
+        let inline = UIFont(name: LLAFonts.sansSemiBold, size: 17),
+        let large = UIFont(name: LLAFonts.sansSemiBold, size: 34)
+      else { return }
+      applied = true
+      let ink = UIColor {
+        UIColor(hex: $0.userInterfaceStyle == .dark ? LLA.Palette.ink.dark : LLA.Palette.ink.light)
+      }
+      let bar = UINavigationBar.appearance()
+      bar.titleTextAttributes = [
+        .font: UIFontMetrics(forTextStyle: .headline).scaledFont(for: inline), .foregroundColor: ink,
+      ]
+      bar.largeTitleTextAttributes = [
+        .font: UIFontMetrics(forTextStyle: .largeTitle).scaledFont(for: large), .foregroundColor: ink,
+        .kern: -0.6,
+      ]
+    }
+  }
+#endif
+
 /// The type scale. Sizes are points; Dynamic Type scales them on iOS through `relativeTo`.
 public enum LLAFont {
   private static let heavy: Set<Font.Weight> = [.semibold, .bold, .heavy, .black]

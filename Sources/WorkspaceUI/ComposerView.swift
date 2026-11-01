@@ -67,6 +67,18 @@ struct ComposerView: View {
     private static let minEditor: CGFloat = 24
   #endif
 
+  /// "Message Codex": the connection's label, or plain "Message".
+  private var placeholder: String {
+    model.connection(id: detail.thread.connectionId).map { "Message \($0.label)" } ?? "Message"
+  }
+
+  /// Where `TextEditor` starts its first line, so the placeholder sits exactly under the caret.
+  #if os(iOS)
+    private static let editorTopInset: CGFloat = 8
+  #else
+    private static let editorTopInset: CGFloat = 0
+  #endif
+
   private static func busyText(_ turn: Turn) -> String {
     "A turn is \(turn.status.rawValue). Your draft stays here until it finishes."
   }
@@ -116,10 +128,21 @@ struct ComposerView: View {
         .opacity(0)
         .accessibilityHidden(true)
         .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { editorHeight = $0 }
+      if model.composerText.isEmpty {
+        // An empty editor otherwise reads as a blank box; the prompt names who the message goes to.
+        Text(placeholder)
+          .font(LLAFont.body)
+          .foregroundStyle(LLA.Color.muted)
+          .padding(.horizontal, 5)
+          .padding(.top, Self.editorTopInset)
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
+      }
       TextEditor(text: $model.composerText)
         .font(LLAFont.body)
         .foregroundStyle(LLA.Color.ink)
         .scrollContentBackground(.hidden)
+        .accessibilityLabel(placeholder)
         .accessibilityIdentifier("composer")
     }
     .frame(height: min(max(editorHeight + 6, Self.minEditor), maxEditor))

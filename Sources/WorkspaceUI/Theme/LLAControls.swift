@@ -65,6 +65,25 @@ extension ButtonStyle where Self == LLAButtonStyle {
   public static var llaLink: LLAButtonStyle { LLAButtonStyle(kind: .link) }
 }
 
+/// A row's press (sidebar, thread, menu, and search rows): the row's rounded shape fills
+/// `surfaceRaised` while it is held, so a tap answers at once and nothing moves. A row draws its own
+/// selected fill above this one.
+public struct LLARowButtonStyle: ButtonStyle {
+  public init() {}
+
+  public func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .background(
+        RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
+          .fill(configuration.isPressed ? LLA.Color.surfaceRaised : .clear)
+      )
+  }
+}
+
+extension ButtonStyle where Self == LLARowButtonStyle {
+  public static var llaRow: LLARowButtonStyle { LLARowButtonStyle() }
+}
+
 /// A bordered panel: 1 pt rule, radius 16, no shadow.
 public struct LLACard<Content: View>: View {
   public enum Fill: Sendable { case bg, surface }

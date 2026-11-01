@@ -210,16 +210,18 @@ struct ThreadRow: View {
     } label: {
       HStack(spacing: LLA.Space.s) {
         AttentionDot(band: band)
-        #if os(iOS)
-          if thread.pinned {
-            Image(systemName: "pin.fill").font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
-          }
-        #endif
         Text(thread.title.isEmpty ? "Untitled" : thread.title)
           .font(loud ? LLAFont.rowStrong : LLAFont.row)
           .foregroundStyle(LLA.Color.ink)
           .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
         Spacer(minLength: LLA.Space.s)
+        #if os(iOS)
+          // Trailing, beside the mark, so every title starts on the same edge.
+          if thread.pinned {
+            Image(systemName: "pin.fill").font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
+              .accessibilityHidden(true)
+          }
+        #endif
         if let kind = model.connection(id: thread.connectionId)?.kind { RuntimeMark(kind: kind) }
       }
       .padding(.horizontal, 10)
@@ -231,7 +233,7 @@ struct ThreadRow: View {
       )
       .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.llaRow)
     .accessibilityIdentifier("thread-row")
     .accessibilityValue(model.threadState(thread).rawValue)
     .accessibilityLabel(Self.accessibilityLabel(model: model, thread: thread))

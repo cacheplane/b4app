@@ -255,7 +255,7 @@ struct ProfileMenuPanel: View {
             title: item.title, systemImage: item.systemImage, trailing: item.shortcut,
             selected: highlighted == index)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.llaRow)
         .onHover { if $0 { highlighted = index } }
       }
     }

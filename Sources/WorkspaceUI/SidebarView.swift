@@ -192,7 +192,7 @@ struct SidebarActionRow: View {
     Button(action: action) {
       SidebarRowLabel(title: title, systemImage: systemImage, trailing: shortcut, selected: selected)
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.llaRow)
   }
 }
 

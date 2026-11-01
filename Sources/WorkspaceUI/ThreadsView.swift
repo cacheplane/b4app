@@ -114,10 +114,24 @@ struct ThreadDetailView: View {
   /// Connection, kind, and directory or route; "on <device>" when the phone's mirror knows the Mac
   /// that owns the thread (the Mac itself reports none).
   private var subtitle: String {
-    var parts = [
-      connection?.label ?? "Unknown connection", connection?.kind.rawValue ?? "?",
-      connection?.kind == .b4 ? "route \(thread.context ?? "?")" : (thread.context ?? "no directory"),
-    ]
+    #if os(iOS)
+      // The phone's line is short enough to read whole: the connection (its kind only when the label
+      // does not already say it), the folder's name rather than its path, and the Mac.
+      var parts = [connection?.label ?? "Unknown connection"]
+      if let kind = connection?.kind.rawValue, kind.caseInsensitiveCompare(parts[0]) != .orderedSame {
+        parts.append(kind)
+      }
+      if connection?.kind == .b4 {
+        parts.append("route \(thread.context ?? "?")")
+      } else if let context = thread.context, !context.isEmpty {
+        parts.append((context as NSString).lastPathComponent)
+      }
+    #else
+      var parts = [
+        connection?.label ?? "Unknown connection", connection?.kind.rawValue ?? "?",
+        connection?.kind == .b4 ? "route \(thread.context ?? "?")" : (thread.context ?? "no directory"),
+      ]
+    #endif
     if let device = thread.ownerDeviceName, !device.isEmpty { parts.append("on \(device)") }
     return parts.joined(separator: " · ")
   }
@@ -147,7 +161,7 @@ struct ThreadDetailView: View {
         ? AnyLayout(VStackLayout(alignment: .leading, spacing: LLA.Space.xs))
         : AnyLayout(HStackLayout(alignment: .center, spacing: LLA.Space.s))
       return layout {
-        Text(subtitle).llaSmallMuted().lineLimit(stacked ? 3 : 1).truncationMode(.middle)
+        Text(subtitle).llaSmallMuted().lineLimit(stacked ? 3 : 1).truncationMode(.tail)
           .frame(maxWidth: .infinity, alignment: .leading)
         if thread.archived { LLABadge("Archived") }
         turnBadge

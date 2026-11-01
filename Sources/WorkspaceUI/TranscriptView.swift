@@ -64,8 +64,12 @@ struct TranscriptRow: View {
       }
     case .assistant:
       if item.type == "agentMessage" {
-        MarkdownText(text: liveText ?? item.payload["text"]?.stringValue ?? "")
-          .frame(maxWidth: .infinity, alignment: .leading)
+        // Trimmed: a reply's trailing blank lines otherwise widen the gap to the next item unevenly.
+        MarkdownText(
+          text: (liveText ?? item.payload["text"]?.stringValue ?? "").trimmingCharacters(
+            in: .whitespacesAndNewlines)
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
       } else {
         CollapsibleCard(
           title: item.type == "reasoning" || item.type == "thinking" ? "Reasoning" : item.type.capitalized,
