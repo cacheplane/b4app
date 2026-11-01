@@ -53,6 +53,16 @@ private final class FakeB4: Sendable {
     process.terminate()
     _ = await process.waitForExit()
   }
+
+  /// Returns once the thread's run has finished on the server: a reattach (`GET /runs/stream`) streams
+  /// the live run until its `done` frame, which the fixture sends after recording the outcome, and
+  /// answers `done` at once when no run is live.
+  func waitForRunToEnd(nativeThreadId: String) async throws {
+    let url = try #require(URL(string: "\(baseURL)/threads/\(nativeThreadId)/runs/stream"))
+    let (bytes, _) = try await URLSession.shared.bytes(from: url)
+    for try await line in bytes.lines where line == "event: done" { return }
+    throw WorkspaceError(.internalError, "the run stream ended without done")
+  }
 }
 
 private func temporaryPaths() throws -> PlatformPaths {
@@ -151,21 +161,54 @@ private struct Harness {
 
 actor EventCollector {
   private(set) var events: [EventEnvelope] = []
+  /// Suspended `until` calls, resumed by the next event (or a deadline).
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
   init(_ stream: AsyncStream<EventEnvelope>) {
     Task { for await event in stream { await self.append(event) } }
   }
-  private func append(_ event: EventEnvelope) { events.append(event) }
 
+  private func append(_ event: EventEnvelope) {
+    events.append(event)
+    wake()
+  }
+
+  private func wake() {
+    let waiting = waiters
+    waiters = []
+    for waiter in waiting { waiter.resume() }
+  }
+
+  /// The events so far once `condition` holds of them, checked now and after each event that arrives,
+  /// or nil at the timeout. The timeout is only a guard so a failing test ends.
+  func until(
+    timeout: Duration = .seconds(60), _ condition: @Sendable ([AdapterEvent]) -> Bool
+  ) async -> [AdapterEvent]? {
+    let deadline = ContinuousClock.now + timeout
+    let alarm = Task { [weak self] in
+      guard (try? await Task.sleep(until: deadline, clock: .continuous)) != nil else { return }
+      await self?.wake()
+    }
+    defer { alarm.cancel() }
+    while true {
+      let seen = events.map(\.event)
+      if condition(seen) { return seen }
+      if ContinuousClock.now >= deadline { return nil }
+      await withCheckedContinuation { waiters.append($0) }
+    }
+  }
+
+  /// The first event matching `predicate`, as soon as it has arrived.
   @discardableResult
   func waitFor(
-    timeout: Duration = .seconds(15), _ predicate: @Sendable (AdapterEvent) -> Bool
+    timeout: Duration = .seconds(60), _ predicate: @Sendable (AdapterEvent) -> Bool
   ) async throws -> AdapterEvent {
-    let deadline = ContinuousClock.now + timeout
-    while ContinuousClock.now < deadline {
-      if let match = events.map(\.event).first(where: predicate) { return match }
-      try await Task.sleep(for: .milliseconds(20))
+    guard let seen = await until(timeout: timeout, { $0.contains(where: predicate) }),
+      let match = seen.first(where: predicate)
+    else {
+      throw WorkspaceError(.internalError, "timed out; saw \(events.map(\.event.kind.rawValue))")
     }
-    throw WorkspaceError(.internalError, "timed out; saw \(events.map(\.event.kind.rawValue))")
+    return match
   }
 }
 
@@ -1046,7 +1089,7 @@ actor EventCollector {
     #expect(turn.status == .running)
     let paths = h.coordinator.paths
     await h.stop()
-    try await Task.sleep(for: .seconds(4))
+    try await server.waitForRunToEnd(nativeThreadId: thread.nativeThreadId)
 
     let back = try await Harness.start(paths: paths)
     let before = try back.coordinator.database.turn(id: turn.id)
