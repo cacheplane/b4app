@@ -92,6 +92,21 @@ private struct ProjectHarness {
       .compactMap { $0.payload["projectId"]?.stringValue }
   }
 
+  /// Polls `projectEvents()` until `condition` holds (events reach the client after the request returns),
+  /// then returns them; fails the test at the deadline with what arrived.
+  func projectEvents(
+    until condition: @Sendable ([String]) -> Bool, sourceLocation: SourceLocation = #_sourceLocation
+  ) async -> [String] {
+    let deadline = ContinuousClock.now + .seconds(15)
+    var seen = await projectEvents()
+    while !condition(seen), ContinuousClock.now < deadline {
+      try? await Task.sleep(for: .milliseconds(20))
+      seen = await projectEvents()
+    }
+    #expect(condition(seen), "project.changed events seen: \(seen)", sourceLocation: sourceLocation)
+    return seen
+  }
+
   func close() async {
     await client.close()
     await coordinator.close()
@@ -124,10 +139,11 @@ private struct ProjectHarness {
       #expect(stored.context == (spelling as NSString).expandingTildeInPath)
       #expect(stored.projectId == project.id)
     }
-    // Only the first thread created a project, so viewers heard of it once.
-    #expect(await h.projectEvents() == [project.id])
+    // Only the first thread created a project, so viewers heard of it once. The last thread's event
+    // comes after every project event, so waiting for it settles the count.
     let last = threads[3].id
     try await h.events.waitFor { $0.kind == .threadUpdated && $0.threadId == last }
+    #expect(await h.projectEvents(until: { !$0.isEmpty }) == [project.id])
   }
 
   @Test func backfillHandlesAMissingFolder() async throws {
@@ -203,8 +219,11 @@ private struct ProjectHarness {
     #expect(try h.db.thread(id: thread.id)?.projectId == manual.id)
     // The automatic project was left empty and is gone.
     #expect(try await h.projects().map(\.id) == [manual.id])
-    let changed = await h.projectEvents()
-    #expect(changed.contains(manual.id) && changed.filter { $0 == automatic }.count == 2)
+    // The automatic project is announced when created and again when it is emptied and deleted.
+    let changed = await h.projectEvents(until: {
+      $0.contains(manual.id) && $0.filter { $0 == automatic }.count == 2
+    })
+    #expect(changed.filter { $0 == automatic }.count == 2)
     let updated = try await h.events.waitFor {
       $0.kind == .threadUpdated && $0.threadId == thread.id
         && $0.payload["thread"]?["projectId"]?.stringValue == manual.id
@@ -284,7 +303,7 @@ private struct ProjectHarness {
       ])
     #expect(try h.db.thread(id: inB.id)?.projectId == projectA)
     #expect(try await h.projects().map(\.id) == [projectA])
-    #expect(await h.projectEvents().contains(projectB))
+    _ = await h.projectEvents(until: { $0.contains(projectB) })
     try await h.events.waitFor {
       $0.kind == .threadUpdated && $0.threadId == inB.id
         && $0.payload["thread"]?["projectId"]?.stringValue == projectA
@@ -313,7 +332,7 @@ private struct ProjectHarness {
     let replacement = try #require(try h.db.project(id: moved))
     #expect(!replacement.manual && replacement.displayName == "a")
     #expect(try h.db.project(folderPath: SessionService.canonicalDirectory(unused)) == nil)
-    #expect(await h.projectEvents().contains(replacement.id))
+    _ = await h.projectEvents(until: { $0.contains(replacement.id) })
     try await h.events.waitFor {
       $0.kind == .threadUpdated && $0.threadId == thread.id
         && $0.payload["thread"]?["projectId"]?.stringValue == moved
@@ -344,7 +363,7 @@ private struct ProjectHarness {
     #expect(projects.count == 1)
     #expect(projects[0].displayName == "a" && !projects[0].manual)
     #expect(try h.db.thread(id: thread.id)?.projectId == projects[0].id)
-    #expect(await h.projectEvents().filter { $0 == manual.id }.count >= 2)
+    _ = await h.projectEvents(until: { $0.filter { $0 == manual.id }.count >= 2 })
     #expect(
       await h.failure {
         try await h.client.request(
@@ -489,5 +508,44 @@ private struct ProjectHarness {
         ThreadMarkRead.self, ThreadMarkRead.Params(threadId: "nope", turnId: nil), options: h.mutation())
     }
     #expect(missing?.code == .notFound)
+  }
+
+  @Test func insertThreadIsAtomicAgainstProjectEdits() async throws {
+    let h = try await ProjectHarness.start()
+    defer { Task { await h.close() } }
+    let connection = try h.db.insertConnection(
+      Connection(id: "c1", kind: .codex, label: "Codex", target: fakeCodex))
+    let projects = h.coordinator.projects
+
+    // Deterministic part: the thread comes back with its project, a new project is announced once, and
+    // the row is stored with that project.
+    let first = try h.folder("first")
+    let inserted = try await projects.insertThread(
+      ConversationThread(id: "t0", connectionId: connection.id, nativeThreadId: "n0", context: first),
+      connection: connection)
+    let projectId = try #require(inserted.projectId)
+    #expect(try h.db.thread(id: "t0")?.projectId == projectId)
+    _ = await h.projectEvents(until: { $0 == [projectId] })
+
+    // A project command racing a thread create can no longer interleave with it: resolving the project
+    // and inserting the row are one actor section with no suspension point. Whichever runs first, the
+    // thread ends in the project that owns its folder (before the fix, create-first deleted the empty
+    // automatic project under the insert, and update-first left the thread in a project that no longer
+    // owned its folder). Scheduling cannot be forced, so this repeats the race and checks the invariant.
+    for round in 0..<30 {
+      let folder = try h.folder("race-\(round)")
+      let canonical = SessionService.canonicalDirectory(folder)
+      let id = "race-\(round)"
+      async let created: ConversationThread = projects.insertThread(
+        ConversationThread(id: id, connectionId: connection.id, nativeThreadId: "n\(id)", context: folder),
+        connection: connection)
+      async let edited: ProjectCreate.Result = projects.create(
+        ProjectCreate.Params(name: "Manual \(round)", folders: [folder]))
+      let (thread, project) = try await (created, edited)
+      let stored = try #require(try h.db.thread(id: thread.id))
+      #expect(stored.projectId == project.project.id, "round \(round)")
+      #expect(try h.db.project(folderPath: canonical)?.id == stored.projectId, "round \(round)")
+      #expect(try h.db.project(id: stored.projectId ?? "") != nil, "round \(round)")
+    }
   }
 }

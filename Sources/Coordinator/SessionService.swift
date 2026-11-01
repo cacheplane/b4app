@@ -22,14 +22,14 @@ public actor SessionService {
     public var adapterFactory: AdapterFactory
     /// Managed B4 servers (M4); a managed route connection is usable only while its server is ready.
     public var servers: LocalServerService?
-    /// Decides which project a new thread joins; shared with the router so their writes serialise.
+    /// Decides which project a new thread joins. The router must be given the same instance: its
+    /// project edits and this service's thread inserts serialise on that one actor.
     public var projects: ProjectService
 
     public init(
       database: WorkspaceDatabase, eventLog: EventLog, diagnostics: DiagnosticsService,
       environment: [String: String], clientVersion: String, secretStore: any SecretStore,
-      adapterFactory: AdapterFactory? = nil, servers: LocalServerService? = nil,
-      projects: ProjectService? = nil
+      projects: ProjectService, adapterFactory: AdapterFactory? = nil, servers: LocalServerService? = nil
     ) {
       self.database = database
       self.eventLog = eventLog
@@ -39,7 +39,7 @@ public actor SessionService {
       self.secretStore = secretStore
       self.adapterFactory = adapterFactory ?? SessionService.defaultAdapterFactory
       self.servers = servers
-      self.projects = projects ?? ProjectService(database: database, eventLog: eventLog)
+      self.projects = projects
     }
   }
 
@@ -333,13 +333,13 @@ public actor SessionService {
       _ = try db.updateConnection(id: connection.id) { $0.nativeScope = ref.nativeScope }
     }
     let title = params.title?.trimmingCharacters(in: .whitespaces)
-    var newThread = ConversationThread(
+    let newThread = ConversationThread(
       id: UUID().uuidString.lowercased(), connectionId: connection.id, nativeThreadId: ref.nativeSessionId,
       nativeScope: ref.nativeScope, title: (title?.isEmpty == false ? title : nil) ?? defaultTitle,
       context: threadContext)
-    // The thread joins the project of its folder (created on first use); `context` stays as given.
-    newThread.projectId = try await context.projects.projectId(forThread: newThread, connection: connection)
-    let thread = try db.insertThread(newThread)
+    // The thread joins the project of its folder (created on first use) in one step with its insert, so
+    // no project edit can land in between; `context` stays as given.
+    let thread = try await context.projects.insertThread(newThread, connection: connection)
     await context.eventLog.publish(
       AdapterEvent(
         kind: .sessionCreated, connectionId: connection.id, threadId: thread.id,

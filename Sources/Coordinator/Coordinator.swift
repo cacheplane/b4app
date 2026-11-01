@@ -154,8 +154,7 @@ public enum Coordinator {
       context: SessionService.Context(
         database: database, eventLog: eventLog, diagnostics: diagnostics, environment: options.environment,
         clientVersion: CoordinatorVersion.current, secretStore: options.secretStore,
-        adapterFactory: options.adapterFactory, servers: servers,
-        projects: projects))
+        projects: projects, adapterFactory: options.adapterFactory, servers: servers))
     await sessions.start()
     await servers.startAll()
     let hub =

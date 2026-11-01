@@ -45,6 +45,37 @@ public actor ProjectService {
     return try await ensureProject(folder: folder).id
   }
 
+  /// Insert a new thread in the project of its folder (created automatically when none owns it) and return
+  /// it with `projectId` set. Resolving the project and inserting the row happen in one section with no
+  /// suspension point, so (actor isolation) no project command can run between them: the project cannot
+  /// be emptied and deleted under the insert, and a folder move cannot miss the not-yet-inserted
+  /// thread. Events are published only after the row is committed.
+  public func insertThread(
+    _ thread: ConversationThread, connection: Connection
+  ) async throws
+    -> ConversationThread
+  {
+    let (inserted, createdProject) = try insertResolving(thread, connection: connection)
+    if let createdProject { await eventLog.publish(.projectChanged(projectId: createdProject.id)) }
+    return inserted
+  }
+
+  /// Synchronous on purpose: see `insertThread`.
+  private func insertResolving(
+    _ thread: ConversationThread, connection: Connection
+  ) throws
+    -> (thread: ConversationThread, createdProject: Project?)
+  {
+    var thread = thread
+    var created: Project?
+    if let folder = try folder(forThread: thread, connection: connection) {
+      let (project, wasCreated) = try ensure(folder: folder)
+      thread.projectId = project.id
+      if wasCreated { created = project }
+    }
+    return (try db.insertThread(thread), created)
+  }
+
   /// The project that owns `folder` (any spelling), creating an automatic one when none does.
   @discardableResult
   public func ensureProject(folder: String) async throws -> Project {
