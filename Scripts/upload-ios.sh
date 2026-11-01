@@ -2,12 +2,14 @@
 # Archive the iOS companion and upload it to App Store Connect for TestFlight (D-048).
 #
 #   B4APP_ASC_KEY_ID=… B4APP_ASC_ISSUER_ID=… ./Scripts/upload-ios.sh
-#   B4APP_UPLOAD=0 …                 export the .ipa under dist/ios instead of uploading
+#   B4APP_UPLOAD=0 …                 export and validate the .ipa under dist/ios, upload nothing
 #   B4APP_TESTFLIGHT_EXTERNAL=1 …    allow the build to go to external testers (Beta App Review)
 #
-# Signing is automatic and cloud-managed: Xcode registers the App ID, creates the profiles, and
-# signs with an Apple Distribution certificate it manages, authorised by a Team App Store Connect
-# API key with the Admin role. The key file stays outside the repository, by default at
+# Signing is automatic and cloud-managed: the export registers the App ID, creates the App Store
+# profile, and signs with an Apple Distribution certificate Apple manages, authorised by a Team App
+# Store Connect API key with the Admin role. altool then validates and uploads the .ipa with the same
+# key (Xcode 26.6's own `destination: upload` failed here with "Cannot verify client's JWT headers"
+# while altool, with the same key, succeeded; D-048). The key file stays outside the repository, by default at
 # ~/.appstoreconnect/private_keys/AuthKey_<key id>.p8 (B4APP_ASC_KEY_PATH overrides it); this script
 # never prints it. The team id comes from B4APP_TEAM_ID or the Developer ID identity in the login
 # keychain. The build number is B4APP_BUILD_NUMBER or the UTC time as yymmddHHMM, so each upload is
@@ -47,11 +49,12 @@ echo "==> Generating the Xcode project"
 echo "==> Archiving B4App-iOS $VERSION ($BUILD) for team $TEAM_ID"
 rm -rf "$OUT"
 mkdir -p "$OUT"
-# shellcheck disable=SC2086
+# The archive is left unsigned: an automatically signed archive needs a development profile, which
+# needs a registered device, and the export below signs everything for distribution anyway.
 xcodebuild archive -project B4App.xcodeproj -scheme B4App-iOS -configuration Release \
   -destination 'generic/platform=iOS' -archivePath "$ARCHIVE" -derivedDataPath .build/DerivedData-ios \
   DEVELOPMENT_TEAM="$TEAM_ID" MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
-  $AUTH -quiet
+  CODE_SIGNING_ALLOWED=NO -quiet
 
 # The archived app must not carry the Debug-only localhost exception, and must carry its manifest.
 INFO="$ARCHIVE/Products/Applications/Agent Workspace.app/Info.plist"
@@ -64,7 +67,6 @@ fi
   exit 1
 }
 
-if [ "${B4APP_UPLOAD:-1}" = 0 ]; then DESTINATION=export; else DESTINATION=upload; fi
 if [ "${B4APP_TESTFLIGHT_EXTERNAL:-0}" = 1 ]; then INTERNAL=false; else INTERNAL=true; fi
 cat > "$OUT/ExportOptions.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -72,7 +74,7 @@ cat > "$OUT/ExportOptions.plist" <<EOF
 <plist version="1.0">
 <dict>
   <key>method</key><string>app-store-connect</string>
-  <key>destination</key><string>$DESTINATION</string>
+  <key>destination</key><string>export</string>
   <key>signingStyle</key><string>automatic</string>
   <key>teamID</key><string>$TEAM_ID</string>
   <key>manageAppVersionAndBuildNumber</key><false/>
@@ -83,12 +85,26 @@ cat > "$OUT/ExportOptions.plist" <<EOF
 EOF
 plutil -lint "$OUT/ExportOptions.plist" >/dev/null
 
-echo "==> Exporting ($DESTINATION)"
+echo "==> Exporting and signing for App Store Connect"
 # shellcheck disable=SC2086
 xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportOptionsPlist "$OUT/ExportOptions.plist" \
   -exportPath "$OUT/export" $AUTH
-if [ "$DESTINATION" = upload ]; then
-  echo "Uploaded $VERSION ($BUILD). App Store Connect emails when processing finishes; then add it to a TestFlight group."
-else
-  ls -l "$OUT/export"
+IPA="$OUT/export/Agent Workspace.ipa"
+ALTOOL_AUTH="--apiKey $KEY_ID --apiIssuer $ISSUER_ID"
+if [ -n "${B4APP_ASC_KEY_PATH:-}" ]; then
+  # altool looks for AuthKey_<id>.p8 in ~/.appstoreconnect/private_keys and a few other folders.
+  export API_PRIVATE_KEYS_DIR
+  API_PRIVATE_KEYS_DIR=$(dirname "$KEY_PATH")
 fi
+
+echo "==> Validating with App Store Connect"
+# shellcheck disable=SC2086
+xcrun altool --validate-app -f "$IPA" -t ios $ALTOOL_AUTH
+if [ "${B4APP_UPLOAD:-1}" = 0 ]; then
+  echo "B4APP_UPLOAD=0: validated $IPA ($VERSION, $BUILD), not uploaded."
+  exit 0
+fi
+echo "==> Uploading"
+# shellcheck disable=SC2086
+xcrun altool --upload-app -f "$IPA" -t ios $ALTOOL_AUTH
+echo "Uploaded $VERSION ($BUILD). App Store Connect emails when processing finishes; then add it to a TestFlight group."
