@@ -107,6 +107,27 @@ private struct ProjectHarness {
     return seen
   }
 
+  /// This thread's `thread.updated` events so far, in the order they were published.
+  func threadUpdates(_ threadId: String) async -> [AdapterEvent] {
+    await events.events.map(\.event).filter { $0.kind == .threadUpdated && $0.threadId == threadId }
+  }
+
+  /// Polls `threadUpdates(_:)` until `condition` holds, then returns them; fails the test at the
+  /// deadline with how many arrived.
+  func threadUpdates(
+    _ threadId: String, until condition: @Sendable ([AdapterEvent]) -> Bool,
+    sourceLocation: SourceLocation = #_sourceLocation
+  ) async -> [AdapterEvent] {
+    let deadline = ContinuousClock.now + .seconds(15)
+    var seen = await threadUpdates(threadId)
+    while !condition(seen), ContinuousClock.now < deadline {
+      try? await Task.sleep(for: .milliseconds(20))
+      seen = await threadUpdates(threadId)
+    }
+    #expect(condition(seen), "thread.updated events seen: \(seen.count)", sourceLocation: sourceLocation)
+    return seen
+  }
+
   func close() async {
     await client.close()
     await coordinator.close()
@@ -469,29 +490,27 @@ private struct ProjectHarness {
     let draft = try await h.client.request(DraftRead.self, DraftRead.Params(threadId: thread.id)).draft
     #expect(draft?.text == "")
 
-    let before = await h.events.events.map(\.event).filter { $0.kind == .threadUpdated }.count
+    // Events arrive over the socket after the call that caused them returns, so every count below is
+    // taken after waiting. Two are due before marking: the thread's creation, and the touch that
+    // records the finished turn (published around `turn.finished`, so it can land after it).
+    let base = await h.threadUpdates(thread.id) { $0.count >= 2 }.count
+    #expect(base == 2)
+
     let marked = try await h.client.request(
       ThreadMarkRead.self, ThreadMarkRead.Params(threadId: thread.id, turnId: turn.id),
       options: h.mutation()
     ).thread
     #expect(marked.readTurnId == turn.id)
     #expect(marked.activity?.latestTurnId == turn.id)
-    try await h.events.waitFor {
-      $0.kind == .threadUpdated && $0.threadId == thread.id
-        && $0.payload["thread"]?["readTurnId"]?.stringValue == turn.id
-    }
-    let after = await h.events.events.map(\.event).filter { $0.kind == .threadUpdated }.count
-    #expect(after == before + 1)
+    _ = await h.threadUpdates(thread.id) { $0.count > base }
 
-    // Marking the same turn again changes nothing, so it says nothing.
+    // Marking the same turn again changes nothing, so it says nothing; neither does a turn that is not
+    // this thread's. Nil marks it unread again, which does say so.
     let again = try await h.client.request(
       ThreadMarkRead.self, ThreadMarkRead.Params(threadId: thread.id, turnId: turn.id),
       options: h.mutation()
     ).thread
     #expect(again.readTurnId == turn.id)
-    #expect(await h.events.events.map(\.event).filter { $0.kind == .threadUpdated }.count == after)
-
-    // A turn that is not this thread's is ignored; nil marks it unread again.
     let stale = try await h.client.request(
       ThreadMarkRead.self, ThreadMarkRead.Params(threadId: thread.id, turnId: "not-a-turn"),
       options: h.mutation()
@@ -501,7 +520,12 @@ private struct ProjectHarness {
       ThreadMarkRead.self, ThreadMarkRead.Params(threadId: thread.id), options: h.mutation()
     ).thread
     #expect(unread.readTurnId == nil)
-    #expect(await h.events.events.map(\.event).filter { $0.kind == .threadUpdated }.count == after + 1)
+    // Events are published in order, so once the unread one has landed anything the two silent calls
+    // had said would have landed before it: exactly two events since `base`, read then unread.
+    let since = Array(await h.threadUpdates(thread.id) { $0.count > base + 1 }.dropFirst(base))
+    #expect(since.count == 2)
+    #expect(since.first?.payload["thread"]?["readTurnId"]?.stringValue == turn.id)
+    #expect(since.last?.payload["thread"]?["readTurnId"]?.stringValue == nil)
 
     let missing = await h.failure {
       try await h.client.request(
