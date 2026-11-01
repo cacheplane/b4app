@@ -24,6 +24,8 @@ import WorkspaceUI
   private(set) var isLinked = false
   /// Why the mirror could not be opened, if it could not.
   private(set) var storeError: String?
+  /// The pull loop's last outcome; `lastError` is set while the mirror is not keeping up with the hub.
+  private(set) var syncStatus = MirrorSyncStatus()
 
   @ObservationIgnored private let store: MirrorStore?
   @ObservationIgnored private let secrets: any SecretStore = KeychainSecretStore(service: "b4app")
@@ -78,6 +80,12 @@ import WorkspaceUI
     transport?.publish(batch)
   }
 
+  /// While pulls succeed only the time moves, so nothing is redrawn until a pull fails or recovers.
+  private func update(_ status: MirrorSyncStatus) {
+    guard status.lastError != nil || syncStatus.lastError != nil, status != syncStatus else { return }
+    syncStatus = status
+  }
+
   /// Joins the hub: validates the URL before any request, enrolls with the one-time code (platform
   /// `ios`), keeps the device token only in the Keychain under a new reference, stores the link, and
   /// starts pulling. The code is not kept.
@@ -115,6 +123,7 @@ import WorkspaceUI
   func disconnect() async {
     await sync?.stop()
     sync = nil
+    syncStatus = MirrorSyncStatus()
     if let store, let link = try? store.link() {
       if let base = try? HubURL.validate(link.hubURL), let ref = SecretRef(rawValue: link.tokenRef) {
         try? await Self.api(base: base, ref: ref, secrets: secrets).revokeSelf()
@@ -131,8 +140,10 @@ import WorkspaceUI
     else { return }
     let sync = MirrorSync(
       store: store, api: Self.api(base: base, ref: ref, secrets: secrets),
-      onBatch: { batch in await MirrorHost.shared.publish(batch) })
+      onBatch: { batch in await MirrorHost.shared.publish(batch) },
+      onStatus: { status in await MirrorHost.shared.update(status) })
     self.sync = sync
+    syncStatus = MirrorSyncStatus()
     Task { await sync.run() }
   }
 

@@ -11,6 +11,12 @@ actor BatchRecorder {
   func record(_ batch: AppliedBatch) { batches.append(batch) }
 }
 
+/// Collects what `MirrorSync` hands to `onStatus`.
+actor StatusRecorder {
+  private(set) var all: [MirrorSyncStatus] = []
+  func record(_ status: MirrorSyncStatus) { all.append(status) }
+}
+
 private func eventually(
   _ what: String, timeout: Duration = .seconds(10), _ condition: () async throws -> Bool
 ) async throws {
@@ -89,6 +95,29 @@ private let link = MirrorLink(
     try await eventually("recovered") { store.cursor == 2 }
     #expect(try store.link()?.lastError == nil)
     #expect(await sync.lastError == nil)
+    await sync.stop()
+    await running.value
+  }
+
+  @Test func statusCallbackReportsAFailureAndClearsItOnSuccess() async throws {
+    let store = try MirrorStore.inMemory()
+    try store.saveLink(link)
+    let hub = FakeHubAPI(stored: Array(try fixtureAsStored().prefix(2)))
+    await hub.setFailNext(HubError(kind: "transport", code: "transport", message: "offline", status: 0))
+    let statuses = StatusRecorder()
+    let sync = MirrorSync(
+      store: store, api: hub, onBatch: { _ in }, onStatus: { await statuses.record($0) },
+      initialBackoff: .milliseconds(300), maxBackoff: .seconds(1))
+    let running = Task { await sync.run() }
+
+    try await eventually("failure reported") { await statuses.all.first != nil }
+    let failure = try #require(await statuses.all.first)
+    #expect(failure.lastError?.contains("offline") == true)
+    #expect(failure.lastSyncAt == nil)
+    try await eventually("success reported") { await statuses.all.contains { $0.lastError == nil } }
+    let success = try #require(await statuses.all.first { $0.lastError == nil })
+    #expect(success.lastSyncAt != nil)
+    #expect(await sync.lastSyncAt != nil)
     await sync.stop()
     await running.value
   }
