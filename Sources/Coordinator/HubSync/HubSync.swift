@@ -47,6 +47,10 @@ public actor HubSync {
   private var pull: HubPull?
   /// Identifies the running pull, so a callback from one that has since been replaced is ignored.
   private var pullGeneration = UUID()
+  /// The hub user's display name: from the enrollment, or `/v1/me` once a start finds a link. Kept in
+  /// memory only, so the link table needs no migration.
+  private var displayName: String?
+  private var fetchingName = false
 
   public init(
     database: WorkspaceDatabase, secretStore: any SecretStore, eventLog: EventLog,
@@ -79,7 +83,10 @@ public actor HubSync {
     }
     guard nudgeTask == nil else { return }
     started = true
-    if let link = try? database.hubLink(), api != nil { startPull(deviceId: link.deviceId) }
+    if let link = try? database.hubLink(), let api {
+      startPull(deviceId: link.deviceId)
+      fetchDisplayNameIfMissing()
+    }
     let events = await eventLog.subscribe()
     nudgeTask = Task { [weak self] in
       for await _ in events {
@@ -147,6 +154,7 @@ public actor HubSync {
     token.remember(enrolled.token)
     self.token = token
     self.api = api
+    displayName = enrolled.user.displayName
     suspended = false
     logger.info(
       "joined \(base.host ?? "hub", privacy: .public) as device \(enrolled.deviceId, privacy: .public)")
@@ -171,8 +179,28 @@ public actor HubSync {
     }
     return HubStatus.Result(
       joined: true, url: link.url, deviceId: link.deviceId, deviceName: link.deviceName,
-      orgSlug: link.orgSlug, username: link.username, unsyncedChanges: unsynced, lastPushAt: link.lastPushAt,
-      lastError: lastError)
+      orgSlug: link.orgSlug, username: link.username, displayName: displayName, unsyncedChanges: unsynced,
+      lastPushAt: link.lastPushAt, lastError: lastError)
+  }
+
+  /// Ask `/v1/me` while the name is unknown: at start, and again after each successful push or pull,
+  /// so a start before the network was up still gets the name.
+  private func fetchDisplayNameIfMissing() {
+    guard displayName == nil, !fetchingName, let api else { return }
+    fetchingName = true
+    Task { await fetchDisplayName(api) }
+  }
+
+  private func fetchDisplayName(_ api: any HubAPI) async {
+    defer { fetchingName = false }
+    do {
+      let me = try await api.me()
+      // A leave or a new join while the request was out owns the name now.
+      guard self.api != nil, displayName == nil else { return }
+      displayName = me.user.displayName
+    } catch {
+      logger.debug("could not read the hub user's name: \(Self.describe(error), privacy: .public)")
+    }
   }
 
   /// Revoke this device at the hub (best effort), forget the token, clear the link, and record later
@@ -182,6 +210,7 @@ public actor HubSync {
     await stopPull()
     let api = self.api
     self.api = nil
+    displayName = nil
     token = nil
     suspended = false
     await waitForPush()
@@ -342,6 +371,7 @@ public actor HubSync {
   /// A pull failure is shown as `lastError` until a pull succeeds again (or a push records its own).
   private func recordPull(error: String?, generation: UUID) {
     guard generation == pullGeneration, pull != nil, var link = try? database.hubLink() else { return }
+    if error == nil { fetchDisplayNameIfMissing() }
     if let error {
       link.lastError = Self.pullErrorPrefix + error
     } else if link.lastError?.hasPrefix(Self.pullErrorPrefix) == true {
@@ -362,6 +392,7 @@ public actor HubSync {
 
   private func record(error: String?, pushed: Bool) throws {
     guard var link = try database.hubLink() else { return }
+    if error == nil, pushed { fetchDisplayNameIfMissing() }
     if pushed { link.lastPushAt = Timestamp.now() }
     link.lastError = error
     try database.saveHubLink(link)

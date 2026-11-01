@@ -15,7 +15,7 @@ struct ThreadsView: View {
           : "Select a thread in the sidebar, or start a new one."
       ) {
         if model.conversationReadyConnections.isEmpty {
-          Button("Add connection") { model.surface = .connections }
+          Button("Add connection") { model.openSettings(.connections) }
             .buttonStyle(.llaPrimary)
             .accessibilityIdentifier("add-connection")
         } else {

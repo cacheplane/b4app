@@ -38,8 +38,8 @@ import WorkspaceProtocol
     let model = try await ListFixture.model()
     #expect(model.sidebarSections.map(\.title) == ["b4app", "Marketing site", "Docs", "Other"])
     #expect(model.sidebarSections.first { $0.id == ListFixture.docs }?.threads.isEmpty == true)
-    // A search narrows the list; it does not pad it with empty projects.
-    model.searchText = "pricing"
+    // A connection filter narrows the list; it does not pad it with empty projects.
+    model.connectionFilter = "c2"
     #expect(model.sidebarSections.map(\.title) == ["Marketing site"])
   }
 
@@ -58,6 +58,24 @@ import WorkspaceProtocol
     #expect(!offered("unread"))
     #expect(!offered("asks"))
     #expect(!offered("busy"))
+  }
+
+  @Test func rowSpeaksItsReasonAndConnection() async throws {
+    // The row shows only the title and a runtime mark; why it sits there and where it runs are spoken
+    // in its label (not a hint, which VoiceOver users can turn off), and a pinned row says so.
+    let model = try await ListFixture.model()
+    let asks = try #require(model.threads.first { $0.id == "asks" })
+    let label = try #require(model.connection(id: asks.connectionId)?.label)
+    #expect(model.band(of: asks) == .needsInput)
+    #expect(
+      ThreadRow.accessibilityLabel(model: model, thread: asks)
+        == "\(asks.title), \(model.reasonLine(for: asks)), \(label)")
+    var pinned = asks
+    pinned.pinned = true
+    #expect(ThreadRow.accessibilityLabel(model: model, thread: pinned).hasPrefix("Pinned, \(asks.title), "))
+    var untitled = asks
+    untitled.title = ""
+    #expect(ThreadRow.accessibilityLabel(model: model, thread: untitled).hasPrefix("Untitled, "))
   }
 
   @Test func newThreadNamesTheProjectOfTheChosenFolder() async throws {
@@ -109,20 +127,10 @@ import WorkspaceProtocol
     #expect(model.sidebarError() == nil)  // no error, no banner
     model.lastError = "That folder already belongs to another project."
 
-    model.surface = .threads
     model.selectedThreadId = nil
     #expect(model.sidebarError() == "That folder already belongs to another project.")
-    model.surface = .diagnostics
-    #expect(model.sidebarError() != nil)
-
-    // The connections and servers screens print the error themselves.
-    model.surface = .connections
-    #expect(model.sidebarError() == nil)
-    model.surface = .servers
-    #expect(model.sidebarError() == nil)
 
     // An open thread shows it in the composer, so the list does not repeat it...
-    model.surface = .threads
     model.selectedThreadId = "asks"
     #expect(model.sidebarError() == nil)
     // ...unless the detail is not on screen (the iPhone's single column).

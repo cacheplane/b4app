@@ -13,7 +13,7 @@ private let fakeClaude =
 
 /// Renders the real root view, over a real coordinator and the fixture runtimes, into PNGs for a
 /// visual check without screen access. Opt in with `B4APP_SNAPSHOT_DIR=<dir> swift test --filter
-/// SnapshotTests`; the files are `<surface>-<light|dark>.png`. The window is never ordered on screen.
+/// SnapshotTests`; the files are `<view>-<light|dark>.png`. The window is never ordered on screen.
 @Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["B4APP_SNAPSHOT_DIR"] != nil))
 @MainActor struct SnapshotTests {
   @Test func rendersEverySurfaceInBothAppearances() async throws {
@@ -69,23 +69,43 @@ private let fakeClaude =
       await model.openThread(id: release.id)
       real.close()
     }
+    let settings = SnapshotWindow(
+      rootView: WorkspaceSettingsView(model: model), size: CGSize(width: 760, height: 500))
+    let signedIn = WorkspaceAccount(username: "blove", displayName: "Brian Love")
     for (appearance, suffix) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
       window.appearance = NSAppearance(named: appearance)
-      try await window.capture(to: "\(dir)/threads-\(suffix).png")
-      model.surface = .connections
+      settings.appearance = NSAppearance(named: appearance)
+      model.account = signedIn
+      try await window.capture(to: "\(dir)/sidebar-\(suffix).png")
+      model.showProfileMenu = true
+      try await window.capture(to: "\(dir)/profile-menu-\(suffix).png")
+      model.showProfileMenu = false
+      model.showSearch = true
+      try await window.capture(to: "\(dir)/search-\(suffix).png")
+      model.showSearch = false
+      model.hostNote = "The background agent is not running. Open Login Items to allow it."
+      model.hostActionTitle = "Open Login Items"
+      model.hostAction = {}
+      try await window.capture(to: "\(dir)/notice-\(suffix).png")
+      model.hostNote = nil
+      model.account = nil
+      try await window.capture(to: "\(dir)/not-signed-in-\(suffix).png")
+      model.account = signedIn
+      model.hostDisconnected = true
+      try await window.capture(to: "\(dir)/host-disconnected-\(suffix).png")
+      model.hostDisconnected = false
       model.selectedThreadId = nil
-      try await window.capture(to: "\(dir)/connections-\(suffix).png")
-      model.surface = .servers
-      try await window.capture(to: "\(dir)/servers-\(suffix).png")
-      model.surface = .diagnostics
-      try await window.capture(to: "\(dir)/diagnostics-\(suffix).png")
-      model.surface = .threads
       try await window.capture(to: "\(dir)/threads-empty-\(suffix).png")
       model.selectedThreadId = release.id
       await model.openThread(id: release.id)
+      for page in SettingsPage.allCases {
+        model.settingsPage = page
+        try await settings.capture(to: "\(dir)/settings-\(page.rawValue)-\(suffix).png")
+      }
     }
+    settings.close()
     window.close()
-    #expect(FileManager.default.fileExists(atPath: "\(dir)/threads-dark.png"))
+    #expect(FileManager.default.fileExists(atPath: "\(dir)/settings-diagnostics-dark.png"))
   }
 }
 
@@ -107,17 +127,11 @@ struct SnapshotShell: View {
     HStack(spacing: 0) {
       SidebarView(model: model).frame(width: 290)
       Rectangle().fill(LLA.Color.rule).frame(width: 1)
-      Group {
-        switch model.surface {
-        case .threads: ThreadsView(model: model)
-        case .connections: ConnectionsView(model: model)
-        case .servers: LocalServersView(model: model)
-        case .diagnostics: DiagnosticsView(model: model)
-        }
-      }
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .background(LLA.Color.bg)
+      ThreadsView(model: model)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(LLA.Color.bg)
     }
+    .overlay { if model.showSearch { SearchPalette(model: model) } }
     .tint(LLA.Color.accent)
     .frame(width: 1200, height: 800)
   }
@@ -246,7 +260,7 @@ struct SnapshotShell: View {
     try await render("iosListFlatWithFilter", size: CGSize(width: 390, height: 760)) {
       VStack(spacing: 0) {
         HStack {
-          ProjectFilterMenu(model: model)
+          MoreMenu(model: model)
           Spacer()
         }
         .padding(LLA.Space.l)
@@ -262,7 +276,7 @@ struct SnapshotShell: View {
     try await render("iosListFilteredToProject", size: CGSize(width: 390, height: 420)) {
       VStack(spacing: 0) {
         HStack {
-          ProjectFilterMenu(model: model)
+          MoreMenu(model: model)
           Spacer()
         }
         .padding(LLA.Space.l)
@@ -281,7 +295,7 @@ struct SnapshotShell: View {
     #expect(rows.map { model.band(of: $0) } == [.needsInput, .unread, .working, .quiet])
     try await render("rowShowsEachBandDot", size: CGSize(width: 290, height: 420)) {
       VStack(alignment: .leading, spacing: 2) {
-        ForEach(rows) { ThreadRow(model: model, thread: $0, showsProject: true) }
+        ForEach(rows) { ThreadRow(model: model, thread: $0) }
         Hairline().padding(.vertical, LLA.Space.m)
         HStack(spacing: LLA.Space.l) {
           ForEach([AttentionBand.needsInput, .unread, .working, .quiet], id: \.rawValue) {

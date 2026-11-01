@@ -75,12 +75,11 @@ struct DiagnosticsView: View {
     }
     .background(LLA.Color.bg)
     .navigationTitle("Diagnostics")
-    .toolbar {
-      ToolbarItem {
-        Button("Refresh") { Task { await model.refreshDiagnostics() } }
-          .disabled(model.link != .ready || model.diagnosticsLoading)
+    .modifier(
+      SettingsPageAction(title: "Refresh", disabled: model.link != .ready || model.diagnosticsLoading) {
+        Task { await model.refreshDiagnostics() }
       }
-    }
+    )
     .task(id: model.link) {
       if model.link == .ready, model.diagnostics == nil { await model.refreshDiagnostics() }
     }

@@ -24,14 +24,14 @@ public enum ThreadRowState: String, Sendable, Equatable, CaseIterable {
   }
 }
 
-public enum Surface: String, CaseIterable, Identifiable, Sendable {
-  case threads, connections, servers, diagnostics
+/// A page of the Settings window (the Mac) or sheet (the iPhone).
+public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
+  case connections, servers, diagnostics
 
   public var id: String { rawValue }
 
   public var title: String {
     switch self {
-    case .threads: return "Threads"
     case .connections: return "Connections"
     case .servers: return "Local servers"
     case .diagnostics: return "Diagnostics"
@@ -40,10 +40,9 @@ public enum Surface: String, CaseIterable, Identifiable, Sendable {
 
   public var systemImage: String {
     switch self {
-    case .threads: return "bubble.left.and.bubble.right"
-    case .connections: return "point.3.connected.trianglepath.dotted"
+    case .connections: return "link"
     case .servers: return "server.rack"
-    case .diagnostics: return "stethoscope"
+    case .diagnostics: return "waveform.path.ecg"
     }
   }
 }
@@ -127,9 +126,19 @@ public final class WorkspaceModel {
   /// Every project with its folders, loaded with the threads and refreshed on `project.changed`.
   public private(set) var projects: [Project] = []
   public var projectFilter: ProjectFilter = .all
-  public var surface: Surface = .threads
+  /// The Settings page to show, and a counter the root view watches to open Settings (a window on the
+  /// Mac, a sheet on the iPhone); a counter so asking twice opens it twice.
+  public var settingsPage: SettingsPage = .connections
+  public var settingsRequest = 0
+  /// The iPhone's Settings sheet.
+  public var showSettingsSheet = false
+  /// Set by the Settings views while they are on screen.
+  public var settingsVisible = false
   public var selectedThreadId: String?
-  public var searchText = ""
+  /// The search palette (⌘K).
+  public var showSearch = false
+  /// The profile menu above the sidebar's profile button.
+  public var showProfileMenu = false
   public var connectionFilter: String?
   public var showArchived = false
   public var showNewThread = false
@@ -157,6 +166,20 @@ public final class WorkspaceModel {
   public var expectedCoordinatorVersion: String?
   public var restartCoordinator: (@MainActor () async -> Void)?
 
+  /// The hub user this device is signed in as; nil reads "Not signed in".
+  public var account: WorkspaceAccount?
+  /// `.host` when the app around the model owns the account (the phone); `refreshAccount()` then
+  /// leaves it alone and `logOut()` calls `hostLogOut`.
+  public var accountSource: AccountSource = .coordinator
+  public var hostLogOut: (@MainActor () async -> Void)?
+  /// The phone's mirror has no joined Mac left: the thread list gives way to a notice.
+  public var hostDisconnected = false
+
+  /// Whether the profile menu offers Log out.
+  public var canLogOut: Bool {
+    account != nil && (accountSource == .coordinator || hostLogOut != nil)
+  }
+
   public var versionMismatch: String? {
     guard let expected = expectedCoordinatorVersion, let running = diagnostics?.coordinator.version,
       running != expected
@@ -182,7 +205,7 @@ public final class WorkspaceModel {
     self.transportProvider = transportProvider
   }
 
-  /// The list under the search, connection, and project filters: pinned first, then needs input,
+  /// The list under the connection and project filters: pinned first, then needs input,
   /// unread reply, working, and quiet, newest activity first inside each (`Attention.ordered`).
   public var orderedThreads: [ConversationThread] {
     Attention.ordered(filtered(archived: projectFilter == .archived, project: projectFilter))
@@ -215,10 +238,8 @@ public final class WorkspaceModel {
   }
 
   private func filtered(archived: Bool, project: ProjectFilter) -> [ConversationThread] {
-    let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
-    return threads.filter { $0.archived == archived }
+    threads.filter { $0.archived == archived }
       .filter { connectionFilter == nil || $0.connectionId == connectionFilter }
-      .filter { query.isEmpty || $0.title.lowercased().contains(query) }
       .filter {
         switch project {
         case .all, .archived: return true
@@ -308,6 +329,7 @@ public final class WorkspaceModel {
         self.client = client
         _ = try await client.ready()
         try await refreshSnapshot()
+        await refreshAccount()
         link = .ready
         settleLink()
         await observe(client)
@@ -338,6 +360,34 @@ public final class WorkspaceModel {
     client = nil
     link = .unavailable
     settleLink()
+  }
+
+  /// Open Settings, at `page` when given.
+  public func openSettings(_ page: SettingsPage? = nil) {
+    if let page { settingsPage = page }
+    settingsRequest += 1
+  }
+
+  /// Ask the coordinator which hub user it has joined as. A failure keeps the account as it was.
+  public func refreshAccount() async {
+    guard accountSource == .coordinator, let client else { return }
+    guard let status = try? await client.request(HubStatus.self, EmptyParams()) else { return }
+    account = WorkspaceAccount(status: status)
+  }
+
+  /// Leave the hub (the Mac) or unlink (the phone, through `hostLogOut`). A failure keeps the account
+  /// and sets `lastError`.
+  public func logOut() async {
+    if accountSource == .host {
+      await hostLogOut?()
+      return
+    }
+    guard
+      await perform({ client in
+        try await client.request(HubLeave.self, EmptyParams(), options: Self.mutation())
+      }) != nil
+    else { return }
+    await refreshAccount()
   }
 
   public func refreshSnapshot() async throws {
@@ -537,7 +587,6 @@ public final class WorkspaceModel {
   public func openThread(id: String) async {
     if let current = detail, current.thread.id != id { await saveDraft(threadId: current.thread.id) }
     selectedThreadId = id
-    surface = .threads
     unreadHold.remove(id)
     await loadDetail(id: id)
     await markReadIfNeeded(threadId: id)
@@ -713,7 +762,7 @@ public final class WorkspaceModel {
   /// nothing while the thread is not on screen (spec "Read state": the reply must be seen); the
   /// detail stays loaded behind the iPhone's list and the Mac's inactive window, so loaded is not seen.
   private func markReadIfNeeded(threadId: String) async {
-    guard isDetailOnScreen, surface == .threads, selectedThreadId == threadId else { return }
+    guard isDetailOnScreen, selectedThreadId == threadId else { return }
     guard let detail, detail.thread.id == threadId, !unreadHold.contains(threadId) else { return }
     guard let latest = detail.turns.max(by: { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }),
       latest.status == .terminal
@@ -874,8 +923,8 @@ public final class WorkspaceModel {
     switch action {
     case .none: break
     case .signIn(let connectionId): await login(connectionId: connectionId)
-    case .openConnections: surface = .connections
-    case .openServers: surface = .servers
+    case .openConnections: openSettings(.connections)
+    case .openServers: openSettings(.servers)
     case .newThread: showNewThread = true
     case .checkAgain: if let id = detail?.thread.id { await reconcileThread(id: id) }
     case .abandonTurn: if let id = detail?.thread.id { await abandonTurn(threadId: id) }

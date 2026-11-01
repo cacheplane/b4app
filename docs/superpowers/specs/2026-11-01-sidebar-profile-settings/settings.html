@@ -1,0 +1,77 @@
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  .lla { font-family: "Hanken Grotesk", -apple-system, sans-serif; color:#0D0D0D; font-size:13px; }
+  .lla svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; flex:none; }
+  .stage { display:flex; gap:36px; align-items:flex-start; flex-wrap:wrap; }
+  .win { display:flex; width:760px; height:500px; border:1px solid #E8E8E8; border-radius:12px; overflow:hidden; background:#fff; box-shadow:0 8px 30px rgba(0,0,0,.08); }
+  .side { width:200px; background:#F7F7F8; border-right:1px solid #E8E8E8; }
+  .chrome { height:44px; display:flex; align-items:center; gap:7px; padding:0 14px; }
+  .dot { width:12px; height:12px; border-radius:50%; background:#E8E8E8; }
+  .row { display:flex; align-items:center; gap:10px; margin:0 10px 2px; padding:6px 10px; border-radius:8px; }
+  .row.sel { background:#ECECEE; font-weight:600; }
+  .main { flex:1; display:flex; flex-direction:column; }
+  .mhead { height:44px; border-bottom:1px solid #E8E8E8; display:flex; align-items:center; padding:0 24px; font-weight:600; }
+  .body { padding:22px 24px; overflow:hidden; }
+  .h { font-weight:600; font-size:15px; margin-bottom:4px; }
+  .intro { color:#5D5D5D; margin-bottom:14px; }
+  .card { border:1px solid #E8E8E8; border-radius:16px; padding:14px 16px; margin-bottom:10px; display:flex; align-items:center; gap:12px; }
+  .card .k { color:#B8B8BC; display:flex; }
+  .card .t { font-weight:600; } .card .s { color:#5D5D5D; font-size:12px; }
+  .pill { margin-left:auto; font-size:11px; color:#5D5D5D; border:1px solid #E8E8E8; border-radius:999px; padding:2px 9px; }
+  .btn { display:inline-block; background:#002FA7; color:#fff; border-radius:8px; padding:6px 12px; font-weight:600; font-size:12px; margin-top:6px; }
+  .phone { width:300px; height:620px; border:1px solid #E8E8E8; border-radius:40px; background:#F7F7F8; overflow:hidden; position:relative; box-shadow:0 8px 30px rgba(0,0,0,.08); }
+  .status { height:44px; }
+  .sheet { position:absolute; left:0; right:0; bottom:0; top:56px; background:#fff; border-radius:16px 16px 0 0; box-shadow:0 -6px 24px rgba(0,0,0,.10); }
+  .grab { width:36px; height:5px; border-radius:3px; background:#E8E8E8; margin:8px auto 6px; }
+  .sh { display:flex; align-items:center; padding:6px 18px 14px; font-weight:600; font-size:16px; }
+  .sh .done { margin-left:auto; color:#002FA7; font-weight:600; font-size:14px; }
+  .group { margin:0 16px; border:1px solid #E8E8E8; border-radius:12px; overflow:hidden; }
+  .li { display:flex; align-items:center; gap:12px; padding:12px 14px; font-size:15px; border-bottom:1px solid #E8E8E8; }
+  .li:last-child { border-bottom:none; }
+  .li .chev { margin-left:auto; color:#B8B8BC; }
+  .cap { color:#5D5D5D; font-size:12px; margin-top:10px; text-align:center; font-family:"Hanken Grotesk",sans-serif; }
+</style>
+
+<h2>Settings: Mac window and iPhone sheet</h2>
+<p class="subtitle">Left: the Settings window, Xcode-style, opened from the profile menu or ⌘,. Right: the same three pages on iPhone, opened from the profile menu as a sheet.</p>
+
+<div class="lla stage">
+<div>
+<div class="win">
+  <div class="side">
+    <div class="chrome"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+    <div class="row sel"><svg viewBox="0 0 24 24"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><path d="M8 12h8"/></svg>Connections</div>
+    <div class="row"><svg viewBox="0 0 24 24"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/></svg>Local servers</div>
+    <div class="row"><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Diagnostics</div>
+  </div>
+  <div class="main">
+    <div class="mhead">Connections</div>
+    <div class="body">
+      <div class="h">Configured</div>
+      <div class="intro">Each connection is one runtime and one identity. Threads never move between them.</div>
+      <div class="card"><span class="k"><svg viewBox="0 0 24 24"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg></span><div><div class="t">Codex · brian@…</div><div class="s">codex 0.62 · signed in</div></div><span class="pill">Ready</span></div>
+      <div class="card"><span class="k"><svg viewBox="0 0 24 24"><path d="M12 4v16"/><path d="M18.9 8 5.1 16"/><path d="m5.1 8 13.8 8"/></svg></span><div><div class="t">Claude Code · Max plan</div><div class="s">claude 2.4 · signed in</div></div><span class="pill">Ready</span></div>
+      <div class="h" style="margin-top:20px">Add a connection</div>
+      <div class="card" style="display:block"><div class="t">B4 agent</div><div class="s">Attach a running B4 server at one exact agent route.</div><span class="btn">Attach…</span></div>
+    </div>
+  </div>
+</div>
+<div class="cap">The pages keep today's content; only where they live changes. (Ghosted marks stand in for the real logos.)</div>
+</div>
+
+<div>
+<div class="phone">
+  <div class="status"></div>
+  <div class="sheet">
+    <div class="grab"></div>
+    <div class="sh">Settings<span class="done">Done</span></div>
+    <div class="group">
+      <div class="li"><svg viewBox="0 0 24 24"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><path d="M8 12h8"/></svg>Connections<span class="chev">›</span></div>
+      <div class="li"><svg viewBox="0 0 24 24"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/></svg>Local servers<span class="chev">›</span></div>
+      <div class="li"><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Diagnostics<span class="chev">›</span></div>
+    </div>
+  </div>
+</div>
+<div class="cap">Tap a row to push its page inside the sheet.</div>
+</div>
+</div>

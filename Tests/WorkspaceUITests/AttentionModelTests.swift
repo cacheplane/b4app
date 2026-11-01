@@ -29,6 +29,8 @@ final class ScriptedTransport: WorkspaceTransport {
     var reads: [String: ThreadRead.Result] = [:]
     var drafts: [String: Draft] = [:]
     var calls: [Call] = []
+    var hub = HubStatus.Result(joined: false, unsyncedChanges: 0)
+    var hubLeaveError: WorkspaceError?
   }
 
   init() {
@@ -47,6 +49,14 @@ final class ScriptedTransport: WorkspaceTransport {
       if let connections { $0.connections = connections }
       if let threads { $0.threads = threads }
       if let projects { $0.projects = projects }
+    }
+  }
+
+  /// What `hub.status` answers; `hub.leave` answers not joined, or throws `leaveError`.
+  func setHub(_ status: HubStatus.Result, leaveError: WorkspaceError? = nil) {
+    state.withLock {
+      $0.hub = status
+      $0.hubLeaveError = leaveError
     }
   }
 
@@ -131,6 +141,12 @@ final class ScriptedTransport: WorkspaceTransport {
       let id = params["projectId"]?.stringValue ?? ""
       state.projects.removeAll { $0.id == id }
       return try JSONValue(encoding: ProjectDelete.Result(projectId: id))
+    case .hubStatus?:
+      return try JSONValue(encoding: state.hub)
+    case .hubLeave?:
+      if let error = state.hubLeaveError { throw error }
+      state.hub = HubStatus.Result(joined: false, unsyncedChanges: state.hub.unsyncedChanges)
+      return try JSONValue(encoding: state.hub)
     default:
       throw WorkspaceError(.unsupportedCapability, "scripted transport does not serve \(method)")
     }
@@ -346,9 +362,6 @@ private struct AttentionDocument: Decodable {
     model.projectFilter = .archived
     #expect(model.orderedThreads.map(\.id) == ["old"])
     model.projectFilter = .all
-    model.searchText = "in-"
-    #expect(model.orderedThreads.map(\.id) == ["in-a", "in-b"])
-    model.searchText = ""
     #expect(model.archivedThreads.map(\.id) == ["old"])
   }
 
@@ -467,12 +480,6 @@ private struct AttentionDocument: Decodable {
     #expect(transport.calls(.threadMarkRead).isEmpty)
     #expect(model.band(of: model.threads[0]) == .unread)
 
-    // On screen, but showing Diagnostics with the thread still loaded: still not read.
-    model.surface = .diagnostics
-    model.isDetailOnScreen = true
-    // Timed on purpose: no mark may follow on Diagnostics; an absence has no event to await.
-    try await Task.sleep(for: .milliseconds(100))
-    #expect(transport.calls(.threadMarkRead).isEmpty)
   }
 
   @Test func aReplyOnAnotherThreadIsNotMarkedRead() async throws {

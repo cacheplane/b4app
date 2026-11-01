@@ -29,6 +29,7 @@ import Testing
         LLA.Palette.bg, LLA.Palette.surface, LLA.Palette.surfaceRaised, LLA.Palette.ink,
         LLA.Palette.muted, LLA.Palette.rule, LLA.Palette.accent, LLA.Palette.accentHover,
         LLA.Palette.danger, LLA.Palette.codeBg, LLA.Palette.codeFg, LLA.Palette.selection,
+        LLA.Palette.ghost,
       ]
       var count = 0
       for dynamic in palette where NSColor(dynamic.color).usingColorSpace(.sRGB) != nil {
@@ -36,7 +37,7 @@ import Testing
       }
       return count
     }.value
-    #expect(resolved == 12)
+    #expect(resolved == 13)
   }
 
   @Test func parserHandlesRelativeAndCurveCommands() {
@@ -44,6 +45,25 @@ import Testing
     #expect(!path.isEmpty)
     let box = path.boundingRect
     #expect(box.minX >= 9 && box.maxX <= 21 && box.minY >= -1 && box.maxY <= 21)
+  }
+
+  @Test func parserHandlesArcsAndPackedNumbers() {
+    // Simple Icons paths use relative arcs and run decimals together (".07.07" is two numbers).
+    let arc = SVGPathData.parse("M0 10a10 10 0 0 0 20 0z")
+    let box = arc.boundingRect
+    #expect(abs(box.width - 20) < 0.5 && abs(box.maxY - 20) < 0.5 && abs(box.minY - 10) < 0.5)
+    let packed = SVGPathData.parse("M0 0l.5.5L1 0z")
+    #expect(abs(packed.boundingRect.maxY - 0.5) < 0.01)
+  }
+
+  @Test func runtimeMarksLoad() throws {
+    for name in ["openai", "anthropic"] {
+      let art = try #require(BrandArt.load(named: name), "\(name).svg did not parse")
+      #expect(!art.path.isEmpty)
+      #expect(art.viewBox.width > 0 && art.viewBox.height > 0)
+      // The whole mark is drawn: a parser that stops early leaves a fraction of the viewBox.
+      #expect(art.path.boundingRect.width > art.viewBox.width * 0.8)
+    }
   }
 
   @Test func registersBundledFonts() {
@@ -63,6 +83,8 @@ import Testing
   }
 
   @Test func contrast() {
+    // `ghost` is exempt from the 3:1 graphics floor: the runtime marks it draws are supplementary,
+    // and the row's accessibility label names the runtime.
     let p = LLA.Palette.self
     for (fg, bg, floor) in [
       (p.ink, p.bg, 4.5), (p.muted, p.bg, 4.5), (p.accent, p.bg, 4.5), (p.danger, p.bg, 4.5),

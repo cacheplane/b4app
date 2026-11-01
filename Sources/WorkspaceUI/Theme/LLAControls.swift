@@ -286,3 +286,11 @@ public struct LLACodeBlock: View {
     .background(RoundedRectangle(cornerRadius: LLA.Radius.card, style: .continuous).fill(LLA.Color.codeBg))
   }
 }
+
+extension View {
+  /// The one shadow in the theme: a soft lift for panels that float over the window (the search
+  /// palette, the profile menu). Cards and sheets stay flat.
+  public func llaPopoverShadow() -> some View {
+    shadow(color: LLA.Color.ink.opacity(0.12), radius: 18, x: 0, y: 8)
+  }
+}

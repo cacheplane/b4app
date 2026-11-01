@@ -55,6 +55,8 @@ public enum LLA {
     public static let codeBg = Dynamic(light: 0x0D0D0D, dark: 0x161617)
     public static let codeFg = Dynamic(light: 0xECECEC, dark: 0xECECEC)
     public static let selection = Dynamic(light: 0xD9E0F5, dark: 0x1F2A4D)
+    /// Supplementary marks (the runtime logos on thread rows); below the graphics floor on purpose.
+    public static let ghost = Dynamic(light: 0xB8B8BC, dark: 0x5A5A5E)
   }
 
   public enum Color {
@@ -70,11 +72,14 @@ public enum LLA {
     public static let codeBg = Palette.codeBg.color
     public static let codeFg = Palette.codeFg.color
     public static let selection = Palette.selection.color
+    public static let ghost = Palette.ghost.color
   }
 
   public enum Radius {
     public static let input: CGFloat = 8
     public static let card: CGFloat = 16
+    /// Floating menus (the profile menu).
+    public static let menu: CGFloat = 12
     public static let pill: CGFloat = 999
   }
 

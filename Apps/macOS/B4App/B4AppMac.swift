@@ -23,7 +23,11 @@ struct B4AppMac: App {
     }
     .defaultSize(width: 1200, height: 800)
     .commands {
-      CommandGroup(replacing: .newItem) {}
+      CommandGroup(replacing: .newItem) {
+        Button("New Thread") { sharedModel.showNewThread = true }
+          .keyboardShortcut("n")
+          .disabled(sharedModel.conversationReadyConnections.isEmpty)
+      }
       CommandMenu("Coordinator") {
         Button("Restart Coordinator") { Task { await CoordinatorHost.restartAndReconnect(sharedModel) } }
         Button("Open Login Items…") { SMAppService.openSystemSettingsLoginItems() }
@@ -32,6 +36,13 @@ struct B4AppMac: App {
           .disabled(!LaunchAgent.isBundled)
       }
     }
+
+    // ⌘, and the app menu's Settings… come with the scene; the profile menu and remediations open it
+    // through `WorkspaceModel.openSettings`.
+    Settings {
+      WorkspaceSettingsView(model: sharedModel)
+    }
+    .windowResizability(.contentMinSize)
   }
 }
 
