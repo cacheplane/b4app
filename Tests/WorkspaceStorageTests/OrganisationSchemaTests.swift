@@ -244,6 +244,77 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     #expect(newest.hlc.utf8.lexicographicallyPrecedes(old[1].hlc.utf8) == false)
   }
 
+  @Test func migrationMarksEveryFinishedThreadReadAndLogsIt() throws {
+    let endpoint = try EphemeralPostgres.endpoint()
+    let lib = try LibPQ.load(binDir: endpoint.binDir!)
+    let raw = try PostgresConnection(
+      lib: lib,
+      connectionString:
+        "host=\(endpoint.socketDir) port=\(endpoint.port) dbname=\(endpoint.database) user=\(NSUserName())")
+    _ = try Migrator.applied(raw)
+    for file in try Migrator.files() where file.name < "0004" {
+      try raw.execute(file.sql)
+      try raw.execute(
+        "INSERT INTO \"schemaMigrations\" (\"name\", \"appliedAt\") VALUES ($1, 'then')", [file.name])
+    }
+    try raw.execute(
+      "INSERT INTO \"connections\" (\"id\", \"kind\", \"label\", \"target\", \"capabilities\", \"status\", \"authStatus\", \"createdAt\", \"updatedAt\") VALUES ('c1', 'codex', 'Codex', '/x', '{}', 'ready', 'authenticated', 'now', 'now')"
+    )
+    for id in ["done", "busy", "tied", "empty"] {
+      try raw.execute(
+        "INSERT INTO \"threads\" (\"id\", \"connectionId\", \"nativeThreadId\", \"createdAt\", \"updatedAt\") VALUES ($1, 'c1', $1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        [id])
+    }
+    // (thread, turn, status, createdAt): "done" ends in a reply, "busy" in a running turn after a
+    // reply, and "tied" has two replies created in the same instant, so the greater id is the latest.
+    let turns: [(String, String, String, String)] = [
+      ("done", "d1", "terminal", "2026-01-01T00:01:00Z"), ("done", "d2", "terminal", "2026-01-01T00:02:00Z"),
+      ("busy", "b1", "terminal", "2026-01-01T00:01:00Z"), ("busy", "b2", "running", "2026-01-01T00:02:00Z"),
+      ("tied", "t-b", "terminal", "2026-01-01T00:01:00Z"),
+      ("tied", "t-a", "terminal", "2026-01-01T00:01:00Z"),
+    ]
+    for (thread, turn, status, at) in turns {
+      try raw.execute(
+        "INSERT INTO \"turns\" (\"id\", \"threadId\", \"operationId\", \"status\", \"submission\", \"outcome\", \"createdAt\", \"updatedAt\") VALUES ($1, $2, $1, $3, 'acknowledged', $4, $5, $5)",
+        [turn, thread, status, status == "terminal" ? "completed" : nil, at])
+    }
+    let before = try raw.execute("SELECT max(\"seq\") AS \"m\" FROM \"changes\"").rows.first?.text("m")
+
+    let db = try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
+    #expect(try db.appliedMigrations().contains("0004_organisation"))
+    func band(_ id: String) throws -> AttentionBand {
+      Attention.band(of: try #require(try db.thread(id: id)))
+    }
+    #expect(try db.thread(id: "done")?.readTurnId == "d2")
+    #expect(try band("done") == .quiet)
+    #expect(try db.thread(id: "busy")?.readTurnId == nil)
+    #expect(try band("busy") == .working)
+    #expect(try db.thread(id: "tied")?.readTurnId == "t-b")
+    #expect(try band("tied") == .quiet)
+    #expect(try db.thread(id: "empty")?.readTurnId == nil)
+    #expect(try band("empty") == .quiet)
+
+    // The log records each marker, so it syncs, and the marker's clock is that change's clock.
+    let after = try db.changes(after: Int(before ?? "0") ?? 0)
+    let marks = after.filter { $0.table == "threads" && $0.column == "readTurnId" }
+    #expect(Set(marks.map(\.rowId)) == ["done", "tied"])
+    #expect(after.allSatisfy { $0.table == "threads" && $0.op == "update" && $0.column == "readTurnId" })
+    let done = try #require(marks.first { $0.rowId == "done" })
+    #expect(done.value == .string("d2"))
+    #expect(try clocks(db, table: "threads", rowId: "done")["readTurnId"] == done.hlc)
+    #expect(try db.thread(id: "done")?.updatedAt == "2026-01-01T00:00:00Z")
+  }
+
+  @Test func runtimeRequestsAreIndexedByThread() throws {
+    let db = try WorkspaceDatabase.temporary()
+    let definition = try db.read { c in
+      try c.execute(
+        "SELECT \"indexdef\" FROM pg_indexes WHERE \"tablename\" = 'runtimeRequests' AND \"indexname\" = 'runtimeRequestsByThread'"
+      ).rows.first?.text("indexdef")
+    }
+    #expect(definition?.contains("(\"threadId\", state)") == true)
+  }
+
   @Test func exportAndRestoreCarryProjectsAndClocks() throws {
     let source = try WorkspaceDatabase.temporary()
     try seedThread(source)

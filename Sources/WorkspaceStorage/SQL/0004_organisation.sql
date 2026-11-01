@@ -101,6 +101,22 @@ BEGIN
 END
 $$;
 
+-- Every thread's activity reads its pending requests (and its latest one) by thread.
+CREATE INDEX "runtimeRequestsByThread" ON "runtimeRequests" ("threadId", "state");
+
+-- Replies that existed before the read marker were all seen: mark each thread read at its latest turn
+-- when that turn is terminal (latest = greatest createdAt, then greatest id, as the activity query
+-- orders them), so the upgrade does not turn every old thread unread. A thread whose latest turn is
+-- still running keeps a null marker and stays working. It runs after the trigger function above, so
+-- the log records each update (and its readTurnId clock) and the hub receives it.
+UPDATE "threads" AS t SET "readTurnId" = latest."id"
+  FROM (
+    SELECT DISTINCT ON ("threadId") "threadId", "id", "status"
+      FROM "turns"
+      ORDER BY "threadId", "createdAt" COLLATE "C" DESC, "id" COLLATE "C" DESC
+  ) AS latest
+  WHERE latest."threadId" = t."id" AND latest."status" = 'terminal';
+
 CREATE TRIGGER "projectsChanges" AFTER INSERT OR UPDATE OR DELETE ON "projects"
   FOR EACH ROW EXECUTE FUNCTION b4app_record_change('id');
 CREATE TRIGGER "projectFoldersChanges" AFTER INSERT OR UPDATE OR DELETE ON "projectFolders"
