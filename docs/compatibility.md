@@ -1,6 +1,6 @@
 # Compatibility manifest
 
-Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M8a on 2026-10-31). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
+Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M8a on 2026-10-31, M8b on 2026-11-01). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
 
 ## Target machine
 
@@ -53,12 +53,32 @@ Pinned exactly (`=`) in `Hub/Cargo.toml` `[workspace.dependencies]`, resolved in
 
 | Item | Value |
 | --- | --- |
-| Hub protocol | `minClientProtocol` 1; `Hub/API.md` is the wire reference |
+| Hub protocol | `minClientProtocol` 1 (unchanged by M8b: the new fields are additive and the hub ships before the clients); `Hub/API.md` is the wire reference |
 | Builder image | `rust:1.93.1-slim-bookworm@sha256:5b9332190bb3b9ece73b810cd1f1e9f06343b294ce184bcb067f0747d7d333ea` (index digest) |
 | Runtime image | `debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3` (index digest); runs as uid 10001, `STOPSIGNAL SIGTERM`, `HEALTHCHECK` on `/readyz` |
 | Compose database | `postgres:17`, not digest-pinned (the index digest seen on 2026-10-31 was `sha256:31ba9c94a03ada9988f2bb493a22a75eef3a185884533e5cdbcd498ea835b08f`); CI's `hub` job uses a `postgres:17` service on Ubuntu |
 | Test database | the zonky PostgreSQL 17.11 from `./Scripts/fetch-postgres.sh`, started by `Hub/scripts/test-db.sh` on 127.0.0.1:54329 |
 | Architectures | `linux/arm64` built and run on the build Mac; `linux/amd64` not built (both base digests are multi-platform indexes, so nothing in the Dockerfile is architecture-specific, but that is reasoning, not a check) |
+
+### Hub and storage additions (M8b)
+
+No dependency, toolchain, or image changed in M8b. What changed is the contract between the hub, the Mac, and the phone; every addition is backward compatible with an M8a client, which is why `minClientProtocol` stays 1.
+
+| Item | Value |
+| --- | --- |
+| `hlc` on `Change` and `StoredChange` | A hybrid logical clock, `<12 hex ms>-<4 hex counter>-<device id>`, compared as plain strings. Optional on upload (the hub derives `<wall>-0000-<device>`); always present on the feed; a malformed value rejects that change (`invalid_clock`). A clock more than 300,000 ms ahead of the hub is rewritten to the hub's time |
+| `rejected` on the `POST /v1/changes` response | `[{deviceSeq, code}]` with `column_not_writable`, `payload_too_large`, or `invalid_clock`; omitted when empty, so an M8a client decodes the response unchanged. A value over 2 MiB is no longer a 413 (only a body over 32 MiB is) |
+| `GET /v1/snapshot` | The user's mirror as synthetic `insert` changes in dependency order, the per-column `clocks`, and `next`; one `REPEATABLE READ` read, unpaged. Answers a client that got `410 resync_required` |
+| `GET /v1/devices` | The user's devices with `id`, `name`, `platform`, `lastSeenAt`, `revokedAt` |
+| `GET /v1/changes` paging | A page stops at 1000 changes or 8 MiB (8,388,608 bytes) of stored `value_bytes`, whichever is first, never fewer than one change; an uncut page's `next` is the org's highest `hubSeq`. `410 resync_required` is now answered for any cursor below the org horizon |
+| Retention | `B4HUB_RETENTION_DAYS` (default 30; a whole number of at least 1, else exit 2); `serve` prunes at start and every 24 h; `b4hub prune --older-than-days N [--org slug]` |
+| Hub migration | `0003_organisation.sql` (`changes.hlc`, `received_at`, `value_bytes`; `owner_device_id` on every materialised table; `projects`, `projectFolders`, `column_clocks`, `org_sync_horizons`; `threads."projectId"` and `"readTurnId"`). Run it with `migrate` before starting a new `serve`; `/readyz` reports `"migrations":"current"` afterwards. It backfills `value_bytes` and `owner_device_id` with full-table updates |
+| Hub write rule | A `macos` device may write any column. An `ios` or `cli` device may `update` `threads.title|pinned|archived|readTurnId`, `projects.name`, `drafts.threadId|text|updatedAt`, and `insert` `drafts` rows; nothing else, and no deletes |
+| Local migration | `0004_organisation.sql` (`projects`, `projectFolders`, `threads.projectId` and `readTurnId`, `changes.hlc` backfilled from `wall`, `columnClocks`, the new trigger function), followed by the Swift backfill of automatic projects. A JSON-lines `db backup` precedes it (the pinned build has no `pg_dump`, D-041). Rows that existed before it have no column clocks |
+| Archive version | `3` (`db backup`/`db restore`): adds `projects`, `projectFolders`, `columnClocks`, and the new thread and change columns. Versions 1 and 2 are still read; an archive newer than the build is refused |
+| iOS mirror schema | `user_version` 2 (`projects`, `projectFolders`, `devices`, `outbox`, `columnClocks`, `ownerDeviceId`, `threads.projectId` and `readTurnId`, `syncState.refusedUploads`), reached by ordered migrations from v1; a file the app cannot migrate is rebuilt only with an empty outbox |
+| New cross-language fixtures | `Tests/Fixtures/sync/conflicts.json` (read by the Swift and Rust suites) and `Tests/Fixtures/sync/attention.json` (read by the coordinator's store and the mirror's store); `changes.json` gained `hlc` on every entry and nothing else, so M8a's count-based assertions stay valid |
+| Test database | Unchanged. Rust suite: 117 tests; Swift suite: 517 tests |
 
 ## Provider runtimes
 
@@ -82,7 +102,7 @@ Pinned exactly (`=`) in `Hub/Cargo.toml` `[workspace.dependencies]`, resolved in
 - Runtime request kinds the app cannot present (`item/permissions/requestApproval`, `mcpServer/elicitation/request`, `item/tool/call`, token refresh, attestation) are declined automatically with a valid response and shown as resolved.
 - A turn whose `codex app-server` process exits stays `reconciling` until the thread is reopened and Codex reports the turn's final status; the composer refuses a new turn until then.
 - The packaged app installs a per-user LaunchAgent plist (`~/Library/LaunchAgents`, D-042) that runs the bundled coordinator, which starts the PostgreSQL cluster; an Xcode-run app or a failed bootstrap falls back to in-process hosting. `SMAppService` is not used while builds are ad hoc: launchd pins the managed program's hash and a rebuild leaves it unspawnable. The coordinator has no idle shutdown. `coordinator restart` and the app's Coordinator menu replace a coordinator left behind by an upgrade.
-- iOS reads a SQLite mirror of what the hub holds (D-046) and cannot write or run turns: phone writes are M8b, the relay is M8c. Turns and runtime requests that arrive while a thread is open show on reopen; only items, threads, and connections are published live. The shell still shows Mac wording on the phone ("Coordinator connected"), with a one-line "Not synced since …" banner above it while pulls fail; a phone whose pulls succeed cannot tell that the Mac is asleep (presence is M8c), and the thread header shows the Mac's working directory (`threads.context`).
+- iOS reads a SQLite mirror of what the hub holds (D-046) and, since M8b, writes titles, pins, archive, read markers, project names, and drafts through an outbox (D-048). It still cannot create or edit projects, send turns, or answer approvals; the relay is M8c. Turns and runtime requests now publish their thread live. The shell still shows Mac wording on the phone ("Coordinator connected"), with a one-line "Not synced since …" banner above it while pulls fail; a phone whose pulls succeed cannot tell that the Mac is asleep (presence is M8c), and the thread header shows the Mac's working directory (`threads.context`).
 - On macOS the Keychain is the file-based login keychain; the macOS data-protection keychain needs a provisioning profile, which needs a signing identity (D-008, D-039). On iOS the token lives in the data-protection keychain, which works with ad hoc signing (the M8a Task 9 Simulator run used Xcode's "Sign to Run Locally"); only an unsigned build fails, with -34018.
-- The store is a private PostgreSQL cluster per Mac (D-041); the schema is `0001_init`, `0002_changes`, and `0003_hub`; backups are JSON-lines archives from `db backup`, not `pg_dump`; a pre-0.2 `workspace.sqlite` is imported once and retired. Sync is read-only M8a (D-043 to D-046): a Mac that ran `hub join` pushes its change log, and nothing else syncs. Compose publishes the hub on `127.0.0.1:8080` only (plain HTTP on the loopback interface; the Simulator shares the Mac's loopback). `database.restore` fails with `invalid input syntax for type json` on an archive whose change log holds an `update` of a scalar jsonb value (found during M8a, not fixed; see `docs/verification.md`).
+- The store is a private PostgreSQL cluster per Mac (D-041); the schema is `0001_init`, `0002_changes`, `0003_hub`, and `0004_organisation`; backups are JSON-lines archives from `db backup`, not `pg_dump`; a pre-0.2 `workspace.sqlite` is imported once and retired. Sync is M8a's push plus M8b's pull and phone writes (D-043 to D-049): a Mac that ran `hub join` pushes its change log and applies the phone's edits of titles, pins, archive, read markers, project names, and drafts (a narrow merge, never a row copy); everything else is Mac-only. Compose publishes the hub on `127.0.0.1:8080` only (plain HTTP on the loopback interface; the Simulator shares the Mac's loopback). `database.restore` fails with `invalid input syntax for type json` on an archive whose change log holds an `update` of a scalar jsonb value (found during M8a, not fixed; see `docs/verification.md`).
 - Packaging is ad hoc: the app runs on the Mac that built it. Developer ID signing and notarisation are untested (no certificate). Removing a registration and changing a server's port are still missing.

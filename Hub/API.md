@@ -224,9 +224,9 @@ rows are keyed to the pushing user as well as the org, so another user of the or
 row id cannot overwrite, update, delete, or adopt as a parent the first user's row.
 
 **Refusals**, before anything is stored: `401 unauthorized`; `400 invalid_request` for a body that
-is not `{"changes": [...]}` or has more than 1000 changes; `413 payload_too_large` for a body over 32 MiB. (A single change
-whose `value` is over 2 MiB is no longer a 413: it is a per-change `rejected` entry.) Pushes to
-one org are serialised, so commit order is `hubSeq` order.
+is not `{"changes": [...]}` or has more than 1000 changes; `413 payload_too_large` for a body over
+32 MiB. (A single change whose `value` is over 2 MiB is not a 413: it is a per-change `rejected`
+entry.) Pushes to one org are serialised, so commit order is `hubSeq` order.
 
 **Clocks and the write rule.** Every change may carry an `hlc`, a hybrid logical clock written
 `<12 lowercase hex digits of epoch milliseconds>-<4 hex digits of counter>-<device id>` (for
