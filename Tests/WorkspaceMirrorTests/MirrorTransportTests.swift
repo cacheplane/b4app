@@ -92,12 +92,14 @@ import WorkspaceSync
     var received: [EventEnvelope] = []
     for await envelope in events {
       received.append(envelope)
-      if received.count == 6 { break }
+      if received.count == 7 { break }
     }
-    #expect(received.map(\.sequence) == [1, 2, 3, 4, 5, 6])
+    #expect(received.map(\.sequence) == [1, 2, 3, 4, 5, 6, 7])
     #expect(received.allSatisfy { $0.epoch == hello.epoch })
     let kinds = received.map(\.event.kind)
     #expect(Set(kinds.prefix(2)) == [.threadUpdated, .connectionChanged])
+    // The second batch's turns touch their thread (M8b), so it is published again before its items.
+    #expect(kinds[2] == .threadUpdated)
     #expect(Array(kinds.suffix(4)) == Array(repeating: .messageCompleted, count: 4))
 
     let connection = try #require(received.first { $0.event.kind == .connectionChanged }?.event)
@@ -112,7 +114,7 @@ import WorkspaceSync
     #expect(received.suffix(4).allSatisfy { $0.event.threadId == "thread-1" })
 
     let ping = try await client.request(SystemPing.self, EmptyParams())
-    #expect(ping.sequence == 6)
+    #expect(ping.sequence == 7)
     await client.close()
   }
 

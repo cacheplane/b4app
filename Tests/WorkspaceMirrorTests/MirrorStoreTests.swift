@@ -28,14 +28,17 @@ func itemJSON(id: String = "x", threadId: String, sequence: Int = 1) -> JSONValu
   ]
 }
 
+/// Stamps the helper's changes: each is newer than every change made before it (the fixture's clocks
+/// are from 2025), as a Mac writing in order would stamp them.
+let macClock = HybridClock(deviceId: "mac-1")
+
 func change(
   _ table: String, _ rowId: String, _ op: String, column: String? = nil, value: JSONValue? = nil,
-  seq: Int = 1000
+  seq: Int = 1000, deviceId: String = "mac-1", hlc: String? = nil
 ) -> StoredChange {
   StoredChange(
-    hubSeq: seq, deviceId: "mac-1", deviceSeq: seq, wall: 0, table: table, rowId: rowId, op: op,
-    column: column,
-    value: value)
+    hubSeq: seq, deviceId: deviceId, deviceSeq: seq, wall: 0, table: table, rowId: rowId, op: op,
+    column: column, value: value, hlc: hlc ?? macClock.next().rawValue)
 }
 
 @Suite struct MirrorStoreTests {
