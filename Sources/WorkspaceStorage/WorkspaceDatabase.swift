@@ -24,11 +24,19 @@ public final class WorkspaceDatabase: Sendable {
   private let columnCache = Mutex<[String: [String]]>([:])
   private let currentDeviceId = Mutex("local")
 
+  /// Stamps every write transaction (`b4app.hlc`); its device id always equals `deviceId`.
+  public let clock = HybridClock(deviceId: "local")
+
   /// The device id the change-log trigger records on every write (`b4app.device_id`). `local` until
   /// this Mac joins a hub; the hub's device id afterwards.
   public var deviceId: String {
     get { currentDeviceId.withLock { $0 } }
-    set { currentDeviceId.withLock { $0 = newValue } }
+    set {
+      currentDeviceId.withLock {
+        $0 = newValue
+        clock.deviceId = newValue
+      }
+    }
   }
 
   /// Connect to a running cluster, create the database when it is missing, and migrate.
@@ -62,15 +70,17 @@ public final class WorkspaceDatabase: Sendable {
     do { return try pool.withConnection(body) } catch { throw Self.mapped(error) }
   }
 
-  /// One transaction. When this Mac has a hub device id, the transaction's first statement sets
-  /// `b4app.device_id` so the change-log trigger records it. (`read` runs outside a transaction, where
-  /// a transaction-local setting would not persist, and no trigger fires on a read.)
+  /// One transaction. Its first statement sets `b4app.hlc` to the next clock stamp, so every change the
+  /// transaction records shares it, and, when this Mac has a hub device id, `b4app.device_id` so the
+  /// change-log trigger records it. (`read` runs outside a transaction, where a transaction-local
+  /// setting would not persist, and no trigger fires on a read.)
   func write<T>(_ body: (PostgresConnection) throws -> T) throws -> T {
     let device = deviceId
     do {
       return try pool.withConnection { c in
         try c.execute("BEGIN")
         do {
+          try c.execute("SELECT set_config('b4app.hlc', $1, true)", [clock.next().rawValue])
           if device != "local" { try c.execute("SELECT set_config('b4app.device_id', $1, true)", [device]) }
           let value = try body(c)
           try c.execute("COMMIT")
@@ -103,8 +113,11 @@ public final class WorkspaceDatabase: Sendable {
     try c.execute(sql, params).rows.map { try Rows.decode(T.self, from: $0) }
   }
 
+  /// Inserts `value`'s stored properties. A property that is not a column of the table (a thread's
+  /// computed `activity` and `ownerDeviceName`) is dropped here, so computed fields are never written.
   private func insert<T: Encodable>(_ c: PostgresConnection, _ table: String, _ value: T) throws {
-    let statement = Rows.insert(table, try Rows.encode(value))
+    let known = Set(try columns(c, of: table))
+    let statement = Rows.insert(table, try Rows.encode(value).filter { known.contains($0.column) })
     try c.execute(statement.sql, statement.params)
   }
 
@@ -119,8 +132,9 @@ public final class WorkspaceDatabase: Sendable {
   private func save<T: Encodable>(
     _ c: PostgresConnection, _ table: String, _ value: T, key: String = "id"
   ) throws {
+    let all = try columns(c, of: table)
     let statement = Rows.upsert(
-      table, try Rows.encode(value), key: key, allColumns: try columns(c, of: table))
+      table, try Rows.encode(value).filter { all.contains($0.column) }, key: key, allColumns: all)
     try c.execute(statement.sql, statement.params)
   }
 

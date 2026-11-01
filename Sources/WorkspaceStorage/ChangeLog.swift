@@ -12,13 +12,15 @@ public struct ChangeRecord: Codable, Sendable, Equatable {
   public var column: String?
   public var value: JSONValue?
   public var synced: Bool
+  /// The hybrid logical clock of the transaction that wrote this change (migration 0004).
+  public var hlc: String
 }
 
 extension WorkspaceDatabase {
   /// The synced tables, in dependency order, with their key column.
   public static let syncedTables: [(table: String, key: String)] = [
-    ("connections", "id"), ("threads", "id"), ("turns", "id"), ("displayItems", "id"),
-    ("runtimeRequests", "id"), ("drafts", "threadId"),
+    ("connections", "id"), ("projects", "id"), ("projectFolders", "id"), ("threads", "id"), ("turns", "id"),
+    ("displayItems", "id"), ("runtimeRequests", "id"), ("drafts", "threadId"),
   ]
 
   /// Changes after `seq`, oldest first.

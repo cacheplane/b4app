@@ -5,16 +5,17 @@ import WorkspaceProtocol
 /// row in dependency order. Written before every migration and on demand; the same archive carries
 /// data across a major PostgreSQL version (D-041: the pinned build ships no pg_dump).
 ///
-/// A `jsonb` cell travels as its JSON text in a string (archive version 2), so every JSON value, a
+/// Version 3 adds the project tables and the clocks (migration 0004); older archives are still read. A
+/// `jsonb` cell travels as its JSON text in a string (archive version 2), so every JSON value, a
 /// scalar `"ready"` or `true` as much as an object, comes back exactly. Version 1 archives carried
 /// the parsed value instead, which made a scalar string indistinguishable from JSON text on the way
 /// back in; they are still read, with each bare value re-encoded as the JSON it was.
 extension WorkspaceDatabase {
   public static let archiveFormat = "b4app-export"
-  public static let archiveVersion = 2
+  public static let archiveVersion = 3
   public static let archiveTables = [
-    "localServers", "connections", "threads", "turns", "displayItems", "runtimeRequests", "drafts", "devices",
-    "changes",
+    "localServers", "connections", "projects", "projectFolders", "threads", "turns", "displayItems",
+    "runtimeRequests", "drafts", "devices", "changes", "columnClocks",
   ]
 
   public struct ArchiveSummary: Sendable, Equatable {
@@ -99,9 +100,16 @@ extension WorkspaceDatabase {
       var count = 0
       for line in lines {
         guard let object = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
-          let table = object["table"] as? String, let row = object["row"] as? [String: Any],
+          let table = object["table"] as? String, var row = object["row"] as? [String: Any],
           Self.archiveTables.contains(table)
         else { continue }
+        // An archive from before migration 0004 has no clock on its changes: derive it as the
+        // migration does, from the wall time and device.
+        if table == "changes", row["hlc"] == nil, let wall = row["wall"] as? Int,
+          let device = row["deviceId"] as? String
+        {
+          row["hlc"] = Self.wallClock(wall: wall, deviceId: device)
+        }
         let columns = try columns(c, of: table).filter { row[$0] != nil }
         let json = try jsonColumns(c, of: table)
         let values = try columns.map { column in
@@ -122,6 +130,12 @@ extension WorkspaceDatabase {
       )
       return ArchiveSummary(path: path, rows: count)
     }
+  }
+
+  /// The clock migration 0004 gives a change written before clocks existed.
+  static func wallClock(wall: Int, deviceId: String) -> String {
+    let hex = String(wall, radix: 16)
+    return String(repeating: "0", count: max(0, 12 - hex.count)) + hex + "-0000-" + deviceId
   }
 
   /// A result cell as a Foundation JSON object (typed by the column's OID). A `json` or `jsonb` cell

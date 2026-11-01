@@ -27,6 +27,7 @@ private func record(
   var object: [String: JSONValue] = [
     "seq": .number(Double(seq)), "deviceId": "local", "wall": 1_700_000_000_000, "table": .string(table),
     "rowId": .string(rowId), "op": .string(op), "synced": false,
+    "hlc": "0000000000a1-0000-local",
   ]
   if let column { object["column"] = .string(column) }
   if let value { object["value"] = value }
