@@ -391,7 +391,11 @@ public final class WorkspaceDatabase: Sendable {
     id: String, _ mutate: @Sendable (inout ConversationThread) -> Void
   ) throws -> ConversationThread? {
     try write { c in
-      guard var thread = try byId(c, ConversationThread.self, "threads", id) else { return nil }
+      // Locked, so a pulled phone edit committing meanwhile is not written back over with the old value.
+      guard
+        var thread = try one(
+          c, ConversationThread.self, "SELECT * FROM \"threads\" WHERE \"id\" = $1 FOR UPDATE", [id])
+      else { return nil }
       mutate(&thread)
       thread.updatedAt = Timestamp.now()
       try update(c, "threads", thread)
@@ -789,7 +793,12 @@ public final class WorkspaceDatabase: Sendable {
 
   public func saveDraft(threadId: String, text: String) throws -> Draft {
     let draft = Draft(threadId: threadId, text: text)
-    try write { try save($0, "drafts", draft, key: "threadId") }
+    try write { c in
+      // The thread's lock first, as `applyRemote` takes it, so a pulled draft and this save queue behind
+      // each other instead of each holding half of what the other needs.
+      try c.execute("SELECT 1 FROM \"threads\" WHERE \"id\" = $1 FOR KEY SHARE", [threadId])
+      try save(c, "drafts", draft, key: "threadId")
+    }
     return draft
   }
 

@@ -60,8 +60,9 @@ extension WorkspaceDatabase {
 
   /// Apply changes from another device (or a replay test) without recording them again: inserts
   /// become upserts, updates set one column, deletes delete. Each change runs in its own savepoint, so
-  /// one that fails (a row whose parent is missing, a value its column refuses) is skipped, not fatal,
-  /// and a partial log never poisons the rest. Returns how many changes applied.
+  /// one the store refuses (SQLSTATE class 22 or 23: a row whose parent is missing, a value its column
+  /// refuses) is skipped, not fatal, and a partial log never poisons the rest; any other failure fails
+  /// the whole replay. Returns how many changes applied.
   @discardableResult
   public func replay(_ changes: [ChangeRecord]) throws -> Int {
     try write { c in
@@ -74,7 +75,7 @@ extension WorkspaceDatabase {
           let wrote = try replayOne(c, change, key: key)
           try c.execute("RELEASE SAVEPOINT \"replayChange\"")
           if wrote { applied += 1 }
-        } catch {
+        } catch  where Self.isDataError(error) {
           try c.execute("ROLLBACK TO SAVEPOINT \"replayChange\"")
           try c.execute("RELEASE SAVEPOINT \"replayChange\"")
         }

@@ -168,8 +168,11 @@ private func clock(_ db: WorkspaceDatabase, _ table: String, _ rowId: String, _ 
         remote(oldMac, stamp(later, oldMac), "threads", "t1", column: "title", value: "Old Mac"),
         // Attributed to a phone but stamped with a Mac's clock: still the Mac's write.
         remote(phone, stamp(later, oldMac), "threads", "t1", column: "title", value: "Mac clock"),
+        // `local` is this Mac before it joined (a snapshot can carry such clocks); a phone never is.
+        remote("local", stamp(later, "local"), "threads", "t1", column: "title", value: "Pre-join"),
+        remote(phone, stamp(later, "local"), "threads", "t1", column: "title", value: "Pre-join clock"),
       ], ownDeviceId: mac, macDeviceIds: [oldMac], cursor: 11)
-    #expect(skipped.applied == 0 && skipped.skipped == 3)
+    #expect(skipped.applied == 0 && skipped.skipped == 5)
     #expect(try db.thread(id: "t1")?.title == "First")
     // The cursor advances even when every change was skipped.
     #expect(try db.hubLink()?.cursor == 11)
@@ -294,6 +297,173 @@ private func clock(_ db: WorkspaceDatabase, _ table: String, _ rowId: String, _ 
     #expect(try db.connection(id: "c1") == source.connection(id: "c1"))
     #expect(try db.thread(id: "t1") != nil)
     #expect(try db.turn(id: "u1") == nil)
+  }
+}
+
+// MARK: - Concurrent local writes
+
+/// Runs `holding` in a write transaction on another thread and keeps that transaction open until some
+/// other connection is waiting on a lock it holds (`pg_locks` and `pg_blocking_pids`, which are read
+/// live, unlike `pg_stat_activity`, which a transaction snapshots once), then calls `whenBlocked` with
+/// that connection's pid and commits. Meanwhile `body` runs here, so it is the waiter. Returns `body`'s
+/// outcome and whether the wait was seen (giving up after ten seconds).
+private func interleave<T>(
+  _ db: WorkspaceDatabase, holding: @escaping @Sendable (PostgresConnection) throws -> Void,
+  whenBlocked: @escaping @Sendable (PostgresConnection, Int) throws -> Void = { _, _ in },
+  _ body: () throws -> T
+) throws -> (result: Result<T, any Error>, blocked: Bool) {
+  let held = DispatchSemaphore(value: 0)
+  let done = DispatchSemaphore(value: 0)
+  let blocked = Mutex(false)
+  let failure = Mutex<String?>(nil)
+  DispatchQueue.global().async {
+    do {
+      try db.write { c in
+        try holding(c)
+        held.signal()
+        let me = try c.execute("SELECT pg_backend_pid() AS \"pid\"").rows.first?.int("pid") ?? 0
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+          if let waiter = try c.execute(
+            "SELECT \"pid\" FROM pg_locks WHERE NOT \"granted\" AND $1::int = ANY(pg_blocking_pids(\"pid\"))",
+            [String(me)]
+          ).rows.first?.int("pid") {
+            try whenBlocked(c, waiter)
+            blocked.withLock { $0 = true }
+            break
+          }
+          usleep(10_000)
+        }
+      }
+    } catch {
+      failure.withLock { $0 = String(describing: error) }
+      held.signal()
+    }
+    done.signal()
+  }
+  held.wait()
+  let result = Result { try body() }
+  done.wait()
+  if let failure = failure.withLock({ $0 }) { Issue.record("the holding transaction failed: \(failure)") }
+  return (result, blocked.withLock { $0 })
+}
+
+/// A settable wall clock for `WorkspaceDatabase.temporary(wall:)`.
+private final class PinnedWall: Sendable {
+  private let millis = Mutex<UInt64>(1_000)
+  func set(_ value: UInt64) { millis.withLock { $0 = value } }
+  func read() -> UInt64 { millis.withLock { $0 } }
+}
+
+/// A store whose clock reads the returned wall, seeded at 1000 ms.
+private func pinnedStore() throws -> (WorkspaceDatabase, PinnedWall) {
+  let wall = PinnedWall()
+  let db = try WorkspaceDatabase.temporary(wall: { wall.read() })
+  try seed(db)
+  return (db, wall)
+}
+
+extension RemoteApplyTests {
+  /// A local title edit (clock 3000) holds the row while a pull of an older phone title (2000) starts:
+  /// the pull waits for the row, then reads the local clock and loses, instead of comparing against the
+  /// insert's clock (1000) and writing the old value under the new clock.
+  @Test func aPulledEditWaitsForALocalEditHoldingTheRow() throws {
+    let (db, wall) = try pinnedStore()
+    wall.set(3_000)
+    let (result, blocked) = try interleave(
+      db,
+      holding: { c in try c.execute("UPDATE \"threads\" SET \"title\" = 'Mac title' WHERE \"id\" = 't1'") }
+    ) {
+      try db.applyRemote(
+        [remote(phone, stamp(2_000, phone), "threads", "t1", column: "title", value: "Phone title")],
+        ownDeviceId: mac, macDeviceIds: [mac], cursor: 1)
+    }
+    #expect(blocked)
+    #expect(try result.get().applied == 0)
+    #expect(try db.thread(id: "t1")?.title == "Mac title")
+    #expect(try db.columnClock(table: "threads", rowId: "t1", column: "title") == stamp(3_000, mac))
+  }
+
+  /// A local save creates the draft (clock 2000) while a newer phone draft (3000) is pulled: the pull
+  /// waits on the thread, then finds the draft and wins column by column, instead of hitting the unique
+  /// key and dropping the newer edit.
+  @Test func aPulledDraftWaitsForALocalSaveOfTheSameDraft() throws {
+    let (db, wall) = try pinnedStore()
+    wall.set(2_000)
+    let (result, blocked) = try interleave(
+      db,
+      holding: { c in
+        try c.execute(
+          "INSERT INTO \"drafts\" (\"threadId\", \"text\", \"updatedAt\") VALUES ('t1', 'typed on the Mac', 'x')"
+        )
+      }
+    ) {
+      try db.applyRemote(
+        [
+          remote(
+            phone, stamp(3_000, phone), "drafts", "t1", "insert",
+            value: ["threadId": "t1", "text": "from the phone", "updatedAt": "y"])
+        ], ownDeviceId: mac, macDeviceIds: [mac], cursor: 1)
+    }
+    #expect(blocked)
+    #expect(try result.get().applied == 1)
+    #expect(try db.draft(threadId: "t1")?.text == "from the phone")
+  }
+
+  /// The reverse: a pulled title commits while a local `updateThread` (which rewrites the whole row) is
+  /// about to read it. The local edit waits and keeps the phone's title.
+  @Test func aLocalThreadEditKeepsAPulledTitleThatCommittedFirst() throws {
+    let (db, _) = try pinnedStore()
+    let (result, blocked) = try interleave(
+      db,
+      holding: { c in
+        try c.execute("SET LOCAL b4app.replaying = 'on'")
+        try c.execute("UPDATE \"threads\" SET \"title\" = 'Phone title' WHERE \"id\" = 't1'")
+      }
+    ) {
+      try db.updateThread(id: "t1") { $0.pinned = true }
+    }
+    #expect(blocked)
+    #expect(try result.get()?.title == "Phone title")
+    let thread = try #require(try db.thread(id: "t1"))
+    #expect(thread.title == "Phone title" && thread.pinned)
+  }
+
+  /// A failure that is not about the value (here a cancelled statement, 57014) fails the batch: the
+  /// cursor stays, so the batch is pulled again.
+  @Test func aCancelledStatementFailsTheBatchAndKeepsTheCursor() throws {
+    let (db, _) = try pinnedStore()
+    try db.setHubCursor(5)
+    let (result, blocked) = try interleave(
+      db,
+      holding: { c in try c.execute("UPDATE \"threads\" SET \"title\" = 'Mac title' WHERE \"id\" = 't1'") },
+      whenBlocked: { c, pid in try c.execute("SELECT pg_cancel_backend($1::int)", [String(pid)]) }
+    ) {
+      try db.applyRemote(
+        [remote(phone, stamp(9_000, phone), "threads", "t1", column: "title", value: "Phone title")],
+        ownDeviceId: mac, macDeviceIds: [mac], cursor: 9)
+    }
+    #expect(blocked)
+    #expect(throws: (any Error).self) { try result.get() }
+    #expect(try db.hubLink()?.cursor == 5)
+    #expect(try db.thread(id: "t1")?.title == "Mac title")
+  }
+
+  @Test func aCancelledStatementFailsTheReplay() throws {
+    let (db, _) = try pinnedStore()
+    let update = ChangeRecord(
+      seq: 1, deviceId: "d", wall: 1, table: "threads", rowId: "t1", op: "update", column: "title",
+      value: "Replayed", synced: false, hlc: stamp(9_000, "d"))
+    let (result, blocked) = try interleave(
+      db,
+      holding: { c in try c.execute("UPDATE \"threads\" SET \"title\" = 'Mac title' WHERE \"id\" = 't1'") },
+      whenBlocked: { c, pid in try c.execute("SELECT pg_cancel_backend($1::int)", [String(pid)]) }
+    ) {
+      try db.replay([update])
+    }
+    #expect(blocked)
+    #expect(throws: (any Error).self) { try result.get() }
+    #expect(try db.thread(id: "t1")?.title == "Mac title")
   }
 }
 
