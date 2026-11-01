@@ -156,7 +156,7 @@ struct SidebarView: View {
         Section {
           ThreadListView(model: model)
         } header: {
-          SidebarGroupLabel("Threads").padding(.horizontal, -10)
+          SidebarGroupLabel("Threads", horizontal: 0)
         }
       }
       .listStyle(.plain)
