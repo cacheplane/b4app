@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 import Testing
 import WorkspaceProtocol
 
@@ -9,6 +10,84 @@ private func scratchFile(_ name: String) -> String {
   let dir = NSTemporaryDirectory() + "b4mp-\(UUID().uuidString.prefix(8))"
   try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
   return dir + "/" + name
+}
+
+/// A one-shot latch a Dispatch handler opens and a test awaits.
+private final class Latch: Sendable {
+  private let state = Mutex<(open: Bool, waiters: [CheckedContinuation<Void, Never>])>((false, []))
+
+  func open() {
+    let waiters = state.withLock { state in
+      state.open = true
+      defer { state.waiters = [] }
+      return state.waiters
+    }
+    for waiter in waiters { waiter.resume() }
+  }
+
+  func wait() async {
+    await withCheckedContinuation { continuation in
+      let open = state.withLock { state in
+        if !state.open { state.waiters.append(continuation) }
+        return state.open
+      }
+      if open { continuation.resume() }
+    }
+  }
+}
+
+/// Returns once `pid` has exited, on the kernel's exit event (a Dispatch process source; libdispatch
+/// reports a process already gone as exited too), or at `timeout`, a guard for a process that never
+/// exits. The source is armed before `exited()` is first asked, so an exit in between is not missed.
+/// The event comes a moment before the kernel marks the process a zombie, so `exited()` may take a few
+/// more turns to agree.
+private func waitForExit(pid: Int32, timeout: Duration = .seconds(10), _ exited: () -> Bool) async {
+  let latch = Latch()
+  let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .global())
+  source.setEventHandler { latch.open() }
+  source.resume()
+  let deadline = ContinuousClock.now + timeout
+  let alarm = Task {
+    guard (try? await Task.sleep(until: deadline, clock: .continuous)) != nil else { return }
+    latch.open()
+  }
+  defer {
+    alarm.cancel()
+    source.cancel()
+  }
+  if !exited() { await latch.wait() }
+  while !exited(), ContinuousClock.now < deadline { await Task.yield() }
+}
+
+/// The contents of `path` once it exists, re-read on each vnode event of its directory (an entry was
+/// added or renamed) rather than on a clock. The writer creates it by rename, so it is whole. The
+/// timeout only ends a test whose writer never writes.
+private func contentsOnceCreated(_ path: String, timeout: Duration = .seconds(60)) async throws -> String {
+  let fd = open((path as NSString).deletingLastPathComponent, O_EVTONLY)
+  guard fd >= 0 else { throw WorkspaceError(.internalError, "cannot watch the directory of \(path)") }
+  let (changes, sink) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+  let source = DispatchSource.makeFileSystemObjectSource(
+    fileDescriptor: fd, eventMask: .write, queue: .global())
+  source.setEventHandler { sink.yield() }
+  source.setCancelHandler { close(fd) }
+  source.resume()
+  let deadline = ContinuousClock.now + timeout
+  let alarm = Task {
+    guard (try? await Task.sleep(until: deadline, clock: .continuous)) != nil else { return }
+    sink.yield()
+  }
+  defer {
+    alarm.cancel()
+    source.cancel()
+  }
+  var events = changes.makeAsyncIterator()
+  while true {
+    if let text = try? String(contentsOfFile: path, encoding: .utf8) { return text }
+    guard ContinuousClock.now < deadline else {
+      throw WorkspaceError(.internalError, "\(path) never appeared")
+    }
+    await events.next()
+  }
 }
 
 @Suite struct DotenvTests {
@@ -48,10 +127,7 @@ private func scratchFile(_ name: String) -> String {
     let process = try ManagedProcess.spawn(
       executable: "/bin/sh", arguments: ["-c", "echo out; echo err >&2; exit 3"],
       environment: ["PATH": "/usr/bin:/bin"], workingDirectory: "/", outputPath: log)
-    let deadline = ContinuousClock.now + .seconds(5)
-    while process.exitStatus() == nil, ContinuousClock.now < deadline {
-      try await Task.sleep(for: .milliseconds(50))
-    }
+    await waitForExit(pid: process.pid) { process.exitStatus() != nil }
     #expect(process.exitStatus() == .exited(3))
     let text = try String(contentsOfFile: log, encoding: .utf8)
     #expect(text.contains("out\n"))
@@ -63,22 +139,16 @@ private func scratchFile(_ name: String) -> String {
   @Test func terminateGroupKillsAGrandchild() async throws {
     let pidFile = scratchFile("grandchild.pid")
     let process = try ManagedProcess.spawn(
-      executable: "/bin/sh", arguments: ["-c", "sleep 30 & echo $! > '\(pidFile)'; wait"],
+      executable: "/bin/sh",
+      arguments: ["-c", "sleep 30 & echo $! > '\(pidFile).tmp' && mv '\(pidFile).tmp' '\(pidFile)'; wait"],
       environment: ["PATH": "/usr/bin:/bin"], workingDirectory: "/", outputPath: scratchFile("g.log"))
-    var grandchild: Int32?
-    for _ in 0..<50 where grandchild == nil {
-      if let text = try? String(contentsOfFile: pidFile, encoding: .utf8),
-        let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
-      {
-        grandchild = pid
-      } else {
-        try await Task.sleep(for: .milliseconds(50))
-      }
-    }
-    let sleeper = try #require(grandchild)
+    let text = try await contentsOnceCreated(pidFile)
+    let sleeper = try #require(Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)))
     #expect(ProcessInspector.isAlive(pid: sleeper))
     #expect(await ManagedProcess.terminateGroup(pid: process.pid, gracePeriod: .seconds(2)))
-    try await Task.sleep(for: .milliseconds(200))
+    // The group's SIGTERM reaches the grandchild too; it exits on its own schedule, so await that. The
+    // guard stays well under its 30 s sleep, so a grandchild the signal missed still fails here.
+    await waitForExit(pid: sleeper) { !ProcessInspector.isAlive(pid: sleeper) }
     #expect(!ProcessInspector.isAlive(pid: sleeper))
   }
 
