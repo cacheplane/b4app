@@ -4,8 +4,14 @@ import WorkspaceProtocol
 /// Backups and restores as one JSON-lines archive: a header, then `{"table": ..., "row": {...}}` per
 /// row in dependency order. Written before every migration and on demand; the same archive carries
 /// data across a major PostgreSQL version (D-041: the pinned build ships no pg_dump).
+///
+/// A `jsonb` cell travels as its JSON text in a string (archive version 2), so every JSON value, a
+/// scalar `"ready"` or `true` as much as an object, comes back exactly. Version 1 archives carried
+/// the parsed value instead, which made a scalar string indistinguishable from JSON text on the way
+/// back in; they are still read, with each bare value re-encoded as the JSON it was.
 extension WorkspaceDatabase {
   public static let archiveFormat = "b4app-export"
+  public static let archiveVersion = 2
   public static let archiveTables = [
     "localServers", "connections", "threads", "turns", "displayItems", "runtimeRequests", "drafts", "devices",
     "changes",
@@ -38,7 +44,7 @@ extension WorkspaceDatabase {
     let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
     defer { try? handle.close() }
     let header: [String: Any] = [
-      "format": Self.archiveFormat, "version": 1, "at": Timestamp.now(),
+      "format": Self.archiveFormat, "version": Self.archiveVersion, "at": Timestamp.now(),
       "migrations": try appliedMigrations(),
     ]
     try handle.write(
@@ -72,6 +78,12 @@ extension WorkspaceDatabase {
       let header = try JSONSerialization.jsonObject(with: Data(first.utf8)) as? [String: Any],
       header["format"] as? String == Self.archiveFormat
     else { throw WorkspaceError(.protocolInvalid, "\(path) is not a \(Self.archiveFormat) archive.") }
+    let version = header["version"] as? Int ?? 1
+    guard version <= Self.archiveVersion else {
+      throw WorkspaceError(
+        .protocolInvalid,
+        "\(path) is a version \(version) archive; this build reads up to \(Self.archiveVersion).")
+    }
     lines.removeFirst()
     return try write { c in
       // Before anything else: neither the clearing nor the loading may land in the change log.
@@ -91,7 +103,11 @@ extension WorkspaceDatabase {
           Self.archiveTables.contains(table)
         else { continue }
         let columns = try columns(c, of: table).filter { row[$0] != nil }
-        let values = try columns.map { try Rows.param(row[$0]!) }
+        let json = try jsonColumns(c, of: table)
+        let values = try columns.map { column in
+          json.contains(column)
+            ? try Self.jsonbParam(row[column]!, archiveVersion: version) : try Rows.param(row[column]!)
+        }
         let statement = Rows.insert(table, Array(zip(columns, values)).map { (column: $0.0, param: $0.1) })
         try c.execute(statement.sql, statement.params)
         count += 1
@@ -104,16 +120,35 @@ extension WorkspaceDatabase {
     }
   }
 
-  /// A result cell as a Foundation JSON object (typed by the column's OID).
+  /// A result cell as a Foundation JSON object (typed by the column's OID). A `json` or `jsonb` cell
+  /// stays its JSON text, so the archive carries the value exactly, whatever its type.
   static func jsonObject(_ cell: Row.Cell) throws -> Any {
     guard let text = cell.text else { return NSNull() }
     switch cell.typeOID {
     case 16: return text == "t"
     case 20, 21, 23, 26: return Int(text) ?? text
     case 700, 701, 1700: return Double(text) ?? text
-    case 114, 3802:
-      return try JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])
     default: return text
     }
+  }
+
+  /// The JSON text to bind for a `jsonb` column from an archived value: NULL for an absent cell, the
+  /// text itself from a version 2 archive, and for a version 1 archive (or a value that is not a
+  /// string, such as an object someone wrote into the archive by hand) the value serialised as JSON.
+  static func jsonbParam(_ value: Any, archiveVersion: Int) throws -> String? {
+    if value is NSNull { return nil }
+    if archiveVersion >= 2, let text = value as? String { return text }
+    let data = try JSONSerialization.data(
+      withJSONObject: value, options: [.fragmentsAllowed, .sortedKeys, .withoutEscapingSlashes])
+    return String(decoding: data, as: UTF8.self)
+  }
+
+  /// The table's `json` and `jsonb` columns, from the catalog.
+  func jsonColumns(_ c: PostgresConnection, of table: String) throws -> Set<String> {
+    Set(
+      try c.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND data_type IN ('json', 'jsonb')",
+        [table]
+      ).rows.compactMap { $0.text("column_name") })
   }
 }
