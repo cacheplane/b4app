@@ -2,6 +2,28 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-10-31: Developer ID signing and notarization (D-039 gate)
+
+Target: the same MacBook Pro (macOS 26.5, Xcode 26.6, notarytool 1.1.2). The owner created the certificate and the `b4app` notarytool profile; neither password passed through the script or this session. The owner's running app was quit, `~/repos/b4app/dist` was moved aside and replaced from the stapled zip, `agent-workspace coordinator restart` ran, and the app was reopened.
+
+| Check | How | Result |
+| --- | --- | --- |
+| Identity found | `security find-identity -v -p codesigning` | 1 valid identity: `Developer ID Application: Brian Love (GJJKL34HCT)` |
+| Notary profile | `xcrun notarytool history --keychain-profile b4app` | Succeeds ("No submission history.") |
+| Signing | `B4APP_SIGN_IDENTITY="Developer ID Application: Brian Love (GJJKL34HCT)" ./Scripts/package.sh` | Every PostgreSQL Mach-O, both helpers, and the bundle signed with `flags=0x10000(runtime)` and a secure timestamp; `codesign --verify --deep --strict`: valid on disk, satisfies its Designated Requirement; `TeamIdentifier=GJJKL34HCT`; entitlements an empty dictionary |
+| Before notarization | `spctl -a -vv --type exec` | `rejected`, `source=Unnotarized Developer ID` (expected; the script shows it and goes on) |
+| Notarization | `xcrun notarytool submit … --keychain-profile b4app --wait` | Submission `7f19144e-ec91-40b3-95ab-928ac1221b32`: **Accepted** on the first submission, no entitlement changes |
+| Stapling | `xcrun stapler staple`, `stapler validate`, then re-zip | "The staple and validate action worked!"; the shipped `dist/Agent-Workspace-0.1.0.zip` (39 MB; app 122 MB) holds the stapled app |
+| Gatekeeper | `spctl -a -vv --type exec "dist/Agent Workspace.app"` | `accepted`, `source=Notarized Developer ID`, `origin=Developer ID Application: Brian Love (GJJKL34HCT)` |
+| As downloaded | The zip copied with a `com.apple.quarantine` attribute, unpacked with `ditto -x -k`, then `spctl -a -vv`, `syspolicy_check distribution`, `stapler validate` | Quarantine propagated to the app; `accepted`, `source=Notarized Developer ID`; "App passed all pre-distribution checks and is ready for distribution."; ticket valid |
+| Coordinator | `agent-workspace coordinator restart`, `doctor --json`, `thread list` | Launch agent loaded and running, last exit 0, from the new bundle; the bundled `postgres` serves the store; the coordinator mapped the bundled `libpq.5.dylib` under the hardened runtime; both stored threads listed |
+| First launch | `open "dist/Agent Workspace.app"` | Launched; the app's Unix socket is connected to `coordinator.sock` in the LaunchAgent coordinator, and it hosts nothing itself (no child processes). The installed copy came from a local unzip, so it carries no quarantine and Gatekeeper's first-launch check has nothing to show; the downloaded case is the row above. Screen access was declined, so nobody watched the window on screen |
+| `SMAppService` after a rebuild (D-042) | A throwaway bundle (`com.cacheplane.b4app.smprobe`) with `Contents/Library/LaunchAgents` and a `BundleProgram` helper, registered with `SMAppService.agent(plistName:)`; the helper rebuilt to a new CDHash and re-signed, then `launchctl kickstart -k`, without re-registering | Developer ID: the job (`has LWCR`) respawned the rebuilt helper at once (`state = running`, the new build's log line). Ad hoc control under a fresh label: the first build ran, and the rebuild went to `spawn scheduled`/`spawn failed`, the D-042 failure. After a Developer ID registration, an ad hoc build under the same label could not spawn even after unregister and register. Both probes unregistered afterwards |
+| Ad hoc path | `./Scripts/package.sh` with no identity, in the worktree's own `dist/` | `Signature=adhoc`, `flags=0x2(adhoc)`, verify passes, no notary step; the bundle is now re-signed with its (empty) entitlements file |
+| Suite, lint | `swift test`, `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass: 332 tests in 75 suites; lint clean (no Swift source changed) |
+
+So the managed agent's requirement is stable across rebuilds once the build is team-signed; the per-user plist of D-042 stays in place unless the owner asks to switch. Still open: Developer ID builds on another Mac, and an on-screen first launch of a downloaded copy (macOS still asks once to confirm opening an app downloaded from the internet; it no longer refuses it).
+
 ## 2026-10-31: blank window on a pending Claude request
 
 Found in the owner's running app: a new Claude thread asked to run Bash, and when the thread opened the window went blank, sidebar and detail, with the toolbar still working; relaunching restored it until the thread was opened again. Root cause and rule in D-047.

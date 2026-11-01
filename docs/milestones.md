@@ -100,15 +100,15 @@ Design: `docs/superpowers/specs/2026-10-31-lla-visual-system-design.md`. Plan: `
 
 Design: `docs/superpowers/specs/2026-10-31-m6-package-and-accept-design.md`. Plan: `docs/superpowers/plans/2026-10-31-lla-design-and-m6.md`.
 
-- [x] Produce a local `.app` bundle and package/locate the coordinator and companion CLI predictably. `implemented`: `Scripts/package.sh` builds `dist/Agent Workspace.app` with `Contents/Helpers/{b4app-coordinator,agent-workspace}` and the LaunchAgent plist, signs (ad hoc, or `B4APP_SIGN_IDENTITY`), verifies, and zips; `Scripts/install-cli.sh` links the bundled CLI onto PATH; the CLI finds the bundled coordinator (D-038, D-040). `live-tested` on this Mac: see `docs/verification.md`.
+- [x] Produce a local `.app` bundle and package/locate the coordinator and companion CLI predictably. `implemented`: `Scripts/package.sh` builds `dist/Agent Workspace.app` with `Contents/Helpers/{b4app-coordinator,agent-workspace}` and the LaunchAgent plist, signs (ad hoc, or `B4APP_SIGN_IDENTITY`, which with a Developer ID also notarizes and staples), verifies, and zips; `Scripts/install-cli.sh` links the bundled CLI onto PATH; the CLI finds the bundled coordinator (D-038, D-040). `live-tested` on this Mac: see `docs/verification.md`.
 - [x] Verify Finder launch with executable paths outside the interactive shell PATH. `implemented` (D-040 fallback directories, `fixture-tested` with a fake nvm tree); `live-tested` by launching the packaged app through LaunchServices with no shell: see `docs/verification.md`.
 - [x] LaunchAgent hosting per D-004. `implemented` as a per-user LaunchAgent plist the app writes and bootstraps (D-042; the `SMAppService` agent of D-038 broke on every ad hoc rebuild), with in-process fallback, restart and removal, `coordinator status|stop|restart|plist`; `live-tested`: spawn from the bundle, restart through launchd, survival across app Quit (`docs/verification.md`).
 - [x] Document prerequisites, build/run/package commands, first sign-in, B4 environment setup, and CLI use. `README.md`.
 - [ ] Run the release acceptance matrix on the target Mac. Rows and their status are in `docs/verification.md`; A10 (remote B4) and the on-screen rows A01/A17 are open or partial as recorded there; A03 passed live on 2026-10-31.
-- [ ] Developer ID signing and notarisation. `blocked`: no signing identity on this Mac (D-039).
+- [x] Developer ID signing and notarisation. `live-tested` on 2026-10-31: `B4APP_SIGN_IDENTITY="Developer ID Application: …" ./Scripts/package.sh` signs with the hardened runtime and a timestamp, notarizes (first submission Accepted), staples, and `spctl -a -vv` reports `source=Notarized Developer ID`; the stapled app launched here and connected to its LaunchAgent coordinator (D-039 amendment, `docs/verification.md`).
 - [x] Record exact versions, performed checks, known limits, and blocked live checks. `docs/verification.md`, `docs/compatibility.md`.
 
-Exit gate status: open. The implementation ships with the gate clearly open on the live rows that need the owner (Claude sign-in, a remote endpoint, a screen click-through) and on Developer ID signing; nothing is labelled fully validated.
+Exit gate status: open. The implementation ships with the gate clearly open on the live rows that need the owner (Claude sign-in, a remote endpoint, a screen click-through); Developer ID signing and notarisation closed on 2026-10-31; nothing is labelled fully validated.
 
 ## M7: PostgreSQL store (D-041)
 
