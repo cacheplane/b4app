@@ -17,14 +17,17 @@ actor StatusRecorder {
   func record(_ status: MirrorSyncStatus) { all.append(status) }
 }
 
+/// The deadline is generous and the condition is checked once more after it passes, because a CI
+/// runner can stall every test for longer than the old 10 s (seen on main, 2026-11-01).
 private func eventually(
-  _ what: String, timeout: Duration = .seconds(10), _ condition: () async throws -> Bool
+  _ what: String, timeout: Duration = .seconds(30), _ condition: () async throws -> Bool
 ) async throws {
   let deadline = ContinuousClock.now + timeout
   while ContinuousClock.now < deadline {
     if try await condition() { return }
     try await Task.sleep(for: .milliseconds(10))
   }
+  if try await condition() { return }
   throw WorkspaceError(.internalError, "timed out waiting for \(what)")
 }
 
