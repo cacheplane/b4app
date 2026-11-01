@@ -27,7 +27,8 @@ public protocol SecretStore: Sendable {
 /// the macOS data-protection keychain (access groups, no prompts) needs a provisioning profile and is
 /// adopted with Developer ID signing. On iOS every item lives in the data-protection keychain, readable
 /// after the first unlock and never migrated to another device; ad hoc signing ("Sign to Run Locally")
-/// is enough there (M8a Task 9 gate, Simulator), while an unsigned build fails with -34018.
+/// is enough there (M8a Task 9 gate, Simulator), while an unsigned build fails with -34018. Each call
+/// runs on a thread of its own (`KeychainCall`), because a Keychain prompt blocks it until answered.
 public struct KeychainSecretStore: SecretStore {
   public let service: String
 
@@ -48,41 +49,47 @@ public struct KeychainSecretStore: SecretStore {
   }
 
   public func put(_ ref: SecretRef, value: String) async throws {
-    let data = Data(value.utf8)
-    var query = baseQuery(ref)
-    var update: [String: Any] = [kSecValueData as String: data]
-    #if os(iOS)
-      update[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-    #endif
-    let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
-    if status == errSecItemNotFound {
-      query[kSecValueData as String] = data
+    try await KeychainCall.run { [self] in
+      let data = Data(value.utf8)
+      var query = baseQuery(ref)
+      var update: [String: Any] = [kSecValueData as String: data]
       #if os(iOS)
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        update[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
       #endif
-      let addStatus = SecItemAdd(query as CFDictionary, nil)
-      guard addStatus == errSecSuccess else { throw KeychainError(status: addStatus) }
-    } else if status != errSecSuccess {
-      throw KeychainError(status: status)
+      let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+      if status == errSecItemNotFound {
+        query[kSecValueData as String] = data
+        #if os(iOS)
+          query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        #endif
+        let addStatus = SecItemAdd(query as CFDictionary, nil)
+        guard addStatus == errSecSuccess else { throw KeychainError(status: addStatus) }
+      } else if status != errSecSuccess {
+        throw KeychainError(status: status)
+      }
     }
   }
 
   public func read(_ ref: SecretRef) async throws -> String? {
-    var query = baseQuery(ref)
-    query[kSecReturnData as String] = true
-    query[kSecMatchLimit as String] = kSecMatchLimitOne
-    var item: CFTypeRef?
-    let status = SecItemCopyMatching(query as CFDictionary, &item)
-    if status == errSecItemNotFound { return nil }
-    guard status == errSecSuccess, let data = item as? Data else { throw KeychainError(status: status) }
-    return String(decoding: data, as: UTF8.self)
+    try await KeychainCall.run { [self] in
+      var query = baseQuery(ref)
+      query[kSecReturnData as String] = true
+      query[kSecMatchLimit as String] = kSecMatchLimitOne
+      var item: CFTypeRef?
+      let status = SecItemCopyMatching(query as CFDictionary, &item)
+      if status == errSecItemNotFound { return nil }
+      guard status == errSecSuccess, let data = item as? Data else { throw KeychainError(status: status) }
+      return String(decoding: data, as: UTF8.self)
+    }
   }
 
   public func remove(_ ref: SecretRef) async throws -> Bool {
-    let status = SecItemDelete(baseQuery(ref) as CFDictionary)
-    if status == errSecItemNotFound { return false }
-    guard status == errSecSuccess else { throw KeychainError(status: status) }
-    return true
+    try await KeychainCall.run { [self] in
+      let status = SecItemDelete(baseQuery(ref) as CFDictionary)
+      if status == errSecItemNotFound { return false }
+      guard status == errSecSuccess else { throw KeychainError(status: status) }
+      return true
+    }
   }
 }
 

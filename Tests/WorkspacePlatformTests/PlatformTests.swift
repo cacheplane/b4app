@@ -1,7 +1,9 @@
 import Foundation
+import Security
 import Testing
 
 @testable import WorkspacePlatform
+@testable import WorkspaceSecrets
 
 @Suite struct PathTests {
   @Test func socketLivesInsideRuntimeDirAndIsShort() {
@@ -151,5 +153,20 @@ import Testing
     let stale = LockRecord(pid: 2_147_000_000, startedAt: "x", socketPath: "/tmp/s.sock")
     try JSONEncoder().encode(stale).write(to: URL(fileURLWithPath: path))
     #expect(SingletonLock.peek(path: path) == nil)
+  }
+}
+
+@Suite struct KeychainCallTests {
+  /// A Keychain prompt blocks the call until it is answered, so it must never run on the caller's
+  /// actor (the package's nonisolated async functions otherwise do).
+  @MainActor @Test func runsOffTheCallersActor() async throws {
+    let onMain = try await KeychainCall.run { Thread.isMainThread }
+    #expect(onMain == false)
+  }
+
+  @Test func rethrowsTheCallsError() async {
+    await #expect(throws: KeychainError.self) {
+      try await KeychainCall.run { () throws -> Int in throw KeychainError(status: errSecItemNotFound) }
+    }
   }
 }
