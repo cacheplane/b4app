@@ -168,6 +168,7 @@ struct SnapshotShell: View {
 
   /// `crop` keeps the top-left corner of that size (points), for content smaller than the window.
   func capture(to path: String, crop: CGSize? = nil) async throws {
+    // Timed on purpose: SwiftUI and AppKit render on later run-loop passes and report no "drawn" event.
     for _ in 0..<12 {
       pump()
       try await Task.sleep(for: .milliseconds(50))

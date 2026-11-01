@@ -290,7 +290,10 @@ struct TurnCommand: AsyncParsableCommand {
       abstract: "Send one user message and stream the reply until the turn finishes.")
     @OptionGroup var global: GlobalOptions
     @Argument var threadId: String
-    @Argument(parsing: .captureForPassthrough, help: "Message text.") var text: [String]
+    /// Options are read wherever they appear, so `--no-wait` after the text is a flag, not part of the
+    /// message (it used to be sent as text, and the command then waited for the whole turn).
+    @Argument(
+      help: "Message text. Quote it; a message that starts with a dash goes after `--`.") var text: [String]
     @Flag(name: .customLong("no-wait"), help: "Return as soon as the turn is acknowledged.") var noWait =
       false
     @Option(help: "Seconds to wait for the turn to finish (default 600).") var timeout: Int = 600

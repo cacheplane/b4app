@@ -34,7 +34,7 @@ private func collect(_ stream: AsyncStream<[UInt8]>) async -> String {
       executable: "/bin/sh",
       arguments: ["-c", "i=0; while [ $i -lt 4000 ]; do printf 'line-%05d\\n' $i 1>&2; i=$((i+1)); done"])
     _ = await child.waitForExit()
-    try await Task.sleep(for: .milliseconds(200))
+    await child.waitForStderrEnd()
     let tail = child.recentStderr()
     #expect(tail.utf8.count <= 16 * 1024)
     #expect(tail.hasSuffix("line-03999\n"))

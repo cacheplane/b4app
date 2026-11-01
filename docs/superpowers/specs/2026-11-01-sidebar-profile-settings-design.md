@@ -31,7 +31,7 @@ The app's left sidebar should read like the sidebar of Claude, ChatGPT, or T3: t
 
 ## Sequencing and base
 
-M8b (cacheplane/b4app#25, draft, branch `feat/m8b-organisation`) rewrites the same sidebar: `ThreadListView`, a "Pinned" group, collapsible project sections and "Other" on the Mac, a flat list with a `ProjectFilterMenu` in the toolbar on the iPhone, the `AttentionDot`, and a three-line `ThreadRow` (title, reason, "Project · Connection"). This redesign is built **on top of #25's thread list**, not beside it. The owner decides when #25 merges. Implementation starts from `feat/m8b-organisation` (or `main` once #25 has merged) on the branch `blove/sidebar-profile-menu`, and the PR targets `main`; while #25 is unmerged the PR stays a draft and is rebased when #25 lands. Nothing in the M8b session's worktree is touched, and the sync changes below are written only after #25 has merged, since they build on its mirror `devices` table and `MirrorSchema` migrations. Decision numbers D-048 to D-050 are taken by #25 and D-051 by #26 (distribution), so this design is recorded as **D-052**.
+M8b (cacheplane/b4app#25, draft, branch `feat/m8b-organisation`) rewrites the same sidebar: `ThreadListView`, a "Pinned" group, collapsible project sections and "Other" on the Mac, a flat list with a `ProjectFilterMenu` in the toolbar on the iPhone, the `AttentionDot`, and a three-line `ThreadRow` (title, reason, "Project · Connection"). This redesign is built **on top of #25's thread list**, not beside it. The owner decides when #25 merges. Implementation starts from `feat/m8b-organisation` (or `main` once #25 has merged) on the branch `blove/sidebar-profile-menu`, and the PR targets `main`; while #25 is unmerged the PR stays a draft and is rebased when #25 lands. Nothing in the M8b session's worktree is touched, and the sync changes below are written only after #25 has merged, since they build on its mirror `devices` table and `MirrorSchema` migrations. Decision numbers D-048 to D-050 are taken by #25 and D-051 by #26 (distribution), and D-052 by #27 (coordinator robustness), so this design is recorded as **D-053**.
 
 ## The sidebar
 
@@ -113,7 +113,7 @@ Places that today set `model.surface` to a settings page (the empty state's "Add
 - Model tests: hub status populates the account and initials (display name, then username fallback); Log out sends `HubLeave` and clears the account; the host-disconnected state disables the top rows and replaces the list; "Not signed in" when not joined; opening Settings at a page from `Remediation`; palette filtering, ordering, archived marking, and keyboard selection logic (kept in a testable type, not in the view).
 - Mirror and sync tests (fixture, `FakeHubAPI`): the host-disconnected flag from a `devices` table with only revoked, one live, and two Macs; the phone's log-out revokes, deletes the token, and empties the mirror, and still unlinks when the revoke fails; `HubSync` reports the display name from enrollment and from `/v1/me`.
 - `swift format lint --strict --recursive Sources Tests Apps Package.swift`, `swift test`, both `xcodebuild` schemes (`B4App-macOS`; `B4App-iOS` for `generic/platform=iOS Simulator`, after `./Scripts/generate-project.sh`).
-- Docs: D-052 in `docs/decisions.md`, gate results in `docs/verification.md`.
+- Docs: D-053 in `docs/decisions.md`, gate results in `docs/verification.md`.
 
 ## Left to the builder
 

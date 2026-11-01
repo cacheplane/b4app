@@ -86,6 +86,13 @@ public enum PostgresLocator {
 /// Starts, stops, and inspects the private cluster through `pg_ctl`, which waits for readiness,
 /// recovers a stale `postmaster.pid`, and knows the shutdown modes. Before stopping, the postmaster
 /// named by the pid file is checked to be a `postgres` serving this data directory (D-025).
+///
+/// A running cluster is adopted only when its postmaster is this install's `postgres`: the same file
+/// (by its current path, so a moved app bundle does not match) and started after that file was last
+/// written (so a bundle replaced in place does not match). Any other postmaster serving this data
+/// directory is from another install of the app; it loads its own libraries, which a hardened-runtime
+/// build of this one cannot share (an upgrade's `plpgsql` failed to load that way), so it is stopped
+/// and this install's server started instead.
 public actor PostgresServer {
   public enum Status: Sendable, Equatable {
     case running(pid: Int32)
@@ -95,7 +102,19 @@ public actor PostgresServer {
 
   public nonisolated let cluster: PostgresCluster
 
-  public init(cluster: PostgresCluster) { self.cluster = cluster }
+  /// When a file was last written; replaced by tests.
+  private nonisolated let modificationDate: @Sendable (String) -> Date?
+
+  public init(cluster: PostgresCluster) {
+    self.init(cluster: cluster) {
+      (try? FileManager.default.attributesOfItem(atPath: $0))?[.modificationDate] as? Date
+    }
+  }
+
+  init(cluster: PostgresCluster, modificationDate: @escaping @Sendable (String) -> Date?) {
+    self.cluster = cluster
+    self.modificationDate = modificationDate
+  }
 
   /// `initdb` once: UTF-8, C locale, trust authentication (the socket directory is 0700 and the
   /// only way in), the current user as the superuser. Returns true when a cluster was created.
@@ -131,11 +150,15 @@ public actor PostgresServer {
     }
   }
 
-  /// Start and wait until connections are accepted. A running cluster is adopted, not restarted.
+  /// Start and wait until connections are accepted. A cluster already running this install's
+  /// `postgres` is adopted, not restarted; one running another install's is stopped first.
   @discardableResult public func start(timeout: Duration = .seconds(60)) async throws -> Int32 {
     try await initializeIfNeeded()
     try PrivateFiles.ensurePrivateDirectory(cluster.socketDir)
-    if case .running(let pid) = try await status(), pid > 0 { return pid }
+    if case .running(let pid) = try await status(), pid > 0 {
+      if runsThisInstall(pid: pid) { return pid }
+      try await stop(timeout: timeout)
+    }
     try? PrivateFiles.ensurePrivateDirectory((cluster.logPath as NSString).deletingLastPathComponent)
     try? LogRedactor.bound(path: cluster.logPath)
     let seconds = max(1, Int(timeout.components.seconds))
@@ -181,6 +204,22 @@ public actor PostgresServer {
       throw WorkspaceError(
         .internalError, "pg_ctl stop failed (\(result.exitCode ?? -1)): \(tail(result.stderr))")
     }
+  }
+
+  /// True when `pid` runs this cluster's `postgres` file and started after it was last written.
+  nonisolated func runsThisInstall(pid: Int32) -> Bool {
+    let ours = cluster.binary("postgres")
+    guard let identity = ProcessInspector.identity(pid: pid),
+      let running = ProcessInspector.executablePath(pid: pid),
+      Self.samePath(running, ours),
+      let written = modificationDate(ours)
+    else { return false }
+    return identity.startedAt >= written.timeIntervalSince1970
+  }
+
+  private static func samePath(_ a: String, _ b: String) -> Bool {
+    URL(fileURLWithPath: a).resolvingSymlinksInPath().standardizedFileURL.path
+      == URL(fileURLWithPath: b).resolvingSymlinksInPath().standardizedFileURL.path
   }
 
   /// The first line of `postmaster.pid`.

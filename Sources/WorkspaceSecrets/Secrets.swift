@@ -43,6 +43,9 @@ extension SecretStore {
 /// and stays in the file-based login keychain. A data-protection store moves an item it does not
 /// hold out of the login keychain the first time it is read: read, add to the group, delete the old
 /// copy. Reading an old item can prompt once, since the coordinator's signature changed.
+///
+/// Each call runs on a thread of its own (`KeychainCall`), because a Keychain prompt blocks it until
+/// answered (D-052).
 public struct KeychainSecretStore: SecretStore {
   public let service: String
   /// The data-protection access group on macOS; nil means the file-based login keychain.
@@ -112,25 +115,31 @@ public struct KeychainSecretStore: SecretStore {
   }
 
   public func put(_ ref: SecretRef, value: String) async throws {
-    try write(ref, value: value, dataProtection: usesDataProtection)
-    if usesDataProtection && accessGroup != nil { _ = try? delete(ref, dataProtection: false) }
+    try await KeychainCall.run { [self] in
+      try write(ref, value: value, dataProtection: usesDataProtection)
+      if usesDataProtection && accessGroup != nil { _ = try? delete(ref, dataProtection: false) }
+    }
   }
 
   public func read(_ ref: SecretRef) async throws -> String? {
-    if let value = try copy(ref, dataProtection: usesDataProtection) { return value }
-    guard usesDataProtection, accessGroup != nil,
-      let legacy = try copy(ref, dataProtection: false)
-    else { return nil }
-    try write(ref, value: legacy, dataProtection: true)
-    _ = try? delete(ref, dataProtection: false)
-    return legacy
+    try await KeychainCall.run { [self] in
+      if let value = try copy(ref, dataProtection: usesDataProtection) { return value }
+      guard usesDataProtection, accessGroup != nil,
+        let legacy = try copy(ref, dataProtection: false)
+      else { return nil }
+      try write(ref, value: legacy, dataProtection: true)
+      _ = try? delete(ref, dataProtection: false)
+      return legacy
+    }
   }
 
   public func remove(_ ref: SecretRef) async throws -> Bool {
-    let removed = try delete(ref, dataProtection: usesDataProtection)
-    guard usesDataProtection, accessGroup != nil else { return removed }
-    let legacy = (try? delete(ref, dataProtection: false)) ?? false
-    return removed || legacy
+    try await KeychainCall.run { [self] in
+      let removed = try delete(ref, dataProtection: usesDataProtection)
+      guard usesDataProtection, accessGroup != nil else { return removed }
+      let legacy = (try? delete(ref, dataProtection: false)) ?? false
+      return removed || legacy
+    }
   }
 
   private func write(_ ref: SecretRef, value: String, dataProtection: Bool) throws {

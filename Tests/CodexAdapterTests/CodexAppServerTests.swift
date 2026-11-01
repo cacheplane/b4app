@@ -18,18 +18,40 @@ actor EventCollector {
     Task { for await event in stream { await self.append(event) } }
   }
 
-  private func append(_ event: AdapterEvent) { events.append(event) }
+  /// Suspended `waitFor` calls, resumed by the next event (or a deadline).
+  private var waiters: [CheckedContinuation<Void, Never>] = []
 
+  private func append(_ event: AdapterEvent) {
+    events.append(event)
+    wake()
+  }
+
+  private func wake() {
+    let waiting = waiters
+    waiters = []
+    for waiter in waiting { waiter.resume() }
+  }
+
+  /// The first event matching `predicate`, checked now and again as each event arrives. The timeout
+  /// only ends a test that would otherwise hang.
   @discardableResult
   func waitFor(
-    timeout: Duration = .seconds(10), _ predicate: @Sendable (AdapterEvent) -> Bool
+    timeout: Duration = .seconds(60), _ predicate: @Sendable (AdapterEvent) -> Bool
   ) async throws -> AdapterEvent {
     let deadline = ContinuousClock.now + timeout
-    while ContinuousClock.now < deadline {
-      if let match = events.first(where: predicate) { return match }
-      try await Task.sleep(for: .milliseconds(20))
+    let alarm = Task { [weak self] in
+      guard (try? await Task.sleep(until: deadline, clock: .continuous)) != nil else { return }
+      await self?.wake()
     }
-    throw WorkspaceError(.internalError, "timed out waiting for event; saw \(events.map(\.kind.rawValue))")
+    defer { alarm.cancel() }
+    while true {
+      if let match = events.first(where: predicate) { return match }
+      guard ContinuousClock.now < deadline else {
+        throw WorkspaceError(
+          .internalError, "timed out waiting for event; saw \(events.map(\.kind.rawValue))")
+      }
+      await withCheckedContinuation { waiters.append($0) }
+    }
   }
 
   func kinds() -> [EventKind] { events.map(\.kind) }

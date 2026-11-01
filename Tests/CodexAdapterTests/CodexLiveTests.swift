@@ -47,6 +47,7 @@ struct CodexLiveTests {
     try await collector.waitFor(timeout: .seconds(60)) {
       $0.kind == .turnAcknowledged && $0.nativeIds["turnId"] == second.nativeTurnId
     }
+    // Timed on purpose (live, opt-in): lets the real model get well into its answer before the stop.
     try await Task.sleep(for: .seconds(3))
     let stop = try await adapter.interrupt(ref, turn: ActiveTurnRef(nativeTurnId: second.nativeTurnId!))
     #expect(stop.confirmed)

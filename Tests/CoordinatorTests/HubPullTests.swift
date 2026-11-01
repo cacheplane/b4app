@@ -28,6 +28,8 @@ private struct PullHarness {
   let fake: FakeHubAPI
   let events: EventLog
   let hub: HubSync
+  /// Fired as each hub call starts and ends, and by an `EventRecorder` given it.
+  let signal: SyncSignal
 
   static func start(join: Bool = true) async throws -> PullHarness {
     let db = try WorkspaceDatabase.temporary()
@@ -43,10 +45,12 @@ private struct PullHarness {
     await fake.addEnrollmentCode(code, enrolled)
     await fake.setDevices(devices)
     let events = EventLog()
+    let signal = SyncSignal()
     let hub = HubSync(
-      database: db, secretStore: MemorySecretStore(), eventLog: events, makeAPI: { _, _ in fake })
+      database: db, secretStore: MemorySecretStore(), eventLog: events,
+      makeAPI: { _, _ in ProbedHub(fake, signal) })
     await hub.start()
-    let harness = PullHarness(db: db, fake: fake, events: events, hub: hub)
+    let harness = PullHarness(db: db, fake: fake, events: events, hub: hub, signal: signal)
     do {
       if join {
         _ = try await hub.join(url: "http://127.0.0.1:8080", code: code, deviceName: "Mac")
@@ -86,7 +90,16 @@ private struct PullHarness {
     return next
   }
 
-  func waitFor(
+  /// Re-checks `condition` as each hub call starts and ends (the pull writes the store only before its
+  /// next call) and as an `EventRecorder` given `signal` records an event; records an issue if it never
+  /// holds.
+  func waitFor(_ what: String, _ condition: () async throws -> Bool) async throws {
+    if try await !signal.until(condition) { Issue.record("timed out waiting for \(what)") }
+  }
+
+  /// Polls `condition`, for the one write no later step follows: `HubSync` records a 401 on the link
+  /// and the pull ends, publishing nothing and calling the hub no more.
+  func pollFor(
     _ what: String, timeout: Duration = .seconds(10), _ condition: () async throws -> Bool
   ) async throws {
     let deadline = ContinuousClock.now + timeout
@@ -113,19 +126,24 @@ private func withCleanup<T>(_ cleanup: () async -> Void, _ body: () async throws
   }
 }
 
-/// Collects the events published after it was created.
+/// Collects the events published after it was created, firing `signal` after each.
 private actor EventRecorder {
   private(set) var events: [EventEnvelope] = []
   private var task: Task<Void, Never>?
+  private let signal: SyncSignal?
 
-  init(_ log: EventLog) async {
+  init(_ log: EventLog, signal: SyncSignal? = nil) async {
+    self.signal = signal
     let stream = await log.subscribe()
     task = Task { [weak self] in
       for await event in stream { await self?.add(event) }
     }
   }
 
-  private func add(_ event: EventEnvelope) { events.append(event) }
+  private func add(_ event: EventEnvelope) {
+    events.append(event)
+    signal?.fire()
+  }
 
   func threadUpdates(_ id: String) -> [EventEnvelope] {
     events.filter { $0.event.kind == .threadUpdated && $0.event.threadId == id }
@@ -139,7 +157,7 @@ private actor EventRecorder {
 @Suite(.serialized) struct HubPullTests {
   @Test func pullAppliesPhoneEditsAndPublishes() async throws {
     try await PullHarness.with { h in
-      let recorder = await EventRecorder(h.events)
+      let recorder = await EventRecorder(h.events, signal: h.signal)
       _ = try h.db.insertProject(Project(id: "p1", name: ""), folders: ["/tmp/p"])
       let before = try #require(try h.db.thread(id: "t1"))
       let logged = try h.db.changes(after: 0).count
@@ -201,25 +219,30 @@ private actor EventRecorder {
       ])
       await fake.setDevices(devices)
       await fake.setFailNext(HubError(kind: "transport", code: "transport", message: "offline", status: 0))
+      // The pull reports the failure and then waits inside `onError` (before its backoff) until the
+      // test has looked, so the retry cannot clear it first.
+      let signal = SyncSignal()
+      let looked = Gate()
       let pull = HubPull(
-        database: db, api: fake, eventLog: EventLog(), ownDeviceId: "dev-mac",
-        initialBackoff: .milliseconds(600))
+        database: db, api: ProbedHub(fake, signal), eventLog: EventLog(), ownDeviceId: "dev-mac",
+        initialBackoff: .milliseconds(600),
+        onError: { message in
+          signal.fire()
+          if message != nil { await looked.wait() }
+        })
       let run = Task { await pull.run() }
       try await withCleanup({
+        looked.open()
         await pull.stop()
         await run.value
       }) {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while await pull.lastError == nil, ContinuousClock.now < deadline {
-          try await Task.sleep(for: .milliseconds(10))
-        }
+        _ = await signal.until { await pull.lastError != nil }
         #expect(await pull.lastError?.contains("offline") == true)
         #expect(try db.thread(id: "t1")?.title == "First")
         #expect(try db.thread(id: "t1")?.pinned == false)
         #expect(try db.hubLink()?.cursor == 0)
-        while try db.hubLink()?.cursor != 2, ContinuousClock.now < deadline {
-          try await Task.sleep(for: .milliseconds(10))
-        }
+        looked.open()
+        _ = try await signal.until { try db.hubLink()?.cursor == 2 }
         let thread = try #require(try db.thread(id: "t1"))
         #expect(thread.title == "Phone")
         #expect(!thread.pinned)
@@ -229,7 +252,7 @@ private actor EventRecorder {
 
   @Test func staleCursorResyncsFromSnapshotWithoutLosingLocalRows() async throws {
     try await PullHarness.with { h in
-      let recorder = await EventRecorder(h.events)
+      let recorder = await EventRecorder(h.events, signal: h.signal)
       let connection = try #require(try h.db.connection(id: "c1"))
       let before = try #require(try h.db.thread(id: "t1"))
       let macClock = HLC(millis: epochMillis() + 30_000, counter: 0, deviceId: "dev-mac").rawValue
@@ -360,11 +383,11 @@ private actor EventRecorder {
     try await PullHarness.with { h in
       await h.fake.setFailNext(
         HubError(kind: "request_error", code: "unauthorized", message: "Unauthorized.", status: 401))
-      try await h.waitFor("the 401 to be recorded") {
+      try await h.pollFor("the 401 to be recorded") {
         try h.db.hubLink()?.lastError?.contains("unauthorized") == true
       }
       let seq = await h.append("threads", "t1", column: "title", value: "After 401", hlc: phoneClock())
-      try await Task.sleep(for: .milliseconds(500))
+      try await Task.sleep(for: .milliseconds(500))  // timed on purpose: the edit must not apply
       #expect(try h.db.thread(id: "t1")?.title == "First")
       #expect(try h.db.hubLink()?.cursor ?? 0 < seq)
     }
@@ -373,14 +396,14 @@ private actor EventRecorder {
     try await PullHarness.with { h in
       try await h.hub.leave()
       _ = await h.append("threads", "t1", column: "title", value: "After leave", hlc: phoneClock())
-      try await Task.sleep(for: .milliseconds(500))
+      try await Task.sleep(for: .milliseconds(500))  // timed on purpose: the edit must not apply
       #expect(try h.db.thread(id: "t1")?.title == "First")
     }
 
     try await PullHarness.with { h in
       await h.hub.stop()
       _ = await h.append("threads", "t1", column: "title", value: "After stop", hlc: phoneClock())
-      try await Task.sleep(for: .milliseconds(500))
+      try await Task.sleep(for: .milliseconds(500))  // timed on purpose: the edit must not apply
       #expect(try h.db.thread(id: "t1")?.title == "First")
     }
   }

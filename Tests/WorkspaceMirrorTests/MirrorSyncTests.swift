@@ -18,18 +18,118 @@ actor StatusRecorder {
   func record(_ status: MirrorSyncStatus) { all.append(status) }
 }
 
-/// Polls for up to 30 s (these wait on real tasks and flake under a loaded machine), then checks once
-/// more after the deadline so a condition that became true during the last sleep still passes.
-func eventually(
-  _ what: String, timeout: Duration = .seconds(30), _ condition: () async throws -> Bool
-) async throws {
-  let deadline = ContinuousClock.now + timeout
-  while ContinuousClock.now < deadline {
-    if try await condition() { return }
-    try await Task.sleep(for: .milliseconds(10))
+/// Wakes waiters whenever something a `MirrorSync` test can observe may have changed: a hub call
+/// starting or ending (`ProbedHub`), a batch, or a status. The sync changes the store only before one
+/// of those, so `until` re-checks its condition exactly when it can have become true, not on a clock.
+final class SyncSignal: Sendable {
+  private struct State {
+    var generation = 0
+    var waiters: [CheckedContinuation<Void, Never>] = []
   }
-  if try await condition() { return }
-  throw WorkspaceError(.internalError, "timed out waiting for \(what)")
+  private let state = Mutex(State())
+
+  func fire() {
+    let waiters = state.withLock { state in
+      state.generation += 1
+      defer { state.waiters = [] }
+      return state.waiters
+    }
+    for waiter in waiters { waiter.resume() }
+  }
+
+  /// Returns once `condition` holds, checking it now and after each signal. The timeout is only a
+  /// guard so a failing test ends; the expected path never waits on it.
+  func until(
+    _ what: String, timeout: Duration = .seconds(60), _ condition: () async throws -> Bool
+  ) async throws {
+    let deadline = ContinuousClock.now + timeout
+    let alarm = Task { [self] in
+      guard (try? await Task.sleep(until: deadline, clock: .continuous)) != nil else { return }
+      fire()
+    }
+    defer { alarm.cancel() }
+    while true {
+      let seen = state.withLock { $0.generation }
+      if try await condition() { return }
+      if ContinuousClock.now >= deadline {
+        throw WorkspaceError(.internalError, "timed out waiting for \(what)")
+      }
+      await next(after: seen)
+    }
+  }
+
+  /// Suspends until a signal after generation `seen` (at once if one has already come).
+  private func next(after seen: Int) async {
+    await withCheckedContinuation { continuation in
+      let fired = state.withLock { state in
+        if state.generation != seen { return true }
+        state.waiters.append(continuation)
+        return false
+      }
+      if fired { continuation.resume() }
+    }
+  }
+}
+
+/// A one-shot latch: `wait()` returns once `open()` has been called, at once if it already has.
+final class Gate: Sendable {
+  private let state = Mutex<(open: Bool, waiters: [CheckedContinuation<Void, Never>])>((false, []))
+
+  func open() {
+    let waiters = state.withLock { state in
+      state.open = true
+      defer { state.waiters = [] }
+      return state.waiters
+    }
+    for waiter in waiters { waiter.resume() }
+  }
+
+  func wait() async {
+    await withCheckedContinuation { continuation in
+      let open = state.withLock { state in
+        if !state.open { state.waiters.append(continuation) }
+        return state.open
+      }
+      if open { continuation.resume() }
+    }
+  }
+}
+
+/// Forwards to `base`, firing `signal` as each call starts and ends, and counts the long polls in
+/// flight so a test can tell when the loop is parked waiting for news.
+final class ProbedHub: HubAPI {
+  let base: any HubAPI
+  let signal: SyncSignal
+  private let waiting = Mutex(0)
+  /// Pulls asked to wait for news (`wait > 0`) that have not returned.
+  var longPollsInFlight: Int { waiting.withLock { $0 } }
+
+  init(_ base: any HubAPI, _ signal: SyncSignal) {
+    self.base = base
+    self.signal = signal
+  }
+
+  private func probe<T>(_ call: () async throws -> T) async rethrows -> T {
+    signal.fire()
+    defer { signal.fire() }
+    return try await call()
+  }
+
+  func enroll(_ request: EnrollRequest) async throws -> EnrollResponse {
+    try await probe { try await base.enroll(request) }
+  }
+  func me() async throws -> MeResponse { try await probe { try await base.me() } }
+  func push(_ changes: [SyncChange]) async throws -> PushResponse {
+    try await probe { try await base.push(changes) }
+  }
+  func pull(after: Int, limit: Int, wait: Int) async throws -> PullResponse {
+    if wait > 0 { waiting.withLock { $0 += 1 } }
+    defer { if wait > 0 { waiting.withLock { $0 -= 1 } } }
+    return try await probe { try await base.pull(after: after, limit: limit, wait: wait) }
+  }
+  func snapshot() async throws -> SnapshotResponse { try await probe { try await base.snapshot() } }
+  func devices() async throws -> [DeviceInfo] { try await probe { try await base.devices() } }
+  func revokeSelf() async throws { try await probe { try await base.revokeSelf() } }
 }
 
 /// `POST /v1/changes`'s body, to measure what a push sent.
@@ -45,15 +145,21 @@ private let link = MirrorLink(
     try store.saveLink(link)
     let hub = FakeHubAPI(stored: Array(try fixtureAsStored().prefix(8)))
     let recorder = BatchRecorder()
-    let sync = MirrorSync(store: store, api: hub, onBatch: { await recorder.record($0) })
+    let signal = SyncSignal()
+    let sync = MirrorSync(
+      store: store, api: ProbedHub(hub, signal),
+      onBatch: {
+        await recorder.record($0)
+        signal.fire()
+      })
     let running = Task { await sync.run() }
 
-    try await eventually("first page") { store.cursor == 8 }
+    try await signal.until("first page") { store.cursor == 8 }
     #expect(try store.items(threadId: "thread-1").count == 4)
     await hub.append(Array(try fixtureAsStored()[8...]))
-    try await eventually("second page") { store.cursor == 12 }
+    try await signal.until("second page") { store.cursor == 12 }
     #expect(try store.thread(id: "thread-1")?.title == "Renamed")
-    try await eventually("batches") { await recorder.batches.count >= 2 }
+    try await signal.until("batches") { await recorder.batches.count >= 2 }
     let batches = await recorder.batches
     #expect(batches.first?.touchedThreadIds == ["thread-1"])
     #expect(batches.first?.touchedItems.count == 4)
@@ -79,14 +185,20 @@ private let link = MirrorLink(
     await fake.setSnapshot(SnapshotResponse(changes: fixture, clocks: [], next: 12))
     let hub = PrunedHub(base: fake, tip: 12)
     let recorder = BatchRecorder()
-    let sync = MirrorSync(store: store, api: hub, onBatch: { await recorder.record($0) })
+    let signal = SyncSignal()
+    let sync = MirrorSync(
+      store: store, api: ProbedHub(hub, signal),
+      onBatch: {
+        await recorder.record($0)
+        signal.fire()
+      })
     let running = Task { await sync.run() }
 
-    try await eventually("snapshot applied") { store.cursor == 12 }
+    try await signal.until("snapshot applied") { store.cursor == 12 }
     #expect(try store.thread(id: "thread-gone") == nil)
     #expect(try store.items(threadId: "thread-1").count == 4)
     #expect(hub.snapshotCalls == 1)
-    try await eventually("snapshot batch") {
+    try await signal.until("snapshot batch") {
       await recorder.batches.contains { !$0.touchedThreadIds.isEmpty }
     }
     await sync.stop()
@@ -100,10 +212,12 @@ private let link = MirrorLink(
     let hub = FakeHubAPI(stored: fixture)
     // The snapshot holds less than the feed, so which one was used shows in the rows.
     await hub.setSnapshot(SnapshotResponse(changes: Array(fixture.prefix(2)), clocks: [], next: 12))
-    let sync = MirrorSync(store: store, api: hub, onBatch: { _ in }, startFromSnapshot: true)
+    let signal = SyncSignal()
+    let sync = MirrorSync(
+      store: store, api: ProbedHub(hub, signal), onBatch: { _ in }, startFromSnapshot: true)
     let running = Task { await sync.run() }
 
-    try await eventually("snapshot applied") { store.cursor == 12 }
+    try await signal.until("snapshot applied") { store.cursor == 12 }
     #expect(try store.thread(id: "thread-1") != nil)
     #expect(try store.turns(threadId: "thread-1").isEmpty)
     await sync.stop()
@@ -119,12 +233,13 @@ private let link = MirrorLink(
     #expect(store.outboxCount == 2)
     let hub = FakeHubAPI(stored: try fixtureAsStored())
     await hub.setPlatform("ios")
-    let sync = MirrorSync(store: store, api: hub, onBatch: { _ in })
+    let signal = SyncSignal()
+    let sync = MirrorSync(store: store, api: ProbedHub(hub, signal), onBatch: { _ in })
     let running = Task { await sync.run() }
 
-    try await eventually("outbox drained") { store.outboxCount == 0 }
+    try await signal.until("outbox drained") { store.outboxCount == 0 }
     // The hub echoes the phone's own changes back; they apply as no-ops and the cursor moves past them.
-    try await eventually("pulled back") { store.cursor == 14 }
+    try await signal.until("pulled back") { store.cursor == 14 }
     let sent = await hub.pushed.flatMap { $0 }
     #expect(sent.map(\.deviceSeq) == [1, 2])
     #expect(sent.map(\.column) == ["title", "pinned"])
@@ -148,10 +263,11 @@ private let link = MirrorLink(
       deviceSeq: 2, table: "threads", rowId: "thread-1", column: "projectId", value: "\"p9\"")
     let hub = FakeHubAPI(stored: try fixtureAsStored())
     await hub.setPlatform("ios")
-    let sync = MirrorSync(store: store, api: hub, onBatch: { _ in })
+    let signal = SyncSignal()
+    let sync = MirrorSync(store: store, api: ProbedHub(hub, signal), onBatch: { _ in })
     let running = Task { await sync.run() }
 
-    try await eventually("outbox drained") { store.outboxCount == 0 }
+    try await signal.until("outbox drained") { store.outboxCount == 0 }
     #expect(try store.refusedUploads == 1)
     let sent = await hub.pushed.flatMap { $0 }
     #expect(sent.map(\.deviceSeq) == [1, 2])
@@ -219,10 +335,11 @@ private let link = MirrorLink(
         deviceSeq: seq, table: "threads", rowId: "thread-1", column: "title", value: "\"t\(seq)\"")
     }
     let hub = FakeHubAPI(stored: try fixtureAsStored())
-    let sync = MirrorSync(store: store, api: hub, onBatch: { _ in })
+    let signal = SyncSignal()
+    let sync = MirrorSync(store: store, api: ProbedHub(hub, signal), onBatch: { _ in })
     let running = Task { await sync.run() }
 
-    try await eventually("outbox drained") { store.outboxCount == 0 }
+    try await signal.until("outbox drained") { store.outboxCount == 0 }
     // The first request is the empty sequence check.
     #expect(await hub.pushed.map(\.count) == [0, 500, 500, 100])
     await sync.stop()
@@ -241,10 +358,11 @@ private let link = MirrorLink(
         deviceSeq: seq, table: "threads", rowId: "thread-1", column: "title", value: "\"\(seq)\(big)\"")
     }
     let hub = FakeHubAPI(stored: try fixtureAsStored())
-    let sync = MirrorSync(store: store, api: hub, onBatch: { _ in })
+    let signal = SyncSignal()
+    let sync = MirrorSync(store: store, api: ProbedHub(hub, signal), onBatch: { _ in })
     let running = Task { await sync.run() }
 
-    try await eventually("outbox drained") { store.outboxCount == 0 }
+    try await signal.until("outbox drained") { store.outboxCount == 0 }
     let pushed = await hub.pushed
     // The first request is the empty sequence check; then five changes (7.5 MiB) and two.
     #expect(pushed.map(\.count) == [0, 5, 2])
@@ -295,10 +413,11 @@ private let link = MirrorLink(
         deviceSeq: 40, wall: 1, table: "drafts", rowId: "x", op: "insert", column: nil, value: nil,
         hlc: macClock.next().rawValue)
     ])
-    let sync = MirrorSync(store: store, api: hub, onBatch: { _ in })
+    let signal = SyncSignal()
+    let sync = MirrorSync(store: store, api: ProbedHub(hub, signal), onBatch: { _ in })
     let running = Task { await sync.run() }
 
-    try await eventually("counter raised") { try store.lastDeviceSeq == 40 }
+    try await signal.until("counter raised") { try store.lastDeviceSeq == 40 }
     await sync.stop()
     await running.value
   }
@@ -310,13 +429,15 @@ private let link = MirrorLink(
     try store.setCursor(12)
     let hub = FakeHubAPI(stored: try fixtureAsStored())
     await hub.setPlatform("ios")
-    let sync = MirrorSync(store: store, api: hub, onBatch: { _ in })
+    let signal = SyncSignal()
+    let probed = ProbedHub(hub, signal)
+    let sync = MirrorSync(store: store, api: probed, onBatch: { _ in })
     let running = Task { await sync.run() }
-    try await Task.sleep(for: .milliseconds(200))  // the loop is parked in its 25 s long poll
+    try await signal.until("parked in its 25 s long poll") { probed.longPollsInFlight > 0 }
 
     _ = try store.updateThread(id: "thread-1", title: "Nudged", pinned: nil, archived: nil)
     await sync.nudge()
-    try await eventually("pushed without waiting out the poll", timeout: .seconds(5)) {
+    try await signal.until("pushed without waiting out the poll", timeout: .seconds(5)) {
       store.outboxCount == 0
     }
     #expect(await hub.stored.last?.value == "Nudged")
@@ -329,16 +450,26 @@ private let link = MirrorLink(
     try store.saveLink(link)
     let hub = FakeHubAPI(stored: Array(try fixtureAsStored().prefix(2)))
     await hub.setFailNext(HubError(kind: "transport", code: "transport", message: "offline", status: 0))
+    // The sync reports the failure and then waits inside `onStatus` (before its backoff) until the
+    // test has looked, so the retry cannot clear the error first.
+    let looked = Gate()
+    let signal = SyncSignal()
     let sync = MirrorSync(
-      store: store, api: hub, onBatch: { _ in }, initialBackoff: .milliseconds(300), maxBackoff: .seconds(1))
+      store: store, api: ProbedHub(hub, signal), onBatch: { _ in },
+      onStatus: { status in
+        signal.fire()
+        if status.lastError != nil { await looked.wait() }
+      },
+      initialBackoff: .milliseconds(300), maxBackoff: .seconds(1))
     let running = Task { await sync.run() }
 
-    try await eventually("error recorded") { try store.link()?.lastError != nil }
+    try await signal.until("error recorded") { try store.link()?.lastError != nil }
     #expect(try store.link()?.lastError?.contains("offline") == true)
     #expect(store.cursor == 0)
     #expect(await sync.lastError?.contains("offline") == true)
+    looked.open()
     // The cursor moves before the success is recorded, so wait for both.
-    try await eventually("recovered") { try store.cursor == 2 && store.link()?.lastError == nil }
+    try await signal.until("recovered") { try store.cursor == 2 && store.link()?.lastError == nil }
     #expect(await sync.lastError == nil)
     await sync.stop()
     await running.value
@@ -350,16 +481,21 @@ private let link = MirrorLink(
     let hub = FakeHubAPI(stored: Array(try fixtureAsStored().prefix(2)))
     await hub.setFailNext(HubError(kind: "transport", code: "transport", message: "offline", status: 0))
     let statuses = StatusRecorder()
+    let signal = SyncSignal()
     let sync = MirrorSync(
-      store: store, api: hub, onBatch: { _ in }, onStatus: { await statuses.record($0) },
+      store: store, api: ProbedHub(hub, signal), onBatch: { _ in },
+      onStatus: {
+        await statuses.record($0)
+        signal.fire()
+      },
       initialBackoff: .milliseconds(300), maxBackoff: .seconds(1))
     let running = Task { await sync.run() }
 
-    try await eventually("failure reported") { await statuses.all.first != nil }
+    try await signal.until("failure reported") { await statuses.all.first != nil }
     let failure = try #require(await statuses.all.first)
     #expect(failure.lastError?.contains("offline") == true)
     #expect(failure.lastSyncAt == nil)
-    try await eventually("success reported") { await statuses.all.contains { $0.lastError == nil } }
+    try await signal.until("success reported") { await statuses.all.contains { $0.lastError == nil } }
     let success = try #require(await statuses.all.first { $0.lastError == nil })
     #expect(success.lastSyncAt != nil)
     #expect(await sync.lastSyncAt != nil)
@@ -369,9 +505,11 @@ private let link = MirrorLink(
 
   @Test func stopEndsALongPoll() async throws {
     let store = try MirrorStore.inMemory()
-    let sync = MirrorSync(store: store, api: FakeHubAPI(), onBatch: { _ in })
+    let signal = SyncSignal()
+    let probed = ProbedHub(FakeHubAPI(), signal)
+    let sync = MirrorSync(store: store, api: probed, onBatch: { _ in })
     let running = Task { await sync.run() }
-    try await Task.sleep(for: .milliseconds(100))
+    try await signal.until("parked in its long poll") { probed.longPollsInFlight > 0 }
     let started = ContinuousClock.now
     await sync.stop()
     await running.value

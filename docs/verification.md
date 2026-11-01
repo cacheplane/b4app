@@ -2,7 +2,7 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
-## 2026-11-01: Sidebar, profile menu, and Settings window (D-052, fixture gates)
+## 2026-11-01: Sidebar, profile menu, and Settings window (D-053, fixture gates)
 
 Run from `blove/sidebar-profile-menu` at `42e329f` (on `main` after #25) on macOS 26.5.
 
@@ -19,6 +19,14 @@ New tests: `ThemeTests` (`runtimeMarksLoad`, `parserHandlesArcsAndPackedNumbers`
 Final review (a fresh reviewer over `a03a230..42e329f`) found no critical issues and six important ones, fixed in `088ba69`: iPhone search did not move to the thread it opened; the phone's Log out kept the outbox of unsent edits (now `MirrorLogOut` in `WorkspaceMirror`, with `MirrorLogOutTests`); the display name was never fetched again after a failed `/v1/me` (`aFailedNameFetchIsRetriedAfterTheNextSuccessfulPush`); the Mac's account did not refresh after a CLI join or leave (it now refreshes when the window becomes active); thread-row context was in the accessibility hint rather than the label; and two empty SVGs had shipped. After the fixes, at `088ba69`: lint clean, `swift test` 559 tests in 95 suites pass, both `xcodebuild` builds succeed.
 
 Not run: the live checks (`B4APP_LIVE_*`), and the app on screen. Log out against a real hub, "Host disconnected" on a real phone, and ⌘, / ⌘K / ⌘N in the running app are still to be checked by hand.
+
+## 2026-11-01: Coordinator robustness (D-052)
+
+- `HubSyncTests.aKeychainPromptIsReportedAndTheTokenIsReadOncePerRun`: with the secret store's read held open (an unanswered prompt), `hub status` answers and names the Keychain wait; after release the push drains and later pushes and the pull reuse the one read.
+- `KeychainCallTests`: a Keychain call made from the main actor runs off it, and its error reaches the caller.
+- `PostgresServerTests.replacesAPostmasterFromAnotherInstall` and `aPostmasterRunningAnotherBinaryIsNotThisInstalls`: a server whose binary was written after it started, or that runs another file, is stopped and replaced; this install's own server is still adopted.
+- `ReasonLineTimeTests`: a reply up to a minute old, or a few seconds in the future, reads "Replied just now".
+- Manual, scratch coordinator with the fake Codex: `turn send <id> please hang around --no-wait` returned in 0.05 s and the stored message was "please hang around".
 
 ## 2026-11-01: distribution, provisioning, and the Mac keychain (D-051)
 
