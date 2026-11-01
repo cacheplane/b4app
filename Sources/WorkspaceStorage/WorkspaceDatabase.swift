@@ -7,10 +7,15 @@ public struct ThreadFilter: Sendable, Equatable {
   public var connectionId: String?
   public var includeArchived: Bool
   public var query: String?
-  public init(connectionId: String? = nil, includeArchived: Bool = false, query: String? = nil) {
+  public var projectId: String?
+  public init(
+    connectionId: String? = nil, includeArchived: Bool = false, query: String? = nil,
+    projectId: String? = nil
+  ) {
     self.connectionId = connectionId
     self.includeArchived = includeArchived
     self.query = query
+    self.projectId = projectId
   }
 }
 
@@ -115,7 +120,7 @@ public final class WorkspaceDatabase: Sendable {
 
   /// Inserts `value`'s stored properties. A property that is not a column of the table (a thread's
   /// computed `activity` and `ownerDeviceName`) is dropped here, so computed fields are never written.
-  private func insert<T: Encodable>(_ c: PostgresConnection, _ table: String, _ value: T) throws {
+  func insert<T: Encodable>(_ c: PostgresConnection, _ table: String, _ value: T) throws {
     let known = Set(try columns(c, of: table))
     let statement = Rows.insert(table, try Rows.encode(value).filter { known.contains($0.column) })
     try c.execute(statement.sql, statement.params)
@@ -150,7 +155,7 @@ public final class WorkspaceDatabase: Sendable {
     return names
   }
 
-  private func byId<T: Decodable>(
+  func byId<T: Decodable>(
     _ c: PostgresConnection, _ type: T.Type, _ table: String, _ id: String, key: String = "id"
   ) throws -> T? {
     try one(c, T.self, "SELECT * FROM \(Rows.quote(table)) WHERE \(Rows.quote(key)) = $1", [id])
@@ -296,32 +301,64 @@ public final class WorkspaceDatabase: Sendable {
 
   // MARK: - Threads
 
+  /// Every thread column plus `activity`, computed in the same query: the latest turn (greatest
+  /// `createdAt`, ties by greatest `id`), the count of pending runtime requests, and the newest of the
+  /// thread's `createdAt` and its latest turn's and latest request's `updatedAt`. Timestamps are ISO-8601
+  /// text, compared bytewise (`COLLATE "C"`). Callers append a WHERE clause on `t`.
+  private static let threadWithActivity = """
+    SELECT t.*, jsonb_build_object(
+      'latestTurnId', lt."id",
+      'latestTurnStatus', lt."status",
+      'latestTurnOutcome', lt."outcome",
+      'pendingRequests', pr."n",
+      'lastActivityAt', (
+        SELECT max(v."x" COLLATE "C") FROM (VALUES (t."createdAt"), (lt."updatedAt"), (lr."updatedAt")) AS v("x"))
+    ) AS "activity"
+    FROM "threads" t
+    LEFT JOIN LATERAL (
+      SELECT "id", "status", "outcome", "updatedAt" FROM "turns" WHERE "threadId" = t."id"
+      ORDER BY "createdAt" COLLATE "C" DESC, "id" COLLATE "C" DESC LIMIT 1) lt ON true
+    LEFT JOIN LATERAL (
+      SELECT "updatedAt" FROM "runtimeRequests" WHERE "threadId" = t."id"
+      ORDER BY "updatedAt" COLLATE "C" DESC LIMIT 1) lr ON true
+    CROSS JOIN LATERAL (
+      SELECT count(*) AS "n" FROM "runtimeRequests" WHERE "threadId" = t."id" AND "state" = 'pending') pr
+    """
+
   public func listThreads(_ filter: ThreadFilter = ThreadFilter()) throws -> [ConversationThread] {
     try read { c in
       var clauses: [String] = []
       var params: [String?] = []
       if let connectionId = filter.connectionId {
         params.append(connectionId)
-        clauses.append("\"connectionId\" = $\(params.count)")
+        clauses.append("t.\"connectionId\" = $\(params.count)")
       }
-      if !filter.includeArchived { clauses.append("\"archived\" = false") }
+      if let projectId = filter.projectId {
+        params.append(projectId)
+        clauses.append("t.\"projectId\" = $\(params.count)")
+      }
+      if !filter.includeArchived { clauses.append("t.\"archived\" = false") }
       if let query = filter.query?.trimmingCharacters(in: .whitespaces), !query.isEmpty {
         let escaped = query.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(
           of: "%", with: "\\%"
         )
         .replacingOccurrences(of: "_", with: "\\_")
         params.append("%\(escaped)%")
-        clauses.append("\"title\" ILIKE $\(params.count) ESCAPE '\\'")
+        clauses.append("t.\"title\" ILIKE $\(params.count) ESCAPE '\\'")
       }
       let whereSQL = clauses.isEmpty ? "" : " WHERE " + clauses.joined(separator: " AND ")
       return try all(
         c, ConversationThread.self,
-        "SELECT * FROM \"threads\"" + whereSQL + " ORDER BY \"pinned\" DESC, \"updatedAt\" DESC", params)
+        Self.threadWithActivity + whereSQL + " ORDER BY t.\"pinned\" DESC, t.\"updatedAt\" DESC", params)
     }
   }
 
   public func thread(id: String) throws -> ConversationThread? {
-    try read { try byId($0, ConversationThread.self, "threads", id) }
+    try read { try threadWithActivity($0, id: id) }
+  }
+
+  func threadWithActivity(_ c: PostgresConnection, id: String) throws -> ConversationThread? {
+    try one(c, ConversationThread.self, Self.threadWithActivity + " WHERE t.\"id\" = $1", [id])
   }
 
   /// Resolve a native thread id within one connection (newest first if scopes ever overlap).
@@ -329,7 +366,8 @@ public final class WorkspaceDatabase: Sendable {
     try read {
       try one(
         $0, ConversationThread.self,
-        "SELECT * FROM \"threads\" WHERE \"connectionId\" = $1 AND \"nativeThreadId\" = $2 ORDER BY \"createdAt\" DESC LIMIT 1",
+        Self.threadWithActivity
+          + " WHERE t.\"connectionId\" = $1 AND t.\"nativeThreadId\" = $2 ORDER BY t.\"createdAt\" DESC LIMIT 1",
         [connectionId, nativeThreadId])
     }
   }
@@ -350,6 +388,35 @@ public final class WorkspaceDatabase: Sendable {
       thread.updatedAt = Timestamp.now()
       try update(c, "threads", thread)
       return thread
+    }
+  }
+
+  /// Mark a thread read up to `turnId`, or unread again with nil. A turn is written only when it is a
+  /// terminal turn of this thread created no earlier than the turn the marker already names (same
+  /// order as the latest turn: `createdAt`, ties by `id`); anything else returns the thread unchanged.
+  /// Moves no `updatedAt`: reading is not an edit of the thread. Nil when the thread does not exist.
+  public func markRead(threadId: String, turnId: String?) throws -> ConversationThread? {
+    try write { c in
+      if let turnId {
+        _ = try c.execute(
+          """
+          UPDATE "threads" SET "readTurnId" = $2::text
+          WHERE "id" = $1 AND "readTurnId" IS DISTINCT FROM $2::text
+            AND EXISTS (
+              SELECT 1 FROM "turns" candidate
+              WHERE candidate."id" = $2::text AND candidate."threadId" = $1 AND candidate."status" = 'terminal'
+                AND NOT EXISTS (
+                  SELECT 1 FROM "turns" marker
+                  WHERE marker."id" = "threads"."readTurnId"
+                    AND (candidate."createdAt" COLLATE "C", candidate."id" COLLATE "C")
+                      < (marker."createdAt" COLLATE "C", marker."id" COLLATE "C")))
+          """, [threadId, turnId])
+      } else {
+        _ = try c.execute(
+          "UPDATE \"threads\" SET \"readTurnId\" = NULL WHERE \"id\" = $1 AND \"readTurnId\" IS NOT NULL",
+          [threadId])
+      }
+      return try threadWithActivity(c, id: threadId)
     }
   }
 
@@ -720,6 +787,16 @@ public final class WorkspaceDatabase: Sendable {
 
   public func deleteDraft(threadId: String) throws {
     try write { _ = try $0.execute("DELETE FROM \"drafts\" WHERE \"threadId\" = $1", [threadId]) }
+  }
+
+  /// Empty a draft's text but keep its row, so the clearing syncs as an update and wins against an older
+  /// edit; a draft is deleted only with its thread. Does nothing when there is no draft or it is empty.
+  public func clearDraft(threadId: String) throws {
+    try write {
+      _ = try $0.execute(
+        "UPDATE \"drafts\" SET \"text\" = '', \"updatedAt\" = $2 WHERE \"threadId\" = $1 AND \"text\" <> ''",
+        [threadId, Timestamp.now()])
+    }
   }
 
   // MARK: - Hub link (M8a, local only)

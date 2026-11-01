@@ -185,7 +185,9 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     let stored = try #require(try db.thread(id: "t1"))
     #expect(stored.projectId == "p1")
     #expect(stored.readTurnId == "u1")
-    #expect(stored.activity == nil)
+    // `activity` is computed on read from the thread's turns and requests (here neither): the value the
+    // struct carried was never stored.
+    #expect(stored.activity == ThreadActivity(lastActivityAt: stored.createdAt))
     #expect(stored.ownerDeviceName == nil)
 
     // An update through a struct that carries computed fields writes none of them either.
@@ -199,7 +201,7 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     #expect(updated.title == "Renamed")
     let again = try #require(try db.thread(id: "t1"))
     #expect(again.readTurnId == "u2")
-    #expect(again.activity == nil)
+    #expect(again.activity == ThreadActivity(lastActivityAt: again.createdAt))
     #expect(again.ownerDeviceName == nil)
   }
 
