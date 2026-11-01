@@ -1,6 +1,6 @@
 # Compatibility manifest
 
-Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 on 2026-10-31). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
+Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M8a on 2026-10-31). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
 
 ## Target machine
 
@@ -14,6 +14,9 @@ Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 on 20
 | Code-signing identity | none installed (`security find-identity -v -p codesigning`: 0 valid); packages are signed ad hoc (D-039) |
 | Fonts bundled | Hanken Grotesk Regular and SemiBold (OFL, from the LiveLoveApp repository), JetBrains Mono variable (OFL); registered per process with CoreText |
 | App version | 0.1.0 (`CoordinatorVersion.current`, stamped into the bundle by `Scripts/package.sh`) |
+| Rust | 1.93.1 (`Hub/rust-toolchain.toml`, `profile = "minimal"` with `rustfmt` and `clippy`; `rust-version` 1.93.1 in the workspace manifest); used by the hub only |
+| Docker | 27.4.0 (Docker Desktop) on the build Mac; builds ran `linux/arm64` only (`linux/amd64` unverified); the Mac's `docker-credential-desktop` hangs, so builds and Compose runs used a throwaway `DOCKER_CONFIG` containing `{}` |
+| iOS Simulator | iOS 26.5, iPhone 17 Pro; the data-protection Keychain needs a signed build (`CODE_SIGNING_ALLOWED=NO` fails with -34018), so the Simulator run used Xcode's ad hoc "Sign to Run Locally" |
 | PostgreSQL | 17.11 (zonky `embedded-postgres-binaries-darwin-arm64v8` 17.11.0, SHA-256 pinned in `Scripts/fetch-postgres.sh`; server, initdb, pg_ctl, libpq, PL/pgSQL, dict_snowball; 62 MB after thinning); the cluster listens only on a Unix socket in the runtime directory |
 
 Xcode 27 (Swift 6.4) requires macOS 26.6; the package uses `swift-tools-version: 6.2` so either toolchain builds it.
@@ -28,7 +31,34 @@ Xcode 27 (Swift 6.4) requires macOS 26.6; the package uses `swift-tools-version:
 | swift-subprocess | 1.0.2 | Running `codex`, `claude`, and `node` with bounded output and timeouts |
 | swift-argument-parser | 1.8.2 | `agent-workspace` CLI |
 
-Exact resolved versions are in `Package.resolved`.
+Exact resolved versions are in `Package.resolved`. The iOS mirror links the system `sqlite3`; no package provides it.
+
+## Hub (M8a)
+
+Pinned exactly (`=`) in `Hub/Cargo.toml` `[workspace.dependencies]`, resolved in the committed `Hub/Cargo.lock`; builds and tests run `--locked`.
+
+| Crate | Version | Used for |
+| --- | --- | --- |
+| axum | 0.8.9 (`http1`, `tokio`, `json`) | HTTP routes |
+| tokio | 1.54.1 | runtime, signals, timers |
+| sqlx | 0.8.6 (`runtime-tokio`, `tls-rustls-ring`, `postgres`, `migrate`, `uuid`, `macros`, `json`) | PostgreSQL, migrations, `#[sqlx::test]` |
+| serde / serde_json | 1.0.229 / 1.0.154 | wire types |
+| clap | 4.6.7 | `serve`, `migrate`, `seed`, `enroll` |
+| tracing / tracing-subscriber | 0.1.44 / 0.3.23 | logs (`B4HUB_LOG`) |
+| uuid | 1.29.0 (`v7`, `serde`) | hub-minted ids |
+| sha2, hmac | 0.10.9, 0.12.1 | token and code hashes; SCRAM-SHA-256 verifier for `b4hub_app` |
+| base64, getrandom | 0.22.1, 0.4.3 | token encoding and randomness |
+| thiserror, url, percent-encoding | 2.0.21, 2.5.8, 2.3.2 | errors, `DATABASE_URL` handling |
+| tower, http-body-util, hyper, hyper-util | 0.5.3, 0.1.5, 1.12.0, 0.1.21 | in-process route tests and the HTTP test client (dev) |
+
+| Item | Value |
+| --- | --- |
+| Hub protocol | `minClientProtocol` 1; `Hub/API.md` is the wire reference |
+| Builder image | `rust:1.93.1-slim-bookworm@sha256:5b9332190bb3b9ece73b810cd1f1e9f06343b294ce184bcb067f0747d7d333ea` (index digest) |
+| Runtime image | `debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3` (index digest); runs as uid 10001, `STOPSIGNAL SIGTERM`, `HEALTHCHECK` on `/readyz` |
+| Compose database | `postgres:17`, not digest-pinned (the index digest seen on 2026-10-31 was `sha256:31ba9c94a03ada9988f2bb493a22a75eef3a185884533e5cdbcd498ea835b08f`); CI's `hub` job uses a `postgres:17` service on Ubuntu |
+| Test database | the zonky PostgreSQL 17.11 from `./Scripts/fetch-postgres.sh`, started by `Hub/scripts/test-db.sh` on 127.0.0.1:54329 |
+| Architectures | `linux/arm64` built and run on the build Mac; `linux/amd64` not built (both base digests are multi-platform indexes, so nothing in the Dockerfile is architecture-specific, but that is reasoning, not a check) |
 
 ## Provider runtimes
 
@@ -52,7 +82,7 @@ Exact resolved versions are in `Package.resolved`.
 - Runtime request kinds the app cannot present (`item/permissions/requestApproval`, `mcpServer/elicitation/request`, `item/tool/call`, token refresh, attestation) are declined automatically with a valid response and shown as resolved.
 - A turn whose `codex app-server` process exits stays `reconciling` until the thread is reopened and Codex reports the turn's final status; the composer refuses a new turn until then.
 - The packaged app installs a per-user LaunchAgent plist (`~/Library/LaunchAgents`, D-042) that runs the bundled coordinator, which starts the PostgreSQL cluster; an Xcode-run app or a failed bootstrap falls back to in-process hosting. `SMAppService` is not used while builds are ad hoc: launchd pins the managed program's hash and a rebuild leaves it unspawnable. The coordinator has no idle shutdown. `coordinator restart` and the app's Coordinator menu replace a coordinator left behind by an upgrade.
-- iOS renders the shell with an unavailable transport; the relay is a follow-on design.
+- iOS reads a SQLite mirror of what the hub holds (D-046) and cannot write or run turns: phone writes are M8b, the relay is M8c. Turns and runtime requests that arrive while a thread is open show on reopen; only items, threads, and connections are published live. The shell still shows Mac wording on the phone ("Coordinator connected") and the thread header shows the Mac's working directory (`threads.context`).
 - Keychain uses the file-based login keychain; the data-protection keychain needs a provisioning profile, which needs a signing identity (D-008, D-039).
-- The store is a private PostgreSQL cluster per Mac (D-041); the schema is `0001_init` and `0002_changes`; backups are JSON-lines archives from `db backup`, not `pg_dump`; a pre-0.2 `workspace.sqlite` is imported once and retired. Nothing syncs yet (M8).
+- The store is a private PostgreSQL cluster per Mac (D-041); the schema is `0001_init` and `0002_changes`; backups are JSON-lines archives from `db backup`, not `pg_dump`; a pre-0.2 `workspace.sqlite` is imported once and retired. Sync is read-only M8a (D-043 to D-046): a Mac that ran `hub join` pushes its change log, and nothing else syncs. `database.restore` fails with `invalid input syntax for type json` on an archive whose change log holds an `update` of a scalar jsonb value (found during M8a, not fixed; see `docs/verification.md`).
 - Packaging is ad hoc: the app runs on the Mac that built it. Developer ID signing and notarisation are untested (no certificate). Removing a registration and changing a server's port are still missing.

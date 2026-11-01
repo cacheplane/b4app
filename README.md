@@ -1,6 +1,6 @@
 # b4app: Personal Agent Workspace
 
-A native Swift app for running Codex, Claude Code, and B4 agent conversations side by side on one Mac, with an iOS companion built from the same code. Everything is local: no accounts, no cloud sync, no telemetry.
+A native Swift app for running Codex, Claude Code, and B4 agent conversations side by side on one Mac, with an iOS companion built from the same code. Everything is local by default: no accounts, no telemetry, and nothing leaves the Mac unless you run a hub and join it (see "Hub (optional)").
 
 The interface follows the LiveLoveApp visual system (`docs/superpowers/specs/2026-10-31-lla-visual-system-design.md`): ink on white, one cobalt accent, Hanken Grotesk and JetBrains Mono, hairlines and pills, with a derived dark appearance.
 
@@ -179,6 +179,50 @@ B4APP_LIVE_B4_URL=http://127.0.0.1:3001 B4APP_LIVE_B4_ROUTE=/chat#agent swift te
 
 The B4 live check needs a server you run yourself: a B4 project with one `agent()` route, started with `b4 dev --port 3001 --env-file .env` where that `.env` holds the model provider key, or the same project registered with `server add` and started by the app. This repo's `.env` is gitignored for exactly that; B4 keeps the provider key, the app never sees it. On the owner's Mac the trusted project is `~/repos/b4app-live-check`.
 
+## Hub (optional)
+
+The hub (`Hub/`, a Rust service backed by PostgreSQL) mirrors conversations created in the app from a Mac to the iOS app, read-only (M8a, decisions D-043 to D-046). The phone shows threads and transcripts; it cannot write, send turns, or answer approvals yet (M8b, M8c). Only threads created in the app sync: nothing is read from `~/.codex`, `~/.claude`, or a B4 server's history, and connection credentials, executable paths, and local-server records never leave the Mac. The hub's wire reference is `Hub/API.md`.
+
+Start a local hub (needs Docker). Compose publishes port 8080 as `8080:8080`, which is every interface and plain HTTP, so use it on a trusted network or put TLS in front of it; the database is not published:
+
+```bash
+cd Hub && cp .env.example .env
+```
+
+Fill in `POSTGRES_PASSWORD` and `B4HUB_APP_PASSWORD` in `.env` (URL-safe printable ASCII, for example `openssl rand -hex 24` each; the file is gitignored), then:
+
+```bash
+docker compose build && docker compose up -d && curl -fsS localhost:8080/readyz
+```
+
+Create the organisation and user, then mint a one-time enrollment code for each device. `seed` and `enroll` are operator commands that run through the `migrate` service, because only it holds the database owner's URL:
+
+```bash
+docker compose run --rm migrate seed --org cacheplane --org-name cacheplane --user blove --name "Your Name" --email you@example.com
+```
+
+```bash
+docker compose run --rm migrate enroll --user blove
+```
+
+The code is eight characters, valid for ten minutes, and works once. Join the Mac (the code is read from a hidden prompt or one line of stdin, never an argument):
+
+```bash
+.build/debug/agent-workspace hub join http://localhost:8080
+```
+
+Join the phone by entering the same hub URL, a second enrollment code, and a device name on the iOS app's Connect screen. The Mac pushes its history and every later change; the phone's thread list and open transcripts update without a refresh. The clients accept `http` only for `localhost`, `127.0.0.1`, and `::1`; any other hub must be `https`, and both sides refuse anything else before sending a request. The Simulator reaches the hub at `http://localhost:8080`. Simulator builds need code signing for the Keychain (Xcode's default "Sign to Run Locally" works; `CODE_SIGNING_ALLOWED=NO` builds fail with Keychain error -34018 when the app tries to store its device token).
+
+```bash
+.build/debug/agent-workspace hub status
+```
+
+```bash
+.build/debug/agent-workspace hub leave
+```
+
+`hub status` shows the hub, this device, the account, and how many changes are still unsynced. `hub leave` revokes this device at the hub and stops pushing; what it already uploaded stays on the hub. While a Mac is joined, `db restore` is refused: leave first, restore, then join again. On the phone, removing the app is the only way to disconnect for now, and it leaves the device unrevoked at the hub.
+
 ## Layout
 
 ```
@@ -186,14 +230,18 @@ Package.swift            umbrella package: libraries, coordinator, CLI, tests
 Sources/WorkspaceProtocol   commands, events, errors, domain (runtime-neutral)
 Sources/WorkspaceClient     typed coordinator client (runtime-neutral)
 Sources/WorkspaceUI         SwiftUI shared by macOS and iOS
-Sources/WorkspacePlatform   paths, executables, processes, Keychain, lock
-Sources/WorkspaceStorage    GRDB schema and repositories
-Sources/Coordinator         event log, router, session service, socket server, launcher
+Sources/WorkspacePlatform   paths, executables, processes, lock
+Sources/WorkspaceSecrets    secret references and the Keychain store (both platforms)
+Sources/WorkspaceSync       hub wire types and HTTP client (Foundation only)
+Sources/WorkspaceMirror     the iOS app's SQLite mirror of the synced tables
+Sources/WorkspaceStorage    PostgreSQL store, migrations, backup and restore
+Sources/Coordinator         event log, router, session service, socket server, launcher, HubSync
 Sources/CoordinatorMain     the b4app-coordinator executable
 Sources/AgentWorkspaceCLI   the agent-workspace executable
 Sources/NIOTransport        Unix socket transport
 Sources/CodexAdapter, ClaudeAdapter, B4Adapter
 Apps/macOS, Apps/iOS        thin app targets (project.yml, XcodeGen)
+Hub/                        the Rust hub: b4hub-core, b4hub-db, b4hub, Dockerfile, Compose
 docs/                       spec, design, decisions, compatibility, verification, research
 ```
 
