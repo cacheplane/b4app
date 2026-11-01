@@ -125,13 +125,22 @@ struct CoordinatorCommand: AsyncParsableCommand {
 
     func run() async throws {
       do {
-        if await LaunchAgentControl.isLoaded() {
+        let previous = CoordinatorLauncher.runningRecord()
+        if let job = await LaunchAgentControl.jobState() {
+          // A coordinator the app or this CLI started outlives `kickstart -k`: launchd's new
+          // instance loses the lock and exits 0. Stop it first so launchd's instance takes over.
+          if LaunchAgentControl.mustStopBeforeKickstart(running: previous, job: job) {
+            _ = try await CoordinatorLauncher.stop()
+          }
           try await LaunchAgentControl.kickstart()
+          _ = try await CoordinatorLauncher.waitForReplacement(of: previous)
         } else {
           _ = try await CoordinatorLauncher.stop()
         }
         let link = try await CoordinatorLauncher.ensure()
         await link.client.close()
+        try CoordinatorLauncher.confirmReplaced(
+          previous: previous, current: CoordinatorLauncher.runningRecord())
         let r = await CoordinatorCommand.report()
         print(global.json ? try Format.jsonOk(r) : CoordinatorCommand.describe(r))
       } catch {

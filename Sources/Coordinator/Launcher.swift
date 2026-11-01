@@ -71,6 +71,28 @@ public enum CoordinatorLauncher {
     )
   }
 
+  /// Wait for a coordinator other than `previous` to hold the lock (launchd starts it
+  /// asynchronously after a kickstart). Returns nil when none appeared within `timeout`.
+  public static func waitForReplacement(
+    of previous: LockRecord?, paths: PlatformPaths? = nil, timeout: Duration = .seconds(15)
+  ) async throws -> LockRecord? {
+    let paths = paths ?? PlatformPaths.resolve()
+    let deadline = ContinuousClock.now + timeout
+    while ContinuousClock.now < deadline {
+      if let record = runningRecord(paths: paths), record.pid != previous?.pid { return record }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    return nil
+  }
+
+  /// Fail when a restart left the same process holding the lock.
+  public static func confirmReplaced(previous: LockRecord?, current: LockRecord?) throws {
+    guard let previous, let current, current.pid == previous.pid else { return }
+    throw WorkspaceError(
+      .endpointUnavailable,
+      "Coordinator pid \(previous.pid) is still running after the restart; run `coordinator stop` and retry.")
+  }
+
   public static func tryConnect(socketPath: String) async -> WorkspaceClient? {
     try? await UnixSocketTransport.client(path: socketPath, timeout: .seconds(2))
   }

@@ -112,6 +112,8 @@ public enum LaunchAgentControl {
     public var state: String
     public var lastExitCode: String?
     public var runs: Int?
+    /// The pid of the process launchd is running for the job, nil when it is not running.
+    public var pid: Int32?
   }
 
   public static func jobState() async -> JobState? {
@@ -120,16 +122,32 @@ public enum LaunchAgentControl {
         "/bin/launchctl", ["print", "\(domain)/\(label)"], options: CommandOptions(timeout: .seconds(5))),
       result.exitCode == 0
     else { return nil }
-    var state = "unknown"
-    var exit: String?
-    var runs: Int?
-    for raw in result.stdout.split(separator: "\n") {
+    return parseJobState(result.stdout)
+  }
+
+  /// Read `launchctl print` output. Nested sections repeat `state =`, so the first one wins.
+  static func parseJobState(_ output: String) -> JobState {
+    var job = JobState(state: "unknown")
+    for raw in output.split(separator: "\n") {
       let line = raw.trimmingCharacters(in: .whitespaces)
-      if line.hasPrefix("state = "), state == "unknown" { state = String(line.dropFirst("state = ".count)) }
-      if line.hasPrefix("last exit code = ") { exit = String(line.dropFirst("last exit code = ".count)) }
-      if line.hasPrefix("runs = ") { runs = Int(line.dropFirst("runs = ".count)) }
+      if line.hasPrefix("state = "), job.state == "unknown" {
+        job.state = String(line.dropFirst("state = ".count))
+      }
+      if line.hasPrefix("last exit code = ") {
+        job.lastExitCode = String(line.dropFirst("last exit code = ".count))
+      }
+      if line.hasPrefix("runs = ") { job.runs = Int(line.dropFirst("runs = ".count)) }
+      if line.hasPrefix("pid = "), job.pid == nil { job.pid = Int32(line.dropFirst("pid = ".count)) }
     }
-    return JobState(state: state, lastExitCode: exit, runs: runs)
+    return job
+  }
+
+  /// True when a coordinator holds the lock but is not launchd's instance of the job (the app or
+  /// the CLI started it). `kickstart -k` cannot replace it: launchd's new process finds the lock
+  /// held and exits 0, and the old one keeps serving, possibly from a deleted binary.
+  public static func mustStopBeforeKickstart(running: LockRecord?, job: JobState?) -> Bool {
+    guard let running else { return false }
+    return running.pid != job?.pid
   }
 
   /// The property list the package script writes into `Contents/Library/LaunchAgents`. Without a
