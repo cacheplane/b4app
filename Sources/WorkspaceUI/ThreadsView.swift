@@ -133,7 +133,7 @@ struct ContinuityBanner: View {
       HStack(alignment: .top, spacing: LLA.Space.l) {
         VStack(alignment: .leading, spacing: LLA.Space.xs) {
           Text("Continuation is unavailable").font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
-          Text(explanation).llaSmallMuted().fixedSize(horizontal: false, vertical: true)
+          Text(explanation).llaSmallMuted()
         }
         Spacer()
         Button("Check again") { Task { await model.reconcileThread(id: thread.id) } }

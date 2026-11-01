@@ -4,7 +4,7 @@ Gate results and unresolved checks, newest first. Each entry names what was exer
 
 ## 2026-11-01: M8b final-review fix wave (fixture gates)
 
-Run from `feat/m8b-organisation` at `446c8c0` (six commits over `6baea96`: read marks wait for the thread to be on screen; `0004` backfills `readTurnId` and indexes `runtimeRequests("threadId", "state")`; the phone's push is capped at 8 MiB and unsent edits of one column collapse; an advisory lock orders local writes against pulled batches; a router test waits for its events; README and D-047/D-048). `Hub/` was not touched, so the Rust gates were not rerun. The live gate below is still pending.
+Run from `feat/m8b-organisation` at `446c8c0` (six commits over `6baea96`: read marks wait for the thread to be on screen; `0004` backfills `readTurnId` and indexes `runtimeRequests("threadId", "state")`; the phone's push is capped at 8 MiB and unsent edits of one column collapse; an advisory lock orders local writes against pulled batches; a router test waits for its events; README and D-048/D-049). `Hub/` was not touched, so the Rust gates were not rerun. The live gate below is still pending.
 
 | Check | Command | Result |
 | --- | --- | --- |
@@ -56,6 +56,20 @@ To be run only after the owner's go-ahead, because it rebuilds the owner's packa
 | 3. Live convergence | `docker compose stop hub`; rename the same thread and edit the same draft on both devices, the Mac's edit later; `docker compose start hub`; both must show the Mac's values (and, with the phone's edit later, the phone's) | not run |
 
 Also record for the live run: `agent-workspace hub status` shows `unsynced 0`; `agent-workspace coordinator status` shows a pid started after the restart; a screenshot of the Simulator list and the Mac sidebar; and that the owner's app, once restored from `main`, is rebuilt with the same dev loop.
+
+## 2026-10-31: blank window on a pending Claude request
+
+Found in the owner's running app: a new Claude thread asked to run Bash, and when the thread opened the window went blank, sidebar and detail, with the toolbar still working; relaunching restored it until the thread was opened again. Root cause and rule in D-047.
+
+| Check | How | Result |
+| --- | --- | --- |
+| Reproduce | The stored thread exported to `Tests/Fixtures/ui/waiting-thread.json`; the packaged app quit and a Debug build of the same tree launched against the running coordinator; env switches hid one part of the thread detail per round | Blank with the request card; rendered without it; rendered with the command text plain or selectable; blank again with only `fixedSize(horizontal: false, vertical: true)` on the command |
+| Measure | `NSHostingController(rootView: ThreadsView(model:)).sizeThatFits(in: .zero)` on the mirrored thread | 184 points without the request, 4,749 with it; 822 with the `fixedSize` removed; 485 with the bounded list (then 240-point cap) |
+| Near the limit | The rendering variant with the window dragged to 900 by 652 points | Not blank, but the sidebar's top was pushed out and the composer off the bottom |
+| Regression test | `swift test --filter DetailMinimumSizeTests` against the unfixed views (`RuntimeRequestView`, `ThreadsView`, `ComposerView` stashed) | Fails: 4,749; 100,969; 201,733; 103,418 points at zero width, 650 at 610 wide for the banner variant |
+| With the fix | The same | Pass, five variants (the long-draft case is folded into each) |
+| Live | The Debug build with the fix, thread "test" opened, then the window dragged to its minimum | Renders: transcript, the whole command, Allow once / Allow for session / Deny, the composer with Stop and Send; the pending permission was left unanswered for the owner |
+| Suite, lint, apps | `swift test`, `swift format lint --strict --recursive Sources Tests Apps Package.swift`, both `xcodebuild` schemes | Pass: 328 tests in 75 suites (324 before; the new test runs four variants); lint clean; macOS and iOS build |
 
 ## 2026-10-31: `db restore` of a store with updates (jsonb scalars)
 

@@ -1,0 +1,171 @@
+[
+ {
+  "column": null,
+  "deviceId": "mac-1",
+  "deviceSeq": 1,
+  "hubSeq": 1,
+  "op": "insert",
+  "rowId": "abcdd5a7-f99f-48af-ac9c-dc117c29e0d4",
+  "table": "connections",
+  "value": {
+   "authReference": null,
+   "authStatus": "authenticated",
+   "capabilities": {
+    "explicit_interruption": "supported",
+    "history_retrieval": "supported",
+    "model_selection": "unverified",
+    "native_resume": "supported",
+    "permission_decisions": "supported",
+    "reconnect": "unverified",
+    "streaming": "supported",
+    "user_questions": "supported"
+   },
+   "createdAt": "2026-10-31T18:35:11.313Z",
+   "enabled": true,
+   "id": "abcdd5a7-f99f-48af-ac9c-dc117c29e0d4",
+   "kind": "claude",
+   "label": "Claude Code",
+   "localServerId": null,
+   "nativeScope": "brian@brianflove.com",
+   "profileRevision": 0,
+   "status": "ready",
+   "target": "",
+   "updatedAt": "2026-10-31T20:13:30.349Z"
+  },
+  "wall": 1761900000001
+ },
+ {
+  "column": null,
+  "deviceId": "mac-1",
+  "deviceSeq": 2,
+  "hubSeq": 2,
+  "op": "insert",
+  "rowId": "f6f1493f-d8ad-4e76-b630-4e712ee9e53e",
+  "table": "threads",
+  "value": {
+   "archived": false,
+   "connectionId": "abcdd5a7-f99f-48af-ac9c-dc117c29e0d4",
+   "context": "/Users/blove/repos/b4run",
+   "continuity": "available",
+   "createdAt": "2026-11-01T03:54:26.590Z",
+   "id": "f6f1493f-d8ad-4e76-b630-4e712ee9e53e",
+   "nativeScope": "brian@brianflove.com",
+   "nativeThreadId": "65d1f8e0-8812-4d45-84f8-dc6ceadd5e81",
+   "pinned": false,
+   "title": "test",
+   "updatedAt": "2026-11-01T03:54:26.590Z"
+  },
+  "wall": 1761900000002
+ },
+ {
+  "column": null,
+  "deviceId": "mac-1",
+  "deviceSeq": 3,
+  "hubSeq": 3,
+  "op": "insert",
+  "rowId": "a9319d7b-f35d-4573-9430-ea7cf6be14c3",
+  "table": "turns",
+  "value": {
+   "createdAt": "2026-11-01T03:55:17.253Z",
+   "id": "a9319d7b-f35d-4573-9430-ea7cf6be14c3",
+   "nativeTurnId": "c5411ffa-9c9c-4fbb-b992-70c564a3d8a3",
+   "operationId": "3219e623-9a9d-4a82-8892-fc2a3d7b4c6d",
+   "status": "waiting_for_user",
+   "submission": "acknowledged",
+   "threadId": "f6f1493f-d8ad-4e76-b630-4e712ee9e53e",
+   "updatedAt": "2026-11-01T03:55:21.240Z"
+  },
+  "wall": 1761900000003
+ },
+ {
+  "column": null,
+  "deviceId": "mac-1",
+  "deviceSeq": 4,
+  "hubSeq": 4,
+  "op": "insert",
+  "rowId": "4b78e2f9-58ad-463b-b6b1-e4a579a92e93",
+  "table": "displayItems",
+  "value": {
+   "createdAt": "2026-11-01T03:55:17.256Z",
+   "id": "4b78e2f9-58ad-463b-b6b1-e4a579a92e93",
+   "payload": {
+    "text": "summarize repo status"
+   },
+   "provenance": "live",
+   "role": "user",
+   "sequence": 0,
+   "threadId": "f6f1493f-d8ad-4e76-b630-4e712ee9e53e",
+   "turnId": "a9319d7b-f35d-4573-9430-ea7cf6be14c3",
+   "type": "userMessage"
+  },
+  "wall": 1761900000004
+ },
+ {
+  "column": null,
+  "deviceId": "mac-1",
+  "deviceSeq": 5,
+  "hubSeq": 5,
+  "op": "insert",
+  "rowId": "0e78a691-92b6-44c4-8ad8-a900404e0329",
+  "table": "displayItems",
+  "value": {
+   "createdAt": "2026-11-01T03:55:19.301Z",
+   "id": "0e78a691-92b6-44c4-8ad8-a900404e0329",
+   "nativeItemId": "toolu_01ScFoVt2xMX42EU5eN754pV",
+   "payload": {
+    "command": "git status -sb && git log --oneline main..HEAD && git diff --stat && git log -1 --format=%cr main && git rev-list --left-right --count origin/main...main 2>/dev/null; ls docs/superpowers/reports/; gh pr list --head blove/ag-ui-orchestration-projection 2>/dev/null",
+    "id": "toolu_01ScFoVt2xMX42EU5eN754pV",
+    "input": {
+     "command": "git status -sb && git log --oneline main..HEAD && git diff --stat && git log -1 --format=%cr main && git rev-list --left-right --count origin/main...main 2>/dev/null; ls docs/superpowers/reports/; gh pr list --head blove/ag-ui-orchestration-projection 2>/dev/null",
+     "description": "Gather branch, diff, and PR status"
+    },
+    "name": "Bash",
+    "status": "inProgress",
+    "type": "toolUse"
+   },
+   "provenance": "live",
+   "role": "tool",
+   "sequence": 1,
+   "threadId": "f6f1493f-d8ad-4e76-b630-4e712ee9e53e",
+   "turnId": "a9319d7b-f35d-4573-9430-ea7cf6be14c3",
+   "type": "toolUse"
+  },
+  "wall": 1761900000005
+ },
+ {
+  "column": null,
+  "deviceId": "mac-1",
+  "deviceSeq": 6,
+  "hubSeq": 6,
+  "op": "insert",
+  "rowId": "628a0cff-a258-45f2-be3d-ffa4215ad6c3",
+  "table": "runtimeRequests",
+  "value": {
+   "adapterGeneration": 1,
+   "createdAt": "2026-11-01T03:55:21.238Z",
+   "id": "628a0cff-a258-45f2-be3d-ffa4215ad6c3",
+   "kind": "tool_permission",
+   "nativeRequestId": "f15f2e74-d3bf-421f-acbf-0f9f0d8d2963",
+   "payload": {
+    "answerable": true,
+    "kind": "tool_permission",
+    "method": "can_use_tool",
+    "request": {
+     "command": "git status -sb && git log --oneline main..HEAD && git diff --stat && git log -1 --format=%cr main && git rev-list --left-right --count origin/main...main 2>/dev/null; ls docs/superpowers/reports/; gh pr list --head blove/ag-ui-orchestration-projection 2>/dev/null",
+     "input": {
+      "command": "git status -sb && git log --oneline main..HEAD && git diff --stat && git log -1 --format=%cr main && git rev-list --left-right --count origin/main...main 2>/dev/null; ls docs/superpowers/reports/; gh pr list --head blove/ag-ui-orchestration-projection 2>/dev/null",
+      "description": "Gather branch, diff, and PR status"
+     },
+     "reason": "Gather branch, diff, and PR status",
+     "toolName": "Bash",
+     "toolUseId": "toolu_01ScFoVt2xMX42EU5eN754pV"
+    }
+   },
+   "state": "pending",
+   "threadId": "f6f1493f-d8ad-4e76-b630-4e712ee9e53e",
+   "turnId": "a9319d7b-f35d-4573-9430-ea7cf6be14c3",
+   "updatedAt": "2026-11-01T03:55:21.238Z"
+  },
+  "wall": 1761900000006
+ }
+]
