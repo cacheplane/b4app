@@ -2,6 +2,14 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-11-01: Coordinator robustness (D-052)
+
+- `HubSyncTests.aKeychainPromptIsReportedAndTheTokenIsReadOncePerRun`: with the secret store's read held open (an unanswered prompt), `hub status` answers and names the Keychain wait; after release the push drains and later pushes and the pull reuse the one read.
+- `KeychainCallTests`: a Keychain call made from the main actor runs off it, and its error reaches the caller.
+- `PostgresServerTests.replacesAPostmasterFromAnotherInstall` and `aPostmasterRunningAnotherBinaryIsNotThisInstalls`: a server whose binary was written after it started, or that runs another file, is stopped and replaced; this install's own server is still adopted.
+- `ReasonLineTimeTests`: a reply up to a minute old, or a few seconds in the future, reads "Replied just now".
+- Manual, scratch coordinator with the fake Codex: `turn send <id> please hang around --no-wait` returned in 0.05 s and the stored message was "please hang around".
+
 ## 2026-11-01: M8b live gate
 
 Run on the owner's MacBook Pro (macOS 26.5) from `feat/m8b-organisation` at `2c5ccef`, plus `87a494e` (the phone's project rename, found missing below). Backups first: `agent-workspace db backup` (152 rows) and `pg_dump` of the hub (13 tables), both in `~/Library/Application Support/b4app/backups/`. The Compose stack moved to the branch's `Hub/` on the same `hub_b4hub-db` volume: migration `0003_organisation` applied, `/readyz` `{"migrations":"current"}`. The packaged app was rebuilt with `./Scripts/package.sh` and swapped into `~/repos/b4app/dist` (main's bundle parked in `dist-main/` for the restore). The store migrated to `0004_organisation` and backfilled 2 projects. Then `agent-workspace hub status` showed `unsynced 0` and the coordinator a pid started at 14:40:00Z. The phone is the iPhone 17 Pro Simulator against `http://localhost:8080`. Real runtimes: Codex 0.166.0 and Claude Code.

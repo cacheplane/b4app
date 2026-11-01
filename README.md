@@ -85,7 +85,7 @@ It signs every PostgreSQL binary and library, both helpers, and the app with the
 
 ### The store
 
-Each Mac keeps its workspace in a private PostgreSQL cluster under `~/Library/Application Support/b4app/pg`, reachable only through a Unix socket in the runtime directory; the app's bundle carries the server under `Contents/SharedSupport/postgres`. The coordinator starts the cluster when it starts and stops it when it stops cleanly; a cluster left running is adopted next time. A `workspace.sqlite` from an earlier version is imported on the first start and renamed `.imported`.
+Each Mac keeps its workspace in a private PostgreSQL cluster under `~/Library/Application Support/b4app/pg`, reachable only through a Unix socket in the runtime directory; the app's bundle carries the server under `Contents/SharedSupport/postgres`. The coordinator starts the cluster when it starts and stops it when it stops cleanly; a cluster left running is adopted next time when it runs this install's `postgres`, and restarted with it otherwise (after an app update). A `workspace.sqlite` from an earlier version is imported on the first start and renamed `.imported`.
 
 ```bash
 agent-workspace db status
@@ -133,7 +133,7 @@ A conversation from the terminal (Codex CLI 0.166.0 or newer signed in with `cod
 .build/debug/agent-workspace turn send <thread-id> Run the test suite and summarize the failures.
 ```
 
-`turn send` streams the reply, prints tool cards and any runtime request with the `request respond` command that answers it, and exits 0 when the turn completes, 1 when it fails, 130 when it was stopped. Flags go before the message text. `turn interrupt <thread-id>` stops the active turn; `thread show <thread-id>` prints the cached transcript and `thread show --reconcile <thread-id>` first asks the runtime about an unresolved turn, merges native history into the cache, and reports whether the thread can still be continued; `turn abandon <thread-id>` gives up on a turn whose outcome the runtime never reported (nothing is re-sent); `thread update <thread-id> --title T | --pin | --unpin | --archive | --unarchive` organizes threads locally; every command takes `--json`.
+`turn send` streams the reply, prints tool cards and any runtime request with the `request respond` command that answers it, and exits 0 when the turn completes, 1 when it fails, 130 when it was stopped. Flags may go before or after the message text; a message that starts with a dash goes after `--`. `turn interrupt <thread-id>` stops the active turn; `thread show <thread-id>` prints the cached transcript and `thread show --reconcile <thread-id>` first asks the runtime about an unresolved turn, merges native history into the cache, and reports whether the thread can still be continued; `turn abandon <thread-id>` gives up on a turn whose outcome the runtime never reported (nothing is re-sent); `thread update <thread-id> --title T | --pin | --unpin | --archive | --unarchive` organizes threads locally; every command takes `--json`.
 
 A B4 agent route on a server you already run (`b4 dev` in the project; remote endpoints must be HTTPS):
 
