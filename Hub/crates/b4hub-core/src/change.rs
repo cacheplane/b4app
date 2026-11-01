@@ -20,6 +20,10 @@ pub const MAX_PUSH_CHANGES: usize = 1000;
 /// The most changes one pull page returns, and the default.
 pub const MAX_PULL_LIMIT: usize = 1000;
 
+/// The most `value` bytes (serialised JSON, summed) one pull page carries. A page stops before the
+/// row that would pass this, but always holds at least one row.
+pub const MAX_PAGE_BYTES: usize = 8 * 1024 * 1024;
+
 /// The tables whose rows sync, in dependency order.
 pub const SYNCED_TABLES: [&str; 8] = [
     "connections",
@@ -254,6 +258,14 @@ pub struct StoredChange {
     pub hlc: String,
 }
 
+impl StoredChange {
+    /// The serialised size of `value` in bytes (0 when absent): the same measure as
+    /// [`Change::value_bytes`], which is what [`MAX_PAGE_BYTES`] sums.
+    pub fn value_bytes(&self) -> usize {
+        self.value.as_ref().map_or(0, json_len)
+    }
+}
+
 /// One page of the feed. `next` is the cursor for the following request: the last returned
 /// `hubSeq`, or the requested `after` when the page is empty.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -261,6 +273,27 @@ pub struct Page {
     pub changes: Vec<StoredChange>,
     pub next: i64,
     pub more: bool,
+}
+
+/// One entry of a snapshot's `clocks`: the clock of the change that last set a clocked column of
+/// a row, so a client that restores from the snapshot can keep merging by clock.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotClock {
+    pub table: String,
+    pub row_id: String,
+    pub column: String,
+    pub hlc: String,
+}
+
+/// The user's synced state as of one instant, for a reader whose cursor is older than the
+/// retained feed. `changes` are synthetic inserts (`hubSeq` 0) in dependency order; `next` is
+/// the cursor to pull from afterwards.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub changes: Vec<StoredChange>,
+    pub clocks: Vec<SnapshotClock>,
+    pub next: i64,
 }
 
 /// The length of `value` serialised as JSON, without building the string.

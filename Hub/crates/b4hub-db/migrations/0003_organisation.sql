@@ -31,6 +31,10 @@ UPDATE changes
     SET hlc = lpad(to_hex(greatest(wall, 0)), 12, '0') || '-0000-' || device_id::text;
 ALTER TABLE changes ALTER COLUMN hlc SET NOT NULL;
 
+-- When the hub recorded the change: what pruning measures retention by (`wall` is the device's
+-- clock and cannot be trusted for that). Changes already held count as received at migration.
+ALTER TABLE changes ADD COLUMN received_at timestamptz NOT NULL DEFAULT now();
+
 DO $$
 DECLARE
     spec text[];
@@ -123,4 +127,16 @@ CREATE TABLE column_clocks (
 ALTER TABLE column_clocks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE column_clocks FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON column_clocks
+    USING (org_id = NULLIF(current_setting('b4hub.org_id', true), '')::uuid);
+
+-- The oldest cursor the org's feed can still serve: pruning deletes `changes` with
+-- `hub_seq <= horizon` and records it here in the same transaction. A reader whose cursor is below
+-- it gets `resync_required` and restores from the snapshot. No row means no pruning yet (0).
+CREATE TABLE org_sync_horizons (
+    org_id  uuid PRIMARY KEY REFERENCES orgs (id),
+    horizon bigint NOT NULL DEFAULT 0
+);
+ALTER TABLE org_sync_horizons ENABLE ROW LEVEL SECURITY;
+ALTER TABLE org_sync_horizons FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON org_sync_horizons
     USING (org_id = NULLIF(current_setting('b4hub.org_id', true), '')::uuid);

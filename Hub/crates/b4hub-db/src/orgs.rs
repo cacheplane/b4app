@@ -125,3 +125,11 @@ pub async fn find_user(db: &Db, org_id: Uuid, username: &str) -> Result<Option<U
     tx.commit().await?;
     Ok(id)
 }
+
+/// Every org's id and slug, oldest first. `orgs` carries no row-level security.
+pub async fn list(db: &Db) -> Result<Vec<(Uuid, String)>> {
+    let orgs = sqlx::query_as("SELECT id, slug FROM orgs ORDER BY created_at, id")
+        .fetch_all(&db.pool)
+        .await?;
+    Ok(orgs)
+}

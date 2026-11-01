@@ -95,6 +95,18 @@ pub struct DeviceInfo {
     pub display_name: String,
 }
 
+/// One of a user's devices as `GET /v1/devices` lists it. Timestamps are RFC 3339 in UTC with
+/// microseconds, rendered by the database; `last_seen_at` is `None` for a device never seen and
+/// `revoked_at` for one not revoked.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct DeviceSummary {
+    pub id: Uuid,
+    pub name: String,
+    pub platform: String,
+    pub last_seen_at: Option<String>,
+    pub revoked_at: Option<String>,
+}
+
 /// Mints an enrollment code for `user_id` in `org_id` that stays redeemable for `ttl`, and
 /// returns it. Only its hash is stored. `ttl` of zero yields a code that is already expired.
 pub async fn create_enrollment_code(
@@ -229,6 +241,25 @@ pub async fn me(db: &Db, org_id: Uuid, device_id: Uuid) -> Result<Option<DeviceI
     let info = describe(&mut tx, device_id).await?;
     tx.commit().await?;
     Ok(info)
+}
+
+/// The user's devices, revoked ones included, oldest first.
+pub async fn list(db: &Db, org_id: Uuid, user_id: Uuid) -> Result<Vec<DeviceSummary>> {
+    const RFC3339: &str = "'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'";
+    let mut tx = db.tenant_tx(org_id).await?;
+    let devices = sqlx::query_as(&format!(
+        "SELECT id, name, platform, \
+                to_char(last_seen_at AT TIME ZONE 'UTC', {RFC3339}) AS last_seen_at, \
+                to_char(revoked_at AT TIME ZONE 'UTC', {RFC3339}) AS revoked_at \
+         FROM devices WHERE org_id = $1 AND user_id = $2 \
+         ORDER BY created_at, id"
+    ))
+    .bind(org_id)
+    .bind(user_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(devices)
 }
 
 /// Revokes the device: deletes its token rows and sets `devices.revoked_at`. Uploaded history is

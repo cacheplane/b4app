@@ -9,6 +9,8 @@ pub mod changes;
 pub mod devices;
 pub mod migrate;
 pub mod orgs;
+pub mod prune;
+pub mod snapshot;
 mod tenant;
 
 /// Everything that can go wrong in this crate. Messages never include a connection URL.
@@ -24,6 +26,9 @@ pub enum Error {
     Entropy,
     #[error("the enrollment code is invalid, expired, or already used")]
     InvalidCode,
+    /// A pull cursor older than the retained feed; the reader restores from the snapshot.
+    #[error("the cursor is older than the retained changes")]
+    ResyncRequired,
     #[error("the b4hub_app role has SUPERUSER or BYPASSRLS; refusing to continue")]
     PrivilegedRole,
 }

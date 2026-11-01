@@ -13,12 +13,15 @@ use tokio::sync::{oneshot, watch};
 use crate::auth::LastTouched;
 use crate::error::ApiError;
 use crate::notify::Notifier;
-use crate::routes::{changes, devices, enroll, health};
+use crate::routes::{changes, devices, enroll, health, snapshot};
 
 /// How long the listener stays open, answering `/readyz` 503, after shutdown begins, so a load
 /// balancer polling readiness stops routing here before connections are refused. Capped at a
 /// quarter of the shutdown wait.
 const READINESS_GRACE_MAX: Duration = Duration::from_millis(500);
+
+/// How often `serve` prunes every org's change log.
+pub const PRUNE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Everything a handler needs. Cheap to clone.
 #[derive(Clone)]
@@ -74,6 +77,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/enroll", post(enroll::enroll))
         .route("/v1/changes", changes::route())
         .route("/v1/me", get(devices::me))
+        .route("/v1/devices", get(devices::list))
+        .route("/v1/snapshot", get(snapshot::get))
         .route("/v1/devices/self", delete(devices::revoke_self))
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
         .fallback(|| async { ApiError::not_found() })
@@ -142,5 +147,34 @@ pub async fn os_signal() {
     tokio::select! {
         () = terminate => tracing::info!("SIGTERM received"),
         () = interrupt => tracing::info!("SIGINT received"),
+    }
+}
+
+/// Prunes every org's change log of what is older than `retention`, immediately and then every
+/// `interval`, until `shutdown`. Each org is pruned in its own transaction (which takes that
+/// org's push lock for just that long), a failure is logged and the next org still runs, and
+/// shutdown ends the wait between passes and abandons a prune in flight (its transaction rolls
+/// back), so the task never holds up the drain.
+pub async fn prune_loop(db: Db, retention: Duration, interval: Duration, shutdown: Shutdown) {
+    let mut stopping = shutdown.subscribe();
+    loop {
+        match b4hub_db::orgs::list(&db).await {
+            Ok(orgs) => {
+                for (org_id, slug) in orgs {
+                    let pruned = tokio::select! {
+                        pruned = b4hub_db::prune::prune(&db, org_id, retention) => pruned,
+                        _ = stopping.wait_for(|down| *down) => return,
+                    };
+                    if let Err(error) = pruned {
+                        tracing::error!(org = %slug, %error, "pruning the change log failed");
+                    }
+                }
+            }
+            Err(error) => tracing::error!(%error, "listing orgs to prune failed"),
+        }
+        tokio::select! {
+            () = tokio::time::sleep(interval) => {}
+            _ = stopping.wait_for(|down| *down) => return,
+        }
     }
 }

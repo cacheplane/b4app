@@ -48,7 +48,7 @@ answer the same generic `404 not_found`.
 | 401 | `invalid_code` | request | The enrollment code is wrong, expired, or already used (the three are indistinguishable). |
 | 404 | `not_found` | request | No such route, or a resource that does not exist or is not yours. |
 | 405 | `method_not_allowed` | request | The route exists but not for that method. |
-| 410 | `resync_required` | request | The pull cursor is older than the retention horizon (see below). |
+| 410 | `resync_required` | request | The pull cursor is older than the retention horizon: the hub has pruned the changes after it. Restore from `GET /v1/snapshot` (see *Horizon*). |
 | 413 | `payload_too_large` | request | A push body over 32 MiB. (A change whose `value` is over 2 MiB is rejected per change instead; see `POST /v1/changes`.) |
 | 500 | `internal_error` | execution | Any unexpected failure; the cause is logged on the hub, never sent. |
 | 503 | `not_ready` | execution | `/readyz`: the database is unreachable or migrations are pending. |
@@ -61,7 +61,8 @@ answer the same generic `404 not_found`.
 | Change `value` | 2 MiB (2,097,152 bytes of its serialised JSON) | each change in a push; over it, that change is rejected (`rejected: [{deviceSeq, code: "payload_too_large"}]`) and not stored, and the rest of the batch lands |
 | Push body | 32 MiB | `POST /v1/changes`; over it, `413 payload_too_large` |
 | `MAX_PUSH_CHANGES` | 1000 changes | one push; over it, `400 invalid_request` |
-| Pull page | 1000 changes (`limit` is clamped to 1 to 1000; default 1000) | `GET /v1/changes` |
+| Pull page | 1000 changes (`limit` is clamped to 1 to 1000; default 1000), and 8 MiB (8,388,608 bytes) of serialised `value` JSON summed over the page; whichever comes first, and always at least one change | `GET /v1/changes` |
+| Retention | `B4HUB_RETENTION_DAYS`, default 30 | how long the hub keeps the change log (see *Horizon*) |
 | Long-poll `wait` | 25 seconds | `GET /v1/changes`; a larger `wait` is clamped to 25 |
 | Other request bodies | 2 MiB (axum's default) | `POST /v1/enroll` |
 
@@ -146,6 +147,23 @@ The authenticated device and the org and user it belongs to. `200`:
 ```
 
 `createdAt` is RFC 3339 in UTC with microseconds. Errors: `401 unauthorized`.
+
+### `GET /v1/devices`
+
+The authenticated user's devices (every device of that user in the org, the calling one and
+revoked ones included), oldest enrolled first. Another user's devices never appear. `200`:
+
+```json
+{"devices": [
+  {"id": "0198...", "name": "Brian's MacBook Pro", "platform": "macos",
+   "lastSeenAt": "2026-10-31T12:00:00.000000Z", "revokedAt": null},
+  {"id": "0199...", "name": "iPhone", "platform": "ios", "lastSeenAt": null,
+   "revokedAt": "2026-10-31T13:00:00.000000Z"}
+]}
+```
+
+`lastSeenAt` and `revokedAt` are RFC 3339 in UTC with microseconds, or `null` (never seen; not
+revoked). `lastSeenAt` is written at most once a minute per device. Errors: `401 unauthorized`.
 
 ### `DELETE /v1/devices/self`
 
@@ -260,7 +278,10 @@ A non-numeric value for any of the three is `400 invalid_request`. Unknown param
 
 - `next` is the cursor for the next request: the last returned `hubSeq`, or the requested `after`
   when the page is empty. Always pass it back as `after`.
-- `more` is `true` when another page follows immediately; ask again with `wait=0`.
+- `more` is `true` when another page follows immediately; ask again with `wait=0`. A page ends
+  early, with `more` true, when it holds `limit` changes or when adding the next change would take
+  the page's summed `value` sizes (serialised JSON bytes, 0 for no value) past 8 MiB; it always
+  holds at least one change, so a page of one 2 MiB change still makes progress.
 
 **Long-poll.** With `wait > 0` and nothing newer than `after`, the hub holds the request until a
 push to the same org commits, `wait` seconds pass (never more than 25), or the hub begins to shut
@@ -270,10 +291,51 @@ adding anything visible to this user, and a timeout is simply an empty page. Cli
 request with the same cursor. The hub registers the waiter before it checks the feed, so a push
 that commits between the check and the wait cannot be missed.
 
-**Horizon.** The hub keeps the feed back to a retention horizon; a cursor behind it can no longer
-be served and gets `410 resync_required`, after which the client starts again from the beginning
-(`after=0`). M8a never prunes, so the horizon is `0` and the only cursors that fail are negative
-ones.
+**Horizon.** The hub keeps the feed for a retention period (`B4HUB_RETENTION_DAYS`, default 30;
+a value that is not a whole number of days of at least 1 is a configuration error and `serve`
+exits 2). `serve` prunes every org's feed when it starts and every 24 hours after, and
+`b4hub prune --older-than-days N [--org <slug>]` does it once (with `DATABASE_ADMIN_URL`; every
+org when `--org` is omitted). Pruning deletes the changes received more than that long ago and
+every change before them, and records the org's *horizon*: the highest `hubSeq` it deleted. It
+never moves down, and the mirrored tables are not touched. A pull whose `after` is below the
+horizon (including `after=0` once anything has been pruned, and any negative `after`) can no
+longer be served and gets `410 resync_required`. The client then restores from `GET
+/v1/snapshot` and continues pulling from the snapshot's `next`. The check and the page are read in
+one database snapshot, so a prune that commits during a pull cannot leave the reader missing rows.
+Pruning takes the same per-org lock a push holds, for one org's prune at a time, so it never
+deletes a row a push is committing.
+
+### `GET /v1/snapshot`
+
+The authenticated user's state, for a reader that got `410 resync_required` (or has nothing yet
+and the feed no longer reaches back to `hubSeq` 1). Read in one `REPEATABLE READ` transaction, so
+the rows, the clocks, and `next` are one instant while pushes keep landing. Only this user's rows
+appear. `200`:
+
+```json
+{
+  "changes": [ <StoredChange>, ... ],
+  "clocks": [ {"table": "threads", "rowId": "thread-1", "column": "title", "hlc": "019a396c76e8-0000-0198..."} ],
+  "next": 12
+}
+```
+
+- `changes` are synthetic `insert`s, one per row, tables in dependency order (`connections`,
+  `projects`, `projectFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`),
+  rows within a table by id. Each has `hubSeq` 0, `deviceSeq` 0, `wall` 0, `column` `null`,
+  `deviceId` the row's owner (the device of its latest insert), and `value` the row's Mac columns
+  (no `org_id`, `user_id`, `device_id`, or `owner_device_id`; `connections.authReference`,
+  `localServerId`, and `target` are `null`, as the hub keeps them). `hlc` is the greatest clock of
+  any of the row's clocked columns, or `000000000000-0000-<owner device id>` when none was ever
+  set, so any later change of the row wins over it.
+- `clocks` lists every per-column clock of those rows (`table`, `rowId`, `column`, `hlc`), so the
+  client can keep merging by clock after restoring.
+- `next` is the cursor to pull from afterwards: the highest `hubSeq` the org's feed had at that
+  instant (or the horizon, if pruning has emptied the feed). `GET /v1/changes?after=<next>` is
+  then valid and returns what was pushed since.
+
+The response is one JSON document holding the user's whole mirror; the hub does not page it.
+Errors: `401 unauthorized`.
 
 **Shutdown.** When the hub receives SIGTERM, every open long-poll is told at once and returns its
 current page (typically empty) instead of waiting out its timeout; a long-poll that arrives after

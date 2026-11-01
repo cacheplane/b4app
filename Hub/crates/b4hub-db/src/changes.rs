@@ -17,23 +17,21 @@
 //! user: ids are client-chosen and unique only per org, so a second user of the org pushing the
 //! same row id can neither overwrite, update, delete, nor adopt as a parent the first user's row.
 
+pub use b4hub_core::change::MAX_PAGE_BYTES;
 use b4hub_core::change::{
     is_scrubbed, table_spec, Change, ChangeOp, TableSpec, MAX_PAYLOAD_BYTES, MAX_PULL_LIMIT,
 };
 pub use b4hub_core::change::{Page, StoredChange};
 use b4hub_core::hlc::Hlc;
 use b4hub_core::writable::{is_clocked, is_phone_writable};
+use futures_util::TryStreamExt;
 use serde_json::Value;
 use sqlx::postgres::PgConnection;
 use sqlx::types::Uuid;
-use sqlx::{Acquire, FromRow};
+use sqlx::{Acquire, FromRow, Postgres, Transaction};
 
 use crate::devices::{AuthedDevice, Platform};
 use crate::{Db, Error, Result};
-
-/// The oldest `hubSeq` a cursor may start from. M8a never prunes the feed, so every cursor from
-/// 0 up is valid; a cursor below this gets `resync_required`.
-pub const HORIZON: i64 = 0;
 
 /// What happened to one change that was new to the hub.
 enum Applied {
@@ -123,6 +121,27 @@ fn stamp(auth: &AuthedDevice, change: &Change, now: u64) -> Hlc {
     kept
 }
 
+/// Takes the org's push lock until the end of `tx`. Pushes to one org run one at a time, and so
+/// does pruning its feed, so a prune never deletes rows a push is committing.
+pub(crate) async fn lock_org(tx: &mut Transaction<'_, Postgres>, org_id: Uuid) -> Result<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('b4hub.changes:' || $1, 0))")
+        .bind(org_id.to_string())
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+/// The oldest cursor the org's feed can serve: pruning has deleted every change up to and
+/// including it. 0 until the org is first pruned.
+pub(crate) async fn horizon(tx: &mut Transaction<'_, Postgres>, org_id: Uuid) -> Result<i64> {
+    let horizon: Option<i64> =
+        sqlx::query_scalar("SELECT horizon FROM org_sync_horizons WHERE org_id = $1")
+            .bind(org_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    Ok(horizon.unwrap_or(0))
+}
+
 /// Records and applies `batch` for `auth`'s device in one transaction and returns
 /// `acceptedThrough`: the highest `device_seq` in the batch (for an empty batch, the highest the
 /// device has had accepted so far, or 0), with the changes the hub refused. Changes the hub
@@ -135,10 +154,7 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
     // this a slow transaction could commit sequence 11 after a reader had already seen 12 and
     // moved its cursor past 11. Holding the lock until commit makes commit order the sequence
     // order. Reads never take it.
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('b4hub.changes:' || $1, 0))")
-        .bind(auth.org_id.to_string())
-        .execute(&mut *tx)
-        .await?;
+    lock_org(&mut tx, auth.org_id).await?;
 
     let now = now_ms();
     let mut rejected = Vec::new();
@@ -239,35 +255,55 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
 }
 
 /// Pulls up to `limit` (clamped to 1 to the page maximum) of `auth`'s user's changes with
-/// `hub_seq > after`, oldest first. The feed is scoped to the user, not the device: a second
-/// device of the same user sees the first one's changes, and another user of the org sees none
-/// of them.
+/// `hub_seq > after`, oldest first. The page also stops before the row that would take the sum of
+/// the `value` sizes past [`MAX_PAGE_BYTES`], but always holds the first row; `more` is true
+/// when it stopped early for either reason. The feed is scoped to the user, not the device: a
+/// second device of the same user sees the first one's changes, and another user of the org sees
+/// none of them.
+///
+/// A cursor below the org's horizon (the feed was pruned past it) is [`Error::ResyncRequired`].
+/// The horizon and the rows are read in one snapshot, so a prune cannot slip between them and
+/// leave the reader silently missing the rows it deleted.
 pub async fn pull(db: &Db, auth: &AuthedDevice, after: i64, limit: usize) -> Result<Page> {
     let limit = limit.clamp(1, MAX_PULL_LIMIT);
-    let mut tx = db.tenant_tx(auth.org_id).await?;
-    // One extra row says whether another page follows.
-    let mut rows: Vec<Row> = sqlx::query_as(
-        "SELECT hub_seq, device_id, device_seq, wall, \"table\" AS table_name, row_id, op, \
-                \"column\" AS column_name, value, hlc \
-         FROM changes \
-         WHERE org_id = $1 AND user_id = $2 AND hub_seq > $3 \
-         ORDER BY hub_seq \
-         LIMIT $4",
-    )
-    .bind(auth.org_id)
-    .bind(auth.user_id)
-    .bind(after)
-    .bind(limit as i64 + 1)
-    .fetch_all(&mut *tx)
-    .await?;
+    let mut tx = db.read_tx(auth.org_id).await?;
+    if after < horizon(&mut tx, auth.org_id).await? {
+        return Err(Error::ResyncRequired);
+    }
+
+    // Rows stream in, so a page that stops early at the byte limit never holds more than the
+    // one row that did not fit. One extra row says whether another page follows.
+    let mut changes: Vec<StoredChange> = Vec::new();
+    let mut more = false;
+    {
+        let mut rows = sqlx::query_as::<_, Row>(
+            "SELECT hub_seq, device_id, device_seq, wall, \"table\" AS table_name, row_id, op, \
+                    \"column\" AS column_name, value, hlc \
+             FROM changes \
+             WHERE org_id = $1 AND user_id = $2 AND hub_seq > $3 \
+             ORDER BY hub_seq \
+             LIMIT $4",
+        )
+        .bind(auth.org_id)
+        .bind(auth.user_id)
+        .bind(after)
+        .bind(limit as i64 + 1)
+        .fetch(&mut *tx);
+        let mut bytes = 0usize;
+        while let Some(row) = rows.try_next().await? {
+            let stored = row.into_stored()?;
+            if changes.len() == limit
+                || (!changes.is_empty() && bytes + stored.value_bytes() > MAX_PAGE_BYTES)
+            {
+                more = true;
+                break;
+            }
+            bytes += stored.value_bytes();
+            changes.push(stored);
+        }
+    }
     tx.commit().await?;
 
-    let more = rows.len() > limit;
-    rows.truncate(limit);
-    let changes = rows
-        .into_iter()
-        .map(Row::into_stored)
-        .collect::<Result<Vec<_>>>()?;
     let next = changes.last().map_or(after, |c| c.hub_seq);
     Ok(Page {
         changes,

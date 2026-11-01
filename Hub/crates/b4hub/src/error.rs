@@ -128,6 +128,7 @@ impl From<b4hub_db::Error> for ApiError {
     fn from(error: b4hub_db::Error) -> ApiError {
         match error {
             b4hub_db::Error::InvalidCode => ApiError::invalid_code(),
+            b4hub_db::Error::ResyncRequired => ApiError::resync_required(),
             other => {
                 tracing::error!(error = %other, "request failed in the database layer");
                 ApiError::internal()

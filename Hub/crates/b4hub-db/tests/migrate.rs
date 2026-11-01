@@ -135,6 +135,7 @@ async fn tenant_tables_force_row_level_security(pool: PgPool) {
         ("displayItems", true, true),
         ("drafts", true, true),
         ("enrollment_codes", false, false),
+        ("org_sync_horizons", true, true),
         ("orgs", false, false),
         ("projectFolders", true, true),
         ("projects", true, true),
@@ -255,4 +256,65 @@ async fn seed_works_under_forced_row_level_security(pool: PgPool) {
     assert_eq!(with, 1);
     tx.rollback().await.unwrap();
     app.pool.close().await;
+}
+
+/// A role that is a member of a privileged role with `INHERIT` has that role's privileges, so the
+/// service refuses it just as it refuses the privileged role itself.
+#[sqlx::test(migrations = false)]
+async fn serve_refuses_a_role_that_inherits_superuser(pool: PgPool) {
+    let (_admin, app) = common::migrated(&pool).await;
+    assert!(
+        !b4hub_db::migrate::connected_role_is_privileged(&app)
+            .await
+            .unwrap(),
+        "b4hub_app itself is unprivileged"
+    );
+
+    let suffix = b4hub_core::ids::new_uuid().simple().to_string();
+    let (weak, quiet, chain) = (
+        format!("weak_{suffix}"),
+        format!("quiet_{suffix}"),
+        format!("chain_{suffix}"),
+    );
+    for statement in [
+        format!("CREATE ROLE {weak} LOGIN"),
+        format!("GRANT postgres TO {weak}"),
+        // Membership without inheritance gives no privileges until `SET ROLE`.
+        format!("CREATE ROLE {quiet} LOGIN NOINHERIT"),
+        format!("GRANT postgres TO {quiet}"),
+        // Two hops: chain -> weak -> postgres.
+        format!("CREATE ROLE {chain} LOGIN"),
+        format!("GRANT {weak} TO {chain}"),
+    ] {
+        sqlx::query(&statement).execute(&pool).await.unwrap();
+    }
+
+    let inherits = Db::connect(&url_as(&pool, &weak, "x")).await.unwrap();
+    assert!(b4hub_db::migrate::connected_role_is_privileged(&inherits)
+        .await
+        .unwrap());
+    let two_hops = Db::connect(&url_as(&pool, &chain, "x")).await.unwrap();
+    assert!(b4hub_db::migrate::connected_role_is_privileged(&two_hops)
+        .await
+        .unwrap());
+    let noinherit = Db::connect(&url_as(&pool, &quiet, "x")).await.unwrap();
+    assert!(!b4hub_db::migrate::connected_role_is_privileged(&noinherit)
+        .await
+        .unwrap());
+
+    // The owner of the tables stays privileged as before.
+    let owner = Db::connect(&admin_url(&pool)).await.unwrap();
+    assert!(b4hub_db::migrate::connected_role_is_privileged(&owner)
+        .await
+        .unwrap());
+
+    for db in [inherits, two_hops, noinherit, owner, app] {
+        db.pool.close().await;
+    }
+    for role in [chain, weak, quiet] {
+        sqlx::query(&format!("DROP ROLE {role}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
 }

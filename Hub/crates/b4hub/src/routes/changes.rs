@@ -143,10 +143,8 @@ async fn pull(
     RawQuery(query): RawQuery,
 ) -> Result<Json<Page>, ApiError> {
     let params = PullParams::parse(query.as_deref())?;
-    if params.after < changes::HORIZON {
-        return Err(ApiError::resync_required());
-    }
-
+    // A cursor behind the retention horizon comes back from `changes::pull` as `ResyncRequired`
+    // (410); the check lives there so it shares a snapshot with the rows it guards.
     let page = long_poll(
         &state.notifier,
         device.org_id,

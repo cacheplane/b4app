@@ -643,3 +643,222 @@ async fn pull_over_real_tcp_does_not_miss_a_push_in_the_gap(pool: PgPool) {
     }
     server.abort();
 }
+
+// ---- Pruning, the snapshot, and the devices list (M8b task 6) ----
+
+/// Marks every change of `org` as received two days ago, as the owner under the org's tenant.
+async fn backdate(state: &AppState, org: &str) {
+    let mut tx = state.db.pool.begin().await.unwrap();
+    sqlx::query(
+        "SELECT set_config('b4hub.org_id', (SELECT id::text FROM orgs WHERE slug = $1), true)",
+    )
+    .bind(org)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE changes SET received_at = now() - interval '2 days'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+}
+
+async fn push_fixture(state: &AppState, token: &str) {
+    let (status, body) = send(
+        state,
+        "POST",
+        "/v1/changes",
+        Some(token),
+        Some(push_body(&filtered_fixture())),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn devices_and_snapshot_need_a_token(pool: PgPool) {
+    let (_admin, state) = migrated(&pool).await;
+    for path in ["/v1/devices", "/v1/snapshot"] {
+        for token in [None, Some("not-a-token")] {
+            let (status, body) = send(&state, "GET", path, token, None).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}: {body}");
+            assert_eq!(error_code(&body), "unauthorized");
+        }
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn devices_lists_this_users_devices_over_http(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let mac = token_for(&admin, &state, "blove").await;
+    let other = token_for(&admin, &state, "alice").await;
+
+    let (status, body) = send(&state, "GET", "/v1/devices", Some(&mac), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let devices = body["devices"].as_array().unwrap();
+    assert_eq!(devices.len(), 1);
+    let device = &devices[0];
+    assert_eq!(device["name"], "test device");
+    assert_eq!(device["platform"], "macos");
+    assert!(device["id"].as_str().is_some_and(|id| id.len() == 36));
+    assert!(device["revokedAt"].is_null());
+    assert!(device.get("lastSeenAt").is_some());
+    let mut keys: Vec<&str> = device
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["id", "lastSeenAt", "name", "platform", "revokedAt"]);
+
+    // Another user's device list is their own; a revoked device stays listed with revokedAt.
+    let (_, theirs) = send(&state, "GET", "/v1/devices", Some(&other), None).await;
+    assert_eq!(theirs["devices"].as_array().unwrap().len(), 1);
+    assert_ne!(theirs["devices"][0]["id"], device["id"]);
+    let (status, _) = send(&state, "DELETE", "/v1/devices/self", Some(&other), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, body) = send(&state, "POST", "/v1/devices", Some(&mac), None).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED, "{body}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_pruned_cursor_resyncs_through_the_snapshot_over_http(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let token = token_for(&admin, &state, "blove").await;
+    let other = token_for(&admin, &state, "alice").await;
+    push_fixture(&state, &token).await;
+    backdate(&state, "cacheplane").await;
+
+    let org = b4hub_db::orgs::resolve_org(&admin, Some("cacheplane"))
+        .await
+        .unwrap();
+    let b4hub_db::orgs::OrgChoice::Found(org_id) = org else {
+        panic!("{org:?}")
+    };
+    let horizon = b4hub_db::prune::prune(&state.db, org_id, Duration::from_secs(86_400))
+        .await
+        .unwrap();
+    assert_eq!(horizon, 12);
+
+    let (status, body) = send(&state, "GET", "/v1/changes?after=3", Some(&token), None).await;
+    assert_eq!(status, StatusCode::GONE, "{body}");
+    assert_eq!(error_code(&body), "resync_required");
+    // The long-poll path answers the same way.
+    let (status, _) = send(
+        &state,
+        "GET",
+        "/v1/changes?after=0&wait=1",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::GONE);
+
+    let (status, snapshot) = send(&state, "GET", "/v1/snapshot", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{snapshot}");
+    assert_eq!(snapshot["next"], 12);
+    let changes = snapshot["changes"].as_array().unwrap();
+    assert!(!changes.is_empty());
+    assert!(changes
+        .iter()
+        .all(|c| c["hubSeq"] == 0 && c["op"] == "insert"));
+    assert_eq!(changes[0]["table"], "connections");
+    assert!(changes[0]["hlc"]
+        .as_str()
+        .unwrap()
+        .starts_with("000000000000-0000-"));
+    let clock = &snapshot["clocks"][0];
+    for key in ["table", "rowId", "column", "hlc"] {
+        assert!(clock.get(key).is_some(), "{key}");
+    }
+    let (_, theirs) = send(&state, "GET", "/v1/snapshot", Some(&other), None).await;
+    assert_eq!(theirs["changes"], json!([]));
+    assert_eq!(theirs["clocks"], json!([]));
+    assert_eq!(theirs["next"], 12);
+
+    let (status, body) = send(&state, "GET", "/v1/changes?after=12", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["changes"], json!([]));
+    assert_eq!(body["next"], 12);
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_prune_loop_prunes_and_stops_promptly_on_shutdown(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let token = token_for(&admin, &state, "blove").await;
+    push_fixture(&state, &token).await;
+    backdate(&state, "cacheplane").await;
+
+    let task = tokio::spawn(serve::prune_loop(
+        state.db.clone(),
+        Duration::from_secs(86_400),
+        Duration::from_secs(3600),
+        state.shutdown.clone(),
+    ));
+    // The first pass runs at once: the cursor behind the horizon starts to resync.
+    let started = Instant::now();
+    loop {
+        let (status, _) = send(&state, "GET", "/v1/changes?after=0", Some(&token), None).await;
+        if status == StatusCode::GONE {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(10), "never pruned");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(count(&state, "cacheplane", "changes").await, 0);
+
+    // Shutdown ends the hour-long wait immediately.
+    let stopping = Instant::now();
+    state.shutdown.trigger();
+    tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .expect("the prune loop stops on shutdown")
+        .unwrap();
+    assert!(stopping.elapsed() < Duration::from_secs(2));
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_prune_command_prunes_one_org_or_all(pool: PgPool) {
+    use clap::Parser;
+
+    let (admin, state) = migrated(&pool).await;
+    let token = token_for(&admin, &state, "blove").await;
+    push_fixture(&state, &token).await;
+    backdate(&state, "cacheplane").await;
+    let settings = b4hub::cli::Settings::from_pairs([("DATABASE_ADMIN_URL", admin_url(&pool))]);
+    let run = |args: &[&str]| {
+        let cli = b4hub::cli::Cli::try_parse_from(
+            ["b4hub", "prune"].into_iter().chain(args.iter().copied()),
+        )
+        .unwrap();
+        let settings = settings.clone();
+        async move { b4hub::cli::run(cli, &settings).await }
+    };
+
+    // An unknown org is a configuration error (exit 2) before anything is pruned.
+    let error = run(&["--older-than-days", "1", "--org", "nope"])
+        .await
+        .unwrap_err();
+    assert_eq!(error.exit_code(), 2, "{error}");
+    assert_eq!(count(&state, "cacheplane", "changes").await, 12);
+
+    // Not older than the retention: nothing happens.
+    run(&["--older-than-days", "3"]).await.unwrap();
+    assert_eq!(count(&state, "cacheplane", "changes").await, 12);
+
+    run(&["--older-than-days", "1", "--org", "cacheplane"])
+        .await
+        .unwrap();
+    assert_eq!(count(&state, "cacheplane", "changes").await, 0);
+    let (status, _) = send(&state, "GET", "/v1/changes?after=1", Some(&token), None).await;
+    assert_eq!(status, StatusCode::GONE);
+
+    // Days must be a positive whole number: clap refuses 0 and text.
+    for bad in ["0", "x", "-1"] {
+        assert!(
+            b4hub::cli::Cli::try_parse_from(["b4hub", "prune", "--older-than-days", bad]).is_err()
+        );
+    }
+}
