@@ -46,7 +46,7 @@ public actor DiagnosticsService {
         dataDir: context.paths.dataDir, socketPath: context.paths.socketPath,
         databasePath:
           "postgresql:///\(context.paths.postgres.database)?host=\(context.paths.postgres.socketDir)&port=\(context.paths.postgres.port)",
-        host: ProcessInfo.processInfo.hostName),
+        host: ProcessInfo.processInfo.hostName, secretStore: context.secretStore.backend),
       host: HostInfo(
         platform: "darwin", arch: Self.architecture,
         release: ProcessInfo.processInfo.operatingSystemVersionString),

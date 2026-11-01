@@ -419,10 +419,13 @@ public struct CoordinatorInfo: Codable, Sendable, Equatable {
   public var socketPath: String
   public var databasePath: String
   public var host: String
+  /// Where the coordinator keeps secrets (D-051), e.g. "data-protection keychain (<group>)"; older
+  /// coordinators omit it.
+  public var secretStore: String?
 
   public init(
     version: String, pid: Int32, startedAt: String, epoch: String, sequence: Int, runtimeDir: String,
-    dataDir: String, socketPath: String, databasePath: String, host: String
+    dataDir: String, socketPath: String, databasePath: String, host: String, secretStore: String? = nil
   ) {
     self.version = version
     self.pid = pid
@@ -434,6 +437,7 @@ public struct CoordinatorInfo: Codable, Sendable, Equatable {
     self.socketPath = socketPath
     self.databasePath = databasePath
     self.host = host
+    self.secretStore = secretStore
   }
 }
 
