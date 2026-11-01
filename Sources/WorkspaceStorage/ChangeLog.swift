@@ -59,8 +59,9 @@ extension WorkspaceDatabase {
   }
 
   /// Apply changes from another device (or a replay test) without recording them again: inserts
-  /// become upserts, updates set one column, deletes delete. Rows whose parent is missing are
-  /// skipped, not fatal, so a partial log never poisons the rest.
+  /// become upserts, updates set one column, deletes delete. Each change runs in its own savepoint, so
+  /// one that fails (a row whose parent is missing, a value its column refuses) is skipped, not fatal,
+  /// and a partial log never poisons the rest. Returns how many changes applied.
   @discardableResult
   public func replay(_ changes: [ChangeRecord]) throws -> Int {
     try write { c in
@@ -68,29 +69,42 @@ extension WorkspaceDatabase {
       var applied = 0
       for change in changes {
         guard let key = Self.syncedTables.first(where: { $0.table == change.table })?.key else { continue }
-        switch change.op {
-        case "insert":
-          guard let object = change.value?.objectValue else { continue }
-          let columns = try columns(c, of: change.table).filter { object[$0] != nil }
-          let values = try columns.map { try Rows.param(Self.foundation(object[$0]!)) }
-          let statement = Rows.upsert(
-            change.table, Array(zip(columns, values)).map { (column: $0.0, param: $0.1) }, key: key,
-            allColumns: try self.columns(c, of: change.table))
-          try c.execute(statement.sql, statement.params)
-        case "update":
-          guard let column = change.column, let value = change.value else { continue }
-          try c.execute(
-            "UPDATE \(Rows.quote(change.table)) SET \(Rows.quote(column)) = $1 WHERE \(Rows.quote(key)) = $2",
-            [try Rows.param(Self.foundation(value)), change.rowId])
-        case "delete":
-          try c.execute(
-            "DELETE FROM \(Rows.quote(change.table)) WHERE \(Rows.quote(key)) = $1", [change.rowId])
-        default: continue
+        try c.execute("SAVEPOINT \"replayChange\"")
+        do {
+          let wrote = try replayOne(c, change, key: key)
+          try c.execute("RELEASE SAVEPOINT \"replayChange\"")
+          if wrote { applied += 1 }
+        } catch {
+          try c.execute("ROLLBACK TO SAVEPOINT \"replayChange\"")
+          try c.execute("RELEASE SAVEPOINT \"replayChange\"")
         }
-        applied += 1
       }
       return applied
     }
+  }
+
+  /// One change of `replay`; false when there was nothing to apply.
+  private func replayOne(_ c: PostgresConnection, _ change: ChangeRecord, key: String) throws -> Bool {
+    switch change.op {
+    case "insert":
+      guard let object = change.value?.objectValue else { return false }
+      let columns = try columns(c, of: change.table).filter { object[$0] != nil }
+      let values = try columns.map { try Rows.param(Self.foundation(object[$0]!)) }
+      let statement = Rows.upsert(
+        change.table, Array(zip(columns, values)).map { (column: $0.0, param: $0.1) }, key: key,
+        allColumns: try self.columns(c, of: change.table))
+      try c.execute(statement.sql, statement.params)
+    case "update":
+      guard let column = change.column, let value = change.value else { return false }
+      try c.execute(
+        "UPDATE \(Rows.quote(change.table)) SET \(Rows.quote(column)) = $1 WHERE \(Rows.quote(key)) = $2",
+        [try Rows.param(Self.foundation(value)), change.rowId])
+    case "delete":
+      try c.execute(
+        "DELETE FROM \(Rows.quote(change.table)) WHERE \(Rows.quote(key)) = $1", [change.rowId])
+    default: return false
+    }
+    return true
   }
 
   /// A JSON value as the Foundation object `Rows.param` understands.

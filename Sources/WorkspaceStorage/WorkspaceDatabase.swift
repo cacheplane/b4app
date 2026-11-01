@@ -30,7 +30,7 @@ public final class WorkspaceDatabase: Sendable {
   private let currentDeviceId = Mutex("local")
 
   /// Stamps every write transaction (`b4app.hlc`); its device id always equals `deviceId`.
-  public let clock = HybridClock(deviceId: "local")
+  public let clock: HybridClock
 
   /// The device id the change-log trigger records on every write (`b4app.device_id`). `local` until
   /// this Mac joins a hub; the hub's device id afterwards.
@@ -44,9 +44,13 @@ public final class WorkspaceDatabase: Sendable {
     }
   }
 
-  /// Connect to a running cluster, create the database when it is missing, and migrate.
-  public init(endpoint: PostgresEndpoint, binDir: String) throws {
+  /// Connect to a running cluster, create the database when it is missing, and migrate. `wall` is the
+  /// clock's time source (tests pin it to replay recorded clocks).
+  public init(
+    endpoint: PostgresEndpoint, binDir: String, wall: @escaping @Sendable () -> UInt64 = epochMillis
+  ) throws {
     self.endpoint = endpoint
+    clock = HybridClock(deviceId: "local", wall: wall)
     let lib = try LibPQ.load(binDir: binDir)
     let base = "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) application_name=b4app"
     adminConnectionString = base + " dbname=postgres"
@@ -58,9 +62,13 @@ public final class WorkspaceDatabase: Sendable {
   }
 
   /// A fresh database on the shared ephemeral test cluster.
-  public static func temporary() throws -> WorkspaceDatabase {
+  public static func temporary(
+    wall: @escaping @Sendable () -> UInt64 = epochMillis
+  ) throws
+    -> WorkspaceDatabase
+  {
     let endpoint = try EphemeralPostgres.endpoint()
-    return try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
+    return try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!, wall: wall)
   }
 
   public func appliedMigrations() throws -> [String] {
@@ -836,7 +844,9 @@ public final class WorkspaceDatabase: Sendable {
     try read { try one($0, HubLink.self, "SELECT * FROM \"hubLink\" WHERE \"id\" = 1") }
   }
 
-  /// Insert or replace the one link row.
+  /// Insert or replace the one link row. Replacing keeps the stored `cursor`, which only the pull moves
+  /// (`applyRemote`, `setHubCursor`), so a push recording its outcome never rewinds a pull that committed
+  /// meanwhile.
   public func saveHubLink(_ link: HubLink) throws {
     try write { c in
       try c.execute(
@@ -846,7 +856,7 @@ public final class WorkspaceDatabase: Sendable {
         VALUES (1, $1, $2, $3, $4, $5, $6, $7::bigint, $8, $9, $10)
         ON CONFLICT ("id") DO UPDATE SET "url" = EXCLUDED."url", "deviceId" = EXCLUDED."deviceId",
           "deviceName" = EXCLUDED."deviceName", "tokenRef" = EXCLUDED."tokenRef",
-          "orgSlug" = EXCLUDED."orgSlug", "username" = EXCLUDED."username", "cursor" = EXCLUDED."cursor",
+          "orgSlug" = EXCLUDED."orgSlug", "username" = EXCLUDED."username",
           "lastPushAt" = EXCLUDED."lastPushAt", "lastError" = EXCLUDED."lastError",
           "joinedAt" = EXCLUDED."joinedAt"
         """,
