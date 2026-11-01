@@ -9,14 +9,23 @@ let fetchedPostgresBin =
   URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
   .deletingLastPathComponent().appendingPathComponent(".build/postgres/bin").path
 
+/// Scratch named `b4pg-<pid>-…` so `EphemeralPostgres`' sweep can tell when its owner is gone.
 func testCluster(_ name: String) -> PostgresCluster {
-  let short = String(UUID().uuidString.prefix(6))
+  let owner = "\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString.prefix(6))"
   let tmp = (ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory())
-  let base = NSTemporaryDirectory() + "b4pg-\(name)-\(short)"
+  let base = NSTemporaryDirectory() + "b4pg-\(owner)-\(name)"
   return PostgresCluster(
     binDir: fetchedPostgresBin, dataDir: base + "/data",
-    socketDir: (tmp as NSString).appendingPathComponent("b4pg-\(short)"),
+    socketDir: (tmp as NSString).appendingPathComponent("b4pg-\(owner)"),
     logPath: base + "/postgres.log")
+}
+
+/// Remove a stopped test cluster's data, log, and socket directories. One still running (a test that
+/// failed before its `stop()`) is left for the sweep, which stops it first.
+func removeScratch(_ cluster: PostgresCluster) {
+  if let pid = PostgresServer(cluster: cluster).postmasterPid(), ProcessInspector.isAlive(pid: pid) { return }
+  try? FileManager.default.removeItem(atPath: (cluster.dataDir as NSString).deletingLastPathComponent)
+  try? FileManager.default.removeItem(atPath: cluster.socketDir)
 }
 
 @Suite(.serialized) struct PostgresServerTests {
@@ -32,6 +41,7 @@ func testCluster(_ name: String) -> PostgresCluster {
 
   @Test func initializesStartsAdoptsAndStops() async throws {
     let server = PostgresServer(cluster: testCluster("life"))
+    defer { removeScratch(server.cluster) }
     #expect(try await server.status() == .uninitialized)
     #expect(try await server.initializeIfNeeded() == true)
     #expect(try await server.initializeIfNeeded() == false)
@@ -54,6 +64,7 @@ func testCluster(_ name: String) -> PostgresCluster {
 
   @Test func replacesAPostmasterFromAnotherInstall() async throws {
     let cluster = testCluster("swap")
+    defer { removeScratch(cluster) }
     let first = PostgresServer(cluster: cluster)
     let oldPid = try await first.start()
     #expect(first.runsThisInstall(pid: oldPid))
@@ -70,6 +81,7 @@ func testCluster(_ name: String) -> PostgresCluster {
 
   @Test func aPostmasterRunningAnotherBinaryIsNotThisInstalls() async throws {
     let server = PostgresServer(cluster: testCluster("other"))
+    defer { removeScratch(server.cluster) }
     let pid = try await server.start()
     var moved = server.cluster
     moved.binDir = "/nonexistent/Agent Workspace.app/Contents/SharedSupport/postgres/bin"
@@ -80,6 +92,7 @@ func testCluster(_ name: String) -> PostgresCluster {
 
   @Test func recoversFromAStalePidFile() async throws {
     let server = PostgresServer(cluster: testCluster("stale"))
+    defer { removeScratch(server.cluster) }
     try await server.initializeIfNeeded()
     let pidFile = (server.cluster.dataDir as NSString).appendingPathComponent("postmaster.pid")
     try "2147000000\n\(server.cluster.dataDir)\n0\n\(server.cluster.port)\n\(server.cluster.socketDir)\n\n"
