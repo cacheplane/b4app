@@ -2,6 +2,22 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-11-01: Sidebar, profile menu, and Settings window (D-051, fixture gates)
+
+Run from `blove/sidebar-profile-menu` at `42e329f` (on `main` after #25) on macOS 26.5.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Lint | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Clean |
+| Tests | `swift test` | 556 tests in 94 suites pass |
+| Mac app | `xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'platform=macOS'` | `** BUILD SUCCEEDED **` |
+| iPhone app | `xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'` | `** BUILD SUCCEEDED **` |
+| Snapshots | `B4APP_SNAPSHOT_DIR=$TMPDIR/b4snap swift test --filter SnapshotTests` | 7 tests pass; sidebar, profile menu, search, notice, not signed in, Host disconnected, and the three Settings pages in light and dark compared by eye with the mockups. The first profile-menu capture showed the panel over the button; fixed in `42e329f` and captured again |
+
+New tests: `ThemeTests` (`runtimeMarksLoad`, `parserHandlesArcsAndPackedNumbers`), `HubSyncTests` (`joinReportsTheDisplayName`, `leaveClearsTheDisplayName`, `restartFetchesTheDisplayName`), `AccountModelTests` (initials of odd names, log out and its failure, the phone's host-supplied account, the status line), `SettingsRequestTests`, `SearchPaletteTests`, `ThreadListTests.rowSpeaksItsReasonAndConnection`, `DevicePresenceTests` (an empty devices list is not a lost host), and `DetailMinimumSizeTests` (`sidebarFooterStaysBounded` at 240 pt with every notice at 3,000 characters; `settingsFitsItsMinimum` at 760 × 500 for each page).
+
+Not run: the live checks (`B4APP_LIVE_*`), and the app on screen. Log out against a real hub, "Host disconnected" on a real phone, and ⌘, / ⌘K / ⌘N in the running app are still to be checked by hand.
+
 ## 2026-11-01: M8b live gate
 
 Run on the owner's MacBook Pro (macOS 26.5) from `feat/m8b-organisation` at `2c5ccef`, plus `87a494e` (the phone's project rename, found missing below). Backups first: `agent-workspace db backup` (152 rows) and `pg_dump` of the hub (13 tables), both in `~/Library/Application Support/b4app/backups/`. The Compose stack moved to the branch's `Hub/` on the same `hub_b4hub-db` volume: migration `0003_organisation` applied, `/readyz` `{"migrations":"current"}`. The packaged app was rebuilt with `./Scripts/package.sh` and swapped into `~/repos/b4app/dist` (main's bundle parked in `dist-main/` for the restore). The store migrated to `0004_organisation` and backfilled 2 projects. Then `agent-workspace hub status` showed `unsynced 0` and the coordinator a pid started at 14:40:00Z. The phone is the iPhone 17 Pro Simulator against `http://localhost:8080`. Real runtimes: Codex 0.166.0 and Claude Code.
