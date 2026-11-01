@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- No tracking, no data collected by the developer (the hub is the owner's own), and no
+     required-reason API in the iOS-linked modules (checked 2026-11-01; D-051). Add an
+     NSPrivacyAccessedAPITypes entry before using UserDefaults, file timestamps, system uptime,
+     or disk space from WorkspaceUI, WorkspaceClient, WorkspaceProtocol, WorkspaceMirror,
+     WorkspaceSync, WorkspaceSecrets, or the iOS app. -->
+<plist version="1.0">
+<dict>
+  <key>NSPrivacyTracking</key>
+  <false/>
+  <key>NSPrivacyTrackingDomains</key>
+  <array/>
+  <key>NSPrivacyCollectedDataTypes</key>
+  <array/>
+  <key>NSPrivacyAccessedAPITypes</key>
+  <array/>
+</dict>
+</plist>

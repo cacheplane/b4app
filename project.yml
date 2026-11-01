@@ -18,12 +18,13 @@ settings:
     SWIFT_UPCOMING_FEATURE_NONISOLATED_NONSENDING_BY_DEFAULT: YES
     SWIFT_UPCOMING_FEATURE_INFER_ISOLATED_CONFORMANCES: YES
     CODE_SIGN_STYLE: Automatic
-    # Xcode builds sign ad hoc. Scripts/package.sh re-signs the packaged app with
-    # B4APP_SIGN_IDENTITY, whose certificate carries the team id, so no team is stored here (D-039).
-    CODE_SIGN_IDENTITY: "-"
-    DEVELOPMENT_TEAM: ""
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+# DEVELOPMENT_TEAM comes from Config/Signing.xcconfig and its gitignored local include, never from
+# this file, because a value here would override the xcconfig (D-051).
+configFiles:
+  Debug: Config/Signing.xcconfig
+  Release: Config/Signing.xcconfig
 packages:
   b4app:
     path: .
@@ -38,8 +39,8 @@ targets:
       path: Apps/macOS/B4App/Info.plist
       properties:
         CFBundleDisplayName: Agent Workspace
-        CFBundleShortVersionString: "0.1.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: Personal tool. Not for distribution.
     entitlements:
@@ -48,6 +49,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.cacheplane.b4app
         PRODUCT_NAME: Agent Workspace
+        # Xcode builds sign ad hoc; Scripts/package.sh re-signs the packaged app with a Developer ID
+        # identity, its provisioning profile, and entitlements generated from the team id (D-051).
+        CODE_SIGN_IDENTITY: "-"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_APP_SANDBOX: NO
         ENABLE_HARDENED_RUNTIME: NO
@@ -75,11 +79,15 @@ targets:
       path: Apps/iOS/B4App/Info.plist
       properties:
         CFBundleDisplayName: Agent Workspace
-        CFBundleShortVersionString: "0.1.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSRequiresIPhoneOS: true
+        # HTTPS through URLSession only: exempt from export documentation (TestFlight asks otherwise).
+        ITSAppUsesNonExemptEncryption: false
+        NSLocalNetworkUsageDescription: Agent Workspace connects to your sync hub when it runs on your local network.
         # Plain HTTP only to the hub on this machine (the Simulator's localhost); HubURL refuses any
-        # other non-HTTPS URL before a request is made.
+        # other non-HTTPS URL before a request is made. Debug only: the post-build script below
+        # removes it from every other configuration, since on a device localhost is the phone.
         NSAppTransportSecurity:
           NSExceptionDomains:
             localhost:
@@ -102,6 +110,18 @@ targets:
         INFOPLIST_FILE: Apps/iOS/B4App/Info.plist
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
+        # Simulator builds sign to run locally (the Keychain needs a signature); device builds and
+        # archives sign automatically with the team from Config/Signing.xcconfig.
+        "CODE_SIGN_IDENTITY[sdk=iphonesimulator*]": "-"
+        # The post-build script edits the processed Info.plist in the build folder.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    postBuildScripts:
+      - name: Drop the localhost ATS exception outside Debug
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ "$CONFIGURATION" != "Debug" ]; then
+            /usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity" "$TARGET_BUILD_DIR/$INFOPLIST_PATH" 2>/dev/null || true
+          fi
     dependencies:
       - package: b4app
         product: WorkspaceUI

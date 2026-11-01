@@ -12,13 +12,17 @@ public enum CoordinatorLauncher {
     public var spawned: Bool
   }
 
-  /// The app bundle's helper folder (M6 layout); the packaged CLI lives there too.
-  public static let bundledHelperPath = "Agent Workspace.app/Contents/Helpers/b4app-coordinator"
+  /// The coordinator inside the app bundle (D-051): a minimal app-like bundle in `Contents/Helpers`,
+  /// so a Developer ID build can embed the provisioning profile that authorises its keychain access
+  /// group. The packaged CLI stays a bare tool in `Contents/Helpers`.
+  public static let helperWrapper = "B4AppCoordinator.app/Contents/MacOS/b4app-coordinator"
+  public static let helperInBundle = "Contents/Helpers/\(helperWrapper)"
+  public static let bundledHelperPath = "Agent Workspace.app/\(helperInBundle)"
 
   /// Locate the `b4app-coordinator` executable: B4APP_COORDINATOR_PATH, beside the current
-  /// executable with symlinks resolved (the CLI and the coordinator share a build directory or the
-  /// app's `Contents/Helpers`), the installed app in `/Applications` or `~/Applications`, then PATH
-  /// and the fallback directories.
+  /// executable with symlinks resolved (the wrapper in the app's `Contents/Helpers`, or the bare
+  /// tool in a SwiftPM build directory), the installed app in `/Applications` or `~/Applications`,
+  /// then PATH and the fallback directories.
   public static func executablePath(
     environment env: [String: String] = ProcessInfo.processInfo.environment,
     executableURL: URL? = Bundle.main.executableURL
@@ -35,6 +39,7 @@ public enum CoordinatorLauncher {
     if let explicit = env["B4APP_COORDINATOR_PATH"], !explicit.isEmpty { candidates.append(explicit) }
     if let executableURL {
       let resolved = executableURL.resolvingSymlinksInPath().deletingLastPathComponent()
+      candidates.append(resolved.appendingPathComponent(helperWrapper).path)
       candidates.append(resolved.appendingPathComponent("b4app-coordinator").path)
     }
     let home = env["HOME"] ?? NSHomeDirectory()

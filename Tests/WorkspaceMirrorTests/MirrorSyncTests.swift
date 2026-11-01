@@ -468,8 +468,8 @@ private let link = MirrorLink(
     #expect(store.cursor == 0)
     #expect(await sync.lastError?.contains("offline") == true)
     looked.open()
-    try await signal.until("recovered") { store.cursor == 2 }
-    #expect(try store.link()?.lastError == nil)
+    // The cursor moves before the success is recorded, so wait for both.
+    try await signal.until("recovered") { try store.cursor == 2 && store.link()?.lastError == nil }
     #expect(await sync.lastError == nil)
     await sync.stop()
     await running.value

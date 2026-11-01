@@ -9,6 +9,7 @@ enum Format {
     lines.append("  started     \(report.coordinator.startedAt)")
     lines.append("  socket      \(report.coordinator.socketPath)")
     lines.append("  database    \(report.coordinator.databasePath)")
+    if let secrets = report.coordinator.secretStore { lines.append("  secrets     \(secrets)") }
     lines.append("  host        \(report.host.platform) \(report.host.arch) (\(report.host.release))")
     lines.append("")
     lines.append("Runtimes")

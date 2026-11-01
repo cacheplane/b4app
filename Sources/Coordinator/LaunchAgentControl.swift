@@ -163,7 +163,7 @@ public enum LaunchAgentControl {
       <plist version="1.0">
       <dict>
         <key>Label</key><string>\(label)</string>
-        <key>BundleProgram</key><string>Contents/Helpers/b4app-coordinator</string>
+        <key>BundleProgram</key><string>\(CoordinatorLauncher.helperInBundle)</string>
         <key>RunAtLoad</key><true/>
         <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
         <key>LimitLoadToSessionType</key><string>Aqua</string>

@@ -17,9 +17,9 @@ import WorkspaceProtocol
     let cli = URL(fileURLWithPath: "/Applications/Agent Workspace.app/Contents/Helpers/agent-workspace")
     let candidates = CoordinatorLauncher.candidatePaths(environment: env, executableURL: cli)
     #expect(candidates.first == "/x/b4app-coordinator")
-    #expect(candidates.contains("/Applications/Agent Workspace.app/Contents/Helpers/b4app-coordinator"))
-    #expect(
-      candidates.contains("/Users/me/Applications/Agent Workspace.app/Contents/Helpers/b4app-coordinator"))
+    let wrapped = "Agent Workspace.app/Contents/Helpers/B4AppCoordinator.app/Contents/MacOS/b4app-coordinator"
+    #expect(candidates[1] == "/Applications/\(wrapped)")
+    #expect(candidates.contains("/Users/me/Applications/\(wrapped)"))
   }
 
   @Test func symlinkedCliFindsTheBundledCoordinator() throws {
@@ -27,7 +27,9 @@ import WorkspaceProtocol
     let helpers = base + "/Agent Workspace.app/Contents/Helpers"
     try FileManager.default.createDirectory(atPath: helpers, withIntermediateDirectories: true)
     try FileManager.default.createDirectory(atPath: base + "/bin", withIntermediateDirectories: true)
-    for name in ["agent-workspace", "b4app-coordinator"] {
+    try FileManager.default.createDirectory(
+      atPath: helpers + "/B4AppCoordinator.app/Contents/MacOS", withIntermediateDirectories: true)
+    for name in ["agent-workspace", CoordinatorLauncher.helperWrapper] {
       FileManager.default.createFile(
         atPath: "\(helpers)/\(name)", contents: Data("#!/bin/sh\n".utf8),
         attributes: [.posixPermissions: 0o755])
@@ -39,7 +41,8 @@ import WorkspaceProtocol
       executableURL: URL(fileURLWithPath: base + "/bin/agent-workspace"))
     #expect(
       found.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }
-        == URL(fileURLWithPath: helpers + "/b4app-coordinator").resolvingSymlinksInPath().path)
+        == URL(fileURLWithPath: helpers + "/" + CoordinatorLauncher.helperWrapper).resolvingSymlinksInPath()
+        .path)
   }
 
   @Test func stopIsANoOpWithoutACoordinatorAndThePlistNamesTheHelper() async throws {
@@ -47,7 +50,9 @@ import WorkspaceProtocol
       runtimeDir: NSTemporaryDirectory() + "b4none-\(UUID().uuidString.prefix(6))", dataDir: "/tmp")
     #expect(try await CoordinatorLauncher.stop(paths: paths) == nil)
     let plist = LaunchAgentControl.plist(logPath: "/tmp/log")
-    #expect(plist.contains("<string>Contents/Helpers/b4app-coordinator</string>"))
+    #expect(
+      plist.contains(
+        "<string>Contents/Helpers/B4AppCoordinator.app/Contents/MacOS/b4app-coordinator</string>"))
     #expect(plist.contains("<string>com.cacheplane.b4app.coordinator</string>"))
     #expect(plist.contains("<key>LimitLoadToSessionType</key><string>Aqua</string>"))
     let parsed =

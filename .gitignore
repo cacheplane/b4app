@@ -32,3 +32,6 @@ xcuserdata/
 
 # packaging output
 dist/
+
+# per-Mac signing settings (team id)
+Config/Signing.local.xcconfig
