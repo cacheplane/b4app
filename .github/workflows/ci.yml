@@ -38,7 +38,35 @@ jobs:
       - name: Build
         run: swift build
       - name: Test
-        run: swift test
+        # TEMPORARY (M8b CI hang diagnosis): sample the test process if it outlives 18 minutes.
+        run: |
+          swift test > test.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 108); do kill -0 $pid 2>/dev/null || break; sleep 10; done
+          if kill -0 $pid 2>/dev/null; then
+            echo "::group::hang: tests started but not finished"
+            grep -o 'Test [A-Za-z0-9_]*(.*) started' test.log | sed 's/ started//' | sort > started.txt
+            grep -oE 'Test [A-Za-z0-9_]*\(.*\) (passed|failed|skipped)' test.log | sed -E 's/ (passed|failed|skipped)$//' | sort -u > ended.txt
+            comm -23 started.txt ended.txt | head -60
+            grep -c 'passed after' test.log || true
+            echo "::endgroup::"
+            echo "::group::hang: postgres"
+            ps -axo pid,etime,command | grep -E '[p]ostgres' | cut -c1-200
+            for f in "$TMPDIR"/b4pg-shared-*/postgres.log; do tail -40 "$f"; done
+            echo "::endgroup::"
+            for p in $(pgrep -f 'b4appPackageTests'); do
+              echo "::group::hang: sample $p"
+              sample "$p" 3 -file "sample-$p.txt" >/dev/null 2>&1 || true
+              grep -E 'Thread_|b4appPackageTests|psynch|semaphore|poll|kevent|mach_msg|SecItem|PQ' "sample-$p.txt" | sed -E 's/^[ +!:|]+//' | cut -c1-200 | head -400
+              echo "::endgroup::"
+            done
+            tail -50 test.log
+            kill $pid
+            exit 1
+          fi
+          wait $pid; status=$?
+          cat test.log
+          exit $status
 
   apps:
     name: macOS and iOS app builds
