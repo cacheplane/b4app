@@ -68,6 +68,87 @@ private func seed(_ db: WorkspaceDatabase) throws -> (thread: ConversationThread
     #expect(try target.displayItems(threadId: thread.id) == source.displayItems(threadId: thread.id))
   }
 
+  /// An update in the change log stores the column's new value, which can be any JSON value: a
+  /// string, a boolean, a number, null, or an object. Every one must survive backup and restore.
+  @Test func exportAndRestoreRoundTripKeepsScalarChangeValues() throws {
+    let source = try WorkspaceDatabase.temporary()
+    let (thread, turn) = try seed(source)
+    _ = try source.updateThread(id: thread.id) {
+      $0.title = "{\"looks\": [\"like\", \"json\"]}"  // a string that must stay a string
+      $0.pinned = true  // boolean
+      $0.context = nil  // JSON null
+    }
+    _ = try source.updateTurn(id: turn.id) { $0.status = .terminal }  // "terminal"
+    _ = try source.updateConnection(id: "c1") { $0.profileRevision = 7 }  // number
+    _ = try source.upsertDisplayItem(
+      threadId: thread.id, turnId: turn.id, nativeItemId: "a1", role: .assistant, type: "agentMessage",
+      payload: ["text": "hi there", "nested": ["ok": false, "list": [1, 2.5, "x", nil]]], provenance: .live)
+    let updates = try source.changes(after: 0).filter { $0.op == "update" }
+    #expect(
+      updates.contains {
+        $0.column == "title" && $0.value?.stringValue == "{\"looks\": [\"like\", \"json\"]}"
+      })
+    #expect(updates.contains { $0.column == "pinned" && $0.value == .bool(true) })
+    #expect(updates.contains { $0.column == "status" && $0.value?.stringValue == "terminal" })
+    #expect(updates.contains { $0.column == "profileRevision" && $0.value == .number(7) })
+    #expect(updates.contains { $0.column == "context" && $0.value == nil })
+
+    let path = NSTemporaryDirectory() + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
+    let summary = try source.export(to: path)
+    let target = try WorkspaceDatabase.temporary()
+    #expect(try target.restore(from: path).rows == summary.rows)
+    #expect(try target.changes(after: 0) == source.changes(after: 0))
+    #expect(try target.listThreads() == source.listThreads())
+    #expect(try target.listConnections() == source.listConnections())
+    #expect(try target.displayItems(threadId: thread.id) == source.displayItems(threadId: thread.id))
+    // The JSON null is a jsonb null in both stores, not an SQL NULL.
+    let nullTypes = """
+      SELECT jsonb_typeof("value") AS "t" FROM "changes" WHERE "op" = 'update' AND "column" = 'context'
+      """
+    for db in [source, target] {
+      #expect(try db.read { try $0.execute(nullTypes).rows.map { $0.text("t") } } == ["null"])
+    }
+  }
+
+  /// A version 1 archive carried every jsonb cell as the parsed value, so a scalar string arrived bare
+  /// and failed to restore. The reader still accepts such archives, re-encoding each value as JSON.
+  @Test func restoreReadsAVersionOneArchive() throws {
+    let source = try WorkspaceDatabase.temporary()
+    let (thread, turn) = try seed(source)
+    _ = try source.updateThread(id: thread.id) {
+      $0.title = "Renamed"
+      $0.pinned = true
+    }
+    _ = try source.updateTurn(id: turn.id) { $0.status = .terminal }
+    let path = NSTemporaryDirectory() + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
+    let summary = try source.export(to: path)
+
+    // Rewrite the archive the way the version 1 exporter wrote it: jsonb text parsed into values.
+    let jsonColumns: Set<String> = ["value", "payload", "capabilities", "routes"]
+    var lines = try String(contentsOfFile: path, encoding: .utf8).split(separator: "\n").map(String.init)
+    var header = try JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as! [String: Any]
+    #expect(header["version"] as? Int == 2)
+    header["version"] = 1
+    lines[0] = String(decoding: try JSONSerialization.data(withJSONObject: header), as: UTF8.self)
+    for index in lines.indices.dropFirst() {
+      var line = try JSONSerialization.jsonObject(with: Data(lines[index].utf8)) as! [String: Any]
+      var row = line["row"] as! [String: Any]
+      for column in jsonColumns {
+        guard let text = row[column] as? String else { continue }
+        row[column] = try JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])
+      }
+      line["row"] = row
+      lines[index] = String(decoding: try JSONSerialization.data(withJSONObject: line), as: UTF8.self)
+    }
+    try (lines.joined(separator: "\n") + "\n").write(toFile: path, atomically: true, encoding: .utf8)
+
+    let target = try WorkspaceDatabase.temporary()
+    #expect(try target.restore(from: path).rows == summary.rows)
+    #expect(try target.changes(after: 0) == source.changes(after: 0))
+    #expect(try target.listThreads() == source.listThreads())
+    #expect(try target.displayItems(threadId: thread.id) == source.displayItems(threadId: thread.id))
+  }
+
   @Test func exportAndRestoreRoundTrip() throws {
     let source = try WorkspaceDatabase.temporary()
     let (thread, _) = try seed(source)

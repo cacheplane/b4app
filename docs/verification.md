@@ -2,9 +2,23 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-10-31: `db restore` of a store with updates (jsonb scalars)
+
+Found while bringing up the M8a hub: `agent-workspace db restore` failed with `invalid input syntax for type json` on any archive from a store whose change log held an update. An update row in `changes` stores the changed column's value as jsonb, which for most columns is a scalar (`"ready"`, `true`, `7`, `null`). The version 1 exporter parsed every jsonb cell into a value, so a scalar string landed in the archive bare, and the restore bound it back to the jsonb column as raw text. Objects (inserts, display-item payloads, capabilities, routes) were unaffected, which is why `exportAndRestoreRoundTrip`, seeded with inserts only, passed.
+
+| Check | How | Result |
+| --- | --- | --- |
+| Reproduce | New `exportAndRestoreRoundTripKeepsScalarChangeValues` seeds a store, then updates a string, a boolean, a number, a JSON null (optional column set to nil), and a nested payload, and restores the archive | Failed on the old code with the reported error on the first scalar (an `updatedAt` string) |
+| Fix | Archive version 2: every `json`/`jsonb` cell travels as its JSON text in a string; restore looks the table's JSON columns up in the catalog and binds that text as jsonb. Version 1 archives are still read, each jsonb value re-encoded as JSON, so an old archive with bare scalar strings now restores too (`restoreReadsAVersionOneArchive`). An archive newer than this build is refused | Both new tests pass; the restored change log, threads, connections, and display items equal the source's, and the JSON null is a jsonb null in both stores |
+| Suite | `swift test` after clearing `.build/debug` | Pass: 264 tests in 62 suites in 35 s. A first incremental run on a `.build` left by an older worktree build reported 8 error-code mismatches in the adapter suites; the test modules had been linked against a stale `WorkspaceProtocol`, and a clean build cleared them |
+| Lint | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass |
+| Live | `agent-workspace connection add --kind codex` on scratch `B4APP_RUNTIME_DIR` and `B4APP_DATA_DIR`, then `db backup`, `db restore --replace` into the same store, `coordinator stop`, and `db restore` into a second, empty scratch store | Pass. The archive (version 2, 9 rows) held 7 update rows with scalar values (`"ready"`, `"authenticated"`, timestamps, the account scope) and one object (`capabilities`); both restores returned 9 rows, `db status` on the fresh store showed 1 connection and 8 changes, and `connection list` returned the connection as `ready / authenticated` with its capabilities. Before the fix, the first scalar update row made the same restore fail |
+
+Still SQL NULL after restoring a version 1 archive: a jsonb null, which the old exporter could not tell from an absent cell. No row the app writes carries one outside the change log, where `ChangeRecord` reads both as a missing value.
+
 ## 2026-10-31: M8a read-only mirror
 
-Target: the same MacBook Pro (macOS 26.5, Xcode 26.6), Docker 27.4.0 for the hub image and Compose, the iPhone 17 Pro Simulator (iOS 26.5) for the phone. The owner's running Agent Workspace app, its LaunchAgent, and `~/Library/Application Support/b4app` were left alone; the live gate ran a scratch debug coordinator on scratch `B4APP_DATA_DIR` and `B4APP_RUNTIME_DIR`. **The agent in the live gate was the fixture `fake-codex.py`. The sync path (coordinator, hub, PostgreSQL, iOS mirror) was real end to end; the inference was not, and the owner's packaged app has not joined a hub.**
+Target: the same MacBook Pro (macOS 26.5, Xcode 26.6), Docker 27.4.0 for the hub image and Compose, the iPhone 17 Pro Simulator (iOS 26.5) for the phone. The owner's running Agent Workspace app, its LaunchAgent, and `~/Library/Application Support/b4app` were left alone; the live gate ran a scratch debug coordinator on scratch `B4APP_DATA_DIR` and `B4APP_RUNTIME_DIR`. **The agent in the live gate was the fixture `fake-codex.py`. The sync path (coordinator, hub, PostgreSQL, iOS mirror) was real end to end; the inference was not, and, at the time of this gate, the owner's packaged app had not joined a hub; the evening entry below covers the join with a real Codex turn.**
 
 ### Automated
 
@@ -79,9 +93,9 @@ Found and fixed during this run: the iOS app died with `SIGTRAP` about two secon
 - No rate limit on `/v1/enroll`; `/v1/changes` pages have no byte limit; a value over 2 MiB in any column other than `displayItems.payload` and `runtimeRequests.payload` (both truncated over 1 MiB) would block the Mac's queue with a permanent 413, visible only in `hub status`.
 - `linux/amd64` is unverified.
 
-### Found, not fixed
+### Found during M8a, fixed separately
 
-`database.restore` (M7) fails with `invalid input syntax for type json` on any archive whose change log holds an `update` with a scalar jsonb value. `Export.swift` writes a jsonb scalar string bare and the restore reinserts it as raw text. `exportAndRestoreRoundTrip` misses it because its seed has no updates. Not part of M8a; it needs its own fix and a test whose seed includes an update. Until then, a restore of a real archive may fail.
+`database.restore` (M7) failed with `invalid input syntax for type json` on any archive whose change log held an `update` with a scalar jsonb value, because `Export.swift` wrote a jsonb scalar string bare and the restore reinserted it as raw text; `exportAndRestoreRoundTrip` missed it because its seed had no updates. Fixed on `main` by PR #18 (archive version 2, see the entry above).
 
 ## 2026-10-31: switching the running app to the M7 build
 
