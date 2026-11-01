@@ -196,6 +196,13 @@ public actor Router {
       return try JSONValue(encoding: DatabaseBackup.Result(path: summary.path, rows: summary.rows))
     case .databaseRestore:
       let params = try command.params(for: DatabaseRestore.self)
+      // A restore rewrites the change log and its sequence; reused deviceSeqs would count as already
+      // accepted at the hub and never be mirrored.
+      guard try context.database.hubLink() == nil else {
+        throw WorkspaceError(
+          .protocolInvalid,
+          "This Mac is joined to a hub; run `agent-workspace hub leave` before restoring, then join again.")
+      }
       let summary = try context.database.restore(from: params.path, replace: params.replace)
       return try JSONValue(encoding: DatabaseBackup.Result(path: summary.path, rows: summary.rows))
     case .databaseImportSQLite:

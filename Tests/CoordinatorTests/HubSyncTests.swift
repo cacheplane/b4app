@@ -224,6 +224,45 @@ private struct HubHarness {
     #expect(try db.unsyncedChangeCount() == db.changes(after: 0).count)
   }
 
+  @Test func restoreIsRefusedWhileJoined() async throws {
+    let h = try await HubHarness.start()
+    defer { Task { await h.close() } }
+    let db = h.coordinator.database
+    // An archive of the empty store: restoring an archive whose change log holds scalar jsonb values
+    // fails independently of the hub (see the Task 7 fix report).
+    let backup = try await h.client.request(
+      DatabaseBackup.self, DatabaseBackup.Params(path: h.workDir + "/archive.jsonl"),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    try await h.addThread()
+    _ = try await h.join()
+    let counts = try db.tableCounts()
+    let changes = try db.changes(after: 0)
+    let link = try db.hubLink()
+
+    for replace in [true, false] {
+      let error = await #expect(throws: WorkspaceError.self) {
+        _ = try await h.client.request(
+          DatabaseRestore.self, DatabaseRestore.Params(path: backup.path, replace: replace),
+          options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+      }
+      #expect(error?.code == .protocolInvalid)
+      #expect(error?.message.contains("hub leave") == true)
+    }
+    #expect(try db.tableCounts() == counts)
+    #expect(try db.changes(after: 0) == changes)
+    #expect(try db.hubLink() == link)
+
+    _ = try await h.client.request(
+      HubLeave.self, EmptyParams(),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    let restored = try await h.client.request(
+      DatabaseRestore.self, DatabaseRestore.Params(path: backup.path, replace: true),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    #expect(restored.rows == backup.rows)
+    #expect(try db.listConnections(includeDisabled: true).isEmpty)
+    #expect(try db.changes(after: 0).isEmpty)
+  }
+
   @Test func pushBatchesByRowsAndBytes() async throws {
     let db = try WorkspaceDatabase.temporary()
     _ = try db.insertConnection(Connection(id: "c1", kind: .codex, label: "Codex", target: "/bin/codex"))
