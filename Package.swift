@@ -15,6 +15,9 @@ let package = Package(
   products: [
     .library(name: "WorkspaceProtocol", targets: ["WorkspaceProtocol"]),
     .library(name: "WorkspaceClient", targets: ["WorkspaceClient"]),
+    .library(name: "WorkspaceSecrets", targets: ["WorkspaceSecrets"]),
+    .library(name: "WorkspaceSync", targets: ["WorkspaceSync"]),
+    .library(name: "WorkspaceMirror", targets: ["WorkspaceMirror"]),
     .library(name: "WorkspacePlatform", targets: ["WorkspacePlatform"]),
     .library(name: "WorkspaceStorage", targets: ["WorkspaceStorage"]),
     .library(name: "CodexAdapter", targets: ["CodexAdapter"]),
@@ -37,11 +40,22 @@ let package = Package(
     .target(name: "WorkspaceProtocol", swiftSettings: concurrency),
     .target(name: "WorkspaceClient", dependencies: ["WorkspaceProtocol"], swiftSettings: concurrency),
 
+    // Keychain-backed secret store: Foundation and Security only, links on both platforms.
+    .target(name: "WorkspaceSecrets", swiftSettings: concurrency),
+    // The hub wire types and HTTP client: Foundation only, links on both platforms.
+    .target(name: "WorkspaceSync", dependencies: ["WorkspaceProtocol"], swiftSettings: concurrency),
+    // The phone's read-only mirror of the synced tables: system SQLite behind an in-process transport,
+    // fed by pulling the hub's change feed. Links on both platforms.
+    .target(
+      name: "WorkspaceMirror",
+      dependencies: ["WorkspaceProtocol", "WorkspaceClient", "WorkspaceSync", "WorkspaceSecrets"],
+      swiftSettings: concurrency, linkerSettings: [.linkedLibrary("sqlite3")]),
+
     // macOS-only infrastructure.
     .target(
       name: "WorkspacePlatform",
       dependencies: [
-        "WorkspaceProtocol",
+        "WorkspaceProtocol", "WorkspaceSecrets",
         .product(name: "Subprocess", package: "swift-subprocess"),
       ],
       swiftSettings: concurrency),
@@ -76,7 +90,7 @@ let package = Package(
     .target(
       name: "Coordinator",
       dependencies: [
-        "WorkspaceProtocol", "WorkspaceClient", "WorkspacePlatform", "WorkspaceStorage",
+        "WorkspaceProtocol", "WorkspaceClient", "WorkspacePlatform", "WorkspaceStorage", "WorkspaceSync",
         "CodexAdapter", "ClaudeAdapter", "B4Adapter", "NIOTransport",
         .product(name: "NIOCore", package: "swift-nio"),
         .product(name: "NIOPosix", package: "swift-nio"),
@@ -103,6 +117,13 @@ let package = Package(
       name: "WorkspaceProtocolTests", dependencies: ["WorkspaceProtocol"], swiftSettings: concurrency),
     .testTarget(name: "WorkspaceClientTests", dependencies: ["WorkspaceClient"], swiftSettings: concurrency),
     .testTarget(
+      name: "WorkspaceSyncTests", dependencies: ["WorkspaceSync"],
+      swiftSettings: concurrency),
+    // Reads `Tests/Fixtures/sync/changes.json` in place (see `WireTests`), so it declares no resource.
+    .testTarget(
+      name: "WorkspaceMirrorTests", dependencies: ["WorkspaceMirror", "WorkspaceSync"],
+      swiftSettings: concurrency),
+    .testTarget(
       name: "WorkspacePlatformTests", dependencies: ["WorkspacePlatform"], swiftSettings: concurrency),
     .testTarget(
       name: "WorkspaceStorageTests", dependencies: ["WorkspaceStorage"], swiftSettings: concurrency),
@@ -118,7 +139,8 @@ let package = Package(
       name: "CoordinatorTests", dependencies: ["Coordinator", "NIOTransport"], swiftSettings: concurrency),
     // Model-level tests of the shared UI against a real in-process coordinator (macOS only).
     .testTarget(
-      name: "WorkspaceUITests", dependencies: ["WorkspaceUI", "Coordinator", "NIOTransport"],
+      name: "WorkspaceUITests",
+      dependencies: ["WorkspaceUI", "Coordinator", "NIOTransport", "WorkspaceMirror"],
       swiftSettings: mainActorDefault),
   ],
   swiftLanguageModes: [.v6]

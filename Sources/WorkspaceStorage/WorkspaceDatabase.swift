@@ -22,6 +22,14 @@ public final class WorkspaceDatabase: Sendable {
   private let pool: ConnectionPool
   private let adminConnectionString: String
   private let columnCache = Mutex<[String: [String]]>([:])
+  private let currentDeviceId = Mutex("local")
+
+  /// The device id the change-log trigger records on every write (`b4app.device_id`). `local` until
+  /// this Mac joins a hub; the hub's device id afterwards.
+  public var deviceId: String {
+    get { currentDeviceId.withLock { $0 } }
+    set { currentDeviceId.withLock { $0 = newValue } }
+  }
 
   /// Connect to a running cluster, create the database when it is missing, and migrate.
   public init(endpoint: PostgresEndpoint, binDir: String) throws {
@@ -54,11 +62,16 @@ public final class WorkspaceDatabase: Sendable {
     do { return try pool.withConnection(body) } catch { throw Self.mapped(error) }
   }
 
+  /// One transaction. When this Mac has a hub device id, the transaction's first statement sets
+  /// `b4app.device_id` so the change-log trigger records it. (`read` runs outside a transaction, where
+  /// a transaction-local setting would not persist, and no trigger fires on a read.)
   func write<T>(_ body: (PostgresConnection) throws -> T) throws -> T {
+    let device = deviceId
     do {
       return try pool.withConnection { c in
         try c.execute("BEGIN")
         do {
+          if device != "local" { try c.execute("SELECT set_config('b4app.device_id', $1, true)", [device]) }
           let value = try body(c)
           try c.execute("COMMIT")
           return value
@@ -693,5 +706,83 @@ public final class WorkspaceDatabase: Sendable {
 
   public func deleteDraft(threadId: String) throws {
     try write { _ = try $0.execute("DELETE FROM \"drafts\" WHERE \"threadId\" = $1", [threadId]) }
+  }
+
+  // MARK: - Hub link (M8a, local only)
+
+  /// The hub this Mac has joined. `tokenRef` names the device token in the secret store; the token
+  /// itself is never stored here.
+  public struct HubLink: Codable, Sendable, Equatable {
+    public var url: String
+    public var deviceId: String
+    public var deviceName: String
+    public var tokenRef: String
+    public var orgSlug: String
+    public var username: String
+    public var cursor: Int
+    public var lastPushAt: String?
+    public var lastError: String?
+    public var joinedAt: String
+
+    public init(
+      url: String, deviceId: String, deviceName: String, tokenRef: String, orgSlug: String, username: String,
+      cursor: Int = 0, lastPushAt: String? = nil, lastError: String? = nil, joinedAt: String
+    ) {
+      self.url = url
+      self.deviceId = deviceId
+      self.deviceName = deviceName
+      self.tokenRef = tokenRef
+      self.orgSlug = orgSlug
+      self.username = username
+      self.cursor = cursor
+      self.lastPushAt = lastPushAt
+      self.lastError = lastError
+      self.joinedAt = joinedAt
+    }
+  }
+
+  public func hubLink() throws -> HubLink? {
+    try read { try one($0, HubLink.self, "SELECT * FROM \"hubLink\" WHERE \"id\" = 1") }
+  }
+
+  /// Insert or replace the one link row.
+  public func saveHubLink(_ link: HubLink) throws {
+    try write { c in
+      try c.execute(
+        """
+        INSERT INTO "hubLink" ("id", "url", "deviceId", "deviceName", "tokenRef", "orgSlug", "username",
+          "cursor", "lastPushAt", "lastError", "joinedAt")
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7::bigint, $8, $9, $10)
+        ON CONFLICT ("id") DO UPDATE SET "url" = EXCLUDED."url", "deviceId" = EXCLUDED."deviceId",
+          "deviceName" = EXCLUDED."deviceName", "tokenRef" = EXCLUDED."tokenRef",
+          "orgSlug" = EXCLUDED."orgSlug", "username" = EXCLUDED."username", "cursor" = EXCLUDED."cursor",
+          "lastPushAt" = EXCLUDED."lastPushAt", "lastError" = EXCLUDED."lastError",
+          "joinedAt" = EXCLUDED."joinedAt"
+        """,
+        [
+          link.url, link.deviceId, link.deviceName, link.tokenRef, link.orgSlug, link.username,
+          String(link.cursor), link.lastPushAt, link.lastError, link.joinedAt,
+        ])
+    }
+  }
+
+  /// Forget the hub: remove the link and mark the whole change log unsynced, so a later join (to this
+  /// or another hub) uploads everything again.
+  public func clearHubLink() throws {
+    try write { c in
+      try c.execute("DELETE FROM \"hubLink\"")
+      try c.execute("UPDATE \"changes\" SET \"synced\" = false WHERE \"synced\"")
+    }
+  }
+
+  /// Record this device in `devices` (the hub's id and name), keeping an existing row's creation time.
+  public func saveDevice(id: String, name: String) throws {
+    try write { c in
+      try c.execute(
+        """
+        INSERT INTO "devices" ("id", "name", "createdAt") VALUES ($1, $2, $3)
+        ON CONFLICT ("id") DO UPDATE SET "name" = EXCLUDED."name"
+        """, [id, name, Timestamp.now()])
+    }
   }
 }

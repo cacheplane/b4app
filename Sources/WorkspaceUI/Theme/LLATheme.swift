@@ -10,7 +10,10 @@ import SwiftUI
 /// Views compose these; no literal colours, radii, or font names live outside this folder.
 public enum LLA {
   /// A light/dark pair of sRGB hex values that resolves with the window's appearance.
-  public struct Dynamic: Sendable, Equatable {
+  /// Nonisolated on purpose: AppKit and UIKit resolve a dynamic provider on whatever thread is
+  /// drawing or snapshotting, and a main-actor closure trapped there (SIGTRAP in the iOS scene
+  /// snapshot, found 2026-10-31 during the M8a click-through).
+  public nonisolated struct Dynamic: Sendable, Equatable {
     public var light: UInt32
     public var dark: UInt32
 
@@ -39,7 +42,7 @@ public enum LLA {
     }
   }
 
-  public enum Palette {
+  public nonisolated enum Palette {
     public static let bg = Dynamic(light: 0xFFFFFF, dark: 0x0D0D0D)
     public static let surface = Dynamic(light: 0xF7F7F8, dark: 0x161617)
     public static let surfaceRaised = Dynamic(light: 0xECECEE, dark: 0x202022)
@@ -112,7 +115,7 @@ public enum LLA {
 
 #if canImport(AppKit)
   extension NSColor {
-    convenience init(hex: UInt32) {
+    nonisolated convenience init(hex: UInt32) {
       self.init(
         srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
         blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
@@ -120,7 +123,7 @@ public enum LLA {
   }
 #else
   extension UIColor {
-    convenience init(hex: UInt32) {
+    nonisolated convenience init(hex: UInt32) {
       self.init(
         red: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
         blue: CGFloat(hex & 0xFF) / 255, alpha: 1)

@@ -648,6 +648,19 @@ All items below start unchecked. The milestones are dependency gates, not elapse
 
 **Exit gate:** Two devices show one thread list and the same transcripts; edits made offline on both converge; no secret value crosses the wire except the Postgres credential itself over TLS; a migration of a copy of the real database leaves a backup behind.
 
+### M8 — The hub: multi-tenant sync service and relay (added 2026-10-31 at the owner's request)
+
+**Dependencies:** M7.  
+**Purpose:** A Rust hub service that every device syncs with as a user: multi-tenant from the first migration (shared schema, forced row-level security), deployable on-prem with Docker Compose and Helm and as cacheplane's public cloud from one image, owning its own users, organisations, devices, and credentials with no bundled identity provider. Only threads created in the app are synced. Built in slices, each verified on its own. Design: `docs/superpowers/specs/2026-10-31-m8-hub-design.md`; research: `docs/research/reports/Multi-tenant hub and sync patterns.md`.
+
+- [ ] M8a Read-only mirror: hub `serve|migrate|seed|enroll`, tenancy and RLS, device enrollment by one-time code, change-log push and long-poll pull, the coordinator's `HubSync` and `hub join|status|leave`, the iOS SQLite mirror behind the unchanged shell, Compose for local use. Exit: a thread run on the Mac appears with its transcript in the iOS Simulator without a refresh; no secret, path, or pid in any hub row; cross-tenant reads fail under RLS.
+- [ ] M8b The phone writes: pins, archive, titles, drafts from iOS; hybrid logical clocks and per-column last-writer-wins; the coordinator applies other devices' changes; device-aware connections.
+- [ ] M8c The relay: an outbound WebSocket from each coordinator; `turn.send`, `turn.interrupt`, `request.respond` routed to the owning Mac; a turn sent while that Mac is offline is refused, never queued; interrupts and request answers held at most 60 s; first answer wins.
+- [ ] M8d Accounts: PKCE sign-in for the apps, the device grant for the CLI, rotating per-device refresh-token families, self-registration with email verification, organisations and memberships, per-organisation OIDC brokering.
+- [ ] M8e Deployable: Helm chart with a migration hook and external Postgres, SAML, SCIM, tenant bundle export and import, a published client compatibility window.
+
+**Exit gate:** The M8a through M8c acceptance passes against a hub installed from the chart with an external database; two users in two organisations on one hub never see each other's rows; a turn from the phone runs on the owning Mac and streams back, and the same turn is refused with the Mac's last-seen time when it is offline.
+
 ## 14. Verification and release acceptance
 
 ### 14.1 Test strategy

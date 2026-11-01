@@ -171,4 +171,20 @@ private func seed(_ db: WorkspaceDatabase) throws -> (thread: ConversationThread
     // Clearing and reloading record nothing: the log is exactly the archive's.
     #expect(try target.changes(after: 0).count == source.changes(after: 0).count)
   }
+
+  @Test func restoreMarksEveryChangeUnsyncedSoALaterJoinUploadsIt() throws {
+    let source = try WorkspaceDatabase.temporary()
+    _ = try seed(source)
+    let total = try source.changes(after: 0).count
+    try source.markSynced(through: Int.max)
+    #expect(try source.unsyncedChangeCount() == 0)
+    let path = NSTemporaryDirectory() + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
+    try source.export(to: path)
+
+    let target = try WorkspaceDatabase.temporary()
+    try target.restore(from: path)
+    #expect(total > 0)
+    #expect(try target.changes(after: 0).count == total)
+    #expect(try target.unsyncedChangeCount() == total)
+  }
 }
