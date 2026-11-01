@@ -1,0 +1,135 @@
+{
+ "changes": [
+  {
+   "platform": "macos",
+   "device": "mac",
+   "deviceSeq": 1,
+   "wall": 1761900002000,
+   "table": "connections",
+   "rowId": "conn-1",
+   "op": "insert",
+   "column": null,
+   "value": {
+    "id": "conn-1",
+    "kind": "codex",
+    "label": "Codex"
+   },
+   "hlc": "019a396c7ad0-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
+  },
+  {
+   "platform": "macos",
+   "device": "mac",
+   "deviceSeq": 2,
+   "wall": 1761900003000,
+   "table": "threads",
+   "rowId": "thread-1",
+   "op": "insert",
+   "column": null,
+   "value": {
+    "id": "thread-1",
+    "connectionId": "conn-1",
+    "title": "Original",
+    "pinned": false,
+    "archived": false
+   },
+   "hlc": "019a396c7eb8-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
+  },
+  {
+   "platform": "macos",
+   "device": "mac",
+   "deviceSeq": 3,
+   "wall": 1761900004000,
+   "table": "turns",
+   "rowId": "turn-1",
+   "op": "insert",
+   "column": null,
+   "value": {
+    "id": "turn-1",
+    "threadId": "thread-1",
+    "status": "terminal"
+   },
+   "hlc": "019a396c82a0-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
+  },
+  {
+   "platform": "ios",
+   "device": "phone",
+   "deviceSeq": 1,
+   "wall": 1761900005000,
+   "table": "threads",
+   "rowId": "thread-1",
+   "op": "update",
+   "column": "title",
+   "value": "Phone title",
+   "hlc": "019a396c8688-0000-01a194d0-5e2a-7b11-9c02-3a1f6e7d8b90"
+  },
+  {
+   "platform": "macos",
+   "device": "mac",
+   "deviceSeq": 4,
+   "wall": 1761900008000,
+   "table": "threads",
+   "rowId": "thread-1",
+   "op": "update",
+   "column": "title",
+   "value": "Mac title",
+   "hlc": "019a396c9240-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
+  },
+  {
+   "platform": "ios",
+   "device": "phone",
+   "deviceSeq": 2,
+   "wall": 1761900006000,
+   "table": "threads",
+   "rowId": "thread-1",
+   "op": "update",
+   "column": "title",
+   "value": "Stale phone title",
+   "hlc": "019a396c8a70-0000-01a194d0-5e2a-7b11-9c02-3a1f6e7d8b90"
+  },
+  {
+   "platform": "macos",
+   "device": "mac",
+   "deviceSeq": 5,
+   "wall": 1761900009000,
+   "table": "drafts",
+   "rowId": "thread-1",
+   "op": "insert",
+   "column": null,
+   "value": {
+    "threadId": "thread-1",
+    "text": "Also check the logout path",
+    "updatedAt": "2026-10-31T12:00:08Z"
+   },
+   "hlc": "019a396c9628-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
+  },
+  {
+   "platform": "ios",
+   "device": "phone",
+   "deviceSeq": 3,
+   "wall": 1761900010000,
+   "table": "drafts",
+   "rowId": "thread-1",
+   "op": "update",
+   "column": "text",
+   "value": "",
+   "hlc": "019a396c9a10-0000-01a194d0-5e2a-7b11-9c02-3a1f6e7d8b90"
+  },
+  {
+   "platform": "ios",
+   "device": "phone",
+   "deviceSeq": 4,
+   "wall": 1761900011000,
+   "table": "threads",
+   "rowId": "thread-1",
+   "op": "update",
+   "column": "readTurnId",
+   "value": "turn-1",
+   "hlc": "019a396c9df8-0000-01a194d0-5e2a-7b11-9c02-3a1f6e7d8b90"
+  }
+ ],
+ "expected": {
+  "threads.title": "Mac title",
+  "threads.readTurnId": "turn-1",
+  "drafts.text": ""
+ }
+}

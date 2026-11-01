@@ -93,6 +93,17 @@ struct ThreadDetailView: View {
     }
   }
 
+  /// Connection, kind, and directory or route; "on <device>" when the phone's mirror knows the Mac
+  /// that owns the thread (the Mac itself reports none).
+  private var subtitle: String {
+    var parts = [
+      connection?.label ?? "Unknown connection", connection?.kind.rawValue ?? "?",
+      connection?.kind == .b4 ? "route \(thread.context ?? "?")" : (thread.context ?? "no directory"),
+    ]
+    if let device = thread.ownerDeviceName, !device.isEmpty { parts.append("on \(device)") }
+    return parts.joined(separator: " · ")
+  }
+
   private var header: some View {
     VStack(alignment: .leading, spacing: LLA.Space.xs) {
       HStack(alignment: .firstTextBaseline, spacing: LLA.Space.m) {
@@ -103,10 +114,7 @@ struct ThreadDetailView: View {
           TurnStatusBadge(turn: turn)
         }
       }
-      Text(
-        "\(connection?.label ?? "Unknown connection") · \(connection?.kind.rawValue ?? "?") · \(connection?.kind == .b4 ? "route \(thread.context ?? "?")" : (thread.context ?? "no directory"))"
-      )
-      .llaSmallMuted().lineLimit(1).truncationMode(.middle)
+      Text(subtitle).llaSmallMuted().lineLimit(1).truncationMode(.middle)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, LLA.Space.xl)

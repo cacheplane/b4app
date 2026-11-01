@@ -84,7 +84,8 @@ private nonisolated func edited(
     let transport = MirrorTransport(store: store, version: "0.2.0")
     let model = WorkspaceModel(transportProvider: { transport })
     model.connect()
-    try await waitUntil("ready") { model.link == .ready }
+    let link = await model.settledLink()
+    try #require(link == .ready, "the model did not connect: \(model.linkMessage ?? "no message")")
     transport.publish(try store.apply(variant.rows))
     try await waitUntil("thread listed") { model.threads.count == 1 }
     let threadId = try #require(model.threads.first?.id)

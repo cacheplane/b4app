@@ -29,6 +29,8 @@ struct DiagnosticsView: View {
               row("Last sync", sync.lastSyncAt ?? "never")
               if let error = sync.lastError { row("Last error", error) }
               row("Unreadable rows", "\(sync.undecodableRows)", mono: true)
+              row("Waiting to upload", Self.uploads(sync.pendingUploads, "waiting to upload"), mono: false)
+              row("Refused by the hub", Self.uploads(sync.refusedUploads, "refused"), mono: false)
             }
           }
           LLASectionHead("Runtimes").padding(.top, LLA.Space.l)
@@ -82,6 +84,11 @@ struct DiagnosticsView: View {
     .task(id: model.link) {
       if model.link == .ready, model.diagnostics == nil { await model.refreshDiagnostics() }
     }
+  }
+
+  /// "None", "1 change waiting to upload", "2 changes refused".
+  static func uploads(_ count: Int, _ what: String) -> String {
+    count == 0 ? "None" : "\(count) \(count == 1 ? "change" : "changes") \(what)"
   }
 
   @ViewBuilder private func row(_ label: String, _ value: String, mono: Bool = false) -> some View {

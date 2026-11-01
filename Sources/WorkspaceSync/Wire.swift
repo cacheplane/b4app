@@ -17,10 +17,13 @@ public struct SyncChange: Codable, Sendable, Equatable {
   public var op: String
   public var column: String?
   public var value: JSONValue?
+  /// The hybrid logical clock the device stamped on the change. Omitted from the wire when `nil`, in
+  /// which case the hub stamps `wall` with counter `0000` and the pushing device's id.
+  public var hlc: String?
 
   public init(
     deviceSeq: Int, wall: Int, table: String, rowId: String, op: String, column: String? = nil,
-    value: JSONValue? = nil
+    value: JSONValue? = nil, hlc: String? = nil
   ) {
     self.deviceSeq = deviceSeq
     self.wall = wall
@@ -29,10 +32,11 @@ public struct SyncChange: Codable, Sendable, Equatable {
     self.op = op
     self.column = column
     self.value = value
+    self.hlc = hlc
   }
 
   private enum CodingKeys: String, CodingKey {
-    case deviceSeq, wall, table, rowId, op, column, value
+    case deviceSeq, wall, table, rowId, op, column, value, hlc
   }
 
   public init(from decoder: Decoder) throws {
@@ -44,6 +48,7 @@ public struct SyncChange: Codable, Sendable, Equatable {
     op = try container.decode(String.self, forKey: .op)
     column = try container.decodeIfPresent(String.self, forKey: .column)
     value = try container.decodePresentValue(forKey: .value)
+    hlc = try container.decodeIfPresent(String.self, forKey: .hlc)
   }
 
   public func encode(to encoder: Encoder) throws {
@@ -55,11 +60,16 @@ public struct SyncChange: Codable, Sendable, Equatable {
     try container.encode(op, forKey: .op)
     try container.encodeIfPresent(column, forKey: .column)
     try container.encodeIfPresent(value, forKey: .value)
+    try container.encodeIfPresent(hlc, forKey: .hlc)
   }
 }
 
 /// A change in the feed: a `SyncChange` plus its position in the org's feed and the device that wrote
 /// it. `value` distinguishes JSON `null` (`.null`) from an absent key (`nil`), as on `SyncChange`.
+///
+/// `hlc` is the clock the hub kept. A feed that predates clocks omits it, and then it is derived the
+/// way the hub derives it for a change pushed without one: `wall` (clamped at 0) as 12 hex digits,
+/// counter `0000`, and the device id.
 public struct StoredChange: Codable, Sendable, Equatable {
   public var hubSeq: Int
   public var deviceId: String
@@ -70,10 +80,11 @@ public struct StoredChange: Codable, Sendable, Equatable {
   public var op: String
   public var column: String?
   public var value: JSONValue?
+  public var hlc: String
 
   public init(
     hubSeq: Int, deviceId: String, deviceSeq: Int, wall: Int, table: String, rowId: String, op: String,
-    column: String? = nil, value: JSONValue? = nil
+    column: String? = nil, value: JSONValue? = nil, hlc: String? = nil
   ) {
     self.hubSeq = hubSeq
     self.deviceId = deviceId
@@ -84,10 +95,16 @@ public struct StoredChange: Codable, Sendable, Equatable {
     self.op = op
     self.column = column
     self.value = value
+    self.hlc = hlc ?? Self.derivedClock(wall: wall, deviceId: deviceId)
+  }
+
+  /// `Hlc::derived` in the hub: the wall as a zero-counter clock of the device.
+  static func derivedClock(wall: Int, deviceId: String) -> String {
+    HLC(millis: UInt64(max(0, wall)), counter: 0, deviceId: deviceId).rawValue
   }
 
   private enum CodingKeys: String, CodingKey {
-    case hubSeq, deviceId, deviceSeq, wall, table, rowId, op, column, value
+    case hubSeq, deviceId, deviceSeq, wall, table, rowId, op, column, value, hlc
   }
 
   public init(from decoder: Decoder) throws {
@@ -101,6 +118,9 @@ public struct StoredChange: Codable, Sendable, Equatable {
     op = try container.decode(String.self, forKey: .op)
     column = try container.decodeIfPresent(String.self, forKey: .column)
     value = try container.decodePresentValue(forKey: .value)
+    hlc =
+      try container.decodeIfPresent(String.self, forKey: .hlc)
+      ?? Self.derivedClock(wall: wall, deviceId: deviceId)
   }
 
   public func encode(to encoder: Encoder) throws {
@@ -114,6 +134,7 @@ public struct StoredChange: Codable, Sendable, Equatable {
     try container.encode(op, forKey: .op)
     try container.encodeIfPresent(column, forKey: .column)
     try container.encodeIfPresent(value, forKey: .value)
+    try container.encode(hlc, forKey: .hlc)
   }
 }
 
@@ -193,11 +214,40 @@ public struct MeResponse: Codable, Sendable, Equatable {
   }
 }
 
+/// A change the hub refused: final, not recorded in the feed, and covered by `acceptedThrough`. `code`
+/// is `column_not_writable`, `payload_too_large`, or `invalid_clock`.
+public struct RejectedChange: Codable, Sendable, Equatable {
+  public var deviceSeq: Int
+  public var code: String
+
+  public init(deviceSeq: Int, code: String) {
+    self.deviceSeq = deviceSeq
+    self.code = code
+  }
+}
+
 public struct PushResponse: Codable, Sendable, Equatable {
   public var acceptedThrough: Int
+  /// Empty when the hub refused nothing; the hub omits the key then, and so does the encoder.
+  public var rejected: [RejectedChange]
 
-  public init(acceptedThrough: Int) {
+  public init(acceptedThrough: Int, rejected: [RejectedChange] = []) {
     self.acceptedThrough = acceptedThrough
+    self.rejected = rejected
+  }
+
+  private enum CodingKeys: String, CodingKey { case acceptedThrough, rejected }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    acceptedThrough = try container.decode(Int.self, forKey: .acceptedThrough)
+    rejected = try container.decodeIfPresent([RejectedChange].self, forKey: .rejected) ?? []
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(acceptedThrough, forKey: .acceptedThrough)
+    if !rejected.isEmpty { try container.encode(rejected, forKey: .rejected) }
   }
 }
 
@@ -211,6 +261,60 @@ public struct PullResponse: Codable, Sendable, Equatable {
     self.next = next
     self.more = more
   }
+}
+
+/// One per-row, per-column clock from `GET /v1/snapshot`, so the reader keeps merging by clock after it
+/// restores.
+public struct ColumnClock: Codable, Sendable, Equatable {
+  public var table: String
+  public var rowId: String
+  public var column: String
+  public var hlc: String
+
+  public init(table: String, rowId: String, column: String, hlc: String) {
+    self.table = table
+    self.rowId = rowId
+    self.column = column
+    self.hlc = hlc
+  }
+}
+
+/// `GET /v1/snapshot`: the user's whole mirror as synthetic inserts (`hubSeq` 0), the clocks of their
+/// columns, and the cursor to pull from afterwards.
+public struct SnapshotResponse: Codable, Sendable, Equatable {
+  public var changes: [StoredChange]
+  public var clocks: [ColumnClock]
+  public var next: Int
+
+  public init(changes: [StoredChange], clocks: [ColumnClock], next: Int) {
+    self.changes = changes
+    self.clocks = clocks
+    self.next = next
+  }
+}
+
+/// One entry of `GET /v1/devices`. The timestamps are RFC 3339 in UTC with microseconds, exactly as
+/// the hub sent them; `nil` means never seen, or not revoked.
+public struct DeviceInfo: Codable, Sendable, Equatable {
+  public var id: String
+  public var name: String
+  public var platform: String
+  public var lastSeenAt: String?
+  public var revokedAt: String?
+
+  public init(id: String, name: String, platform: String, lastSeenAt: String? = nil, revokedAt: String? = nil)
+  {
+    self.id = id
+    self.name = name
+    self.platform = platform
+    self.lastSeenAt = lastSeenAt
+    self.revokedAt = revokedAt
+  }
+}
+
+/// The `{"devices": [...]}` envelope of `GET /v1/devices`.
+struct DevicesResponse: Codable, Sendable, Equatable {
+  var devices: [DeviceInfo]
 }
 
 /// B4's error envelope as the hub sends it: `{"error":{"kind","message","details":{"code"}}}`.

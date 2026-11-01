@@ -2,6 +2,80 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-11-01: M8b live gate
+
+Run on the owner's MacBook Pro (macOS 26.5) from `feat/m8b-organisation` at `2c5ccef`, plus `87a494e` (the phone's project rename, found missing below). Backups first: `agent-workspace db backup` (152 rows) and `pg_dump` of the hub (13 tables), both in `~/Library/Application Support/b4app/backups/`. The Compose stack moved to the branch's `Hub/` on the same `hub_b4hub-db` volume: migration `0003_organisation` applied, `/readyz` `{"migrations":"current"}`. The packaged app was rebuilt with `./Scripts/package.sh` and swapped into `~/repos/b4app/dist` (main's bundle parked in `dist-main/` for the restore). The store migrated to `0004_organisation` and backfilled 2 projects. Then `agent-workspace hub status` showed `unsynced 0` and the coordinator a pid started at 14:40:00Z. The phone is the iPhone 17 Pro Simulator against `http://localhost:8080`. Real runtimes: Codex 0.166.0 and Claude Code.
+
+| Exit item | Result |
+| --- | --- |
+| 1. Attention order on both devices | Pass. The phone list opened with both threads quiet (the `0004` backfill). A Codex reply moved its thread to the top as unread. A Claude Code turn asking to run `touch` opened a `tool_permission` request at 14:50:39.9; the phone showed the thread first with the cobalt dot and "Waiting for your input". Declined on the Mac at 14:53:50.9 (`request respond --decline`): the phone showed "Working" (ring) below the unread thread within seconds, then unread when the reply finished. Opened on the phone at 14:54:03.8: the Mac's `readTurnId` matched the latest turn 0.15 s later. The Mac sidebar showed "Pinned" and a collapsible "B4 Run (Mac)" section, with the b4app section hidden while its only thread was pinned |
+| 2. Phone and Mac edits show on the other | Pass, each within about 1 s of the tap: pin (14:54:11), thread rename (14:54:23 at the hub, on the Mac by 14:54:25.2), draft (14:54:28; `draft.read` on the Mac returned it), archive (on the Mac 0.14 s after the tap), and project rename (on the Mac 0.2 s after). Reverse, from the CLI and the socket: title, unpin, unarchive, pin, project rename, and draft all showed on the phone within a few seconds. The project rename needed `87a494e`: the phone had no rename control, although the spec gives the phone that edit and the mirror already answered `project.rename` |
+| 3. Live convergence | Pass. `docker compose stop hub` at 14:58:32 (the phone showed "Not synced"). The phone renamed the thread "Offline phone title" and drafted "Offline phone draft"; then the Mac set "Offline Mac title" and "offline Mac draft" (4 unsynced). `docker compose start hub` at 14:58:57. The phone's edits reached the hub at 14:59:03 and the Mac's at 14:59:13, with greater clocks (`…1979ecbc9` over `…1979ea41b`). By 14:59:14 the Mac showed `unsynced 0`, and both devices showed the Mac's title and draft. The reversed-clock order is fixture-tested only |
+| 5. The real hub's rows | 198 change rows over `connections`, `displayItems`, `drafts`, `projectFolders`, `projects`, `runtimeRequests`, `threads`, `turns`: none holds a `secret:` reference, an executable path, a `pid`, or a socket path |
+
+Found during the run, outside the exit items:
+
+- **Keychain prompt blocks the hub actor.** Each ad-hoc `package.sh` rebuild changes the coordinator's signature, so its first read of the hub token raises a Keychain access prompt. Until someone answers, `HubSync` is suspended inside `SecItemCopyMatching`: nothing pushes, and `hub status` times out after 15 s. The coordinator that main's 2026-10-31 rebuild started sat there for 8 hours. Answering the prompt cleared it.
+- **A stale cluster survives a coordinator swap.** That stuck coordinator did not exit within `coordinator stop`'s 10 s, and when it did go it left its PostgreSQL server (started from the old bundle) running. The new coordinator reused that server, and `0004` failed: the server could not `dlopen` the new bundle's `plpgsql.dylib`, whose ad-hoc signature differs. The migration rolled back. After `pg_ctl stop` with the old bundle's binaries, the new coordinator started its own server and migrated.
+- **Simulator team prefix.** With the Developer ID certificate now installed, Xcode signs Simulator builds as `GJJKL34HCT.com.cacheplane.b4app.ios` instead of `FAKETEAMID…`, so the reinstalled app could not read the token the earlier build had stored, and every request got a 401. The Simulator was enrolled again (the old phone device revoked at the hub).
+- `agent-workspace turn send --no-wait` did not return after the turn opened a request; the request itself was recorded correctly.
+- A just-finished reply reads "Replied in 0 sec." on the phone when its time is a moment ahead of the phone's clock.
+- The Codex connection runs with its sandbox off, so a Codex turn never opens a command approval; the approval check used Claude Code.
+
+## 2026-11-01: M8b final-review fix wave (fixture gates)
+
+Run from `feat/m8b-organisation` at `446c8c0` (six commits over `6baea96`: read marks wait for the thread to be on screen; `0004` backfills `readTurnId` and indexes `runtimeRequests("threadId", "state")`; the phone's push is capped at 8 MiB and unsent edits of one column collapse; an advisory lock orders local writes against pulled batches; a router test waits for its events; README and D-048/D-049). `Hub/` was not touched, so the Rust gates were not rerun. The live gate below is still pending.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Swift format | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass |
+| Build | `swift build` | Pass |
+| Tests | `swift test` | Pass: 526 tests in 89 suites in 37.7 s, no issues on the first run |
+| Project | `./Scripts/generate-project.sh` | Regenerated |
+| macOS app | `xcodebuild build ... -scheme B4App-macOS -destination 'platform=macOS'` | `** BUILD SUCCEEDED **` |
+| iOS app | `xcodebuild build ... -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'` | `** BUILD SUCCEEDED **` |
+
+## 2026-11-01: M8b organisation (fixture gates; live gate pending)
+
+Target: the same MacBook Pro (macOS 26.5, Xcode 26.6), run from the worktree `feat/m8b-organisation` at `2cedd55` (the head of Tasks 1 to 12) before this documentation commit. **Only the fixture gates are recorded here. The live gate (the owner's packaged app, the Compose hub, and the Simulator) has not been run, and nothing below is a live result.** The owner's running Agent Workspace app, its LaunchAgent, `~/Library/Application Support/b4app`, and the Compose stack were not touched.
+
+### Automated
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Swift format | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass |
+| Build | `swift build` | Pass |
+| Tests | `swift test` | Pass: 517 tests in 89 suites in 36.4 s (324 tests at the end of M8a). The first full run reported 1 issue in 517 tests: `MirrorSyncTests.offlineEditsWaitAndDrainWhenTheHubReturns` (`MirrorSyncTests.swift:185`, `lastError == nil`), a timing flake under load (the PR #19 class, a 10 s wait). `swift test --filter MirrorSyncTests` alone passed (13 tests), and a second full run passed with no issues |
+| Project | `./Scripts/generate-project.sh` | `B4App.xcodeproj` regenerated from `project.yml` |
+| macOS app | `xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'platform=macOS'` | `** BUILD SUCCEEDED **` |
+| iOS app | `xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'` | `** BUILD SUCCEEDED **` |
+| Rust format | `cd Hub && eval "$(./scripts/test-db.sh)" && cargo fmt --all -- --check` | Pass |
+| Rust lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| Rust tests | `cargo test --workspace --locked`, then `./scripts/test-db.sh --stop` | Pass: 117 tests against a real PostgreSQL 17.11 (77 at the end of M8a): `b4hub` 51 (unit 22, `changes` 14, `enroll` 10, `health` 5), `b4hub-core` 19, `b4hub-db` 47 (unit 3, `changes` 34, `migrate` 7, `rls` 3) |
+| CI | the Swift package job, the apps job, and the Ubuntu `hub` job | Recorded in the PR for `feat/m8b-organisation`, not here |
+
+### Exit items the fixtures cover
+
+| M8b exit item (design) | Fixture evidence | Not covered by fixtures |
+| --- | --- | --- |
+| 1. Sidebar and phone list in attention order; an approval moves its thread to the top within one poll; answering it moves it to unread; opening it on the phone makes it quiet on both | `Tests/Fixtures/sync/attention.json` run against the coordinator's store (`ActivityQueryTests`), the mirror's store (`MirrorActivityTests`), `Attention` (`AttentionTests`), and the model (`AttentionModelTests`, `ThreadListTests`); `markRead` and its guard in `ProjectServiceTests` | The timing within one poll, and both screens, against the real stack |
+| 2. A phone rename, pin, archive, project rename, and draft show on the Mac, and the reverse | Hub: `phone_title_edit_applies_and_later_mac_edit_wins`, `a_phone_may_insert_a_draft_and_clear_it`; Mac: `HubPullTests`, `RemoteApplyTests`; phone: `MirrorWritesTests`, `outboxIsPushedThenPulledBack` | The same through the Compose hub with the owner's joined app |
+| 3. Convergence: both devices rename one thread and edit one draft while the hub is down, the Mac later; both converge on the Mac's values, and on the phone's with the clocks reversed | The shared `conflicts.json` (`conflictFixtureMergesToTheExpectedValues`, both orders, in the Swift suites; the Rust suite decodes the same file), `stale_phone_edit_loses`, `offlineEditsWaitAndDrainWhenTheHubReturns` | The live run with `docker compose stop hub` |
+| 4. A cursor below a pruned horizon resyncs from `/v1/snapshot` without losing an outbox row | `stale_cursor_gets_resync_and_snapshot_restores`, `a_pruned_cursor_resyncs_through_the_snapshot_over_http`, `staleCursorResyncsFromSnapshotWithoutLosingLocalRows`, `resyncUsesTheSnapshot`, `snapshotKeepsTheOutbox`, `aSnapshotClockNewerThanAnUnsentEditWins` | A prune of the real hub |
+| 5. A phone change to a Mac-only column is refused; no hub row holds a secret, path, or pid | `phone_cannot_write_mac_only_columns`, `connection_secrets_are_scrubbed_even_if_sent` | A look at the real hub's tables after the live run |
+| 6. `cargo test`, `swift test`, and both app builds pass | Above, locally | CI |
+
+### Live gate: run 2026-11-01 (see "M8b live gate" above; the table below is the procedure as planned)
+
+To be run only after the owner's go-ahead, because it rebuilds the owner's packaged app and migrates the owner's real local store (to `0004`) and the Compose hub's volume (to `0003`); both migrations are hard to reverse. First: `agent-workspace db backup` and a `pg_dump` of the hub volume. Then rebuild the hub image and bring the stack up from the branch's `Hub/` (`/readyz` must show `"migrations":"current"`), `./Scripts/package.sh`, quit the app, `agent-workspace coordinator restart`, reopen, and run the three items below in the iPhone 17 Pro Simulator with a fixture approval (or a real Codex command approval), recording each with timings. Fill this table in; leave a row `not run` until it is.
+
+| Exit item | Procedure | Result |
+| --- | --- | --- |
+| 1. Attention order on both devices | Open the Mac sidebar (Pinned and per-project sections) and the phone's list with the project filter. Start a fixture turn that opens an approval: the thread must move to the top on both within one poll interval. Answer it on the Mac: it moves to unread. Open it on the phone: it becomes quiet on both | not run |
+| 2. Phone and Mac edits show on the other | Rename a thread on the phone, pin one, archive one, rename a project, and type a draft: each shows on the Mac within one poll interval. Then do the reverse | not run |
+| 3. Live convergence | `docker compose stop hub`; rename the same thread and edit the same draft on both devices, the Mac's edit later; `docker compose start hub`; both must show the Mac's values (and, with the phone's edit later, the phone's) | not run |
+
+Also record for the live run: `agent-workspace hub status` shows `unsynced 0`; `agent-workspace coordinator status` shows a pid started after the restart; a screenshot of the Simulator list and the Mac sidebar; and that the owner's app, once restored from `main`, is rebuilt with the same dev loop.
 ## 2026-10-31: Developer ID signing and notarization (D-039 gate)
 
 Target: the same MacBook Pro (macOS 26.5, Xcode 26.6, notarytool 1.1.2). The owner created the certificate and the `b4app` notarytool profile; neither password passed through the script or this session. The owner's running app was quit, `~/repos/b4app/dist` was moved aside and replaced from the stapled zip, `agent-workspace coordinator restart` ran, and the app was reopened.

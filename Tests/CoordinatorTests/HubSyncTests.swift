@@ -27,6 +27,7 @@ private func record(
   var object: [String: JSONValue] = [
     "seq": .number(Double(seq)), "deviceId": "local", "wall": 1_700_000_000_000, "table": .string(table),
     "rowId": .string(rowId), "op": .string(op), "synced": false,
+    "hlc": "0000000000a1-0000-local",
   ]
   if let column { object["column"] = .string(column) }
   if let value { object["value"] = value }
@@ -195,6 +196,18 @@ private struct HubHarness {
     #expect(SyncFilter.outbound(try record(3, "runtimeRequests", "insert", value: small))?.value == small)
   }
 
+  @Test func projectsTravelAndEveryChangeCarriesItsClock() throws {
+    for table in ["projects", "projectFolders"] {
+      let out = try #require(SyncFilter.outbound(try record(1, table, "insert", value: ["id": "r1"])))
+      #expect(out.table == table)
+      #expect(out.hlc == "0000000000a1-0000-local")
+    }
+    let update = try #require(
+      SyncFilter.outbound(try record(2, "threads", "update", column: "title", value: "T")))
+    #expect(update.hlc == "0000000000a1-0000-local")
+    #expect(SyncFilter.outbound(try record(3, "hubLink", "update", column: "cursor", value: 1)) == nil)
+  }
+
   @Test func connectionInsertsKeepOnlyTheKnownColumns() throws {
     #expect(SyncFilter.outbound(try record(1, "connections", "insert", value: "not an object")) == nil)
     #expect(SyncFilter.outbound(try record(2, "connections", "insert", value: nil)) == nil)
@@ -331,7 +344,10 @@ private struct HubHarness {
     }
     #expect(try db.tableCounts() == counts)
     #expect(try db.changes(after: 0) == changes)
-    #expect(try db.hubLink() == link)
+    // The pull moves the cursor on its own; the rest of the link is untouched.
+    var kept = try db.hubLink()
+    kept?.cursor = link?.cursor ?? 0
+    #expect(kept == link)
 
     _ = try await h.client.request(
       HubLeave.self, EmptyParams(),
