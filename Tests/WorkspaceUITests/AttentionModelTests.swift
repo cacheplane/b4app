@@ -477,11 +477,6 @@ private struct AttentionDocument: Decodable {
     #expect(transport.calls(.threadMarkRead).isEmpty)
     #expect(model.band(of: model.threads[0]) == .unread)
 
-    // On screen, but showing Diagnostics with the thread still loaded: still not read.
-    model.surface = .diagnostics
-    model.isDetailOnScreen = true
-    try await Task.sleep(for: .milliseconds(100))
-    #expect(transport.calls(.threadMarkRead).isEmpty)
   }
 
   @Test func aReplyOnAnotherThreadIsNotMarkedRead() async throws {

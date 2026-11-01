@@ -1,12 +1,12 @@
 import SwiftUI
 import WorkspaceProtocol
 
-/// Sidebar plus detail on both platforms. The sidebar holds the surfaces and the thread list;
-/// the detail shows the selected surface or thread. Styling comes from `Theme/` (LLA visual system).
+/// Sidebar plus detail on both platforms. The sidebar holds the actions and the thread list; the
+/// detail shows the selected thread. Styling comes from `Theme/` (LLA visual system).
 public struct WorkspaceRootView: View {
   @Bindable var model: WorkspaceModel
-  /// On a compact width (iPhone) the split view shows one column; choosing a surface or a thread
-  /// in the sidebar moves to the detail. Ignored where both columns show.
+  /// On a compact width (iPhone) the split view shows one column; choosing a thread in the sidebar
+  /// moves to the detail. Ignored where both columns show.
   @State private var compactColumn = NavigationSplitViewColumn.sidebar
   @Environment(\.scenePhase) private var scenePhase
   #if os(macOS)
@@ -19,7 +19,7 @@ public struct WorkspaceRootView: View {
   /// on the Mac, its window is the active one; on a compact width (iPhone), the detail column is the
   /// one showing, since going back to the list keeps the thread loaded behind it.
   private var detailOnScreen: Bool {
-    guard scenePhase == .active, model.surface == .threads, model.selectedThreadId != nil else {
+    guard scenePhase == .active, model.selectedThreadId != nil else {
       return false
     }
     #if os(macOS)
@@ -40,7 +40,7 @@ public struct WorkspaceRootView: View {
         .navigationSplitViewColumnWidth(min: 240, ideal: 290)
         .environment(\.showDetail, { compactColumn = .detail })
     } detail: {
-      detail
+      ThreadsView(model: model)
         .modifier(WorkspaceWindowBackground())
     }
     .tint(LLA.Color.accent)
@@ -56,14 +56,6 @@ public struct WorkspaceRootView: View {
 
   @Environment(\.openURL) private var openURL
 
-  @ViewBuilder private var detail: some View {
-    switch model.surface {
-    case .threads: ThreadsView(model: model)
-    case .connections: ConnectionsView(model: model)
-    case .servers: LocalServersView(model: model)
-    case .diagnostics: DiagnosticsView(model: model)
-    }
-  }
 }
 
 /// The window's own background in the theme colour on macOS; iOS has no window container.
@@ -127,15 +119,6 @@ struct SidebarView: View {
             .padding(.top, LLA.Space.s)
             .padding(.bottom, LLA.Space.m)
 
-          ForEach(Surface.allCases) { surface in
-            let selected = model.surface == surface && model.selectedThreadId == nil
-            SidebarTextRow(title: surface.title, selected: selected) {
-              model.surface = surface
-              if surface != .threads { model.selectedThreadId = nil }
-              showDetail()
-            }
-          }
-
           SidebarGroupLabel("Threads")
           if model.connections.count > 1 {
             Picker("Connection", selection: $model.connectionFilter) {
@@ -162,17 +145,6 @@ struct SidebarView: View {
       List {
         Section {
           header.listRowBackground(Color.clear).listRowSeparator(.hidden)
-          ForEach(Surface.allCases) { surface in
-            let selected = model.surface == surface && model.selectedThreadId == nil
-            SidebarTextRow(title: surface.title, selected: selected) {
-              model.surface = surface
-              if surface != .threads { model.selectedThreadId = nil }
-              showDetail()
-            }
-            .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 6))
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-          }
         }
         Section {
           ThreadListView(model: model)

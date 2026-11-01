@@ -48,3 +48,36 @@ import WorkspaceProtocol
     #expect(stopped.action == .openServers(serverId: "s1"))
   }
 }
+
+@MainActor
+@Suite struct SettingsRequestTests {
+  private func model() -> WorkspaceModel {
+    WorkspaceModel(transportProvider: { throw WorkspaceError(.endpointUnavailable, "no coordinator") })
+  }
+
+  @Test func remediationOpensSettingsAtThePage() async {
+    let model = model()
+    await model.perform(.openConnections)
+    #expect(model.settingsPage == .connections)
+    #expect(model.settingsRequest == 1)
+    await model.perform(.openServers(serverId: "s1"))
+    #expect(model.settingsPage == .servers)
+    #expect(model.settingsRequest == 2)
+  }
+
+  @Test func openSettingsTwiceRequestsTwice() {
+    let model = model()
+    model.openSettings(.diagnostics)
+    model.openSettings(.diagnostics)
+    #expect(model.settingsRequest == 2)
+    #expect(model.settingsPage == .diagnostics)
+    model.openSettings()
+    #expect(model.settingsRequest == 3)
+    #expect(model.settingsPage == .diagnostics)
+  }
+
+  @Test func pagesHaveTheirTitlesAndSymbols() {
+    #expect(SettingsPage.allCases.map(\.title) == ["Connections", "Local servers", "Diagnostics"])
+    #expect(SettingsPage.allCases.map(\.systemImage) == ["link", "server.rack", "waveform.path.ecg"])
+  }
+}

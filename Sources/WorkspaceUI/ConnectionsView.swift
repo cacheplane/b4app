@@ -45,7 +45,7 @@ struct ConnectionsView: View {
           ForEach(model.connections) { connection in
             ConnectionCard(model: model, connection: connection)
           }
-          if let error = model.lastError, model.surface == .connections {
+          if let error = model.lastError, model.settingsVisible, model.settingsPage == .connections {
             Text(error).font(LLAFont.small).foregroundStyle(LLA.Color.danger)
           }
         }

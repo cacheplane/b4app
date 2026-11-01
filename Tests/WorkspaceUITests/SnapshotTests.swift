@@ -72,14 +72,7 @@ private let fakeClaude =
     for (appearance, suffix) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
       window.appearance = NSAppearance(named: appearance)
       try await window.capture(to: "\(dir)/threads-\(suffix).png")
-      model.surface = .connections
       model.selectedThreadId = nil
-      try await window.capture(to: "\(dir)/connections-\(suffix).png")
-      model.surface = .servers
-      try await window.capture(to: "\(dir)/servers-\(suffix).png")
-      model.surface = .diagnostics
-      try await window.capture(to: "\(dir)/diagnostics-\(suffix).png")
-      model.surface = .threads
       try await window.capture(to: "\(dir)/threads-empty-\(suffix).png")
       model.selectedThreadId = release.id
       await model.openThread(id: release.id)
@@ -107,16 +100,9 @@ struct SnapshotShell: View {
     HStack(spacing: 0) {
       SidebarView(model: model).frame(width: 290)
       Rectangle().fill(LLA.Color.rule).frame(width: 1)
-      Group {
-        switch model.surface {
-        case .threads: ThreadsView(model: model)
-        case .connections: ConnectionsView(model: model)
-        case .servers: LocalServersView(model: model)
-        case .diagnostics: DiagnosticsView(model: model)
-        }
-      }
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .background(LLA.Color.bg)
+      ThreadsView(model: model)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(LLA.Color.bg)
     }
     .tint(LLA.Color.accent)
     .frame(width: 1200, height: 800)

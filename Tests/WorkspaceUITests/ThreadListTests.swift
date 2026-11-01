@@ -109,20 +109,10 @@ import WorkspaceProtocol
     #expect(model.sidebarError() == nil)  // no error, no banner
     model.lastError = "That folder already belongs to another project."
 
-    model.surface = .threads
     model.selectedThreadId = nil
     #expect(model.sidebarError() == "That folder already belongs to another project.")
-    model.surface = .diagnostics
-    #expect(model.sidebarError() != nil)
-
-    // The connections and servers screens print the error themselves.
-    model.surface = .connections
-    #expect(model.sidebarError() == nil)
-    model.surface = .servers
-    #expect(model.sidebarError() == nil)
 
     // An open thread shows it in the composer, so the list does not repeat it...
-    model.surface = .threads
     model.selectedThreadId = "asks"
     #expect(model.sidebarError() == nil)
     // ...unless the detail is not on screen (the iPhone's single column).

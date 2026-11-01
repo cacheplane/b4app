@@ -21,7 +21,7 @@ struct LocalServersView: View {
         ForEach(model.servers) { server in
           ServerCard(model: model, server: server)
         }
-        if let error = model.lastError, model.surface == .servers {
+        if let error = model.lastError, model.settingsVisible, model.settingsPage == .servers {
           Text(error).font(LLAFont.small).foregroundStyle(LLA.Color.danger)
         }
         LLASectionHead("Add a project").padding(.top, LLA.Space.l)

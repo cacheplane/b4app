@@ -24,14 +24,14 @@ public enum ThreadRowState: String, Sendable, Equatable, CaseIterable {
   }
 }
 
-public enum Surface: String, CaseIterable, Identifiable, Sendable {
-  case threads, connections, servers, diagnostics
+/// A page of the Settings window (the Mac) or sheet (the iPhone).
+public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
+  case connections, servers, diagnostics
 
   public var id: String { rawValue }
 
   public var title: String {
     switch self {
-    case .threads: return "Threads"
     case .connections: return "Connections"
     case .servers: return "Local servers"
     case .diagnostics: return "Diagnostics"
@@ -40,10 +40,9 @@ public enum Surface: String, CaseIterable, Identifiable, Sendable {
 
   public var systemImage: String {
     switch self {
-    case .threads: return "bubble.left.and.bubble.right"
-    case .connections: return "point.3.connected.trianglepath.dotted"
+    case .connections: return "link"
     case .servers: return "server.rack"
-    case .diagnostics: return "stethoscope"
+    case .diagnostics: return "waveform.path.ecg"
     }
   }
 }
@@ -127,7 +126,14 @@ public final class WorkspaceModel {
   /// Every project with its folders, loaded with the threads and refreshed on `project.changed`.
   public private(set) var projects: [Project] = []
   public var projectFilter: ProjectFilter = .all
-  public var surface: Surface = .threads
+  /// The Settings page to show, and a counter the root view watches to open Settings (a window on the
+  /// Mac, a sheet on the iPhone); a counter so asking twice opens it twice.
+  public var settingsPage: SettingsPage = .connections
+  public var settingsRequest = 0
+  /// The iPhone's Settings sheet.
+  public var showSettingsSheet = false
+  /// Set by the Settings views while they are on screen.
+  public var settingsVisible = false
   public var selectedThreadId: String?
   public var searchText = ""
   public var connectionFilter: String?
@@ -352,6 +358,12 @@ public final class WorkspaceModel {
     settleLink()
   }
 
+  /// Open Settings, at `page` when given.
+  public func openSettings(_ page: SettingsPage? = nil) {
+    if let page { settingsPage = page }
+    settingsRequest += 1
+  }
+
   /// Ask the coordinator which hub user it has joined as. A failure keeps the account as it was.
   public func refreshAccount() async {
     guard accountSource == .coordinator, let client else { return }
@@ -571,7 +583,6 @@ public final class WorkspaceModel {
   public func openThread(id: String) async {
     if let current = detail, current.thread.id != id { await saveDraft(threadId: current.thread.id) }
     selectedThreadId = id
-    surface = .threads
     unreadHold.remove(id)
     await loadDetail(id: id)
     await markReadIfNeeded(threadId: id)
@@ -747,7 +758,7 @@ public final class WorkspaceModel {
   /// nothing while the thread is not on screen (spec "Read state": the reply must be seen); the
   /// detail stays loaded behind the iPhone's list and the Mac's inactive window, so loaded is not seen.
   private func markReadIfNeeded(threadId: String) async {
-    guard isDetailOnScreen, surface == .threads, selectedThreadId == threadId else { return }
+    guard isDetailOnScreen, selectedThreadId == threadId else { return }
     guard let detail, detail.thread.id == threadId, !unreadHold.contains(threadId) else { return }
     guard let latest = detail.turns.max(by: { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }),
       latest.status == .terminal
@@ -908,8 +919,8 @@ public final class WorkspaceModel {
     switch action {
     case .none: break
     case .signIn(let connectionId): await login(connectionId: connectionId)
-    case .openConnections: surface = .connections
-    case .openServers: surface = .servers
+    case .openConnections: openSettings(.connections)
+    case .openServers: openSettings(.servers)
     case .newThread: showNewThread = true
     case .checkAgain: if let id = detail?.thread.id { await reconcileThread(id: id) }
     case .abandonTurn: if let id = detail?.thread.id { await abandonTurn(threadId: id) }

@@ -92,17 +92,11 @@ extension WorkspaceModel {
 }
 
 extension WorkspaceModel {
-  /// Whether the detail column is already showing `lastError`: the connections and servers screens
-  /// print it, and an open, loaded thread shows it in the composer (or in place of the transcript).
-  /// Diagnostics, an empty Threads screen, and a thread that is still loading print nothing.
+  /// Whether the detail column is already showing `lastError`: an open, loaded thread shows it in the
+  /// composer (or in place of the transcript). No thread, or one still loading, prints nothing.
   var detailShowsError: Bool {
-    switch surface {
-    case .connections, .servers: return true
-    case .diagnostics: return false
-    case .threads:
-      guard let id = selectedThreadId, threads.contains(where: { $0.id == id }) else { return false }
-      return !detailLoading
-    }
+    guard let id = selectedThreadId, threads.contains(where: { $0.id == id }) else { return false }
+    return !detailLoading
   }
 
   /// The failure the list prints where the action happened: a project or thread action failed and
