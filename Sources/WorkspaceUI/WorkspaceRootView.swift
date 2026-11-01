@@ -5,6 +5,9 @@ import WorkspaceProtocol
 /// the detail shows the selected surface or thread. Styling comes from `Theme/` (LLA visual system).
 public struct WorkspaceRootView: View {
   @Bindable var model: WorkspaceModel
+  /// On a compact width (iPhone) the split view shows one column; choosing a surface or a thread
+  /// in the sidebar moves to the detail. Ignored where both columns show.
+  @State private var compactColumn = NavigationSplitViewColumn.sidebar
 
   public init(model: WorkspaceModel) {
     LLAFonts.register()
@@ -12,9 +15,10 @@ public struct WorkspaceRootView: View {
   }
 
   public var body: some View {
-    NavigationSplitView {
+    NavigationSplitView(preferredCompactColumn: $compactColumn) {
       SidebarView(model: model)
         .navigationSplitViewColumnWidth(min: 240, ideal: 290)
+        .environment(\.showDetail, { compactColumn = .detail })
     } detail: {
       detail
         .modifier(WorkspaceWindowBackground())
@@ -52,8 +56,14 @@ struct WorkspaceWindowBackground: ViewModifier {
   }
 }
 
+extension EnvironmentValues {
+  /// Moves a collapsed split view to its detail column (set by `WorkspaceRootView`).
+  @Entry var showDetail: @MainActor @Sendable () -> Void = {}
+}
+
 struct SidebarView: View {
   @Bindable var model: WorkspaceModel
+  @Environment(\.showDetail) private var showDetail
 
   var body: some View {
     // A scroll view and stacks rather than `List`: inside the split view's sidebar column a List drew
@@ -73,6 +83,7 @@ struct SidebarView: View {
           SidebarTextRow(title: surface.title, selected: selected) {
             model.surface = surface
             if surface != .threads { model.selectedThreadId = nil }
+            showDetail()
           }
         }
 
@@ -184,11 +195,13 @@ struct ThreadRow: View {
   let thread: ConversationThread
   @State private var renaming = false
   @State private var newTitle = ""
+  @Environment(\.showDetail) private var showDetail
 
   var body: some View {
     let state = model.threadState(thread)
     let selected = model.selectedThreadId == thread.id
     Button {
+      showDetail()
       Task { await model.openThread(id: thread.id) }
     } label: {
       HStack(alignment: .top, spacing: LLA.Space.s) {

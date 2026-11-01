@@ -2,18 +2,21 @@ import SwiftUI
 import WorkspaceClient
 import WorkspaceUI
 
-/// The iOS companion renders the same shell. It cannot run a coordinator or reach the Mac's socket;
-/// a secure relay is designed later (spec section 15), so the transport reports unavailable.
+/// The iOS companion reads the workspace the Mac syncs to the hub (M8a): until this device has
+/// joined it shows the Connect screen, then the shared shell over the local mirror. Writing from the
+/// phone arrives in M8b and sending turns through the hub in M8c; the mirror refuses both.
 @main
 struct B4AppiOS: App {
-  @State private var model = WorkspaceModel(transportProvider: {
-    UnavailableTransport(
-      reason: "iOS cannot reach the Mac coordinator yet. A secure relay is a follow-on milestone.")
-  })
+  @State private var host = MirrorHost.shared
+  @State private var model = WorkspaceModel(transportProvider: MirrorHost.transportProvider)
 
   var body: some Scene {
     WindowGroup {
-      WorkspaceRootView(model: model)
+      if host.isLinked {
+        WorkspaceRootView(model: model)
+      } else {
+        HubConnectView(host: host)
+      }
     }
   }
 }
