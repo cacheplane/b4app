@@ -18,6 +18,8 @@ public actor FakeHubAPI: HubAPI {
   public private(set) var revoked = false
   /// How many times `enroll` was called, redeemed or not.
   public private(set) var enrollCalls = 0
+  public private(set) var meCalls = 0
+  private var failMe: HubError?
 
   private var device: EnrollResponse?
   private var deviceName = "Fake device"
@@ -38,6 +40,8 @@ public actor FakeHubAPI: HubAPI {
   }
 
   public func setFailNext(_ error: HubError?) { failNext = error }
+  /// Fail the next `me()` only, whatever other calls run first.
+  public func setFailMe(_ error: HubError?) { failMe = error }
 
   /// Sets the platform of the fake's device, which decides what `push` refuses: `macos` may write
   /// anything, `ios` and `cli` only the phone's columns. `enroll` sets it from its request.
@@ -70,6 +74,11 @@ public actor FakeHubAPI: HubAPI {
   }
 
   public func me() async throws -> MeResponse {
+    meCalls += 1
+    if let failure = failMe {
+      failMe = nil
+      throw failure
+    }
     try authorize()
     let device =
       device

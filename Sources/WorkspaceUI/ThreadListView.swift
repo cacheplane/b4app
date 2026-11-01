@@ -183,8 +183,9 @@ struct AttentionDot: View {
 
 // MARK: - Rows
 
-/// One list row: the band dot, the title, and the runtime's ghosted mark. Why it sits there and which
-/// connection runs it are spoken, not shown. The context menu holds the organization actions;
+/// One list row: the band dot, the title, and the runtime's ghosted mark (and a pin on the iPhone,
+/// whose flat list has no Pinned group). Why it sits there and which connection runs it are spoken,
+/// not shown. The context menu holds the organization actions;
 /// archiving never stops a turn (spec 3.3).
 struct ThreadRow: View {
   @Bindable var model: WorkspaceModel
@@ -206,6 +207,11 @@ struct ThreadRow: View {
     } label: {
       HStack(spacing: LLA.Space.s) {
         AttentionDot(band: band)
+        #if os(iOS)
+          if thread.pinned {
+            Image(systemName: "pin.fill").font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
+          }
+        #endif
         Text(thread.title.isEmpty ? "Untitled" : thread.title)
           .font(loud ? LLAFont.smallStrong : LLAFont.small)
           .foregroundStyle(LLA.Color.ink)
@@ -224,7 +230,7 @@ struct ThreadRow: View {
     .buttonStyle(.plain)
     .accessibilityIdentifier("thread-row")
     .accessibilityValue(model.threadState(thread).rawValue)
-    .accessibilityHint(Self.accessibilityHint(model: model, thread: thread))
+    .accessibilityLabel(Self.accessibilityLabel(model: model, thread: thread))
     .contextMenu {
       Button("Rename…", systemImage: "pencil") {
         newTitle = thread.title
@@ -254,10 +260,12 @@ struct ThreadRow: View {
     }
   }
 
-  /// What the row no longer prints: the reason it sits where it does, the connection, and the
-  /// connection's trouble when it is offline or errored.
-  static func accessibilityHint(model: WorkspaceModel, thread: ConversationThread) -> String {
-    var parts = [model.reasonLine(for: thread)]
+  /// The title plus what the row no longer prints: whether it is pinned, the reason it sits where it
+  /// does, the connection, and the connection's trouble when it is offline or errored.
+  static func accessibilityLabel(model: WorkspaceModel, thread: ConversationThread) -> String {
+    var parts = thread.pinned ? ["Pinned"] : []
+    parts.append(thread.title.isEmpty ? "Untitled" : thread.title)
+    parts.append(model.reasonLine(for: thread))
     parts.append(model.connection(id: thread.connectionId)?.label ?? "Unknown connection")
     let state = model.threadState(thread)
     if [.reconnecting, .error, .unknown, .stopping].contains(state) { parts.append(state.label) }

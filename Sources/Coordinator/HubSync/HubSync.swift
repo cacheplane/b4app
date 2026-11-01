@@ -48,6 +48,7 @@ public actor HubSync {
   /// The hub user's display name: from the enrollment, or `/v1/me` once a start finds a link. Kept in
   /// memory only, so the link table needs no migration.
   private var displayName: String?
+  private var fetchingName = false
 
   public init(
     database: WorkspaceDatabase, secretStore: any SecretStore, eventLog: EventLog,
@@ -80,7 +81,7 @@ public actor HubSync {
     started = true
     if let link = try? database.hubLink(), let api {
       startPull(deviceId: link.deviceId)
-      Task { await self.fetchDisplayName(api) }
+      fetchDisplayNameIfMissing()
     }
     let events = await eventLog.subscribe()
     nudgeTask = Task { [weak self] in
@@ -169,7 +170,16 @@ public actor HubSync {
       lastPushAt: link.lastPushAt, lastError: link.lastError)
   }
 
+  /// Ask `/v1/me` while the name is unknown: at start, and again after each successful push or pull,
+  /// so a start before the network was up still gets the name.
+  private func fetchDisplayNameIfMissing() {
+    guard displayName == nil, !fetchingName, let api else { return }
+    fetchingName = true
+    Task { await fetchDisplayName(api) }
+  }
+
   private func fetchDisplayName(_ api: any HubAPI) async {
+    defer { fetchingName = false }
     do {
       let me = try await api.me()
       // A leave or a new join while the request was out owns the name now.
@@ -347,6 +357,7 @@ public actor HubSync {
   /// A pull failure is shown as `lastError` until a pull succeeds again (or a push records its own).
   private func recordPull(error: String?, generation: UUID) {
     guard generation == pullGeneration, pull != nil, var link = try? database.hubLink() else { return }
+    if error == nil { fetchDisplayNameIfMissing() }
     if let error {
       link.lastError = Self.pullErrorPrefix + error
     } else if link.lastError?.hasPrefix(Self.pullErrorPrefix) == true {
@@ -367,6 +378,7 @@ public actor HubSync {
 
   private func record(error: String?, pushed: Bool) throws {
     guard var link = try database.hubLink() else { return }
+    if error == nil, pushed { fetchDisplayNameIfMissing() }
     if pushed { link.lastPushAt = Timestamp.now() }
     link.lastError = error
     try database.saveHubLink(link)

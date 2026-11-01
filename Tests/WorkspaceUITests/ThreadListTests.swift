@@ -61,13 +61,21 @@ import WorkspaceProtocol
   }
 
   @Test func rowSpeaksItsReasonAndConnection() async throws {
-    // The row shows only the title and a runtime mark; why it sits there and where it runs are spoken.
+    // The row shows only the title and a runtime mark; why it sits there and where it runs are spoken
+    // in its label (not a hint, which VoiceOver users can turn off), and a pinned row says so.
     let model = try await ListFixture.model()
     let asks = try #require(model.threads.first { $0.id == "asks" })
     let label = try #require(model.connection(id: asks.connectionId)?.label)
     #expect(model.band(of: asks) == .needsInput)
     #expect(
-      ThreadRow.accessibilityHint(model: model, thread: asks) == "\(model.reasonLine(for: asks)), \(label)")
+      ThreadRow.accessibilityLabel(model: model, thread: asks)
+        == "\(asks.title), \(model.reasonLine(for: asks)), \(label)")
+    var pinned = asks
+    pinned.pinned = true
+    #expect(ThreadRow.accessibilityLabel(model: model, thread: pinned).hasPrefix("Pinned, \(asks.title), "))
+    var untitled = asks
+    untitled.title = ""
+    #expect(ThreadRow.accessibilityLabel(model: model, thread: untitled).hasPrefix("Untitled, "))
   }
 
   @Test func newThreadNamesTheProjectOfTheChosenFolder() async throws {

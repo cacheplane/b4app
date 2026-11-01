@@ -38,11 +38,13 @@ public struct WorkspaceRootView: View {
     NavigationSplitView(preferredCompactColumn: $compactColumn) {
       SidebarView(model: model)
         .navigationSplitViewColumnWidth(min: 240, ideal: 290)
-        .environment(\.showDetail, { compactColumn = .detail })
     } detail: {
       ThreadsView(model: model)
         .modifier(WorkspaceWindowBackground())
     }
+    // On the split view, not the sidebar: the search sheet hangs off the split view and must move
+    // the iPhone to the thread it opens too.
+    .environment(\.showDetail, { compactColumn = .detail })
     .tint(LLA.Color.accent)
     .onChange(of: detailOnScreen, initial: true) { _, onScreen in model.isDetailOnScreen = onScreen }
     .task { model.connect() }
@@ -54,6 +56,8 @@ public struct WorkspaceRootView: View {
     #endif
     #if os(macOS)
       .onChange(of: model.settingsRequest) { openSettings() }
+      // A join or leave from the CLI, or a name the hub answered late, shows when the window is back.
+      .onChange(of: appearsActive) { _, active in if active { Task { await model.refreshAccount() } } }
     #else
       .onChange(of: model.settingsRequest) { model.showSettingsSheet = true }
       .sheet(isPresented: $model.showSettingsSheet) { SettingsSheet(model: model) }

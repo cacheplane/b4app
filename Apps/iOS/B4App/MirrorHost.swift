@@ -141,15 +141,26 @@ import WorkspaceUI
     refreshAccount()
   }
 
-  /// Log out from the profile menu: unlink (revoke, forget the token and the link), then empty the
-  /// mirror so nothing of the account stays on the phone. The Connect screen shows next.
+  /// Log out from the profile menu: stop syncing, then `MirrorLogOut` revokes this device (best
+  /// effort), forgets the token, and empties the mirror, unsent edits included. The Connect screen
+  /// shows next.
   func logOut() async {
-    await disconnect()
-    try? store?.clearRows()
-    try? store?.saveDevices([])
+    await sync?.stop()
+    sync = nil
+    syncStatus = MirrorSyncStatus()
+    if let store {
+      let link = try? store.link()
+      let ref = link.flatMap { SecretRef(rawValue: $0.tokenRef) }
+      let base = link.flatMap { try? HubURL.validate($0.hubURL) }
+      let api = base.flatMap { base in ref.map { Self.api(base: base, ref: $0, secrets: secrets) } }
+      await MirrorLogOut.run(store: store, api: api) { [secrets] in
+        if let ref { _ = try? await secrets.remove(ref) }
+      }
+    }
     displayName = nil
     model?.account = nil
     model?.hostDisconnected = false
+    isLinked = false
   }
 
   /// A local write was made: have the sync loop push it now.
@@ -201,22 +212,6 @@ import WorkspaceUI
     startSync(link, fromSnapshot: false)
     isLinked = true
     refreshAccount()
-  }
-
-  /// Leaves the hub: stops pulling, revokes this device (best effort), removes the token, and forgets
-  /// the link. Reached from Log out in the profile menu (`logOut()`), which also empties the mirror.
-  func disconnect() async {
-    await sync?.stop()
-    sync = nil
-    syncStatus = MirrorSyncStatus()
-    if let store, let link = try? store.link() {
-      if let base = try? HubURL.validate(link.hubURL), let ref = SecretRef(rawValue: link.tokenRef) {
-        try? await Self.api(base: base, ref: ref, secrets: secrets).revokeSelf()
-        _ = try? await secrets.remove(ref)
-      }
-      try? store.clearLink()
-    }
-    isLinked = false
   }
 
   private func startSync(_ link: MirrorLink, fromSnapshot: Bool) {

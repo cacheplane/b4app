@@ -359,6 +359,41 @@ private struct HubHarness {
     try db.close()
   }
 
+  @Test func aFailedNameFetchIsRetriedAfterTheNextSuccessfulPush() async throws {
+    // A coordinator started at login before the network is up: the first /v1/me fails.
+    let db = try WorkspaceDatabase.temporary()
+    _ = try db.insertConnection(Connection(id: "c1", kind: .codex, label: "Codex", target: "/bin/codex"))
+    _ = try db.insertThread(
+      ConversationThread(
+        id: "t1", connectionId: "c1", nativeThreadId: "n1", nativeScope: "s", title: "T", context: "/tmp"))
+    let fake = FakeHubAPI()
+    await fake.addEnrollmentCode(code, enrolled)
+    let secrets = MemorySecretStore()
+    let first = HubSync(database: db, secretStore: secrets, eventLog: EventLog(), makeAPI: { _, _ in fake })
+    _ = try await first.join(url: "http://127.0.0.1:8080", code: code, deviceName: "Mac")
+    await first.stop()
+
+    await fake.setFailMe(HubError(kind: "transport", code: "offline", message: "offline", status: 0))
+    let second = HubSync(database: db, secretStore: secrets, eventLog: EventLog(), makeAPI: { _, _ in fake })
+    let before = await fake.meCalls
+    await second.start()
+    var deadline = ContinuousClock.now + .seconds(10)
+    while await fake.meCalls == before, ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    #expect(try await second.status().displayName == nil)
+
+    _ = try db.saveDraft(threadId: "t1", text: "after the network came up")
+    _ = try await second.pushNow()
+    deadline = ContinuousClock.now + .seconds(10)
+    while try await second.status().displayName == nil, ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    #expect(try await second.status().displayName == enrolled.user.displayName)
+    await second.stop()
+    try db.close()
+  }
+
   @Test func restoreIsRefusedWhileJoined() async throws {
     let h = try await HubHarness.start()
     defer { Task { await h.close() } }
