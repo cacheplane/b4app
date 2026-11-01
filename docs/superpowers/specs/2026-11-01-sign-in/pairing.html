@@ -1,0 +1,84 @@
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  .lla { font-family: "Hanken Grotesk", -apple-system, sans-serif; color:#0D0D0D; font-size:13px; }
+  .stage { display:flex; gap:34px; align-items:flex-start; flex-wrap:wrap; margin-top:18px; }
+  .cap { color:#5D5D5D; font-size:12px; margin-top:10px; font-family:"Hanken Grotesk",sans-serif; line-height:1.5; }
+  .win { width:560px; height:440px; border:1px solid #E8E8E8; border-radius:12px; overflow:hidden; background:#fff; box-shadow:0 8px 30px rgba(0,0,0,.08); display:flex; flex-direction:column; }
+  .chrome { height:38px; display:flex; align-items:center; gap:7px; padding:0 14px; flex:none; }
+  .dot { width:12px; height:12px; border-radius:50%; background:#E8E8E8; }
+  .center { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding-bottom:24px; }
+  .col { width:300px; display:flex; flex-direction:column; align-items:stretch; }
+  .h { font-size:22px; font-weight:600; letter-spacing:-0.01em; text-align:center; }
+  .intro { color:#5D5D5D; line-height:1.5; margin:8px 0 18px; text-align:center; }
+  .qr { width:150px; height:150px; align-self:center; border:1px solid #E8E8E8; border-radius:16px; padding:12px; background:#fff; margin-bottom:10px; }
+  .qr svg { width:100%; height:100%; }
+  .exp { color:#5D5D5D; font-size:11px; text-align:center; margin-bottom:18px; }
+  .btn { height:34px; border-radius:999px; display:flex; align-items:center; justify-content:center; font-weight:600; gap:7px; }
+  .pri { background:#0D0D0D; color:#fff; }
+  .sec { background:#F7F7F8; color:#0D0D0D; border:1px solid #E8E8E8; }
+  .btn + .btn { margin-top:10px; }
+  .link { color:#5D5D5D; text-align:center; font-size:12px; margin-top:14px; }
+  .acc { color:#002FA7; }
+  .phone { width:260px; height:540px; border:1px solid #E8E8E8; border-radius:38px; background:#fff; box-shadow:0 8px 30px rgba(0,0,0,.08); display:flex; flex-direction:column; overflow:hidden; }
+  .status { height:40px; display:flex; justify-content:space-between; align-items:center; padding:0 24px; font-size:12px; font-weight:600; flex:none; }
+  .phone .col { width:214px; }
+  .phone .btn { height:44px; font-size:15px; }
+  .phone .h { font-size:22px; }
+  .phone .intro { font-size:14px; }
+  .home { width:96px; height:4px; border-radius:2px; background:#0D0D0D; align-self:center; margin:0 0 8px; }
+  .btn svg { width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+  .row { display:flex; justify-content:center; gap:18px; margin-top:16px; font-size:14px; }
+  .row span { color:#5D5D5D; }
+  .alert { width:280px; border:1px solid #E8E8E8; border-radius:12px; background:#F7F7F8; box-shadow:0 10px 30px rgba(0,0,0,.12); padding:18px; }
+  .alert .t { font-weight:600; font-size:13px; margin-bottom:6px; }
+  .alert .m { color:#0D0D0D; font-size:12px; line-height:1.5; margin-bottom:14px; }
+  .alert .btn { height:28px; font-size:12px; }
+</style>
+
+<h2>Pairing the iPhone, and logging out</h2>
+<p class="subtitle">The Mac shows a code; the phone scans it, with the in-app scanner or the system Camera.</p>
+
+<div class="lla stage">
+  <div>
+    <div class="win">
+      <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+      <div class="center">
+        <div class="col">
+          <div class="h">Add your iPhone</div>
+          <div class="intro">Scan this with your iPhone's camera to see your threads there.</div>
+          <div class="qr"><svg viewBox="0 0 21 21" shape-rendering="crispEdges"><path fill="#0D0D0D" d="M0 0h7v7H0zM14 0h7v7h-7zM0 14h7v7H0z"/><path fill="#fff" d="M1 1h5v5H1zM15 1h5v5h-5zM1 15h5v5H1z"/><path fill="#0D0D0D" d="M2 2h3v3H2zM16 2h3v3h-3zM2 16h3v3H2zM8 0h1v1H8zM10 1h2v1h-2zM8 3h2v2H8zM11 4h1v2h-1zM9 6h1v2H9zM12 7h2v1h-2zM8 9h3v1H8zM0 8h2v1H0zM3 9h2v2H3zM6 8h1v3H6zM14 8h1v2h-1zM16 9h3v1h-3zM19 8h2v2h-2zM12 10h1v3h-1zM9 11h2v2H9zM15 11h2v1h-2zM18 11h1v3h-1zM8 14h1v2H8zM10 15h3v1h-3zM14 13h2v2h-2zM16 16h2v2h-2zM19 15h2v1h-2zM9 18h2v3H9zM12 17h2v1h-2zM14 19h3v2h-3zM19 18h2v3h-2zM12 20h1v1h-1z"/></svg></div>
+          <div class="exp">Works for 5 minutes · <span class="acc">New code</span></div>
+          <div class="btn sec">Done</div>
+          <div class="link">No iPhone app yet? It's on the App Store.</div>
+        </div>
+      </div>
+    </div>
+    <p class="cap" style="max-width:560px">Mac. Shown once after a new account's onboarding (Done skips it), and any time from Settings → Devices, which also lists the account's devices. The code is a link, <code>https://b4.run/pair#…</code>, used once.</p>
+  </div>
+
+  <div>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span>●●● ▮</span></div>
+      <div class="center">
+        <div class="col">
+          <div class="h">Connect your Mac</div>
+          <div class="intro">Your threads run on your Mac. Install Agent Workspace there, sign in, and scan the code it shows.</div>
+          <div class="btn pri"><svg viewBox="0 0 24 24"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M7 12h10"/></svg>Scan the code</div>
+          <div class="row"><span class="acc">Copy download link</span><span class="acc">Help</span></div>
+        </div>
+      </div>
+      <div class="home"></div>
+    </div>
+    <p class="cap" style="max-width:260px">iPhone, account with no Mac. Copy download link copies b4.run/download and says "Copied". Help opens the docs in a Safari sheet.</p>
+  </div>
+
+  <div>
+    <div class="alert">
+      <div class="t">Log out of Brian's Org?</div>
+      <div class="m">1 turn is running and 1 local server is up. Logging out stops them, uploads what hasn't synced, and keeps everything on this Mac for when you sign back in.</div>
+      <div class="btn pri">Stop and log out</div>
+      <div class="btn sec">Cancel</div>
+    </div>
+    <p class="cap" style="max-width:280px">Mac Log out with work running. With nothing running the message is just the last sentence.</p>
+  </div>
+</div>

@@ -1,0 +1,71 @@
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  .lla { font-family: "Hanken Grotesk", -apple-system, sans-serif; color:#0D0D0D; font-size:13px; }
+  .stage { display:flex; gap:34px; align-items:flex-start; flex-wrap:wrap; margin-top:18px; }
+  .cap { color:#5D5D5D; font-size:12px; margin-top:10px; font-family:"Hanken Grotesk",sans-serif; line-height:1.5; }
+  .win { width:560px; height:420px; border:1px solid #E8E8E8; border-radius:12px; overflow:hidden; background:#fff; box-shadow:0 8px 30px rgba(0,0,0,.08); display:flex; flex-direction:column; }
+  .chrome { height:38px; display:flex; align-items:center; gap:7px; padding:0 14px; flex:none; }
+  .dot { width:12px; height:12px; border-radius:50%; background:#E8E8E8; }
+  .center { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding-bottom:30px; }
+  .col { width:300px; display:flex; flex-direction:column; align-items:stretch; }
+  .h { font-size:22px; font-weight:600; letter-spacing:-0.01em; }
+  .intro { color:#5D5D5D; line-height:1.5; margin:8px 0 22px; }
+  .lab { color:#5D5D5D; font-size:12px; margin:0 0 5px; }
+  .field { height:32px; border:1px solid #E8E8E8; background:#F7F7F8; border-radius:8px; display:flex; align-items:center; padding:0 10px; margin-bottom:14px; }
+  .field.focus { border:2px solid #002FA7; padding:0 9px; }
+  .ph { color:#9C9C9C; }
+  .hint { color:#5D5D5D; font-size:11px; margin:-8px 0 18px; line-height:1.5; }
+  .btn { height:34px; border-radius:999px; display:flex; align-items:center; justify-content:center; font-weight:600; background:#0D0D0D; color:#fff; }
+  .link { color:#5D5D5D; text-align:center; font-size:12px; margin-top:14px; }
+  .phone { width:260px; height:540px; border:1px solid #E8E8E8; border-radius:38px; background:#fff; box-shadow:0 8px 30px rgba(0,0,0,.08); display:flex; flex-direction:column; overflow:hidden; }
+  .status { height:40px; display:flex; justify-content:space-between; align-items:center; padding:0 24px; font-size:12px; font-weight:600; flex:none; }
+  .phone .col { width:214px; }
+  .phone .btn { height:44px; font-size:15px; }
+  .phone .field { height:42px; font-size:15px; }
+  .phone .h { font-size:22px; }
+  .phone .intro { font-size:14px; }
+  .home { width:96px; height:4px; border-radius:2px; background:#0D0D0D; align-self:center; margin:0 0 8px; }
+  .sec { background:#F7F7F8; color:#0D0D0D; border:1px solid #E8E8E8; }
+  .ctr { text-align:center; }
+</style>
+
+<h2>Right after sign-up</h2>
+<p class="subtitle">Left: onboarding, the one screen a new account sees before the app. Right: a new account on the iPhone whose Mac isn't set up yet.</p>
+
+<div class="lla stage">
+  <div>
+    <div class="win">
+      <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+      <div class="center">
+        <div class="col">
+          <div class="h">Welcome</div>
+          <div class="intro">Two things before you start.</div>
+          <div class="lab">Full name</div>
+          <div class="field focus">Brian Love</div>
+          <div class="lab">Phone number</div>
+          <div class="field"><span class="ph">+1 555 010 0000</span></div>
+          <div class="hint">We'll use it to confirm it's you.</div>
+          <div class="btn">Continue</div>
+          <div class="link">Not you? Log out</div>
+        </div>
+      </div>
+    </div>
+    <p class="cap" style="max-width:560px">Signed up with Apple: the name is filled from Apple and can be edited. Signed up with a passkey: both fields start empty. Continue creates "Brian's Org" and opens the app. Phone isn't verified yet; the hint line is a guess at wording for later.</p>
+  </div>
+
+  <div>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span>●●● ▮</span></div>
+      <div class="center">
+        <div class="col">
+          <div class="h ctr">Set up your Mac</div>
+          <div class="intro ctr">Your threads run on your Mac. Install Agent Workspace there and sign in with the same account; they'll show up here.</div>
+          <div class="btn sec">Copy the download link</div>
+          <div class="link">b4.run/download</div>
+        </div>
+      </div>
+      <div class="home"></div>
+    </div>
+    <p class="cap" style="max-width:260px">Replaces the empty list until the account has a Mac. The sidebar and profile menu stay, so you can still log out.</p>
+  </div>
+</div>
