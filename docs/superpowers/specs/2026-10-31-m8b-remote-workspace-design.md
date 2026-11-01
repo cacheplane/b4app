@@ -1,6 +1,6 @@
 # M8b to M8f: the phone as a second keyboard
 
-Date: 2026-10-31. Owner: Brian Love. Status: draft for the owner's approval.
+Date: 2026-10-31. Owner: Brian Love. Status: approved by the owner 2026-10-31.
 
 This document amends `2026-10-31-m8-hub-design.md` (the M8 design). Everything there still holds unless a section below says otherwise. M8a, the read-only mirror, is merged (PR #16) and live-verified with the owner's packaged app and the Simulator.
 
