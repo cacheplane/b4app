@@ -115,6 +115,15 @@ public final class WorkspaceModel {
       }
     }
   }
+  /// True only while the open thread is actually in front of the owner: the scene is active, the
+  /// window is key (Mac), and the detail column is the one showing (iPhone). The views set it. A reply
+  /// is marked read only while it is true, and turning true marks the open thread's latest reply read.
+  public var isDetailOnScreen = false {
+    didSet {
+      guard isDetailOnScreen, !oldValue, let id = selectedThreadId else { return }
+      Task { await markReadIfNeeded(threadId: id) }
+    }
+  }
   /// Every project with its folders, loaded with the threads and refreshed on `project.changed`.
   public private(set) var projects: [Project] = []
   public var projectFilter: ProjectFilter = .all
@@ -677,8 +686,11 @@ public final class WorkspaceModel {
   }
 
   /// When the open thread's latest turn is finished and is not the one marked read, mark it read:
-  /// once per (thread, turn) for the life of the model. Nothing is sent for a turn still running.
+  /// once per (thread, turn) for the life of the model. Nothing is sent for a turn still running, and
+  /// nothing while the thread is not on screen (spec "Read state": the reply must be seen); the
+  /// detail stays loaded behind the iPhone's list and the Mac's inactive window, so loaded is not seen.
   private func markReadIfNeeded(threadId: String) async {
+    guard isDetailOnScreen, surface == .threads, selectedThreadId == threadId else { return }
     guard let detail, detail.thread.id == threadId, !unreadHold.contains(threadId) else { return }
     guard let latest = detail.turns.max(by: { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }),
       latest.status == .terminal

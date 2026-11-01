@@ -207,6 +207,9 @@ struct ThreadRow: View {
     let selected = model.selectedThreadId == thread.id
     let loud = selected || band == .needsInput || band == .unread
     Button {
+      // Select before showing the detail, so the detail coming on screen cannot mark the thread that
+      // was open before (still loaded until `openThread` replaces it) read.
+      model.selectedThreadId = thread.id
       showDetail()
       Task { await model.openThread(id: thread.id) }
     } label: {

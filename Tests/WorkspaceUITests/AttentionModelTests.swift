@@ -198,11 +198,14 @@ private func delta(_ threadId: String) -> AdapterEvent {
 }
 
 @MainActor
+/// A connected model. `onScreen` stands for the views: the open thread is in front of the owner.
 private func connected(
-  _ transport: ScriptedTransport, now: Date = Date(timeIntervalSince1970: 1_793_000_000 + 600)
+  _ transport: ScriptedTransport, now: Date = Date(timeIntervalSince1970: 1_793_000_000 + 600),
+  onScreen: Bool = true
 ) async throws -> WorkspaceModel {
   let model = WorkspaceModel(transportProvider: { transport })
   model.now = { now }
+  model.isDetailOnScreen = onScreen
   model.connect()
   try await waitUntil("ready") { model.link == .ready }
   return model
@@ -410,6 +413,58 @@ private struct AttentionDocument: Decodable {
     try await waitUntil("refetched") { transport.calls(.threadRead).count >= 2 }
     try await Task.sleep(for: .milliseconds(100))
     #expect(transport.calls(.threadMarkRead).count == 1)
+  }
+
+  @Test func aReplyArrivingWhileTheThreadIsNotOnScreenStaysUnreadUntilItIs() async throws {
+    let transport = ScriptedTransport()
+    let running = thread("t1", readTurnId: "u0", activity: activity(turn: "u1", status: .running, at: 2))
+    transport.set(threads: [running])
+    transport.setRead(
+      read(running, turns: [turn("u0", in: "t1", at: 1), turn("u1", in: "t1", status: .running, at: 2)]))
+    let model = try await connected(transport)
+    await model.openThread(id: "t1")
+    // Back to the list on the iPhone, or the Mac's window put behind another app: the thread stays
+    // loaded, but it is not in front of the owner.
+    model.isDetailOnScreen = false
+
+    let done = turn("u1", in: "t1", at: 2)
+    var finishedThread = running
+    finishedThread.activity = activity(turn: "u1", status: .terminal, at: 2)
+    transport.set(threads: [finishedThread])
+    transport.setRead(read(finishedThread, turns: [turn("u0", in: "t1", at: 1), done]))
+    transport.emit(try finished(done))
+    try await waitUntil("refetched") { transport.calls(.threadRead).count >= 2 }
+    try await waitUntil("unread") { model.band(of: model.threads[0]) == .unread }
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(transport.calls(.threadMarkRead).isEmpty)
+    #expect(model.threads[0].readTurnId == "u0")
+
+    // Coming back on screen marks the reply read, once.
+    model.isDetailOnScreen = true
+    try await waitUntil("marked") { transport.calls(.threadMarkRead).count == 1 }
+    #expect(transport.calls(.threadMarkRead).first?["turnId"]?.stringValue == "u1")
+    #expect(model.band(of: model.threads[0]) == .quiet)
+    model.isDetailOnScreen = false
+    model.isDetailOnScreen = true
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(transport.calls(.threadMarkRead).count == 1)
+  }
+
+  @Test func openingAThreadThatIsNotOnScreenDoesNotMarkIt() async throws {
+    let transport = ScriptedTransport()
+    let unread = thread("t1", activity: activity(turn: "u1", status: .terminal, at: 2))
+    transport.set(threads: [unread])
+    transport.setRead(read(unread, turns: [turn("u1", in: "t1", at: 2)]))
+    let model = try await connected(transport, onScreen: false)
+    await model.openThread(id: "t1")
+    #expect(transport.calls(.threadMarkRead).isEmpty)
+    #expect(model.band(of: model.threads[0]) == .unread)
+
+    // On screen, but showing Diagnostics with the thread still loaded: still not read.
+    model.surface = .diagnostics
+    model.isDetailOnScreen = true
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(transport.calls(.threadMarkRead).isEmpty)
   }
 
   @Test func aReplyOnAnotherThreadIsNotMarkedRead() async throws {

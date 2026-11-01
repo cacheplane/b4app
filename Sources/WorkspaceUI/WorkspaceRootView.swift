@@ -8,6 +8,26 @@ public struct WorkspaceRootView: View {
   /// On a compact width (iPhone) the split view shows one column; choosing a surface or a thread
   /// in the sidebar moves to the detail. Ignored where both columns show.
   @State private var compactColumn = NavigationSplitViewColumn.sidebar
+  @Environment(\.scenePhase) private var scenePhase
+  #if os(macOS)
+    @Environment(\.appearsActive) private var appearsActive
+  #else
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+  #endif
+
+  /// Whether the selected thread is in front of the owner, for read marks: the scene is active and,
+  /// on the Mac, its window is the active one; on a compact width (iPhone), the detail column is the
+  /// one showing, since going back to the list keeps the thread loaded behind it.
+  private var detailOnScreen: Bool {
+    guard scenePhase == .active, model.surface == .threads, model.selectedThreadId != nil else {
+      return false
+    }
+    #if os(macOS)
+      return appearsActive
+    #else
+      return horizontalSizeClass != .compact || compactColumn == .detail
+    #endif
+  }
 
   public init(model: WorkspaceModel) {
     LLAFonts.register()
@@ -24,6 +44,7 @@ public struct WorkspaceRootView: View {
         .modifier(WorkspaceWindowBackground())
     }
     .tint(LLA.Color.accent)
+    .onChange(of: detailOnScreen, initial: true) { _, onScreen in model.isDetailOnScreen = onScreen }
     .task { model.connect() }
     .sheet(isPresented: $model.showNewThread) { NewThreadSheet(model: model) }
     .onChange(of: model.pendingLoginURL) { _, url in
