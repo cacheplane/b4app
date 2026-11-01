@@ -361,7 +361,10 @@ struct SnapshotShell: View {
     let now = Date(timeIntervalSince1970: base + 60 * 60)
     model.now = { now }
     model.connect()
-    try await waitUntil("list fixture ready") { model.link == .ready && model.projects.count == 3 }
+    // Projects load with the snapshot, before the link turns ready.
+    let link = await model.settledLink()
+    try #require(link == .ready, "the model did not connect: \(model.linkMessage ?? "no message")")
+    try #require(model.projects.count == 3)
     return model
   }
 }

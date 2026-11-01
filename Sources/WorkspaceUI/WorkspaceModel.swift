@@ -136,7 +136,8 @@ public final class WorkspaceModel {
   /// Draft writes are debounced; the pending one is flushed by `persistDraftNow()`.
   public private(set) var draftSaveTask: Task<Void, Never>?
   private var restoringDraft = false
-  public static var draftSaveDelay: Duration = .milliseconds(600)
+  /// Per model, so tests that change it cannot slow each other down (suites run in parallel).
+  @ObservationIgnored public var draftSaveDelay: Duration = .milliseconds(600)
   /// A burst of events about one thread becomes one `thread.read` this long after the first.
   public static var refetchDelay: Duration = .milliseconds(200)
   /// A draft that changed elsewhere replaces the composer only when it has not been typed in for this long.
@@ -166,6 +167,8 @@ public final class WorkspaceModel {
   private let transportProvider: TransportProvider
   private var client: WorkspaceClient?
   private var connectTask: Task<Void, Never>?
+  /// Callers of `settledLink()` waiting for the link to leave `.connecting`.
+  @ObservationIgnored private var linkWaiters: [CheckedContinuation<LinkState, Never>] = []
   @ObservationIgnored private var lastComposerChange = Date.distantPast
   /// Threads with a `thread.read` already scheduled; further events inside the window join it.
   @ObservationIgnored private var refetchTasks: [String: Task<Void, Never>] = [:]
@@ -303,12 +306,27 @@ public final class WorkspaceModel {
         _ = try await client.ready()
         try await refreshSnapshot()
         link = .ready
+        settleLink()
         await observe(client)
       } catch {
         link = .unavailable
         linkMessage = Self.describe(error)
+        settleLink()
       }
     }
+  }
+
+  /// The link once `connect()` has settled: `.ready` after the first snapshot is in, or `.unavailable`
+  /// with `linkMessage` saying why. Returns at once when the link is not `.connecting`.
+  public func settledLink() async -> LinkState {
+    if link != .connecting { return link }
+    return await withCheckedContinuation { linkWaiters.append($0) }
+  }
+
+  private func settleLink() {
+    let waiters = linkWaiters
+    linkWaiters = []
+    for waiter in waiters { waiter.resume(returning: link) }
   }
 
   public func disconnect() async {
@@ -316,6 +334,7 @@ public final class WorkspaceModel {
     await client?.close()
     client = nil
     link = .unavailable
+    settleLink()
   }
 
   public func refreshSnapshot() async throws {
@@ -563,8 +582,9 @@ public final class WorkspaceModel {
   private func scheduleDraftSave() {
     draftSaveTask?.cancel()
     guard let threadId = detail?.thread.id else { return }
+    let delay = draftSaveDelay
     draftSaveTask = Task { [weak self] in
-      try? await Task.sleep(for: Self.draftSaveDelay)
+      try? await Task.sleep(for: delay)
       guard !Task.isCancelled, let self, self.detail?.thread.id == threadId else { return }
       await self.saveDraft(threadId: threadId)
       self.draftSaveTask = nil

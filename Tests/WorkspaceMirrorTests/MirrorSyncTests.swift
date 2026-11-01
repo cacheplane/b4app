@@ -173,17 +173,35 @@ private let link = MirrorLink(
     await hub.setPlatform("ios")
     let offline = HubError(kind: "transport", code: "transport", message: "offline", status: 0)
     await hub.setFailNext(offline)
+    // Driven by the statuses the sync reports, not by a clock: it awaits `onStatus` before it backs
+    // off, so the callback sees the outbox as the failed attempt left it and arms the second failure
+    // before the next attempt can start.
+    let (statuses, sink) = AsyncStream.makeStream(of: MirrorSyncStatus.self)
+    let failures = Mutex(0)
+    let outboxAtFailures = Mutex<[Int]>([])
     let sync = MirrorSync(
-      store: store, api: hub, onBatch: { _ in }, initialBackoff: .milliseconds(50),
-      maxBackoff: .milliseconds(200))
+      store: store, api: hub, onBatch: { _ in },
+      onStatus: { status in
+        if status.lastError != nil {
+          outboxAtFailures.withLock { $0.append(store.outboxCount) }
+          let failure = failures.withLock { count in
+            count += 1
+            return count
+          }
+          if failure == 1 { await hub.setFailNext(offline) }
+        }
+        sink.yield(status)
+      },
+      initialBackoff: .milliseconds(50), maxBackoff: .milliseconds(200))
     let running = Task { await sync.run() }
 
-    try await eventually("first failure") { await hub.failNext == nil }
-    #expect(store.outboxCount == queued)
-    #expect(await hub.pushed.flatMap { $0 }.isEmpty)
-    await hub.setFailNext(offline)
-    try await eventually("second failure") { await hub.failNext == nil }
-    try await eventually("drained") { store.outboxCount == 0 }
+    var reported = statuses.makeAsyncIterator()
+    #expect(await reported.next()?.lastError != nil)
+    #expect(await reported.next()?.lastError != nil)
+    // The hub is back: the next status is the pull after the push that drained the outbox.
+    #expect(await reported.next()?.lastError == nil)
+    #expect(outboxAtFailures.withLock { $0 } == [queued, queued])
+    #expect(store.outboxCount == 0)
     #expect(await hub.pushed.flatMap { $0 }.count == queued)
     #expect(try store.link()?.lastError == nil)
     #expect(try store.thread(id: "thread-1")?.title == "Offline edit")

@@ -26,7 +26,8 @@ private func fixtureAsStored(file: StaticString = #filePath) throws -> [StoredCh
     let transport = MirrorTransport(store: store, version: "0.2.0")
     let model = WorkspaceModel(transportProvider: { transport })
     model.connect()
-    try await waitUntil("ready") { model.link == .ready }
+    let link = await model.settledLink()
+    try #require(link == .ready, "the model did not connect: \(model.linkMessage ?? "no message")")
     let fixture = try fixtureAsStored()
 
     transport.publish(try store.apply(Array(fixture.prefix(2))))  // connection + thread

@@ -207,7 +207,8 @@ private func connected(
   model.now = { now }
   model.isDetailOnScreen = onScreen
   model.connect()
-  try await waitUntil("ready") { model.link == .ready }
+  let link = await model.settledLink()
+  try #require(link == .ready, "the model did not connect: \(model.linkMessage ?? "no message")")
   return model
 }
 
@@ -590,17 +591,17 @@ private struct AttentionDocument: Decodable {
   }
 
   @Test func remoteDraftReloadsOnlyWhenIdle() async throws {
-    WorkspaceModel.draftSaveDelay = .seconds(30)
-    defer { WorkspaceModel.draftSaveDelay = .milliseconds(600) }
     let transport = ScriptedTransport()
     let t = thread("t1")
     transport.set(threads: [t])
     transport.setRead(read(t))
     let clock = Mutex(Date(timeIntervalSince1970: 1_800_000_000))
     let model = WorkspaceModel(transportProvider: { transport })
+    model.draftSaveDelay = .seconds(30)
     model.now = { clock.withLock { $0 } }
     model.connect()
-    try await waitUntil("ready") { model.link == .ready }
+    let link = await model.settledLink()
+    try #require(link == .ready, "the model did not connect: \(model.linkMessage ?? "no message")")
     transport.setDraft(Draft(threadId: "t1", text: ""))
     await model.openThread(id: "t1")
     #expect(model.composerText == "")
