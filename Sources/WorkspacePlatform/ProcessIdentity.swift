@@ -33,6 +33,15 @@ public enum ProcessInspector {
     return ProcessIdentity(pid: pid, startedAt: startedAt, arguments: arguments(pid: pid))
   }
 
+  /// Where the process's executable is now, from `proc_pidpath`: the file's current path, so a
+  /// moved bundle shows its new location. Nil when the process is gone or the path is unknown.
+  public static func executablePath(pid: Int32) -> String? {
+    var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+    let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+    guard length > 0 else { return nil }
+    return String(decoding: buffer[..<Int(length)].map { UInt8(bitPattern: $0) }, as: UTF8.self)
+  }
+
   public static func isAlive(pid: Int32) -> Bool {
     guard pid > 0, let info = kinfo(pid: pid) else { return false }
     return Int32(info.kp_proc.p_stat) != SZOMB
