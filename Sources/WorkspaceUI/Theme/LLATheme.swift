@@ -95,6 +95,12 @@ public enum LLA {
     #endif
     /// Reading column for transcripts and long copy.
     public static let column: CGFloat = 720
+    /// The smallest window the macOS app allows; the thread detail must fit inside it at any
+    /// content (`DetailMinimumSizeTests`).
+    public static let minimumWindow = CGSize(width: 900, height: 600)
+    /// The most height the pending-request area takes before it scrolls, so a long command or
+    /// several requests never push the composer off the window or collapse the split view.
+    public static let requestsMaxHeight: CGFloat = 240
   }
 
   /// WCAG 2 contrast ratio between two sRGB hex colours; the theme tests pin the palette with it.

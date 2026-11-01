@@ -22,7 +22,6 @@ struct ComposerView: View {
           HStack(alignment: .top, spacing: LLA.Space.m) {
             VStack(alignment: .leading, spacing: 2) {
               Text(remedy?.message ?? error).font(LLAFont.small).foregroundStyle(LLA.Color.danger)
-                .fixedSize(horizontal: false, vertical: true)
               if remedy != nil, let code = model.lastFailure?.code {
                 Text(code.rawValue).llaCodeMuted()
               }
