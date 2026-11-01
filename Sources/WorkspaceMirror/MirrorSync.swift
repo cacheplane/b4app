@@ -3,12 +3,25 @@ import WorkspaceProtocol
 import WorkspaceSync
 import os
 
-/// Pulls the hub's change feed into a `MirrorStore`: long-poll after the cursor, apply the page,
-/// advance the cursor to the page's `next`, report the batch. `resync_required` (the cursor fell
-/// behind the hub's retention) clears the mirrored rows and starts again from 0. Any other failure is
-/// recorded on the link as `lastError` and retried after a backoff that starts at two seconds and
-/// doubles to a minute. The device token stays inside `api`. Each outcome is also handed to `onStatus`
-/// (when given), so the app can say that what it shows is stale.
+/// Keeps a `MirrorStore` and the hub in step. Each turn of the loop pushes the phone's queued edits
+/// (`MirrorStore.outbox`, at most 500 rows a request), then long-polls the change feed after the cursor,
+/// applies the page, advances the cursor to the page's `next`, and reports the batch.
+///
+/// - A push removes the outbox through `acceptedThrough` only; the hub's `rejected` changes are covered
+///   by it, so they go too and are counted (`MirrorStore.refusedUploads`) for Diagnostics.
+/// - Once per `run()`, before any push, an empty push asks the hub for the highest `deviceSeq` it has
+///   recorded for this device; the store's counter is raised to it if lower, so a counter lost to a
+///   restored backup never reissues a number.
+/// - `nudge()` (a local write was made) wakes the loop: it cancels a long-poll in flight and goes round
+///   again, so the edit is pushed at once. A nudge while a push is in flight is not lost; the loop
+///   pushes again before it waits.
+/// - `resync_required` (the cursor fell behind the hub's retention) fetches the hub's snapshot and
+///   replaces the mirror with it, keeping unsent edits. A mirror that was just rebuilt starts the same
+///   way (`startFromSnapshot`) rather than pulling the whole feed from 0.
+/// - The device list is refreshed at most once a minute.
+/// - Any other failure is recorded on the link as `lastError` and retried after a backoff that starts at
+///   two seconds and doubles to a minute. The device token stays inside `api`. Each outcome is also
+///   handed to `onStatus` (when given), so the app can say that what it shows is stale.
 public actor MirrorSync {
   private let store: MirrorStore
   private let api: any HubAPI
@@ -17,7 +30,13 @@ public actor MirrorSync {
   private let initialBackoff: Duration
   private let maxBackoff: Duration
   private var loop: Task<Void, Never>?
+  private var pulling: Task<PullResponse, any Error>?
   private var stopped = false
+  private var nudged = false
+  private var needsSnapshot: Bool
+  private var sequenceChecked = false
+  private var resyncsInARow = 0
+  private var devicesFetchedAt: ContinuousClock.Instant?
   /// The last failure, nil after a successful pull.
   public private(set) var lastError: String?
   /// When a pull last succeeded (`Timestamp`), starting from the stored link's value.
@@ -25,12 +44,15 @@ public actor MirrorSync {
 
   private static let logger = Logger(subsystem: "com.cacheplane.b4app", category: "mirror")
   static let pageLimit = 1000
+  static let pushLimit = 500
   static let waitSeconds = 25
+  static let devicesInterval: Duration = .seconds(60)
 
   public init(
     store: MirrorStore, api: any HubAPI, onBatch: @escaping @Sendable (AppliedBatch) async -> Void,
     onStatus: (@Sendable (MirrorSyncStatus) async -> Void)? = nil,
-    initialBackoff: Duration = .seconds(2), maxBackoff: Duration = .seconds(60)
+    initialBackoff: Duration = .seconds(2), maxBackoff: Duration = .seconds(60),
+    startFromSnapshot: Bool = false
   ) {
     self.store = store
     self.api = api
@@ -39,12 +61,13 @@ public actor MirrorSync {
     self.lastSyncAt = try? store.link()?.lastSyncAt
     self.initialBackoff = initialBackoff
     self.maxBackoff = maxBackoff
+    self.needsSnapshot = startFromSnapshot
   }
 
-  /// Pulls until `stop()`. A second call while running, or a call after `stop()`, returns at once.
+  /// Syncs until `stop()`. A second call while running, or a call after `stop()`, returns at once.
   public func run() async {
     guard loop == nil, !stopped else { return }
-    let task = Task { await self.pullLoop() }
+    let task = Task { await self.syncLoop() }
     loop = task
     await task.value
   }
@@ -53,17 +76,31 @@ public actor MirrorSync {
   public func stop() {
     stopped = true
     loop?.cancel()
+    pulling?.cancel()
   }
 
-  private func pullLoop() async {
+  /// A local write was made: push it now rather than after the long-poll ends.
+  public func nudge() {
+    nudged = true
+    pulling?.cancel()
+  }
+
+  private func syncLoop() async {
     var backoff = initialBackoff
     while !stopped, !Task.isCancelled {
+      // Cleared before the outbox is read, so a write made after the read sets it again.
+      nudged = false
       do {
-        let page = try await api.pull(after: store.cursor, limit: Self.pageLimit, wait: Self.waitSeconds)
+        try await checkSequence()
+        try await pushOutbox()
+        if needsSnapshot { try await fetchSnapshot() }
+        await refreshDevices()
+        let page = try await pull()
         let batch = try store.apply(page.changes)
         try store.setCursor(page.next)
         await record(error: nil)
         backoff = initialBackoff
+        resyncsInARow = 0
         if batch.undecodableRows > 0 {
           Self.logger.warning(
             "mirror batch through \(page.next, privacy: .public) holds \(batch.undecodableRows, privacy: .public) rows this build cannot read"
@@ -71,21 +108,74 @@ public actor MirrorSync {
         }
         if !page.changes.isEmpty { await onBatch(batch) }
       } catch let error as HubError where error.code == "resync_required" {
-        // From 0 there is nothing older to fall behind; a hub that still says so is failing.
-        guard store.cursor > 0 else {
-          await failed(error, backoff: &backoff)
-          continue
-        }
-        do {
-          try store.clearRows()
-        } catch {
-          await failed(error, backoff: &backoff)
-        }
+        // A hub that asks again straight after a snapshot is failing; do not spin on it.
+        resyncsInARow += 1
+        if resyncsInARow > 1 { await failed(error, backoff: &backoff) }
+        needsSnapshot = true
       } catch {
-        if stopped || Task.isCancelled || error is CancellationError { break }
+        if stopped || Task.isCancelled { break }
+        // A nudge cancelled the long-poll: not a failure, go round and push.
+        if error is CancellationError, nudged { continue }
+        if error is CancellationError { break }
         await failed(error, backoff: &backoff)
       }
     }
+  }
+
+  /// The pull for this turn. With a nudge already waiting it does not wait for news.
+  private func pull() async throws -> PullResponse {
+    let cursor = store.cursor
+    let wait = nudged ? 0 : Self.waitSeconds
+    let api = api
+    let task = Task { try await api.pull(after: cursor, limit: Self.pageLimit, wait: wait) }
+    pulling = task
+    defer { pulling = nil }
+    return try await task.value
+  }
+
+  /// Once per `run()`: an empty push answers with the highest `deviceSeq` the hub has for this device.
+  private func checkSequence() async throws {
+    guard !sequenceChecked else { return }
+    let response = try await api.push([])
+    try store.raiseLastDeviceSeq(to: response.acceptedThrough)
+    sequenceChecked = true
+  }
+
+  /// Uploads the outbox, oldest first, in requests of at most 500 rows, until it is empty.
+  private func pushOutbox() async throws {
+    while true {
+      let batch = try store.outbox(limit: Self.pushLimit)
+      guard let first = batch.first else { return }
+      let response = try await api.push(batch)
+      // Nothing was taken (a hub that answers with a number below the batch): retrying at once would
+      // spin, so it is a failure like any other and waits out the backoff.
+      guard response.acceptedThrough >= first.deviceSeq else {
+        throw WorkspaceError(
+          .internalError,
+          "The hub accepted nothing of the edits from \(first.deviceSeq) (it answered \(response.acceptedThrough))."
+        )
+      }
+      let covered = response.rejected.filter { $0.deviceSeq <= response.acceptedThrough }.count
+      try store.completeUpload(through: response.acceptedThrough, refused: covered)
+      if covered > 0 {
+        Self.logger.warning("the hub refused \(covered, privacy: .public) edits")
+      }
+    }
+  }
+
+  private func fetchSnapshot() async throws {
+    let snapshot = try await api.snapshot()
+    let batch = try store.applySnapshot(snapshot)
+    needsSnapshot = false
+    await onBatch(batch)
+  }
+
+  /// At most once a minute, and never a reason to stop syncing.
+  private func refreshDevices() async {
+    let now = ContinuousClock.now
+    if let last = devicesFetchedAt, now - last < Self.devicesInterval { return }
+    devicesFetchedAt = now
+    if let devices = try? await api.devices() { try? store.saveDevices(devices) }
   }
 
   private func failed(_ error: any Error, backoff: inout Duration) async {

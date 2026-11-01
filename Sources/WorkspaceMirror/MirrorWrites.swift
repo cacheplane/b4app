@@ -172,6 +172,68 @@ extension MirrorStore {
     return 0
   }
 
+  /// What the hub's answer to a push settled: drops every edit through `deviceSeq` (accepted, or
+  /// refused and covered by it) and adds the refused ones to the running count, in one transaction.
+  public func completeUpload(through deviceSeq: Int, refused: Int) throws {
+    try locked {
+      try transaction {
+        try run(#"DELETE FROM "outbox" WHERE "deviceSeq" <= ?"#, [.integer(Int64(deviceSeq))])
+        if refused > 0 {
+          try run(
+            #"UPDATE "syncState" SET "refusedUploads" = "refusedUploads" + ? WHERE "id" = 1"#,
+            [.integer(Int64(refused))])
+        }
+      }
+    }
+  }
+
+  /// Edits the hub has refused over this mirror's life (it survives restarts; a rebuild starts over).
+  public var refusedUploads: Int {
+    get throws {
+      try locked {
+        if case .integer(let count)? = try query(#"SELECT "refusedUploads" FROM "syncState" WHERE "id" = 1"#)
+          .first?["refusedUploads"]
+        {
+          return Int(count)
+        }
+        return 0
+      }
+    }
+  }
+
+  /// Adds to the refused count (`completeUpload` does this with the removal; this is for tests).
+  func addRefusedUploads(_ count: Int) throws {
+    try locked {
+      try run(
+        #"UPDATE "syncState" SET "refusedUploads" = "refusedUploads" + ? WHERE "id" = 1"#,
+        [.integer(Int64(count))])
+    }
+  }
+
+  /// The highest `deviceSeq` this device has issued; the next edit is numbered after it.
+  public var lastDeviceSeq: Int {
+    get throws {
+      try locked {
+        if case .integer(let seq)? = try query(#"SELECT "lastDeviceSeq" FROM "syncState" WHERE "id" = 1"#)
+          .first?["lastDeviceSeq"]
+        {
+          return Int(seq)
+        }
+        return 0
+      }
+    }
+  }
+
+  /// Raises the high-water mark to `seq` when that is higher (the hub has recorded a later one for this
+  /// device than the mirror ever issued), so the next edit is numbered past it. Never lowers it.
+  public func raiseLastDeviceSeq(to seq: Int) throws {
+    try locked {
+      try run(
+        #"UPDATE "syncState" SET "lastDeviceSeq" = max("lastDeviceSeq", ?) WHERE "id" = 1"#,
+        [.integer(Int64(seq))])
+    }
+  }
+
   func outboxRows(limit: Int?) throws -> [SyncChange] {
     let sql = #"SELECT * FROM "outbox" ORDER BY "deviceSeq""# + (limit == nil ? "" : " LIMIT ?")
     return try query(sql, limit.map { [.integer(Int64($0))] } ?? []).compactMap { row in

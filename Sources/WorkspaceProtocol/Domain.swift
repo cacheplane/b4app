@@ -473,10 +473,15 @@ public struct SyncDiagnostic: Codable, Sendable, Equatable {
   public var lastError: String?
   /// Mirrored rows this build cannot decode (written by a newer Mac): kept, but not shown.
   public var undecodableRows: Int
+  /// Local edits not yet accepted by the hub.
+  public var pendingUploads: Int
+  /// Edits the hub refused over this device's lifetime (a column the device may not write, or a value
+  /// too large); they are dropped from the queue and counted here.
+  public var refusedUploads: Int
 
   public init(
     hubURL: String, deviceName: String, cursor: Int, lastSyncAt: String?, lastError: String?,
-    undecodableRows: Int = 0
+    undecodableRows: Int = 0, pendingUploads: Int = 0, refusedUploads: Int = 0
   ) {
     self.hubURL = hubURL
     self.deviceName = deviceName
@@ -484,10 +489,12 @@ public struct SyncDiagnostic: Codable, Sendable, Equatable {
     self.lastSyncAt = lastSyncAt
     self.lastError = lastError
     self.undecodableRows = undecodableRows
+    self.pendingUploads = pendingUploads
+    self.refusedUploads = refusedUploads
   }
 
   private enum CodingKeys: String, CodingKey {
-    case hubURL, deviceName, cursor, lastSyncAt, lastError, undecodableRows
+    case hubURL, deviceName, cursor, lastSyncAt, lastError, undecodableRows, pendingUploads, refusedUploads
   }
 
   public init(from decoder: any Decoder) throws {
@@ -498,6 +505,8 @@ public struct SyncDiagnostic: Codable, Sendable, Equatable {
     lastSyncAt = try container.decodeIfPresent(String.self, forKey: .lastSyncAt)
     lastError = try container.decodeIfPresent(String.self, forKey: .lastError)
     undecodableRows = try container.decodeIfPresent(Int.self, forKey: .undecodableRows) ?? 0
+    pendingUploads = try container.decodeIfPresent(Int.self, forKey: .pendingUploads) ?? 0
+    refusedUploads = try container.decodeIfPresent(Int.self, forKey: .refusedUploads) ?? 0
   }
 }
 

@@ -223,5 +223,6 @@ enum MirrorSchema {
     ) STRICT
     """,
     #"ALTER TABLE "syncState" ADD COLUMN "lastDeviceSeq" INTEGER NOT NULL DEFAULT 0"#,
+    #"ALTER TABLE "syncState" ADD COLUMN "refusedUploads" INTEGER NOT NULL DEFAULT 0"#,
   ]
 }
