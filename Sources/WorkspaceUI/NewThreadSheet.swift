@@ -53,7 +53,10 @@ struct NewThreadSheet: View {
       }
       HStack(spacing: LLA.Space.s) {
         Spacer()
-        Button("Cancel") { dismiss() }.buttonStyle(.llaSecondary).keyboardShortcut(.cancelAction)
+        Button("Cancel") {
+          model.lastError = nil
+          dismiss()
+        }.buttonStyle(.llaSecondary).keyboardShortcut(.cancelAction)
         Button("Create") {
           creating = true
           Task {

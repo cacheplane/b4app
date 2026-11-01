@@ -232,6 +232,14 @@ struct SnapshotShell: View {
     }
   }
 
+  @Test func macSidebarShowsAFailedProjectAction() async throws {
+    let model = try await ListFixture.model()
+    model.lastError = "That folder already belongs to the project \u{201C}Marketing site\u{201D}."
+    try await render("macSidebarShowsAFailedProjectAction", size: CGSize(width: 290, height: 420)) {
+      ScrollView { ThreadListView(model: model).padding(.horizontal, 10) }
+    }
+  }
+
   @Test func iosListFlatWithFilter() async throws {
     let model = try await ListFixture.model()
     try await render("iosListFlatWithFilter", size: CGSize(width: 390, height: 760)) {

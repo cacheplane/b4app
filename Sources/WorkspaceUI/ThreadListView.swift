@@ -91,6 +91,51 @@ extension WorkspaceModel {
   }
 }
 
+extension WorkspaceModel {
+  /// Whether the detail column is already showing `lastError`: the connections and servers screens
+  /// print it, and an open, loaded thread shows it in the composer (or in place of the transcript).
+  /// Diagnostics, an empty Threads screen, and a thread that is still loading print nothing.
+  var detailShowsError: Bool {
+    switch surface {
+    case .connections, .servers: return true
+    case .diagnostics: return false
+    case .threads:
+      guard let id = selectedThreadId, threads.contains(where: { $0.id == id }) else { return false }
+      return !detailLoading
+    }
+  }
+
+  /// The failure the list prints where the action happened: a project or thread action failed and
+  /// nothing else on screen says so. `detailVisible` is false where the detail is not on screen (the
+  /// iPhone's single column). A sheet prints its own copy of the error, and the banner is hidden
+  /// behind it, so the sheets are unaffected.
+  func sidebarError(detailVisible: Bool = true) -> String? {
+    guard let error = lastError else { return nil }
+    return detailVisible && detailShowsError ? nil : (remediation?.message ?? error)
+  }
+}
+
+/// A dismissible error line at the top of the thread list, in the style of the composer's banner.
+struct SidebarErrorBanner: View {
+  @Bindable var model: WorkspaceModel
+  var detailVisible = true
+
+  var body: some View {
+    if let message = model.sidebarError(detailVisible: detailVisible) {
+      LLACard(fill: .surface, padding: LLA.Space.m) {
+        HStack(alignment: .top, spacing: LLA.Space.s) {
+          Text(message).font(LLAFont.small).foregroundStyle(LLA.Color.danger)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+          Button("Dismiss") { model.lastError = nil }.buttonStyle(.llaLink).font(LLAFont.small)
+        }
+      }
+      .padding(.vertical, LLA.Space.xs)
+      .accessibilityIdentifier("sidebar-error")
+    }
+  }
+}
+
 // MARK: - Status dot
 
 /// The attention band as an 8 pt dot (D-036, one accent): needs input is the accent, filled; unread is
@@ -246,14 +291,24 @@ struct ThreadListView: View {
     @SceneStorage("collapsedProjects") private var collapsedRaw = ""
   #endif
 
+  #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+  #endif
+
   var body: some View {
     #if os(macOS)
-      ProjectSectionsView(
-        model: model,
-        collapsed: Binding(
-          get: { CollapsedProjects.parse(collapsedRaw) },
-          set: { collapsedRaw = CollapsedProjects.encode($0) }))
+      VStack(alignment: .leading, spacing: 0) {
+        SidebarErrorBanner(model: model)
+        ProjectSectionsView(
+          model: model,
+          collapsed: Binding(
+            get: { CollapsedProjects.parse(collapsedRaw) },
+            set: { collapsedRaw = CollapsedProjects.encode($0) }))
+      }
     #else
+      // On the iPhone's single column the thread detail is not on screen, so the list says it.
+      SidebarErrorBanner(model: model, detailVisible: sizeClass != .compact)
+        .listRowBackground(Color.clear).listRowSeparator(.hidden)
       FlatThreadRows(model: model)
     #endif
   }
