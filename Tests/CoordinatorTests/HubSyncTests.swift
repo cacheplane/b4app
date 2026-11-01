@@ -135,6 +135,87 @@ private struct HubHarness {
     #expect(SyncFilter.outbound(try record(9, "localServers", "insert", value: ["id": "s1"])) == nil)
     #expect(SyncFilter.outbound(try record(10, "hubLink", "insert", value: ["id": 1])) == nil)
   }
+
+  @Test func nativeScopesWithPathsOrURLsTravelAsStableOpaqueTokens() throws {
+    let origin = "http://127.0.0.1:3001"
+    let configPath = "/Users/me/.claude"
+    let b4 = try #require(
+      SyncFilter.outbound(
+        try record(
+          1, "connections", "insert", rowId: "c1", value: ["id": "c1", "nativeScope": .string(origin)])))
+    let b4Scope = try #require(b4.value?["nativeScope"]?.stringValue)
+    #expect(b4Scope.hasPrefix("scope:"))
+    #expect(b4Scope.count == "scope:".count + 16)
+    #expect(!b4Scope.contains("127.0.0.1") && !b4Scope.contains("3001"))
+    let hex = b4Scope.dropFirst("scope:".count)
+    #expect(hex.allSatisfy { $0.isHexDigit })
+
+    // The same scope on a thread, and on an update, maps to the same token, so uniqueness holds.
+    let thread = try #require(
+      SyncFilter.outbound(
+        try record(2, "threads", "insert", rowId: "t1", value: ["id": "t1", "nativeScope": .string(origin)])))
+    #expect(thread.value?["nativeScope"] == .string(b4Scope))
+    let update = try #require(
+      SyncFilter.outbound(try record(3, "threads", "update", column: "nativeScope", value: .string(origin))))
+    #expect(update.value == .string(b4Scope))
+
+    let claude = try #require(
+      SyncFilter.outbound(
+        try record(
+          4, "connections", "update", rowId: "c2", column: "nativeScope", value: .string(configPath))))
+    let claudeScope = try #require(claude.value?.stringValue)
+    #expect(claudeScope.hasPrefix("scope:"))
+    #expect(!claudeScope.contains("Users"))
+    #expect(claudeScope != b4Scope)
+
+    let email = try #require(
+      SyncFilter.outbound(
+        try record(
+          5, "connections", "insert", rowId: "c3", value: ["id": "c3", "nativeScope": "me@example.com"])))
+    #expect(email.value?["nativeScope"] == .string("me@example.com"))
+    let codex = try #require(
+      SyncFilter.outbound(try record(6, "threads", "update", column: "nativeScope", value: "chatgpt")))
+    #expect(codex.value == .string("chatgpt"))
+  }
+
+  @Test func oversizedRuntimeRequestPayloadsAreTruncated() throws {
+    let big: JSONValue = ["text": .string(String(repeating: "a", count: 2 * 1024 * 1024))]
+    let marker: JSONValue = [
+      "truncated": true, "bytes": .number(Double(try JSONCoding.encoder.encode(big).count)),
+    ]
+    let insert = try #require(
+      SyncFilter.outbound(
+        try record(1, "runtimeRequests", "insert", value: ["id": "q1", "kind": "approval", "payload": big])))
+    #expect(insert.value?["payload"] == marker)
+    #expect(insert.value?["kind"] == .string("approval"))
+    let update = try #require(
+      SyncFilter.outbound(try record(2, "runtimeRequests", "update", column: "payload", value: big)))
+    #expect(update.value == marker)
+    let small: JSONValue = ["id": "q2", "payload": ["command": "ls"]]
+    #expect(SyncFilter.outbound(try record(3, "runtimeRequests", "insert", value: small))?.value == small)
+  }
+
+  @Test func connectionInsertsKeepOnlyTheKnownColumns() throws {
+    #expect(SyncFilter.outbound(try record(1, "connections", "insert", value: "not an object")) == nil)
+    #expect(SyncFilter.outbound(try record(2, "connections", "insert", value: nil)) == nil)
+
+    var row: [String: JSONValue] = [:]
+    for column in SyncFilter.connectionColumns { row[column] = .string("v-\(column)") }
+    row["futureSecret"] = "do-not-upload"
+    let out = try #require(SyncFilter.outbound(try record(3, "connections", "insert", value: .object(row))))
+    guard case .object(let sent) = out.value else {
+      Issue.record("expected an object")
+      return
+    }
+    #expect(sent["futureSecret"] == nil)
+    #expect(Set(sent.keys) == SyncFilter.connectionColumns)
+    #expect(sent.count == 16)
+    #expect(sent["authReference"] == .null)
+    #expect(sent["localServerId"] == .null)
+    #expect(sent["target"] == .string(""))
+    #expect(sent["label"] == .string("v-label"))
+    #expect(sent["nativeScope"] == .string("v-nativeScope"))
+  }
 }
 
 @Suite(.serialized) struct HubSyncTests {

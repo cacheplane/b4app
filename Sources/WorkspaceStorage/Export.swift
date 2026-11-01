@@ -96,6 +96,10 @@ extension WorkspaceDatabase {
         try c.execute(statement.sql, statement.params)
         count += 1
       }
+      // Restored changes have reached no hub from this store: an archive taken while joined must not
+      // keep them marked synced, or a later `hub join` would never upload them. Restore is refused
+      // while joined, so nothing here races a push.
+      try c.execute("UPDATE \"changes\" SET \"synced\" = false")
       // The changes sequence must continue past the restored rows.
       try c.execute(
         "SELECT setval('\"changes_seq_seq\"', coalesce((SELECT max(\"seq\") FROM \"changes\"), 0) + 1, false)"
