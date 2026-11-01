@@ -49,7 +49,7 @@ answer the same generic `404 not_found`.
 | 404 | `not_found` | request | No such route, or a resource that does not exist or is not yours. |
 | 405 | `method_not_allowed` | request | The route exists but not for that method. |
 | 410 | `resync_required` | request | The pull cursor is older than the retention horizon (see below). |
-| 413 | `payload_too_large` | request | A push body over 32 MiB, or any change whose `value` is over 2 MiB. |
+| 413 | `payload_too_large` | request | A push body over 32 MiB. (A change whose `value` is over 2 MiB is rejected per change instead; see `POST /v1/changes`.) |
 | 500 | `internal_error` | execution | Any unexpected failure; the cause is logged on the hub, never sent. |
 | 503 | `not_ready` | execution | `/readyz`: the database is unreachable or migrations are pending. |
 | 503 | `shutting_down` | execution | `/readyz` after SIGTERM. |
@@ -58,7 +58,7 @@ answer the same generic `404 not_found`.
 
 | Limit | Value | Applies to |
 | --- | --- | --- |
-| Change `value` | 2 MiB (2,097,152 bytes of its serialised JSON) | each change in a push; over it, the whole batch is refused with `413 payload_too_large` before anything is stored |
+| Change `value` | 2 MiB (2,097,152 bytes of its serialised JSON) | each change in a push; over it, that change is rejected (`rejected: [{deviceSeq, code: "payload_too_large"}]`) and not stored, and the rest of the batch lands |
 | Push body | 32 MiB | `POST /v1/changes`; over it, `413 payload_too_large` |
 | `MAX_PUSH_CHANGES` | 1000 changes | one push; over it, `400 invalid_request` |
 | Pull page | 1000 changes (`limit` is clamped to 1 to 1000; default 1000) | `GET /v1/changes` |
@@ -66,8 +66,8 @@ answer the same generic `404 not_found`.
 | Other request bodies | 2 MiB (axum's default) | `POST /v1/enroll` |
 
 The Mac client sends batches of 500 and replaces a `displayItems.payload` over 1 MiB with
-`{"truncated": true, "bytes": n}` before upload, so the hub's 2 MiB limit only ever refuses a
-broken or hostile client. The hub refuses; it never truncates.
+`{"truncated": true, "bytes": n}` before upload, so the hub's 2 MiB limit only ever rejects a
+broken or hostile client's change. The hub rejects; it never truncates.
 
 ### Protocol version
 
@@ -169,9 +169,24 @@ Request (`changes` required, no other field allowed):
 {"acceptedThrough": 12}
 ```
 
+or, when the hub refused some changes:
+
+```json
+{"acceptedThrough": 12, "rejected": [{"deviceSeq": 7, "code": "column_not_writable"}]}
+```
+
 `acceptedThrough` is the highest `deviceSeq` in the batch (for an empty batch, the highest
 `deviceSeq` this device has had accepted so far, or `0`). A client marks local rows `synced` only
-once `acceptedThrough` covers them.
+once `acceptedThrough` covers them. It covers rejected changes too: a rejection is final, so the
+client must not resend them. `rejected` is omitted when empty, so a client that predates it
+decodes the response unchanged. `code` is one of:
+
+- `column_not_writable`: the device is an `ios` or `cli` device and the change is not one of the
+  phone's (see *Clocks and the write rule* below).
+- `payload_too_large`: the change's `value` is over 2 MiB. Only that change is rejected; the rest
+  of the batch lands.
+
+A rejected change is not recorded in the feed and not applied, so no other device ever sees it.
 
 **Idempotency is per device.** A change is identified by `(device, deviceSeq)`. One the hub
 already holds counts as accepted and is not recorded or applied again, so retrying a batch (after
@@ -188,9 +203,38 @@ rows are keyed to the pushing user as well as the org, so another user of the or
 row id cannot overwrite, update, delete, or adopt as a parent the first user's row.
 
 **Refusals**, before anything is stored: `401 unauthorized`; `400 invalid_request` for a body that
-is not `{"changes": [...]}` or has more than 1000 changes; `413 payload_too_large` for a body over
-32 MiB or a change whose `value` is over 2 MiB. Pushes to one org are serialised, so commit order
-is `hubSeq` order.
+is not `{"changes": [...]}`, has more than 1000 changes, or carries an `hlc` that is not in the
+clock form; `413 payload_too_large` for a body over 32 MiB. (A single change whose `value` is over
+2 MiB is no longer a 413: it is a per-change `rejected` entry.) Pushes to one org are serialised,
+so commit order is `hubSeq` order.
+
+**Clocks and the write rule.** Every change may carry an `hlc`, a hybrid logical clock written
+`<12 lowercase hex digits of epoch milliseconds>-<4 hex digits of counter>-<device id>` (for
+example `0192e0f1a2b3-0000-01a194cf-0d12-7418-b3b5-5559dbee2441`). Clocks compare as plain
+strings. A change with no `hlc` (an M8a client) is stamped with its `wall`, counter `0000`, and
+the pushing device's id. A clock more than 300 000 ms (five minutes) ahead of the hub's wall
+clock is rewritten to the hub's milliseconds with counter `0000` and the same device id, so a
+device with a fast clock cannot win every later conflict; exactly 300 000 ms ahead is kept. The
+clock the hub keeps is the one it serves back in the feed.
+
+These columns merge last-writer-wins: `threads.title`, `threads.pinned`, `threads.archived`,
+`threads.readTurnId`, `threads.projectId`, `projects.name`, `drafts.threadId`, `drafts.text`,
+`drafts.updatedAt`. The hub remembers, per row and column, the clock of the change that last set
+it (`column_clocks`); an `update` of such a column applies only when its clock is greater, and
+an `insert` counts as setting every such column it carries, at its clock. A change that loses is
+still recorded in the feed (it is history) but writes nothing. Every other column applies
+whatever its clock, as in M8a.
+
+An `macos` device may write any column. An `ios` or `cli` device may only `update` these
+columns, and `insert` rows of `drafts`: `threads.title`, `threads.pinned`, `threads.archived`,
+`threads.readTurnId`, `projects.name`, `drafts.threadId`, `drafts.text`, `drafts.updatedAt`.
+Anything else (including every `delete`) is rejected with `column_not_writable`. A draft is
+cleared by setting `text` to `""`, never by deleting it.
+
+**Ownership and scrubbing.** Each mirrored row records `owner_device_id`, the device of its latest
+`insert` (an `update` never changes it; `device_id` remains the last writer). The hub sets
+`connections.authReference`, `connections.localServerId`, and `connections.target` to NULL on
+every insert and update, whatever the change carries.
 
 ### `GET /v1/changes`
 
@@ -245,28 +289,30 @@ that does not wait at all. The client simply reconnects, normally to the replace
   "rowId": "conn-1",
   "op": "insert",
   "column": null,
-  "value": {"id": "conn-1", "kind": "codex", "label": "Codex", "enabled": true, "profileRevision": 1, "target": "/usr/local/bin/codex", "routeKey": null, "b4Mode": null, "localServerId": null, "authReference": "secret:abc", "nativeScope": "/Users/brian/project", "capabilities": {"streaming": "supported", "native_resume": "supported", "history_retrieval": "supported", "explicit_interruption": "supported", "reconnect": "supported", "permission_decisions": "supported", "user_questions": "unsupported", "model_selection": "unverified"}, "status": "ready", "authStatus": "authenticated", "createdAt": "2026-10-31T12:00:00Z", "updatedAt": "2026-10-31T12:00:00Z"}
+  "value": {"id": "conn-1", "kind": "codex", "label": "Codex", "enabled": true, "profileRevision": 1, "target": "/usr/local/bin/codex", "routeKey": null, "b4Mode": null, "localServerId": null, "authReference": "secret:abc", "nativeScope": "/Users/brian/project", "capabilities": {"streaming": "supported", "native_resume": "supported", "history_retrieval": "supported", "explicit_interruption": "supported", "reconnect": "supported", "permission_decisions": "supported", "user_questions": "unsupported", "model_selection": "unverified"}, "status": "ready", "authStatus": "authenticated", "createdAt": "2026-10-31T12:00:00Z", "updatedAt": "2026-10-31T12:00:00Z"},
+  "hlc": "019a396c76e8-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
 }
 ```
 
-That is the first of the twelve changes in `Tests/Fixtures/sync/changes.json`, the fixture the
+That is the first of the twelve changes in `Tests/Fixtures/sync/changes.json` (which also carries each change's `hlc`), the fixture the
 Swift client and the hub both test against. The fixture is a bare array of `Change`; a push wraps
 it as `{"changes": [...]}`. It shows the client's pre-upload shape, not what goes on the wire: the
 coordinator blanks `connections.authReference`, `connections.localServerId`, and
 `connections.target`, sends a `nativeScope` that contains `/` (a URL or a path) as `scope:` plus
 16 hex characters of its SHA-256, and replaces over-large payloads before it sends anything. The file
 deliberately holds one `displayItems` change (`deviceSeq` 7) whose `value` is just over the hub's
-2 MiB limit, so pushing the raw array is refused whole with `413 payload_too_large`; do not paste
-it whole.
+2 MiB limit, so pushing the raw array answers `200` with that change in `rejected` (`payload_too_large`) and the
+other eleven applied; do not paste it whole.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `deviceSeq` | integer | The change's sequence on the device that wrote it: unique per device, increasing. The idempotency key together with the authenticated device. |
 | `wall` | integer | Milliseconds since the epoch on the origin device. |
-| `table` | string | One of `connections`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`. Any other name (including `localServers`, which never syncs) is recorded and skipped. |
+| `table` | string | One of `connections`, `projects`, `projectFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`. Any other name (including `localServers`, which never syncs) is recorded and skipped. |
 | `rowId` | string | The row's key: its `id`, or `threadId` for `drafts`. Client-chosen text; unique per org within a table. |
 | `op` | `"insert"`, `"update"`, or `"delete"` | |
 | `column` | string or `null` | For `update`, the column being set; otherwise absent or `null`. |
+| `hlc` | string, optional | The hybrid logical clock the device stamped on the change (see *Clocks and the write rule*). Omit it and the hub derives one from `wall`. A value not in the clock form is `400 invalid_request`. |
 | `value` | any JSON or `null` | For `insert`, the whole row as an object keyed by the Mac's camelCase column names; for `update`, the column's new value (absent or `null` sets it to NULL); for `delete`, absent. At most 2 MiB serialised. |
 
 Unknown fields are rejected (`400 invalid_request`). Column names are the Mac schema's quoted
@@ -286,12 +332,13 @@ A `Change` plus where it sits in the feed and who wrote it:
   "rowId": "conn-1",
   "op": "insert",
   "column": null,
-  "value": { "...": "as uploaded" }
+  "value": { "...": "as uploaded" },
+  "hlc": "019a396c76e8-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
 }
 ```
 
 `hubSeq` is the org-wide feed position and the pull cursor; `deviceId` is the UUID of the device
-that uploaded the change. `value` is the uploaded JSON, stored as `jsonb`: equal as JSON, but
+that uploaded the change; `hlc` is the change's clock after the hub's clamp, always present. `value` is the uploaded JSON, stored as `jsonb`: equal as JSON, but
 object key order is not preserved and duplicate keys collapse.
 
 ## Shutdown

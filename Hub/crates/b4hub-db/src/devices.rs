@@ -17,6 +17,34 @@ use sqlx::{Postgres, Transaction};
 use crate::tenant::set_tenant;
 use crate::{Db, Error, Result};
 
+/// What kind of device enrolled, which decides what it may write: a `macos` device writes any
+/// column, an `ios` or `cli` device only the phone-writable ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    Macos,
+    Ios,
+    Cli,
+}
+
+impl Platform {
+    pub fn parse(text: &str) -> Option<Platform> {
+        match text {
+            "macos" => Some(Platform::Macos),
+            "ios" => Some(Platform::Ios),
+            "cli" => Some(Platform::Cli),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Platform::Macos => "macos",
+            Platform::Ios => "ios",
+            Platform::Cli => "cli",
+        }
+    }
+}
+
 /// A device that proved its token: the principal of every protected request. It comes only from
 /// the verified token row and the device row it points at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +52,7 @@ pub struct AuthedDevice {
     pub org_id: Uuid,
     pub user_id: Uuid,
     pub device_id: Uuid,
+    pub platform: Platform,
 }
 
 /// What redeeming a code yields. `token` is shown to the caller once and stored nowhere.
@@ -173,16 +202,24 @@ pub async fn authenticate(db: &Db, token: &str) -> Result<Option<AuthedDevice>> 
     };
 
     set_tenant(&mut tx, org_id).await?;
-    let user_id: Option<Uuid> =
-        sqlx::query_scalar("SELECT user_id FROM devices WHERE id = $1 AND revoked_at IS NULL")
-            .bind(device_id)
-            .fetch_optional(&mut *tx)
-            .await?;
+    let device: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT user_id, platform FROM devices WHERE id = $1 AND revoked_at IS NULL",
+    )
+    .bind(device_id)
+    .fetch_optional(&mut *tx)
+    .await?;
     tx.commit().await?;
-    Ok(user_id.map(|user_id| AuthedDevice {
+    let Some((user_id, platform)) = device else {
+        return Ok(None);
+    };
+    // The `devices` table only holds the three platforms.
+    let platform = Platform::parse(&platform)
+        .ok_or_else(|| sqlx::Error::Decode("unknown device platform".into()))?;
+    Ok(Some(AuthedDevice {
         org_id,
         user_id,
         device_id,
+        platform,
     }))
 }
 

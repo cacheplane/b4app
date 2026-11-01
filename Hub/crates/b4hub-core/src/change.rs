@@ -21,8 +21,10 @@ pub const MAX_PUSH_CHANGES: usize = 1000;
 pub const MAX_PULL_LIMIT: usize = 1000;
 
 /// The tables whose rows sync, in dependency order.
-pub const SYNCED_TABLES: [&str; 6] = [
+pub const SYNCED_TABLES: [&str; 8] = [
     "connections",
+    "projects",
+    "projectFolders",
     "threads",
     "turns",
     "displayItems",
@@ -44,7 +46,7 @@ pub struct TableSpec {
     pub parent: Option<(&'static str, &'static str)>,
 }
 
-const TABLES: [TableSpec; 6] = [
+const TABLES: [TableSpec; 8] = [
     TableSpec {
         name: "connections",
         key: "id",
@@ -69,6 +71,18 @@ const TABLES: [TableSpec; 6] = [
         parent: None,
     },
     TableSpec {
+        name: "projects",
+        key: "id",
+        columns: &["id", "name", "manual", "createdAt", "updatedAt"],
+        parent: None,
+    },
+    TableSpec {
+        name: "projectFolders",
+        key: "id",
+        columns: &["id", "projectId", "path", "createdAt"],
+        parent: Some(("projectId", "projects")),
+    },
+    TableSpec {
         name: "threads",
         key: "id",
         columns: &[
@@ -83,6 +97,8 @@ const TABLES: [TableSpec; 6] = [
             "continuity",
             "createdAt",
             "updatedAt",
+            "projectId",
+            "readTurnId",
         ],
         parent: Some(("connectionId", "connections")),
     },
@@ -145,6 +161,20 @@ const TABLES: [TableSpec; 6] = [
     },
 ];
 
+/// Columns the hub sets NULL on every insert and update, whatever the change carries. The Mac
+/// blanks them before upload (they name local executables, servers, and secret references that
+/// mean nothing off the Mac); the hub does not trust that.
+pub const SCRUBBED_COLUMNS: &[(&str, &str)] = &[
+    ("connections", "authReference"),
+    ("connections", "localServerId"),
+    ("connections", "target"),
+];
+
+/// True when the hub nulls `table.column` on write.
+pub fn is_scrubbed(table: &str, column: &str) -> bool {
+    SCRUBBED_COLUMNS.contains(&(table, column))
+}
+
 /// The description of a synced table; `None` for any other name (including `localServers`,
 /// which never syncs).
 pub fn table_spec(name: &str) -> Option<&'static TableSpec> {
@@ -193,6 +223,10 @@ pub struct Change {
     pub op: ChangeOp,
     pub column: Option<String>,
     pub value: Option<Value>,
+    /// The hybrid logical clock the writing device stamped on the change (see [`crate::hlc`]).
+    /// Absent from an M8a client; the hub then derives one from `wall`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hlc: Option<String>,
 }
 
 impl Change {
@@ -216,6 +250,8 @@ pub struct StoredChange {
     pub op: ChangeOp,
     pub column: Option<String>,
     pub value: Option<Value>,
+    /// The change's clock after the hub's clamp.
+    pub hlc: String,
 }
 
 /// One page of the feed. `next` is the cursor for the following request: the last returned
@@ -276,7 +312,19 @@ mod tests {
             json!({"deviceSeq": 1, "wall": 2, "table": "drafts", "rowId": "t", "op": "delete"});
         let delete: Change = serde_json::from_value(minimal).unwrap();
         assert_eq!(delete.op, ChangeOp::Delete);
-        assert_eq!((delete.column, delete.value), (None, None));
+        assert_eq!(
+            (delete.column, delete.value, delete.hlc),
+            (None, None, None)
+        );
+
+        let clocked = json!({"deviceSeq": 1, "wall": 2, "table": "drafts", "rowId": "t",
+                             "op": "delete", "hlc": "000000000002-0001-dev"});
+        let change: Change = serde_json::from_value(clocked.clone()).unwrap();
+        assert_eq!(change.hlc.as_deref(), Some("000000000002-0001-dev"));
+        assert_eq!(
+            serde_json::to_value(&change).unwrap()["hlc"],
+            clocked["hlc"]
+        );
     }
 
     #[test]
@@ -299,11 +347,13 @@ mod tests {
             op: ChangeOp::Delete,
             column: None,
             value: None,
+            hlc: "000000000004-0000-dev".into(),
         };
         let wire = serde_json::to_value(&stored).unwrap();
         assert_eq!(wire["hubSeq"], 3);
         assert_eq!(wire["deviceId"], "00000000-0000-0000-0000-000000000009");
         assert_eq!(wire["op"], "delete");
+        assert_eq!(wire["hlc"], "000000000004-0000-dev");
         assert_eq!(
             serde_json::from_value::<StoredChange>(wire).unwrap(),
             stored
@@ -324,6 +374,13 @@ mod tests {
             .map(|c| c.row_id.as_str())
             .collect();
         assert_eq!(oversize, vec!["item-3"]);
+        // Every entry carries a clock, derived from its wall and one device id.
+        for change in &changes {
+            let hlc = crate::hlc::Hlc::parse(change.hlc.as_deref().unwrap()).unwrap();
+            assert_eq!(hlc.millis() as i64, change.wall);
+            assert_eq!(hlc.counter(), 0);
+            assert_eq!(hlc.device_id(), "01a194cf-0d12-7418-b3b5-5559dbee2441");
+        }
         // The connection still carries what the client blanks before upload.
         let connection = changes[0].value.as_ref().unwrap();
         assert_eq!(connection["authReference"], "secret:abc");
@@ -367,6 +424,7 @@ mod tests {
             op: ChangeOp::Update,
             column: Some("title".into()),
             value,
+            hlc: None,
         };
         assert_eq!(change(None).value_bytes(), 0);
         let value = json!({"a": "é", "b": [1, 2.5, null]});

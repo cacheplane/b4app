@@ -32,7 +32,8 @@
    "authStatus": "authenticated",
    "createdAt": "2026-10-31T12:00:00Z",
    "updatedAt": "2026-10-31T12:00:00Z"
-  }
+  },
+  "hlc": "019a396c76e8-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
  },
  {
   "deviceSeq": 2,
@@ -53,7 +54,8 @@
    "continuity": "available",
    "createdAt": "2026-10-31T12:01:00Z",
    "updatedAt": "2026-10-31T12:01:00Z"
-  }
+  },
+  "hlc": "019a396c7ad0-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
  },
  {
   "deviceSeq": 3,
@@ -73,7 +75,8 @@
    "outcome": "completed",
    "createdAt": "2026-10-31T12:02:00Z",
    "updatedAt": "2026-10-31T12:02:00Z"
-  }
+  },
+  "hlc": "019a396c7eb8-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
  },
  {
   "deviceSeq": 4,
@@ -93,7 +96,8 @@
    "outcome": null,
    "createdAt": "2026-10-31T12:03:00Z",
    "updatedAt": "2026-10-31T12:03:00Z"
-  }
+  },
+  "hlc": "019a396c82a0-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
  },
  {
   "deviceSeq": 5,
@@ -115,7 +119,8 @@
    "sequence": 1,
    "provenance": "live",
    "createdAt": "2026-10-31T12:04:00Z"
-  }
+  },
+  "hlc": "019a396c8688-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
  },
  {
   "deviceSeq": 6,
@@ -137,7 +142,8 @@
    "sequence": 2,
    "provenance": "live",
    "createdAt": "2026-10-31T12:05:00Z"
-  }
+  },
+  "hlc": "019a396c8a70-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
  },
  {
   "deviceSeq": 7,
@@ -159,7 +165,8 @@
    "sequence": 3,
    "provenance": "live",
    "createdAt": "2026-10-31T12:06:00Z"
-  }
+  },
+  "hlc": "019a396c8e58-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
  },
  {
   "deviceSeq": 8,
@@ -181,7 +188,8 @@
    "sequence": 4,
    "provenance": "live",
    "createdAt": "2026-10-31T12:07:00Z"
-  }
+  },
+  "hlc": "019a396c9240-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
  },
  {
   "deviceSeq": 9,
@@ -204,7 +212,8 @@
    },
    "createdAt": "2026-10-31T12:09:00Z",
    "updatedAt": "2026-10-31T12:09:00Z"
-  }
+  },
+  "hlc": "019a396c9628-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
  },
  {
   "deviceSeq": 10,
@@ -213,7 +222,8 @@
   "rowId": "thread-1",
   "op": "update",
   "column": "title",
-  "value": "Renamed"
+  "value": "Renamed",
+  "hlc": "019a396c9a10-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
  },
  {
   "deviceSeq": 11,
@@ -226,7 +236,8 @@
    "threadId": "thread-1",
    "text": "Also check the logout path",
    "updatedAt": "2026-10-31T12:11:00Z"
-  }
+  },
+  "hlc": "019a396c9df8-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
  },
  {
   "deviceSeq": 12,
@@ -235,6 +246,7 @@
   "rowId": "thread-1",
   "op": "delete",
   "column": null,
-  "value": null
+  "value": null,
+  "hlc": "019a396ca1e0-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
  }
 ]

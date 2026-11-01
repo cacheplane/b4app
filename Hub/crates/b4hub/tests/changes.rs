@@ -379,12 +379,12 @@ async fn shutdown_releases_open_long_polls(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
-async fn oversize_payload_is_refused(pool: PgPool) {
+async fn oversize_value_is_rejected_per_change(pool: PgPool) {
     let (admin, state) = migrated(&pool).await;
     let token = token_for(&admin, &state, "blove").await;
 
-    // The raw fixture carries a 2 MiB payload: the hub refuses the whole batch, and refuses it
-    // for the value, not for the request body being too large to read.
+    // The raw fixture carries a 2 MiB payload (deviceSeq 7). The push is a 200: that one change
+    // is rejected, is not recorded, and the rest of the batch lands.
     let raw: Vec<Change> = serde_json::from_str(FIXTURE).unwrap();
     let (status, body) = send(
         &state,
@@ -394,28 +394,22 @@ async fn oversize_payload_is_refused(pool: PgPool) {
         Some(push_body(&raw)),
     )
     .await;
-    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
-    assert_eq!(error_code(&body), "payload_too_large");
-    assert_eq!(body["error"]["kind"], "request_error");
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("change value"),
-        "{body}"
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body,
+        json!({"acceptedThrough": 12, "rejected": [{"deviceSeq": 7, "code": "payload_too_large"}]})
     );
-    for table in ["changes", "connections", "threads", "displayItems"] {
-        assert_eq!(count(&state, "cacheplane", table).await, 0, "{table}");
-    }
+    assert_eq!(count(&state, "cacheplane", "changes").await, 11);
+    assert_eq!(count(&state, "cacheplane", "displayItems").await, 3);
 
-    // A value exactly at the limit is accepted; one byte over is not. (`"x"` quotes count.)
+    // A value exactly at the limit is accepted; one byte over is rejected. (`"x"` quotes count.)
     let limit = b4hub_core::change::MAX_PAYLOAD_BYTES;
     let sized = |bytes: usize| -> Change {
-        let mut change = small_change(1, "conn-1");
+        let mut change = small_change(100, "conn-big");
         change.value = Some(Value::String("y".repeat(bytes - 2)));
         change
     };
-    let (status, _) = send(
+    let (status, body) = send(
         &state,
         "POST",
         "/v1/changes",
@@ -423,7 +417,11 @@ async fn oversize_payload_is_refused(pool: PgPool) {
         Some(push_body(&[sized(limit + 1)])),
     )
     .await;
-    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body,
+        json!({"acceptedThrough": 100, "rejected": [{"deviceSeq": 100, "code": "payload_too_large"}]})
+    );
     let (status, body) = send(
         &state,
         "POST",
@@ -433,7 +431,44 @@ async fn oversize_payload_is_refused(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(count(&state, "cacheplane", "changes").await, 1);
+    assert_eq!(
+        body,
+        json!({"acceptedThrough": 100}),
+        "no rejected key when none"
+    );
+    assert_eq!(count(&state, "cacheplane", "changes").await, 12);
+
+    // The body limit is still 413: a body over 32 MiB is refused before it is read.
+    let body = format!(
+        r#"{{"changes": [{{"deviceSeq": 1, "wall": 0, "table": "connections", "rowId": "c", "op": "insert", "value": "{}"}}]}}"#,
+        "z".repeat(33 * 1024 * 1024)
+    );
+    let (status, body) = send(&state, "POST", "/v1/changes", Some(&token), Some(body)).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    assert_eq!(error_code(&body), "payload_too_large");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_malformed_clock_is_a_bad_request(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let token = token_for(&admin, &state, "blove").await;
+    let mut change = small_change(1, "conn-1");
+    change.hlc = Some("not-a-clock".into());
+    let (status, body) = send(
+        &state,
+        "POST",
+        "/v1/changes",
+        Some(&token),
+        Some(push_body(&[small_change(2, "conn-2"), change])),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(error_code(&body), "invalid_request");
+    assert_eq!(
+        count(&state, "cacheplane", "changes").await,
+        0,
+        "nothing stored"
+    );
 }
 
 #[sqlx::test(migrations = false)]
