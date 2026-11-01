@@ -142,7 +142,7 @@ public enum LLAFont {
 /// Point sizes for each role at the default text size. The Mac keeps D-036's desktop scale; the phone
 /// starts each role at the size of the iOS text style it scales with (body 17, subheadline 15,
 /// caption 12, title3 20, title 28; Apple's Typography specifications), so a custom face reads like
-/// the system's and Dynamic Type moves it in step (D-054).
+/// the system's and Dynamic Type moves it in step (D-060).
 public struct LLATypeScale: Sendable, Equatable {
   public var display: CGFloat
   public var title: CGFloat

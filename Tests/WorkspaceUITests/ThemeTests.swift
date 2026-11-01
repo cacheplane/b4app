@@ -83,7 +83,7 @@ import Testing
   }
 
   @Test func phoneTypeScaleMeetsTheHIG() {
-    // D-054: the phone starts each role at its iOS text style's default size, never under Apple's
+    // D-060: the phone starts each role at its iOS text style's default size, never under Apple's
     // 11 pt floor, with body at the system's 17 pt; the Mac keeps D-036's desktop scale.
     let phone = LLATypeScale.phone
     #expect(phone.body == 17 && phone.row == 17 && phone.button == 17)

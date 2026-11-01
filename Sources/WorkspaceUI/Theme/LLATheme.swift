@@ -100,7 +100,7 @@ public enum LLA {
       /// Side margin of a page, the transcript, and the composer.
       public static let margin: CGFloat = Space.xl
     #else
-      /// Apple's minimum hit target on iPhone, 44 by 44 pt (HIG, Accessibility; D-054).
+      /// Apple's minimum hit target on iPhone, 44 by 44 pt (HIG, Accessibility; D-060).
       public static let control: CGFloat = 44
       public static let row: CGFloat = 44
       /// The iPhone's system layout margin, 16 pt, so pages line up with lists and the navigation bar.
