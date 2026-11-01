@@ -18,7 +18,7 @@ Target: the same MacBook Pro (macOS 26.5, Xcode 26.6), Docker 27.4.0 for the hub
 | Tests | `swift test` | Pass: 319 tests in 74 suites (262 before M8a) |
 | macOS app | `./Scripts/generate-project.sh`, then `xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO` | Pass |
 | iOS app | the same with `-scheme B4App-iOS -destination 'generic/platform=iOS Simulator'` | Pass |
-| CI | the `hub` job (Ubuntu, `postgres:17` service) | Recorded in the draft PR cacheplane/b4app#17 (base `design/m8-hub`), not here: the controller observed all three checks (Swift package job, the two app builds, the Ubuntu `hub` job) green at commit a6d9a2a (end of Task 6) and partially green on later heads; later heads, including the docs commit, were still pending when this was written. The final head's result is in the PR |
+| CI | the `hub` job (Ubuntu, `postgres:17` service) | Recorded in the draft PR cacheplane/b4app#17 (base `design/m8-hub`), not here: the controller observed all three checks (the Swift package job, the apps job, which runs both app builds, and the Ubuntu `hub` job) green at commit a6d9a2a (end of Task 6) and partially green on later heads; later heads, including the docs commit, were still pending when this was written. The final head's result is in the PR |
 | Image | `docker build` of `Hub/Dockerfile` on the build Mac, `linux/arm64` | Builds; runs as uid 10001; `docker compose ps` showed `hub` healthy after about 11 s (Task 5) |
 
 ### Live on this Mac (Task 9 gate)
@@ -59,9 +59,9 @@ Three things the gate found and Task 9 fixed in the same commit: an unsigned Sim
 
 - Disconnecting the phone is deleting the app; the hub device stays unrevoked (there is no Disconnect control to call the hub's revoke).
 - The phone's thread header shows the Mac's working directory from `threads.context`. It is a project path, not an executable path, and it crosses the wire; the owner decides whether `threads.context` should sync.
-- The shell shows Mac wording on the phone ("Coordinator connected").
+- The shell shows Mac wording on the phone ("Coordinator connected"). When the last pull failed (hub down, token revoked, hub wiped) a one-line banner above the shell says "Not synced since <time>: <error>" and hides after the next successful pull (`MirrorSyncTests` covers the status callback; the banner was built for both app targets but not seen in the Simulator). A healthy phone still cannot tell that the Mac is asleep or offline: its pulls succeed and simply bring nothing, until M8c adds presence.
 - New turns and runtime requests mirrored while a thread is open appear when it is reopened; only display items, threads, and connections are published live.
-- No rate limit on `/v1/enroll`; `/v1/changes` pages have no byte limit; a non-`displayItems` value over 2 MiB would block the Mac's queue with a permanent 413, visible only in `hub status`.
+- No rate limit on `/v1/enroll`; `/v1/changes` pages have no byte limit; a value over 2 MiB in any column other than `displayItems.payload` and `runtimeRequests.payload` (both truncated over 1 MiB) would block the Mac's queue with a permanent 413, visible only in `hub status`.
 - `linux/amd64` is unverified.
 
 ### Found, not fixed

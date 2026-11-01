@@ -3,7 +3,7 @@
 The hub speaks JSON over HTTP. This document describes what the code in `crates/b4hub` does;
 where the two disagree, the code is right and this file is the bug.
 
-All paths are relative to the hub's base URL (`http://localhost:8080` for the Compose stack).
+All paths are relative to the hub's base URL (`http://localhost:8080` for the Compose stack, which publishes the port on `127.0.0.1` only).
 Clients refuse any non-HTTPS URL whose host is not `localhost`, `127.0.0.1`, or `::1`.
 
 ## Conventions
@@ -253,7 +253,8 @@ That is the first of the twelve changes in `Tests/Fixtures/sync/changes.json`, t
 Swift client and the hub both test against. The fixture is a bare array of `Change`; a push wraps
 it as `{"changes": [...]}`. It shows the client's pre-upload shape, not what goes on the wire: the
 coordinator blanks `connections.authReference`, `connections.localServerId`, and
-`connections.target` and replaces over-large payloads before it sends anything. The file
+`connections.target`, sends a `nativeScope` that contains `/` (a URL or a path) as `scope:` plus
+16 hex characters of its SHA-256, and replaces over-large payloads before it sends anything. The file
 deliberately holds one `displayItems` change (`deviceSeq` 7) whose `value` is just over the hub's
 2 MiB limit, so pushing the raw array is refused whole with `413 payload_too_large`; do not paste
 it whole.

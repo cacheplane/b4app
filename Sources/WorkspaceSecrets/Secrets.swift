@@ -23,10 +23,11 @@ public protocol SecretStore: Sendable {
   func remove(_ ref: SecretRef) async throws -> Bool
 }
 
-/// Generic-password items in the login keychain under one service name. The data-protection keychain
-/// (access groups, no prompts) needs a provisioning profile and is adopted with signing in M6. On iOS
-/// every item lives in the data-protection keychain, readable after the first unlock and never migrated
-/// to another device.
+/// Generic-password items under one service name. On macOS they live in the file-based login keychain;
+/// the macOS data-protection keychain (access groups, no prompts) needs a provisioning profile and is
+/// adopted with Developer ID signing. On iOS every item lives in the data-protection keychain, readable
+/// after the first unlock and never migrated to another device; ad hoc signing ("Sign to Run Locally")
+/// is enough there (M8a Task 9 gate, Simulator), while an unsigned build fails with -34018.
 public struct KeychainSecretStore: SecretStore {
   public let service: String
 

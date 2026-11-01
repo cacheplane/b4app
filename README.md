@@ -183,7 +183,7 @@ The B4 live check needs a server you run yourself: a B4 project with one `agent(
 
 The hub (`Hub/`, a Rust service backed by PostgreSQL) mirrors conversations created in the app from a Mac to the iOS app, read-only (M8a, decisions D-043 to D-046). The phone shows threads and transcripts; it cannot write, send turns, or answer approvals yet (M8b, M8c). Only threads created in the app sync: nothing is read from `~/.codex`, `~/.claude`, or a B4 server's history, and connection credentials, executable paths, and local-server records never leave the Mac. The hub's wire reference is `Hub/API.md`.
 
-Start a local hub (needs Docker). Compose publishes port 8080 as `8080:8080`, which is every interface and plain HTTP, so use it on a trusted network or put TLS in front of it; the database is not published:
+Start a local hub (needs Docker). Compose publishes the hub as `127.0.0.1:8080:8080`: plain HTTP on the Mac's loopback interface only, which the Mac and the Simulator reach as `localhost` (any other device needs a hub behind TLS, since the clients refuse plain HTTP for any host but `localhost`); the database is not published:
 
 ```bash
 cd Hub && cp .env.example .env
@@ -221,7 +221,7 @@ Join the phone by entering the same hub URL, a second enrollment code, and a dev
 .build/debug/agent-workspace hub leave
 ```
 
-`hub status` shows the hub, this device, the account, and how many changes are still unsynced. `hub leave` revokes this device at the hub and stops pushing; what it already uploaded stays on the hub. While a Mac is joined, `db restore` is refused: leave first, restore, then join again. (`hub join`, `hub status`, and the push were exercised live in M8a; `hub leave`, the restore refusal, and history surviving a revoke are fixture-tested only.) On the phone, removing the app is the only way to disconnect for now, and it leaves the device unrevoked at the hub.
+`hub status` shows the hub, this device, the account, and how many changes are still unsynced. `hub leave` revokes this device at the hub and stops pushing; what it already uploaded stays on the hub. While a Mac is joined, `db restore` is refused: leave first, restore, then join again. A restore marks every restored change unsynced, so the next join uploads the restored history. (`hub join`, `hub status`, and the push were exercised live in M8a; `hub leave`, the restore refusal, and history surviving a revoke are fixture-tested only.) On the phone, removing the app is the only way to disconnect for now, and it leaves the device unrevoked at the hub.
 
 ## Layout
 

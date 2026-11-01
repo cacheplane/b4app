@@ -46,7 +46,7 @@ services:
     environment:
       DATABASE_URL: postgres://b4hub_app:${B4HUB_APP_PASSWORD:?set B4HUB_APP_PASSWORD in Hub/.env (see .env.example)}@db:5432/b4hub
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     # The hub drains open long-polls for up to B4HUB_SHUTDOWN_WAIT_MS (30 s); Compose's default
     # 10 s stop timeout would SIGKILL it first.
     stop_grace_period: 35s
