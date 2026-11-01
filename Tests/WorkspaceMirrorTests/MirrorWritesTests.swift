@@ -146,6 +146,21 @@ private func pulled(
     #expect(thread.nativeThreadId == "native-renamed")
   }
 
+  /// As the Mac's `merge`: an update of a row this mirror does not hold writes nothing, touches
+  /// nothing, keeps no clock, and is not counted as skipped.
+  @Test func anUpdateOfAMissingRowIsANoOp() throws {
+    let store = try linkedStore()
+    let batch = try store.apply([
+      change("threads", "missing", "update", column: "title", value: "x"),
+      change("threads", "missing", "update", column: "context", value: "/tmp"),
+      change("runtimeRequests", "missing", "update", column: "state", value: "resolved"),
+      change("projectFolders", "missing", "update", column: "projectId", value: "p1"),
+      change("connections", "missing", "update", column: "label", value: "x"),
+    ])
+    #expect(batch == AppliedBatch())
+    #expect(try store.columnClock(table: "threads", rowId: "missing", column: "title") == nil)
+  }
+
   @Test func ownChangeComingBackIsANoOp() throws {
     let store = try linkedStore()
     _ = try store.updateThread(id: "thread-1", title: "Phone", pinned: nil, archived: nil)

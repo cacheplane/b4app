@@ -163,7 +163,9 @@ extension MirrorStore {
     }
   }
 
-  /// How many edits wait to be uploaded (0 when the count cannot be read).
+  /// How many edits wait to be uploaded, for Diagnostics. It reads 0 when the count cannot be read, so
+  /// it must never decide whether a rebuild is safe: only `MirrorStoreError.needsRebuild(outboxEmpty:)`,
+  /// which counts an unreadable outbox as not empty, decides that.
   public var outboxCount: Int {
     let value = try? locked { try query(#"SELECT count(*) AS "n" FROM "outbox""#).first?["n"] }
     if case .integer(let count)? = value { return Int(count) }

@@ -197,6 +197,93 @@ private func writeVersion1File(_ path: String) throws {
     #expect(throws: MirrorStoreError.needsRebuild(outboxEmpty: true)) { try MirrorStore(path: path) }
   }
 
+  /// A file a newer build left: a v2 store with the link saved, then marked version 3, with the
+  /// sequence counter and outbox as given.
+  private func writeNewerFile(_ path: String, lastDeviceSeq: Int, outboxSeq: Int? = nil) throws {
+    do {
+      let store = try MirrorStore(path: path)
+      try store.saveLink(phoneLink)
+    }
+    let raw = try RawSQLite(path: path)
+    defer { raw.close() }
+    try raw.exec(#"UPDATE "syncState" SET "lastDeviceSeq" = \#(lastDeviceSeq) WHERE "id" = 1"#)
+    if let outboxSeq {
+      try raw.exec(
+        #"INSERT INTO "outbox" ("deviceSeq", "hlc", "table", "rowId", "op", "column", "value") "#
+          + #"VALUES (\#(outboxSeq), '019a396c76e8-0000-phone-1', 'threads', 'thread-1', 'update', 'title', '"x"')"#
+      )
+    }
+    try raw.exec("PRAGMA user_version = 3")
+  }
+
+  /// The first local write after a rebuild, on the fixture's thread.
+  private func firstWrite(_ store: MirrorStore) throws -> SyncChange {
+    _ = try store.apply(Array(try fixtureAsStored().prefix(2)))
+    _ = try store.updateThread(id: "thread-1", title: "After rebuild", pinned: nil, archived: nil)
+    return try #require(try store.outbox(limit: 10).first)
+  }
+
+  /// The link and the sequence counter survive a rebuild together: reusing a `deviceSeq` under the
+  /// same device id would make the hub drop the new edit as one it already accepted.
+  @Test(arguments: [(7, nil, 8), (7, 9, 10), (12, 9, 13)])
+  func rebuildKeepsTheLinkAndTheSequenceCounter(lastDeviceSeq: Int, outboxSeq: Int?, next: Int) throws {
+    let path = temporaryPath()
+    defer { MirrorStoreTests.remove(path) }
+    try writeNewerFile(path, lastDeviceSeq: lastDeviceSeq, outboxSeq: outboxSeq)
+    #expect(throws: MirrorStoreError.self) { try MirrorStore(path: path) }
+
+    let store = try MirrorStore.rebuild(path: path)
+    #expect(try store.link() == phoneLink)
+    #expect(store.outboxCount == 0)
+    let write = try firstWrite(store)
+    #expect(write.deviceSeq == next)
+    #expect(HLC(rawValue: write.hlc ?? "")?.deviceId == phoneLink.deviceId)
+    // And it is stored, not only held in memory.
+    let reopened = try MirrorStore(path: path)
+    #expect(try reopened.link() == phoneLink)
+  }
+
+  @Test func rebuildingAVersion1FileKeepsItsLinkAndCountsFromOne() throws {
+    let path = temporaryPath()
+    defer { MirrorStoreTests.remove(path) }
+    try writeVersion1File(path)
+    let store = try MirrorStore.rebuild(path: path)
+    #expect(try store.link() == phoneLink)
+    #expect(store.cursor == 0)
+    #expect(try firstWrite(store).deviceSeq == 1)
+  }
+
+  @Test func rebuildDropsTheLinkWhenTheCounterCannotBeRead() throws {
+    let path = temporaryPath()
+    defer { MirrorStoreTests.remove(path) }
+    do {
+      let raw = try RawSQLite(path: path)
+      defer { raw.close() }
+      let link = String(decoding: try JSONCoding.encoder.encode(phoneLink), as: UTF8.self)
+        .replacingOccurrences(of: "'", with: "''")
+      try raw.exec(#"CREATE TABLE "syncState" ("id" INTEGER PRIMARY KEY, "link" TEXT, "lastDeviceSeq")"#)
+      try raw.exec(#"INSERT INTO "syncState" VALUES (1, '\#(link)', 'seven')"#)
+      try raw.exec("PRAGMA user_version = 3")
+    }
+    let store = try MirrorStore.rebuild(path: path)
+    #expect(try store.link() == nil)
+    #expect(try firstWrite(store).deviceSeq == 1)
+  }
+
+  @Test func rebuildDropsTheLinkWhenTheOutboxHasNoSequenceColumn() throws {
+    let path = temporaryPath()
+    defer { MirrorStoreTests.remove(path) }
+    try writeNewerFile(path, lastDeviceSeq: 3)
+    do {
+      let raw = try RawSQLite(path: path)
+      defer { raw.close() }
+      try raw.exec(#"DROP TABLE "outbox""#)
+      try raw.exec(#"CREATE TABLE "outbox" ("seq" INTEGER PRIMARY KEY, "change" TEXT)"#)
+    }
+    let store = try MirrorStore.rebuild(path: path)
+    #expect(try store.link() == nil)
+  }
+
   @Test func rebuildReplacesTheFileWithAFreshOne() throws {
     let path = temporaryPath()
     defer { MirrorStoreTests.remove(path) }

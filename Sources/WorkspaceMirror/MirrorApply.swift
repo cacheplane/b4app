@@ -64,7 +64,8 @@ extension MirrorStore {
   enum Outcome {
     /// Not applied: an unknown table, column, or op, a missing value, or a violated constraint.
     case skipped
-    /// Every column it carried lost to a newer clock.
+    /// It wrote nothing: every column it carried lost to a newer clock, or it updates a row the mirror
+    /// does not hold.
     case unchanged
     case applied
   }
@@ -241,10 +242,10 @@ extension MirrorStore {
         try run(
           "UPDATE \(Self.quote(table)) SET \(Self.quote(column)) = ? WHERE \(Self.quote(key)) = ?",
           [bindable(value, table: table, column: column), .text(change.rowId)])
-        // A clock is kept only for a row that exists.
-        if clocked.contains(column), changedRows > 0 {
-          try advanceClock(table, change.rowId, column, to: hlc)
-        }
+        // A row this mirror does not hold: nothing written, nothing touched, no clock (as the Mac's
+        // `merge`, which skips an update of a row it does not have).
+        guard changedRows > 0 else { return .unchanged }
+        if clocked.contains(column) { try advanceClock(table, change.rowId, column, to: hlc) }
       case "delete":
         try run("DELETE FROM \(Self.quote(table)) WHERE \(Self.quote(key)) = ?", [.text(change.rowId)])
         try run(
