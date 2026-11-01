@@ -18,7 +18,7 @@ Target: the same MacBook Pro (macOS 26.5, Xcode 26.6), Docker 27.4.0 for the hub
 | Tests | `swift test` | Pass: 319 tests in 74 suites (262 before M8a) |
 | macOS app | `./Scripts/generate-project.sh`, then `xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO` | Pass |
 | iOS app | the same with `-scheme B4App-iOS -destination 'generic/platform=iOS Simulator'` | Pass |
-| CI | the `hub` job (Ubuntu, `postgres:17` service) | Green (recorded by the controller on the draft PR) |
+| CI | the `hub` job (Ubuntu, `postgres:17` service) | Recorded in the draft PR cacheplane/b4app#17 (base `design/m8-hub`), not here: the controller observed all three checks (Swift package job, the two app builds, the Ubuntu `hub` job) green at commit a6d9a2a (end of Task 6) and partially green on later heads; later heads, including the docs commit, were still pending when this was written. The final head's result is in the PR |
 | Image | `docker build` of `Hub/Dockerfile` on the build Mac, `linux/arm64` | Builds; runs as uid 10001; `docker compose ps` showed `hub` healthy after about 11 s (Task 5) |
 
 ### Live on this Mac (Task 9 gate)
@@ -50,9 +50,10 @@ Three things the gate found and Task 9 fixed in the same commit: an unsigned Sim
 ### Not exercised (open gates)
 
 - The owner's packaged Mac app joined to a hub; real Codex or Claude threads through a hub.
+- `hub leave`, the `database.restore` refusal while joined, uploaded history surviving a device revoke, the 1 MiB payload truncation, and the 401 suspension: `fixture-tested` only, never run live. The one revoke seen live was the Keychain-failure cleanup.
 - The Mac app's runtime after the `WorkspaceRootView` compact-column change: 319 tests and reading only, no click-through.
 - A hub behind TLS, a `linux/amd64` image, any deployment other than the Mac's Compose, and a restore of a hub from a PostgreSQL backup.
-- Rate limiting, byte-limited pull pages, and pruning (`resync_required` for a real stale cursor): not built.
+- Rate limiting, byte-limited pull pages, and pruning (`resync_required` for a real stale cursor; M8a answers it for a negative cursor only, fixture-tested and never seen live): not built.
 
 ### Known limitations
 

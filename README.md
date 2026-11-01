@@ -221,7 +221,7 @@ Join the phone by entering the same hub URL, a second enrollment code, and a dev
 .build/debug/agent-workspace hub leave
 ```
 
-`hub status` shows the hub, this device, the account, and how many changes are still unsynced. `hub leave` revokes this device at the hub and stops pushing; what it already uploaded stays on the hub. While a Mac is joined, `db restore` is refused: leave first, restore, then join again. On the phone, removing the app is the only way to disconnect for now, and it leaves the device unrevoked at the hub.
+`hub status` shows the hub, this device, the account, and how many changes are still unsynced. `hub leave` revokes this device at the hub and stops pushing; what it already uploaded stays on the hub. While a Mac is joined, `db restore` is refused: leave first, restore, then join again. (`hub join`, `hub status`, and the push were exercised live in M8a; `hub leave`, the restore refusal, and history surviving a revoke are fixture-tested only.) On the phone, removing the app is the only way to disconnect for now, and it leaves the device unrevoked at the hub.
 
 ## Layout
 
