@@ -307,6 +307,10 @@ private func clock(_ db: WorkspaceDatabase, _ table: String, _ rowId: String, _ 
 /// live, unlike `pg_stat_activity`, which a transaction snapshots once), then calls `whenBlocked` with
 /// that connection's pid and commits. Meanwhile `body` runs here, so it is the waiter. Returns `body`'s
 /// outcome and whether the wait was seen (giving up after ten seconds).
+///
+/// The holder runs on its own `Thread`, not a global dispatch queue: the caller blocks a Swift
+/// concurrency thread on a semaphore, and on a three-core CI runner three such tests used every thread
+/// GCD would grant at that priority, so queued holders never started and the whole suite hung.
 private func interleave<T>(
   _ db: WorkspaceDatabase, holding: @escaping @Sendable (PostgresConnection) throws -> Void,
   whenBlocked: @escaping @Sendable (PostgresConnection, Int) throws -> Void = { _, _ in },
@@ -316,7 +320,7 @@ private func interleave<T>(
   let done = DispatchSemaphore(value: 0)
   let blocked = Mutex(false)
   let failure = Mutex<String?>(nil)
-  DispatchQueue.global().async {
+  Thread {
     do {
       try db.write { c in
         try holding(c)
@@ -340,7 +344,7 @@ private func interleave<T>(
       held.signal()
     }
     done.signal()
-  }
+  }.start()
   held.wait()
   let result = Result { try body() }
   done.wait()
@@ -399,14 +403,15 @@ extension RemoteApplyTests {
       [remote(phone, pulled, "threads", "t1", column: "title", value: "Phone title")],
       ownDeviceId: mac, macDeviceIds: [mac], cursor: 1
     ) { c in
-      DispatchQueue.global().async {
+      // Its own thread, for the reason `interleave` gives.
+      Thread {
         do {
           _ = try db.updateThread(id: "t1") { $0.title = "Mac title" }
         } catch {
           localFailure.withLock { $0 = String(describing: error) }
         }
         localDone.signal()
-      }
+      }.start()
       // Hold the batch until the local edit is seen waiting on it (or, were it not made to wait, done).
       let me = try c.execute("SELECT pg_backend_pid() AS \"pid\"").rows.first?.int("pid") ?? 0
       let deadline = Date().addingTimeInterval(10)
