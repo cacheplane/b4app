@@ -35,6 +35,12 @@ ALTER TABLE changes ALTER COLUMN hlc SET NOT NULL;
 -- clock and cannot be trusted for that). Changes already held count as received at migration.
 ALTER TABLE changes ADD COLUMN received_at timestamptz NOT NULL DEFAULT now();
 
+-- The size of the change's `value` in bytes, as PostgreSQL renders the jsonb (`octet_length` of
+-- its text form; 0 when there is none). A push stores it with the row, so a pull finds where an
+-- 8 MiB page ends from sizes alone and reads `value` only for the rows inside the page.
+ALTER TABLE changes ADD COLUMN value_bytes integer NOT NULL DEFAULT 0;
+UPDATE changes SET value_bytes = COALESCE(octet_length(value::text), 0);
+
 DO $$
 DECLARE
     spec text[];

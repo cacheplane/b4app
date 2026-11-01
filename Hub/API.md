@@ -61,7 +61,7 @@ answer the same generic `404 not_found`.
 | Change `value` | 2 MiB (2,097,152 bytes of its serialised JSON) | each change in a push; over it, that change is rejected (`rejected: [{deviceSeq, code: "payload_too_large"}]`) and not stored, and the rest of the batch lands |
 | Push body | 32 MiB | `POST /v1/changes`; over it, `413 payload_too_large` |
 | `MAX_PUSH_CHANGES` | 1000 changes | one push; over it, `400 invalid_request` |
-| Pull page | 1000 changes (`limit` is clamped to 1 to 1000; default 1000), and 8 MiB (8,388,608 bytes) of serialised `value` JSON summed over the page; whichever comes first, and always at least one change | `GET /v1/changes` |
+| Pull page | 1000 changes (`limit` is clamped to 1 to 1000; default 1000), and 8 MiB (8,388,608 bytes) of `value` summed over the page (each sized when pushed, as PostgreSQL's `jsonb` text, a few bytes more than compact JSON); whichever comes first, and always at least one change | `GET /v1/changes` |
 | Retention | `B4HUB_RETENTION_DAYS`, default 30 | how long the hub keeps the change log (see *Horizon*) |
 | Long-poll `wait` | 25 seconds | `GET /v1/changes`; a larger `wait` is clamped to 25 |
 | Other request bodies | 2 MiB (axum's default) | `POST /v1/enroll` |
@@ -276,17 +276,21 @@ A non-numeric value for any of the three is `400 invalid_request`. Unknown param
 {"changes": [ <StoredChange>, ... ], "next": 12, "more": false}
 ```
 
-- `next` is the cursor for the next request: the last returned `hubSeq`, or the requested `after`
-  when the page is empty. Always pass it back as `after`.
+- `next` is the cursor for the next request; always pass it back as `after`. When `more` is true
+  it is the last returned `hubSeq`. Otherwise the page reached the end of your feed and `next` is
+  the highest `hubSeq` the org has recorded (at least the requested `after`), even when that is
+  another user's change: none of yours lies in between, because pushes commit in `hubSeq` order.
+  So a user with nothing new still moves forward and is not left behind the retention horizon by
+  other users' activity.
 - `more` is `true` when another page follows immediately; ask again with `wait=0`. A page ends
   early, with `more` true, when it holds `limit` changes or when adding the next change would take
-  the page's summed `value` sizes (serialised JSON bytes, 0 for no value) past 8 MiB; it always
+  the page's summed `value` sizes (as stored with each change, 0 for no value) past 8 MiB; it always
   holds at least one change, so a page of one 2 MiB change still makes progress.
 
 **Long-poll.** With `wait > 0` and nothing newer than `after`, the hub holds the request until a
 push to the same org commits, `wait` seconds pass (never more than 25), or the hub begins to shut
 down, and then answers with whatever the feed holds at that moment. That may be an empty page
-(`changes: []`, `next` equal to `after`): a push by another user of the org wakes the poll without
+(`changes: []`, `next` at least `after`): a push by another user of the org wakes the poll without
 adding anything visible to this user, and a timeout is simply an empty page. Clients repeat the
 request with the same cursor. The hub registers the waiter before it checks the feed, so a push
 that commits between the check and the wait cannot be missed.

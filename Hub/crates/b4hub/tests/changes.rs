@@ -309,9 +309,10 @@ async fn pull_pages_and_long_polls(pool: PgPool) {
     let (status, theirs) = send(&state, "GET", "/v1/changes?after=0", Some(&other), None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(theirs["changes"], json!([]));
+    // Their cursor still advances to the org's newest change (13), which is none of theirs.
     assert_eq!(
         (theirs["next"].clone(), theirs["more"].clone()),
-        (json!(0), json!(false))
+        (json!(13), json!(false))
     );
 }
 

@@ -24,7 +24,6 @@ use b4hub_core::change::{
 pub use b4hub_core::change::{Page, StoredChange};
 use b4hub_core::hlc::Hlc;
 use b4hub_core::writable::{is_clocked, is_phone_writable};
-use futures_util::TryStreamExt;
 use serde_json::Value;
 use sqlx::postgres::PgConnection;
 use sqlx::types::Uuid;
@@ -177,8 +176,9 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
         let recorded: Option<i64> = sqlx::query_scalar(
             "INSERT INTO changes \
                  (org_id, device_id, device_seq, user_id, wall, \"table\", row_id, op, \"column\", \
-                  value, hlc) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+                  value, hlc, value_bytes) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, \
+                     COALESCE(octet_length($10::jsonb::text), 0)) \
              ON CONFLICT (org_id, device_id, device_seq) DO NOTHING \
              RETURNING hub_seq",
         )
@@ -261,54 +261,123 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
 /// second device of the same user sees the first one's changes, and another user of the org sees
 /// none of them.
 ///
+/// `next` is the cursor for the following request. A page cut short ends at its last change. A
+/// page that reaches the end of the user's feed (`more` false) advances `next` to the highest
+/// `hubSeq` the org has, other users' included: nothing of this user's lies between, because
+/// pushes commit in `hubSeq` order, so a reader that is idle while the org is busy is not left
+/// behind a horizon that other users' pruned changes moved.
+///
 /// A cursor below the org's horizon (the feed was pruned past it) is [`Error::ResyncRequired`].
 /// The horizon and the rows are read in one snapshot, so a prune cannot slip between them and
 /// leave the reader silently missing the rows it deleted.
 pub async fn pull(db: &Db, auth: &AuthedDevice, after: i64, limit: usize) -> Result<Page> {
+    pull_within(db, auth, after, limit, MAX_PAGE_BYTES).await
+}
+
+/// [`pull`] with the page's byte budget given, so tests can reach the cut with small values.
+pub async fn pull_within(
+    db: &Db,
+    auth: &AuthedDevice,
+    after: i64,
+    limit: usize,
+    max_bytes: usize,
+) -> Result<Page> {
     let limit = limit.clamp(1, MAX_PULL_LIMIT);
     let mut tx = db.read_tx(auth.org_id).await?;
     if after < horizon(&mut tx, auth.org_id).await? {
         return Err(Error::ResyncRequired);
     }
 
-    // Rows stream in, so a page that stops early at the byte limit never holds more than the
-    // one row that did not fit. One extra row says whether another page follows.
-    let mut changes: Vec<StoredChange> = Vec::new();
-    let mut more = false;
-    {
-        let mut rows = sqlx::query_as::<_, Row>(
+    // Where the page ends is decided from the stored sizes alone; `value` is read, below, only
+    // for the rows inside the cut.
+    let cut = page_cut(&mut tx, auth, after, limit, max_bytes).await?;
+    let rows: Vec<Row> = if cut.hub_seqs.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as(
             "SELECT hub_seq, device_id, device_seq, wall, \"table\" AS table_name, row_id, op, \
                     \"column\" AS column_name, value, hlc \
              FROM changes \
-             WHERE org_id = $1 AND user_id = $2 AND hub_seq > $3 \
-             ORDER BY hub_seq \
-             LIMIT $4",
+             WHERE org_id = $1 AND user_id = $2 AND hub_seq = ANY($3) \
+             ORDER BY hub_seq",
         )
         .bind(auth.org_id)
         .bind(auth.user_id)
-        .bind(after)
-        .bind(limit as i64 + 1)
-        .fetch(&mut *tx);
-        let mut bytes = 0usize;
-        while let Some(row) = rows.try_next().await? {
-            let stored = row.into_stored()?;
-            if changes.len() == limit
-                || (!changes.is_empty() && bytes + stored.value_bytes() > MAX_PAGE_BYTES)
-            {
-                more = true;
-                break;
-            }
-            bytes += stored.value_bytes();
-            changes.push(stored);
+        .bind(&cut.hub_seqs)
+        .fetch_all(&mut *tx)
+        .await?
+    };
+    let changes = rows
+        .into_iter()
+        .map(Row::into_stored)
+        .collect::<Result<Vec<_>>>()?;
+    let next = match changes.last() {
+        Some(last) if cut.more => last.hub_seq,
+        _ => {
+            let newest: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(max(hub_seq), 0) FROM changes WHERE org_id = $1",
+            )
+            .bind(auth.org_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            newest.max(after)
         }
-    }
+    };
     tx.commit().await?;
-
-    let next = changes.last().map_or(after, |c| c.hub_seq);
     Ok(Page {
         changes,
         next,
-        more,
+        more: cut.more,
+    })
+}
+
+/// Which changes a page holds, found without reading any `value`.
+struct PageCut {
+    /// The `hub_seq`s inside the page, oldest first.
+    hub_seqs: Vec<i64>,
+    /// True when the user's feed has changes beyond the page.
+    more: bool,
+}
+
+/// The cut of the user's feed after `after`: the first `limit` changes whose running sum of
+/// stored `value_bytes` stays within `max_bytes`, and always the first. Reads at most `limit + 1`
+/// index entries and no `value`, `hlc`, or row id: the extra entry says whether more follows.
+async fn page_cut(
+    tx: &mut Transaction<'_, Postgres>,
+    auth: &AuthedDevice,
+    after: i64,
+    limit: usize,
+    max_bytes: usize,
+) -> Result<PageCut> {
+    // The running sum is non-decreasing, so the rows within budget are a prefix.
+    let entries: Vec<(i64, bool)> = sqlx::query_as(
+        "SELECT hub_seq, (n <= $4 AND (n = 1 OR running <= $5)) AS inside \
+         FROM ( \
+             SELECT hub_seq, \
+                    row_number() OVER feed AS n, \
+                    sum(value_bytes) OVER feed AS running \
+             FROM changes \
+             WHERE org_id = $1 AND user_id = $2 AND hub_seq > $3 \
+             WINDOW feed AS (ORDER BY hub_seq) \
+             ORDER BY hub_seq \
+             LIMIT $4 + 1 \
+         ) page \
+         ORDER BY hub_seq",
+    )
+    .bind(auth.org_id)
+    .bind(auth.user_id)
+    .bind(after)
+    .bind(limit as i64)
+    .bind(i64::try_from(max_bytes).unwrap_or(i64::MAX))
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(PageCut {
+        more: entries.iter().any(|(_, inside)| !inside),
+        hub_seqs: entries
+            .into_iter()
+            .filter(|(_, inside)| *inside)
+            .map(|(hub_seq, _)| hub_seq)
+            .collect(),
     })
 }
 

@@ -442,7 +442,9 @@ async fn pull_pages_and_is_scoped_to_the_user(pool: PgPool) {
     // Another user in the same org sees none of it.
     let theirs = changes::pull(&app, &other, 0, 1000).await.unwrap();
     assert!(theirs.changes.is_empty());
-    assert_eq!(theirs.next, 0);
+    // Their feed is empty, but the cursor still moves to the org's newest change: nothing of
+    // theirs lies before it.
+    assert_eq!(theirs.next, 12);
 
     // The same device id's rows are the device's own: the feed is scoped by user, so a second
     // device of the same user would see this device's changes.
@@ -1266,8 +1268,8 @@ async fn migration_backfills_clocks_and_owners(pool: PgPool) {
     }
     // A change with a negative wall, as Hlc::derived treats it.
     sqlx::query(
-        "INSERT INTO changes (org_id, device_id, device_seq, user_id, wall, \"table\", row_id, op) \
-         VALUES ($1, $2, 10, $3, -5, 'connections', 'c1', 'insert')",
+        "INSERT INTO changes (org_id, device_id, device_seq, user_id, wall, \"table\", row_id, op, value) \
+         VALUES ($1, $2, 10, $3, -5, 'connections', 'c1', 'insert', '{\"id\": \"c1\", \"label\": \"é\"}')",
     )
     .bind(org)
     .bind(dev_a)
@@ -1317,6 +1319,23 @@ async fn migration_backfills_clocks_and_owners(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(negative, Hlc::derived(-5, &dev_a.to_string()).to_string());
+    // The size of a change's value is backfilled as PostgreSQL's jsonb text (bytes, not
+    // characters: the é is two); a change with no value is 0.
+    let sizes: Vec<(i64, i32)> =
+        sqlx::query_as("SELECT device_seq, value_bytes FROM changes WHERE user_id = $1 ORDER BY 1")
+            .bind(user)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(
+        sizes,
+        vec![
+            (1, 0),
+            (2, 0),
+            (3, 0),
+            (10, "{\"id\": \"c1\", \"label\": \"é\"}".len() as i32)
+        ]
+    );
     let clocks: Vec<String> = sqlx::query_scalar(
         "SELECT hlc FROM changes WHERE user_id = $1 AND \"table\" = 'threads' ORDER BY device_seq",
     )
@@ -1405,38 +1424,153 @@ async fn a_page_always_holds_its_first_row_and_stops_at_a_thousand_rows(pool: Pg
     assert_eq!((last.changes.len(), last.more, last.next), (1, false, 1001));
 }
 
-/// The synced rows of `who`'s user as the snapshot should carry them: every table in dependency
-/// order, each row's Mac columns, keyed by `(table, row id)`.
-async fn materialised(app: &Db, who: &AuthedDevice) -> Vec<(String, String, Value)> {
-    let mut tx = app.tenant_tx(who.org_id).await.unwrap();
-    let mut rows = Vec::new();
-    for name in SYNCED_TABLES {
-        let spec = table_spec(name).unwrap();
-        let found: Vec<(String, Value)> = sqlx::query_as(&format!(
-            "SELECT \"{key}\"::text, to_jsonb(t) - '{{org_id,user_id,device_id,owner_device_id}}'::text[] \
-             FROM \"{name}\" t WHERE org_id = $1 AND user_id = $2 ORDER BY \"{key}\" COLLATE \"C\"",
-            key = spec.key
-        ))
-        .bind(who.org_id)
-        .bind(who.user_id)
-        .fetch_all(&mut *tx)
-        .await
-        .unwrap();
-        rows.extend(found.into_iter().map(|(id, v)| (name.to_string(), id, v)));
+/// What `batch` (pushed by one macOS device, in order) leaves in the mirror, worked out from the
+/// changes themselves rather than read back from the database: per table, the rows by id with
+/// every Mac column (absent ones null, the scrubbed connection columns null), updates applied,
+/// deleted rows gone.
+fn expected_rows(batch: &[Change]) -> Vec<(String, String, Value)> {
+    let mut rows: std::collections::BTreeMap<(usize, String), serde_json::Map<String, Value>> =
+        Default::default();
+    for change in batch {
+        let table = SYNCED_TABLES
+            .iter()
+            .position(|t| *t == change.table)
+            .unwrap();
+        let spec = table_spec(&change.table).unwrap();
+        let key = (table, change.row_id.clone());
+        match change.op {
+            ChangeOp::Insert => {
+                let sent = change.value.as_ref().unwrap().as_object().unwrap();
+                let row = spec
+                    .columns
+                    .iter()
+                    .map(|column| {
+                        let scrubbed = change.table == "connections"
+                            && ["authReference", "localServerId", "target"].contains(column);
+                        let value = if scrubbed {
+                            Value::Null
+                        } else {
+                            sent.get(*column).cloned().unwrap_or(Value::Null)
+                        };
+                        (column.to_string(), value)
+                    })
+                    .collect();
+                rows.insert(key, row);
+            }
+            ChangeOp::Update => {
+                let column = change.column.clone().unwrap();
+                rows.get_mut(&key)
+                    .unwrap()
+                    .insert(column, change.value.clone().unwrap_or(Value::Null));
+            }
+            ChangeOp::Delete => {
+                rows.remove(&key);
+            }
+        }
     }
-    tx.commit().await.unwrap();
-    rows
+    rows.into_iter()
+        .map(|((table, id), row)| (SYNCED_TABLES[table].to_string(), id, Value::Object(row)))
+        .collect()
+}
+
+/// The highest clock among `batch`'s changes that set a clocked column of `table.row`, per column:
+/// an insert sets every clocked column it carries, an update the one it names. The greatest
+/// always wins, so this is the clock the hub should hold.
+fn expected_clocks(batch: &[Change]) -> Vec<(String, String, String, String)> {
+    let mut clocks: std::collections::BTreeMap<(String, String, String), String> =
+        Default::default();
+    for change in batch {
+        let columns: Vec<String> = match change.op {
+            ChangeOp::Insert => change
+                .value
+                .as_ref()
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .keys()
+                .filter(|c| b4hub_core::writable::is_clocked(&change.table, c))
+                .cloned()
+                .collect(),
+            ChangeOp::Update => change
+                .column
+                .iter()
+                .filter(|c| b4hub_core::writable::is_clocked(&change.table, c))
+                .cloned()
+                .collect(),
+            ChangeOp::Delete => {
+                // The hub drops a deleted row's clocks with it.
+                clocks.retain(|(table, row, _), _| {
+                    !(*table == change.table && *row == change.row_id)
+                });
+                Vec::new()
+            }
+        };
+        for column in columns {
+            let key = (change.table.clone(), change.row_id.clone(), column);
+            let hlc = change.hlc.clone().unwrap();
+            if clocks
+                .get(&key)
+                .is_none_or(|kept| kept.as_str() < hlc.as_str())
+            {
+                clocks.insert(key, hlc);
+            }
+        }
+    }
+    clocks
+        .into_iter()
+        .map(|((table, row, column), hlc)| (table, row, column, hlc))
+        .collect()
+}
+
+/// The fixture plus a project, its folder, and the thread moved into it, each with an explicit
+/// clock so the snapshot's clocks can be worked out from what was sent.
+fn fixture_with_projects(device: &AuthedDevice) -> Vec<Change> {
+    let clock = |ms_hex: &str| Some(format!("{ms_hex}-0000-{}", device.device_id));
+    let mut batch = common::filtered_fixture();
+    let mut project = insert(
+        13,
+        "projects",
+        "proj-1",
+        json!({"id": "proj-1", "name": "b4app", "manual": false,
+               "createdAt": "2026-10-31T12:00:00Z", "updatedAt": "2026-10-31T12:00:00Z"}),
+    );
+    project.hlc = clock("019a396ca5c8");
+    let mut folder = insert(
+        14,
+        "projectFolders",
+        "folder-1",
+        json!({"id": "folder-1", "projectId": "proj-1", "path": "/Users/brian/repos/b4app",
+               "createdAt": "2026-10-31T12:00:00Z"}),
+    );
+    folder.hlc = clock("019a396ca9b0");
+    let mut moved = update(
+        15,
+        "threads",
+        "thread-1",
+        "projectId",
+        Some(json!("proj-1")),
+    );
+    moved.hlc = clock("019a396cad98");
+    let mut renamed = update(
+        16,
+        "projects",
+        "proj-1",
+        "name",
+        Some(json!("Personal Agent")),
+    );
+    renamed.hlc = clock("019a396cb180");
+    batch.extend([project, folder, moved, renamed]);
+    batch
 }
 
 #[sqlx::test(migrations = false)]
 async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
     let (admin, app) = common::migrated(&pool).await;
     let device = common::enrolled(&admin, &app, "blove").await;
-    push_through(&app, &device, &common::filtered_fixture())
-        .await
-        .unwrap();
-    let expected = materialised(&app, &device).await;
-    assert!(!expected.is_empty());
+    let batch = fixture_with_projects(&device);
+    push_through(&app, &device, &batch).await.unwrap();
+    let last = batch.len() as i64;
+    assert_eq!(last, 16);
 
     // Nothing is older than a day, so nothing is pruned and the horizon stays put.
     let kept = b4hub_db::prune::prune(&app, device.org_id, Duration::from_secs(86_400))
@@ -1449,15 +1583,15 @@ async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
             .unwrap()
             .changes
             .len(),
-        12
+        16
     );
 
     // Everything is older than "now".
     let horizon = b4hub_db::prune::prune(&app, device.org_id, Duration::ZERO)
         .await
         .unwrap();
-    assert_eq!(horizon, 12);
-    for after in [0, 3, 11] {
+    assert_eq!(horizon, last);
+    for after in [0, 3, 15] {
         let error = changes::pull(&app, &device, after, 1000).await.unwrap_err();
         assert!(
             matches!(error, b4hub_db::Error::ResyncRequired),
@@ -1466,14 +1600,39 @@ async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
     }
 
     let snapshot = b4hub_db::snapshot::take(&app, &device).await.unwrap();
-    assert_eq!(snapshot.next, 12);
-    // Synthetic inserts, hubSeq 0, in dependency order, equal to the materialised tables.
+    assert_eq!(snapshot.next, last);
+    // Synthetic inserts in dependency order, equal to what the pushed changes leave behind.
     let got: Vec<(String, String, Value)> = snapshot
         .changes
         .iter()
         .map(|c| (c.table.clone(), c.row_id.clone(), c.value.clone().unwrap()))
         .collect();
+    let expected = expected_rows(&batch);
     assert_eq!(got, expected);
+    let tables: Vec<&str> = got.iter().map(|(t, _, _)| t.as_str()).collect();
+    for table in [
+        "connections",
+        "projects",
+        "projectFolders",
+        "threads",
+        "turns",
+    ] {
+        assert!(tables.contains(&table), "{table}");
+    }
+    // The thread moved into the project, the project was renamed.
+    let find = |table: &str, id: &str| {
+        got.iter()
+            .find(|(t, i, _)| t == table && i == id)
+            .map(|(_, _, v)| v.clone())
+            .unwrap()
+    };
+    assert_eq!(find("threads", "thread-1")["projectId"], "proj-1");
+    assert_eq!(find("threads", "thread-1")["title"], "Renamed");
+    assert_eq!(find("projects", "proj-1")["name"], "Personal Agent");
+    assert_eq!(
+        find("projectFolders", "folder-1")["path"],
+        "/Users/brian/repos/b4app"
+    );
     for change in &snapshot.changes {
         assert_eq!(change.hub_seq, 0);
         assert_eq!(change.op, ChangeOp::Insert);
@@ -1484,58 +1643,54 @@ async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
             assert!(!value.contains_key(hub_column), "{hub_column}");
         }
     }
-    let order: Vec<usize> = snapshot
-        .changes
-        .iter()
-        .map(|c| SYNCED_TABLES.iter().position(|t| *t == c.table).unwrap())
-        .collect();
-    assert!(order.windows(2).all(|w| w[0] <= w[1]), "{order:?}");
 
-    // A row with clocked columns carries the greatest of its column clocks; one without carries
-    // the zero clock of its owner.
-    let thread = snapshot
-        .changes
-        .iter()
-        .find(|c| c.table == "threads")
-        .unwrap();
-    let mut tx = app.tenant_tx(device.org_id).await.unwrap();
-    let greatest: String = sqlx::query_scalar(
-        "SELECT max(hlc COLLATE \"C\") FROM column_clocks WHERE \"table\" = 'threads' AND row_id = 'thread-1'",
-    )
-    .fetch_one(&mut *tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(thread.hlc, greatest);
-    let connection = snapshot
-        .changes
-        .iter()
-        .find(|c| c.table == "connections")
-        .unwrap();
-    assert_eq!(
-        connection.hlc,
-        format!("000000000000-0000-{}", device.device_id)
-    );
-    // Every clock of the user's rows is listed, with the table, row, and column.
-    assert!(snapshot
+    // The clocks are the greatest clock sent for each clocked column of a surviving row, and a row
+    // carries the greatest of its columns' (or the zero clock of its owner if it has none).
+    let order = |table: &str| SYNCED_TABLES.iter().position(|t| *t == table).unwrap();
+    let mut want = expected_clocks(&batch);
+    want.sort_by(|a, b| (order(&a.0), &a.1, &a.2).cmp(&(order(&b.0), &b.1, &b.2)));
+    let have: Vec<_> = snapshot
         .clocks
         .iter()
-        .any(|c| c.table == "threads" && c.row_id == "thread-1" && c.column == "title"));
-    assert!(snapshot.clocks.iter().all(|c| !c.hlc.is_empty()));
+        .map(|c| {
+            (
+                c.table.clone(),
+                c.row_id.clone(),
+                c.column.clone(),
+                c.hlc.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(have, want);
+    assert!(have.iter().any(|c| c.0 == "projects" && c.2 == "name"));
+    for change in &snapshot.changes {
+        let greatest = want
+            .iter()
+            .filter(|c| c.0 == change.table && c.1 == change.row_id)
+            .map(|c| c.3.clone())
+            .max();
+        assert_eq!(
+            change.hlc,
+            greatest.unwrap_or(format!("000000000000-0000-{}", device.device_id)),
+            "{} {}",
+            change.table,
+            change.row_id
+        );
+    }
 
     // The snapshot's `next` is a valid cursor again, and the log is empty beyond it.
     let after = changes::pull(&app, &device, snapshot.next, 1000)
         .await
         .unwrap();
     assert!(after.changes.is_empty());
-    assert_eq!((after.next, after.more), (12, false));
+    assert_eq!((after.next, after.more), (last, false));
 
     // New pushes land after the horizon and are served from it.
     push_through(
         &app,
         &device,
         &[update(
-            13,
+            17,
             "threads",
             "thread-1",
             "title",
@@ -1548,7 +1703,7 @@ async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(after.changes.len(), 1);
-    assert_eq!(after.changes[0].hub_seq, 13);
+    assert_eq!(after.changes[0].hub_seq, last + 1);
 }
 
 #[sqlx::test(migrations = false)]
@@ -1715,4 +1870,113 @@ fn small(seq: i64) -> Change {
         &format!("c-{seq}"),
         json!({"id": format!("c-{seq}"), "kind": "codex"}),
     )
+}
+
+/// The sizes a push stores, as PostgreSQL's jsonb text, are what the page budget sums.
+#[sqlx::test(migrations = false)]
+async fn push_stores_each_values_size(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let device = common::enrolled(&admin, &app, "blove").await;
+    let mut batch = common::filtered_fixture();
+    batch.push(insert(
+        13,
+        "connections",
+        "multibyte",
+        json!({"id": "multibyte", "label": "é\u{1F600}"}),
+    ));
+    push_through(&app, &device, &batch).await.unwrap();
+
+    let mut tx = app.tenant_tx(device.org_id).await.unwrap();
+    let disagreeing: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM changes WHERE value_bytes <> COALESCE(octet_length(value::text), 0)",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    let sizes: Vec<i32> = sqlx::query_scalar("SELECT value_bytes FROM changes ORDER BY hub_seq")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(disagreeing, 0);
+    // The delete carries no value; the multibyte value counts bytes, not characters.
+    assert_eq!(sizes[11], 0);
+    assert_eq!(
+        sizes[12],
+        r#"{"id": "multibyte", "label": "é😀"}"#.len() as i32
+    );
+    assert!(sizes[..11].iter().all(|bytes| *bytes > 0));
+}
+
+/// Where a page ends is decided from the stored sizes, not from the values: with the stored size
+/// of every row after the second set far above the budget, the page stops there although the
+/// values themselves are tiny. A page that read `value` to measure it would hold all of them.
+#[sqlx::test(migrations = false)]
+async fn the_cut_comes_from_stored_sizes_and_not_from_reading_values(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let device = common::enrolled(&admin, &app, "blove").await;
+    let rows: Vec<Change> = (1..=20).map(small).collect();
+    push_through(&app, &device, &rows).await.unwrap();
+    let mut tx = app.tenant_tx(device.org_id).await.unwrap();
+    sqlx::query("UPDATE changes SET value_bytes = 600 WHERE hub_seq >= 3")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    // Budget 1000: row 1 and 2 are tiny (running well under), row 3 brings it to 600 + ..., row 4
+    // passes 1000.
+    let page = changes::pull_within(&app, &device, 0, 1000, 1000)
+        .await
+        .unwrap();
+    let seqs: Vec<i64> = page.changes.iter().map(|c| c.hub_seq).collect();
+    assert_eq!(seqs, vec![1, 2, 3]);
+    assert!(page.more);
+    assert_eq!(page.next, 3);
+
+    // Whatever the budget, the first row is in.
+    let page = changes::pull_within(&app, &device, 0, 1000, 0)
+        .await
+        .unwrap();
+    assert_eq!(page.changes.len(), 1);
+    assert!(page.more);
+    let page = changes::pull_within(&app, &device, 5, 1000, 1000)
+        .await
+        .unwrap();
+    assert_eq!(page.changes.len(), 1);
+    assert_eq!((page.changes[0].hub_seq, page.next), (6, 6));
+}
+
+#[sqlx::test(migrations = false)]
+async fn an_idle_users_cursor_follows_the_org_past_other_users_changes(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let idle = common::enrolled(&admin, &app, "alice").await;
+    let busy = common::enrolled(&admin, &app, "bob").await;
+    let rows: Vec<Change> = (1..=5).map(small).collect();
+    push_through(&app, &busy, &rows).await.unwrap();
+
+    // Alice has nothing, but her cursor moves to the end of what the org has recorded.
+    let page = changes::pull(&app, &idle, 0, 1000).await.unwrap();
+    assert!(page.changes.is_empty());
+    assert_eq!((page.next, page.more), (5, false));
+
+    // Bob's changes are pruned: Alice's cursor is not behind the horizon, so no resync.
+    let mut tx = app.tenant_tx(busy.org_id).await.unwrap();
+    sqlx::query("UPDATE changes SET received_at = now() - interval '2 days'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let horizon = b4hub_db::prune::prune(&app, idle.org_id, Duration::from_secs(86_400))
+        .await
+        .unwrap();
+    assert_eq!(horizon, 5);
+    let page = changes::pull(&app, &idle, page.next, 1000).await.unwrap();
+    assert!(page.changes.is_empty());
+    assert_eq!(page.next, 5);
+    // A cursor that stayed at 0 is behind the horizon, as before.
+    assert!(matches!(
+        changes::pull(&app, &idle, 0, 1000).await,
+        Err(b4hub_db::Error::ResyncRequired)
+    ));
 }

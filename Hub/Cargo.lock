@@ -177,7 +177,6 @@ version = "0.1.0"
 dependencies = [
  "b4hub-core",
  "base64",
- "futures-util",
  "getrandom 0.4.3",
  "hmac",
  "percent-encoding",
