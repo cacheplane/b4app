@@ -31,6 +31,24 @@ extension WorkspaceDatabase {
     }
   }
 
+  /// The oldest unsynced changes, in `seq` order.
+  public func unsyncedChanges(limit: Int) throws -> [ChangeRecord] {
+    try read {
+      try all(
+        $0, ChangeRecord.self,
+        "SELECT * FROM \"changes\" WHERE NOT \"synced\" ORDER BY \"seq\" LIMIT $1::int", [String(limit)])
+    }
+  }
+
+  /// Mark every change up to and including `seq` as synced (the hub accepted through it).
+  public func markSynced(through seq: Int) throws {
+    try write {
+      _ = try $0.execute(
+        "UPDATE \"changes\" SET \"synced\" = true WHERE \"seq\" <= $1::bigint AND NOT \"synced\"",
+        [String(seq)])
+    }
+  }
+
   public func unsyncedChangeCount() throws -> Int {
     try read {
       try $0.execute("SELECT count(*) AS \"n\" FROM \"changes\" WHERE NOT \"synced\"").rows.first?.int("n")

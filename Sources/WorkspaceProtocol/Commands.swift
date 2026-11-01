@@ -38,6 +38,9 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case databaseBackup = "database.backup"
   case databaseRestore = "database.restore"
   case databaseImportSQLite = "database.importSqlite"
+  case hubJoin = "hub.join"
+  case hubStatus = "hub.status"
+  case hubLeave = "hub.leave"
 
   public var isMutation: Bool {
     switch self {
@@ -47,11 +50,11 @@ public enum Method: String, Codable, Sendable, CaseIterable {
       .serverRestart,
       .serverStop, .serverInspect, .workspaceStopLocalWork, .workspaceReconcile, .databaseBackup,
       .databaseRestore,
-      .databaseImportSQLite:
+      .databaseImportSQLite, .hubJoin, .hubLeave:
       return true
     case .systemPing, .diagnosticsRead, .connectionList, .threadList, .draftRead, .eventsSnapshot,
       .eventsReplay, .threadRead, .serverList, .serverStatus, .serverLogs, .workspaceActiveWork,
-      .databaseStatus:
+      .databaseStatus, .hubStatus:
       return false
     }
   }
@@ -706,6 +709,66 @@ public enum DatabaseImportSQLite: WorkspaceCommand {
     public init(rows: [String: Int]) { self.rows = rows }
   }
   public static let method = Method.databaseImportSQLite
+}
+
+// MARK: - Hub (M8a)
+
+/// Join a hub with a one-time enrollment code. The code travels only over the local socket, as
+/// `credential.add` carries values; it is never echoed in the result, an event, or a log.
+public enum HubJoin: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var url: String
+    public var code: String
+    /// Defaults to the Mac's name.
+    public var deviceName: String?
+    public init(url: String, code: String, deviceName: String? = nil) {
+      self.url = url
+      self.code = code
+      self.deviceName = deviceName
+    }
+  }
+  public typealias Result = HubStatus.Result
+  public static let method = Method.hubJoin
+}
+
+/// Whether this Mac has joined a hub, as whom, and how much of its change log is still unpushed.
+public enum HubStatus: WorkspaceCommand {
+  public typealias Params = EmptyParams
+  public struct Result: Codable, Sendable, Equatable {
+    public var joined: Bool
+    public var url: String?
+    public var deviceId: String?
+    public var deviceName: String?
+    public var orgSlug: String?
+    public var username: String?
+    public var unsyncedChanges: Int
+    public var lastPushAt: String?
+    public var lastError: String?
+    public init(
+      joined: Bool, url: String? = nil, deviceId: String? = nil, deviceName: String? = nil,
+      orgSlug: String? = nil, username: String? = nil, unsyncedChanges: Int, lastPushAt: String? = nil,
+      lastError: String? = nil
+    ) {
+      self.joined = joined
+      self.url = url
+      self.deviceId = deviceId
+      self.deviceName = deviceName
+      self.orgSlug = orgSlug
+      self.username = username
+      self.unsyncedChanges = unsyncedChanges
+      self.lastPushAt = lastPushAt
+      self.lastError = lastError
+    }
+  }
+  public static let method = Method.hubStatus
+}
+
+/// Revoke this device at the hub (best effort), forget its token, and stop pushing. What was already
+/// uploaded stays on the hub.
+public enum HubLeave: WorkspaceCommand {
+  public typealias Params = EmptyParams
+  public typealias Result = HubStatus.Result
+  public static let method = Method.hubLeave
 }
 
 public struct ParsedCommand: Sendable, Equatable {

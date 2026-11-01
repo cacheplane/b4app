@@ -66,3 +66,47 @@ jobs:
         run: >
           xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'
           -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO
+
+  hub:
+    name: Hub (Rust)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: Hub
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # The tests create a database per test, so they connect as the superuser.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust 1.93.1
+        run: |
+          rustup toolchain install 1.93.1 --profile minimal --component rustfmt --component clippy
+          rustup default 1.93.1
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            Hub/target
+          key: hub-cargo-${{ runner.os }}-${{ hashFiles('Hub/Cargo.lock') }}
+          restore-keys: hub-cargo-${{ runner.os }}-
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked

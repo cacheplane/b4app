@@ -76,6 +76,12 @@ targets:
         CFBundleShortVersionString: "0.1.0"
         CFBundleVersion: "1"
         LSRequiresIPhoneOS: true
+        # Plain HTTP only to the hub on this machine (the Simulator's localhost); HubURL refuses any
+        # other non-HTTPS URL before a request is made.
+        NSAppTransportSecurity:
+          NSExceptionDomains:
+            localhost:
+              NSExceptionAllowsInsecureHTTPLoads: true
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -101,6 +107,12 @@ targets:
         product: WorkspaceClient
       - package: b4app
         product: WorkspaceProtocol
+      - package: b4app
+        product: WorkspaceMirror
+      - package: b4app
+        product: WorkspaceSync
+      - package: b4app
+        product: WorkspaceSecrets
 schemes:
   B4App-macOS:
     build:

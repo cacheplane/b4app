@@ -12,6 +12,7 @@ public actor Router {
     public var diagnostics: DiagnosticsService
     public var sessions: SessionService
     public var servers: LocalServerService
+    public var hub: HubSync
     public var startedAt: String
     public var paths: PlatformPaths
   }
@@ -195,12 +196,29 @@ public actor Router {
       return try JSONValue(encoding: DatabaseBackup.Result(path: summary.path, rows: summary.rows))
     case .databaseRestore:
       let params = try command.params(for: DatabaseRestore.self)
+      // A restore rewrites the change log and its sequence; reused deviceSeqs would count as already
+      // accepted at the hub and never be mirrored.
+      guard try context.database.hubLink() == nil else {
+        throw WorkspaceError(
+          .protocolInvalid,
+          "This Mac is joined to a hub; run `agent-workspace hub leave` before restoring, then join again.")
+      }
       let summary = try context.database.restore(from: params.path, replace: params.replace)
       return try JSONValue(encoding: DatabaseBackup.Result(path: summary.path, rows: summary.rows))
     case .databaseImportSQLite:
       let params = try command.params(for: DatabaseImportSQLite.self)
       let summary = try SQLiteImporter.importFile(at: params.path, into: context.database)
       return try JSONValue(encoding: DatabaseImportSQLite.Result(rows: summary.rows))
+    case .hubJoin:
+      let params = try command.params(for: HubJoin.self)
+      return try JSONValue(
+        encoding: try await context.hub.join(
+          url: params.url, code: params.code, deviceName: params.deviceName ?? HubSync.defaultDeviceName()))
+    case .hubStatus:
+      return try JSONValue(encoding: try await context.hub.status())
+    case .hubLeave:
+      try await context.hub.leave()
+      return try JSONValue(encoding: try await context.hub.status())
     }
   }
 

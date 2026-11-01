@@ -1,0 +1,6 @@
+target/
+.superpowers/
+.git/
+.env
+.env.*
+!.env.example

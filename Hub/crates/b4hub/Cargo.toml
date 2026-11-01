@@ -1,0 +1,38 @@
+[package]
+name = "b4hub"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "b4hub"
+path = "src/lib.rs"
+
+[[bin]]
+name = "b4hub"
+path = "src/main.rs"
+
+[dependencies]
+axum.workspace = true
+b4hub-core.workspace = true
+b4hub-db.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+sqlx.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true

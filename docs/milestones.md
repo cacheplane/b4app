@@ -123,3 +123,39 @@ Design: `docs/superpowers/specs/2026-10-31-storage-and-sync-design.md`. Plan: `d
 - [ ] Schema documentation (`docs/schema.md`).
 
 Exit gate status: the store runs on Postgres end to end; sync (M8) has not started.
+
+## M8a: read-only mirror (D-043 to D-046)
+
+Design: `docs/superpowers/specs/2026-10-31-m8-hub-design.md`. Plan: `docs/superpowers/plans/2026-10-31-m8a-read-only-mirror.md`. Roadmap block: M8 in `docs/roadmaps/Personal_Agent_Workspace_Technical_Spec_and_Roadmap.md`.
+
+- [x] The hub: a Rust service in `Hub/` with `serve`, `migrate`, `seed`, `enroll`; one shared schema, `org_id` on every tenant table, RLS enabled and forced, the application role `b4hub_app` not the owner and without `BYPASSRLS` (D-043). `implemented`, `fixture-tested` (77 Rust tests against real PostgreSQL 17: `rls.rs` runs as `b4hub_app`: it sees only its own org's rows, sees nothing and cannot insert without a tenant context, and the owner role with row security off errors instead of filtering; plus change-log idempotency and ordering, long-poll, enrollment, and health tests). `live-tested` as a Compose service (below).
+- [x] Device enrollment by a one-time code and device-token authentication; revocation keeps uploaded history (D-044). `implemented`, `fixture-tested` (enrollment, token authentication, and that revoking keeps uploaded history are all fixture-tested only). `live-tested`: a Mac and a Simulator device each enrolled against the Compose hub and authenticated with the token; the only revoke seen live was the Keychain-failure cleanup (`revoked_at` set, 0 tokens), not uploaded history surviving a revoke.
+- [x] Change-log push and long-poll pull with a per-org sequence cursor; `GET /v1/changes` answers `resync_required` (410) for a negative cursor only; the retention horizon is 0 because M8a never prunes, so a stale cursor cannot occur yet. `implemented`, `fixture-tested` (including `resync_required`, which was never seen live). `live-tested`: push, long-poll pull, and the cursor, with 35 changes on the hub equal to the Mac's count and the phone's cursor.
+- [x] The coordinator's `HubSync` and `agent-workspace hub join|status|leave`; `SyncFilter` keeps only the known `connections` columns, blanks `authReference`, `localServerId`, `target`, sends a `nativeScope` containing `/` as an opaque `scope:` hash, never uploads `localServers`, truncates a display-item or runtime-request payload over 1 MiB; `database.restore` refused while joined (D-046). `implemented`, `fixture-tested` against `FakeHubAPI` (`HubSyncTests`). `live-tested`: `hub join`, `hub status`, and the push, and after a real push the hub's `connections` row had `authReference` NULL, `target` empty, `localServerId` NULL, and no `localServers` table content; the non-loopback URL refusal on `hub join` was also seen live. `hub leave`, the `database.restore` refusal while joined, the 1 MiB payload truncation, and the 401 suspension are `fixture-tested` only.
+- [x] The iOS SQLite mirror (`WorkspaceMirror`) behind the unchanged shell through an in-process transport, the Connect screen, and the Keychain-held device token (`WorkspaceSecrets`). `implemented`, `fixture-tested` (`WorkspaceMirrorTests`, `HubURLTests`, the shared `Tests/Fixtures/sync/changes.json` decoded by both languages), `live-tested` in the Simulator.
+- [x] Compose for local use (`Hub/compose.yaml`, `Hub/.env.example`), a non-root image with `HEALTHCHECK`, and a CI `hub` job on Ubuntu with a `postgres:17` service. `implemented`; the image `live-tested` on `linux/arm64`; the CI `hub` job is recorded in the draft PR, cacheplane/b4app#17 (base `design/m8-hub`): the controller observed all three checks (the Swift package job, the apps job, which runs both app builds, and the new Ubuntu `hub` job) green at commit a6d9a2a (end of Task 6) and partially green on later heads; the heads after that, including the docs commit, were still pending when this was written, so the final head's result is in the PR, not here; `linux/amd64` not built.
+- [x] Swift suite 324 tests (262 before M8a), Rust suite 77 tests; both app builds pass. `fixture-tested`.
+- [ ] The owner's packaged Mac app joined to a hub. `open`: the live gate ran a scratch debug coordinator beside the running app and deliberately did not replace it.
+- [ ] Real Codex or Claude threads through a hub. `open`: the agent in the live gate was the fixture `fake-codex.py`; the sync path (debug coordinator, Compose hub, iOS app) was real end to end, the inference was not. Only threads created in the app sync; nothing is read from `~/.codex`, `~/.claude`, or a B4 server's history.
+- [ ] Hub deployed anywhere but the Mac's Compose, behind TLS, and from another architecture. `open`: no chart, no `linux/amd64` build, the hub speaks plain HTTP and the clients accept it only for `localhost`, `127.0.0.1`, and `::1`.
+
+Live gate (2026-10-31, Task 9): scratch debug coordinator with the fixture Codex, the Compose hub, and the iOS app in the iPhone 17 Pro Simulator. A thread and its transcript appeared on the phone without a refresh; a second turn showed within 1.4 s and a new thread within 1.6 s; the hub's change count (35) equalled the Mac's and the phone's cursor; a non-loopback `http` URL was refused on both sides before any request. Evidence and commands: `docs/verification.md`.
+
+Known limitations (none are fixed in M8a):
+
+- Disconnecting the phone is deleting the app; that leaves its hub device unrevoked. There is no Disconnect control yet.
+- The phone's thread header shows the Mac's working directory from `threads.context`. That is a project path crossing the wire; the design's list of what never syncs names secrets, executable paths, pids, ports, sockets, and log paths, not this. The owner decides whether `threads.context` should sync.
+- The shell shows Mac wording on the phone ("Coordinator connected").
+- Turns and runtime requests that arrive while a thread is open appear when it is reopened; only display items, threads, and connections are published live.
+- No rate limit on `/v1/enroll`; `GET /v1/changes` pages have no byte limit; a value other than a display-item payload over 2 MiB would be refused with a permanent 413 that blocks the Mac's queue and shows only in `hub status`.
+- The shared `WorkspaceRootView` now binds the compact column so a thread opens on iPhone; the Mac app's runtime behaviour after that change is covered by the test suite and by reading only, not by a click-through.
+- ATS (`NSAllowsInsecureHTTPLoads` for `localhost`) is set in `project.yml`; the generated `Info.plist` is gitignored.
+
+Exit gate status: the M8a exit as written in the roadmap holds for the Simulator with a fixture agent and a scratch Mac coordinator; it is not claimed for the owner's own app and real runtimes until a join is run there.
+
+## M8b to M8e: phone writes, relay, accounts, deployable
+
+- [ ] M8b The phone writes (pins, archive, titles, drafts; hybrid logical clocks, per-column last-writer-wins; the coordinator applies other devices' changes). `blocked` on M8a.
+- [ ] M8c The relay (outbound WebSocket per coordinator; `turn.send`, `turn.interrupt`, `request.respond` routed to the owning Mac; a turn for an offline Mac is refused, D-045). `blocked` on M8a; the iOS composer stays unavailable until then (`unsupportedCapability` naming M8c).
+- [ ] M8d Accounts (PKCE, device grant, refresh-token families, self-registration, organisations, OIDC brokering). `blocked` on M8a; extends D-044's tables.
+- [ ] M8e Deployable (Helm chart with a migration hook and external Postgres, SAML, SCIM, tenant bundle export and import, a client compatibility window). `blocked` on M8a.

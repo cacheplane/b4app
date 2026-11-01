@@ -9,15 +9,19 @@ public struct CoordinatorOptions: Sendable {
   public var secretStore: any SecretStore
   /// Overrides the per-connection adapter construction (tests inject a fake runtime).
   public var adapterFactory: SessionService.AdapterFactory?
+  /// Overrides the hub client construction (tests inject a `FakeHubAPI`); nil builds `HTTPHubAPI`.
+  public var hubAPIFactory: HubSync.APIFactory?
 
   public init(
     paths: PlatformPaths? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
-    secretStore: (any SecretStore)? = nil, adapterFactory: SessionService.AdapterFactory? = nil
+    secretStore: (any SecretStore)? = nil, adapterFactory: SessionService.AdapterFactory? = nil,
+    hubAPIFactory: HubSync.APIFactory? = nil
   ) {
     self.environment = environment
     self.paths = paths ?? PlatformPaths.resolve(environment: environment)
     self.secretStore = secretStore ?? KeychainSecretStore()
     self.adapterFactory = adapterFactory
+    self.hubAPIFactory = hubAPIFactory
   }
 }
 
@@ -35,6 +39,7 @@ public final class RunningCoordinator: Sendable {
   public let diagnostics: DiagnosticsService
   public let sessions: SessionService
   public let servers: LocalServerService
+  public let hub: HubSync
   public let router: Router
   public let server: SocketServer
   public let sleepWatcher: SleepWatcher
@@ -47,7 +52,7 @@ public final class RunningCoordinator: Sendable {
 
   init(
     paths: PlatformPaths, startedAt: String, database: WorkspaceDatabase, eventLog: EventLog,
-    diagnostics: DiagnosticsService, sessions: SessionService, servers: LocalServerService,
+    diagnostics: DiagnosticsService, sessions: SessionService, servers: LocalServerService, hub: HubSync,
     router: Router, server: SocketServer, sleepWatcher: SleepWatcher, postgres: PostgresServer?,
     lock: SingletonLock
   ) {
@@ -58,6 +63,7 @@ public final class RunningCoordinator: Sendable {
     self.diagnostics = diagnostics
     self.sessions = sessions
     self.servers = servers
+    self.hub = hub
     self.router = router
     self.server = server
     self.sleepWatcher = sleepWatcher
@@ -73,6 +79,7 @@ public final class RunningCoordinator: Sendable {
   public func close() async {
     guard await closed.setIfClear() else { return }
     await sleepWatcher.stop()
+    await hub.stop()
     await server.close()
     await sessions.shutdown()
     await servers.shutdown()
@@ -138,11 +145,16 @@ public enum Coordinator {
         adapterFactory: options.adapterFactory, servers: servers))
     await sessions.start()
     await servers.startAll()
+    let hub =
+      options.hubAPIFactory.map {
+        HubSync(database: database, secretStore: options.secretStore, eventLog: eventLog, makeAPI: $0)
+      } ?? HubSync(database: database, secretStore: options.secretStore, eventLog: eventLog)
     let router = Router(
       context: Router.Context(
         database: database, eventLog: eventLog, diagnostics: diagnostics, sessions: sessions,
-        servers: servers,
+        servers: servers, hub: hub,
         startedAt: startedAt, paths: paths))
+    await hub.start()
     let server: SocketServer
     do {
       server = try await SocketServer.start(socketPath: paths.socketPath, router: router, eventLog: eventLog)
@@ -152,7 +164,10 @@ public enum Coordinator {
       throw error
     }
     // Spec 10.3 sleep/wake: a CLI-spawned coordinator has no app to tell it the Mac woke up.
-    let sleepWatcher = SleepWatcher { [sessions] _ in _ = await sessions.reconcileAll(reason: "wake") }
+    let sleepWatcher = SleepWatcher { [sessions, hub] _ in
+      _ = await sessions.reconcileAll(reason: "wake")
+      _ = try? await hub.pushNow()
+    }
     await sleepWatcher.start()
     logger.info(
       "started pid \(ProcessInfo.processInfo.processIdentifier, privacy: .public) epoch \(eventLog.epoch, privacy: .public)"
@@ -160,7 +175,8 @@ public enum Coordinator {
     return .running(
       RunningCoordinator(
         paths: paths, startedAt: startedAt, database: database, eventLog: eventLog, diagnostics: diagnostics,
-        sessions: sessions, servers: servers, router: router, server: server, sleepWatcher: sleepWatcher,
+        sessions: sessions, servers: servers, hub: hub, router: router, server: server,
+        sleepWatcher: sleepWatcher,
         postgres: store.ownedServer, lock: lock))
   }
 }
