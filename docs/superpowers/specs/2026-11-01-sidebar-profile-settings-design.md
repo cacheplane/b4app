@@ -1,6 +1,6 @@
 # Sidebar, profile menu, and Settings window
 
-Date: 2026-11-01. Owner: Brian Love. Status: draft for the owner's approval. Calls marked *(my call)* were made by the designer and can be reversed cheaply; everything else is the owner's. Mockups from the brainstorm, in `2026-11-01-sidebar-profile-settings/` beside this file (open in a browser; colours and type are the app's, the line icons stand in for SF Symbols and the real marks): `sidebar.html`, the sidebar with the profile menu open, and `settings.html`, the Settings window beside the iPhone Settings sheet (the owner approved both: "looks good, using the correct visual identity and layout", "this looks correct").
+Date: 2026-11-01. Owner: Brian Love. Status: approved by the owner on 2026-11-01. Calls marked *(my call)* were made by the designer and can be reversed cheaply; everything else is the owner's. Mockups from the brainstorm, in `2026-11-01-sidebar-profile-settings/` beside this file (open in a browser; colours and type are the app's, the line icons stand in for SF Symbols and the real marks): `sidebar.html`, the sidebar with the profile menu open, and `settings.html`, the Settings window beside the iPhone Settings sheet (the owner approved both: "looks good, using the correct visual identity and layout", "this looks correct").
 
 ## Intent
 
