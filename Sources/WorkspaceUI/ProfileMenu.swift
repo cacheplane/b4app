@@ -27,6 +27,13 @@ struct SidebarFooter: View {
   @State private var confirmingLogOut = false
   @State private var buttonHeight: CGFloat = 0
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.dynamicTypeSize) private var typeSize
+  /// The avatar follows the name's text size; 26 pt on the Mac, 32 pt on the phone at the default size.
+  #if os(iOS)
+    @ScaledMetric(relativeTo: .body) private var avatarSize: CGFloat = 32
+  #else
+    @ScaledMetric(relativeTo: .body) private var avatarSize: CGFloat = 26
+  #endif
 
   init(model: WorkspaceModel) { self.model = model }
 
@@ -130,9 +137,10 @@ struct SidebarFooter: View {
         avatar
         VStack(alignment: .leading, spacing: 1) {
           Text(model.account?.name ?? "Not signed in")
-            .font(LLAFont.smallStrong).foregroundStyle(LLA.Color.ink).lineLimit(1)
+            .font(LLAFont.rowStrong).foregroundStyle(LLA.Color.ink).lineLimit(1)
           Text(model.linkStatusText)
-            .font(LLAFont.caption).foregroundStyle(LLA.Color.muted).lineLimit(1)
+            .font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
+            .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
         }
         Spacer(minLength: LLA.Space.xs)
         Image(systemName: "chevron.up.chevron.down")
@@ -140,6 +148,7 @@ struct SidebarFooter: View {
       }
       .padding(.horizontal, LLA.Space.s)
       .padding(.vertical, 6)
+      .frame(minHeight: LLA.Metrics.row)
       .background(
         RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
           .fill(hovering || model.showProfileMenu ? LLA.Color.surfaceRaised : .clear)
@@ -156,17 +165,18 @@ struct SidebarFooter: View {
 
   private var avatar: some View {
     ZStack(alignment: .bottomTrailing) {
-      Circle().fill(LLA.Color.ink).frame(width: 26, height: 26)
+      Circle().fill(LLA.Color.ink).frame(width: avatarSize, height: avatarSize)
         .overlay {
           if let account = model.account {
             Text(account.initials)
-              .font(LLAFont.sans(10, weight: .semibold)).foregroundStyle(LLA.Color.bg)
+              .font(LLAFont.sans(fixed: avatarSize * 0.38, weight: .semibold)).foregroundStyle(LLA.Color.bg)
               .lineLimit(1).minimumScaleFactor(0.6)
           } else {
-            Image(systemName: "person.fill").font(LLAFont.caption).foregroundStyle(LLA.Color.bg)
+            Image(systemName: "person.fill").font(.system(size: avatarSize * 0.45))
+              .foregroundStyle(LLA.Color.bg)
           }
         }
-      Circle().fill(statusColor).frame(width: 7, height: 7)
+      Circle().fill(statusColor).frame(width: avatarSize * 0.27, height: avatarSize * 0.27)
         .overlay(Circle().strokeBorder(LLA.Color.surface, lineWidth: 1.5))
         .offset(x: 1, y: 1)
     }

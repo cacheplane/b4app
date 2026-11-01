@@ -1,6 +1,10 @@
 import CoreText
 import SwiftUI
 
+#if os(iOS)
+  import UIKit
+#endif
+
 /// Hanken Grotesk (400, 600) and JetBrains Mono (variable), bundled under the SIL Open Font License
 /// and registered with CoreText once per process. When a face is missing the system font stands in.
 public enum LLAFonts {
@@ -48,7 +52,25 @@ public enum LLAFont {
   {
     guard LLAFonts.register() else { return .system(size: size, weight: weight) }
     return .custom(
-      heavy.contains(weight) ? LLAFonts.sansSemiBold : LLAFonts.sansRegular, size: size, relativeTo: style)
+      heavy.contains(weight) || boldText ? LLAFonts.sansSemiBold : LLAFonts.sansRegular, size: size,
+      relativeTo: style)
+  }
+
+  /// Bold Text is the app's to honour with a custom face (HIG, Typography): regular text takes the
+  /// semibold face while it is on. Turning it on redraws the views, which read this again.
+  static var boldText: Bool {
+    #if os(iOS)
+      UIAccessibility.isBoldTextEnabled
+    #else
+      false
+    #endif
+  }
+
+  /// A size that Dynamic Type leaves alone, for text inside a shape that already scales (a monogram
+  /// in an avatar or a runtime mark); scaling both would double the growth.
+  public static func sans(fixed size: CGFloat, weight: Font.Weight = .regular) -> Font {
+    guard LLAFonts.register() else { return .system(size: size, weight: weight) }
+    return .custom(heavy.contains(weight) ? LLAFonts.sansSemiBold : LLAFonts.sansRegular, fixedSize: size)
   }
 
   public static func mono(
@@ -58,20 +80,63 @@ public enum LLAFont {
   {
     guard LLAFonts.register() else { return .system(size: size, weight: weight, design: .monospaced) }
     let name =
-      heavy.contains(weight) && LLAFonts.isAvailable(LLAFonts.monoSemiBold)
+      (heavy.contains(weight) || boldText) && LLAFonts.isAvailable(LLAFonts.monoSemiBold)
       ? LLAFonts.monoSemiBold : LLAFonts.monoRegular
     return .custom(name, size: size, relativeTo: style)
   }
 
-  public static var display: Font { sans(26, weight: .semibold, relativeTo: .title) }
-  public static var title: Font { sans(19, weight: .semibold, relativeTo: .title3) }
-  public static var body: Font { sans(15) }
-  public static var bodyStrong: Font { sans(15, weight: .semibold) }
-  public static var small: Font { sans(13, relativeTo: .subheadline) }
-  public static var smallStrong: Font { sans(13, weight: .semibold, relativeTo: .subheadline) }
-  public static var caption: Font { sans(12, relativeTo: .caption) }
-  public static var code: Font { mono(13, relativeTo: .callout) }
-  public static var codeSmall: Font { mono(12, relativeTo: .caption) }
+  public static var display: Font { sans(scale.display, weight: .semibold, relativeTo: .title) }
+  public static var title: Font { sans(scale.title, weight: .semibold, relativeTo: .title3) }
+  public static var body: Font { sans(scale.body) }
+  public static var bodyStrong: Font { sans(scale.body, weight: .semibold) }
+  public static var small: Font { sans(scale.small, relativeTo: .subheadline) }
+  public static var smallStrong: Font { sans(scale.small, weight: .semibold, relativeTo: .subheadline) }
+  public static var caption: Font { sans(scale.caption, relativeTo: .caption) }
+  public static var code: Font { mono(scale.code, relativeTo: .callout) }
+  public static var codeSmall: Font { mono(scale.codeSmall, relativeTo: .footnote) }
+  /// Sidebar, menu, and search rows: dense on the Mac, the size of a system list row on the phone.
+  public static var row: Font { sans(scale.row, relativeTo: scale.rowStyle) }
+  public static var rowStrong: Font { sans(scale.row, weight: .semibold, relativeTo: scale.rowStyle) }
+  /// Pill button titles.
+  public static var button: Font { sans(scale.button, weight: .semibold, relativeTo: scale.buttonStyle) }
+
+  /// The scale this platform draws with.
+  public static var scale: LLATypeScale {
+    #if os(iOS)
+      .phone
+    #else
+      .mac
+    #endif
+  }
+}
+
+/// Point sizes for each role at the default text size. The Mac keeps D-036's desktop scale; the phone
+/// starts each role at the size of the iOS text style it scales with (body 17, subheadline 15,
+/// caption 12, title3 20, title 28; Apple's Typography specifications), so a custom face reads like
+/// the system's and Dynamic Type moves it in step (D-054).
+public struct LLATypeScale: Sendable, Equatable {
+  public var display: CGFloat
+  public var title: CGFloat
+  public var body: CGFloat
+  public var small: CGFloat
+  public var caption: CGFloat
+  public var code: CGFloat
+  public var codeSmall: CGFloat
+  public var button: CGFloat
+  public var buttonStyle: Font.TextStyle
+  public var row: CGFloat
+  public var rowStyle: Font.TextStyle
+
+  public static let mac = LLATypeScale(
+    display: 26, title: 19, body: 15, small: 13, caption: 12, code: 13, codeSmall: 12, button: 13,
+    buttonStyle: .subheadline, row: 13, rowStyle: .subheadline)
+  /// Mono runs a point or two under its sans neighbour: JetBrains Mono is wider and taller per point.
+  public static let phone = LLATypeScale(
+    display: 28, title: 20, body: 17, small: 15, caption: 12, code: 15, codeSmall: 13, button: 17,
+    buttonStyle: .body, row: 17, rowStyle: .body)
+
+  /// Every size, for checks against a floor.
+  public var all: [CGFloat] { [display, title, body, small, caption, code, codeSmall, button, row] }
 }
 
 extension View {

@@ -73,7 +73,7 @@ struct NewThreadSheet: View {
         .accessibilityIdentifier("create-thread")
       }
     }
-    .padding(LLA.Space.xl)
+    .padding(LLA.Metrics.margin)
     .frame(minWidth: 480)
     .background(LLA.Color.bg)
     .onAppear {

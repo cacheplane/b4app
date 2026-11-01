@@ -34,6 +34,7 @@ struct ThreadDetailView: View {
   let thread: ConversationThread
   @State private var renaming = false
   @State private var newTitle = ""
+  @Environment(\.dynamicTypeSize) private var typeSize
 
   private var connection: Connection? { model.connection(id: thread.connectionId) }
 
@@ -61,28 +62,25 @@ struct ThreadDetailView: View {
       }
     }
     .navigationTitle(thread.title.isEmpty ? "Untitled" : thread.title)
+    #if os(iOS)
+      // A pushed detail takes the inline title (HIG, Navigation bars); the header below drops its own
+      // copy, so the transcript starts under one title rather than two.
+      .navigationBarTitleDisplayMode(.inline)
+    #endif
     .task(id: thread.id) {
       if model.detail?.thread.id != thread.id { await model.openThread(id: thread.id) }
     }
     .toolbar {
-      ToolbarItemGroup {
-        Button("Rename", systemImage: "pencil") {
-          newTitle = thread.title
-          renaming = true
+      #if os(macOS)
+        ToolbarItemGroup { threadActions }
+      #else
+        // One overflow menu on the phone, so the inline title keeps the bar's width (HIG, Toolbars:
+        // the most important items in the bar, the rest in a More menu).
+        ToolbarItem {
+          Menu("Thread actions", systemImage: "ellipsis") { threadActions }
+            .accessibilityIdentifier("thread-actions")
         }
-        .accessibilityIdentifier("rename")
-        Button(thread.pinned ? "Unpin" : "Pin", systemImage: thread.pinned ? "pin.slash" : "pin") {
-          Task { await model.updateThread(id: thread.id, pinned: !thread.pinned) }
-        }
-        .accessibilityIdentifier("pin")
-        Button(
-          thread.archived ? "Unarchive" : "Archive",
-          systemImage: thread.archived ? "tray.and.arrow.up" : "archivebox"
-        ) {
-          Task { await model.updateThread(id: thread.id, archived: !thread.archived) }
-        }
-        .accessibilityIdentifier("archive")
-      }
+      #endif
     }
     .alert("Rename thread", isPresented: $renaming) {
       TextField("Title", text: $newTitle)
@@ -91,6 +89,26 @@ struct ThreadDetailView: View {
     } message: {
       Text("The title is local to this app; the runtime's own history is not changed.")
     }
+  }
+
+  /// Rename, Pin, Archive: toolbar buttons on the Mac, the overflow menu's items on the phone.
+  @ViewBuilder private var threadActions: some View {
+    Button("Rename", systemImage: "pencil") {
+      newTitle = thread.title
+      renaming = true
+    }
+    .accessibilityIdentifier("rename")
+    Button(thread.pinned ? "Unpin" : "Pin", systemImage: thread.pinned ? "pin.slash" : "pin") {
+      Task { await model.updateThread(id: thread.id, pinned: !thread.pinned) }
+    }
+    .accessibilityIdentifier("pin")
+    Button(
+      thread.archived ? "Unarchive" : "Archive",
+      systemImage: thread.archived ? "tray.and.arrow.up" : "archivebox"
+    ) {
+      Task { await model.updateThread(id: thread.id, archived: !thread.archived) }
+    }
+    .accessibilityIdentifier("archive")
   }
 
   /// Connection, kind, and directory or route; "on <device>" when the phone's mirror knows the Mac
@@ -104,21 +122,45 @@ struct ThreadDetailView: View {
     return parts.joined(separator: " · ")
   }
 
-  private var header: some View {
-    VStack(alignment: .leading, spacing: LLA.Space.xs) {
-      HStack(alignment: .firstTextBaseline, spacing: LLA.Space.m) {
-        Text(thread.title.isEmpty ? "Untitled" : thread.title).llaDisplay().lineLimit(1)
-        if thread.archived { LLABadge("Archived") }
-        Spacer()
-        if let turn = model.detail?.activeTurn, model.detail?.thread.id == thread.id {
-          TurnStatusBadge(turn: turn)
+  #if os(macOS)
+    private var header: some View {
+      VStack(alignment: .leading, spacing: LLA.Space.xs) {
+        HStack(alignment: .firstTextBaseline, spacing: LLA.Space.m) {
+          Text(thread.title.isEmpty ? "Untitled" : thread.title).llaDisplay().lineLimit(1)
+          if thread.archived { LLABadge("Archived") }
+          Spacer()
+          turnBadge
         }
+        Text(subtitle).llaSmallMuted().lineLimit(1).truncationMode(.middle)
       }
-      Text(subtitle).llaSmallMuted().lineLimit(1).truncationMode(.middle)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, LLA.Metrics.margin)
+      .padding(.vertical, LLA.Space.l)
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal, LLA.Space.xl)
-    .padding(.vertical, LLA.Space.l)
+  #else
+    /// Where the thread runs and its state, under the navigation bar's title. The badges move below
+    /// the line at accessibility sizes, where the line wraps instead of truncating.
+    private var header: some View {
+      let stacked = typeSize.isAccessibilitySize
+      let layout =
+        stacked
+        ? AnyLayout(VStackLayout(alignment: .leading, spacing: LLA.Space.xs))
+        : AnyLayout(HStackLayout(alignment: .center, spacing: LLA.Space.s))
+      return layout {
+        Text(subtitle).llaSmallMuted().lineLimit(stacked ? 3 : 1).truncationMode(.middle)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        if thread.archived { LLABadge("Archived") }
+        turnBadge
+      }
+      .padding(.horizontal, LLA.Metrics.margin)
+      .padding(.vertical, LLA.Space.s)
+    }
+  #endif
+
+  @ViewBuilder private var turnBadge: some View {
+    if let turn = model.detail?.activeTurn, model.detail?.thread.id == thread.id {
+      TurnStatusBadge(turn: turn)
+    }
   }
 }
 
@@ -144,7 +186,7 @@ struct ContinuityBanner: View {
           .disabled(model.conversationReadyConnections.isEmpty)
       }
     }
-    .padding(.horizontal, LLA.Space.xl)
+    .padding(.horizontal, LLA.Metrics.margin)
     .padding(.top, LLA.Space.l)
     .frame(maxWidth: LLA.Metrics.column)
     .frame(maxWidth: .infinity)
@@ -173,7 +215,7 @@ struct TurnStatusBadge: View {
       if turn.status == .running || turn.status == .submitting || turn.status == .stopping {
         ProgressView().controlSize(.mini)
       }
-      Text(text)
+      Text(text).lineLimit(1).fixedSize()
     }
     .font(LLAFont.caption)
     .foregroundStyle(turn.status == .waitingForUser ? LLA.Color.accent : LLA.Color.ink)
