@@ -23,7 +23,11 @@ struct B4AppMac: App {
     }
     .defaultSize(width: 1200, height: 800)
     .commands {
-      CommandGroup(replacing: .newItem) {}
+      CommandGroup(replacing: .newItem) {
+        Button("New Thread") { sharedModel.showNewThread = true }
+          .keyboardShortcut("n")
+          .disabled(sharedModel.conversationReadyConnections.isEmpty)
+      }
       CommandMenu("Coordinator") {
         Button("Restart Coordinator") { Task { await CoordinatorHost.restartAndReconnect(sharedModel) } }
         Button("Open Login Items…") { SMAppService.openSystemSettingsLoginItems() }

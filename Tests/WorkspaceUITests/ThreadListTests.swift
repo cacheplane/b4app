@@ -60,6 +60,16 @@ import WorkspaceProtocol
     #expect(!offered("busy"))
   }
 
+  @Test func rowSpeaksItsReasonAndConnection() async throws {
+    // The row shows only the title and a runtime mark; why it sits there and where it runs are spoken.
+    let model = try await ListFixture.model()
+    let asks = try #require(model.threads.first { $0.id == "asks" })
+    let label = try #require(model.connection(id: asks.connectionId)?.label)
+    #expect(model.band(of: asks) == .needsInput)
+    #expect(
+      ThreadRow.accessibilityHint(model: model, thread: asks) == "\(model.reasonLine(for: asks)), \(label)")
+  }
+
   @Test func newThreadNamesTheProjectOfTheChosenFolder() async throws {
     let model = try await ListFixture.model()
     #expect(

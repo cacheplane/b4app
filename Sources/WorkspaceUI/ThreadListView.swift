@@ -183,14 +183,12 @@ struct AttentionDot: View {
 
 // MARK: - Rows
 
-/// One list row: the band dot, the title, the reason it sits there ("Waiting for your approval",
-/// "Replied 3m ago"), and a detail line with the project (when the list is not already grouped by
-/// it) and the connection. The context menu holds the organization actions; archiving never stops
-/// a turn (spec 3.3).
+/// One list row: the band dot, the title, and the runtime's ghosted mark. Why it sits there and which
+/// connection runs it are spoken, not shown. The context menu holds the organization actions;
+/// archiving never stops a turn (spec 3.3).
 struct ThreadRow: View {
   @Bindable var model: WorkspaceModel
   let thread: ConversationThread
-  var showsProject = false
   @State private var renaming = false
   @State private var newTitle = ""
   @Environment(\.showDetail) private var showDetail
@@ -206,25 +204,14 @@ struct ThreadRow: View {
       showDetail()
       Task { await model.openThread(id: thread.id) }
     } label: {
-      HStack(alignment: .top, spacing: LLA.Space.s) {
-        AttentionDot(band: band).padding(.top, 5)
-        VStack(alignment: .leading, spacing: 2) {
-          HStack(spacing: 4) {
-            if thread.pinned {
-              Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(LLA.Color.muted)
-            }
-            Text(thread.title.isEmpty ? "Untitled" : thread.title)
-              .font(loud ? LLAFont.smallStrong : LLAFont.small)
-              .foregroundStyle(LLA.Color.ink)
-              .lineLimit(1)
-          }
-          Text(model.reasonLine(for: thread))
-            .font(LLAFont.caption)
-            .foregroundStyle(band == .needsInput ? LLA.Color.accent : LLA.Color.muted)
-            .lineLimit(1)
-          Text(detail).font(LLAFont.caption).foregroundStyle(LLA.Color.muted).lineLimit(1)
-        }
-        Spacer(minLength: 0)
+      HStack(spacing: LLA.Space.s) {
+        AttentionDot(band: band)
+        Text(thread.title.isEmpty ? "Untitled" : thread.title)
+          .font(loud ? LLAFont.smallStrong : LLAFont.small)
+          .foregroundStyle(LLA.Color.ink)
+          .lineLimit(1)
+        Spacer(minLength: LLA.Space.s)
+        if let kind = model.connection(id: thread.connectionId)?.kind { RuntimeMark(kind: kind) }
       }
       .padding(.horizontal, 10)
       .padding(.vertical, 6)
@@ -237,6 +224,7 @@ struct ThreadRow: View {
     .buttonStyle(.plain)
     .accessibilityIdentifier("thread-row")
     .accessibilityValue(model.threadState(thread).rawValue)
+    .accessibilityHint(Self.accessibilityHint(model: model, thread: thread))
     .contextMenu {
       Button("Rename…", systemImage: "pencil") {
         newTitle = thread.title
@@ -266,14 +254,14 @@ struct ThreadRow: View {
     }
   }
 
-  /// "Project · Connection", plus the connection's trouble when it is offline or errored.
-  private var detail: String {
-    var parts: [String] = []
-    if showsProject, let name = model.projectName(for: thread) { parts.append(name) }
+  /// What the row no longer prints: the reason it sits where it does, the connection, and the
+  /// connection's trouble when it is offline or errored.
+  static func accessibilityHint(model: WorkspaceModel, thread: ConversationThread) -> String {
+    var parts = [model.reasonLine(for: thread)]
     parts.append(model.connection(id: thread.connectionId)?.label ?? "Unknown connection")
     let state = model.threadState(thread)
     if [.reconnecting, .error, .unknown, .stopping].contains(state) { parts.append(state.label) }
-    return parts.joined(separator: " · ")
+    return parts.joined(separator: ", ")
   }
 }
 
@@ -324,7 +312,7 @@ struct FlatThreadRows: View {
         .listRowBackground(Color.clear)
     }
     ForEach(rows) { thread in
-      ThreadRow(model: model, thread: thread, showsProject: true)
+      ThreadRow(model: model, thread: thread)
         .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 6))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
@@ -364,90 +352,11 @@ struct FlatThreadList: View {
   }
 }
 
-/// The phone's filter: all projects, one project, "Other", or the archive; the connection filter
-/// sits below a divider, where the connection picker used to be. With one project selected, the
-/// menu also renames it (the phone's only project edit).
-struct ProjectFilterMenu: View {
-  @Bindable var model: WorkspaceModel
-  @State private var renaming: Project?
-  @State private var newName = ""
-
-  var body: some View {
-    Menu {
-      Picker("Project", selection: $model.projectFilter) {
-        Text("All projects").tag(ProjectFilter.all)
-        ForEach(model.filterProjects) { project in
-          Text(project.displayName).tag(ProjectFilter.project(project.id))
-        }
-        if model.hasOtherThreads || model.projectFilter == .other {
-          Text("Other").tag(ProjectFilter.other)
-        }
-        Text("Archived").tag(ProjectFilter.archived)
-      }
-      .pickerStyle(.inline)
-      if let project = selectedProject {
-        Button("Rename \u{201C}\(project.displayName)\u{201D}\u{2026}", systemImage: "pencil") {
-          newName = project.name
-          renaming = project
-        }
-        .accessibilityIdentifier("rename-project")
-      }
-      if model.connections.count > 1 {
-        Divider()
-        Picker("Connection", selection: $model.connectionFilter) {
-          Text("All connections").tag(String?.none)
-          ForEach(model.connections) { connection in
-            Text(connection.label).tag(String?.some(connection.id))
-          }
-        }
-        .pickerStyle(.inline)
-      }
-    } label: {
-      HStack(spacing: 4) {
-        Text(label).font(LLAFont.smallStrong).foregroundStyle(LLA.Color.ink).lineLimit(1)
-        Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
-          .foregroundStyle(LLA.Color.muted)
-      }
-      .contentShape(Rectangle())
-    }
-    .menuIndicator(.hidden)
-    #if os(macOS)
-      .menuStyle(.borderlessButton)
-      .fixedSize()
-    #endif
-    .accessibilityIdentifier("project-filter")
-    .alert(
-      "Rename project", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } }),
-      presenting: renaming
-    ) { project in
-      TextField("Name", text: $newName)
-      Button("Rename") {
-        Task { await model.renameProject(id: project.id, name: newName.trimmingCharacters(in: .whitespaces)) }
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: { _ in
-      Text("Leave it empty to show the first folder's name.")
-    }
-  }
-
-  private var selectedProject: Project? {
-    guard case .project(let id) = model.projectFilter else { return nil }
-    return model.filterProjects.first { $0.id == id }
-  }
-
-  private var label: String {
-    guard let id = model.connectionFilter, let connection = model.connection(id: id) else {
-      return model.filterTitle
-    }
-    return "\(model.filterTitle) · \(connection.label)"
-  }
-}
-
 // MARK: - The Mac sections
 
 #if os(macOS)
   /// The Mac sidebar's list: Pinned, then a collapsible section per project, "Other" last, the
-  /// archive on request, and "New Project…" at the end. Plain stacks, not `List`: a List drew nothing
+  /// archive while More's switch is on, and "New Project…" at the end. Plain stacks, not `List`: a List drew nothing
   /// in the macOS 26 split-view sidebar (see `SidebarView`).
   struct ProjectSectionsView: View {
     @Bindable var model: WorkspaceModel
@@ -467,7 +376,7 @@ struct ProjectFilterMenu: View {
         }
         if !pinned.isEmpty {
           SidebarGroupLabel("Pinned")
-          ForEach(pinned) { ThreadRow(model: model, thread: $0, showsProject: true) }
+          ForEach(pinned) { ThreadRow(model: model, thread: $0) }
         }
         ForEach(sections) { section in
           sectionView(section)
@@ -561,25 +470,14 @@ struct ProjectFilterMenu: View {
       }
     }
 
-    /// The archive: a switch, and the archived threads under it when it is on.
+    /// The archived threads, listed last while More's "Show archived" is on.
     @ViewBuilder private var archive: some View {
-      if model.showArchived || !model.archivedThreads.isEmpty {
-        Toggle(isOn: $model.showArchived) {
-          Text("Archived (\(model.archivedThreads.count))").font(LLAFont.small)
-            .foregroundStyle(LLA.Color.muted)
+      if model.showArchived {
+        SidebarGroupLabel("Archived")
+        if model.archivedThreads.isEmpty {
+          Text("No archived threads.").llaSmallMuted().padding(.horizontal, 10).padding(.vertical, 6)
         }
-        .toggleStyle(.switch)
-        .controlSize(.mini)
-        .padding(.horizontal, 10)
-        .padding(.top, LLA.Space.m)
-        .padding(.bottom, LLA.Space.xs)
-        .accessibilityIdentifier("show-archived")
-        if model.showArchived {
-          if model.archivedThreads.isEmpty {
-            Text("No archived threads.").llaSmallMuted().padding(.horizontal, 10).padding(.vertical, 6)
-          }
-          ForEach(model.archivedThreads) { ThreadRow(model: model, thread: $0, showsProject: true) }
-        }
+        ForEach(model.archivedThreads) { ThreadRow(model: model, thread: $0) }
       }
     }
   }

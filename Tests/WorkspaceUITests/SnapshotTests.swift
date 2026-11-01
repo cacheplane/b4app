@@ -231,7 +231,7 @@ struct SnapshotShell: View {
     try await render("iosListFlatWithFilter", size: CGSize(width: 390, height: 760)) {
       VStack(spacing: 0) {
         HStack {
-          ProjectFilterMenu(model: model)
+          MoreMenu(model: model)
           Spacer()
         }
         .padding(LLA.Space.l)
@@ -247,7 +247,7 @@ struct SnapshotShell: View {
     try await render("iosListFilteredToProject", size: CGSize(width: 390, height: 420)) {
       VStack(spacing: 0) {
         HStack {
-          ProjectFilterMenu(model: model)
+          MoreMenu(model: model)
           Spacer()
         }
         .padding(LLA.Space.l)
@@ -266,7 +266,7 @@ struct SnapshotShell: View {
     #expect(rows.map { model.band(of: $0) } == [.needsInput, .unread, .working, .quiet])
     try await render("rowShowsEachBandDot", size: CGSize(width: 290, height: 420)) {
       VStack(alignment: .leading, spacing: 2) {
-        ForEach(rows) { ThreadRow(model: model, thread: $0, showsProject: true) }
+        ForEach(rows) { ThreadRow(model: model, thread: $0) }
         Hairline().padding(.vertical, LLA.Space.m)
         HStack(spacing: LLA.Space.l) {
           ForEach([AttentionBand.needsInput, .unread, .working, .quiet], id: \.rawValue) {
