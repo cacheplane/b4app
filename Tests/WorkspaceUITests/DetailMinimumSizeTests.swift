@@ -108,4 +108,37 @@ private nonisolated func edited(
     )
     await model.disconnect()
   }
+
+  /// The sidebar's footer sits outside its scroll view, so its notice must stay bounded however long
+  /// the coordinator's error, the host note, or the version note runs.
+  @Test func sidebarFooterStaysBounded() async throws {
+    let note = String(repeating: "The background agent could not be reached at its socket. ", count: 52)
+    // Every notice at once on a live link: a long host note with its action, and a version mismatch.
+    let store = try MirrorStore.inMemory()
+    let transport = MirrorTransport(store: store, version: "0.2.0")
+    let live = WorkspaceModel(transportProvider: { transport })
+    live.connect()
+    try #require(await live.settledLink() == .ready)
+    await live.refreshDiagnostics()
+    live.expectedCoordinatorVersion = "0.0.0-mismatch"
+    try #require(live.versionMismatch != nil)
+    live.hostNote = note
+    live.hostActionTitle = "Open Login Items"
+    live.hostAction = {}
+    live.account = WorkspaceAccount(username: "blove", displayName: String(repeating: "Brian ", count: 40))
+    // A link that failed with a long message.
+    let failed = WorkspaceModel(transportProvider: { throw WorkspaceError(.endpointUnavailable, note) })
+    failed.connect()
+    try #require(await failed.settledLink() == .unavailable)
+    failed.hostNote = note
+
+    for model in [live, failed] {
+      let controller = NSHostingController(rootView: SidebarFooter(model: model))
+      for width in [CGFloat(0), 240] {
+        let height = controller.sizeThatFits(in: CGSize(width: width, height: 0)).height
+        #expect(height <= 240, "footer is \(height) tall at \(width) wide")
+      }
+    }
+    await live.disconnect()
+  }
 }

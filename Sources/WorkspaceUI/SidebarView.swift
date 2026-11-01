@@ -10,7 +10,15 @@ struct SidebarView: View {
   var body: some View {
     content
       .background(LLA.Color.surface)
-      .safeAreaInset(edge: .bottom, spacing: 0) { LinkStatusView(model: model) }
+      .overlay {
+        // A click anywhere else in the sidebar closes the profile menu.
+        if model.showProfileMenu {
+          Color.clear.contentShape(Rectangle())
+            .onTapGesture { model.showProfileMenu = false }
+            .accessibilityHidden(true)
+        }
+      }
+      .safeAreaInset(edge: .bottom, spacing: 0) { SidebarFooter(model: model) }
   }
 
   /// New thread, Search, More. Disabled while the phone has no joined Mac to show.

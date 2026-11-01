@@ -137,6 +137,8 @@ public final class WorkspaceModel {
   public var selectedThreadId: String?
   /// The search palette (⌘K).
   public var showSearch = false
+  /// The profile menu above the sidebar's profile button.
+  public var showProfileMenu = false
   public var connectionFilter: String?
   public var showArchived = false
   public var showNewThread = false

@@ -78,6 +78,8 @@ public enum LLA {
   public enum Radius {
     public static let input: CGFloat = 8
     public static let card: CGFloat = 16
+    /// Floating menus (the profile menu).
+    public static let menu: CGFloat = 12
     public static let pill: CGFloat = 999
   }
 

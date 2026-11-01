@@ -95,4 +95,15 @@ private let joined = HubStatus.Result(
     #expect(loggedOut == 1)
     #expect(transport.calls(.hubLeave).isEmpty)
   }
+
+  @Test func linkStatusTextNamesTheState() async throws {
+    let failing = WorkspaceModel(transportProvider: { throw WorkspaceError(.endpointUnavailable, "gone") })
+    #expect(failing.linkStatusText == "Connecting to coordinator…")
+    failing.connect()
+    _ = await failing.settledLink()
+    // The status line under the name stays short; the error itself goes in the notice above.
+    #expect(failing.linkStatusText == "Coordinator unavailable")
+    let model = try await connectedModel(ScriptedTransport())
+    #expect(model.linkStatusText == "Coordinator connected")
+  }
 }
