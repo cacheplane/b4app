@@ -156,6 +156,33 @@ extension MirrorStore {
     try locked { try outboxRows(limit: limit) }
   }
 
+  /// The next push: the oldest unsent edits, at most `rows` of them and `bytes` of encoded request body
+  /// but always at least one (the rule of the Mac's `HubSync.batch`), so a backlog larger than the hub's
+  /// body limit drains in several pushes instead of being refused whole on every retry. The rows
+  /// returned count as sent from now on (`sentThrough`), in the same locked step that reads them, so a
+  /// local write made while the push is in flight never collapses into one of them.
+  public func nextUpload(rows: Int, bytes: Int) throws -> [SyncChange] {
+    try locked {
+      let batch = Self.uploadPrefix(try outboxRows(limit: rows), rows: rows, bytes: bytes)
+      if let last = batch.last { sentThrough = max(sentThrough, last.deviceSeq) }
+      return batch
+    }
+  }
+
+  /// The longest prefix of `changes` with at most `rows` changes and at most `bytes` of
+  /// `{"changes":[...]}` body, and never empty when `changes` is not.
+  static func uploadPrefix(_ changes: [SyncChange], rows: Int, bytes limit: Int) -> [SyncChange] {
+    var batch: [SyncChange] = []
+    var bytes = 16  // {"changes":[]}
+    for change in changes {
+      let size = ((try? JSONCoding.encoder.encode(change).count) ?? 0) + 1
+      if !batch.isEmpty, batch.count >= rows || bytes + size > limit { break }
+      batch.append(change)
+      bytes += size
+    }
+    return batch
+  }
+
   /// Drops every edit the hub has accepted, through `deviceSeq`.
   public func removeOutbox(through deviceSeq: Int) throws {
     try locked {
@@ -267,7 +294,9 @@ extension MirrorStore {
 
   /// Inside the open transaction, after the mirror rows are written: one clock for the whole write,
   /// the written columns' clocks advanced to it, and one outbox row per change after the high-water
-  /// mark, which then moves.
+  /// mark, which then moves. An update of a column that already has an update queued and not yet sent
+  /// (`deviceSeq` above `sentThrough`) replaces that row's value and clock and keeps its `deviceSeq`
+  /// instead, so typing a draft offline queues one row per column, not one per save.
   private func record(_ changes: [LocalChange]) throws {
     guard !changes.isEmpty else { return }
     let hlc = clock.next().rawValue
@@ -281,6 +310,20 @@ extension MirrorStore {
       let written = change.op == "insert" ? clocked.sorted() : [change.column].compactMap { $0 }
       for column in written where clocked.contains(column) {
         try advanceClock(change.table, change.rowId, column, to: hlc)
+      }
+      if change.op == "update", let column = change.column {
+        try run(
+          """
+          UPDATE "outbox" SET "hlc" = ?1, "value" = ?2
+          WHERE "deviceSeq" = (
+            SELECT max("deviceSeq") FROM "outbox"
+            WHERE "table" = ?3 AND "rowId" = ?4 AND "op" = 'update' AND "column" = ?5 AND "deviceSeq" > ?6)
+          """,
+          [
+            .text(hlc), .text(Self.jsonText(change.value)), .text(change.table), .text(change.rowId),
+            .text(column), .integer(Int64(sentThrough)),
+          ])
+        if changedRows > 0 { continue }
       }
       seq += 1
       try run(

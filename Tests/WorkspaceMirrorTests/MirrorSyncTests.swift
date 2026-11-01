@@ -32,6 +32,9 @@ func eventually(
   throw WorkspaceError(.internalError, "timed out waiting for \(what)")
 }
 
+/// `POST /v1/changes`'s body, to measure what a push sent.
+private struct Body: Encodable { var changes: [SyncChange] }
+
 private let link = MirrorLink(
   hubURL: "http://localhost:8080", deviceId: "phone-1", deviceName: "Test Phone", tokenRef: "secret:t",
   orgSlug: "o", username: "u")
@@ -206,6 +209,46 @@ private let link = MirrorLink(
     #expect(await hub.pushed.map(\.count) == [0, 500, 500, 100])
     await sync.stop()
     await running.value
+  }
+
+  @Test func aBacklogLargerThan8MiBDrainsInSeveralPushes() async throws {
+    let store = try MirrorStore.inMemory()
+    try store.saveLink(link)
+    _ = try store.apply(try fixtureAsStored())
+    try store.setCursor(12)
+    // Seven 1.5 MiB titles: 10.5 MiB, each change under the hub's 2 MiB value limit.
+    let big = String(repeating: "x", count: 1_572_864)
+    for seq in 1...7 {
+      try store.queueRaw(
+        deviceSeq: seq, table: "threads", rowId: "thread-1", column: "title", value: "\"\(seq)\(big)\"")
+    }
+    let hub = FakeHubAPI(stored: try fixtureAsStored())
+    let sync = MirrorSync(store: store, api: hub, onBatch: { _ in })
+    let running = Task { await sync.run() }
+
+    try await eventually("outbox drained") { store.outboxCount == 0 }
+    let pushed = await hub.pushed
+    // The first request is the empty sequence check; then five changes (7.5 MiB) and two.
+    #expect(pushed.map(\.count) == [0, 5, 2])
+    for batch in pushed {
+      let body = try JSONCoding.encoder.encode(Body(changes: batch))
+      #expect(body.count <= MirrorSync.pushBytes)
+    }
+    #expect(pushed.flatMap { $0 }.map(\.deviceSeq) == Array(1...7))
+    await sync.stop()
+    await running.value
+  }
+
+  @Test func aPushAlwaysCarriesAtLeastOneChange() throws {
+    let change = SyncChange(
+      deviceSeq: 1, wall: 1, table: "threads", rowId: "t", op: "update", column: "title", value: "long",
+      hlc: macClock.next().rawValue)
+    var second = change
+    second.deviceSeq = 2
+    #expect(MirrorStore.uploadPrefix([change, second], rows: 500, bytes: 1).map(\.deviceSeq) == [1])
+    #expect(MirrorStore.uploadPrefix([change, second], rows: 1, bytes: .max).map(\.deviceSeq) == [1])
+    #expect(MirrorStore.uploadPrefix([change, second], rows: 500, bytes: .max).count == 2)
+    #expect(MirrorStore.uploadPrefix([], rows: 500, bytes: 1).isEmpty)
   }
 
   @Test func theRefusedCountSurvivesReopeningTheFile() throws {

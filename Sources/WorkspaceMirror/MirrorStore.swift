@@ -103,6 +103,11 @@ public final class MirrorStore: @unchecked Sendable {
   let wall: @Sendable () -> UInt64
   /// Column names and declared types per synced table, read from the schema at open.
   var columns: [String: [String: String]] = [:]
+  /// The highest outbox `deviceSeq` that may already be at the hub: every row handed to a push this
+  /// session, and every row that existed when the file was opened (an earlier process may have sent it
+  /// before it stopped). A local write collapses only into queued rows above it, never into one the hub
+  /// may hold, whose resend would be ignored as a repeat. Read and written only inside `locked`.
+  var sentThrough = 0
 
   /// Opens (creating when missing) and migrates the file. Throws `MirrorStoreError.needsRebuild` when
   /// its schema is newer than this build's or a migration fails, leaving the file untouched.
@@ -147,6 +152,11 @@ public final class MirrorStore: @unchecked Sendable {
         #"SELECT max("hlc") AS "hlc" FROM (SELECT "hlc" FROM "columnClocks" UNION ALL SELECT "hlc" FROM "outbox")"#
       ).first?["hlc"]
       if case .text(let text)? = latest, let hlc = HLC(rawValue: text) { clock.observe(hlc) }
+      if case .integer(let seq)? = try query(#"SELECT "lastDeviceSeq" FROM "syncState" WHERE "id" = 1"#)
+        .first?["lastDeviceSeq"]
+      {
+        sentThrough = Int(seq)
+      }
     }
   }
 

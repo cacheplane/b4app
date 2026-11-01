@@ -4,7 +4,7 @@ import WorkspaceSync
 import os
 
 /// Keeps a `MirrorStore` and the hub in step. Each turn of the loop pushes the phone's queued edits
-/// (`MirrorStore.outbox`, at most 500 rows a request), then long-polls the change feed after the cursor,
+/// (`MirrorStore.nextUpload`, at most 500 rows and 8 MiB a request), then long-polls the change feed after the cursor,
 /// applies the page, advances the cursor to the page's `next`, and reports the batch.
 ///
 /// - A push removes the outbox through `acceptedThrough` only; the hub's `rejected` changes are covered
@@ -45,6 +45,9 @@ public actor MirrorSync {
   private static let logger = Logger(subsystem: "com.cacheplane.b4app", category: "mirror")
   static let pageLimit = 1000
   static let pushLimit = 500
+  /// The most encoded change JSON one push carries (the Mac's `HubSync.batchBytes`), well under the
+  /// hub's 32 MiB body limit, whose 413 would otherwise refuse the same backlog on every retry.
+  static let pushBytes = 8 * 1024 * 1024
   static let waitSeconds = 25
   static let devicesInterval: Duration = .seconds(60)
 
@@ -141,10 +144,10 @@ public actor MirrorSync {
     sequenceChecked = true
   }
 
-  /// Uploads the outbox, oldest first, in requests of at most 500 rows, until it is empty.
+  /// Uploads the outbox, oldest first, in requests of at most 500 rows and 8 MiB, until it is empty.
   private func pushOutbox() async throws {
     while true {
-      let batch = try store.outbox(limit: Self.pushLimit)
+      let batch = try store.nextUpload(rows: Self.pushLimit, bytes: Self.pushBytes)
       guard let first = batch.first else { return }
       let response = try await api.push(batch)
       // Nothing was taken (a hub that answers with a number below the batch): retrying at once would

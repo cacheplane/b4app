@@ -28,6 +28,9 @@ public actor FakeHubAPI: HubAPI {
 
   /// The hub refuses a `value` over this many bytes of serialised JSON.
   private static let maxValueBytes = 2_097_152
+  /// The hub refuses a whole push whose body is over this many bytes with a 413, before reading it.
+  public static let maxBodyBytes = 33_554_432
+  private struct Body: Encodable { var changes: [SyncChange] }
 
   public init(enrollmentCodes: [String: EnrollResponse] = [:], stored: [StoredChange] = []) {
     self.enrollmentCodes = enrollmentCodes
@@ -80,6 +83,9 @@ public actor FakeHubAPI: HubAPI {
 
   public func push(_ changes: [SyncChange]) async throws -> PushResponse {
     try authorize()
+    if let body = try? JSONCoding.encoder.encode(Body(changes: changes)), body.count > Self.maxBodyBytes {
+      throw Self.error("payload_too_large", "The request body is too large.", status: 413)
+    }
     pushed.append(changes)
     let deviceId = device?.deviceId ?? "fake-device"
     var rejected: [RejectedChange] = []

@@ -84,6 +84,8 @@ private func pulled(
       try store.saveLink(link)
       _ = try store.apply(Array(try fixtureAsStored().prefix(2)))
       _ = try store.updateThread(id: "thread-1", title: "One", pinned: nil, archived: nil)
+      // Handed to a push, so the next title is a row of its own rather than collapsing into it.
+      #expect(try store.nextUpload(rows: 10, bytes: .max).map(\.deviceSeq) == [1])
       _ = try store.updateThread(id: "thread-1", title: "Two", pinned: nil, archived: nil)
       try store.removeOutbox(through: 1)
       #expect(try store.outbox(limit: 10).map(\.deviceSeq) == [2])
@@ -226,9 +228,11 @@ private func pulled(
     // Nil marks it unread again, and then an older turn is acceptable.
     #expect(try store.markRead(threadId: "thread-1", turnId: nil)?.readTurnId == nil)
     #expect(try store.markRead(threadId: "thread-1", turnId: older)?.readTurnId == older)
+    // Nothing was sent in between, so the three marks share one queued row holding the last.
     let queued = try store.outbox(limit: 10)
-    #expect(queued.map(\.column) == ["readTurnId", "readTurnId", "readTurnId"])
-    #expect(queued.map(\.value) == [.string(newer), .null, .string(older)])
+    #expect(queued.map(\.deviceSeq) == [1])
+    #expect(queued.map(\.column) == ["readTurnId"])
+    #expect(queued.map(\.value) == [.string(older)])
   }
 
   @Test func saveDraftInsertsThenUpdatesColumnByColumn() throws {
@@ -256,6 +260,64 @@ private func pulled(
     #expect(throws: WorkspaceError.self) { try store.saveDraft(threadId: "missing", text: "x") }
   }
 
+  @Test func repeatedDraftSavesOfflineQueueOneRowPerColumn() throws {
+    let store = try linkedStore()
+    _ = try store.saveDraft(threadId: "thread-1", text: "h")
+    var typed = "h"
+    for letter in "alf a thought" {
+      typed.append(letter)
+      _ = try store.saveDraft(threadId: "thread-1", text: typed)
+    }
+    _ = try store.updateThread(id: "thread-1", title: "One", pinned: nil, archived: nil)
+    _ = try store.updateThread(id: "thread-1", title: "Two", pinned: true, archived: nil)
+    _ = try store.updateThread(id: "thread-1", title: "Three", pinned: nil, archived: nil)
+
+    // The new draft's insert, then one row per column, each keeping the number it was first given
+    // and carrying the latest value and clock. (`updatedAt` is queued only if the clock ticked past the
+    // insert's timestamp during the loop, and then once.)
+    let queued = try store.outbox(limit: 100)
+    let columns = queued.map { $0.column ?? $0.op }
+    #expect(columns.filter { $0 != "updatedAt" } == ["insert", "text", "title", "pinned"])
+    #expect(columns.filter { $0 == "updatedAt" }.count <= 1)
+    #expect(queued.map(\.deviceSeq) == Array(1...queued.count))
+    #expect(try store.lastDeviceSeq == queued.count)
+    #expect(queued[0].value?["text"] == "h")
+    let text = try #require(queued.first { $0.column == "text" })
+    let title = try #require(queued.first { $0.column == "title" })
+    #expect(text.deviceSeq == 2)
+    #expect(text.value == .string("half a thought"))
+    #expect(title.value == "Three")
+    #expect(queued.allSatisfy { HLC(rawValue: $0.hlc ?? "") != nil })
+    #expect(try clock(title.hlc) > clock(text.hlc))
+    #expect(try store.columnClock(table: "threads", rowId: "thread-1", column: "title") == title.hlc)
+    #expect(try store.columnClock(table: "drafts", rowId: "thread-1", column: "text") == text.hlc)
+    #expect(try store.draft(threadId: "thread-1")?.text == "half a thought")
+  }
+
+  @Test func anEditNeverCollapsesIntoARowThatMayBeAtTheHub() throws {
+    let path = NSTemporaryDirectory() + "mirror-\(UUID().uuidString.prefix(8)).sqlite"
+    defer { MirrorStoreTests.remove(path) }
+    do {
+      let store = try MirrorStore(path: path)
+      try store.saveLink(link)
+      _ = try store.apply(Array(try fixtureAsStored().prefix(2)))
+      _ = try store.updateThread(id: "thread-1", title: "One", pinned: nil, archived: nil)
+      // A push is in flight with row 1: the next title queues behind it, untouched.
+      #expect(try store.nextUpload(rows: 10, bytes: .max).map(\.deviceSeq) == [1])
+      _ = try store.updateThread(id: "thread-1", title: "Two", pinned: nil, archived: nil)
+      _ = try store.updateThread(id: "thread-1", title: "Three", pinned: nil, archived: nil)
+      let queued = try store.outbox(limit: 10)
+      #expect(queued.map(\.deviceSeq) == [1, 2])
+      #expect(queued.map(\.value) == ["One", "Three"])
+    }
+    // Rows that were queued when the file was opened may have gone out before the app stopped.
+    let reopened = try MirrorStore(path: path)
+    _ = try reopened.updateThread(id: "thread-1", title: "Four", pinned: nil, archived: nil)
+    let queued = try reopened.outbox(limit: 10)
+    #expect(queued.map(\.deviceSeq) == [1, 2, 3])
+    #expect(queued.map(\.value) == ["One", "Three", "Four"])
+  }
+
   /// Review Focus 4, mirror side.
   @Test func renameProjectToEmptyShowsFolderName() throws {
     let store = try linkedStore()
@@ -280,10 +342,11 @@ private func pulled(
     #expect(cleared.name == "")
     #expect(cleared.displayName == "b4app")
     #expect(try store.projects().first?.displayName == "b4app")
+    // Both renames are one queued row (nothing was sent in between), holding the last name.
     let queued = try store.outbox(limit: 10)
-    #expect(queued.map(\.table) == ["projects", "projects"])
-    #expect(queued.map(\.column) == ["name", "name"])
-    #expect(queued.map(\.value) == ["Agent Workspace", ""])
+    #expect(queued.map(\.table) == ["projects"])
+    #expect(queued.map(\.column) == ["name"])
+    #expect(queued.map(\.value) == [""])
     #expect(try store.renameProject(id: "missing", name: "x") == nil)
   }
 
