@@ -271,6 +271,7 @@ private struct HubHarness {
     // A 401 is recorded, leaves the rows unsynced, and stops write-driven pushes until the next join.
     await h.fake.setFailNext(unauthorized)
     try await h.addThread()
+    // Polled: HubSync records the 401 on the link and stops, with no event or later hub call after it.
     var status = try await h.status()
     let deadline = ContinuousClock.now + .seconds(10)
     while status.lastError == nil, ContinuousClock.now < deadline {
@@ -282,6 +283,7 @@ private struct HubHarness {
     #expect(try db.changes(after: 0).last?.deviceId == "dev-mac")
     let attempts = await h.fake.pushed.count
     try await h.addThread()
+    // Timed on purpose: past the 250 ms write debounce, no push may follow; an absence has no event.
     try await Task.sleep(for: .milliseconds(600))
     #expect(await h.fake.pushed.count == attempts)
   }
