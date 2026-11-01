@@ -28,27 +28,62 @@ import WorkspaceProtocol
   @Test func decodesTheShapes() throws {
     let data = try Data(contentsOf: fixtureURL("relay.json"))
     let messages = try JSONCoding.decoder.decode([RelayMessage].self, from: data)
-    guard case .hello(let protocolVersion, _, _, let role, let heartbeat, _) = messages[0] else {
-      Issue.record("first is not hello")
+    let hello = messages.first { if case .hello = $0 { true } else { false } }
+    guard case .hello(let protocolVersion, _, _, let role, let heartbeat, _)? = hello else {
+      Issue.record("no hello")
       return
     }
     #expect(protocolVersion == 1 && role == .client && heartbeat == 10)
-    guard case .command(_, let method, _, let deadline, let from) = messages[6] else {
-      Issue.record("seventh is not a command")
+    let stamped = messages.compactMap { m -> (RelayMethod, String?, RelayFrom?)? in
+      if case .command(_, let method, _, let deadline, let from) = m, deadline != nil {
+        return (method, deadline, from)
+      }
+      return nil
+    }
+    #expect(stamped.map(\.0) == [.turnInterrupt, .requestRespond])
+    #expect(stamped.allSatisfy { $0.2?.name == "Brian's iPhone" })
+    let event = messages.compactMap { m -> AdapterEvent? in
+      if case .event(let event) = m { return event }
+      return nil
+    }.first
+    #expect(event?.kind == .messageDelta && event?.threadId == "thread-1")
+    let methods = Set(
+      messages.compactMap { m -> RelayMethod? in
+        if case .command(_, let method, _, _, _) = m { return method }
+        return nil
+      })
+    #expect(methods == Set(RelayMethod.allCases))
+  }
+
+  @Test func unknownErrorCodesStillDecodeAndRoundTrip() throws {
+    let frames = [
+      #"{"type":"error","code":"invalid_request","message":"Bad frame."}"#,
+      #"{"type":"error","code":"payload_too_large","message":"Too big.","details":{"limit":65536}}"#,
+      #"{"type":"reply","id":"c1","error":{"code":"invalid_request","message":"No.","details":{"a":1}}}"#,
+    ]
+    for frame in frames {
+      let message = try JSONCoding.decoder.decode(RelayMessage.self, from: Data(frame.utf8))
+      let original = try JSONCoding.decoder.decode(JSONValue.self, from: Data(frame.utf8))
+      let encoded = try JSONCoding.decoder.decode(
+        JSONValue.self, from: JSONCoding.encoder.encode(message))
+      #expect(encoded == original)
+    }
+    let message = try JSONCoding.decoder.decode(RelayMessage.self, from: Data(frames[0].utf8))
+    guard case .error(let code, _, _) = message else {
+      Issue.record("not an error frame")
       return
     }
-    #expect(method == .turnInterrupt && deadline != nil && from?.name == "Brian's iPhone")
-    guard case .event(let event) = messages[13] else {
-      Issue.record("not an event")
+    #expect(code == "invalid_request" && ErrorCode(rawValue: code) == nil)
+
+    let reply = try JSONCoding.decoder.decode(RelayMessage.self, from: Data(frames[2].utf8))
+    guard case .reply(_, _, let error?) = reply else {
+      Issue.record("not a reply error")
       return
     }
-    #expect(event.kind == .messageDelta && event.threadId == "thread-1")
-    #expect(
-      Set(
-        messages.compactMap { m -> RelayMethod? in
-          if case .command(_, let method, _, _, _) = m { return method }
-          return nil
-        }) == Set(RelayMethod.allCases))
+    #expect(error.errorCode == nil)
+    #expect(error.workspaceError.code == .protocolInvalid)
+    #expect(error.workspaceError.details?["relayCode"]?.stringValue == "invalid_request")
+    #expect(RelayWireError(.deviceOffline, "x").workspaceError.code == .deviceOffline)
   }
 
   @Test func anUnknownTypeIsRefused() {

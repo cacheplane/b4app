@@ -42,6 +42,38 @@ public struct RelayFrom: Codable, Sendable, Equatable {
   }
 }
 
+/// The failure of one relayed command, carried in a `reply`. The hub's `WireError`. `code` stays the raw
+/// string, so a code this build does not know (a newer hub's, or `invalid_request`) still decodes and
+/// round-trips; `errorCode` is the known `ErrorCode`, when there is one.
+public struct RelayWireError: Codable, Sendable, Equatable {
+  public var code: String
+  public var message: String
+  public var details: JSONValue?
+
+  public init(code: String, message: String, details: JSONValue? = nil) {
+    self.code = code
+    self.message = message
+    self.details = details
+  }
+
+  public init(_ code: ErrorCode, _ message: String, details: JSONValue? = nil) {
+    self.init(code: code.rawValue, message: message, details: details)
+  }
+
+  /// The code as an `ErrorCode`, or nil when it is not one this build knows.
+  public var errorCode: ErrorCode? { ErrorCode(rawValue: code) }
+
+  /// The error as the rest of the app throws it: an unknown code becomes `protocolInvalid`, with the
+  /// original string kept in `details.relayCode`.
+  public var workspaceError: WorkspaceError {
+    if let errorCode { return WorkspaceError(errorCode, message, details: details) }
+    var merged: [String: JSONValue] = [:]
+    if case .object(let object)? = details { merged = object }
+    merged["relayCode"] = .string(code)
+    return WorkspaceError(.protocolInvalid, message, details: .object(merged))
+  }
+}
+
 /// One frame on a relay link: the same shape as the hub's `RelayMessage` in `b4hub-core`, and
 /// `Tests/Fixtures/sync/relay.json` is decoded and re-encoded by both. Absent optional fields are
 /// omitted when encoding, never written as `null`. `params` and `result` are opaque to the hub.
@@ -56,7 +88,7 @@ public enum RelayMessage: Codable, Sendable, Equatable {
   case command(
     id: String, method: RelayMethod, params: JSONValue, deadline: String? = nil, from: RelayFrom? = nil)
   /// `result` or `error`, never both.
-  case reply(id: String, result: JSONValue? = nil, error: WorkspaceError? = nil)
+  case reply(id: String, result: JSONValue? = nil, error: RelayWireError? = nil)
   case watch(threadId: String)
   case unwatch(threadId: String)
   /// Hub to host: the full set of its threads that some client watches.
@@ -65,8 +97,9 @@ public enum RelayMessage: Codable, Sendable, Equatable {
   /// Hub to client: events for this thread were dropped.
   case streamGap(threadId: String)
   case presence(hosts: [RelayHostPresence])
-  /// Hub to device: a problem with the link or a frame, not with a command.
-  case error(code: ErrorCode, message: String, details: JSONValue? = nil)
+  /// Hub to device: a problem with the link or a frame, not with a command. `code` is the raw string
+  /// (see `RelayWireError`).
+  case error(code: String, message: String, details: JSONValue? = nil)
 
   private enum CodingKeys: String, CodingKey {
     case type, `protocol`, minClientProtocol, deviceId, role, heartbeatSeconds, hubTime, id, method, params
@@ -110,7 +143,7 @@ public enum RelayMessage: Codable, Sendable, Equatable {
       self = .reply(
         id: try c.decode(String.self, forKey: .id),
         result: try c.decodeIfPresent(JSONValue.self, forKey: .result),
-        error: try c.decodeIfPresent(WorkspaceError.self, forKey: .error))
+        error: try c.decodeIfPresent(RelayWireError.self, forKey: .error))
     case .watch:
       self = .watch(threadId: try c.decode(String.self, forKey: .threadId))
     case .unwatch:
@@ -125,7 +158,7 @@ public enum RelayMessage: Codable, Sendable, Equatable {
       self = .presence(hosts: try c.decode([RelayHostPresence].self, forKey: .hosts))
     case .error:
       self = .error(
-        code: try c.decode(ErrorCode.self, forKey: .code),
+        code: try c.decode(String.self, forKey: .code),
         message: try c.decode(String.self, forKey: .message),
         details: try c.decodeIfPresent(JSONValue.self, forKey: .details))
     }

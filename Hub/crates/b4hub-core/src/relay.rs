@@ -231,6 +231,23 @@ mod tests {
     }
 
     #[test]
+    fn constants_match_the_swift_limits() {
+        assert_eq!(HEARTBEAT_SECONDS, 10);
+        assert_eq!(DEAD_LINK, Duration::from_secs(30));
+        assert_eq!(COMMAND_DEADLINE, Duration::from_secs(10));
+        assert_eq!(REPLY_WAIT_START, Duration::from_secs(30));
+        assert_eq!(REPLY_WAIT_OTHER, Duration::from_secs(15));
+        assert_eq!(HOLD_WINDOW, Duration::from_secs(60));
+        assert_eq!(PENDING_THREAD_TTL, Duration::from_secs(300));
+        assert_eq!(CLIENT_FRAME_MAX, 65_536);
+        assert_eq!(HOST_FRAME_MAX, 262_144);
+        assert_eq!(WATCH_MAX, 4);
+        assert_eq!(HELD_MAX, 32);
+        assert_eq!(LINK_QUEUE, 256);
+        assert_eq!(FORWARDED_EVENT_KINDS.len(), 10);
+    }
+
+    #[test]
     fn unknown_type_is_an_error() {
         let result = serde_json::from_str::<RelayMessage>(r#"{"type":"teleport"}"#);
         assert!(result.is_err());
