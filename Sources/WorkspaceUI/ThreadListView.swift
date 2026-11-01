@@ -372,9 +372,12 @@ struct FlatThreadList: View {
 }
 
 /// The phone's filter: all projects, one project, "Other", or the archive; the connection filter
-/// sits below a divider, where the connection picker used to be.
+/// sits below a divider, where the connection picker used to be. With one project selected, the
+/// menu also renames it (the phone's only project edit).
 struct ProjectFilterMenu: View {
   @Bindable var model: WorkspaceModel
+  @State private var renaming: Project?
+  @State private var newName = ""
 
   var body: some View {
     Menu {
@@ -389,6 +392,13 @@ struct ProjectFilterMenu: View {
         Text("Archived").tag(ProjectFilter.archived)
       }
       .pickerStyle(.inline)
+      if let project = selectedProject {
+        Button("Rename \u{201C}\(project.displayName)\u{201D}\u{2026}", systemImage: "pencil") {
+          newName = project.name
+          renaming = project
+        }
+        .accessibilityIdentifier("rename-project")
+      }
       if model.connections.count > 1 {
         Divider()
         Picker("Connection", selection: $model.connectionFilter) {
@@ -413,6 +423,23 @@ struct ProjectFilterMenu: View {
       .fixedSize()
     #endif
     .accessibilityIdentifier("project-filter")
+    .alert(
+      "Rename project", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } }),
+      presenting: renaming
+    ) { project in
+      TextField("Name", text: $newName)
+      Button("Rename") {
+        Task { await model.renameProject(id: project.id, name: newName.trimmingCharacters(in: .whitespaces)) }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: { _ in
+      Text("Leave it empty to show the first folder's name.")
+    }
+  }
+
+  private var selectedProject: Project? {
+    guard case .project(let id) = model.projectFilter else { return nil }
+    return model.filterProjects.first { $0.id == id }
   }
 
   private var label: String {
