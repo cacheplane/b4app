@@ -16,17 +16,7 @@ public nonisolated struct LLAMark: Shape {
   public init(variant: Variant = .full) { self.variant = variant }
 
   public func path(in rect: CGRect) -> Path {
-    guard let art = BrandArt.load(variant), art.viewBox.width > 0, art.viewBox.height > 0 else {
-      return Path()
-    }
-    let scale = min(rect.width / art.viewBox.width, rect.height / art.viewBox.height)
-    let width = art.viewBox.width * scale
-    let height = art.viewBox.height * scale
-    let transform = CGAffineTransform(
-      translationX: rect.minX + (rect.width - width) / 2 - art.viewBox.minX * scale,
-      y: rect.minY + (rect.height - height) / 2 - art.viewBox.minY * scale
-    ).scaledBy(x: scale, y: scale)
-    return art.path.applying(transform)
+    BrandShape(name: variant.rawValue).path(in: rect)
   }
 
   /// Natural width divided by height, for sizing by height.
@@ -60,19 +50,22 @@ nonisolated struct BrandArt: Sendable {
   var viewBox: CGRect
   var path: Path
 
-  private static let cache = Mutex<[LLAMark.Variant: BrandArt]>([:])
+  private static let cache = Mutex<[String: BrandArt]>([:])
 
-  static func load(_ variant: LLAMark.Variant) -> BrandArt? {
-    if let cached = cache.withLock({ $0[variant] }) { return cached }
+  static func load(_ variant: LLAMark.Variant) -> BrandArt? { load(named: variant.rawValue) }
+
+  /// A vendored SVG in `Resources/Brand` by file name, without the extension.
+  static func load(named name: String) -> BrandArt? {
+    if let cached = cache.withLock({ $0[name] }) { return cached }
     guard
-      let url = Bundle.module.url(forResource: variant.rawValue, withExtension: "svg", subdirectory: "Brand"),
+      let url = Bundle.module.url(forResource: name, withExtension: "svg", subdirectory: "Brand"),
       let text = try? String(contentsOf: url, encoding: .utf8), let art = parse(svg: text)
     else { return nil }
-    cache.withLock { $0[variant] = art }
+    cache.withLock { $0[name] = art }
     return art
   }
 
-  /// Reads `viewBox` and the first `<path d>` of an outlined SVG (absolute M, L, H, V, Q, C, Z only).
+  /// Reads `viewBox` and the first `<path d>` of an outlined SVG.
   static func parse(svg: String) -> BrandArt? {
     guard let box = capture(#"viewBox="([^"]+)""#, in: svg), let d = capture(#"\sd="([^"]+)""#, in: svg)
     else {
@@ -94,7 +87,8 @@ nonisolated struct BrandArt: Sendable {
   }
 }
 
-/// A minimal SVG path-data reader for the outlined brand files.
+/// A minimal SVG path-data reader for the outlined brand files: M, L, H, V, Q, C, A, and Z, absolute
+/// or relative.
 nonisolated enum SVGPathData {
   private enum Token { case command(Character), number(CGFloat) }
 
@@ -156,11 +150,86 @@ nonisolated enum SVGPathData {
         else { return path }
         path.addCurve(to: p, control1: c1, control2: c2)
         current = p
+      case "A":
+        guard let rx = number(), let ry = number(), let rotation = number(), let large = number(),
+          let sweep = number(), let p = point(relative: relative)
+        else { return path }
+        addArc(
+          to: &path, from: current, to: p, radii: CGSize(width: rx, height: ry), rotation: rotation,
+          large: large != 0, sweep: sweep != 0)
+        current = p
       default:
         return path
       }
     }
     return path
+  }
+
+  /// An elliptical arc as cubic curves, from the endpoint form (SVG 1.1, appendix F.6.5 and F.6.6).
+  private static func addArc(
+    to path: inout Path, from start: CGPoint, to end: CGPoint, radii: CGSize, rotation: CGFloat,
+    large: Bool, sweep: Bool
+  ) {
+    var rx = abs(radii.width)
+    var ry = abs(radii.height)
+    guard rx > 0, ry > 0, start != end else {
+      path.addLine(to: end)
+      return
+    }
+    let phi = rotation * .pi / 180
+    let (cosPhi, sinPhi) = (cos(phi), sin(phi))
+    let dx = (start.x - end.x) / 2
+    let dy = (start.y - end.y) / 2
+    let x1 = cosPhi * dx + sinPhi * dy
+    let y1 = -sinPhi * dx + cosPhi * dy
+    let lambda = (x1 * x1) / (rx * rx) + (y1 * y1) / (ry * ry)
+    if lambda > 1 {
+      rx *= lambda.squareRoot()
+      ry *= lambda.squareRoot()
+    }
+    let numerator = rx * rx * ry * ry - rx * rx * y1 * y1 - ry * ry * x1 * x1
+    let denominator = rx * rx * y1 * y1 + ry * ry * x1 * x1
+    var factor = (max(0, numerator) / denominator).squareRoot()
+    if large == sweep { factor = -factor }
+    let cx1 = factor * rx * y1 / ry
+    let cy1 = -factor * ry * x1 / rx
+    let center = CGPoint(
+      x: cosPhi * cx1 - sinPhi * cy1 + (start.x + end.x) / 2,
+      y: sinPhi * cx1 + cosPhi * cy1 + (start.y + end.y) / 2)
+
+    func angle(_ ux: CGFloat, _ uy: CGFloat, _ vx: CGFloat, _ vy: CGFloat) -> CGFloat {
+      atan2(ux * vy - uy * vx, ux * vx + uy * vy)
+    }
+    let theta1 = angle(1, 0, (x1 - cx1) / rx, (y1 - cy1) / ry)
+    var delta = angle((x1 - cx1) / rx, (y1 - cy1) / ry, (-x1 - cx1) / rx, (-y1 - cy1) / ry)
+    if !sweep && delta > 0 { delta -= 2 * .pi }
+    if sweep && delta < 0 { delta += 2 * .pi }
+
+    // One cubic per quarter turn or less keeps the error far below a pixel at icon sizes.
+    let segments = max(1, Int((abs(delta) / (.pi / 2)).rounded(.up)))
+    let step = delta / CGFloat(segments)
+    let k = 4 / 3 * tan(step / 4)
+    func onEllipse(_ t: CGFloat) -> (point: CGPoint, derivative: CGPoint) {
+      let (cosT, sinT) = (cos(t), sin(t))
+      let point = CGPoint(
+        x: center.x + rx * cosT * cosPhi - ry * sinT * sinPhi,
+        y: center.y + rx * cosT * sinPhi + ry * sinT * cosPhi)
+      let derivative = CGPoint(
+        x: -rx * sinT * cosPhi - ry * cosT * sinPhi,
+        y: -rx * sinT * sinPhi + ry * cosT * cosPhi)
+      return (point, derivative)
+    }
+    var t = theta1
+    for index in 0..<segments {
+      let a = onEllipse(t)
+      let b = onEllipse(t + step)
+      let target = index == segments - 1 ? end : b.point
+      path.addCurve(
+        to: target,
+        control1: CGPoint(x: a.point.x + k * a.derivative.x, y: a.point.y + k * a.derivative.y),
+        control2: CGPoint(x: b.point.x - k * b.derivative.x, y: b.point.y - k * b.derivative.y))
+      t += step
+    }
   }
 
   private static func tokenize(_ d: String) -> [Token] {
@@ -179,6 +248,10 @@ nonisolated enum SVGPathData {
       } else if character == "-", !buffer.isEmpty, !buffer.hasSuffix("e") {
         flush()
         buffer = "-"
+      } else if character == ".", buffer.contains("."), !buffer.contains("e") {
+        // A second decimal point starts the next number: ".07.07" is 0.07 then 0.07.
+        flush()
+        buffer = "."
       } else {
         buffer.append(character)
       }
