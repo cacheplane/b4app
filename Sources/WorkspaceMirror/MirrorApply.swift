@@ -113,6 +113,8 @@ extension MirrorStore {
       switch change.table {
       case "connections": state.batch.touchedConnectionIds.insert(change.rowId)
       case "threads": state.batch.touchedThreadIds.insert(change.rowId)
+      // A draft's row id is its thread id; the open composer reloads on the thread's event.
+      case "drafts": state.batch.touchedThreadIds.insert(change.rowId)
       case "projects": state.batch.touchedProjectIds.insert(change.rowId)
       case "turns", "runtimeRequests": state.batch.touchedThreadIds.formUnion(parents)
       case "projectFolders": state.batch.touchedProjectIds.formUnion(parents)

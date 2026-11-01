@@ -287,6 +287,18 @@ private func pulled(
     #expect(try store.renameProject(id: "missing", name: "x") == nil)
   }
 
+  @Test func aPulledDraftTouchesItsThread() throws {
+    let store = try linkedStore(prefix: 2)
+    let draft = Draft(threadId: "thread-1", text: "from the Mac", updatedAt: "2026-10-31T12:05:00Z")
+    let inserted = try store.apply([
+      change("drafts", "thread-1", "insert", value: try JSONValue(encoding: draft))
+    ])
+    #expect(inserted.touchedThreadIds == ["thread-1"])
+    let edited = try store.apply([change("drafts", "thread-1", "update", column: "text", value: "edited")])
+    #expect(edited.touchedThreadIds == ["thread-1"])
+    #expect(try store.draft(threadId: "thread-1")?.text == "edited")
+  }
+
   @Test func turnsAndRequestsTouchTheirThread() throws {
     let store = try linkedStore(prefix: 2)
     let fixture = try fixtureAsStored()

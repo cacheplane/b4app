@@ -273,12 +273,27 @@ private struct AttentionDocument: Decodable {
     let model = try await connected(transport)
     #expect(model.pinnedThreads.map(\.id) == ["pinned-b"])
     // Beta holds a thread that needs input; Gamma an unread one; Other a working one; Alpha only quiet.
-    #expect(model.projectSections.map(\.id) == ["pb", "pc", "other", "pa"])
-    #expect(model.projectSections.map(\.title) == ["Beta", "Gamma", "Other", "Alpha"])
+    #expect(model.projectSections.map(\.id) == ["pb", "pc", "pa", "other"])
+    #expect(model.projectSections.map(\.title) == ["Beta", "Gamma", "Alpha", "Other"])
     #expect(model.projectSections.flatMap(\.threads).map(\.id).contains("pinned-b") == false)
     #expect(model.projectSections[0].threads.map(\.id) == ["waiting-b"])
     #expect(model.projectSections[1].threads.map(\.id) == ["unread-c", "quiet-c"])
-    #expect(model.projectSections[3].threads.map(\.id) == ["quiet-a", "quiet-a2"])
+    #expect(model.projectSections[2].threads.map(\.id) == ["quiet-a", "quiet-a2"])
+    #expect(model.projectSections[3].threads.map(\.id) == ["loose"])
+  }
+
+  @Test func otherComesLastEvenWhenItHoldsTheOnlyThreadThatNeedsInput() async throws {
+    let transport = ScriptedTransport()
+    transport.set(
+      threads: [
+        thread("asks", activity: activity(pending: 1, at: 99)),
+        thread("a", project: "pa", activity: activity(at: 1)),
+        thread("b", project: "pb", activity: activity(at: 2)),
+      ],
+      projects: [project("pa", "Alpha"), project("pb", "Beta")])
+    let model = try await connected(transport)
+    #expect(model.projectSections.map(\.id) == ["pb", "pa", "other"])
+    #expect(model.projectSections.last?.threads.map(\.id) == ["asks"])
   }
 
   @Test func sectionsInOneBandBreakTiesByRecentActivityThenTitle() async throws {
@@ -403,10 +418,19 @@ private struct AttentionDocument: Decodable {
     let other = thread("t2", activity: activity(turn: "x1", status: .running, at: 2))
     transport.set(threads: [open, other])
     transport.setRead(read(open, turns: [turn("u1", in: "t1", at: 2)]))
+    let done = turn("x1", in: "t2", at: 2)
+    var finishedOther = other
+    finishedOther.activity = activity(turn: "x1", status: .terminal, at: 2)
+    transport.setRead(read(finishedOther, turns: [done]))
     let model = try await connected(transport)
     await model.openThread(id: "t1")
-    transport.emit(try finished(turn("x1", in: "t2", at: 2)))
-    transport.emit(delta("t1"))  // a sentinel: events arrive in order
+    transport.emit(try finished(done))
+    // Wait for the refetch of t2 (it follows the event within the 200 ms window): it is now unread,
+    // and still nothing is marked, because t2 is not the open thread.
+    try await waitUntil("t2 refetched") {
+      transport.calls(.threadRead).contains { $0["threadId"]?.stringValue == "t2" }
+    }
+    try await waitUntil("t2 unread") { model.band(of: model.threads.first { $0.id == "t2" }!) == .unread }
     try await Task.sleep(for: .milliseconds(100))
     #expect(transport.calls(.threadMarkRead).isEmpty)
   }
@@ -466,6 +490,23 @@ private struct AttentionDocument: Decodable {
     #expect(model.reasonLine(for: read1) == "Read")
     #expect(model.reasonLine(for: fresh) == "No messages yet")
     #expect(model.reasonLine(for: bare) == "No messages yet")
+  }
+
+  @Test func aReplyWhoseTimeCannotBeReadKeepsJustTheWord() async throws {
+    let transport = ScriptedTransport()
+    func odd(_ id: String, _ outcome: TurnOutcome) -> ConversationThread {
+      var t = thread(id, activity: activity(turn: "u-\(id)", status: .terminal, outcome: outcome))
+      t.activity?.lastActivityAt = "not a time"
+      return t
+    }
+    let replied = odd("a", .completed)
+    let failed = odd("b", .failed)
+    let stopped = odd("c", .cancelled)
+    transport.set(threads: [replied, failed, stopped])
+    let model = try await connected(transport)
+    #expect(model.reasonLine(for: replied) == "Replied")
+    #expect(model.reasonLine(for: failed) == "Failed")
+    #expect(model.reasonLine(for: stopped) == "Stopped")
   }
 
   @Test func everyRequestKindHasAReasonLine() async throws {

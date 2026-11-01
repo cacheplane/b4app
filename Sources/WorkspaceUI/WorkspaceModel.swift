@@ -230,11 +230,13 @@ public final class WorkspaceModel {
       }
     case .unread:
       let when = relative(thread.activity?.lastActivityAt)
+      let word: String
       switch thread.activity?.latestTurnOutcome {
-      case .failed?: return "Failed \(when)"
-      case .cancelled?: return "Stopped \(when)"
-      case .completed?, nil: return "Replied \(when)"
+      case .failed?: word = "Failed"
+      case .cancelled?: word = "Stopped"
+      case .completed?, nil: word = "Replied"
       }
+      return when.isEmpty ? word : "\(word) \(when)"
     case .working:
       return "Working"
     case .quiet:
