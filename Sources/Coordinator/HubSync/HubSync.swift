@@ -45,6 +45,9 @@ public actor HubSync {
   private var pull: HubPull?
   /// Identifies the running pull, so a callback from one that has since been replaced is ignored.
   private var pullGeneration = UUID()
+  /// The hub user's display name: from the enrollment, or `/v1/me` once a start finds a link. Kept in
+  /// memory only, so the link table needs no migration.
+  private var displayName: String?
 
   public init(
     database: WorkspaceDatabase, secretStore: any SecretStore, eventLog: EventLog,
@@ -75,7 +78,10 @@ public actor HubSync {
     }
     guard nudgeTask == nil else { return }
     started = true
-    if let link = try? database.hubLink(), api != nil { startPull(deviceId: link.deviceId) }
+    if let link = try? database.hubLink(), let api {
+      startPull(deviceId: link.deviceId)
+      Task { await self.fetchDisplayName(api) }
+    }
     let events = await eventLog.subscribe()
     nudgeTask = Task { [weak self] in
       for await _ in events {
@@ -139,6 +145,7 @@ public actor HubSync {
     }
     database.deviceId = enrolled.deviceId
     self.api = api
+    displayName = enrolled.user.displayName
     suspended = false
     logger.info(
       "joined \(base.host ?? "hub", privacy: .public) as device \(enrolled.deviceId, privacy: .public)")
@@ -158,8 +165,19 @@ public actor HubSync {
     }
     return HubStatus.Result(
       joined: true, url: link.url, deviceId: link.deviceId, deviceName: link.deviceName,
-      orgSlug: link.orgSlug, username: link.username, unsyncedChanges: unsynced, lastPushAt: link.lastPushAt,
-      lastError: link.lastError)
+      orgSlug: link.orgSlug, username: link.username, displayName: displayName, unsyncedChanges: unsynced,
+      lastPushAt: link.lastPushAt, lastError: link.lastError)
+  }
+
+  private func fetchDisplayName(_ api: any HubAPI) async {
+    do {
+      let me = try await api.me()
+      // A leave or a new join while the request was out owns the name now.
+      guard self.api != nil, displayName == nil else { return }
+      displayName = me.user.displayName
+    } catch {
+      logger.debug("could not read the hub user's name: \(Self.describe(error), privacy: .public)")
+    }
   }
 
   /// Revoke this device at the hub (best effort), forget the token, clear the link, and record later
@@ -169,6 +187,7 @@ public actor HubSync {
     await stopPull()
     let api = self.api
     self.api = nil
+    displayName = nil
     suspended = false
     await waitForPush()
     if let api {

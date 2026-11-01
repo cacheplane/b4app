@@ -748,13 +748,15 @@ public enum HubStatus: WorkspaceCommand {
     public var deviceName: String?
     public var orgSlug: String?
     public var username: String?
+    /// The hub user's display name, when the coordinator has it (absent from a pre-0.2 coordinator).
+    public var displayName: String?
     public var unsyncedChanges: Int
     public var lastPushAt: String?
     public var lastError: String?
     public init(
       joined: Bool, url: String? = nil, deviceId: String? = nil, deviceName: String? = nil,
-      orgSlug: String? = nil, username: String? = nil, unsyncedChanges: Int, lastPushAt: String? = nil,
-      lastError: String? = nil
+      orgSlug: String? = nil, username: String? = nil, displayName: String? = nil, unsyncedChanges: Int,
+      lastPushAt: String? = nil, lastError: String? = nil
     ) {
       self.joined = joined
       self.url = url
@@ -762,6 +764,7 @@ public enum HubStatus: WorkspaceCommand {
       self.deviceName = deviceName
       self.orgSlug = orgSlug
       self.username = username
+      self.displayName = displayName
       self.unsyncedChanges = unsyncedChanges
       self.lastPushAt = lastPushAt
       self.lastError = lastError

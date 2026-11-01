@@ -318,6 +318,47 @@ private struct HubHarness {
     #expect(try db.unsyncedChangeCount() == db.changes(after: 0).count)
   }
 
+  @Test func joinReportsTheDisplayName() async throws {
+    let h = try await HubHarness.start()
+    defer { Task { await h.close() } }
+    let joined = try await h.join()
+    #expect(joined.displayName == enrolled.user.displayName)
+    #expect(try await h.status().displayName == enrolled.user.displayName)
+  }
+
+  @Test func leaveClearsTheDisplayName() async throws {
+    let h = try await HubHarness.start()
+    defer { Task { await h.close() } }
+    _ = try await h.join()
+    let left = try await h.client.request(
+      HubLeave.self, EmptyParams(),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    #expect(left.displayName == nil)
+    #expect(try await h.status().displayName == nil)
+  }
+
+  @Test func restartFetchesTheDisplayName() async throws {
+    // The name is held in memory only; a coordinator that starts on an existing link asks /v1/me.
+    let db = try WorkspaceDatabase.temporary()
+    let fake = FakeHubAPI()
+    await fake.addEnrollmentCode(code, enrolled)
+    let secrets = MemorySecretStore()
+    let first = HubSync(database: db, secretStore: secrets, eventLog: EventLog(), makeAPI: { _, _ in fake })
+    _ = try await first.join(url: "http://127.0.0.1:8080", code: code, deviceName: "Mac")
+    await first.stop()
+
+    let second = HubSync(database: db, secretStore: secrets, eventLog: EventLog(), makeAPI: { _, _ in fake })
+    #expect(try await second.status().displayName == nil)
+    await second.start()
+    let deadline = ContinuousClock.now + .seconds(10)
+    while try await second.status().displayName == nil, ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    #expect(try await second.status().displayName == enrolled.user.displayName)
+    await second.stop()
+    try db.close()
+  }
+
   @Test func restoreIsRefusedWhileJoined() async throws {
     let h = try await HubHarness.start()
     defer { Task { await h.close() } }
