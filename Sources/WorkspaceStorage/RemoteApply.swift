@@ -66,8 +66,12 @@ extension WorkspaceDatabase {
   /// - A change whose value the store refuses (SQLSTATE class 22 or 23) is rolled back to its own
   ///   savepoint and skipped; it never fails the batch. Any other failure (a deadlock, a lock timeout, a
   ///   cancelled statement, a lost connection) fails the whole batch, cursor included, so it is retried.
-  /// - Each target row is locked (`FOR UPDATE`; a draft's thread too) before its clock is read, so a
-  ///   local edit committing meanwhile is either waited for and then compared, or waits for this one.
+  /// - The batch holds `remoteApplyLockKey` exclusively, taken first, while every local `write` holds it
+  ///   shared: a local edit is never stamped while a batch is in flight (it waits, then stamps after
+  ///   every clock the batch applied), and a batch never waits on a row a local write has locked.
+  ///   Each target row is still locked (`FOR UPDATE`; a draft's thread too) before its clock is read;
+  ///   with the advisory lock held no `write` can hold a conflicting row lock, so these never wait, and
+  ///   they double as the existence checks.
   ///
   /// Runs in one transaction with `b4app.replaying` on, so nothing is recorded in the change log (and so
   /// nothing echoes back to the hub), and sets `hubLink.cursor` to `cursor` in the same transaction even
@@ -76,7 +80,17 @@ extension WorkspaceDatabase {
   public func applyRemote(
     _ changes: [RemoteChange], ownDeviceId: String, macDeviceIds: Set<String>, cursor: Int
   ) throws -> RemoteApplied {
-    try write { c in
+    try applyRemote(changes, ownDeviceId: ownDeviceId, macDeviceIds: macDeviceIds, cursor: cursor) { _ in }
+  }
+
+  /// `applyRemote`, calling `didLock` inside the transaction once the advisory lock is held and before
+  /// any change is looked at (tests start a local write there).
+  func applyRemote(
+    _ changes: [RemoteChange], ownDeviceId: String, macDeviceIds: Set<String>, cursor: Int,
+    didLock: (PostgresConnection) throws -> Void
+  ) throws -> RemoteApplied {
+    try write(exclusive: true) { c in
+      try didLock(c)
       try c.execute("SET LOCAL b4app.replaying = 'on'")
       var result = RemoteApplied()
       let wall = epochMillis()

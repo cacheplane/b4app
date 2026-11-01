@@ -384,6 +384,58 @@ extension RemoteApplyTests {
     #expect(try db.columnClock(table: "threads", rowId: "t1", column: "title") == stamp(3_000, mac))
   }
 
+  /// A local title edit starts while a pull batch holds the lock and before it has looked at its
+  /// changes (whose clock, 9000, is ahead of this Mac's wall, 5000). The edit waits for the batch to
+  /// commit and only then takes its clock, which has observed the pulled one: it is stamped after it,
+  /// wins, and the row, its column clock, and the change sent to the hub all agree.
+  @Test func aLocalEditStartedDuringAPullIsStampedAfterIt() throws {
+    let (db, wall) = try pinnedStore()
+    wall.set(5_000)
+    let pulled = stamp(9_000, phone)
+    let localDone = DispatchSemaphore(value: 0)
+    let localFailure = Mutex<String?>(nil)
+    let waited = Mutex(false)
+    let result = try db.applyRemote(
+      [remote(phone, pulled, "threads", "t1", column: "title", value: "Phone title")],
+      ownDeviceId: mac, macDeviceIds: [mac], cursor: 1
+    ) { c in
+      DispatchQueue.global().async {
+        do {
+          _ = try db.updateThread(id: "t1") { $0.title = "Mac title" }
+        } catch {
+          localFailure.withLock { $0 = String(describing: error) }
+        }
+        localDone.signal()
+      }
+      // Hold the batch until the local edit is seen waiting on it (or, were it not made to wait, done).
+      let me = try c.execute("SELECT pg_backend_pid() AS \"pid\"").rows.first?.int("pid") ?? 0
+      let deadline = Date().addingTimeInterval(10)
+      while Date() < deadline {
+        if try !c.execute(
+          "SELECT \"pid\" FROM pg_locks WHERE NOT \"granted\" AND $1::int = ANY(pg_blocking_pids(\"pid\"))",
+          [String(me)]
+        ).rows.isEmpty {
+          waited.withLock { $0 = true }
+          break
+        }
+        if localDone.wait(timeout: .now() + .milliseconds(10)) == .success {
+          localDone.signal()
+          break
+        }
+      }
+    }
+    localDone.wait()
+    if let failure = localFailure.withLock({ $0 }) { Issue.record("the local edit failed: \(failure)") }
+    #expect(waited.withLock { $0 })
+    #expect(result.applied == 1)
+
+    let local = try #require(try db.changes(after: 0).last { $0.column == "title" })
+    #expect(local.value == "Mac title")
+    #expect(local.hlc.utf8.lexicographicallyPrecedes(pulled.utf8) == false && local.hlc != pulled)
+    #expect(try db.thread(id: "t1")?.title == "Mac title")
+    #expect(try db.columnClock(table: "threads", rowId: "t1", column: "title") == local.hlc)
+  }
+
   /// A local save creates the draft (clock 2000) while a newer phone draft (3000) is pulled: the pull
   /// waits on the thread, then finds the draft and wins column by column, instead of hitting the unique
   /// key and dropping the newer edit.

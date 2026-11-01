@@ -83,16 +83,32 @@ public final class WorkspaceDatabase: Sendable {
     do { return try pool.withConnection(body) } catch { throw Self.mapped(error) }
   }
 
-  /// One transaction. Its first statement sets `b4app.hlc` to the next clock stamp, so every change the
+  /// The transaction-scoped advisory lock that orders local writes against pulled batches: every
+  /// `write` holds it shared, `applyRemote` exclusive (any fixed value works; this is "b4ap" in ASCII).
+  static let remoteApplyLockKey: Int64 = 0x6234_6170
+
+  /// One transaction. It first takes `remoteApplyLockKey`, shared (or exclusive, for `applyRemote`),
+  /// before anything else, and only then sets `b4app.hlc` to the next clock stamp, so every change the
   /// transaction records shares it, and, when this Mac has a hub device id, `b4app.device_id` so the
   /// change-log trigger records it. (`read` runs outside a transaction, where a transaction-local
   /// setting would not persist, and no trigger fires on a read.)
-  func write<T>(_ body: (PostgresConnection) throws -> T) throws -> T {
+  ///
+  /// The lock comes first so a local write that starts while a pull batch is being applied waits for
+  /// the batch to commit before it takes its clock, which has by then observed every pulled clock: the
+  /// local edit is stamped after them and wins, on this Mac and at the hub alike. And because a pull
+  /// takes the lock before any row lock and a local write takes it before any row lock, a pull never
+  /// holds a row lock that a local write waits on, or the reverse, so the two cannot deadlock.
+  func write<T>(exclusive: Bool = false, _ body: (PostgresConnection) throws -> T) throws -> T {
     let device = deviceId
     do {
       return try pool.withConnection { c in
         try c.execute("BEGIN")
         do {
+          try c.execute(
+            exclusive
+              ? "SELECT pg_advisory_xact_lock($1::bigint)"
+              : "SELECT pg_advisory_xact_lock_shared($1::bigint)",
+            [String(Self.remoteApplyLockKey)])
           try c.execute("SELECT set_config('b4app.hlc', $1, true)", [clock.next().rawValue])
           if device != "local" { try c.execute("SELECT set_config('b4app.device_id', $1, true)", [device]) }
           let value = try body(c)
