@@ -168,11 +168,16 @@ struct SidebarView: View {
 /// A group label in the sidebar: small, muted, sentence case.
 struct SidebarGroupLabel: View {
   let title: String
-  init(_ title: String) { self.title = title }
+  /// Side inset; the sidebar's own padding is 10, a list header supplies its own.
+  let horizontal: CGFloat
+  init(_ title: String, horizontal: CGFloat = 10) {
+    self.title = title
+    self.horizontal = horizontal
+  }
 
   var body: some View {
     Text(title).font(LLAFont.small).foregroundStyle(LLA.Color.muted)
-      .padding(.horizontal, 10)
+      .padding(.horizontal, horizontal)
       .padding(.top, LLA.Space.m)
       .padding(.bottom, LLA.Space.xs)
       .textCase(nil)

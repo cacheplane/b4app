@@ -43,7 +43,7 @@ import WorkspaceProtocol
     #expect(model.sidebarSections.map(\.title) == ["Marketing site"])
   }
 
-  @Test func flatRowsShowTheProjectNameOnlyWhenAsked() async throws {
+  @Test func projectNameIsTheDisplayNameAndNilForOther() async throws {
     let model = try await ListFixture.model()
     let thread = try #require(model.threads.first { $0.id == "asks" })
     #expect(model.projectName(for: thread) == "b4app")
@@ -75,5 +75,32 @@ import WorkspaceProtocol
     #expect(DiagnosticsView.uploads(0, "refused") == "None")
     #expect(DiagnosticsView.uploads(1, "waiting to upload") == "1 change waiting to upload")
     #expect(DiagnosticsView.uploads(2, "refused") == "2 changes refused")
+  }
+
+  @Test func onlyAWorkingDotPulsesAndReduceMotionStopsIt() {
+    for band in [AttentionBand.needsInput, .unread, .quiet] {
+      #expect(!AttentionDot.pulses(band: band, reduceMotion: false))
+    }
+    #expect(AttentionDot.pulses(band: .working, reduceMotion: false))
+    #expect(!AttentionDot.pulses(band: .working, reduceMotion: true))
+  }
+
+  @Test func theWorkingRingStaysAsDarkAsTheQuietRingAtItsPaleSidePhase() {
+    // Ink at the pulse floor over the page background versus the muted quiet ring, light and dark.
+    func blend(_ ink: UInt32, over bg: UInt32) -> Double {
+      let f = AttentionDot.pulseFloor
+      func channel(_ shift: UInt32) -> Double {
+        Double((ink >> shift) & 0xFF) * f + Double((bg >> shift) & 0xFF) * (1 - f)
+      }
+      return 0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+    }
+    func lum(_ hex: UInt32) -> Double {
+      0.2126 * Double((hex >> 16) & 0xFF) + 0.7152 * Double((hex >> 8) & 0xFF) + 0.0722 * Double(hex & 0xFF)
+    }
+    let light = LLA.Palette.self
+    // Light: a paler ring has higher luminance; allow a few levels of slack for the thicker stroke.
+    #expect(blend(light.ink.light, over: light.surface.light) <= lum(light.muted.light) + 12)
+    // Dark: a paler ring has lower luminance.
+    #expect(blend(light.ink.dark, over: light.surface.dark) >= lum(light.muted.dark) - 12)
   }
 }

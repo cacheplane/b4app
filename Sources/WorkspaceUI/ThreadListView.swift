@@ -101,6 +101,17 @@ struct AttentionDot: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var dim = false
 
+  /// The lowest opacity of a working ring. A working ring (ink, 8 pt, 1.5 pt stroke) must never read
+  /// paler than a quiet ring (muted, 6 pt, 1 pt stroke), so the pulse stops well short of faint.
+  static let pulseFloor = 0.65
+
+  /// Whether the dot animates: only a working thread, and never under Reduce Motion.
+  static func pulses(band: AttentionBand, reduceMotion: Bool) -> Bool {
+    band == .working && !reduceMotion
+  }
+
+  private var pulses: Bool { Self.pulses(band: band, reduceMotion: reduceMotion) }
+
   var body: some View {
     ZStack {
       switch band {
@@ -109,14 +120,22 @@ struct AttentionDot: View {
       case .unread:
         Circle().fill(LLA.Color.ink)
       case .working:
-        Circle().strokeBorder(LLA.Color.ink, lineWidth: 1.5).opacity(dim ? 0.35 : 1)
+        Circle().strokeBorder(LLA.Color.ink, lineWidth: 1.5).opacity(pulses && dim ? Self.pulseFloor : 1)
       case .quiet:
         Circle().strokeBorder(LLA.Color.muted, lineWidth: 1).frame(width: 6, height: 6)
       }
     }
     .frame(width: 8, height: 8)
-    .onAppear {
-      guard band == .working, !reduceMotion else { return }
+    // Keyed by whether the dot pulses, not by appearance: a row keeps its identity when its band
+    // changes in place, and Reduce Motion can change while it is on screen. Each change resets the
+    // phase first, so a ring that goes working, quiet, working starts again at full opacity.
+    .task(id: pulses) {
+      var reset = Transaction()
+      reset.disablesAnimations = true
+      withTransaction(reset) { dim = false }
+      guard pulses else { return }
+      try? await Task.sleep(for: .milliseconds(30))
+      guard !Task.isCancelled else { return }
       withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { dim = true }
     }
     .accessibilityElement(children: .ignore)
