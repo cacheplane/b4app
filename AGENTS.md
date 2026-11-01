@@ -16,7 +16,7 @@ This repository is the Personal Agent Workspace: a native Swift macOS app, an iO
 - `Sources/WorkspaceProtocol` and `Sources/WorkspaceClient` are Foundation-only and link on iOS. Never import AppKit, NIO, GRDB, or Subprocess there.
 - `Sources/WorkspaceUI` is SwiftUI shared by both apps; it talks only to `WorkspaceClient`.
 - `Sources/WorkspacePlatform` holds paths, executable lookup, process running, Keychain, and the singleton lock.
-- `Sources/WorkspaceStorage` is the only module that opens SQLite, and only the coordinator uses it.
+- `Sources/WorkspaceStorage` is the only module that opens the database (PostgreSQL over libpq, started per Mac by `WorkspacePlatform`; the pre-M7 SQLite store is read once by the importer), and only the coordinator uses it.
 - `Sources/Coordinator` is the service both the app and the CLI talk to over the Unix socket; `Sources/CoordinatorMain` is its executable.
 - `Sources/CodexAdapter`, `ClaudeAdapter`, `B4Adapter`: one per native runtime. `Apps/` holds the two thin app targets.
 - Fake runtimes for tests live under `Tests/<Adapter>Tests/Fixtures/` (`fake-codex.py`, `fake-claude.py`, `fake-b4.py`, plus `fake-b4-cli.py` and `fake-node.sh` for managed servers: `Tests/CoordinatorTests/FakeB4Project.swift` builds a scratch project whose `node_modules/@b4run/cli/dist/index.js` is the fake CLI and sets `B4APP_NODE_PATH` to the shim); the coordinator tests reuse them by path. Live tests are gated by `B4APP_LIVE_CODEX`, `B4APP_LIVE_CLAUDE`, and `B4APP_LIVE_B4_URL`.
