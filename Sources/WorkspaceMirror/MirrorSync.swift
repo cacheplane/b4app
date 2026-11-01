@@ -1,6 +1,7 @@
 import Foundation
 import WorkspaceProtocol
 import WorkspaceSync
+import os
 
 /// Pulls the hub's change feed into a `MirrorStore`: long-poll after the cursor, apply the page,
 /// advance the cursor to the page's `next`, report the batch. `resync_required` (the cursor fell
@@ -18,6 +19,7 @@ public actor MirrorSync {
   /// The last failure, nil after a successful pull.
   public private(set) var lastError: String?
 
+  private static let logger = Logger(subsystem: "com.cacheplane.b4app", category: "mirror")
   static let pageLimit = 1000
   static let waitSeconds = 25
 
@@ -55,6 +57,11 @@ public actor MirrorSync {
         try store.setCursor(page.next)
         record(error: nil)
         backoff = initialBackoff
+        if batch.undecodableRows > 0 {
+          Self.logger.warning(
+            "mirror batch through \(page.next, privacy: .public) holds \(batch.undecodableRows, privacy: .public) rows this build cannot read"
+          )
+        }
         if !page.changes.isEmpty { await onBatch(batch) }
       } catch let error as HubError where error.code == "resync_required" {
         // From 0 there is nothing older to fall behind; a hub that still says so is failing.

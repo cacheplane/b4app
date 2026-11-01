@@ -457,13 +457,33 @@ public struct SyncDiagnostic: Codable, Sendable, Equatable {
   public var cursor: Int
   public var lastSyncAt: String?
   public var lastError: String?
+  /// Mirrored rows this build cannot decode (written by a newer Mac): kept, but not shown.
+  public var undecodableRows: Int
 
-  public init(hubURL: String, deviceName: String, cursor: Int, lastSyncAt: String?, lastError: String?) {
+  public init(
+    hubURL: String, deviceName: String, cursor: Int, lastSyncAt: String?, lastError: String?,
+    undecodableRows: Int = 0
+  ) {
     self.hubURL = hubURL
     self.deviceName = deviceName
     self.cursor = cursor
     self.lastSyncAt = lastSyncAt
     self.lastError = lastError
+    self.undecodableRows = undecodableRows
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case hubURL, deviceName, cursor, lastSyncAt, lastError, undecodableRows
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    hubURL = try container.decode(String.self, forKey: .hubURL)
+    deviceName = try container.decode(String.self, forKey: .deviceName)
+    cursor = try container.decode(Int.self, forKey: .cursor)
+    lastSyncAt = try container.decodeIfPresent(String.self, forKey: .lastSyncAt)
+    lastError = try container.decodeIfPresent(String.self, forKey: .lastError)
+    undecodableRows = try container.decodeIfPresent(Int.self, forKey: .undecodableRows) ?? 0
   }
 }
 

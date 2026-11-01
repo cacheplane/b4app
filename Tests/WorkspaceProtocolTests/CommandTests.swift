@@ -153,5 +153,10 @@ private func failure(_ json: String) -> WorkspaceError? {
       hubURL: "http://localhost:8080", deviceName: "Phone", cursor: 3, lastSyncAt: nil, lastError: "x")
     let again = try JSONCoding.decoder.decode(DiagnosticsReport.self, from: JSONCoding.encoder.encode(linked))
     #expect(again == linked)
+
+    // A sync section from before `undecodableRows` existed reads as zero.
+    let older = Data(#"{"hubURL":"h","deviceName":"d","cursor":1}"#.utf8)
+    let sync = try JSONCoding.decoder.decode(SyncDiagnostic.self, from: older)
+    #expect(sync.undecodableRows == 0 && sync.lastSyncAt == nil && sync.lastError == nil)
   }
 }

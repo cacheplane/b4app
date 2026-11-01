@@ -193,10 +193,11 @@ public final class MirrorTransport: WorkspaceTransport {
       version: version, pid: ProcessInfo.processInfo.processIdentifier, startedAt: startedAt, epoch: epoch,
       sequence: sequence, runtimeDir: directory, dataDir: directory, socketPath: "mirror",
       databasePath: store.path, host: link?.deviceName ?? "iPhone")
+    let undecodable = try store.undecodableRowCount()
     let sync = link.map {
       SyncDiagnostic(
         hubURL: $0.hubURL, deviceName: $0.deviceName, cursor: store.cursor, lastSyncAt: $0.lastSyncAt,
-        lastError: $0.lastError)
+        lastError: $0.lastError, undecodableRows: undecodable)
     }
     let errors = link?.lastError.map { [RecentError(scope: "sync", code: "sync_failed", message: $0)] } ?? []
     return DiagnosticsReport(

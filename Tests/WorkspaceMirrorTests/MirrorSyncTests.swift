@@ -39,11 +39,12 @@ private let link = MirrorLink(
     #expect(try store.items(threadId: "thread-1").count == 4)
     await hub.append(Array(try fixtureAsStored()[8...]))
     try await eventually("second page") { store.cursor == 12 }
-    #expect(try store.thread(id: "thread-1")?.title == "Fix the login bug (password trim)")
+    #expect(try store.thread(id: "thread-1")?.title == "Renamed")
     try await eventually("batches") { await recorder.batches.count >= 2 }
     let batches = await recorder.batches
     #expect(batches.first?.touchedThreadIds == ["thread-1"])
     #expect(batches.first?.touchedItems.count == 4)
+    #expect(batches.allSatisfy { $0.skipped == 0 && $0.undecodableRows == 0 })
     #expect(try store.link()?.lastSyncAt != nil)
     #expect(try store.link()?.lastError == nil)
 

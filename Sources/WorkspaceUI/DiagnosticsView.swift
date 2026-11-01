@@ -28,6 +28,7 @@ struct DiagnosticsView: View {
               row("Cursor", "\(sync.cursor)", mono: true)
               row("Last sync", sync.lastSyncAt ?? "never")
               if let error = sync.lastError { row("Last error", error) }
+              row("Unreadable rows", "\(sync.undecodableRows)", mono: true)
             }
           }
           LLASectionHead("Runtimes").padding(.top, LLA.Space.l)

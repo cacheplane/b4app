@@ -31,22 +31,25 @@ public struct MirrorLink: Codable, Sendable, Equatable {
 }
 
 /// What one `apply` changed, for the transport to turn into events: threads and connections whose row
-/// was written, the display items written (as they now read), and how many changes were not applied.
+/// was written, the display items written (as they now read), how many changes were not applied, and
+/// how many rows the batch wrote that this build cannot decode (stored, but left out of reads).
 public struct AppliedBatch: Sendable, Equatable {
   public var touchedThreadIds: Set<String>
   public var touchedItems: [DisplayItem]
   public var touchedConnectionIds: Set<String>
   public var skipped: Int
+  public var undecodableRows: Int
 
   public init(
     touchedThreadIds: Set<String> = [], touchedItems: [DisplayItem] = [],
     touchedConnectionIds: Set<String> = [],
-    skipped: Int = 0
+    skipped: Int = 0, undecodableRows: Int = 0
   ) {
     self.touchedThreadIds = touchedThreadIds
     self.touchedItems = touchedItems
     self.touchedConnectionIds = touchedConnectionIds
     self.skipped = skipped
+    self.undecodableRows = undecodableRows
   }
 }
 
@@ -54,6 +57,8 @@ public struct AppliedBatch: Sendable, Equatable {
 /// Replay equals `WorkspaceDatabase.replay` on the Mac: an insert upserts the provided columns, an
 /// update sets one column, a delete deletes, and a change that violates a constraint (a row whose
 /// parent is missing) is skipped and counted. Rows read back through the protocol's `Codable` types.
+/// A row this build cannot decode (a value a newer Mac wrote) is kept, left out of reads, and
+/// counted: per batch in `AppliedBatch.undecodableRows`, and in total by `undecodableRowCount()`.
 ///
 /// The mirror never stores a connection's `authReference`, `localServerId`, or `target`, whatever
 /// arrives: the Mac blanks them before upload, and the mirror does not rely on that.
@@ -103,12 +108,16 @@ public final class MirrorStore: @unchecked Sendable {
     try locked {
       var batch = AppliedBatch()
       var itemIds: [String] = []
+      var written: [(table: String, rowId: String)] = []
       try exec("BEGIN IMMEDIATE")
       do {
         for change in changes {
           guard try applyOne(change) else {
             batch.skipped += 1
             continue
+          }
+          if change.op != "delete", !written.contains(where: { $0 == (change.table, change.rowId) }) {
+            written.append((change.table, change.rowId))
           }
           switch change.table {
           case "connections": batch.touchedConnectionIds.insert(change.rowId)
@@ -126,6 +135,12 @@ public final class MirrorStore: @unchecked Sendable {
       batch.touchedItems = try itemIds.compactMap {
         try one(
           DisplayItem.self, "displayItems", #"SELECT * FROM "displayItems" WHERE "id" = ?"#, [.text($0)])
+      }
+      for (table, rowId) in written {
+        guard let key = MirrorSchema.syncedTables.first(where: { $0.table == table })?.key else { continue }
+        let rows = try query(
+          "SELECT * FROM \(Self.quote(table)) WHERE \(Self.quote(key)) = ?", [.text(rowId)])
+        batch.undecodableRows += rows.filter { !decodes(table: table, $0) }.count
       }
       return batch
     }
@@ -266,6 +281,18 @@ public final class MirrorStore: @unchecked Sendable {
     }
   }
 
+  /// Stored rows of every synced table that this build cannot decode, so reads leave them out.
+  public func undecodableRowCount() throws -> Int {
+    try locked {
+      try MirrorSchema.syncedTables.reduce(0) { total, entry in
+        total
+          + (try query("SELECT * FROM \(Self.quote(entry.table))")).filter {
+            !decodes(table: entry.table, $0)
+          }.count
+      }
+    }
+  }
+
   // MARK: - Sync state
 
   /// The hub sequence the mirror has applied through (0 before the first pull).
@@ -358,27 +385,11 @@ public final class MirrorStore: @unchecked Sendable {
         json += booleans.contains(name) ? (value != 0 ? "true" : "false") : String(value)
       case .real(let value): json += String(value)
       case .text(let value):
-        if jsons.contains(name) {
-          json += table == "connections" && name == "capabilities" ? Self.knownCapabilities(value) : value
-        } else {
-          json += Self.jsonString(value)
-        }
+        json += jsons.contains(name) ? value : Self.jsonString(value)
       }
     }
     json += "}"
     return try? JSONCoding.decoder.decode(T.self, from: Data(json.utf8))
-  }
-
-  /// The capability entries this build defines; entries under other keys or with other values (a
-  /// newer or older Mac) are dropped so the connection still reads.
-  private static func knownCapabilities(_ text: String) -> String {
-    guard let object = try? JSONCoding.decoder.decode([String: JSONValue].self, from: Data(text.utf8)) else {
-      return "{}"
-    }
-    let known = object.filter { key, value in
-      CapabilityKey(rawValue: key) != nil && value.stringValue.flatMap(CapabilityState.init(rawValue:)) != nil
-    }
-    return (try? JSONCoding.encoder.encode(known)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
   }
 
   private static func jsonString(_ text: String) -> String {
@@ -403,6 +414,19 @@ public final class MirrorStore: @unchecked Sendable {
 
   private static func jsonText(_ value: JSONValue) -> String {
     (try? JSONCoding.encoder.encode(value)).map { String(decoding: $0, as: UTF8.self) } ?? "null"
+  }
+
+  /// Whether a row of `table` decodes as its protocol type.
+  private func decodes(table: String, _ row: Row) -> Bool {
+    switch table {
+    case "connections": return decode(Connection.self, table: table, row) != nil
+    case "threads": return decode(ConversationThread.self, table: table, row) != nil
+    case "turns": return decode(Turn.self, table: table, row) != nil
+    case "displayItems": return decode(DisplayItem.self, table: table, row) != nil
+    case "runtimeRequests": return decode(RuntimeRequest.self, table: table, row) != nil
+    case "drafts": return decode(Draft.self, table: table, row) != nil
+    default: return true
+    }
   }
 
   private func all<T: Decodable>(

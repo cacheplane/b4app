@@ -45,21 +45,15 @@ func change(
 
     let threads = try store.threads(includeArchived: true, connectionId: nil, query: nil)
     #expect(threads.count == 1)
-    #expect(threads.first?.title == "Fix the login bug (password trim)")
+    #expect(threads.first?.title == "Renamed")
     #expect(try store.thread(id: "thread-1")?.connectionId == "conn-1")
     let items = try store.items(threadId: "thread-1")
     #expect(items.map(\.id) == ["item-1", "item-2", "item-3", "item-4"])
     #expect(items[0].payload == ["text": "The login form rejects a valid password."])
     #expect(try store.draft(threadId: "thread-1") == nil)
-    // The fixture's turns ("accepted"), request ("approval"), and capabilities (booleans under keys
-    // this build does not define) are not the protocol's values. The rows are stored; a turn or
-    // request row this build cannot decode is left out of reads rather than failing them, and
-    // capability entries it does not know are dropped.
-    #expect(try store.rowCount("turns") == 2)
-    #expect(try store.rowCount("runtimeRequests") == 1)
-    #expect(try store.turns(threadId: "thread-1").isEmpty)
-    #expect(try store.requests(threadId: "thread-1").isEmpty)
-    #expect(try store.connections().first?.capabilities == [:])
+    #expect(try store.turns(threadId: "thread-1").map(\.id) == ["turn-1", "turn-2"])
+    #expect(try store.requests(threadId: "thread-1").first?.kind == .commandApproval)
+    #expect(try store.connections().first?.capabilities[.permissionDecisions] == .supported)
     #expect(batch.touchedThreadIds == ["thread-1"])
     #expect(batch.touchedConnectionIds == ["conn-1"])
     #expect(batch.touchedItems.map(\.id) == ["item-1", "item-2", "item-3", "item-4"])
@@ -82,16 +76,15 @@ func change(
     #expect(again.skipped == 0)
     #expect(try store.connections().count == 1)
     #expect(try store.threads(includeArchived: true, connectionId: nil, query: nil).count == 1)
-    #expect(try store.rowCount("turns") == 2)
+    #expect(try store.turns(threadId: "thread-1").count == 2)
     #expect(try store.items(threadId: "thread-1").count == 4)
-    #expect(try store.rowCount("runtimeRequests") == 1)
+    #expect(try store.requests(threadId: "thread-1").count == 1)
 
     let before = try #require(try store.thread(id: "thread-1"))
-    let renamed = try store.apply([change("threads", "thread-1", "update", column: "title", value: "Renamed")]
-    )
+    let renamed = try store.apply([change("threads", "thread-1", "update", column: "title", value: "Again")])
     #expect(renamed.touchedThreadIds == ["thread-1"])
     var expected = before
-    expected.title = "Renamed"
+    expected.title = "Again"
     #expect(try store.thread(id: "thread-1") == expected)
 
     // A cleared column arrives as JSON null and sets NULL; an absent value is skipped.
@@ -101,7 +94,7 @@ func change(
     #expect(try store.thread(id: "thread-1")?.context == nil)
     let absent = try store.apply([change("threads", "thread-1", "update", column: "title", value: nil)])
     #expect(absent.skipped == 1)
-    #expect(try store.thread(id: "thread-1")?.title == "Renamed")
+    #expect(try store.thread(id: "thread-1")?.title == "Again")
 
     // Booleans and deletes.
     _ = try store.apply([change("threads", "thread-1", "update", column: "pinned", value: true)])
@@ -217,6 +210,42 @@ func change(
     // A JSON column keeps a scalar string as JSON, not as bare text.
     _ = try store.apply([change("runtimeRequests", request.id, "update", column: "payload", value: "plain")])
     #expect(try store.requests(threadId: "thread-1").first?.payload == "plain")
+  }
+
+  @Test func theSharedFixtureDecodesCompletelyThroughTheProtocolTypes() throws {
+    let store = try MirrorStore.inMemory()
+    let batch = try store.apply(try fixtureAsStored())
+    #expect(batch.skipped == 0)
+    #expect(batch.undecodableRows == 0)
+    #expect(try store.connections().count == 1)
+    #expect(try store.threads(includeArchived: true, connectionId: nil, query: nil).count == 1)
+    #expect(try store.turns(threadId: "thread-1").count == 2)
+    #expect(try store.items(threadId: "thread-1").count == 4)
+    #expect(try store.requests(threadId: "thread-1").count == 1)
+    #expect(try store.draft(threadId: "thread-1") == nil)
+    let stored = [
+      "connections": 1, "threads": 1, "turns": 2, "displayItems": 4, "runtimeRequests": 1, "drafts": 0,
+    ]
+    for (table, count) in stored { #expect(try store.rowCount(table) == count, "\(table)") }
+    #expect(try store.undecodableRowCount() == 0)
+  }
+
+  @Test func aRowANewerMacWroteIsKeptLeftOutOfReadsAndCounted() throws {
+    let store = try MirrorStore.inMemory()
+    _ = try store.apply(Array(try fixtureAsStored().prefix(3)))
+    var future = try #require(try fixtureAsStored()[3].value?.objectValue)
+    future["status"] = "teleporting"  // a TurnStatus this build does not define
+    let batch = try store.apply([change("turns", "turn-2", "insert", value: .object(future))])
+    #expect(batch.skipped == 0)
+    #expect(batch.undecodableRows == 1)
+    #expect(try store.rowCount("turns") == 2)
+    #expect(try store.turns(threadId: "thread-1").map(\.id) == ["turn-1"])
+    #expect(try store.undecodableRowCount() == 1)
+
+    // Once the row becomes readable it is shown again and no longer counted.
+    _ = try store.apply([change("turns", "turn-2", "update", column: "status", value: "running")])
+    #expect(try store.turns(threadId: "thread-1").count == 2)
+    #expect(try store.undecodableRowCount() == 0)
   }
 
   static func remove(_ path: String) {

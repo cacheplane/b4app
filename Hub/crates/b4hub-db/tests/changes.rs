@@ -96,7 +96,7 @@ async fn push_materialises_and_is_idempotent(pool: PgPool) {
     let thread = row(&app, &device, "threads", "id", "thread-1")
         .await
         .expect("the thread is mirrored");
-    assert_eq!(thread["title"], "Fix the login bug (password trim)");
+    assert_eq!(thread["title"], "Renamed");
     assert_eq!(thread["pinned"], false);
     assert_eq!(thread["connectionId"], "conn-1");
     assert_eq!(thread["org_id"], device.org_id.to_string());
@@ -115,7 +115,10 @@ async fn push_materialises_and_is_idempotent(pool: PgPool) {
     let connection = row(&app, &device, "connections", "id", "conn-1")
         .await
         .unwrap();
-    assert_eq!(connection["capabilities"]["approvals"], true);
+    assert_eq!(
+        connection["capabilities"]["permission_decisions"],
+        "supported"
+    );
     assert_eq!(connection["profileRevision"], 1);
     for blanked in ["authReference", "localServerId", "target"] {
         assert_eq!(connection[blanked], Value::Null, "{blanked}");

@@ -42,8 +42,8 @@ private func fixtureAsStored(file: StaticString = #filePath) throws -> [StoredCh
     #expect(model.detail?.items.map(\.id) == ["item-1", "item-2", "item-3", "item-4"])
 
     transport.publish(try store.apply([fixture[9]]))  // the title update
-    try await waitUntil("renamed") { model.threads.first?.title == "Fix the login bug (password trim)" }
-    #expect(model.detail?.thread.title == "Fix the login bug (password trim)")
+    try await waitUntil("renamed") { model.threads.first?.title == "Renamed" }
+    #expect(model.detail?.thread.title == "Renamed")
     #expect(model.connections.first?.target == "")
     #expect(model.connections.first?.authReference == nil)
 

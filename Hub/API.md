@@ -245,7 +245,7 @@ that does not wait at all. The client simply reconnects, normally to the replace
   "rowId": "conn-1",
   "op": "insert",
   "column": null,
-  "value": {"id": "conn-1", "kind": "codex", "label": "Codex", "enabled": true, "profileRevision": 1, "target": "/usr/local/bin/codex", "routeKey": null, "b4Mode": null, "localServerId": null, "authReference": "secret:abc", "nativeScope": "/Users/brian/project", "capabilities": {"streaming": true, "approvals": true, "resume": true}, "status": "ready", "authStatus": "authenticated", "createdAt": "2026-10-31T12:00:00Z", "updatedAt": "2026-10-31T12:00:00Z"}
+  "value": {"id": "conn-1", "kind": "codex", "label": "Codex", "enabled": true, "profileRevision": 1, "target": "/usr/local/bin/codex", "routeKey": null, "b4Mode": null, "localServerId": null, "authReference": "secret:abc", "nativeScope": "/Users/brian/project", "capabilities": {"streaming": "supported", "native_resume": "supported", "history_retrieval": "supported", "explicit_interruption": "supported", "reconnect": "supported", "permission_decisions": "supported", "user_questions": "unsupported", "model_selection": "unverified"}, "status": "ready", "authStatus": "authenticated", "createdAt": "2026-10-31T12:00:00Z", "updatedAt": "2026-10-31T12:00:00Z"}
 }
 ```
 

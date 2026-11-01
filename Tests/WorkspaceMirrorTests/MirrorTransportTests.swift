@@ -19,7 +19,8 @@ import WorkspaceSync
     #expect(try await client.request(ThreadList.self, .init()).threads.count == 1)
     let read = try await client.request(ThreadRead.self, .init(threadId: "thread-1"))
     #expect(read.items.count == 4)
-    #expect(read.thread.title == "Fix the login bug (password trim)")
+    #expect(read.thread.title == "Renamed")
+    #expect(read.turns.count == 2 && read.requests.count == 1)
     #expect(try await client.request(ConnectionList.self, .init()).connections.first?.target == "")
     #expect(try await client.request(DraftRead.self, .init(threadId: "thread-1")).draft == nil)
     #expect(try await client.request(ServerList.self, EmptyParams()).servers.isEmpty)
@@ -153,6 +154,12 @@ import WorkspaceSync
     #expect(unlinked.host.platform == "macOS")
     #expect(unlinked.runtimes.isEmpty && unlinked.recentErrors.isEmpty)
 
+    // A row this build cannot read is counted in the sync section.
+    _ = try store.apply(Array(try fixtureAsStored().prefix(3)))
+    var future = try #require(try fixtureAsStored()[3].value?.objectValue)
+    future["submission"] = "teleported"
+    _ = try store.apply([change("turns", "turn-2", "insert", value: .object(future))])
+
     try store.saveLink(
       MirrorLink(
         hubURL: "http://localhost:8080", deviceId: "phone-1", deviceName: "Test Phone", tokenRef: "secret:t",
@@ -165,7 +172,7 @@ import WorkspaceSync
         == SyncDiagnostic(
           hubURL: "http://localhost:8080", deviceName: "Test Phone", cursor: 7,
           lastSyncAt: "2026-10-31T12:00:00Z",
-          lastError: "Hub error 503 shutting_down"))
+          lastError: "Hub error 503 shutting_down", undecodableRows: 1))
     #expect(linked.coordinator.host == "Test Phone")
     #expect(linked.recentErrors.map(\.message) == ["Hub error 503 shutting_down"])
     // The token reference never leaves the store.
