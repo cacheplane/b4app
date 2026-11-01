@@ -15,7 +15,7 @@ The owner's direction, in his words where it matters:
 - Builds: App Store and the b4.run download use "prod db and the prod hub on b4.run domain"; TestFlight uses "a special db and hub for testing"; local uses "a local db and hub". Apple ID and passkeys everywhere, except "For local, just passkeys is fine."
 - After the sandbox research: "let's remove the mac store + testflight plans for the macOS app. We will still have builds for the app store + testflight for the iOS app. macOS is installed like codex and claude - download or homebrew."
 - Accounts: "they get their own private place. we won't require an org name in the sign up, so we'll call it something generic like "Brian's Org"."
-- Passkey sign-up asks for nothing: "just use the passkey to auth them, then dump them into the onboarding flow, which at first will collect their full name and phone number (which we'll eventually validate)."
+- Passkey sign-up asks for nothing: "just use the passkey to auth them, then dump them into the onboarding flow, which at first will collect their full name and phone number (which we'll eventually validate)." After the review raised App Review's rule against requiring personal data the app does not use: "remove the phone number option". Onboarding asks only for the full name.
 - The logo on the sign-in screen is the b4.run wordmark, "not the LLA logo".
 - A phone with no Mac gets "a button to "capture QR code" ... which opens the camera so they can capture the QR code from their mac", "a link to download (tapping it copies it), and docs for help (opens in safari overlay)." Scanning the code with the system Camera "we want it to open the b4.run app and pair."
 - The Mac "should support multi-user db persistence locally. I should be able to sign in and out of an account and pick up exactly where I left off, even if I sign into another account."
@@ -26,7 +26,7 @@ The owner's direction, in his words where it matters:
 
 1. One sign-in screen, the same on both apps: the b4.run wordmark, a heading, one sentence, "Continue with Apple", "Continue with a passkey", centred. Each button signs in an existing account or creates a new one.
 2. The hub verifies Sign in with Apple identity tokens and WebAuthn passkey ceremonies itself, creates users and a private org per user, and issues device tokens without an enrollment code.
-3. Onboarding after sign-up: full name and phone number, then the app.
+3. Onboarding after sign-up: the full name, then the app.
 4. The Mac keeps one local database per account and switches between them on sign-in, so signing out and back in (as the same or another account) resumes exactly where that account left off.
 5. A clean Log out on both apps that returns to the sign-in screen.
 6. Pairing a phone by scanning the Mac's QR code, from the app's scanner or the system Camera, which also signs the phone in.
@@ -37,7 +37,7 @@ The owner's direction, in his words where it matters:
 - A Mac App Store or TestFlight-for-Mac build. Both require App Sandbox, which cannot run the user's own agents (see "Mac distribution" below).
 - Enterprise sign-in (OIDC, SAML, SCIM), invitations, shared orgs, roles, and org management. Every account is one user in one private org.
 - Email or password sign-in, the CLI device grant, and refresh-token families from the M8 design's long-run model. Device tokens stay as they are.
-- Phone number verification (stored now, verified later).
+- Collecting or verifying a phone number (removed by the owner; a later design can add it with the feature that uses it).
 - Multiple accounts signed in at once on one device. One account is active at a time; the Mac remembers the others' data.
 - Running agents on a hosted hub or anywhere but the user's Mac.
 - Deploying the hosted hubs (hosting, databases, domains, deploy workflows); the owner's separate project.
@@ -135,9 +135,9 @@ On the Mac every hub call in these flows goes through the coordinator (new comma
 
 ## Onboarding
 
-`OnboardingView` in `WorkspaceUI` (`onboarding.html`, left panel): "Welcome", "Two things before you start.", **Full name** (prefilled from Apple's name when Apple gave one, editable), **Phone number** (`textContentType(.telephoneNumber)`, stored as typed after trimming; a light check of 7 to 20 digits with an optional leading `+`), the hint "We'll use it to confirm it's you.", **Continue**, and "Not you? Log out".
+`OnboardingView` in `WorkspaceUI` (`onboarding.html`, left panel, without the phone field): "Welcome", "What should we call you?", **Full name** (`textContentType(.name)`, prefilled from Apple's name when Apple gave one, editable, 1 to 200 characters after trimming), **Continue**, and "Not you? Log out".
 
-Continue sends `PUT /v1/me/profile`, which stores both, sets `onboarded_at`, and renames the private org from its placeholder to "<first word of the full name>'s Org" (just "My Org" if that is empty). The Mac then shows "Add your iPhone" once (below); the phone goes to its thread list or to "Connect your Mac".
+Continue sends `PUT /v1/me/profile`, which stores the name, sets `onboarded_at`, and renames the private org from its placeholder to "<first word of the full name>'s Org" (just "My Org" if that is empty). The Mac then shows "Add your iPhone" once (below); the phone goes to its thread list or to "Connect your Mac".
 
 A user who quits mid-onboarding sees onboarding again at the next launch (the hub's `/v1/me` says `onboarded: false`).
 
@@ -195,7 +195,7 @@ The account's own database keeps everything it has today, including its `hubLink
 
 Migration `0005_accounts.sql` (numbered after M8c's `0004_relay.sql`; if this lands first it takes `0004` and M8c renumbers):
 
-- `users`: `email` becomes nullable; add `full_name text`, `phone text`, `onboarded_at timestamptz`, `deleted_at timestamptz`. `username` stays required and unique per org; sign-up generates `u-<8 random base32 characters>`.
+- `users`: `email` becomes nullable; add `full_name text`, `onboarded_at timestamptz`, `deleted_at timestamptz`. `username` stays required and unique per org; sign-up generates `u-<8 random base32 characters>`.
 - `orgs`: add `personal boolean NOT NULL DEFAULT false` and `owner_user_id uuid`; the slug is generated (`o-<8 random>`), never shown.
 - `user_identities` (no row-level security, looked up before the tenant is known, like `device_tokens`): `id`, `org_id`, `user_id`, `kind` (`apple` or `passkey`), `created_at`, `last_used_at`, and for `apple`: `apple_sub` (unique), `apple_email`, `apple_refresh_token_enc` (the refresh token from the code exchange, encrypted with `B4HUB_SECRET_KEY`, kept so account deletion can revoke it); for `passkey`: `credential_id bytea` (unique), `passkey` (webauthn-rs's serialised `Passkey`, which holds the public key, counter, and backup flags), `user_handle bytea`, `name` (for the list in Settings).
 - `auth_ceremonies` (no row-level security): `id`, `kind`, `state jsonb` (webauthn-rs's registration and authentication state, the Apple nonce and verifier hash), `expires_at` (5 minutes), `used_at`. Stored in the database rather than in memory so any hub instance can finish a ceremony another began. Expired rows are pruned with the change log.
@@ -216,7 +216,7 @@ All under `/v1`, JSON, B4's error envelope, `deny_unknown_fields`. Every route t
 | `POST /auth/apple/begin` | none | creates an Apple ceremony; answers `ceremonyId`, `nonce` (the native flow passes its SHA-256 to Apple) |
 | `POST /auth/apple/callback` | Apple's form post | verifies `state`, exchanges the code, verifies the token, records a handoff, 302 to `<scheme>://auth?handoff=` |
 | `POST /auth/handoff` | none | `{ handoff, verifier, device }`; single use |
-| `PUT /me/profile` | device | `{ fullName, phone }`; sets `onboarded_at`, renames the personal org |
+| `PUT /me/profile` | device | `{ fullName }`; sets `onboarded_at`, renames the personal org |
 | `GET /me` | device | gains `user.fullName`, `onboarded`, `identities: [{id, kind, name, createdAt, lastUsedAt}]` |
 | `POST /me/passkeys/begin`, `POST /me/passkeys/finish` | device | adds a passkey to the signed-in user |
 | `POST /me/apple` | device | links an Apple ID (native token, or a handoff from the web flow) |
@@ -236,14 +236,14 @@ All under `/v1`, JSON, B4's error envelope, `deny_unknown_fields`. Every route t
 
 ### Linking and Settings → Account
 
-A new Settings page, **Account** (both apps), shows the full name, phone, org name, and the sign-in methods ("Apple ID · added 1 Nov", "Passkey · Brian Love · added 1 Nov") with **Add a passkey**, **Connect Apple ID** (when there is none), **Remove** on each method (disabled for the last one), and **Delete account…** at the bottom in the danger style. An account made with Apple adds a passkey here, and the reverse; signing in with either then reaches the same account. The owner's existing local account (`blove`, joined by enrollment code) adds its first passkey here.
+A new Settings page, **Account** (both apps), shows the full name (editable), the org name, and the sign-in methods ("Apple ID · added 1 Nov", "Passkey · Brian Love · added 1 Nov") with **Add a passkey**, **Connect Apple ID** (when there is none), **Remove** on each method (disabled for the last one), and **Delete account…** at the bottom in the danger style. An account made with Apple adds a passkey here, and the reverse; signing in with either then reaches the same account. The owner's existing local account (`blove`, joined by enrollment code) adds its first passkey here.
 
 ## The coordinator and the protocol
 
 New commands (protocol-additive; the CLI gets matching `account` subcommands only for `status` and `logout`):
 
 - `account.status` → `{ state: "signedOut" | "needsOnboarding" | "signedIn", account?: {id, displayName, orgName, hubURL} , known: [{id, displayName, orgName, lastSignedInAt}] }`.
-- `account.passkeyBegin` → the hub's begin answer (no secret in it); `account.passkeyFinish { ceremonyId, assertion | attestation }`; `account.appleStart` → `{ url, callbackScheme }`; `account.appleFinish { handoff }` (the verifier never leaves the coordinator); `account.completeProfile { fullName, phone }`; `account.logout { stopWork: bool }` → refuses with `work_running` and the list when work runs and `stopWork` is false; `account.identities`, `account.addPasskeyBegin/Finish`, `account.removeIdentity`, `account.delete`.
+- `account.passkeyBegin` → the hub's begin answer (no secret in it); `account.passkeyFinish { ceremonyId, assertion | attestation }`; `account.appleStart` → `{ url, callbackScheme }`; `account.appleFinish { handoff }` (the verifier never leaves the coordinator); `account.completeProfile { fullName }`; `account.logout { stopWork: bool }` → refuses with `work_running` and the list when work runs and `stopWork` is false; `account.identities`, `account.addPasskeyBegin/Finish`, `account.removeIdentity`, `account.delete`.
 - Event `account.changed` with the new `account.status` result.
 
 The WebAuthn responses and the Apple handoff cross the local socket once, to the coordinator, and are never logged or stored; this is the same narrow exception D-058 records for the pairing code.
@@ -273,7 +273,7 @@ Until those hubs exist, this project is built and verified against the local hub
 
 ## Privacy declarations
 
-The iPhone app now collects a name, a phone number, an email (from Apple), and a user id, so `PrivacyInfo.xcprivacy` changes from "no data collected" (D-051) to declaring those as linked to the user, used for app functionality, not for tracking. The owner updates the App Store Connect privacy answers to match before the first build with sign-in goes to TestFlight.
+The iPhone app now collects a name, an email (from Apple), and a user id, so `PrivacyInfo.xcprivacy` changes from "no data collected" (D-051) to declaring those as linked to the user, used for app functionality, not for tracking. The owner updates the App Store Connect privacy answers to match before the first build with sign-in goes to TestFlight.
 
 ## Visual identity
 
