@@ -47,9 +47,12 @@ struct ModelHarness {
   }
 }
 
+/// Polls `condition` on the main actor until it holds. 30 s, because on the three-core CI runner the
+/// suite's first minute (the test cluster's boot, every suite starting at once) kept a mirror model
+/// from reaching `.ready` within 15 s; a passing wait returns as soon as the condition holds.
 @MainActor
 func waitUntil(
-  _ what: String, timeout: Duration = .seconds(15), _ condition: @MainActor () -> Bool
+  _ what: String, timeout: Duration = .seconds(30), _ condition: @MainActor () -> Bool
 ) async throws {
   let deadline = ContinuousClock.now + timeout
   while ContinuousClock.now < deadline {
