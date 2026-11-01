@@ -4,14 +4,20 @@ import WorkspaceProtocol
 import WorkspaceStorage
 import WorkspaceSync
 
-/// Pushes this Mac's change log to the hub it joined (M8a, read-only mirror). The only owner of the
-/// `hubLink` row and of the device token in the secret store.
+/// Pushes this Mac's change log to the hub it joined (M8a), and runs `HubPull`, which merges other
+/// devices' edits back (M8b). The only owner of the `hubLink` row (the pull moves only its `cursor`) and
+/// of the device token in the secret store.
 ///
 /// Pushes run one at a time: after local writes (every published event is a nudge, coalesced over
 /// 250 ms), every 30 s, on wake, and once at join. Each push sends the unsynced log in batches of at
 /// most 500 rows or 8 MiB of body through `SyncFilter`, and marks rows synced only once the hub's
 /// `acceptedThrough` covers them. A failure is recorded as `lastError` and never escapes a background
-/// push; a 401 also stops the write- and timer-driven pushes until the next `join`.
+/// push; a 401 also stops the write- and timer-driven pushes until the next `join`. A change the hub
+/// refuses (`rejected`) is covered by `acceptedThrough`, so it is marked synced like the rest and counted
+/// in `lastError` ("2 changes refused by the hub: column_not_writable"); it never stalls the queue.
+///
+/// The pull starts with `start()` (when joined) or with a `join` after it, and stops with `leave()`,
+/// `stop()`, or its own 401 (which also suspends background pushes until the next `join`).
 ///
 /// The enrollment code, the token, and the token's `SecretRef` never appear in a log line, a result,
 /// or an error message.
@@ -35,6 +41,10 @@ public actor HubSync {
   private var nudgeTask: Task<Void, Never>?
   private var timerTask: Task<Void, Never>?
   private var pendingNudge: Task<Void, Never>?
+  private var started = false
+  private var pull: HubPull?
+  /// Identifies the running pull, so a callback from one that has since been replaced is ignored.
+  private var pullGeneration = UUID()
 
   public init(
     database: WorkspaceDatabase, secretStore: any SecretStore, eventLog: EventLog,
@@ -64,6 +74,8 @@ public actor HubSync {
       logger.error("could not load the hub link: \(String(describing: error), privacy: .public)")
     }
     guard nudgeTask == nil else { return }
+    started = true
+    if let link = try? database.hubLink(), api != nil { startPull(deviceId: link.deviceId) }
     let events = await eventLog.subscribe()
     nudgeTask = Task { [weak self] in
       for await _ in events {
@@ -80,13 +92,16 @@ public actor HubSync {
     }
   }
 
-  public func stop() {
+  /// Stop the nudge, the timer, and the pull, waiting for the pull to end.
+  public func stop() async {
+    started = false
     nudgeTask?.cancel()
     timerTask?.cancel()
     pendingNudge?.cancel()
     nudgeTask = nil
     timerTask = nil
     pendingNudge = nil
+    await stopPull()
   }
 
   // MARK: - Commands
@@ -132,6 +147,7 @@ public actor HubSync {
     } catch {
       // Recorded as lastError; the join itself succeeded.
     }
+    startPull(deviceId: enrolled.deviceId)
     return try status()
   }
 
@@ -150,6 +166,7 @@ public actor HubSync {
   /// writes as `local` again.
   public func leave() async throws {
     guard let link = try database.hubLink() else { return }
+    await stopPull()
     let api = self.api
     self.api = nil
     suspended = false
@@ -216,6 +233,7 @@ public actor HubSync {
     guard let api else { return 0 }
     var accepted = 0
     var pushed = false
+    var refused: [RejectedChange] = []
     do {
       while true {
         let records = try database.unsyncedChanges(limit: Self.batchRows)
@@ -236,10 +254,16 @@ public actor HubSync {
             message: "The hub accepted through \(response.acceptedThrough), before this batch.",
             status: 200)
         }
+        // A refused change is final and covered by `acceptedThrough`: it leaves the queue with the rest.
         try database.markSynced(through: covered)
         accepted += batch.filter { $0.deviceSeq <= covered }.count
+        refused += response.rejected
       }
-      if pushed { try record(error: nil, pushed: true) }
+      if pushed {
+        let message = Self.refusalMessage(refused)
+        if let message { logger.warning("\(message, privacy: .public)") }
+        try record(error: message, pushed: true)
+      }
       return accepted
     } catch {
       if (error as? HubError)?.code == "unauthorized" { suspended = true }
@@ -267,6 +291,59 @@ public actor HubSync {
       through = record.seq
     }
     return (changes, through)
+  }
+
+  /// "2 changes refused by the hub: column_not_writable", or nil when nothing was refused.
+  static func refusalMessage(_ rejected: [RejectedChange]) -> String? {
+    guard !rejected.isEmpty else { return nil }
+    let codes = Set(rejected.map(\.code)).sorted().joined(separator: ", ")
+    let noun = rejected.count == 1 ? "change" : "changes"
+    return "\(rejected.count) \(noun) refused by the hub: \(codes)"
+  }
+
+  // MARK: - Pulling
+
+  /// Start the pull loop for this device, when `start()` has run and none is running.
+  private func startPull(deviceId: String) {
+    guard started, pull == nil, let api else { return }
+    let generation = UUID()
+    let pull = HubPull(
+      database: database, api: api, eventLog: eventLog, ownDeviceId: deviceId,
+      onError: { [weak self] message in await self?.recordPull(error: message, generation: generation) },
+      onUnauthorized: { [weak self] message in await self?.pullUnauthorized(message, generation: generation) }
+    )
+    self.pull = pull
+    pullGeneration = generation
+    Task { await pull.launch() }
+  }
+
+  private func stopPull() async {
+    guard let pull else { return }
+    self.pull = nil
+    await pull.stop()
+  }
+
+  private static let pullErrorPrefix = "Pull: "
+
+  /// A pull failure is shown as `lastError` until a pull succeeds again (or a push records its own).
+  private func recordPull(error: String?, generation: UUID) {
+    guard generation == pullGeneration, pull != nil, var link = try? database.hubLink() else { return }
+    if let error {
+      link.lastError = Self.pullErrorPrefix + error
+    } else if link.lastError?.hasPrefix(Self.pullErrorPrefix) == true {
+      link.lastError = nil
+    } else {
+      return
+    }
+    try? database.saveHubLink(link)
+  }
+
+  /// The pull loop has ended on a 401; it must not be awaited here (it is waiting for this call).
+  private func pullUnauthorized(_ message: String, generation: UUID) {
+    guard generation == pullGeneration, pull != nil else { return }
+    recordPull(error: message, generation: generation)
+    pull = nil
+    suspended = true
   }
 
   private func record(error: String?, pushed: Bool) throws {

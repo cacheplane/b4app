@@ -18,6 +18,8 @@ settings:
     SWIFT_UPCOMING_FEATURE_NONISOLATED_NONSENDING_BY_DEFAULT: YES
     SWIFT_UPCOMING_FEATURE_INFER_ISOLATED_CONFORMANCES: YES
     CODE_SIGN_STYLE: Automatic
+    # Xcode builds sign ad hoc. Scripts/package.sh re-signs the packaged app with
+    # B4APP_SIGN_IDENTITY, whose certificate carries the team id, so no team is stored here (D-039).
     CODE_SIGN_IDENTITY: "-"
     DEVELOPMENT_TEAM: ""
     MARKETING_VERSION: "0.1.0"

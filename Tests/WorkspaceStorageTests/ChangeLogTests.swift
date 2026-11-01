@@ -127,7 +127,7 @@ private func seed(_ db: WorkspaceDatabase) throws -> (thread: ConversationThread
     let jsonColumns: Set<String> = ["value", "payload", "capabilities", "routes"]
     var lines = try String(contentsOfFile: path, encoding: .utf8).split(separator: "\n").map(String.init)
     var header = try JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as! [String: Any]
-    #expect(header["version"] as? Int == 2)
+    #expect(header["version"] as? Int == 3)
     header["version"] = 1
     lines[0] = String(decoding: try JSONSerialization.data(withJSONObject: header), as: UTF8.self)
     for index in lines.indices.dropFirst() {

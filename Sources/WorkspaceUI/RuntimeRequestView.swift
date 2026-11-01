@@ -1,20 +1,30 @@
 import SwiftUI
 import WorkspaceProtocol
 
+/// The pending requests between the transcript and the composer. The list sizes to its cards up
+/// to `LLA.Metrics.requestsMaxHeight` and scrolls past that: a card's texts wrap with
+/// `fixedSize(vertical:)`, and outside a scroll view that made the detail's minimum height grow
+/// with the command's length, which on macOS 26 blanked the whole `NavigationSplitView` once it
+/// exceeded the window (D-047). Inside the scroll view the measurement stays bounded.
 struct RuntimeRequestList: View {
   @Bindable var model: WorkspaceModel
   let requests: [RuntimeRequest]
 
   var body: some View {
-    VStack(alignment: .leading, spacing: LLA.Space.m) {
-      ForEach(requests) { request in
-        RuntimeRequestCard(model: model, request: request)
+    ScrollView {
+      VStack(alignment: .leading, spacing: LLA.Space.m) {
+        ForEach(requests) { request in
+          RuntimeRequestCard(model: model, request: request)
+        }
       }
+      .padding(.horizontal, LLA.Space.xl)
+      .padding(.vertical, LLA.Space.l)
+      .frame(maxWidth: LLA.Metrics.column)
+      .frame(maxWidth: .infinity)
     }
-    .padding(.horizontal, LLA.Space.xl)
-    .padding(.vertical, LLA.Space.l)
-    .frame(maxWidth: LLA.Metrics.column)
-    .frame(maxWidth: .infinity)
+    .frame(maxHeight: LLA.Metrics.requestsMaxHeight)
+    .fixedSize(horizontal: false, vertical: true)
+    .accessibilityIdentifier("runtime-requests")
   }
 }
 

@@ -7,10 +7,15 @@ public struct ThreadFilter: Sendable, Equatable {
   public var connectionId: String?
   public var includeArchived: Bool
   public var query: String?
-  public init(connectionId: String? = nil, includeArchived: Bool = false, query: String? = nil) {
+  public var projectId: String?
+  public init(
+    connectionId: String? = nil, includeArchived: Bool = false, query: String? = nil,
+    projectId: String? = nil
+  ) {
     self.connectionId = connectionId
     self.includeArchived = includeArchived
     self.query = query
+    self.projectId = projectId
   }
 }
 
@@ -24,16 +29,28 @@ public final class WorkspaceDatabase: Sendable {
   private let columnCache = Mutex<[String: [String]]>([:])
   private let currentDeviceId = Mutex("local")
 
+  /// Stamps every write transaction (`b4app.hlc`); its device id always equals `deviceId`.
+  public let clock: HybridClock
+
   /// The device id the change-log trigger records on every write (`b4app.device_id`). `local` until
   /// this Mac joins a hub; the hub's device id afterwards.
   public var deviceId: String {
     get { currentDeviceId.withLock { $0 } }
-    set { currentDeviceId.withLock { $0 = newValue } }
+    set {
+      currentDeviceId.withLock {
+        $0 = newValue
+        clock.deviceId = newValue
+      }
+    }
   }
 
-  /// Connect to a running cluster, create the database when it is missing, and migrate.
-  public init(endpoint: PostgresEndpoint, binDir: String) throws {
+  /// Connect to a running cluster, create the database when it is missing, and migrate. `wall` is the
+  /// clock's time source (tests pin it to replay recorded clocks).
+  public init(
+    endpoint: PostgresEndpoint, binDir: String, wall: @escaping @Sendable () -> UInt64 = epochMillis
+  ) throws {
     self.endpoint = endpoint
+    clock = HybridClock(deviceId: "local", wall: wall)
     let lib = try LibPQ.load(binDir: binDir)
     let base = "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) application_name=b4app"
     adminConnectionString = base + " dbname=postgres"
@@ -45,9 +62,13 @@ public final class WorkspaceDatabase: Sendable {
   }
 
   /// A fresh database on the shared ephemeral test cluster.
-  public static func temporary() throws -> WorkspaceDatabase {
+  public static func temporary(
+    wall: @escaping @Sendable () -> UInt64 = epochMillis
+  ) throws
+    -> WorkspaceDatabase
+  {
     let endpoint = try EphemeralPostgres.endpoint()
-    return try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
+    return try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!, wall: wall)
   }
 
   public func appliedMigrations() throws -> [String] {
@@ -62,15 +83,33 @@ public final class WorkspaceDatabase: Sendable {
     do { return try pool.withConnection(body) } catch { throw Self.mapped(error) }
   }
 
-  /// One transaction. When this Mac has a hub device id, the transaction's first statement sets
-  /// `b4app.device_id` so the change-log trigger records it. (`read` runs outside a transaction, where
-  /// a transaction-local setting would not persist, and no trigger fires on a read.)
-  func write<T>(_ body: (PostgresConnection) throws -> T) throws -> T {
+  /// The transaction-scoped advisory lock that orders local writes against pulled batches: every
+  /// `write` holds it shared, `applyRemote` exclusive (any fixed value works; this is "b4ap" in ASCII).
+  static let remoteApplyLockKey: Int64 = 0x6234_6170
+
+  /// One transaction. It first takes `remoteApplyLockKey`, shared (or exclusive, for `applyRemote`),
+  /// before anything else, and only then sets `b4app.hlc` to the next clock stamp, so every change the
+  /// transaction records shares it, and, when this Mac has a hub device id, `b4app.device_id` so the
+  /// change-log trigger records it. (`read` runs outside a transaction, where a transaction-local
+  /// setting would not persist, and no trigger fires on a read.)
+  ///
+  /// The lock comes first so a local write that starts while a pull batch is being applied waits for
+  /// the batch to commit before it takes its clock, which has by then observed every pulled clock: the
+  /// local edit is stamped after them and wins, on this Mac and at the hub alike. And because a pull
+  /// takes the lock before any row lock and a local write takes it before any row lock, a pull never
+  /// holds a row lock that a local write waits on, or the reverse, so the two cannot deadlock.
+  func write<T>(exclusive: Bool = false, _ body: (PostgresConnection) throws -> T) throws -> T {
     let device = deviceId
     do {
       return try pool.withConnection { c in
         try c.execute("BEGIN")
         do {
+          try c.execute(
+            exclusive
+              ? "SELECT pg_advisory_xact_lock($1::bigint)"
+              : "SELECT pg_advisory_xact_lock_shared($1::bigint)",
+            [String(Self.remoteApplyLockKey)])
+          try c.execute("SELECT set_config('b4app.hlc', $1, true)", [clock.next().rawValue])
           if device != "local" { try c.execute("SELECT set_config('b4app.device_id', $1, true)", [device]) }
           let value = try body(c)
           try c.execute("COMMIT")
@@ -103,8 +142,11 @@ public final class WorkspaceDatabase: Sendable {
     try c.execute(sql, params).rows.map { try Rows.decode(T.self, from: $0) }
   }
 
-  private func insert<T: Encodable>(_ c: PostgresConnection, _ table: String, _ value: T) throws {
-    let statement = Rows.insert(table, try Rows.encode(value))
+  /// Inserts `value`'s stored properties. A property that is not a column of the table (a thread's
+  /// computed `activity` and `ownerDeviceName`) is dropped here, so computed fields are never written.
+  func insert<T: Encodable>(_ c: PostgresConnection, _ table: String, _ value: T) throws {
+    let known = Set(try columns(c, of: table))
+    let statement = Rows.insert(table, try Rows.encode(value).filter { known.contains($0.column) })
     try c.execute(statement.sql, statement.params)
   }
 
@@ -119,8 +161,9 @@ public final class WorkspaceDatabase: Sendable {
   private func save<T: Encodable>(
     _ c: PostgresConnection, _ table: String, _ value: T, key: String = "id"
   ) throws {
+    let all = try columns(c, of: table)
     let statement = Rows.upsert(
-      table, try Rows.encode(value), key: key, allColumns: try columns(c, of: table))
+      table, try Rows.encode(value).filter { all.contains($0.column) }, key: key, allColumns: all)
     try c.execute(statement.sql, statement.params)
   }
 
@@ -136,7 +179,7 @@ public final class WorkspaceDatabase: Sendable {
     return names
   }
 
-  private func byId<T: Decodable>(
+  func byId<T: Decodable>(
     _ c: PostgresConnection, _ type: T.Type, _ table: String, _ id: String, key: String = "id"
   ) throws -> T? {
     try one(c, T.self, "SELECT * FROM \(Rows.quote(table)) WHERE \(Rows.quote(key)) = $1", [id])
@@ -282,32 +325,64 @@ public final class WorkspaceDatabase: Sendable {
 
   // MARK: - Threads
 
+  /// Every thread column plus `activity`, computed in the same query: the latest turn (greatest
+  /// `createdAt`, ties by greatest `id`), the count of pending runtime requests, and the newest of the
+  /// thread's `createdAt` and its latest turn's and latest request's `updatedAt`. Timestamps are ISO-8601
+  /// text, compared bytewise (`COLLATE "C"`). Callers append a WHERE clause on `t`.
+  private static let threadWithActivity = """
+    SELECT t.*, jsonb_build_object(
+      'latestTurnId', lt."id",
+      'latestTurnStatus', lt."status",
+      'latestTurnOutcome', lt."outcome",
+      'pendingRequests', pr."n",
+      'lastActivityAt', (
+        SELECT max(v."x" COLLATE "C") FROM (VALUES (t."createdAt"), (lt."updatedAt"), (lr."updatedAt")) AS v("x"))
+    ) AS "activity"
+    FROM "threads" t
+    LEFT JOIN LATERAL (
+      SELECT "id", "status", "outcome", "updatedAt" FROM "turns" WHERE "threadId" = t."id"
+      ORDER BY "createdAt" COLLATE "C" DESC, "id" COLLATE "C" DESC LIMIT 1) lt ON true
+    LEFT JOIN LATERAL (
+      SELECT "updatedAt" FROM "runtimeRequests" WHERE "threadId" = t."id"
+      ORDER BY "updatedAt" COLLATE "C" DESC LIMIT 1) lr ON true
+    CROSS JOIN LATERAL (
+      SELECT count(*) AS "n" FROM "runtimeRequests" WHERE "threadId" = t."id" AND "state" = 'pending') pr
+    """
+
   public func listThreads(_ filter: ThreadFilter = ThreadFilter()) throws -> [ConversationThread] {
     try read { c in
       var clauses: [String] = []
       var params: [String?] = []
       if let connectionId = filter.connectionId {
         params.append(connectionId)
-        clauses.append("\"connectionId\" = $\(params.count)")
+        clauses.append("t.\"connectionId\" = $\(params.count)")
       }
-      if !filter.includeArchived { clauses.append("\"archived\" = false") }
+      if let projectId = filter.projectId {
+        params.append(projectId)
+        clauses.append("t.\"projectId\" = $\(params.count)")
+      }
+      if !filter.includeArchived { clauses.append("t.\"archived\" = false") }
       if let query = filter.query?.trimmingCharacters(in: .whitespaces), !query.isEmpty {
         let escaped = query.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(
           of: "%", with: "\\%"
         )
         .replacingOccurrences(of: "_", with: "\\_")
         params.append("%\(escaped)%")
-        clauses.append("\"title\" ILIKE $\(params.count) ESCAPE '\\'")
+        clauses.append("t.\"title\" ILIKE $\(params.count) ESCAPE '\\'")
       }
       let whereSQL = clauses.isEmpty ? "" : " WHERE " + clauses.joined(separator: " AND ")
       return try all(
         c, ConversationThread.self,
-        "SELECT * FROM \"threads\"" + whereSQL + " ORDER BY \"pinned\" DESC, \"updatedAt\" DESC", params)
+        Self.threadWithActivity + whereSQL + " ORDER BY t.\"pinned\" DESC, t.\"updatedAt\" DESC", params)
     }
   }
 
   public func thread(id: String) throws -> ConversationThread? {
-    try read { try byId($0, ConversationThread.self, "threads", id) }
+    try read { try threadWithActivity($0, id: id) }
+  }
+
+  func threadWithActivity(_ c: PostgresConnection, id: String) throws -> ConversationThread? {
+    try one(c, ConversationThread.self, Self.threadWithActivity + " WHERE t.\"id\" = $1", [id])
   }
 
   /// Resolve a native thread id within one connection (newest first if scopes ever overlap).
@@ -315,7 +390,8 @@ public final class WorkspaceDatabase: Sendable {
     try read {
       try one(
         $0, ConversationThread.self,
-        "SELECT * FROM \"threads\" WHERE \"connectionId\" = $1 AND \"nativeThreadId\" = $2 ORDER BY \"createdAt\" DESC LIMIT 1",
+        Self.threadWithActivity
+          + " WHERE t.\"connectionId\" = $1 AND t.\"nativeThreadId\" = $2 ORDER BY t.\"createdAt\" DESC LIMIT 1",
         [connectionId, nativeThreadId])
     }
   }
@@ -331,11 +407,44 @@ public final class WorkspaceDatabase: Sendable {
     id: String, _ mutate: @Sendable (inout ConversationThread) -> Void
   ) throws -> ConversationThread? {
     try write { c in
-      guard var thread = try byId(c, ConversationThread.self, "threads", id) else { return nil }
+      // Locked, so a pulled phone edit committing meanwhile is not written back over with the old value.
+      guard
+        var thread = try one(
+          c, ConversationThread.self, "SELECT * FROM \"threads\" WHERE \"id\" = $1 FOR UPDATE", [id])
+      else { return nil }
       mutate(&thread)
       thread.updatedAt = Timestamp.now()
       try update(c, "threads", thread)
       return thread
+    }
+  }
+
+  /// Mark a thread read up to `turnId`, or unread again with nil. A turn is written only when it is a
+  /// terminal turn of this thread created no earlier than the turn the marker already names (same
+  /// order as the latest turn: `createdAt`, ties by `id`); anything else returns the thread unchanged.
+  /// Moves no `updatedAt`: reading is not an edit of the thread. Nil when the thread does not exist.
+  public func markRead(threadId: String, turnId: String?) throws -> ConversationThread? {
+    try write { c in
+      if let turnId {
+        _ = try c.execute(
+          """
+          UPDATE "threads" SET "readTurnId" = $2::text
+          WHERE "id" = $1 AND "readTurnId" IS DISTINCT FROM $2::text
+            AND EXISTS (
+              SELECT 1 FROM "turns" candidate
+              WHERE candidate."id" = $2::text AND candidate."threadId" = $1 AND candidate."status" = 'terminal'
+                AND NOT EXISTS (
+                  SELECT 1 FROM "turns" marker
+                  WHERE marker."id" = "threads"."readTurnId"
+                    AND (candidate."createdAt" COLLATE "C", candidate."id" COLLATE "C")
+                      < (marker."createdAt" COLLATE "C", marker."id" COLLATE "C")))
+          """, [threadId, turnId])
+      } else {
+        _ = try c.execute(
+          "UPDATE \"threads\" SET \"readTurnId\" = NULL WHERE \"id\" = $1 AND \"readTurnId\" IS NOT NULL",
+          [threadId])
+      }
+      return try threadWithActivity(c, id: threadId)
     }
   }
 
@@ -700,12 +809,27 @@ public final class WorkspaceDatabase: Sendable {
 
   public func saveDraft(threadId: String, text: String) throws -> Draft {
     let draft = Draft(threadId: threadId, text: text)
-    try write { try save($0, "drafts", draft, key: "threadId") }
+    try write { c in
+      // The thread's lock first, as `applyRemote` takes it, so a pulled draft and this save queue behind
+      // each other instead of each holding half of what the other needs.
+      try c.execute("SELECT 1 FROM \"threads\" WHERE \"id\" = $1 FOR KEY SHARE", [threadId])
+      try save(c, "drafts", draft, key: "threadId")
+    }
     return draft
   }
 
   public func deleteDraft(threadId: String) throws {
     try write { _ = try $0.execute("DELETE FROM \"drafts\" WHERE \"threadId\" = $1", [threadId]) }
+  }
+
+  /// Empty a draft's text but keep its row, so the clearing syncs as an update and wins against an older
+  /// edit; a draft is deleted only with its thread. Does nothing when there is no draft or it is empty.
+  public func clearDraft(threadId: String) throws {
+    try write {
+      _ = try $0.execute(
+        "UPDATE \"drafts\" SET \"text\" = '', \"updatedAt\" = $2 WHERE \"threadId\" = $1 AND \"text\" <> ''",
+        [threadId, Timestamp.now()])
+    }
   }
 
   // MARK: - Hub link (M8a, local only)
@@ -745,7 +869,9 @@ public final class WorkspaceDatabase: Sendable {
     try read { try one($0, HubLink.self, "SELECT * FROM \"hubLink\" WHERE \"id\" = 1") }
   }
 
-  /// Insert or replace the one link row.
+  /// Insert or replace the one link row. Replacing keeps the stored `cursor`, which only the pull moves
+  /// (`applyRemote`, `setHubCursor`), so a push recording its outcome never rewinds a pull that committed
+  /// meanwhile.
   public func saveHubLink(_ link: HubLink) throws {
     try write { c in
       try c.execute(
@@ -755,7 +881,7 @@ public final class WorkspaceDatabase: Sendable {
         VALUES (1, $1, $2, $3, $4, $5, $6, $7::bigint, $8, $9, $10)
         ON CONFLICT ("id") DO UPDATE SET "url" = EXCLUDED."url", "deviceId" = EXCLUDED."deviceId",
           "deviceName" = EXCLUDED."deviceName", "tokenRef" = EXCLUDED."tokenRef",
-          "orgSlug" = EXCLUDED."orgSlug", "username" = EXCLUDED."username", "cursor" = EXCLUDED."cursor",
+          "orgSlug" = EXCLUDED."orgSlug", "username" = EXCLUDED."username",
           "lastPushAt" = EXCLUDED."lastPushAt", "lastError" = EXCLUDED."lastError",
           "joinedAt" = EXCLUDED."joinedAt"
         """,

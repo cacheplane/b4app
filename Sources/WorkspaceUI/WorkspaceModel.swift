@@ -108,8 +108,25 @@ public final class WorkspaceModel {
   /// The typed error behind `lastError`, when the failure came from the coordinator.
   public private(set) var lastFailure: WorkspaceError?
   public var composerText = "" {
-    didSet { if composerText != oldValue, !restoringDraft { scheduleDraftSave() } }
+    didSet {
+      if composerText != oldValue, !restoringDraft {
+        lastComposerChange = now()
+        scheduleDraftSave()
+      }
+    }
   }
+  /// True only while the open thread is actually in front of the owner: the scene is active, the
+  /// window is key (Mac), and the detail column is the one showing (iPhone). The views set it. A reply
+  /// is marked read only while it is true, and turning true marks the open thread's latest reply read.
+  public var isDetailOnScreen = false {
+    didSet {
+      guard isDetailOnScreen, !oldValue, let id = selectedThreadId else { return }
+      Task { await markReadIfNeeded(threadId: id) }
+    }
+  }
+  /// Every project with its folders, loaded with the threads and refreshed on `project.changed`.
+  public private(set) var projects: [Project] = []
+  public var projectFilter: ProjectFilter = .all
   public var surface: Surface = .threads
   public var selectedThreadId: String?
   public var searchText = ""
@@ -119,7 +136,14 @@ public final class WorkspaceModel {
   /// Draft writes are debounced; the pending one is flushed by `persistDraftNow()`.
   public private(set) var draftSaveTask: Task<Void, Never>?
   private var restoringDraft = false
-  public static var draftSaveDelay: Duration = .milliseconds(600)
+  /// Per model, so tests that change it cannot slow each other down (suites run in parallel).
+  @ObservationIgnored public var draftSaveDelay: Duration = .milliseconds(600)
+  /// A burst of events about one thread becomes one `thread.read` this long after the first.
+  public static var refetchDelay: Duration = .milliseconds(200)
+  /// A draft that changed elsewhere replaces the composer only when it has not been typed in for this long.
+  public static var remoteDraftIdle: TimeInterval = 2
+  /// The clock for relative times ("Replied 3m ago") and the composer idle rule; tests replace it.
+  public var now: @Sendable () -> Date = { Date() }
   /// Set after `connection.login`; the view opens it in the system browser and clears it.
   public var pendingLoginURL: URL?
 
@@ -143,22 +167,105 @@ public final class WorkspaceModel {
   private let transportProvider: TransportProvider
   private var client: WorkspaceClient?
   private var connectTask: Task<Void, Never>?
+  /// Callers of `settledLink()` waiting for the link to leave `.connecting`.
+  @ObservationIgnored private var linkWaiters: [CheckedContinuation<LinkState, Never>] = []
+  @ObservationIgnored private var lastComposerChange = Date.distantPast
+  /// Threads with a `thread.read` already scheduled; further events inside the window join it.
+  @ObservationIgnored private var refetchTasks: [String: Task<Void, Never>] = [:]
+  /// `"<threadId>/<turnId>"` for every `thread.markRead` sent, so a turn is marked at most once.
+  @ObservationIgnored private var markedRead: Set<String> = []
+  /// Threads the owner marked unread while open; they stay unread until the thread is opened again
+  /// or a new reply finishes.
+  @ObservationIgnored private var unreadHold: Set<String> = []
 
   public init(transportProvider: @escaping TransportProvider) {
     self.transportProvider = transportProvider
   }
 
-  public var visibleThreads: [ConversationThread] { filtered(archived: false) }
+  /// The list under the search, connection, and project filters: pinned first, then needs input,
+  /// unread reply, working, and quiet, newest activity first inside each (`Attention.ordered`).
+  public var orderedThreads: [ConversationThread] {
+    Attention.ordered(filtered(archived: projectFilter == .archived, project: projectFilter))
+  }
 
-  /// Archived threads under the same search and connection filter, shown when `showArchived` is on.
-  public var archivedThreads: [ConversationThread] { filtered(archived: true) }
+  /// Pinned threads of `orderedThreads`.
+  public var pinnedThreads: [ConversationThread] { orderedThreads.filter(\.pinned) }
 
-  private func filtered(archived: Bool) -> [ConversationThread] {
+  /// The unpinned threads of `orderedThreads` grouped by project (the Mac sidebar).
+  public var projectSections: [ProjectSection] {
+    ProjectSection.build(threads: orderedThreads.filter { !$0.pinned }, projects: projects)
+  }
+
+  /// Unarchived threads under the search, connection, and project filters, in attention order.
+  public var visibleThreads: [ConversationThread] {
+    Attention.ordered(filtered(archived: false, project: projectFilter == .archived ? .all : projectFilter))
+  }
+
+  /// Archived threads under the search and connection filters, shown when `showArchived` is on.
+  public var archivedThreads: [ConversationThread] {
+    Attention.ordered(filtered(archived: true, project: .all))
+  }
+
+  public func band(of thread: ConversationThread) -> AttentionBand { Attention.band(of: thread) }
+
+  /// A thread belongs under "Other" when it has no project or its project is not known.
+  private func isOther(_ thread: ConversationThread) -> Bool {
+    guard let projectId = thread.projectId else { return true }
+    return !projects.contains { $0.id == projectId }
+  }
+
+  private func filtered(archived: Bool, project: ProjectFilter) -> [ConversationThread] {
     let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
     return threads.filter { $0.archived == archived }
       .filter { connectionFilter == nil || $0.connectionId == connectionFilter }
       .filter { query.isEmpty || $0.title.lowercased().contains(query) }
-      .sorted { ($0.pinned ? 1 : 0, $0.updatedAt) > ($1.pinned ? 1 : 0, $1.updatedAt) }
+      .filter {
+        switch project {
+        case .all, .archived: return true
+        case .project(let id): return $0.projectId == id
+        case .other: return isOther($0)
+        }
+      }
+  }
+
+  /// One line under a thread's title saying why it sits where it does. Needs-input threads name the
+  /// request kind when the thread is open (the list's `activity` only counts requests).
+  public func reasonLine(for thread: ConversationThread) -> String {
+    switch Attention.band(of: thread) {
+    case .needsInput:
+      let pending = detail.flatMap { $0.thread.id == thread.id ? $0.requests : nil }?
+        .filter { $0.state == .pending }.min { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
+      switch pending?.kind {
+      case .commandApproval?, .fileChangeApproval?, .toolPermission?: return "Waiting for your approval"
+      case .userQuestion?, .elicitation?: return "Has a question for you"
+      case .unknown?, nil: return "Waiting for your input"
+      }
+    case .unread:
+      let when = relative(thread.activity?.lastActivityAt)
+      let word: String
+      switch thread.activity?.latestTurnOutcome {
+      case .failed?: word = "Failed"
+      case .cancelled?: word = "Stopped"
+      case .completed?, nil: word = "Replied"
+      }
+      return when.isEmpty ? word : "\(word) \(when)"
+    case .working:
+      return "Working"
+    case .quiet:
+      return thread.activity?.latestTurnId == nil ? "No messages yet" : "Read"
+    }
+  }
+
+  private func relative(_ timestamp: String?) -> String {
+    guard let timestamp, let date = Self.date(from: timestamp) else { return "" }
+    let formatter = RelativeDateTimeFormatter()
+    formatter.unitsStyle = .short
+    return formatter.localizedString(for: date, relativeTo: now())
+  }
+
+  private static func date(from timestamp: String) -> Date? {
+    if let date = Timestamp.date(from: timestamp) { return date }
+    return ISO8601DateFormatter().date(from: timestamp)
   }
 
   /// Sidebar state for one thread: the connection's availability wins over an idle thread, and a
@@ -199,12 +306,27 @@ public final class WorkspaceModel {
         _ = try await client.ready()
         try await refreshSnapshot()
         link = .ready
+        settleLink()
         await observe(client)
       } catch {
         link = .unavailable
         linkMessage = Self.describe(error)
+        settleLink()
       }
     }
+  }
+
+  /// The link once `connect()` has settled: `.ready` after the first snapshot is in, or `.unavailable`
+  /// with `linkMessage` saying why. Returns at once when the link is not `.connecting`.
+  public func settledLink() async -> LinkState {
+    if link != .connecting { return link }
+    return await withCheckedContinuation { linkWaiters.append($0) }
+  }
+
+  private func settleLink() {
+    let waiters = linkWaiters
+    linkWaiters = []
+    for waiter in waiters { waiter.resume(returning: link) }
   }
 
   public func disconnect() async {
@@ -212,6 +334,7 @@ public final class WorkspaceModel {
     await client?.close()
     client = nil
     link = .unavailable
+    settleLink()
   }
 
   public func refreshSnapshot() async throws {
@@ -222,6 +345,7 @@ public final class WorkspaceModel {
     activeTurns = Dictionary(
       snapshot.activeTurns.map { ($0.threadId, $0) }, uniquingKeysWith: { _, new in new })
     servers = (try? await client.request(ServerList.self, EmptyParams()).servers) ?? []
+    await refreshProjects()
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
     if let id = selectedThreadId, detail != nil { await loadDetail(id: id) }
   }
@@ -411,7 +535,9 @@ public final class WorkspaceModel {
     if let current = detail, current.thread.id != id { await saveDraft(threadId: current.thread.id) }
     selectedThreadId = id
     surface = .threads
+    unreadHold.remove(id)
     await loadDetail(id: id)
+    await markReadIfNeeded(threadId: id)
   }
 
   private func loadDetail(id: String) async {
@@ -433,6 +559,7 @@ public final class WorkspaceModel {
       }
       detail = ThreadDetail(
         thread: read.thread, turns: read.turns, items: read.items, requests: read.requests)
+      store(read.thread)
       if let active = read.turns.last(where: { $0.status != .terminal }) {
         activeTurns[id] = active
       } else {
@@ -455,8 +582,9 @@ public final class WorkspaceModel {
   private func scheduleDraftSave() {
     draftSaveTask?.cancel()
     guard let threadId = detail?.thread.id else { return }
+    let delay = draftSaveDelay
     draftSaveTask = Task { [weak self] in
-      try? await Task.sleep(for: Self.draftSaveDelay)
+      try? await Task.sleep(for: delay)
       guard !Task.isCancelled, let self, self.detail?.thread.id == threadId else { return }
       await self.saveDraft(threadId: threadId)
       self.draftSaveTask = nil
@@ -496,6 +624,183 @@ public final class WorkspaceModel {
         ThreadUpdate.Params(threadId: id, title: title, pinned: pinned, archived: archived),
         options: Self.mutation()
       ).thread
+    }
+  }
+
+  // MARK: - Projects
+
+  public func refreshProjects() async {
+    guard let client, let list = try? await client.request(ProjectList.self, EmptyParams()) else { return }
+    projects = list.projects
+  }
+
+  @discardableResult
+  public func createProject(name: String, folders: [String]) async -> Project? {
+    let created: Project? = await perform {
+      try await $0.request(
+        ProjectCreate.self, ProjectCreate.Params(name: name, folders: folders), options: Self.mutation()
+      ).project
+    }
+    if let created { merge(created) }
+    return created
+  }
+
+  /// Rename a project; the empty string restores the folder-name display.
+  public func renameProject(id: String, name: String) async {
+    let renamed: Project? = await perform {
+      try await $0.request(
+        ProjectRename.self, ProjectRename.Params(projectId: id, name: name), options: Self.mutation()
+      ).project
+    }
+    if let renamed { merge(renamed) }
+  }
+
+  public func addFolder(projectId: String, path: String) async {
+    let updated: Project? = await perform {
+      try await $0.request(
+        ProjectUpdate.self, ProjectUpdate.Params(projectId: projectId, addFolders: [path]),
+        options: Self.mutation()
+      ).project
+    }
+    if let updated { merge(updated) }
+    // Threads whose folder moved arrive as `thread.updated`; the list follows `project.changed`.
+  }
+
+  public func deleteProject(id: String) async {
+    let deleted: String? = await perform {
+      try await $0.request(ProjectDelete.self, ProjectDelete.Params(projectId: id), options: Self.mutation())
+        .projectId
+    }
+    guard let deleted else { return }
+    projects.removeAll { $0.id == deleted }
+    if projectFilter == .project(deleted) { projectFilter = .all }
+  }
+
+  private func merge(_ project: Project) {
+    if let index = projects.firstIndex(where: { $0.id == project.id }) {
+      projects[index] = project
+    } else {
+      projects.append(project)
+    }
+  }
+
+  // MARK: - Read state
+
+  /// Mark the thread unread again (spec: context menu on the Mac, swipe on the phone).
+  public func markUnread(id: String) async {
+    let previous = threads.first { $0.id == id }?.readTurnId
+    unreadHold.insert(id)
+    markedRead = markedRead.filter { !$0.hasPrefix("\(id)/") }
+    setReadTurn(threadId: id, turnId: nil)
+    let result: ConversationThread? = await perform {
+      try await $0.request(
+        ThreadMarkRead.self, ThreadMarkRead.Params(threadId: id, turnId: nil), options: Self.mutation()
+      ).thread
+    }
+    if let result {
+      store(result)
+    } else {
+      unreadHold.remove(id)
+      setReadTurn(threadId: id, turnId: previous)
+    }
+  }
+
+  /// When the open thread's latest turn is finished and is not the one marked read, mark it read:
+  /// once per (thread, turn) for the life of the model. Nothing is sent for a turn still running, and
+  /// nothing while the thread is not on screen (spec "Read state": the reply must be seen); the
+  /// detail stays loaded behind the iPhone's list and the Mac's inactive window, so loaded is not seen.
+  private func markReadIfNeeded(threadId: String) async {
+    guard isDetailOnScreen, surface == .threads, selectedThreadId == threadId else { return }
+    guard let detail, detail.thread.id == threadId, !unreadHold.contains(threadId) else { return }
+    guard let latest = detail.turns.max(by: { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }),
+      latest.status == .terminal
+    else { return }
+    let readTurnId = threads.first { $0.id == threadId }?.readTurnId ?? detail.thread.readTurnId
+    guard readTurnId != latest.id, markedRead.insert("\(threadId)/\(latest.id)").inserted else { return }
+    guard let client else {
+      markedRead.remove("\(threadId)/\(latest.id)")
+      return
+    }
+    setReadTurn(threadId: threadId, turnId: latest.id)
+    do {
+      let result = try await client.request(
+        ThreadMarkRead.self, ThreadMarkRead.Params(threadId: threadId, turnId: latest.id),
+        options: Self.mutation())
+      store(result.thread)
+    } catch {
+      // Not sent after all: the dot comes back and a later open may try again.
+      markedRead.remove("\(threadId)/\(latest.id)")
+      if threads.first(where: { $0.id == threadId })?.readTurnId == latest.id {
+        setReadTurn(threadId: threadId, turnId: readTurnId)
+      }
+    }
+  }
+
+  /// Set the read marker on the list row and the open detail at once, so the row's band changes
+  /// before the coordinator has answered.
+  private func setReadTurn(threadId: String, turnId: String?) {
+    if let index = threads.firstIndex(where: { $0.id == threadId }) { threads[index].readTurnId = turnId }
+    if detail?.thread.id == threadId { detail?.thread.readTurnId = turnId }
+  }
+
+  /// Put a fresher copy of a thread into the list (and the open detail), keeping the `activity` and
+  /// owner name an event payload may lack.
+  private func store(_ thread: ConversationThread) {
+    var fresh = thread
+    if let index = threads.firstIndex(where: { $0.id == thread.id }) {
+      fresh.activity = fresh.activity ?? threads[index].activity
+      fresh.ownerDeviceName = fresh.ownerDeviceName ?? threads[index].ownerDeviceName
+      threads[index] = fresh
+    } else {
+      threads.append(fresh)
+    }
+    if detail?.thread.id == thread.id { detail?.thread = fresh }
+  }
+
+  // MARK: - Keeping rows current
+
+  /// Re-read one thread shortly after an event about it, so its `activity` (and the open thread's
+  /// turns and requests) are current. The first event opens a window; the rest join its one read.
+  private func scheduleRefetch(threadId: String) {
+    guard refetchTasks[threadId] == nil else { return }
+    refetchTasks[threadId] = Task { [weak self] in
+      try? await Task.sleep(for: Self.refetchDelay)
+      guard !Task.isCancelled, let self else { return }
+      self.refetchTasks[threadId] = nil
+      await self.refetch(threadId: threadId)
+    }
+  }
+
+  private func refetch(threadId: String) async {
+    guard let client,
+      let read = try? await client.request(
+        ThreadRead.self, ThreadRead.Params(threadId: threadId), options: RequestOptions(timeout: .seconds(60))
+      )
+    else { return }
+    if var current = detail, current.thread.id == threadId {
+      current.turns = read.turns
+      current.items = read.items
+      current.requests = read.requests
+      detail = current
+      activeTurns[threadId] = read.turns.last { $0.status != .terminal }
+    }
+    store(read.thread)
+    await markReadIfNeeded(threadId: threadId)
+  }
+
+  /// A draft changed on another device shows in the open composer, but only when nothing has been
+  /// typed for `remoteDraftIdle` seconds: a focused composer keeps what is being typed.
+  private func reloadRemoteDraftIfIdle(threadId: String) {
+    guard now().timeIntervalSince(lastComposerChange) >= Self.remoteDraftIdle, let client else { return }
+    let stamp = lastComposerChange
+    Task {
+      guard
+        let draft = try? await client.request(DraftRead.self, DraftRead.Params(threadId: threadId)).draft,
+        detail?.thread.id == threadId, lastComposerChange == stamp, composerText != draft.text
+      else { return }
+      restoringDraft = true
+      composerText = draft.text
+      restoringDraft = false
     }
   }
 
@@ -655,10 +960,12 @@ public final class WorkspaceModel {
     switch event.kind {
     case .threadUpdated:
       if let thread = try? event.payload["thread"]?.decode(ConversationThread.self) {
-        threads.removeAll { $0.id == thread.id }
-        threads.insert(thread, at: 0)
-        if detail?.thread.id == thread.id { detail?.thread = thread }
+        store(thread)
+        if detail?.thread.id == thread.id { reloadRemoteDraftIfIdle(threadId: thread.id) }
+        scheduleRefetch(threadId: thread.id)
       }
+    case .projectChanged:
+      Task { await refreshProjects() }
     case .serverChanged:
       if let server = try? event.payload["server"]?.decode(LocalServer.self) { merge(server) }
     case .connectionChanged:
@@ -679,6 +986,16 @@ public final class WorkspaceModel {
         activeTurns[threadId] = turn.status == .terminal ? nil : turn
       }
       applyToDetail(event)
+      if let threadId = event.threadId {
+        scheduleRefetch(threadId: threadId)
+        if event.kind == .turnFinished, detail?.thread.id == threadId {
+          unreadHold.remove(threadId)
+          Task { await markReadIfNeeded(threadId: threadId) }
+        }
+      }
+    case .runtimeRequestOpened, .runtimeRequestResolved, .runtimeRequestExpired:
+      applyToDetail(event)
+      if let threadId = event.threadId { scheduleRefetch(threadId: threadId) }
     default:
       applyToDetail(event)
     }

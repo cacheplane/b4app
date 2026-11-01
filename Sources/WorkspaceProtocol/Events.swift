@@ -19,6 +19,8 @@ public enum EventKind: String, Codable, Sendable, CaseIterable {
   case adapterError = "adapter.error"
   case threadUpdated = "thread.updated"
   case serverChanged = "server.changed"
+  /// A project, or the set of its folders, changed. `payload["projectId"]` names it.
+  case projectChanged = "project.changed"
 }
 
 /// One normalized adapter event. Identity fields are always present; the payload shape depends on `kind`.
@@ -62,6 +64,11 @@ public struct AdapterEvent: Codable, Sendable, Equatable {
   /// A managed server row changed (health, pid, port, routes). Not tied to a connection.
   public static func serverChanged(_ server: LocalServer) throws -> AdapterEvent {
     AdapterEvent(kind: .serverChanged, connectionId: "", payload: ["server": try JSONValue(encoding: server)])
+  }
+
+  /// A project was created, renamed, deleted, or gained or lost a folder. Not tied to a connection.
+  public static func projectChanged(projectId: String) -> AdapterEvent {
+    AdapterEvent(kind: .projectChanged, connectionId: "", payload: ["projectId": .string(projectId)])
   }
 
   public static func threadUpdated(_ thread: ConversationThread) throws -> AdapterEvent {

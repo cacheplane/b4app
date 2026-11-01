@@ -8,11 +8,14 @@ import WorkspaceProtocol
   /// The fixture the hub's Rust tests read too. SwiftPM cannot declare a resource outside the target
   /// directory and copies a symlink as a dangling link, so the test reads the shared file in place,
   /// relative to this source file.
-  private func fixtureChanges(file: StaticString = #filePath) throws -> [SyncChange] {
-    let url = URL(fileURLWithPath: "\(file)")
+  private func fixtureURL(_ name: String, file: StaticString = #filePath) -> URL {
+    URL(fileURLWithPath: "\(file)")
       .deletingLastPathComponent().deletingLastPathComponent()
-      .appendingPathComponent("Fixtures/sync/changes.json")
-    return try JSONCoding.decoder.decode([SyncChange].self, from: Data(contentsOf: url))
+      .appendingPathComponent("Fixtures/sync/\(name)")
+  }
+
+  private func fixtureChanges() throws -> [SyncChange] {
+    try JSONCoding.decoder.decode([SyncChange].self, from: Data(contentsOf: fixtureURL("changes.json")))
   }
 
   @Test func decodesTheSharedFixture() throws {
@@ -21,6 +24,44 @@ import WorkspaceProtocol
     #expect(changes[0].table == "connections" && changes[0].op == "insert")
     #expect(changes[0].deviceSeq == 1)
     #expect(changes[0].value?["id"] == "conn-1")
+    #expect(changes.allSatisfy { $0.hlc != nil })
+    #expect(changes[0].hlc == "019a396c76e8-0000-01a194cf-0d12-7418-b3b5-5559dbee2441")
+    #expect(HLC(rawValue: changes[11].hlc ?? "") != nil)
+  }
+
+  /// One entry of `conflicts.json`: the change the device made, which device it was, and its place.
+  private struct ConflictEntry: Decodable {
+    var platform: String
+    var device: String
+    var change: SyncChange
+
+    init(from decoder: Decoder) throws {
+      let container = try decoder.container(keyedBy: Keys.self)
+      platform = try container.decode(String.self, forKey: .platform)
+      device = try container.decode(String.self, forKey: .device)
+      change = try SyncChange(from: decoder)
+    }
+
+    private enum Keys: String, CodingKey { case platform, device }
+  }
+
+  private struct Conflicts: Decodable {
+    var changes: [ConflictEntry]
+    var expected: [String: JSONValue]
+  }
+
+  @Test func decodesTheConflictFixture() throws {
+    let fixture = try JSONCoding.decoder.decode(
+      Conflicts.self, from: Data(contentsOf: fixtureURL("conflicts.json")))
+
+    #expect(fixture.changes.count == 9)
+    #expect(Set(fixture.changes.map(\.platform)).isSubset(of: ["macos", "ios", "cli"]))
+    #expect(fixture.changes.allSatisfy { !$0.device.isEmpty && $0.change.hlc != nil })
+    #expect(fixture.changes[0].change.op == "insert" && fixture.changes[0].change.column == nil)
+    #expect(fixture.changes[3].platform == "ios" && fixture.changes[3].change.value == "Phone title")
+    #expect(fixture.expected["threads.title"] == "Mac title")
+    #expect(fixture.expected["drafts.text"] == "")
+    #expect(fixture.expected.count == 3)
   }
 
   @Test func fixtureRoundTripsWithoutLoss() throws {
@@ -58,6 +99,53 @@ import WorkspaceProtocol
     let stored = try JSONCoding.decoder.decode(StoredChange.self, from: json)
     #expect(stored.hubSeq == 9 && stored.deviceId == "d")
     #expect(stored.value == .some(.null))
+  }
+
+  @Test func aStoredChangeWithoutHlcDerivesOne() throws {
+    let old = Data(
+      #"""
+      {"hubSeq":9,"deviceId":"01a1-dev","deviceSeq":3,"wall":1761900001000,"table":"threads","rowId":"t","op":"delete"}
+      """#.utf8)
+    let stored = try JSONCoding.decoder.decode(StoredChange.self, from: old)
+    #expect(stored.hlc == "019a396c76e8-0000-01a1-dev")
+
+    let negative = Data(
+      #"{"hubSeq":1,"deviceId":"d","deviceSeq":1,"wall":-5,"table":"t","rowId":"r","op":"delete"}"#.utf8)
+    #expect(try JSONCoding.decoder.decode(StoredChange.self, from: negative).hlc == "000000000000-0000-d")
+
+    let explicit = Data(
+      #"{"hubSeq":1,"deviceId":"d","deviceSeq":1,"wall":5,"table":"t","rowId":"r","op":"delete","hlc":"0000000000ff-0002-d"}"#
+        .utf8)
+    let kept = try JSONCoding.decoder.decode(StoredChange.self, from: explicit)
+    #expect(kept.hlc == "0000000000ff-0002-d")
+    // The initialiser derives it the same way, and a round trip keeps it.
+    #expect(
+      StoredChange(hubSeq: 1, deviceId: "d", deviceSeq: 1, wall: 255, table: "t", rowId: "r", op: "delete")
+        .hlc
+        == "0000000000ff-0000-d")
+    #expect(try JSONCoding.decoder.decode(StoredChange.self, from: JSONCoding.encoder.encode(kept)) == kept)
+  }
+
+  @Test func aPushResponseOmitsAndDecodesRejections() throws {
+    let plain = try JSONCoding.decoder.decode(PushResponse.self, from: Data(#"{"acceptedThrough":12}"#.utf8))
+    #expect(plain.acceptedThrough == 12 && plain.rejected.isEmpty)
+    let encoded = String(decoding: try JSONCoding.encoder.encode(plain), as: UTF8.self)
+    #expect(!encoded.contains("rejected"))
+
+    let refused = try JSONCoding.decoder.decode(
+      PushResponse.self,
+      from: Data(#"{"acceptedThrough":12,"rejected":[{"deviceSeq":7,"code":"column_not_writable"}]}"#.utf8))
+    #expect(refused.rejected == [RejectedChange(deviceSeq: 7, code: "column_not_writable")])
+  }
+
+  @Test func aSyncChangeKeepsItsClockThroughARoundTrip() throws {
+    let change = SyncChange(
+      deviceSeq: 1, wall: 2, table: "threads", rowId: "t", op: "update", column: "title", value: "x",
+      hlc: "000000000002-0000-d")
+    let again = try JSONCoding.decoder.decode(SyncChange.self, from: JSONCoding.encoder.encode(change))
+    #expect(again == change && again.hlc == "000000000002-0000-d")
+    let bare = SyncChange(deviceSeq: 1, wall: 2, table: "threads", rowId: "t", op: "delete")
+    #expect(!String(decoding: try JSONCoding.encoder.encode(bare), as: UTF8.self).contains("hlc"))
   }
 
   @Test func decodesTheHubResponses() throws {

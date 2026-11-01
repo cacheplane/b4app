@@ -37,7 +37,9 @@ struct ModelHarness {
       try await UnixSocketTransport.connect(path: socketPath, timeout: .seconds(5))
     })
     model.connect()
-    try await waitUntil("model ready") { model.link == .ready }
+    guard await model.settledLink() == .ready else {
+      throw WorkspaceError(.internalError, "the model did not connect: \(model.linkMessage ?? "no message")")
+    }
     return ModelHarness(coordinator: coordinator, model: model, workDir: base + "/work")
   }
 
@@ -60,6 +62,17 @@ func waitUntil(
 }
 
 @Suite(.serialized) @MainActor struct WorkspaceModelTests {
+  @Test func settledLinkReturnsWhenTheConnectionFails() async {
+    let model = WorkspaceModel(transportProvider: {
+      throw WorkspaceError(.endpointUnavailable, "no coordinator")
+    })
+    model.connect()
+    #expect(await model.settledLink() == .unavailable)
+    #expect(model.linkMessage?.contains("no coordinator") == true)
+    // Already settled: returns at once.
+    #expect(await model.settledLink() == .unavailable)
+  }
+
   @Test func sidebarStateFollowsTurnEventsAndArchivedThreadsHideUntilAsked() async throws {
     let h = try await ModelHarness.start()
     let model = h.model
@@ -90,10 +103,9 @@ func waitUntil(
   }
 
   @Test func draftsAreSavedAfterTypingStopsAndFlushedOnDemand() async throws {
-    WorkspaceModel.draftSaveDelay = .milliseconds(150)
-    defer { WorkspaceModel.draftSaveDelay = .milliseconds(600) }
     let h = try await ModelHarness.start()
     let model = h.model
+    model.draftSaveDelay = .milliseconds(150)
     let connection = try #require(
       await model.addConnection(kind: .codex, label: "Fake Codex", executablePath: fakeCodex))
     await model.createThread(connectionId: connection.id, directory: h.workDir, title: "drafty")

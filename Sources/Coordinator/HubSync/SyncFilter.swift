@@ -22,6 +22,7 @@ import WorkspaceSync
 ///   `{"truncated": true, "bytes": n}`, on an insert and on an update of the `payload` column alike
 ///   (the hub refuses any value over 2 MiB, so an oversized one would otherwise block the queue).
 /// - An update that cleared a column carries JSON `null` (the hub's "set it to NULL").
+/// - Every change carries its transaction's clock (`hlc`), which the hub merges by.
 enum SyncFilter {
   static let payloadLimit = 1_048_576
   static let blankedConnectionColumns: Set<String> = ["authReference", "localServerId", "target"]
@@ -70,7 +71,7 @@ enum SyncFilter {
     if record.op == "update", value == nil { value = .null }
     return SyncChange(
       deviceSeq: record.seq, wall: record.wall, table: record.table, rowId: record.rowId, op: record.op,
-      column: record.column, value: value)
+      column: record.column, value: value, hlc: record.hlc)
   }
 
   /// The payload itself, or a marker with its JSON size when that is over `payloadLimit`.

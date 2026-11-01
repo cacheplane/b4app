@@ -55,7 +55,7 @@ xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generi
 ./Scripts/package.sh
 ```
 
-That builds `dist/Agent Workspace.app` (version from `Sources/Coordinator/Version.swift`) with the coordinator and the CLI inside `Contents/Helpers`, the PostgreSQL server under `Contents/SharedSupport`, signs it ad hoc, verifies, and zips it. Copy the app to `/Applications` and open it. On first launch the app writes `~/Library/LaunchAgents/com.cacheplane.b4app.coordinator.plist`, pointing at the coordinator inside the app, and loads it; macOS may show "Agent Workspace added items that can run in the background". The coordinator then outlives the window. If launchd cannot start it, the link status at the bottom of the sidebar says so and the window hosts the coordinator itself until the next launch repairs the agent.
+That builds `dist/Agent Workspace.app` (version from `Sources/Coordinator/Version.swift`) with the coordinator and the CLI inside `Contents/Helpers`, the PostgreSQL server under `Contents/SharedSupport`, signs it (ad hoc unless `B4APP_SIGN_IDENTITY` is set, below), verifies, and zips it. Copy the app to `/Applications` and open it. On first launch the app writes `~/Library/LaunchAgents/com.cacheplane.b4app.coordinator.plist`, pointing at the coordinator inside the app, and loads it; macOS may show "Agent Workspace added items that can run in the background". The coordinator then outlives the window. If launchd cannot start it, the link status at the bottom of the sidebar says so and the window hosts the coordinator itself until the next launch repairs the agent.
 
 Put the CLI on your PATH as a link to the bundled one, so the app and the CLI always agree on a version:
 
@@ -63,7 +63,13 @@ Put the CLI on your PATH as a link to the bundled one, so the app and the CLI al
 ./Scripts/install-cli.sh
 ```
 
-Signing: with no Developer ID certificate the build is ad hoc and runs on the Mac that built it. `B4APP_SIGN_IDENTITY="Developer ID Application: …" ./Scripts/package.sh` signs with the hardened runtime; notarisation is a separate step and not part of this release.
+Signing (D-039): with no identity the build is ad hoc and runs on the Mac that built it. With a Developer ID Application certificate in the login keychain and a notarytool profile you created yourself (`xcrun notarytool store-credentials b4app --apple-id <apple-id> --team-id <team-id>`, with an app-specific password from account.apple.com; the script never sees it), run
+
+```bash
+B4APP_SIGN_IDENTITY="Developer ID Application: <name> (<team-id>)" ./Scripts/package.sh
+```
+
+It signs every PostgreSQL binary and library, both helpers, and the app with the hardened runtime and a secure timestamp, verifies, submits the zip to the notary service and waits, staples the ticket to the app, re-zips the stapled app, and fails unless `spctl -a -vv` reports `source=Notarized Developer ID`. A rejected submission prints notarytool's log. `B4APP_NOTARY_PROFILE` names another profile; `B4APP_SKIP_NOTARIZE=1` signs without submitting. The team id comes from the certificate, so `project.yml` stores none.
 
 ### First sign-in
 
@@ -181,7 +187,7 @@ The B4 live check needs a server you run yourself: a B4 project with one `agent(
 
 ## Hub (optional)
 
-The hub (`Hub/`, a Rust service backed by PostgreSQL) mirrors conversations created in the app from a Mac to the iOS app, read-only (M8a, decisions D-043 to D-046). The phone shows threads and transcripts; it cannot write, send turns, or answer approvals yet (M8b, M8c). Only threads created in the app sync: nothing is read from `~/.codex`, `~/.claude`, or a B4 server's history, and connection credentials, executable paths, and local-server records never leave the Mac. The hub's wire reference is `Hub/API.md`.
+The hub (`Hub/`, a Rust service backed by PostgreSQL) mirrors conversations created in the app from a Mac to the iOS app (M8a, decisions D-043 to D-046) and, since M8b, carries the phone's own edits back (decisions D-048 to D-050). The phone shows threads and transcripts in the same attention order as the Mac, and can rename, pin, archive, and mark threads read or unread, rename projects, and edit a thread's shared draft; each edit applies on the phone at once, waits in an outbox while offline, and merges on the Mac and the hub column by column by hybrid logical clock. Only those columns are phone-writable, and the hub and the Mac both refuse anything else from a phone. Projects are created and their folders changed only on the Mac; the phone cannot yet create threads, send turns, or answer approvals (M8c). Only threads created in the app sync: nothing is read from `~/.codex`, `~/.claude`, or a B4 server's history, and connection credentials, executable paths, and local-server records never leave the Mac. The hub's wire reference is `Hub/API.md`.
 
 Start a local hub (needs Docker). Compose publishes the hub as `127.0.0.1:8080:8080`: plain HTTP on the Mac's loopback interface only, which the Mac and the Simulator reach as `localhost` (any other device needs a hub behind TLS, since the clients refuse plain HTTP for any host but `localhost`); the database is not published:
 

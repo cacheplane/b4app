@@ -2,6 +2,116 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-11-01: M8b live gate
+
+Run on the owner's MacBook Pro (macOS 26.5) from `feat/m8b-organisation` at `2c5ccef`, plus `87a494e` (the phone's project rename, found missing below). Backups first: `agent-workspace db backup` (152 rows) and `pg_dump` of the hub (13 tables), both in `~/Library/Application Support/b4app/backups/`. The Compose stack moved to the branch's `Hub/` on the same `hub_b4hub-db` volume: migration `0003_organisation` applied, `/readyz` `{"migrations":"current"}`. The packaged app was rebuilt with `./Scripts/package.sh` and swapped into `~/repos/b4app/dist` (main's bundle parked in `dist-main/` for the restore). The store migrated to `0004_organisation` and backfilled 2 projects. Then `agent-workspace hub status` showed `unsynced 0` and the coordinator a pid started at 14:40:00Z. The phone is the iPhone 17 Pro Simulator against `http://localhost:8080`. Real runtimes: Codex 0.166.0 and Claude Code.
+
+| Exit item | Result |
+| --- | --- |
+| 1. Attention order on both devices | Pass. The phone list opened with both threads quiet (the `0004` backfill). A Codex reply moved its thread to the top as unread. A Claude Code turn asking to run `touch` opened a `tool_permission` request at 14:50:39.9; the phone showed the thread first with the cobalt dot and "Waiting for your input". Declined on the Mac at 14:53:50.9 (`request respond --decline`): the phone showed "Working" (ring) below the unread thread within seconds, then unread when the reply finished. Opened on the phone at 14:54:03.8: the Mac's `readTurnId` matched the latest turn 0.15 s later. The Mac sidebar showed "Pinned" and a collapsible "B4 Run (Mac)" section, with the b4app section hidden while its only thread was pinned |
+| 2. Phone and Mac edits show on the other | Pass, each within about 1 s of the tap: pin (14:54:11), thread rename (14:54:23 at the hub, on the Mac by 14:54:25.2), draft (14:54:28; `draft.read` on the Mac returned it), archive (on the Mac 0.14 s after the tap), and project rename (on the Mac 0.2 s after). Reverse, from the CLI and the socket: title, unpin, unarchive, pin, project rename, and draft all showed on the phone within a few seconds. The project rename needed `87a494e`: the phone had no rename control, although the spec gives the phone that edit and the mirror already answered `project.rename` |
+| 3. Live convergence | Pass. `docker compose stop hub` at 14:58:32 (the phone showed "Not synced"). The phone renamed the thread "Offline phone title" and drafted "Offline phone draft"; then the Mac set "Offline Mac title" and "offline Mac draft" (4 unsynced). `docker compose start hub` at 14:58:57. The phone's edits reached the hub at 14:59:03 and the Mac's at 14:59:13, with greater clocks (`…1979ecbc9` over `…1979ea41b`). By 14:59:14 the Mac showed `unsynced 0`, and both devices showed the Mac's title and draft. The reversed-clock order is fixture-tested only |
+| 5. The real hub's rows | 198 change rows over `connections`, `displayItems`, `drafts`, `projectFolders`, `projects`, `runtimeRequests`, `threads`, `turns`: none holds a `secret:` reference, an executable path, a `pid`, or a socket path |
+
+Found during the run, outside the exit items:
+
+- **Keychain prompt blocks the hub actor.** Each ad-hoc `package.sh` rebuild changes the coordinator's signature, so its first read of the hub token raises a Keychain access prompt. Until someone answers, `HubSync` is suspended inside `SecItemCopyMatching`: nothing pushes, and `hub status` times out after 15 s. The coordinator that main's 2026-10-31 rebuild started sat there for 8 hours. Answering the prompt cleared it.
+- **A stale cluster survives a coordinator swap.** That stuck coordinator did not exit within `coordinator stop`'s 10 s, and when it did go it left its PostgreSQL server (started from the old bundle) running. The new coordinator reused that server, and `0004` failed: the server could not `dlopen` the new bundle's `plpgsql.dylib`, whose ad-hoc signature differs. The migration rolled back. After `pg_ctl stop` with the old bundle's binaries, the new coordinator started its own server and migrated.
+- **Simulator team prefix.** With the Developer ID certificate now installed, Xcode signs Simulator builds as `GJJKL34HCT.com.cacheplane.b4app.ios` instead of `FAKETEAMID…`, so the reinstalled app could not read the token the earlier build had stored, and every request got a 401. The Simulator was enrolled again (the old phone device revoked at the hub).
+- `agent-workspace turn send --no-wait` did not return after the turn opened a request; the request itself was recorded correctly.
+- A just-finished reply reads "Replied in 0 sec." on the phone when its time is a moment ahead of the phone's clock.
+- The Codex connection runs with its sandbox off, so a Codex turn never opens a command approval; the approval check used Claude Code.
+
+## 2026-11-01: M8b final-review fix wave (fixture gates)
+
+Run from `feat/m8b-organisation` at `446c8c0` (six commits over `6baea96`: read marks wait for the thread to be on screen; `0004` backfills `readTurnId` and indexes `runtimeRequests("threadId", "state")`; the phone's push is capped at 8 MiB and unsent edits of one column collapse; an advisory lock orders local writes against pulled batches; a router test waits for its events; README and D-048/D-049). `Hub/` was not touched, so the Rust gates were not rerun. The live gate below is still pending.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Swift format | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass |
+| Build | `swift build` | Pass |
+| Tests | `swift test` | Pass: 526 tests in 89 suites in 37.7 s, no issues on the first run |
+| Project | `./Scripts/generate-project.sh` | Regenerated |
+| macOS app | `xcodebuild build ... -scheme B4App-macOS -destination 'platform=macOS'` | `** BUILD SUCCEEDED **` |
+| iOS app | `xcodebuild build ... -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'` | `** BUILD SUCCEEDED **` |
+
+## 2026-11-01: M8b organisation (fixture gates; live gate pending)
+
+Target: the same MacBook Pro (macOS 26.5, Xcode 26.6), run from the worktree `feat/m8b-organisation` at `2cedd55` (the head of Tasks 1 to 12) before this documentation commit. **Only the fixture gates are recorded here. The live gate (the owner's packaged app, the Compose hub, and the Simulator) has not been run, and nothing below is a live result.** The owner's running Agent Workspace app, its LaunchAgent, `~/Library/Application Support/b4app`, and the Compose stack were not touched.
+
+### Automated
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Swift format | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass |
+| Build | `swift build` | Pass |
+| Tests | `swift test` | Pass: 517 tests in 89 suites in 36.4 s (324 tests at the end of M8a). The first full run reported 1 issue in 517 tests: `MirrorSyncTests.offlineEditsWaitAndDrainWhenTheHubReturns` (`MirrorSyncTests.swift:185`, `lastError == nil`), a timing flake under load (the PR #19 class, a 10 s wait). `swift test --filter MirrorSyncTests` alone passed (13 tests), and a second full run passed with no issues |
+| Project | `./Scripts/generate-project.sh` | `B4App.xcodeproj` regenerated from `project.yml` |
+| macOS app | `xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'platform=macOS'` | `** BUILD SUCCEEDED **` |
+| iOS app | `xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'` | `** BUILD SUCCEEDED **` |
+| Rust format | `cd Hub && eval "$(./scripts/test-db.sh)" && cargo fmt --all -- --check` | Pass |
+| Rust lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| Rust tests | `cargo test --workspace --locked`, then `./scripts/test-db.sh --stop` | Pass: 117 tests against a real PostgreSQL 17.11 (77 at the end of M8a): `b4hub` 51 (unit 22, `changes` 14, `enroll` 10, `health` 5), `b4hub-core` 19, `b4hub-db` 47 (unit 3, `changes` 34, `migrate` 7, `rls` 3) |
+| CI | the Swift package job, the apps job, and the Ubuntu `hub` job | Recorded in the PR for `feat/m8b-organisation`, not here |
+
+### Exit items the fixtures cover
+
+| M8b exit item (design) | Fixture evidence | Not covered by fixtures |
+| --- | --- | --- |
+| 1. Sidebar and phone list in attention order; an approval moves its thread to the top within one poll; answering it moves it to unread; opening it on the phone makes it quiet on both | `Tests/Fixtures/sync/attention.json` run against the coordinator's store (`ActivityQueryTests`), the mirror's store (`MirrorActivityTests`), `Attention` (`AttentionTests`), and the model (`AttentionModelTests`, `ThreadListTests`); `markRead` and its guard in `ProjectServiceTests` | The timing within one poll, and both screens, against the real stack |
+| 2. A phone rename, pin, archive, project rename, and draft show on the Mac, and the reverse | Hub: `phone_title_edit_applies_and_later_mac_edit_wins`, `a_phone_may_insert_a_draft_and_clear_it`; Mac: `HubPullTests`, `RemoteApplyTests`; phone: `MirrorWritesTests`, `outboxIsPushedThenPulledBack` | The same through the Compose hub with the owner's joined app |
+| 3. Convergence: both devices rename one thread and edit one draft while the hub is down, the Mac later; both converge on the Mac's values, and on the phone's with the clocks reversed | The shared `conflicts.json` (`conflictFixtureMergesToTheExpectedValues`, both orders, in the Swift suites; the Rust suite decodes the same file), `stale_phone_edit_loses`, `offlineEditsWaitAndDrainWhenTheHubReturns` | The live run with `docker compose stop hub` |
+| 4. A cursor below a pruned horizon resyncs from `/v1/snapshot` without losing an outbox row | `stale_cursor_gets_resync_and_snapshot_restores`, `a_pruned_cursor_resyncs_through_the_snapshot_over_http`, `staleCursorResyncsFromSnapshotWithoutLosingLocalRows`, `resyncUsesTheSnapshot`, `snapshotKeepsTheOutbox`, `aSnapshotClockNewerThanAnUnsentEditWins` | A prune of the real hub |
+| 5. A phone change to a Mac-only column is refused; no hub row holds a secret, path, or pid | `phone_cannot_write_mac_only_columns`, `connection_secrets_are_scrubbed_even_if_sent` | A look at the real hub's tables after the live run |
+| 6. `cargo test`, `swift test`, and both app builds pass | Above, locally | CI |
+
+### Live gate: run 2026-11-01 (see "M8b live gate" above; the table below is the procedure as planned)
+
+To be run only after the owner's go-ahead, because it rebuilds the owner's packaged app and migrates the owner's real local store (to `0004`) and the Compose hub's volume (to `0003`); both migrations are hard to reverse. First: `agent-workspace db backup` and a `pg_dump` of the hub volume. Then rebuild the hub image and bring the stack up from the branch's `Hub/` (`/readyz` must show `"migrations":"current"`), `./Scripts/package.sh`, quit the app, `agent-workspace coordinator restart`, reopen, and run the three items below in the iPhone 17 Pro Simulator with a fixture approval (or a real Codex command approval), recording each with timings. Fill this table in; leave a row `not run` until it is.
+
+| Exit item | Procedure | Result |
+| --- | --- | --- |
+| 1. Attention order on both devices | Open the Mac sidebar (Pinned and per-project sections) and the phone's list with the project filter. Start a fixture turn that opens an approval: the thread must move to the top on both within one poll interval. Answer it on the Mac: it moves to unread. Open it on the phone: it becomes quiet on both | not run |
+| 2. Phone and Mac edits show on the other | Rename a thread on the phone, pin one, archive one, rename a project, and type a draft: each shows on the Mac within one poll interval. Then do the reverse | not run |
+| 3. Live convergence | `docker compose stop hub`; rename the same thread and edit the same draft on both devices, the Mac's edit later; `docker compose start hub`; both must show the Mac's values (and, with the phone's edit later, the phone's) | not run |
+
+Also record for the live run: `agent-workspace hub status` shows `unsynced 0`; `agent-workspace coordinator status` shows a pid started after the restart; a screenshot of the Simulator list and the Mac sidebar; and that the owner's app, once restored from `main`, is rebuilt with the same dev loop.
+## 2026-10-31: Developer ID signing and notarization (D-039 gate)
+
+Target: the same MacBook Pro (macOS 26.5, Xcode 26.6, notarytool 1.1.2). The owner created the certificate and the `b4app` notarytool profile; neither password passed through the script or this session. The owner's running app was quit, `~/repos/b4app/dist` was moved aside and replaced from the stapled zip, `agent-workspace coordinator restart` ran, and the app was reopened.
+
+| Check | How | Result |
+| --- | --- | --- |
+| Identity found | `security find-identity -v -p codesigning` | 1 valid identity: `Developer ID Application: Brian Love (GJJKL34HCT)` |
+| Notary profile | `xcrun notarytool history --keychain-profile b4app` | Succeeds ("No submission history.") |
+| Signing | `B4APP_SIGN_IDENTITY="Developer ID Application: Brian Love (GJJKL34HCT)" ./Scripts/package.sh` | Every PostgreSQL Mach-O, both helpers, and the bundle signed with `flags=0x10000(runtime)` and a secure timestamp; `codesign --verify --deep --strict`: valid on disk, satisfies its Designated Requirement; `TeamIdentifier=GJJKL34HCT`; entitlements an empty dictionary |
+| Before notarization | `spctl -a -vv --type exec` | `rejected`, `source=Unnotarized Developer ID` (expected; the script shows it and goes on) |
+| Notarization | `xcrun notarytool submit … --keychain-profile b4app --wait` | Submission `7f19144e-ec91-40b3-95ab-928ac1221b32`: **Accepted** on the first submission, no entitlement changes |
+| Stapling | `xcrun stapler staple`, `stapler validate`, then re-zip | "The staple and validate action worked!"; the shipped `dist/Agent-Workspace-0.1.0.zip` (39 MB; app 122 MB) holds the stapled app |
+| Gatekeeper | `spctl -a -vv --type exec "dist/Agent Workspace.app"` | `accepted`, `source=Notarized Developer ID`, `origin=Developer ID Application: Brian Love (GJJKL34HCT)` |
+| As downloaded | The zip copied with a `com.apple.quarantine` attribute, unpacked with `ditto -x -k`, then `spctl -a -vv`, `syspolicy_check distribution`, `stapler validate` | Quarantine propagated to the app; `accepted`, `source=Notarized Developer ID`; "App passed all pre-distribution checks and is ready for distribution."; ticket valid |
+| Coordinator | `agent-workspace coordinator restart`, `doctor --json`, `thread list` | Launch agent loaded and running, last exit 0, from the new bundle; the bundled `postgres` serves the store; the coordinator mapped the bundled `libpq.5.dylib` under the hardened runtime; both stored threads listed |
+| First launch | `open "dist/Agent Workspace.app"` | Launched; the app's Unix socket is connected to `coordinator.sock` in the LaunchAgent coordinator, and it hosts nothing itself (no child processes). The installed copy came from a local unzip, so it carries no quarantine and Gatekeeper's first-launch check has nothing to show; the downloaded case is the row above. Screen access was declined, so nobody watched the window on screen |
+| `SMAppService` after a rebuild (D-042) | A throwaway bundle (`com.cacheplane.b4app.smprobe`) with `Contents/Library/LaunchAgents` and a `BundleProgram` helper, registered with `SMAppService.agent(plistName:)`; the helper rebuilt to a new CDHash and re-signed, then `launchctl kickstart -k`, without re-registering | Developer ID: the job (`has LWCR`) respawned the rebuilt helper at once (`state = running`, the new build's log line). Ad hoc control under a fresh label: the first build ran, and the rebuild went to `spawn scheduled`/`spawn failed`, the D-042 failure. After a Developer ID registration, an ad hoc build under the same label could not spawn even after unregister and register. Both probes unregistered afterwards |
+| Ad hoc path | `./Scripts/package.sh` with no identity, in the worktree's own `dist/` | `Signature=adhoc`, `flags=0x2(adhoc)`, verify passes, no notary step; the bundle is now re-signed with its (empty) entitlements file |
+| Suite, lint | `swift test`, `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass: 332 tests in 75 suites; lint clean (no Swift source changed) |
+
+So the managed agent's requirement is stable across rebuilds once the build is team-signed; the per-user plist of D-042 stays in place unless the owner asks to switch. Still open: Developer ID builds on another Mac, and an on-screen first launch of a downloaded copy (macOS still asks once to confirm opening an app downloaded from the internet; it no longer refuses it).
+
+## 2026-10-31: blank window on a pending Claude request
+
+Found in the owner's running app: a new Claude thread asked to run Bash, and when the thread opened the window went blank, sidebar and detail, with the toolbar still working; relaunching restored it until the thread was opened again. Root cause and rule in D-047.
+
+| Check | How | Result |
+| --- | --- | --- |
+| Reproduce | The stored thread exported to `Tests/Fixtures/ui/waiting-thread.json`; the packaged app quit and a Debug build of the same tree launched against the running coordinator; env switches hid one part of the thread detail per round | Blank with the request card; rendered without it; rendered with the command text plain or selectable; blank again with only `fixedSize(horizontal: false, vertical: true)` on the command |
+| Measure | `NSHostingController(rootView: ThreadsView(model:)).sizeThatFits(in: .zero)` on the mirrored thread | 184 points without the request, 4,749 with it; 822 with the `fixedSize` removed; 485 with the bounded list (then 240-point cap) |
+| Near the limit | The rendering variant with the window dragged to 900 by 652 points | Not blank, but the sidebar's top was pushed out and the composer off the bottom |
+| Regression test | `swift test --filter DetailMinimumSizeTests` against the unfixed views (`RuntimeRequestView`, `ThreadsView`, `ComposerView` stashed) | Fails: 4,749; 100,969; 201,733; 103,418 points at zero width, 650 at 610 wide for the banner variant |
+| With the fix | The same | Pass, five variants (the long-draft case is folded into each) |
+| Live | The Debug build with the fix, thread "test" opened, then the window dragged to its minimum | Renders: transcript, the whole command, Allow once / Allow for session / Deny, the composer with Stop and Send; the pending permission was left unanswered for the owner |
+| Suite, lint, apps | `swift test`, `swift format lint --strict --recursive Sources Tests Apps Package.swift`, both `xcodebuild` schemes | Pass: 328 tests in 75 suites (324 before; the new test runs four variants); lint clean; macOS and iOS build |
+
 ## 2026-10-31: `db restore` of a store with updates (jsonb scalars)
 
 Found while bringing up the M8a hub: `agent-workspace db restore` failed with `invalid input syntax for type json` on any archive from a store whose change log held an update. An update row in `changes` stores the changed column's value as jsonb, which for most columns is a scalar (`"ready"`, `true`, `7`, `null`). The version 1 exporter parsed every jsonb cell into a value, so a scalar string landed in the archive bare, and the restore bound it back to the jsonb column as raw text. Objects (inserts, display-item payloads, capabilities, routes) were unaffected, which is why `exportAndRestoreRoundTrip`, seeded with inserts only, passed.

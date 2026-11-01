@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use b4hub_core::change::Change;
-use b4hub_db::devices::{self, AuthedDevice};
+use b4hub_db::devices::{self, AuthedDevice, Platform};
 use b4hub_db::{orgs, Db};
 use serde_json::{json, Value};
 use sqlx::PgPool;
@@ -52,9 +52,21 @@ pub async fn migrated(pool: &PgPool) -> (Db, Db) {
     (admin, app)
 }
 
-/// Seeds `username` in the org `org_slug` and enrolls one device for them through the real
+/// Seeds `username` in the org `org_slug` and enrolls one macOS device for them through the real
 /// enrollment path.
 pub async fn enrolled_in(admin: &Db, app: &Db, org_slug: &str, username: &str) -> AuthedDevice {
+    enrolled_in_as(admin, app, org_slug, username, "macos").await
+}
+
+/// Like [`enrolled_in`], for a device of `platform` (`macos`, `ios` or `cli`). Enrolling the same
+/// user again adds another device of theirs.
+pub async fn enrolled_in_as(
+    admin: &Db,
+    app: &Db,
+    org_slug: &str,
+    username: &str,
+    platform: &str,
+) -> AuthedDevice {
     let seeded = orgs::seed(
         admin,
         org_slug,
@@ -73,14 +85,20 @@ pub async fn enrolled_in(admin: &Db, app: &Db, org_slug: &str, username: &str) -
     )
     .await
     .unwrap();
-    let enrolled = devices::redeem(app, &code, "test device", "macos")
+    let enrolled = devices::redeem(app, &code, "test device", platform)
         .await
         .unwrap();
     AuthedDevice {
         org_id: enrolled.org_id,
         user_id: enrolled.user_id,
         device_id: enrolled.device_id,
+        platform: Platform::parse(platform).expect("a platform the devices table accepts"),
     }
+}
+
+/// A device of `username` in the org `cacheplane`, of `platform`.
+pub async fn enrolled_as(admin: &Db, app: &Db, username: &str, platform: &str) -> AuthedDevice {
+    enrolled_in_as(admin, app, "cacheplane", username, platform).await
 }
 
 /// A device of `username` in the org `cacheplane`.

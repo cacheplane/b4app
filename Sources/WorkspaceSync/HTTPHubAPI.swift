@@ -41,6 +41,16 @@ public final class HTTPHubAPI: HubAPI {
       timeout: TimeInterval(max(wait, 0) + 5))
   }
 
+  public func snapshot() async throws -> SnapshotResponse {
+    // One document holding the whole mirror, so it gets a longer timeout than a page.
+    try await send(.get, "v1/snapshot", timeout: 120)
+  }
+
+  public func devices() async throws -> [DeviceInfo] {
+    let response: DevicesResponse = try await send(.get, "v1/devices")
+    return response.devices
+  }
+
   public func revokeSelf() async throws {
     _ = try await perform(.delete, "v1/devices/self")
   }

@@ -6,7 +6,7 @@ use std::time::Duration;
 use axum::extract::{DefaultBodyLimit, RawQuery, State};
 use axum::routing::{post, MethodRouter};
 use axum::Json;
-use b4hub_core::change::{Change, Page, MAX_PAYLOAD_BYTES, MAX_PULL_LIMIT, MAX_PUSH_CHANGES};
+use b4hub_core::change::{Change, Page, MAX_PULL_LIMIT, MAX_PUSH_CHANGES};
 use b4hub_db::changes;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -21,9 +21,9 @@ use crate::serve::{AppState, Shutdown};
 pub const MAX_WAIT_SECS: u64 = 25;
 
 /// The largest push body accepted. A batch of up to [`MAX_PUSH_CHANGES`] changes may carry
-/// several values near the 1 MiB the client truncates to; the per-change limit
-/// ([`MAX_PAYLOAD_BYTES`]) is what refuses an oversized value, this only bounds what the server
-/// will buffer.
+/// several values near the 1 MiB the client truncates to. A value over
+/// `MAX_PAYLOAD_BYTES` is rejected per change by `changes::push`; this only bounds what the
+/// server will buffer.
 pub const MAX_PUSH_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
@@ -49,22 +49,20 @@ async fn push(
             "a push carries at most {MAX_PUSH_CHANGES} changes"
         )));
     }
-    // The client truncates large payloads before upload; the hub refuses rather than truncating,
-    // and refuses the whole batch before storing any of it.
-    if request
-        .changes
-        .iter()
-        .any(|change| change.value_bytes() > MAX_PAYLOAD_BYTES)
-    {
-        return Err(ApiError::payload_too_large(format!(
-            "a change value is larger than {MAX_PAYLOAD_BYTES} bytes"
-        )));
-    }
-
-    let accepted_through = changes::push(&state.db, &device, &request.changes).await?;
+    // A value over the size limit and a malformed clock are not refused here: `changes::push`
+    // rejects each on its own, so the rest of the batch still lands and the client's queue moves.
+    let outcome = changes::push(&state.db, &device, &request.changes).await?;
     // After the commit, so a woken pull finds the changes.
     state.notifier.wake(device.org_id);
-    Ok(Json(json!({ "acceptedThrough": accepted_through })))
+    let mut body = json!({ "acceptedThrough": outcome.accepted_through });
+    if !outcome.rejected.is_empty() {
+        body["rejected"] = outcome
+            .rejected
+            .iter()
+            .map(|r| json!({ "deviceSeq": r.device_seq, "code": r.code }))
+            .collect();
+    }
+    Ok(Json(body))
 }
 
 /// The query of `GET /v1/changes`. Absent parameters take their defaults; unknown ones are
@@ -145,10 +143,8 @@ async fn pull(
     RawQuery(query): RawQuery,
 ) -> Result<Json<Page>, ApiError> {
     let params = PullParams::parse(query.as_deref())?;
-    if params.after < changes::HORIZON {
-        return Err(ApiError::resync_required());
-    }
-
+    // A cursor behind the retention horizon comes back from `changes::pull` as `ResyncRequired`
+    // (410); the check lives there so it shares a snapshot with the rows it guards.
     let page = long_poll(
         &state.notifier,
         device.org_id,
@@ -192,6 +188,7 @@ mod tests {
                 op: ChangeOp::Delete,
                 column: None,
                 value: None,
+                hlc: "000000000000-0000-dev".into(),
             }],
             next: 1,
             more: false,

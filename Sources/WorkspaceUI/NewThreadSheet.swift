@@ -32,6 +32,7 @@ struct NewThreadSheet: View {
             LLAField("Working directory", text: $directory)
             Button("Choose…") { choosing = true }.buttonStyle(.llaSecondary)
           }
+          Text(projectNote).llaCaption().accessibilityIdentifier("new-thread-project")
         }
       }
       VStack(alignment: .leading, spacing: LLA.Space.xs) {
@@ -52,7 +53,10 @@ struct NewThreadSheet: View {
       }
       HStack(spacing: LLA.Space.s) {
         Spacer()
-        Button("Cancel") { dismiss() }.buttonStyle(.llaSecondary).keyboardShortcut(.cancelAction)
+        Button("Cancel") {
+          model.lastError = nil
+          dismiss()
+        }.buttonStyle(.llaSecondary).keyboardShortcut(.cancelAction)
         Button("Create") {
           creating = true
           Task {
@@ -78,6 +82,14 @@ struct NewThreadSheet: View {
     }
     .fileImporter(isPresented: $choosing, allowedContentTypes: [.folder]) { result in
       if case .success(let url) = result { directory = url.path }
+    }
+  }
+
+  /// Which project the chosen folder lands in, as far as the project list tells; the coordinator decides.
+  private var projectNote: String {
+    switch NewThreadProject.describe(directory: directory, projects: model.projects) {
+    case .joins(let name): return "Joins the project \u{201C}\(name)\u{201D}."
+    case .newProject: return "Starts a new project from this folder."
     }
   }
 

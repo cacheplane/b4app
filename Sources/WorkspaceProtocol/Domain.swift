@@ -218,12 +218,22 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
   public var continuity: ThreadContinuity
   public var createdAt: String
   public var updatedAt: String
+  /// The project this thread belongs to; nil until it is assigned one.
+  public var projectId: String?
+  /// The latest turn the owner has read; a terminal latest turn with another id is unread.
+  public var readTurnId: String?
+  /// Computed on read from turns and runtime requests; never a database column.
+  public var activity: ThreadActivity?
+  /// The name of the Mac that owns the thread; only the phone's mirror fills it, never a column.
+  public var ownerDeviceName: String?
 
   public init(
     id: String, connectionId: String, nativeThreadId: String, nativeScope: String = "", title: String = "",
     context: String? = nil, pinned: Bool = false, archived: Bool = false,
     continuity: ThreadContinuity = .available,
-    createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now()
+    createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now(),
+    projectId: String? = nil, readTurnId: String? = nil, activity: ThreadActivity? = nil,
+    ownerDeviceName: String? = nil
   ) {
     self.id = id
     self.connectionId = connectionId
@@ -236,6 +246,10 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
     self.continuity = continuity
     self.createdAt = createdAt
     self.updatedAt = updatedAt
+    self.projectId = projectId
+    self.readTurnId = readTurnId
+    self.activity = activity
+    self.ownerDeviceName = ownerDeviceName
   }
 }
 
@@ -459,10 +473,15 @@ public struct SyncDiagnostic: Codable, Sendable, Equatable {
   public var lastError: String?
   /// Mirrored rows this build cannot decode (written by a newer Mac): kept, but not shown.
   public var undecodableRows: Int
+  /// Local edits not yet accepted by the hub.
+  public var pendingUploads: Int
+  /// Edits the hub refused over this device's lifetime (a column the device may not write, or a value
+  /// too large); they are dropped from the queue and counted here.
+  public var refusedUploads: Int
 
   public init(
     hubURL: String, deviceName: String, cursor: Int, lastSyncAt: String?, lastError: String?,
-    undecodableRows: Int = 0
+    undecodableRows: Int = 0, pendingUploads: Int = 0, refusedUploads: Int = 0
   ) {
     self.hubURL = hubURL
     self.deviceName = deviceName
@@ -470,10 +489,12 @@ public struct SyncDiagnostic: Codable, Sendable, Equatable {
     self.lastSyncAt = lastSyncAt
     self.lastError = lastError
     self.undecodableRows = undecodableRows
+    self.pendingUploads = pendingUploads
+    self.refusedUploads = refusedUploads
   }
 
   private enum CodingKeys: String, CodingKey {
-    case hubURL, deviceName, cursor, lastSyncAt, lastError, undecodableRows
+    case hubURL, deviceName, cursor, lastSyncAt, lastError, undecodableRows, pendingUploads, refusedUploads
   }
 
   public init(from decoder: any Decoder) throws {
@@ -484,6 +505,8 @@ public struct SyncDiagnostic: Codable, Sendable, Equatable {
     lastSyncAt = try container.decodeIfPresent(String.self, forKey: .lastSyncAt)
     lastError = try container.decodeIfPresent(String.self, forKey: .lastError)
     undecodableRows = try container.decodeIfPresent(Int.self, forKey: .undecodableRows) ?? 0
+    pendingUploads = try container.decodeIfPresent(Int.self, forKey: .pendingUploads) ?? 0
+    refusedUploads = try container.decodeIfPresent(Int.self, forKey: .refusedUploads) ?? 0
   }
 }
 
