@@ -218,12 +218,22 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
   public var continuity: ThreadContinuity
   public var createdAt: String
   public var updatedAt: String
+  /// The project this thread belongs to; nil until it is assigned one.
+  public var projectId: String?
+  /// The latest turn the owner has read; a terminal latest turn with another id is unread.
+  public var readTurnId: String?
+  /// Computed on read from turns and runtime requests; never a database column.
+  public var activity: ThreadActivity?
+  /// The name of the Mac that owns the thread; only the phone's mirror fills it, never a column.
+  public var ownerDeviceName: String?
 
   public init(
     id: String, connectionId: String, nativeThreadId: String, nativeScope: String = "", title: String = "",
     context: String? = nil, pinned: Bool = false, archived: Bool = false,
     continuity: ThreadContinuity = .available,
-    createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now()
+    createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now(),
+    projectId: String? = nil, readTurnId: String? = nil, activity: ThreadActivity? = nil,
+    ownerDeviceName: String? = nil
   ) {
     self.id = id
     self.connectionId = connectionId
@@ -236,6 +246,10 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
     self.continuity = continuity
     self.createdAt = createdAt
     self.updatedAt = updatedAt
+    self.projectId = projectId
+    self.readTurnId = readTurnId
+    self.activity = activity
+    self.ownerDeviceName = ownerDeviceName
   }
 }
 
