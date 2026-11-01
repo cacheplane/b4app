@@ -21,45 +21,131 @@ public protocol SecretStore: Sendable {
   func put(_ ref: SecretRef, value: String) async throws
   func read(_ ref: SecretRef) async throws -> String?
   func remove(_ ref: SecretRef) async throws -> Bool
+  /// Where values live, for diagnostics; never a value.
+  var backend: String { get }
 }
 
-/// Generic-password items under one service name. On macOS they live in the file-based login keychain;
-/// the macOS data-protection keychain (access groups, no prompts) needs a provisioning profile and is
-/// adopted with Developer ID signing. On iOS every item lives in the data-protection keychain, readable
-/// after the first unlock and never migrated to another device; ad hoc signing ("Sign to Run Locally")
-/// is enough there (M8a Task 9 gate, Simulator), while an unsigned build fails with -34018.
+extension SecretStore {
+  public var backend: String { String(describing: Self.self) }
+}
+
+/// Generic-password items under one service name.
+///
+/// On iOS every item lives in the data-protection keychain under the app's default access group,
+/// readable after the first unlock and never migrated to another device; ad hoc signing ("Sign to
+/// Run Locally") is enough there (M8a Task 9 gate, Simulator), while an unsigned build fails with
+/// -34018.
+///
+/// On macOS (D-051) a process whose signature claims the shared access group, a Developer ID build
+/// whose embedded provisioning profile authorises `<team>.com.cacheplane.b4app.shared`, uses the
+/// data-protection keychain in that group, so the app and the coordinator share items and nothing
+/// prompts. Everything else (`swift build`, tests, ad hoc packages) has no profile and so no group,
+/// and stays in the file-based login keychain. A data-protection store moves an item it does not
+/// hold out of the login keychain the first time it is read: read, add to the group, delete the old
+/// copy. Reading an old item can prompt once, since the coordinator's signature changed.
 public struct KeychainSecretStore: SecretStore {
   public let service: String
+  /// The data-protection access group on macOS; nil means the file-based login keychain.
+  public let accessGroup: String?
 
-  public init(service: String = "b4app") {
+  /// The suffix of the access group the app and the coordinator share, after the team id.
+  public static let sharedGroupSuffix = ".com.cacheplane.b4app.shared"
+
+  public init(service: String = "b4app", accessGroup: String? = nil) {
     self.service = service
+    #if os(macOS)
+      self.accessGroup = accessGroup
+    #else
+      self.accessGroup = nil
+    #endif
   }
 
-  private func baseQuery(_ ref: SecretRef) -> [String: Any] {
+  /// The store for this process: the shared data-protection group when the signature claims it,
+  /// the file-based keychain otherwise.
+  public static func forCurrentProcess(service: String = "b4app") -> KeychainSecretStore {
+    #if os(macOS)
+      let group = claimedAccessGroups().first { $0.hasSuffix(sharedGroupSuffix) }
+      return KeychainSecretStore(service: service, accessGroup: group)
+    #else
+      return KeychainSecretStore(service: service)
+    #endif
+  }
+
+  #if os(macOS)
+    /// The `keychain-access-groups` entitlement of this process's own signature.
+    public static func claimedAccessGroups() -> [String] {
+      guard let task = SecTaskCreateFromSelf(nil) else { return [] }
+      let value = SecTaskCopyValueForEntitlement(task, "keychain-access-groups" as CFString, nil)
+      return value as? [String] ?? []
+    }
+  #endif
+
+  public var backend: String {
+    #if os(macOS)
+      if let accessGroup { return "data-protection keychain (\(accessGroup))" }
+      return "login keychain (file-based)"
+    #else
+      return "data-protection keychain"
+    #endif
+  }
+
+  private var usesDataProtection: Bool {
+    #if os(macOS)
+      return accessGroup != nil
+    #else
+      return true
+    #endif
+  }
+
+  /// The flag is always explicit: with no flag, a process that claims keychain entitlements reads
+  /// the data-protection copy first and deletes from both keychains, so the migration's "delete the
+  /// old copy" also removed the copy it had just written (2026-11-01, the owner's hub token).
+  func baseQuery(_ ref: SecretRef, dataProtection: Bool) -> [String: Any] {
     var query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: service,
       kSecAttrAccount as String: ref.rawValue,
+      kSecUseDataProtectionKeychain as String: dataProtection,
     ]
-    #if os(iOS)
-      query[kSecUseDataProtectionKeychain as String] = true
-    #endif
+    if dataProtection, let accessGroup { query[kSecAttrAccessGroup as String] = accessGroup }
     return query
   }
 
   public func put(_ ref: SecretRef, value: String) async throws {
+    try write(ref, value: value, dataProtection: usesDataProtection)
+    if usesDataProtection && accessGroup != nil { _ = try? delete(ref, dataProtection: false) }
+  }
+
+  public func read(_ ref: SecretRef) async throws -> String? {
+    if let value = try copy(ref, dataProtection: usesDataProtection) { return value }
+    guard usesDataProtection, accessGroup != nil,
+      let legacy = try copy(ref, dataProtection: false)
+    else { return nil }
+    try write(ref, value: legacy, dataProtection: true)
+    _ = try? delete(ref, dataProtection: false)
+    return legacy
+  }
+
+  public func remove(_ ref: SecretRef) async throws -> Bool {
+    let removed = try delete(ref, dataProtection: usesDataProtection)
+    guard usesDataProtection, accessGroup != nil else { return removed }
+    let legacy = (try? delete(ref, dataProtection: false)) ?? false
+    return removed || legacy
+  }
+
+  private func write(_ ref: SecretRef, value: String, dataProtection: Bool) throws {
     let data = Data(value.utf8)
-    var query = baseQuery(ref)
+    var query = baseQuery(ref, dataProtection: dataProtection)
     var update: [String: Any] = [kSecValueData as String: data]
-    #if os(iOS)
+    if dataProtection {
       update[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-    #endif
+    }
     let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
     if status == errSecItemNotFound {
       query[kSecValueData as String] = data
-      #if os(iOS)
+      if dataProtection {
         query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-      #endif
+      }
       let addStatus = SecItemAdd(query as CFDictionary, nil)
       guard addStatus == errSecSuccess else { throw KeychainError(status: addStatus) }
     } else if status != errSecSuccess {
@@ -67,8 +153,8 @@ public struct KeychainSecretStore: SecretStore {
     }
   }
 
-  public func read(_ ref: SecretRef) async throws -> String? {
-    var query = baseQuery(ref)
+  private func copy(_ ref: SecretRef, dataProtection: Bool) throws -> String? {
+    var query = baseQuery(ref, dataProtection: dataProtection)
     query[kSecReturnData as String] = true
     query[kSecMatchLimit as String] = kSecMatchLimitOne
     var item: CFTypeRef?
@@ -78,8 +164,8 @@ public struct KeychainSecretStore: SecretStore {
     return String(decoding: data, as: UTF8.self)
   }
 
-  public func remove(_ ref: SecretRef) async throws -> Bool {
-    let status = SecItemDelete(baseQuery(ref) as CFDictionary)
+  private func delete(_ ref: SecretRef, dataProtection: Bool) throws -> Bool {
+    let status = SecItemDelete(baseQuery(ref, dataProtection: dataProtection) as CFDictionary)
     if status == errSecItemNotFound { return false }
     guard status == errSecSuccess else { throw KeychainError(status: status) }
     return true
@@ -89,7 +175,12 @@ public struct KeychainSecretStore: SecretStore {
 public struct KeychainError: Error, CustomStringConvertible {
   public let status: OSStatus
   public var description: String {
-    "Keychain error \(status): \((SecCopyErrorMessageString(status, nil) as String?) ?? "unknown")"
+    let message = (SecCopyErrorMessageString(status, nil) as String?) ?? "unknown"
+    if status == errSecMissingEntitlement {
+      return
+        "Keychain error \(status): \(message) The signature does not claim the keychain access group its provisioning profile authorises (D-051)."
+    }
+    return "Keychain error \(status): \(message)"
   }
 }
 
@@ -100,4 +191,5 @@ public actor MemorySecretStore: SecretStore {
   public func put(_ ref: SecretRef, value: String) async throws { values[ref] = value }
   public func read(_ ref: SecretRef) async throws -> String? { values[ref] }
   public func remove(_ ref: SecretRef) async throws -> Bool { values.removeValue(forKey: ref) != nil }
+  public nonisolated var backend: String { "memory" }
 }

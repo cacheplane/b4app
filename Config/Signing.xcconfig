@@ -1,0 +1,6 @@
+// Signing settings shared by both app targets (D-051). No team id is committed: a build Mac that
+// signs keeps it in the gitignored Config/Signing.local.xcconfig (`DEVELOPMENT_TEAM = <team id>`),
+// and the scripts pass DEVELOPMENT_TEAM on the command line. With neither, the macOS target signs
+// ad hoc and the iOS Simulator build signs to run locally, which is what CI does.
+DEVELOPMENT_TEAM =
+#include? "Signing.local.xcconfig"

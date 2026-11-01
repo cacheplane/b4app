@@ -182,7 +182,7 @@ enum LaunchAgent {
       "Contents/Library/LaunchAgents/\(LaunchAgentControl.plistName)")
   }
   static var helperURL: URL {
-    Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/b4app-coordinator")
+    Bundle.main.bundleURL.appendingPathComponent(CoordinatorLauncher.helperInBundle)
   }
   static var isBundled: Bool {
     FileManager.default.fileExists(atPath: plistURL.path)
