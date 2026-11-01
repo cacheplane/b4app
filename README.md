@@ -55,7 +55,7 @@ xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generi
 ./Scripts/package.sh
 ```
 
-That builds `dist/Agent Workspace.app` (version from `Sources/Coordinator/Version.swift`) with the coordinator and the CLI inside `Contents/Helpers`, the PostgreSQL server under `Contents/SharedSupport`, signs it (ad hoc unless `B4APP_SIGN_IDENTITY` is set, below), verifies, and zips it. Copy the app to `/Applications` and open it. On first launch the app writes `~/Library/LaunchAgents/com.cacheplane.b4app.coordinator.plist`, pointing at the coordinator inside the app, and loads it; macOS may show "Agent Workspace added items that can run in the background". The coordinator then outlives the window. If launchd cannot start it, the link status at the bottom of the sidebar says so and the window hosts the coordinator itself until the next launch repairs the agent.
+That builds `dist/Agent Workspace.app` (version from `Sources/Coordinator/Version.swift`) with the CLI and the coordinator (`B4AppCoordinator.app`, a background-only bundle that can hold its own provisioning profile) inside `Contents/Helpers`, the PostgreSQL server under `Contents/SharedSupport`, signs it (ad hoc unless `B4APP_SIGN_IDENTITY` is set, below), verifies, and zips it. Copy the app to `/Applications` and open it. On first launch the app writes `~/Library/LaunchAgents/com.cacheplane.b4app.coordinator.plist`, pointing at the coordinator inside the app, and loads it; macOS may show "Agent Workspace added items that can run in the background". The coordinator then outlives the window. If launchd cannot start it, the link status at the bottom of the sidebar says so and the window hosts the coordinator itself until the next launch repairs the agent.
 
 Put the CLI on your PATH as a link to the bundled one, so the app and the CLI always agree on a version:
 
@@ -69,7 +69,28 @@ Signing (D-039): with no identity the build is ad hoc and runs on the Mac that b
 B4APP_SIGN_IDENTITY="Developer ID Application: <name> (<team-id>)" ./Scripts/package.sh
 ```
 
-It signs every PostgreSQL binary and library, both helpers, and the app with the hardened runtime and a secure timestamp, verifies, submits the zip to the notary service and waits, staples the ticket to the app, re-zips the stapled app, and fails unless `spctl -a -vv` reports `source=Notarized Developer ID`. A rejected submission prints notarytool's log. `B4APP_NOTARY_PROFILE` names another profile; `B4APP_SKIP_NOTARIZE=1` signs without submitting. The team id comes from the certificate, so `project.yml` stores none.
+It signs every PostgreSQL binary and library, the CLI, the coordinator bundle, and the app with the hardened runtime and a secure timestamp, verifies, submits the zip to the notary service and waits, staples the ticket to the app, re-zips the stapled app, and fails unless `spctl -a -vv` reports `source=Notarized Developer ID`. A rejected submission prints notarytool's log. `B4APP_NOTARY_PROFILE` names another profile; `B4APP_SKIP_NOTARIZE=1` signs without submitting. The team id comes from the certificate, so the repository stores none (`Config/Signing.xcconfig` includes a gitignored `Config/Signing.local.xcconfig` for Xcode).
+
+A Developer ID build also keeps secrets in the data-protection keychain, shared by the app and the coordinator (D-048). That needs two provisioning profiles, made once at developer.apple.com:
+
+1. Identifiers: register the macOS App IDs `com.cacheplane.b4app` and `com.cacheplane.b4app.coordinator`, each with **Keychain Sharing**.
+2. Profiles: create a **Developer ID** profile for each with your Developer ID Application certificate, and save them as `~/.b4app/signing/app.provisionprofile` and `~/.b4app/signing/coordinator.provisionprofile` (or point `B4APP_APP_PROFILE` and `B4APP_COORDINATOR_PROFILE` at them).
+
+The script checks each profile's App ID, team, keychain group, and expiry, embeds it, and signs both with the group `<team-id>.com.cacheplane.b4app.shared`. `agent-workspace doctor` shows which keychain the coordinator uses. Existing items move out of the login keychain the first time they are read, and macOS may ask once per item. A profile lasts 18 years, but the app stops launching once it expires, so regenerate both profiles when the certificate is renewed. `B4APP_SKIP_PROFILES=1` signs without profiles and keeps the login keychain.
+
+### TestFlight (iOS)
+
+The Mac app is not eligible for TestFlight or the Mac App Store: both require App Sandbox, which cannot run your own CLIs, the bundled PostgreSQL, or the LaunchAgent (D-048). The iOS companion ships through TestFlight with Xcode's cloud-managed signing:
+
+1. App Store Connect → Users and Access → Integrations → App Store Connect API: create a **Team** key with the **Admin** role, and save the `.p8` file as `~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8` (it downloads once; never commit it).
+2. App Store Connect → Apps → New App: iOS, bundle id `com.cacheplane.b4app.ios`.
+3. Run:
+
+```bash
+B4APP_ASC_KEY_ID=<key-id> B4APP_ASC_ISSUER_ID=<issuer-id> ./Scripts/upload-ios.sh
+```
+
+It archives Release with the team from the Developer ID certificate (or `B4APP_TEAM_ID`) and a build number from the UTC time (or `B4APP_BUILD_NUMBER`). It checks that the archive has a privacy manifest and no localhost ATS exception, then uploads with method `app-store-connect`. Builds are for internal testers unless `B4APP_TESTFLIGHT_EXTERNAL=1`, which needs Beta App Review and a reachable hub; `B4APP_UPLOAD=0` exports the `.ipa` to `dist/ios` instead of uploading. A phone needs a hub it can reach over HTTPS: `localhost` on a device is the phone itself.
 
 ### First sign-in
 

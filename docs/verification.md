@@ -2,6 +2,23 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-11-01: distribution, provisioning, and the Mac keychain (D-048)
+
+Target: the same MacBook Pro (macOS 26.5, Xcode 26.6, XcodeGen 2.46.0). Research: `docs/research/reports/App Store and TestFlight signing.md`. The owner's running app and coordinator were left alone; the package checks ran in the worktree's own `dist/` and a scratch runtime and data directory.
+
+| Check | How | Result |
+| --- | --- | --- |
+| File-based keychain across rebuilds | A throwaway tool (`com.cacheplane.b4app.kcprobe`) with `SecKeychainSetUserInteractionAllowed(false)` added an item, then was rebuilt to a new CDHash and read it | Developer ID rebuilds: read OK with no prompt. Ad hoc rebuild: `-25293` (it would have prompted). Probe item deleted |
+| Data-protection keychain without a profile | The same probe, Developer ID, `kSecUseDataProtectionKeychain` | `-34018` "A required entitlement isn't present", as TN3137 says |
+| iOS, as CI builds it | `xcodebuild build -scheme B4App-iOS -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO` | Pass |
+| iOS Release bundle | The same, `-configuration Release`, signing to run locally | `ITSAppUsesNonExemptEncryption = false`, the local-network string, versions from build settings (0.1.0, 1), `PrivacyInfo.xcprivacy` in the bundle, no `NSAppTransportSecurity`; the Debug build keeps the localhost exception |
+| macOS, as CI builds it | `xcodebuild build -scheme B4App-macOS CODE_SIGNING_ALLOWED=NO` | Pass |
+| Coordinator bundle | `B4APP_SKIP_PROFILES=1 B4APP_SKIP_NOTARIZE=1 B4APP_SIGN_IDENTITY="Developer ID Application: Brian Love (GJJKL34HCT)" ./Scripts/package.sh` | `Contents/Helpers/{B4AppCoordinator.app,agent-workspace}`; identifiers `com.cacheplane.b4app.coordinator` and `com.cacheplane.b4app.agent-workspace`, hardened runtime, team GJJKL34HCT; the bundle's LaunchAgent plist names `Contents/Helpers/B4AppCoordinator.app/Contents/MacOS/b4app-coordinator` |
+| Wrapped coordinator runs | The package's CLI `doctor` with scratch `B4APP_RUNTIME_DIR` and `B4APP_DATA_DIR`, then `coordinator stop` | Spawned the wrapper's executable, which found `SharedSupport/postgres` and served; `secrets: login keychain (file-based)` (no profile) |
+| Suite, lint | `swift test`, `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass: 334 tests in 76 suites; lint clean. A first incremental run crashed (SIGSEGV decoding `DiagnosticsReport`) because the test bundle was linked against the old `CoordinatorInfo` layout; clearing `.build/arm64-apple-macosx/debug` fixed it |
+
+Open, waiting on the owner: the two Developer ID provisioning profiles, then a notarized package with them (`syspolicy_check distribution`, the coordinator launching under its profile, `doctor` showing the data-protection keychain, and the one-time move of the existing items); and the App Store Connect app record and Team API key, then `Scripts/upload-ios.sh` and a build in TestFlight.
+
 ## 2026-10-31: Developer ID signing and notarization (D-039 gate)
 
 Target: the same MacBook Pro (macOS 26.5, Xcode 26.6, notarytool 1.1.2). The owner created the certificate and the `b4app` notarytool profile; neither password passed through the script or this session. The owner's running app was quit, `~/repos/b4app/dist` was moved aside and replaced from the stapled zip, `agent-workspace coordinator restart` ran, and the app was reopened.
