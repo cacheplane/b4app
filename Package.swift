@@ -17,6 +17,7 @@ let package = Package(
     .library(name: "WorkspaceClient", targets: ["WorkspaceClient"]),
     .library(name: "WorkspaceSecrets", targets: ["WorkspaceSecrets"]),
     .library(name: "WorkspaceSync", targets: ["WorkspaceSync"]),
+    .library(name: "WorkspaceMirror", targets: ["WorkspaceMirror"]),
     .library(name: "WorkspacePlatform", targets: ["WorkspacePlatform"]),
     .library(name: "WorkspaceStorage", targets: ["WorkspaceStorage"]),
     .library(name: "CodexAdapter", targets: ["CodexAdapter"]),
@@ -43,6 +44,12 @@ let package = Package(
     .target(name: "WorkspaceSecrets", swiftSettings: concurrency),
     // The hub wire types and HTTP client: Foundation only, links on both platforms.
     .target(name: "WorkspaceSync", dependencies: ["WorkspaceProtocol"], swiftSettings: concurrency),
+    // The phone's read-only mirror of the synced tables: system SQLite behind an in-process transport,
+    // fed by pulling the hub's change feed. Links on both platforms.
+    .target(
+      name: "WorkspaceMirror",
+      dependencies: ["WorkspaceProtocol", "WorkspaceClient", "WorkspaceSync", "WorkspaceSecrets"],
+      swiftSettings: concurrency, linkerSettings: [.linkedLibrary("sqlite3")]),
 
     // macOS-only infrastructure.
     .target(
@@ -112,6 +119,10 @@ let package = Package(
     .testTarget(
       name: "WorkspaceSyncTests", dependencies: ["WorkspaceSync"],
       swiftSettings: concurrency),
+    // Reads `Tests/Fixtures/sync/changes.json` in place (see `WireTests`), so it declares no resource.
+    .testTarget(
+      name: "WorkspaceMirrorTests", dependencies: ["WorkspaceMirror", "WorkspaceSync"],
+      swiftSettings: concurrency),
     .testTarget(
       name: "WorkspacePlatformTests", dependencies: ["WorkspacePlatform"], swiftSettings: concurrency),
     .testTarget(
@@ -128,7 +139,8 @@ let package = Package(
       name: "CoordinatorTests", dependencies: ["Coordinator", "NIOTransport"], swiftSettings: concurrency),
     // Model-level tests of the shared UI against a real in-process coordinator (macOS only).
     .testTarget(
-      name: "WorkspaceUITests", dependencies: ["WorkspaceUI", "Coordinator", "NIOTransport"],
+      name: "WorkspaceUITests",
+      dependencies: ["WorkspaceUI", "Coordinator", "NIOTransport"],
       swiftSettings: mainActorDefault),
   ],
   swiftLanguageModes: [.v6]

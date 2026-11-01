@@ -1,0 +1,522 @@
+import Foundation
+import SQLite3
+import WorkspaceProtocol
+import WorkspaceSync
+
+/// The hub this device has joined. `tokenRef` names the device token in the secret store; the token
+/// itself is never stored here.
+public struct MirrorLink: Codable, Sendable, Equatable {
+  public var hubURL: String
+  public var deviceId: String
+  public var deviceName: String
+  public var tokenRef: String
+  public var orgSlug: String
+  public var username: String
+  public var lastSyncAt: String?
+  public var lastError: String?
+
+  public init(
+    hubURL: String, deviceId: String, deviceName: String, tokenRef: String, orgSlug: String, username: String,
+    lastSyncAt: String? = nil, lastError: String? = nil
+  ) {
+    self.hubURL = hubURL
+    self.deviceId = deviceId
+    self.deviceName = deviceName
+    self.tokenRef = tokenRef
+    self.orgSlug = orgSlug
+    self.username = username
+    self.lastSyncAt = lastSyncAt
+    self.lastError = lastError
+  }
+}
+
+/// What one `apply` changed, for the transport to turn into events: threads and connections whose row
+/// was written, the display items written (as they now read), and how many changes were not applied.
+public struct AppliedBatch: Sendable, Equatable {
+  public var touchedThreadIds: Set<String>
+  public var touchedItems: [DisplayItem]
+  public var touchedConnectionIds: Set<String>
+  public var skipped: Int
+
+  public init(
+    touchedThreadIds: Set<String> = [], touchedItems: [DisplayItem] = [],
+    touchedConnectionIds: Set<String> = [],
+    skipped: Int = 0
+  ) {
+    self.touchedThreadIds = touchedThreadIds
+    self.touchedItems = touchedItems
+    self.touchedConnectionIds = touchedConnectionIds
+    self.skipped = skipped
+  }
+}
+
+/// A read-only mirror of the Mac's synced tables in the system SQLite, fed by the hub's change feed.
+/// Replay equals `WorkspaceDatabase.replay` on the Mac: an insert upserts the provided columns, an
+/// update sets one column, a delete deletes, and a change that violates a constraint (a row whose
+/// parent is missing) is skipped and counted. Rows read back through the protocol's `Codable` types.
+///
+/// The mirror never stores a connection's `authReference`, `localServerId`, or `target`, whatever
+/// arrives: the Mac blanks them before upload, and the mirror does not rely on that.
+///
+/// Every statement runs on one serial queue over one connection.
+public final class MirrorStore: @unchecked Sendable {
+  /// The SQLite file, or `:memory:`.
+  public let path: String
+  private let db: OpaquePointer
+  private let queue = DispatchQueue(label: "b4app.mirror.store")
+  /// Column names and declared types per synced table, read from the schema at open.
+  private var columns: [String: [String: String]] = [:]
+
+  public init(path: String) throws {
+    var handle: OpaquePointer?
+    let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
+    let status = sqlite3_open_v2(path, &handle, flags, nil)
+    guard status == SQLITE_OK, let handle else {
+      let message = handle.map { String(cString: sqlite3_errmsg($0)) } ?? "status \(status)"
+      if let handle { sqlite3_close_v2(handle) }
+      throw WorkspaceError(.internalError, "Could not open the mirror database: \(message)")
+    }
+    self.path = path
+    self.db = handle
+    sqlite3_extended_result_codes(handle, 1)
+    try locked {
+      for pragma in MirrorSchema.pragmas { try exec(pragma) }
+      try migrate()
+      for (table, _) in MirrorSchema.syncedTables {
+        var declared: [String: String] = [:]
+        for row in try query("PRAGMA table_info(\(Self.quote(table)))") {
+          if case .text(let name) = row["name"], case .text(let type) = row["type"] { declared[name] = type }
+        }
+        columns[table] = declared
+      }
+    }
+  }
+
+  /// A store that lives only as long as this object (tests, previews).
+  public static func inMemory() throws -> MirrorStore { try MirrorStore(path: ":memory:") }
+
+  deinit { sqlite3_close_v2(db) }
+
+  // MARK: - Applying changes
+
+  public func apply(_ changes: [StoredChange]) throws -> AppliedBatch {
+    try locked {
+      var batch = AppliedBatch()
+      var itemIds: [String] = []
+      try exec("BEGIN IMMEDIATE")
+      do {
+        for change in changes {
+          guard try applyOne(change) else {
+            batch.skipped += 1
+            continue
+          }
+          switch change.table {
+          case "connections": batch.touchedConnectionIds.insert(change.rowId)
+          case "threads": batch.touchedThreadIds.insert(change.rowId)
+          case "displayItems" where change.op != "delete":
+            if !itemIds.contains(change.rowId) { itemIds.append(change.rowId) }
+          default: break
+          }
+        }
+        try exec("COMMIT")
+      } catch {
+        try? exec("ROLLBACK")
+        throw error
+      }
+      batch.touchedItems = try itemIds.compactMap {
+        try one(
+          DisplayItem.self, "displayItems", #"SELECT * FROM "displayItems" WHERE "id" = ?"#, [.text($0)])
+      }
+      return batch
+    }
+  }
+
+  /// Applies one change inside the open transaction. False when it was not applied: an unknown table,
+  /// column, or op, a missing value, or a constraint the row violates.
+  private func applyOne(_ change: StoredChange) throws -> Bool {
+    guard let key = MirrorSchema.syncedTables.first(where: { $0.table == change.table })?.key,
+      let declared = columns[change.table]
+    else { return false }
+    let table = change.table
+    do {
+      switch change.op {
+      case "insert":
+        guard var object = change.value?.objectValue else { return false }
+        if object[key] == nil { object[key] = .string(change.rowId) }
+        if table == "connections" { Self.blankConnection(&object) }
+        let provided = object.keys.filter { declared[$0] != nil }.sorted()
+        let assignments = declared.keys.filter { $0 != key }.sorted().map {
+          provided.contains($0)
+            ? "\(Self.quote($0)) = excluded.\(Self.quote($0))" : "\(Self.quote($0)) = NULL"
+        }
+        let sql =
+          "INSERT INTO \(Self.quote(table)) (\(provided.map(Self.quote).joined(separator: ", "))) VALUES ("
+          + Array(repeating: "?", count: provided.count).joined(separator: ", ") + ") ON CONFLICT ("
+          + Self.quote(key) + ") DO UPDATE SET " + assignments.joined(separator: ", ")
+        try run(sql, provided.map { bindable(object[$0]!, table: table, column: $0) })
+      case "update":
+        guard let column = change.column, declared[column] != nil, var value = change.value else {
+          return false
+        }
+        if table == "connections", let blank = Self.connectionBlanks[column] { value = blank }
+        try run(
+          "UPDATE \(Self.quote(table)) SET \(Self.quote(column)) = ? WHERE \(Self.quote(key)) = ?",
+          [bindable(value, table: table, column: column), .text(change.rowId)])
+      case "delete":
+        try run("DELETE FROM \(Self.quote(table)) WHERE \(Self.quote(key)) = ?", [.text(change.rowId)])
+      default:
+        return false
+      }
+    } catch let error as SQLiteError where error.isConstraint {
+      return false
+    }
+    return true
+  }
+
+  /// What the mirror stores for a connection's secret and machine-local columns, whatever arrived.
+  private static let connectionBlanks: [String: JSONValue] = [
+    "authReference": .null, "localServerId": .null, "target": .string(""),
+  ]
+
+  private static func blankConnection(_ object: inout [String: JSONValue]) {
+    for (column, blank) in connectionBlanks { object[column] = blank }
+  }
+
+  // MARK: - Reads
+
+  public func connections() throws -> [Connection] {
+    try locked {
+      try all(Connection.self, "connections", #"SELECT * FROM "connections" ORDER BY "createdAt""#)
+    }
+  }
+
+  /// Threads ordered as the Mac lists them (pinned first, then most recently updated); `query` matches
+  /// the title case-insensitively, with `%` and `_` taken literally.
+  public func threads(
+    includeArchived: Bool, connectionId: String?, query: String?
+  ) throws
+    -> [ConversationThread]
+  {
+    var clauses: [String] = []
+    var binds: [Bind] = []
+    if let connectionId {
+      clauses.append(#""connectionId" = ?"#)
+      binds.append(.text(connectionId))
+    }
+    if !includeArchived { clauses.append(#""archived" = 0"#) }
+    if let query = query?.trimmingCharacters(in: .whitespaces), !query.isEmpty {
+      let escaped = query.replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "%", with: "\\%").replacingOccurrences(of: "_", with: "\\_")
+      clauses.append(#""title" LIKE ? ESCAPE '\'"#)
+      binds.append(.text("%\(escaped)%"))
+    }
+    let whereSQL = clauses.isEmpty ? "" : " WHERE " + clauses.joined(separator: " AND ")
+    return try locked {
+      try all(
+        ConversationThread.self, "threads",
+        #"SELECT * FROM "threads""# + whereSQL + #" ORDER BY "pinned" DESC, "updatedAt" DESC"#, binds)
+    }
+  }
+
+  public func thread(id: String) throws -> ConversationThread? {
+    try locked {
+      try one(ConversationThread.self, "threads", #"SELECT * FROM "threads" WHERE "id" = ?"#, [.text(id)])
+    }
+  }
+
+  public func turns(threadId: String) throws -> [Turn] {
+    try locked {
+      try all(
+        Turn.self, "turns", #"SELECT * FROM "turns" WHERE "threadId" = ? ORDER BY "createdAt""#,
+        [.text(threadId)])
+    }
+  }
+
+  public func items(threadId: String) throws -> [DisplayItem] {
+    try locked {
+      try all(
+        DisplayItem.self, "displayItems",
+        #"SELECT * FROM "displayItems" WHERE "threadId" = ? ORDER BY "sequence""#, [.text(threadId)])
+    }
+  }
+
+  /// Every runtime request of the thread, in any state, oldest first.
+  public func requests(threadId: String) throws -> [RuntimeRequest] {
+    try locked {
+      try all(
+        RuntimeRequest.self, "runtimeRequests",
+        #"SELECT * FROM "runtimeRequests" WHERE "threadId" = ? ORDER BY "createdAt""#, [.text(threadId)])
+    }
+  }
+
+  public func draft(threadId: String) throws -> Draft? {
+    try locked {
+      try one(Draft.self, "drafts", #"SELECT * FROM "drafts" WHERE "threadId" = ?"#, [.text(threadId)])
+    }
+  }
+
+  /// Rows stored in a synced table, decodable or not (tests and diagnostics).
+  func rowCount(_ table: String) throws -> Int {
+    try locked {
+      guard MirrorSchema.syncedTables.contains(where: { $0.table == table }) else { return 0 }
+      if case .integer(let count) = try query("SELECT count(*) AS n FROM \(Self.quote(table))").first?["n"] {
+        return Int(count)
+      }
+      return 0
+    }
+  }
+
+  // MARK: - Sync state
+
+  /// The hub sequence the mirror has applied through (0 before the first pull).
+  public var cursor: Int {
+    let value = try? locked {
+      try query(#"SELECT "cursor" FROM "syncState" WHERE "id" = 1"#).first?["cursor"]
+    }
+    if case .integer(let cursor)? = value { return Int(cursor) }
+    return 0
+  }
+
+  public func setCursor(_ cursor: Int) throws {
+    try locked { try run(#"UPDATE "syncState" SET "cursor" = ? WHERE "id" = 1"#, [.integer(Int64(cursor))]) }
+  }
+
+  public func link() throws -> MirrorLink? {
+    try locked {
+      guard case .text(let text) = try query(#"SELECT "link" FROM "syncState" WHERE "id" = 1"#).first?["link"]
+      else { return nil }
+      return try JSONCoding.decoder.decode(MirrorLink.self, from: Data(text.utf8))
+    }
+  }
+
+  public func saveLink(_ link: MirrorLink) throws {
+    let text = String(decoding: try JSONCoding.encoder.encode(link), as: UTF8.self)
+    try locked { try run(#"UPDATE "syncState" SET "link" = ? WHERE "id" = 1"#, [.text(text)]) }
+  }
+
+  public func clearLink() throws {
+    try locked { try run(#"UPDATE "syncState" SET "link" = NULL WHERE "id" = 1"#) }
+  }
+
+  /// Deletes every mirrored row and rewinds the cursor to 0 (the hub answered `resync_required`). The
+  /// link stays.
+  public func clearRows() throws {
+    try locked {
+      try exec("BEGIN IMMEDIATE")
+      do {
+        for (table, _) in MirrorSchema.syncedTables.reversed() {
+          try exec("DELETE FROM \(Self.quote(table))")
+        }
+        try exec(#"UPDATE "syncState" SET "cursor" = 0 WHERE "id" = 1"#)
+        try exec("COMMIT")
+      } catch {
+        try? exec("ROLLBACK")
+        throw error
+      }
+    }
+  }
+
+  // MARK: - Schema
+
+  private func migrate() throws {
+    guard case .integer(let current) = try query("PRAGMA user_version").first?["user_version"] else {
+      throw SQLiteError(code: SQLITE_ERROR, message: "PRAGMA user_version returned nothing")
+    }
+    if current == MirrorSchema.version { return }
+    guard current == 0 else {
+      throw SQLiteError(
+        code: SQLITE_ERROR,
+        message: "The mirror database has schema version \(current); this build knows only "
+          + "\(MirrorSchema.version).")
+    }
+    try exec("BEGIN IMMEDIATE")
+    do {
+      for statement in MirrorSchema.ddl { try exec(statement) }
+      try exec("PRAGMA user_version = \(MirrorSchema.version)")
+      try exec("COMMIT")
+    } catch {
+      try? exec("ROLLBACK")
+      throw error
+    }
+  }
+
+  // MARK: - Rows
+
+  /// A row as JSON in the shape of the protocol type, built like `Rows.decode` on the Mac: booleans
+  /// from 0/1, JSON columns inline, integers as numbers, text as strings. A row this build cannot
+  /// decode (a value a newer Mac wrote) is left out rather than failing the whole read.
+  private func decode<T: Decodable>(_ type: T.Type, table: String, _ row: Row) -> T? {
+    let booleans = MirrorSchema.booleanColumns[table] ?? []
+    let jsons = MirrorSchema.jsonColumns[table] ?? []
+    var json = "{"
+    for (index, name) in row.names.enumerated() {
+      if index > 0 { json += "," }
+      json += Self.jsonString(name) + ":"
+      switch row.cells[index] {
+      case .null: json += "null"
+      case .integer(let value):
+        json += booleans.contains(name) ? (value != 0 ? "true" : "false") : String(value)
+      case .real(let value): json += String(value)
+      case .text(let value):
+        if jsons.contains(name) {
+          json += table == "connections" && name == "capabilities" ? Self.knownCapabilities(value) : value
+        } else {
+          json += Self.jsonString(value)
+        }
+      }
+    }
+    json += "}"
+    return try? JSONCoding.decoder.decode(T.self, from: Data(json.utf8))
+  }
+
+  /// The capability entries this build defines; entries under other keys or with other values (a
+  /// newer or older Mac) are dropped so the connection still reads.
+  private static func knownCapabilities(_ text: String) -> String {
+    guard let object = try? JSONCoding.decoder.decode([String: JSONValue].self, from: Data(text.utf8)) else {
+      return "{}"
+    }
+    let known = object.filter { key, value in
+      CapabilityKey(rawValue: key) != nil && value.stringValue.flatMap(CapabilityState.init(rawValue:)) != nil
+    }
+    return (try? JSONCoding.encoder.encode(known)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+  }
+
+  private static func jsonString(_ text: String) -> String {
+    (try? JSONCoding.encoder.encode(text)).map { String(decoding: $0, as: UTF8.self) } ?? "\"\""
+  }
+
+  /// A JSON value as the column stores it: JSON text for JSON columns, 0/1 for booleans, integers as
+  /// integers, everything else as text.
+  private func bindable(_ value: JSONValue, table: String, column: String) -> Bind {
+    if case .null = value { return .null }
+    if MirrorSchema.jsonColumns[table]?.contains(column) == true { return .text(Self.jsonText(value)) }
+    switch value {
+    case .bool(let flag): return .integer(flag ? 1 : 0)
+    case .number(let number):
+      let integral = number == number.rounded() && abs(number) < 9.0e15
+      if integral, columns[table]?[column] == "INTEGER" { return .integer(Int64(number)) }
+      return .text(integral ? String(Int64(number)) : String(number))
+    case .string(let text): return .text(text)
+    default: return .text(Self.jsonText(value))
+    }
+  }
+
+  private static func jsonText(_ value: JSONValue) -> String {
+    (try? JSONCoding.encoder.encode(value)).map { String(decoding: $0, as: UTF8.self) } ?? "null"
+  }
+
+  private func all<T: Decodable>(
+    _ type: T.Type, _ table: String, _ sql: String, _ binds: [Bind] = []
+  ) throws
+    -> [T]
+  {
+    try statement(sql, binds).compactMap { decode(type, table: table, $0) }
+  }
+
+  private func one<T: Decodable>(_ type: T.Type, _ table: String, _ sql: String, _ binds: [Bind]) throws -> T?
+  {
+    try statement(sql, binds).first.flatMap { decode(type, table: table, $0) }
+  }
+
+  // MARK: - SQLite
+
+  enum Bind {
+    case null
+    case integer(Int64)
+    case text(String)
+  }
+
+  enum Cell: Equatable {
+    case null
+    case integer(Int64)
+    case real(Double)
+    case text(String)
+  }
+
+  struct Row {
+    var names: [String]
+    var cells: [Cell]
+    subscript(name: String) -> Cell? { names.firstIndex(of: name).map { cells[$0] } }
+  }
+
+  struct SQLiteError: Error, CustomStringConvertible {
+    var code: Int32
+    var message: String
+    var isConstraint: Bool { code & 0xff == SQLITE_CONSTRAINT }
+    var description: String { "SQLite \(code): \(message)" }
+  }
+
+  /// Runs `body` on the store's queue; SQLite failures surface as `WorkspaceError(.internalError)`.
+  private func locked<T>(_ body: () throws -> T) throws -> T {
+    try queue.sync {
+      do {
+        return try body()
+      } catch let error as SQLiteError {
+        throw WorkspaceError(.internalError, "Mirror store: \(error.message)")
+      }
+    }
+  }
+
+  private func exec(_ sql: String) throws {
+    var message: UnsafeMutablePointer<CChar>?
+    let status = sqlite3_exec(db, sql, nil, nil, &message)
+    guard status == SQLITE_OK else {
+      let text = message.map { String(cString: $0) } ?? String(cString: sqlite3_errmsg(db))
+      sqlite3_free(message)
+      throw SQLiteError(code: sqlite3_extended_errcode(db), message: text)
+    }
+  }
+
+  private func run(_ sql: String, _ binds: [Bind] = []) throws { _ = try statement(sql, binds) }
+
+  private func query(_ sql: String, _ binds: [Bind] = []) throws -> [Row] { try statement(sql, binds) }
+
+  private func statement(_ sql: String, _ binds: [Bind]) throws -> [Row] {
+    var prepared: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &prepared, nil) == SQLITE_OK, let prepared else {
+      throw SQLiteError(code: sqlite3_extended_errcode(db), message: String(cString: sqlite3_errmsg(db)))
+    }
+    defer { sqlite3_finalize(prepared) }
+    for (index, bind) in binds.enumerated() {
+      let position = Int32(index + 1)
+      switch bind {
+      case .null: sqlite3_bind_null(prepared, position)
+      case .integer(let value): sqlite3_bind_int64(prepared, position, value)
+      case .text(let value): sqlite3_bind_text(prepared, position, value, -1, Self.transient)
+      }
+    }
+    let count = sqlite3_column_count(prepared)
+    let names = (0..<count).map { String(cString: sqlite3_column_name(prepared, $0)) }
+    var rows: [Row] = []
+    while true {
+      let status = sqlite3_step(prepared)
+      if status == SQLITE_DONE { break }
+      guard status == SQLITE_ROW else {
+        throw SQLiteError(code: sqlite3_extended_errcode(db), message: String(cString: sqlite3_errmsg(db)))
+      }
+      rows.append(Row(names: names, cells: (0..<count).map { Self.cell(prepared, $0) }))
+    }
+    return rows
+  }
+
+  private static func cell(_ statement: OpaquePointer, _ index: Int32) -> Cell {
+    switch sqlite3_column_type(statement, index) {
+    case SQLITE_INTEGER: return .integer(sqlite3_column_int64(statement, index))
+    case SQLITE_FLOAT: return .real(sqlite3_column_double(statement, index))
+    case SQLITE_NULL: return .null
+    default:
+      guard let bytes = sqlite3_column_text(statement, index) else { return .null }
+      let length = Int(sqlite3_column_bytes(statement, index))
+      return .text(String(decoding: UnsafeBufferPointer(start: bytes, count: length), as: UTF8.self))
+    }
+  }
+
+  /// `SQLITE_TRANSIENT`: SQLite copies the bound text before `bind` returns.
+  private static var transient: sqlite3_destructor_type {
+    unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+  }
+
+  private static func quote(_ identifier: String) -> String {
+    "\"" + identifier.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+  }
+}
