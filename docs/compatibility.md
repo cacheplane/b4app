@@ -80,6 +80,24 @@ No dependency, toolchain, or image changed in M8b. What changed is the contract 
 | New cross-language fixtures | `Tests/Fixtures/sync/conflicts.json` (read by the Swift and Rust suites) and `Tests/Fixtures/sync/attention.json` (read by the coordinator's store and the mirror's store); `changes.json` gained `hlc` on every entry and nothing else, so M8a's count-based assertions stay valid |
 | Test database | Unchanged. Rust suite: 117 tests; Swift suite: 517 tests |
 
+### Hub link (M8c)
+
+The relay link adds WebSocket support to the hub. Pinned exactly (`=`) in `Hub/Cargo.toml`, resolved in the committed `Hub/Cargo.lock`.
+
+| Crate | Version | Used for |
+| --- | --- | --- |
+| axum | 0.8.9, `ws` feature added | the `GET /v1/devices/self/link` upgrade; brings `tungstenite` 0.29.0 and `sha1` 0.10.7 into the hub |
+| tokio-tungstenite | 0.29.0 (dev dependency; the version axum's `ws` resolves to, so there is one copy of `tungstenite`) | the fake Macs and phones in the relay tests |
+| futures-util | 0.3.34 (`sink`, `std`; dev dependency, the version already in the lock) | `SinkExt`/`StreamExt` on the test sockets |
+| tokio `test-util` | 1.54.1 (dev dependency feature) | `tokio::time::pause()` in the relay tests |
+
+Locking `tokio-tungstenite` and `tungstenite` also adds `data-encoding` 2.11.1 and a second `rand` line (0.9.5, with `rand_chacha` 0.9.0, `rand_core` 0.9.5, `getrandom` 0.3.4, `r-efi` 5.3.0, `wasip2` 1.0.4, `wit-bindgen` 0.57.1) beside the existing `rand` 0.8.8 that `sqlx` uses; no existing version moved.
+
+| Item | Value |
+| --- | --- |
+| Link protocol | `protocol` 1 and `minClientProtocol` 1 in `hello`; a device names its protocol in `B4-Protocol` (missing counts as 1) |
+| Close codes | 1001 shutdown; 4000 replaced; 4001 revoked; 4002 `client_too_old`; 4003 silent for 30 s (`Hub/API.md`, "Link") |
+
 ## Provider runtimes
 
 | Runtime | Installed on target Mac | Published | Verified behavior | Limits and gates |

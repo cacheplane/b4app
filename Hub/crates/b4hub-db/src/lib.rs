@@ -10,6 +10,7 @@ pub mod devices;
 pub mod migrate;
 pub mod orgs;
 pub mod prune;
+pub mod relay;
 pub mod snapshot;
 mod tenant;
 

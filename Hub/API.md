@@ -43,7 +43,7 @@ answer the same generic `404 not_found`.
 
 | HTTP | `details.code` | `kind` | When |
 | --- | --- | --- | --- |
-| 400 | `invalid_request` | request | The body is not valid JSON for the endpoint (malformed JSON, an unknown or missing field, a wrong value type, a missing or wrong `Content-Type`); a `deviceName` or `platform` that fails validation; a push with more than 1000 changes; a non-numeric `after`, `limit`, or `wait`. |
+| 400 | `invalid_request` | request | The body is not valid JSON for the endpoint (malformed JSON, an unknown or missing field, a wrong value type, a missing or wrong `Content-Type`); a `deviceName` or `platform` that fails validation; a push with more than 1000 changes; a non-numeric `after`, `limit`, or `wait`; a link request that is not a WebSocket upgrade or whose `B4-Protocol` is not a whole number. |
 | 401 | `unauthorized` | request | The bearer token is missing, malformed, unknown, or belongs to a revoked device. |
 | 401 | `invalid_code` | request | The enrollment code is wrong, expired, or already used (the three are indistinguishable). |
 | 404 | `not_found` | request | No such route, or a resource that does not exist or is not yours. |
@@ -203,7 +203,12 @@ revoked). `lastSeenAt` is written at most once a minute per device. Errors: `401
 
 Revoke the calling device: its token rows are deleted and `devices.revoked_at` is set. Changes the
 device already uploaded stay in the feed. `204` with no body. The token stops working
-immediately; the next request with it is `401 unauthorized`. Errors: `401 unauthorized`.
+immediately; the next request with it is `401 unauthorized`. If the device has an open link
+(see *Link*), the hub closes it with code 4001. Errors: `401 unauthorized`.
+
+### `GET /v1/devices/self/link`
+
+The device's WebSocket link to the relay. See *Link*.
 
 ### `POST /v1/changes`
 
@@ -445,11 +450,100 @@ A `Change` plus where it sits in the feed and who wrote it:
 that uploaded the change; `hlc` is the change's clock after the hub's clamp, always present. `value` is the uploaded JSON, stored as `jsonb`: equal as JSON, but
 object key order is not preserved and duplicate keys collapse.
 
+## Link
+
+`GET /v1/devices/self/link` upgrades to a WebSocket that carries the relay: a phone's commands to
+the Mac, the Mac's replies and live events back, and which Macs are online. The frames are JSON
+text, one message each, with a `type` discriminator; absent optional fields are omitted, never
+`null`. `Tests/Fixtures/sync/relay.json` holds one example of every frame, and both the hub's and
+the Swift clients' test suites decode it. This section describes the link itself; commands,
+watching, and events are described as they are implemented.
+
+### Opening a link
+
+```
+GET /v1/devices/self/link
+Authorization: Bearer <device token>
+B4-Protocol: 1
+Upgrade: websocket
+```
+
+Authentication happens before the upgrade, so a bad token is the usual `401 unauthorized` and no
+socket. A request that is not a WebSocket upgrade is `400 invalid_request`. A device may attempt
+10 upgrades a minute (a sliding window per device, counted after authentication); the 11th is
+`429 rate_limited` with `retryAfterMs` and no socket. During shutdown the answer is
+`503 shutting_down`.
+
+`B4-Protocol` is the device's link protocol; a missing header counts as `1`, and a value that is
+not a whole number is `400 invalid_request`. The role comes from the device, not the request: a
+`macos` device is a **host**, an `ios` or `cli` device is a **client**.
+
+One link per device. A newer link from a device replaces its older one: the older gets an `error`
+frame `link_replaced`, then close code 4000. The replaced device does not go offline.
+
+### Frames in this version
+
+| Direction | `type` | Body |
+| --- | --- | --- |
+| hub to device | `hello` | `protocol` (1), `minClientProtocol`, `deviceId`, `role` (`host` or `client`), `heartbeatSeconds` (10), `hubTime` |
+| device to hub | `ping` | none |
+| hub to device | `pong` | `hubTime` |
+| hub to client | `presence` | `hosts: [{ deviceId, name, online, lastSeenAt? }]` |
+| hub to device | `error` | `code`, `message`, `details?` |
+
+`hello` is the hub's first frame on every link. `hubTime` is the hub's clock, RFC 3339 in UTC with
+milliseconds (`2026-11-01T09:30:00.123Z`); a host uses the `hubTime` of `hello` and `pong` to
+estimate the hub's clock. A device whose `B4-Protocol` is below the hub's `minClientProtocol` gets
+no `hello`: it gets an `error` frame `client_too_old` (`details: { minClientProtocol }`) and then
+close code 4002.
+
+A frame that is not valid JSON, not a relay message, binary, or not one the device may send gets
+an `error` frame `invalid_request`; the link stays up. (Until commands and the rest are
+implemented, a device may send only `ping`.)
+
+### Heartbeat
+
+The device sends `ping` every 10 seconds and the hub answers `pong`. Any frame from the device
+(including a WebSocket protocol ping) counts as the link being alive. The hub closes a link that
+has sent nothing for 30 seconds with code 4003; a device that has received nothing for 30 seconds
+treats the link as dead and reconnects.
+
+### Presence
+
+A host is online while it has a link. A client receives `presence` once after `hello`, then again
+whenever one of its user's Macs goes online or offline: `hosts` is every non-revoked `macos`
+device of that user (never another user's), with `online` and `lastSeenAt` (RFC 3339 in UTC with
+milliseconds; omitted for a Mac never seen). A Mac that is revoked drops out of the list.
+
+`devices.last_seen_at` is written when a link opens, at most once a minute while it is open, and
+when it closes, where it is the time of the link's **last received frame**, not the moment the
+hub noticed the drop: a link closed for 30 seconds of silence reports a time 30 seconds in the
+past. It never moves backwards.
+
+### Close codes
+
+| Code | Meaning | The device should |
+| --- | --- | --- |
+| 1001 | the hub is shutting down | reconnect with backoff |
+| 4000 | replaced by a newer link of the same device (after an `error` frame `link_replaced`) | not reconnect |
+| 4001 | the device was revoked | stop until it joins again |
+| 4002 | `client_too_old` | stop and update |
+| 4003 | no frame for 30 seconds | reconnect with backoff |
+
+Reconnect backoff is 1 second doubling to 30 (15 on the phone) with full jitter, reset after a
+link has stayed up for 60 seconds.
+
+### Frame size
+
+The WebSocket layer refuses a message over 256 KiB (the host limit); the connection then ends.
+
 ## Shutdown
 
 On SIGTERM (or SIGINT) the hub fails `/readyz` with `503 shutting_down` first, wakes every open
 long-poll so each returns its current page, keeps the listener open for a short readiness grace
 (a quarter of the shutdown wait, at most 500 ms) so a load balancer stops routing here, then stops
-accepting connections and lets in-flight requests finish. The whole sequence is bounded by
+accepting connections and lets in-flight requests finish. Every open link is closed with code
+1001 as soon as shutdown begins (an upgraded connection is no longer an in-flight request, so the
+drain waits for the links separately). The whole sequence is bounded by
 `B4HUB_SHUTDOWN_WAIT_MS` (default 30000) from the moment the signal arrives; anything still open
 then is dropped and the process exits.
