@@ -20,6 +20,25 @@ import Testing
     #expect(fitted.height > 16)
   }
 
+  @Test func dynamicColorsResolveOffTheMainActor() async {
+    // AppKit and UIKit call a dynamic colour provider on whatever thread draws or snapshots. A
+    // main-actor provider trapped in the iOS scene snapshot (2026-10-31), so every palette colour
+    // must resolve from a nonisolated context; a regression crashes this test process.
+    let resolved = await Task.detached { () -> Int in
+      let palette: [LLA.Dynamic] = [
+        LLA.Palette.bg, LLA.Palette.surface, LLA.Palette.surfaceRaised, LLA.Palette.ink,
+        LLA.Palette.muted, LLA.Palette.rule, LLA.Palette.accent, LLA.Palette.accentHover,
+        LLA.Palette.danger, LLA.Palette.codeBg, LLA.Palette.codeFg, LLA.Palette.selection,
+      ]
+      var count = 0
+      for dynamic in palette where NSColor(dynamic.color).usingColorSpace(.sRGB) != nil {
+        count += 1
+      }
+      return count
+    }.value
+    #expect(resolved == 12)
+  }
+
   @Test func parserHandlesRelativeAndCurveCommands() {
     let path = SVGPathData.parse("M10 10 l10 0 L20 20 H10 V10 Q15 5 20 10 C 20 0, 10 0, 10 10 Z")
     #expect(!path.isEmpty)

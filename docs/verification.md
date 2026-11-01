@@ -47,11 +47,26 @@ Three things the gate found and Task 9 fixed in the same commit: an unsigned Sim
 - **URL refusal on the Connect screen.** `HubURLTests` covers the rule; the Simulator run showed the screen refusing before any request (no screenshot of that step was kept).
 - **The Simulator end to end** (hub, enrollment, push, mirror, live update): there is no other way to exercise it; it passed with the fixture agent as recorded above.
 
+### Live on this Mac: the packaged app joined, with a real Codex turn (2026-10-31, evening)
+
+| Step | How | Result |
+| --- | --- | --- |
+| Packaged app on this branch | `./Scripts/package.sh`, the running app quit, `dist/Agent Workspace.app` replaced, `agent-workspace coordinator restart` | Coordinator pid 76419 on the new bundle; `db status` shows `0001_init, 0002_changes, 0003_hub`, so the live store migrated in place (18 change rows kept) |
+| Hub | Compose stack from `Hub/` with a local `.env`; `seed` and two `enroll` codes through the `migrate` service | `/readyz` current; org `cacheplane`, user `blove` |
+| Mac join | `agent-workspace hub join http://localhost:8080 --name "Brian's MacBook Pro"` with the code on stdin | `hub status`: device enrolled, `unsynced 0`, first push 2026-11-01T01:52:39Z |
+| Phone enrol | The iOS build on the booted iPhone 17 Pro Simulator, Connect screen, URL default and the second code | List showed the real `First Codex thread` (connection `Codex`) within one poll of the Mac's push; before the Mac joined the list was honestly empty |
+| Real Codex turn | In the Mac app, opened the thread and sent `Reply with exactly one word: synced` (clicked Send; a plain Return in the composer inserts a newline through accessibility) | Codex answered `synced`; the Mac transcript, the phone's transcript, and `hub status` (`unsynced 0`, 39 changes on the hub) agreed within seconds |
+| Hub rows | `psql` in the Compose database | `connections`: `authReference` NULL, `target` empty, `localServerId` NULL, `nativeScope` the account email (no `/`, so not hashed); `devices`: two active; `threads.context` is the thread's working directory `/Users/blove/repos/b4app` (owner's call pending) |
+| Mac click-through | Threads, Connections (both runtimes `ready`, signed in), Local servers (`research` registered, stopped), Diagnostics (coordinator, runtimes, database path) | All four surfaces render and respond; the shared-shell change for iPhone has no visible effect on the Mac |
+| Phone Send | Typed into the composer and tapped Send | Refused inline with `Writing from this device arrives in M8b; sending turns through the hub in M8c.` (`unsupported_capability`) |
+| Phone Diagnostics | Diagnostics row | Sync section: hub URL, device `iPhone 17 Pro`, cursor 39, last sync time, unreadable rows 0 |
+
+Found and fixed during this run: the iOS app died with `SIGTRAP` about two seconds after a relaunch and once during use. The crash reports show `LLA.Dynamic.color`'s dynamic colour provider being resolved by UIKit off the main thread (scene snapshot) while the closure was main-actor isolated by the module's default isolation. `LLA.Dynamic`, `LLA.Palette`, and the hex colour initialisers are now `nonisolated`; `ThemeTests.dynamicColorsResolveOffTheMainActor` resolves every palette colour from a detached task, and the nonisolated `Palette` makes a main-actor `Dynamic` a compile error. The rebuilt app survived relaunch and the Diagnostics screen.
+
 ### Not exercised (open gates)
 
-- The owner's packaged Mac app joined to a hub; real Codex or Claude threads through a hub.
+- Real Claude or B4 threads through a hub (only the real Codex thread above); a second Mac.
 - `hub leave`, the `database.restore` refusal while joined, uploaded history surviving a device revoke, the 1 MiB payload truncation, and the 401 suspension: `fixture-tested` only, never run live. The one revoke seen live was the Keychain-failure cleanup.
-- The Mac app's runtime after the `WorkspaceRootView` compact-column change: 319 tests and reading only, no click-through.
 - A hub behind TLS, a `linux/amd64` image, any deployment other than the Mac's Compose, and a restore of a hub from a PostgreSQL backup.
 - Rate limiting, byte-limited pull pages, and pruning (`resync_required` for a real stale cursor; M8a answers it for a negative cursor only, fixture-tested and never seen live): not built.
 
