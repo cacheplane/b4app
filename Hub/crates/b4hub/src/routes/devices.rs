@@ -4,7 +4,7 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
-use b4hub_db::devices;
+use b4hub_db::devices::{self, Platform};
 use serde_json::{json, Value};
 
 use crate::auth::AuthedDevice;
@@ -36,7 +36,15 @@ pub async fn revoke_self(
 ) -> Result<StatusCode, ApiError> {
     devices::revoke_self(&state.db, device.org_id, device.device_id).await?;
     // A revoked device's link ends now, not at its next heartbeat.
-    state.relay.close(device.device_id, Close::revoked());
+    let had_link = state.relay.close(device.device_id, Close::revoked());
+    // With a link, the link's own end tells the user's phones. Without one, a Mac that was offline
+    // still leaves their list now.
+    if !had_link && device.platform == Platform::Macos {
+        state
+            .relay
+            .broadcast_presence(&state.db, device.org_id, device.user_id)
+            .await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

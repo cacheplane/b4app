@@ -110,7 +110,9 @@ async fn serve_link(
         return;
     }
 
+    relay.pass_gate().await;
     let role = who.role;
+    let identity = (who.org_id, who.device_id);
     let Registration {
         handle,
         mut outbound,
@@ -127,16 +129,28 @@ async fn serve_link(
         last_written: Instant::now(),
         peer_closed: false,
     };
-    let close = link.run(&mut socket, &mut outbound, &mut closing).await;
+    // The upgrade checked that the device is not revoked, but a revocation can land between that
+    // check and the registration above, when `close` finds no link to close. Registering first and
+    // looking again closes that window: a revocation after this look finds the registered link.
+    let revoked = matches!(
+        devices::me(&link.state.db, identity.0, identity.1).await,
+        Ok(None)
+    );
+    let close = if revoked {
+        Some(Close::revoked())
+    } else {
+        link.run(&mut socket, &mut outbound, &mut closing).await
+    };
 
-    // The link is over. Leave the registry first, so a phone told "offline" below is right.
+    // The link is over. The device was last heard from when its last frame arrived, not when the
+    // drop was noticed. That goes in the database before the device reads as offline, so anyone who
+    // sees it offline (a command judging how recently it was seen) finds the time already there.
+    link.write_last_seen(link.last_frame).await;
     let was_current = relay.unregister(link.handle.device_id, link.handle.generation);
     let closed = match &close {
         Some(close) => send_close(&mut socket, close).await,
         None => false,
     };
-    // The device was last heard from when its last frame arrived, not when the drop was noticed.
-    link.write_last_seen(link.last_frame).await;
     if was_current && role == Role::Host {
         relay
             .broadcast_presence(&link.state.db, link.handle.org_id, link.handle.user_id)

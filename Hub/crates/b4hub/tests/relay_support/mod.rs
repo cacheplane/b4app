@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
+use b4hub::relay::{Relay, WallClock};
 use b4hub::serve::{self, AppState};
 use b4hub_core::relay::RelayMessage;
 use b4hub_db::{devices, orgs, Db};
@@ -140,10 +141,23 @@ pub struct Hub {
     pub server: JoinHandle<std::io::Result<()>>,
 }
 
-/// Migrates the database, opens a loopback listener, and serves the hub on it. The shutdown
-/// wait is five seconds. Trigger shutdown with `hub.state.shutdown.trigger()`.
+/// Migrates the database, opens a loopback listener, and serves the hub on it, on the real
+/// system clock. The shutdown wait is five seconds. Trigger shutdown with
+/// `hub.state.shutdown.trigger()`.
 pub async fn spawn_hub(pool: &PgPool) -> Hub {
-    let (admin, state) = migrated(pool).await;
+    spawn_hub_with_clock(pool, WallClock::system()).await
+}
+
+/// Like [`spawn_hub`], for a test that pauses the tokio clock with [`pause_clock`]: the hub's wall
+/// time (`hubTime`, `last_seen_at`) is anchored to the tokio clock, so it moves when the test
+/// advances it.
+pub async fn spawn_hub_paused(pool: &PgPool) -> Hub {
+    spawn_hub_with_clock(pool, WallClock::anchored_to_tokio()).await
+}
+
+pub async fn spawn_hub_with_clock(pool: &PgPool, clock: WallClock) -> Hub {
+    let (admin, mut state) = migrated(pool).await;
+    state.relay = Relay::with_clock(clock);
     // Open several connections now: a pool that must connect lazily while a test's clock is
     // paused would otherwise race its own acquire timeout.
     let mut warm = Vec::new();

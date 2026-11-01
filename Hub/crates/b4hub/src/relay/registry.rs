@@ -147,6 +147,16 @@ impl Drop for LiveLink {
     }
 }
 
+/// A test seam that holds an accepted upgrade just before its link registers, so a test can make
+/// something else (a revocation) happen in exactly that window.
+#[derive(Debug, Default)]
+pub struct RegistrationGate {
+    /// Signalled when a link reaches the gate.
+    pub reached: tokio::sync::Notify,
+    /// The gated link waits for this.
+    pub release: tokio::sync::Notify,
+}
+
 struct Entry {
     handle: LinkHandle,
     closing: Option<oneshot::Sender<Close>>,
@@ -157,6 +167,7 @@ struct Inner {
     next_generation: AtomicU64,
     min_client_protocol: AtomicU32,
     clock: WallClock,
+    gate: Mutex<Option<Arc<RegistrationGate>>>,
     upgrades: SlidingWindow,
     live: watch::Sender<usize>,
 }
@@ -179,11 +190,17 @@ impl Default for Relay {
 
 impl Relay {
     pub fn new() -> Relay {
+        Relay::with_clock(WallClock::system())
+    }
+
+    /// A relay that reads wall time from `clock`. Tests use it to date frames on a paused clock.
+    pub fn with_clock(clock: WallClock) -> Relay {
         Relay(Arc::new(Inner {
             links: Mutex::default(),
             next_generation: AtomicU64::new(0),
             min_client_protocol: AtomicU32::new(MIN_CLIENT_PROTOCOL),
-            clock: WallClock::new(),
+            clock,
+            gate: Mutex::new(None),
             upgrades: SlidingWindow::upgrades(),
             live: watch::channel(0).0,
         }))
@@ -320,6 +337,32 @@ impl Relay {
         };
         for client in self.presence_subscribers(user_id) {
             let _ = client.try_send(message.clone());
+        }
+    }
+
+    /// Installs a gate that every upgraded link passes through just before it registers, and
+    /// returns it. A test seam; nothing in the hub installs one.
+    pub fn gate_registration(&self) -> Arc<RegistrationGate> {
+        let gate = Arc::new(RegistrationGate::default());
+        *self
+            .0
+            .gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&gate));
+        gate
+    }
+
+    /// Waits at the registration gate, if one is installed.
+    pub(super) async fn pass_gate(&self) {
+        let gate = self
+            .0
+            .gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(gate) = gate {
+            gate.reached.notify_one();
+            gate.release.notified().await;
         }
     }
 

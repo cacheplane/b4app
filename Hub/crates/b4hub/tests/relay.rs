@@ -15,7 +15,8 @@ use serde_json::json;
 use sqlx::PgPool;
 
 use relay_support::{
-    epoch_seconds, eventually, pause_clock, settle, spawn_hub, FakeDevice, FRAME_WAIT,
+    epoch_seconds, eventually, pause_clock, real_sleep, settle, spawn_hub, spawn_hub_paused,
+    FakeDevice, FRAME_WAIT,
 };
 
 /// The `hello` a link starts with, as `(role, heartbeatSeconds, deviceId)`.
@@ -175,7 +176,7 @@ async fn a_second_link_replaces_the_first(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn a_silent_link_is_closed_after_thirty_seconds(pool: PgPool) {
-    let hub = spawn_hub(&pool).await;
+    let hub = spawn_hub_paused(&pool).await;
     let blove = hub.user("cacheplane", "blove").await;
     let (token, mac_id) = hub.enroll(&blove, "macos", "Mac").await;
     let clock = pause_clock();
@@ -197,7 +198,7 @@ async fn a_silent_link_is_closed_after_thirty_seconds(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn a_ping_keeps_a_link_alive(pool: PgPool) {
-    let hub = spawn_hub(&pool).await;
+    let hub = spawn_hub_paused(&pool).await;
     let blove = hub.user("cacheplane", "blove").await;
     let (token, mac_id) = hub.enroll(&blove, "macos", "Mac").await;
     let clock = pause_clock();
@@ -214,7 +215,7 @@ async fn a_ping_keeps_a_link_alive(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn last_seen_is_refreshed_once_a_minute_while_a_link_is_open(pool: PgPool) {
-    let hub = spawn_hub(&pool).await;
+    let hub = spawn_hub_paused(&pool).await;
     let blove = hub.user("cacheplane", "blove").await;
     let (token, mac_id) = hub.enroll(&blove, "macos", "Mac").await;
     let clock = pause_clock();
@@ -303,7 +304,7 @@ async fn a_device_that_says_goodbye_goes_offline_too(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn last_seen_is_the_last_frame_heard_after_a_dead_link_close(pool: PgPool) {
-    let hub = spawn_hub(&pool).await;
+    let hub = spawn_hub_paused(&pool).await;
     let blove = hub.user("cacheplane", "blove").await;
     let (token, mac_id) = hub.enroll(&blove, "macos", "Mac").await;
     let clock = pause_clock();
@@ -372,6 +373,12 @@ async fn shutdown_closes_links_with_1001(pool: PgPool) {
     mac.next().await;
     let mut phone = FakeDevice::connect(hub.addr, &phone_token).await;
     phone.next().await;
+    // The Mac is heard from once more, a while after it opened its link (not enough to trigger the
+    // once-a-minute write): the shutdown has to record that frame, not the open.
+    let opened = hub.last_seen(&blove, mac_id).await.unwrap();
+    real_sleep(Duration::from_millis(500)).await;
+    mac.send(&RelayMessage::Ping).await;
+    assert!(matches!(mac.next().await, RelayMessage::Pong { .. }));
 
     hub.state.shutdown.trigger();
     assert_eq!(mac.expect_close().await, close_code::SHUTDOWN);
@@ -383,8 +390,12 @@ async fn shutdown_closes_links_with_1001(pool: PgPool) {
         .unwrap()
         .unwrap();
     assert!(!hub.state.relay.online(mac_id) && !hub.state.relay.online(phone_id));
-    // Each link recorded when it was last heard from.
-    assert!(hub.last_seen(&blove, mac_id).await.is_some());
+    // Each link recorded when it was last heard from, on the way out.
+    let seen = hub.last_seen(&blove, mac_id).await.unwrap();
+    assert!(
+        seen > opened + 0.4,
+        "{seen} should be after the ping, not the open at {opened}"
+    );
 }
 
 #[sqlx::test(migrations = false)]
@@ -394,10 +405,9 @@ async fn eleven_upgrades_in_a_minute_are_limited(pool: PgPool) {
     let (token, _) = hub.enroll(&blove, "macos", "Mac").await;
     let (other_token, _) = hub.enroll(&blove, "ios", "iPhone").await;
 
-    for attempt in 1..=10 {
+    for _ in 1..=10 {
         let mut link = FakeDevice::connect(hub.addr, &token).await;
-        link.next().await;
-        assert!(attempt <= 10);
+        hello_of(link.next().await);
     }
     let refused = FakeDevice::try_connect(hub.addr, Some(&token), None)
         .await
@@ -475,4 +485,82 @@ async fn a_frame_the_hub_cannot_use_gets_an_error_and_the_link_stays(pool: PgPoo
     mac.send(&RelayMessage::Ping).await;
     assert!(matches!(mac.next().await, RelayMessage::Pong { .. }));
     settle().await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_device_never_reads_offline_before_its_last_seen_is_written(pool: PgPool) {
+    let hub = spawn_hub_paused(&pool).await;
+    let blove = hub.user("cacheplane", "blove").await;
+    let (token, mac_id) = hub.enroll(&blove, "macos", "Mac").await;
+    let clock = pause_clock();
+
+    let mut mac = FakeDevice::connect(hub.addr, &token).await;
+    let RelayMessage::Hello { hub_time, .. } = mac.next().await else {
+        panic!("expected hello");
+    };
+    let opened = epoch_seconds(&hub_time);
+    clock.advance(Duration::from_secs(5)).await;
+    mac.send(&RelayMessage::Ping).await;
+    assert!(matches!(mac.next().await, RelayMessage::Pong { .. }));
+    clock.advance(Duration::from_millis(30_005)).await;
+
+    // Watch for the first moment the hub says "offline" and read the database at once: a command
+    // judging how recently the Mac was seen must already find the last frame's time.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while hub.state.relay.online(mac_id) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the link never closed"
+        );
+        tokio::task::yield_now().await;
+    }
+    let seen = hub.last_seen(&blove, mac_id).await.unwrap();
+    assert!(
+        (seen - (opened + 5.0)).abs() < 0.1,
+        "last_seen_at {seen} should already be the last frame ({} )",
+        opened + 5.0
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_revocation_during_the_upgrade_still_closes_the_link(pool: PgPool) {
+    let hub = spawn_hub(&pool).await;
+    let blove = hub.user("cacheplane", "blove").await;
+    let (mac_token, mac_id) = hub.enroll(&blove, "macos", "Mac").await;
+    let (phone_token, _) = hub.enroll(&blove, "ios", "iPhone").await;
+    let mut phone = FakeDevice::connect(hub.addr, &phone_token).await;
+    phone.next().await; // hello
+    phone.next().await; // presence
+
+    // The upgrade is accepted (the device was valid) but the link has not registered yet.
+    let gate = hub.state.relay.gate_registration();
+    let mut mac = FakeDevice::connect(hub.addr, &mac_token).await;
+    gate.reached.notified().await;
+    let (status, _) = hub
+        .http("DELETE", "/v1/devices/self", Some(&mac_token))
+        .await;
+    assert_eq!(status, 204); // finds no link to close
+    gate.release.notify_one();
+
+    assert_eq!(mac.expect_close().await, close_code::REVOKED);
+    assert!(!hub.state.relay.online(mac_id));
+    // The Mac never read as online to anyone: the phone hears the list without it, nothing else.
+    assert!(hosts_of(phone.next().await).is_empty());
+}
+
+#[sqlx::test(migrations = false)]
+async fn revoking_an_offline_mac_updates_the_phones_list(pool: PgPool) {
+    let hub = spawn_hub(&pool).await;
+    let blove = hub.user("cacheplane", "blove").await;
+    let (mac_token, _) = hub.enroll(&blove, "macos", "Mac").await;
+    let (phone_token, _) = hub.enroll(&blove, "ios", "iPhone").await;
+    let mut phone = FakeDevice::connect(hub.addr, &phone_token).await;
+    phone.next().await; // hello
+    assert_eq!(hosts_of(phone.next().await).len(), 1);
+
+    let (status, _) = hub
+        .http("DELETE", "/v1/devices/self", Some(&mac_token))
+        .await;
+    assert_eq!(status, 204);
+    assert!(hosts_of(phone.next().await).is_empty());
 }

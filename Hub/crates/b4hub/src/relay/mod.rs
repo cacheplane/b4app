@@ -7,10 +7,11 @@
 //!
 //! Everything here reads time through `tokio::time::Instant`, so a test that calls
 //! `tokio::time::pause()` controls heartbeats, the dead-link timeout, and rate-limit windows. A
-//! wall-clock time (`hubTime`, the `last_seen_at` a link writes) is the `SystemTime` the relay
-//! was created at plus the `tokio::time::Instant` elapsed since, so it moves with a paused clock
-//! too and a link's "last frame" can be dated exactly.
+//! wall-clock time (`hubTime`, the `last_seen_at` a link writes) is the system clock at the time
+//! of the call, offset by the tokio instant's distance from now (see [`WallClock`]); tests that
+//! pause the tokio clock inject a clock anchored to it.
 
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use b4hub_core::relay::RelayMessage;
@@ -64,37 +65,66 @@ pub fn link_replaced() -> RelayMessage {
     error_frame(relay_code::LINK_REPLACED, "this device opened a newer link")
 }
 
-/// The hub's wall clock, read through the (possibly paused) tokio clock. See the module docs.
-#[derive(Debug, Clone, Copy)]
+/// The hub's wall clock. A time is the system clock *at the moment of the call*, moved back (or
+/// forward) by how far the tokio clock says the instant in question is from now. So it follows
+/// every step of the system clock (NTP after a container starts, a VM resuming from sleep) and
+/// never drifts from a time captured once at startup, while a link's "last frame" is still dated
+/// by the monotonic instant it arrived at.
+///
+/// The source of "now" is injectable: tests use [`WallClock::anchored_to_tokio`] so that a paused
+/// tokio clock moves wall time too, and [`WallClock::from_source`] to prove the clock follows its
+/// source.
+#[derive(Clone)]
 pub struct WallClock {
-    wall: SystemTime,
-    instant: Instant,
+    source: Arc<dyn Fn() -> SystemTime + Send + Sync>,
+}
+
+impl std::fmt::Debug for WallClock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WallClock").finish_non_exhaustive()
+    }
 }
 
 impl WallClock {
-    pub fn new() -> WallClock {
+    /// The real system clock.
+    pub fn system() -> WallClock {
+        WallClock::from_source(SystemTime::now)
+    }
+
+    /// A clock whose "now" is `source()`.
+    pub fn from_source(source: impl Fn() -> SystemTime + Send + Sync + 'static) -> WallClock {
         WallClock {
-            wall: SystemTime::now(),
-            instant: Instant::now(),
+            source: Arc::new(source),
         }
     }
 
-    /// The wall-clock time at `at`.
-    pub fn at(&self, at: Instant) -> SystemTime {
-        match at.checked_duration_since(self.instant) {
-            Some(elapsed) => self.wall + elapsed,
-            None => self.wall - self.instant.duration_since(at),
-        }
+    /// A clock that starts at the current system time and then moves only with the tokio clock,
+    /// so `tokio::time::pause()` and `advance()` move it. For tests.
+    pub fn anchored_to_tokio() -> WallClock {
+        let wall = SystemTime::now();
+        let start = Instant::now();
+        WallClock::from_source(move || wall + Instant::now().saturating_duration_since(start))
     }
 
+    /// The wall-clock time now.
     pub fn now(&self) -> SystemTime {
-        self.at(Instant::now())
+        (self.source)()
+    }
+
+    /// The wall-clock time at the tokio instant `at`.
+    pub fn at(&self, at: Instant) -> SystemTime {
+        let now = self.now();
+        let current = Instant::now();
+        match current.checked_duration_since(at) {
+            Some(ago) => now - ago,
+            None => now + at.saturating_duration_since(current),
+        }
     }
 }
 
 impl Default for WallClock {
     fn default() -> WallClock {
-        WallClock::new()
+        WallClock::system()
     }
 }
 
@@ -137,6 +167,8 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
 
     fn at(seconds: u64, millis: u32) -> SystemTime {
@@ -177,13 +209,40 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn wall_time_follows_the_tokio_clock() {
-        let clock = WallClock::new();
+    async fn an_anchored_clock_follows_the_tokio_clock() {
+        let clock = WallClock::anchored_to_tokio();
         let start = clock.now();
         tokio::time::advance(Duration::from_secs(5)).await;
         let later = clock.now();
         assert_eq!(later.duration_since(start).unwrap(), Duration::from_secs(5));
         let started_at = clock.at(Instant::now() - Duration::from_secs(5));
         assert_eq!(started_at, start);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_clock_follows_its_source_not_a_time_captured_at_startup() {
+        // A system clock that steps (NTP, a VM resuming) while the monotonic clock does not.
+        let stepped = Arc::new(AtomicU64::new(0));
+        let base = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let clock = WallClock::from_source({
+            let stepped = Arc::clone(&stepped);
+            move || base + Duration::from_secs(stepped.load(Ordering::SeqCst))
+        });
+        let frame = Instant::now();
+        assert_eq!(clock.at(frame), base);
+        stepped.store(3_600, Ordering::SeqCst);
+        // The same instant is now dated an hour later, and "now" moved with the source.
+        assert_eq!(clock.now(), base + Duration::from_secs(3_600));
+        assert_eq!(clock.at(frame), base + Duration::from_secs(3_600));
+        // An instant 5 s ago is 5 s before the (stepped) now.
+        tokio::time::advance(Duration::from_secs(5)).await;
+        assert_eq!(clock.at(frame), base + Duration::from_secs(3_600 - 5));
+    }
+
+    #[test]
+    fn the_system_clock_is_the_default() {
+        let before = SystemTime::now();
+        let seen = WallClock::default().now();
+        assert!(seen >= before && seen <= SystemTime::now());
     }
 }
