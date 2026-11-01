@@ -135,7 +135,8 @@ public final class WorkspaceModel {
   /// Set by the Settings views while they are on screen.
   public var settingsVisible = false
   public var selectedThreadId: String?
-  public var searchText = ""
+  /// The search palette (⌘K).
+  public var showSearch = false
   public var connectionFilter: String?
   public var showArchived = false
   public var showNewThread = false
@@ -202,7 +203,7 @@ public final class WorkspaceModel {
     self.transportProvider = transportProvider
   }
 
-  /// The list under the search, connection, and project filters: pinned first, then needs input,
+  /// The list under the connection and project filters: pinned first, then needs input,
   /// unread reply, working, and quiet, newest activity first inside each (`Attention.ordered`).
   public var orderedThreads: [ConversationThread] {
     Attention.ordered(filtered(archived: projectFilter == .archived, project: projectFilter))
@@ -235,10 +236,8 @@ public final class WorkspaceModel {
   }
 
   private func filtered(archived: Bool, project: ProjectFilter) -> [ConversationThread] {
-    let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
-    return threads.filter { $0.archived == archived }
+    threads.filter { $0.archived == archived }
       .filter { connectionFilter == nil || $0.connectionId == connectionFilter }
-      .filter { query.isEmpty || $0.title.lowercased().contains(query) }
       .filter {
         switch project {
         case .all, .archived: return true

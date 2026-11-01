@@ -359,9 +359,6 @@ private struct AttentionDocument: Decodable {
     model.projectFilter = .archived
     #expect(model.orderedThreads.map(\.id) == ["old"])
     model.projectFilter = .all
-    model.searchText = "in-"
-    #expect(model.orderedThreads.map(\.id) == ["in-a", "in-b"])
-    model.searchText = ""
     #expect(model.archivedThreads.map(\.id) == ["old"])
   }
 

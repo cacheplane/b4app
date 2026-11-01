@@ -47,6 +47,11 @@ public struct WorkspaceRootView: View {
     .onChange(of: detailOnScreen, initial: true) { _, onScreen in model.isDetailOnScreen = onScreen }
     .task { model.connect() }
     .sheet(isPresented: $model.showNewThread) { NewThreadSheet(model: model) }
+    #if os(macOS)
+      .overlay { if model.showSearch { SearchPalette(model: model) } }
+    #else
+      .sheet(isPresented: $model.showSearch) { SearchPalette(model: model) }
+    #endif
     .onChange(of: model.pendingLoginURL) { _, url in
       guard let url else { return }
       openURL(url)
@@ -81,7 +86,6 @@ struct SidebarView: View {
   var body: some View {
     content
       .background(LLA.Color.surface)
-      .searchable(text: $model.searchText, prompt: "Search titles")
       .navigationTitle("Agent Workspace")
       .toolbar {
         #if os(iOS)

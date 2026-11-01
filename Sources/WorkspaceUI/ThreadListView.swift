@@ -75,11 +75,10 @@ extension WorkspaceModel {
 
   /// The Mac sidebar's sections: `projectSections`, plus manual projects that hold no listed thread
   /// (a new project, or one whose threads are pinned or archived) so they can still be renamed,
-  /// given a folder, or deleted. A search or a connection filter shows matches only. "Other" stays last.
+  /// given a folder, or deleted. A connection filter shows matches only. "Other" stays last.
   var sidebarSections: [ProjectSection] {
     let built = projectSections
-    let narrowed = !searchText.trimmingCharacters(in: .whitespaces).isEmpty || connectionFilter != nil
-    guard !narrowed, projectFilter == .all else { return built }
+    guard connectionFilter == nil, projectFilter == .all else { return built }
     let present = Set(built.map(\.id))
     let empty =
       projects

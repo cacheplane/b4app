@@ -38,8 +38,8 @@ import WorkspaceProtocol
     let model = try await ListFixture.model()
     #expect(model.sidebarSections.map(\.title) == ["b4app", "Marketing site", "Docs", "Other"])
     #expect(model.sidebarSections.first { $0.id == ListFixture.docs }?.threads.isEmpty == true)
-    // A search narrows the list; it does not pad it with empty projects.
-    model.searchText = "pricing"
+    // A connection filter narrows the list; it does not pad it with empty projects.
+    model.connectionFilter = "c2"
     #expect(model.sidebarSections.map(\.title) == ["Marketing site"])
   }
 
