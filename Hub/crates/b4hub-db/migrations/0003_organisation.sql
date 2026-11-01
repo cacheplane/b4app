@@ -28,7 +28,7 @@ $$;
 
 ALTER TABLE changes ADD COLUMN hlc text;
 UPDATE changes
-    SET hlc = lpad(to_hex(wall), 12, '0') || '-0000-' || device_id::text;
+    SET hlc = lpad(to_hex(greatest(wall, 0)), 12, '0') || '-0000-' || device_id::text;
 ALTER TABLE changes ALTER COLUMN hlc SET NOT NULL;
 
 DO $$
@@ -41,13 +41,20 @@ BEGIN
     LOOP
         EXECUTE format('ALTER TABLE %1$I ADD COLUMN owner_device_id uuid REFERENCES devices (id)',
                        spec[1]);
+        -- The latest recorded insert of each (row, user), in one pass over the feed. Matching the
+        -- user means another user's insert of the same row id never makes their device the owner.
         EXECUTE format(
-            'UPDATE %1$I m SET owner_device_id = COALESCE(('
-            '    SELECT c.device_id FROM changes c'
-            '    WHERE c.org_id = m.org_id AND c."table" = %1$L AND c.row_id = m.%2$I'
-            '      AND c.op = ''insert'''
-            '    ORDER BY c.hub_seq DESC LIMIT 1), m.device_id)',
+            'WITH latest AS ('
+            '    SELECT DISTINCT ON (org_id, row_id, user_id) org_id, row_id, user_id, device_id'
+            '    FROM changes WHERE "table" = %1$L AND op = ''insert'''
+            '    ORDER BY org_id, row_id, user_id, hub_seq DESC)'
+            ' UPDATE %1$I m SET owner_device_id = latest.device_id FROM latest'
+            ' WHERE latest.org_id = m.org_id AND latest.row_id = m.%2$I'
+            '   AND latest.user_id = m.user_id',
             spec[1], spec[2]);
+        -- A row whose insert was never recorded is owned by its last writer.
+        EXECUTE format('UPDATE %1$I SET owner_device_id = device_id WHERE owner_device_id IS NULL',
+                       spec[1]);
         EXECUTE format('ALTER TABLE %1$I ALTER COLUMN owner_device_id SET NOT NULL', spec[1]);
     END LOOP;
 END

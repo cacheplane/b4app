@@ -449,26 +449,31 @@ async fn oversize_value_is_rejected_per_change(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
-async fn a_malformed_clock_is_a_bad_request(pool: PgPool) {
+async fn a_malformed_clock_is_rejected_per_change(pool: PgPool) {
     let (admin, state) = migrated(&pool).await;
     let token = token_for(&admin, &state, "blove").await;
-    let mut change = small_change(1, "conn-1");
-    change.hlc = Some("not-a-clock".into());
+    let mut bad = small_change(2, "conn-bad");
+    bad.hlc = Some("not-a-clock".into());
     let (status, body) = send(
         &state,
         "POST",
         "/v1/changes",
         Some(&token),
-        Some(push_body(&[small_change(2, "conn-2"), change])),
+        Some(push_body(&[
+            small_change(1, "conn-1"),
+            bad,
+            small_change(3, "conn-3"),
+        ])),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(error_code(&body), "invalid_request");
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
-        count(&state, "cacheplane", "changes").await,
-        0,
-        "nothing stored"
+        body,
+        json!({"acceptedThrough": 3, "rejected": [{"deviceSeq": 2, "code": "invalid_clock"}]})
     );
+    // The other two landed; the bad one was neither logged nor applied.
+    assert_eq!(count(&state, "cacheplane", "changes").await, 2);
+    assert_eq!(count(&state, "cacheplane", "connections").await, 2);
 }
 
 #[sqlx::test(migrations = false)]

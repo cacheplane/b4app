@@ -911,6 +911,43 @@ async fn a_change_without_a_clock_gets_the_wall_derived_one(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn a_malformed_clock_is_rejected_and_the_rest_lands(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let (mac, phone) = mac_and_phone(&admin, &app).await;
+    let before = count(&app, &mac, "changes").await;
+    let good = at(
+        update(1, "threads", "thread-1", "title", Some(json!("Fine"))),
+        200,
+        PHONE_CLOCK,
+    );
+    let bad = |seq, hlc: &str| Change {
+        hlc: Some(hlc.into()),
+        ..update(seq, "threads", "thread-1", "pinned", Some(json!(true)))
+    };
+    let batch = vec![
+        good,
+        bad(2, "garbage"),
+        bad(3, "0192E0F1A2B3-0000-dev"),
+        bad(4, ""),
+    ];
+    let outcome = changes::push(&app, &phone, &batch).await.unwrap();
+    assert_eq!(outcome.accepted_through, 4);
+    assert_eq!(
+        outcome.rejected,
+        (2..=4)
+            .map(|device_seq| Rejected {
+                device_seq,
+                code: "invalid_clock"
+            })
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(count(&app, &mac, "changes").await, before + 1);
+    assert_eq!(title(&app, &mac).await, "Fine");
+    let thread = row(&app, &mac, "threads", "id", "thread-1").await.unwrap();
+    assert_eq!(thread["pinned"], false);
+}
+
+#[sqlx::test(migrations = false)]
 async fn push_clamps_a_clock_far_ahead(pool: PgPool) {
     let (admin, app) = common::migrated(&pool).await;
     let (mac, phone) = mac_and_phone(&admin, &app).await;
@@ -928,7 +965,7 @@ async fn push_clamps_a_clock_far_ahead(pool: PgPool) {
             Some(json!("From the future")),
         )
     };
-    // Exactly at the limit is kept as sent.
+    // Ten seconds inside the limit: kept as sent.
     let edge = Hlc::new((now + 290_000) as u64, 1, PHONE_CLOCK);
     let at_edge = Change {
         hlc: Some(edge.to_string()),
@@ -1176,6 +1213,9 @@ async fn migration_backfills_clocks_and_owners(pool: PgPool) {
     let org = Uuid::from_u128(1);
     let user = Uuid::from_u128(2);
     let (dev_a, dev_b) = (Uuid::from_u128(3), Uuid::from_u128(4));
+    // A second user of the org, who recorded an insert of the same row id after the first user's
+    // last one (it never applied: the row is the first user's).
+    let (other, dev_c) = (Uuid::from_u128(5), Uuid::from_u128(6));
     let mut tx = sqlx::Connection::begin(&mut conn).await.unwrap();
     sqlx::query("SELECT set_config('b4hub.org_id', $1, true)")
         .bind(org.to_string())
@@ -1193,11 +1233,17 @@ async fn migration_backfills_clocks_and_owners(pool: PgPool) {
         .execute(&mut *tx)
         .await
         .unwrap();
-    for device in [dev_a, dev_b] {
+    sqlx::query("INSERT INTO users (id, org_id, username, display_name, email) VALUES ($1, $2, 'v', 'v', 'v@x.test')")
+        .bind(other)
+        .bind(org)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    for (device, owner) in [(dev_a, user), (dev_b, user), (dev_c, other)] {
         sqlx::query("INSERT INTO devices (id, org_id, user_id, name, platform) VALUES ($1, $2, $3, 'd', 'macos')")
             .bind(device)
             .bind(org)
-            .bind(user)
+            .bind(owner)
             .execute(&mut *tx)
             .await
             .unwrap();
@@ -1217,6 +1263,28 @@ async fn migration_backfills_clocks_and_owners(pool: PgPool) {
         .await
         .unwrap();
     }
+    // A change with a negative wall, as Hlc::derived treats it.
+    sqlx::query(
+        "INSERT INTO changes (org_id, device_id, device_seq, user_id, wall, \"table\", row_id, op) \
+         VALUES ($1, $2, 10, $3, -5, 'connections', 'c1', 'insert')",
+    )
+    .bind(org)
+    .bind(dev_a)
+    .bind(user)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO changes (org_id, device_id, device_seq, user_id, wall, \"table\", row_id, op) \
+         VALUES ($1, $2, 1, $3, $4, 'threads', 't1', 'insert')",
+    )
+    .bind(org)
+    .bind(dev_c)
+    .bind(other)
+    .bind(T0 + 9)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
     sqlx::query(
         "INSERT INTO threads (org_id, user_id, device_id, \"id\") VALUES ($1, $2, $3, 't1')",
     )
@@ -1239,11 +1307,22 @@ async fn migration_backfills_clocks_and_owners(pool: PgPool) {
         .fetch_one(&mut *tx)
         .await
         .unwrap();
-    assert_eq!(owner, dev_b, "the latest insert, not the latest write");
-    let clocks: Vec<String> = sqlx::query_scalar("SELECT hlc FROM changes ORDER BY device_seq")
-        .fetch_all(&mut *tx)
+    assert_eq!(
+        owner, dev_b,
+        "the owner's latest insert: not the latest write, not another user's insert"
+    );
+    let negative: String = sqlx::query_scalar("SELECT hlc FROM changes WHERE wall < 0")
+        .fetch_one(&mut *tx)
         .await
         .unwrap();
+    assert_eq!(negative, Hlc::derived(-5, &dev_a.to_string()).to_string());
+    let clocks: Vec<String> = sqlx::query_scalar(
+        "SELECT hlc FROM changes WHERE user_id = $1 AND \"table\" = 'threads' ORDER BY device_seq",
+    )
+    .bind(user)
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
     assert_eq!(
         clocks,
         [(1, dev_a), (2, dev_b), (3, dev_a)]

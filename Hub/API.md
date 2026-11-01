@@ -175,16 +175,19 @@ or, when the hub refused some changes:
 {"acceptedThrough": 12, "rejected": [{"deviceSeq": 7, "code": "column_not_writable"}]}
 ```
 
-`acceptedThrough` is the highest `deviceSeq` in the batch (for an empty batch, the highest
-`deviceSeq` this device has had accepted so far, or `0`). A client marks local rows `synced` only
-once `acceptedThrough` covers them. It covers rejected changes too: a rejection is final, so the
-client must not resend them. `rejected` is omitted when empty, so a client that predates it
-decodes the response unchanged. `code` is one of:
+`acceptedThrough` is the highest `deviceSeq` in the batch. For an empty batch it is the highest
+`deviceSeq` the hub has recorded for this device, or `0`; a rejected change is not recorded, so
+that can sit below a `deviceSeq` the device had rejected earlier. A client marks local rows
+`synced` only once `acceptedThrough` covers them. In a non-empty batch it covers rejected changes
+too: a rejection is final, so the client must not resend them. `rejected` is omitted when empty,
+so a client that predates it decodes the response unchanged. `code` is one of:
 
 - `column_not_writable`: the device is an `ios` or `cli` device and the change is not one of the
   phone's (see *Clocks and the write rule* below).
 - `payload_too_large`: the change's `value` is over 2 MiB. Only that change is rejected; the rest
   of the batch lands.
+- `invalid_clock`: the change's `hlc` is present but not in the clock form. Only that change is
+  rejected; a change with no `hlc` is fine.
 
 A rejected change is not recorded in the feed and not applied, so no other device ever sees it.
 
@@ -203,10 +206,9 @@ rows are keyed to the pushing user as well as the org, so another user of the or
 row id cannot overwrite, update, delete, or adopt as a parent the first user's row.
 
 **Refusals**, before anything is stored: `401 unauthorized`; `400 invalid_request` for a body that
-is not `{"changes": [...]}`, has more than 1000 changes, or carries an `hlc` that is not in the
-clock form; `413 payload_too_large` for a body over 32 MiB. (A single change whose `value` is over
-2 MiB is no longer a 413: it is a per-change `rejected` entry.) Pushes to one org are serialised,
-so commit order is `hubSeq` order.
+is not `{"changes": [...]}` or has more than 1000 changes; `413 payload_too_large` for a body over 32 MiB. (A single change
+whose `value` is over 2 MiB is no longer a 413: it is a per-change `rejected` entry.) Pushes to
+one org are serialised, so commit order is `hubSeq` order.
 
 **Clocks and the write rule.** Every change may carry an `hlc`, a hybrid logical clock written
 `<12 lowercase hex digits of epoch milliseconds>-<4 hex digits of counter>-<device id>` (for
@@ -225,7 +227,7 @@ an `insert` counts as setting every such column it carries, at its clock. A chan
 still recorded in the feed (it is history) but writes nothing. Every other column applies
 whatever its clock, as in M8a.
 
-An `macos` device may write any column. An `ios` or `cli` device may only `update` these
+A `macos` device may write any column. An `ios` or `cli` device may only `update` these
 columns, and `insert` rows of `drafts`: `threads.title`, `threads.pinned`, `threads.archived`,
 `threads.readTurnId`, `projects.name`, `drafts.threadId`, `drafts.text`, `drafts.updatedAt`.
 Anything else (including every `delete`) is rejected with `column_not_writable`. A draft is
@@ -312,7 +314,7 @@ other eleven applied; do not paste it whole.
 | `rowId` | string | The row's key: its `id`, or `threadId` for `drafts`. Client-chosen text; unique per org within a table. |
 | `op` | `"insert"`, `"update"`, or `"delete"` | |
 | `column` | string or `null` | For `update`, the column being set; otherwise absent or `null`. |
-| `hlc` | string, optional | The hybrid logical clock the device stamped on the change (see *Clocks and the write rule*). Omit it and the hub derives one from `wall`. A value not in the clock form is `400 invalid_request`. |
+| `hlc` | string, optional | The hybrid logical clock the device stamped on the change (see *Clocks and the write rule*). Omit it and the hub derives one from `wall`. A value not in the clock form gets that change rejected with `invalid_clock`. |
 | `value` | any JSON or `null` | For `insert`, the whole row as an object keyed by the Mac's camelCase column names; for `update`, the column's new value (absent or `null` sets it to NULL); for `delete`, absent. At most 2 MiB serialised. |
 
 Unknown fields are rejected (`400 invalid_request`). Column names are the Mac schema's quoted

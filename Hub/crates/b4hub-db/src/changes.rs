@@ -46,6 +46,10 @@ enum Applied {
 /// A phone changed something only the Mac may change.
 pub const COLUMN_NOT_WRITABLE: &str = "column_not_writable";
 
+/// A change carries an `hlc` that is not in the clock form. A change with none is fine: it gets
+/// one derived from its `wall`.
+pub const INVALID_CLOCK: &str = "invalid_clock";
+
 /// A change's `value` is over [`MAX_PAYLOAD_BYTES`].
 pub const PAYLOAD_TOO_LARGE: &str = "payload_too_large";
 
@@ -81,6 +85,13 @@ fn refusal(auth: &AuthedDevice, change: &Change) -> Option<&'static str> {
     if change.value_bytes() > MAX_PAYLOAD_BYTES {
         return Some(PAYLOAD_TOO_LARGE);
     }
+    if change
+        .hlc
+        .as_deref()
+        .is_some_and(|hlc| Hlc::parse(hlc).is_none())
+    {
+        return Some(INVALID_CLOCK);
+    }
     None
 }
 
@@ -91,8 +102,9 @@ fn now_ms() -> u64 {
         .map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(0))
 }
 
-/// The clock a change is stored and merged under: the one it carries (or, for a client that
-/// sends none, one derived from its wall time), clamped to `now`.
+/// The clock a change is stored and merged under: the one it carries (a malformed one was
+/// refused before this) or, for a client that sends none, one derived from its wall time,
+/// clamped to `now`.
 fn stamp(auth: &AuthedDevice, change: &Change, now: u64) -> Hlc {
     let sent = change
         .hlc
