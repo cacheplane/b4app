@@ -1,5 +1,49 @@
 {
+ "connections": [
+  {
+   "id": "conn-attn",
+   "kind": "codex",
+   "label": "Attention fixture",
+   "enabled": true,
+   "profileRevision": 1,
+   "target": "",
+   "routeKey": null,
+   "b4Mode": null,
+   "localServerId": null,
+   "authReference": null,
+   "nativeScope": "/Users/brian/project",
+   "capabilities": {
+    "streaming": "supported",
+    "native_resume": "supported",
+    "history_retrieval": "supported",
+    "explicit_interruption": "supported",
+    "reconnect": "supported",
+    "permission_decisions": "supported",
+    "user_questions": "unsupported",
+    "model_selection": "unverified"
+   },
+   "status": "ready",
+   "authStatus": "authenticated",
+   "createdAt": "2026-10-31T05:00:00Z",
+   "updatedAt": "2026-10-31T05:00:00Z"
+  }
+ ],
  "threads": [
+  {
+   "id": "t-pinned-working",
+   "connectionId": "conn-attn",
+   "nativeThreadId": "native-t-pinned-working",
+   "nativeScope": "/Users/brian/project",
+   "title": "t-pinned-working",
+   "context": "/Users/brian/project",
+   "pinned": true,
+   "archived": false,
+   "continuity": "available",
+   "createdAt": "2026-10-31T05:00:00Z",
+   "updatedAt": "2026-10-31T05:00:00Z",
+   "projectId": null,
+   "readTurnId": null
+  },
   {
    "id": "t-pinned-quiet",
    "connectionId": "conn-attn",
@@ -16,11 +60,11 @@
    "readTurnId": "u-pq1"
   },
   {
-   "id": "t-needs-input",
+   "id": "t-ask-request-late",
    "connectionId": "conn-attn",
-   "nativeThreadId": "native-t-needs-input",
+   "nativeThreadId": "native-t-ask-request-late",
    "nativeScope": "/Users/brian/project",
-   "title": "t-needs-input",
+   "title": "t-ask-request-late",
    "context": "/Users/brian/project",
    "pinned": false,
    "archived": false,
@@ -28,20 +72,50 @@
    "createdAt": "2026-10-31T09:00:00Z",
    "updatedAt": "2026-10-31T09:00:00Z",
    "projectId": null,
-   "readTurnId": "u-ni2"
+   "readTurnId": "u-arl1"
   },
   {
-   "id": "t-working",
+   "id": "t-ask-turn-late",
    "connectionId": "conn-attn",
-   "nativeThreadId": "native-t-working",
+   "nativeThreadId": "native-t-ask-turn-late",
    "nativeScope": "/Users/brian/project",
-   "title": "t-working",
+   "title": "t-ask-turn-late",
    "context": "/Users/brian/project",
    "pinned": false,
    "archived": false,
    "continuity": "available",
-   "createdAt": "2026-10-31T10:00:00Z",
-   "updatedAt": "2026-10-31T10:00:00Z",
+   "createdAt": "2026-10-31T09:30:00Z",
+   "updatedAt": "2026-10-31T09:30:00Z",
+   "projectId": null,
+   "readTurnId": "u-atl2"
+  },
+  {
+   "id": "t-unread-a",
+   "connectionId": "conn-attn",
+   "nativeThreadId": "native-t-unread-a",
+   "nativeScope": "/Users/brian/project",
+   "title": "t-unread-a",
+   "context": "/Users/brian/project",
+   "pinned": false,
+   "archived": false,
+   "continuity": "available",
+   "createdAt": "2026-10-31T09:50:00Z",
+   "updatedAt": "2026-10-31T09:50:00Z",
+   "projectId": null,
+   "readTurnId": null
+  },
+  {
+   "id": "t-unread-b",
+   "connectionId": "conn-attn",
+   "nativeThreadId": "native-t-unread-b",
+   "nativeScope": "/Users/brian/project",
+   "title": "t-unread-b",
+   "context": "/Users/brian/project",
+   "pinned": false,
+   "archived": false,
+   "continuity": "available",
+   "createdAt": "2026-10-31T09:45:00Z",
+   "updatedAt": "2026-10-31T09:45:00Z",
    "projectId": null,
    "readTurnId": null
   },
@@ -61,32 +135,47 @@
    "readTurnId": null
   },
   {
-   "id": "t-unread-a",
+   "id": "t-equal-created",
    "connectionId": "conn-attn",
-   "nativeThreadId": "native-t-unread-a",
+   "nativeThreadId": "native-t-equal-created",
    "nativeScope": "/Users/brian/project",
-   "title": "t-unread-a",
+   "title": "t-equal-created",
    "context": "/Users/brian/project",
    "pinned": false,
    "archived": false,
    "continuity": "available",
-   "createdAt": "2026-10-31T09:45:00Z",
-   "updatedAt": "2026-10-31T09:45:00Z",
+   "createdAt": "2026-10-31T09:00:00Z",
+   "updatedAt": "2026-10-31T09:00:00Z",
    "projectId": null,
    "readTurnId": null
   },
   {
-   "id": "t-unread-b",
+   "id": "t-latest-created",
    "connectionId": "conn-attn",
-   "nativeThreadId": "native-t-unread-b",
+   "nativeThreadId": "native-t-latest-created",
    "nativeScope": "/Users/brian/project",
-   "title": "t-unread-b",
+   "title": "t-latest-created",
    "context": "/Users/brian/project",
    "pinned": false,
    "archived": false,
    "continuity": "available",
-   "createdAt": "2026-10-31T09:50:00Z",
-   "updatedAt": "2026-10-31T09:50:00Z",
+   "createdAt": "2026-10-31T09:00:00Z",
+   "updatedAt": "2026-10-31T09:00:00Z",
+   "projectId": null,
+   "readTurnId": null
+  },
+  {
+   "id": "t-working",
+   "connectionId": "conn-attn",
+   "nativeThreadId": "native-t-working",
+   "nativeScope": "/Users/brian/project",
+   "title": "t-working",
+   "context": "/Users/brian/project",
+   "pinned": false,
+   "archived": false,
+   "continuity": "available",
+   "createdAt": "2026-10-31T10:00:00Z",
+   "updatedAt": "2026-10-31T10:00:00Z",
    "projectId": null,
    "readTurnId": null
   },
@@ -100,8 +189,8 @@
    "pinned": false,
    "archived": false,
    "continuity": "available",
-   "createdAt": "2026-10-31T10:30:00Z",
-   "updatedAt": "2026-10-31T10:30:00Z",
+   "createdAt": "2026-10-31T06:15:00Z",
+   "updatedAt": "2026-10-31T06:15:00Z",
    "projectId": null,
    "readTurnId": "u-cr1"
   },
@@ -117,21 +206,6 @@
    "continuity": "available",
    "createdAt": "2026-10-31T07:00:00Z",
    "updatedAt": "2026-10-31T07:00:00Z",
-   "projectId": null,
-   "readTurnId": null
-  },
-  {
-   "id": "t-stale-updated",
-   "connectionId": "conn-attn",
-   "nativeThreadId": "native-t-stale-updated",
-   "nativeScope": "/Users/brian/project",
-   "title": "t-stale-updated",
-   "context": "/Users/brian/project",
-   "pinned": false,
-   "archived": false,
-   "continuity": "available",
-   "createdAt": "2026-10-31T06:00:00Z",
-   "updatedAt": "2027-01-01T00:00:00Z",
    "projectId": null,
    "readTurnId": null
   },
@@ -164,9 +238,36 @@
    "updatedAt": "2026-10-31T06:30:00Z",
    "projectId": null,
    "readTurnId": null
+  },
+  {
+   "id": "t-stale-updated",
+   "connectionId": "conn-attn",
+   "nativeThreadId": "native-t-stale-updated",
+   "nativeScope": "/Users/brian/project",
+   "title": "t-stale-updated",
+   "context": "/Users/brian/project",
+   "pinned": false,
+   "archived": false,
+   "continuity": "available",
+   "createdAt": "2026-10-31T06:00:00Z",
+   "updatedAt": "2027-01-01T00:00:00Z",
+   "projectId": null,
+   "readTurnId": null
   }
  ],
  "turns": [
+  {
+   "id": "u-pw1",
+   "threadId": "t-pinned-working",
+   "operationId": "op-u-pw1",
+   "nativeTurnId": "native-u-pw1",
+   "inputRef": null,
+   "status": "running",
+   "submission": "acknowledged",
+   "outcome": null,
+   "createdAt": "2026-10-31T05:05:00Z",
+   "updatedAt": "2026-10-31T05:10:00Z"
+  },
   {
    "id": "u-pq1",
    "threadId": "t-pinned-quiet",
@@ -180,10 +281,10 @@
    "updatedAt": "2026-10-31T08:10:00Z"
   },
   {
-   "id": "u-ni1",
-   "threadId": "t-needs-input",
-   "operationId": "op-u-ni1",
-   "nativeTurnId": "native-u-ni1",
+   "id": "u-arl1",
+   "threadId": "t-ask-request-late",
+   "operationId": "op-u-arl1",
+   "nativeTurnId": "native-u-arl1",
    "inputRef": null,
    "status": "terminal",
    "submission": "acknowledged",
@@ -192,39 +293,27 @@
    "updatedAt": "2026-10-31T09:10:00Z"
   },
   {
-   "id": "u-ni2",
-   "threadId": "t-needs-input",
-   "operationId": "op-u-ni2",
-   "nativeTurnId": "native-u-ni2",
+   "id": "u-atl1",
+   "threadId": "t-ask-turn-late",
+   "operationId": "op-u-atl1",
+   "nativeTurnId": "native-u-atl1",
    "inputRef": null,
    "status": "terminal",
    "submission": "acknowledged",
    "outcome": "completed",
-   "createdAt": "2026-10-31T09:20:00Z",
-   "updatedAt": "2026-10-31T09:30:00Z"
+   "createdAt": "2026-10-31T09:35:00Z",
+   "updatedAt": "2026-10-31T09:40:00Z"
   },
   {
-   "id": "u-w1",
-   "threadId": "t-working",
-   "operationId": "op-u-w1",
-   "nativeTurnId": "native-u-w1",
-   "inputRef": null,
-   "status": "running",
-   "submission": "acknowledged",
-   "outcome": null,
-   "createdAt": "2026-10-31T10:15:00Z",
-   "updatedAt": "2026-10-31T10:20:00Z"
-  },
-  {
-   "id": "u-fu1",
-   "threadId": "t-failed-unread",
-   "operationId": "op-u-fu1",
-   "nativeTurnId": "native-u-fu1",
+   "id": "u-atl2",
+   "threadId": "t-ask-turn-late",
+   "operationId": "op-u-atl2",
+   "nativeTurnId": "native-u-atl2",
    "inputRef": null,
    "status": "terminal",
    "submission": "acknowledged",
-   "outcome": "failed",
-   "createdAt": "2026-10-31T10:50:00Z",
+   "outcome": "completed",
+   "createdAt": "2026-10-31T10:00:00Z",
    "updatedAt": "2026-10-31T11:00:00Z"
   },
   {
@@ -252,6 +341,78 @@
    "updatedAt": "2026-10-31T11:45:00Z"
   },
   {
+   "id": "u-fu1",
+   "threadId": "t-failed-unread",
+   "operationId": "op-u-fu1",
+   "nativeTurnId": "native-u-fu1",
+   "inputRef": null,
+   "status": "terminal",
+   "submission": "acknowledged",
+   "outcome": "failed",
+   "createdAt": "2026-10-31T10:50:00Z",
+   "updatedAt": "2026-10-31T11:00:00Z"
+  },
+  {
+   "id": "u-eq-a",
+   "threadId": "t-equal-created",
+   "operationId": "op-u-eq-a",
+   "nativeTurnId": "native-u-eq-a",
+   "inputRef": null,
+   "status": "terminal",
+   "submission": "acknowledged",
+   "outcome": "completed",
+   "createdAt": "2026-10-31T10:45:00Z",
+   "updatedAt": "2026-10-31T10:50:00Z"
+  },
+  {
+   "id": "u-eq-b",
+   "threadId": "t-equal-created",
+   "operationId": "op-u-eq-b",
+   "nativeTurnId": "native-u-eq-b",
+   "inputRef": null,
+   "status": "running",
+   "submission": "acknowledged",
+   "outcome": null,
+   "createdAt": "2026-10-31T10:45:00Z",
+   "updatedAt": "2026-10-31T10:46:00Z"
+  },
+  {
+   "id": "u-lc1",
+   "threadId": "t-latest-created",
+   "operationId": "op-u-lc1",
+   "nativeTurnId": "native-u-lc1",
+   "inputRef": null,
+   "status": "terminal",
+   "submission": "acknowledged",
+   "outcome": "completed",
+   "createdAt": "2026-10-31T10:00:00Z",
+   "updatedAt": "2026-10-31T14:00:00Z"
+  },
+  {
+   "id": "u-lc2",
+   "threadId": "t-latest-created",
+   "operationId": "op-u-lc2",
+   "nativeTurnId": "native-u-lc2",
+   "inputRef": null,
+   "status": "running",
+   "submission": "acknowledged",
+   "outcome": null,
+   "createdAt": "2026-10-31T10:30:00Z",
+   "updatedAt": "2026-10-31T10:35:00Z"
+  },
+  {
+   "id": "u-w1",
+   "threadId": "t-working",
+   "operationId": "op-u-w1",
+   "nativeTurnId": "native-u-w1",
+   "inputRef": null,
+   "status": "running",
+   "submission": "acknowledged",
+   "outcome": null,
+   "createdAt": "2026-10-31T10:15:00Z",
+   "updatedAt": "2026-10-31T10:20:00Z"
+  },
+  {
    "id": "u-cr1",
    "threadId": "t-completed-read",
    "operationId": "op-u-cr1",
@@ -260,16 +421,16 @@
    "status": "terminal",
    "submission": "acknowledged",
    "outcome": "completed",
-   "createdAt": "2026-10-31T10:32:00Z",
+   "createdAt": "2026-10-31T06:20:00Z",
    "updatedAt": "2026-10-31T10:40:00Z"
   }
  ],
  "runtimeRequests": [
   {
-   "id": "r-ni1",
-   "nativeRequestId": "native-r-ni1",
-   "threadId": "t-needs-input",
-   "turnId": "u-ni1",
+   "id": "r-arl1",
+   "nativeRequestId": "native-r-arl1",
+   "threadId": "t-ask-request-late",
+   "turnId": "u-arl1",
    "adapterGeneration": 1,
    "kind": "command_approval",
    "state": "pending",
@@ -280,18 +441,18 @@
    "updatedAt": "2026-10-31T12:00:00Z"
   },
   {
-   "id": "r-w1",
-   "nativeRequestId": "native-r-w1",
-   "threadId": "t-working",
-   "turnId": "u-w1",
+   "id": "r-atl1",
+   "nativeRequestId": "native-r-atl1",
+   "threadId": "t-ask-turn-late",
+   "turnId": "u-atl1",
    "adapterGeneration": 1,
    "kind": "command_approval",
-   "state": "expired",
+   "state": "pending",
    "payload": {
     "command": "ls"
    },
-   "createdAt": "2026-10-31T10:10:00Z",
-   "updatedAt": "2026-10-31T10:10:00Z"
+   "createdAt": "2026-10-31T10:00:00Z",
+   "updatedAt": "2026-10-31T10:00:00Z"
   },
   {
    "id": "r-fu1",
@@ -306,28 +467,50 @@
    },
    "createdAt": "2026-10-31T10:55:00Z",
    "updatedAt": "2026-10-31T10:55:00Z"
+  },
+  {
+   "id": "r-w1",
+   "nativeRequestId": "native-r-w1",
+   "threadId": "t-working",
+   "turnId": "u-w1",
+   "adapterGeneration": 1,
+   "kind": "command_approval",
+   "state": "expired",
+   "payload": {
+    "command": "ls"
+   },
+   "createdAt": "2026-10-31T10:10:00Z",
+   "updatedAt": "2026-10-31T10:10:00Z"
   }
  ],
  "expected": {
   "bands": {
+   "t-pinned-working": "working",
    "t-pinned-quiet": "quiet",
-   "t-needs-input": "needsInput",
-   "t-working": "working",
-   "t-failed-unread": "unread",
+   "t-ask-request-late": "needsInput",
+   "t-ask-turn-late": "needsInput",
    "t-unread-a": "unread",
    "t-unread-b": "unread",
+   "t-failed-unread": "unread",
+   "t-equal-created": "working",
+   "t-latest-created": "working",
+   "t-working": "working",
    "t-completed-read": "quiet",
    "t-no-turns": "quiet",
-   "t-stale-updated": "quiet",
    "t-tie-a": "quiet",
-   "t-tie-b": "quiet"
+   "t-tie-b": "quiet",
+   "t-stale-updated": "quiet"
   },
   "order": [
+   "t-pinned-working",
    "t-pinned-quiet",
-   "t-needs-input",
+   "t-ask-request-late",
+   "t-ask-turn-late",
    "t-unread-b",
    "t-unread-a",
    "t-failed-unread",
+   "t-equal-created",
+   "t-latest-created",
    "t-working",
    "t-completed-read",
    "t-no-turns",
