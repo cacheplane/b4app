@@ -22,11 +22,14 @@ public actor SessionService {
     public var adapterFactory: AdapterFactory
     /// Managed B4 servers (M4); a managed route connection is usable only while its server is ready.
     public var servers: LocalServerService?
+    /// Decides which project a new thread joins; shared with the router so their writes serialise.
+    public var projects: ProjectService
 
     public init(
       database: WorkspaceDatabase, eventLog: EventLog, diagnostics: DiagnosticsService,
       environment: [String: String], clientVersion: String, secretStore: any SecretStore,
-      adapterFactory: AdapterFactory? = nil, servers: LocalServerService? = nil
+      adapterFactory: AdapterFactory? = nil, servers: LocalServerService? = nil,
+      projects: ProjectService? = nil
     ) {
       self.database = database
       self.eventLog = eventLog
@@ -36,6 +39,7 @@ public actor SessionService {
       self.secretStore = secretStore
       self.adapterFactory = adapterFactory ?? SessionService.defaultAdapterFactory
       self.servers = servers
+      self.projects = projects ?? ProjectService(database: database, eventLog: eventLog)
     }
   }
 
@@ -329,17 +333,31 @@ public actor SessionService {
       _ = try db.updateConnection(id: connection.id) { $0.nativeScope = ref.nativeScope }
     }
     let title = params.title?.trimmingCharacters(in: .whitespaces)
-    let thread = try db.insertThread(
-      ConversationThread(
-        id: UUID().uuidString.lowercased(), connectionId: connection.id, nativeThreadId: ref.nativeSessionId,
-        nativeScope: ref.nativeScope, title: (title?.isEmpty == false ? title : nil) ?? defaultTitle,
-        context: threadContext))
+    var newThread = ConversationThread(
+      id: UUID().uuidString.lowercased(), connectionId: connection.id, nativeThreadId: ref.nativeSessionId,
+      nativeScope: ref.nativeScope, title: (title?.isEmpty == false ? title : nil) ?? defaultTitle,
+      context: threadContext)
+    // The thread joins the project of its folder (created on first use); `context` stays as given.
+    newThread.projectId = try await context.projects.projectId(forThread: newThread, connection: connection)
+    let thread = try db.insertThread(newThread)
     await context.eventLog.publish(
       AdapterEvent(
         kind: .sessionCreated, connectionId: connection.id, threadId: thread.id,
         nativeIds: ["threadId": ref.nativeSessionId], payload: ["scope": .string(ref.nativeScope)]))
     await context.eventLog.publish(try AdapterEvent.threadUpdated(thread))
     return ThreadCreate.Result(thread: thread)
+  }
+
+  /// Mark a thread read up to `turnId`, or unread again with nil. The storage guard ignores a turn that
+  /// is not a terminal turn of this thread or is older than the marker; viewers hear about a change only.
+  public func threadMarkRead(_ params: ThreadMarkRead.Params) async throws -> ThreadMarkRead.Result {
+    guard let before = try db.thread(id: params.threadId),
+      let after = try db.markRead(threadId: params.threadId, turnId: params.turnId)
+    else { throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.") }
+    if before.readTurnId != after.readTurnId {
+      await context.eventLog.publish(try AdapterEvent.threadUpdated(after))
+    }
+    return ThreadMarkRead.Result(thread: after)
   }
 
   /// A plain read is cheap and offline-safe: it reconciles an unresolved turn and, when the cache
@@ -510,7 +528,8 @@ public actor SessionService {
     let userItem = try db.upsertDisplayItem(
       threadId: thread.id, turnId: turn.id, nativeItemId: nil, role: .user, type: "userMessage",
       payload: ["text": .string(text)], provenance: .live)
-    try? db.deleteDraft(threadId: thread.id)
+    // Cleared, not deleted: the empty text syncs as an ordinary last-writer-wins update.
+    try? db.clearDraft(threadId: thread.id)
     await context.eventLog.publish(
       AdapterEvent(
         kind: .messageCompleted, connectionId: connection.id, threadId: thread.id, turnId: turn.id,

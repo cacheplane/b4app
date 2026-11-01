@@ -40,6 +40,7 @@ public final class RunningCoordinator: Sendable {
   public let sessions: SessionService
   public let servers: LocalServerService
   public let hub: HubSync
+  public let projects: ProjectService
   public let router: Router
   public let server: SocketServer
   public let sleepWatcher: SleepWatcher
@@ -53,7 +54,8 @@ public final class RunningCoordinator: Sendable {
   init(
     paths: PlatformPaths, startedAt: String, database: WorkspaceDatabase, eventLog: EventLog,
     diagnostics: DiagnosticsService, sessions: SessionService, servers: LocalServerService, hub: HubSync,
-    router: Router, server: SocketServer, sleepWatcher: SleepWatcher, postgres: PostgresServer?,
+    projects: ProjectService, router: Router, server: SocketServer, sleepWatcher: SleepWatcher,
+    postgres: PostgresServer?,
     lock: SingletonLock
   ) {
     self.paths = paths
@@ -64,6 +66,7 @@ public final class RunningCoordinator: Sendable {
     self.sessions = sessions
     self.servers = servers
     self.hub = hub
+    self.projects = projects
     self.router = router
     self.server = server
     self.sleepWatcher = sleepWatcher
@@ -138,11 +141,21 @@ public enum Coordinator {
     let servers = LocalServerService(
       context: LocalServerService.Context(
         database: database, eventLog: eventLog, environment: options.environment, paths: paths))
+    let projects = ProjectService(database: database, eventLog: eventLog)
+    // Migrations have run; give every existing thread without a project the project of its folder. A
+    // failure here must not keep the coordinator from starting: the next start tries again.
+    do {
+      let assigned = try await projects.backfill()
+      if assigned > 0 { logger.info("project backfill assigned \(assigned, privacy: .public) threads") }
+    } catch {
+      logger.error("project backfill failed: \(String(describing: error), privacy: .public)")
+    }
     let sessions = SessionService(
       context: SessionService.Context(
         database: database, eventLog: eventLog, diagnostics: diagnostics, environment: options.environment,
         clientVersion: CoordinatorVersion.current, secretStore: options.secretStore,
-        adapterFactory: options.adapterFactory, servers: servers))
+        adapterFactory: options.adapterFactory, servers: servers,
+        projects: projects))
     await sessions.start()
     await servers.startAll()
     let hub =
@@ -152,7 +165,7 @@ public enum Coordinator {
     let router = Router(
       context: Router.Context(
         database: database, eventLog: eventLog, diagnostics: diagnostics, sessions: sessions,
-        servers: servers, hub: hub,
+        servers: servers, hub: hub, projects: projects,
         startedAt: startedAt, paths: paths))
     await hub.start()
     let server: SocketServer
@@ -175,7 +188,8 @@ public enum Coordinator {
     return .running(
       RunningCoordinator(
         paths: paths, startedAt: startedAt, database: database, eventLog: eventLog, diagnostics: diagnostics,
-        sessions: sessions, servers: servers, hub: hub, router: router, server: server,
+        sessions: sessions, servers: servers, hub: hub, projects: projects, router: router,
+        server: server,
         sleepWatcher: sleepWatcher,
         postgres: store.ownedServer, lock: lock))
   }

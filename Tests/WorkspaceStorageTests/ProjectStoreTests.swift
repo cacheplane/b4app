@@ -124,4 +124,114 @@ private func seedThread(_ db: WorkspaceDatabase, _ id: String) throws {
       try db.setThreadProject(threadIds: ["t1"], projectId: "no-such-project")
     }
   }
+
+  @Test func moveAndRemoveRefuseAFolderNoProjectOwns() throws {
+    let db = try WorkspaceDatabase.temporary()
+    _ = try db.insertProject(Project(id: "p1"), folders: ["/x/a"])
+    for body in [
+      { try db.moveFolder(path: "/x/none", toProject: "p1") }, { try db.removeFolder(path: "/x/none") },
+    ] {
+      do {
+        try body()
+        Issue.record("expected protocolInvalid")
+      } catch let error as WorkspaceError {
+        #expect(error.code == .protocolInvalid)
+        #expect(error.message.contains("/x/none"))
+      }
+    }
+    #expect(try db.project(id: "p1")?.folders.map(\.path) == ["/x/a"])
+  }
+
+  @Test func creatingAManualProjectMovesFoldersAndThreadsAndDropsTheEmptyAutomaticOne() throws {
+    let db = try WorkspaceDatabase.temporary()
+    try seedThread(db, "t1")
+    _ = try db.insertProject(Project(id: "auto"), folders: ["/x/a", "/x/b"])
+    _ = try db.insertProject(Project(id: "other"), folders: ["/x/c"])
+    try db.setThreadProject(threadIds: ["t1"], projectId: "auto")
+
+    let result = try db.createManualProject(
+      Project(id: "m", name: "Site", manual: true),
+      placing: [FolderPlacement(path: "/x/a", threadIds: ["t1"]), FolderPlacement(path: "/x/c")])
+    #expect(result.project?.folders.map(\.path) == ["/x/a", "/x/c"])
+    // `auto` keeps /x/b and stays; `other` lost its only folder and is deleted.
+    #expect(result.deletedProjectIds == ["other"])
+    #expect(Set(result.changedProjectIds) == ["m", "auto", "other"])
+    #expect(try db.project(id: "auto")?.folders.map(\.path) == ["/x/b"])
+    #expect(try db.project(id: "other") == nil)
+    #expect(try db.thread(id: "t1")?.projectId == "m")
+  }
+
+  @Test func aFailedEditChangesNothing() throws {
+    let db = try WorkspaceDatabase.temporary()
+    try seedThread(db, "t1")
+    _ = try db.insertProject(Project(id: "auto"), folders: ["/x/a"])
+    _ = try db.insertProject(Project(id: "m", name: "M", manual: true), folders: [])
+    try db.setThreadProject(threadIds: ["t1"], projectId: "auto")
+    do {
+      _ = try db.updateProject(
+        id: "m", name: "Renamed", placing: [FolderPlacement(path: "/x/a", threadIds: ["t1"])],
+        releasing: [FolderRelease(path: "/x/not-here")])
+      Issue.record("expected protocolInvalid")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .protocolInvalid)
+      #expect(error.message.contains("/x/not-here"))
+    }
+    #expect(try db.project(id: "auto")?.folders.map(\.path) == ["/x/a"])
+    #expect(try db.project(id: "m")?.name == "M")
+    #expect(try db.thread(id: "t1")?.projectId == "auto")
+    do {
+      _ = try db.updateProject(id: "missing", name: "x", placing: [], releasing: [])
+      Issue.record("expected notFound")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .notFound)
+    }
+  }
+
+  @Test func addingAFolderToAnAutomaticProjectMakesItManual() throws {
+    let db = try WorkspaceDatabase.temporary()
+    _ = try db.insertProject(Project(id: "auto"), folders: ["/x/a"])
+    _ = try db.updateProject(
+      id: "auto", name: nil, placing: [FolderPlacement(path: "/x/b")], releasing: [])
+    let project = try #require(try db.project(id: "auto"))
+    #expect(project.manual)
+    #expect(project.folders.map(\.path) == ["/x/a", "/x/b"])
+  }
+
+  @Test func releasingAFolderGivesItsThreadsAReplacementProject() throws {
+    let db = try WorkspaceDatabase.temporary()
+    try seedThread(db, "t1")
+    _ = try db.insertProject(Project(id: "m", name: "M", manual: true), folders: ["/x/a", "/x/b"])
+    try db.setThreadProject(threadIds: ["t1"], projectId: "m")
+
+    let result = try db.updateProject(
+      id: "m", name: nil, placing: [],
+      releasing: [FolderRelease(path: "/x/a", threadIds: ["t1"], replacement: Project(id: "r"))])
+    #expect(Set(result.changedProjectIds) == ["m", "r"])
+    #expect(try db.project(id: "m")?.folders.map(\.path) == ["/x/b"])
+    let replacement = try #require(try db.project(id: "r"))
+    #expect(!replacement.manual)
+    #expect(replacement.folders.map(\.path) == ["/x/a"])
+    #expect(try db.thread(id: "t1")?.projectId == "r")
+  }
+
+  @Test func deletingAManualProjectKeepsFoldersThreadsUseAsAutomaticProjects() throws {
+    let db = try WorkspaceDatabase.temporary()
+    try seedThread(db, "t1")
+    _ = try db.insertProject(Project(id: "m", name: "M", manual: true), folders: ["/x/a", "/x/b"])
+    _ = try db.insertProject(Project(id: "auto"), folders: ["/x/c"])
+    try db.setThreadProject(threadIds: ["t1"], projectId: "m")
+
+    #expect(throws: WorkspaceError.self) { _ = try db.deleteManualProject(id: "auto", releasing: []) }
+    #expect(try db.project(id: "auto") != nil)
+
+    let result = try db.deleteManualProject(
+      id: "m",
+      releasing: [FolderRelease(path: "/x/a", threadIds: ["t1"], replacement: Project(id: "r"))])
+    #expect(result.deletedProjectIds == ["m"])
+    #expect(Set(result.changedProjectIds) == ["m", "r"])
+    #expect(try db.project(id: "m") == nil)
+    #expect(try db.project(folderPath: "/x/b") == nil)
+    #expect(try db.project(folderPath: "/x/a")?.id == "r")
+    #expect(try db.thread(id: "t1")?.projectId == "r")
+  }
 }
