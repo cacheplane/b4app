@@ -276,14 +276,15 @@ async fn serve_refuses_a_role_that_inherits_superuser(pool: PgPool) {
         format!("quiet_{suffix}"),
         format!("chain_{suffix}"),
     );
+    // A password, because CI's PostgreSQL authenticates TCP connections with one.
     for statement in [
-        format!("CREATE ROLE {weak} LOGIN"),
+        format!("CREATE ROLE {weak} LOGIN PASSWORD 'x'"),
         format!("GRANT postgres TO {weak}"),
         // Membership without inheritance gives no privileges until `SET ROLE`.
-        format!("CREATE ROLE {quiet} LOGIN NOINHERIT"),
+        format!("CREATE ROLE {quiet} LOGIN NOINHERIT PASSWORD 'x'"),
         format!("GRANT postgres TO {quiet}"),
         // Two hops: chain -> weak -> postgres.
-        format!("CREATE ROLE {chain} LOGIN"),
+        format!("CREATE ROLE {chain} LOGIN PASSWORD 'x'"),
         format!("GRANT {weak} TO {chain}"),
     ] {
         sqlx::query(&statement).execute(&pool).await.unwrap();
