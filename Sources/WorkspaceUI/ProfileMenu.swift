@@ -25,6 +25,7 @@ struct SidebarFooter: View {
   @Bindable var model: WorkspaceModel
   @State private var hovering = false
   @State private var confirmingLogOut = false
+  @State private var buttonHeight: CGFloat = 0
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   init(model: WorkspaceModel) { self.model = model }
@@ -36,15 +37,23 @@ struct SidebarFooter: View {
       profileButton
         .padding(.horizontal, 6)
         .padding(.vertical, 6)
-        .overlay(alignment: .top) {
+        .onGeometryChange(for: CGFloat.self) {
+          $0.size.height
+        } action: {
+          buttonHeight = $0
+        }
+        .overlay(alignment: .bottom) {
           if model.showProfileMenu {
             ProfileMenuPanel(model: model, dismiss: { setMenu(open: false) }) {
               setMenu(open: false)
               confirmingLogOut = true
             }
+            // Its own height, not the button's: the overlay proposes the button's size.
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 6)
-            // The panel's bottom edge sits 6 pt above the button's top.
-            .alignmentGuide(.top) { $0[.bottom] + 6 }
+            // Bottom-aligned and lifted by the button's height: the panel's bottom edge sits 6 pt
+            // above the button's top. (An alignment guide on the overlay was ignored.)
+            .padding(.bottom, buttonHeight + 6)
             .transition(
               reduceMotion ? .identity : .opacity.combined(with: .offset(y: 6)))
           }
