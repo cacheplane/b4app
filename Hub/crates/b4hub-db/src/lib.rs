@@ -29,6 +29,10 @@ pub enum Error {
     /// A pull cursor older than the retained feed; the reader restores from the snapshot.
     #[error("the cursor is older than the retained changes")]
     ResyncRequired,
+    /// A user already minted the most pairing codes an hour allows; `retry_after` is how long
+    /// until the oldest of them is an hour old.
+    #[error("too many pairing codes minted; try again in {} ms", .retry_after.as_millis())]
+    RateLimited { retry_after: std::time::Duration },
     #[error("the b4hub_app role has SUPERUSER or BYPASSRLS; refusing to continue")]
     PrivilegedRole,
 }

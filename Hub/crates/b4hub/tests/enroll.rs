@@ -723,3 +723,200 @@ async fn enroll_command_resolves_the_org_and_the_user(pool: PgPool) {
     }
     assert!(Cli::try_parse_from(["b4hub", "enroll"]).is_err());
 }
+
+// ---- Pairing codes (M8c) ----
+
+/// Enrolls a fresh device of `platform` for `seeded` and returns its token and id.
+async fn enroll_as(
+    admin: &Db,
+    state: &AppState,
+    seeded: &orgs::SeedOutcome,
+    platform: &str,
+) -> (String, Uuid) {
+    let code = devices::create_enrollment_code(admin, seeded.org_id, seeded.user_id, TEN_MINUTES)
+        .await
+        .unwrap();
+    let body = json!({"code": code, "deviceName": "A device", "platform": platform}).to_string();
+    let (status, body) = send(state, "POST", "/v1/enroll", None, Some(&body)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    (
+        body["token"].as_str().unwrap().to_string(),
+        body["deviceId"].as_str().unwrap().parse().unwrap(),
+    )
+}
+
+async fn mint(state: &AppState, token: &str) -> (StatusCode, Value) {
+    send(state, "POST", "/v1/pairing-codes", Some(token), None).await
+}
+
+fn phone_enroll_body(code: &str) -> String {
+    json!({"code": code, "deviceName": "Brian's iPhone", "platform": "ios"}).to_string()
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_mac_mints_a_pairing_code_the_phone_redeems(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let seeded = seed_blove(&admin).await;
+    let (mac_token, mac_id) = enroll_as(&admin, &state, &seeded, "macos").await;
+
+    let (status, body) = mint(&state, &mac_token).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let code = body["code"].as_str().expect("a code").to_string();
+    assert_eq!(code.len(), 8, "{code}");
+    assert!(body["expiresAt"].as_str().unwrap().ends_with('Z'), "{body}");
+    assert!(body.get("hubURL").is_none(), "no public URL is configured");
+
+    // The code records which Mac minted it, and its expiry is five minutes out.
+    let (minted_by, seconds): (Option<Uuid>, f64) = sqlx::query_as(
+        "SELECT created_by_device_id, extract(epoch FROM expires_at - now())::float8 \
+         FROM enrollment_codes WHERE used_at IS NULL",
+    )
+    .fetch_one(&admin.pool)
+    .await
+    .unwrap();
+    assert_eq!(minted_by, Some(mac_id));
+    assert!((290.0..=300.0).contains(&seconds), "{seconds}");
+
+    let (status, enrolled) = send(
+        &state,
+        "POST",
+        "/v1/enroll",
+        None,
+        Some(&phone_enroll_body(&code)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{enrolled}");
+    let phone_token = enrolled["token"].as_str().unwrap();
+    assert_eq!(enrolled["user"]["username"], "blove");
+    let (status, me) = send(&state, "GET", "/v1/me", Some(phone_token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(me["platform"], "ios");
+    assert_eq!(me["user"]["username"], "blove");
+    let (_, listed) = send(&state, "GET", "/v1/devices", Some(&mac_token), None).await;
+    assert_eq!(listed["devices"].as_array().unwrap().len(), 2, "{listed}");
+
+    // Single use.
+    let (status, body) = send(
+        &state,
+        "POST",
+        "/v1/enroll",
+        None,
+        Some(&phone_enroll_body(&code)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(error_code(&body), "invalid_code");
+}
+
+#[sqlx::test(migrations = false)]
+async fn pairing_codes_expire_after_five_minutes(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let seeded = seed_blove(&admin).await;
+    let (mac_token, _) = enroll_as(&admin, &state, &seeded, "macos").await;
+    let (_, body) = mint(&state, &mac_token).await;
+    let code = body["code"].as_str().unwrap();
+
+    sqlx::query("UPDATE enrollment_codes SET expires_at = now() - interval '1 second'")
+        .execute(&admin.pool)
+        .await
+        .unwrap();
+    let (status, body) = send(
+        &state,
+        "POST",
+        "/v1/enroll",
+        None,
+        Some(&phone_enroll_body(code)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(error_code(&body), "invalid_code");
+}
+
+#[sqlx::test(migrations = false)]
+async fn only_a_mac_can_mint(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let seeded = seed_blove(&admin).await;
+    for platform in ["ios", "cli"] {
+        let (token, _) = enroll_as(&admin, &state, &seeded, platform).await;
+        let (status, body) = mint(&state, &token).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{platform}: {body}");
+        assert_eq!(error_code(&body), "not_found");
+    }
+    let (status, _) = send(&state, "POST", "/v1/pairing-codes", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    // A refused caller leaves no code and no count behind.
+    let held: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM enrollment_codes WHERE used_at IS NULL")
+            .fetch_one(&admin.pool)
+            .await
+            .unwrap();
+    assert_eq!(held, 0);
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_eleventh_mint_in_an_hour_is_limited(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let seeded = seed_blove(&admin).await;
+    let (mac_token, _) = enroll_as(&admin, &state, &seeded, "macos").await;
+    for n in 1..=10 {
+        let (status, body) = mint(&state, &mac_token).await;
+        assert_eq!(status, StatusCode::OK, "mint {n}: {body}");
+    }
+    let (status, body) = mint(&state, &mac_token).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(error_code(&body), "rate_limited");
+    assert_eq!(body["error"]["kind"], "request_error");
+    let retry = body["error"]["details"]["retryAfterMs"].as_i64().unwrap();
+    assert!((1..=3_600_000).contains(&retry), "{retry}");
+    let held: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM enrollment_codes WHERE used_at IS NULL")
+            .fetch_one(&admin.pool)
+            .await
+            .unwrap();
+    assert_eq!(held, 10, "a refused mint stores no code");
+
+    // Mints older than an hour stop counting.
+    sqlx::query("UPDATE pairing_mints SET minted_at = now() - interval '61 minutes'")
+        .execute(&admin.pool)
+        .await
+        .unwrap();
+    let (status, body) = mint(&state, &mac_token).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_limit_is_per_user(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let blove = seed_blove(&admin).await;
+    let (blove_token, _) = enroll_as(&admin, &state, &blove, "macos").await;
+    let other = orgs::seed(
+        &admin,
+        "cacheplane",
+        "Cacheplane",
+        "ada",
+        "Ada",
+        "a@example.test",
+    )
+    .await
+    .unwrap();
+    let (ada_token, _) = enroll_as(&admin, &state, &other, "macos").await;
+    for _ in 0..10 {
+        assert_eq!(mint(&state, &blove_token).await.0, StatusCode::OK);
+    }
+    assert_eq!(
+        mint(&state, &blove_token).await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(mint(&state, &ada_token).await.0, StatusCode::OK);
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_answer_carries_the_public_hub_url_when_one_is_set(pool: PgPool) {
+    let (admin, mut state) = migrated(&pool).await;
+    let seeded = seed_blove(&admin).await;
+    let (mac_token, _) = enroll_as(&admin, &state, &seeded, "macos").await;
+    state.public_url = Some(Url::parse("https://hub.example.test").unwrap());
+    let (status, body) = mint(&state, &mac_token).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["hubURL"], "https://hub.example.test/");
+}

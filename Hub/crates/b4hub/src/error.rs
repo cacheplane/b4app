@@ -2,6 +2,8 @@
 //! type: `{"error":{"kind":"request_error"|"execution_error","message":"…","details":{"code":"…"}}}`.
 //! Messages are fixed text chosen here; they never carry SQL, a panic, or another tenant's data.
 
+use std::time::Duration;
+
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Request};
 use axum::http::StatusCode;
@@ -50,6 +52,8 @@ pub struct ApiError {
     pub code: &'static str,
     pub message: String,
     pub status: StatusCode,
+    /// Fields added to `details` beside `code`, such as a `rate_limited` answer's `retryAfterMs`.
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl ApiError {
@@ -59,6 +63,7 @@ impl ApiError {
             code,
             message: message.into(),
             status,
+            extra: serde_json::Map::new(),
         }
     }
 
@@ -72,6 +77,7 @@ impl ApiError {
             code,
             message: message.into(),
             status,
+            extra: serde_json::Map::new(),
         }
     }
 
@@ -123,6 +129,16 @@ impl ApiError {
         )
     }
 
+    /// `rate_limited` with the wait the caller should honour before trying again.
+    pub fn rate_limited_after(retry_after: Duration) -> ApiError {
+        let mut error = ApiError::rate_limited();
+        let millis = u64::try_from(retry_after.as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        error.extra.insert("retryAfterMs".into(), json!(millis));
+        error
+    }
+
     pub fn method_not_allowed() -> ApiError {
         ApiError::request(
             StatusCode::METHOD_NOT_ALLOWED,
@@ -162,6 +178,9 @@ impl From<b4hub_db::Error> for ApiError {
         match error {
             b4hub_db::Error::InvalidCode => ApiError::invalid_code(),
             b4hub_db::Error::ResyncRequired => ApiError::resync_required(),
+            b4hub_db::Error::RateLimited { retry_after } => {
+                ApiError::rate_limited_after(retry_after)
+            }
             other => {
                 tracing::error!(error = %other, "request failed in the database layer");
                 ApiError::internal()
@@ -200,11 +219,13 @@ fn json_rejection(rejection: &JsonRejection) -> ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        let mut details = self.extra;
+        details.insert("code".into(), json!(self.code));
         let body = json!({
             "error": {
                 "kind": self.kind,
                 "message": self.message,
-                "details": { "code": self.code },
+                "details": details,
             }
         });
         (self.status, Json(body)).into_response()
@@ -250,6 +271,23 @@ mod tests {
         let error = ApiError::rate_limited();
         assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(error.code, "rate_limited");
+    }
+
+    #[tokio::test]
+    async fn rate_limited_carries_retry_after_ms_beside_the_code() {
+        let response = ApiError::rate_limited_after(Duration::from_millis(1500)).into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body["error"]["details"],
+            json!({"code": "rate_limited", "retryAfterMs": 1500})
+        );
+        // Never zero: a client that waits "0 ms" would hammer the hub.
+        let tiny = ApiError::rate_limited_after(Duration::ZERO);
+        assert_eq!(tiny.extra["retryAfterMs"], json!(1));
     }
 
     #[test]

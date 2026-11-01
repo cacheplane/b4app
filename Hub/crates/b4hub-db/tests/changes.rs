@@ -137,6 +137,7 @@ async fn push_materialises_and_is_idempotent(pool: PgPool) {
         "supported"
     );
     assert_eq!(connection["profileRevision"], 1);
+    assert_eq!(connection["projectId"], "project-1");
     for blanked in ["authReference", "localServerId", "target"] {
         assert_eq!(connection[blanked], Value::Null, "{blanked}");
     }
@@ -1045,6 +1046,34 @@ async fn connection_secrets_are_scrubbed_even_if_sent(pool: PgPool) {
     for secret in ["target", "authReference", "localServerId"] {
         assert_eq!(connection[secret], Value::Null, "{secret}");
     }
+}
+
+#[sqlx::test(migrations = false)]
+async fn connection_project_id_is_materialised(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let mac = common::enrolled(&admin, &app, "blove").await;
+    let bound = insert(
+        1,
+        "connections",
+        "conn-1",
+        json!({"id": "conn-1", "kind": "b4", "label": "B4", "projectId": "project-1"}),
+    );
+    let unbound = insert(
+        2,
+        "connections",
+        "conn-2",
+        json!({"id": "conn-2", "kind": "codex", "label": "Codex"}),
+    );
+    push_through(&app, &mac, &[bound, unbound]).await.unwrap();
+
+    let connection = row(&app, &mac, "connections", "id", "conn-1")
+        .await
+        .unwrap();
+    assert_eq!(connection["projectId"], "project-1");
+    let other = row(&app, &mac, "connections", "id", "conn-2")
+        .await
+        .unwrap();
+    assert_eq!(other["projectId"], Value::Null);
 }
 
 #[sqlx::test(migrations = false)]

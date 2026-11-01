@@ -347,7 +347,8 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
         retention_days = retention.as_secs() / SECONDS_PER_DAY,
         "serving"
     );
-    let state = AppState::new(db.clone());
+    let mut state = AppState::new(db.clone());
+    state.public_url = public_url;
     let pruning = tokio::spawn(serve::prune_loop(
         db,
         retention,

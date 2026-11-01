@@ -66,6 +66,7 @@ const TABLES: [TableSpec; 8] = [
             "localServerId",
             "authReference",
             "nativeScope",
+            "projectId",
             "capabilities",
             "status",
             "authStatus",
@@ -418,6 +419,13 @@ mod tests {
         let connection = changes[0].value.as_ref().unwrap();
         assert_eq!(connection["authReference"], "secret:abc");
         assert_eq!(connection["target"], "/usr/local/bin/codex");
+        // And the project it serves, which only the Mac writes and the hub keeps.
+        assert_eq!(connection["projectId"], "project-1");
+        assert!(table_spec("connections")
+            .unwrap()
+            .columns
+            .contains(&"projectId"));
+        assert!(!is_scrubbed("connections", "projectId"));
     }
 
     #[test]

@@ -9,11 +9,12 @@ use axum::Router;
 use b4hub_db::Db;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
+use url::Url;
 
 use crate::auth::LastTouched;
 use crate::error::ApiError;
 use crate::notify::Notifier;
-use crate::routes::{changes, devices, enroll, health, snapshot};
+use crate::routes::{changes, devices, enroll, health, pairing, snapshot};
 
 /// How long the listener stays open, answering `/readyz` 503, after shutdown begins, so a load
 /// balancer polling readiness stops routing here before connections are refused. Capped at a
@@ -32,6 +33,8 @@ pub struct AppState {
     pub last_touched: LastTouched,
     /// Wakes long-polling pulls when a push commits (single replica in M8a).
     pub notifier: Notifier,
+    /// `B4HUB_PUBLIC_URL`: the URL clients reach the hub at, handed to a phone with a pairing code.
+    pub public_url: Option<Url>,
 }
 
 impl AppState {
@@ -41,6 +44,7 @@ impl AppState {
             shutdown: Shutdown::default(),
             last_touched: LastTouched::default(),
             notifier: Notifier::default(),
+            public_url: None,
         }
     }
 }
@@ -75,6 +79,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
         .route("/v1/enroll", post(enroll::enroll))
+        .route("/v1/pairing-codes", post(pairing::create))
         .route("/v1/changes", changes::route())
         .route("/v1/me", get(devices::me))
         .route("/v1/devices", get(devices::list))

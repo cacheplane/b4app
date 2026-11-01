@@ -50,7 +50,7 @@ answer the same generic `404 not_found`.
 | 405 | `method_not_allowed` | request | The route exists but not for that method. |
 | 410 | `resync_required` | request | The pull cursor is older than the retention horizon: the hub has pruned the changes after it. Restore from `GET /v1/snapshot` (see *Horizon*). |
 | 413 | `payload_too_large` | request | A push body over 32 MiB. (A change whose `value` is over 2 MiB is rejected per change instead; see `POST /v1/changes`.) |
-| 429 | `rate_limited` | request | A device opened too many relay links in a minute (the upgrade is refused before it happens). On the link it is also an `error` frame or a `reply` error, with `details.retryAfterMs`. |
+| 429 | `rate_limited` | request | A device opened too many relay links in a minute (the upgrade is refused before it happens), or a user minted an eleventh pairing code in an hour. Always with `details.retryAfterMs`; on the link it is also an `error` frame or a `reply` error. |
 | 500 | `internal_error` | execution | Any unexpected failure; the cause is logged on the hub, never sent. |
 | 503 | `not_ready` | execution | `/readyz`: the database is unreachable or migrations are pending. |
 | 503 | `shutting_down` | execution | `/readyz` after SIGTERM. |
@@ -143,6 +143,27 @@ Both are validated before the code is redeemed, so a malformed request does not 
 
 `token` appears in this response and nowhere else; keep it in the Keychain. Errors: `400
 invalid_request`, `401 invalid_code`.
+
+### `POST /v1/pairing-codes`
+
+A joined Mac mints a code that pairs a phone. Bearer auth; no body. Only a `macos` device may
+mint: an `ios` or `cli` caller gets `404 not_found`, as if the route did not exist. The code is an
+ordinary enrollment code (same alphabet, hashing, and case-insensitive match) that expires in
+five minutes instead of ten and is single-use. The phone redeems it at `POST /v1/enroll` with
+`platform: "ios"` and becomes a device of the same user. The hub remembers which Mac minted it.
+
+`200`:
+
+```json
+{"code": "ABCD2345", "expiresAt": "2026-11-01T12:05:00.000000Z", "hubURL": "https://hub.example.com/"}
+```
+
+`hubURL` is `B4HUB_PUBLIC_URL`, and is absent when that is not set. Neither the code nor its hash
+is logged.
+
+A user may mint 10 codes in any hour. The eleventh is `429 rate_limited` with
+`details.retryAfterMs`, the milliseconds until the tenth most recent mint is an hour old; the
+refused request stores nothing. Codes of different users are limited separately.
 
 ### `GET /v1/me`
 
@@ -267,7 +288,9 @@ cleared by setting `text` to `""`, never by deleting it.
 **Ownership and scrubbing.** Each mirrored row records `owner_device_id`, the device of its latest
 `insert` (an `update` never changes it; `device_id` remains the last writer). The hub sets
 `connections.authReference`, `connections.localServerId`, and `connections.target` to NULL on
-every insert and update, whatever the change carries.
+every insert and update, whatever the change carries. `connections.projectId`, the Mac project a
+`b4` connection serves, is not scrubbed and is Mac-only like every column not listed above; it
+merges by hub order (`hubSeq`), not by clock.
 
 ### `GET /v1/changes`
 
@@ -370,7 +393,7 @@ that does not wait at all. The client simply reconnects, normally to the replace
   "rowId": "conn-1",
   "op": "insert",
   "column": null,
-  "value": {"id": "conn-1", "kind": "codex", "label": "Codex", "enabled": true, "profileRevision": 1, "target": "/usr/local/bin/codex", "routeKey": null, "b4Mode": null, "localServerId": null, "authReference": "secret:abc", "nativeScope": "/Users/brian/project", "capabilities": {"streaming": "supported", "native_resume": "supported", "history_retrieval": "supported", "explicit_interruption": "supported", "reconnect": "supported", "permission_decisions": "supported", "user_questions": "unsupported", "model_selection": "unverified"}, "status": "ready", "authStatus": "authenticated", "createdAt": "2026-10-31T12:00:00Z", "updatedAt": "2026-10-31T12:00:00Z"},
+  "value": {"id": "conn-1", "kind": "codex", "label": "Codex", "enabled": true, "profileRevision": 1, "target": "/usr/local/bin/codex", "routeKey": null, "b4Mode": null, "localServerId": null, "authReference": "secret:abc", "nativeScope": "/Users/brian/project", "projectId": "project-1", "capabilities": {"streaming": "supported", "native_resume": "supported", "history_retrieval": "supported", "explicit_interruption": "supported", "reconnect": "supported", "permission_decisions": "supported", "user_questions": "unsupported", "model_selection": "unverified"}, "status": "ready", "authStatus": "authenticated", "createdAt": "2026-10-31T12:00:00Z", "updatedAt": "2026-10-31T12:00:00Z"},
   "hlc": "019a396c76e8-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
 }
 ```

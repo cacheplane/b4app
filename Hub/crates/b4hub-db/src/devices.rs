@@ -140,6 +140,75 @@ pub async fn create_enrollment_code(
     Err(Error::Entropy)
 }
 
+/// How long a pairing code stays redeemable.
+pub const PAIRING_TTL: Duration = Duration::from_secs(300);
+
+/// The most pairing codes one user may mint in an hour.
+pub const PAIRING_MINTS_PER_HOUR: i64 = 10;
+
+/// Mints a pairing code for `user_id`, on behalf of the Mac `device_id`: an enrollment code of the
+/// same alphabet and hashing that stays redeemable for [`PAIRING_TTL`] and remembers which device
+/// minted it. Returns the code and its expiry (RFC 3339 in UTC with microseconds, rendered by the
+/// database like the other timestamps). The user's tenth code within an hour is the last: the
+/// next is [`Error::RateLimited`] and stores nothing.
+pub async fn create_pairing_code(
+    db: &Db,
+    org_id: Uuid,
+    user_id: Uuid,
+    device_id: Uuid,
+) -> Result<(String, String)> {
+    let mut tx = db.tenant_tx(org_id).await?;
+    // Serialise one user's mints so two at once cannot both see room for the last slot.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))")
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    // The (limit)th most recent mint of the last hour: once it is an hour old there is room again.
+    let blocking: Option<f64> = sqlx::query_scalar(
+        "SELECT extract(epoch FROM minted_at + interval '1 hour' - clock_timestamp())::float8 \
+         FROM pairing_mints \
+         WHERE org_id = $1 AND user_id = $2 AND minted_at > clock_timestamp() - interval '1 hour' \
+         ORDER BY minted_at DESC OFFSET $3 LIMIT 1",
+    )
+    .bind(org_id)
+    .bind(user_id)
+    .bind(PAIRING_MINTS_PER_HOUR - 1)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some(seconds) = blocking {
+        return Err(Error::RateLimited {
+            retry_after: Duration::from_secs_f64(seconds.max(0.0)),
+        });
+    }
+
+    for _ in 0..5 {
+        let code = new_code();
+        let expires_at: Option<String> = sqlx::query_scalar(
+            "INSERT INTO enrollment_codes (code_hash, org_id, user_id, expires_at, created_by_device_id) \
+             VALUES ($1, $2, $3, now() + make_interval(secs => $4), $5) \
+             ON CONFLICT (code_hash) DO NOTHING \
+             RETURNING to_char(expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')",
+        )
+        .bind(&hash_code(&code)[..])
+        .bind(org_id)
+        .bind(user_id)
+        .bind(PAIRING_TTL.as_secs_f64())
+        .bind(device_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(expires_at) = expires_at {
+            sqlx::query("INSERT INTO pairing_mints (org_id, user_id) VALUES ($1, $2)")
+                .bind(org_id)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            return Ok((code, expires_at));
+        }
+    }
+    Err(Error::Entropy)
+}
+
 /// Redeems `code`: marks it used, creates the device, and issues its token, atomically. A code
 /// that is unknown, expired, or already used is [`Error::InvalidCode`]; nothing is changed then.
 /// `platform` must be one the `devices` table accepts.

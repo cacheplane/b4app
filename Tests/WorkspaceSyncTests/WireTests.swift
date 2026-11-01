@@ -24,6 +24,7 @@ import WorkspaceProtocol
     #expect(changes[0].table == "connections" && changes[0].op == "insert")
     #expect(changes[0].deviceSeq == 1)
     #expect(changes[0].value?["id"] == "conn-1")
+    #expect(changes[0].value?["projectId"] == "project-1")
     #expect(changes.allSatisfy { $0.hlc != nil })
     #expect(changes[0].hlc == "019a396c76e8-0000-01a194cf-0d12-7418-b3b5-5559dbee2441")
     #expect(HLC(rawValue: changes[11].hlc ?? "") != nil)
