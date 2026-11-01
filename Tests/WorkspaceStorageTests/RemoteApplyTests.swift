@@ -336,6 +336,7 @@ private func interleave<T>(
             blocked.withLock { $0 = true }
             break
           }
+          // Polled on its own thread: PostgreSQL announces no lock wait, so pg_locks is sampled.
           usleep(10_000)
         }
       }

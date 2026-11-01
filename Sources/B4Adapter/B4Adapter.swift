@@ -306,6 +306,16 @@ public actor B4Adapter: AgentAdapter {
     }
   }
 
+  /// Returns once every stream being consumed has ended and been handled. A test seam: `turn.finished`
+  /// is emitted from inside the stream, a moment before its end clears the run. Waits for nothing else.
+  func streamsSettled() async {
+    var awaited: Set<Task<Void, Never>> = []
+    while let task = runs.values.compactMap(\.task).first(where: { !awaited.contains($0) }) {
+      awaited.insert(task)
+      await task.value
+    }
+  }
+
   /// History from the latest checkpoint (`GET /threads/:id/state`), best effort and read-only.
   public func loadSession(_ ref: NativeSessionRef) async throws -> SessionSnapshot {
     let client = try requireClient()

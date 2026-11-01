@@ -59,6 +59,7 @@ final class ScriptedTransport: WorkspaceTransport {
       let envelope = EventEnvelope(epoch: epoch, sequence: state.sequence, event: event)
       continuation.yield(try! NDJSON.encodeLine(envelope))
     }
+    ConditionNudge.post()
   }
 
   func calls(_ method: WorkspaceProtocol.Method) -> [JSONValue] {
@@ -79,6 +80,8 @@ final class ScriptedTransport: WorkspaceTransport {
       }
     }
     continuation.yield(try NDJSON.encodeLine(response))
+    // `waitUntil` cannot observe the call log, so it is told when the log grows.
+    ConditionNudge.post()
   }
 
   func close() async { continuation.finish() }
@@ -412,6 +415,7 @@ private struct AttentionDocument: Decodable {
     // The refetch that follows the finish does not send a second one.
     transport.setRead(read(running, turns: [turn("u0", in: "t1", at: 1), done]))
     try await waitUntil("refetched") { transport.calls(.threadRead).count >= 2 }
+    // Timed on purpose: a second mark must not follow; an absence has no event to await.
     try await Task.sleep(for: .milliseconds(100))
     #expect(transport.calls(.threadMarkRead).count == 1)
   }
@@ -436,6 +440,7 @@ private struct AttentionDocument: Decodable {
     transport.emit(try finished(done))
     try await waitUntil("refetched") { transport.calls(.threadRead).count >= 2 }
     try await waitUntil("unread") { model.band(of: model.threads[0]) == .unread }
+    // Timed on purpose: no mark may follow while off screen; an absence has no event to await.
     try await Task.sleep(for: .milliseconds(100))
     #expect(transport.calls(.threadMarkRead).isEmpty)
     #expect(model.threads[0].readTurnId == "u0")
@@ -447,6 +452,7 @@ private struct AttentionDocument: Decodable {
     #expect(model.band(of: model.threads[0]) == .quiet)
     model.isDetailOnScreen = false
     model.isDetailOnScreen = true
+    // Timed on purpose: a second mark must not follow; an absence has no event to await.
     try await Task.sleep(for: .milliseconds(100))
     #expect(transport.calls(.threadMarkRead).count == 1)
   }
@@ -464,6 +470,7 @@ private struct AttentionDocument: Decodable {
     // On screen, but showing Diagnostics with the thread still loaded: still not read.
     model.surface = .diagnostics
     model.isDetailOnScreen = true
+    // Timed on purpose: no mark may follow on Diagnostics; an absence has no event to await.
     try await Task.sleep(for: .milliseconds(100))
     #expect(transport.calls(.threadMarkRead).isEmpty)
   }
@@ -487,6 +494,7 @@ private struct AttentionDocument: Decodable {
       transport.calls(.threadRead).contains { $0["threadId"]?.stringValue == "t2" }
     }
     try await waitUntil("t2 unread") { model.band(of: model.threads.first { $0.id == "t2" }!) == .unread }
+    // Timed on purpose: no mark may follow for t2; an absence has no event to await.
     try await Task.sleep(for: .milliseconds(100))
     #expect(transport.calls(.threadMarkRead).isEmpty)
   }
@@ -615,6 +623,7 @@ private struct AttentionDocument: Decodable {
     renamed.title = "after"
     transport.emit(try .threadUpdated(renamed))  // events are ordered, so the one before has been applied
     try await waitUntil("later event applied") { model.threads.first?.title == "after" }
+    // Timed on purpose: the draft must not be replaced; an absence has no event to await.
     try await Task.sleep(for: .milliseconds(50))
     #expect(model.composerText == "typing here")
 
@@ -623,6 +632,7 @@ private struct AttentionDocument: Decodable {
     let saves = transport.calls(.draftSave).count
     transport.emit(try .threadUpdated(renamed))
     try await waitUntil("replaced") { model.composerText == "from the phone" }
+    // Timed on purpose: no save may follow; an absence has no event to await.
     try await Task.sleep(for: .milliseconds(50))
     #expect(transport.calls(.draftSave).count == saves)
   }
@@ -649,6 +659,7 @@ private struct AttentionDocument: Decodable {
           payload: ["turn": try JSONValue(encoding: turn("u1", in: "t1", status: .running, at: 2))]))
     }
     try await waitUntil("one refetch") { transport.calls(.threadRead).count == baseline + 1 }
+    // Timed on purpose: no second refetch may follow; an absence has no event to await.
     try await Task.sleep(for: .milliseconds(400))
     #expect(transport.calls(.threadRead).count == baseline + 1)
   }
@@ -662,6 +673,7 @@ private struct AttentionDocument: Decodable {
     await model.openThread(id: "t1")
     let baseline = transport.calls(.threadRead).count
     for _ in 0..<20 { transport.emit(delta("t1")) }
+    // Timed on purpose: no refetch may follow; an absence has no event to await.
     try await Task.sleep(for: .milliseconds(500))
     #expect(transport.calls(.threadRead).count == baseline)
   }

@@ -87,45 +87,42 @@ private struct ProjectHarness {
   }
 
   /// Every `project.changed` published so far, as project ids.
-  func projectEvents() async -> [String] {
-    await events.events.map(\.event).filter { $0.kind == .projectChanged }
-      .compactMap { $0.payload["projectId"]?.stringValue }
-  }
+  func projectEvents() async -> [String] { Self.projectIds(await events.events.map(\.event)) }
 
-  /// Polls `projectEvents()` until `condition` holds (events reach the client after the request returns),
-  /// then returns them; fails the test at the deadline with what arrived.
+  /// Waits, event by event, until `condition` holds of `projectEvents()` (events reach the client after
+  /// the request returns), then returns them; fails the test at the deadline with what arrived.
   func projectEvents(
     until condition: @Sendable ([String]) -> Bool, sourceLocation: SourceLocation = #_sourceLocation
   ) async -> [String] {
-    let deadline = ContinuousClock.now + .seconds(15)
-    var seen = await projectEvents()
-    while !condition(seen), ContinuousClock.now < deadline {
-      try? await Task.sleep(for: .milliseconds(20))
-      seen = await projectEvents()
-    }
+    _ = await events.until { condition(Self.projectIds($0)) }
+    let seen = await projectEvents()
     #expect(condition(seen), "project.changed events seen: \(seen)", sourceLocation: sourceLocation)
     return seen
   }
 
   /// This thread's `thread.updated` events so far, in the order they were published.
   func threadUpdates(_ threadId: String) async -> [AdapterEvent] {
-    await events.events.map(\.event).filter { $0.kind == .threadUpdated && $0.threadId == threadId }
+    Self.threadUpdates(threadId, in: await events.events.map(\.event))
   }
 
-  /// Polls `threadUpdates(_:)` until `condition` holds, then returns them; fails the test at the
-  /// deadline with how many arrived.
+  /// Waits, event by event, until `condition` holds of `threadUpdates(_:)`, then returns them; fails
+  /// the test at the deadline with how many arrived.
   func threadUpdates(
     _ threadId: String, until condition: @Sendable ([AdapterEvent]) -> Bool,
     sourceLocation: SourceLocation = #_sourceLocation
   ) async -> [AdapterEvent] {
-    let deadline = ContinuousClock.now + .seconds(15)
-    var seen = await threadUpdates(threadId)
-    while !condition(seen), ContinuousClock.now < deadline {
-      try? await Task.sleep(for: .milliseconds(20))
-      seen = await threadUpdates(threadId)
-    }
+    _ = await events.until { condition(Self.threadUpdates(threadId, in: $0)) }
+    let seen = await threadUpdates(threadId)
     #expect(condition(seen), "thread.updated events seen: \(seen.count)", sourceLocation: sourceLocation)
     return seen
+  }
+
+  private static func projectIds(_ events: [AdapterEvent]) -> [String] {
+    events.filter { $0.kind == .projectChanged }.compactMap { $0.payload["projectId"]?.stringValue }
+  }
+
+  private static func threadUpdates(_ threadId: String, in events: [AdapterEvent]) -> [AdapterEvent] {
+    events.filter { $0.kind == .threadUpdated && $0.threadId == threadId }
   }
 
   func close() async {

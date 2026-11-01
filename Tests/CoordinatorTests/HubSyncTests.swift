@@ -34,6 +34,82 @@ private func record(
   return try JSONValue.object(object).decode(ChangeRecord.self)
 }
 
+/// A secret store whose reads can be held open, standing in for a Keychain prompt nobody has answered.
+private actor GatedSecretStore: SecretStore {
+  private var values: [SecretRef: String] = [:]
+  private(set) var reads = 0
+  private var holding = false
+  private var held: [CheckedContinuation<Void, Never>] = []
+  private var heldWaiters: [CheckedContinuation<Void, Never>] = []
+
+  func put(_ ref: SecretRef, value: String) { values[ref] = value }
+  func remove(_ ref: SecretRef) -> Bool { values.removeValue(forKey: ref) != nil }
+
+  func read(_ ref: SecretRef) async -> String? {
+    reads += 1
+    if holding {
+      await withCheckedContinuation { continuation in
+        held.append(continuation)
+        for waiter in heldWaiters { waiter.resume() }
+        heldWaiters = []
+      }
+    }
+    return values[ref]
+  }
+
+  /// Hold every later read open until `release()`.
+  func hold() { holding = true }
+
+  func release() {
+    holding = false
+    for continuation in held { continuation.resume() }
+    held = []
+  }
+
+  /// Returns once a read is being held open.
+  func heldRead() async {
+    if !held.isEmpty { return }
+    await withCheckedContinuation { heldWaiters.append($0) }
+  }
+}
+
+/// Asks for the token before every authenticated call, as `HTTPHubAPI` does, and answers 401 without
+/// one; the calls themselves go to the fake.
+private struct TokenReadingAPI: HubAPI {
+  let fake: FakeHubAPI
+  let token: @Sendable () async throws -> String?
+
+  private func authenticate() async throws {
+    guard try await token() != nil else { throw unauthorized }
+  }
+
+  func enroll(_ request: EnrollRequest) async throws -> EnrollResponse { try await fake.enroll(request) }
+  func me() async throws -> MeResponse {
+    try await authenticate()
+    return try await fake.me()
+  }
+  func push(_ changes: [SyncChange]) async throws -> PushResponse {
+    try await authenticate()
+    return try await fake.push(changes)
+  }
+  func pull(after: Int, limit: Int, wait: Int) async throws -> PullResponse {
+    try await authenticate()
+    return try await fake.pull(after: after, limit: limit, wait: wait)
+  }
+  func snapshot() async throws -> SnapshotResponse {
+    try await authenticate()
+    return try await fake.snapshot()
+  }
+  func devices() async throws -> [DeviceInfo] {
+    try await authenticate()
+    return try await fake.devices()
+  }
+  func revokeSelf() async throws {
+    try await authenticate()
+    try await fake.revokeSelf()
+  }
+}
+
 private struct HubHarness {
   let coordinator: RunningCoordinator
   let client: WorkspaceClient
@@ -271,6 +347,7 @@ private struct HubHarness {
     // A 401 is recorded, leaves the rows unsynced, and stops write-driven pushes until the next join.
     await h.fake.setFailNext(unauthorized)
     try await h.addThread()
+    // Polled: HubSync records the 401 on the link and stops, with no event or later hub call after it.
     var status = try await h.status()
     let deadline = ContinuousClock.now + .seconds(10)
     while status.lastError == nil, ContinuousClock.now < deadline {
@@ -282,6 +359,7 @@ private struct HubHarness {
     #expect(try db.changes(after: 0).last?.deviceId == "dev-mac")
     let attempts = await h.fake.pushed.count
     try await h.addThread()
+    // Timed on purpose: past the 250 ms write debounce, no push may follow; an absence has no event.
     try await Task.sleep(for: .milliseconds(600))
     #expect(await h.fake.pushed.count == attempts)
   }
@@ -393,6 +471,45 @@ private struct HubHarness {
     #expect(batches.first?.count ?? 0 < 11)
     #expect(batches.flatMap { $0 }.count == total)
     #expect(Set(batches.flatMap { $0 }.map(\.deviceSeq)).count == total)
+    try db.close()
+  }
+
+  @Test func aKeychainPromptIsReportedAndTheTokenIsReadOncePerRun() async throws {
+    let db = try WorkspaceDatabase.temporary()
+    _ = try db.insertConnection(Connection(id: "c1", kind: .codex, label: "Codex", target: "/bin/codex"))
+    _ = try db.insertThread(
+      ConversationThread(
+        id: "t1", connectionId: "c1", nativeThreadId: "n1", nativeScope: "s", title: "T", context: "/tmp"))
+    let fake = FakeHubAPI()
+    await fake.addEnrollmentCode(code, enrolled)
+    let secrets = GatedSecretStore()
+    let makeAPI: HubSync.APIFactory = { _, token in TokenReadingAPI(fake: fake, token: token) }
+    let joining = HubSync(database: db, secretStore: secrets, eventLog: EventLog(), makeAPI: makeAPI)
+    _ = try await joining.join(url: "http://127.0.0.1:8080", code: code, deviceName: "Mac")
+    #expect(await secrets.reads == 0, "a join keeps the token it stored")
+
+    // After a restart the token has to be read; hold that read open, as an unanswered prompt does.
+    await secrets.hold()
+    let hub = HubSync(database: db, secretStore: secrets, eventLog: EventLog(), makeAPI: makeAPI)
+    await hub.start()
+    _ = try db.saveDraft(threadId: "t1", text: "typed while the prompt is up")
+    let push = Task { try await hub.pushNow() }
+    await secrets.heldRead()
+
+    let waiting = try await hub.status()
+    #expect(waiting.lastError?.contains("answer the Keychain prompt") == true)
+    #expect(waiting.unsyncedChanges > 0)
+
+    await secrets.release()
+    _ = try await push.value
+    let answered = try await hub.status()
+    #expect(answered.unsyncedChanges == 0)
+    #expect(answered.lastError == nil)
+
+    _ = try db.saveDraft(threadId: "t1", text: "and after")
+    _ = try await hub.pushNow()
+    #expect(await secrets.reads == 1, "the push, the pull, and later pushes share one read")
+    await hub.stop()
     try db.close()
   }
 }

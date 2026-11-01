@@ -34,6 +34,8 @@ public actor HubSync {
   private let logger = Log.logger("hub")
 
   private var api: (any HubAPI)?
+  /// The link's token, kept in memory once read (`HubToken`); nil when not joined.
+  private var token: HubToken?
   /// Set by a 401; cleared by `join`. Background pushes skip while it is set.
   private var suspended = false
   private var joining = false
@@ -65,7 +67,9 @@ public actor HubSync {
       if let link = try database.hubLink() {
         if let url = URL(string: link.url), let ref = SecretRef(rawValue: link.tokenRef) {
           database.deviceId = link.deviceId
-          api = makeAPI(url, tokenReader(ref))
+          let token = HubToken(store: secretStore, ref: ref)
+          self.token = token
+          api = makeAPI(url, { try await token.value() })
         } else {
           logger.error("the stored hub link is unreadable; not pushing")
         }
@@ -119,7 +123,8 @@ public actor HubSync {
     let name = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !name.isEmpty else { throw WorkspaceError(.protocolInvalid, "The device name is empty.") }
     let ref = SecretRef.make()
-    let api = makeAPI(base, tokenReader(ref))
+    let token = HubToken(store: secretStore, ref: ref)
+    let api = makeAPI(base, { try await token.value() })
     let enrolled: EnrollResponse
     do {
       enrolled = try await api.enroll(EnrollRequest(code: code, deviceName: name, platform: "macos"))
@@ -138,6 +143,9 @@ public actor HubSync {
       throw error
     }
     database.deviceId = enrolled.deviceId
+    // The token was just stored, so it is known without asking the Keychain.
+    token.remember(enrolled.token)
+    self.token = token
     self.api = api
     suspended = false
     logger.info(
@@ -156,10 +164,15 @@ public actor HubSync {
     guard let link = try database.hubLink() else {
       return HubStatus.Result(joined: false, unsyncedChanges: unsynced)
     }
+    var lastError = link.lastError
+    if let since = token?.waitingSince {
+      lastError =
+        "Waiting since \(since) for Keychain access to the hub token; answer the Keychain prompt on this Mac."
+    }
     return HubStatus.Result(
       joined: true, url: link.url, deviceId: link.deviceId, deviceName: link.deviceName,
       orgSlug: link.orgSlug, username: link.username, unsyncedChanges: unsynced, lastPushAt: link.lastPushAt,
-      lastError: link.lastError)
+      lastError: lastError)
   }
 
   /// Revoke this device at the hub (best effort), forget the token, clear the link, and record later
@@ -169,6 +182,7 @@ public actor HubSync {
     await stopPull()
     let api = self.api
     self.api = nil
+    token = nil
     suspended = false
     await waitForPush()
     if let api {
@@ -358,10 +372,6 @@ public actor HubSync {
   /// The Mac's name as System Settings shows it, for a join without `--name`.
   public static func defaultDeviceName() -> String {
     Host.current().localizedName ?? ProcessInfo.processInfo.hostName
-  }
-
-  private func tokenReader(_ ref: SecretRef) -> @Sendable () async throws -> String? {
-    { [secretStore] in try await secretStore.read(ref) }
   }
 
   private static func describe(_ error: any Error) -> String {

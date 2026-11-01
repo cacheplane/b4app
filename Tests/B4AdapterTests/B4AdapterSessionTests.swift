@@ -286,6 +286,8 @@ private struct Rig {
     try await rig.finished(try await rig.turn(ref, "hello"))
     let recorded = try await rig.adapter.reconcile(ref, turn: ActiveTurnRef(nativeTurnId: "turn-1"))
     #expect(recorded.activeTurnOutcome == .known(.completed))
+    // turn-1's stream may still be ending; while it is, a turn-3 reconcile can only say "unknown".
+    await rig.adapter.streamsSettled()
     let missing = try await rig.adapter.reconcile(ref, turn: ActiveTurnRef(nativeTurnId: "turn-3"))
     #expect(missing.activeTurnOutcome == .known(.failed))
     let error = try await rig.collector.waitFor { $0.kind == .adapterError }

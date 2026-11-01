@@ -1,5 +1,7 @@
 import Foundation
 import NIOTransport
+import Observation
+import Synchronization
 import Testing
 import WorkspacePlatform
 import WorkspaceProtocol
@@ -49,16 +51,79 @@ struct ModelHarness {
   }
 }
 
+/// One wake-up of `waitUntil`: fired by a change to observed state the condition read, by a
+/// `ConditionNudge`, or by the deadline, whichever comes first.
+nonisolated final class Wakeup: Sendable {
+  private let state = Mutex<(fired: Bool, continuation: CheckedContinuation<Void, Never>?)>((false, nil))
+
+  func fire() {
+    let continuation = state.withLock { state in
+      state.fired = true
+      defer { state.continuation = nil }
+      return state.continuation
+    }
+    continuation?.resume()
+  }
+
+  func wait() async {
+    await withCheckedContinuation { continuation in
+      let fired = state.withLock { state in
+        if !state.fired { state.continuation = continuation }
+        return state.fired
+      }
+      if fired { continuation.resume() }
+    }
+  }
+}
+
+/// Wakes every pending `waitUntil` to check again, for state the observation system cannot see:
+/// `ScriptedTransport` posts one with each command it records and each event it emits. A wake-up
+/// whose condition still fails costs one more check.
+nonisolated enum ConditionNudge {
+  private static let pending = Mutex<[ObjectIdentifier: Wakeup]>([:])
+
+  static func post() {
+    for wakeup in pending.withLock({ Array($0.values) }) { wakeup.fire() }
+  }
+
+  fileprivate static func register(_ wakeup: Wakeup) {
+    pending.withLock { $0[ObjectIdentifier(wakeup)] = wakeup }
+  }
+
+  fileprivate static func unregister(_ wakeup: Wakeup) {
+    _ = pending.withLock { $0.removeValue(forKey: ObjectIdentifier(wakeup)) }
+  }
+}
+
+/// Returns once `condition` holds. It is checked now and again after each change to an observed
+/// property it read (the model is `@Observable`) or a `ConditionNudge`, never on a clock. `onChange`
+/// fires as a property is about to change; the check runs on the main actor's next turn, after the
+/// write. The timeout only ends a test that would otherwise hang; the expected path never waits on it.
 @MainActor
 func waitUntil(
-  _ what: String, timeout: Duration = .seconds(15), _ condition: @MainActor () -> Bool
+  _ what: String, timeout: Duration = .seconds(60), _ condition: @MainActor () -> Bool
 ) async throws {
   let deadline = ContinuousClock.now + timeout
-  while ContinuousClock.now < deadline {
-    if condition() { return }
-    try await Task.sleep(for: .milliseconds(20))
+  while true {
+    let wakeup = Wakeup()
+    ConditionNudge.register(wakeup)
+    defer { ConditionNudge.unregister(wakeup) }
+    let met = withObservationTracking {
+      condition()
+    } onChange: {
+      wakeup.fire()
+    }
+    if met { return }
+    guard ContinuousClock.now < deadline else {
+      throw WorkspaceError(.internalError, "timed out waiting for \(what)")
+    }
+    let alarm = Task {
+      guard (try? await Task.sleep(until: deadline, clock: .continuous)) != nil else { return }
+      wakeup.fire()
+    }
+    await wakeup.wait()
+    alarm.cancel()
   }
-  throw WorkspaceError(.internalError, "timed out waiting for \(what)")
 }
 
 @Suite(.serialized) @MainActor struct WorkspaceModelTests {

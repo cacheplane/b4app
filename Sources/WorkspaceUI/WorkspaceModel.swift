@@ -256,8 +256,11 @@ public final class WorkspaceModel {
     }
   }
 
+  /// "3 min. ago", or "just now" inside the last minute. The reply's time comes from the Mac's clock,
+  /// which can run a little ahead of the phone's, and the formatter then said "in 0 sec.".
   private func relative(_ timestamp: String?) -> String {
     guard let timestamp, let date = Self.date(from: timestamp) else { return "" }
+    if now().timeIntervalSince(date) < 60 { return "just now" }
     let formatter = RelativeDateTimeFormatter()
     formatter.unitsStyle = .short
     return formatter.localizedString(for: date, relativeTo: now())

@@ -17,6 +17,8 @@ public final class StreamingProcess: Sendable {
     var stderrTail: [UInt8] = []
     var exit: ExitStatus?
     var exitWaiters: [CheckedContinuation<ExitStatus, Never>] = []
+    var stderrEnded = false
+    var stderrWaiters: [CheckedContinuation<Void, Never>] = []
   }
 
   public let processIdentifier: Int32
@@ -61,10 +63,13 @@ public final class StreamingProcess: Sendable {
       }
     }
     let holder = Mutex<StreamingProcess?>(nil)
+    let stderrEOF = Mutex(false)
     stderrPipe.fileHandleForReading.readabilityHandler = { handle in
       let data = handle.availableData
       if data.isEmpty {
         handle.readabilityHandler = nil
+        stderrEOF.withLock { $0 = true }
+        holder.withLock { $0 }?.endStderr()
         return
       }
       holder.withLock { $0 }?.appendStderr(Array(data))
@@ -83,6 +88,8 @@ public final class StreamingProcess: Sendable {
     }
     let instance = StreamingProcess(process: process, stdin: stdinPipe.fileHandleForWriting, stdout: stream)
     holder.withLock { $0 = instance }
+    // Set after the holder, read by the handler before it: one of the two always sees the other.
+    if stderrEOF.withLock({ $0 }) { instance.endStderr() }
     // The handlers above may have fired before the holder was set; nothing is lost for exit because
     // `isRunning` is consulted in `recordExit` callers, but re-check termination here.
     if !process.isRunning {
@@ -142,6 +149,28 @@ public final class StreamingProcess: Sendable {
   /// The last 16 KiB of stderr, for diagnostics messages. Never logged automatically.
   public func recentStderr() -> String {
     String(decoding: state.withLock { $0.stderrTail }, as: UTF8.self)
+  }
+
+  /// Returns once stderr has reached end of file, so `recentStderr()` holds all the child wrote. The
+  /// exit can come first: the tail may still be draining when `waitForExit()` returns. A test seam; it
+  /// changes nothing about the capture.
+  public func waitForStderrEnd() async {
+    await withCheckedContinuation { continuation in
+      let ended = state.withLock { state in
+        if !state.stderrEnded { state.stderrWaiters.append(continuation) }
+        return state.stderrEnded
+      }
+      if ended { continuation.resume() }
+    }
+  }
+
+  private func endStderr() {
+    let waiters = state.withLock { state in
+      state.stderrEnded = true
+      defer { state.stderrWaiters = [] }
+      return state.stderrWaiters
+    }
+    for waiter in waiters { waiter.resume() }
   }
 
   private func appendStderr(_ bytes: [UInt8]) {

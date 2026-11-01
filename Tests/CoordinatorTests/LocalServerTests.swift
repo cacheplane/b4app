@@ -187,14 +187,24 @@ struct ServerHarness {
 
 /// Owned-server lifecycle against the fake project CLI.
 @Suite(.serialized) struct LocalServerLifecycleTests {
+  /// The server's row once a `server.changed` event has moved it from the health it had in `server` to
+  /// `health` (every change to a managed server is published). Events are ordered, so a match after
+  /// the one that reported `server.health` is the change the caller waits for, not an older one.
   private func waitForHealth(
-    _ h: ServerHarness, _ server: LocalServer, _ health: LocalServerHealth, timeout: Duration = .seconds(10)
+    _ h: ServerHarness, _ server: LocalServer, _ health: LocalServerHealth
   ) async throws -> LocalServer {
-    let deadline = ContinuousClock.now + timeout
-    while ContinuousClock.now < deadline {
-      let current = try await h.status(server)
-      if current.health == health { return current }
-      try await Task.sleep(for: .milliseconds(100))
+    let id = server.id
+    let from = server.health.rawValue
+    let to = health.rawValue
+    _ = await h.events.until { events in
+      let healths = events.compactMap { event -> String? in
+        guard event.kind == .serverChanged, event.payload["server"]?["id"]?.stringValue == id else {
+          return nil
+        }
+        return event.payload["server"]?["health"]?.stringValue
+      }
+      guard let left = healths.firstIndex(of: from) else { return false }
+      return healths[(left + 1)...].contains(to)
     }
     return try await h.status(server)
   }
@@ -386,6 +396,8 @@ struct ServerHarness {
     try "FAKE_B4_HANG_ON_TERM=1\n".write(toFile: path + "/.env", atomically: true, encoding: .utf8)
     let started = try await h.start(try await h.add(path))
     async let stopping = h.stop(started)
+    // Timed on purpose: lets the stop reach the coordinator first. A stop publishes nothing until it
+    // has finished, so there is no "stopping" event to await.
     try await Task.sleep(for: .milliseconds(50))
     async let starting = h.start(started)
     let (afterStop, afterStart) = try await (stopping, starting)
@@ -434,9 +446,10 @@ struct ServerHarness {
     #expect(first.offset > 0 && !first.truncated)
     let raw = try String(contentsOfFile: started.logPath!, encoding: .utf8)
     #expect(raw.contains("sk-proj-abcdefghijklmnop"))
+    // No wait: the server's output goes straight to the log file, and the fixture writes the request
+    // line there before it sends the response.
     _ = try await URLSession.shared.data(
       from: URL(string: "http://127.0.0.1:\(started.actualPort ?? 0)/readyz")!)
-    try await Task.sleep(for: .milliseconds(200))
     let more = try await h.logs(started, afterOffset: first.offset)
     #expect(more.lines == ["fake-b4: GET /readyz"])
     #expect(more.offset > first.offset)
@@ -547,7 +560,12 @@ struct ServerHarness {
     #expect(try await h.status(server).health == .ready)
     let stopped = try await h.stop(server, force: true)
     #expect(stopped.health == .stopped)
-    try await Task.sleep(for: .seconds(2))
+    // The lost turn's next state is published: reconciling (a state change) or a terminal outcome.
+    try await h.events.waitFor {
+      $0.turnId == turn.id
+        && ($0.kind == .turnFinished
+          || ($0.kind == .turnStateChanged && $0.payload["status"]?.stringValue == "reconciling"))
+    }
     let read = try await h.client.request(
       ThreadRead.self, ThreadRead.Params(threadId: created.id), options: RequestOptions(timeout: .seconds(30))
     )
@@ -575,7 +593,7 @@ struct ServerHarness {
       $0.kind == .turnStateChanged && $0.turnId == turn.id && $0.payload["status"]?.stringValue == "running"
     }
     kill(server.pid!, SIGKILL)
-    try await h.events.waitFor(timeout: .seconds(10)) {
+    try await h.events.waitFor {
       $0.kind == .connectionChanged && $0.connectionId == connection.id
         && $0.payload["status"]?.stringValue == "offline"
     }
