@@ -97,16 +97,17 @@ public struct KeychainSecretStore: SecretStore {
     #endif
   }
 
-  private func baseQuery(_ ref: SecretRef, dataProtection: Bool) -> [String: Any] {
+  /// The flag is always explicit: with no flag, a process that claims keychain entitlements reads
+  /// the data-protection copy first and deletes from both keychains, so the migration's "delete the
+  /// old copy" also removed the copy it had just written (2026-11-01, the owner's hub token).
+  func baseQuery(_ ref: SecretRef, dataProtection: Bool) -> [String: Any] {
     var query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: service,
       kSecAttrAccount as String: ref.rawValue,
+      kSecUseDataProtectionKeychain as String: dataProtection,
     ]
-    if dataProtection {
-      query[kSecUseDataProtectionKeychain as String] = true
-      if let accessGroup { query[kSecAttrAccessGroup as String] = accessGroup }
-    }
+    if dataProtection, let accessGroup { query[kSecAttrAccessGroup as String] = accessGroup }
     return query
   }
 
