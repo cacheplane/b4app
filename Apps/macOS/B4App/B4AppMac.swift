@@ -36,6 +36,13 @@ struct B4AppMac: App {
           .disabled(!LaunchAgent.isBundled)
       }
     }
+
+    // ⌘, and the app menu's Settings… come with the scene; the profile menu and remediations open it
+    // through `WorkspaceModel.openSettings`.
+    Settings {
+      WorkspaceSettingsView(model: sharedModel)
+    }
+    .windowResizability(.contentMinSize)
   }
 }
 

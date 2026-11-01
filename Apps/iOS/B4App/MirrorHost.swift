@@ -35,6 +35,11 @@ import WorkspaceUI
   @ObservationIgnored private let secrets: any SecretStore = KeychainSecretStore(service: "b4app")
   @ObservationIgnored private var sync: MirrorSync?
   @ObservationIgnored private var transport: MirrorTransport?
+  /// The shell's model, once `wire` has run: the phone, not a coordinator, supplies its account, its
+  /// log-out, and whether the Mac is still joined.
+  @ObservationIgnored private weak var model: WorkspaceModel?
+  /// The hub user's display name from `/v1/me`, fetched once per sync start.
+  @ObservationIgnored private var displayName: String?
 
   private static var version: String {
     Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
@@ -106,6 +111,47 @@ import WorkspaceUI
     return transport
   }
 
+  /// Hand the shell's model the account and log-out, and keep its "Host disconnected" state current.
+  func wire(_ model: WorkspaceModel) {
+    self.model = model
+    model.accountSource = .host
+    model.hostLogOut = { await MirrorHost.shared.logOut() }
+    refreshAccount()
+    refreshHostState()
+  }
+
+  /// The stored link's username, with the display name once `/v1/me` has answered.
+  private func refreshAccount() {
+    guard let model else { return }
+    guard let link = try? store?.link() else {
+      model.account = nil
+      return
+    }
+    model.account = WorkspaceAccount(username: link.username, displayName: displayName)
+  }
+
+  /// The mirror's devices table names no joined Mac. Empty (not fetched yet) is not disconnected.
+  private func refreshHostState() {
+    model?.hostDisconnected = (try? store?.devices())?.hostDisconnected ?? false
+  }
+
+  private func fetchDisplayName(_ api: HTTPHubAPI) async {
+    guard let me = try? await api.me() else { return }
+    displayName = me.user.displayName
+    refreshAccount()
+  }
+
+  /// Log out from the profile menu: unlink (revoke, forget the token and the link), then empty the
+  /// mirror so nothing of the account stays on the phone. The Connect screen shows next.
+  func logOut() async {
+    await disconnect()
+    try? store?.clearRows()
+    try? store?.saveDevices([])
+    displayName = nil
+    model?.account = nil
+    model?.hostDisconnected = false
+  }
+
   /// A local write was made: have the sync loop push it now.
   private func nudge() async {
     await sync?.nudge()
@@ -113,10 +159,13 @@ import WorkspaceUI
 
   private func publish(_ batch: AppliedBatch) {
     transport?.publish(batch)
+    refreshHostState()
   }
 
   /// While pulls succeed only the time moves, so nothing is redrawn until a pull fails or recovers.
   private func update(_ status: MirrorSyncStatus) {
+    // Each cycle may have refreshed the devices list, whether or not the status changed.
+    refreshHostState()
     guard status.lastError != nil || syncStatus.lastError != nil, status != syncStatus else { return }
     syncStatus = status
   }
@@ -151,10 +200,11 @@ import WorkspaceUI
     }
     startSync(link, fromSnapshot: false)
     isLinked = true
+    refreshAccount()
   }
 
   /// Leaves the hub: stops pulling, revokes this device (best effort), removes the token, and forgets
-  /// the link. Not reachable from the UI in M8a; deleting the app is the way to disconnect.
+  /// the link. Reached from Log out in the profile menu (`logOut()`), which also empties the mirror.
   func disconnect() async {
     await sync?.stop()
     sync = nil
@@ -173,13 +223,15 @@ import WorkspaceUI
     guard let store, let base = try? HubURL.validate(link.hubURL),
       let ref = SecretRef(rawValue: link.tokenRef)
     else { return }
+    let api = Self.api(base: base, ref: ref, secrets: secrets)
     let sync = MirrorSync(
-      store: store, api: Self.api(base: base, ref: ref, secrets: secrets),
+      store: store, api: api,
       onBatch: { batch in await MirrorHost.shared.publish(batch) },
       onStatus: { status in await MirrorHost.shared.update(status) }, startFromSnapshot: fromSnapshot)
     self.sync = sync
     syncStatus = MirrorSyncStatus()
     Task { await sync.run() }
+    Task { await fetchDisplayName(api) }
   }
 
   /// The token is read from the Keychain for each request and never held here.

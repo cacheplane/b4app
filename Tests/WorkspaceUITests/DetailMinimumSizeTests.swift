@@ -141,4 +141,21 @@ private nonisolated func edited(
     }
     await live.disconnect()
   }
+
+  /// The Settings window opens at its minimum, 760 × 500; no page may ask for more.
+  @Test(arguments: SettingsPage.allCases)
+  func settingsFitsItsMinimum(_ page: SettingsPage) async throws {
+    let store = try MirrorStore.inMemory()
+    let transport = MirrorTransport(store: store, version: "0.2.0")
+    let model = WorkspaceModel(transportProvider: { transport })
+    model.connect()
+    try #require(await model.settledLink() == .ready)
+    await model.refreshDiagnostics()
+    model.settingsPage = page
+    model.lastError = String(repeating: "The connection could not be reached. ", count: 60)
+    let controller = NSHostingController(rootView: WorkspaceSettingsView(model: model))
+    let size = controller.sizeThatFits(in: .zero)
+    #expect(size.width <= 760 && size.height <= 500, "\(page) asks for \(size)")
+    await model.disconnect()
+  }
 }

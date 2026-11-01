@@ -52,6 +52,12 @@ public struct WorkspaceRootView: View {
     #else
       .sheet(isPresented: $model.showSearch) { SearchPalette(model: model) }
     #endif
+    #if os(macOS)
+      .onChange(of: model.settingsRequest) { openSettings() }
+    #else
+      .onChange(of: model.settingsRequest) { model.showSettingsSheet = true }
+      .sheet(isPresented: $model.showSettingsSheet) { SettingsSheet(model: model) }
+    #endif
     .onChange(of: model.pendingLoginURL) { _, url in
       guard let url else { return }
       openURL(url)
@@ -60,6 +66,9 @@ public struct WorkspaceRootView: View {
   }
 
   @Environment(\.openURL) private var openURL
+  #if os(macOS)
+    @Environment(\.openSettings) private var openSettings
+  #endif
 
 }
 

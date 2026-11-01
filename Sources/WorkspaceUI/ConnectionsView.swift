@@ -79,12 +79,11 @@ struct ConnectionsView: View {
     }
     .background(LLA.Color.bg)
     .navigationTitle("Connections")
-    .toolbar {
-      ToolbarItem {
-        Button("Re-check runtimes") { Task { await model.refreshDiagnostics() } }
-          .disabled(model.link != .ready || model.diagnosticsLoading)
-      }
-    }
+    .modifier(
+      SettingsPageAction(
+        title: "Re-check runtimes", disabled: model.link != .ready || model.diagnosticsLoading
+      ) { Task { await model.refreshDiagnostics() } }
+    )
     .task(id: model.link) {
       if model.link == .ready, model.diagnostics == nil { await model.refreshDiagnostics() }
     }
@@ -99,6 +98,7 @@ struct ConnectionCard: View {
     LLACard {
       VStack(alignment: .leading, spacing: LLA.Space.s) {
         HStack(spacing: LLA.Space.s) {
+          RuntimeMark(kind: connection.kind)
           Text(connection.label).font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
           Text(connection.kind.rawValue).llaSmallMuted()
           Spacer()

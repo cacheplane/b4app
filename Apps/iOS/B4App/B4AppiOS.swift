@@ -20,6 +20,7 @@ struct B4AppiOS: App {
         // mirror is keeping up with the hub is said here, above everything, while it is not.
         WorkspaceRootView(model: model)
           .safeAreaInset(edge: .top, spacing: 0) { SyncBanner(status: host.syncStatus) }
+          .task { host.wire(model) }
       } else {
         HubConnectView(host: host)
       }
