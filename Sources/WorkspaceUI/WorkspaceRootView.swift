@@ -66,88 +66,103 @@ struct SidebarView: View {
   @Environment(\.showDetail) private var showDetail
 
   var body: some View {
+    content
+      .background(LLA.Color.surface)
+      .searchable(text: $model.searchText, prompt: "Search titles")
+      .navigationTitle("Agent Workspace")
+      .toolbar {
+        #if os(iOS)
+          // The project filter replaces the connection picker; the connection choices sit in its menu.
+          ToolbarItem(placement: .topBarLeading) { ProjectFilterMenu(model: model) }
+        #endif
+        ToolbarItem {
+          Button("New thread", systemImage: "square.and.pencil") { model.showNewThread = true }
+            .disabled(model.conversationReadyConnections.isEmpty)
+            .help(
+              model.conversationReadyConnections.isEmpty
+                ? "Add a ready Codex connection first" : "Start a new thread"
+            )
+            .accessibilityIdentifier("new-thread-toolbar")
+        }
+      }
+      .safeAreaInset(edge: .bottom, spacing: 0) { LinkStatusView(model: model) }
+  }
+
+  private var header: some View {
+    HStack(spacing: LLA.Space.s) {
+      LLAMarkView(height: 20)
+      Text("Agent Workspace").font(LLAFont.smallStrong).foregroundStyle(LLA.Color.ink)
+    }
+  }
+
+  #if os(macOS)
     // A scroll view and stacks rather than `List`: inside the split view's sidebar column a List drew
     // nothing on macOS 26 (seen in the app and reproduced by `SnapshotTests` in root mode).
-    ScrollView {
-      VStack(alignment: .leading, spacing: 2) {
-        HStack(spacing: LLA.Space.s) {
-          LLAMarkView(height: 20)
-          Text("Agent Workspace").font(LLAFont.smallStrong).foregroundStyle(LLA.Color.ink)
+    private var content: some View {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 2) {
+          header
+            .padding(.horizontal, 10)
+            .padding(.top, LLA.Space.s)
+            .padding(.bottom, LLA.Space.m)
+
+          ForEach(Surface.allCases) { surface in
+            let selected = model.surface == surface && model.selectedThreadId == nil
+            SidebarTextRow(title: surface.title, selected: selected) {
+              model.surface = surface
+              if surface != .threads { model.selectedThreadId = nil }
+              showDetail()
+            }
+          }
+
+          SidebarGroupLabel("Threads")
+          if model.connections.count > 1 {
+            Picker("Connection", selection: $model.connectionFilter) {
+              Text("All connections").tag(String?.none)
+              ForEach(model.connections) { connection in
+                Text(connection.label).tag(String?.some(connection.id))
+              }
+            }
+            .labelsHidden()
+            .font(LLAFont.small)
+            .padding(.horizontal, 10)
+            .padding(.bottom, LLA.Space.xs)
+          }
+          ThreadListView(model: model)
         }
         .padding(.horizontal, 10)
-        .padding(.top, LLA.Space.s)
-        .padding(.bottom, LLA.Space.m)
-
-        ForEach(Surface.allCases) { surface in
-          let selected = model.surface == surface && model.selectedThreadId == nil
-          SidebarTextRow(title: surface.title, selected: selected) {
-            model.surface = surface
-            if surface != .threads { model.selectedThreadId = nil }
-            showDetail()
-          }
-        }
-
-        SidebarGroupLabel("Threads")
-        if model.connections.count > 1 {
-          Picker("Connection", selection: $model.connectionFilter) {
-            Text("All connections").tag(String?.none)
-            ForEach(model.connections) { connection in
-              Text(connection.label).tag(String?.some(connection.id))
-            }
-          }
-          .labelsHidden()
-          .font(LLAFont.small)
-          .padding(.horizontal, 10)
-          .padding(.bottom, LLA.Space.xs)
-        }
-        if model.visibleThreads.isEmpty {
-          Text("No threads yet.").llaSmallMuted().padding(.horizontal, 10).padding(.vertical, 6)
-        }
-        ForEach(model.visibleThreads) { thread in
-          ThreadRow(model: model, thread: thread)
-        }
-
-        if model.showArchived || !model.archivedThreads.isEmpty {
-          Toggle(isOn: $model.showArchived) {
-            Text("Archived (\(model.archivedThreads.count))").font(LLAFont.small).foregroundStyle(
-              LLA.Color.muted)
-          }
-          .toggleStyle(.switch)
-          .controlSize(.mini)
-          .padding(.horizontal, 10)
-          .padding(.top, LLA.Space.m)
-          .padding(.bottom, LLA.Space.xs)
-          .accessibilityIdentifier("show-archived")
-          if model.showArchived {
-            if model.archivedThreads.isEmpty {
-              Text("No archived threads.").llaSmallMuted().padding(.horizontal, 10).padding(.vertical, 6)
-            }
-            ForEach(model.archivedThreads) { thread in
-              ThreadRow(model: model, thread: thread)
-            }
-          }
-        }
-      }
-      .padding(.horizontal, 10)
-      .padding(.bottom, LLA.Space.l)
-      .frame(maxWidth: .infinity, alignment: .leading)
-    }
-    .background(LLA.Color.surface)
-    .searchable(text: $model.searchText, prompt: "Search titles")
-    .navigationTitle("Agent Workspace")
-    .toolbar {
-      ToolbarItem {
-        Button("New thread", systemImage: "square.and.pencil") { model.showNewThread = true }
-          .disabled(model.conversationReadyConnections.isEmpty)
-          .help(
-            model.conversationReadyConnections.isEmpty
-              ? "Add a ready Codex connection first" : "Start a new thread"
-          )
-          .accessibilityIdentifier("new-thread-toolbar")
+        .padding(.bottom, LLA.Space.l)
+        .frame(maxWidth: .infinity, alignment: .leading)
       }
     }
-    .safeAreaInset(edge: .bottom, spacing: 0) { LinkStatusView(model: model) }
-  }
+  #else
+    // The phone uses a List: rows need swipe actions, and the split view collapses to one column there.
+    private var content: some View {
+      List {
+        Section {
+          header.listRowBackground(Color.clear).listRowSeparator(.hidden)
+          ForEach(Surface.allCases) { surface in
+            let selected = model.surface == surface && model.selectedThreadId == nil
+            SidebarTextRow(title: surface.title, selected: selected) {
+              model.surface = surface
+              if surface != .threads { model.selectedThreadId = nil }
+              showDetail()
+            }
+            .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 6))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+          }
+        }
+        Section {
+          ThreadListView(model: model)
+        } header: {
+          SidebarGroupLabel("Threads").padding(.horizontal, -10)
+        }
+      }
+      .listStyle(.plain)
+      .scrollContentBackground(.hidden)
+    }
+  #endif
 }
 
 /// A group label in the sidebar: small, muted, sentence case.
@@ -185,79 +200,6 @@ struct SidebarTextRow: View {
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-  }
-}
-
-/// One sidebar row: pin, title, connection, and the state dot; the context menu holds the
-/// organization actions (spec 3.1). Archiving never stops a turn (spec 3.3).
-struct ThreadRow: View {
-  @Bindable var model: WorkspaceModel
-  let thread: ConversationThread
-  @State private var renaming = false
-  @State private var newTitle = ""
-  @Environment(\.showDetail) private var showDetail
-
-  var body: some View {
-    let state = model.threadState(thread)
-    let selected = model.selectedThreadId == thread.id
-    Button {
-      showDetail()
-      Task { await model.openThread(id: thread.id) }
-    } label: {
-      HStack(alignment: .top, spacing: LLA.Space.s) {
-        LLAStateDot(state: state).padding(.top, 3)
-        VStack(alignment: .leading, spacing: 2) {
-          HStack(spacing: 4) {
-            if thread.pinned {
-              Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(LLA.Color.muted)
-            }
-            Text(thread.title.isEmpty ? "Untitled" : thread.title)
-              .font(selected ? LLAFont.smallStrong : LLAFont.small)
-              .foregroundStyle(LLA.Color.ink)
-              .lineLimit(1)
-          }
-          Text(
-            state == .idle
-              ? (model.connection(id: thread.connectionId)?.label ?? "Unknown connection")
-              : "\(model.connection(id: thread.connectionId)?.label ?? "Unknown connection") · \(state.label)"
-          )
-          .font(LLAFont.caption).foregroundStyle(LLA.Color.muted).lineLimit(1)
-        }
-        Spacer(minLength: 0)
-      }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 6)
-      .background(
-        RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
-          .fill(selected ? LLA.Color.surfaceRaised : .clear)
-      )
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .accessibilityIdentifier("thread-row")
-    .accessibilityValue(state.rawValue)
-    .contextMenu {
-      Button("Rename…", systemImage: "pencil") {
-        newTitle = thread.title
-        renaming = true
-      }
-      Button(thread.pinned ? "Unpin" : "Pin", systemImage: thread.pinned ? "pin.slash" : "pin") {
-        Task { await model.updateThread(id: thread.id, pinned: !thread.pinned) }
-      }
-      Button(
-        thread.archived ? "Unarchive" : "Archive",
-        systemImage: thread.archived ? "tray.and.arrow.up" : "archivebox"
-      ) {
-        Task { await model.updateThread(id: thread.id, archived: !thread.archived) }
-      }
-    }
-    .alert("Rename thread", isPresented: $renaming) {
-      TextField("Title", text: $newTitle)
-      Button("Rename") { Task { await model.updateThread(id: thread.id, title: newTitle) } }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("The title is local to this app; the runtime's own history is not changed.")
-    }
   }
 }
 

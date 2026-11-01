@@ -3,7 +3,7 @@ import WorkspaceProtocol
 
 /// Which threads the list shows: everything, one project, the threads without a project, or the
 /// archive.
-public enum ProjectFilter: Sendable, Equatable {
+public enum ProjectFilter: Sendable, Hashable {
   case all
   case project(String)
   case other
