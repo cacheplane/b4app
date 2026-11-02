@@ -4,6 +4,8 @@
 pub mod auth;
 pub mod cli;
 pub mod error;
+pub mod maintenance;
 pub mod notify;
+pub mod request_log;
 pub mod routes;
 pub mod serve;

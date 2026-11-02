@@ -258,3 +258,57 @@ tests:
       ingress.bogus: true
     asserts:
       - failedTemplate: {}
+
+  - it: accepts a tls entry with hosts and no secretName (controller default certificate)
+    template: templates/ingress.yaml
+    set:
+      ingress.enabled: true
+      ingress.host: hub.example.com
+      ingress.tls:
+        - hosts: [hub.example.com]
+    asserts:
+      - equal:
+          path: spec.tls
+          value:
+            - hosts: [hub.example.com]
+
+  - it: accepts a tls entry with a secretName and no hosts
+    template: templates/ingress.yaml
+    set:
+      ingress.enabled: true
+      ingress.host: hub.example.com
+      ingress.tls:
+        - secretName: hub-tls
+    asserts:
+      - equal:
+          path: spec.tls
+          value:
+            - secretName: hub-tls
+
+  - it: rejects an empty tls entry
+    template: templates/ingress.yaml
+    set:
+      ingress.enabled: true
+      ingress.host: hub.example.com
+      ingress.tls:
+        - {}
+    asserts:
+      - failedTemplate: {}
+
+  - it: applies affinity to both the hub and the migration pods
+    set:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - {key: kubernetes.io/arch, operator: In, values: [arm64]}
+    asserts:
+      - equal:
+          path: spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].values
+          value: [arm64]
+        template: templates/deployment.yaml
+      - equal:
+          path: spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].values
+          value: [arm64]
+        template: templates/migrate-job.yaml

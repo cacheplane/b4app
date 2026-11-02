@@ -116,8 +116,9 @@ resource "aws_ecs_task_definition" "migrate" {
 # template's ordering is explained here):
 # - psql (essential): postgres client as the RDS master user, the only place
 #   the master secret is used. It is the essential container so the task
-#   lives (sleep 3600) on a fresh account, before the b4hub database and
-#   b4hub_app role exist: the operator creates them from psql first.
+#   lives (sleep infinity, until admin-shell.sh stops it) on a fresh account,
+#   before the b4hub database and b4hub_app role exist: the operator creates
+#   them from psql first.
 # - hub (not essential): the image's ENTRYPOINT is the binary (`/bin/sh`
 #   exists for ECS Exec), so it runs `b4hub serve` on 8081 only to stay alive
 #   for ECS Exec; the operator execs

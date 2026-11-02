@@ -262,7 +262,7 @@ public enum ConnectionInspect: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
     public var connectionId: String
     /// Answer at once with the stored connection and report the check through `connection.changed`, so
-    /// a check that retries never holds the client's requests (settings connections, D-073).
+    /// a check that retries never holds the client's requests (settings connections, D-075).
     public var background: Bool?
     public init(connectionId: String, background: Bool? = nil) {
       self.connectionId = connectionId

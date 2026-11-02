@@ -64,9 +64,11 @@ if grep -q '^DATABASE_ADMIN_URL' <<<"$hub_env"; then
   exit 1
 fi
 grep -q '^DATABASE_URL_FILE=' <<<"$hub_env" || { echo "hub lacks DATABASE_URL_FILE" >&2; exit 1; }
-hosts="$(docker inspect --format '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{.HostIp}} {{end}}{{end}}' "$hub_id")"
-if [ -z "$hosts" ] || tr ' ' '\n' <<<"$hosts" | grep -v -e '^$' -e '^127\.0\.0\.1$' | grep -q .; then
-  echo "hub must publish only on 127.0.0.1 (got: $hosts)" >&2
+# Each binding's HostIp is bracketed so a blank one (Docker's "all interfaces") shows up as []
+# and fails, instead of vanishing as whitespace.
+hosts="$(docker inspect --format '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}[{{.HostIp}}] {{end}}{{end}}' "$hub_id")"
+if [ -z "$hosts" ] || tr ' ' '\n' <<<"$hosts" | grep -v -e '^$' -e '^\[127\.0\.0\.1\]$' | grep -q .; then
+  echo "hub must publish only on 127.0.0.1 (got: ${hosts:-no bindings}; [] means all interfaces)" >&2
   exit 1
 fi
 

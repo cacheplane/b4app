@@ -238,6 +238,8 @@ docker compose run --rm migrate seed --org cacheplane --org-name cacheplane --us
 docker compose run --rm migrate enroll --user blove
 ```
 
+During maintenance, `docker compose run --rm migrate maintenance on|off|status` pauses and resumes writes while reads continue (`Hub/API.md`, "Maintenance mode").
+
 The code is eight characters, valid for ten minutes, and works once. Join the Mac (the code is read from a hidden prompt or one line of stdin, never an argument):
 
 ```bash

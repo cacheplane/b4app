@@ -16,7 +16,7 @@ extension SessionService {
       case .codex, .claude:
         return ConnectionUsage(connectionId: connection.id, reading: readings[connection.id])
       case .b4:
-        // A server that has never reported tokens has no figure, rather than zero (D-074).
+        // A server that has never reported tokens has no figure, rather than zero (D-076).
         guard try db.hasTokenUsage(connectionId: connection.id) else {
           return ConnectionUsage(connectionId: connection.id)
         }

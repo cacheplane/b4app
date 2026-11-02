@@ -1,4 +1,7 @@
 # Tests apply against a mocked AWS provider; nothing here needs credentials.
+# The mock_provider blocks below are a copy of the canonical ones in
+# network.tftest.hcl (test files cannot share mocks; see tests/README.md).
+# Change that file first, then copy the change here.
 
 mock_provider "aws" {
   mock_data "aws_caller_identity" {
@@ -256,5 +259,10 @@ run "alb_logs_policy_is_scoped" {
   assert {
     condition     = length(jsondecode(aws_s3_bucket_policy.alb_logs.policy).Statement) == 1 && jsondecode(aws_s3_bucket_policy.alb_logs.policy).Statement[0].Action == "s3:PutObject"
     error_message = "the only grant is s3:PutObject"
+  }
+
+  assert {
+    condition     = jsondecode(aws_s3_bucket_policy.alb_logs.policy).Statement[0].Principal == { AWS = "arn:aws:iam::033677994240:root" } && jsondecode(aws_s3_bucket_policy.alb_logs.policy).Statement[0].Effect == "Allow"
+    error_message = "the grant's only principal is the region's ELB service account"
   }
 }

@@ -40,7 +40,7 @@ database:
   secretKeys:
     # -- Key in the Secret holding the `b4hub_app` connection URL. The only key the hub Deployment mounts.
     url: DATABASE_URL
-    # -- Key in the Secret holding the owner (admin) connection URL. Only the migration Job mounts it.
+    # -- Key in the Secret holding the admin connection URL (a role with `CREATEROLE`, or a superuser). Only the migration Job mounts it.
     adminUrl: DATABASE_ADMIN_URL
   urls:
     # -- For evaluation only; use `existingSecret` in production. With `adminUrl`, the chart creates `<release>-b4hub-db`.
@@ -66,11 +66,11 @@ hub:
     audiences: []
     # -- Apple Services ID for web sign-in (`B4HUB_APPLE_SERVICES_ID`); rendered only when set.
     servicesId: ""
-  # -- Extra `EnvVar` entries appended verbatim to the hub container (for example `OTEL_EXPORTER_OTLP_*`).
+  # -- Extra `EnvVar` entries appended verbatim to the hub container. For OTLP use `otel.endpoint`, `otel.protocol`, and `otel.extraEnv` instead.
   extraEnv: []
 
 secrets:
-  # -- Existing Secret with keys `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, `B4HUB_APPLE_PRIVATE_KEY`.
+  # -- Existing Secret with keys `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, `B4HUB_APPLE_PRIVATE_KEY`. Each reference is `optional: true`, so Kubernetes does not catch a missing or mistyped key (no `CreateContainerConfigError`); the hub's startup check is the only guard.
   existingSecret: ""
   # -- `false`: env from `secretKeyRef`. `true`: mount at `/etc/b4hub/secrets/` and set `B4HUB_*_FILE` (needs a hub with the `_FILE` forms, M8e).
   useFileVars: false
@@ -178,5 +178,5 @@ resources:
 nodeSelector: {}
 # -- Tolerations for the hub and migration pods.
 tolerations: []
-# -- Affinity for the hub pods.
+# -- Affinity for the hub and migration pods.
 affinity: {}

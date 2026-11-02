@@ -45,6 +45,7 @@ case "${1:-} ${2:-}" in
     cluster="$(arg --cluster "$@")"
     echo "arn:aws:ecs:us-east-2:$acct:task-definition/$cluster-hub:5" ;;
   "ecs register-task-definition")
+    [ "${STUB_REGISTER_FAIL:-0}" = 1 ] && { echo "register refused" >&2; exit 1; }
     file="$(arg --cli-input-json "$@")"; file="${file#file://}"
     family="$(jq -er .family "$file")"
     cp "$file" "${STUB_LOG%/*}/registered-$family.json"
@@ -127,6 +128,29 @@ deployed=123456789012.dkr.ecr.us-east-2.amazonaws.com/b4hub@sha256:0123456789abc
   [ "$(jq -r '[.containerDefinitions[] | select(.name == "hub") | .secrets[].name] | join(",")' "$doc")" = DATABASE_ADMIN_URL,DATABASE_URL ]
   [ "$(jq -r '.containerDefinitions[] | select(.name == "hub") | .environment[] | select(.name == "B4HUB_WEBAUTHN_RP_ID") | .value' "$doc")" = test.b4.run ]
   [ "$(jq -r '.containerDefinitions[0].logConfiguration.options."awslogs-group"' "$doc")" = /b4hub/test/admin ]
+}
+
+@test "the render directory is removed after a registration and after a failed one" {
+  export STUB_SERVICE_IMAGE="$deployed"
+  # macOS mktemp ignores TMPDIR, so a stub creates every temp dir under one we watch.
+  export RENDER_TMP="$BATS_TEST_TMPDIR/tmp"
+  mkdir -p "$RENDER_TMP"
+  cat > "$stubdir/mktemp" << 'STUB'
+#!/usr/bin/env bash
+[ "$*" = -d ] || { echo "mktemp stub: unexpected arguments: $*" >&2; exit 64; }
+dir="${RENDER_TMP:?}/d.$$.$RANDOM"
+mkdir "$dir" && printf '%s\n' "$dir"
+STUB
+  chmod +x "$stubdir/mktemp"
+  run "$script" test
+  [ "$status" -eq 0 ]
+  [ -z "$(ls -A "$RENDER_TMP")" ]
+  export STUB_REGISTER_FAIL=1
+  : > "$STUB_LOG"
+  run "$script" test
+  [ "$status" -ne 0 ]
+  not_logged 'aws ecs run-task'
+  [ -z "$(ls -A "$RENDER_TMP")" ]
 }
 
 @test "a service still on the placeholder falls back to the latest revision with a warning" {

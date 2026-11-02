@@ -27,6 +27,16 @@ The principal (org, user, device) comes only from the verified token. Nothing in
 query can name a different one, and the wire `Change` carries no device id: the hub attributes
 every change to the authenticated device.
 
+### Request ids
+
+Every response carries `X-Request-Id`: a UUIDv7 the hub mints per request, never a value a caller
+supplied (nothing deployed in front of the hub strips the header, so an honoured inbound id would
+let a client choose the id it is logged under). Every log line the request produces names that id
+(see "Logging"), so an operator can go from a client's error to the hub's lines for it. A caller may
+send its own `X-Request-Id`; when it is 1 to 64 printable ASCII characters without whitespace the
+hub records it as `client_request_id` beside its own id, for correlation with the caller's logs,
+and otherwise ignores it. The id is an opaque string to clients.
+
 ### Errors
 
 Every error uses B4's envelope:
@@ -53,6 +63,7 @@ answer the same generic `404 not_found`.
 | 500 | `internal_error` | execution | Any unexpected failure; the cause is logged on the hub, never sent. |
 | 503 | `not_ready` | execution | `/readyz`: the database is unreachable or migrations are pending. |
 | 503 | `shutting_down` | execution | `/readyz` after SIGTERM. |
+| 503 | `maintenance` | execution | A write (`POST /v1/enroll`, `POST /v1/changes`, `DELETE /v1/devices/self`) while the operator has paused writes; carries `Retry-After: 30`. See "Maintenance mode". |
 
 ### Limits
 
@@ -95,6 +106,9 @@ the container `HEALTHCHECK` calls.
 ```json
 {"ok": true, "migrations": "current", "minClientProtocol": 1}
 ```
+
+While writes are paused (see "Maintenance mode") the body also carries `"maintenance":
+"read_only"`; the status stays `200`, because reads are still served.
 
 `503 not_ready` when the database is unavailable or migrations are pending; `503 shutting_down`
 once SIGTERM has been received (see "Shutdown").
@@ -417,3 +431,51 @@ long-poll so each returns its current page, keeps the listener open for a short 
 accepting connections and lets in-flight requests finish. The whole sequence is bounded by
 `B4HUB_SHUTDOWN_WAIT_MS` (default 30000) from the moment the signal arrives; anything still open
 then is dropped and the process exits.
+
+## Maintenance mode
+
+The operator pauses client writes on every hub instance at once with `b4hub maintenance on
+[--message "<text>"]` and resumes them with `b4hub maintenance off`; `b4hub maintenance status`
+prints the state. "Client writes" means the API's write routes below; the hub's own writes
+(`last_seen_at` touches, the daily prune) continue. The message is public: an unauthenticated
+`POST /v1/enroll` caller sees it, so it must carry no internal detail. The commands connect with
+`DATABASE_ADMIN_URL` (like `seed` and `enroll`) and write one row in `hub_settings`, which the
+serving role can only read; no environment variable changes and no instance restarts. Each
+`serve` reads the switch before it listens and then every `B4HUB_MAINTENANCE_POLL_MS` (default
+5000), so a flip reaches every instance within one interval. A failed read keeps the last value
+and logs a warning on every poll until a read succeeds; an instance whose very first read fails
+therefore starts with maintenance off (fail-open) until the database answers.
+
+While on, `POST /v1/enroll`, `POST /v1/changes`, and `DELETE /v1/devices/self` answer `503` with
+`Retry-After: 30` and
+
+```json
+{"error": {"kind": "execution_error", "message": "the hub is in maintenance: <message, or 'writes are paused'>", "details": {"code": "maintenance"}}}
+```
+
+before the body is read; on the two authenticated routes after the token is checked (a bad token
+is still `401`), and on `POST /v1/enroll` before the code is checked. Reads (`GET /v1/changes`, `GET /v1/snapshot`, `GET /v1/me`,
+`GET /v1/devices`), `/healthz`, and `/readyz` are unchanged, except that `/readyz` reports
+`"maintenance": "read_only"`. A client treats `maintenance` like a transient failure: keep the
+outbox, retry after the header's delay.
+
+## Logging
+
+`b4hub` logs to stderr. `B4HUB_LOG` is the filter (a `tracing` directive such as `info` or
+`b4hub=debug,info`; default `info`). `B4HUB_LOG_FORMAT` is `text` or `json`; by default `text`
+when stderr is a terminal and `json` otherwise, so a container gets one JSON object per line
+without configuration.
+
+Every request runs inside a `request` span with the fields `request_id` (the value of the
+response's `X-Request-Id`), `method`, `path` (the matched route pattern, such as `/v1/changes`, or
+`(unmatched)`; never the raw path or the query string), `client_request_id` (the caller's
+well-formed `X-Request-Id`, when it sent one), and, once the bearer token has been verified,
+`device_id` (the device's UUID; the token is never logged). One completion event per
+request, `request complete`, carries `status` and `elapsed_ms`: at `WARN` for a `503` (the hub
+refusing on purpose: maintenance, shutting down, not ready), `ERROR` for any other 5xx, and `INFO`
+otherwise. Headers and bodies are never logged. In JSON the event's own fields are top-level and
+the span's fields sit under `span`:
+
+```json
+{"timestamp":"2026-11-02T10:15:30.123456Z","level":"INFO","message":"request complete","status":200,"elapsed_ms":12,"target":"b4hub::request_log","span":{"device_id":"0192f0…","method":"POST","path":"/v1/changes","request_id":"0192f0…","name":"request"}}
+```

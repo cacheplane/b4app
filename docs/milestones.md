@@ -192,7 +192,7 @@ Known limitations (the full reasoning is under D-048 to D-050):
 
 Exit gate status: the fixture gates pass (design exit items 4 to 6, locally: a cursor below the horizon resyncs without losing an outbox row; a phone change to a Mac-only column is refused and connection secrets are scrubbed on every apply; `cargo test`, `swift test`, and both app builds pass). Items 1 to 3 pass live (2026-11-01). M8b is complete once the PR's CI passes.
 
-## Settings: connections, usage, B4 projects (D-073 to D-076)
+## Settings: connections, usage, B4 projects (D-075 to D-078)
 
 - [x] Connection cards with icon status, plan usage (Codex, Claude) and B4 token totals, checks that retry, the "+" menu, the B4 form with a Keychain-stored key, Edit (name, key), and the B4 projects page (renamed from Local servers) with agent rows and the attach sheet. `implemented` and `fixture-tested` (adapter, storage, coordinator, model, and format tests; Mac snapshots measured); usage reading `live-tested` against the owner's Codex and Claude Code (2026-11-02). Usage stays on the Mac; the phone shows state only. Not built: removing a connection or a project (needs a decision on its threads and connections).
 
@@ -210,4 +210,9 @@ Exit gate status: the fixture gates pass (design exit items 4 to 6, locally: a c
   - Docker Compose self-hosting (`Hub/deploy/compose/`). `fixture-tested`: `test.sh` passed on the build Mac against a locally built image (first-boot path); the CI `compose-smoke` job has not run on `main`; the `tls` profile on a clean VM is not exercised.
   - Helm chart `b4hub` with a pre-upgrade migration hook and a CloudNativePG example (`Hub/chart/b4hub`, `hub-chart.yml`). `live-tested` on a kind cluster in GitHub Actions (runs 41389901877 and 41390300766, including upgrade and uninstall); `helm unittest` (47 tests) is `fixture-tested`; the OCI publish is `implemented` and has not run (it happens on a `hub-v*` release).
   - Verification gates 1 to 7 and 8a on a clean VM. `blocked` on the owner's AWS setup, the sign-in project, and M8c; see `docs/verification.md` "Hosted hubs".
+  Hub-side operability (design `docs/superpowers/specs/2026-11-02-m8e-hub-operability-design.md`; Part A built 2026-11-02, D-073 and D-074; Part B waits for M8c and sign-in):
+  - A1 Request-scoped logging: a hub-minted `X-Request-Id` on every response (a caller's own id is recorded as `client_request_id`, never honoured as ours), a `request` span with the route pattern and the device id, one completion event with status and elapsed time, JSON logs when stderr is not a terminal (`B4HUB_LOG_FORMAT`). `implemented`, `fixture-tested` (middleware unit tests and a redaction test through a JSON subscriber: the token never appears).
+  - A2 Maintenance mode: `hub_settings` (migration 0006, app role read-only), `b4hub maintenance on|off|status`, a poll in `serve`, `503 maintenance` with `Retry-After: 30` on the three write routes, reads and `/readyz` untouched (`"maintenance": "read_only"`). `implemented`, `fixture-tested` over the loopback listener with the real CLI flipping the switch. Not `live-tested`: no hosted hub exists yet.
+  - A3 `*_FILE` variants for the sign-in secrets: in the sign-in branch, or here after it merges. `blocked` on that branch.
+  - B1 `/readyz` exercises the relay; B2 cross-instance relay routing. Designed; `blocked` on M8c.
 - [ ] M8f Attention on the phone (notifications through a swappable push sender, a `spool` sender for the Simulator and `apns` later, and the home-screen widget showing the top three threads). New in the M8b design so that M8d and M8e keep their meaning. `blocked` on M8c; exit: a pending approval on the Mac notifies the Simulator within five seconds and tapping it opens the thread.
