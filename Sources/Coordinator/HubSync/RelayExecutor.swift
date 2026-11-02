@@ -92,7 +92,9 @@ public actor RelayExecutor {
       return .reply(id: id, result: try await run(id: id, method: method, params: params))
     } catch {
       let failure = WorkspaceError.from(error)
-      let (wire, replaced) = Self.wireError(failure)
+      let (sanitized, replaced) = Self.wireError(failure)
+      var wire = sanitized
+      wire.details = blockingTurnRenamed(wire.details, commandId: id, method: method)
       if replaced {
         // The full text stays on this Mac: the log (private) and Diagnostics, as the `Router` records it.
         logger.error(
@@ -128,11 +130,50 @@ public actor RelayExecutor {
     return (RelayWireError(code: failure.code.rawValue, message: couldNotRun, details: details), true)
   }
 
+  /// Refusal reasons whose `details.turnId` names the turn in the way, not one this command made.
+  static let blockingReasons: Set<String> = ["turn_active", "directory_locked"]
+
+  /// The phone reads `details.turnId` as "this send's turn exists, so it was accepted". A refusal made
+  /// before this command's turn existed names another turn there (the one in the way); at this boundary
+  /// that id moves to `details.blockingTurnId`. It moves when the reason is one of `blockingReasons`, and,
+  /// for `turn.send` and `thread.start`, whenever the named turn is not this command's own (its
+  /// operationId is not the command id). `SessionService` and the local `Router` keep `turnId`.
+  private func blockingTurnRenamed(
+    _ details: JSONValue?, commandId: String, method: RelayMethod
+  ) -> JSONValue? {
+    guard case .object(var object)? = details, let turnId = object["turnId"] else { return details }
+    let blocking: Bool
+    if let reason = object["reason"]?.stringValue, Self.blockingReasons.contains(reason) {
+      blocking = true
+    } else if method == .turnSend || method == .threadStart, let id = turnId.stringValue,
+      let turn = try? db.turn(id: id)
+    {
+      blocking = turn.operationId != commandId
+    } else {
+      blocking = false
+    }
+    guard blocking else { return details }
+    object["turnId"] = nil
+    object["blockingTurnId"] = turnId
+    return .object(object)
+  }
+
+  /// A NUL cannot be stored, and the store refuses it only after the turn row exists, which would leave
+  /// that turn `submitting` (see the Task 8 report); a relayed text with one is refused before anything.
+  private static func requireStorableText(_ text: String) throws {
+    guard !text.unicodeScalars.contains("\0") else {
+      throw WorkspaceError(
+        .protocolInvalid, "The message contains a character that cannot be sent.",
+        details: ["reason": "invalid_text"])
+    }
+  }
+
   private func run(id: String, method: RelayMethod, params: JSONValue) async throws -> JSONValue {
     switch method {
     case .turnSend:
-      return try JSONValue(
-        encoding: try await sessions.turnSend(try decode(TurnSend.self, params), operationId: id))
+      let send = try decode(TurnSend.self, params)
+      try Self.requireStorableText(send.text)
+      return try JSONValue(encoding: try await sessions.turnSend(send, operationId: id))
     case .turnInterrupt:
       return try JSONValue(encoding: try await sessions.turnInterrupt(try decode(TurnInterrupt.self, params)))
     case .requestRespond:
@@ -171,6 +212,7 @@ public actor RelayExecutor {
   private func threadStart(
     _ params: ThreadStart.Params, operationId: String
   ) async throws -> ThreadStart.Result {
+    try Self.requireStorableText(params.text)
     // A retry of a start that already made its turn gets that answer, whatever changed since (the
     // connection may have gone offline): refusing it now would tell the phone the send never happened.
     if let turn = try db.turn(operationId: operationId) {

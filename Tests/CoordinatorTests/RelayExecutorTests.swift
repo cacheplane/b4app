@@ -83,29 +83,46 @@ private struct RelayHarness {
   }
 }
 
-/// Counts the native sessions a runtime was asked to create.
-private actor SessionCounter {
+/// What `SeamAdapter` does differently from the runtime it wraps, set by the test as it goes.
+private actor Seams {
+  /// Native sessions the runtime was asked to create.
   private(set) var created = 0
-  func record() { created += 1 }
+  /// Held before each `createSession`, so a second create arrives while the first is under way.
+  var createDelay: Duration?
+  /// Thrown by `sendTurn` in place of the runtime's answer (after the turn is inserted).
+  var sendFailure: (any Error & Sendable)?
+  func recordCreate() -> Duration? {
+    created += 1
+    return createDelay
+  }
+  func set(createDelay: Duration? = nil, sendFailure: (any Error & Sendable)? = nil) {
+    self.createDelay = createDelay
+    self.sendFailure = sendFailure
+  }
 }
 
-/// A real adapter (the fake Codex runtime) whose `createSession` is slow and counted, so a second start
-/// of the same thread arrives while the first is still creating it.
-private struct SlowCreateAdapter: AgentAdapter {
+/// A foreign error whose description carries a path and SQL, as `String(describing:)` of a real one can.
+private struct LeakyFailure: Error, CustomStringConvertible {
+  var description: String { "open /Users/someone/Library/secret.db failed near SELECT * FROM turns" }
+}
+
+/// A real adapter (the fake Codex runtime) with the test's `Seams`: a counted, optionally slow
+/// `createSession`, and an optionally failing `sendTurn`.
+private struct SeamAdapter: AgentAdapter {
   let inner: any AgentAdapter
-  let counter: SessionCounter
+  let seams: Seams
   var kind: ConnectionKind { inner.kind }
   func inspectConnection() async throws -> ConnectionInspection { try await inner.inspectConnection() }
   func createSession(_ input: NewSessionInput) async throws -> NativeSessionRef {
-    await counter.record()
-    try await Task.sleep(for: .milliseconds(300))
+    if let delay = await seams.recordCreate() { try await Task.sleep(for: delay) }
     return try await inner.createSession(input)
   }
   func loadSession(_ ref: NativeSessionRef) async throws -> SessionSnapshot {
     try await inner.loadSession(ref)
   }
   func sendTurn(_ ref: NativeSessionRef, input: TurnInput) async throws -> SubmissionReceipt {
-    try await inner.sendTurn(ref, input: input)
+    if let failure = await seams.sendFailure { throw failure }
+    return try await inner.sendTurn(ref, input: input)
   }
   func interrupt(_ ref: NativeSessionRef, turn: ActiveTurnRef) async throws -> StopReceipt {
     try await inner.interrupt(ref, turn: turn)
@@ -118,6 +135,15 @@ private struct SlowCreateAdapter: AgentAdapter {
   }
   func events() -> AsyncStream<AdapterEvent> { inner.events() }
   func dispose() async { await inner.dispose() }
+}
+
+/// A harness whose adapters all go through `SeamAdapter` with `seams`.
+private func seamHarness(_ seams: Seams) async throws -> RelayHarness {
+  try await RelayHarness.start(adapterFactory: { connection, environment, version, secrets in
+    SeamAdapter(
+      inner: try SessionService.defaultAdapterFactory(connection, environment, version, secrets), seams: seams
+    )
+  })
 }
 
 /// One relayed command as `HubLink` passes it: a deadline 8 s after the hub's now, by default.
@@ -510,12 +536,9 @@ private func failure(
   /// Two starts of one new thread under different command ids: the second waits for the first, so the
   /// thread (and its native session) is created once and no store error reaches the reply.
   @Test func concurrentStartsOfOneNewThreadCreateItOnce() async throws {
-    let counter = SessionCounter()
-    let h = try await RelayHarness.start(adapterFactory: { connection, environment, version, secrets in
-      SlowCreateAdapter(
-        inner: try SessionService.defaultAdapterFactory(connection, environment, version, secrets),
-        counter: counter)
-    })
+    let seams = Seams()
+    await seams.set(createDelay: .milliseconds(300))
+    let h = try await seamHarness(seams)
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let app = try h.folder("app")
@@ -539,7 +562,7 @@ private func failure(
       #expect(error.message != RelayExecutor.couldNotRun)
     }
     #expect(try h.db.listThreads(ThreadFilter(includeArchived: true)).map(\.id) == [threadId])
-    #expect(await counter.created == 1)
+    #expect(await seams.created == 1)
     try await h.waitForFinish(started.turn)
   }
 
@@ -548,10 +571,12 @@ private func failure(
   /// A store failure, a process launch failure, and an internal error reach the hub only as their code
   /// (and `turnId`); the text, which can carry SQL, row values, and paths, goes to the log and
   /// Diagnostics on this Mac.
-  @Test func storeAndLaunchFailuresKeepTheirTextOnTheMac() async throws {
-    let h = try await RelayHarness.start()
+  @Test func storeLaunchAndInternalFailuresKeepTheirTextOnTheMac() async throws {
+    let seams = Seams()
+    let h = try await seamHarness(seams)
     defer { Task { await h.close() } }
-    let project = try await h.project("App", [try h.folder("app")])
+    let app = try h.folder("app")
+    let project = try await h.project("App", [app])
 
     // A runtime that exists but cannot be executed: "Could not start <path>: …".
     let broken = h.base + "/bin/codex"
@@ -566,25 +591,51 @@ private func failure(
           h.executor, .threadStart,
           ThreadStart.Params(
             threadId: UUID().uuidString.lowercased(), projectId: project.id, connectionId: unrunnable.id,
-            folder: h.base + "/app", text: "hi"))))
+            folder: app, text: "hi"))))
     #expect(launch.code == ErrorCode.missingExecutable.rawValue)
 
-    // A store failure: PostgreSQL refuses a NUL in the message's jsonb payload (internal_error).
+    // A store failure: a local create of the same thread id commits first, so the relayed start's insert
+    // hits the primary key ("PostgreSQL: [23505] … DETAIL: Key (id)=(…)", protocol_invalid).
     let connection = try await h.addCodex()
-    let thread = try await h.newThread(connection, in: try h.folder("work"))
+    await seams.set(createDelay: .milliseconds(300))
+    let threadId = UUID().uuidString.lowercased()
+    let sessions = h.coordinator.sessions
+    let local = Task {
+      try await sessions.threadCreate(
+        ThreadCreate.Params(connectionId: connection.id, workingDirectory: app, threadId: threadId))
+    }
+    try await Task.sleep(for: .milliseconds(100))
     let store = try #require(
       failure(
-        try await run(h.executor, .turnSend, TurnSend.Params(threadId: thread.id, text: "a \u{0} b"))))
-    #expect(store.code == ErrorCode.internalError.rawValue)
-    #expect(store.details == nil)
+        try await run(
+          h.executor, .threadStart,
+          ThreadStart.Params(
+            threadId: threadId, projectId: project.id, connectionId: connection.id, folder: app, text: "hi")))
+    )
+    _ = try await local.value
+    #expect(store.code == ErrorCode.protocolInvalid.rawValue)
 
-    for error in [launch, store] {
+    // An internal error after the turn exists: a foreign error from the runtime. The code and `turnId`
+    // survive; its other details go.
+    await seams.set(sendFailure: LeakyFailure())
+    let id = UUID().uuidString.lowercased()
+    let internalError = try #require(
+      failure(
+        try await run(h.executor, id: id, .turnSend, TurnSend.Params(threadId: threadId, text: "hello"))))
+    #expect(internalError.code == ErrorCode.internalError.rawValue)
+    let turnId = try #require(internalError.details?["turnId"]?.stringValue)
+    #expect(internalError.details == .object(["turnId": .string(turnId)]))
+    #expect(try h.db.turn(id: turnId)?.operationId == id)
+
+    for error in [launch, store, internalError] {
       #expect(error.message == RelayExecutor.couldNotRun)
       let encoded = String(decoding: try JSONCoding.encoder.encode(error), as: UTF8.self)
-      #expect(!encoded.contains("PostgreSQL"))
-      #expect(!encoded.contains("/bin/codex"))
-      #expect(!encoded.contains(h.base))
-      #expect(!encoded.contains(SessionService.canonicalDirectory(h.base)))
+      for leak in [
+        "PostgreSQL", "/bin/codex", "/Users/someone", "SELECT", "DETAIL", h.base,
+        SessionService.canonicalDirectory(h.base),
+      ] {
+        #expect(!encoded.contains(leak), "\(error.code) leaks \(leak)")
+      }
     }
     // The text is kept on this Mac, in Diagnostics.
     let recorded = try await h.coordinator.diagnostics.read().recentErrors
@@ -595,9 +646,85 @@ private func failure(
       })
     #expect(
       recorded.contains {
-        $0.scope == "relay:turn.send" && $0.code == ErrorCode.internalError.rawValue
+        $0.scope == "relay:thread.start" && $0.code == "protocol_invalid"
           && $0.message.hasPrefix("PostgreSQL:")
       })
+    #expect(
+      recorded.contains {
+        $0.scope == "relay:turn.send" && $0.code == ErrorCode.internalError.rawValue
+          && $0.message.contains("/Users/someone")
+      })
+  }
+
+  /// A refusal made before this send's turn exists names the turn in the way as `blockingTurnId`, never
+  /// `turnId`, which the phone reads as "accepted".
+  @Test func refusalsBeforeTheTurnExistsNameTheBlockingTurnApart() async throws {
+    let h = try await RelayHarness.start()
+    defer { Task { await h.close() } }
+    let connection = try await h.addCodex()
+    let work = try h.folder("work")
+    let thread = try await h.newThread(connection, in: work)
+    let sibling = try await h.newThread(connection, in: work)
+    let active = try result(
+      try await run(h.executor, .turnSend, TurnSend.Params(threadId: thread.id, text: "hang around")),
+      as: TurnSend.Result.self
+    ).turn
+
+    let busy = try #require(
+      failure(try await run(h.executor, .turnSend, TurnSend.Params(threadId: thread.id, text: "next"))))
+    #expect(busy.details?["reason"]?.stringValue == "turn_active")
+    #expect(busy.details?["turnId"] == nil)
+    #expect(busy.details?["blockingTurnId"]?.stringValue == active.id)
+
+    let locked = try #require(
+      failure(try await run(h.executor, .turnSend, TurnSend.Params(threadId: sibling.id, text: "beside"))))
+    #expect(locked.details?["reason"]?.stringValue == "directory_locked")
+    #expect(locked.details?["turnId"] == nil)
+    #expect(locked.details?["blockingTurnId"]?.stringValue == active.id)
+    #expect(try h.db.turns(threadId: sibling.id).isEmpty)
+
+    // The local socket still gets `turnId`, unchanged.
+    do {
+      _ = try await h.client.request(
+        TurnSend.self, TurnSend.Params(threadId: thread.id, text: "local"),
+        options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+      Issue.record("a second turn must be refused")
+    } catch let error as WorkspaceError {
+      #expect(error.details?["turnId"]?.stringValue == active.id)
+    }
+    _ = try await h.coordinator.sessions.turnInterrupt(TurnInterrupt.Params(threadId: thread.id))
+    try await h.waitForFinish(active)
+  }
+
+  /// A NUL cannot be stored; a relayed text with one is refused before any `SessionService` call.
+  @Test func textWithANulIsRefusedBeforeAnything() async throws {
+    let h = try await RelayHarness.start()
+    defer { Task { await h.close() } }
+    let connection = try await h.addCodex()
+    let app = try h.folder("app")
+    let project = try await h.project("App", [app])
+    let thread = try await h.newThread(connection, in: try h.folder("work"))
+    let threadId = UUID().uuidString.lowercased()
+    let replies = [
+      try await run(h.executor, .turnSend, TurnSend.Params(threadId: thread.id, text: "a \u{0} b")),
+      try await run(
+        h.executor, .threadStart,
+        ThreadStart.Params(
+          threadId: threadId, projectId: project.id, connectionId: connection.id, folder: app, text: "\u{0}")),
+    ]
+    for reply in replies {
+      let error = try #require(failure(reply))
+      #expect(error.code == ErrorCode.protocolInvalid.rawValue)
+      #expect(error.details?["reason"]?.stringValue == "invalid_text")
+    }
+    #expect(try h.db.turns(threadId: thread.id).isEmpty)
+    #expect(try h.db.thread(id: threadId) == nil)
+    // The thread is not left blocked: an ordinary send runs.
+    let turn = try result(
+      try await run(h.executor, .turnSend, TurnSend.Params(threadId: thread.id, text: "fine")),
+      as: TurnSend.Result.self
+    ).turn
+    try await h.waitForFinish(turn)
   }
 
   /// The boundary rule itself: code kept, `turnId` kept, the text replaced only where it may carry
