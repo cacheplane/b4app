@@ -27,6 +27,15 @@ The principal (org, user, device) comes only from the verified token. Nothing in
 query can name a different one, and the wire `Change` carries no device id: the hub attributes
 every change to the authenticated device.
 
+### Request ids
+
+Every response carries `X-Request-Id`. The hub mints a UUIDv7 per request, or keeps the inbound
+`X-Request-Id` when it is 1 to 64 printable ASCII characters without whitespace and the hub runs
+with `B4HUB_TRUST_X_FORWARDED_FOR=1` (a proxy in front sets it; otherwise a client could choose the
+id its request is logged under). Every log line the request produces names the same id (see
+"Logging"), so an operator can go from a client's error to the hub's lines for it. The id is an
+opaque string to clients.
+
 ### Errors
 
 Every error uses B4's envelope:
@@ -417,3 +426,22 @@ long-poll so each returns its current page, keeps the listener open for a short 
 accepting connections and lets in-flight requests finish. The whole sequence is bounded by
 `B4HUB_SHUTDOWN_WAIT_MS` (default 30000) from the moment the signal arrives; anything still open
 then is dropped and the process exits.
+
+## Logging
+
+`b4hub` logs to stderr. `B4HUB_LOG` is the filter (a `tracing` directive such as `info` or
+`b4hub=debug,info`; default `info`). `B4HUB_LOG_FORMAT` is `text` or `json`; by default `text`
+when stderr is a terminal and `json` otherwise, so a container gets one JSON object per line
+without configuration.
+
+Every request runs inside a `request` span with the fields `request_id` (the value of the
+response's `X-Request-Id`), `method`, `path` (the matched route pattern, such as `/v1/changes`, or
+`(unmatched)`; never the raw path or the query string), and, once the bearer token has been
+verified, `device_id` (the device's UUID; the token is never logged). One completion event per
+request, `request complete`, carries `status` and `elapsed_ms`, at `ERROR` for a 5xx and `INFO`
+otherwise. Headers and bodies are never logged. In JSON the event's own fields are top-level and
+the span's fields sit under `span`:
+
+```json
+{"timestamp":"2026-11-02T10:15:30.123456Z","level":"INFO","message":"request complete","status":200,"elapsed_ms":12,"target":"b4hub::logging","span":{"device_id":"0192f0…","method":"POST","path":"/v1/changes","request_id":"0192f0…","name":"request"}}
+```

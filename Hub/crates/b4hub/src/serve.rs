@@ -5,13 +5,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::routing::{delete, get, post};
-use axum::Router;
+use axum::{middleware, Router};
 use b4hub_db::Db;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
 
 use crate::auth::LastTouched;
 use crate::error::ApiError;
+use crate::logging;
 use crate::notify::Notifier;
 use crate::routes::{changes, devices, enroll, health, snapshot};
 
@@ -32,6 +33,9 @@ pub struct AppState {
     pub last_touched: LastTouched,
     /// Wakes long-polling pulls when a push commits (single replica in M8a).
     pub notifier: Notifier,
+    /// Whether a proxy in front of the hub sets the forwarding headers (`Settings::trust_proxy`),
+    /// so an inbound `X-Request-Id` is kept rather than replaced.
+    pub trust_proxy: bool,
 }
 
 impl AppState {
@@ -41,7 +45,13 @@ impl AppState {
             shutdown: Shutdown::default(),
             last_touched: LastTouched::default(),
             notifier: Notifier::default(),
+            trust_proxy: false,
         }
+    }
+
+    pub fn trust_proxy(mut self, trust_proxy: bool) -> AppState {
+        self.trust_proxy = trust_proxy;
+        self
     }
 }
 
@@ -71,6 +81,7 @@ impl Shutdown {
 }
 
 pub fn router(state: AppState) -> Router {
+    let trust_proxy = state.trust_proxy;
     Router::new()
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
@@ -82,6 +93,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/devices/self", delete(devices::revoke_self))
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
         .fallback(|| async { ApiError::not_found() })
+        .layer(middleware::from_fn_with_state(
+            trust_proxy,
+            logging::trace_request,
+        ))
         .with_state(state)
 }
 

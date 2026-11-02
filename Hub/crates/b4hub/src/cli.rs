@@ -1,5 +1,5 @@
-//! Command line, environment settings, and the five commands (`serve`, `migrate`, `seed`,
-//! `enroll`, `prune`).
+//! Command line, environment settings, and the commands (`serve`, `migrate`, `seed`, `enroll`,
+//! `prune`).
 //!
 //! A missing or malformed setting is a [`ConfigError`] that names the setting and never echoes
 //! its value (the database URLs carry passwords); `main` prints it on one line and exits 2.
@@ -168,6 +168,13 @@ impl CliError {
     }
 }
 
+/// How `b4hub` writes its log: one line of text, or one JSON object per line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogFormat {
+    Text,
+    Json,
+}
+
 /// A snapshot of the environment, so settings parse the same way in tests as in production.
 #[derive(Debug, Clone, Default)]
 pub struct Settings {
@@ -265,6 +272,31 @@ impl Settings {
             .map_err(|_| ConfigError::new("B4HUB_LOG", "is not a valid tracing filter"))
     }
 
+    /// `B4HUB_LOG_FORMAT`, `text` or `json`; by default `text` when stderr is a terminal and
+    /// `json` otherwise, so a local run stays readable and a container gets one object per line.
+    pub fn log_format(&self, stderr_is_terminal: bool) -> Result<LogFormat, ConfigError> {
+        match self.var("B4HUB_LOG_FORMAT") {
+            None if stderr_is_terminal => Ok(LogFormat::Text),
+            None => Ok(LogFormat::Json),
+            Some("text") => Ok(LogFormat::Text),
+            Some("json") => Ok(LogFormat::Json),
+            Some(_) => Err(ConfigError::new("B4HUB_LOG_FORMAT", "must be text or json")),
+        }
+    }
+
+    /// `B4HUB_TRUST_X_FORWARDED_FOR` (`1` or `true`), default false: the hub is behind a proxy
+    /// that sets the forwarding headers, so an inbound `X-Request-Id` is the edge's and is kept.
+    pub fn trust_proxy(&self) -> Result<bool, ConfigError> {
+        match self.var("B4HUB_TRUST_X_FORWARDED_FOR") {
+            None | Some("0" | "false") => Ok(false),
+            Some("1" | "true") => Ok(true),
+            Some(_) => Err(ConfigError::new(
+                "B4HUB_TRUST_X_FORWARDED_FOR",
+                "must be 1, true, 0, or false",
+            )),
+        }
+    }
+
     /// `DATABASE_URL` (or the contents of the file `DATABASE_URL_FILE` names): the `b4hub_app`
     /// connection.
     pub fn database_url(&self) -> Result<String, ConfigError> {
@@ -337,6 +369,7 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
     let wait = settings.shutdown_wait()?;
     let public_url = settings.public_url()?;
     let retention = settings.retention()?;
+    let trust_proxy = settings.trust_proxy()?;
     let db = Db::connect(&settings.database_url()?).await?;
     refuse_privileged_connection(&db).await?;
     let listener = TcpListener::bind(addr).await?;
@@ -345,9 +378,10 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
         public_url = public_url.as_ref().map(Url::as_str),
         shutdown_wait_ms = wait.as_millis() as u64,
         retention_days = retention.as_secs() / SECONDS_PER_DAY,
+        trust_proxy,
         "serving"
     );
-    let state = AppState::new(db.clone());
+    let state = AppState::new(db.clone()).trust_proxy(trust_proxy);
     let pruning = tokio::spawn(serve::prune_loop(
         db,
         retention,
@@ -495,6 +529,50 @@ mod tests {
         assert_eq!(s.public_url().unwrap(), None);
         assert_eq!(s.retention().unwrap(), Duration::from_secs(30 * 86_400));
         assert!(s.log_filter().is_ok());
+    }
+
+    #[test]
+    fn trust_proxy_reads_the_shared_flag() {
+        assert!(!settings(&[]).trust_proxy().unwrap());
+        assert!(!settings(&[("B4HUB_TRUST_X_FORWARDED_FOR", "0")])
+            .trust_proxy()
+            .unwrap());
+        assert!(!settings(&[("B4HUB_TRUST_X_FORWARDED_FOR", "false")])
+            .trust_proxy()
+            .unwrap());
+        assert!(settings(&[("B4HUB_TRUST_X_FORWARDED_FOR", "1")])
+            .trust_proxy()
+            .unwrap());
+        assert!(settings(&[("B4HUB_TRUST_X_FORWARDED_FOR", "true")])
+            .trust_proxy()
+            .unwrap());
+        let error = settings(&[("B4HUB_TRUST_X_FORWARDED_FOR", "yes")])
+            .trust_proxy()
+            .unwrap_err();
+        assert_eq!(error.name, "B4HUB_TRUST_X_FORWARDED_FOR");
+    }
+
+    #[test]
+    fn log_format_defaults_by_terminal_and_accepts_text_or_json() {
+        assert_eq!(settings(&[]).log_format(true).unwrap(), LogFormat::Text);
+        assert_eq!(settings(&[]).log_format(false).unwrap(), LogFormat::Json);
+        assert_eq!(
+            settings(&[("B4HUB_LOG_FORMAT", "text")])
+                .log_format(false)
+                .unwrap(),
+            LogFormat::Text
+        );
+        assert_eq!(
+            settings(&[("B4HUB_LOG_FORMAT", "json")])
+                .log_format(true)
+                .unwrap(),
+            LogFormat::Json
+        );
+        let error = settings(&[("B4HUB_LOG_FORMAT", "yaml")])
+            .log_format(true)
+            .unwrap_err();
+        assert_eq!(error.name, "B4HUB_LOG_FORMAT");
+        assert!(!error.to_string().contains("yaml"));
     }
 
     #[test]
