@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
+use b4hub::instances::InstancesState;
 use b4hub::relay::{Relay, SendError, WallClock};
 use b4hub::serve::{self, AppState};
 use b4hub_core::relay::{RelayMessage, RelayMethod, WireError};
@@ -179,6 +180,8 @@ pub struct Hub {
     pub addr: SocketAddr,
     /// The server task; it finishes after `state.shutdown.trigger()` once its links are closed.
     pub server: JoinHandle<std::io::Result<()>>,
+    /// Delivers the shutdown signal as SIGTERM would (see [`Hub::signal`]).
+    signal: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 /// Migrates the database, opens a loopback listener, and serves the hub on it, on the real
@@ -196,8 +199,19 @@ pub async fn spawn_hub_paused(pool: &PgPool) -> Hub {
 }
 
 pub async fn spawn_hub_with_clock(pool: &PgPool, clock: WallClock) -> Hub {
+    spawn_hub_with(pool, clock, InstancesState::default()).await
+}
+
+/// One of several hub instances sharing the test database: its own instance id, heartbeating every
+/// `heartbeat` (so its liveness window is four of those), on the real system clock.
+pub async fn spawn_instance(pool: &PgPool, heartbeat: Duration) -> Hub {
+    spawn_hub_with(pool, WallClock::system(), InstancesState::new(heartbeat)).await
+}
+
+pub async fn spawn_hub_with(pool: &PgPool, clock: WallClock, instances: InstancesState) -> Hub {
     let (admin, mut state) = migrated(pool).await;
     state.relay = Relay::with_clock(clock);
+    state.instances = instances;
     // Open several connections now: a pool that must connect lazily while a test's clock is
     // paused would otherwise race its own acquire timeout.
     let mut warm = Vec::new();
@@ -209,8 +223,12 @@ pub async fn spawn_hub_with_clock(pool: &PgPool, clock: WallClock) -> Hub {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let mut stopping = state.shutdown.subscribe();
+    let (signal_tx, signalled) = tokio::sync::oneshot::channel::<()>();
     let signal = async move {
-        let _ = stopping.wait_for(|down| *down).await;
+        tokio::select! {
+            _ = stopping.wait_for(|down| *down) => {}
+            _ = signalled => {}
+        }
     };
     let server = tokio::spawn(serve::run(
         listener,
@@ -223,6 +241,7 @@ pub async fn spawn_hub_with_clock(pool: &PgPool, clock: WallClock) -> Hub {
         state,
         addr,
         server,
+        signal: Some(signal_tx),
     }
 }
 
@@ -235,6 +254,15 @@ impl Drop for Hub {
 }
 
 impl Hub {
+    /// Sends the shutdown signal the way SIGTERM reaches `b4hub serve`: `serve::run` runs its whole
+    /// drain (held commands answered, then the links closed, then the claims released). Triggering
+    /// `state.shutdown` directly skips the first step.
+    pub fn signal(&mut self) {
+        if let Some(signal) = self.signal.take() {
+            let _ = signal.send(());
+        }
+    }
+
     /// Ensures `username` exists in the org `org_slug` (created if needed).
     pub async fn user(&self, org_slug: &str, username: &str) -> Seeded {
         let seeded = orgs::seed(
@@ -367,6 +395,8 @@ impl Hub {
 pub struct Refused {
     pub status: u16,
     pub body: Value,
+    /// The refusal's `Set-Cookie` header, if it had one.
+    pub set_cookie: Option<String>,
 }
 
 impl Refused {
@@ -398,6 +428,19 @@ impl FakeDevice {
         token: Option<&str>,
         protocol: Option<&str>,
     ) -> Result<FakeDevice, Refused> {
+        FakeDevice::try_connect_with_cookie(addr, token, protocol, None)
+            .await
+            .map(|(device, _)| device)
+    }
+
+    /// Like [`FakeDevice::try_connect`], sending `cookie` as the `Cookie` header when given, and
+    /// returning the upgrade response's `Set-Cookie` with the device.
+    pub async fn try_connect_with_cookie(
+        addr: SocketAddr,
+        token: Option<&str>,
+        protocol: Option<&str>,
+        cookie: Option<&str>,
+    ) -> Result<(FakeDevice, Option<String>), Refused> {
         let mut request = format!("ws://{addr}/v1/devices/self/link")
             .into_client_request()
             .unwrap();
@@ -412,10 +455,21 @@ impl FakeDevice {
                 .headers_mut()
                 .insert("B4-Protocol", protocol.parse().unwrap());
         }
+        if let Some(cookie) = cookie {
+            request
+                .headers_mut()
+                .insert(header::COOKIE, cookie.parse().unwrap());
+        }
+        let set_cookie = |headers: &axum::http::HeaderMap| {
+            headers
+                .get(header::SET_COOKIE)
+                .map(|value| value.to_str().unwrap().to_string())
+        };
         match connect_async(request).await {
-            Ok((ws, _)) => Ok(FakeDevice { ws }),
+            Ok((ws, response)) => Ok((FakeDevice { ws }, set_cookie(response.headers()))),
             Err(tungstenite::Error::Http(response)) => Err(Refused {
                 status: response.status().as_u16(),
+                set_cookie: set_cookie(response.headers()),
                 body: response
                     .body()
                     .as_deref()

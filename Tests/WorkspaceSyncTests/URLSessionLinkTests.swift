@@ -23,6 +23,45 @@ struct URLSessionLinkTests {
     #expect(request.headers["b4-protocol"] == "1")
   }
 
+  @Test func cookiesGoOutOnTheUpgradeAndTheUpgradesCookiesComeBack() async throws {
+    let server = try await LoopbackHub.start(
+      .echo,
+      setCookies: [
+        "b4hub-instance=0190f5d0-0000-7000-8000-000000000001; Path=/; Max-Age=3600; Secure; HttpOnly",
+        "AWSALBAPP-0=opaque-value; Expires=Wed, 09 Nov 2026 10:00:00 GMT; Path=/",
+      ])
+    defer { server.stop() }
+    let socket = try await URLSessionHubLinkConnection().open(
+      url: server.url, token: "t", protocolVersion: 1,
+      cookies: ["b4hub-instance": "previous", "AWSALBAPP-0": "sticky"])
+    defer { socket.close(code: 1000) }
+    #expect(try await socket.receive() == LoopbackHub.hello)
+    let request = try #require(server.requests.first)
+    #expect(request.headers["cookie"] == "AWSALBAPP-0=sticky; b4hub-instance=previous")
+    #expect(
+      socket.responseCookies == [
+        "b4hub-instance": "0190f5d0-0000-7000-8000-000000000001", "AWSALBAPP-0": "opaque-value",
+      ])
+  }
+
+  @Test func noCookieHeaderWithoutCookies() async throws {
+    let server = try await LoopbackHub.start(.echo)
+    defer { server.stop() }
+    let socket = try await URLSessionHubLinkConnection().open(url: server.url, token: "t", protocolVersion: 1)
+    defer { socket.close(code: 1000) }
+    _ = try await socket.receive()
+    #expect(try #require(server.requests.first).headers["cookie"] == nil)
+    #expect(socket.responseCookies.isEmpty)
+  }
+
+  @Test func aRelocatedUpgradeIsRefusedWithItsStatus() async throws {
+    let server = try await LoopbackHub.start(.refuse(409))
+    defer { server.stop() }
+    await #expect(throws: HubLinkError.refused(status: 409)) {
+      _ = try await URLSessionHubLinkConnection().open(url: server.url, token: "t", protocolVersion: 1)
+    }
+  }
+
   @Test func theHubURLPathIsKeptAndTheSchemeBecomesWebSocket() throws {
     #expect(
       URLSessionHubLinkConnection.linkURL(for: URL(string: "https://hub.example.com")!).absoluteString
@@ -151,7 +190,8 @@ final class LoopbackHub: @unchecked Sendable {
     self.url = URL(string: "http://127.0.0.1:\(port)")!
   }
 
-  static func start(_ mode: Mode) async throws -> LoopbackHub {
+  /// `setCookies` are sent as `Set-Cookie` headers on the `101`.
+  static func start(_ mode: Mode, setCookies: [String] = []) async throws -> LoopbackHub {
     let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     let box = HubBox()
     let bootstrap = ServerBootstrap(group: group)
@@ -161,7 +201,9 @@ final class LoopbackHub: @unchecked Sendable {
           shouldUpgrade: { channel, head in
             box.hub?.record(head)
             if case .refuse = mode { return channel.eventLoop.makeSucceededFuture(nil) }
-            return channel.eventLoop.makeSucceededFuture(HTTPHeaders())
+            var headers = HTTPHeaders()
+            for cookie in setCookies { headers.add(name: "Set-Cookie", value: cookie) }
+            return channel.eventLoop.makeSucceededFuture(headers)
           },
           upgradePipelineHandler: { channel, _ in
             channel.eventLoop.makeCompletedFuture {

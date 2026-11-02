@@ -5,6 +5,7 @@
 pub mod auth;
 pub mod cli;
 pub mod error;
+pub mod instances;
 pub mod maintenance;
 pub mod notify;
 pub mod relay;

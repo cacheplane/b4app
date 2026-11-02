@@ -565,3 +565,21 @@ A new ALB has a new DNS name and, if the certificate was recreated, new validati
 Each `hub-v*` release also publishes the Helm chart whose version is in `Hub/chart/b4hub/Chart.yaml` (with `appVersion` set to the release's hub version) to GHCR as an OCI chart. The chart version is not derived from the tag: it is whatever `Chart.yaml` says at the release commit, and publishing the same chart version twice fails. So in the release PR, bump `version` in `Hub/chart/b4hub/Chart.yaml` whenever anything under `Hub/chart/` changed since the last release.
 
 A release is atomic: the image built from the release commit must be attested from `main`, then it gets the semver tags, then it deploys to production (with the `production` reviewer's approval), and only then is the chart published. A release cut from a `main` commit with no `sha-<sha>` image (a commit whose push did not touch `Hub/**` or the deploy files) fails in `promote`: dispatch `hub-image.yml` on `main` first (`gh workflow run hub-image.yml --ref main`; it builds `main`'s head, so do it while the release commit is still the head, and produces the `sha-` and `main` tags), then publish the release.
+
+### 13. Run two tasks (prod)
+
+The hub serves every link of one user on one instance (D-085), so production can run two tasks across two zones with rolling deploys and no outage.
+
+1. Deploy a hub image that includes M8e Part B (migration `0008_instances`; `/readyz` reports `"relay"` and `"instances"`). An older image must not run beside two tasks: it has no claims and would serve any user's links.
+2. In `envs/prod/main.tf` set `task_count = 2` and `desired_count = 2`, and `private_tasks = true` for the "next" tier's NAT (see `docs/deployment-architecture.md`, "Availability"). Merge, and let CI apply. `task_count > 1` switches the module to rolling deploys (minimum healthy 100 percent, maximum 200 percent) and turns on the target group's application-cookie stickiness on `b4hub-instance` (one hour). Terraform ignores `desired_count` drift on the running service, so also run `aws ecs update-service --cluster b4hub-prod --service b4hub-prod-hub --desired-count 2`.
+3. Check both tasks: `aws elbv2 describe-target-health --target-group-arn <hub target group>` shows two healthy targets, and repeated `curl -sS -D - https://hub.b4.run/readyz` shows `"relay": "ok", "instances": "ok"` and a `Set-Cookie: b4hub-instance=` naming each instance in turn.
+4. Every task writes a heartbeat every `B4HUB_HEARTBEAT_MS` (5 s; leave it unset so all tasks agree). A device whose user is served by the other task is answered `409 relocated` and retries at once; after its first link it carries the ALB's cookie and reconnects straight to its task.
+
+What a rolling deploy looks like afterwards. ECS starts the new tasks first; each registers its instance, passes `/readyz`, and joins the target group. For each old task, in order:
+
+1. The ALB deregisters it: no new connection reaches it, its open links stay up, and it still heartbeats and holds its users' claims.
+2. After `deregistration_delay` (5 s with `task_count > 1`, set short on purpose; 60 s with one task) ECS sends SIGTERM. A device of one of its users that re-links inside those 5 s lands on a new task and is refused `409 relocated`: its three immediate retries fail the same way and it backs off (1 s, 2 s, ...), which carries it past the window.
+3. On SIGTERM the hub fails `/readyz`, answers every command it was holding for an offline Mac `device_offline`, closes its links with 1001, and then deletes its claims and its instance row.
+4. Its devices reconnect (their cookie names a deregistered target, so the ALB picks a live one), reach a new task, and are claimed there at once.
+
+Nothing is down at any point: each device reconnects about once per deploy, as before, and resumes from its cursor; a device that re-linked during step 2 is a few seconds later. A task that crashes instead of draining keeps its users for up to 20 s (four heartbeats), after which the next link of each user is claimed by a live task; until then those devices see `409 relocated` and back off.

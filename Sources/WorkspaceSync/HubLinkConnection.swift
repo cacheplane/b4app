@@ -22,6 +22,14 @@ public protocol HubLinkSocket: Sendable {
   func receive() async throws -> RelayMessage
   /// Closes the socket; a pending `receive` throws `.closed(code:)`.
   func close(code: Int)
+  /// The cookies (name to value) the upgrade's `101` response set: the hub's `b4hub-instance` and, behind
+  /// an AWS load balancer with application-cookie stickiness, its `AWSALBAPP-*`. `RelayLink` sends them
+  /// back on its next upgrade so the load balancer reaches the same instance.
+  var responseCookies: [String: String] { get }
+}
+
+extension HubLinkSocket {
+  public var responseCookies: [String: String] { [:] }
 }
 
 /// Opens the link. A real one speaks WebSocket over `URLSession`; a fake scripts the hub's side.
@@ -30,6 +38,28 @@ public protocol HubLinkConnection: Sendable {
   /// `token` and the `B4-Protocol` header, and returns once the upgrade is accepted. A refused upgrade
   /// throws `HubLinkError.refused(status:)`.
   func open(url: URL, token: String, protocolVersion: Int) async throws -> any HubLinkSocket
+  /// The same, also sending `cookies` (name to value) as the `Cookie` header when there are any.
+  func open(
+    url: URL, token: String, protocolVersion: Int, cookies: [String: String]
+  ) async throws
+    -> any HubLinkSocket
+}
+
+extension HubLinkConnection {
+  /// A connection that cannot send cookies opens without them.
+  public func open(
+    url: URL, token: String, protocolVersion: Int, cookies: [String: String]
+  ) async throws
+    -> any HubLinkSocket
+  {
+    try await open(url: url, token: token, protocolVersion: protocolVersion)
+  }
+
+  /// `cookies` as a `Cookie` header value, sorted by name so it is stable; nil when there are none.
+  public static func cookieHeader(_ cookies: [String: String]) -> String? {
+    guard !cookies.isEmpty else { return nil }
+    return cookies.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "; ")
+  }
 }
 
 // MARK: - URLSession
@@ -62,11 +92,25 @@ public struct URLSessionHubLinkConnection: HubLinkConnection {
   }
 
   public func open(url: URL, token: String, protocolVersion: Int) async throws -> any HubLinkSocket {
+    try await open(url: url, token: token, protocolVersion: protocolVersion, cookies: [:])
+  }
+
+  /// Each socket has its own ephemeral `URLSession`, so nothing is kept between upgrades: `cookies` are
+  /// sent explicitly, and the `101`'s cookies are read back into `responseCookies`.
+  public func open(
+    url: URL, token: String, protocolVersion: Int, cookies: [String: String]
+  ) async throws
+    -> any HubLinkSocket
+  {
     var request = URLRequest(url: Self.linkURL(for: url))
     request.timeoutInterval = requestTimeout
+    request.httpShouldHandleCookies = false
     request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     request.setValue(String(protocolVersion), forHTTPHeaderField: "B4-Protocol")
-    let socket = URLSessionHubLinkSocket(request: request)
+    if let cookie = Self.cookieHeader(cookies) {
+      request.setValue(cookie, forHTTPHeaderField: "Cookie")
+    }
+    let socket = URLSessionHubLinkSocket(request: request, cookieURL: url)
     do {
       try await socket.awaitOpen()
     } catch {
@@ -90,8 +134,16 @@ final class URLSessionHubLinkSocket: NSObject, HubLinkSocket, URLSessionWebSocke
   private var openResult: Result<Void, any Error>?
   private var peerCloseCode: Int?
   private var localCloseCode: Int?
+  private var cookiesSet: [String: String] = [:]
+  /// The hub URL as `https`, which `HTTPCookie` parses `Set-Cookie` against. Always `https`, so a
+  /// `Secure` cookie from a plain-`http` hub (a local Compose hub, a test) is read too: this end replays
+  /// the cookies itself and keeps no cookie store.
+  private let cookieURL: URL
 
-  init(request: URLRequest) {
+  init(request: URLRequest, cookieURL: URL) {
+    var components = URLComponents(url: cookieURL, resolvingAgainstBaseURL: false)
+    components?.scheme = "https"
+    self.cookieURL = components?.url ?? cookieURL
     super.init()
     let session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
     let task = session.webSocketTask(with: request)
@@ -159,6 +211,8 @@ final class URLSessionHubLinkSocket: NSObject, HubLinkSocket, URLSessionWebSocke
     }
   }
 
+  var responseCookies: [String: String] { lock.withLock { cookiesSet } }
+
   func close(code: Int) {
     let (task, session) = lock.withLock { () -> (URLSessionWebSocketTask?, URLSession?) in
       if localCloseCode == nil { localCloseCode = code }
@@ -194,6 +248,15 @@ final class URLSessionHubLinkSocket: NSObject, HubLinkSocket, URLSessionWebSocke
   func urlSession(
     _ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?
   ) {
+    if let response = webSocketTask.response as? HTTPURLResponse {
+      let fields = response.allHeaderFields.reduce(into: [String: String]()) { fields, field in
+        if let name = field.key as? String, let value = field.value as? String { fields[name] = value }
+      }
+      let cookies = HTTPCookie.cookies(withResponseHeaderFields: fields, for: cookieURL)
+      lock.withLock {
+        for cookie in cookies { cookiesSet[cookie.name] = cookie.value }
+      }
+    }
     finishOpen(.success(()))
   }
 
@@ -224,11 +287,19 @@ public final class FakeHubLinkConnection: HubLinkConnection, @unchecked Sendable
   private var scripted: [Result<Void, any Error>] = []
   private let opened = FakeChannel<FakeHubLinkSocket>()
   private var count = 0
+  private var sentCookies: [[String: String]] = []
+  private var nextCookies: [String: String] = [:]
 
   public init() {}
 
   /// How many times `open` was called, failed or not.
   public var openCount: Int { lock.withLock { count } }
+
+  /// The cookies each `open` sent, in order, failed opens included.
+  public var cookiesSent: [[String: String]] { lock.withLock { sentCookies } }
+
+  /// The cookies the next successful open's upgrade response sets (as `responseCookies`).
+  public func setCookiesOnNextOpen(_ cookies: [String: String]) { lock.withLock { nextCookies = cookies } }
 
   /// The next `times` opens throw `error`.
   public func failNext(_ error: any Error, times: Int = 1) {
@@ -247,13 +318,26 @@ public final class FakeHubLinkConnection: HubLinkConnection, @unchecked Sendable
   }
 
   public func open(url: URL, token: String, protocolVersion: Int) async throws -> any HubLinkSocket {
-    let failure = lock.withLock { () -> (any Error)? in
+    try await open(url: url, token: token, protocolVersion: protocolVersion, cookies: [:])
+  }
+
+  public func open(
+    url: URL, token: String, protocolVersion: Int, cookies: [String: String]
+  ) async throws
+    -> any HubLinkSocket
+  {
+    let (failure, setCookies) = lock.withLock { () -> ((any Error)?, [String: String]) in
       count += 1
-      guard !scripted.isEmpty, case .failure(let error) = scripted.removeFirst() else { return nil }
-      return error
+      sentCookies.append(cookies)
+      guard !scripted.isEmpty, case .failure(let error) = scripted.removeFirst() else {
+        defer { nextCookies = [:] }
+        return (nil, nextCookies)
+      }
+      return (error, [:])
     }
     if let failure { throw failure }
-    let socket = FakeHubLinkSocket(url: url, token: token, protocolVersion: protocolVersion)
+    let socket = FakeHubLinkSocket(
+      url: url, token: token, protocolVersion: protocolVersion, responseCookies: setCookies)
     opened.push(socket)
     return socket
   }
@@ -266,6 +350,7 @@ public final class FakeHubLinkSocket: HubLinkSocket, @unchecked Sendable {
   /// The bearer token the device opened with.
   public let token: String
   public let protocolVersion: Int
+  public let responseCookies: [String: String]
 
   private let lock = NSLock()
   private let toDevice = FakeChannel<RelayMessage?>()
@@ -273,10 +358,11 @@ public final class FakeHubLinkSocket: HubLinkSocket, @unchecked Sendable {
   private var deviceClose: Int?
   private var sentLog: [RelayMessage] = []
 
-  init(url: URL, token: String, protocolVersion: Int) {
+  init(url: URL, token: String, protocolVersion: Int, responseCookies: [String: String] = [:]) {
     self.url = url
     self.token = token
     self.protocolVersion = protocolVersion
+    self.responseCookies = responseCookies
   }
 
   /// The code the device closed with, once it has.

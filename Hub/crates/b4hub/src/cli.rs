@@ -18,6 +18,7 @@ use b4hub_db::orgs::{self, OrgChoice};
 use b4hub_db::settings::Maintenance;
 use b4hub_db::{devices, Db};
 
+use crate::instances::InstancesState;
 use crate::maintenance;
 use crate::serve::{self, AppState};
 
@@ -25,6 +26,7 @@ const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_SHUTDOWN_WAIT_MS: u64 = 30_000;
 const DEFAULT_RETENTION_DAYS: u32 = 30;
 const DEFAULT_MAINTENANCE_POLL_MS: u64 = 5000;
+const DEFAULT_HEARTBEAT_MS: u64 = 5000;
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 
 /// How long an enrollment code stays redeemable.
@@ -292,6 +294,27 @@ impl Settings {
         }
     }
 
+    /// `B4HUB_HEARTBEAT_MS`, default 5000: how often `serve` writes its instance heartbeat. Four
+    /// heartbeats are the liveness window (20 s by default) after which other instances take this
+    /// one's users; every instance of one hub must use the same value. A whole number of
+    /// milliseconds, at least 1.
+    pub fn heartbeat(&self) -> Result<Duration, ConfigError> {
+        match self.var("B4HUB_HEARTBEAT_MS") {
+            None => Ok(Duration::from_millis(DEFAULT_HEARTBEAT_MS)),
+            Some(raw) => raw
+                .parse::<u64>()
+                .ok()
+                .filter(|ms| *ms >= 1)
+                .map(Duration::from_millis)
+                .ok_or_else(|| {
+                    ConfigError::new(
+                        "B4HUB_HEARTBEAT_MS",
+                        "must be a whole number of milliseconds, at least 1",
+                    )
+                }),
+        }
+    }
+
     /// `B4HUB_PUBLIC_URL`, when set: the URL clients reach the hub at.
     pub fn public_url(&self) -> Result<Option<Url>, ConfigError> {
         match self.var("B4HUB_PUBLIC_URL") {
@@ -450,6 +473,7 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
     let retention = settings.retention()?;
     let trust_proxy = settings.trust_proxy()?;
     let maintenance_poll = settings.maintenance_poll()?;
+    let heartbeat = settings.heartbeat()?;
     let db = Db::connect(&settings.database_url()?).await?;
     refuse_privileged_connection(&db).await?;
     let listener = TcpListener::bind(addr).await?;
@@ -460,15 +484,18 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
         retention_days = retention.as_secs() / SECONDS_PER_DAY,
         trust_proxy,
         maintenance_poll_ms = maintenance_poll.as_millis() as u64,
+        heartbeat_ms = heartbeat.as_millis() as u64,
         "serving"
     );
     let mut state = AppState::new(db.clone());
     state.public_url = public_url;
+    state.instances = InstancesState::new(heartbeat);
     // Know the switch before the first request, not one poll later.
     maintenance::refresh(&db, &state.maintenance).await;
     let pruning = tokio::spawn(serve::prune_loop(
         db.clone(),
         retention,
+        state.instances.alive_within(),
         serve::PRUNE_INTERVAL,
         state.shutdown.clone(),
     ));
@@ -620,6 +647,25 @@ mod tests {
         assert_eq!(s.public_url().unwrap(), None);
         assert_eq!(s.retention().unwrap(), Duration::from_secs(30 * 86_400));
         assert!(s.log_filter().is_ok());
+    }
+
+    #[test]
+    fn heartbeat_is_milliseconds_with_a_five_second_default() {
+        assert_eq!(
+            settings(&[]).heartbeat().unwrap(),
+            Duration::from_millis(5000)
+        );
+        assert_eq!(
+            settings(&[("B4HUB_HEARTBEAT_MS", "250")])
+                .heartbeat()
+                .unwrap(),
+            Duration::from_millis(250)
+        );
+        for bad in ["0", "-1", "soon"] {
+            assert!(settings(&[("B4HUB_HEARTBEAT_MS", bad)])
+                .heartbeat()
+                .is_err());
+        }
     }
 
     #[test]

@@ -74,12 +74,16 @@ resource "aws_lb" "this" {
 }
 
 resource "aws_lb_target_group" "hub" {
-  name                 = "${local.name}-hub"
-  target_type          = "ip"
-  port                 = 8080
-  protocol             = "HTTP"
-  vpc_id               = aws_vpc.this.id
-  deregistration_delay = 60
+  name        = "${local.name}-hub"
+  target_type = "ip"
+  port        = 8080
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.this.id
+  # With one task the ALB's 60 s drain covers a recreate deploy. With more, the hub drains itself on
+  # SIGTERM (holds answered, links closed 1001, claims released; D-085), and a long delay would keep
+  # a deregistered task holding its users' claims while the ALB sends their reconnects elsewhere,
+  # where they are refused `409 relocated`. So ECS's SIGTERM follows deregistration after 5 s.
+  deregistration_delay = var.task_count > 1 ? 5 : 60
 
   health_check {
     path                = "/readyz"
@@ -87,6 +91,17 @@ resource "aws_lb_target_group" "hub" {
     healthy_threshold   = 2
     unhealthy_threshold = 3
     matcher             = "200"
+  }
+
+  # The relay serves each user's links on one hub instance (D-085). With more than one task, the
+  # hub sets the `b4hub-instance` cookie on /readyz and on accepted link upgrades, and the ALB adds
+  # its AWSALBAPP-* cookie naming that target, so a device's reconnect lands where its user is
+  # served. One task needs no stickiness.
+  stickiness {
+    type            = "app_cookie"
+    cookie_name     = "b4hub-instance"
+    cookie_duration = 3600
+    enabled         = var.task_count > 1
   }
 }
 

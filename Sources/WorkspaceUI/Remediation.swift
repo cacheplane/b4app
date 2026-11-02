@@ -117,7 +117,7 @@ public struct Remediation: Equatable, Sendable {
       return Remediation(message: error.message, action: .none)
     // The relay's codes reach the user as their own message; the phone's views word them (M8c).
     case .deviceOffline, .commandExpired, .relayTimeout, .rateLimited, .linkReplaced, .clientTooOld,
-      .watchLimit:
+      .watchLimit, .relocated:
       return Remediation(message: error.message, action: .none)
     }
   }
