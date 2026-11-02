@@ -797,6 +797,7 @@ async fn the_prune_loop_prunes_and_stops_promptly_on_shutdown(pool: PgPool) {
     let task = tokio::spawn(serve::prune_loop(
         state.db.clone(),
         Duration::from_secs(86_400),
+        Duration::from_secs(20),
         Duration::from_secs(3600),
         state.shutdown.clone(),
     ));

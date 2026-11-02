@@ -33,7 +33,7 @@ private func parse(_ json: String) throws -> ParsedCommand { try parseCommand(Da
       .serverRestart,
       .serverStop, .serverInspect, .workspaceStopLocalWork, .workspaceReconcile, .databaseBackup,
       .databaseRestore, .databaseImportSQLite, .hubJoin, .hubLeave, .projectCreate, .projectUpdate,
-      .projectRename, .projectDelete, .threadMarkRead, .threadStart, .settingsUpdate,
+      .projectRename, .projectDelete, .threadMarkRead, .threadStart, .settingsUpdate, .connectionUpdate,
       .accountPasskeyFinish, .accountAppleFinish, .accountCompleteProfile, .accountLogout,
       .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice,
     ]

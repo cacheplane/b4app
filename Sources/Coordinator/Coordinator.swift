@@ -16,6 +16,8 @@ public struct CoordinatorOptions: Sendable {
   /// creates its own data directory (sign-in plan, Task 3). Nil, the default, adopts nothing; the
   /// gate that decides is `LegacyAdoption.planIfExplicitLocal`.
   public var legacyAdoption: LegacyAdoption.Plan?
+  /// The waits between tries of a connection check that found its runtime unreachable.
+  public var checkRetryDelays: [Duration]
   /// Overrides the relay link's WebSocket (tests inject a `FakeHubLinkConnection`); nil uses
   /// `URLSessionHubLinkConnection`.
   public var hubLinkConnection: (any HubLinkConnection)?
@@ -30,7 +32,7 @@ public struct CoordinatorOptions: Sendable {
     secretStore: (any SecretStore)? = nil, adapterFactory: SessionService.AdapterFactory? = nil,
     hubAPIFactory: HubSync.APIFactory? = nil, hubLinkConnection: (any HubLinkConnection)? = nil,
     powerAssertions: (any PowerAssertions)? = nil, legacyAdoption: LegacyAdoption.Plan? = nil,
-    flavor: Flavor = .current
+    flavor: Flavor = .current, checkRetryDelays: [Duration] = [.seconds(1), .seconds(3)]
   ) {
     self.flavor = flavor
     self.environment = environment
@@ -42,6 +44,7 @@ public struct CoordinatorOptions: Sendable {
     self.adapterFactory = adapterFactory
     self.hubAPIFactory = hubAPIFactory
     self.legacyAdoption = legacyAdoption
+    self.checkRetryDelays = checkRetryDelays
     self.hubLinkConnection = hubLinkConnection
     self.powerAssertions = powerAssertions
   }
@@ -184,7 +187,7 @@ public enum Coordinator {
           paths: paths, environment: options.environment, secretStore: options.secretStore,
           eventLog: eventLog, diagnostics: diagnostics, adapterFactory: options.adapterFactory,
           hubAPIFactory: options.hubAPIFactory, hubLinkConnection: options.hubLinkConnection,
-          powerAssertions: options.powerAssertions),
+          powerAssertions: options.powerAssertions, checkRetryDelays: options.checkRetryDelays),
         flavor: options.flavor))
     await diagnostics.attachAccounts { [accounts] in accounts.current }
     // Restore the active account (or adopt a joined `workspace`) before the socket opens, so the first

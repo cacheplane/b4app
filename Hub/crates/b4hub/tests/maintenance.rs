@@ -254,6 +254,26 @@ async fn maintenance_pauses_writes_and_keeps_reads_and_readiness(pool: PgPool) {
         }})
     );
 
+    // The Mac's pairing-code mint is a write too.
+    let (status, headers, body) = http(
+        &client,
+        "POST",
+        &format!("{base}/v1/pairing-codes"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(headers[header::RETRY_AFTER], "30");
+    assert_eq!(
+        body,
+        json!({"error": {
+            "kind": "execution_error",
+            "message": "the hub is in maintenance: swapping the disk",
+            "details": {"code": "maintenance"},
+        }})
+    );
+
     // A bad token is still a 401, since authentication runs before the guard.
     let (status, _, _) = http(
         &client,
@@ -296,10 +316,17 @@ async fn maintenance_pauses_writes_and_keeps_reads_and_readiness(pool: PgPool) {
     let (status, _, _) = http(&client, "GET", &format!("{base}/v1/me"), Some(&token), None).await;
     assert_eq!(status, StatusCode::OK);
     let (status, _, body) = http(&client, "GET", &format!("{base}/readyz"), None, None).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         body,
-        json!({"ok": true, "migrations": "current", "minClientProtocol": 1, "maintenance": "read_only"})
+        json!({
+            "ok": true,
+            "migrations": "current",
+            "minClientProtocol": 1,
+            "relay": "ok",
+            "instances": "ok",
+            "maintenance": "read_only",
+        })
     );
 
     run(&cli_settings, &["off"]).await.unwrap();

@@ -96,7 +96,7 @@ public actor Router {
       .workspaceActiveWork, .workspaceStopLocalWork, .workspaceReconcile, .databaseStatus, .databaseBackup,
       .databaseRestore, .databaseImportSQLite, .hubStatus, .hubLeave, .hubPair, .hubPairStatus,
       .settingsRead, .settingsUpdate, .projectList, .projectCreate, .projectUpdate, .projectRename,
-      .projectDelete, .threadMarkRead:
+      .projectDelete, .threadMarkRead, .usageRead, .connectionUpdate:
       return true
     }
   }
@@ -334,6 +334,11 @@ public actor Router {
       return try JSONValue(encoding: status)
     case .hubLeave:
       throw WorkspaceError(.internalError, "hub.leave runs through the account manager.")
+    case .usageRead:
+      return try JSONValue(encoding: try await sessions.usageRead())
+    case .connectionUpdate:
+      return try JSONValue(
+        encoding: try await sessions.connectionUpdate(try command.params(for: ConnectionUpdate.self)))
     case .hubPair:
       return try JSONValue(encoding: try await scope.hub.pair())
     case .hubPairStatus:

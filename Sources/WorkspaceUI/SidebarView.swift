@@ -2,7 +2,7 @@ import SwiftUI
 import WorkspaceProtocol
 
 /// The sidebar on both platforms: New thread, Search, and More at the top, then the threads; the
-/// profile button sits at the bottom. No surfaces: Connections, Local servers, and Diagnostics live in
+/// profile button sits at the bottom. No surfaces: Connections, B4 projects, and Diagnostics live in
 /// Settings, reached from the profile menu.
 struct SidebarView: View {
   @Bindable var model: WorkspaceModel

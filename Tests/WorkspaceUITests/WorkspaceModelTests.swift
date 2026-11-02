@@ -33,7 +33,8 @@ struct ModelHarness {
     try signInTestAccount(paths)
     guard
       case .running(let coordinator) = try await Coordinator.start(
-        options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
+        options: CoordinatorOptions(
+          paths: paths, environment: env, secretStore: MemorySecretStore(), checkRetryDelays: [.zero, .zero]))
     else { throw WorkspaceError(.internalError, "expected running") }
     let socketPath = paths.socketPath
     let model = WorkspaceModel(transportProvider: {

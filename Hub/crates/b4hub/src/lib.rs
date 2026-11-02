@@ -8,6 +8,7 @@ pub mod auth_limits;
 pub mod cli;
 pub mod config;
 pub mod error;
+pub mod instances;
 pub mod logging;
 pub mod maintenance;
 pub mod notify;

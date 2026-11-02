@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 
 use crate::auth::AuthedDevice;
 use crate::error::ApiError;
+use crate::maintenance::WritesAllowed;
 use crate::serve::AppState;
 
 /// Only a `macos` device mints; any other caller is told `not_found`, as if the route did not
@@ -16,6 +17,7 @@ use crate::serve::AppState;
 pub async fn create(
     State(state): State<AppState>,
     device: AuthedDevice,
+    WritesAllowed: WritesAllowed,
 ) -> Result<Json<Value>, ApiError> {
     if device.platform != Platform::Macos {
         return Err(ApiError::not_found());

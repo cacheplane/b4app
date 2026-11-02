@@ -7,24 +7,35 @@
 //! `DEAD_LINK`, when something asks it to ([`Close`]), or when the hub shuts down. When it ends it
 //! leaves the registry, records the time of the link's last frame as `last_seen_at`, and, for a
 //! Mac, tells the user's phones.
+//!
+//! With more than one instance, the upgrade first claims the device's user for this instance
+//! (`b4hub_db::instances::claim_user`); a user served by another live instance is refused `409
+//! relocated` before any socket exists. [`probe`] runs the same link task over an in-memory socket
+//! for `/readyz`.
 
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
+use axum::http::header::SET_COOKIE;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use b4hub_core::relay::{
-    RelayMessage, Role, CLIENT_FRAME_MAX, DEAD_LINK, HEARTBEAT_SECONDS, HOST_FRAME_MAX,
+    RelayMessage, RelayMethod, Role, WireError, CLIENT_FRAME_MAX, DEAD_LINK, HEARTBEAT_SECONDS,
+    HOST_FRAME_MAX,
 };
 use b4hub_db::devices::{self, Platform};
+use b4hub_db::instances::Claim;
 use b4hub_db::relay::set_last_seen;
+use std::future::Future;
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use super::registry::{Close, Identity, LinkHandle, LiveLink, Registration};
 use super::{invalid_frame, route, PROTOCOL};
 use crate::auth::AuthedDevice;
 use crate::error::ApiError;
+use crate::maintenance;
 use crate::serve::AppState;
 
 /// The header a device names its link protocol in; a missing header counts as 1.
@@ -43,6 +54,66 @@ const WIRE_MAX: usize = 1024 * 1024;
 /// How long the hub waits, after sending a close frame, for the device's own before it drops the
 /// connection.
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
+
+/// How long [`probe`] may take, `hello` exchange included.
+pub const PROBE_WAIT: Duration = Duration::from_secs(2);
+
+/// How long [`probe`] waits for its link task to finish after the exchange before aborting it, so
+/// a failing `/readyz` still answers well inside the container `HEALTHCHECK --timeout=4s`.
+const PROBE_JOIN_WAIT: Duration = Duration::from_millis(500);
+
+/// What a link task reads and writes: the upgraded WebSocket, or the readiness probe's in-memory
+/// socket. The link task is the same code over either.
+pub trait LinkSocket: Send {
+    /// The next message; `None` once the peer is gone, `Err` when the socket failed.
+    fn recv(&mut self) -> impl Future<Output = Option<Result<Message, ()>>> + Send;
+    fn send(&mut self, message: Message) -> impl Future<Output = Result<(), ()>> + Send;
+}
+
+impl LinkSocket for WebSocket {
+    async fn recv(&mut self) -> Option<Result<Message, ()>> {
+        WebSocket::recv(self)
+            .await
+            .map(|message| message.map_err(|_| ()))
+    }
+
+    async fn send(&mut self, message: Message) -> Result<(), ()> {
+        WebSocket::send(self, message).await.map_err(|_| ())
+    }
+}
+
+/// One end of an in-memory socket: the messages the other end sent, and the way to send it more.
+struct MemorySocket {
+    incoming: mpsc::Receiver<Message>,
+    outgoing: mpsc::Sender<Message>,
+}
+
+impl MemorySocket {
+    fn pair() -> (MemorySocket, MemorySocket) {
+        let (a_tx, a_rx) = mpsc::channel(16);
+        let (b_tx, b_rx) = mpsc::channel(16);
+        (
+            MemorySocket {
+                incoming: a_rx,
+                outgoing: b_tx,
+            },
+            MemorySocket {
+                incoming: b_rx,
+                outgoing: a_tx,
+            },
+        )
+    }
+}
+
+impl LinkSocket for MemorySocket {
+    async fn recv(&mut self) -> Option<Result<Message, ()>> {
+        self.incoming.recv().await.map(Ok)
+    }
+
+    async fn send(&mut self, message: Message) -> Result<(), ()> {
+        self.outgoing.send(message).await.map_err(|_| ())
+    }
+}
 
 pub async fn upgrade(
     State(state): State<AppState>,
@@ -66,19 +137,120 @@ pub async fn upgrade(
     let info = devices::me(&state.db, device.org_id, device.device_id)
         .await?
         .ok_or_else(ApiError::unauthorized)?;
+    // Every link of one user is served by one instance. A user another live instance serves is
+    // refused here, before any socket exists, so the device hears no `hello` and nothing about
+    // the refused link enters the registry. No cookie goes with the refusal: the load balancer
+    // would bind it to this (wrong) target.
+    let claim = b4hub_db::instances::claim_user(
+        &state.db,
+        device.user_id,
+        state.instances.id(),
+        state.instances.alive_within(),
+    )
+    .await?;
+    if let Claim::Other(owner) = claim {
+        tracing::info!(device = %device.device_id, owner = %owner, "link relocated");
+        return Err(ApiError::relocated(owner));
+    }
     let who = Identity {
         device_id: device.device_id,
         name: info.device_name,
         role: role_of(device.platform),
         user_id: device.user_id,
         org_id: device.org_id,
+        probe: false,
     };
     let live = state.relay.track();
-    Ok(upgrade
+    let cookie = state.instances.cookie();
+    let mut response = upgrade
         .max_message_size(WIRE_MAX)
         .max_frame_size(WIRE_MAX)
         .on_upgrade(move |socket| serve_link(state, who, protocol, socket, live))
-        .into_response())
+        .into_response();
+    response.headers_mut().insert(SET_COOKIE, cookie);
+    Ok(response)
+}
+
+/// Why [`probe`] failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeFailure {
+    /// No `hello` (and `pong`) within [`PROBE_WAIT`].
+    Timeout,
+    /// The link answered something else first, or ended.
+    Unexpected(&'static str),
+}
+
+/// The readiness probe: runs this instance's link task over an in-memory socket as the probe
+/// identity (which the registry never enters), expects `hello` and the client's `presence`, sends
+/// `ping`, expects `pong`, and closes, all within [`PROBE_WAIT`]. No device is minted and no row
+/// is written.
+pub async fn probe(state: &AppState) -> Result<(), ProbeFailure> {
+    let (hub_end, mut device) = MemorySocket::pair();
+    let live = state.relay.track();
+    let mut task = tokio::spawn(serve_link(
+        state.clone(),
+        Identity::probe(),
+        PROTOCOL,
+        hub_end,
+        live,
+    ));
+    let exchange = async {
+        match next_frame(&mut device).await? {
+            RelayMessage::Hello { .. } => {}
+            _ => return Err(ProbeFailure::Unexpected("the link did not say hello")),
+        }
+        match next_frame(&mut device).await? {
+            RelayMessage::Presence { .. } => {}
+            _ => return Err(ProbeFailure::Unexpected("no presence after hello")),
+        }
+        let ping = serde_json::to_string(&RelayMessage::Ping)
+            .map_err(|_| ProbeFailure::Unexpected("a ping does not encode"))?;
+        device
+            .send(Message::Text(ping.into()))
+            .await
+            .map_err(|()| ProbeFailure::Unexpected("the link stopped reading"))?;
+        match next_frame(&mut device).await? {
+            RelayMessage::Pong { .. } => Ok(()),
+            _ => Err(ProbeFailure::Unexpected("no pong")),
+        }
+    };
+    let outcome = match tokio::time::timeout(PROBE_WAIT, exchange).await {
+        Ok(outcome) => outcome,
+        Err(_) => Err(ProbeFailure::Timeout),
+    };
+    if outcome.is_err() {
+        // A wedged link task must not linger in the relay's live count (shutdown waits on it).
+        task.abort();
+        return outcome;
+    }
+    // Close politely, then hang up: the link task sees the close, and then the end of the socket.
+    let _ = tokio::time::timeout(PROBE_JOIN_WAIT, device.send(Message::Close(None))).await;
+    drop(device);
+    if tokio::time::timeout(PROBE_JOIN_WAIT, &mut task)
+        .await
+        .is_err()
+    {
+        task.abort();
+        tracing::warn!("the readiness probe's link task did not finish; aborted");
+    }
+    outcome
+}
+
+/// The next relay frame the probe's device end receives.
+async fn next_frame(device: &mut MemorySocket) -> Result<RelayMessage, ProbeFailure> {
+    loop {
+        match device.recv().await {
+            Some(Ok(Message::Text(text))) => {
+                return serde_json::from_str(text.as_str())
+                    .map_err(|_| ProbeFailure::Unexpected("not a relay frame"));
+            }
+            Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+            Some(Ok(Message::Close(_))) => {
+                return Err(ProbeFailure::Unexpected("the link closed"));
+            }
+            _ => return Err(ProbeFailure::Unexpected("the link ended")),
+        }
+    }
 }
 
 /// A `macos` device is a host; an `ios` or `cli` device is a client.
@@ -101,24 +273,31 @@ fn client_protocol(headers: &HeaderMap) -> Result<u32, ApiError> {
 }
 
 /// One link, from its first frame to its cleanup.
-async fn serve_link(
+async fn serve_link<S: LinkSocket>(
     state: AppState,
     who: Identity,
     protocol: u32,
-    mut socket: WebSocket,
+    mut socket: S,
     _live: LiveLink,
 ) {
     let relay = state.relay.clone();
     let min = relay.min_client_protocol();
+    let probe = who.probe;
     if protocol < min {
-        tracing::info!(device = %who.device_id, protocol, min, "link refused: client too old");
+        if probe {
+            tracing::warn!(protocol, min, "readiness probe refused: protocol too old");
+        } else {
+            tracing::info!(device = %who.device_id, protocol, min, "link refused: client too old");
+        }
         if send_close(&mut socket, &Close::client_too_old(min)).await {
             await_peer_close(&mut socket).await;
         }
         return;
     }
 
-    relay.pass_gate().await;
+    if !probe {
+        relay.pass_gate().await;
+    }
     let role = who.role;
     let identity = (who.org_id, who.device_id);
     let Registration {
@@ -126,8 +305,11 @@ async fn serve_link(
         mut outbound,
         mut closing,
         replaced,
+        probe_closer: _probe_closer,
     } = relay.register(who);
-    tracing::info!(device = %handle.device_id, ?role, replaced, "link open");
+    if !probe {
+        tracing::info!(device = %handle.device_id, ?role, replaced, "link open");
+    }
 
     let mut link = Link {
         state,
@@ -136,14 +318,16 @@ async fn serve_link(
         last_frame: Instant::now(),
         last_written: Instant::now(),
         peer_closed: false,
+        probe,
     };
     // The upgrade checked that the device is not revoked, but a revocation can land between that
     // check and the registration above, when `close` finds no link to close. Registering first and
     // looking again closes that window: a revocation after this look finds the registered link.
-    let revoked = matches!(
-        devices::me(&link.state.db, identity.0, identity.1).await,
-        Ok(None)
-    );
+    let revoked = !probe
+        && matches!(
+            devices::me(&link.state.db, identity.0, identity.1).await,
+            Ok(None)
+        );
     let close = if revoked {
         Some(Close::revoked())
     } else {
@@ -166,6 +350,9 @@ async fn serve_link(
     }
     if closed || link.peer_closed {
         await_peer_close(&mut socket).await;
+    }
+    if probe {
+        return;
     }
     tracing::info!(
         device = %link.handle.device_id,
@@ -190,14 +377,16 @@ struct Link {
     /// The device sent its own close frame. Our answer is queued inside the WebSocket and goes out
     /// the next time the socket is read, which `await_peer_close` does.
     peer_closed: bool,
+    /// The readiness probe's link: it writes no `last_seen_at` (there is no such device).
+    probe: bool,
 }
 
 impl Link {
     /// Serves the link until it ends. `Some(close)` is a close the hub chose (and still owes the
     /// device); `None` means the device went away or the socket failed.
-    async fn run(
+    async fn run<S: LinkSocket>(
         &mut self,
-        socket: &mut WebSocket,
+        socket: &mut S,
         outbound: &mut tokio::sync::mpsc::Receiver<RelayMessage>,
         closing: &mut tokio::sync::oneshot::Receiver<Close>,
     ) -> Option<Close> {
@@ -261,7 +450,14 @@ impl Link {
                 closing = &mut *closing => {
                     return Some(closing.unwrap_or_else(|_| Close::shutdown()));
                 }
-                () = hub_stopping(&mut stopping) => return Some(Close::shutdown()),
+                () = hub_stopping(&mut stopping) => {
+                    // What is already queued (the drain's answers to held commands, a reply)
+                    // goes out before the close.
+                    while let Ok(message) = outbound.try_recv() {
+                        write(socket, &message).await.ok()?;
+                    }
+                    return Some(Close::shutdown());
+                }
                 () = &mut dead => return Some(Close::silent()),
                 queued = outbound.recv() => {
                     // The registry's handle keeps the sender alive as long as this link is
@@ -356,6 +552,27 @@ impl Link {
             RelayMessage::Command {
                 id, method, params, ..
             } => {
+                // While maintenance is on, a client's commands that change something answer as
+                // the HTTP write routes do; `turn.lookup` and `watch` continue.
+                if role == Role::Client && writes(method) {
+                    if let Some(paused) = self.state.maintenance.current() {
+                        tracing::info!(
+                            method = method.as_str(),
+                            outcome = "maintenance",
+                            "command"
+                        );
+                        let refused = maintenance::refused(&paused).0;
+                        return Some(RelayMessage::Reply {
+                            id,
+                            result: None,
+                            error: Some(WireError {
+                                code: refused.code.to_string(),
+                                message: refused.message,
+                                details: None,
+                            }),
+                        });
+                    }
+                }
                 let relay = self.state.relay.clone();
                 let db = self.state.db.clone();
                 let caller = self.handle.clone();
@@ -387,6 +604,9 @@ impl Link {
     /// Writes `last_seen_at` at most once a minute while the link is up, off the link's task so
     /// a slow database never delays a heartbeat.
     fn keep_last_seen_fresh(&mut self, now: Instant) {
+        if self.probe {
+            return;
+        }
         if now.saturating_duration_since(self.last_written) < LAST_SEEN_EVERY {
             return;
         }
@@ -403,6 +623,9 @@ impl Link {
 
     /// Records that the device was heard from at `at` (an instant on the tokio clock).
     async fn write_last_seen(&self, at: Instant) {
+        if self.probe {
+            return;
+        }
         let at = self.state.relay.wall(at);
         let written = set_last_seen(
             &self.state.db,
@@ -423,14 +646,24 @@ async fn hub_stopping(stopping: &mut tokio::sync::watch::Receiver<bool>) {
     let _ = stopping.wait_for(|down| *down).await;
 }
 
+/// The commands that change something on the Mac, refused while maintenance is on: `turn.send`,
+/// `thread.start`, and `request.respond`. `turn.lookup` is a read, and `turn.interrupt` stops work
+/// rather than starting it, so both continue.
+fn writes(method: RelayMethod) -> bool {
+    matches!(
+        method,
+        RelayMethod::TurnSend | RelayMethod::ThreadStart | RelayMethod::RequestRespond
+    )
+}
+
 /// Writes one frame, giving up if the device stops reading for as long as a dead link.
-async fn write(socket: &mut WebSocket, message: &RelayMessage) -> Result<(), ()> {
+async fn write<S: LinkSocket>(socket: &mut S, message: &RelayMessage) -> Result<(), ()> {
     // A relay frame is plain data, so encoding it cannot fail.
     let text = serde_json::to_string(message).map_err(|_| ())?;
     write_message(socket, Message::Text(text.into())).await
 }
 
-async fn write_message(socket: &mut WebSocket, message: Message) -> Result<(), ()> {
+async fn write_message<S: LinkSocket>(socket: &mut S, message: Message) -> Result<(), ()> {
     match tokio::time::timeout(DEAD_LINK, socket.send(message)).await {
         Ok(Ok(())) => Ok(()),
         _ => Err(()),
@@ -439,7 +672,7 @@ async fn write_message(socket: &mut WebSocket, message: Message) -> Result<(), (
 
 /// Writes the close's `error` frame, if any, then its close frame. True when the close frame was
 /// written, so the device may still answer it.
-async fn send_close(socket: &mut WebSocket, close: &Close) -> bool {
+async fn send_close<S: LinkSocket>(socket: &mut S, close: &Close) -> bool {
     if let Some(error) = &close.error {
         let _ = write(socket, error).await;
     }
@@ -454,7 +687,7 @@ async fn send_close(socket: &mut WebSocket, close: &Close) -> bool {
 
 /// Gives the device a moment to answer our close frame with its own, so it sees the code before
 /// the connection is dropped.
-async fn await_peer_close(socket: &mut WebSocket) {
+async fn await_peer_close<S: LinkSocket>(socket: &mut S) {
     let _ = tokio::time::timeout(CLOSE_GRACE, async {
         while let Some(Ok(message)) = socket.recv().await {
             if matches!(message, Message::Close(_)) {

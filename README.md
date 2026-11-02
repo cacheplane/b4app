@@ -100,9 +100,9 @@ It archives Release with the team from the Developer ID certificate (or `B4APP_T
 
 ### B4 environment setup
 
-- A local project: under Local servers, register the project directory (the B4 app root with `b4.config` and `node_modules/@b4run/cli`), optionally its env file, and start it; connect one of its discovered routes to get a connection you can start threads on. Registration runs the project's config and route modules with Node to discover routes, so register only projects you trust. Node is found on PATH, in nvm/fnm/Volta/Bun/Homebrew layouts, or via `B4APP_NODE_PATH`.
-- An already running local server: Connections › B4 agent, base URL `http://127.0.0.1:<port>` and the route key.
-- A remote endpoint: HTTPS only; store the credential with `agent-workspace credential add <label>` and paste the printed reference into the form. Values never appear in arguments, logs, or results.
+- A local project: under Settings → B4 projects, choose Attach B4 project… and pick the project directory (the B4 app root with `b4.config` and `node_modules/@b4run/cli`), optionally its env file, and start it; connect one of its discovered routes to get a connection you can start threads on. Registration runs the project's config and route modules with Node to discover routes, so register only projects you trust. Node is found on PATH, in nvm/fnm/Volta/Bun/Homebrew layouts, or via `B4APP_NODE_PATH`.
+- An already running local server: Settings → Connections, + → B4 agent…, with Server `http://127.0.0.1:<port>` and the agent's route.
+- A remote endpoint: HTTPS only. Type its API key into the form's API key field: the app stores it in the Keychain through `credential.add` and keeps only the `secret:` reference (`agent-workspace credential add <label>` still works from the CLI). Values never appear in arguments, logs, or results.
 
 ### The store
 
@@ -186,7 +186,7 @@ A local B4 project the app runs for you (registering it runs its `b4.config` and
 .build/debug/agent-workspace connection add --kind b4 --server research --route /chat#agent
 ```
 
-`server add` resolves Node 24+ and the project-installed `@b4run/cli` (never `.bin/b4`, never downloaded), allocates a loopback port once, and inspects the routes with `b4 routes --json`. `server start` runs `b4 start --host 127.0.0.1 --port <n>` (source mode, the default) or `b4 dev --port <n> --env-file <p>` (`--mode development`, hot reload) from the project directory with an environment the coordinator builds from the env file, waits for `/healthz`, and is idempotent. `server status`, `server logs [--follow]`, `server restart`, `server stop`, `server inspect`, and `server list` work the same from the Local servers screen; `stop` and `restart` refuse while a route connection has a running turn unless `--force`. Servers keep running when the app quits or the coordinator restarts; the next coordinator re-adopts one whose pid, start time, and arguments still match, and never signals anything else. Logs live under the data directory and are redacted when read.
+`server add` resolves Node 24+ and the project-installed `@b4run/cli` (never `.bin/b4`, never downloaded), allocates a loopback port once, and inspects the routes with `b4 routes --json`. `server start` runs `b4 start --host 127.0.0.1 --port <n>` (source mode, the default) or `b4 dev --port <n> --env-file <p>` (`--mode development`, hot reload) from the project directory with an environment the coordinator builds from the env file, waits for `/healthz`, and is idempotent. `server status`, `server logs [--follow]`, `server restart`, `server stop`, `server inspect`, and `server list` work the same from Settings → B4 projects; `stop` and `restart` refuse while a route connection has a running turn unless `--force`. Servers keep running when the app quits or the coordinator restarts; the next coordinator re-adopts one whose pid, start time, and arguments still match, and never signals anything else. Logs live under the data directory and are redacted when read.
 
 The CLI connects to the running coordinator or starts `b4app-coordinator` next to itself. Set `B4APP_RUNTIME_DIR` and `B4APP_DATA_DIR` to isolate an experiment from the real data under `~/Library/Application Support/b4app`. The runtime directory must be short enough for a Unix socket path (104 bytes); the default under `$TMPDIR` is.
 

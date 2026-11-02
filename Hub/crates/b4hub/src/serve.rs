@@ -19,6 +19,7 @@ use crate::auth_limits::AuthLimits;
 use crate::cli::ConfigError;
 use crate::config::Config;
 use crate::error::ApiError;
+use crate::instances::{self, InstancesState};
 use crate::maintenance::MaintenanceState;
 use crate::notify::Notifier;
 use crate::relay::{link, Relay};
@@ -29,6 +30,14 @@ use crate::routes::{apple, auth, changes, devices, enroll, health, me, pairing, 
 /// balancer polling readiness stops routing here before connections are refused. Capped at a
 /// quarter of the shutdown wait.
 const READINESS_GRACE_MAX: Duration = Duration::from_millis(500);
+
+/// How long the drain waits for held commands to be answered before it closes the links, capped
+/// at a quarter of the shutdown wait.
+const HOLD_RELEASE_MAX: Duration = Duration::from_secs(1);
+
+/// The part of the shutdown wait kept back for releasing the instance's claims after the drain,
+/// capped at an eighth of the wait.
+const RELEASE_RESERVE_MAX: Duration = Duration::from_secs(1);
 
 /// How often `serve` prunes every org's change log.
 pub const PRUNE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -61,6 +70,8 @@ pub struct AppState {
     pub relay: Relay,
     /// The maintenance switch as last polled (`maintenance::poll_loop`); writes check it.
     pub maintenance: MaintenanceState,
+    /// This instance's id and heartbeat health; the link upgrade claims users for it.
+    pub instances: InstancesState,
 }
 
 impl AppState {
@@ -92,6 +103,7 @@ impl AppState {
             public_url,
             relay: Relay::new(),
             maintenance: MaintenanceState::default(),
+            instances: InstancesState::default(),
         })
     }
 
@@ -164,8 +176,18 @@ pub fn router(state: AppState) -> Router {
 /// Serves `router(state)` on `listener` (with each connection's peer address, which the sign-in
 /// rate limits key on) until `signal` resolves, then shuts down: `/readyz`
 /// turns 503 `shutting_down` and waiters are told, the listener stays open for a short readiness
-/// grace and then closes, and in-flight requests drain. The whole sequence is bounded by `wait`
-/// from the moment the signal arrives; whatever is still open then is dropped.
+/// grace and then closes, and in-flight requests drain.
+///
+/// Around that, the instance: it registers before serving and heartbeats while it serves
+/// (`instances::heartbeat_loop`); when the signal arrives, commands held for offline Macs are
+/// answered `device_offline` first (so the answers go out before the links close), and once the
+/// links are closed the instance releases its claims, so its users are claimed at once by the
+/// instance they reconnect to.
+///
+/// The whole sequence, from the signal to the claims released, is bounded by `wait`: the drain
+/// (holds, readiness grace, requests, links) gets `wait` less a reserve for the release (an
+/// eighth of `wait`, at most 1 s), whatever is still open then is dropped, and the release gets
+/// what is left.
 pub async fn run(
     listener: TcpListener,
     state: AppState,
@@ -173,16 +195,37 @@ pub async fn run(
     signal: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
     let grace = (wait / 4).min(READINESS_GRACE_MAX);
+    let hold_release = (wait / 4).min(HOLD_RELEASE_MAX);
     let shutdown = state.shutdown.clone();
     let (signalled_tx, signalled_rx) = oneshot::channel::<()>();
+    let release_reserve = (wait / 8).min(RELEASE_RESERVE_MAX);
+    // When the signal arrived, so the release after the drain knows what is left of `wait`.
+    let signalled_at = Arc::new(std::sync::Mutex::new(None::<tokio::time::Instant>));
+
+    let public_url = state.public_url.as_ref().map(|url| url.to_string());
+    instances::register(&state.db, &state.instances, public_url.as_deref()).await;
+    // Aborted however `run` ends, dropped mid-drain included.
+    let heartbeat = AbortOnDrop(tokio::spawn(instances::heartbeat_loop(
+        state.db.clone(),
+        state.instances.clone(),
+        state.relay.clone(),
+        public_url,
+        state.shutdown.clone(),
+    )));
+    let (db, instance) = (state.db.clone(), state.instances.clone());
 
     let relay = state.relay.clone();
+    let holds = state.relay.clone();
+    let marked = Arc::clone(&signalled_at);
     let app = router(state).into_make_service_with_connect_info::<SocketAddr>();
     let server = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             signal.await;
-            shutdown.trigger();
+            // The deadline starts now, before anything else the drain does.
+            *marked.lock().unwrap_or_else(|p| p.into_inner()) = Some(tokio::time::Instant::now());
             let _ = signalled_tx.send(());
+            holds.release_holds(hold_release).await;
+            shutdown.trigger();
             tokio::time::sleep(grace).await;
         })
         .into_future();
@@ -195,17 +238,43 @@ pub async fn run(
     };
     let deadline = async move {
         match signalled_rx.await {
-            Ok(()) => tokio::time::sleep(wait).await,
+            Ok(()) => tokio::time::sleep(wait - release_reserve).await,
             Err(_) => std::future::pending().await,
         }
     };
 
-    tokio::select! {
+    let result = tokio::select! {
         result = server => result,
         () = deadline => {
-            tracing::warn!(wait_ms = wait.as_millis() as u64, "shutdown deadline reached; dropping open connections");
+            tracing::warn!(
+                wait_ms = (wait - release_reserve).as_millis() as u64,
+                "shutdown deadline reached; dropping open connections"
+            );
             Ok(())
         }
+    };
+    drop(heartbeat);
+    let left = signalled_at
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .map_or(wait, |at| {
+            (at + wait).saturating_duration_since(tokio::time::Instant::now())
+        });
+    if tokio::time::timeout(left, instances::release(&db, &instance))
+        .await
+        .is_err()
+    {
+        tracing::warn!("releasing the instance's claims did not finish within the shutdown wait");
+    }
+    result
+}
+
+/// Aborts its task when dropped.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
@@ -237,14 +306,33 @@ pub async fn os_signal() {
 }
 
 /// Prunes every org's change log of what is older than `retention`, immediately and then every
-/// `interval`, until `shutdown`; each pass also deletes expired sign-in ceremonies and handoffs.
-/// Each org is pruned in its own transaction (which takes that org's push lock for just that
-/// long), a failure is logged and the next org still runs, and shutdown ends the wait between
-/// passes and abandons a prune in flight (its transaction rolls back), so the task never holds up
-/// the drain.
-pub async fn prune_loop(db: Db, retention: Duration, interval: Duration, shutdown: Shutdown) {
+/// `interval`, until `shutdown`. Each org is pruned in its own transaction (which takes that
+/// org's push lock for just that long), a failure is logged and the next org still runs, and
+/// shutdown ends the wait between passes and abandons a prune in flight (its transaction rolls
+/// back), so the task never holds up the drain.
+///
+/// Each pass also deletes expired sign-in ceremonies and handoffs, and prunes dead instances and the claims no live instance holds
+/// (`b4hub_db::instances::prune`, with the instances' liveness window `alive_within`).
+pub async fn prune_loop(
+    db: Db,
+    retention: Duration,
+    alive_within: Duration,
+    interval: Duration,
+    shutdown: Shutdown,
+) {
     let mut stopping = shutdown.subscribe();
     loop {
+        match b4hub_db::instances::prune(&db, alive_within).await {
+            Ok(pruned) if pruned.instances > 0 || pruned.claims > 0 => {
+                tracing::info!(
+                    instances = pruned.instances,
+                    claims = pruned.claims,
+                    "pruned dead instances"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => tracing::error!(%error, "pruning dead instances failed"),
+        }
         match b4hub_db::orgs::list(&db).await {
             Ok(orgs) => {
                 for (org_id, slug) in orgs {

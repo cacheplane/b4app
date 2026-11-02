@@ -21,6 +21,12 @@ public enum RelayLinkState: Sendable, Equatable {
 /// - Heartbeat: `ping` every 10 s; 30 s without any frame ends the link and reconnects.
 /// - Stops, with no retry: a 401 at the upgrade (or no token), `link_replaced`/close 4000, close 4001,
 ///   `client_too_old`/close 4002. A 429 at the upgrade and every other failure retry.
+/// - More than one hub instance: the cookies of the last successful upgrade are sent on the next one,
+///   so the load balancer's stickiness reaches the instance serving this user. A `409 relocated` at the
+///   upgrade drops them (they point at the wrong instance) and retries at once, at most
+///   `maxImmediateRelocations` times in a row, then with the backoff; a `hello` resets the count and
+///   keeps the new cookies. (`URLSessionWebSocketTask` exposes a refused upgrade's status but not its
+///   body, so the 409's `details.instanceId` is not read; a device cannot address an instance anyway.)
 /// - Call `stop()` when done with the link: the run task retains the actor, so dropping the last
 ///   reference does not end it.
 /// - `onMessage` gets every frame except `pong`, one at a time and in order, awaited before the next is
@@ -28,6 +34,9 @@ public enum RelayLinkState: Sendable, Equatable {
 public actor RelayLink {
   /// The link protocol this build speaks, sent as `B4-Protocol`.
   public static let protocolVersion = 1
+
+  /// How many `409 relocated` upgrades in a row are retried at once before the backoff applies.
+  public static let maxImmediateRelocations = 3
 
   private enum Outcome {
     case stop(String)
@@ -61,6 +70,10 @@ public actor RelayLink {
   private var stable: Task<Void, Never>?
   /// The hub's clock minus this device's, in seconds, from the latest `hello` or `pong`.
   private var hubOffset: TimeInterval?
+  /// The cookies of the last successful upgrade response, sent on the next upgrade.
+  private var cookies: [String: String] = [:]
+  /// `409 relocated` answers since the last `hello`.
+  private var relocations = 0
 
   /// - Parameters:
   ///   - url: the hub's base URL (as `HubURL.validate` returns it); the connection adds the path.
@@ -202,12 +215,21 @@ public actor RelayLink {
 
     let socket: any HubLinkSocket
     do {
-      socket = try await connection.open(url: url, token: token, protocolVersion: Self.protocolVersion)
+      socket = try await connection.open(
+        url: url, token: token, protocolVersion: Self.protocolVersion, cookies: cookies)
     } catch HubLinkError.refused(let status) where status == 401 {
       return .stop("unauthorized")
+    } catch HubLinkError.refused(let status) where status == 409 {
+      // The hub's only 409 at the upgrade: another instance serves this user's links.
+      cookies = [:]
+      relocations += 1
+      if relocations <= Self.maxImmediateRelocations { skipBackoff = true }
+      return .retry("relocated")
     } catch {
       return .retry(Self.describe(error))
     }
+    let fresh = socket.responseCookies
+    if !fresh.isEmpty { cookies = fresh }
     guard runID == id, !Task.isCancelled else {
       socket.close(code: 1000)
       return .retry("cancelled")
@@ -245,6 +267,7 @@ public actor RelayLink {
         if !connected {
           connected = true
           reachedHello = true
+          relocations = 0
           // A reconnect requested while this link was opening is moot now.
           skipBackoff = false
           startTimers(id)

@@ -103,7 +103,7 @@ import WorkspaceProtocol
       .deviceOffline: "device_offline", .commandExpired: "command_expired",
       .relayTimeout: "relay_timeout", .rateLimited: "rate_limited",
       .linkReplaced: "link_replaced", .clientTooOld: "client_too_old",
-      .watchLimit: "watch_limit",
+      .watchLimit: "watch_limit", .relocated: "relocated",
     ]
     for (code, wire) in expected { #expect(code.rawValue == wire) }
     #expect(ErrorCode(rawValue: "stale_runtime_request") == .staleRuntimeRequest)

@@ -56,6 +56,10 @@ public enum ErrorCode: String, Codable, Sendable, CaseIterable {
   case clientTooOld = "client_too_old"
   /// The link already watches the most threads it may.
   case watchLimit = "watch_limit"
+  /// The link upgrade reached a hub instance other than the one serving this user's links (`409` at
+  /// the upgrade). `details.instanceId` names the owner. The device retries at once, at most three
+  /// times, then with its backoff.
+  case relocated = "relocated"
 }
 
 public struct WorkspaceError: Error, Codable, Sendable, Equatable, CustomStringConvertible {

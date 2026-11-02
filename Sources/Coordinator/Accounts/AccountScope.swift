@@ -78,12 +78,14 @@ public final class AccountScope: Sendable {
     public var hubAPIFactory: HubSync.APIFactory?
     public var hubLinkConnection: (any HubLinkConnection)?
     public var powerAssertions: (any PowerAssertions)?
+    /// The waits between tries of a connection check that found its runtime unreachable.
+    public var checkRetryDelays: [Duration]
 
     public init(
       paths: PlatformPaths, environment: [String: String], secretStore: any SecretStore, eventLog: EventLog,
       diagnostics: DiagnosticsService, adapterFactory: SessionService.AdapterFactory? = nil,
       hubAPIFactory: HubSync.APIFactory? = nil, hubLinkConnection: (any HubLinkConnection)? = nil,
-      powerAssertions: (any PowerAssertions)? = nil
+      powerAssertions: (any PowerAssertions)? = nil, checkRetryDelays: [Duration] = [.seconds(1), .seconds(3)]
     ) {
       self.paths = paths
       self.environment = environment
@@ -94,6 +96,7 @@ public final class AccountScope: Sendable {
       self.hubAPIFactory = hubAPIFactory
       self.hubLinkConnection = hubLinkConnection
       self.powerAssertions = powerAssertions
+      self.checkRetryDelays = checkRetryDelays
     }
 
     /// The hub client for `url`, as `HubSync` builds it.
@@ -197,7 +200,7 @@ public final class AccountScope: Sendable {
         database: database, eventLog: eventLog, diagnostics: context.diagnostics,
         environment: context.environment, clientVersion: CoordinatorVersion.current,
         secretStore: context.secretStore, projects: projects, adapterFactory: context.adapterFactory,
-        servers: servers))
+        servers: servers, checkRetryDelays: context.checkRetryDelays))
     await sessions.start()
     await servers.startAll()
     let relay = RelayExecutor(

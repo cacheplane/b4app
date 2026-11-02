@@ -130,6 +130,18 @@ Feature flags on two already-pinned crates, one crate already in the lock used f
 | New wire | `X-Request-Id` on every response; `503 maintenance` with `Retry-After: 30`; `"maintenance": "read_only"` on `/readyz`; all additive, `minClientProtocol` stays 1 |
 | Test database | Unchanged. Rust suite: 135 tests |
 
+### Hub instances (M8e Part B)
+
+No new crates and no new features: `uuid`'s `v7` and `tokio`'s `sync`/`time` were already enabled.
+
+| Item | Value |
+| --- | --- |
+| Hub migration | `0008_instances.sql` (`hub_instances`: `instance_id`, `started_at`, `heartbeat_at`, `public_url`; `user_links`: `user_id`, `instance_id`, `claimed_at`; hub-internal, no RLS, `b4hub_app` reads and writes). `0005` and `0007` are reserved for the sign-in branch |
+| New environment | `B4HUB_HEARTBEAT_MS` (default 5000; the liveness window is four heartbeats; every instance of one hub must agree) |
+| New wire | `409 relocated` (`details.instanceId`) at `GET /v1/devices/self/link`; `Set-Cookie: b4hub-instance=<id>` on accepted upgrades and `/readyz`; `"relay"` and `"instances"` on `/readyz`; a `maintenance` reply error over the link; all additive, `minClientProtocol` stays 1 |
+| Swift | `ErrorCode.relocated`; `HubLinkConnection.open(url:token:protocolVersion:cookies:)` (defaulted for existing conformers) and `HubLinkSocket.responseCookies` (defaulted) |
+| AWS ALB | application-cookie stickiness on `b4hub-instance`, 3600 s, enabled when `task_count > 1`; `deregistration_delay` 5 s when `task_count > 1` (60 s otherwise) |
+
 ### Hub sign-in additions (passkeys)
 
 New crates, pinned exactly like the rest:
@@ -186,6 +198,8 @@ New crates, pinned exactly like the rest:
 - Codex app-server (verified live on 0.166.0): newline-delimited JSON-RPC without the `jsonrpc` field; `initialize` then `initialized`; the server emits `configWarning`, `remoteControl/status/changed`, and `account/updated` right after the handshake and clients must ignore unknown methods. `account/read` distinguishes `chatgpt` from `apiKey`. A turn echoes the user message as an `item/started` + `item/completed` `userMessage` pair before the agent items; reasoning arrives as a `reasoning` item. `turn/completed.turn.status` is `completed | interrupted | failed`. Notification params for `thread/status/changed` use `{ type, activeFlags }`. Generated schema policy strings are `untrusted | on-request | never` and `read-only | workspace-write | danger-full-access`.
 - Claude Code (recorded live on 2.1.282, 2026-10-31): write `control_request initialize` before any user message and wait for its `control_response`; the user's `SessionStart` hooks run first and emit `system/hook_started` / `system/hook_response`; `command_lifecycle` frames bracket each turn; `system/init` arrives per turn with `apiKeySource` (`none` for plan login) and `capabilities`; `--replay-user-messages` echoes the input as a `user` frame with `isReplay: true`; a synthetic `assistant` frame carries `error` (for example `authentication_failed`) and `is_api_error_message`; `result` may be `subtype: success` with `is_error: true` and `terminal_reason: api_error`; `--resume` of an unknown id emits one `result error_during_execution` and exits 1. Strip `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`; never pass `--bare`; `AskUserQuestion` arrives through `can_use_tool`; end a session by closing stdin after `interrupt`.
 - B4 (source-verified and live-verified on 0.15.8, 2026-10-31; see `docs/research/2026-10-30-b4-runtime.md`): the live server also emits `usage` once per model call (summed into `turn.finished.usage`), `step` display updates keyed by `toolCallId` (folded into the tool card), `tool_call_args` before `tool_call`, and `tool_result.output` as a serialized `ToolMessage` (its `content` is the result); `GET /turns` nests the list under `turns.turns`; no thread-list endpoint and no run id, so the app names turns by their ordinal in `GET /threads/:id/turns` (D-019); `done` carries several outcomes; `interrupted` means cancelled or parked and `GET /pending_interrupts` tells them apart (D-020); a permission prompt is `interrupt { interruptId, type: "permission-request", kind, detail, grant? }` answered with `POST /resume { resume: [{ interruptId, status, payload?, grant? }], route }` whose response is a second SSE stream (D-021); `GET /runs/stream` reattaches and sends only frames after the attach; `runs/stream` checks route before middleware, so an unknown route is a 404 and a rejected credential a 401 on the first turn, never on the health check; no built-in endpoint auth, so the health check cannot verify a secret.
+
+- Plan usage (settings connections, D-082; checked 2026-11-02): Codex 0.166.0 answers `account/rateLimits/read` (params may be null) with `{ rateLimits: { primary, secondary, planType, rateLimitReachedType, credits }, ordinaryUsageAllowed, … }`, each window `{ usedPercent, windowDurationMins, resetsAt (epoch s) }`, and pushes `account/rateLimits/updated { rateLimits }`; live on the owner's `promax` account it reported only `primary` with a 10080-minute window. Claude Code 2.1.282 emits `{"type":"rate_limit_event","rate_limit_info":{status, rateLimitType, utilization, resetsAt, isUsingOverage, unifiedWindows}}` during a turn (not on demand); `unifiedWindows` is marked `@internal` in its bundled schema and live carried only `seven_day` for the owner's plan login. If a later Claude Code drops `unifiedWindows`, the card falls back to the one window `rateLimitType` names.
 
 ## Hosted hub infrastructure (Terraform)
 

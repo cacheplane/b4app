@@ -230,6 +230,56 @@ struct SnapshotShell: View {
     }
   }
 
+  /// B4 project cards from fixed server rows: one running with an agent to connect, one starting, one
+  /// that failed (settings connections design, card option A).
+  @Test func b4ProjectCards() async throws {
+    let model = try await ListFixture.model()
+    let home = NSHomeDirectory()
+    let servers = [
+      LocalServer(
+        id: "s1", name: "support-bot", projectPath: home + "/repos/support-bot", nodePath: "/n",
+        cliPath: "/c",
+        launchMode: .development, requestedPort: 3000, actualPort: 3000, pid: 4242, health: .ready,
+        routes: [
+          LocalServerRoute(id: "/chat", kind: "agent", entryFile: "src/app/chat/agent.ts"),
+          LocalServerRoute(id: "/triage", kind: "agent", entryFile: "src/app/triage/agent.ts"),
+        ]),
+      LocalServer(
+        id: "s2", name: "research-agent", projectPath: home + "/repos/research-agent", nodePath: "/n",
+        cliPath: "/c", launchMode: .source, requestedPort: 3100, pid: 4343, health: .starting),
+      LocalServer(
+        id: "s3", name: "playground", projectPath: home + "/scratch/playground", nodePath: "/n",
+        cliPath: "/c",
+        launchMode: .development, requestedPort: 3200, health: .unhealthy,
+        statusMessage: "The server exited during startup (exit 1)."),
+    ]
+    try await render("b4ProjectCards", size: CGSize(width: 560, height: 520)) {
+      VStack(spacing: LLA.Space.m) {
+        ForEach(servers) { B4ProjectCard(model: model, server: $0) }
+      }
+      .padding(LLA.Space.xl)
+      .frame(maxHeight: .infinity, alignment: .top)
+      .background(LLA.Color.bg)
+    }
+  }
+
+  /// The settings sheets: adding a B4 connection, editing one with a saved key, and attaching a project.
+  @Test func settingsSheets() async throws {
+    let model = try await ListFixture.model()
+    let saved = Connection(
+      id: "b", kind: .b4, label: "Support", target: "https://agents.example.com", routeKey: "/chat#agent",
+      authReference: "secret:x", status: .ready, authStatus: .notRequired)
+    try await render("addB4Sheet", size: CGSize(width: 480, height: 400)) {
+      B4ConnectionSheet(model: model, connection: nil).frame(maxHeight: .infinity, alignment: .top)
+    }
+    try await render("editB4Sheet", size: CGSize(width: 480, height: 380)) {
+      B4ConnectionSheet(model: model, connection: saved).frame(maxHeight: .infinity, alignment: .top)
+    }
+    try await render("attachProjectSheet", size: CGSize(width: 480, height: 460)) {
+      AttachB4ProjectSheet(model: model).frame(maxHeight: .infinity, alignment: .top)
+    }
+  }
+
   @Test func macSidebarGroupsByProject() async throws {
     let model = try await ListFixture.model()
     try await render("macSidebarGroupsByProject", size: CGSize(width: 290, height: 800)) {

@@ -5,7 +5,7 @@ import WorkspaceProtocol
 /// Codex adapter over `codex app-server` (spec section 7). Owns one app-server process, keeps the
 /// set of threads resumed in the current process generation, and tracks pending server requests so
 /// every one of them gets an explicit answer.
-public actor CodexAdapter: AgentAdapter, LoginCapable {
+public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
   public nonisolated let kind = ConnectionKind.codex
   public nonisolated let connectionId: String
   /// Answer requests the app cannot present (permissions, elicitation, dynamic tools) with an explicit
@@ -122,6 +122,9 @@ public actor CodexAdapter: AgentAdapter, LoginCapable {
         }
         return
       }
+      if case .notification("account/rateLimits/updated", _) = message {
+        Task { await self.followRateLimits(generation: generation) }
+      }
       if case .notification("serverRequest/resolved", let params) = message {
         let requestId = params["requestId"]
         let key = requestId?.stringValue ?? requestId?.numberValue.map { String(Int($0)) } ?? ""
@@ -172,6 +175,23 @@ public actor CodexAdapter: AgentAdapter, LoginCapable {
     let result = try await server.request("account/read", CodexProtocol.accountReadParams())
     account = CodexAccount(accountReadResult: result)
     return account
+  }
+
+  /// The plan's 5-hour and weekly windows through `account/rateLimits/read`.
+  public func readUsage() async throws -> UsageReading? {
+    let server = try await ensureStarted()
+    let result = try await server.request("account/rateLimits/read", .null)
+    return CodexUsage.reading(from: result, observedAt: Timestamp.now())
+  }
+
+  /// Codex's push says only that something moved, and not all of it (the schema calls it sparse and
+  /// says to merge or refetch): refetch, so a refusal or the plan is never dropped.
+  private func followRateLimits(generation: Int) async {
+    guard let reading = try? await readUsage(),
+      let event = try? AdapterEvent.usageChanged(
+        connectionId: connectionId, reading: reading, adapterGeneration: generation)
+    else { return }
+    eventContinuation.yield(event)
   }
 
   /// Start the official ChatGPT sign-in. The caller opens `authUrl` in the system browser; completion

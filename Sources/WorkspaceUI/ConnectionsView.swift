@@ -1,57 +1,35 @@
 import SwiftUI
 import WorkspaceProtocol
 
+/// Settings → Connections (settings connections design): a card per connection with its state as an
+/// icon and its usage, checked when the page opens. Adding is the "+" in the Settings heading
+/// (`ConnectionAddMenu`); editing is each card's "…" menu. The phone shows the cards read-only.
 struct ConnectionsView: View {
   @Bindable var model: WorkspaceModel
-
-  private struct KindInfo {
-    let kind: ConnectionKind
-    let title: String
-    let summary: String
-    let milestone: String
-    let runtime: RuntimeKind?
-  }
-
-  private let kinds = [
-    KindInfo(
-      kind: .codex, title: "Codex",
-      summary:
-        "Uses the installed Codex CLI and its official ChatGPT sign-in. No passwords are collected here.",
-      milestone: "M1", runtime: .codex),
-    KindInfo(
-      kind: .claude, title: "Claude Code",
-      summary:
-        "Uses the installed Claude Code executable and its Claude plan sign-in. Plan allowances apply.",
-      milestone: "M2", runtime: .claude),
-    KindInfo(
-      kind: .b4, title: "B4 agent",
-      summary:
-        "Attach a running B4 server (local HTTP on loopback, or a remote HTTPS endpoint) at one exact agent route. To run a local project from here, register it under Local servers and connect one of its routes.",
-      milestone: "M3", runtime: nil),
-  ]
+  @State private var editing: Connection?
 
   var body: some View {
     ScrollView {
-      VStack(alignment: .leading, spacing: LLA.Space.xl) {
+      VStack(alignment: .leading, spacing: LLA.Space.m) {
+        if !WorkspaceDevice.managesWorkspace {
+          Text(WorkspaceDevice.managedOnMac).llaSmallMuted().fixedSize(horizontal: false, vertical: true)
+        }
         if let error = model.diagnosticsError {
           Text(error).font(LLAFont.small).foregroundStyle(LLA.Color.danger)
         }
-        LLASectionHead(
-          "Configured",
-          intro: WorkspaceDevice.managesWorkspace
-            ? "Each connection is one runtime and one identity. Threads never move between them."
-            : "Each connection is one runtime and one identity. \(WorkspaceDevice.managedOnMac)")
         if model.connections.isEmpty {
-          Text("No connections configured.").llaMuted()
-        } else {
-          ForEach(model.connections) { connection in
-            ConnectionCard(model: model, connection: connection)
-          }
-          if let error = model.lastError, model.settingsVisible, model.settingsPage == .connections {
-            Text(error).font(LLAFont.small).foregroundStyle(LLA.Color.danger)
-          }
+          Text(
+            WorkspaceDevice.managesWorkspace
+              ? "No connections yet. Add Codex, Claude, or a B4 agent with +." : "No connections yet."
+          )
+          .llaSmallMuted()
         }
-        if WorkspaceDevice.managesWorkspace { addSection }
+        ForEach(model.connections) { connection in
+          ConnectionCardView(model: model, connection: connection) { editing = connection }
+        }
+        if let error = model.lastError, model.settingsVisible, model.settingsPage == .connections {
+          Text(error).font(LLAFont.small).foregroundStyle(LLA.Color.danger)
+        }
       }
       .padding(LLA.Metrics.margin)
       .frame(maxWidth: 820, alignment: .leading)
@@ -59,181 +37,76 @@ struct ConnectionsView: View {
     }
     .background(LLA.Color.bg)
     .navigationTitle("Connections")
-    .modifier(
-      SettingsPageAction(
-        title: "Re-check runtimes", disabled: model.link != .ready || model.diagnosticsLoading,
-        shown: WorkspaceDevice.managesWorkspace
-      ) { Task { await model.refreshDiagnostics() } }
-    )
+    .sheet(item: $editing) { connection in
+      if connection.kind == .b4 {
+        B4ConnectionSheet(model: model, connection: connection)
+      } else {
+        ConnectionNameSheet(model: model, connection: connection)
+      }
+    }
     .task(id: model.link) {
-      if model.link == .ready, model.diagnostics == nil { await model.refreshDiagnostics() }
-    }
-  }
-
-  /// Adding a connection, with each runtime's install and sign-in state: the Mac only.
-  @ViewBuilder private var addSection: some View {
-    LLASectionHead("Add a connection").padding(.top, LLA.Space.l)
-    ForEach(kinds, id: \.kind) { info in
-      LLACard {
-        VStack(alignment: .leading, spacing: LLA.Space.s) {
-          Text(info.title).font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
-          Text(info.summary).llaSmallMuted().fixedSize(horizontal: false, vertical: true)
-          if let runtime = info.runtime {
-            RuntimeStatusView(
-              runtime: model.diagnostics?.runtimes.first { $0.kind == runtime },
-              loading: model.diagnosticsLoading)
-          }
-          if info.kind != .b4 {
-            Button("Add \(info.title) connection") { Task { await model.addConnection(kind: info.kind) } }
-              .buttonStyle(.llaPrimary)
-              .disabled(model.busy)
-              .padding(.top, LLA.Space.xs)
-              .accessibilityIdentifier("add-\(info.kind.rawValue)")
-          } else {
-            B4AttachForm(model: model)
-          }
-        }
+      guard model.link == .ready else { return }
+      await model.refreshUsage()
+      guard WorkspaceDevice.managesWorkspace else { return }
+      if model.diagnostics == nil { await model.refreshDiagnostics() }
+      // A check per connection when the page opens, in the background so nothing waits on it; each card
+      // shows its own progress. A connection with a turn in progress is plainly working, so it is left
+      // alone, and one checked in the last two minutes is not checked again.
+      let busy = Set(
+        model.activeTurns.keys.compactMap { id in model.threads.first { $0.id == id }?.connectionId })
+      for connection in model.connections where !busy.contains(connection.id) {
+        await model.checkInBackground(id: connection.id)
       }
     }
   }
 }
 
-struct ConnectionCard: View {
+/// The "+" in the Settings heading: Codex and Claude go straight to their sign-in; B4 opens its form.
+/// A runtime that is not installed is listed but disabled, with the reason beneath.
+struct ConnectionAddMenu: View {
   @Bindable var model: WorkspaceModel
-  let connection: Connection
-  @Environment(\.dynamicTypeSize) private var typeSize
+  let addB4: () -> Void
 
   var body: some View {
-    // At accessibility sizes the heading and the sign-in line stack instead of sharing a row each.
-    let stacked = typeSize.isAccessibilitySize
-    let row =
-      stacked
-      ? AnyLayout(VStackLayout(alignment: .leading, spacing: LLA.Space.s))
-      : AnyLayout(HStackLayout(spacing: LLA.Space.s))
-    LLACard {
-      VStack(alignment: .leading, spacing: LLA.Space.s) {
-        row {
-          HStack(spacing: LLA.Space.s) {
-            RuntimeMark(kind: connection.kind)
-            Text(connection.label).font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
-          }
-          Text(connection.kind.rawValue).llaSmallMuted()
-          if !stacked { Spacer() }
-          StatusBadge(status: connection.status)
-        }
-        // A mirrored connection carries no path (the Mac never uploads it), so there is no row.
-        if !connection.target.isEmpty { Text(connection.target).llaCodeMuted() }
-        if let route = connection.routeKey {
-          Text(
-            "route \(route) · \(connection.b4Mode?.rawValue.replacingOccurrences(of: "_", with: " ") ?? "b4")"
-          )
-          .llaCodeMuted()
-        }
-        row {
-          // The account on its own line under the state, so neither wraps into the buttons.
-          VStack(alignment: .leading, spacing: 2) {
-            Text(signInText).llaSmallMuted()
-            if let scope = connection.nativeScope {
-              Text(scope).llaCodeMuted().lineLimit(stacked ? 3 : 1).truncationMode(.middle)
-            }
-          }
-          if !stacked { Spacer(minLength: LLA.Space.s) }
-          if WorkspaceDevice.managesWorkspace {
-            Button("Check") { Task { await model.inspectConnection(id: connection.id) } }
-              .buttonStyle(.llaSecondary)
-              .disabled(model.busy)
-          }
-          if WorkspaceDevice.managesWorkspace, connection.kind != .b4, connection.authStatus != .authenticated
-          {
-            Button(connection.kind == .codex ? "Sign in with ChatGPT" : "Sign in to Claude") {
-              Task { await model.login(connectionId: connection.id) }
-            }
-            .buttonStyle(.llaPrimary)
-            .disabled(model.busy || connection.status == .error)
-            .accessibilityIdentifier("sign-in")
-          }
-        }
-        .padding(.top, LLA.Space.xs)
-      }
+    Menu {
+      runtime(.codex, title: "Codex")
+      runtime(.claude, title: "Claude")
+      Button("B4 agent…", action: addB4)
+    } label: {
+      Image(systemName: "plus")
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(LLA.Color.ink)
+        .frame(width: LLA.Metrics.control, height: LLA.Metrics.control)
+        .background(Circle().fill(LLA.Color.surface))
+        .overlay(Circle().strokeBorder(LLA.Color.rule))
+        .contentShape(Circle())
     }
+    .menuStyle(.button)
+    .buttonStyle(.plain)
+    .menuIndicator(.hidden)
+    .fixedSize()
+    .accessibilityLabel("Add connection")
+    .help("Add connection")
+    .disabled(model.link != .ready || model.busy)
   }
-}
 
-extension ConnectionCard {
-  /// "Signed in as" when an account follows, otherwise the state in words ("Signed in: not authenticated").
-  var signInText: String {
-    if connection.authStatus == .authenticated, connection.nativeScope != nil { return "Signed in as" }
-    return "Signed in: \(connection.authStatus.rawValue.replacingOccurrences(of: "_", with: " "))"
-  }
-}
-
-/// Attach-endpoint form. It collects a credential *reference*, never a secret (spec 3.2, D-022).
-struct B4AttachForm: View {
-  @Bindable var model: WorkspaceModel
-  @State private var url = "http://127.0.0.1:8000"
-  @State private var route = "/chat#agent"
-  @State private var label = ""
-  @State private var reference = ""
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: LLA.Space.s) {
-      LLAField("Base URL (https://host, or http://127.0.0.1:port)", text: $url)
-      LLAField("Route key, for example /chat#agent", text: $route)
-      LLAField("Label (optional)", text: $label)
-      LLAField("Credential reference (optional, secret:…)", text: $reference)
-      Text(
-        "Remote endpoints must use HTTPS. Create a secret with `agent-workspace credential add <label>` and paste only its reference here; it is sent as a bearer to this origin only. The check confirms the server is reachable, not that its model credentials work."
-      )
-      .llaCaption().fixedSize(horizontal: false, vertical: true)
-      Button("Attach B4 endpoint") {
-        Task {
-          await model.addConnection(
-            kind: .b4, label: label.isEmpty ? nil : label, url: url, route: route,
-            authReference: reference.isEmpty ? nil : reference)
-        }
-      }
-      .buttonStyle(.llaPrimary)
-      .disabled(model.busy || url.isEmpty || route.isEmpty)
-      .accessibilityIdentifier("add-b4")
+  @ViewBuilder private func runtime(_ kind: ConnectionKind, title: String) -> some View {
+    let runtime = model.diagnostics?.runtimes.first { $0.kind.rawValue == kind.rawValue }
+    let missing = runtime.map { $0.executablePath == nil } ?? false
+    Button {
+      Task { await add(kind) }
+    } label: {
+      Text(title)
+      if missing { Text("Not installed. See Diagnostics.") }
     }
+    .disabled(missing)
   }
-}
 
-struct RuntimeStatusView: View {
-  let runtime: RuntimeDiagnostic?
-  let loading: Bool
-
-  var body: some View {
-    if let runtime {
-      LLAFacts {
-        LLAFact("Status") { StatusBadge(status: runtime.status) }
-        LLAFact("Signed in") {
-          Text(runtime.authStatus.rawValue.replacingOccurrences(of: "_", with: " ")).llaSmall()
-        }
-        LLAFact("Version") { Text(runtime.version ?? "unknown").llaSmall() }
-        LLAFact("Executable") { Text(runtime.executablePath ?? "not found").llaCodeMuted() }
-        if let message = runtime.message {
-          LLAFact("Note") { Text(message).llaSmall().fixedSize(horizontal: false, vertical: true) }
-        }
-      }
-    } else {
-      Text(loading ? "Checking…" : "Not checked yet.").llaSmallMuted()
+  private func add(_ kind: ConnectionKind) async {
+    guard let added = await model.addConnection(kind: kind) else { return }
+    if added.authStatus != .authenticated, added.status == .ready || added.authStatus == .required {
+      await model.login(connectionId: added.id)
     }
-  }
-}
-
-struct StatusBadge: View {
-  let status: ConnectionStatus
-
-  var body: some View {
-    LLABadge(status.rawValue, tone: tone, raised: true)
-  }
-
-  private var tone: LLABadge.Tone {
-    switch status {
-    case .ready: return .neutral
-    case .error, .incompatible, .offline: return .danger
-    case .connecting, .unconfigured: return .muted
-    }
+    await model.refreshUsage()
   }
 }
