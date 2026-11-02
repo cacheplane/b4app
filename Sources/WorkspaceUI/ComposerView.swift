@@ -31,14 +31,19 @@ struct ComposerView: View {
   private var activeTurn: Turn? { detail.activeTurn }
   private var canSend: Bool {
     activeTurn == nil && !model.busy && detail.thread.continuity == .available
+      && model.sendBlockedReason(for: detail.thread) == nil
       && !model.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
+
+  /// The phone's Mac is offline or left the hub: the field is off, and its notice is the reason.
+  private var unreachable: String? { model.controlsDisabledReason(for: detail.thread) }
 
   var body: some View {
     VStack(alignment: .leading, spacing: LLA.Space.s) {
       if let error = model.lastError { errorBanner(error) }
+      relayLines
       if let turn = activeTurn { turnRow(turn) }
-      field
+      field.disabled(unreachable != nil)
     }
     .padding(.horizontal, LLA.Metrics.margin)
     .padding(.top, LLA.Space.s)
@@ -197,9 +202,11 @@ struct ComposerView: View {
     }
   #endif
 
-  /// "Message Codex": the connection's label, or plain "Message".
+  /// "Message Codex": the connection's label, or plain "Message". On the phone, why it cannot send
+  /// instead: the Mac is offline, or "Connecting to the hub…".
   private var placeholder: String {
-    model.connection(id: detail.thread.connectionId).map { "Message \($0.label)" } ?? "Message"
+    if let reason = unreachable ?? model.hubLinkNotice { return reason }
+    return model.connection(id: detail.thread.connectionId).map { "Message \($0.label)" } ?? "Message"
   }
 
   // MARK: Send and stop
@@ -209,7 +216,10 @@ struct ComposerView: View {
     if let turn = activeTurn {
       Button("Stop", systemImage: "stop.fill") { Task { await model.stop() } }
         .buttonStyle(ComposerCircleStyle(diameter: controlSize, glyph: 11 * scale))
-        .disabled(turn.nativeTurnId == nil || turn.status == .stopping || turn.status == .reconciling)
+        .disabled(
+          turn.nativeTurnId == nil || turn.status == .stopping || turn.status == .reconciling
+            || !model.canStop(detail.thread)
+        )
         .accessibilityIdentifier("stop")
     } else {
       Button("Send", systemImage: "arrow.up") { Task { await model.send() } }
@@ -227,7 +237,10 @@ struct ComposerView: View {
   private func turnRow(_ turn: Turn) -> some View {
     // Two lines at most on the Mac, whose smallest window must still fit the detail
     // (`DetailMinimumSizeTests`); the phone wraps it whole, for large text.
-    let text = Text("A turn is \(turn.status.rawValue). Your draft stays here until it finishes.")
+    let words =
+      model.activeTurnLabel(for: detail.thread)
+      ?? "A turn is \(turn.status.rawValue). Your draft stays here until it finishes."
+    let text = Text(words)
       .llaCaption()
       #if os(macOS)
         .lineLimit(2)
@@ -266,6 +279,32 @@ struct ComposerView: View {
     .disabled(model.busy)
     .help("Give up on this turn's unknown outcome so the thread can take a new message. Nothing is re-sent.")
     .accessibilityIdentifier("abandon")
+  }
+
+  /// The phone's relay, in one caption line each: Stop waiting for the Mac or not confirmed, and a
+  /// refused send's reason in place of its message (which the transcript no longer shows).
+  @ViewBuilder private var relayLines: some View {
+    if let stop = model.stopStates[detail.thread.id] {
+      relayLine(stop.label, danger: stop != .waiting, waiting: stop == .waiting)
+        .accessibilityIdentifier("stop-state")
+    }
+    if case .refused? = model.pendingSends[detail.thread.id]?.state,
+      let reason = model.sendStatus(for: detail.thread.id)
+    {
+      relayLine(reason, danger: true, waiting: false).accessibilityIdentifier("send-refused")
+    }
+  }
+
+  private func relayLine(_ text: String, danger: Bool, waiting: Bool) -> some View {
+    HStack(spacing: LLA.Space.s) {
+      if waiting { ProgressView().controlSize(.mini).accessibilityHidden(true) }
+      Text(text)
+        .font(LLAFont.caption)
+        .foregroundStyle(danger ? LLA.Color.danger : LLA.Color.muted)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .padding(.horizontal, Self.textLeading)
+    .accessibilityElement(children: .combine)
   }
 
   private func errorBanner(_ error: String) -> some View {

@@ -78,6 +78,18 @@ public struct HostPresence: Codable, Sendable, Equatable {
   }
 }
 
+/// Presence as `events.snapshot` carries it, so a model that connects after the events were emitted
+/// still knows them: the phone's link, and every Mac last reported while it was `connected`.
+public struct PresenceSnapshot: Codable, Sendable, Equatable {
+  public var link: HubLinkStatus.State
+  public var hosts: [HostPresence]
+
+  public init(link: HubLinkStatus.State, hosts: [HostPresence]) {
+    self.link = link
+    self.hosts = hosts
+  }
+}
+
 extension AdapterEvent {
   /// `host.presence`. `payload.link` is the phone's own hub link (`connected`, `connecting`, or
   /// `offline`); `payload.host` is one Mac's presence, absent when the event only reports the link. While

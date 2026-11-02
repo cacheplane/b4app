@@ -21,7 +21,8 @@ struct SidebarView: View {
       .safeAreaInset(edge: .bottom, spacing: 0) { SidebarFooter(model: model) }
   }
 
-  /// New thread, Search, More. Disabled while the phone has no joined Mac to show.
+  /// New thread, Search, More. New thread is off while the phone's Mac is offline or has left the hub
+  /// (the list's notice says why); Search and More stay, since every thread is still browsable.
   private var actionRows: some View {
     VStack(alignment: .leading, spacing: 2) {
       SidebarActionRow(
@@ -29,10 +30,11 @@ struct SidebarView: View {
       ) {
         model.showNewThread = true
       }
-      .disabled(model.conversationReadyConnections.isEmpty)
+      .disabled(model.conversationReadyConnections.isEmpty || model.newThreadDisabledReason != nil)
       .help(
-        model.conversationReadyConnections.isEmpty
-          ? "Add a ready Codex connection first" : "Start a new thread"
+        model.newThreadDisabledReason
+          ?? (model.conversationReadyConnections.isEmpty
+            ? "Add a ready Codex connection first" : "Start a new thread")
       )
       .accessibilityIdentifier("new-thread-toolbar")
       SidebarActionRow(title: "Search", systemImage: "magnifyingglass", shortcut: shortcut("⌘K")) {
@@ -42,7 +44,6 @@ struct SidebarView: View {
       .accessibilityIdentifier("sidebar-search")
       MoreMenu(model: model)
     }
-    .disabled(model.hostDisconnected)
   }
 
   /// The Mac shows the shortcut beside the row; the phone has no keyboard to advertise.
@@ -54,11 +55,13 @@ struct SidebarView: View {
     #endif
   }
 
-  private var hostDisconnected: some View {
-    LLAEmptyState(
-      "Host disconnected", text: "Your Mac has left the hub. Its threads come back when it joins again."
-    )
-    .accessibilityIdentifier("host-disconnected")
+  /// The Mac left the hub, or the primary Mac is offline: a persistent notice above the list, which
+  /// stays browsable (M8c; this replaced M8b's empty state).
+  @ViewBuilder private var listNotice: some View {
+    if let notice = model.listNotice {
+      HostNotice(message: notice)
+        .accessibilityIdentifier(notice.kind == .leftHub ? "host-disconnected" : "host-notice")
+    }
   }
 
   #if os(macOS)
@@ -70,43 +73,35 @@ struct SidebarView: View {
           .padding(.horizontal, 10)
           .padding(.top, LLA.Space.s)
           .padding(.bottom, LLA.Space.m)
-        if model.hostDisconnected {
-          hostDisconnected
-        } else {
-          ScrollView {
-            ThreadListView(model: model)
-              .padding(.horizontal, 10)
-              .padding(.bottom, LLA.Space.l)
-              .frame(maxWidth: .infinity, alignment: .leading)
-          }
+        listNotice
+        ScrollView {
+          ThreadListView(model: model)
+            .padding(.horizontal, 10)
+            .padding(.bottom, LLA.Space.l)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
       }
     }
   #else
     // The phone uses a List: rows need swipe actions, and the split view collapses to one column there.
-    @ViewBuilder private var content: some View {
-      if model.hostDisconnected {
-        VStack(alignment: .leading, spacing: 0) {
-          actionRows.padding(.horizontal, LLA.Space.l).padding(.top, LLA.Space.s)
-          hostDisconnected
+    private var content: some View {
+      List {
+        Section {
+          actionRows
+            .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: LLA.Space.m, trailing: 6))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
         }
-      } else {
-        List {
-          Section {
-            actionRows
-              .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: LLA.Space.m, trailing: 6))
-              .listRowBackground(Color.clear)
-              .listRowSeparator(.hidden)
-          }
-          Section {
-            ThreadListView(model: model)
-          }
+        Section {
+          ThreadListView(model: model)
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        // Rows are exactly their 44 pt target: no untappable band above and below each one.
-        .environment(\.defaultMinListRowHeight, LLA.Metrics.row)
       }
+      .listStyle(.plain)
+      .scrollContentBackground(.hidden)
+      // Rows are exactly their 44 pt target: no untappable band above and below each one.
+      .environment(\.defaultMinListRowHeight, LLA.Metrics.row)
+      // Pinned above the scrolling list, so it stays in view while the threads are browsed.
+      .safeAreaInset(edge: .top, spacing: 0) { listNotice }
     }
   #endif
 }

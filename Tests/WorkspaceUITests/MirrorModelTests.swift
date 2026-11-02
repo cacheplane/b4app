@@ -62,8 +62,11 @@ private func fixtureAsStored(file: StaticString = #filePath) throws -> [StoredCh
     let store = try MirrorStore.inMemory()
     _ = try store.apply(try fixtureAsStored())
     let connection = FakeHubLinkConnection()
+    // A clock that never moves: the fake hub sends no pongs, and on the real clock the relay's 30 s
+    // silence timer ended the link when a busy run kept the test going that long.
     let relay = MirrorRelay(
-      url: URL(string: "https://hub.example.com")!, token: { "tok" }, connection: connection, jitter: { 1.0 })
+      url: URL(string: "https://hub.example.com")!, token: { "tok" }, connection: connection,
+      clock: TestClock(), jitter: { 1.0 })
     await relay.start()
     let socket = await connection.nextSocket()
     socket.deliver(
@@ -77,6 +80,42 @@ private func fixtureAsStored(file: StaticString = #filePath) throws -> [StoredCh
     await model.openThread(id: "thread-1")
     try await waitUntil("detail") { model.detail?.items.count == 4 }
     return (model, store, transport, socket)
+  }
+
+  /// A model that connects over a relay already linked, whose presence was heard before the
+  /// transport and the model existed (a model reconnect): the snapshot carries it.
+  @Test func presenceHeardBeforeTheModelConnectsIsShown() async throws {
+    let store = try MirrorStore.inMemory()
+    _ = try store.apply(try fixtureAsStored())
+    let connection = FakeHubLinkConnection()
+    // A clock that never moves: the fake hub sends no pongs, and on the real clock the relay's 30 s
+    // silence timer ended the link when a busy run kept the test going that long.
+    let relay = MirrorRelay(
+      url: URL(string: "https://hub.example.com")!, token: { "tok" }, connection: connection,
+      clock: TestClock(), jitter: { 1.0 })
+    await relay.start()
+    let socket = await connection.nextSocket()
+    socket.deliver(
+      .hello(
+        protocol: 1, minClientProtocol: 1, deviceId: "phone-1", role: .client, heartbeatSeconds: 10,
+        hubTime: Timestamp.now()))
+    let mac = RelayHostPresence(deviceId: "mac-1", name: "Brian's MacBook Pro", online: true)
+    socket.deliver(.presence(hosts: [mac]))
+    for _ in 0..<500 where await relay.hosts != [mac] { try await Task.sleep(for: .milliseconds(2)) }
+    try #require(await relay.hosts == [mac])
+
+    let transport = MirrorTransport(store: store, version: "0.2.0", relay: relay)
+    let model = WorkspaceModel(transportProvider: { transport })
+    model.accountSource = .host
+    model.connect()
+    try #require(await model.settledLink() == .ready)
+    try await waitUntil("presence", timeout: .seconds(10)) {
+      model.hostPhase(deviceId: "mac-1") == .connected
+    }
+    #expect(model.hubLinkPhase == .connected)
+    #expect(model.hostPresence["mac-1"]?.name == "Brian's MacBook Pro")
+    await model.disconnect()
+    await relay.stop()
   }
 
   private func agent(_ text: String) -> DisplayItem {

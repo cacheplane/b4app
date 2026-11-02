@@ -70,6 +70,8 @@ public final class MirrorTransport: WorkspaceTransport {
     var placeholders: [String: Placeholder] = [:]
     /// The phone's hub link as last announced.
     var link: HubLinkStatus.State = .offline
+    /// Each Mac's presence as last announced, by device id; emptied while the link is not connected.
+    var hosts: [String: HostPresence] = [:]
   }
 
   /// Relayed state of one thread, kept in memory until the synced rows catch up.
@@ -373,7 +375,11 @@ public final class MirrorTransport: WorkspaceTransport {
       return try JSONValue(
         encoding: EventsSnapshot.Result(
           epoch: epoch, sequence: state.sequence, connections: try store.connections(),
-          threads: try store.threads(includeArchived: true, connectionId: nil, query: nil), activeTurns: []))
+          threads: try store.threads(includeArchived: true, connectionId: nil, query: nil), activeTurns: [],
+          presence: relay == nil
+            ? nil
+            : PresenceSnapshot(
+              link: state.link, hosts: state.hosts.values.sorted { $0.deviceId < $1.deviceId })))
     case .eventsReplay:
       // Events are never buffered: within this epoch there is nothing the client missed (each
       // client gets every event this transport emits); any other epoch needs a snapshot.
@@ -600,6 +606,7 @@ public final class MirrorTransport: WorkspaceTransport {
         guard phase != state.link else { return }
         let dropped = state.link == .connected
         state.link = phase
+        if phase != .connected { state.hosts = [:] }
         if let event = try? AdapterEvent.hostPresence(nil, link: phase) { emit([event], state: &state) }
         // The relay reports the watched thread's gap; a started thread the hub watched on its own
         // (not read yet) lost its events too.
@@ -609,12 +616,11 @@ public final class MirrorTransport: WorkspaceTransport {
           }
         }
       case .presence(let hosts):
-        let events = hosts.compactMap {
-          try? AdapterEvent.hostPresence(
-            HostPresence(deviceId: $0.deviceId, name: $0.name, online: $0.online, lastSeenAt: $0.lastSeenAt),
-            link: state.link)
+        let presences = hosts.map {
+          HostPresence(deviceId: $0.deviceId, name: $0.name, online: $0.online, lastSeenAt: $0.lastSeenAt)
         }
-        emit(events, state: &state)
+        if state.link == .connected { for host in presences { state.hosts[host.deviceId] = host } }
+        emit(presences.compactMap { try? AdapterEvent.hostPresence($0, link: state.link) }, state: &state)
       case .event(let event):
         relayed(event, state: &state)
       case .gap(let threadId):

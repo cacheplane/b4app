@@ -190,8 +190,30 @@ public final class WorkspaceModel {
   /// leaves it alone and `logOut()` calls `hostLogOut`.
   public var accountSource: AccountSource = .coordinator
   public var hostLogOut: (@MainActor () async -> Void)?
-  /// The phone's mirror has no joined Mac left: the thread list gives way to a notice.
+  /// The phone's mirror has no joined Mac left: a notice sits above the still browsable list.
   public var hostDisconnected = false
+
+  // MARK: The phone's relay (M8c; the logic is in SendState.swift and HostNotice.swift)
+
+  /// The phone's sends by thread id, one per thread, until settled and shown.
+  public internal(set) var pendingSends: [String: PendingSend] = [:]
+  /// The phone's Stop by thread id, and its answers by request id, while they wait or after they failed.
+  public internal(set) var stopStates: [String: ControlState] = [:]
+  public internal(set) var answerStates: [String: ControlState] = [:]
+  /// Each Mac's presence by device id, from `host.presence`; only `MirrorTransport` emits it.
+  public internal(set) var hostPresence: [String: HostPresence] = [:]
+  /// The phone's own hub link, from `host.presence`; nil until reported (always, on the Mac).
+  public internal(set) var hubLinkPhase: HubLinkStatus.State?
+  /// Bumped when a phase may have changed with time alone, so views reading `hostPhase` redraw.
+  var presenceRevision = 0
+  /// The clock the send and presence timers sleep on, read with `now`; tests replace both.
+  @ObservationIgnored public var clock: any Clock<Duration> = ContinuousClock()
+  /// Counts the phone's link coming up, so a lost send's reply can tell it already came back.
+  @ObservationIgnored var linkGeneration = 0
+  /// Where the latest snapshot left the event stream.
+  @ObservationIgnored private var snapshotPosition: (epoch: String, sequence: Int)?
+  @ObservationIgnored var sendTimer: Task<Void, Never>?
+  @ObservationIgnored var phaseTimer: Task<Void, Never>?
 
   /// Whether the profile menu offers Log out.
   public var canLogOut: Bool {
@@ -206,7 +228,7 @@ public final class WorkspaceModel {
   }
 
   private let transportProvider: TransportProvider
-  private var client: WorkspaceClient?
+  var client: WorkspaceClient?
   private var connectTask: Task<Void, Never>?
   /// Callers of `settledLink()` waiting for the link to leave `.connecting`.
   @ObservationIgnored private var linkWaiters: [CheckedContinuation<LinkState, Never>] = []
@@ -289,7 +311,8 @@ public final class WorkspaceModel {
       }
       return when.isEmpty ? word : "\(word) \(when)"
     case .working:
-      return "Working"
+      // The phone does not call a turn on an offline Mac working; its band stays as synced.
+      return activeTurnLabel(for: thread) ?? "Working"
     case .quiet:
       return thread.activity?.latestTurnId == nil ? "No messages yet" : "Read"
     }
@@ -345,12 +368,16 @@ public final class WorkspaceModel {
         let transport = try await transportProvider()
         let client = WorkspaceClient(transport: transport)
         self.client = client
-        _ = try await client.ready()
+        let hello = try await client.ready()
+        // Subscribed before the first snapshot, so nothing emitted after it is lost (presence
+        // included); the events the snapshot already covers are skipped in `observe`.
+        let events = await client.events()
         try await refreshSnapshot()
+        let covered = snapshotPosition ?? (hello.epoch, hello.sequence)
         await refreshAccount()
         link = .ready
         settleLink()
-        await observe(client)
+        await observe(client, events: events, covered: covered)
       } catch {
         link = .unavailable
         linkMessage = Self.describe(error)
@@ -459,9 +486,12 @@ public final class WorkspaceModel {
     threads = snapshot.threads
     activeTurns = Dictionary(
       snapshot.activeTurns.map { ($0.threadId, $0) }, uniquingKeysWith: { _, new in new })
+    resolvePendingSends(with: snapshot.activeTurns)
+    if let presence = snapshot.presence { applyPresence(presence) }
     servers = (try? await client.request(ServerList.self, EmptyParams()).servers) ?? []
     await refreshProjects()
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
+    snapshotPosition = (snapshot.epoch, snapshot.sequence)
     if let id = selectedThreadId, detail != nil { await loadDetail(id: id) }
   }
 
@@ -674,6 +704,8 @@ public final class WorkspaceModel {
       detail = ThreadDetail(
         thread: read.thread, turns: read.turns, items: read.items, requests: read.requests)
       store(read.thread)
+      resolvePendingSends(with: read.turns)
+      prunePendingSends()
       if let active = read.turns.last(where: { $0.status != .terminal }) {
         activeTurns[id] = active
       } else {
@@ -859,11 +891,12 @@ public final class WorkspaceModel {
 
   /// Put a fresher copy of a thread into the list (and the open detail), keeping the `activity` and
   /// owner name an event payload may lack.
-  private func store(_ thread: ConversationThread) {
+  func store(_ thread: ConversationThread) {
     var fresh = thread
     if let index = threads.firstIndex(where: { $0.id == thread.id }) {
       fresh.activity = fresh.activity ?? threads[index].activity
       fresh.ownerDeviceName = fresh.ownerDeviceName ?? threads[index].ownerDeviceName
+      fresh.ownerDeviceId = fresh.ownerDeviceId ?? threads[index].ownerDeviceId
       threads[index] = fresh
     } else {
       threads.append(fresh)
@@ -897,7 +930,9 @@ public final class WorkspaceModel {
       current.requests = read.requests
       detail = current
       activeTurns[threadId] = read.turns.last { $0.status != .terminal }
+      prunePendingSends()
     }
+    resolvePendingSends(with: read.turns)
     store(read.thread)
     await markReadIfNeeded(threadId: threadId)
   }
@@ -922,6 +957,11 @@ public final class WorkspaceModel {
 
   public func send() async {
     guard let detail else { return }
+    // The phone: through the hub, with the send's state kept until the Mac's answer (SendState.swift).
+    if relaysThroughHub {
+      await relaySend(threadId: detail.thread.id)
+      return
+    }
     let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return }
     composerText = ""
@@ -938,6 +978,10 @@ public final class WorkspaceModel {
 
   public func stop() async {
     guard let detail else { return }
+    if relaysThroughHub {
+      await relayStop(threadId: detail.thread.id)
+      return
+    }
     _ = await perform {
       try await $0.request(
         TurnInterrupt.self, TurnInterrupt.Params(threadId: detail.thread.id), options: Self.mutation()
@@ -1007,6 +1051,10 @@ public final class WorkspaceModel {
   }
 
   public func respond(requestId: String, decision: RuntimeDecision) async {
+    if relaysThroughHub {
+      await relayRespond(RequestRespond.Params(requestId: requestId, decision: decision))
+      return
+    }
     _ = await perform {
       try await $0.request(
         RequestRespond.self, RequestRespond.Params(requestId: requestId, decision: decision),
@@ -1016,6 +1064,10 @@ public final class WorkspaceModel {
   }
 
   public func answer(requestId: String, answers: [String: [String]]) async {
+    if relaysThroughHub {
+      await relayRespond(RequestRespond.Params(requestId: requestId, answers: answers))
+      return
+    }
     _ = await perform {
       try await $0.request(
         RequestRespond.self, RequestRespond.Params(requestId: requestId, answers: answers),
@@ -1056,13 +1108,19 @@ public final class WorkspaceModel {
     }
   }
 
-  private func observe(_ client: WorkspaceClient) async {
-    let events = await client.events()
+  /// `covered` is the first snapshot's position: events at or before it are already in the snapshot
+  /// (presence too, which the phone's snapshot carries).
+  private func observe(
+    _ client: WorkspaceClient, events: AsyncStream<EventEnvelope>, covered: (epoch: String, sequence: Int)
+  ) async {
     let desync = await client.desync()
     let desyncTask = Task { @MainActor in
       for await _ in desync { await self.reconcileAfter("reconnect") }
     }
-    for await envelope in events { apply(envelope.event) }
+    for await envelope in events {
+      if envelope.epoch == covered.epoch, envelope.sequence <= covered.sequence { continue }
+      apply(envelope.event)
+    }
     desyncTask.cancel()
     if link == .ready {
       link = .unavailable
@@ -1095,9 +1153,13 @@ public final class WorkspaceModel {
           connections[index].authStatus = auth
         }
       }
+    case .hostPresence:
+      applyPresence(event)
     case .turnAcknowledged, .turnStateChanged, .turnFinished:
       if let threadId = event.threadId, let turn = try? event.payload["turn"]?.decode(Turn.self) {
         activeTurns[threadId] = turn.status == .terminal ? nil : turn
+        if turn.status == .terminal { stopStates[threadId] = nil }
+        resolvePendingSends(with: [turn])
       }
       applyToDetail(event)
       if let threadId = event.threadId {
@@ -1152,6 +1214,7 @@ public final class WorkspaceModel {
       break
     }
     detail = current
+    prunePendingSends()
   }
 
   static func describe(_ error: any Error) -> String {

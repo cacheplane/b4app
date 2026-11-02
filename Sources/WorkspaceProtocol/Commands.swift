@@ -181,18 +181,24 @@ public enum EventsSnapshot: WorkspaceCommand {
     public var connections: [Connection]
     public var threads: [ConversationThread]
     public var activeTurns: [Turn]
+    /// The phone's hub link and Macs as of this snapshot (M8c), from `MirrorTransport` with a relay;
+    /// absent from the Mac's coordinator. Events at or before `sequence` are covered by it.
+    public var presence: PresenceSnapshot?
     public init(
       epoch: String, sequence: Int, connections: [Connection], threads: [ConversationThread],
-      activeTurns: [Turn] = []
+      activeTurns: [Turn] = [], presence: PresenceSnapshot? = nil
     ) {
       self.epoch = epoch
       self.sequence = sequence
       self.connections = connections
       self.threads = threads
       self.activeTurns = activeTurns
+      self.presence = presence
     }
 
-    private enum CodingKeys: String, CodingKey { case epoch, sequence, connections, threads, activeTurns }
+    private enum CodingKeys: String, CodingKey {
+      case epoch, sequence, connections, threads, activeTurns, presence
+    }
 
     public init(from decoder: any Decoder) throws {
       let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -201,6 +207,7 @@ public enum EventsSnapshot: WorkspaceCommand {
       connections = try container.decode([Connection].self, forKey: .connections)
       threads = try container.decode([ConversationThread].self, forKey: .threads)
       activeTurns = try container.decodeIfPresent([Turn].self, forKey: .activeTurns) ?? []
+      presence = try container.decodeIfPresent(PresenceSnapshot.self, forKey: .presence)
     }
   }
   public static let method = Method.eventsSnapshot

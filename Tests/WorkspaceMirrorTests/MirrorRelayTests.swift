@@ -413,6 +413,9 @@ struct MirrorRelayTests {
     let seen = try #require(hosts[0].lastSeenAt.flatMap(Timestamp.date(from:)))
     #expect(abs(seen.timeIntervalSinceNow + 30) < 5)
     #expect(hosts[1].online && hosts[1].lastSeenAt == nil)
+    // The snapshot carries the same, so a model that connects after these events still knows them.
+    let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
+    #expect(snapshot.presence == PresenceSnapshot(link: .connected, hosts: hosts))
 
     // The phone's own link going down makes every host unknown.
     socket.closeFromHub(code: 1001)
@@ -422,6 +425,8 @@ struct MirrorRelayTests {
         break
       }
     }
+    let down = try await client.request(EventsSnapshot.self, EmptyParams())
+    #expect(down.presence == PresenceSnapshot(link: .connecting, hosts: []))
     await client.close()
     await h.relay.stop()
   }

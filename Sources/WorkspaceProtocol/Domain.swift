@@ -231,6 +231,9 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
   public var activity: ThreadActivity?
   /// The name of the Mac that owns the thread; only the phone's mirror fills it, never a column.
   public var ownerDeviceName: String?
+  /// The device id of the Mac that owns the thread, from the phone's mirror; nil on the Mac. The phone
+  /// matches it against `host.presence` (M8c), so a thread's controls follow its own Mac.
+  public var ownerDeviceId: String?
 
   public init(
     id: String, connectionId: String, nativeThreadId: String, nativeScope: String = "", title: String = "",
@@ -238,7 +241,7 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
     continuity: ThreadContinuity = .available,
     createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now(),
     projectId: String? = nil, readTurnId: String? = nil, activity: ThreadActivity? = nil,
-    ownerDeviceName: String? = nil
+    ownerDeviceName: String? = nil, ownerDeviceId: String? = nil
   ) {
     self.id = id
     self.connectionId = connectionId
@@ -255,6 +258,7 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
     self.readTurnId = readTurnId
     self.activity = activity
     self.ownerDeviceName = ownerDeviceName
+    self.ownerDeviceId = ownerDeviceId
   }
 }
 

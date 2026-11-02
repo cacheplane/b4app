@@ -209,6 +209,8 @@ private final class WriteCounter: Sendable {
     #expect(snapshot.connections.map(\.id) == ["conn-1", "conn-2"])
     #expect(snapshot.threads.map(\.id) == ["thread-1"])
     #expect(snapshot.activeTurns.isEmpty)
+    // Without a relay there is no presence to carry.
+    #expect(snapshot.presence == nil)
     #expect(try await client.request(ConnectionList.self, .init()).connections.map(\.id) == ["conn-1"])
     #expect(
       try await client.request(ConnectionList.self, .init(includeDisabled: true)).connections.count == 2)
