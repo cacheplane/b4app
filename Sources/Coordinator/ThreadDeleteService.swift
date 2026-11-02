@@ -10,37 +10,57 @@ extension SessionService {
   /// The longest wait between tries at deleting a runtime copy that could not be reached.
   static let threadDeleteBackoffCap: TimeInterval = 3600
 
-  /// Delete a thread. A running turn is stopped first (best effort, up to 10 seconds). Deleting a
-  /// thread already deleted returns it unchanged.
+  /// Delete a thread: it is marked and announced at once, and answers then. Its running turn is
+  /// stopped and the runtime's copy deleted right after, in the background (the same step the sweep
+  /// runs for a delete pulled from the phone). Deleting a thread already deleted returns it unchanged.
   public func threadDelete(_ params: ThreadDelete.Params) async throws -> ThreadCreate.Result {
-    guard let existing = try db.thread(id: params.threadId) else {
-      throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.")
-    }
-    if existing.userDeletedAt == nil, try db.activeTurn(threadId: existing.id) != nil {
-      await stopBeforeDelete(existing)
-    }
-    guard let thread = try db.markThreadDeleted(id: existing.id, at: Timestamp.now()) else {
+    guard try db.thread(id: params.threadId) != nil,
+      let thread = try db.markThreadDeleted(id: params.threadId, at: Timestamp.now())
+    else {
       throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.")
     }
     await context.eventLog.publish(try AdapterEvent.threadUpdated(thread))
-    await sweepThreadDeletes(only: thread.id)
+    let id = thread.id
+    Task { await self.sweepThreadDeletes(only: id) }
     return ThreadCreate.Result(thread: thread)
   }
 
-  /// Interrupt the thread's unresolved turn and wait up to 10 seconds for the runtime to end it. A turn
-  /// still unresolved after that is ended here as cancelled: its thread is going, and nothing would
-  /// ever show or resolve it.
-  private func stopBeforeDelete(_ thread: ConversationThread) async {
-    _ = try? await turnInterrupt(TurnInterrupt.Params(threadId: thread.id))
-    let deadline = ContinuousClock.now + .seconds(10)
-    while ContinuousClock.now < deadline, (try? db.activeTurn(threadId: thread.id)) != nil {
-      try? await Task.sleep(for: .milliseconds(100))
-    }
+  /// End the deleted thread's unresolved turn. A live one is interrupted through its adapter (the
+  /// thread commands refuse a deleted thread, so not through `turnInterrupt`), asking again once the
+  /// runtime has named the turn, and given up to 10 seconds to end. Whatever is still unresolved after
+  /// that, or was already `reconciling`, is ended here as cancelled: nothing would ever show or resolve
+  /// it, and it would keep its folder locked.
+  private func stopTurn(of thread: ConversationThread, connection: Connection?) async {
     guard let active = try? db.activeTurn(threadId: thread.id) else { return }
+    if active.status != .reconciling, let connection, connection.enabled,
+      let adapter = try? adapter(for: connection)
+    {
+      let ref = NativeSessionRef(nativeSessionId: thread.nativeThreadId, nativeScope: thread.nativeScope)
+      var asked = false
+      let deadline = ContinuousClock.now + .seconds(10)
+      while ContinuousClock.now < deadline, let current = try? db.activeTurn(threadId: thread.id) {
+        if !asked, let native = current.nativeTurnId {
+          asked = true
+          if let receipt = try? await adapter.interrupt(ref, turn: ActiveTurnRef(nativeTurnId: native)),
+            let outcome = receipt.outcome
+          {
+            _ = try? db.updateTurn(id: current.id) {
+              if $0.status != .terminal {
+                $0.status = .terminal
+                $0.outcome = outcome
+              }
+            }
+          }
+          continue
+        }
+        try? await Task.sleep(for: .milliseconds(100))
+      }
+    }
+    guard let unresolved = try? db.activeTurn(threadId: thread.id) else { return }
     for request in (try? db.pendingRuntimeRequests(threadId: thread.id)) ?? [] {
       _ = try? db.transitionRuntimeRequest(id: request.id, to: .expired)
     }
-    _ = try? db.updateTurn(id: active.id) {
+    _ = try? db.updateTurn(id: unresolved.id) {
       $0.status = .terminal
       $0.outcome = .cancelled
     }
@@ -66,6 +86,7 @@ extension SessionService {
   }
 
   private func deleteRuntimeCopy(_ thread: ConversationThread, now: Date) async {
+    await stopTurn(of: thread, connection: try? db.connection(id: thread.connectionId))
     do {
       guard !thread.nativeThreadId.isEmpty else {
         return try db.recordThreadDelete(threadId: thread.id, outcome: .done, error: nil, nextAttemptAt: nil)

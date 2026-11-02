@@ -16,7 +16,7 @@ Material implementation decisions, newest first. The spec (`docs/roadmaps/Person
     - **Done.** The runtime deleted it, or says it's gone; a B4 `404` counts.
     - **Unsupported, which is final.** Codex method-not-found, a B4 `405`, a disabled or missing connection, or a connection now signed in as another identity.
     - **Waiting.** Any thrown error. It is retried after 30 seconds, doubling to at most an hour, by a sweep at coordinator start and every 60 seconds.
-  - **Running turns and the phone.** A running turn is interrupted first. If the runtime hasn't ended it after 10 seconds, it is ended locally as cancelled. A delete made on the phone reaches the Mac by pull, and the sweep deletes the runtime's copy then.
+  - **Running turns and the phone.** `thread.delete` answers as soon as the thread is marked and announced; the rest runs in the background, in the same step the sweep runs for a delete pulled from the phone. That step first interrupts a running turn through its adapter and waits up to 10 seconds. A turn still unresolved after that, or one already `reconciling` (say, after a restart), is ended locally as cancelled, so a deleted thread never stays in the Quit dialog or keeps its folder locked. Then the runtime's copy is deleted.
   - **Diagnostics** counts deletes waiting and not supported, by runtime, without thread titles.
 
 ## 2026-11-02 (usage on the phone)

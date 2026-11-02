@@ -47,6 +47,18 @@ struct DiagnosticsView: View {
               row("Keeping Mac awake", held ? "Yes" : "No")
             }
           }
+          if let deletes = report.threadDeletes {
+            // Deleted threads whose runtime copy is not deleted yet, or cannot be: counts, never titles.
+            LLASectionHead("Deleted threads").padding(.top, LLA.Space.l)
+            let lines = Self.threadDeletes(deletes)
+            if lines.isEmpty {
+              Text("Every runtime copy is deleted.").llaMuted()
+            } else {
+              LLAFacts {
+                ForEach(lines, id: \.runtime) { line in row(line.runtime, line.value) }
+              }
+            }
+          }
           LLASectionHead("Runtimes").padding(.top, LLA.Space.l)
           ForEach(Array(report.runtimes.enumerated()), id: \.offset) { _, runtime in
             LLACard {
@@ -96,6 +108,28 @@ struct DiagnosticsView: View {
     )
     .task(id: model.link) {
       if model.link == .ready, model.diagnostics == nil { await model.refreshDiagnostics() }
+    }
+  }
+
+  /// One runtime's deletes still to do: "2 waiting", "1 waiting, 3 not supported".
+  struct ThreadDeleteLine: Equatable {
+    var runtime: String
+    var value: String
+  }
+
+  static func threadDeletes(_ summaries: [ThreadDeleteSummary]) -> [ThreadDeleteLine] {
+    summaries.compactMap { summary in
+      var parts: [String] = []
+      if summary.waiting > 0 { parts.append("\(summary.waiting) waiting") }
+      if summary.unsupported > 0 { parts.append("\(summary.unsupported) not supported") }
+      guard !parts.isEmpty else { return nil }
+      let runtime: String
+      switch summary.kind {
+      case .codex: runtime = "Codex"
+      case .claude: runtime = "Claude Code"
+      case .b4: runtime = "B4"
+      }
+      return ThreadDeleteLine(runtime: runtime, value: parts.joined(separator: ", "))
     }
   }
 

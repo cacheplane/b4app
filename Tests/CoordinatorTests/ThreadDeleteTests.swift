@@ -17,6 +17,7 @@ actor RuntimeCalls {
 private struct RecordingAdapter: AgentAdapter {
   let inner: any AgentAdapter
   let calls: RuntimeCalls
+  var deleteDelay: Duration = .zero
   var kind: ConnectionKind { inner.kind }
   func inspectConnection() async throws -> ConnectionInspection { try await inner.inspectConnection() }
   func createSession(_ input: NewSessionInput) async throws -> NativeSessionRef {
@@ -40,17 +41,31 @@ private struct RecordingAdapter: AgentAdapter {
   }
   func deleteSession(_ ref: NativeSessionRef) async throws -> SessionDeletion {
     await calls.record("delete:\(ref.nativeSessionId)")
+    try await Task.sleep(for: deleteDelay)
     return try await inner.deleteSession(ref)
   }
   func events() -> AsyncStream<AdapterEvent> { inner.events() }
   func dispose() async { await inner.dispose() }
 }
 
-private func recording(_ calls: RuntimeCalls) -> SessionService.AdapterFactory {
+private func recording(_ calls: RuntimeCalls, deleteDelay: Duration = .zero) -> SessionService.AdapterFactory
+{
   { connection, environment, version, secrets in
     RecordingAdapter(
-      inner: try SessionService.defaultAdapterFactory(connection, environment, version, secrets), calls: calls
-    )
+      inner: try SessionService.defaultAdapterFactory(connection, environment, version, secrets),
+      calls: calls,
+      deleteDelay: deleteDelay)
+  }
+}
+
+/// Waits until `condition` holds: the runtime delete runs after `thread.delete` answers.
+private func eventually(
+  _ what: String, timeout: Duration = .seconds(30), _ condition: () async throws -> Bool
+) async throws {
+  let deadline = ContinuousClock.now + timeout
+  while try await !condition() {
+    guard ContinuousClock.now < deadline else { throw WorkspaceError(.internalError, "never: \(what)") }
+    try await Task.sleep(for: .milliseconds(50))
   }
 }
 
@@ -102,8 +117,12 @@ extension Harness {
     } catch let error as WorkspaceError {
       #expect(error.code == .notFound)
     }
+    try await eventually("deleted in Codex") {
+      let tried = await !calls.deletes.isEmpty
+      let settled = try await h.deleteSummary().isEmpty
+      return tried && settled
+    }
     #expect(await calls.deletes == ["delete:\(thread.nativeThreadId)"])
-    #expect(try await h.deleteSummary().isEmpty)
     await h.stop()
   }
 
@@ -118,6 +137,9 @@ extension Harness {
       $0.kind == .turnStateChanged && $0.turnId == turn.id && $0.payload["status"]?.stringValue == "running"
     }
     _ = try await h.delete(thread)
+    try await eventually("tried in B4") {
+      try h.coordinator.database.threadDeleteAttempts(threadId: thread.id) == 1
+    }
     #expect(await calls.calls == ["interrupt:\(thread.nativeThreadId)", "delete:\(thread.nativeThreadId)"])
     #expect(try h.coordinator.database.activeTurn(threadId: thread.id) == nil)
     #expect(try h.coordinator.database.threadDeleteAttempts(threadId: thread.id) == 1)
@@ -149,7 +171,9 @@ extension Harness {
     await server.stop()
     _ = try await h.delete(thread)
     #expect(try await h.listedIds().isEmpty)
-    #expect(try h.coordinator.database.threadDeleteAttempts(threadId: thread.id) == 1)
+    try await eventually("tried once") {
+      try h.coordinator.database.threadDeleteAttempts(threadId: thread.id) == 1
+    }
     #expect(try await h.deleteSummary() == [ThreadDeleteSummary(kind: .b4, waiting: 1, unsupported: 0)])
     let restarted = try await FakeB4.start(port: server.port)
     // Not yet: the first retry waits 30 seconds.
@@ -169,11 +193,64 @@ extension Harness {
     let b4 = try await h.addB4(server).connection
     let thread = try await h.newB4Thread(b4)
     _ = try await h.delete(thread)
-    #expect(try await h.deleteSummary() == [ThreadDeleteSummary(kind: .b4, waiting: 0, unsupported: 1)])
+    try await eventually("unsupported") {
+      try await h.deleteSummary() == [ThreadDeleteSummary(kind: .b4, waiting: 0, unsupported: 1)]
+    }
     await h.coordinator.sessions.sweepThreadDeletes(now: Date().addingTimeInterval(86_400))
     #expect(await calls.deletes.count == 1)
     await h.stop()
     await server.stop()
+  }
+
+  @Test func deletingAnswersBeforeASlowRuntimeDelete() async throws {
+    let calls = RuntimeCalls()
+    let h = try await Harness.start(adapterFactory: recording(calls, deleteDelay: .seconds(5)))
+    let codex = try await h.addCodex()
+    let thread = try await h.newThread(codex)
+    let started = ContinuousClock.now
+    _ = try await h.delete(thread)
+    #expect(ContinuousClock.now - started < .seconds(3))
+    #expect(try await h.listedIds().isEmpty)
+    try await eventually("deleted in Codex") {
+      let tried = await !calls.deletes.isEmpty
+      let settled = try await h.deleteSummary().isEmpty
+      return tried && settled
+    }
+    await h.stop()
+  }
+
+  @Test func aPhonesDeleteStopsTheRunningTurn() async throws {
+    let server = try await FakeB4.start()
+    let calls = RuntimeCalls()
+    let h = try await Harness.start(adapterFactory: recording(calls))
+    let b4 = try await h.addB4(server).connection
+    let thread = try await h.newB4Thread(b4)
+    let turn = try await h.send(thread, "hang around")
+    _ = try await h.events.waitFor {
+      $0.kind == .turnStateChanged && $0.turnId == turn.id && $0.payload["status"]?.stringValue == "running"
+    }
+    // A phone's delete, pulled while the turn runs.
+    _ = try h.coordinator.database.markThreadDeleted(id: thread.id, at: Timestamp.now())
+    await h.coordinator.sessions.sweepThreadDeletes()
+    #expect(await calls.calls == ["interrupt:\(thread.nativeThreadId)", "delete:\(thread.nativeThreadId)"])
+    #expect(try h.coordinator.database.activeTurn(threadId: thread.id) == nil)
+    #expect(try await h.client.request(WorkspaceActiveWork.self, EmptyParams()).turns.isEmpty)
+    await h.stop()
+    await server.stop()
+  }
+
+  @Test func aReconcilingTurnOfADeletedThreadIsEnded() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let thread = try await h.newThread(codex)
+    var turn = Turn(id: "stuck", threadId: thread.id, operationId: "op-stuck")
+    turn.status = .reconciling
+    _ = try h.coordinator.database.insertTurn(turn)
+    _ = try h.coordinator.database.markThreadDeleted(id: thread.id, at: Timestamp.now())
+    await h.coordinator.sessions.sweepThreadDeletes()
+    #expect(try h.coordinator.database.activeTurn(threadId: thread.id) == nil)
+    #expect(try h.coordinator.database.turn(id: "stuck")?.outcome == .cancelled)
+    await h.stop()
   }
 
   @Test func aLateEventDoesNotBringTheThreadBack() async throws {
