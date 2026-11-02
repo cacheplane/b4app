@@ -92,12 +92,14 @@ public enum ControlState: Sendable, Equatable {
   }
 }
 
-/// The relay's words, verbatim from the spec.
+/// The relay's words, verbatim from the spec unless marked.
 public enum RelayCopy {
   public static let sending = "Sending…"
   public static let starting = "Starting…"
   public static let startPending = "Waiting to hear whether your last new thread started."
   public static let startRefused = "Couldn't start this thread. Try again."
+  /// Not in the spec (D-087): a start the Mac confirmed whose row has not synced yet.
+  public static let startNotSynced = "Your Mac started this thread. It hasn't reached this phone yet."
   public static let notConfirmed = "Not confirmed: your Mac may not have received this."
   public static let didNotReach = "Didn't reach your Mac"
   public static let offlineTurn = "Not confirmed while your Mac is offline"
@@ -386,10 +388,12 @@ extension WorkspaceModel {
   }
 
   /// A thread this phone started whose row has not reached the mirror and whose placeholder has expired
-  /// (2 minutes): its read answers `not_found`. Per the spec the thread then shows "Not confirmed", so
-  /// the send goes back to not confirmed (settled by `turn.lookup` or the synced turn) and that is the
-  /// error shown, never the raw not-found text. A start already settled as not made shows why instead.
-  /// True when `error` was this; false (nothing changed) otherwise, and always on the Mac.
+  /// (2 minutes), or never had the thread (a lost reply a lookup settled): its read answers `not_found`.
+  /// A start the Mac confirmed (its reply, or a lookup that found the turn) stays accepted and says the
+  /// thread has not reached the phone yet, since only the row is late (D-087). An unconfirmed one shows
+  /// "Not confirmed", per the spec, settled by `turn.lookup` or the synced turn; one settled as not made
+  /// shows why. Never the raw not-found text. True when `error` was this; false (nothing changed)
+  /// otherwise, and always on the Mac.
   func startedThreadMissing(threadId: String, error: any Error) -> Bool {
     guard relaysThroughHub, WorkspaceError.from(error).code == .notFound,
       var send = pendingSends[threadId], send.start != nil
@@ -398,7 +402,10 @@ extension WorkspaceModel {
     case .refused, .didNotReach:
       lastError = sendStatus(for: threadId)
       return true
-    case .sending, .accepted, .acceptedWithError, .notConfirmed:
+    case .accepted, .acceptedWithError:
+      lastError = RelayCopy.startNotSynced
+      return true
+    case .sending, .notConfirmed:
       break
     }
     if !send.inFlight, send.state != .notConfirmed {

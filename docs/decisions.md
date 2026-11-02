@@ -2,6 +2,13 @@
 
 Material implementation decisions, newest first. The spec (`docs/roadmaps/Personal_Agent_Workspace_Technical_Spec_and_Roadmap.md`) is the requirement source; this log records deviations and choices the spec left open.
 
+## 2026-11-02 (M8c follow-ups)
+
+Fixes for three phone transcript limitations found in the M8c live gate and build review, on `fix/m8c-transcript`.
+
+- **D-087 A thread start the Mac confirmed never goes back to "Not confirmed" when its row is late; amends the M8c design's placeholder sentence.** The design says that a started thread whose row has not arrived within 2 minutes loses its placeholder "and the thread shows 'Not confirmed'". That holds for a start the Mac never confirmed. For one it did confirm (its `thread.start` reply, or a `turn.lookup` that found the turn after a lost reply), the read's `not_found` only means the row has not synced yet. The send now stays accepted, no lookup is asked for, and the thread shows "Your Mac started this thread. It hasn't reached this phone yet." (`RelayCopy.startNotSynced`, the one relay message not in the design). Before this, the send went back to not confirmed, and the next lookup found the turn again, on every reopen. An unconfirmed start is unchanged. `SendState.startedThreadMissing`; `SendStateTests`.
+  - **Also in this change (no decision needed).** A reload of the open thread mid-reply keeps the text streamed so far, so the next delta appends to it (`WorkspaceModel.loadDetail`, `MirrorModelTests`). The transcript opens at its latest message and keeps its bottom edge when its content shrinks (`.defaultScrollAnchor(.bottom)` for `.initialOffset` and `.sizeChanges`), so a Stop no longer leaves it scrolled past its end.
+
 ## 2026-11-02 (M8e Part B)
 
 Design `docs/superpowers/specs/2026-11-02-m8e-part-b-relay-routing-design.md`, reviewed by the M8c build session; built on `blove/m8e-relay-multi-instance`. Numbered D-085 and D-086 because the open sign-in pull request claims D-081 to D-084; re-checked at merge.

@@ -198,6 +198,26 @@ private func fixtureAsStored(file: StaticString = #filePath) throws -> [StoredCh
     await model.disconnect()
   }
 
+  /// Reloading the open thread mid-reply (a snapshot, a wake, opening it again) keeps the text streamed
+  /// so far, and the next delta appends to it rather than starting over.
+  @Test func reloadingTheOpenThreadMidReplyKeepsTheLiveText() async throws {
+    let (model, _, _, socket) = try await relayedModel()
+    socket.deliver(try itemEvent(.messageStarted, agent("")))
+    socket.deliver(delta("Hel"))
+    try await waitUntil("streamed") { model.detail?.liveText["native-9"] == "Hel" }
+
+    await model.openThread(id: "thread-1")
+    #expect(model.detail?.liveText["native-9"] == "Hel")
+    socket.deliver(delta("lo"))
+    try await waitUntil("appended") { model.detail?.liveText["native-9"] == "Hello" }
+
+    socket.deliver(try itemEvent(.messageCompleted, agent("Hello")))
+    try await waitUntil("completed") { model.detail?.liveText["native-9"] == nil }
+    await model.openThread(id: "thread-1")
+    #expect(model.detail?.liveText["native-9"] == nil)
+    await model.disconnect()
+  }
+
   @Test func streamGapClearsLiveText() async throws {
     let (model, _, _, socket) = try await relayedModel()
     socket.deliver(try itemEvent(.messageStarted, agent("")))
