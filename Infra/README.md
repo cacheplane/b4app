@@ -177,7 +177,10 @@ Once per account, after the first `terraform apply` of the root and before the f
 3. **Open the psql shell** in a second terminal (same profile). It starts a `hub-admin` task, waits for it, and opens `/bin/sh` in the `psql` container, which already has `PGHOST`, `PGUSER=b4hub_master`, and `PGPASSWORD` from the RDS-managed secret. It needs the Session Manager plugin (`brew install --cask session-manager-plugin`) and stops the task when you exit:
 
    ```bash
-   AWS_PROFILE=b4hub-$ENV Infra/scripts/admin-shell.sh $ENV psql
+   export ENV=test                            # same as the first terminal
+   export AWS_PROFILE=b4hub-$ENV AWS_REGION=us-east-2
+   cd <repository root>
+   Infra/scripts/admin-shell.sh $ENV psql
    ```
 
 4. **Run the bootstrap SQL.** The container has no copy of the repository, so paste the statements from `Infra/sql/bootstrap-owner.sql` at a psql prompt. The password is a psql variable, so it is never in a file or on a shell command line (psql's own history lives and dies with this task). In the shell:
@@ -228,19 +231,20 @@ Do this before the sign-in hub merges to `main`, because the deploy then adds th
    rm -P "$tmp/key"
    ```
 
-2. The three Apple values come from the Apple Developer portal, following the sign-in design's owner tasks: the Team ID (Membership details), and the Key ID and `.p8` private key of a key with Sign in with Apple enabled (Certificates, Identifiers & Profiles, Keys; the `.p8` downloads once, so store it in your password manager first). The PEM goes in through `file://`, never pasted into a command:
+2. The three Apple values come from the Apple Developer portal, following the sign-in design's owner tasks: the Team ID (Membership details), and the Key ID and `.p8` private key of a key with Sign in with Apple enabled (Certificates, Identifiers & Profiles, Keys; the `.p8` downloads once). Keep the original at `~/.b4app/signing/AuthKey_<KeyID>.p8` with mode 600 (or in your password manager) so the second account can use it too; this step only ever copies it. The PEM goes in through `file://`, never pasted into a command:
 
    ```bash
+   umask 077; tmp=$(mktemp -d)
    printf %s 'ABCDE12345' > "$tmp/team"      # your Team ID
    printf %s 'FGHIJ67890' > "$tmp/keyid"     # your Key ID
-   cp ~/Downloads/AuthKey_FGHIJ67890.p8 "$tmp/p8"
+   cp ~/.b4app/signing/AuthKey_FGHIJ67890.p8 "$tmp/p8"
    aws secretsmanager put-secret-value --secret-id b4hub/apple-team-id     --secret-string file://$tmp/team  > /dev/null
    aws secretsmanager put-secret-value --secret-id b4hub/apple-key-id      --secret-string file://$tmp/keyid > /dev/null
    aws secretsmanager put-secret-value --secret-id b4hub/apple-private-key --secret-string file://$tmp/p8    > /dev/null
-   rm -P "$tmp/team" "$tmp/keyid" "$tmp/p8" ~/Downloads/AuthKey_FGHIJ67890.p8; rmdir "$tmp"
+   rm -P "$tmp/team" "$tmp/keyid" "$tmp/p8"; rmdir "$tmp"      # the original stays in ~/.b4app/signing
    ```
 
-3. Do both accounts (`ENV=test`, then `ENV=prod`). The Apple values are the same in both; `secret-key` is not: generate one per account.
+3. Do both accounts (`ENV=test`, then `ENV=prod`; set `AWS_PROFILE=b4hub-$ENV` first). The Apple values are the same in both; `secret-key` is not: generate one per account.
 4. In the pull request that merges the sign-in hub, set `INCLUDE_SIGNIN_SECRETS=1` in `Infra/taskdefs/features.env`. Not before: with `0` the deploy renders a task with `DATABASE_URL` only, which is what a hub without sign-in expects.
 
 ### 4. First deploy
@@ -358,7 +362,8 @@ Prove a backup restores and holds the data. Two parts: a full drill in the test 
    RP=$(aws backup list-recovery-points-by-backup-vault --backup-vault-name b4hub-test --by-resource-type RDS \
      --query 'sort_by(RecoveryPoints, &CreationDate)[-1].RecoveryPointArn' --output text)
    umask 077; tmp=$(mktemp -d)
-   aws backup get-restore-job-metadata --recovery-point-arn "$RP" --query RestoreMetadata > "$tmp/meta.json"
+   aws backup get-recovery-point-restore-metadata --backup-vault-name b4hub-test \
+     --recovery-point-arn "$RP" --query RestoreMetadata > "$tmp/meta.json"
    jq '.DBInstanceIdentifier = "b4hub-test-drill" | .PubliclyAccessible = "false"' "$tmp/meta.json" > "$tmp/drill.json"
    ```
 
@@ -366,12 +371,29 @@ Prove a backup restores and holds the data. Two parts: a full drill in the test 
 
    ```bash
    ROLE=$(aws iam get-role --role-name b4hub-test-backup --query Role.Arn --output text)
-   aws backup start-restore-job --recovery-point-arn "$RP" --iam-role-arn "$ROLE" \
-     --resource-type RDS --metadata file://$tmp/drill.json
-   aws rds wait db-instance-available --db-instance-identifier b4hub-test-drill
-   SCRATCH=$(aws rds describe-db-instances --db-instance-identifier b4hub-test-drill \
+   JOB=$(aws backup start-restore-job --recovery-point-arn "$RP" --iam-role-arn "$ROLE" \
+     --resource-type RDS --metadata file://$tmp/drill.json --query RestoreJobId --output text)
+   # The instance exists only once AWS Backup has created it, so poll the job first (add --region in B).
+   while :; do
+     STATUS=$(aws backup describe-restore-job --restore-job-id "$JOB" --query Status --output text)
+     case "$STATUS" in
+       COMPLETED) break ;;
+       ABORTED | FAILED) break ;;
+     esac
+     sleep 30
+   done
+   if [ "$STATUS" != COMPLETED ]; then   # stop here: do not run the lines below
+     echo "restore job $JOB $STATUS:" >&2
+     aws backup describe-restore-job --restore-job-id "$JOB" --query StatusMessage --output text
+   fi
+   DRILL_ARN=$(aws backup describe-restore-job --restore-job-id "$JOB" --query CreatedResourceArn --output text)
+   DRILL_ID=${DRILL_ARN##*:}                  # the DB instance identifier
+   aws rds wait db-instance-available --db-instance-identifier "$DRILL_ID"
+   SCRATCH=$(aws rds describe-db-instances --db-instance-identifier "$DRILL_ID" \
      --query 'DBInstances[0].Endpoint.Address' --output text)
    ```
+
+   If it printed a failure message, stop and fix the cause before continuing.
 
 3. **Point the test hub at it.** Never put secrets in task overrides; use the secrets, in the test account only. Save the two current URLs, then write the same URLs with the host swapped (the snapshot holds the same roles and passwords):
 
@@ -385,12 +407,19 @@ Prove a backup restores and holds the data. Two parts: a full drill in the test 
    ```
 
 4. Run the normal deploy of the digest test already runs ([runbook 5](#5-deploy-a-given-digest-or-roll-back)): it migrates and serves against the scratch instance. `curl -fsS https://hub.test.b4.run/readyz` must pass.
-5. **Compare.** In `Infra/scripts/admin-shell.sh test psql` run the same query against both instances. The container's `PGHOST` is the live one; the scratch host is `$SCRATCH` from step 2; the `b4hub_owner` password is the one in `$tmp/database-admin-url.orig` (read it there; psql prompts for it):
+5. **Compare.** In `Infra/scripts/admin-shell.sh test psql` run the same query against both instances. The container's `PGHOST` is the live one; the scratch host is `$SCRATCH` from step 2. psql needs the `b4hub_owner` password, which is only on your laptop. Never print it: psql prompts for it, so copy it to the clipboard without showing it, and paste at each prompt (the paste is not echoed), then clear the clipboard:
+
+   ```bash
+   # on the laptop, in the shell that holds $tmp
+   sed -n 's#^postgres://b4hub_owner:\([^@]*\)@.*#\1#p' "$tmp/database-admin-url.orig" | tr -d '\n' | pbcopy
+   ```
 
    ```sh
    psql -h <live host> -U b4hub_owner -d b4hub -c 'select org_id, max(hub_seq) from changes group by 1 order by 1'
    psql -h <scratch host> -U b4hub_owner -d b4hub -c 'select org_id, max(hub_seq) from changes group by 1 order by 1'
    ```
+
+   Then `printf '' | pbcopy` (Linux: `xclip`).
 
    The restored `max(hub_seq)` per org must be less than or equal to the live one and no older than the backup interval.
 6. **Put the test account back**, then delete the scratch instance:
@@ -399,8 +428,10 @@ Prove a backup restores and holds the data. Two parts: a full drill in the test 
    for s in database-admin-url database-url; do
      aws secretsmanager put-secret-value --secret-id b4hub/$s --secret-string file://$tmp/$s.orig > /dev/null
    done
-   # dispatch a deploy of the current digest again (runbook 5), then:
-   aws rds delete-db-instance --db-instance-identifier b4hub-test-drill --skip-final-snapshot --delete-automated-backups
+   # dispatch a deploy of the current digest again (runbook 5), then wait for that run to
+   # finish and `curl -fsS https://hub.test.b4.run/readyz` to pass: the hub must be off the
+   # scratch instance before it is deleted. Only then:
+   aws rds delete-db-instance --db-instance-identifier "$DRILL_ID" --skip-final-snapshot --delete-automated-backups
    rm -P "$tmp/database-admin-url.orig" "$tmp/database-admin-url.drill" "$tmp/database-url.orig" "$tmp/database-url.drill"
    rm -f "$tmp/meta.json" "$tmp/drill.json"; rmdir "$tmp"
    ```
@@ -408,7 +439,7 @@ Prove a backup restores and holds the data. Two parts: a full drill in the test 
 **B. Production's cross-region copy** restores in `us-west-2` (run with `AWS_PROFILE=b4hub-prod`):
 
 1. `aws backup list-recovery-points-by-backup-vault --region us-west-2 --backup-vault-name b4hub-prod-copy --by-resource-type RDS --query 'sort_by(RecoveryPoints, &CreationDate)[-1].[RecoveryPointArn,CreationDate,Status]'`. The newest must be under 36 hours old and `COMPLETED`.
-2. Restore it with `aws backup start-restore-job --region us-west-2 ...` as in A.2, with the metadata read by `get-restore-job-metadata` for that recovery point, `DBInstanceIdentifier` set to `b4hub-prod-drill`, the role `b4hub-prod-backup`, and `DBSubnetGroupName` and `VpcSecurityGroupIds` set to the `default` ones of the region's default VPC (the stack has no network in `us-west-2`). Wait with `aws rds wait db-instance-available --region us-west-2 --db-instance-identifier b4hub-prod-drill`, then delete it with `aws rds delete-db-instance --region us-west-2 --db-instance-identifier b4hub-prod-drill --skip-final-snapshot`.
+2. Restore it with `aws backup start-restore-job --region us-west-2 ...` as in A.2, with the metadata from `aws backup get-recovery-point-restore-metadata --region us-west-2 --backup-vault-name b4hub-prod-copy --recovery-point-arn <arn>`, `DBInstanceIdentifier` set to `b4hub-prod-drill`, the role `b4hub-prod-backup`, and `DBSubnetGroupName` and `VpcSecurityGroupIds` set to the `default` ones of the region's default VPC (the stack has no network in `us-west-2`). Poll the restore job and read `CreatedResourceArn` as in A.2 (every `aws` call with `--region us-west-2`), wait with `aws rds wait db-instance-available --region us-west-2 --db-instance-identifier "$DRILL_ID"`, then delete it with `aws rds delete-db-instance --region us-west-2 --db-instance-identifier "$DRILL_ID" --skip-final-snapshot`.
 3. Comparing production's `max(hub_seq)` against a restored copy of production needs the snapshot in an account with the hub's network. AWS cannot share a snapshot encrypted with the service default key (the copy vault's key) across accounts, so that comparison waits for the copy vault to use a customer managed key (a Terraform change, not made yet). Until then, B proves restorability only and A proves the data path.
 
 ### 9. Incident basics
