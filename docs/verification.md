@@ -36,6 +36,21 @@ Every pending gate above waits on these (details in `Infra/README.md`). None is 
 9. Create the Better Stack monitors on both `/readyz` URLs with phone escalation and the status page at `status.b4.run` (a Vercel CNAME); confirm the SNS subscription email; subscribe to the AWS Health Dashboard, GitHub status, and Apple status.
 10. Set the repository variable `HUB_GHCR_CLEANUP_LIVE=true` after one dry run of `hub-ghcr-cleanup.yml`.
 
+## 2026-11-01: iPhone follow-ups (D-060, fixture gates and Simulator)
+
+Run from `blove/iphone-hig-followups` (on `main` at `4552bdb`) on macOS 26.5 with Xcode 26.6, iPhone 17 Pro Simulator (iOS 26.5).
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Lint | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Clean |
+| Tests | `swift test` | 573 tests in 99 suites pass |
+| Mac app | `xcodebuild build … -scheme B4App-macOS -destination 'platform=macOS'` | `** BUILD SUCCEEDED **` |
+| iPhone app | `xcodebuild build … -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'` | `** BUILD SUCCEEDED **` |
+| Read-only Settings | Simulator: Settings › Connections and › Local servers | Connections shows its two cards with status and account only, and the sentence about the Mac; no Add section, Check, Sign in, or Re-check runtimes. Local servers shows the sentence and "No projects registered on your Mac."; no Add a project or server controls |
+| Titles follow the text size | `xcrun simctl ui <udid> content_size accessibility-extra-large`, then `large`, with the screen open | The open Connections large title grew in place; a thread's inline title measured 140.7 pt wide at Large, 166.0 pt at AX3, and 140.7 pt again after switching back, without leaving the screen |
+
+`docs/screenshots/ios-hig-followups.png`. The Mac's pages are unchanged (`WorkspaceDevice.managesWorkspace` is true there; the server controls moved into a property, same views).
+
 ## 2026-11-01: Composer (D-061, fixture gates, Simulator, and Mac snapshots)
 
 Run from `blove/ios-mobile-fit` after the merge of `main` (#31) on macOS 26.5 with Xcode 26.6, iPhone 17 Pro Simulator (iOS 26.5).
