@@ -1,0 +1,103 @@
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  .lla { --ink:#0d0d0d; --bg:#fff; --surface:#f7f7f8; --raised:#ececee; --rule:#e8e8e8; --muted:#5d5d5d; --accent:#002fa7; --danger:#962e1f; --ghost:#b8b8bc;
+    font-family:'Hanken Grotesk',system-ui,sans-serif; color:var(--ink); font-size:13px; line-height:16px; }
+  .lla .mono { font-family:'JetBrains Mono',ui-monospace,monospace; font-size:12px; line-height:16px; }
+  .lla .muted { color:var(--muted); }
+  .page { width:100%; max-width:560px; box-sizing:border-box; margin:0 auto; background:var(--bg); padding:24px; border-radius:12px; border:1px solid var(--rule); }
+  .card2 { border:1px solid var(--rule); border-radius:12px; background:var(--surface); padding:16px; margin-top:12px; }
+  .card2:first-child { margin-top:0; }
+  .head { display:flex; align-items:center; gap:8px; min-height:32px; }
+  .head .grow { flex:1; min-width:0; }
+  .name { font-size:15px; line-height:20px; font-weight:600; }
+  .mark { width:24px; height:24px; border-radius:6px; background:var(--ink); color:#fff; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:600; flex:none; }
+  .icon { width:16px; height:16px; flex:none; }
+  .spin { animation:spin 1s linear infinite; transform-origin:50% 50%; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .iconbtn { width:28px; height:28px; border-radius:8px; display:flex; align-items:center; justify-content:center; color:var(--muted); flex:none; }
+  .iconbtn.solid { border:1px solid var(--rule); background:var(--bg); color:var(--ink); }
+  .pill { height:20px; padding:0 8px; border-radius:10px; background:var(--raised); color:var(--ink); font-size:11px; font-weight:500; display:inline-flex; align-items:center; gap:4px; }
+  .meta { display:flex; gap:8px; align-items:center; margin-top:4px; color:var(--muted); }
+  .meta .dot { width:3px; height:3px; border-radius:50%; background:var(--ghost); }
+  .agents { margin-top:12px; border-top:1px solid var(--rule); }
+  .agent { display:flex; align-items:center; gap:8px; min-height:40px; border-bottom:1px solid var(--rule); }
+  .agent:last-child { border-bottom:none; }
+  .agent .grow { flex:1; }
+  .btn { height:28px; padding:0 12px; border-radius:8px; display:inline-flex; align-items:center; font-weight:600; font-size:12px; box-sizing:border-box; }
+  .btn.sec { border:1px solid var(--rule); background:var(--bg); color:var(--ink); font-weight:500; }
+  .done { display:inline-flex; align-items:center; gap:4px; color:var(--muted); font-size:12px; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+  .chip { height:28px; padding:0 12px 0 8px; border-radius:14px; border:1px solid var(--rule); background:var(--bg); display:inline-flex; align-items:center; gap:6px; }
+  .chip.on { background:var(--ink); border-color:var(--ink); color:var(--bg); }
+  .chip.on .mono { color:var(--bg); }
+  .note { font-size:12px; color:var(--muted); margin-top:12px; }
+  .empty { margin-top:12px; color:var(--muted); font-size:12px; }
+</style>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="ok" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#0d0d0d"/><path d="M4.8 8.2l2.1 2.1 4.3-4.6" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="warn" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#962e1f"/><path d="M8 4.3v4.6" stroke="#fff" stroke-width="1.7" stroke-linecap="round"/><circle cx="8" cy="11.4" r="1" fill="#fff"/></symbol>
+    <symbol id="off" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2" fill="none" stroke="#b8b8bc" stroke-width="1.6"/></symbol>
+    <symbol id="busy" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2" fill="none" stroke="#ececee" stroke-width="1.8"/><path d="M8 1.8a6.2 6.2 0 0 1 6.2 6.2" fill="none" stroke="#002fa7" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="dots" viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="1.3" fill="currentColor"/><circle cx="8" cy="8" r="1.3" fill="currentColor"/><circle cx="12.5" cy="8" r="1.3" fill="currentColor"/></symbol>
+    <symbol id="play" viewBox="0 0 16 16"><path d="M5 3.5v9l7.5-4.5z" fill="currentColor"/></symbol>
+    <symbol id="stop" viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/></symbol>
+    <symbol id="check" viewBox="0 0 16 16"><path d="M3.5 8.3l3 3 6-6.3" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="plus" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+  </defs>
+</svg>
+
+<h2>B4 project card: how should its agents show?</h2>
+<p class="subtitle">Same three projects in each: one running with two agents (one already connected), one starting, one stopped. Header is shared: name, folder, status icon, a start/stop button, and "…" (Restart, Inspect agents, Show log, Remove). Mode and port are small pills.</p>
+
+<div class="cards lla" style="grid-template-columns:1fr;margin-top:16px">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="aspect-ratio:auto;padding:16px;background:#fafafa">
+      <div class="page">
+        <div class="card2">
+          <div class="head"><div class="mark">B4</div><div class="grow"><div class="name">support-bot</div></div><svg class="icon"><use href="#ok"/></svg><div class="iconbtn solid" title="Stop"><svg class="icon" style="width:12px;height:12px"><use href="#stop"/></svg></div><div class="iconbtn"><svg class="icon"><use href="#dots"/></svg></div></div>
+          <div class="meta"><span class="mono">~/repos/support-bot</span><span class="dot"></span><span class="pill">Dev</span><span class="pill mono" style="font-size:11px">:3000</span></div>
+          <div class="agents">
+            <div class="agent"><span class="mono grow">/chat#agent</span><span class="done"><svg class="icon" style="width:14px;height:14px"><use href="#check"/></svg>Connected</span></div>
+            <div class="agent"><span class="mono grow">/triage#agent</span><span class="btn sec">Connect</span></div>
+          </div>
+        </div>
+        <div class="card2">
+          <div class="head"><div class="mark">B4</div><div class="grow"><div class="name">research-agent</div></div><svg class="icon spin"><use href="#busy"/></svg><div class="iconbtn solid" title="Stop"><svg class="icon" style="width:12px;height:12px"><use href="#stop"/></svg></div><div class="iconbtn"><svg class="icon"><use href="#dots"/></svg></div></div>
+          <div class="meta"><span class="mono">~/repos/research-agent</span><span class="dot"></span><span class="pill">Source</span><span class="muted">Starting…</span></div>
+        </div>
+        <div class="card2">
+          <div class="head"><div class="mark">B4</div><div class="grow"><div class="name">playground</div></div><svg class="icon"><use href="#off"/></svg><div class="iconbtn solid" title="Start"><svg class="icon" style="width:12px;height:12px"><use href="#play"/></svg></div><div class="iconbtn"><svg class="icon"><use href="#dots"/></svg></div></div>
+          <div class="meta"><span class="mono">~/scratch/playground</span><span class="dot"></span><span class="pill">Dev</span><span class="muted">Stopped</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body"><h3>A · Agents as rows</h3><p>Each agent the project exposes is a row with Connect, or a quiet "Connected" once it is a connection. Easiest to scan when a project has several agents; long route names never wrap.</p></div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="aspect-ratio:auto;padding:16px;background:#fafafa">
+      <div class="page">
+        <div class="card2">
+          <div class="head"><div class="mark">B4</div><div class="grow"><div class="name">support-bot</div></div><svg class="icon"><use href="#ok"/></svg><div class="iconbtn solid" title="Stop"><svg class="icon" style="width:12px;height:12px"><use href="#stop"/></svg></div><div class="iconbtn"><svg class="icon"><use href="#dots"/></svg></div></div>
+          <div class="meta"><span class="mono">~/repos/support-bot</span><span class="dot"></span><span class="pill">Dev</span><span class="pill mono" style="font-size:11px">:3000</span></div>
+          <div class="chips">
+            <span class="chip on"><svg class="icon" style="width:14px;height:14px"><use href="#check"/></svg><span class="mono">/chat#agent</span></span>
+            <span class="chip"><svg class="icon" style="width:14px;height:14px;color:#5d5d5d"><use href="#plus"/></svg><span class="mono">/triage#agent</span></span>
+          </div>
+        </div>
+        <div class="card2">
+          <div class="head"><div class="mark">B4</div><div class="grow"><div class="name">research-agent</div></div><svg class="icon spin"><use href="#busy"/></svg><div class="iconbtn solid" title="Stop"><svg class="icon" style="width:12px;height:12px"><use href="#stop"/></svg></div><div class="iconbtn"><svg class="icon"><use href="#dots"/></svg></div></div>
+          <div class="meta"><span class="mono">~/repos/research-agent</span><span class="dot"></span><span class="pill">Source</span><span class="muted">Starting…</span></div>
+        </div>
+        <div class="card2">
+          <div class="head"><div class="mark">B4</div><div class="grow"><div class="name">playground</div></div><svg class="icon"><use href="#off"/></svg><div class="iconbtn solid" title="Start"><svg class="icon" style="width:12px;height:12px"><use href="#play"/></svg></div><div class="iconbtn"><svg class="icon"><use href="#dots"/></svg></div></div>
+          <div class="meta"><span class="mono">~/scratch/playground</span><span class="dot"></span><span class="pill">Dev</span><span class="muted">Stopped</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body"><h3>B · Agents as chips</h3><p>Agents are pills: an ink pill with a check is connected, an outlined pill with "+" connects it in one click. Most compact and modern; wraps onto a second line when a project has many agents.</p></div>
+  </div>
+</div>
+<p class="note lla">Both: the log opens in its own sheet from "…", not inline on the card. A failed start shows the red "!" and one line saying why, with Show log beside it.</p>
