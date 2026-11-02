@@ -249,6 +249,7 @@ run "serve_environment" {
       B4HUB_SIGNUP                = "open"
       B4HUB_WEBAUTHN_RP_ID        = "test.b4.run"
       B4HUB_APPLE_AUDIENCES       = "com.cacheplane.b4app.ios,com.cacheplane.b4app.signin"
+      B4HUB_APPLE_SERVICES_ID     = "com.cacheplane.b4app.signin"
       B4HUB_TRUST_X_FORWARDED_FOR = "1"
       B4HUB_RETENTION_DAYS        = "30"
       B4HUB_LOG                   = "info"

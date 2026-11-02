@@ -27,8 +27,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/actionlint"
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP/actionlint" actionlint
           echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Install shellcheck and bats
+        run: sudo apt-get update && sudo apt-get install -y shellcheck bats
       - name: actionlint
         run: actionlint
       - name: shellcheck
@@ -37,6 +37,8 @@ jobs:
           shellcheck .github/scripts/*.sh Hub/scripts/*.sh Infra/scripts/*.sh
       - name: Release tag guard test
         run: .github/scripts/test-tag-guard.sh
+      - name: Deploy script tests
+        run: bats Infra/scripts/tests
 
   package:
     name: Package build and tests

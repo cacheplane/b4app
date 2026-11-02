@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Test stub for the AWS CLI: records every invocation in $STUB_LOG and returns
+# canned JSON. STUB_MIGRATE_EXIT sets the migrate container's exit code
+# ("none" leaves it out); STUB_ROLLOUT sets the primary deployment's state.
+set -euo pipefail
+printf 'aws %s\n' "$*" >> "${STUB_LOG:?}"
+
+arg() { # value following flag $1
+  local want="$1"; shift
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "$want" ]; then printf '%s' "${2:-}"; return 0; fi
+    shift
+  done
+  return 1
+}
+
+account=123456789012
+region=us-east-2
+case "${1:-} ${2:-}" in
+  "sts get-caller-identity")
+    printf '{"Account":"%s"}\n' "$account"
+    ;;
+  "secretsmanager describe-secret")
+    id="$(arg --secret-id "$@")"
+    printf '{"ARN":"arn:aws:secretsmanager:%s:%s:secret:%s-AbC123","Name":"%s"}\n' "$region" "$account" "$id" "$id"
+    ;;
+  "ecs describe-task-definition")
+    family="$(arg --task-definition "$@")"
+    env="${family#b4hub-}"; env="${env%%-*}"
+    printf '{"taskDefinition":{"family":"%s","executionRoleArn":"arn:aws:iam::%s:role/b4hub-%s-task-exec","taskRoleArn":"arn:aws:iam::%s:role/b4hub-%s-task"}}\n' \
+      "$family" "$account" "$env" "$account" "$env"
+    ;;
+  "ecs register-task-definition")
+    file="$(arg --cli-input-json "$@")"
+    file="${file#file://}"
+    cp "$file" "${STUB_LOG%/*}/registered-$(jq -r .family "$file").json"
+    family="$(jq -er .family "$file")"
+    printf '{"taskDefinition":{"taskDefinitionArn":"arn:aws:ecs:%s:%s:task-definition/%s:7"}}\n' "$region" "$account" "$family"
+    ;;
+  "ecs describe-services")
+    cluster="$(arg --cluster "$@")"
+    printf '{"services":[{"networkConfiguration":{"awsvpcConfiguration":{"subnets":["subnet-a","subnet-b"],"securityGroups":["sg-task"],"assignPublicIp":"ENABLED"}},"deployments":[{"status":"PRIMARY","taskDefinition":"arn:aws:ecs:%s:%s:task-definition/%s-hub:7","rolloutState":"%s"}]}]}\n' \
+      "$region" "$account" "$cluster" "${STUB_ROLLOUT:-COMPLETED}"
+    ;;
+  "ec2 describe-security-groups")
+    printf '{"SecurityGroups":[{"GroupId":"sg-admin"}]}\n'
+    ;;
+  "ecs run-task")
+    printf '{"tasks":[{"taskArn":"arn:aws:ecs:%s:%s:task/b4hub-test/0123abcd"}],"failures":[]}\n' "$region" "$account"
+    ;;
+  "ecs wait")
+    ;;
+  "ecs describe-tasks")
+    code="${STUB_MIGRATE_EXIT:-0}"
+    if [ "$code" = none ]; then
+      printf '{"tasks":[{"stoppedReason":"CannotPullContainerError: pull failed","containers":[{"name":"migrate"}]}]}\n'
+    else
+      printf '{"tasks":[{"stoppedReason":"Essential container in task exited","containers":[{"name":"migrate","exitCode":%s}]}]}\n' "$code"
+    fi
+    ;;
+  "logs get-log-events")
+    printf '{"events":[{"message":"applied 0001_tenancy"},{"message":"applied 0003_organisation"}]}\n'
+    ;;
+  "ecs update-service")
+    printf '{"service":{"serviceName":"stub"}}\n'
+    ;;
+  *)
+    echo "aws stub: unexpected call: $*" >&2
+    exit 64
+    ;;
+esac

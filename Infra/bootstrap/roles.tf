@@ -289,6 +289,22 @@ data "aws_iam_policy_document" "deploy" {
     resources = ["arn:${local.partition}:ecr:${var.region}:${local.account_id}:repository/b4hub"]
   }
 
+  # deploy.sh resolves the hub secrets' ARNs (they end in a random suffix)
+  # by name; DescribeSecret returns metadata only, never a value.
+  statement {
+    sid       = "ResolveHubSecretArns"
+    actions   = ["secretsmanager:DescribeSecret"]
+    resources = ["arn:${local.partition}:secretsmanager:${var.region}:${local.account_id}:secret:b4hub/*"]
+  }
+
+  # The migration task runs in the admin security group, found by name.
+  # EC2 Describe actions do not support resource-level permissions.
+  statement {
+    sid       = "FindAdminSecurityGroup"
+    actions   = ["ec2:DescribeSecurityGroups"]
+    resources = ["*"]
+  }
+
   statement {
     sid       = "ReadTaskLogs"
     actions   = ["logs:GetLogEvents"]

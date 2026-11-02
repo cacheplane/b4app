@@ -1,0 +1,186 @@
+name: Hub deploy
+
+# Deploys one hub image, by digest, to test or production: verify the build
+# attestation, copy the image into the account's ECR, register the hub-migrate
+# and hub task definitions, run the migration task, and only if it exits 0
+# roll the service and check /readyz (Infra/scripts/deploy.sh does the AWS
+# part). Called by hub-image.yml after a push to main (test) and by
+# hub-release.yml for a published hub-v* release (production); run by hand
+# with any previously built digest to roll back.
+#
+# OIDC subjects: a job that declares `environment:` presents the subject
+# repo:cacheplane/b4app:environment:<name>; any other job presents
+# ref:<github.ref>. The test deploy role (AWS_ROLE_DEPLOY_TEST) trusts only
+# ref:refs/heads/main, so deploy-test declares no environment and runs only on
+# main. The prod deploy role (AWS_ROLE_DEPLOY_PROD) trusts only
+# environment:production, so deploy-production declares it, which also applies
+# that Environment's required reviewer and its deployment-branch rule (main
+# and hub-v* only), so a manual production rollback runs from one of those.
+#
+# Two jobs rather than one with `environment: ${{ cond && 'production' || '' }}`:
+# whether an empty environment name means "no environment" is not documented
+# behavior, and getting it wrong changes the OIDC subject, so each job's
+# environment is literal.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: test or production
+        required: true
+        type: string
+      digest:
+        description: The image index digest to deploy (sha256:...)
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Where to deploy (test runs only from main; production from main or a hub-v* tag)
+        required: true
+        type: choice
+        options:
+          - test
+          - production
+      digest:
+        description: A digest previously built by hub-image.yml (sha256:...)
+        required: true
+        type: string
+
+permissions: {}
+
+env:
+  IMAGE: ghcr.io/cacheplane/b4hub
+
+jobs:
+  check-inputs:
+    name: Check the inputs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Validate environment, digest, and ref
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          DIGEST: ${{ inputs.digest }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          case "$ENVIRONMENT" in
+            test | production) ;;
+            *) echo "::error::environment must be test or production, not '$ENVIRONMENT'"; exit 1 ;;
+          esac
+          if ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::digest must be sha256:<64 hex>"
+            exit 1
+          fi
+          if [ "$ENVIRONMENT" = test ] && [ "$REF" != refs/heads/main ]; then
+            echo "::error::test deploys run only from main (the test deploy role trusts only that ref); this run is on $REF"
+            exit 1
+          fi
+          echo "deploying $IMAGE@$DIGEST to $ENVIRONMENT from $REF"
+
+  deploy-test:
+    name: Deploy to test
+    needs: check-inputs
+    if: inputs.environment == 'test' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    # Migrations may take up to 30 minutes and the rollout up to 10.
+    timeout-minutes: 60
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify the build attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          gh attestation verify "oci://$IMAGE@$DIGEST" \
+            --repo cacheplane/b4app \
+            --signer-workflow cacheplane/b4app/.github/workflows/hub-image.yml
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_DEPLOY_TEST }}
+          aws-region: us-east-2
+          mask-aws-account-id: true
+      - name: Log in to ECR
+        run: |
+          set -euo pipefail
+          registry="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-2.amazonaws.com"
+          aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin "$registry"
+      - name: Deploy
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          DIGEST: ${{ inputs.digest }}
+        run: Infra/scripts/deploy.sh "$ENVIRONMENT" "$DIGEST"
+
+  deploy-production:
+    name: Deploy to production
+    needs: check-inputs
+    if: inputs.environment == 'production'
+    runs-on: ubuntu-24.04
+    # Migrations may take up to 30 minutes and the rollout up to 10.
+    timeout-minutes: 60
+    environment:
+      name: production
+      url: https://hub.b4.run
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify the build attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          gh attestation verify "oci://$IMAGE@$DIGEST" \
+            --repo cacheplane/b4app \
+            --signer-workflow cacheplane/b4app/.github/workflows/hub-image.yml
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_DEPLOY_PROD }}
+          aws-region: us-east-2
+          mask-aws-account-id: true
+      - name: Log in to ECR
+        run: |
+          set -euo pipefail
+          registry="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-2.amazonaws.com"
+          aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin "$registry"
+      - name: Deploy
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          DIGEST: ${{ inputs.digest }}
+        run: Infra/scripts/deploy.sh "$ENVIRONMENT" "$DIGEST"

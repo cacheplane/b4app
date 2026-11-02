@@ -201,9 +201,24 @@ run "deploy_pass_role_is_limited_to_task_roles" {
   assert {
     condition = alltrue([
       for s in data.aws_iam_policy_document.deploy.statement :
-      !contains(s.resources, "*") || length(setsubtract(s.actions, ["ecr:GetAuthorizationToken", "ecs:RegisterTaskDefinition", "ecs:DescribeTaskDefinition"])) == 0
+      !contains(s.resources, "*") || length(setsubtract(s.actions, ["ecr:GetAuthorizationToken", "ecs:RegisterTaskDefinition", "ecs:DescribeTaskDefinition", "ec2:DescribeSecurityGroups"])) == 0
     ])
     error_message = "only actions that AWS cannot scope to a resource may use Resource *"
+  }
+
+  assert {
+    condition = one([
+      for s in data.aws_iam_policy_document.deploy.statement : s if contains(tolist(s.actions), "secretsmanager:DescribeSecret")
+    ]).resources == toset(["arn:aws:secretsmanager:us-east-2:123456789012:secret:b4hub/*"])
+    error_message = "the deploy role reads secret metadata for the hub secrets only, and never a secret value"
+  }
+
+  assert {
+    condition = !anytrue([
+      for a in flatten([for s in data.aws_iam_policy_document.deploy.statement : tolist(s.actions)]) :
+      a == "secretsmanager:GetSecretValue"
+    ])
+    error_message = "the deploy role must not read secret values"
   }
 }
 

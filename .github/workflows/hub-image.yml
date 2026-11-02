@@ -224,3 +224,20 @@ jobs:
         env:
           DIGEST: ${{ needs.merge.outputs.digest }}
         run: Hub/scripts/check-image.sh "$IMAGE@$DIGEST"
+
+  # A push to main deploys the digest just built to test; nightly and manual
+  # runs only build. Called workflows get at most the caller job's permissions.
+  deploy-test:
+    name: Deploy to test
+    needs: [changed, merge, check]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changed.outputs.skip != 'true'
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+      attestations: read
+    uses: ./.github/workflows/hub-deploy.yml
+    with:
+      environment: test
+      digest: ${{ needs.merge.outputs.digest }}
+    secrets: inherit

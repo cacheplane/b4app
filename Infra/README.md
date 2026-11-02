@@ -67,7 +67,7 @@ Every IAM role a root creates through the infra role must set `permissions_bound
 | --- | --- | --- |
 | `b4hub-<env>-plan` | `repo:cacheplane/b4app:*` (any ref) | `ReadOnlyAccess`, read state, lock object write |
 | `b4hub-<env>-infra` | test: `ref:refs/heads/main`; prod: `environment:production` | `AdministratorAccess` capped by `b4hub-<env>-boundary` (no IAM users, access keys, login profiles, Organizations, or account actions; cannot edit the three roles or the boundary) |
-| `b4hub-<env>-deploy` | same as infra | ECS rollout in cluster `b4hub-<env>`, `iam:PassRole` for the two task roles, push and pull on ECR repository `b4hub`, read `/b4hub/<env>/*` logs |
+| `b4hub-<env>-deploy` | same as infra | ECS rollout in cluster `b4hub-<env>`, `iam:PassRole` for the two task roles, push and pull on ECR repository `b4hub`, read `/b4hub/<env>/*` logs, `secretsmanager:DescribeSecret` on `b4hub/*` (ARNs only, never values), `ec2:DescribeSecurityGroups` (to find `b4hub-<env>-admin` for the migration task). An account bootstrapped before the last two were added needs bootstrap re-applied before its first deploy. |
 
 ## Environment roots
 

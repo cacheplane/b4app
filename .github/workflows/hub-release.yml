@@ -94,15 +94,19 @@ jobs:
           docker buildx imagetools create "${tag_args[@]}" "$IMAGE@$DIGEST"
           docker buildx imagetools inspect "$IMAGE@$DIGEST"
 
-  # Task 10 uncomments this
-  # deploy:
-  #   name: Deploy to production
-  #   needs: promote
-  #   permissions:
-  #     contents: read
-  #     id-token: write
-  #   uses: ./.github/workflows/hub-deploy.yml
-  #   with:
-  #     environment: production
-  #     digest: ${{ needs.promote.outputs.digest }}
-  #   secrets: inherit
+  # Skipped for mac-v* releases twice over: promote is skipped, so this job is
+  # too, and its own guard repeats the tag check.
+  deploy:
+    name: Deploy to production
+    needs: promote
+    if: startsWith(github.event.release.tag_name, 'hub-v')
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+      attestations: read
+    uses: ./.github/workflows/hub-deploy.yml
+    with:
+      environment: production
+      digest: ${{ needs.promote.outputs.digest }}
+    secrets: inherit

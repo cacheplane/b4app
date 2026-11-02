@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Test stub for docker buildx imagetools: records every invocation in
+# $STUB_LOG. inspect reports the digest named by the tag, or a different one
+# when STUB_DIGEST_MISMATCH=1; before any create it reports "not found"
+# unless STUB_ECR_EXISTS=1.
+set -euo pipefail
+printf 'docker %s\n' "$*" >> "${STUB_LOG:?}"
+case "${1:-} ${2:-} ${3:-}" in
+  "buildx imagetools create")
+    ;;
+  "buildx imagetools inspect")
+    ref="$4"
+    if [ "${STUB_ECR_EXISTS:-0}" != 1 ] && ! grep -q '^docker buildx imagetools create' "$STUB_LOG"; then
+      echo "ERROR: $ref: not found" >&2
+      exit 1
+    fi
+    hex="${ref##*:}"
+    if [ "${STUB_DIGEST_MISMATCH:-0}" = 1 ]; then
+      hex="ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    fi
+    printf '{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"sha256:%s"}\n' "$hex"
+    ;;
+  *)
+    echo "docker stub: unexpected call: $*" >&2
+    exit 64
+    ;;
+esac
