@@ -66,7 +66,7 @@ public actor SessionService {
   /// adapter before it marks the request resolved, so without this a second answer (one from the Mac,
   /// one relayed from the phone) could reach the runtime too.
   private var answering: Set<String> = []
-  private let logger = Log.logger("sessions")
+  let logger = Log.logger("sessions")
   var db: WorkspaceDatabase { context.database }
 
   public init(context: Context) {

@@ -146,7 +146,7 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     #expect(
       WorkspaceDatabase.syncedTables.map(\.table) == [
         "connections", "projects", "projectFolders", "threads", "turns", "displayItems", "runtimeRequests",
-        "drafts",
+        "drafts", "connectionUsage",
       ])
     let changes = try db.changes(after: 0)
     #expect(changes.map(\.table) == ["projects", "projectFolders"])
