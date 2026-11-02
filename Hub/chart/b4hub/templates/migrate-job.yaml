@@ -1,0 +1,63 @@
+{{- if .Values.migrate.enabled }}
+{{- $dbSecret := include "b4hub.db.secretName" . }}
+# Applies migrations before the Deployment changes. A failed hook fails the release. Hook resources
+# are not tracked by Helm: inspect a failure with `kubectl logs job/<name>` (see NOTES.txt).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "b4hub.migrateJobName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "b4hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Values.migrate.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "b4hub.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      {{- include "b4hub.podCommon" . | nindent 6 }}
+      containers:
+        - name: migrate
+          image: {{ include "b4hub.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [migrate]
+          env:
+            - name: DATABASE_ADMIN_URL_FILE
+              value: /etc/b4hub/db/DATABASE_ADMIN_URL
+            - name: DATABASE_URL_FILE
+              value: /etc/b4hub/db/DATABASE_URL
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- with .Values.migrate.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: db
+              mountPath: /etc/b4hub/db
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: db
+          secret:
+            secretName: {{ $dbSecret }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.database.secretKeys.adminUrl }}
+                path: DATABASE_ADMIN_URL
+              - key: {{ .Values.database.secretKeys.url }}
+                path: DATABASE_URL
+{{- end }}

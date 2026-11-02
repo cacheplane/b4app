@@ -1,0 +1,10 @@
+apiVersion: v2
+name: b4hub
+description: The b4 hub, the sync and relay service for the b4 Personal Agent Workspace, with an external PostgreSQL and a pre-upgrade migration Job.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.29.0"
+home: https://b4.run
+sources:
+  - https://github.com/cacheplane/b4app

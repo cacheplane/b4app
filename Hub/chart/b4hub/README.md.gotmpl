@@ -1,0 +1,61 @@
+{{ template "chart.header" . }}
+{{ template "chart.deprecationWarning" . }}
+
+{{ template "chart.badgesSection" . }}
+
+{{ template "chart.description" . }}
+
+{{ template "chart.homepageLine" . }}
+
+## Before you install
+
+The hub needs an external PostgreSQL. Create one Secret with two keys:
+
+- `DATABASE_URL`: the `b4hub_app` role's connection URL. The hub Deployment mounts only this key, at `/etc/b4hub/db/DATABASE_URL`, and reads it through `DATABASE_URL_FILE`.
+- `DATABASE_ADMIN_URL`: the owner connection URL. Only the migration Job mounts it.
+
+Key names are overridable with `database.secretKeys`. Pass the Secret as `database.existingSecret`.
+`database.urls.url` and `database.urls.adminUrl` make the chart create `<release>-b4hub-db` instead; that is for evaluation only (the values sit in your values file, and the Secret is a hook resource that `helm uninstall` leaves behind). Use `existingSecret` in production.
+
+`hub.publicUrl` and `hub.rpId` are required.
+
+```sh
+helm install hub oci://ghcr.io/cacheplane/charts/b4hub \
+  --namespace b4hub --create-namespace \
+  --set database.existingSecret=b4hub-db \
+  --set hub.publicUrl=https://hub.example.com \
+  --set hub.rpId=example.com
+```
+
+## Migrations
+
+`b4hub migrate` runs as a Job with `helm.sh/hook: pre-install,pre-upgrade` (weight `-5`, delete policy `before-hook-creation,hook-succeeded`, `backoffLimit: 0`). A failed migration fails the release before the Deployment changes. The Job is named `<fullname>-migrate-<revision>`; a failed one is kept for an hour. Helm does not track hook resources, so read a failure with `kubectl logs job/<name>` (the install notes print the exact command).
+
+## Sign-in secrets
+
+Sign-in needs `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, and `B4HUB_APPLE_PRIVATE_KEY`. Provide them in an existing Secret with those keys (`secrets.existingSecret`), or let the chart create `<release>-b4hub-secrets` from `secrets.values`, passing the PEM from a file:
+
+```sh
+--set-file secrets.values.applePrivateKey=AuthKey_ABC123.p8
+```
+
+With neither set, the hub runs without sign-in secrets and the chart renders none.
+`secrets.useFileVars: false` (default) exposes them as environment variables from `secretKeyRef`. `true` mounts them at `/etc/b4hub/secrets/<KEY>` and sets `B4HUB_*_FILE` instead; turn it on once the hub reads the `_FILE` forms (M8e).
+
+## Replicas
+
+Keep `replicaCount: 1` and `strategy.type: Recreate`. The relay routes per process until M8e (D-057); the install notes warn when `replicaCount` is above 1. `RollingUpdate` and more replicas are supported after M8e.
+
+## Security
+
+The pods meet the Restricted Pod Security Standard by default: non-root UID/GID 10001, no privilege escalation, all capabilities dropped, `RuntimeDefault` seccomp, a read-only root filesystem with an `emptyDir` at `/tmp`, and no service account token.
+
+## Air-gapped installs
+
+`global.imageRegistry` replaces the registry portion of `image.repository` (`ghcr.io`). `image.digest` pins the image by digest and wins over `image.tag`. `--skip-schema-validation` skips `values.schema.json` if your tooling needs it.
+
+{{ template "chart.requirementsSection" . }}
+
+{{ template "chart.valuesSection" . }}
+
+{{ template "helm-docs.versionFooter" . }}

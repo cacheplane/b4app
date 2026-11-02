@@ -1,0 +1,136 @@
+# Values for the b4hub chart. Comments starting with `# --` feed README.md through helm-docs.
+
+# -- Override the chart name used in resource names.
+nameOverride: ""
+# -- Override the full resource name prefix (default `<release>-b4hub`).
+fullnameOverride: ""
+
+global:
+  # -- Replaces the registry portion of every image reference (`ghcr.io`), for air-gapped mirrors.
+  imageRegistry: ""
+
+image:
+  # -- The hub image. One image serves both `serve` and `migrate`.
+  repository: ghcr.io/cacheplane/b4hub
+  # -- Image tag; defaults to the chart's `appVersion`.
+  tag: ""
+  # -- Image digest (`sha256:...`). When set it wins over `tag` and the image is pulled as `repository@digest`.
+  digest: ""
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+
+# -- Pull secrets for a private registry or mirror.
+imagePullSecrets: []
+
+# -- Hub replicas. Keep 1: the relay routes per process until M8e (D-057).
+replicaCount: 1
+
+strategy:
+  # -- `Recreate` (default) or `RollingUpdate`. `RollingUpdate` and `replicaCount > 1` are supported after M8e (D-057).
+  type: Recreate
+
+# -- Seconds Kubernetes waits after SIGTERM. The hub drains open long-polls for up to 30 s.
+terminationGracePeriodSeconds: 45
+# -- `preStop` sleep so endpoint removal propagates before SIGTERM.
+preStopSleepSeconds: 5
+
+database:
+  # -- Name of an existing Secret holding both database URLs. Required unless both `database.urls` are set.
+  existingSecret: ""
+  secretKeys:
+    # -- Key in the Secret holding the `b4hub_app` connection URL. The only key the hub Deployment mounts.
+    url: DATABASE_URL
+    # -- Key in the Secret holding the owner (admin) connection URL. Only the migration Job mounts it.
+    adminUrl: DATABASE_ADMIN_URL
+  urls:
+    # -- For evaluation only; use `existingSecret` in production. With `adminUrl`, the chart creates `<release>-b4hub-db`.
+    url: ""
+    # -- For evaluation only; use `existingSecret` in production.
+    adminUrl: ""
+
+hub:
+  # -- Required. The URL clients reach the hub at (`B4HUB_PUBLIC_URL`).
+  publicUrl: ""
+  # -- Required. The WebAuthn relying party id, a registrable domain (`B4HUB_WEBAUTHN_RP_ID`).
+  rpId: ""
+  # -- `open` or `closed` (`B4HUB_SIGNUP`).
+  signup: closed
+  # -- Trust the last `X-Forwarded-For` hop for the client address. Correct only if your proxy appends the client address.
+  trustXForwardedFor: true
+  # -- Days the change log is kept (`B4HUB_RETENTION_DAYS`).
+  retentionDays: 30
+  # -- Tracing filter (`B4HUB_LOG`).
+  log: info
+  apple:
+    # -- Apple token audiences (`B4HUB_APPLE_AUDIENCES`, joined with commas); rendered only when set.
+    audiences: []
+    # -- Apple Services ID for web sign-in (`B4HUB_APPLE_SERVICES_ID`); rendered only when set.
+    servicesId: ""
+  # -- Extra `EnvVar` entries appended verbatim to the hub container (for example `OTEL_EXPORTER_OTLP_*`).
+  extraEnv: []
+
+secrets:
+  # -- Existing Secret with keys `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, `B4HUB_APPLE_PRIVATE_KEY`.
+  existingSecret: ""
+  # -- `false`: env from `secretKeyRef`. `true`: mount at `/etc/b4hub/secrets/` and set `B4HUB_*_FILE` (needs a hub with the `_FILE` forms, M8e).
+  useFileVars: false
+  # -- Chart-created `<release>-b4hub-secrets` when `existingSecret` is empty. Pass the PEM with `--set-file secrets.values.applePrivateKey=AuthKey.p8`.
+  values:
+    secretKey: ""
+    appleTeamId: ""
+    appleKeyId: ""
+    applePrivateKey: ""
+
+migrate:
+  # -- Run `b4hub migrate` as a pre-install and pre-upgrade hook Job.
+  enabled: true
+  # -- Deadline for the migration Job.
+  activeDeadlineSeconds: 600
+  # -- Resources for the migration container.
+  resources: {}
+
+serviceAccount:
+  # -- Create a ServiceAccount for the hub.
+  create: true
+  # -- Name of the ServiceAccount (default: the full name when `create`, else `default`).
+  name: ""
+  # -- Annotations for the ServiceAccount.
+  annotations: {}
+
+service:
+  # -- Service port in front of the hub's `http` port (8080).
+  port: 80
+
+# -- Annotations for the hub pods.
+podAnnotations: {}
+
+# -- Pod security context (Restricted Pod Security Standard).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container security context (Restricted Pod Security Standard). `/tmp` is an `emptyDir`.
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+  readOnlyRootFilesystem: true
+
+# -- Hub container resources.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+# -- Node selector for the hub and migration pods.
+nodeSelector: {}
+# -- Tolerations for the hub and migration pods.
+tolerations: []
+# -- Affinity for the hub pods.
+affinity: {}

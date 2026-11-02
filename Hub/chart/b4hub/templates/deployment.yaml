@@ -1,0 +1,146 @@
+{{- $dbSecret := include "b4hub.db.secretName" . }}
+{{- $hubSecret := include "b4hub.secrets.secretName" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "b4hub.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "b4hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hub
+spec:
+  # One replica with Recreate: the relay routes per process until M8e (D-057).
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: {{ .Values.strategy.type }}
+  selector:
+    matchLabels:
+      {{- include "b4hub.selectorLabels" (dict "ctx" . "component" "hub") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "b4hub.labels" . | nindent 8 }}
+        app.kubernetes.io/component: hub
+      {{- if or .Values.podAnnotations (include "b4hub.secrets.createSecret" .) }}
+      annotations:
+        {{- if include "b4hub.secrets.createSecret" . }}
+        checksum/secrets: {{ toJson .Values.secrets.values | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "b4hub.serviceAccountName" . }}
+      {{- include "b4hub.podCommon" . | nindent 6 }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: hub
+          image: {{ include "b4hub.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [serve]
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: DATABASE_URL_FILE
+              value: /etc/b4hub/db/DATABASE_URL
+            - name: B4HUB_PORT
+              value: "8080"
+            - name: B4HUB_PUBLIC_URL
+              value: {{ required "hub.publicUrl is required" .Values.hub.publicUrl | quote }}
+            - name: B4HUB_WEBAUTHN_RP_ID
+              value: {{ required "hub.rpId is required" .Values.hub.rpId | quote }}
+            - name: B4HUB_SIGNUP
+              value: {{ .Values.hub.signup | quote }}
+            {{- if .Values.hub.trustXForwardedFor }}
+            - name: B4HUB_TRUST_X_FORWARDED_FOR
+              value: "1"
+            {{- end }}
+            - name: B4HUB_RETENTION_DAYS
+              value: {{ .Values.hub.retentionDays | toString | quote }}
+            - name: B4HUB_LOG
+              value: {{ .Values.hub.log | quote }}
+            {{- with .Values.hub.apple.audiences }}
+            - name: B4HUB_APPLE_AUDIENCES
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- with .Values.hub.apple.servicesId }}
+            - name: B4HUB_APPLE_SERVICES_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if $hubSecret }}
+            {{- range splitList " " (include "b4hub.secrets.keys" .) }}
+            {{- if $.Values.secrets.useFileVars }}
+            - name: {{ . }}_FILE
+              value: /etc/b4hub/secrets/{{ . }}
+            {{- else }}
+            - name: {{ . }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $hubSecret }}
+                  key: {{ . }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.hub.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          lifecycle:
+            preStop:
+              exec:
+                command: [/bin/sh, -c, "sleep {{ .Values.preStopSleepSeconds }}"]
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: db
+              mountPath: /etc/b4hub/db
+              readOnly: true
+            {{- if and $hubSecret .Values.secrets.useFileVars }}
+            - name: hub-secrets
+              mountPath: /etc/b4hub/secrets
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        # Only the app URL: the hub never sees the admin URL.
+        - name: db
+          secret:
+            secretName: {{ $dbSecret }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.database.secretKeys.url }}
+                path: DATABASE_URL
+        {{- if and $hubSecret .Values.secrets.useFileVars }}
+        - name: hub-secrets
+          secret:
+            secretName: {{ $hubSecret }}
+            defaultMode: 0440
+            items:
+              {{- range splitList " " (include "b4hub.secrets.keys" .) }}
+              - key: {{ . }}
+                path: {{ . }}
+              {{- end }}
+        {{- end }}
