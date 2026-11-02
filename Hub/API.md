@@ -66,7 +66,7 @@ in whole seconds.
 | 405 | `method_not_allowed` | request | The route exists but not for that method. |
 | 409 | `last_identity` | request | `DELETE /v1/me/identities/{id}` of the account's only sign-in method, which would leave it unable to sign in. Add another first. |
 | 409 | `apple_linked` | request | `POST /v1/me/apple`, `/v1/me/apple/native`, or `/v1/me/apple/handoff` (or a link's callback) for an account that already has an Apple ID: an account links at most one. |
-| 409 | `merge_refused` | request | `POST /v1/enroll` with a token whose account cannot be merged into the code's: it has (or ever had) a `macos` device, it is a member of a shared org rather than the owner of a personal one, or it is the code's own account. Nothing changes, and the code stays redeemable. |
+| 409 | `merge_refused` | request | `POST /v1/enroll` with a token whose account cannot be merged into the code's. `details.reason` says why, checked in this order: `same_account` (the token's org is the code's own: the phone is already in it, whichever user of that org it is), `shared_org` (a member of a shared org rather than the owner of a personal one), or `has_mac` (it has, or ever had, a `macos` device). It is absent when the hub cannot say (the token's user is gone). Nothing changes, and the code stays redeemable. |
 | 409 | `shared_org` | request | `DELETE /v1/me` by a member of a shared (non-personal) org, such as an operator-seeded user; only the owner of a personal org can delete their account here. Nothing is revoked or deleted. |
 | 409 | `relocated` | request | `GET /v1/devices/self/link` reached an instance other than the one serving this user's links; `details.instanceId` names that instance. No socket is opened. Retry at once, at most 3 times, then with the normal backoff (see *Link*, *More than one instance*). |
 | 410 | `resync_required` | request | The pull cursor is older than the retention horizon: the hub has pruned the changes after it. Restore from `GET /v1/snapshot` (see *Horizon*). |
@@ -197,8 +197,10 @@ code is `401 invalid_code` and the phone's account and token are untouched.
 
 - A header that is present but not a valid token (another scheme, malformed, unknown, revoked) is
   `401 unauthorized`, before the code is looked at.
-- A token whose account has (or had) a `macos` device, belongs to a shared org, or is the code's
-  own account is `409 merge_refused`, and the code stays redeemable.
+- A token whose account is in the code's own org, belongs to a shared org, or has (or had) a
+  `macos` device is `409 merge_refused` with `details.reason` `same_account`, `shared_org`, or
+  `has_mac`, and the code stays redeemable. The code is checked first: a wrong, expired, or used
+  one is `401 invalid_code` whatever the token.
 - Without the header, enrollment is exactly as before.
 
 ### `POST /v1/pairing-codes`

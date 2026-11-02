@@ -621,6 +621,34 @@ final class TokenSequence: @unchecked Sendable {
     #expect(recorder.all.allSatisfy { $0.request.url?.path == "/v1/enroll" })
   }
 
+  @Test func aMergeRefusalCarriesItsReason() async throws {
+    for reason in ["same_account", "has_mac", "shared_org"] {
+      let api = make(host: "merge-\(reason).test") { _ in
+        .json(
+          409,
+          #"{"error":{"kind":"request_error","message":"this account cannot be merged into another","details":{"code":"merge_refused","reason":"\#(reason)"}}}"#
+        )
+      }
+      do {
+        _ = try await api.enroll(
+          EnrollRequest(code: "ABCD2345", deviceName: "Phone", platform: "ios"), replacingToken: "phone-token"
+        )
+        Issue.record("expected merge_refused")
+      } catch let error as HubError {
+        #expect(error.status == 409 && error.code == "merge_refused" && error.reason == reason)
+      }
+    }
+    // An older hub sends none.
+    let old = make(host: "merge-old.test") { _ in
+      .json(409, #"{"error":{"kind":"request_error","message":"no","details":{"code":"merge_refused"}}}"#)
+    }
+    let error = await #expect(throws: HubError.self) {
+      _ = try await old.enroll(
+        EnrollRequest(code: "ABCD2345", deviceName: "Phone", platform: "ios"), replacingToken: "phone-token")
+    }
+    #expect(error?.reason == nil)
+  }
+
   @Test func signInRefusalsKeepTheirHubCodes() async {
     let codes: [(status: Int, code: String)] = [
       (403, "signup_closed"), (400, "ceremony_expired"), (401, "credential_rejected"),

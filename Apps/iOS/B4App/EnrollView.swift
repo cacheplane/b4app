@@ -11,9 +11,11 @@ import WorkspaceUI
 /// when a pairing link arrives: the Mac's `https://<site>/pair#c=<code>` from the system Camera, the
 /// in-app scanner, or any link. A link fills the sheet and asks one question, "Pair this iPhone with
 /// the hub at <host>?"; nothing is sent without that tap. Then `MirrorHost.pair` signs a signed-out
-/// phone in or merges a phone-only account; a phone signed in to an account with a Mac (or one the hub
-/// will not merge) is asked once more before it logs out and switches. The code lives in this view's
-/// state only until the request returns, then it is cleared; nothing logs it.
+/// phone in, or (signed in) tries the merge: it merges a phone-only account, says "This iPhone is
+/// already paired" for the code's own account, and otherwise asks once more before switching, which
+/// redeems the code before it ends the old session. A signed-in phone never sees the typed-code entry:
+/// a typed code would replace its account without asking. The code lives in this view's state only
+/// until the request returns, then it is cleared; nothing logs it.
 struct EnrollView: View {
   let host: MirrorHost
   /// A pairing link opened while this screen shows; taken into `offer` and cleared at once.
@@ -27,16 +29,13 @@ struct EnrollView: View {
   /// The link waiting for "Pair". Holds the code until the request returns or Brian cancels.
   @State private var offer: PairLink?
   @State private var scanning = false
-  /// The switch question, after "Pair" on a phone signed in to another account: the org it leaves, and
-  /// whether that account has a Mac. The offer keeps the code until it is answered.
-  @State private var switchQuestion: SwitchQuestion?
-  /// Signed in when the sheet opened: Cancel then closes it, since the typed entry is for signing in.
+  /// The switch question, after "Pair" on a phone signed in to another account: the org it leaves. The
+  /// offer keeps the code until it is answered.
+  @State private var switchFrom: String?
+  /// "This iPhone is already paired", after "Pair" with a code for the org the phone is in.
+  @State private var alreadyPaired = false
+  /// Signed in when the sheet opened (and still): the typed entry never shows, and Cancel closes.
   @State private var openedSignedIn = false
-
-  struct SwitchQuestion: Equatable {
-    let from: String
-    let alreadyPaired: Bool
-  }
   @Environment(\.dismiss) private var dismiss
 
   static let codeLength = PairLink.codeLength
@@ -55,6 +54,8 @@ struct EnrollView: View {
         VStack(alignment: .leading, spacing: LLA.Space.l) {
           if let offer {
             confirmation(offer)
+          } else if openedSignedIn {
+            signedInResult
           } else {
             typedEntry
           }
@@ -73,23 +74,23 @@ struct EnrollView: View {
       }
     }
     .tint(LLA.Color.accent)
-    .onAppear { openedSignedIn = host.accountStatus.map { $0.state != .signedOut } ?? false }
+    .onAppear { openedSignedIn = host.isSignedIn }
     .alert(
-      switchQuestion.map { PairingCopy.title(alreadyPaired: $0.alreadyPaired) } ?? "",
-      isPresented: Binding(get: { switchQuestion != nil }, set: { if !$0 { switchQuestion = nil } }),
-      presenting: switchQuestion
-    ) { question in
+      switchFrom.map { PairingCopy.switchQuestion(to: nil, from: $0) } ?? "",
+      isPresented: Binding(get: { switchFrom != nil }, set: { if !$0 { switchFrom = nil } })
+    ) {
       Button(PairingCopy.switchButton, role: .destructive) {
-        switchQuestion = nil
+        switchFrom = nil
         if let offer { Task { await switchAndPair(offer) } }
       }
       .accessibilityIdentifier("pair.switch")
       Button("Cancel", role: .cancel) {
-        switchQuestion = nil
+        switchFrom = nil
         cancelOffer()
       }
-    } message: { question in
-      Text(PairingCopy.message(alreadyPaired: question.alreadyPaired, from: question.from))
+    }
+    .alert(PairingCopy.alreadyPaired, isPresented: $alreadyPaired) {
+      Button("OK", role: .cancel) { dismiss() }
     }
     .onChange(of: incoming, initial: true) { _, arrival in
       guard let arrival else { return }
@@ -101,6 +102,17 @@ struct EnrollView: View {
         accept(PairArrival(scanned: text, decide: host.pairLinkDecision))
       }
     }
+  }
+
+  // MARK: Signed in
+
+  /// A signed-in phone whose pairing ended without a sign-in (a refused code, a link it will not take):
+  /// the one line, and a way out. Never the typed entry.
+  @ViewBuilder private var signedInResult: some View {
+    errors
+    Button("Done") { dismiss() }
+      .buttonStyle(.llaSecondary)
+      .accessibilityIdentifier("enroll.done")
   }
 
   // MARK: Typed
@@ -182,6 +194,8 @@ struct EnrollView: View {
   /// ignored, with a note, so the hub Brian is reading about cannot change under his thumb.
   private func accept(_ arrival: PairArrival) {
     guard !connecting else { return }
+    // The same link twice (a universal link can reach the app by two routes) is one arrival.
+    if case .offer(let link) = arrival, link == offer { return }
     guard offer == nil else {
       error = PairArrival.ignoredWhileOffering
       return
@@ -205,18 +219,23 @@ struct EnrollView: View {
       case .signedIn:
         offer = nil
         dismiss()
-      case .askToSwitch(let from, let alreadyPaired):
-        // Nothing was sent: the offer (and its code) waits for the answer.
-        switchQuestion = SwitchQuestion(from: from, alreadyPaired: alreadyPaired)
+      case .alreadyPaired:
+        offer = nil
+        alreadyPaired = true
+      case .askToSwitch(let from):
+        // Nothing changed: the offer (and its code) waits for the answer.
+        switchFrom = from
       }
     } catch {
       offer = nil
+      // Signed in or out, the state is what it was; a 401 on the way may have signed it out.
+      openedSignedIn = host.isSignedIn
       self.error = MirrorHost.describe(error)
     }
   }
 
-  /// "Switch": log out, then enroll into the code's account. A refused code leaves the phone signed
-  /// out, with the refusal on the typed entry.
+  /// "Switch": redeem the code, then end the old session and sign in to the code's account. A refused
+  /// code leaves the phone signed in as it was, with the one line.
   private func switchAndPair(_ link: PairLink) async {
     error = nil
     connecting = true
@@ -228,7 +247,7 @@ struct EnrollView: View {
       try await host.switchAndPair(link, deviceName: deviceName)
       dismiss()
     } catch {
-      openedSignedIn = false
+      openedSignedIn = host.isSignedIn
       self.error = MirrorHost.describe(error)
     }
   }

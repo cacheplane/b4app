@@ -54,7 +54,11 @@
 
     private(set) var phase = Phase.minting
     private(set) var code: String?
+    /// The site's pairing link to show as a QR code; nil when the Mac is joined to a hub other than its
+    /// flavour's (the coordinator decides, `HubPair.Result.link`), which the phone joins by typing.
     private(set) var link: URL?
+    /// The hub's URL, for typing on the phone when there is no link.
+    private(set) var hubURL: String?
     private(set) var secondsLeft: Int?
     /// Bumped by "New code" so the view restarts `run()`.
     private(set) var generation = 0
@@ -92,6 +96,7 @@
     func clear() {
       code = nil
       link = nil
+      hubURL = nil
       secondsLeft = nil
     }
 
@@ -124,8 +129,9 @@
       guard !Task.isCancelled else { return }
       guard account == model.accountGeneration else { return endForAnotherAccount() }
       code = minted.code
-      // D-066: the flavour's site implies the hub, so the link names the site, not `minted.url`.
-      link = PairLink.make(siteDomain: model.signInConfiguration.siteDomain, code: minted.code)
+      // D-066: the site link only for the flavour's own hub, which the coordinator knows.
+      link = minted.link.flatMap(URL.init(string:))
+      hubURL = minted.url
       let deadline = uptime().advanced(by: Self.lifetime)
       secondsLeft = Int(Self.lifetime.components.seconds)
       phase = .waiting

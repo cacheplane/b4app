@@ -41,12 +41,13 @@ public enum MirrorPairOutcome: Sendable, Equatable {
   /// The phone enrolled into the code's account (it was signed out), or merged its phone-only account
   /// into it: either way it is now signed in there.
   case signedIn(AccountStatus.Result)
-  /// The phone is signed in to another account and nothing was sent: ask
-  /// `PairingCopy.switchQuestion(to: nil, from:)` and, on confirm, `MirrorAccount.switchAndPair`.
-  /// `alreadyPaired` when that account has a Mac of its own. The code names no account before it is
-  /// redeemed, so the phone cannot tell its own account's code from another's; it says it is already
-  /// paired and offers the switch.
-  case askToSwitch(from: String, alreadyPaired: Bool)
+  /// The code is for the org this phone is already in (`merge_refused`, `same_account`). Nothing
+  /// changed; say `PairingCopy.alreadyPaired`.
+  case alreadyPaired
+  /// The phone is signed in to another account that will not merge (it has a Mac, it is in a shared
+  /// org) or is at another hub. Nothing changed: ask `PairingCopy.switchQuestion(to: nil, from:)` and,
+  /// on confirm, `MirrorAccount.switchAndPair`.
+  case askToSwitch(from: String)
 }
 
 /// The words a pairing scan uses on the phone.
@@ -56,20 +57,9 @@ public enum PairingCopy {
   public static let switchButton = "Switch"
 
   /// "Switch to <org name>? You'll be signed out of <other org name>." The phone does not know the
-  /// code's org before redeeming it, so it names "this Mac's account" when `orgName` is nil.
+  /// code's org before redeeming it, which happens only once this is confirmed, so it names "this
+  /// Mac's account" when `orgName` is nil.
   public static func switchQuestion(to orgName: String?, from current: String) -> String {
     "Switch to \(orgName ?? "this Mac's account")? You'll be signed out of \(current)."
-  }
-
-  /// The question's title: "This iPhone is already paired" when the account has a Mac, else the switch
-  /// question's first sentence.
-  public static func title(alreadyPaired: Bool, to orgName: String? = nil) -> String {
-    alreadyPaired ? Self.alreadyPaired : "Switch to \(orgName ?? "this Mac's account")?"
-  }
-
-  /// The question's message under `title`.
-  public static func message(alreadyPaired: Bool, from current: String, to orgName: String? = nil) -> String {
-    alreadyPaired
-      ? switchQuestion(to: orgName, from: current) : "You'll be signed out of \(current)."
   }
 }

@@ -94,7 +94,9 @@ public actor AccountManager {
   public init(context: Context) {
     registry = context.registry
     cluster = context.cluster
-    scopeContext = context.scope
+    var scope = context.scope
+    scope.flavor = context.flavor
+    scopeContext = scope
     flavor = context.flavor
   }
 

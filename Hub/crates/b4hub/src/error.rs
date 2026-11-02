@@ -162,14 +162,19 @@ impl ApiError {
         )
     }
 
-    /// The signed-in account cannot be merged into the code's account: it has (or had) a Mac,
-    /// is a member of a shared org, or is the code's account itself.
-    pub fn merge_refused() -> ApiError {
-        ApiError::request(
+    /// The signed-in account cannot be merged into the code's account: it is already in the
+    /// code's org, is a member of a shared org, or has (or had) a Mac. `details.reason` says which
+    /// (`same_account`, `shared_org`, `has_mac`) when the hub knows.
+    pub fn merge_refused(reason: Option<b4hub_db::MergeRefusal>) -> ApiError {
+        let mut error = ApiError::request(
             StatusCode::CONFLICT,
             "merge_refused",
             "this account cannot be merged into another",
-        )
+        );
+        if let Some(reason) = reason {
+            error.extra.insert("reason".into(), json!(reason.as_str()));
+        }
+        error
     }
 
     /// Linking an Apple ID to an account that already has one.
@@ -281,7 +286,7 @@ impl From<b4hub_db::Error> for ApiError {
             b4hub_db::Error::CeremonyExpired => ApiError::ceremony_expired(),
             b4hub_db::Error::IdentityTaken => ApiError::credential_rejected(),
             b4hub_db::Error::LastIdentity => ApiError::last_identity(),
-            b4hub_db::Error::MergeRefused => ApiError::merge_refused(),
+            b4hub_db::Error::MergeRefused(reason) => ApiError::merge_refused(reason),
             b4hub_db::Error::SharedOrg => ApiError::shared_org(),
             b4hub_db::Error::AppleLinked => ApiError::apple_linked(),
             b4hub_db::Error::RateLimited { retry_after } => {

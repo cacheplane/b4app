@@ -146,6 +146,12 @@ import WorkspaceProtocol
     #expect(handoff.device.candidateDeviceIds?.count == 2)
   }
 
+  @Test func mergeRefusedRoundTripsWithItsReason() throws {
+    let body = try roundTrips(HubErrorBody.self, "mergeRefused")
+    #expect(body.error.details?.code == "merge_refused")
+    #expect(body.error.details?.reason == "same_account")
+  }
+
   @Test func deviceSpecLeavesOutAbsentCandidates() throws {
     let spec = DeviceSpec(deviceName: "Mac", platform: "macos", deviceId: "d")
     let encoded = try JSONCoding.decoder.decode(JSONValue.self, from: JSONCoding.encoder.encode(spec))

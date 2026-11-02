@@ -118,7 +118,8 @@ private let joined = HubStatus.Result(
   username: "u-abc", displayName: "Brian Love", unsyncedChanges: 0)
 
 private let minted = HubPair.Result(
-  url: "https://hub.test.b4.run", code: "K7M2Q9XP", expiresAt: "2026-11-01T10:05:00.000000Z")
+  url: "https://hub.test.b4.run", code: "K7M2Q9XP", expiresAt: "2026-11-01T10:05:00.000000Z",
+  link: "https://test.b4.run/pair#c=K7M2Q9XP")
 
 // MARK: - Tests
 

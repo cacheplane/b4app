@@ -13,7 +13,7 @@ use b4hub_db::accounts::{
     self, Deletion, DeviceSpec, Identity, Principal, SealedAppleToken, SealedAppleTokens,
 };
 use b4hub_db::devices::{self, AuthedDevice, Platform};
-use b4hub_db::{ceremonies, changes, orgs, Db, Error};
+use b4hub_db::{ceremonies, changes, orgs, Db, Error, MergeRefusal};
 use serde_json::json;
 use sqlx::migrate::Migrator;
 use sqlx::types::Uuid;
@@ -1080,7 +1080,7 @@ async fn merge_refused_when_source_has_macos_device(pool: PgPool) {
 
     assert!(matches!(
         accounts::merge_phone_only(&app, from, into).await,
-        Err(Error::MergeRefused)
+        Err(Error::MergeRefused(Some(MergeRefusal::HasMac)))
     ));
     // Nothing moved.
     assert_eq!(
@@ -1104,8 +1104,49 @@ async fn merge_refused_when_source_has_macos_device(pool: PgPool) {
     };
     assert!(matches!(
         accounts::merge_phone_only(&app, me, me).await,
-        Err(Error::MergeRefused)
+        Err(Error::MergeRefused(Some(MergeRefusal::SameAccount)))
     ));
+}
+
+#[sqlx::test(migrations = false)]
+async fn merge_refusals_name_their_reason(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let blove = Principal::from(common::enrolled(&admin, &app, "blove").await);
+    let phone = accounts::create_personal(&app, passkey(b"ph"), device("iPhone", Platform::Ios))
+        .await
+        .unwrap();
+    let phone = Principal {
+        org_id: phone.org_id,
+        user_id: phone.user_id,
+    };
+
+    // Another user of the code's own org: already in it, checked before anything else.
+    let colleague = Principal::from(
+        common::enrolled_in_as(&admin, &app, "cacheplane", "colleague", "ios").await,
+    );
+    assert_eq!(colleague.org_id, blove.org_id);
+    assert!(matches!(
+        accounts::merge_phone_only(&app, colleague, blove).await,
+        Err(Error::MergeRefused(Some(MergeRefusal::SameAccount)))
+    ));
+    // A member of a shared org (the operator-seeded user), merging into a personal account.
+    assert!(matches!(
+        accounts::merge_phone_only(&app, blove, phone).await,
+        Err(Error::MergeRefused(Some(MergeRefusal::SharedOrg)))
+    ));
+    // A user whose row is gone: refused, with no reason to give.
+    let gone = Principal {
+        org_id: phone.org_id,
+        user_id: b4hub_core::ids::new_uuid(),
+    };
+    assert!(matches!(
+        accounts::merge_phone_only(&app, gone, blove).await,
+        Err(Error::MergeRefused(None))
+    ));
+    // The wire names.
+    assert_eq!(MergeRefusal::SameAccount.as_str(), "same_account");
+    assert_eq!(MergeRefusal::HasMac.as_str(), "has_mac");
+    assert_eq!(MergeRefusal::SharedOrg.as_str(), "shared_org");
 }
 
 #[sqlx::test(migrations = false)]

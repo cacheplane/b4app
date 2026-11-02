@@ -53,6 +53,8 @@ public actor HubSync {
   private var api: (any HubAPI)?
   /// The joined hub's base URL, for the relay link.
   private var baseURL: URL?
+  /// Whose site a pairing link names, and whose hub that site implies.
+  private let flavor: Flavor
   /// The relay link while joined (kept after a 401 stops it, so `status` says why); nil when not joined
   /// or when no `makeLink` was given.
   private var link: HubLink?
@@ -89,8 +91,9 @@ public actor HubSync {
     database: WorkspaceDatabase, secretStore: any SecretStore, eventLog: EventLog,
     makeAPI: @escaping APIFactory = { HTTPHubAPI(baseURL: $0, token: $1) }, makeLink: LinkFactory? = nil,
     pairing: Pairing = Pairing(), powerAssertions: any PowerAssertions = IOKitPowerAssertions(),
-    onUnauthorized: (@Sendable () async -> Void)? = nil
+    flavor: Flavor = .current, onUnauthorized: (@Sendable () async -> Void)? = nil
   ) {
+    self.flavor = flavor
     self.database = database
     self.secretStore = secretStore
     self.eventLog = eventLog
@@ -284,16 +287,31 @@ public actor HubSync {
   // MARK: - Pairing and settings
 
   /// Mint a code that pairs a phone and start watching for it to be used. The code is in the result and
-  /// nowhere else.
+  /// nowhere else. The result carries the site's pairing link only when this Mac is joined to its
+  /// flavour's hub: the link names no hub, so on any other it would send the phone to the wrong one.
   public func pair() async throws -> HubPair.Result {
     guard let api, let baseURL, try database.hubLink() != nil else {
       throw WorkspaceError(.protocolInvalid, "Join a hub first")
     }
+    var minted: HubPair.Result
     do {
-      return try await pairing.mint(api: api, fallbackURL: baseURL)
+      minted = try await pairing.mint(api: api, fallbackURL: baseURL)
     } catch let error as HubError {
       throw Self.workspaceError(error, doing: "pair a phone")
     }
+    if Self.isFlavorHub(baseURL, flavor) {
+      minted.link = PairLink.make(siteDomain: flavor.siteDomain, code: minted.code).absoluteString
+    }
+    return minted
+  }
+
+  /// `joined` and the flavour's hub are one hub, compared canonically (scheme and host case, a
+  /// trailing `/`).
+  static func isFlavorHub(_ joined: URL, _ flavor: Flavor) -> Bool {
+    guard let joined = try? HubURL.canonical(joined.absoluteString),
+      let own = try? HubURL.canonical(flavor.hubURL.absoluteString)
+    else { return false }
+    return joined == own
   }
 
   public func pairStatus() async -> HubPairStatus.Result {

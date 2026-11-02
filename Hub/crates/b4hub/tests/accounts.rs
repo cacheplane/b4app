@@ -902,6 +902,7 @@ async fn enroll_with_token_of_account_with_mac_is_merge_refused(pool: PgPool) {
     assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
     assert_eq!(refused.code(), "merge_refused");
     assert_eq!(refused.body["error"]["kind"], "request_error");
+    assert_eq!(refused.body["error"]["details"]["reason"], "has_mac");
     // Nothing changed: the phone's session works and the code is still redeemable.
     assert_eq!(
         hub.get("/v1/me", Some(token(&phone))).await.status,
@@ -911,6 +912,30 @@ async fn enroll_with_token_of_account_with_mac_is_merge_refused(pool: PgPool) {
     // The code's own account, and an account in a shared org, are refused too.
     let own = call(hub, "POST", "/v1/enroll", Some(&body), token(&blove_mac)).await;
     assert_eq!(own.code(), "merge_refused");
+    assert_eq!(own.body["error"]["details"]["reason"], "same_account");
+    // A member of a shared org, pairing with a phone-only account's code: `shared_org`.
+    let mut other_keys = Authenticator::new(ORIGIN);
+    let other = sign_up(hub, &mut other_keys, device("iPhone", "ios")).await;
+    let other_code = devices::create_enrollment_code(
+        &setup.admin,
+        principal(hub, token(&other)).await.org_id,
+        principal(hub, token(&other)).await.user_id,
+        TEN_MINUTES,
+    )
+    .await
+    .unwrap();
+    let other_body = json!({"code": other_code, "deviceName": "Mac", "platform": "ios"});
+    let shared = call(
+        hub,
+        "POST",
+        "/v1/enroll",
+        Some(&other_body),
+        token(&blove_mac),
+    )
+    .await;
+    assert_eq!(shared.status, StatusCode::CONFLICT, "{}", shared.body);
+    assert_eq!(shared.code(), "merge_refused");
+    assert_eq!(shared.body["error"]["details"]["reason"], "shared_org");
 
     // An invalid bearer is unauthorized, whatever the code.
     for auth in ["Bearer not-a-token", "Basic abc", "Bearer"] {

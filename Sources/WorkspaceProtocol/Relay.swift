@@ -135,19 +135,27 @@ extension AdapterEvent {
 /// never caches this method's answer, even under an `operationId`). `url` is the hub's public URL, or
 /// the URL this Mac joined with. Refused with `protocol_invalid` "Join a hub first" when the Mac has not
 /// joined, and `rate_limited` (`details.retryAfterMs`) past ten codes an hour.
+///
+/// `link` is the pairing link to show as a QR code, `https://<site>/pair#c=<code>` (D-066), set only
+/// when the Mac is joined to its flavour's own hub, which the site implies. On any other hub (an
+/// operator's) it is absent: the phone enters the code and `url`'s host under "Use an enrollment code".
 public enum HubPair: WorkspaceCommand {
   public typealias Params = EmptyParams
   public struct Result: Codable, Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
     public var url: String
     public var code: String
     public var expiresAt: String
-    public init(url: String, code: String, expiresAt: String) {
+    public var link: String?
+    public init(url: String, code: String, expiresAt: String, link: String? = nil) {
       self.url = url
       self.code = code
       self.expiresAt = expiresAt
+      self.link = link
     }
-    /// Never prints the code.
-    public var description: String { "HubPair.Result(url: \(url), expiresAt: \(expiresAt))" }
+    /// Never prints the code, or the link that holds it.
+    public var description: String {
+      "HubPair.Result(url: \(url), expiresAt: \(expiresAt), link: \(link == nil ? "none" : "<redacted>"))"
+    }
     public var debugDescription: String { description }
   }
   public static let method = Method.hubPair

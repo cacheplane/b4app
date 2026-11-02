@@ -10,6 +10,12 @@
     static let newCode = "New code"
     static let done = "Done"
     static let appStore = "No iPhone app yet? It's on the App Store."
+
+    /// In place of the QR code when this Mac is joined to a hub other than its flavour's: the site's
+    /// link would send the phone to the wrong hub, so the phone types both.
+    static func typed(hubURL: String, code: String) -> String {
+      "On your iPhone, tap Use an enrollment code, then enter \(hubURL) and the code \(code)."
+    }
   }
 
   /// What "Add your iPhone" shows for the pairing flow's phase (see `SignInContent`).
@@ -32,6 +38,9 @@
       switch flow.phase {
       case .waiting:
         showsCode = flow.link != nil
+        if flow.link == nil, let code = flow.code {
+          status = AddPhoneCopy.typed(hubURL: flow.hubURL ?? "", code: code)
+        }
         expiry = AddPhoneCopy.expiry
         newCode = AddPhoneCopy.newCode
       case .paired:

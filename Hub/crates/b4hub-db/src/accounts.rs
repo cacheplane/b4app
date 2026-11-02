@@ -17,7 +17,7 @@ use sqlx::{Postgres, Transaction};
 
 use crate::devices::{AuthedDevice, Platform};
 use crate::tenant::set_tenant;
-use crate::{Db, Error, Result};
+use crate::{Db, Error, MergeRefusal, Result};
 
 /// Who signed in: a user and the org they belong to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -578,9 +578,11 @@ pub async fn delete_user(
 
 /// Merges the phone-only account `from` into `into`, as pairing a phone with a Mac's account
 /// does: `from`'s identities move to `into`, then `from`'s tokens, devices, user, and personal
-/// org are deleted, in one transaction. [`Error::MergeRefused`] when `from` has ever had a
-/// `macos` device (revoked or not), is not the owner of a personal org, or is `into`; nothing
-/// changes then.
+/// org are deleted, in one transaction. [`Error::MergeRefused`] when `from` is in `into`'s org
+/// ([`MergeRefusal::SameAccount`], checked first), is not the owner of a personal org
+/// ([`MergeRefusal::SharedOrg`]), or has ever had a `macos` device, revoked or not
+/// ([`MergeRefusal::HasMac`]); with no reason when `from`'s user row is gone. Nothing changes
+/// then.
 pub async fn merge_phone_only(db: &Db, from: Principal, into: Principal) -> Result<()> {
     let mut tx = db.untenanted_tx().await?;
     merge_in(&mut tx, from, into).await?;
@@ -596,13 +598,16 @@ pub(crate) async fn merge_in(
     into: Principal,
 ) -> Result<()> {
     if from == into || from.org_id == into.org_id {
-        return Err(Error::MergeRefused);
+        return Err(Error::MergeRefused(Some(MergeRefusal::SameAccount)));
     }
     set_tenant(tx, from.org_id).await?;
     // Locking the user row first holds off a device enrolling for it meanwhile (its foreign key
     // needs a share lock on the row), so the check below stays true until commit.
-    if !lock_user(tx, from.user_id).await? || !owns_personal_org(tx, from).await? {
-        return Err(Error::MergeRefused);
+    if !lock_user(tx, from.user_id).await? {
+        return Err(Error::MergeRefused(None));
+    }
+    if !owns_personal_org(tx, from).await? {
+        return Err(Error::MergeRefused(Some(MergeRefusal::SharedOrg)));
     }
     let has_mac: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM devices WHERE user_id = $1 AND platform = 'macos')",
@@ -611,7 +616,7 @@ pub(crate) async fn merge_in(
     .fetch_one(&mut **tx)
     .await?;
     if has_mac {
-        return Err(Error::MergeRefused);
+        return Err(Error::MergeRefused(Some(MergeRefusal::HasMac)));
     }
 
     sqlx::query(

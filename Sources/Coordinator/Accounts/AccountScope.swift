@@ -80,6 +80,8 @@ public final class AccountScope: Sendable {
     public var powerAssertions: (any PowerAssertions)?
     /// The waits between tries of a connection check that found its runtime unreachable.
     public var checkRetryDelays: [Duration]
+    /// The app's flavour: whether the joined hub is the one its pairing links' site implies.
+    public var flavor: Flavor = .current
 
     public init(
       paths: PlatformPaths, environment: [String: String], secretStore: any SecretStore, eventLog: EventLog,
@@ -216,7 +218,8 @@ public final class AccountScope: Sendable {
     let hub = HubSync(
       database: database, secretStore: context.secretStore, eventLog: eventLog,
       makeAPI: { context.makeAPI($0, $1) }, makeLink: makeLink,
-      powerAssertions: context.powerAssertions ?? IOKitPowerAssertions(), onUnauthorized: onUnauthorized)
+      powerAssertions: context.powerAssertions ?? IOKitPowerAssertions(), flavor: context.flavor,
+      onUnauthorized: onUnauthorized)
     await hub.start()
     return AccountScope(
       row: row, instance: instance, gate: gate, database: database, sessions: sessions, servers: servers,

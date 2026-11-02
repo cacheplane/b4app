@@ -75,6 +75,9 @@ extension MirrorAccount: @retroactive AccountHost {}
   /// Who the phone is signed in as (the account's own state, as the root and Settings read it).
   var accountStatus: AccountStatus.Result? { account?.accountStatus }
 
+  /// Signed in (or onboarding): a link is stored.
+  var isSignedIn: Bool { account?.link != nil }
+
   private init() {
     var opened: MirrorStore?
     var fromSnapshot = false

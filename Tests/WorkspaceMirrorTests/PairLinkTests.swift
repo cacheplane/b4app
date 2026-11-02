@@ -37,13 +37,14 @@ private final class CallLog: Sendable {
   var all: [String] { entries.withLock { $0 } }
 }
 
-/// Forwards to the fake, logs the account-changing calls, answers `devices` as told, and, when
-/// `refuseMerge` is set, refuses an enrollment that carries a token with `409 merge_refused` (leaving
-/// the code redeemable, as the hub does).
+/// Forwards to the fake and logs the account-changing calls. With `mergeRefusal` set, an enrollment
+/// that carries a token is refused with `409 merge_refused` and that `details.reason` (`.some(nil)`
+/// for none, as an older hub), leaving the code redeemable, as the hub does: the code is checked
+/// first, so a code the fake does not hold is `invalid_code` whatever the token.
 private struct LoggingHub: HubAPI {
   let fake: FakeHubAPI
   let log: CallLog
-  var refuseMerge = false
+  var mergeRefusal: String?? = nil
   var refuseToken = false
 
   func enroll(_ request: EnrollRequest) async throws -> EnrollResponse {
@@ -54,10 +55,10 @@ private struct LoggingHub: HubAPI {
     if token != nil, refuseToken {
       throw HubError(kind: "request_error", code: "unauthorized", message: "unauthorized", status: 401)
     }
-    if token != nil, refuseMerge {
+    if token != nil, let reason = mergeRefusal, await fake.enrollmentCodes[request.code] != nil {
       throw HubError(
         kind: "request_error", code: "merge_refused", message: "this account cannot be merged into another",
-        status: 409)
+        status: 409, reason: reason)
     }
     return try await fake.enroll(request, replacingToken: token)
   }
@@ -90,10 +91,10 @@ private struct Rig {
   let log = CallLog()
   let account: MirrorAccount
 
-  init(flavor: PhoneFlavor = .prod, refuseMerge: Bool = false, refuseToken: Bool = false) throws {
+  init(flavor: PhoneFlavor = .prod, mergeRefusal: String?? = nil, refuseToken: Bool = false) throws {
     store = try MirrorStore.inMemory()
     fake = FakeHubAPI(enrollmentCodes: [code: enrolled()])
-    let hub = LoggingHub(fake: fake, log: log, refuseMerge: refuseMerge, refuseToken: refuseToken)
+    let hub = LoggingHub(fake: fake, log: log, mergeRefusal: mergeRefusal, refuseToken: refuseToken)
     account = MirrorAccount(
       store: store, secrets: secrets,
       configuration: MirrorAccount.Configuration(
@@ -241,24 +242,28 @@ private let withAMac = [
   }
 
   @MainActor @Test func scanSameAccountAlreadyPaired() async throws {
-    // Signed in to an account that has a Mac. The code names no account, so the phone cannot tell
-    // the same account from another without redeeming it: it says it is already paired, offers the
-    // switch, and sends nothing until asked.
-    let rig = try Rig()
+    // Signed in to the code's own account: the merge is tried, the hub answers `same_account`, and
+    // nothing else happens. The code is not used up.
+    let rig = try Rig(mergeRefusal: "same_account")
     try await rig.signIn(devices: withAMac)
     let outcome = try await rig.account.pair(
       PairLink(hub: PhoneFlavor.prod.hubURL, code: code), deviceName: "Brian's iPhone")
-    #expect(outcome == .askToSwitch(from: "Phone's Org", alreadyPaired: true))
-    #expect(PairingCopy.title(alreadyPaired: true) == "This iPhone is already paired")
-    #expect(!rig.log.all.contains { $0.hasPrefix("enroll") })
+    #expect(outcome == .alreadyPaired)
+    #expect(PairingCopy.alreadyPaired == "This iPhone is already paired")
+    #expect(rig.log.all.filter { $0.hasPrefix("enroll") } == ["enroll+merge"])
+    #expect(!rig.log.all.contains("endSession"))
     #expect(await rig.fake.enrollmentCodes[code] != nil)
     #expect(rig.account.accountStatus.account?.orgName == "Phone's Org")
+    #expect(try await rig.token() == "tok-own-5501")
+    #expect(rig.account.sync != nil)
     await rig.account.stopSync()
   }
 
   @MainActor @Test func scanPhoneOnlyAccountMerges() async throws {
     let rig = try Rig()
     try await rig.signIn(devices: iPhoneOnly)
+    let oldLink = try #require(try rig.store.link())
+    let oldRef = try #require(SecretRef(rawValue: oldLink.tokenRef))
     let outcome = try await rig.account.pair(
       PairLink(hub: PhoneFlavor.prod.hubURL, code: code), deviceName: "Brian's iPhone")
     guard case .signedIn(let status) = outcome else {
@@ -272,29 +277,62 @@ private let withAMac = [
     #expect(status.account?.orgName == "Brian's Org")
     #expect(try rig.store.link()?.deviceId == "dev-paired")
     #expect(try await rig.token() == "tok-paired")
+    // The old token is forgotten (the hub deleted it), with no hub call for it.
+    #expect(try await rig.secrets.read(oldRef) == nil)
+    #expect(!rig.log.all.contains("endSession"))
     // The old account's device is gone at the hub, so no later sign-in offers it.
     #expect(rig.memory.devices(hubURL: "https://hub.b4.run") == ["dev-paired"])
     await rig.account.stopSync()
   }
 
+  @MainActor @Test func theMergeIsTriedWhateverTheDevicesSay() async throws {
+    // A device list that shows a Mac (perhaps a minute stale) does not stop the merge: the hub judges.
+    let rig = try Rig()
+    try await rig.signIn(devices: withAMac)
+    let outcome = try await rig.account.pair(
+      PairLink(hub: PhoneFlavor.prod.hubURL, code: code), deviceName: "Brian's iPhone")
+    guard case .signedIn = outcome else {
+      Issue.record("expected a merge, got \(outcome)")
+      return
+    }
+    #expect(await rig.fake.enrollTokens == ["tok-own-5501"])
+    await rig.account.stopSync()
+  }
+
   @MainActor @Test func aRefusedMergeFallsBackToTheSwitchQuestion() async throws {
-    // The hub refuses to merge (the account had a Mac once, or is in a shared org): nothing changed,
-    // the code is still good, and the phone asks before switching.
-    let rig = try Rig(refuseMerge: true)
-    try await rig.signIn(devices: iPhoneOnly)
-    let link = PairLink(hub: PhoneFlavor.prod.hubURL, code: code)
-    let outcome = try await rig.account.pair(link, deviceName: "Brian's iPhone")
-    #expect(outcome == .askToSwitch(from: "Phone's Org", alreadyPaired: false))
+    // The hub refuses to merge an account that has a Mac, one in a shared org, or (an older hub) with
+    // no reason: nothing changed, the code is still good, and the phone asks before switching.
+    for reason: String? in ["has_mac", "shared_org", nil] {
+      let rig = try Rig(mergeRefusal: .some(reason))
+      try await rig.signIn(devices: iPhoneOnly)
+      let link = PairLink(hub: PhoneFlavor.prod.hubURL, code: code)
+      let outcome = try await rig.account.pair(link, deviceName: "Brian's iPhone")
+      #expect(outcome == .askToSwitch(from: "Phone's Org"), "\(reason ?? "none")")
+      #expect(rig.account.accountStatus.state == .signedIn)
+      #expect(rig.account.accountStatus.account?.orgName == "Phone's Org")
+      #expect(try await rig.token() == "tok-own-5501")
+      #expect(await rig.fake.enrollmentCodes[code] != nil)
+      // Syncing goes on for the account it still is.
+      #expect(rig.account.sync != nil)
+      await rig.account.stopSync()
+    }
+  }
+
+  @MainActor @Test func aMergeThatFailsOtherwiseChangesNothing() async throws {
+    // An expired or used code: the hub checks it before the merge, so the phone stays as it was and
+    // the refusal is one line, without the code in it.
+    let rig = try Rig(mergeRefusal: "has_mac")
+    try await rig.signIn(devices: withAMac)
+    let error = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.account.pair(
+        PairLink(hub: PhoneFlavor.prod.hubURL, code: "BCDFGHJK"), deviceName: "Brian's iPhone")
+    }
+    #expect(error.map { !"\($0)".contains("BCDFGHJK") } == true)
     #expect(rig.account.accountStatus.state == .signedIn)
     #expect(rig.account.accountStatus.account?.orgName == "Phone's Org")
     #expect(try await rig.token() == "tok-own-5501")
-    #expect(await rig.fake.enrollmentCodes[code] != nil)
-    // Syncing goes on for the account it still is.
+    #expect(!rig.log.all.contains("endSession"))
     #expect(rig.account.sync != nil)
-    // Confirmed, it switches like any other.
-    let status = try await rig.account.switchAndPair(link, deviceName: "Brian's iPhone")
-    #expect(status.account?.orgName == "Brian's Org")
-    #expect(rig.log.all.suffix(2) == ["endSession", "enroll"])
     await rig.account.stopSync()
   }
 
@@ -316,11 +354,11 @@ private let withAMac = [
   }
 
   @MainActor @Test func scanOtherAccountWithMacAsksToSwitch() async throws {
-    let rig = try Rig()
+    let rig = try Rig(mergeRefusal: "has_mac")
     try await rig.signIn(devices: withAMac)
     let link = PairLink(hub: PhoneFlavor.prod.hubURL, code: code)
     let outcome = try await rig.account.pair(link, deviceName: "Brian's iPhone")
-    #expect(outcome == .askToSwitch(from: "Phone's Org", alreadyPaired: true))
+    #expect(outcome == .askToSwitch(from: "Phone's Org"))
     // The spec's copy where the code's org is known; the phone does not know it before redeeming the
     // code, so it names "this Mac's account" instead.
     #expect(
@@ -331,19 +369,53 @@ private let withAMac = [
         == "Switch to this Mac's account? You'll be signed out of Phone's Org.")
     #expect(PairingCopy.switchButton == "Switch")
 
-    // On confirm: log out (the session ended at the hub, the token forgotten), then enroll.
+    // On confirm: the code is redeemed first, then the old session ends at the hub and its token is
+    // forgotten.
     let oldLink = try #require(try rig.store.link())
     let oldRef = try #require(SecretRef(rawValue: oldLink.tokenRef))
     let status = try await rig.account.switchAndPair(link, deviceName: "Brian's iPhone")
     let calls = rig.log.all
-    let endedAt = try #require(calls.lastIndex(of: "endSession"))
     let enrolledAt = try #require(calls.lastIndex(of: "enroll"))
-    #expect(endedAt < enrolledAt)
-    #expect(!calls.contains("enroll+merge"))
+    let endedAt = try #require(calls.lastIndex(of: "endSession"))
+    #expect(enrolledAt < endedAt)
     #expect(status.state == .signedIn)
     #expect(status.account?.orgName == "Brian's Org")
     #expect(try await rig.token() == "tok-paired")
     #expect(try await rig.secrets.read(oldRef) == nil)
+    await rig.account.stopSync()
+  }
+
+  @MainActor @Test func aRefusedCodeOnSwitchLeavesThePhoneSignedIn() async throws {
+    // The code expired while the question was up: nothing is ended, and the phone is as it was.
+    let rig = try Rig(mergeRefusal: "has_mac")
+    try await rig.signIn(devices: withAMac)
+    let link = PairLink(hub: PhoneFlavor.prod.hubURL, code: code)
+    #expect(
+      try await rig.account.pair(link, deviceName: "Brian's iPhone") == .askToSwitch(from: "Phone's Org"))
+    _ = try await rig.fake.enroll(EnrollRequest(code: code, deviceName: "Someone else", platform: "ios"))
+    let error = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.account.switchAndPair(link, deviceName: "Brian's iPhone")
+    }
+    #expect(error.map { !"\($0)".contains(code) } == true)
+    #expect(rig.account.accountStatus.state == .signedIn)
+    #expect(rig.account.accountStatus.account?.orgName == "Phone's Org")
+    #expect(try await rig.token() == "tok-own-5501")
+    #expect(!rig.log.all.contains("endSession"))
+    #expect(rig.account.sync != nil)
+    await rig.account.stopSync()
+  }
+
+  @MainActor @Test func aTypedEnrollOnASignedInPhoneIsRefused() async throws {
+    // Only a pairing scan may change a signed-in phone's account, and it asks first.
+    let rig = try Rig()
+    try await rig.signIn(devices: iPhoneOnly)
+    let error = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.account.enroll(url: "https://hub.b4.run", code: code, deviceName: "Brian's iPhone")
+    }
+    #expect(error?.code == .protocolInvalid)
+    #expect(!rig.log.all.contains { $0.hasPrefix("enroll") })
+    #expect(rig.account.accountStatus.account?.orgName == "Phone's Org")
+    #expect(try await rig.token() == "tok-own-5501")
     await rig.account.stopSync()
   }
 
@@ -354,7 +426,7 @@ private let withAMac = [
     try await rig.signIn(devices: iPhoneOnly)
     let outcome = try await rig.account.pair(
       PairLink(hub: try HubURL.validate("https://hub.example.com"), code: code), deviceName: "Brian's iPhone")
-    #expect(outcome == .askToSwitch(from: "Phone's Org", alreadyPaired: false))
+    #expect(outcome == .askToSwitch(from: "Phone's Org"))
     #expect(await rig.fake.enrollTokens.isEmpty)
     await rig.account.stopSync()
   }

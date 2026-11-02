@@ -316,4 +316,27 @@ async fn routes_answer_the_shapes_the_fixture_holds(pool: PgPool) {
     let enrolled = hub.post("/v1/enroll", Some(&request)).await;
     assert_eq!(enrolled.status, StatusCode::OK, "{}", enrolled.body);
     same_shape("enrollResponse", &enrolled.body, &example("enrollResponse"));
+
+    // A merge the hub refuses: that Mac's own token, with another code of its own org. The
+    // fixture's answer, word for word, reason included.
+    let again = devices::create_enrollment_code(
+        &admin,
+        seeded.org_id,
+        seeded.user_id,
+        std::time::Duration::from_secs(600),
+    )
+    .await
+    .unwrap();
+    request["code"] = json!(again);
+    let mac_auth = bearer(enrolled.body["token"].as_str().unwrap());
+    let refused = hub
+        .send(
+            "POST",
+            "/v1/enroll",
+            Some(&request),
+            &[("authorization", mac_auth.as_str())],
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_eq!(refused.body, example("mergeRefused"));
 }

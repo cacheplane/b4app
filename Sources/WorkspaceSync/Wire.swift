@@ -408,6 +408,9 @@ public struct HubErrorBody: Codable, Sendable, Equatable {
     public var code: String?
     /// A `rate_limited` answer's wait, in milliseconds.
     public var retryAfterMs: Int?
+    /// Why a `merge_refused` was refused: `same_account`, `has_mac`, or `shared_org`; absent from an
+    /// older hub, and when the hub does not know.
+    public var reason: String?
   }
 
   public struct Body: Codable, Sendable, Equatable {
@@ -431,13 +434,18 @@ public struct HubError: Error, Sendable, Equatable, CustomStringConvertible {
   public var status: Int
   /// How long the hub asks the caller to wait, on a `rate_limited` answer.
   public var retryAfterMs: Int?
+  /// `details.reason`, on a `merge_refused` answer (`same_account`, `has_mac`, `shared_org`).
+  public var reason: String?
 
-  public init(kind: String, code: String, message: String, status: Int, retryAfterMs: Int? = nil) {
+  public init(
+    kind: String, code: String, message: String, status: Int, retryAfterMs: Int? = nil, reason: String? = nil
+  ) {
     self.kind = kind
     self.code = code
     self.message = message
     self.status = status
     self.retryAfterMs = retryAfterMs
+    self.reason = reason
   }
 
   public var description: String { "Hub error \(status) \(code): \(message)" }

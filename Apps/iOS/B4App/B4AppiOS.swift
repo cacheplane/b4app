@@ -30,6 +30,11 @@ struct B4AppiOS: App {
   @State private var scanning = false
   /// A pairing link refused on a signed-in phone, said in an alert rather than the sign-in sheet.
   @State private var refusedLink: String?
+  /// An arrival waiting for the sheet or alert in front of the root to go, so it is never lost to a
+  /// presentation SwiftUI would not make.
+  @State private var pending: PairArrival?
+  /// The last link opened, and when: a universal link can reach the app by two routes at once.
+  @State private var lastOpened: (url: URL, at: Date)?
   @Environment(\.scenePhase) private var scenePhase
 
   var body: some Scene {
@@ -54,25 +59,18 @@ struct B4AppiOS: App {
         .environment(\.connectMacContent) {
           AnyView(ConnectMacView(siteDomain: MirrorHost.flavor.siteDomain) { scanning = true })
         }
-        .sheet(isPresented: $enrolling) {
+        .sheet(isPresented: $enrolling, onDismiss: presentPending) {
           EnrollView(host: host, incoming: $pairArrival)
         }
-        .sheet(
-          isPresented: $scanning,
-          onDismiss: {
-            // The scanner is gone, so the sheet that confirms can come up in its place. The scanner is
-            // reached from Connect your Mac, signed in, so a refused code is said in an alert.
-            if case .invalid(let message) = pairArrival {
-              pairArrival = nil
-              refusedLink = message
-            } else if pairArrival != nil {
-              enrolling = true
-            }
-          }
-        ) {
+        .sheet(isPresented: $scanning, onDismiss: presentPending) {
+          // What it reads waits for the scanner to go, then takes the way every link takes.
           QRScannerView { text in
-            pairArrival = PairArrival(scanned: text, decide: host.pairLinkDecision)
+            pending = PairArrival(scanned: text, decide: host.pairLinkDecision)
           }
+        }
+        // The workspace's own sheets, or the alert below: an arrival waits for them to close.
+        .onChange(of: workspaceSheetUp || refusedLink != nil) { _, blocked in
+          if !blocked { presentPending() }
         }
         .onChange(of: scenePhase, initial: true) { _, phase in host.enter(RelayLifecycle.Phase(phase)) }
         .onChange(of: model.rootScreen) { old, screen in
@@ -97,16 +95,47 @@ struct B4AppiOS: App {
   private func open(_ url: URL) {
     // A sign-in callback opened from outside a ceremony belongs to none: dropped, never redeemed.
     if model.openURL(url) { return }
+    // The same link again within moments is the same arrival (`onContinueUserActivity` and
+    // `onOpenURL` can both deliver one universal link).
+    if let last = lastOpened, last.url == url, Date().timeIntervalSince(last.at) < 10 { return }
+    lastOpened = (url, Date())
     switch host.pairLinkDecision(url) {
-    case .confirm(let link):
-      pairArrival = .offer(link)
-      enrolling = true
-    case .invalid where model.rootScreen == .signIn:
-      pairArrival = .invalid(PairArrival.invalidLink)
-      enrolling = true
-    case .invalid:
-      refusedLink = PairArrival.invalidLink
+    case .confirm(let link): deliver(.offer(link))
+    case .invalid: deliver(.invalid(PairArrival.invalidLink))
     case .ignored: break
+    }
+  }
+
+  /// A sheet of the workspace's own is up (Settings, New thread, Search).
+  private var workspaceSheetUp: Bool {
+    model.showSettingsSheet || model.showNewThread || model.showSearch
+  }
+
+  /// Into the enrollment sheet if it is up; otherwise now, or once whatever is in front has gone.
+  private func deliver(_ arrival: PairArrival) {
+    if enrolling {
+      pairArrival = arrival
+    } else if scanning || workspaceSheetUp || refusedLink != nil {
+      pending = arrival
+    } else {
+      present(arrival)
+    }
+  }
+
+  private func presentPending() {
+    guard let arrival = pending, !enrolling, !scanning, !workspaceSheetUp, refusedLink == nil else { return }
+    pending = nil
+    present(arrival)
+  }
+
+  /// A refused link on a signed-in phone is an alert (the sheet's typed entry is for signing in); the
+  /// rest open the enrollment sheet, which confirms.
+  private func present(_ arrival: PairArrival) {
+    if case .invalid(let message) = arrival, model.rootScreen != .signIn {
+      refusedLink = message
+    } else {
+      pairArrival = arrival
+      enrolling = true
     }
   }
 }

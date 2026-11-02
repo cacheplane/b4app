@@ -251,7 +251,8 @@ public final class HTTPHubAPI: HubAPI {
     if let envelope = try? JSONCoding.decoder.decode(HubErrorBody.self, from: data) {
       return HubError(
         kind: envelope.error.kind, code: envelope.error.details?.code ?? "http_\(status)",
-        message: envelope.error.message, status: status, retryAfterMs: envelope.error.details?.retryAfterMs)
+        message: envelope.error.message, status: status, retryAfterMs: envelope.error.details?.retryAfterMs,
+        reason: envelope.error.details?.reason)
     }
     return HubError(
       kind: status >= 500 ? "execution_error" : "request_error", code: "http_\(status)",
