@@ -358,7 +358,7 @@ A push to `main` that changes only a task-definition template or the deploy scri
 
 ### 6. Enroll a device before sign-in is live
 
-Until the sign-in hub is deployed, a Mac joins a hosted hub with a one-time code from `b4hub enroll`. Run it through the `hub` container of the admin task, which has both database URLs. That container runs `b4hub serve` to stay alive, so it exits on a fresh account until `migrate` has run: do runbook 4 first. `admin-shell.sh` registers a new admin revision pinned to the ECR digest the service runs, so `b4hub` here is the deployed hub. Before the first deploy it falls back to Terraform's placeholder (`ghcr.io/cacheplane/b4hub:main`, which needs the package to be public) and warns.
+Until the sign-in hub is deployed, a Mac joins a hosted hub with a one-time code from `b4hub enroll`. Run it through the `hub` container of the admin task, which has both database URLs. That container is the one place the hub image runs without a read-only root filesystem: ECS Exec's agent writes under the container root and AWS documents a read-only root as unsupported, so the exec target would otherwise never reach `RUNNING` (the serving and migrate tasks keep the read-only root). That container runs `b4hub serve` to stay alive, so it exits on a fresh account until `migrate` has run: do runbook 4 first. `admin-shell.sh` registers a new admin revision pinned to the ECR digest the service runs, so `b4hub` here is the deployed hub. Before the first deploy it falls back to Terraform's placeholder (`ghcr.io/cacheplane/b4hub:main`, which needs the package to be public) and warns.
 
 1. Open the shell:
 
