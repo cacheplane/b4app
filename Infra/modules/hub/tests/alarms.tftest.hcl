@@ -120,18 +120,22 @@ run "alarm_count" {
   assert {
     condition = toset([
       aws_cloudwatch_metric_alarm.alb_5xx.alarm_name,
-      aws_cloudwatch_metric_alarm.unhealthy_hosts.alarm_name,
       aws_cloudwatch_metric_alarm.latency_p99.alarm_name,
       aws_cloudwatch_metric_alarm.rds_free_storage.alarm_name,
       aws_cloudwatch_metric_alarm.rds_cpu.alarm_name,
       aws_cloudwatch_metric_alarm.rds_connections.alarm_name,
-    ]) == toset([for n in ["alb-5xx", "unhealthy-hosts", "latency-p99", "rds-free-storage", "rds-cpu", "rds-connections"] : "b4hub-test-${n}"])
-    error_message = "six alarms exist whatever the desired count"
+    ]) == toset([for n in ["alb-5xx", "latency-p99", "rds-free-storage", "rds-cpu", "rds-connections"] : "b4hub-test-${n}"])
+    error_message = "five alarms exist whatever the desired count"
   }
 
   assert {
     condition     = length(aws_cloudwatch_metric_alarm.running_tasks) == 0
-    error_message = "the running-tasks alarm is the seventh and is absent at desired_count 0"
+    error_message = "the running-tasks alarm is absent at desired_count 0"
+  }
+
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.unhealthy_hosts) == 0
+    error_message = "the unhealthy-hosts alarm is absent at desired_count 0: no targets exist to report"
   }
 }
 
@@ -144,7 +148,12 @@ run "seven_alarms_when_serving" {
 
   assert {
     condition     = length(aws_cloudwatch_metric_alarm.running_tasks) == 1
-    error_message = "the seventh alarm exists once the service is meant to run"
+    error_message = "the running-tasks alarm exists once the service is meant to run"
+  }
+
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.unhealthy_hosts) == 1
+    error_message = "the unhealthy-hosts alarm exists once the service is meant to run, making seven"
   }
 
   assert {
@@ -165,13 +174,17 @@ run "running_task_alarm_off_when_zero" {
 run "alarm_shapes" {
   command = apply
 
+  variables {
+    desired_count = 1
+  }
+
   assert {
     condition     = aws_cloudwatch_metric_alarm.alb_5xx.statistic == "Sum" && aws_cloudwatch_metric_alarm.alb_5xx.period == 300 && aws_cloudwatch_metric_alarm.alb_5xx.threshold == 5 && aws_cloudwatch_metric_alarm.alb_5xx.comparison_operator == "GreaterThanOrEqualToThreshold"
     error_message = "5xx: sum >= 5 over 300 s"
   }
 
   assert {
-    condition     = aws_cloudwatch_metric_alarm.unhealthy_hosts.evaluation_periods == 2 && aws_cloudwatch_metric_alarm.unhealthy_hosts.datapoints_to_alarm == 2 && aws_cloudwatch_metric_alarm.unhealthy_hosts.period == 60
+    condition     = aws_cloudwatch_metric_alarm.unhealthy_hosts[0].evaluation_periods == 2 && aws_cloudwatch_metric_alarm.unhealthy_hosts[0].datapoints_to_alarm == 2 && aws_cloudwatch_metric_alarm.unhealthy_hosts[0].period == 60
     error_message = "unhealthy hosts: 2 of 2 periods of 60 s"
   }
 

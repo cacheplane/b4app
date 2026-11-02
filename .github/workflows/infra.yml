@@ -6,6 +6,14 @@ name: Infra
 # AWS_ROLE_PLAN_<ENV> for plans, AWS_ROLE_INFRA_<ENV> for applies, and the
 # state key from TFSTATE_KMS_KEY_ARN_<ENV>. B4HUB_ALARM_EMAIL is the address
 # the alarm topic and budget notify.
+#
+# OIDC subjects: a job that declares `environment:` presents the subject
+# repo:cacheplane/b4app:environment:<name>; any other job on main presents
+# ref:refs/heads/main. The test infra role trusts the ref subject, the prod one
+# trusts environment:production, so apply-test declares no environment (it would
+# be refused) and apply-prod declares production, which also gates it on the
+# reviewer. Apply jobs allow 90 minutes because the first apply can wait up to
+# 60 minutes on certificate validation.
 
 on:
   pull_request:
@@ -102,11 +110,23 @@ jobs:
       - name: Validate
         run: terraform validate
       - name: Lint
-        run: tflint --config ../../.tflint.hcl
+        run: |
+          tflint --config ../../.tflint.hcl --init
+          tflint --config ../../.tflint.hcl
       - name: Plan
         run: terraform plan -no-color -input=false -out plan.bin
-      - name: Render the plan
-        run: terraform show -no-color plan.bin > "$RUNNER_TEMP/plan.txt"
+      - name: Summarize the plan
+        # The repository is public: the comment carries counts and resource
+        # addresses only, never attribute values (account id, ARNs, email).
+        # The full plan is in the Plan step's log above.
+        run: |
+          set -euo pipefail
+          terraform show -json plan.bin | jq -r '
+            [.resource_changes[] | select(.change.actions != ["no-op"] and .change.actions != ["read"])] as $c
+            | "Plan: \([$c[] | select(.change.actions == ["create"])] | length) to add, \([$c[] | select(.change.actions == ["update"])] | length) to change, \([$c[] | select(.change.actions | index("delete"))] | length) to destroy (replacements count as destroy and add).",
+              "",
+              ($c[] | "- `\(.address)`: \(.change.actions | join(" + "))")
+          ' > "$RUNNER_TEMP/plan.txt"
       - name: Comment the plan on the pull request
         continue-on-error: false
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -121,9 +141,9 @@ jobs:
             let plan = fs.readFileSync(process.env.PLAN_FILE, 'utf8');
             const limit = 60000;
             if (plan.length > limit) {
-              plan = plan.slice(0, limit) + '\n... truncated; see the job log for the full plan';
+              plan = plan.slice(0, limit) + '\n... truncated';
             }
-            const body = `${marker}\n### Terraform plan: ${env}\n\n<details><summary>Show plan</summary>\n\n\`\`\`\n${plan}\n\`\`\`\n\n</details>`;
+            const body = `${marker}\n### Terraform plan: ${env}\n\n${plan}\n\nThe full plan is in the workflow run log.`;
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;
             const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
@@ -138,8 +158,7 @@ jobs:
     name: Apply test
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    environment: test
+    timeout-minutes: 90
     concurrency:
       group: infra-test
       cancel-in-progress: false
@@ -182,7 +201,7 @@ jobs:
     if: github.event_name == 'push'
     needs: apply-test
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     environment: production
     concurrency:
       group: infra-prod

@@ -104,12 +104,12 @@ terraform init \
 
 1. Bootstrap both accounts (runbook above).
 2. Add repository variables for each environment: `AWS_ROLE_PLAN_<ENV>`, `AWS_ROLE_INFRA_<ENV>`, `AWS_ROLE_DEPLOY_<ENV>`, `TFSTATE_KMS_KEY_ARN_<ENV>` (`TEST` and `PROD`), plus `B4HUB_ALARM_EMAIL`.
-3. Create GitHub Environments `test` (no rules) and `production` (required reviewer: the owner; deployment branches and tags: `main` and `hub-v*`).
+3. Create one GitHub Environment, `production` (required reviewer: the owner; deployment branches and tags: `main` and `hub-v*`). Do not create one for test: a job that declares `environment: test` presents the OIDC subject `environment:test`, which the test infra role does not trust (it trusts `ref:refs/heads/main`), so `apply-test` declares none. Prod trusts `environment:production`, which is also what gates it on the reviewer.
 4. Make the GHCR package `ghcr.io/cacheplane/b4hub` public.
 
 ### First apply and DNS
 
-The first apply of each root waits on certificate validation (up to 60 minutes). Read the records first with `terraform apply -target=module.hub.aws_acm_certificate.hub` (it needs the root's `-var alarm_email=...` or `TF_VAR_alarm_email`), add the `acm_validation_records` CNAMEs and a CNAME from the hostname to `alb_dns_name` at Vercel, then run the full apply (locally, or by merging).
+The first apply of each root waits on certificate validation (up to 60 minutes; the apply jobs allow 90). The validation CNAMEs must already exist at Vercel before the first prod apply is approved, otherwise that apply sits waiting; the same goes for the first test apply. Read the records first with `terraform apply -target=module.hub.aws_acm_certificate.hub` (it needs the root's `-var alarm_email=...` or `TF_VAR_alarm_email`), add the `acm_validation_records` CNAMEs and a CNAME from the hostname to `alb_dns_name` at Vercel, then run the full apply (locally, or by merging).
 
 ### First deploy: flip `desired_count`
 
@@ -117,8 +117,8 @@ Both roots are created with `desired_count = 0`, since no image has been deploye
 
 ### CI and reading a plan comment
 
-`.github/workflows/infra.yml` runs on pull requests that touch `Infra/`: a `test` job (format check and `terraform test` in the module) and a `plan` job per environment (format, validate, tflint, `terraform plan`). Each plan leg posts one comment, `Terraform plan: test` or `Terraform plan: prod`, updated in place on later pushes; expand it with "Show plan". Read the summary line at the end first (`N to add, N to change, N to destroy`), then look for any `must be replaced` or `destroy` lines, which for the database, the KMS key, or the state bucket mean stop and ask. On a merge to `main`, `apply-test` runs, then `apply-prod` waits for the `production` reviewer's approval; each applies a fresh plan, so what runs is what the approver sees in the job log.
+`.github/workflows/infra.yml` runs on pull requests that touch `Infra/`: a `test` job (format check and `terraform test` in the module) and a `plan` job per environment (format, validate, tflint, `terraform plan`). Each plan leg posts one comment, `Terraform plan: test` or `Terraform plan: prod`, updated in place on later pushes. Read the summary line first (`N to add, N to change, N to destroy`), then the resource list: any database, KMS key, or state bucket marked `delete` (a replacement shows as `delete + create`) means stop and ask. The comment holds only counts and resource addresses, because the repository is public; the full plan is in the plan step of the workflow run log. On a merge to `main`, `apply-test` runs, then `apply-prod` waits for the `production` reviewer. The approver sees the PR plan comment and the test apply that already ran; the prod job then re-plans and applies its own `plan.bin` in one job, so check the prod job log if the PR comment is old.
 
 ### Alarm notifications
 
-Seven CloudWatch alarms (5xx, unhealthy hosts, p99 latency, running tasks, database free storage, CPU, connections), an EventBridge rule that emails whenever a migrate task stops (the email shows the stop code and container exit code, so a clean run is also one email; it cannot filter on a non-zero exit), and a monthly cost budget that emails at 150 percent of actual spend all go to `alarm_email` through the `b4hub-<env>-alerts` topic.
+Seven CloudWatch alarms (5xx, unhealthy hosts, p99 latency, running tasks, database free storage, CPU, connections; unhealthy hosts and running tasks exist only while `desired_count > 0`), an EventBridge rule that emails whenever a migrate task stops (the email shows the stop code and container exit code, so a clean run is also one email; it cannot filter on a non-zero exit), and a monthly cost budget that emails at 150 percent of actual spend all go to `alarm_email` through the `b4hub-<env>-alerts` topic.

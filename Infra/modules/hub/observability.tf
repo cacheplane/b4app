@@ -67,7 +67,13 @@ resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
   }
 }
 
+# Gated like running_tasks: with no tasks (desired_count 0) there are no
+# targets, and "missing data is breaching" would fire from the first apply. A
+# single-task recreate deploy also leaves a gap, so the alarm needs two
+# consecutive 60 s periods to fire.
 resource "aws_cloudwatch_metric_alarm" "unhealthy_hosts" {
+  count = var.desired_count > 0 ? 1 : 0
+
   alarm_name          = "${local.name}-unhealthy-hosts"
   alarm_description   = "The target group has had an unhealthy task for two minutes."
   namespace           = "AWS/ApplicationELB"
@@ -78,8 +84,8 @@ resource "aws_cloudwatch_metric_alarm" "unhealthy_hosts" {
   datapoints_to_alarm = 2
   threshold           = 0
   comparison_operator = "GreaterThanThreshold"
-  # No data means no healthy or unhealthy targets are reporting, which is also
-  # a failure while the service is meant to run.
+  # While the service is meant to run, no data means no targets are reporting,
+  # which is a failure that should page.
   treat_missing_data = "breaching"
   alarm_actions      = [aws_sns_topic.alerts.arn]
   ok_actions         = [aws_sns_topic.alerts.arn]
