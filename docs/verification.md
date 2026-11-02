@@ -2,6 +2,65 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-11-02: M8c relay (fixture gates; live gate pending)
+
+Target: the same MacBook Pro (macOS 26.5, Xcode 26.6), run from the worktree `feat/m8c-relay`, whose code head is `1373553` (the merge of `origin/main` after the final fix wave `3cfa867..497a42c`); the documentation commit that records this adds no code but one comment in `Hub/crates/b4hub/src/relay/link.rs`. **Only the fixture gates are recorded here. The live gate (the Simulator, the Compose hub on `localhost:8080`, and the owner's packaged app rebuilt from the branch) has not been run, and nothing below is a live result.** The owner's running Agent Workspace app, its LaunchAgent, `~/Library/Application Support/b4app`, and the Compose stack were not touched by these gates.
+
+### Automated
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Swift format | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass (exit 0, no findings), rerun on the documentation commit's tree |
+| Build and tests | `swift build`, then `swift test` | Pass: 779 tests in 116 suites in 54.0 s (517 at the end of M8b, 770 at Task 15). `swift test` exit 0 on `1373553` |
+| Project | `./Scripts/generate-project.sh` | `B4App.xcodeproj` regenerated from `project.yml` |
+| macOS app | `xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'platform=macOS'` | `** BUILD SUCCEEDED **`, 0 warnings |
+| iOS app | `xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'` | `** BUILD SUCCEEDED **`, 0 warnings |
+| Rust format | `cd Hub && cargo fmt --all -- --check` | Pass (rerun on the documentation commit's tree) |
+| Rust lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| Rust tests | `cargo test --workspace --locked`, then `./scripts/test-db.sh --stop` | Pass: 209 tests against a real PostgreSQL 17.11 (117 at the end of M8b): `b4hub` 136 (unit 41, `changes` 14, `enroll` 17, `health` 5, `relay` 59), `b4hub-core` 24, `b4hub-db` 49 (unit 3, `changes` 35, `migrate` 7, `rls` 4) |
+| CI | the Swift package job, the apps job, and the Ubuntu `hub` job | Recorded in the PR for `feat/m8c-relay`, not here |
+
+The Swift, clippy, and Rust-test results were read from one gate run on `1373553` (logs in the build session's scratchpad: `gate3-swift.log`, `gate3-clippy.log`, `gate3-cargo.log`); the format lints and both `xcodebuild` builds were run afterwards, in this worktree, on the tree that includes the documentation changes.
+
+### Flaky tests fixed in the final wave
+
+The final review found two tests that failed now and then under load. Both turned out to expose a real fault, fixed in production code (`2ee71b9`), and each was run 20 times in a row after the fix and again on the final head.
+
+| Test | Cause | Result |
+| --- | --- | --- |
+| `MirrorModelTests.relayedDeltaStreamsThenSyncedItemReplacesIt` | Two races. The transport could start listening before the relay's subscription existed, so an early frame was lost; `MirrorRelay.updates()` now subscribes synchronously and the transport subscribes before its listener starts. And `WorkspaceClient.resetCursor` moved the cursor back after the model's startup `host.presence` had advanced it, so every later event read as a gap and was dropped (D-080). Reproduced by adding a delay in the listener task (5 and 20 ms passed, 100 and 300 ms failed); after both fixes delays of 0, 1, 2, 3, 5, and 100 ms pass. Covered by `WorkspaceClientTests.aSnapshotOlderThanDeliveredEventsKeepsTheCursor` (red before) | 20/20 passed, twice |
+| `HubLinkRelayTests.aRefusedPushStopsTheLink` | The test asserted before the link had finished going offline; it now waits for `hub.status().link?.state == .offline` | 20/20 passed, twice |
+
+### Live-gate items and the fixture evidence for each
+
+The live gate is the spec's list (`docs/superpowers/specs/2026-11-01-m8c-relay-design.md`, "Not in CI"). The left column is its item; the rest is what the fixtures show and what they cannot.
+
+| Live-gate item | Fixture evidence | Not covered by fixtures |
+| --- | --- | --- |
+| 1. Pair the Simulator: the Mac's sheet shows a QR code, the Simulator opens the link and confirms, the sheet closes with the device name | Mac: `PairingTests.pairReturnsUrlCodeAndExpiry`, `pairStatusTurnsPairedWhenANewPhoneAppears`, `pairStatusExpiresFiveMinutesAfterTheMintWhateverTheMacsWallClockSays`, `pairIsRoutedAndNeverReplayedFromTheOperationCache`, `codeNeverAppearsInLogsOrStatus`; sheet: `RemoteAccessTests.qrRoundTripsThroughCIDetector` (the exact link comes back from the rendered image), `sheetShowsTheLinkAndCountsDown`, `sheetClosesWhenPaired`, `anExpiredCodeOffersANewOne`; phone: `PairLinkTests` (valid link, bad code, insecure remote hub, localhost, other hosts), `RelayLifecycleTests.enrollingAndLeavingFollowThePhase`, `aRefusedDeviceStopsStartingUntilItPairsAgain`; hub: `a_mac_mints_a_pairing_code_the_phone_redeems`, `pairing_codes_expire_after_five_minutes`, `only_a_mac_can_mint`, `the_eleventh_mint_in_an_hour_is_limited`, `a_revoked_macs_unused_pairing_code_cannot_be_redeemed` | The sheet and the confirmation drawn on a real screen; `xcrun simctl openurl` and the system's "Open in" prompt; the camera (never run on a device, D-058); the packaged app minting against the Compose hub |
+| 2. Start a thread in a project from the phone, once on Codex or Claude and once on a managed local B4 connection; it appears on the Mac and its reply streams with tool calls | Mac: `RelayExecutorTests.threadStartCreatesInTheFolderAndSends`, `threadStartOnLocalB4IsRouteBound`, the four refusals (`threadStartRefusesAFolderOutsideTheProject`, `...AB4ServerOfAnotherProject`, `...RemoteB4`, `...AReusedIdWithAnotherFolder`), `threadStartRetryReusesThreadAndTurn`, `threadStartInALockedFolderCreatesNothing`; hub: `a_started_thread_is_routable_before_its_row_arrives`, `thread_start_auto_watches_the_new_thread`, `a_refused_thread_start_gives_its_watch_back`; phone: `PhoneNewThreadTests.offersCodexClaudeAndThisProjectsLocalB4Only`, `startOpensTheThreadOnAccept`, `aSecondTapDoesNotMintASecondThread`, `SendStateTests.threadStartIsTrackedOnItsNewThread`; a B4 connection's project: `ProjectServiceTests.localB4ConnectionGetsItsServersProject`, `codexAndRemoteB4ConnectionsHaveNoProject`, `backfillSetsExistingConnections` | Real Codex and Claude inference; a real managed `b4` server serving the project; "appears on the Mac at once" in the window; the streaming timings |
+| 3. Continue an existing Mac thread from the phone, with streaming | Mac: `RelayExecutorTests.relayedSendRunsATurn`, `resendAfterCompletionReturnsTheSameTurn`, `overlappingResendAwaitsTheFirst`, `deadlineUsesTheHubClockNotTheMacs`, `turnLookupReportsInFlightFoundAndNone`; link: `HubLinkRelayTests.commandFromTheHubRunsAndReplies`, `onlyWatchedThreadsEventsAreSent`, `newWatchFirstGetsTheTextSoFar`, `reconnectCatchesUpTheWatchedThreadsAgain`; hub: `each_method_reaches_the_owning_mac_with_a_deadline`, `events_go_only_to_watchers`, `a_slow_phone_gets_a_stream_gap`; phone: `MirrorRelayTests.sendGoesThroughTheRelayWithTheOperationId`, `SendStateTests.acceptedClearsTheComposer`, `lookupFoundAccepts`, `MirrorModelTests.relayedDeltaStreamsThenSyncedItemReplacesIt`, `streamGapClearsLiveText`, `aCatchUpAfterAMacRelinkResumesTheText` | Real runtimes producing the stream; tool calls drawn in the phone's transcript; end-to-end latency (the design's 10 s deadline and 30 s reply wait are tested on a paused clock) |
+| 4. Answer an approval on the phone and the Mac's card resolves once; answer on the Mac first and the phone's tap reads "Already answered" | `SessionTests.answersAnApprovalExactlyOnce`, `simultaneousAnswersReachTheRuntimeOnce` (the second answer gets `stale_runtime_request`); hub: `answered_request_is_stale_without_forwarding`; phone: `SendStateTests.alreadyAnsweredCopy` | A relayed `request.respond` is not driven through `RelayExecutor` or `HubLink` in any test (the executor decodes and calls `SessionService.requestRespond`, which is tested); a real runtime approval card on both screens |
+| 5. Stop a running turn from the phone | Phone: `SendStateTests.stopWaitsNinetySecondsThenNotConfirmed`; hub: `interrupt_is_held_and_delivered_on_reconnect`, `held_answer_expires_after_sixty_seconds`; `SessionTests` cover the interrupt itself | A relayed `turn.interrupt` is likewise not driven through `RelayExecutor` or `HubLink`; a real stop of a running Codex or Claude turn from the phone |
+| 6. Stop the coordinator: "Reconnecting…", then after about 60 s the notice with the last-seen time, the list still browsable; a send is refused with that time; restart clears it | Hub: `send_to_an_offline_mac_is_refused_with_last_seen`, `last_seen_is_the_last_frame_heard_after_a_dead_link_close`, `a_device_never_reads_offline_before_its_last_seen_is_written`, `presence_reaches_clients_on_connect_and_drop`, `revoking_an_offline_mac_updates_the_phones_list`; phone: `HostPresenceTests.phasesConnectedReconnectingDisconnectedConnected` (on an injected clock), `disconnectedDisablesControlsButListAndTranscriptsLoad`, `offlineNotice`, `leftHubShowsNoticeAboveTheList`, `phoneLinkDownShowsConnectingToTheHub`, `SendStateTests.disconnectEndsTheRelayState`; link: `RelayLinkTests.pingsEveryTenSecondsAndReconnectsAfterThirtySilent`, `backoffDoublesToTheCapWithJitterAndResets`; Mac: `HubLinkRelayTests.wakeReconnectsAtOnce`, `pathChangeReconnectsAtOnce`, `leaveStopsTheLink` | A real coordinator stop and restart; the 60 s grace on a wall clock; the notice rendered; the Mac app's wake handler reaching `reconnectLink` (the sleep watcher and path monitor are what the tests exercise) |
+| 7. "Keep the Mac awake" with the Mac joined: `pmset -g assertions` lists the coordinator's assertion; off, it is gone | `KeepAwakeTests.assertionHeldOnlyWhenEnabledAndJoined`, `leaveReleasesTheAssertion`, `stoppingTheCoordinatorReleasesTheAssertion`, `turningTheToggleOffReleasesAndOnTakesAgain`, `aRefusedAssertionIsReportedAsNotHeld`, `settingsAreServedOverTheSocketAndDiagnosticsShowTheAssertion`; `RemoteAccessTests.keepAwakeToggleSendsSettingsUpdate` | The real IOKit assertion: the tests use `FakePowerAssertions`, so `pmset -g assertions` has not been looked at |
+
+Cross-language: `relay.json` decodes in the hub (`b4hub-core`) and in `RelayWireTests.relayFixtureRoundTrips`; `RelayWireTests.limitsMatchTheHub` pins the constants the two sides share; `changes.json` (now carrying `connections.projectId`) decodes in both suites. `URLSessionLinkTests` run `URLSessionHubLinkConnection` against a fake hub built on `NIOWebSocket` over loopback: the upgrade carries the bearer and `B4-Protocol` headers, frames go both ways, close codes and refused upgrades (401, 429) are reported.
+
+### Live gate: to be run
+
+Not run. The controller runs it after this record and fills the table. The procedure is Task 16's: bring the main checkout's Compose stack down so one stack owns the volume, copy `~/repos/b4app/Hub/.env` beside the branch's `Hub/`, `docker compose build && docker compose up -d` (`/readyz` must show `"migrations":"current"`; hub migration `0004` is applied to the volume, and cannot be undone), `./Scripts/package.sh`, quit the app, `agent-workspace coordinator restart`, reopen (`agent-workspace hub status` must show `link` `connected`), then the seven items above in the iPhone 17 Pro Simulator.
+
+| Live-gate item | Procedure | Result |
+| --- | --- | --- |
+| 1. Pair the Simulator | "Pair iPhone…" on the Mac; `xcrun simctl openurl booted "<the link the sheet shows>"`; confirm | not run |
+| 2. Start a thread from the phone (Codex or Claude, and a managed local B4 connection) | New thread in a project; send; watch the reply and its tool calls | not run |
+| 3. Continue a Mac thread from the phone | Send into an existing thread; watch it stream | not run |
+| 4. Approval answered on the phone, and on the Mac first | A fixture or live approval; check the Mac's card resolves once and the late tap reads "Already answered" | not run |
+| 5. Stop from the phone | Stop a running turn | not run |
+| 6. Coordinator stopped and restarted | `agent-workspace coordinator stop`: "Reconnecting…", the notice after about 60 s with the last-seen time, a refused send; restart: the notice clears | not run |
+| 7. Keep the Mac awake | `pmset -g assertions` with the toggle on and joined, then off | not run |
+
 ## 2026-11-02: Hosted hubs (D-068 to D-072)
 
 Implementation is on `blove/cloud-hub-deployment-arch-4b6348`; nothing has been applied to AWS, because the owner has not created the AWS Organization or the two accounts. The gates are the eight in `docs/deployment-architecture.md` ("Verification gates"), plus 2b (the 9 MiB push through the WAF). Each is `passed` (with evidence), `pending` (with the step that produces the evidence and what it must show), or owned by another project. A gate that needs a live hub is never `passed` from a mock.

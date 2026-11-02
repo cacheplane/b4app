@@ -699,7 +699,9 @@ A frame is one WebSocket text message. The hub refuses a frame from a **client**
 `invalid_request` (`details: { maxBytes }`); the frame is not read, not echoed, and not logged,
 and the link stays up. A frame of exactly the limit is accepted. The limits are on what a device
 sends: a phone can receive a 256 KiB `event`. Beneath that, the WebSocket layer reads no message
-over 1 MiB: such a message ends the connection (with no close code), so a device must not send one.
+over 1 MiB: such a message ends the connection, and the hub drops it without a close frame (no
+close code, not 1009), so a device must not send one. Only that device's link ends; the others
+are unaffected.
 
 | Limit | Value |
 | --- | --- |

@@ -36,7 +36,8 @@ const LAST_SEEN_EVERY: Duration = Duration::from_secs(60);
 
 /// The largest WebSocket message the socket layer reads at all. The per-role limits
 /// (`CLIENT_FRAME_MAX`, `HOST_FRAME_MAX`) are checked on top of it, as a refusal that leaves the
-/// link up; a message past this ends the connection (close code 1009) before the hub sees it.
+/// link up; a message past this ends the connection before the hub sees it, and the hub drops it
+/// without a close frame (the read fails, `run` returns `None`, and only a chosen close is sent).
 const WIRE_MAX: usize = 1024 * 1024;
 
 /// How long the hub waits, after sending a close frame, for the device's own before it drops the
