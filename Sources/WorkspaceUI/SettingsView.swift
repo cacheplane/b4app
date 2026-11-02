@@ -21,7 +21,7 @@ enum WorkspaceDevice {
   }
 
   /// The sentence a read-only page shows in place of its controls.
-  static let managedOnMac = "Connections, their sign-in, and local servers are managed on your Mac."
+  static let managedOnMac = "Connections, their sign-in, and B4 projects are managed on your Mac."
 }
 
 /// A Settings page's one action (re-check, refresh): a toolbar button, except in the Mac's Settings
@@ -48,7 +48,7 @@ extension SettingsPage {
   @MainActor @ViewBuilder func view(model: WorkspaceModel) -> some View {
     switch self {
     case .connections: ConnectionsView(model: model)
-    case .servers: LocalServersView(model: model)
+    case .servers: B4ProjectsView(model: model)
     case .diagnostics: DiagnosticsView(model: model)
     }
   }
@@ -60,6 +60,7 @@ extension SettingsPage {
 public struct WorkspaceSettingsView: View {
   @Bindable var model: WorkspaceModel
   @State private var addingB4 = false
+  @State private var attachingProject = false
 
   public init(model: WorkspaceModel) {
     LLAFonts.register()
@@ -112,12 +113,15 @@ public struct WorkspaceSettingsView: View {
           .buttonStyle(.llaSecondary)
           .disabled(model.link != .ready || model.diagnosticsLoading)
       case .servers:
-        EmptyView()
+        Button("Attach B4 project…") { attachingProject = true }
+          .buttonStyle(.llaSecondary)
+          .disabled(model.link != .ready || model.busy)
       }
     }
     .padding(.horizontal, LLA.Space.xl)
     .padding(.top, LLA.Space.xl)
     .sheet(isPresented: $addingB4) { B4ConnectionSheet(model: model, connection: nil) }
+    .sheet(isPresented: $attachingProject) { AttachB4ProjectSheet(model: model) }
   }
 }
 

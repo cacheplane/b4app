@@ -65,9 +65,9 @@ public struct Remediation: Equatable, Sendable {
     case .endpointUnavailable where reason == "server_stopped":
       return Remediation(
         message:
-          "The managed server is stopped. Start it from Local servers; the thread continues on the same route.",
+          "The B4 project is stopped. Start it from B4 projects; the thread continues on the same agent.",
         action: .openServers(serverId: error.details?["serverId"]?.stringValue),
-        actionTitle: "Open Local servers")
+        actionTitle: "Open B4 projects")
     case .endpointUnavailable:
       return Remediation(
         message:
@@ -110,7 +110,7 @@ public struct Remediation: Equatable, Sendable {
     case .ownedProcessConflict:
       return Remediation(
         message: "\(error.message) Nothing was stopped.", action: .openServers(serverId: nil),
-        actionTitle: "Open Local servers")
+        actionTitle: "Open B4 projects")
     case .unsupportedCapability, .notImplemented:
       return Remediation(message: error.message, action: .none)
     case .protocolInvalid, .methodUnknown, .snapshotRequired, .notFound, .internalError:
