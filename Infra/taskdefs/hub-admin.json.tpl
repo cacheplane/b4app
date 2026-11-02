@@ -2,7 +2,7 @@
   {
     "name": "hub",
     "image": "${image}",
-    "essential": true,
+    "essential": false,
     "command": ["serve"],
     "environment": [
       { "name": "B4HUB_PORT", "value": "8081" },
@@ -30,7 +30,7 @@
   {
     "name": "psql",
     "image": "${psql_image}",
-    "essential": false,
+    "essential": true,
     "command": ["sleep", "3600"],
     "environment": [
       { "name": "PGHOST", "value": "${db_host}" },

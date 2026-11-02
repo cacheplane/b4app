@@ -11,6 +11,11 @@ locals {
     admin   = "${local.name}-hub-admin"
   }
 
+  # The task definition templates live outside the module, in Infra/taskdefs,
+  # because the CI renderer shares them. So roots must source this module by
+  # a relative in-repo path (source = "../../modules/hub") or a git source
+  # with a //Infra/modules/hub subdirectory. An absolute local path is copied
+  # into .terraform/modules without the templates, and templatefile fails.
   taskdef_dir = "${path.module}/../../taskdefs"
 
   # Terraform registers placeholder revisions so the service can be created
@@ -107,13 +112,20 @@ resource "aws_ecs_task_definition" "migrate" {
 }
 
 # Run ad hoc by an operator with --enable-execute-command (a RunTask flag, not
-# a task-definition attribute). Two containers:
-# - hub: the hub image has no shell, so it runs `b4hub serve` on 8081 only to
-#   stay alive for ECS Exec; the operator execs `b4hub seed|enroll` in it.
-#   serve needs DATABASE_URL and seed/enroll need DATABASE_ADMIN_URL, so it
-#   gets both. It is operator-only and never receives traffic.
-# - psql: postgres client as the RDS master user, the only place the master
-#   secret is used. PGSSLMODE is require, not verify-full: the postgres image
+# a task-definition attribute). Two containers (JSON has no comments, so the
+# template's ordering is explained here):
+# - psql (essential): postgres client as the RDS master user, the only place
+#   the master secret is used. It is the essential container so the task
+#   lives (sleep 3600) on a fresh account, before the b4hub database and
+#   b4hub_app role exist: the operator creates them from psql first.
+# - hub (not essential): the hub image has no shell, so it runs `b4hub serve`
+#   on 8081 only to stay alive for ECS Exec; the operator execs
+#   `b4hub seed|enroll` in it. serve connects at startup, so before the
+#   database exists and `migrate` has run it exits without stopping the task;
+#   after migrate it stays up. serve needs DATABASE_URL and seed/enroll need
+#   DATABASE_ADMIN_URL, so it gets both. It is operator-only and never
+#   receives traffic.
+# psql: PGSSLMODE is require, not verify-full: the postgres image
 #   lacks the RDS CA bundle. require still encrypts; the hub itself verifies
 #   the server with the bundle baked into its image.
 resource "aws_ecs_task_definition" "admin" {

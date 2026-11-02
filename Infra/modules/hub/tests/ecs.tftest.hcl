@@ -344,8 +344,8 @@ run "psql_container" {
   command = apply
 
   assert {
-    condition     = one([for c in jsondecode(aws_ecs_task_definition.admin.container_definitions) : c if c.name == "psql"]).essential == false && one([for c in jsondecode(aws_ecs_task_definition.admin.container_definitions) : c if c.name == "psql"]).image == "public.ecr.aws/docker/library/postgres:17"
-    error_message = "psql runs postgres:17 and is not essential"
+    condition     = one([for c in jsondecode(aws_ecs_task_definition.admin.container_definitions) : c if c.name == "psql"]).essential == true && one([for c in jsondecode(aws_ecs_task_definition.admin.container_definitions) : c if c.name == "psql"]).image == "public.ecr.aws/docker/library/postgres:17"
+    error_message = "psql runs postgres:17"
   }
 
   assert {
@@ -366,6 +366,18 @@ run "container_counts" {
   assert {
     condition     = length(jsondecode(aws_ecs_task_definition.hub.container_definitions)) == 1 && length(jsondecode(aws_ecs_task_definition.migrate.container_definitions)) == 1 && length(jsondecode(aws_ecs_task_definition.admin.container_definitions)) == 2
     error_message = "hub 1 container, migrate 1, admin 2"
+  }
+
+  assert {
+    condition     = jsondecode(aws_ecs_task_definition.hub.container_definitions)[0].essential == true && jsondecode(aws_ecs_task_definition.migrate.container_definitions)[0].essential == true
+    error_message = "the serving and migrate containers are essential"
+  }
+
+  # psql keeps the admin task alive on a fresh account, before the database
+  # exists; the hub container may exit until migrate has run.
+  assert {
+    condition     = { for c in jsondecode(aws_ecs_task_definition.admin.container_definitions) : c.name => c.essential } == { hub = false, psql = true }
+    error_message = "in the admin task psql is essential and hub is not"
   }
 }
 
