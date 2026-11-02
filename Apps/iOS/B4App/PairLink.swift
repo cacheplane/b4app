@@ -12,6 +12,8 @@ enum PairArrival: Equatable {
 
   static let invalidLink = "This pairing link is not valid. Show a new code on your Mac and try again."
   static let notAPairingCode = "That QR code is not a pairing code from your Mac."
+  static let ignoredWhileOffering =
+    "Another pairing link arrived and was ignored. Cancel, then open it again to use it."
 
   /// What a scanned QR code offers. Only reached while not enrolled.
   init(scanned text: String, decide: (URL) -> RelayLifecycle.PairLinkDecision) {

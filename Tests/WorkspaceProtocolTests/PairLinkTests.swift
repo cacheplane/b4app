@@ -42,6 +42,10 @@ import WorkspaceProtocol
     #expect(try parse(hub: hub, code: "BCDFGHJ1") == nil)
     #expect(try parse(hub: hub, code: " BCDFGHJ") == nil)
     #expect(try parse(hub: hub, code: "BCDFGHJÉ") == nil)
+    // Upper-casing can lengthen a string ("ß" → "SS", "ﬀ" → "FF"): seven characters must not pass as eight.
+    #expect(try parse(hub: hub, code: "BCDFGHß") == nil)
+    #expect(try parse(hub: hub, code: "BCDFGHﬀ") == nil)
+    #expect(try parse(hub: hub, code: "bcdfghß") == nil)
     // Two codes are ambiguous, so neither is taken.
     #expect(
       PairLink.parse(try link("b4app://pair?hub=https%3A%2F%2Fhub.example.com&code=BCDFGHJK&code=MNPQRSTV"))

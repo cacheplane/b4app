@@ -34,6 +34,9 @@ import WorkspaceUI
   @ObservationIgnored private var unreadableReason: String?
   /// The pull loop's last outcome; `lastError` is set while the mirror is not keeping up with the hub.
   private(set) var syncStatus = MirrorSyncStatus()
+  /// Set when the hub refused the relay's link (`unauthorized`, `revoked`): the link stays closed until
+  /// this phone logs out and pairs again, and the banner says so.
+  private(set) var relayRefused: String?
 
   @ObservationIgnored private let store: MirrorStore?
   @ObservationIgnored private let secrets: any SecretStore = KeychainSecretStore(service: "b4app")
@@ -45,6 +48,10 @@ import WorkspaceUI
   @ObservationIgnored private var lifecycle = RelayLifecycle(enrolled: false)
   /// The relay's start and stop calls, chained so they reach it in the order they were decided.
   @ObservationIgnored private var relayControl: Task<Void, Never>?
+  /// Watches the relay for the stops it makes on its own.
+  @ObservationIgnored private var relayWatch: Task<Void, Never>?
+  /// The copy for a refused link.
+  static let relayRefusedMessage = "The hub no longer accepts this iPhone. Log out, then pair it again."
   /// The shell's model, once `wire` has run: the phone, not a coordinator, supplies its account, its
   /// log-out, and whether the Mac is still joined.
   @ObservationIgnored private weak var model: WorkspaceModel?
@@ -88,7 +95,7 @@ import WorkspaceUI
       isLinked = true
       startSync(link, fromSnapshot: fromSnapshot)
     }
-    lifecycle = RelayLifecycle(enrolled: isLinked)
+    lifecycle = RelayLifecycle(enrolled: isLinked, hasRelay: relay != nil)
   }
 
   /// `<Application Support>/b4app`, readable once the device has been unlocked after boot so the
@@ -165,7 +172,15 @@ import WorkspaceUI
     lifecycle.pairLink(url)
   }
 
+  /// The relay stopped itself. A refusal keeps it closed (and says so) until the phone pairs again.
+  private func relayStopped(_ stopped: MirrorRelay, reason: String) {
+    guard stopped === relay else { return }
+    control(lifecycle.linkStopped(reason: reason))
+    if lifecycle.refused { relayRefused = Self.relayRefusedMessage }
+  }
+
   private func control(_ action: RelayLifecycle.Action?) {
+    // The lifecycle decides only while a relay exists (`hasRelay`), so this guard never drops a decision.
     guard let action, let relay else { return }
     let previous = relayControl
     relayControl = Task {
@@ -181,10 +196,13 @@ import WorkspaceUI
   /// syncing, then `MirrorLogOut` revokes this device (best effort), forgets the token, and empties the
   /// mirror, unsent edits included. The Connect screen shows next.
   func logOut() async {
-    control(lifecycle.setEnrolled(false))
+    control(lifecycle.setEnrolled(false, hasRelay: false))
     await relayControl?.value
     relayControl = nil
+    relayWatch?.cancel()
+    relayWatch = nil
     relay = nil
+    relayRefused = nil
     await model?.disconnect()
     await sync?.stop()
     sync = nil
@@ -252,7 +270,7 @@ import WorkspaceUI
     }
     startSync(link, fromSnapshot: false)
     isLinked = true
-    control(lifecycle.setEnrolled(true))
+    control(lifecycle.setEnrolled(true, hasRelay: relay != nil))
     refreshAccount()
   }
 
@@ -263,7 +281,16 @@ import WorkspaceUI
     let api = Self.api(base: base, ref: ref, secrets: secrets)
     // The relay adds `/v1/devices/self/link` itself, and asks for the token on every attempt; the read
     // runs on a thread of its own (D-052), and the token is never kept or logged here.
-    relay = MirrorRelay(url: base, token: { [secrets] in try await secrets.read(ref) })
+    let relay = MirrorRelay(url: base, token: { [secrets] in try await secrets.read(ref) })
+    self.relay = relay
+    relayWatch?.cancel()
+    relayWatch = Task {
+      for await update in await relay.updates() {
+        if case .link(.stopped(let reason)) = update {
+          MirrorHost.shared.relayStopped(relay, reason: reason)
+        }
+      }
+    }
     let sync = MirrorSync(
       store: store, api: api,
       onBatch: { batch in await MirrorHost.shared.publish(batch) },

@@ -27,7 +27,9 @@ struct B4AppiOS: App {
           // The shared shell's footer speaks for the mirror, which is always reachable; whether the
           // mirror is keeping up with the hub is said here, above everything, while it is not.
           WorkspaceRootView(model: model)
-            .safeAreaInset(edge: .top, spacing: 0) { SyncBanner(status: host.syncStatus) }
+            .safeAreaInset(edge: .top, spacing: 0) {
+              SyncBanner(status: host.syncStatus, relayRefused: host.relayRefused)
+            }
             .task { host.wire(model) }
         } else {
           HubConnectView(host: host, incoming: $pairArrival)
@@ -52,21 +54,27 @@ struct B4AppiOS: App {
 }
 
 /// One line while the last pull failed: when the mirror last caught up and why it cannot now. Hidden
-/// once a pull succeeds. It cannot tell a sleeping Mac from an idle one (presence arrives in M8c).
+/// once a pull succeeds. While the hub refuses the relay's link (a revoked device), that comes first:
+/// it lasts until the phone logs out and pairs again.
 struct SyncBanner: View {
   let status: MirrorSyncStatus
+  var relayRefused: String?
 
   var body: some View {
-    if let error = status.lastError {
+    if let message = relayRefused
+      ?? status.lastError.map({
+        Self.message(error: $0, lastSyncAt: status.lastSyncAt)
+      })
+    {
       HStack(spacing: LLA.Space.s) {
         Circle()
           .fill(LLA.Color.danger)
           .frame(width: 8, height: 8)
           .accessibilityHidden(true)
-        Text(Self.message(error: error, lastSyncAt: status.lastSyncAt))
+        Text(message)
           .font(LLAFont.small)
           .foregroundStyle(LLA.Color.ink)
-          .lineLimit(1)
+          .lineLimit(relayRefused == nil ? 1 : 2)
           .truncationMode(.tail)
       }
       .padding(.horizontal, LLA.Space.l)

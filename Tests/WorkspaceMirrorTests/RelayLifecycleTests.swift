@@ -43,6 +43,53 @@ import WorkspaceProtocol
     #expect(lifecycle.enter(.active) == .start)
   }
 
+  @Test func aRefusedDeviceStopsStartingUntilItPairsAgain() {
+    for reason in ["unauthorized", "revoked"] {
+      var lifecycle = RelayLifecycle(enrolled: true)
+      #expect(lifecycle.enter(.active) == .start)
+      // The relay stopped itself: nothing to send it, and the state says it is not running.
+      #expect(lifecycle.linkStopped(reason: reason) == nil)
+      #expect(!lifecycle.running)
+      #expect(lifecycle.refused)
+      // Background and active again open no doomed link.
+      #expect(lifecycle.enter(.background) == nil)
+      #expect(lifecycle.enter(.active) == nil)
+      #expect(!lifecycle.running)
+      // Still enrolled, so a pairing link is still "already paired".
+      #expect(
+        lifecycle.pairLink(PairLink.make(url: "https://hub.example.com", code: "BCDFGHJK")) == .alreadyPaired)
+      // Log out, then pair again: the link opens.
+      #expect(lifecycle.setEnrolled(false) == nil)
+      #expect(!lifecycle.refused)
+      #expect(lifecycle.setEnrolled(true) == .start)
+    }
+  }
+
+  @Test func otherStopsAreNotRefusals() {
+    var lifecycle = RelayLifecycle(enrolled: true)
+    #expect(lifecycle.enter(.active) == .start)
+    // Our own stop, reported late, says nothing about the running link.
+    #expect(lifecycle.linkStopped(reason: "stopped") == nil)
+    #expect(lifecycle.running)
+    // Replaced by another link of this device: not running, but the next active may open it again.
+    #expect(lifecycle.linkStopped(reason: "replaced") == nil)
+    #expect(!lifecycle.running && !lifecycle.refused)
+    #expect(lifecycle.enter(.background) == nil)
+    #expect(lifecycle.enter(.active) == .start)
+  }
+
+  @Test func withoutARelayNothingRuns() throws {
+    // An unreadable mirror: linked (so a pairing link is "already paired"), but no relay was built.
+    var lifecycle = RelayLifecycle(enrolled: true, hasRelay: false)
+    #expect(lifecycle.enter(.active) == nil)
+    #expect(!lifecycle.running)
+    #expect(
+      lifecycle.pairLink(PairLink.make(url: "https://hub.example.com", code: "BCDFGHJK")) == .alreadyPaired)
+    // Pairing again builds one.
+    #expect(lifecycle.setEnrolled(false, hasRelay: false) == nil)
+    #expect(lifecycle.setEnrolled(true, hasRelay: true) == .start)
+  }
+
   @Test func alreadyEnrolledIgnoresPairLink() throws {
     let url = PairLink.make(url: "https://hub.example.com", code: "BCDFGHJK")
     // Enrolled: whatever the link holds, nothing is offered.

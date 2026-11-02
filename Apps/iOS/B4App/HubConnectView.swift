@@ -131,9 +131,14 @@ struct HubConnectView: View {
     }
   }
 
-  /// A link or scan replaces any offer not yet accepted; nothing is sent until "Pair".
+  /// Takes a link or scan; nothing is sent until "Pair". While an offer is on screen another arrival is
+  /// ignored, with a note, so the hub Brian is reading about cannot change under his thumb.
   private func accept(_ arrival: PairArrival) {
     guard !connecting else { return }
+    guard offer == nil else {
+      error = PairArrival.ignoredWhileOffering
+      return
+    }
     switch arrival {
     case .offer(let link):
       offer = link

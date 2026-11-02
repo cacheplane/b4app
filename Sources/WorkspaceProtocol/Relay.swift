@@ -265,6 +265,10 @@ public struct PairLink: Sendable, Equatable {
     guard let hubParts = URLComponents(url: hub, resolvingAgainstBaseURL: false),
       hubParts.user == nil, hubParts.password == nil
     else { return nil }
+    // Checked before upper-casing, which can lengthen a string ("ß" becomes "SS"): exactly eight ASCII
+    // scalars, whose upper case is then the same length.
+    let scalars = codeText.unicodeScalars
+    guard scalars.count == codeLength, scalars.allSatisfy(\.isASCII) else { return nil }
     let code = codeText.uppercased()
     guard code.count == codeLength, code.allSatisfy(codeAlphabet.contains) else { return nil }
     return PairLink(hub: hub, code: code)
