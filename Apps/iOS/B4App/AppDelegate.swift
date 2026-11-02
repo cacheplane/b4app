@@ -35,8 +35,23 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     _ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any],
     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
   ) {
-    Task {
-      completionHandler(await MirrorHost.shared.backgroundRefresh() ? .newData : .noData)
+    refresh(then: completionHandler)
+  }
+
+  /// A background-fetch wake (the `fetch` mode): how the Simulator's `simctl push` delivers a
+  /// content-available payload, and a wake iOS may give the app on its own. The same refresh as a push.
+  func application(
+    _ application: UIApplication,
+    performFetchWithCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+  ) {
+    refresh(then: completionHandler)
+  }
+
+  /// Refreshes the mirror and the widget, then calls `completion` once, on the main actor, after the
+  /// sync loop is idle again (`MirrorHost.backgroundRefresh`).
+  private func refresh(then completion: @escaping (UIBackgroundFetchResult) -> Void) {
+    Task { @MainActor in
+      completion(await MirrorHost.shared.backgroundRefresh() ? .newData : .noData)
     }
   }
 

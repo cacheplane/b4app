@@ -97,8 +97,12 @@ targets:
         B4AppAppGroup: group.com.cacheplane.b4app
         B4AppURLScheme: b4app
         # A push with `content-available` wakes the app to pull before the banner is tapped (D-113).
+        # `fetch` too: `xcrun simctl push` delivers a content-available payload as a background-fetch
+        # launch, which iOS refuses without it, and with it the system may also give the app fetch
+        # wakes of its own; both go through the same refresh, so the widget is fresher.
         UIBackgroundModes:
           - remote-notification
+          - fetch
         # Plain HTTP only to the hub on this machine (the Simulator's localhost); HubURL refuses any
         # other non-HTTPS URL before a request is made. Debug only: the post-build script below
         # removes it from every other configuration, since on a device localhost is the phone.
