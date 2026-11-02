@@ -16,8 +16,8 @@ use sqlx::types::Uuid;
 use sqlx::PgPool;
 
 use relay_support::{
-    epoch_seconds, eventually, pause_clock, real_sleep, settle, spawn_hub, spawn_hub_paused,
-    FakeDevice, Hub, Seeded, FRAME_WAIT,
+    epoch_seconds, eventually, fill_queue, pause_clock, real_sleep, settle, spawn_hub,
+    spawn_hub_paused, FakeDevice, Hub, Seeded, FRAME_WAIT,
 };
 
 /// The `hello` a link starts with, as `(role, heartbeatSeconds, deviceId)`.
@@ -740,40 +740,42 @@ async fn another_orgs_thread_is_not_found(pool: PgPool) {
     let hub = &world.hub;
     let stranger = hub.user("elsewhere", "stranger").await;
     let (stranger_mac_token, stranger_mac) = hub.enroll(&stranger, "macos", "Their Mac").await;
-    // The same ids as blove's rows: ids are only unique within an org.
+    // Ids are only unique within an org: the stranger's org has rows with blove's very ids, and
+    // one thread blove's org does not have at all.
+    hub.seed_thread(&stranger, stranger_mac, "thread-1").await;
+    hub.seed_request(&stranger, stranger_mac, "request-1", "thread-1", "pending")
+        .await;
+    hub.seed_project(&stranger, stranger_mac, "project-1").await;
     hub.seed_thread(&stranger, stranger_mac, "their-thread")
         .await;
-    hub.seed_request(
-        &stranger,
-        stranger_mac,
-        "their-request",
-        "their-thread",
-        "pending",
-    )
-    .await;
-    hub.seed_project(&stranger, stranger_mac, "their-project")
-        .await;
     let mut their_mac = FakeDevice::ready(hub.addr, &stranger_mac_token).await.0;
+    let mut mac = world.mac().await;
     let mut phone = world.phone().await;
 
-    for (method, params) in [
-        (
+    // The colliding ids resolve within blove's org, to blove's Mac, never the stranger's.
+    for method in [
+        RelayMethod::TurnInterrupt,
+        RelayMethod::RequestRespond,
+        RelayMethod::ThreadStart,
+    ] {
+        phone
+            .command(method.as_str(), method, params_for(method))
+            .await;
+        let (id, got, ..) = mac.expect_command().await;
+        assert_eq!((id.as_str(), got), (method.as_str(), method));
+        mac.reply(&id, json!({})).await;
+        assert_eq!(phone.expect_reply().await.0, method.as_str());
+    }
+    // A thread only the other org has is not found.
+    phone
+        .command(
+            "theirs",
             RelayMethod::TurnInterrupt,
             json!({"threadId": "their-thread"}),
-        ),
-        (
-            RelayMethod::RequestRespond,
-            json!({"requestId": "their-request"}),
-        ),
-        (
-            RelayMethod::ThreadStart,
-            json!({"threadId": "t", "projectId": "their-project"}),
-        ),
-    ] {
-        phone.command(method.as_str(), method, params).await;
-        let (_, error) = phone.expect_refusal().await;
-        assert_eq!(error.code, "not_found");
-    }
+        )
+        .await;
+    let (_, error) = phone.expect_refusal().await;
+    assert_eq!(error.code, "not_found");
     their_mac.expect_quiet(QUIET).await;
 }
 
@@ -1147,13 +1149,15 @@ async fn a_resend_after_hub_restart_reaches_the_mac_again(pool: PgPool) {
     let (second, ..) = mac.expect_command().await;
     assert_eq!((first.as_str(), second.as_str()), ("send-1", "send-1"));
 
-    // The Mac (which returns the turn it already made) answers, and the phone hears it.
+    // The Mac (which returns the turn it already made) answers, and the phone hears it, once.
     mac.reply("send-1", json!({"turn": {"id": "turn-1"}})).await;
     let (id, result, _) = phone.expect_reply().await;
     assert_eq!(
         (id.as_str(), result),
         ("send-1", Some(json!({"turn": {"id": "turn-1"}})))
     );
+    mac.expect_quiet(QUIET).await;
+    phone.expect_quiet(QUIET).await;
 }
 
 #[sqlx::test(migrations = false)]
@@ -1399,4 +1403,128 @@ async fn thirty_three_held_commands_overflow_to_device_offline(pool: PgPool) {
     ids.sort_by_key(|id| id[1..].parse::<u32>().unwrap());
     assert_eq!(ids, (0..32).map(|n| format!("h{n}")).collect::<Vec<_>>());
     mac.expect_quiet(QUIET).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_resend_in_flight_is_not_counted_against_the_limits(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let (cli_token, _) = world
+        .hub
+        .enroll(&world.blove, "cli", "agent-workspace")
+        .await;
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+    let mut cli = FakeDevice::ready(world.hub.addr, &cli_token).await.0;
+
+    // Nineteen sends from another device of the user, then the phone's, the twentieth of the
+    // minute, which reaches the Mac.
+    for n in 0..19 {
+        cli.command(
+            &format!("c{n}"),
+            RelayMethod::TurnSend,
+            json!({"threadId": "missing"}),
+        )
+        .await;
+        assert_eq!(cli.expect_refusal().await.1.code, "not_found");
+    }
+    let send = params_for(RelayMethod::TurnSend);
+    phone
+        .command("send-20", RelayMethod::TurnSend, send.clone())
+        .await;
+    assert_eq!(mac.expect_command().await.0, "send-20");
+
+    // The phone's link drops and it resends the same id, as it must: the window is full, but
+    // the resend attaches to the send in flight rather than being refused.
+    drop(phone);
+    let mut phone = world.phone().await;
+    phone.command("send-20", RelayMethod::TurnSend, send).await;
+    // (A new send is refused: the window really is full.)
+    phone
+        .command(
+            "send-21",
+            RelayMethod::TurnSend,
+            json!({"threadId": "missing"}),
+        )
+        .await;
+    let (id, error) = phone.expect_refusal().await;
+    assert_eq!(
+        (id.as_str(), error.code.as_str()),
+        ("send-21", "rate_limited")
+    );
+    mac.expect_quiet(QUIET).await;
+
+    // Exactly one reply for send-20: the Mac's.
+    mac.reply("send-20", json!({"turn": {"id": "turn-1"}}))
+        .await;
+    let (id, result, error) = phone.expect_reply().await;
+    assert_eq!((id.as_str(), error), ("send-20", None));
+    assert_eq!(result, Some(json!({"turn": {"id": "turn-1"}})));
+    phone.expect_quiet(QUIET).await;
+}
+
+/// The next `reply`, past any `event` (the backlog `fill_queue` left), `pong`, or `presence`.
+async fn reply_past_backlog(device: &mut FakeDevice) -> (String, Option<Value>) {
+    loop {
+        match device.next().await {
+            RelayMessage::Event { .. }
+            | RelayMessage::Pong { .. }
+            | RelayMessage::Presence { .. } => {}
+            RelayMessage::Reply { id, result, .. } => return (id, result),
+            other => panic!("expected a reply, got {other:?}"),
+        }
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_reply_waits_for_room_in_the_callers_full_queue(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+    phone
+        .command(
+            "send-1",
+            RelayMethod::TurnSend,
+            params_for(RelayMethod::TurnSend),
+        )
+        .await;
+    mac.expect_command().await;
+
+    // The phone stops reading until its queue is full, and the Mac answers meanwhile.
+    fill_queue(&world.hub.state.relay, world.phone_id).await;
+    mac.reply("send-1", json!({"turn": {"id": "turn-1"}})).await;
+    real_sleep(Duration::from_millis(500)).await;
+
+    // When it reads again (within the wait), the reply is there after the backlog.
+    let (id, result) = reply_past_backlog(&mut phone).await;
+    assert_eq!(
+        (id.as_str(), result),
+        ("send-1", Some(json!({"turn": {"id": "turn-1"}})))
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_mac_whose_queue_stays_full_is_relay_timeout_not_offline(pool: PgPool) {
+    let world = World::new(spawn_hub_paused(&pool).await).await;
+    let clock = pause_clock();
+    let _mac = world.mac().await; // links, then never reads
+    let mut phone = world.phone().await;
+    fill_queue(&world.hub.state.relay, world.mac_id).await;
+
+    phone
+        .command(
+            "send-1",
+            RelayMethod::TurnSend,
+            params_for(RelayMethod::TurnSend),
+        )
+        .await;
+    clock.advance(Duration::from_millis(4_900)).await;
+    phone.expect_quiet(QUIET).await;
+    // Five seconds without room: the Mac is online but not taking commands in time. That is a
+    // timeout, not "offline", and it comes well before the 30 s reply wait.
+    clock.advance(Duration::from_millis(105)).await;
+    let (id, error) = phone.expect_refusal().await;
+    assert_eq!(
+        (id.as_str(), error.code.as_str()),
+        ("send-1", "relay_timeout")
+    );
 }

@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
-use b4hub::relay::{Relay, WallClock};
+use b4hub::relay::{Relay, SendError, WallClock};
 use b4hub::serve::{self, AppState};
 use b4hub_core::relay::{RelayMessage, RelayMethod, WireError};
 use b4hub_db::{devices, orgs, Db};
@@ -108,6 +108,30 @@ impl PausedClock {
         settle().await;
         tokio::time::advance(by).await;
     }
+}
+
+/// Fills `device_id`'s outbound queue and keeps it full: queues 16 KiB `event` frames until the
+/// device's socket stops taking them (the device is not reading) and the queue stays full across
+/// two pauses of real time. The device later reads them as `event` frames.
+pub async fn fill_queue(relay: &Relay, device_id: Uuid) {
+    let frame = RelayMessage::Event {
+        event: serde_json::json!({ "kind": "padding", "pad": "x".repeat(16 * 1024) }),
+    };
+    let still_full = || relay.send(device_id, frame.clone()) == Err(SendError::Full);
+    assert!(relay.online(device_id), "the device has no link");
+    for _ in 0..200 {
+        // Fill the queue in one go (the link task cannot run meanwhile), then give the link a
+        // moment: if it could not drain a single frame, twice, its socket is blocked.
+        while relay.send(device_id, frame.clone()).is_ok() {}
+        real_sleep(Duration::from_millis(200)).await;
+        if still_full() {
+            real_sleep(Duration::from_millis(200)).await;
+            if still_full() {
+                return;
+            }
+        }
+    }
+    panic!("the queue never stayed full");
 }
 
 // ---- the hub ---------------------------------------------------------------------------------

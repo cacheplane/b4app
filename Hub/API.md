@@ -547,7 +547,7 @@ checks, in this order:
 
 1. **Role and method.** A `command` from a host link, or with a method outside the five, is
    `not_found` (a host never sends commands; an unknown method answers by the frame's `id`).
-2. **Limits.** A client device may send 60 commands a minute (a sliding window), in bursts of at
+2. **Limits.** (A resend of a command still in flight is not counted; see *In flight*.) A client device may send 60 commands a minute (a sliding window), in bursts of at
    most 20 (after a burst, one a second). A user's `turn.send` and `thread.start` together are
    limited to 20 a minute across all of their devices. Over a limit the answer is `rate_limited`
    with `details.retryAfterMs`. A command refused by the user's limit still counts toward the
@@ -561,8 +561,9 @@ checks, in this order:
 5. **Delivery.**
    - **Owner online:** the command is forwarded with `deadline` (the hub's time plus 10 seconds,
      RFC 3339 in UTC with milliseconds; the Mac drops a command past it and answers
-     `command_expired`) and `from` (the calling device's id and name). If the Mac's link cannot
-     take it (it dropped meanwhile, or its queue is full) the answer is `device_offline`.
+     `command_expired`) and `from` (the calling device's id and name). If the Mac's link dropped
+     meanwhile the answer is `device_offline`; if its outbound queue stays full for 5 seconds the
+     answer is `relay_timeout` (the Mac is online but not taking frames in time).
    - **Owner offline, `turn.send`, `thread.start`, or `turn.lookup`:** `device_offline` at once,
      with `details: { deviceId, deviceName, lastSeenAt }` (`lastSeenAt` omitted for a Mac never
      seen). These are never held.
@@ -575,12 +576,14 @@ checks, in this order:
    `thread.start`, 15 seconds for the others (counted from when it was forwarded), then answers
    `relay_timeout`. A `reply` that arrives later, or for an `id` nothing waits for, is dropped.
 
-**In flight.** A command is in flight from when it passes the limits until it is answered, keyed by
-the calling *device* and the `id`. A second command with the same key while the first is in flight
-attaches to it: it is not forwarded again, and the device gets one `reply`. The answer goes to the
-calling device's link as it is when the answer is ready, so a phone that links again mid-command
-gets the reply on its new link; a device with no link then misses it (the phone settles a send
-with `turn.lookup`). The map lives in memory: after a hub restart, a resend of the same `id` is
+**In flight.** A command is in flight from when it arrives (before the limits) until its answer is
+queued for the caller, keyed by the calling *device* and the `id`. A second command with the same
+key while the first is in flight attaches to it: it is not counted against the limits, not
+forwarded again, and the device gets one `reply`. The answer goes to the calling device's link as
+it is when the answer is ready, so a phone that links again mid-command gets the reply on its new
+link. If the caller's outbound queue is full, the reply waits up to 5 seconds for room (it is
+never dropped for a momentarily full queue, unlike `event` frames); a device with no link, or
+whose queue stays full that long, misses it (the phone settles a send with `turn.lookup`). The map lives in memory: after a hub restart, a resend of the same `id` is
 forwarded to the Mac again, and the Mac recognises it.
 
 **A thread just started.** When the hub forwards `thread.start`, it remembers for 5 minutes that
@@ -600,7 +603,7 @@ its params, its result, or a token.
 | `rate_limited` | a limit (step 2); `details.retryAfterMs` |
 | `stale_runtime_request` | step 4 |
 | `device_offline` | step 5; `details: { deviceId, deviceName, lastSeenAt? }` |
-| `relay_timeout` | step 6 |
+| `relay_timeout` | step 6, or step 5 when the Mac's queue stays full for 5 seconds |
 | `internal_error` | the hub could not read the database to route the command |
 
 ### Close codes

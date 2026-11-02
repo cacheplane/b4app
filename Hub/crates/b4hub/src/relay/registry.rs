@@ -87,7 +87,8 @@ impl Close {
 pub enum SendError {
     /// The device has no link.
     Offline,
-    /// The link's outbound queue holds [`LINK_QUEUE`] frames.
+    /// The link's outbound queue holds [`LINK_QUEUE`] frames (for [`Relay::send_wait`]: and kept
+    /// holding them for the whole wait).
     Full,
 }
 
@@ -300,6 +301,34 @@ impl Relay {
             .try_send(message)
     }
 
+    /// Queues `message` for `device_id`'s current link, waiting up to `bound` for room in its
+    /// queue: for frames that must not be dropped (commands and replies). If that link closes
+    /// meanwhile and the device has linked again, the newer link gets it. `Offline` when the
+    /// device has no link; `Full` when its queue stayed full for `bound`.
+    pub async fn send_wait(
+        &self,
+        device_id: Uuid,
+        message: RelayMessage,
+        bound: Duration,
+    ) -> Result<(), SendError> {
+        let until = Instant::now() + bound;
+        let mut message = message;
+        let mut tried = None;
+        loop {
+            let handle = self.handle(device_id).ok_or(SendError::Offline)?;
+            if tried == Some(handle.generation) {
+                return Err(SendError::Offline);
+            }
+            tried = Some(handle.generation);
+            match tokio::time::timeout_at(until, handle.tx.send(message)).await {
+                Ok(Ok(())) => return Ok(()),
+                // That link is gone; try the device's current one, if it has a newer one.
+                Ok(Err(mpsc::error::SendError(back))) => message = back,
+                Err(_) => return Err(SendError::Full),
+            }
+        }
+    }
+
     /// The client links of `user_id`: who is told when one of the user's Macs goes on or offline.
     /// A scan of every link, which is fine for the handful a hub carries.
     pub fn presence_subscribers(&self, user_id: Uuid) -> Vec<LinkHandle> {
@@ -479,6 +508,36 @@ mod tests {
         assert_eq!(relay.send(device, RelayMessage::Ping), Err(SendError::Full));
         assert_eq!(link.outbound.try_recv().unwrap(), RelayMessage::Ping);
         relay.send(device, RelayMessage::Ping).unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn send_wait_waits_for_room_and_gives_up_after_its_bound() {
+        let relay = Relay::new();
+        let device = Uuid::from_u128(1);
+        let bound = Duration::from_secs(5);
+        assert_eq!(
+            relay.send_wait(device, RelayMessage::Ping, bound).await,
+            Err(SendError::Offline)
+        );
+        let mut link = relay.register(identity(1, Role::Client));
+        for _ in 0..LINK_QUEUE {
+            relay.send(device, RelayMessage::Ping).unwrap();
+        }
+        // A slot frees after 2 s: the frame waits for it rather than being dropped.
+        let waiting = tokio::spawn({
+            let relay = relay.clone();
+            async move { relay.send_wait(device, RelayMessage::Ping, bound).await }
+        });
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        link.outbound.recv().await.unwrap();
+        assert_eq!(waiting.await.unwrap(), Ok(()));
+        // A queue that stays full for the bound is `Full`.
+        let started = Instant::now();
+        assert_eq!(
+            relay.send_wait(device, RelayMessage::Ping, bound).await,
+            Err(SendError::Full)
+        );
+        assert_eq!(started.elapsed(), bound);
     }
 
     #[test]

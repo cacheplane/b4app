@@ -4,7 +4,8 @@
 //! For each command, [`handle_command`] applies, in order:
 //!
 //! 1. the role (only a client link sends commands) and the method (an allowlist; an unknown one
-//!    never decodes, and [`unknown_command`] answers it), then the rate limits;
+//!    never decodes, and [`unknown_command`] answers it), then the in-flight check, then the rate
+//!    limits;
 //! 2. the lookup of the thread, the runtime request's thread, or the project, within the caller's
 //!    org and user (a thread started moments ago through this hub is found in the pending-thread
 //!    map first); a miss is `not_found`;
@@ -16,10 +17,10 @@
 //!    was last heard from) and is otherwise `device_offline`;
 //! 6. the wait for the reply, or `relay_timeout`.
 //!
-//! A command is in flight from the moment it passes the limits until it is answered, keyed by the
-//! caller *device* and the command `id`: a second command with the same key attaches to the first
-//! (it is not forwarded again), and the answer goes to whatever link the caller device has when it
-//! arrives. Nothing here is stored; a hub restart forgets it all, and the phone's resend of the same
+//! A command is in flight from the moment it arrives until its answer is queued for the caller,
+//! keyed by the caller *device* and the command `id`: a second command with the same key attaches
+//! to the first (it is neither counted against the limits nor forwarded again), and the answer goes
+//! to whatever link the caller device has when it is ready. Nothing here is stored; a hub restart forgets it all, and the phone's resend of the same
 //! `id` is then forwarded afresh (the Mac recognises the id).
 //!
 //! The hub logs each command's method, outcome, and latency, never its params or result.
@@ -40,8 +41,12 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use super::limits::{RateWithBurst, SlidingWindow, COMMAND_WINDOW, STARTS_PER_WINDOW};
-use super::{rfc3339_millis, LinkHandle, Relay};
+use super::{rfc3339_millis, LinkHandle, Relay, SendError};
 use crate::error::relay_code;
+
+/// How long a command or a reply waits for room in a full outbound queue before it is given up:
+/// a command to a Mac is then `relay_timeout`, and a reply to a client is dropped.
+pub const QUEUE_WAIT: Duration = Duration::from_secs(5);
 
 /// The reused codes a command can be refused with besides the relay's own (`relay_code`).
 pub mod code {
@@ -257,9 +262,22 @@ pub async fn handle_command(
     params: Value,
 ) {
     let started = Instant::now();
-    let Some(answer) = route(relay, db, caller, &id, method, params).await else {
-        tracing::info!(method = method.as_str(), outcome = "attached", "command");
-        return;
+    // A client's command is claimed before anything else, the limits included: a resend of one in
+    // flight attaches to it and is not counted. The claim is held until the answer has been handed
+    // to the caller's link, so a resend in that gap attaches too, and the caller gets one reply.
+    let claim = match caller.role {
+        Role::Client => match Claim::take(relay.commands(), caller.device_id, &id) {
+            Some(claim) => Some(claim),
+            None => {
+                tracing::info!(method = method.as_str(), outcome = "attached", "command");
+                return;
+            }
+        },
+        Role::Host => None,
+    };
+    let answer = match &claim {
+        Some(claim) => route(relay, db, caller, claim, &id, method, params).await,
+        None => Answer::refused(not_found()),
     };
     let outcome = answer
         .error
@@ -268,15 +286,21 @@ pub async fn handle_command(
     let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     tracing::info!(method = method.as_str(), outcome, latency_ms, "command");
     // The caller may have linked again meanwhile; then the answer goes to the new link. A caller
-    // with no link misses it and settles the command another way (the phone's `turn.lookup`).
-    let _ = relay.send(
-        caller.device_id,
-        RelayMessage::Reply {
-            id,
-            result: answer.result,
-            error: answer.error,
-        },
-    );
+    // with no link, or whose queue stays full for `QUEUE_WAIT`, misses it and settles the command
+    // another way (the phone's `turn.lookup`).
+    let reply = RelayMessage::Reply {
+        id,
+        result: answer.result,
+        error: answer.error,
+    };
+    if relay
+        .send_wait(caller.device_id, reply, QUEUE_WAIT)
+        .await
+        .is_err()
+    {
+        tracing::info!(method = method.as_str(), "command reply not delivered");
+    }
+    drop(claim);
 }
 
 /// A host's `reply`: answers the commands `id` forwarded to it that are still waiting. A reply
@@ -314,29 +338,23 @@ pub fn unknown_command(text: &str) -> Option<RelayMessage> {
     })
 }
 
-/// `None` when the command attached to one already in flight, which will be answered instead.
+/// A claimed client command, from the limits on.
 async fn route(
     relay: &Relay,
     db: &Db,
     caller: &LinkHandle,
+    claim: &Claim<'_>,
     id: &str,
     method: RelayMethod,
     params: Value,
-) -> Option<Answer> {
-    if caller.role != Role::Client {
-        return Some(Answer::refused(not_found()));
-    }
-    let commands = relay.commands();
-    if let Err(wait) = commands.check_limits(caller, method) {
+) -> Answer {
+    if let Err(wait) = relay.commands().check_limits(caller, method) {
         tracing::warn!(device = %caller.device_id, method = method.as_str(), "command rate limit hit");
-        return Some(Answer::refused(rate_limited(wait)));
+        return Answer::refused(rate_limited(wait));
     }
-    let claim = Claim::take(commands, caller.device_id, id)?;
-    Some(
-        deliver(relay, db, caller, &claim, id, method, params)
-            .await
-            .unwrap_or_else(Answer::refused),
-    )
+    deliver(relay, db, caller, claim, id, method, params)
+        .await
+        .unwrap_or_else(Answer::refused)
 }
 
 async fn deliver(
@@ -484,10 +502,15 @@ async fn forward(
             name: caller.name.clone(),
         }),
     };
-    // Offline (it dropped since we looked) or a full queue: either way it did not reach the Mac.
+    // A Mac with no link (it dropped since we looked) is offline. One whose queue stays full is
+    // online but not answering in time.
     relay
-        .send(owner.device_id, command)
-        .map_err(|_| device_offline(owner))?;
+        .send_wait(owner.device_id, command, QUEUE_WAIT)
+        .await
+        .map_err(|error| match error {
+            SendError::Offline => device_offline(owner),
+            SendError::Full => relay_timeout(),
+        })?;
     if let Some(thread_id) = started_thread {
         relay
             .commands()
