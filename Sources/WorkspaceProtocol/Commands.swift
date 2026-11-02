@@ -47,6 +47,8 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case projectRename = "project.rename"
   case projectDelete = "project.delete"
   case threadMarkRead = "thread.markRead"
+  case usageRead = "usage.read"
+  case connectionUpdate = "connection.update"
 
   public var isMutation: Bool {
     switch self {
@@ -57,11 +59,11 @@ public enum Method: String, Codable, Sendable, CaseIterable {
       .serverStop, .serverInspect, .workspaceStopLocalWork, .workspaceReconcile, .databaseBackup,
       .databaseRestore,
       .databaseImportSQLite, .hubJoin, .hubLeave, .projectCreate, .projectUpdate, .projectRename,
-      .projectDelete, .threadMarkRead:
+      .projectDelete, .threadMarkRead, .connectionUpdate:
       return true
     case .systemPing, .diagnosticsRead, .connectionList, .threadList, .draftRead, .eventsSnapshot,
       .eventsReplay, .threadRead, .serverList, .serverStatus, .serverLogs, .workspaceActiveWork,
-      .databaseStatus, .hubStatus, .projectList:
+      .databaseStatus, .hubStatus, .projectList, .usageRead:
       return false
     }
   }
