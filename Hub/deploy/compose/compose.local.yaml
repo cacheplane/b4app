@@ -1,0 +1,8 @@
+# Overlay for operators who terminate TLS elsewhere on the same host: publishes the hub on this
+# machine's loopback only. `hub` itself in compose.yaml stays unpublished.
+#   docker compose -f compose.yaml -f compose.local.yaml up -d
+# or set COMPOSE_FILE=compose.yaml:compose.local.yaml in .env.
+services:
+  hub:
+    ports:
+      - "127.0.0.1:${B4HUB_LOCAL_PORT:-8080}:8080"

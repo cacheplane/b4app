@@ -138,6 +138,8 @@ struct AttentionDot: View {
   let band: AttentionBand
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var dim = false
+  /// 8 pt at the default size; it grows with the row's text so it stays legible beside it.
+  @ScaledMetric(relativeTo: .body) private var size: CGFloat = 8
 
   /// The lowest opacity of a working ring. A working ring (ink, 8 pt, 1.5 pt stroke) must never read
   /// paler than a quiet ring (muted, 6 pt, 1 pt stroke), so the pulse stops well short of faint.
@@ -160,10 +162,10 @@ struct AttentionDot: View {
       case .working:
         Circle().strokeBorder(LLA.Color.ink, lineWidth: 1.5).opacity(pulses && dim ? Self.pulseFloor : 1)
       case .quiet:
-        Circle().strokeBorder(LLA.Color.muted, lineWidth: 1).frame(width: 6, height: 6)
+        Circle().strokeBorder(LLA.Color.muted, lineWidth: 1).frame(width: size * 0.75, height: size * 0.75)
       }
     }
-    .frame(width: 8, height: 8)
+    .frame(width: size, height: size)
     // Keyed by whether the dot pulses, not by appearance: a row keeps its identity when its band
     // changes in place, and Reduce Motion can change while it is on screen. Each change resets the
     // phase first, so a ring that goes working, quiet, working starts again at full opacity.
@@ -193,6 +195,7 @@ struct ThreadRow: View {
   @State private var renaming = false
   @State private var newTitle = ""
   @Environment(\.showDetail) private var showDetail
+  @Environment(\.dynamicTypeSize) private var typeSize
 
   var body: some View {
     let band = model.band(of: thread)
@@ -207,27 +210,30 @@ struct ThreadRow: View {
     } label: {
       HStack(spacing: LLA.Space.s) {
         AttentionDot(band: band)
+        Text(thread.title.isEmpty ? "Untitled" : thread.title)
+          .font(loud ? LLAFont.rowStrong : LLAFont.row)
+          .foregroundStyle(LLA.Color.ink)
+          .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
+        Spacer(minLength: LLA.Space.s)
         #if os(iOS)
+          // Trailing, beside the mark, so every title starts on the same edge.
           if thread.pinned {
             Image(systemName: "pin.fill").font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
+              .accessibilityHidden(true)
           }
         #endif
-        Text(thread.title.isEmpty ? "Untitled" : thread.title)
-          .font(loud ? LLAFont.smallStrong : LLAFont.small)
-          .foregroundStyle(LLA.Color.ink)
-          .lineLimit(1)
-        Spacer(minLength: LLA.Space.s)
         if let kind = model.connection(id: thread.connectionId)?.kind { RuntimeMark(kind: kind) }
       }
       .padding(.horizontal, 10)
       .padding(.vertical, 6)
+      .frame(minHeight: LLA.Metrics.row)
       .background(
         RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
           .fill(selected ? LLA.Color.surfaceRaised : .clear)
       )
       .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.llaRow)
     .accessibilityIdentifier("thread-row")
     .accessibilityValue(model.threadState(thread).rawValue)
     .accessibilityLabel(Self.accessibilityLabel(model: model, thread: thread))
@@ -357,6 +363,7 @@ struct FlatThreadList: View {
     List { FlatThreadRows(model: model) }
       .listStyle(.plain)
       .scrollContentBackground(.hidden)
+      .environment(\.defaultMinListRowHeight, LLA.Metrics.row)
   }
 }
 

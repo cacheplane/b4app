@@ -82,6 +82,42 @@ import Testing
     _ = LLAFont.mono(13, weight: .semibold)
   }
 
+  @Test func phoneTypeScaleMeetsTheHIG() {
+    // D-060: the phone starts each role at its iOS text style's default size, never under Apple's
+    // 11 pt floor, with body at the system's 17 pt; the Mac keeps D-036's desktop scale.
+    let phone = LLATypeScale.phone
+    #expect(phone.body == 17 && phone.row == 17 && phone.button == 17)
+    #expect(phone.small == 15 && phone.caption == 12 && phone.title == 20 && phone.display == 28)
+    #expect(phone.all.allSatisfy { $0 >= 11 })
+    #expect(LLATypeScale.mac.body == 15 && LLATypeScale.mac.row == 13 && LLATypeScale.mac.button == 13)
+    // Each phone role is at least the Mac's: the phone never reads smaller than the desktop.
+    #expect(zip(phone.all, LLATypeScale.mac.all).allSatisfy { $0 >= $1 })
+    // This test target runs on the Mac, so the desktop scale and metrics are the ones in use.
+    #expect(LLAFont.scale == .mac)
+    #expect(LLA.Metrics.row == 0 && LLA.Metrics.margin == LLA.Space.xl && LLA.Metrics.control == 30)
+  }
+
+  @Test func composerChoosesLineOrBox() {
+    // D-061: one line only on a wide screen, for a draft that fits beside the 32 pt button with no
+    // line break, and never at an accessibility size. A 400 pt field leaves 400 - 16 - 8 - 32 - 6.
+    let room: CGFloat = 400 - 16 - 8 - 32 - 6
+    func shape(
+      wide: Bool = true, ax: Bool = false, draft: String = "Ship it", width: CGFloat
+    ) -> ComposerView.Shape {
+      ComposerView.shape(wide: wide, accessibilitySize: ax, draft: draft, draftWidth: width, fieldWidth: 400)
+    }
+    #expect(shape(width: room) == .line)
+    #expect(shape(width: room + 1) == .box)
+    #expect(shape(wide: false, width: 10) == .box)
+    #expect(shape(ax: true, width: 10) == .box)
+    #expect(shape(draft: "two\nlines", width: 10) == .box)
+    #expect(
+      ComposerView.shape(wide: true, accessibilitySize: false, draft: "", draftWidth: 50, fieldWidth: 0)
+        == .line)
+    // The button is concentric with the 44 pt line's corner: equal gaps on every side it touches.
+    #expect(ComposerView.inset * 2 + ComposerView.control == ComposerView.line)
+  }
+
   @Test func contrast() {
     // `ghost` is exempt from the 3:1 graphics floor: the runtime marks it draws are supplementary,
     // and the row's accessibility label names the runtime.

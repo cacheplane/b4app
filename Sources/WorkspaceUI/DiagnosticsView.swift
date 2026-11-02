@@ -12,7 +12,7 @@ struct DiagnosticsView: View {
         }
         if let report = model.diagnostics {
           LLASectionHead("Coordinator")
-          Grid(alignment: .leading, horizontalSpacing: LLA.Space.l, verticalSpacing: LLA.Space.xs) {
+          LLAFacts {
             row("Version", "\(report.coordinator.version) (pid \(report.coordinator.pid))")
             row("Started", report.coordinator.startedAt)
             row("Epoch", "\(report.coordinator.epoch) @ \(report.coordinator.sequence)", mono: true)
@@ -22,7 +22,7 @@ struct DiagnosticsView: View {
           }
           if let sync = report.sync {
             LLASectionHead("Sync").padding(.top, LLA.Space.l)
-            Grid(alignment: .leading, horizontalSpacing: LLA.Space.l, verticalSpacing: LLA.Space.xs) {
+            LLAFacts {
               row("Hub", sync.hubURL, mono: true)
               row("Device", sync.deviceName)
               row("Cursor", "\(sync.cursor)", mono: true)
@@ -69,7 +69,7 @@ struct DiagnosticsView: View {
           Text(model.link == .ready ? "Loading…" : "Waiting for the coordinator.").llaMuted()
         }
       }
-      .padding(LLA.Space.xl)
+      .padding(LLA.Metrics.margin)
       .frame(maxWidth: 820, alignment: .leading)
       .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -91,8 +91,7 @@ struct DiagnosticsView: View {
   }
 
   @ViewBuilder private func row(_ label: String, _ value: String, mono: Bool = false) -> some View {
-    GridRow {
-      Text(label).llaSmallMuted()
+    LLAFact(label) {
       Group {
         if mono { Text(value).llaCodeMuted().foregroundStyle(LLA.Color.ink) } else { Text(value).llaSmall() }
       }

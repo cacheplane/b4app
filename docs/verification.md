@@ -17,6 +17,90 @@ Run from `blove/sign-in` on macOS 26.5. Nothing was signed with a Developer ID i
 
 Open: a Developer ID package of any flavour. It needs profiles regenerated with Associated Domains (all flavours, app profile) and new App IDs for beta and local (`~/.b4app/signing/{app,coordinator}-{beta,local}.provisionprofile`), so `codesign -d --entitlements -` on a signed local package, listing the associated domain and both keychain groups, is not yet run. The checks that match profile contents against the flavour were exercised only with hand-written profiles, not Apple-issued ones.
 
+## 2026-11-02: Hosted hubs (D-068 to D-072)
+
+Implementation is on `blove/cloud-hub-deployment-arch-4b6348`; nothing has been applied to AWS, because the owner has not created the AWS Organization or the two accounts. The gates are the eight in `docs/deployment-architecture.md` ("Verification gates"), plus 2b (the 9 MiB push through the WAF). Each is `passed` (with evidence), `pending` (with the step that produces the evidence and what it must show), or owned by another project. A gate that needs a live hub is never `passed` from a mock.
+
+| Gate | Status | Evidence, or what will close it |
+| --- | --- | --- |
+| 1. Both accounts bootstrapped; `terraform plan` from a PR is clean and read-only; `apply` from `main` reaches test with no human step | pending | Needs the owner's accounts. Close with the "Bootstrap runbook" in `Infra/README.md` for both accounts, then the first apply; it must show a `plan` comment on a PR with no changes after the apply, and an `infra.yml` run on `main` whose `apply-test` job runs with no approval. Offline only: `terraform fmt`, `validate` of the roots, `tflint`, and `terraform test` with mocked providers (bootstrap 9 passed, hub module 49 passed). No plan or apply has run. |
+| 2. A merge to `main` produces a multi-arch image on GHCR with attestations; the test hub serves that digest within 15 minutes; the migration task's log shows the migration list | image half passed, deploy half pending | Image half, 2026-11-02: the `hub-image.yml` dry run on the branch (a temporary push trigger, since dispatch needs the file on the default branch), https://github.com/cacheplane/b4app/actions/runs/41378882037, all jobs green (`changed`, `build` on amd64 and arm64, `merge`, `check`); the index `sha256:e133ca31...ac82` lists `linux/amd64`, `linux/arm64`, and two attestation manifests; `gh attestation verify oci://ghcr.io/cacheplane/b4hub@sha256:<digest> -R cacheplane/b4app` exited 0; `Hub/scripts/check-image.sh` passed (Task 2 report). Deploy half: after runbook 4 ("First deploy") the `deploy-test` job must show the pushed digest, the log group `/b4hub/test/migrate` must list the migrations, and `https://hub.test.b4.run/readyz` must report `"migrations":"current"` within 15 minutes of the merge. The deploy scripts pass bats (39 tests in `Infra/scripts/tests`, re-run 2026-11-02) against stub `aws`, `docker`, and `curl` only; nothing has run against AWS. |
+| 2b. A 9 MiB `POST /v1/changes` from the Mac client through the WAF is accepted | pending | Needs the test hub and its WAF (D-071: no body-inspecting managed rule group). Close by pushing a 9 MiB batch from the Mac client to `https://hub.test.b4.run/v1/changes`; it must be accepted (200), with no WAF block in the web ACL's sampled requests. |
+| 3. A `hub-v*` release deploys production after the owner's approval; a `mac-v*` release deploys nothing | pending | Needs production and the `production` GitHub Environment. Close by publishing `hub-v0.1.0`: the `deploy` job of `hub-release.yml` must wait for the Environment approval and then deploy the release digest; a `mac-v*` release must show that job (and `promote`) skipped. Offline: `.github/scripts/test-tag-guard.sh` and `actionlint` run in CI's lint job. |
+| 4. Sign in with a passkey against `hub.test.b4.run`, pair, and run a relayed turn from a packaged Mac app and a TestFlight iPhone | owned by the sign-in project and M8c | Those projects' live gates, run against this hub once gates 1 and 2 pass. Not run. |
+| 5. A deploy during an open WebSocket: the phone reconnects within the backoff window and no change is lost | pending, needs M8c | The relay's WebSocket is M8c, which is not merged. Close after M8c: hold a phone session open, deploy a digest (runbook 5), and compare the device's cursor before and after; it must reconnect inside the backoff and the cursor must be unchanged. |
+| 6. `aws ecs stop-task` by hand: the alarm fires, Better Stack pages, ECS replaces the task | pending | Needs the test hub, the confirmed SNS email, and the Better Stack monitor. Close by stopping the test task (runbook 9, "Incident basics", for the commands and first look); expect the running-tasks alarm email, the Better Stack phone page, and a replacement task healthy on `/readyz`. |
+| 7. Restore drill, once end to end in the test account | pending | Needs the test database. Close with runbook 8 ("Restore drill"); it must end with the drill's own verification step passing and the scratch instance removed. |
+| 8a. `docker compose --profile tls up` from the self-hosting docs on a clean VM reaches `/readyz` | partly passed | `Hub/deploy/compose/test.sh` passed on the build Mac against the locally built image (`b4hub:check`): `readyz` reported `"migrations":"current"`, the `migrate` service exited 0, and teardown removed the containers, volume, and network (Task 11 report). That is the first-boot path on a Mac, not a clean VM, and not the `tls` profile. The CI `compose-smoke` job in `hub-image.yml` exists but has not run on `main`. Close by running `test.sh` on a clean Linux VM, then the `tls` profile there with a real hostname. |
+| 8b. `helm install` of the chart on kind with a CloudNativePG cluster reaches `/readyz`; the hook Job shows the migration | passed | `hub-chart.yml` on GitHub, 2026-11-02: https://github.com/cacheplane/b4app/actions/runs/41389901877 (push) and https://github.com/cacheplane/b4app/actions/runs/41390300766 (dispatch), lint and install green: kind v0.31.0 on node v1.31.14, CloudNativePG chart 0.29.1, both migrate hook Jobs `Completed`, `applied migrations: 3`, `/readyz` reported `"migrations":"current"`, the upgrade moved the Deployment from revision 1 to 2, and uninstall left nothing behind. The image was `ghcr.io/cacheplane/b4hub:blove-cloud-hub-deployment-arch-4b6348`. The same script passed locally (kind 0.32.0). A dispatch with the default `image_tag=main` (https://github.com/cacheplane/b4app/actions/runs/41389942642) failed fast on `:main: not found`: no `main` image exists until `hub-image.yml` runs on `main`, a bootstrap condition and not a chart fault. Not covered: publishing the chart to GHCR (skipped in every run; it happens on a `hub-v*` release). |
+
+Static checks run in CI and locally: `actionlint`, `shellcheck` over the deploy and chart scripts, `helm lint --strict`, `helm unittest` (47 tests), `ct lint`, and `kubeconform` for five value variants against Kubernetes 1.31.0.
+
+### Owner steps outstanding
+
+Every pending gate above waits on these (details in `Infra/README.md`). None is recorded as done.
+
+1. Create the AWS Organization and the test and production accounts.
+2. Bootstrap both accounts (runbook 1, "Bootstrap runbook").
+3. Add repository variables: `AWS_ROLE_PLAN_*`, `AWS_ROLE_INFRA_*`, `AWS_ROLE_DEPLOY_*`, `TFSTATE_KMS_KEY_ARN_*` (`TEST` and `PROD`), and `B4HUB_ALARM_EMAIL`.
+4. Create the `production` GitHub Environment (required reviewer: the owner; deployment branches and tags: `main` and `hub-v*`). Create none for test.
+5. Make the GHCR package `ghcr.io/cacheplane/b4hub` public.
+6. Add the Vercel CNAMEs (`hub.test.b4.run`, `hub.b4.run`) and the ACM validation records the first apply prints.
+7. Set the database owner and sign-in secrets (runbooks 2 and 3).
+8. Flip `desired_count` from 0 to 1 in each env root after the first deploy (runbook 4).
+9. Create the Better Stack monitors on both `/readyz` URLs with phone escalation and the status page at `status.b4.run` (a Vercel CNAME); confirm the SNS subscription email; subscribe to the AWS Health Dashboard, GitHub status, and Apple status.
+10. Set the repository variable `HUB_GHCR_CLEANUP_LIVE=true` after one dry run of `hub-ghcr-cleanup.yml`.
+
+## 2026-11-01: iPhone follow-ups (D-060, fixture gates and Simulator)
+
+Run from `blove/iphone-hig-followups` (on `main` at `4552bdb`) on macOS 26.5 with Xcode 26.6, iPhone 17 Pro Simulator (iOS 26.5).
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Lint | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Clean |
+| Tests | `swift test` | 573 tests in 99 suites pass |
+| Mac app | `xcodebuild build … -scheme B4App-macOS -destination 'platform=macOS'` | `** BUILD SUCCEEDED **` |
+| iPhone app | `xcodebuild build … -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'` | `** BUILD SUCCEEDED **` |
+| Read-only Settings | Simulator: Settings › Connections and › Local servers | Connections shows its two cards with status and account only, and the sentence about the Mac; no Add section, Check, Sign in, or Re-check runtimes. Local servers shows the sentence and "No projects registered on your Mac."; no Add a project or server controls |
+| Titles follow the text size | `xcrun simctl ui <udid> content_size accessibility-extra-large`, then `large`, with the screen open | The open Connections large title grew in place; a thread's inline title measured 140.7 pt wide at Large, 166.0 pt at AX3, and 140.7 pt again after switching back, without leaving the screen |
+
+`docs/screenshots/ios-hig-followups.png`. The Mac's pages are unchanged (`WorkspaceDevice.managesWorkspace` is true there; the server controls moved into a property, same views).
+
+## 2026-11-01: Composer (D-061, fixture gates, Simulator, and Mac snapshots)
+
+Run from `blove/ios-mobile-fit` after the merge of `main` (#31) on macOS 26.5 with Xcode 26.6, iPhone 17 Pro Simulator (iOS 26.5).
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Lint | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Clean |
+| Tests | `swift test` | 573 tests in 99 suites pass, including `ThemeTests.composerChoosesLineOrBox`. The first run failed `DetailMinimumSizeTests` (the Mac detail's minimum height 1317 pt against 548): the turn caption above the field wrapped a character per line at zero width; it is two lines at most on the Mac now |
+| Mac app | `xcodebuild build … -scheme B4App-macOS -destination 'platform=macOS'` | `** BUILD SUCCEEDED **` |
+| iPhone app | `xcodebuild build … -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'` | `** BUILD SUCCEEDED **` |
+| Phone geometry | 3x screenshots scanned pixel by pixel | Box with one line 74.3 pt tall; send 32 pt, 6.0 pt from the trailing and bottom edges; text 16 pt in, its cap-height centre 21.5 pt from the top (22 is the centre of a 44 pt line); three lines 116 pt, the fourth scrolls |
+| Mac geometry | `B4APP_SNAPSHOT_DIR=… swift test --filter SnapshotTests`, 2x | One-line capsule 44 pt; stop 32 pt, 6 pt from the top, trailing, and bottom edges; text 16 pt in, cap centre at 21.3. The first capture showed flattened capsule ends (continuous corners); circular corners fixed it |
+| Behaviour | Simulator | Typing grows the field a line at a time to three, then scrolls; Return adds a line; the field rides 8 pt above the on-screen keyboard; the caret is cobalt; the transcript scrolls under the field behind the soft edge; at AX3 the button grows to 48 pt and stays concentric; dark mode reads on the theme's surface and rule |
+
+`docs/screenshots/composer.png` shows the phone empty, at three lines, with the keyboard, and at AX3 in dark, and the Mac's line. Open: the iPad's one-line shape was checked through the Mac (the same code path); no iPad Simulator is enrolled with the hub. Test drafts typed on the phone were cleared afterwards.
+
+## 2026-11-01: iPhone sizes, targets, and accessibility text sizes (D-060, fixture gates and Simulator)
+
+Run from `blove/ios-mobile-fit` (on `main` at `2e05bad`) on macOS 26.5 with Xcode 26.6; the iPhone 17 Pro Simulator (iOS 26.5) showed the mirror of the Mac's threads through the local Compose hub.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Lint | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Clean |
+| Tests | `swift test` | 572 tests in 99 suites pass |
+| Mac app | `xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'platform=macOS'` | `** BUILD SUCCEEDED **` |
+| iPhone app | `xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'` | `** BUILD SUCCEEDED **` |
+| Mac unchanged | `B4APP_SNAPSHOT_DIR=$TMPDIR/b4snap swift test --filter SnapshotTests` | The sidebar, profile menu, and Settings pages draw at the desktop scale as before (by eye) |
+| Phone, default size | Simulator build with team `GJJKL34HCT`, `xcrun simctl ui <udid> content_size large`, screenshots before (`main`) and after | `docs/screenshots/ios-hig-default.png`. Sidebar and thread rows measured 28 pt tall on a 52 pt pitch before and 44 pt on a 44 pt pitch after (selection highlight, 3x screenshot); profile-menu items 28 to 44 pt; body text 15 to 17 pt; one title on the thread instead of two |
+| Phone, AX3 | `content_size accessibility-extra-large` | `docs/screenshots/ios-hig-ax3.png`. Before: symbols ran into labels, the avatar and marks stayed small, "completed" broke inside its badge, the command title truncated to "/b…md'". After: titles wrap, the card and header stack, Diagnostics and Connections read label above value, Send drops below the editor |
+| Hit regions | Taps 3 pt inside a thread row's top edge on its empty right side, and on a transcript card's padding | The row opened its thread; the card toggled Show/Hide |
+
+Design review (same branch, after the first gates): New thread, Search, the More menu, Settings, and Connections were added to the pass, in light and dark (`xcrun simctl ui <udid> appearance dark`) and at AX3. The fixes are listed under D-060; `docs/screenshots/ios-hig-review.png` shows New thread before and after and the dark Settings and Connections pages. Gates rerun after the fixes: lint clean, `swift test` 572 tests in 99 suites pass, both app builds succeed, the 7 Mac `SnapshotTests` pass. The Hanken navigation titles are computed when the app starts, so a text-size change while it runs takes effect at the next launch (system inline titles barely scale either).
+
+Open: the Connect screen was checked in code only (the phone is joined, and leaving would need a new enrollment code); its fields and button were already 44 pt and now share the 16 pt margin and the phone scale. No `performAccessibilityAudit` UI test exists yet (no XCUITest target).
+
 ## 2026-11-01: Sidebar, profile menu, and Settings window (D-053, fixture gates)
 
 Run from `blove/sidebar-profile-menu` at `42e329f` (on `main` after #25) on macOS 26.5.

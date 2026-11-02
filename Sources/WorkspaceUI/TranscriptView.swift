@@ -30,11 +30,15 @@ struct TranscriptView: View {
           }
           Color.clear.frame(height: 1).id("bottom")
         }
-        .padding(.horizontal, LLA.Space.xl)
-        .padding(.vertical, LLA.Space.xl)
+        .padding(.horizontal, LLA.Metrics.margin)
+        .padding(.vertical, LLA.Metrics.margin)
         .frame(maxWidth: LLA.Metrics.column, alignment: .leading)
         .frame(maxWidth: .infinity)
       }
+      #if os(iOS)
+        // Dragging the transcript down puts the keyboard away, as in Messages.
+        .scrollDismissesKeyboard(.interactively)
+      #endif
       .onChange(of: detail.items.count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
       .onChange(of: detail.liveText) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
     }
@@ -60,8 +64,12 @@ struct TranscriptRow: View {
       }
     case .assistant:
       if item.type == "agentMessage" {
-        MarkdownText(text: liveText ?? item.payload["text"]?.stringValue ?? "")
-          .frame(maxWidth: .infinity, alignment: .leading)
+        // Trimmed: a reply's trailing blank lines otherwise widen the gap to the next item unevenly.
+        MarkdownText(
+          text: (liveText ?? item.payload["text"]?.stringValue ?? "").trimmingCharacters(
+            in: .whitespacesAndNewlines)
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
       } else {
         CollapsibleCard(
           title: item.type == "reasoning" || item.type == "thinking" ? "Reasoning" : item.type.capitalized,
@@ -169,6 +177,7 @@ struct CollapsibleCard<Content: View>: View {
   let status: String?
   @ViewBuilder let content: () -> Content
   @State private var expanded = false
+  @Environment(\.dynamicTypeSize) private var typeSize
 
   var body: some View {
     LLACard(fill: .bg, padding: LLA.Space.m) {
@@ -176,13 +185,27 @@ struct CollapsibleCard<Content: View>: View {
         Button {
           withAnimation(.none) { expanded.toggle() }
         } label: {
-          HStack(spacing: LLA.Space.s) {
-            Text(title).llaCode().lineLimit(1).truncationMode(.middle)
-            Spacer()
-            if let status { LLABadge(status, tone: statusTone(status)) }
-            Text(expanded ? "Hide" : "Show").font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
+          // At accessibility sizes the title takes the full width and wraps; the badge and the
+          // Show/Hide word go under it rather than squeezing it to an ellipsis.
+          let stacked = typeSize.isAccessibilitySize
+          let layout =
+            stacked
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: LLA.Space.xs))
+            : AnyLayout(HStackLayout(spacing: LLA.Space.s))
+          layout {
+            Text(title).llaCode().lineLimit(stacked ? 4 : 1).truncationMode(.middle)
+            if !stacked { Spacer() }
+            HStack(spacing: LLA.Space.s) {
+              if let status { LLABadge(status, tone: statusTone(status)) }
+              Text(expanded ? "Hide" : "Show").font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
+            }
           }
-          .contentShape(Rectangle())
+          // The target reaches over the card's padding, so the whole closed card is the button: at
+          // least 44 pt tall on the phone without making the card itself taller.
+          .frame(
+            maxWidth: .infinity, minHeight: max(LLA.Metrics.row - 2 * LLA.Space.m, 0), alignment: .leading
+          )
+          .contentShape(Rectangle().inset(by: -LLA.Space.m))
         }
         .buttonStyle(.plain)
         if expanded {

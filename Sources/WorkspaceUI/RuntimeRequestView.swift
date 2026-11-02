@@ -17,7 +17,7 @@ struct RuntimeRequestList: View {
           RuntimeRequestCard(model: model, request: request)
         }
       }
-      .padding(.horizontal, LLA.Space.xl)
+      .padding(.horizontal, LLA.Metrics.margin)
       .padding(.vertical, LLA.Space.l)
       .frame(maxWidth: LLA.Metrics.column)
       .frame(maxWidth: .infinity)

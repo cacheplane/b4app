@@ -59,7 +59,7 @@ struct NewProjectSheet: View {
         .accessibilityIdentifier("create-project")
       }
     }
-    .padding(LLA.Space.xl)
+    .padding(LLA.Metrics.margin)
     .frame(minWidth: 480)
     .background(LLA.Color.bg)
     .onAppear { model.lastError = nil }
@@ -109,7 +109,7 @@ struct RenameProjectSheet: View {
         .accessibilityIdentifier("rename-project")
       }
     }
-    .padding(LLA.Space.xl)
+    .padding(LLA.Metrics.margin)
     .frame(minWidth: 420)
     .background(LLA.Color.bg)
     .onAppear {

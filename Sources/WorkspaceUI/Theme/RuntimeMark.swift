@@ -6,6 +6,8 @@ import WorkspaceProtocol
 public struct RuntimeMark: View {
   public var kind: ConnectionKind
   public var height: CGFloat
+  /// Grows the mark with the text beside it under Dynamic Type; 1 at the default size and on the Mac.
+  @ScaledMetric(relativeTo: .body) private var scale: CGFloat = 1
 
   public init(kind: ConnectionKind, height: CGFloat = 14) {
     self.kind = kind
@@ -13,13 +15,14 @@ public struct RuntimeMark: View {
   }
 
   public var body: some View {
-    Group {
+    let height = self.height * scale
+    return Group {
       switch kind {
-      case .codex: vector("openai")
-      case .claude: vector("anthropic")
+      case .codex: vector("openai", height: height)
+      case .claude: vector("anthropic", height: height)
       case .b4:
         Text("B4")
-          .font(LLAFont.sans(height * 0.8, weight: .semibold))
+          .font(LLAFont.sans(fixed: height * 0.8, weight: .semibold))
           .foregroundStyle(LLA.Color.ghost)
           .fixedSize()
           .frame(height: height)
@@ -28,7 +31,7 @@ public struct RuntimeMark: View {
     .accessibilityHidden(true)
   }
 
-  private func vector(_ name: String) -> some View {
+  private func vector(_ name: String, height: CGFloat) -> some View {
     let art = BrandArt.load(named: name)
     let aspect = art.map { $0.viewBox.height > 0 ? $0.viewBox.width / $0.viewBox.height : 1 } ?? 1
     return BrandShape(name: name)

@@ -1,6 +1,6 @@
 # Compatibility manifest
 
-Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M8a on 2026-10-31, M8b on 2026-11-01). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
+Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M8a on 2026-10-31, M8b on 2026-11-01, hosted-hub tooling on 2026-11-02). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
 
 ## Target machine
 
@@ -56,6 +56,8 @@ Pinned exactly (`=`) in `Hub/Cargo.toml` `[workspace.dependencies]`, resolved in
 | Hub protocol | `minClientProtocol` 1 (unchanged by M8b: the new fields are additive and the hub ships before the clients); `Hub/API.md` is the wire reference |
 | Builder image | `rust:1.93.1-slim-bookworm@sha256:5b9332190bb3b9ece73b810cd1f1e9f06343b294ce184bcb067f0747d7d333ea` (index digest) |
 | Runtime image | `debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3` (index digest); runs as uid 10001, `STOPSIGNAL SIGTERM`, `HEALTHCHECK` on `/readyz` |
+| Build cache | `cargo-chef` 0.1.78 (`cargo install --locked --version 0.1.78` in the `chef` stage; latest on crates.io on 2026-11-01); a source-only change reuses the dependency `cook` layer (checked on `linux/arm64`) |
+| RDS CA bundle | `https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem`, fetched at image build on 2026-11-01 (114 certificates, 174,560 bytes), installed at `/etc/ssl/certs/rds-global-bundle.pem`; `Hub/scripts/check-image.sh <image>` asserts it, uid 10001, and that `b4hub` links no libssl (`libssl3` is on the image only as a dependency of `curl`) |
 | Compose database | `postgres:17`, not digest-pinned (the index digest seen on 2026-10-31 was `sha256:31ba9c94a03ada9988f2bb493a22a75eef3a185884533e5cdbcd498ea835b08f`); CI's `hub` job uses a `postgres:17` service on Ubuntu |
 | Test database | the zonky PostgreSQL 17.11 from `./Scripts/fetch-postgres.sh`, started by `Hub/scripts/test-db.sh` on 127.0.0.1:54329 |
 | Architectures | `linux/arm64` built and run on the build Mac; `linux/amd64` not built (both base digests are multi-platform indexes, so nothing in the Dockerfile is architecture-specific, but that is reasoning, not a check) |
@@ -136,6 +138,38 @@ New crates, pinned exactly like the rest:
 - Codex app-server (verified live on 0.166.0): newline-delimited JSON-RPC without the `jsonrpc` field; `initialize` then `initialized`; the server emits `configWarning`, `remoteControl/status/changed`, and `account/updated` right after the handshake and clients must ignore unknown methods. `account/read` distinguishes `chatgpt` from `apiKey`. A turn echoes the user message as an `item/started` + `item/completed` `userMessage` pair before the agent items; reasoning arrives as a `reasoning` item. `turn/completed.turn.status` is `completed | interrupted | failed`. Notification params for `thread/status/changed` use `{ type, activeFlags }`. Generated schema policy strings are `untrusted | on-request | never` and `read-only | workspace-write | danger-full-access`.
 - Claude Code (recorded live on 2.1.282, 2026-10-31): write `control_request initialize` before any user message and wait for its `control_response`; the user's `SessionStart` hooks run first and emit `system/hook_started` / `system/hook_response`; `command_lifecycle` frames bracket each turn; `system/init` arrives per turn with `apiKeySource` (`none` for plan login) and `capabilities`; `--replay-user-messages` echoes the input as a `user` frame with `isReplay: true`; a synthetic `assistant` frame carries `error` (for example `authentication_failed`) and `is_api_error_message`; `result` may be `subtype: success` with `is_error: true` and `terminal_reason: api_error`; `--resume` of an unknown id emits one `result error_during_execution` and exits 1. Strip `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`; never pass `--bare`; `AskUserQuestion` arrives through `can_use_tool`; end a session by closing stdin after `interrupt`.
 - B4 (source-verified and live-verified on 0.15.8, 2026-10-31; see `docs/research/2026-10-30-b4-runtime.md`): the live server also emits `usage` once per model call (summed into `turn.finished.usage`), `step` display updates keyed by `toolCallId` (folded into the tool card), `tool_call_args` before `tool_call`, and `tool_result.output` as a serialized `ToolMessage` (its `content` is the result); `GET /turns` nests the list under `turns.turns`; no thread-list endpoint and no run id, so the app names turns by their ordinal in `GET /threads/:id/turns` (D-019); `done` carries several outcomes; `interrupted` means cancelled or parked and `GET /pending_interrupts` tells them apart (D-020); a permission prompt is `interrupt { interruptId, type: "permission-request", kind, detail, grant? }` answered with `POST /resume { resume: [{ interruptId, status, payload?, grant? }], route }` whose response is a second SSE stream (D-021); `GET /runs/stream` reattaches and sends only frames after the attach; `runs/stream` checks route before middleware, so an unknown route is a 404 and a rejected credential a 401 on the first turn, never on the health check; no built-in endpoint auth, so the health check cannot verify a secret.
+
+## Hosted hub infrastructure (Terraform)
+
+| Item | Version |
+| --- | --- |
+| Terraform | 1.17.1 (`Infra/.terraform-version`, `required_version >= 1.17.1, < 2.0.0`) |
+| `hashicorp/aws` provider | 6.71.0, pinned exactly in `Infra/bootstrap/versions.tf` and `.terraform.lock.hcl` (darwin_arm64, linux_amd64, linux_arm64 hashes) |
+| TFLint | 0.65.0 with the bundled `terraform` ruleset 0.15.0 (`recommended`); the AWS ruleset is not enabled |
+
+`Infra/bootstrap` (9 tests) and `Infra/modules/hub` (49 tests) were verified with `terraform validate` of the roots, `tflint`, and `terraform test` against mocked providers only; nothing has been planned or applied in a real account.
+
+### Hosted hub tooling (pinned in the workflows and scripts)
+
+Read from `.github/workflows/hub-chart.yml`, `ci.yml`, `Infra/`, and `Hub/chart/b4hub/examples`. Only the pins marked in the last column ran on GitHub; the rest ran locally or against mocks.
+
+| Item | Pin | Where, and what ran |
+| --- | --- | --- |
+| Helm | 4.2.2 (`HELM_VERSION: v4.2.2`) | `hub-chart.yml`; lint and install ran on GitHub (run 41389901877) |
+| helm-unittest | 1.2.1 (tarball sha256-checked) | `hub-chart.yml`; 47 tests passed on GitHub |
+| helm-docs | 1.14.2 (sha256-checked) | `hub-chart.yml` README freshness check; ran on GitHub |
+| chart-testing (`ct`) | 3.15.0, with yamllint 1.37.1 and yamale 6.0.0 | `hub-chart.yml`; ran on GitHub |
+| kubeconform | 0.8.0 (sha256-checked), schemas for Kubernetes 1.31.0 | `hub-chart.yml`; ran on GitHub |
+| CRD schema catalog | `datreeio/CRDs-catalog` commit `27233a506de0085e71c7f9702597806a7f95eb24` (HTTPRoute, ServiceMonitor) | `hub-chart.yml` `CRD_SCHEMAS` |
+| kind | 0.31.0 in CI (the newest release with a Kubernetes 1.31 node image); 0.32.0 locally | `helm/kind-action` v1.15.1 in `hub-chart.yml` |
+| kind node image | `kindest/node:v1.31.14@sha256:6f86cf509dbb42767b6e79debc3f2c32e4ee01386f0489b3b2be24b0a55aac2b`, kubectl v1.31.14 | `hub-chart.yml` install job |
+| CloudNativePG operator chart | `cloudnative-pg` 0.29.1 (operator 1.30.1) | `hub-chart.yml` install job via `.github/scripts/chart-kind-test.sh`. CloudNativePG 1.30 lists Kubernetes 1.31 as "tested, but not supported": it works in the install test; move the test cluster to 1.34 or later when the chart's floor allows |
+| PostgreSQL for the hosted hubs | 17 (RDS `engine_version = "17"`, major only; minor upgrades are automatic) | `Infra/modules/hub/rds.tf`; asserted by the mocked `terraform test`, not applied |
+| PostgreSQL in the self-hosting examples | 17 (`postgres:17` in `Hub/deploy/compose/compose.yaml`; `ghcr.io/cloudnative-pg/postgresql:17` in the CNPG example) | Compose first boot ran locally; the CNPG cluster ran in kind on GitHub |
+| bats | 1.14.0 (sha256-checked tarball) | `ci.yml` lint job; `bats Infra/scripts/tests` runs 39 tests against stubs |
+| actionlint | 1.7.12 (sha256-checked) | `ci.yml` lint job |
+| `curlimages/curl` | 8.22.0 (digest-pinned) | `hub-chart.yml` install job probe |
+| cargo-chef | 0.1.78 | See the Hub (M8a) table |
 
 ## Known limits of the shell
 

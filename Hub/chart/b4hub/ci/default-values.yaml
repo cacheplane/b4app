@@ -1,0 +1,8 @@
+# Evaluation install: the chart creates the database Secret from database.urls.
+hub:
+  publicUrl: https://hub.example.test
+  rpId: example.test
+database:
+  urls:
+    url: postgres://b4hub_app:app-password@b4hub-db-rw:5432/b4hub
+    adminUrl: postgres://postgres:admin-password@b4hub-db-rw:5432/b4hub

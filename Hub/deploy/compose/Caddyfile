@@ -1,0 +1,3 @@
+{$CADDY_HOSTNAME} {
+	reverse_proxy hub:8080
+}

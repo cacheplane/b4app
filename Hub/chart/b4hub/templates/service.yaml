@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "b4hub.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "b4hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hub
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "b4hub.selectorLabels" (dict "ctx" . "component" "hub") | nindent 4 }}

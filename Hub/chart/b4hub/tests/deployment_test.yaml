@@ -1,0 +1,285 @@
+suite: deployment
+templates:
+  - templates/deployment.yaml
+release:
+  name: t
+  namespace: hub
+set:
+  database.existingSecret: hub-db
+  hub.publicUrl: https://hub.example.com
+  hub.rpId: example.com
+tests:
+  - it: defaults to one replica with the Recreate strategy (D-057)
+    asserts:
+      - isKind:
+          of: Deployment
+      - equal:
+          path: spec.replicas
+          value: 1
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+      - notExists:
+          path: spec.strategy.rollingUpdate
+
+  - it: keeps Recreate when replicaCount is raised without changing the strategy
+    set:
+      replicaCount: 2
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 2
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+
+  - it: uses RollingUpdate only when strategy.type says so
+    set:
+      replicaCount: 2
+      strategy.type: RollingUpdate
+    asserts:
+      - equal:
+          path: spec.strategy.type
+          value: RollingUpdate
+
+  - it: runs serve with the image's entrypoint
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value: [serve]
+      - notExists:
+          path: spec.template.spec.containers[0].command
+
+  - it: never gives the hub the admin URL in any form
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_ADMIN_URL
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_ADMIN_URL_FILE
+          any: true
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_URL_FILE
+            value: /etc/b4hub/db/DATABASE_URL
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: db
+            secret:
+              secretName: hub-db
+              defaultMode: 0440
+              items:
+                - key: DATABASE_URL
+                  path: DATABASE_URL
+
+  - it: honours renamed database secret keys
+    set:
+      database.secretKeys.url: app-uri
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: db
+            secret:
+              secretName: hub-db
+              defaultMode: 0440
+              items:
+                - key: app-uri
+                  path: DATABASE_URL
+
+  - it: sets the hub environment
+    set:
+      hub.apple.audiences: [com.example.ios, com.example.signin]
+      hub.apple.servicesId: com.example.signin
+      hub.extraEnv:
+        - name: OTEL_SERVICE_NAME
+          value: b4hub
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: B4HUB_PORT, value: "8080"}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: B4HUB_PUBLIC_URL, value: https://hub.example.com}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: B4HUB_WEBAUTHN_RP_ID, value: example.com}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: B4HUB_SIGNUP, value: closed}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: B4HUB_TRUST_X_FORWARDED_FOR, value: "1"}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: B4HUB_RETENTION_DAYS, value: "30"}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: B4HUB_LOG, value: info}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: B4HUB_APPLE_AUDIENCES, value: "com.example.ios,com.example.signin"}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: B4HUB_APPLE_SERVICES_ID, value: com.example.signin}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: OTEL_SERVICE_NAME, value: b4hub}
+
+  - it: leaves out the optional Apple settings and X-Forwarded-For trust when unset
+    set:
+      hub.trustXForwardedFor: false
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content: {name: B4HUB_APPLE_AUDIENCES}
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content: {name: B4HUB_APPLE_SERVICES_ID}
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content: {name: B4HUB_TRUST_X_FORWARDED_FOR}
+          any: true
+
+  - it: fails without the required hub settings
+    set:
+      hub.publicUrl: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: hub.publicUrl is required
+
+  - it: fails without a database secret
+    set:
+      database.existingSecret: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: database.existingSecret is required
+
+  - it: applies the Restricted Pod Security Standard
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+      - equal:
+          path: spec.template.spec.containers[0].securityContext
+          value:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tmp
+            emptyDir: {}
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tmp
+            mountPath: /tmp
+
+  - it: drains before SIGTERM and probes the hub's endpoints
+    asserts:
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 45
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
+          value: [/bin/sh, -c, sleep 5]
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet
+          value: {path: /readyz, port: http}
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet
+          value: {path: /healthz, port: http}
+      - equal:
+          path: spec.template.spec.containers[0].ports
+          value:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+      - equal:
+          path: spec.template.spec.containers[0].resources
+          value:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 512Mi}
+
+  - it: defaults the image tag to the chart's appVersion
+    chart:
+      appVersion: 9.8.7
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/cacheplane/b4hub:9.8.7
+
+  - it: pins by digest, ignoring the tag
+    set:
+      image.tag: "1.2.3"
+      image.digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/cacheplane/b4hub@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+  - it: rewrites the registry for mirrors
+    set:
+      image.tag: "1.2.3"
+      global.imageRegistry: registry.internal:5000
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.internal:5000/cacheplane/b4hub:1.2.3
+
+  - it: carries the standard labels and selects on name, instance, and component
+    chart:
+      version: 0.1.0
+      appVersion: 0.1.0
+    asserts:
+      - equal:
+          path: metadata.name
+          value: t-b4hub
+      - isSubset:
+          path: metadata.labels
+          content:
+            app.kubernetes.io/name: b4hub
+            app.kubernetes.io/instance: t
+            app.kubernetes.io/version: 0.1.0
+            app.kubernetes.io/managed-by: Helm
+            app.kubernetes.io/component: hub
+      - equal:
+          path: spec.selector.matchLabels
+          value:
+            app.kubernetes.io/name: b4hub
+            app.kubernetes.io/instance: t
+            app.kubernetes.io/component: hub
+
+  - it: rejects an unknown top-level value (schema)
+    set:
+      bogus: 1
+    asserts:
+      - failedTemplate:
+          errorPattern: "additional properties 'bogus' not allowed"
+
+  - it: rejects an invalid hub.signup (schema)
+    set:
+      hub.signup: maybe
+    asserts:
+      - failedTemplate:
+          errorPattern: "value must be one of 'open', 'closed'"
