@@ -409,6 +409,9 @@ class Handler(BaseHTTPRequestHandler):
             # FAKE_B4_NO_DELETE=1: a server without the route answers 405.
             if os.environ.get("FAKE_B4_NO_DELETE") == "1":
                 return self.send_json(405, error_body("Method not allowed"))
+            # FAKE_B4_DELETE_404=1: a server without the route that answers 404 for any DELETE.
+            if os.environ.get("FAKE_B4_DELETE_404") == "1":
+                return self.send_json(404, error_body("Not found"))
             with LOCK:
                 found = STATE["threads"].pop(parts[1], None) is not None
                 save_state()

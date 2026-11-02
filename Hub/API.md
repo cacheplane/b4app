@@ -783,6 +783,9 @@ so a client that predates it decodes the response unchanged. `code` is one of:
   of the batch lands.
 - `invalid_clock`: the change's `hlc` is present but not in the clock form. Only that change is
   rejected; a change with no `hlc` is fine.
+- `cannot_clear`: the change is an `update` that sets `threads.userDeletedAt` to null (or omits its
+  value), from any device. A thread's delete mark is never cleared (D-138). An `insert` that carries
+  a null for it is applied without that column, so it cannot clear a set mark either.
 
 A rejected change is not recorded in the feed and not applied, so no other device ever sees it.
 

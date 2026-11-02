@@ -30,9 +30,17 @@ pub const CLOCKED: &[(&str, &str)] = &[
     ("drafts", "updatedAt"),
 ];
 
+/// `(table, column)` pairs that are set once and never cleared: no device may set them to null.
+pub const NEVER_CLEARED: &[(&str, &str)] = &[("threads", "userDeletedAt")];
+
 /// True when a phone may write `table.column`.
 pub fn is_phone_writable(table: &str, column: &str) -> bool {
     PHONE_WRITABLE.contains(&(table, column))
+}
+
+/// True when `table.column` is never cleared once set.
+pub fn is_never_cleared(table: &str, column: &str) -> bool {
+    NEVER_CLEARED.contains(&(table, column))
 }
 
 /// True when `table.column` merges by clock.
