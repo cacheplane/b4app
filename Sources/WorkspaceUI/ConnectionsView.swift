@@ -38,7 +38,9 @@ struct ConnectionsView: View {
         }
         LLASectionHead(
           "Configured",
-          intro: "Each connection is one runtime and one identity. Threads never move between them.")
+          intro: WorkspaceDevice.managesWorkspace
+            ? "Each connection is one runtime and one identity. Threads never move between them."
+            : "Each connection is one runtime and one identity. \(WorkspaceDevice.managedOnMac)")
         if model.connections.isEmpty {
           Text("No connections configured.").llaMuted()
         } else {
@@ -49,29 +51,7 @@ struct ConnectionsView: View {
             Text(error).font(LLAFont.small).foregroundStyle(LLA.Color.danger)
           }
         }
-        LLASectionHead("Add a connection").padding(.top, LLA.Space.l)
-        ForEach(kinds, id: \.kind) { info in
-          LLACard {
-            VStack(alignment: .leading, spacing: LLA.Space.s) {
-              Text(info.title).font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
-              Text(info.summary).llaSmallMuted().fixedSize(horizontal: false, vertical: true)
-              if let runtime = info.runtime {
-                RuntimeStatusView(
-                  runtime: model.diagnostics?.runtimes.first { $0.kind == runtime },
-                  loading: model.diagnosticsLoading)
-              }
-              if info.kind != .b4 {
-                Button("Add \(info.title) connection") { Task { await model.addConnection(kind: info.kind) } }
-                  .buttonStyle(.llaPrimary)
-                  .disabled(model.busy)
-                  .padding(.top, LLA.Space.xs)
-                  .accessibilityIdentifier("add-\(info.kind.rawValue)")
-              } else {
-                B4AttachForm(model: model)
-              }
-            }
-          }
-        }
+        if WorkspaceDevice.managesWorkspace { addSection }
       }
       .padding(LLA.Metrics.margin)
       .frame(maxWidth: 820, alignment: .leading)
@@ -81,11 +61,39 @@ struct ConnectionsView: View {
     .navigationTitle("Connections")
     .modifier(
       SettingsPageAction(
-        title: "Re-check runtimes", disabled: model.link != .ready || model.diagnosticsLoading
+        title: "Re-check runtimes", disabled: model.link != .ready || model.diagnosticsLoading,
+        shown: WorkspaceDevice.managesWorkspace
       ) { Task { await model.refreshDiagnostics() } }
     )
     .task(id: model.link) {
       if model.link == .ready, model.diagnostics == nil { await model.refreshDiagnostics() }
+    }
+  }
+
+  /// Adding a connection, with each runtime's install and sign-in state: the Mac only.
+  @ViewBuilder private var addSection: some View {
+    LLASectionHead("Add a connection").padding(.top, LLA.Space.l)
+    ForEach(kinds, id: \.kind) { info in
+      LLACard {
+        VStack(alignment: .leading, spacing: LLA.Space.s) {
+          Text(info.title).font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
+          Text(info.summary).llaSmallMuted().fixedSize(horizontal: false, vertical: true)
+          if let runtime = info.runtime {
+            RuntimeStatusView(
+              runtime: model.diagnostics?.runtimes.first { $0.kind == runtime },
+              loading: model.diagnosticsLoading)
+          }
+          if info.kind != .b4 {
+            Button("Add \(info.title) connection") { Task { await model.addConnection(kind: info.kind) } }
+              .buttonStyle(.llaPrimary)
+              .disabled(model.busy)
+              .padding(.top, LLA.Space.xs)
+              .accessibilityIdentifier("add-\(info.kind.rawValue)")
+          } else {
+            B4AttachForm(model: model)
+          }
+        }
+      }
     }
   }
 }
@@ -130,10 +138,13 @@ struct ConnectionCard: View {
             }
           }
           if !stacked { Spacer(minLength: LLA.Space.s) }
-          Button("Check") { Task { await model.inspectConnection(id: connection.id) } }
-            .buttonStyle(.llaSecondary)
-            .disabled(model.busy)
-          if connection.kind != .b4, connection.authStatus != .authenticated {
+          if WorkspaceDevice.managesWorkspace {
+            Button("Check") { Task { await model.inspectConnection(id: connection.id) } }
+              .buttonStyle(.llaSecondary)
+              .disabled(model.busy)
+          }
+          if WorkspaceDevice.managesWorkspace, connection.kind != .b4, connection.authStatus != .authenticated
+          {
             Button(connection.kind == .codex ? "Sign in with ChatGPT" : "Sign in to Claude") {
               Task { await model.login(connectionId: connection.id) }
             }

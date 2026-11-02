@@ -12,11 +12,17 @@ struct LocalServersView: View {
       VStack(alignment: .leading, spacing: LLA.Space.xl) {
         LLASectionHead(
           "Registered projects",
-          intro:
-            "B4 projects this app runs on loopback. Attached servers and remote endpoints live under Connections."
+          intro: WorkspaceDevice.managesWorkspace
+            ? "B4 projects this app runs on loopback. Attached servers and remote endpoints live under Connections."
+            : "B4 projects your Mac runs on loopback. \(WorkspaceDevice.managedOnMac)"
         )
         if model.servers.isEmpty {
-          Text("No projects registered. Register a local B4 project below to run it from here.").llaMuted()
+          Text(
+            WorkspaceDevice.managesWorkspace
+              ? "No projects registered. Register a local B4 project below to run it from here."
+              : "No projects registered on your Mac."
+          )
+          .llaMuted()
         }
         ForEach(model.servers) { server in
           ServerCard(model: model, server: server)
@@ -24,8 +30,10 @@ struct LocalServersView: View {
         if let error = model.lastError, model.settingsVisible, model.settingsPage == .servers {
           Text(error).font(LLAFont.small).foregroundStyle(LLA.Color.danger)
         }
-        LLASectionHead("Add a project").padding(.top, LLA.Space.l)
-        AddProjectForm(model: model)
+        if WorkspaceDevice.managesWorkspace {
+          LLASectionHead("Add a project").padding(.top, LLA.Space.l)
+          AddProjectForm(model: model)
+        }
       }
       .padding(LLA.Metrics.margin)
       .frame(maxWidth: 820, alignment: .leading)
@@ -86,25 +94,7 @@ struct ServerCard: View {
         if let message = server.statusMessage {
           Text(message).llaSmall().fixedSize(horizontal: false, vertical: true)
         }
-        HStack(spacing: LLA.Space.s) {
-          Button("Start") { Task { await model.startServer(id: server.id) } }
-            .buttonStyle(.llaPrimary)
-            .disabled(model.busy || server.pid != nil)
-            .accessibilityIdentifier("server-start-\(server.name)")
-          Button("Stop") { Task { await model.stopServer(id: server.id) } }
-            .buttonStyle(.llaSecondary)
-            .disabled(model.busy || server.pid == nil)
-            .accessibilityIdentifier("server-stop-\(server.name)")
-          Button("Restart") { Task { await model.restartServer(id: server.id) } }
-            .buttonStyle(.llaSecondary)
-            .disabled(model.busy || server.pid == nil)
-          Button("Inspect routes") { Task { await model.inspectServer(id: server.id) } }
-            .buttonStyle(.llaSecondary)
-            .disabled(model.busy || server.pid != nil && server.health == .starting)
-          Spacer()
-          Button(showLogs ? "Hide log" : "Show log") { showLogs.toggle() }.buttonStyle(.llaLink)
-        }
-        .padding(.top, LLA.Space.xs)
+        if WorkspaceDevice.managesWorkspace { controls }
         Hairline().padding(.vertical, LLA.Space.xs)
         Text("Routes").font(LLAFont.smallStrong).foregroundStyle(LLA.Color.ink)
         if server.routes.isEmpty {
@@ -119,7 +109,7 @@ struct ServerCard: View {
             if let connection = model.connection(serverId: server.id, route: route.key) {
               Text("Connected: \(connection.label)").llaCaption()
               StatusBadge(status: connection.status)
-            } else {
+            } else if WorkspaceDevice.managesWorkspace {
               Button("Connect") { Task { await model.connectRoute(serverId: server.id, route: route.key) } }
                 .buttonStyle(.llaSecondary)
                 .disabled(model.busy)
@@ -134,6 +124,29 @@ struct ServerCard: View {
         }
       }
     }
+  }
+
+  /// Start, Stop, Restart, Inspect routes, and the log: the Mac only.
+  private var controls: some View {
+    HStack(spacing: LLA.Space.s) {
+      Button("Start") { Task { await model.startServer(id: server.id) } }
+        .buttonStyle(.llaPrimary)
+        .disabled(model.busy || server.pid != nil)
+        .accessibilityIdentifier("server-start-\(server.name)")
+      Button("Stop") { Task { await model.stopServer(id: server.id) } }
+        .buttonStyle(.llaSecondary)
+        .disabled(model.busy || server.pid == nil)
+        .accessibilityIdentifier("server-stop-\(server.name)")
+      Button("Restart") { Task { await model.restartServer(id: server.id) } }
+        .buttonStyle(.llaSecondary)
+        .disabled(model.busy || server.pid == nil)
+      Button("Inspect routes") { Task { await model.inspectServer(id: server.id) } }
+        .buttonStyle(.llaSecondary)
+        .disabled(model.busy || server.pid != nil && server.health == .starting)
+      Spacer()
+      Button(showLogs ? "Hide log" : "Show log") { showLogs.toggle() }.buttonStyle(.llaLink)
+    }
+    .padding(.top, LLA.Space.xs)
   }
 }
 
