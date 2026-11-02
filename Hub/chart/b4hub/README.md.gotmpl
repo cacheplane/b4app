@@ -18,6 +18,8 @@
 helm install b4hub oci://ghcr.io/cacheplane/charts/b4hub --version <v> -f values.yaml
 ```
 
+Each `hub-v<semver>` release publishes the `Chart.yaml` chart version to `oci://ghcr.io/cacheplane/charts/b4hub` alongside the image, with `appVersion` set to that hub version and the chart signed with cosign.
+
 `hub.publicUrl` and `hub.rpId` are required, plus a database Secret (next section). A minimal `values.yaml`:
 
 ```yaml
@@ -40,22 +42,26 @@ Key names are overridable with `database.secretKeys`. Pass the Secret as `databa
 
 ### CloudNativePG example
 
-`examples/cnpg-cluster.yaml` is a single-instance CloudNativePG `Cluster` named `b4hub-db` (PostgreSQL 17, 10Gi, database `b4hub`, owner `b4hub_owner`). The chart never applies it. The sequence below builds the `b4hub-db` Secret from CNPG's generated secrets. The CNPG secret names (`b4hub-db-app`, `b4hub-db-superuser`) and their key names (`password`) are **to be confirmed against the CloudNativePG docs** before you rely on them, and the `b4hub_app` role the hub connects as must exist with the grants the migration expects; the example uses the owner role for both URLs, which suits evaluation only.
+`examples/cnpg-cluster.yaml` is a single-instance CloudNativePG `Cluster` named `b4hub-db` (PostgreSQL 17, 10Gi, database `b4hub`, owner `b4hub_owner`). The chart never applies it. The sequence below builds the `b4hub-db` Secret from it; the chart's CI install test runs exactly this sequence (in the `default` namespace) against CloudNativePG 1.30.
+
+- `DATABASE_ADMIN_URL` uses the superuser from the `b4hub-db-superuser` Secret (keys `username` and `password`), which `enableSuperuserAccess: true` creates. `b4hub migrate` creates the `b4hub_app` role, which needs `CREATEROLE`, and CloudNativePG's database owner `b4hub_owner` (in `b4hub-db-app`) does not have it.
+- `DATABASE_URL` connects as `b4hub_app` with a password you generate: `b4hub migrate` creates the role, or resets its password, from this URL. The hub refuses to serve as the owner or a superuser.
 
 ```sh
 kubectl create namespace b4hub
 kubectl -n b4hub apply -f examples/cnpg-cluster.yaml
 kubectl -n b4hub wait --for=condition=Ready cluster/b4hub-db --timeout=300s
 
-APP_PW=$(kubectl -n b4hub get secret b4hub-db-app -o jsonpath='{.data.password}' | base64 -d)
+ADMIN_USER=$(kubectl -n b4hub get secret b4hub-db-superuser -o jsonpath='{.data.username}' | base64 -d)
 ADMIN_PW=$(kubectl -n b4hub get secret b4hub-db-superuser -o jsonpath='{.data.password}' | base64 -d)
+APP_PW=$(openssl rand -hex 24)
 
 kubectl -n b4hub create secret generic b4hub-db \
-  --from-literal=DATABASE_URL="postgres://b4hub_owner:${APP_PW}@b4hub-db-rw:5432/b4hub" \
-  --from-literal=DATABASE_ADMIN_URL="postgres://postgres:${ADMIN_PW}@b4hub-db-rw:5432/b4hub"
+  --from-literal=DATABASE_URL="postgres://b4hub_app:${APP_PW}@b4hub-db-rw:5432/b4hub" \
+  --from-literal=DATABASE_ADMIN_URL="postgres://${ADMIN_USER}:${ADMIN_PW}@b4hub-db-rw:5432/b4hub"
 ```
 
-`enableSuperuserAccess: true` in the example is what creates `b4hub-db-superuser`.
+Keep `APP_PW` only in the Secret: every `helm upgrade` reruns the migration, which sets the `b4hub_app` password from `DATABASE_URL` again.
 
 ## Sign-in secrets
 

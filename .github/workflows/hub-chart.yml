@@ -1,0 +1,318 @@
+name: Hub chart
+
+# The b4hub Helm chart (Hub/chart/b4hub). Pull requests and pushes to main lint it and
+# install it on kind against a CloudNativePG database. `publish` runs only when a `hub-v*`
+# release calls this workflow (hub-release.yml): it pushes the chart to
+# oci://ghcr.io/cacheplane/charts, signs it with cosign, and attests its provenance.
+
+on:
+  pull_request:
+    paths:
+      - "Hub/chart/**"
+      - ".github/workflows/hub-chart.yml"
+      - ".github/scripts/chart-kind-test.sh"
+  push:
+    branches: [main]
+    paths:
+      - "Hub/chart/**"
+      - ".github/workflows/hub-chart.yml"
+      - ".github/scripts/chart-kind-test.sh"
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Hub image tag on ghcr.io/cacheplane/b4hub for the install test
+        required: false
+        default: main
+  workflow_call:
+    inputs:
+      version:
+        description: The chart version to publish; must equal Chart.yaml's version
+        required: true
+        type: string
+      app_version:
+        description: The hub semver the chart's appVersion is set to
+        required: true
+        type: string
+
+concurrency:
+  group: hub-chart-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CHART_DIR: Hub/chart/b4hub
+  CHART_OCI: oci://ghcr.io/cacheplane/charts
+  CHART_REF: ghcr.io/cacheplane/charts/b4hub
+  HELM_VERSION: v4.2.2
+  HELM_UNITTEST_VERSION: v1.2.1
+  KUBECONFORM_VERSION: v0.8.0
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+  HELM_DOCS_VERSION: 1.14.2
+  HELM_DOCS_SHA256: a8cf72ada34fad93285ba2a452b38bdc5bd52cc9a571236244ec31022928d6cc
+  # CRD schemas for HTTPRoute and ServiceMonitor, pinned to a datreeio/CRDs-catalog commit.
+  CRD_SCHEMAS: https://raw.githubusercontent.com/datreeio/CRDs-catalog/27233a506de0085e71c7f9702597806a7f95eb24/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
+
+jobs:
+  lint:
+    name: Lint, unit tests, schemas
+    # Not on release calls: those only publish.
+    if: inputs.version == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # packages: read lets the registry say "repository not known" instead of "denied" when
+    # the chart has never been published.
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: Install the helm-unittest plugin
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest.git --version "$HELM_UNITTEST_VERSION" --verify=false
+      - name: Install kubeconform and helm-docs
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin" "$RUNNER_TEMP/dl"
+          cd "$RUNNER_TEMP/dl"
+          curl -fsSLo kubeconform.tgz "https://github.com/yannh/kubeconform/releases/download/$KUBECONFORM_VERSION/kubeconform-linux-amd64.tar.gz"
+          echo "$KUBECONFORM_SHA256  kubeconform.tgz" | sha256sum -c -
+          tar -xzf kubeconform.tgz -C "$bin" kubeconform
+          curl -fsSLo helm-docs.tgz "https://github.com/norwoodj/helm-docs/releases/download/v$HELM_DOCS_VERSION/helm-docs_${HELM_DOCS_VERSION}_Linux_x86_64.tar.gz"
+          echo "$HELM_DOCS_SHA256  helm-docs.tgz" | sha256sum -c -
+          tar -xzf helm-docs.tgz -C "$bin" helm-docs
+          echo "$bin" >> "$GITHUB_PATH"
+      # Installs ct plus pinned yamllint and yamale from PyPI.
+      - uses: helm/chart-testing-action@720270857a28afd41e2426521a7801db09e9b510 # v2.9.0
+        with:
+          version: 3.15.0
+          yamllint_version: 1.37.1
+          yamale_version: 6.0.0
+      - name: ct lint
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            # No diff target on main itself: lint every chart, and the version was checked on the PR.
+            ct lint --config Hub/chart/ct.yaml --all --check-version-increment=false
+          else
+            ct lint --config Hub/chart/ct.yaml --target-branch main
+          fi
+      - name: helm lint --strict
+        run: |
+          set -euo pipefail
+          echo "== no values"
+          helm lint --strict "$CHART_DIR"
+          for values in "$CHART_DIR"/ci/*.yaml; do
+            echo "== $values"
+            helm lint --strict "$CHART_DIR" -f "$values"
+          done
+      - name: helm unittest
+        run: helm unittest "$CHART_DIR"
+      - name: kubeconform
+        run: |
+          set -euo pipefail
+          kc() {
+            kubeconform -strict -summary -kubernetes-version 1.31.0 \
+              -schema-location default -schema-location "$CRD_SCHEMAS" -ignore-missing-schemas
+          }
+          echo "== default"
+          helm template b4hub "$CHART_DIR" -f "$CHART_DIR/ci/default-values.yaml" | kc
+          echo "== existing secret"
+          helm template b4hub "$CHART_DIR" -f "$CHART_DIR/ci/existing-secret-values.yaml" | kc
+          echo "== ingress"
+          helm template b4hub "$CHART_DIR" -f "$CHART_DIR/examples/values-ingress.yaml" | kc
+          echo "== HTTPRoute"
+          helm template b4hub "$CHART_DIR" -f "$CHART_DIR/examples/values-httproute.yaml" | kc
+          echo "== ServiceMonitor"
+          manifests="$(helm template b4hub "$CHART_DIR" -f "$CHART_DIR/ci/existing-secret-values.yaml" \
+            --set serviceMonitor.enabled=true --api-versions monitoring.coreos.com/v1)"
+          grep -q '^kind: ServiceMonitor$' <<< "$manifests" || { echo "::error::no ServiceMonitor rendered"; exit 1; }
+          kc <<< "$manifests"
+      - name: README is current with helm-docs
+        run: |
+          set -euo pipefail
+          helm-docs --chart-search-root Hub/chart
+          if ! git diff --exit-code -- "$CHART_DIR/README.md"; then
+            echo "::error::Hub/chart/b4hub/README.md is stale; run helm-docs --chart-search-root Hub/chart and commit it"
+            exit 1
+          fi
+      - name: Chart version is not already published
+        # main itself carries the version being released; the PR that bumped it ran this check.
+        if: github.ref != 'refs/heads/main'
+        env:
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(yq -r .version "$CHART_DIR/Chart.yaml")"
+          repo="${CHART_REF#ghcr.io/}"
+          token="$(curl -fsS -u "$GH_ACTOR:$GH_TOKEN" "https://ghcr.io/token?service=ghcr.io&scope=repository:$repo:pull" | jq -r '.token // ""')"
+          [ -n "$token" ] || { echo "::error::could not get a GHCR pull token for $repo"; exit 1; }
+          code="$(curl -sS -o "$RUNNER_TEMP/tags.json" -w '%{http_code}' -H "Authorization: Bearer $token" \
+            "https://ghcr.io/v2/$repo/tags/list?n=1000")"
+          if [ "$code" = 404 ] && jq -e '.errors[]? | select(.code == "NAME_UNKNOWN")' "$RUNNER_TEMP/tags.json" >/dev/null; then
+            echo "::notice::$CHART_REF does not exist yet (first publish); skipping the published-version check for $version"
+            exit 0
+          fi
+          [ "$code" = 200 ] || { echo "::error::GHCR tag list for $repo returned HTTP $code: $(cat "$RUNNER_TEMP/tags.json")"; exit 1; }
+          echo "$GH_TOKEN" | helm registry login ghcr.io --username "$GH_ACTOR" --password-stdin
+          if out="$(helm show chart "$CHART_OCI/b4hub" --version "$version" 2>&1)"; then
+            echo "$out"
+            echo "::error::b4hub $version is already published to $CHART_OCI; bump Chart.yaml version"
+            exit 1
+          fi
+          case "$out" in
+            *"not found"*) echo "b4hub $version is not published yet" ;;
+            *) echo "::error::could not check $CHART_OCI/b4hub $version: $out"; exit 1 ;;
+          esac
+
+  install:
+    name: Install on kind with CloudNativePG
+    if: inputs.version == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    env:
+      CNPG_CHART_VERSION: 0.29.1
+      CURL_IMAGE: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+      IMAGE_REPOSITORY: ghcr.io/cacheplane/b4hub
+      IMAGE_PULL_SECRET: ghcr-pull
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+      # kind v0.31.0 is the newest release with a prebuilt Kubernetes 1.31 node image.
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: v0.31.0
+          node_image: kindest/node:v1.31.14@sha256:6f86cf509dbb42767b6e79debc3f2c32e4ee01386f0489b3b2be24b0a55aac2b
+          kubectl_version: v1.31.14
+          cluster_name: b4hub-chart
+          wait: 120s
+      - name: Choose the hub image tag
+        env:
+          INPUT_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-main}"
+          case "$tag" in
+            *[!A-Za-z0-9_.-]*|'') echo "::error::invalid image tag: $tag"; exit 1 ;;
+          esac
+          echo "IMAGE_TAG=$tag" >> "$GITHUB_ENV"
+      # Lets the cluster pull the hub image while the GHCR package is private; harmless once public.
+      - name: Image pull Secret from the job token
+        env:
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          auth="$(printf '%s:%s' "$GH_ACTOR" "$GH_TOKEN" | base64 -w0)"
+          jq -n --arg auth "$auth" '{auths: {"ghcr.io": {auth: $auth}}}' > "$RUNNER_TEMP/ghcr.json"
+          kubectl create secret generic "$IMAGE_PULL_SECRET" --type=kubernetes.io/dockerconfigjson \
+            --from-file=.dockerconfigjson="$RUNNER_TEMP/ghcr.json"
+          rm -f "$RUNNER_TEMP/ghcr.json"
+      - name: Install, upgrade, and uninstall the chart
+        run: .github/scripts/chart-kind-test.sh run
+      - name: Diagnostics
+        if: failure()
+        run: .github/scripts/chart-kind-test.sh diagnose
+
+  publish:
+    name: Publish to ghcr.io/cacheplane/charts
+    # Only a hub release calls this workflow with a version (hub-release.yml).
+    if: inputs.version != '' && github.event_name == 'release'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: chart-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: Check the version against Chart.yaml
+        env:
+          VERSION: ${{ inputs.version }}
+          APP_VERSION: ${{ inputs.app_version }}
+        run: |
+          set -euo pipefail
+          semver='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          [[ "$VERSION" =~ $semver ]] || { echo "::error::version $VERSION is not semver"; exit 1; }
+          [[ "$APP_VERSION" =~ $semver ]] || { echo "::error::app_version $APP_VERSION is not semver"; exit 1; }
+          chart_version="$(yq -r .version "$CHART_DIR/Chart.yaml")"
+          if [ "$chart_version" != "$VERSION" ]; then
+            echo "::error::version input $VERSION does not match Chart.yaml version $chart_version"
+            exit 1
+          fi
+      - name: Package
+        id: package
+        env:
+          VERSION: ${{ inputs.version }}
+          APP_VERSION: ${{ inputs.app_version }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/chart"
+          helm package "$CHART_DIR" --version "$VERSION" --app-version "$APP_VERSION" --destination "$RUNNER_TEMP/chart"
+          package="$RUNNER_TEMP/chart/b4hub-$VERSION.tgz"
+          [ -f "$package" ] || { echo "::error::$package was not created"; exit 1; }
+          helm show chart "$package"
+          echo "package=$package" >> "$GITHUB_OUTPUT"
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push
+        id: push
+        env:
+          VERSION: ${{ inputs.version }}
+          PACKAGE: ${{ steps.package.outputs.package }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | helm registry login ghcr.io --username "$GH_ACTOR" --password-stdin
+          # Never overwrite a published version.
+          if helm show chart "$CHART_OCI/b4hub" --version "$VERSION" >/dev/null 2>&1; then
+            echo "::error::b4hub $VERSION is already published to $CHART_OCI"
+            exit 1
+          fi
+          out="$(helm push "$PACKAGE" "$CHART_OCI" 2>&1)"
+          echo "$out"
+          digest="$(sed -n 's/^Digest: \(sha256:[0-9a-f]\{64\}\)$/\1/p' <<< "$out")"
+          [ -n "$digest" ] || { echo "::error::no digest in the helm push output"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Sign with cosign
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "$CHART_REF@$DIGEST"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.CHART_REF }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

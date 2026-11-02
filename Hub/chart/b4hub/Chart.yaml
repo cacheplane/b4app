@@ -8,3 +8,6 @@ kubeVersion: ">=1.29.0"
 home: https://b4.run
 sources:
   - https://github.com/cacheplane/b4app
+maintainers:
+  - name: cacheplane
+    url: https://b4.run

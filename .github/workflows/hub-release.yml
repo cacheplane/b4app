@@ -29,6 +29,8 @@ jobs:
       packages: write
     outputs:
       digest: ${{ steps.resolve.outputs.digest }}
+      chart_version: ${{ steps.chart.outputs.version }}
+      app_version: ${{ steps.chart.outputs.app_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -53,6 +55,20 @@ jobs:
             echo "$tags"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+      - name: Read the chart version at the release commit
+        id: chart
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          version="$(yq -r .version Hub/chart/b4hub/Chart.yaml)"
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::Hub/chart/b4hub/Chart.yaml version is not semver: $version"; exit 1 ;;
+          esac
+          echo "chart b4hub $version, appVersion ${TAG#hub-v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "app_version=${TAG#hub-v}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Log in to GHCR
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
@@ -109,3 +125,20 @@ jobs:
     with:
       environment: production
       digest: ${{ needs.promote.outputs.digest }}
+
+  # Publishes the chart version from Chart.yaml with appVersion set to this release's hub
+  # version. The image tags it defaults to were added by promote.
+  chart:
+    name: Publish the Helm chart
+    needs: promote
+    if: startsWith(github.event.release.tag_name, 'hub-v')
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    uses: ./.github/workflows/hub-chart.yml
+    with:
+      version: ${{ needs.promote.outputs.chart_version }}
+      app_version: ${{ needs.promote.outputs.app_version }}

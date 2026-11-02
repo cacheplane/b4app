@@ -1,0 +1,16 @@
+# The kind install test (.github/workflows/hub-chart.yml): a CloudNativePG cluster in the
+# default namespace and the b4hub-db Secret built from it as the README describes.
+hub:
+  publicUrl: http://b4hub.default.svc
+  rpId: b4hub.default.svc
+  signup: closed
+database:
+  existingSecret: b4hub-db
+service:
+  port: 80
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi

@@ -1,0 +1,8 @@
+# chart-testing configuration for the b4hub chart (.github/workflows/hub-chart.yml).
+chart-dirs:
+  - Hub/chart
+target-branch: main
+validate-maintainers: true
+check-version-increment: true
+helm-extra-args: --timeout 300s
+chart-repos: []
