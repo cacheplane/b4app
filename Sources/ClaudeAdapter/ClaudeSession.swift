@@ -76,6 +76,10 @@ actor ClaudeSession {
       for line in lines.push(chunk) { dispatch(ClaudeStream.decodeFrame(line)) }
     }
     let status = await child.waitForExit()
+    // The exit can be seen before stderr is read to its end, and the tail is what tells a resume of
+    // an unknown session ("No conversation found") from a crash. A grandchild that keeps stderr
+    // open must not hold the exit back, hence the bound.
+    await Self.stderrEnd(of: child, atMost: .seconds(2))
     let tail = child.recentStderr()
     exited = (status, tail)
     if self.process === child { process = nil }
@@ -86,6 +90,22 @@ actor ClaudeSession {
     pending = [:]
     continuation.yield(.exited(status, stderrTail: tail))
     continuation.finish()
+  }
+
+  /// Returns when `child`'s stderr reaches end of file, or after `limit`, whichever comes first.
+  private static func stderrEnd(of child: StreamingProcess, atMost limit: Duration) async {
+    let (first, signal) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+    let ended = Task {
+      await child.waitForStderrEnd()
+      signal.yield()
+    }
+    let alarm = Task {
+      try? await Task.sleep(for: limit)
+      signal.yield()
+    }
+    for await _ in first { break }
+    alarm.cancel()
+    ended.cancel()
   }
 
   private func dispatch(_ frame: ClaudeStream.Frame) {

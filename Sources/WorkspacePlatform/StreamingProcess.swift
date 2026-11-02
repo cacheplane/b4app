@@ -152,8 +152,8 @@ public final class StreamingProcess: Sendable {
   }
 
   /// Returns once stderr has reached end of file, so `recentStderr()` holds all the child wrote. The
-  /// exit can come first: the tail may still be draining when `waitForExit()` returns. A test seam; it
-  /// changes nothing about the capture.
+  /// exit can come first: the tail may still be draining when `waitForExit()` returns. `ClaudeSession`
+  /// awaits it (bounded) before reporting an exit; it changes nothing about the capture.
   public func waitForStderrEnd() async {
     await withCheckedContinuation { continuation in
       let ended = state.withLock { state in

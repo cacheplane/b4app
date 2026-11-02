@@ -3,8 +3,10 @@
 recorded from Claude Code 2.1.282 (docs/research/2026-10-30-claude-cli-stream-protocol.md and the
 2026-10-31 probe). Behavior is scripted by the user text: "tool" asks for a Bash permission,
 "question" asks an AskUserQuestion, "elicitation" sends an MCP elicitation, "hang" waits for an
-interrupt, "crash" exits mid-turn, "fail" returns an error result. Never a substitute for the real CLI
-in anything the docs call live-tested."""
+interrupt, "crash" exits mid-turn, "fail" returns an error result. Resuming session "missing" fails as
+the real CLI does; "missing-late" fails the same way, but its stderr line is written by a grandchild
+300 ms after the fake has exited (stderr ends only then). Never a substitute for the real CLI in
+anything the docs call live-tested."""
 import json
 import os
 import sys
@@ -55,6 +57,14 @@ def log(text):
 
 
 log("argv %r" % args)
+if resumed and session_id == "missing-late":
+    import subprocess
+    # Only stderr is inherited: stdout reaches EOF when this process exits, stderr 300 ms later.
+    subprocess.Popen(["/bin/sh", "-c", "sleep 0.3; echo 'No conversation found with session ID: missing-late' >&2"],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    send({"type": "result", "subtype": "error_during_execution", "duration_ms": 0, "is_error": True,
+          "num_turns": 0, "stop_reason": None, "total_cost_usd": 0, "errors": []})
+    sys.exit(1)
 if resumed and session_id == "missing":
     send({"type": "result", "subtype": "error_during_execution", "duration_ms": 0, "is_error": True,
           "num_turns": 0, "stop_reason": None, "total_cost_usd": 0, "errors": []})
