@@ -24,10 +24,11 @@ public struct LLAButtonStyle: ButtonStyle {
     var body: some View {
       configuration.label
         .labelStyle(.titleOnly)
-        .font(LLAFont.sans(13, weight: .semibold, relativeTo: .subheadline))
+        .font(LLAFont.button)
         .lineLimit(1)
         .padding(.horizontal, kind == .link ? 0 : 14)
-        .frame(minHeight: kind == .link ? 0 : LLA.Metrics.control)
+        // A link keeps its text's width but still gets a full-height target on the phone.
+        .frame(minHeight: kind == .link ? LLA.Metrics.row : LLA.Metrics.control)
         .foregroundStyle(foreground)
         .background {
           if kind != .link { Capsule().fill(fill) }
@@ -62,6 +63,25 @@ extension ButtonStyle where Self == LLAButtonStyle {
   public static var llaSecondary: LLAButtonStyle { LLAButtonStyle(kind: .secondary) }
   public static var llaDanger: LLAButtonStyle { LLAButtonStyle(kind: .danger) }
   public static var llaLink: LLAButtonStyle { LLAButtonStyle(kind: .link) }
+}
+
+/// A row's press (sidebar, thread, menu, and search rows): the row's rounded shape fills
+/// `surfaceRaised` while it is held, so a tap answers at once and nothing moves. A row draws its own
+/// selected fill above this one.
+public struct LLARowButtonStyle: ButtonStyle {
+  public init() {}
+
+  public func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .background(
+        RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
+          .fill(configuration.isPressed ? LLA.Color.surfaceRaised : .clear)
+      )
+  }
+}
+
+extension ButtonStyle where Self == LLARowButtonStyle {
+  public static var llaRow: LLARowButtonStyle { LLARowButtonStyle() }
 }
 
 /// A bordered panel: 1 pt rule, radius 16, no shadow.
@@ -117,6 +137,8 @@ public struct LLABadge: View {
     Text(text)
       .font(LLAFont.caption)
       .foregroundStyle(color)
+      .lineLimit(1)
+      .fixedSize()
       .padding(.horizontal, 8)
       .padding(.vertical, 3)
       .background(Capsule().fill(raised ? LLA.Color.surfaceRaised : LLA.Color.surface))
@@ -260,6 +282,49 @@ public struct LLAField: View {
         .stroke(focused ? LLA.Color.accent : LLA.Color.rule, lineWidth: focused ? 2 : 1)
     )
     .focusEffectDisabled()
+  }
+}
+
+/// Label-and-value facts (Diagnostics, a runtime's status): a two-column grid, or each label above
+/// its value at accessibility text sizes, where a label column would leave the value a sliver.
+public struct LLAFacts<Rows: View>: View {
+  @ViewBuilder public var rows: () -> Rows
+  @Environment(\.dynamicTypeSize) private var typeSize
+
+  public init(@ViewBuilder rows: @escaping () -> Rows) { self.rows = rows }
+
+  public var body: some View {
+    if typeSize.isAccessibilitySize {
+      VStack(alignment: .leading, spacing: LLA.Space.m) { rows() }
+    } else {
+      Grid(alignment: .leading, horizontalSpacing: LLA.Space.l, verticalSpacing: LLA.Space.xs) { rows() }
+    }
+  }
+}
+
+/// One fact in `LLAFacts`: a muted label and its value.
+public struct LLAFact<Value: View>: View {
+  public var label: String
+  @ViewBuilder public var value: () -> Value
+  @Environment(\.dynamicTypeSize) private var typeSize
+
+  public init(_ label: String, @ViewBuilder value: @escaping () -> Value) {
+    self.label = label
+    self.value = value
+  }
+
+  public var body: some View {
+    if typeSize.isAccessibilitySize {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(label).llaSmallMuted()
+        value()
+      }
+    } else {
+      GridRow {
+        Text(label).llaSmallMuted()
+        value()
+      }
+    }
   }
 }
 

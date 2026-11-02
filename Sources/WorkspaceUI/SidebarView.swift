@@ -104,6 +104,8 @@ struct SidebarView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        // Rows are exactly their 44 pt target: no untappable band above and below each one.
+        .environment(\.defaultMinListRowHeight, LLA.Metrics.row)
       }
     }
   #endif
@@ -136,17 +138,20 @@ struct SidebarRowLabel: View {
   var trailing: String?
   var selected = false
   @Environment(\.isEnabled) private var isEnabled
+  @Environment(\.dynamicTypeSize) private var typeSize
+  /// The symbol's column grows with the text, so a large size never runs the symbol into the title.
+  @ScaledMetric(relativeTo: .body) private var symbolWidth: CGFloat = 18
 
   var body: some View {
     HStack(spacing: LLA.Space.s) {
       Image(systemName: systemImage)
-        .font(LLAFont.small)
+        .font(LLAFont.row)
         .foregroundStyle(LLA.Color.ink)
-        .frame(width: 18)
+        .frame(width: symbolWidth)
       Text(title)
-        .font(selected ? LLAFont.smallStrong : LLAFont.small)
+        .font(selected ? LLAFont.rowStrong : LLAFont.row)
         .foregroundStyle(LLA.Color.ink)
-        .lineLimit(1)
+        .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
       Spacer(minLength: LLA.Space.s)
       if let trailing {
         Text(trailing).font(LLAFont.caption).foregroundStyle(LLA.Color.muted).lineLimit(1)
@@ -155,6 +160,7 @@ struct SidebarRowLabel: View {
     .opacity(isEnabled ? 1 : 0.45)
     .padding(.horizontal, 10)
     .padding(.vertical, 6)
+    .frame(minHeight: LLA.Metrics.row)
     .background(
       RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
         .fill(selected ? LLA.Color.surfaceRaised : .clear)
@@ -186,7 +192,7 @@ struct SidebarActionRow: View {
     Button(action: action) {
       SidebarRowLabel(title: title, systemImage: systemImage, trailing: shortcut, selected: selected)
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.llaRow)
   }
 }
 

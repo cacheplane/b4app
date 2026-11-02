@@ -64,12 +64,16 @@ struct SearchPalette: View {
             } label: {
               row(thread, highlighted: false)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.llaRow)
+            // The sidebar's row: no separators, the same 6 pt inset and 44 pt height.
+            .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 6))
+            .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
           }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .environment(\.defaultMinListRowHeight, LLA.Metrics.row)
         .background(LLA.Color.bg)
         .searchable(
           text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search threads"
@@ -142,7 +146,7 @@ struct SearchPalette: View {
     HStack(spacing: LLA.Space.s) {
       AttentionDot(band: model.band(of: thread))
       Text(ThreadSearch.shownTitle(thread))
-        .font(LLAFont.small)
+        .font(LLAFont.row)
         .foregroundStyle(LLA.Color.ink)
         .lineLimit(1)
       if let project = model.projectName(for: thread) {
@@ -156,6 +160,7 @@ struct SearchPalette: View {
     }
     .padding(.horizontal, 10)
     .padding(.vertical, 7)
+    .frame(minHeight: LLA.Metrics.row)
     .background(
       RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
         .fill(highlighted ? LLA.Color.surfaceRaised : .clear)

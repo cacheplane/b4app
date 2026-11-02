@@ -27,7 +27,7 @@ struct LocalServersView: View {
         LLASectionHead("Add a project").padding(.top, LLA.Space.l)
         AddProjectForm(model: model)
       }
-      .padding(LLA.Space.xl)
+      .padding(LLA.Metrics.margin)
       .frame(maxWidth: 820, alignment: .leading)
       .frame(maxWidth: .infinity, alignment: .leading)
     }

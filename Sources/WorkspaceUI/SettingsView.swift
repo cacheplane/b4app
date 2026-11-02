@@ -123,8 +123,13 @@ public struct WorkspaceSettingsView: View {
               .font(LLAFont.body)
               .foregroundStyle(LLA.Color.ink)
           }
+          .listRowBackground(LLA.Color.surface)
         }
         .listStyle(.insetGrouped)
+        // Surface rows on the page background, as the theme's cards sit, in place of the system's
+        // grouped greys (which differ from the palette in both appearances).
+        .scrollContentBackground(.hidden)
+        .background(LLA.Color.bg)
         .navigationTitle("Settings")
         .navigationDestination(for: SettingsPage.self) { page in
           page.view(model: model)
