@@ -331,8 +331,8 @@ pub async fn list(db: &Db, org_id: Uuid, user_id: Uuid) -> Result<Vec<DeviceSumm
     Ok(devices)
 }
 
-/// Revokes the device: deletes its token rows and sets `devices.revoked_at`. Uploaded history is
-/// kept. Idempotent.
+/// Revokes the device: deletes its token rows, sets `devices.revoked_at`, and withdraws the pairing
+/// codes it minted that are still unused. Uploaded history is kept. Idempotent.
 pub async fn revoke_self(db: &Db, org_id: Uuid, device_id: Uuid) -> Result<()> {
     let mut tx = db.tenant_tx(org_id).await?;
     sqlx::query("UPDATE devices SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL")
@@ -343,6 +343,14 @@ pub async fn revoke_self(db: &Db, org_id: Uuid, device_id: Uuid) -> Result<()> {
         .bind(device_id)
         .execute(&mut *tx)
         .await?;
+    // A pairing code this Mac minted and nobody redeemed yet is withdrawn with it.
+    sqlx::query(
+        "UPDATE enrollment_codes SET used_at = now() \
+         WHERE created_by_device_id = $1 AND used_at IS NULL",
+    )
+    .bind(device_id)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(())
 }

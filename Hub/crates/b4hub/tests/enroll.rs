@@ -920,3 +920,39 @@ async fn the_answer_carries_the_public_hub_url_when_one_is_set(pool: PgPool) {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["hubURL"], "https://hub.example.test/");
 }
+
+#[sqlx::test(migrations = false)]
+async fn a_revoked_macs_unused_pairing_code_cannot_be_redeemed(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let seeded = seed_blove(&admin).await;
+    let (mac_token, _) = enroll_as(&admin, &state, &seeded, "macos").await;
+    let (other_token, _) = enroll_as(&admin, &state, &seeded, "macos").await;
+    let (_, body) = mint(&state, &mac_token).await;
+    let code = body["code"].as_str().unwrap().to_string();
+    // Another Mac's code is not the revoked Mac's to withdraw.
+    let (_, body) = mint(&state, &other_token).await;
+    let kept = body["code"].as_str().unwrap().to_string();
+
+    let (status, _) = send(&state, "DELETE", "/v1/devices/self", Some(&mac_token), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, body) = send(
+        &state,
+        "POST",
+        "/v1/enroll",
+        None,
+        Some(&phone_enroll_body(&code)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(error_code(&body), "invalid_code");
+    let (status, body) = send(
+        &state,
+        "POST",
+        "/v1/enroll",
+        None,
+        Some(&phone_enroll_body(&kept)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}

@@ -203,8 +203,9 @@ revoked). `lastSeenAt` is written at most once a minute per device. Errors: `401
 
 Revoke the calling device: its token rows are deleted and `devices.revoked_at` is set. Changes the
 device already uploaded stay in the feed. `204` with no body. The token stops working
-immediately; the next request with it is `401 unauthorized`. If the device has an open link
-(see *Link*), the hub closes it with code 4001. Errors: `401 unauthorized`.
+immediately; the next request with it is `401 unauthorized`. A pairing code the device minted
+that is still unused is withdrawn with it (redeeming it is then `401 invalid_code`). If the device
+has an open link (see *Link*), the hub closes it with code 4001. Errors: `401 unauthorized`.
 
 ### `GET /v1/devices/self/link`
 
