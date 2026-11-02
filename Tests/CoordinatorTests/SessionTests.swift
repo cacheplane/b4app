@@ -79,7 +79,7 @@ struct Harness {
 
   static func start(
     paths: PlatformPaths? = nil, extraEnvironment: [String: String] = [:],
-    secretStore: any SecretStore = MemorySecretStore()
+    secretStore: any SecretStore = MemorySecretStore(), checkRetryDelays: [Duration] = [.zero, .zero]
   ) async throws -> Harness {
     let paths = try paths ?? temporaryPaths()
     // The fixture is a Python script, so the child needs the real PATH; Node lookups stay isolated.
@@ -91,7 +91,7 @@ struct Harness {
     // A check retries without waiting here, so a failing check costs nothing in other tests.
     let outcome = try await Coordinator.start(
       options: CoordinatorOptions(
-        paths: paths, environment: env, secretStore: secretStore, checkRetryDelays: [.zero, .zero]))
+        paths: paths, environment: env, secretStore: secretStore, checkRetryDelays: checkRetryDelays))
     guard case .running(let coordinator) = outcome else {
       throw WorkspaceError(.internalError, "expected running")
     }

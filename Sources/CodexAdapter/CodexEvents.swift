@@ -139,11 +139,9 @@ public enum CodexEventTranslator {
           adapterGeneration: generation)
       ]
     case "account/rateLimits/updated":
-      guard let reading = CodexUsage.reading(from: params, observedAt: Timestamp.now()),
-        let event = try? AdapterEvent.usageChanged(
-          connectionId: connectionId, reading: reading, adapterGeneration: generation)
-      else { return [] }
-      return [event]
+      // Sparse: no `ordinaryUsageAllowed`, and a window or the plan may be missing. The adapter answers
+      // it with a full `account/rateLimits/read` (`CodexAdapter.followRateLimits`).
+      return []
     case "account/login/completed":
       let success = params["success"]?.boolValue ?? false
       return [

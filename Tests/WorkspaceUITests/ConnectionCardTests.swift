@@ -91,4 +91,36 @@ private func connection(
       observedAt: "2026-11-02T00:00:00.000Z")
     #expect(ConnectionSummary.windows(both).map(\.title) == ["5-hour", "Weekly"])
   }
+
+  @Test func aRefusalEndsWhenItsWindowResets() {
+    let now = Timestamp.date(from: "2026-11-02T12:00:00.000Z")!
+    func reading(_ fiveHour: (Double, String)?, _ weekly: (Double, String)?) -> UsageReading {
+      UsageReading(
+        fiveHour: fiveHour.map { UsageWindow(usedPercent: $0.0, resetsAt: $0.1) },
+        weekly: weekly.map { UsageWindow(usedPercent: $0.0, resetsAt: $0.1) }, blocked: true,
+        observedAt: "2026-11-02T09:00:00.000Z")
+    }
+    // The capped 5-hour window has reset: no longer blocked, though the week resets later.
+    #expect(
+      !ConnectionSummary.isBlocked(
+        reading((100, "2026-11-02T11:00:00.000Z"), (40, "2026-11-05T09:00:00.000Z")), now: now))
+    // The capped weekly window has not reset.
+    #expect(
+      ConnectionSummary.isBlocked(
+        reading((20, "2026-11-02T11:00:00.000Z"), (100, "2026-11-05T09:00:00.000Z")), now: now))
+    // Nothing capped: the refusal lasts until the first reset.
+    #expect(!ConnectionSummary.isBlocked(reading((80, "2026-11-02T11:00:00.000Z"), nil), now: now))
+    #expect(ConnectionSummary.isBlocked(reading((80, "2026-11-02T13:00:00.000Z"), nil), now: now))
+    // No reset time: it holds.
+    #expect(ConnectionSummary.isBlocked(reading((100, ""), nil), now: now))
+    var open = reading((100, "2026-11-02T13:00:00.000Z"), nil)
+    open.blocked = false
+    #expect(!ConnectionSummary.isBlocked(open, now: now))
+  }
+
+  @Test func usageBeforeAnyReportSaysSo() {
+    #expect(ConnectionSummary.noUsage(.codex) == "Usage unavailable")
+    #expect(ConnectionSummary.noUsage(.claude) == "Usage appears after the first turn")
+    #expect(ConnectionSummary.noUsage(.b4) == "Token use appears after the first turn")
+  }
 }

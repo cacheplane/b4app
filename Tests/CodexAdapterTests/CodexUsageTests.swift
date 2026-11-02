@@ -70,13 +70,27 @@ private func snapshot(
     await adapter.dispose()
   }
 
-  @Test func rateLimitsUpdatedBecomesAUsageEvent() throws {
+  @Test func rateLimitsUpdatedIsNotTakenAsAReading() {
     let message = RpcMessage.notification(
       method: "account/rateLimits/updated", params: ["rateLimits": snapshot()["rateLimits"] ?? .null])
-    let events = CodexEventTranslator.translate(message, connectionId: "c1", generation: 1)
-    let event = try #require(events.first)
-    #expect(event.kind == .usageChanged)
+    #expect(CodexEventTranslator.translate(message, connectionId: "c1", generation: 1).isEmpty)
+  }
+
+  /// `account/rateLimits/updated` is sparse: it carries no `ordinaryUsageAllowed` and may omit the plan
+  /// and a window. The adapter answers it with a full read, so a refusal is not lost after a turn.
+  @Test func aSparsePushIsAnsweredWithAFullRead() async throws {
+    var environment = ProcessInfo.processInfo.environment
+    environment["FAKE_CODEX_BLOCKED"] = "1"
+    let adapter = CodexAdapter(
+      connectionId: "c1", executablePath: fakeCodexPath(), environment: environment, clientVersion: "test")
+    let collector = EventCollector(adapter.events())
+    let ref = try await adapter.createSession(NewSessionInput(workingDirectory: "/tmp/work"))
+    _ = try await adapter.sendTurn(ref, input: TurnInput(operationId: "op1", text: "hello"))
+    let event = try await collector.waitFor { $0.kind == .usageChanged }
     let reading = try #require(try event.payload["reading"]?.decode(UsageReading.self))
-    #expect(reading.fiveHour?.usedPercent == 62)
+    #expect(reading.blocked)
+    #expect(reading.planType == "pro")
+    #expect(reading.weekly?.usedPercent == 31)
+    await adapter.dispose()
   }
 }

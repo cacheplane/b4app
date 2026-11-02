@@ -261,7 +261,13 @@ public enum ConnectionAdd: WorkspaceCommand {
 public enum ConnectionInspect: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
     public var connectionId: String
-    public init(connectionId: String) { self.connectionId = connectionId }
+    /// Answer at once with the stored connection and report the check through `connection.changed`, so
+    /// a check that retries never holds the client's requests (settings connections, D-073).
+    public var background: Bool?
+    public init(connectionId: String, background: Bool? = nil) {
+      self.connectionId = connectionId
+      self.background = background
+    }
   }
   public typealias Result = ConnectionAdd.Result
   public static let method = Method.connectionInspect

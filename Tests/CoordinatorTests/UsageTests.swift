@@ -72,8 +72,13 @@ extension Harness {
     let server = try await FakeB4.start()
     let h = try await Harness.start()
     let b4 = try await h.addB4(server).connection
-    #expect(try await h.usage(b4.id)?.tokens == TokenTotals(today: 0, week: 0))
+    // Nothing reported yet is no figure, not zero.
+    #expect(try await h.usage(b4.id)?.tokens == nil)
     let thread = try await h.newB4Thread(b4)
+    let failed = try await h.send(thread, "fail please")
+    _ = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == failed.id }
+    try await server.waitForRunToEnd(nativeThreadId: thread.nativeThreadId)
+    #expect(try await h.usage(b4.id)?.tokens == nil)
     for text in ["hello", "use a tool"] {
       let turn = try await h.send(thread, text)
       _ = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
@@ -185,5 +190,66 @@ extension Harness {
     #expect(try await secrets.read(try #require(SecretRef(rawValue: shared))) == "shared")
     await h.stop()
     await server.stop()
+  }
+
+  @Test func aKeyChangeWaitsForTheRunningTurn() async throws {
+    let server = try await FakeB4.start()
+    let h = try await Harness.start()
+    let key = try await h.storeCredential("k")
+    let b4 = try await h.addB4(server, label: "B4").connection
+    let thread = try await h.newB4Thread(b4)
+    let turn = try await h.send(thread, "hang here")
+    _ = try await h.events.waitFor { $0.kind == .messageDelta && $0.threadId == thread.id }
+    for params in [
+      ConnectionUpdate.Params(connectionId: b4.id, authReference: key),
+      ConnectionUpdate.Params(connectionId: b4.id, clearAuth: true),
+    ] {
+      do {
+        _ = try await h.update(params)
+        Issue.record("a key change must wait for the running turn")
+      } catch let error as WorkspaceError {
+        #expect(error.details?["reason"]?.stringValue == "turn_active")
+      }
+    }
+    // A rename does not touch the adapter, so it is allowed mid-turn.
+    #expect(
+      try await h.update(ConnectionUpdate.Params(connectionId: b4.id, label: "Renamed")).connection.label
+        == "Renamed")
+    _ = try await h.client.request(
+      TurnInterrupt.self, TurnInterrupt.Params(threadId: thread.id),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    _ = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    await h.stop()
+    await server.stop()
+  }
+
+  /// A background check answers at once and reports through events, so it never holds the socket (the
+  /// coordinator serves one client's requests in order) while it retries.
+  @Test func aBackgroundCheckAnswersAtOnce() async throws {
+    let h = try await Harness.start(checkRetryDelays: [.seconds(1), .seconds(1)])
+    let added = try await h.client.request(
+      ConnectionAdd.self,
+      ConnectionAdd.Params(kind: .b4, label: "Gone", url: "http://127.0.0.1:9", route: "/chat#agent"),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(60)))
+    let clock = ContinuousClock()
+    let started = clock.now
+    let startedAt = Date()
+    let answer = try await h.client.request(
+      ConnectionInspect.self, ConnectionInspect.Params(connectionId: added.connection.id, background: true),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    #expect(clock.now - started < .milliseconds(800))
+    #expect(answer.connection.id == added.connection.id)
+    // The socket is free: another request answers while the check retries.
+    _ = try await h.client.request(ConnectionList.self, ConnectionList.Params())
+    #expect(clock.now - started < .milliseconds(900))
+    // The check's result arrives later, as the closing `connection.changed` after its three tries.
+    let attempts = try await h.events.waitFor {
+      $0.kind == .connectionChanged && $0.connectionId == added.connection.id
+        && $0.payload["attempt"]?.numberValue == 3
+        && (Timestamp.date(from: $0.at) ?? .distantPast) > startedAt
+    }
+    #expect(attempts.payload["attempts"]?.numberValue == 3)
+    #expect(clock.now - started > .seconds(1))
+    await h.stop()
   }
 }

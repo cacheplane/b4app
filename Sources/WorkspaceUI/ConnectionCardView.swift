@@ -4,11 +4,15 @@ import WorkspaceProtocol
 /// The line under a connection's name: the plan and account, the try while checking, or the reason in
 /// a few words when it needs you. Pure, so the copy is pinned by tests.
 enum ConnectionSummary {
-  static func subtitle(_ connection: Connection, reading: UsageReading?, check: ConnectionCheck?) -> String {
+  static func subtitle(
+    _ connection: Connection, reading: UsageReading?, check: ConnectionCheck?, now: Date = Date()
+  ) -> String {
     if let check {
       return check.attempt > 1 ? "Checking… try \(check.attempt) of \(check.attempts)" : "Checking…"
     }
-    if let reason = reason(connection, blocked: reading?.blocked ?? false) { return reason }
+    if let reason = reason(connection, blocked: reading.map { isBlocked($0, now: now) } ?? false) {
+      return reason
+    }
     if connection.kind == .b4 { return host(connection.target) ?? connection.target }
     let plan = reading?.planType.flatMap(planName)
     guard let account = connection.nativeScope, !account.isEmpty else { return plan ?? "Not signed in" }
@@ -30,6 +34,27 @@ enum ConnectionSummary {
     if [.required, .error].contains(connection.authStatus) { return "Sign-in needed" }
     if blocked { return "Usage limit reached" }
     return nil
+  }
+
+  /// Whether the plan still refuses use. A refusal ends when the window that ran out resets (Claude
+  /// reports only during a turn, so the reading can outlive it); with no window at its cap, when the
+  /// first window resets. Without a reset time it holds.
+  static func isBlocked(_ reading: UsageReading, now: Date) -> Bool {
+    guard reading.blocked else { return false }
+    let windows = [reading.fiveHour, reading.weekly].compactMap { $0 }
+    let capped = windows.filter { $0.usedPercent >= 100 }
+    let resets = (capped.isEmpty ? windows : capped).compactMap { $0.resetsAt.flatMap(Timestamp.date(from:)) }
+    guard !resets.isEmpty else { return true }
+    return capped.isEmpty ? resets.min()! > now : resets.contains { $0 > now }
+  }
+
+  /// The line in place of usage before a runtime has reported any.
+  static func noUsage(_ kind: ConnectionKind) -> String {
+    switch kind {
+    case .codex: return "Usage unavailable"
+    case .claude: return "Usage appears after the first turn"
+    case .b4: return "Token use appears after the first turn"
+    }
   }
 
   /// "localhost:3000" from "http://localhost:3000".
@@ -73,12 +98,14 @@ struct ConnectionCardView: View {
   private var check: ConnectionCheck? { model.checks[connection.id] }
 
   var body: some View {
-    let status = LLAStatus(
-      connection: connection, checking: check != nil, blocked: usage?.reading?.blocked ?? false)
-    LLACard(fill: .surface) {
-      VStack(alignment: .leading, spacing: LLA.Space.m) {
-        header(status)
-        TimelineView(.periodic(from: .now, by: 30)) { context in
+    // The card ages with the clock: reset times count down and a refusal ends when its window resets.
+    TimelineView(.periodic(from: .now, by: 30)) { context in
+      let blocked = usage?.reading.map { ConnectionSummary.isBlocked($0, now: context.date) } ?? false
+      LLACard(fill: .surface) {
+        VStack(alignment: .leading, spacing: LLA.Space.m) {
+          header(
+            LLAStatus(connection: connection, checking: check != nil, blocked: blocked), blocked: blocked,
+            now: context.date)
           details(now: context.date)
         }
       }
@@ -89,8 +116,8 @@ struct ConnectionCardView: View {
 
   /// One row: the mark, the name over its detail, the status icon and menu. At accessibility sizes the
   /// name and detail take a row of their own under the mark and icon, so they wrap at words.
-  @ViewBuilder private func header(_ status: LLAStatus) -> some View {
-    let subtitle = ConnectionSummary.subtitle(connection, reading: usage?.reading, check: check)
+  @ViewBuilder private func header(_ status: LLAStatus, blocked: Bool, now: Date) -> some View {
+    let subtitle = ConnectionSummary.subtitle(connection, reading: usage?.reading, check: check, now: now)
     let names = VStack(alignment: .leading, spacing: 2) {
       Text(connection.label).font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
         .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
@@ -103,7 +130,7 @@ struct ConnectionCardView: View {
     let icons = HStack(spacing: LLA.Space.s) {
       LLAStatusIcon(
         status: status,
-        detail: ConnectionSummary.reason(connection, blocked: usage?.reading?.blocked ?? false))
+        detail: ConnectionSummary.reason(connection, blocked: blocked))
       if WorkspaceDevice.managesWorkspace { menu }
     }
     let mark = RuntimeMark(kind: connection.kind, height: 16).frame(width: markSlot, height: markSlot)
@@ -159,6 +186,8 @@ struct ConnectionCardView: View {
           figure("Today", tokens.today)
           figure("This week", tokens.week)
         }
+      } else {
+        note(ConnectionSummary.noUsage(.b4))
       }
     } else if let reading = usage?.reading, reading.fiveHour != nil || reading.weekly != nil {
       VStack(alignment: .leading, spacing: LLA.Space.s) {
@@ -168,7 +197,7 @@ struct ConnectionCardView: View {
         }
       }
     } else {
-      note(connection.kind == .claude ? "Usage appears after the first turn" : "Usage unavailable")
+      note(ConnectionSummary.noUsage(connection.kind))
     }
   }
 

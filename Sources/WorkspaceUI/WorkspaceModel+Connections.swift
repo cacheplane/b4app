@@ -59,6 +59,20 @@ extension WorkspaceModel {
     return true
   }
 
+  /// A check nobody waits for (the Connections page opening): the coordinator answers at once and
+  /// reports through events, and the model is never marked busy, so sending and approvals stay free.
+  /// A connection checked in the last two minutes is left alone. Returns whether a check was asked for.
+  @discardableResult
+  public func checkInBackground(id: String) async -> Bool {
+    guard let client else { return false }
+    if let last = lastChecked[id], Date().timeIntervalSince(last) < 120 { return false }
+    lastChecked[id] = Date()
+    _ = try? await client.request(
+      ConnectionInspect.self, ConnectionInspect.Params(connectionId: id, background: true),
+      options: Self.mutation())
+    return true
+  }
+
   /// Check a connection again; progress arrives as `checks`, the result as the connection's status.
   public func checkConnection(id: String) async {
     await inspectConnection(id: id)

@@ -60,6 +60,8 @@ public actor SessionService {
   let context: Context
   var adapters: [String: any AgentAdapter] = [:]
   var pumps: [String: Task<Void, Never>] = [:]
+  /// Connections with a background check in progress (`inspectInBackground`).
+  var runningChecks: Set<String> = []
   private let logger = Log.logger("sessions")
   var db: WorkspaceDatabase { context.database }
 
@@ -268,6 +270,7 @@ public actor SessionService {
 
   public func connectionInspect(_ params: ConnectionInspect.Params) async throws -> ConnectionAdd.Result {
     let (connection, adapter) = try connectionAndAdapter(id: params.connectionId)
+    if params.background == true { return inspectInBackground(connection) }
     let inspection: ConnectionInspection
     if let outage = await managedServerOutage(connection) {
       inspection = ConnectionInspection(

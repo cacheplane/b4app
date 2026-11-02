@@ -16,6 +16,10 @@ extension SessionService {
       case .codex, .claude:
         return ConnectionUsage(connectionId: connection.id, reading: readings[connection.id])
       case .b4:
+        // A server that has never reported tokens has no figure, rather than zero (D-074).
+        guard try db.hasTokenUsage(connectionId: connection.id) else {
+          return ConnectionUsage(connectionId: connection.id)
+        }
         return ConnectionUsage(
           connectionId: connection.id,
           tokens: TokenTotals(
@@ -74,18 +78,44 @@ extension SessionService {
     let delays = context.checkRetryDelays
     let attempts = delays.count + 1
     var attempt = 1
-    while true {
+    do {
+      while true {
+        await context.eventLog.publish(
+          AdapterEvent.connectionChanged(
+            connectionId: connection.id, status: .connecting, authStatus: connection.authStatus,
+            transport: .disconnected, message: "Checking…", attempt: attempt, attempts: attempts))
+        let inspection = try await adapter.inspectConnection()
+        let unreachable = inspection.status == .offline || inspection.error?.code == .endpointUnavailable
+        guard unreachable, attempt < attempts else { return inspection }
+        try await Task.sleep(for: delays[attempt - 1])
+        attempt += 1
+      }
+    } catch {
+      // A check that ends early (the runtime threw, or the wait was cancelled) still closes, so no card
+      // is left spinning: the connection goes back to what was stored.
       await context.eventLog.publish(
         AdapterEvent.connectionChanged(
-          connectionId: connection.id, status: .connecting, authStatus: connection.authStatus,
-          transport: .disconnected, message: "Checking…", attempt: attempt, attempts: attempts))
-      let inspection = try await adapter.inspectConnection()
-      let unreachable = inspection.status == .offline || inspection.error?.code == .endpointUnavailable
-      guard unreachable, attempt < attempts else { return inspection }
-      try await Task.sleep(for: delays[attempt - 1])
-      attempt += 1
+          connectionId: connection.id, status: connection.status, authStatus: connection.authStatus,
+          transport: .disconnected, message: WorkspaceError.from(error).message))
+      throw error
     }
   }
+
+  /// A check the caller does not wait for: it answers with the stored connection at once and reports
+  /// through `connection.changed` and `usage.changed`. One check per connection runs at a time.
+  func inspectInBackground(_ connection: Connection) -> ConnectionAdd.Result {
+    if !runningChecks.contains(connection.id) {
+      runningChecks.insert(connection.id)
+      Task {
+        _ = try? await self.connectionInspect(ConnectionInspect.Params(connectionId: connection.id))
+        self.finishCheck(connection.id)
+      }
+    }
+    return ConnectionAdd.Result(
+      connection: connection, inspection: ConnectionInspection(status: connection.status))
+  }
+
+  private func finishCheck(_ connectionId: String) { runningChecks.remove(connectionId) }
 
   // MARK: - Editing
 
@@ -100,6 +130,12 @@ extension SessionService {
     let changesAuth = params.authReference != nil || params.clearAuth == true
     if changesAuth, connection.kind != .b4 {
       throw WorkspaceError(.protocolInvalid, "Only a B4 connection takes a credential reference.")
+    }
+    // A new key means a new adapter, and dropping the old one would cut off a turn in flight.
+    if changesAuth, let running = try db.unresolvedTurns(connectionId: connection.id).first {
+      throw WorkspaceError(
+        .protocolInvalid, "A turn is running on this connection. Change the key when it finishes.",
+        details: ["reason": "turn_active", "turnId": .string(running.id)])
     }
     if let reference = params.authReference {
       guard let ref = SecretRef(rawValue: reference) else {

@@ -42,6 +42,15 @@ extension WorkspaceDatabase {
     }
   }
 
+  /// Whether any of the connection's turns has reported tokens; until one has, there is no figure.
+  public func hasTokenUsage(connectionId: String) throws -> Bool {
+    try read {
+      !(try $0.execute(
+        "SELECT 1 FROM \"tokenUsage\" WHERE \"connectionId\" = $1 LIMIT 1", [connectionId]
+      ).rows.isEmpty)
+    }
+  }
+
   /// Tokens the connection's turns used at or after `since` (an ISO-8601 UTC timestamp).
   public func tokenTotals(connectionId: String, since: String) throws -> Int {
     try read {

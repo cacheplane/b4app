@@ -111,6 +111,9 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
         }
         return
       }
+      if case .notification("account/rateLimits/updated", _) = message {
+        Task { await self.followRateLimits(generation: generation) }
+      }
       if case .notification("serverRequest/resolved", let params) = message {
         let requestId = params["requestId"]
         let key = requestId?.stringValue ?? requestId?.numberValue.map { String(Int($0)) } ?? ""
@@ -168,6 +171,16 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
     let server = try await ensureStarted()
     let result = try await server.request("account/rateLimits/read", .null)
     return CodexUsage.reading(from: result, observedAt: Timestamp.now())
+  }
+
+  /// Codex's push says only that something moved, and not all of it (the schema calls it sparse and
+  /// says to merge or refetch): refetch, so a refusal or the plan is never dropped.
+  private func followRateLimits(generation: Int) async {
+    guard let reading = try? await readUsage(),
+      let event = try? AdapterEvent.usageChanged(
+        connectionId: connectionId, reading: reading, adapterGeneration: generation)
+    else { return }
+    eventContinuation.yield(event)
   }
 
   /// Start the official ChatGPT sign-in. The caller opens `authUrl` in the system browser; completion

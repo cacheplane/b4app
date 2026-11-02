@@ -49,14 +49,13 @@ struct ConnectionsView: View {
       await model.refreshUsage()
       guard WorkspaceDevice.managesWorkspace else { return }
       if model.diagnostics == nil { await model.refreshDiagnostics() }
-      // A check per connection when the page opens, side by side; each card shows its own progress. A
-      // connection with a turn in progress is plainly working, so it is left alone.
+      // A check per connection when the page opens, in the background so nothing waits on it; each card
+      // shows its own progress. A connection with a turn in progress is plainly working, so it is left
+      // alone, and one checked in the last two minutes is not checked again.
       let busy = Set(
         model.activeTurns.keys.compactMap { id in model.threads.first { $0.id == id }?.connectionId })
-      await withTaskGroup(of: Void.self) { group in
-        for connection in model.connections where !busy.contains(connection.id) {
-          group.addTask { await model.checkConnection(id: connection.id) }
-        }
+      for connection in model.connections where !busy.contains(connection.id) {
+        await model.checkInBackground(id: connection.id)
       }
     }
   }

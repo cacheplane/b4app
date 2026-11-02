@@ -91,7 +91,8 @@ def finish_turn(thread_id, turn_id, status, error=None):
     notify("turn/completed", {"threadId": thread_id,
                               "turn": {"id": turn_id, "status": status, "items": [], "error": error}})
     notify("thread/status/changed", {"threadId": thread_id, "status": {"type": "idle"}})
-    notify("account/rateLimits/updated", {"rateLimits": rate_limits()})
+    # Sparse, as the real one is: one window, no plan, no ordinaryUsageAllowed.
+    notify("account/rateLimits/updated", {"rateLimits": {"limitId": "codex", "primary": rate_limits()["primary"]}})
 
 
 turn_counter = 0
@@ -118,7 +119,8 @@ while True:
                                                    "planType": "plus", "workspaceName": None},
                                        "requiresOpenaiAuth": True}})
     elif method == "account/rateLimits/read":
-        send({"id": req_id, "result": {"rateLimits": rate_limits(), "ordinaryUsageAllowed": True}})
+        allowed = os.environ.get("FAKE_CODEX_BLOCKED") != "1"
+        send({"id": req_id, "result": {"rateLimits": rate_limits(), "ordinaryUsageAllowed": allowed}})
     elif method == "account/login/start":
         send({"id": req_id, "result": {"type": "chatgpt", "authUrl": "https://auth.example/login?state=1",
                                        "loginId": "login_1"}})

@@ -96,6 +96,8 @@ public final class WorkspaceModel {
   public internal(set) var usage: [String: ConnectionUsage] = [:]
   /// Checks in progress that have said which try they are on, per connection id.
   public internal(set) var checks: [String: ConnectionCheck] = [:]
+  /// When this window last asked for a background check of each connection.
+  var lastChecked: [String: Date] = [:]
   /// Latest redacted log tail per server id, replaced on each poll.
   public private(set) var serverLogs: [String: ServerLogs.Result] = [:]
   /// A stop or restart the coordinator refused because a turn is running; the view confirms force.
@@ -399,6 +401,8 @@ public final class WorkspaceModel {
     guard let client else { return }
     let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
     connections = snapshot.connections
+    // Progress from before the snapshot may never see its closing event.
+    checks = [:]
     threads = snapshot.threads
     activeTurns = Dictionary(
       snapshot.activeTurns.map { ($0.threadId, $0) }, uniquingKeysWith: { _, new in new })
