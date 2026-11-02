@@ -58,6 +58,19 @@ Setup, isolated from the owner's app, the Compose hub on port 8080, and the sign
 
 Screenshots: notification, banner, the thread opened from it, the widget before and after (kept with the session; not committed).
 
+### Live gate again, after merging sign-in (2026-11-02, 12:05 to 12:19 PST)
+
+The phone code changed in the merge (flavours, accounts), so the gate ran again on the merged branch: the Debug build (local flavour, `com.cacheplane.b4app.ios.local`, App Group `group.com.cacheplane.b4app.local`) on the same Simulator, against a fresh `b4hub-m8f` stack built from the branch. The Mac was played by a script that enrolled a `macos` device with an enrollment code and pushed the rows a coordinator uploads (a connection, a project, three threads, then a turn with a pending command approval and its answer), because the merged debug coordinator now asks for Keychain access to the hub token and that prompt was not answered. The hub, the spool, `sim-push.sh`, and the phone were the real ones.
+
+| Exit item | Result |
+| --- | --- |
+| Sign-in and token | Pass. "Use an enrollment code" signed the phone in; after "Allow" the hub held one `sandbox` token for `com.cacheplane.b4app.ios.local`. |
+| App in the background, an approval notifies within five seconds | Pass. The push returned at 12:07:07.994 (spool file 12:07:07.990) and `sim-push.sh` finished sending at 12:07:08.900; the banner read "M8f approval check" / "Waiting for your approval". |
+| Tapping opens the thread | Pass. From the background, a "Replied" banner tapped while it showed opened "M8f quiet thread" (12:19); in the foreground a banner tap and `xcrun simctl openurl b4app-local://thread/<id>` opened theirs. A first attempt seemed to fail; the SpringBoard log showed the tap had landed on the widget after the banner timed out, and a widget row tapped from the background opened its thread. |
+| The widget shows the top three and updates | Pass. The medium widget (from the flavour's group) listed the three threads with the project "gate", moved "M8f approval check" to the top with the needs-input dot behind the first banner, and showed "M8f quiet thread" as unread behind the "Replied" banner, both while the app was in the background. |
+
+The approval card read "cannot be answered here" because the script's request payload lacks fields a real Codex approval carries; it does not bear on M8f.
+
 ### Not exercised, and blocked
 
 - APNs, a real iPhone, and TestFlight: `blocked` on the deploy slice (Developer Program key, the App Group, push capability, and the widget's App ID on the portal). `B4HUB_PUSH_SENDER=apns` refuses to start.
