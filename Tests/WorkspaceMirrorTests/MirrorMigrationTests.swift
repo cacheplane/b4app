@@ -97,8 +97,8 @@ private func writeVersion1File(_ path: String) throws {
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
     #expect(try raw.integer("PRAGMA user_version") == MirrorSchema.version)
-    #expect(MirrorSchema.version == 2)
-    #expect(MirrorSchema.migrations.map(\.version) == [1, 2])
+    #expect(MirrorSchema.version == 3)
+    #expect(MirrorSchema.migrations.map(\.version) == [1, 2, 3])
     for table in ["projects", "projectFolders", "devices", "outbox", "columnClocks"] {
       #expect(try raw.integer("SELECT count(*) FROM sqlite_master WHERE name = '\(table)'") == 1, "\(table)")
     }
@@ -123,10 +123,10 @@ private func writeVersion1File(_ path: String) throws {
 
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
-    #expect(try raw.integer("PRAGMA user_version") == 2)
+    #expect(try raw.integer("PRAGMA user_version") == 3)
     for (table, column) in [
       ("threads", "projectId"), ("threads", "readTurnId"), ("threads", "ownerDeviceId"),
-      ("connections", "ownerDeviceId"), ("projects", "ownerDeviceId"),
+      ("connections", "ownerDeviceId"), ("projects", "ownerDeviceId"), ("connections", "projectId"),
     ] {
       #expect(
         try raw.integer("SELECT count(*) FROM pragma_table_info('\(table)') WHERE name = '\(column)'") == 1,
@@ -138,6 +138,50 @@ private func writeVersion1File(_ path: String) throws {
   }
 
   /// Review Focus 5: a newer file holding unsent edits is reported, never replaced.
+  /// M8b's file gains `connections.projectId` in place, keeping its rows, cursor, link, and outbox.
+  @Test func migratesV2ToV3() throws {
+    let path = temporaryPath()
+    defer { MirrorStoreTests.remove(path) }
+    try writeVersion1File(path)
+    do {
+      let raw = try RawSQLite(path: path)
+      defer { raw.close() }
+      let v2 = try #require(MirrorSchema.migrations.first { $0.version == 2 })
+      try raw.exec("BEGIN")
+      for statement in v2.statements { try raw.exec(statement) }
+      try raw.exec(
+        #"INSERT INTO "outbox" ("deviceSeq", "hlc", "table", "rowId", "op", "column", "value") "#
+          + #"VALUES (1, '019a396c76e8-0000-phone-1', 'threads', 'thread-1', 'update', 'title', '"x"')"#)
+      try raw.exec(#"UPDATE "syncState" SET "lastDeviceSeq" = 1 WHERE "id" = 1"#)
+      try raw.exec("PRAGMA user_version = 2")
+      try raw.exec("COMMIT")
+    }
+
+    let store = try MirrorStore(path: path)
+    #expect(store.cursor == 42)
+    #expect(try store.link() == phoneLink)
+    #expect(store.outboxCount == 1)
+    let connection = try #require(try store.connections().first)
+    #expect(connection.id == "conn-1" && connection.projectId == nil)
+    let raw = try RawSQLite(path: path)
+    defer { raw.close() }
+    #expect(try raw.integer("PRAGMA user_version") == 3)
+    #expect(
+      try raw.integer(#"SELECT count(*) FROM pragma_table_info('connections') WHERE name = 'projectId'"#) == 1
+    )
+  }
+
+  /// The Mac's `projectId` (a local B4 connection's project) arrives in the change log and is kept.
+  @Test func connectionProjectIdIsStored() throws {
+    let store = try MirrorStore.inMemory()
+    _ = try store.apply(Array(try fixtureAsStored().prefix(1)))
+    #expect(try store.connections().first?.projectId == "project-1")
+    _ = try store.apply([change("connections", "conn-1", "update", column: "projectId", value: "project-2")])
+    #expect(try store.connections().first?.projectId == "project-2")
+    _ = try store.apply([change("connections", "conn-1", "update", column: "projectId", value: .null)])
+    #expect(try store.connections().first?.projectId == nil)
+  }
+
   @Test func failedMigrationWithPendingEditsKeepsTheFile() throws {
     let path = temporaryPath()
     defer { MirrorStoreTests.remove(path) }
@@ -150,7 +194,7 @@ private func writeVersion1File(_ path: String) throws {
     }
     do {
       let raw = try RawSQLite(path: path)
-      try raw.exec("PRAGMA user_version = 3")
+      try raw.exec("PRAGMA user_version = 4")
       raw.close()
     }
     let before = bytes(path)
@@ -160,7 +204,7 @@ private func writeVersion1File(_ path: String) throws {
     #expect(bytes(path) == before)
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
-    #expect(try raw.integer("PRAGMA user_version") == 3)
+    #expect(try raw.integer("PRAGMA user_version") == 4)
     #expect(try raw.integer(#"SELECT count(*) FROM "outbox""#) == 1)
   }
 
@@ -197,7 +241,7 @@ private func writeVersion1File(_ path: String) throws {
     #expect(throws: MirrorStoreError.needsRebuild(outboxEmpty: true)) { try MirrorStore(path: path) }
   }
 
-  /// A file a newer build left: a v2 store with the link saved, then marked version 3, with the
+  /// A file a newer build left: a current store with the link saved, then marked version 4, with the
   /// sequence counter and outbox as given.
   private func writeNewerFile(_ path: String, lastDeviceSeq: Int, outboxSeq: Int? = nil) throws {
     do {
@@ -213,7 +257,7 @@ private func writeVersion1File(_ path: String) throws {
           + #"VALUES (\#(outboxSeq), '019a396c76e8-0000-phone-1', 'threads', 'thread-1', 'update', 'title', '"x"')"#
       )
     }
-    try raw.exec("PRAGMA user_version = 3")
+    try raw.exec("PRAGMA user_version = 4")
   }
 
   /// The first local write after a rebuild, on the fixture's thread.
@@ -263,7 +307,7 @@ private func writeVersion1File(_ path: String) throws {
         .replacingOccurrences(of: "'", with: "''")
       try raw.exec(#"CREATE TABLE "syncState" ("id" INTEGER PRIMARY KEY, "link" TEXT, "lastDeviceSeq")"#)
       try raw.exec(#"INSERT INTO "syncState" VALUES (1, '\#(link)', 'seven')"#)
-      try raw.exec("PRAGMA user_version = 3")
+      try raw.exec("PRAGMA user_version = 4")
     }
     let store = try MirrorStore.rebuild(path: path)
     #expect(try store.link() == nil)
@@ -291,7 +335,7 @@ private func writeVersion1File(_ path: String) throws {
       let raw = try RawSQLite(path: path)
       try raw.exec("PRAGMA journal_mode = WAL")
       try raw.exec(#"CREATE TABLE "something" ("id" TEXT)"#)
-      try raw.exec("PRAGMA user_version = 3")
+      try raw.exec("PRAGMA user_version = 4")
       raw.close()
     }
     #expect(throws: MirrorStoreError.needsRebuild(outboxEmpty: true)) { try MirrorStore(path: path) }
@@ -303,7 +347,7 @@ private func writeVersion1File(_ path: String) throws {
     #expect(try store.threads(includeArchived: true, connectionId: nil, query: nil).isEmpty)
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
-    #expect(try raw.integer("PRAGMA user_version") == 2)
+    #expect(try raw.integer("PRAGMA user_version") == MirrorSchema.version)
     #expect(try raw.integer("SELECT count(*) FROM sqlite_master WHERE name = 'something'") == 0)
   }
 }

@@ -59,6 +59,48 @@ public enum TurnLookup: WorkspaceCommand {
   public static let method = Method.turnLookup
 }
 
+// MARK: - Presence (M8c)
+
+/// One Mac as the phone sees it, from the hub's `presence` frame. `lastSeenAt` is the last frame the hub
+/// heard from it, already moved onto the phone's clock (the hub's time less the link's measured offset),
+/// so the phone can compare it with its own `Date()`.
+public struct HostPresence: Codable, Sendable, Equatable {
+  public var deviceId: String
+  public var name: String
+  public var online: Bool
+  public var lastSeenAt: String?
+
+  public init(deviceId: String, name: String, online: Bool, lastSeenAt: String? = nil) {
+    self.deviceId = deviceId
+    self.name = name
+    self.online = online
+    self.lastSeenAt = lastSeenAt
+  }
+}
+
+extension AdapterEvent {
+  /// `host.presence`. `payload.link` is the phone's own hub link (`connected`, `connecting`, or
+  /// `offline`); `payload.host` is one Mac's presence, absent when the event only reports the link. While
+  /// the link is not `connected`, every host's presence is unknown.
+  public static func hostPresence(_ host: HostPresence?, link: HubLinkStatus.State) throws -> AdapterEvent {
+    var payload: [String: JSONValue] = ["link": .string(link.rawValue)]
+    if let host { payload["host"] = try JSONValue(encoding: host) }
+    return AdapterEvent(kind: .hostPresence, connectionId: "", payload: .object(payload))
+  }
+
+  /// The Mac a `host.presence` event is about, if any.
+  public var presenceHost: HostPresence? {
+    guard kind == .hostPresence else { return nil }
+    return try? payload["host"]?.decode(HostPresence.self)
+  }
+
+  /// The phone's hub link a `host.presence` event reports.
+  public var presenceLink: HubLinkStatus.State? {
+    guard kind == .hostPresence else { return nil }
+    return payload["link"]?.stringValue.flatMap(HubLinkStatus.State.init(rawValue:))
+  }
+}
+
 // MARK: - Pairing and settings (M8c)
 
 /// Mint a code that pairs a phone and start watching for the phone to use it. The answer is the only
