@@ -115,9 +115,29 @@ public final class MirrorStore: @unchecked Sendable {
     try self.init(path: path, wall: epochMillis)
   }
 
-  init(path: String, wall: @escaping @Sendable () -> UInt64) throws {
+  convenience init(path: String, wall: @escaping @Sendable () -> UInt64) throws {
+    try self.init(path: path, wall: wall, readOnly: false)
+  }
+
+  /// Opens the file for reading only, for the widget extension: no creating, no pragmas that write, no
+  /// migration, and `query_only` so a write fails even through a mistake here. The file must already be
+  /// at this build's schema version, or this throws `MirrorStoreError.needsRebuild(outboxEmpty: true)`
+  /// (a reader never rebuilds, and cannot see whether the outbox holds edits, so the app decides). A
+  /// missing file throws `WorkspaceError(.endpointUnavailable, ...)`. Safe beside the app's read-write
+  /// connection: the file is in WAL mode, so readers and the writer do not block each other.
+  public static func openReadOnly(path: String) throws -> MirrorStore {
+    guard FileManager.default.fileExists(atPath: path) else {
+      throw WorkspaceError(.endpointUnavailable, "The mirror database does not exist yet.")
+    }
+    return try MirrorStore(path: path, wall: epochMillis, readOnly: true)
+  }
+
+  private init(path: String, wall: @escaping @Sendable () -> UInt64, readOnly: Bool) throws {
     var handle: OpaquePointer?
-    let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
+    let flags =
+      readOnly
+      ? SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+      : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
     let status = sqlite3_open_v2(path, &handle, flags, nil)
     guard status == SQLITE_OK, let handle else {
       let message = handle.map { String(cString: sqlite3_errmsg($0)) } ?? "status \(status)"
@@ -126,7 +146,11 @@ public final class MirrorStore: @unchecked Sendable {
     }
     sqlite3_extended_result_codes(handle, 1)
     do {
-      try Self.prepare(handle)
+      if readOnly {
+        try Self.prepareReadOnly(handle)
+      } else {
+        try Self.prepare(handle)
+      }
     } catch let error as SQLiteError {
       sqlite3_close_v2(handle)
       throw WorkspaceError(.internalError, "Mirror store: \(error.message)")
