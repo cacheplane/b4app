@@ -382,39 +382,56 @@ Prove a backup restores and holds the data. Two parts: a full drill in the test 
      esac
      sleep 30
    done
-   if [ "$STATUS" != COMPLETED ]; then   # stop here: do not run the lines below
-     echo "restore job $JOB $STATUS:" >&2
+   SCRATCH=""
+   if [ "$STATUS" = COMPLETED ]; then       # nothing below runs unless the restore completed
+     DRILL_ARN=$(aws backup describe-restore-job --restore-job-id "$JOB" --query CreatedResourceArn --output text)
+     DRILL_ID=${DRILL_ARN##*:}                # the DB instance identifier
+     aws rds wait db-instance-available --db-instance-identifier "$DRILL_ID"
+     SCRATCH=$(aws rds describe-db-instances --db-instance-identifier "$DRILL_ID" \
+       --query 'DBInstances[0].Endpoint.Address' --output text)
+   else
+     echo "restore job $JOB ended $STATUS; stop here:" >&2
      aws backup describe-restore-job --restore-job-id "$JOB" --query StatusMessage --output text
    fi
-   DRILL_ARN=$(aws backup describe-restore-job --restore-job-id "$JOB" --query CreatedResourceArn --output text)
-   DRILL_ID=${DRILL_ARN##*:}                  # the DB instance identifier
-   aws rds wait db-instance-available --db-instance-identifier "$DRILL_ID"
-   SCRATCH=$(aws rds describe-db-instances --db-instance-identifier "$DRILL_ID" \
-     --query 'DBInstances[0].Endpoint.Address' --output text)
+   echo "scratch host: ${SCRATCH:-none}"
    ```
 
-   If it printed a failure message, stop and fix the cause before continuing.
+   If `SCRATCH` is empty, stop and fix the cause (the next step refuses to run without it). Nothing here exits your shell.
 
 3. **Point the test hub at it.** Never put secrets in task overrides; use the secrets, in the test account only. Save the two current URLs, then write the same URLs with the host swapped (the snapshot holds the same roles and passwords):
 
    ```bash
    LIVE=$(aws rds describe-db-instances --db-instance-identifier b4hub-test --query 'DBInstances[0].Endpoint.Address' --output text)
-   for s in database-admin-url database-url; do
-     aws secretsmanager get-secret-value --secret-id b4hub/$s --query SecretString --output text > "$tmp/$s.orig"
-     sed "s/@$LIVE:/@$SCRATCH:/" "$tmp/$s.orig" > "$tmp/$s.drill"
-     aws secretsmanager put-secret-value --secret-id b4hub/$s --secret-string file://$tmp/$s.drill > /dev/null
-   done
+   if [ -n "$SCRATCH" ] && [ "$SCRATCH" != None ] && [ -n "$LIVE" ] && [ "$LIVE" != None ]; then
+     for s in database-admin-url database-url; do
+       aws secretsmanager get-secret-value --secret-id b4hub/$s --query SecretString --output text > "$tmp/$s.orig"
+       sed "s/@$LIVE:/@$SCRATCH:/" "$tmp/$s.orig" > "$tmp/$s.drill"
+     done
+     # write only if both swapped URLs really point at the scratch host
+     if grep -q "@$SCRATCH:" "$tmp/database-admin-url.drill" && grep -q "@$SCRATCH:" "$tmp/database-url.drill"; then
+       for s in database-admin-url database-url; do
+         aws secretsmanager put-secret-value --secret-id b4hub/$s --secret-string file://$tmp/$s.drill > /dev/null
+       done
+     else
+       echo "the saved URLs do not contain the live host; nothing written; stop" >&2
+     fi
+   else
+     echo "no scratch or live host; nothing written; stop" >&2
+   fi
    ```
 
+   The originals stay in `$tmp/*.orig` for step 6.
+
 4. Run the normal deploy of the digest test already runs ([runbook 5](#5-deploy-a-given-digest-or-roll-back)): it migrates and serves against the scratch instance. `curl -fsS https://hub.test.b4.run/readyz` must pass.
-5. **Compare.** In `Infra/scripts/admin-shell.sh test psql` run the same query against both instances. The container's `PGHOST` is the live one; the scratch host is `$SCRATCH` from step 2. psql needs the `b4hub_owner` password, which is only on your laptop. Never print it: psql prompts for it, so copy it to the clipboard without showing it, and paste at each prompt (the paste is not echoed), then clear the clipboard:
+5. **Compare.** In `Infra/scripts/admin-shell.sh test psql` run the same query against both instances. The container's `PGHOST` is the live one; the scratch host is `$SCRATCH` from step 2. psql needs the `b4hub_owner` password, which is only on your laptop. The container's environment carries `PGPASSWORD` (the master password), which psql would send for any user and fail, so `unset PGPASSWORD` first (in the container shell, once); psql then prompts. Never print the password: copy it to the clipboard without showing it, paste at each prompt (the paste is not echoed), then clear the clipboard:
 
    ```bash
    # on the laptop, in the shell that holds $tmp
-   sed -n 's#^postgres://b4hub_owner:\([^@]*\)@.*#\1#p' "$tmp/database-admin-url.orig" | tr -d '\n' | pbcopy
+   sed -n -E 's#^postgres(ql)?://b4hub_owner:([^@]*)@.*#\2#p' "$tmp/database-admin-url.orig" | tr -d '\n' | pbcopy
    ```
 
    ```sh
+   unset PGPASSWORD                          # else psql sends the master password
    psql -h <live host> -U b4hub_owner -d b4hub -c 'select org_id, max(hub_seq) from changes group by 1 order by 1'
    psql -h <scratch host> -U b4hub_owner -d b4hub -c 'select org_id, max(hub_seq) from changes group by 1 order by 1'
    ```
