@@ -19,6 +19,7 @@ final class ScriptedTransport: WorkspaceTransport {
   struct Call: Sendable {
     var method: String
     var params: JSONValue
+    var operationId: String?
   }
 
   private struct State {
@@ -31,6 +32,12 @@ final class ScriptedTransport: WorkspaceTransport {
     var calls: [Call] = []
     var hub = HubStatus.Result(joined: false, unsyncedChanges: 0)
     var hubLeaveError: WorkspaceError?
+    var pair: Result<HubPair.Result, WorkspaceError> = .failure(
+      WorkspaceError(.protocolInvalid, "Join a hub first"))
+    /// `hub.pairStatus` answers these in order and then the last one again.
+    var pairStatuses: [HubPairStatus.Result] = [HubPairStatus.Result(state: .none)]
+    var keepAwake = true
+    var settingsError: WorkspaceError?
   }
 
   init() {
@@ -60,6 +67,28 @@ final class ScriptedTransport: WorkspaceTransport {
     }
   }
 
+  /// What `hub.pair` answers (a failure is thrown), and the `hub.pairStatus` answers in order.
+  func setPairing(
+    _ pair: Result<HubPair.Result, WorkspaceError>, statuses: [HubPairStatus.Result] = []
+  ) {
+    state.withLock {
+      $0.pair = pair
+      if !statuses.isEmpty { $0.pairStatuses = statuses }
+    }
+  }
+
+  func setSettings(keepAwake: Bool, error: WorkspaceError? = nil) {
+    state.withLock {
+      $0.keepAwake = keepAwake
+      $0.settingsError = error
+    }
+  }
+
+  /// Every command recorded, with the `operationId` it carried.
+  func recorded(_ method: WorkspaceProtocol.Method) -> [Call] {
+    state.withLock { $0.calls.filter { $0.method == method.rawValue } }
+  }
+
   func setRead(_ read: ThreadRead.Result) { state.withLock { $0.reads[read.thread.id] = read } }
   func setDraft(_ draft: Draft) { state.withLock { $0.drafts[draft.threadId] = draft } }
 
@@ -82,7 +111,7 @@ final class ScriptedTransport: WorkspaceTransport {
     let envelope = try JSONCoding.decoder.decode(CommandEnvelope.self, from: line)
     let params = envelope.params ?? .object([:])
     let response: ResponseEnvelope = state.withLock { state in
-      state.calls.append(Call(method: envelope.method, params: params))
+      state.calls.append(Call(method: envelope.method, params: params, operationId: envelope.operationId))
       do {
         return .success(envelope.requestId, result: try answer(envelope.method, params, &state))
       } catch {
@@ -147,6 +176,17 @@ final class ScriptedTransport: WorkspaceTransport {
       if let error = state.hubLeaveError { throw error }
       state.hub = HubStatus.Result(joined: false, unsyncedChanges: state.hub.unsyncedChanges)
       return try JSONValue(encoding: state.hub)
+    case .hubPair?:
+      return try JSONValue(encoding: try state.pair.get())
+    case .hubPairStatus?:
+      let next = state.pairStatuses.count > 1 ? state.pairStatuses.removeFirst() : state.pairStatuses[0]
+      return try JSONValue(encoding: next)
+    case .settingsRead?:
+      return try JSONValue(encoding: SettingsRead.Result(keepAwake: state.keepAwake))
+    case .settingsUpdate?:
+      if let error = state.settingsError { throw error }
+      if let value = params["keepAwake"]?.boolValue { state.keepAwake = value }
+      return try JSONValue(encoding: SettingsRead.Result(keepAwake: state.keepAwake))
     default:
       throw WorkspaceError(.unsupportedCapability, "scripted transport does not serve \(method)")
     }

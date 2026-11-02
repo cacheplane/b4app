@@ -132,3 +132,37 @@ public enum SettingsUpdate: WorkspaceCommand {
   public typealias Result = SettingsRead.Result
   public static let method = Method.settingsUpdate
 }
+
+// MARK: - The pairing link (M8c)
+
+/// The link a Mac shows as a QR code and the phone opens: `b4app://pair?hub=<URL>&code=<code>`. One
+/// implementation for both apps; the Mac builds it here, and the phone's parser joins it with its
+/// validation rules.
+public enum PairLink {
+  public static let scheme = "b4app"
+  public static let host = "pair"
+
+  /// Everything but RFC 3986's unreserved characters is escaped, so the hub's `:`, `/`, `?`, `&`, `#`
+  /// and `%` stay inside the one `hub` value.
+  private static let unreserved: CharacterSet = {
+    var set = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+    set.insert(charactersIn: "-._~")
+    return set
+  }()
+
+  private static func escaped(_ value: String) -> String {
+    // Escaping with a fixed ASCII set cannot fail.
+    value.addingPercentEncoding(withAllowedCharacters: unreserved) ?? ""
+  }
+
+  /// The pairing link for a hub's URL and a one-time code. The code is a credential: the caller must not
+  /// log the result.
+  public static func make(url: String, code: String) -> URL {
+    let text = "\(scheme)://\(host)?hub=\(escaped(url))&code=\(escaped(code))"
+    guard let link = URL(string: text) else {
+      // Unreachable: the prefix is fixed and both values are escaped to unreserved characters.
+      preconditionFailure("a pairing link built from escaped parts is always a URL")
+    }
+    return link
+  }
+}

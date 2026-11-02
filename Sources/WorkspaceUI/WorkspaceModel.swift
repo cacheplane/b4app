@@ -26,7 +26,17 @@ public enum ThreadRowState: String, Sendable, Equatable, CaseIterable {
 
 /// A page of the Settings window (the Mac) or sheet (the iPhone).
 public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
-  case connections, servers, diagnostics
+  case connections, servers, remoteAccess, diagnostics
+
+  /// The pages this platform shows. "Remote access" is the Mac's: it mints the pairing code and holds
+  /// the Mac awake, neither of which the phone does.
+  nonisolated public static var allCases: [SettingsPage] {
+    #if os(macOS)
+      [.connections, .servers, .remoteAccess, .diagnostics]
+    #else
+      [.connections, .servers, .diagnostics]
+    #endif
+  }
 
   public var id: String { rawValue }
 
@@ -34,6 +44,7 @@ public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
     switch self {
     case .connections: return "Connections"
     case .servers: return "Local servers"
+    case .remoteAccess: return "Remote access"
     case .diagnostics: return "Diagnostics"
     }
   }
@@ -42,6 +53,7 @@ public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
     switch self {
     case .connections: return "link"
     case .servers: return "server.rack"
+    case .remoteAccess: return "iphone"
     case .diagnostics: return "waveform.path.ecg"
     }
   }
@@ -168,6 +180,12 @@ public final class WorkspaceModel {
 
   /// The hub user this device is signed in as; nil reads "Not signed in".
   public var account: WorkspaceAccount?
+  /// Whether this Mac is joined to a hub, and where its relay link stands, from the last `hub.status`.
+  /// The "Remote access" page reads them; the phone has no such status.
+  public private(set) var hubJoined = false
+  public private(set) var hubLink: HubLinkStatus?
+  /// The Mac's "Keep the Mac awake" preference (on until set off), from `settings.read`.
+  public private(set) var keepAwake = true
   /// `.host` when the app around the model owns the account (the phone); `refreshAccount()` then
   /// leaves it alone and `logOut()` calls `hostLogOut`.
   public var accountSource: AccountSource = .coordinator
@@ -373,6 +391,50 @@ public final class WorkspaceModel {
     guard accountSource == .coordinator, let client else { return }
     guard let status = try? await client.request(HubStatus.self, EmptyParams()) else { return }
     account = WorkspaceAccount(status: status)
+    hubJoined = status.joined
+    hubLink = status.link
+  }
+
+  // MARK: - Remote access (the Mac)
+
+  /// A phone can be paired: the coordinator is up and this Mac has joined a hub.
+  public var canPair: Bool { link == .ready && hubJoined }
+
+  /// Read the hub status and the preferences the "Remote access" page shows. A failure keeps what the
+  /// page showed.
+  public func refreshRemoteAccess() async {
+    await refreshAccount()
+    guard let client else { return }
+    if let settings = try? await client.request(SettingsRead.self, EmptyParams()) {
+      keepAwake = settings.keepAwake
+    }
+  }
+
+  /// Turn "Keep the Mac awake" on or off. The value shown follows the coordinator's answer, so a
+  /// refusal leaves the old one and sets `lastError`.
+  public func setKeepAwake(_ enabled: Bool) async {
+    guard
+      let settings = await perform({ client in
+        try await client.request(
+          SettingsUpdate.self, SettingsUpdate.Params(keepAwake: enabled), options: Self.mutation())
+      })
+    else { return }
+    keepAwake = settings.keepAwake
+    await refreshAccount()
+  }
+
+  /// Mint a pairing code. The code is returned to the caller and kept nowhere here: it lives in the
+  /// pairing sheet's state only while the sheet is open (D-058). Sent without an `operationId`, so the
+  /// coordinator has nothing to cache. Throws what the coordinator refused with.
+  public func pair() async throws -> HubPair.Result {
+    guard let client else { throw WorkspaceError(.endpointUnavailable, "Coordinator is not connected.") }
+    return try await client.request(HubPair.self, EmptyParams())
+  }
+
+  /// Where the latest code stands; nil when the coordinator could not be asked.
+  public func pairStatus() async -> HubPairStatus.Result? {
+    guard let client else { return nil }
+    return try? await client.request(HubPairStatus.self, EmptyParams())
   }
 
   /// Leave the hub (the Mac) or unlink (the phone, through `hostLogOut`). A failure keeps the account

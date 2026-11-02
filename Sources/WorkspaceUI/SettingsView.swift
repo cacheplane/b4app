@@ -31,6 +31,12 @@ extension SettingsPage {
     switch self {
     case .connections: ConnectionsView(model: model)
     case .servers: LocalServersView(model: model)
+    case .remoteAccess:
+      #if os(macOS)
+        RemoteAccessView(model: model)
+      #else
+        EmptyView()
+      #endif
     case .diagnostics: DiagnosticsView(model: model)
     }
   }
@@ -94,7 +100,7 @@ public struct WorkspaceSettingsView: View {
         Button("Refresh") { Task { await model.refreshDiagnostics() } }
           .buttonStyle(.llaSecondary)
           .disabled(model.link != .ready || model.diagnosticsLoading)
-      case .servers:
+      case .servers, .remoteAccess:
         EmptyView()
       }
     }
