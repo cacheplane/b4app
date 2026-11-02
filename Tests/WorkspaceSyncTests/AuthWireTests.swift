@@ -152,6 +152,12 @@ import WorkspaceProtocol
     #expect(body.error.details?.reason == "same_account")
   }
 
+  @Test func anUnknownPasskeyRoundTripsWithItsReason() throws {
+    let body = try roundTrips(HubErrorBody.self, "credentialUnknown")
+    #expect(body.error.details?.code == "credential_rejected")
+    #expect(body.error.details?.reason == HubError.unknownCredential)
+  }
+
   @Test func deviceSpecLeavesOutAbsentCandidates() throws {
     let spec = DeviceSpec(deviceName: "Mac", platform: "macos", deviceId: "d")
     let encoded = try JSONCoding.decoder.decode(JSONValue.self, from: JSONCoding.encoder.encode(spec))

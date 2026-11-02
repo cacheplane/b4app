@@ -298,6 +298,8 @@ async fn wrong_origin_rejected(pool: PgPool) {
     let answer = sign_in(&hub, &mut authenticator, device("Mac", "macos")).await;
     assert_eq!(answer.status, StatusCode::UNAUTHORIZED, "{}", answer.body);
     assert_eq!(answer.code(), "credential_rejected");
+    // A known passkey refused for its origin is not "unknown": the app must not forget it.
+    assert_eq!(answer.reason(), None, "{}", answer.body);
 }
 
 #[sqlx::test(migrations = false)]
@@ -313,12 +315,20 @@ async fn unknown_or_mismatched_credential_rejected(pool: PgPool) {
     let answer = sign_in(&hub, &mut stranger, device("Mac", "macos")).await;
     assert_eq!(answer.status, StatusCode::UNAUTHORIZED, "{}", answer.body);
     assert_eq!(answer.code(), "credential_rejected");
+    // The one refusal that says why: no identity holds this credential id.
+    assert_eq!(
+        answer.reason(),
+        Some("unknown_credential"),
+        "{}",
+        answer.body
+    );
 
-    // A registered credential presented with another user handle.
+    // A registered credential presented with another user handle: no reason.
     authenticator.credentials[0].user_handle = Uuid::new_v4().as_bytes().to_vec();
     let answer = sign_in(&hub, &mut authenticator, device("Mac", "macos")).await;
     assert_eq!(answer.status, StatusCode::UNAUTHORIZED, "{}", answer.body);
     assert_eq!(answer.code(), "credential_rejected");
+    assert_eq!(answer.reason(), None, "{}", answer.body);
 
     // Registering a credential id that already belongs to an account.
     let begun = begin(&hub).await;
@@ -348,6 +358,40 @@ async fn unknown_or_mismatched_credential_rejected(pool: PgPool) {
         .await;
     assert_eq!(answer.status, StatusCode::UNAUTHORIZED, "{}", answer.body);
     assert_eq!(answer.code(), "credential_rejected");
+    assert_eq!(answer.reason(), None, "{}", answer.body);
+}
+
+/// After `DELETE /v1/me`, the deleted account's passkey is unknown to the hub, and the refusal
+/// says so; the same passkey before then signed in.
+#[sqlx::test(migrations = false)]
+async fn a_deleted_accounts_passkey_is_unknown(pool: PgPool) {
+    let hub = hub(&pool, Signup::Open).await;
+    let mut authenticator = Authenticator::new(ORIGIN);
+    let session = sign_up(&hub, &mut authenticator).await;
+    let token = session["token"].as_str().unwrap();
+    let auth = format!("Bearer {token}");
+    let deleted = hub
+        .send(
+            "DELETE",
+            "/v1/me",
+            None,
+            &[("authorization", auth.as_str())],
+        )
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
+    let answer = sign_in(&hub, &mut authenticator, device("Mac", "macos")).await;
+    assert_eq!(answer.status, StatusCode::UNAUTHORIZED, "{}", answer.body);
+    assert_eq!(answer.code(), "credential_rejected");
+    assert_eq!(
+        answer.reason(),
+        Some("unknown_credential"),
+        "{}",
+        answer.body
+    );
+    assert_eq!(
+        answer.body["error"]["details"].as_object().unwrap().len(),
+        2
+    );
 }
 
 fn replace(haystack: &[u8], needle: &[u8], with: &[u8]) -> Vec<u8> {
@@ -543,6 +587,7 @@ async fn counter_updated(pool: PgPool) {
     let answer = sign_in(&hub, &mut authenticator, device("Mac", "macos")).await;
     assert_eq!(answer.status, StatusCode::UNAUTHORIZED, "{}", answer.body);
     assert_eq!(answer.code(), "credential_rejected");
+    assert_eq!(answer.reason(), None, "{}", answer.body);
     assert_eq!(
         stored_passkey(&hub, &credential).await.0["cred"]["counter"],
         2
@@ -675,6 +720,7 @@ async fn assert_rejected_then_recovers(
         answer.body
     );
     assert_eq!(answer.code(), "credential_rejected", "{why}");
+    assert_eq!(answer.reason(), None, "{why}: {}", answer.body);
     restore(authenticator);
 }
 
@@ -699,6 +745,8 @@ async fn assertion_crypto_checks_are_enforced(pool: PgPool) {
     let answer = sign_in(&hub, &mut impostor, device("Mac", "macos")).await;
     assert_eq!(answer.status, StatusCode::UNAUTHORIZED, "{}", answer.body);
     assert_eq!(answer.code(), "credential_rejected");
+    // A bad signature on a registered credential id carries no reason.
+    assert_eq!(answer.reason(), None, "{}", answer.body);
 
     // UV unset.
     assert_rejected_then_recovers(
@@ -741,6 +789,7 @@ async fn assertion_crypto_checks_are_enforced(pool: PgPool) {
         .await;
     assert_eq!(answer.status, StatusCode::UNAUTHORIZED, "{}", answer.body);
     assert_eq!(answer.code(), "credential_rejected");
+    assert_eq!(answer.reason(), None, "{}", answer.body);
 
     // None of those moved the stored counter, and the honest key still signs in.
     let counter = stored_passkey(&hub, &authenticator.credentials[0].id)

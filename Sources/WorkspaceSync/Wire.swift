@@ -408,8 +408,9 @@ public struct HubErrorBody: Codable, Sendable, Equatable {
     public var code: String?
     /// A `rate_limited` answer's wait, in milliseconds.
     public var retryAfterMs: Int?
-    /// Why a `merge_refused` was refused: `same_account`, `has_mac`, or `shared_org`; absent from an
-    /// older hub, and when the hub does not know.
+    /// Why: on `merge_refused`, `same_account`, `has_mac`, or `shared_org`; on a passkey sign-in's
+    /// `credential_rejected`, `unknown_credential` when no account holds the passkey. Absent from an
+    /// older hub, when the hub does not know, and on every other refusal.
     public var reason: String?
   }
 
@@ -434,8 +435,12 @@ public struct HubError: Error, Sendable, Equatable, CustomStringConvertible {
   public var status: Int
   /// How long the hub asks the caller to wait, on a `rate_limited` answer.
   public var retryAfterMs: Int?
-  /// `details.reason`, on a `merge_refused` answer (`same_account`, `has_mac`, `shared_org`).
+  /// `details.reason`: on a `merge_refused` answer `same_account`, `has_mac`, or `shared_org`; on a
+  /// passkey sign-in's `credential_rejected`, `unknownCredential` or nothing.
   public var reason: String?
+
+  /// The `credential_rejected` reason that says no account holds the asserted passkey.
+  public static let unknownCredential = "unknown_credential"
 
   public init(
     kind: String, code: String, message: String, status: Int, retryAfterMs: Int? = nil, reason: String? = nil

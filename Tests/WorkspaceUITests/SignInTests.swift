@@ -523,29 +523,43 @@ extension Array where Element == ScreenElement {
   }
 
   /// Final review M11: after the account was deleted the device still offers its passkey, and the hub
-  /// refuses it every time. A refused sign-in reports the asserted credential as unknown, under the
-  /// assertion options' relying party, so the next tap asks to create an account.
-  @Test func aRefusedPasskeySignInReportsThePasskeyAsUnknown() async throws {
+  /// refuses it every time, saying the passkey is unknown. Only that refusal reports the asserted
+  /// credential as unknown, under the assertion options' relying party.
+  @Test func aRefusedPasskeySignInReportsThePasskeyAsUnknownOnlyWithTheReason() async throws {
     let transport = ScriptedTransport()
     let model = try await connected(signedOut, transport: transport, configuration: prod)
     let ceremony = FakeCeremony()
     ceremony.assertOutcome = .credential(["id": "-_8B", "rawId": "-_8B", "type": "public-key"])
-    func signIn(failingWith code: ErrorCode) async {
+    func signIn(failingWith error: WorkspaceError) async {
       transport.script(.accountPasskeyBegin, [try! begin()])
-      transport.script(.accountPasskeyFinish, [.failure(WorkspaceError(code, "refused"))])
+      transport.script(.accountPasskeyFinish, [.failure(error)])
       await model.signInWithPasskey(using: ceremony)
     }
+    func rejected(reason: String?) -> WorkspaceError {
+      var details: [String: JSONValue] = ["hubCode": "credential_rejected"]
+      if let reason { details["reason"] = .string(reason) }
+      return WorkspaceError(.credentialRejected, "refused", details: .object(details))
+    }
 
-    await signIn(failingWith: .credentialRejected)
+    // `credential_rejected` with no reason (a bad signature, a wrong origin or relying party, as a
+    // misconfigured hub answers for every passkey): nothing is reported.
+    await signIn(failingWith: rejected(reason: nil))
+    await signIn(failingWith: rejected(reason: "something_else"))
+    #expect(ceremony.reportedUnknown.isEmpty)
+    #expect(model.signInProgress.failure == SignInCopy.failure(for: WorkspaceError(.credentialRejected, "")))
+
+    // The hub says no account holds it: the password manager is told.
+    await signIn(failingWith: rejected(reason: "unknown_credential"))
     #expect(ceremony.reportedUnknown.map(\.relyingParty) == ["test.b4.run"])
     #expect(ceremony.reportedUnknown.map(\.credentialID) == [Data([0xfb, 0xff, 0x01])])
     #expect(model.signInProgress.failure == SignInCopy.failure(for: WorkspaceError(.credentialRejected, "")))
 
-    // Nothing else says the passkey is unknown: an expired ceremony, a lost answer, a hub that is down.
+    // Nothing else says the passkey is unknown, whatever its details say.
     for code in [
       ErrorCode.ceremonyExpired, .rateLimited, .internalError, .endpointUnavailable, .authRequired,
     ] {
-      await signIn(failingWith: code)
+      await signIn(
+        failingWith: WorkspaceError(code, "refused", details: ["reason": "unknown_credential"]))
       #expect(model.signInProgress.failure != nil)
     }
     #expect(ceremony.reportedUnknown.count == 1)

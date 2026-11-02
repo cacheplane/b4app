@@ -173,10 +173,11 @@ private final class FakePasskeys: PasskeyCeremony {
   }
 }
 
-/// The fake hub, except that every passkey sign-in is refused, as the hub refuses a deleted
-/// account's passkey.
+/// The fake hub, except that every passkey sign-in is refused `credential_rejected`, with `reason`
+/// (as the hub refuses a deleted account's passkey) or without (as for a bad signature).
 private struct RejectingPasskeyHub: HubAPI {
   let fake: FakeHubAPI
+  var reason: String?
   func enroll(_ request: EnrollRequest) async throws -> EnrollResponse { try await fake.enroll(request) }
   func me() async throws -> MeResponse { try await fake.me() }
   func push(_ changes: [SyncChange]) async throws -> PushResponse { try await fake.push(changes) }
@@ -189,7 +190,9 @@ private struct RejectingPasskeyHub: HubAPI {
   func revokeSelf() async throws { try await fake.revokeSelf() }
   func passkeyBegin() async throws -> PasskeyBeginResponse { try await fake.passkeyBegin() }
   func passkeyFinish(_ request: PasskeyFinishRequest) async throws -> AuthSession {
-    throw HubError(kind: "request_error", code: "credential_rejected", message: "rejected", status: 401)
+    throw HubError(
+      kind: "request_error", code: "credential_rejected", message: "the credential could not be verified",
+      status: 401, reason: reason)
   }
 }
 
@@ -387,22 +390,30 @@ private func sha256Hex(_ text: String) -> String {
     #expect(phone.model.showAddPhone == false)
   }
 
-  /// Final review M11 on the phone: the hub refuses the passkey of a deleted account; the phone reports
-  /// it as unknown, through the same ceremony, so it is not offered again.
-  @Test func aRefusedPasskeySignInOnThePhoneReportsThePasskeyAsUnknown() async throws {
-    let fake = FakeHubAPI()
-    await fake.setPasskeyBegin(
-      PasskeyBeginResponse(
-        ceremonyId: "c1", authentication: assertionOptions, registration: registrationOptions))
-    let phone = try await Phone(fake: fake, api: RejectingPasskeyHub(fake: fake))
-    defer { Task { await phone.close() } }
-    let passkeys = FakePasskeys()
-    await phone.model.signInWithPasskey(using: passkeys)
-    #expect(phone.model.accountState == .signedOut(reason: nil))
-    #expect(phone.model.signInProgress.failure != nil)
-    #expect(passkeys.reportedUnknown.map(\.relyingParty) == ["test.b4.run"])
-    #expect(
-      passkeys.reportedUnknown.map(\.credentialID) == [try #require(WebAuthnJSON.data(base64URL: "cred"))])
+  /// Final review M11 on the phone: the hub refuses the passkey of a deleted account as unknown; the
+  /// phone reports it, through the same ceremony, so it is not offered again. A refusal without that
+  /// reason reports nothing.
+  @Test func aRefusedPasskeySignInOnThePhoneReportsThePasskeyOnlyWhenUnknown() async throws {
+    for reason in [String?.none, HubError.unknownCredential] {
+      let fake = FakeHubAPI()
+      await fake.setPasskeyBegin(
+        PasskeyBeginResponse(
+          ceremonyId: "c1", authentication: assertionOptions, registration: registrationOptions))
+      let phone = try await Phone(fake: fake, api: RejectingPasskeyHub(fake: fake, reason: reason))
+      let passkeys = FakePasskeys()
+      await phone.model.signInWithPasskey(using: passkeys)
+      #expect(phone.model.accountState == .signedOut(reason: nil))
+      #expect(phone.model.signInProgress.failure != nil)
+      if reason == nil {
+        #expect(passkeys.reportedUnknown.isEmpty)
+      } else {
+        #expect(passkeys.reportedUnknown.map(\.relyingParty) == ["test.b4.run"])
+        #expect(
+          passkeys.reportedUnknown.map(\.credentialID) == [try #require(WebAuthnJSON.data(base64URL: "cred"))]
+        )
+      }
+      await phone.close()
+    }
   }
 
   @Test func a401MovesThePhoneToSignIn() async throws {

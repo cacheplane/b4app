@@ -1156,6 +1156,25 @@ private func runCLI(
   )
 }
 
+/// The hub's `details.reason` reaches the app in the error's details (final review M11): the app
+/// forgets a passkey only on `unknown_credential`.
+@Suite struct AccountErrorReasonTests {
+  @Test func theHubsReasonIsPassedOn() {
+    let unknown = AccountManager.accountError(
+      HubError(
+        kind: "request_error", code: "credential_rejected", message: "no", status: 401,
+        reason: HubError.unknownCredential),
+      doing: "sign in")
+    #expect(unknown.code == .credentialRejected)
+    #expect(unknown.details?["reason"]?.stringValue == "unknown_credential")
+    let bare = AccountManager.accountError(
+      HubError(kind: "request_error", code: "credential_rejected", message: "no", status: 401),
+      doing: "sign in")
+    #expect(bare.code == .credentialRejected)
+    #expect(bare.details?["reason"] == nil)
+  }
+}
+
 @Suite(.serialized, .timeLimit(.minutes(3))) struct AccountCLITests {
   @Test func accountStatusJSON() async throws {
     let rig = try await CommandRig.start()

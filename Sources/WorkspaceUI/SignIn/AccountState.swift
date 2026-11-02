@@ -451,22 +451,30 @@ extension WorkspaceModel {
     await ceremony.reportUnknownCredential(relyingParty: relyingParty, credentialID: credentialID)
   }
 
-  /// The hub refused a passkey this device offered (`credential_rejected`): most often its account was
-  /// deleted, here or on another device. Tell the password manager it is unknown, so the next "Continue
-  /// with a passkey" finds none and asks to create an account instead of offering, every time, one the
-  /// hub will always refuse. The relying party is the assertion options' own `rpId`, the credential the
-  /// assertion's id. Any other failure (an expired ceremony, a lost answer, an unreachable hub) says
-  /// nothing about the passkey and is never reported.
+  /// The hub refused a passkey this device offered because no account holds it (`credential_rejected`
+  /// with `details.reason` `unknown_credential`): most often its account was deleted, here or on
+  /// another device. Tell the password manager it is unknown, so the next "Continue with a passkey"
+  /// finds none and asks to create an account instead of offering, every time, one the hub will always
+  /// refuse. The relying party is the assertion options' own `rpId`, the credential the assertion's
+  /// id. A `credential_rejected` without that reason (a bad signature, a wrong origin or relying party,
+  /// as a misconfigured hub would answer for every passkey) and any other failure say nothing about
+  /// whether the passkey is still an account's, and are never reported: forgetting one cannot be
+  /// undone.
   func reportRejected(
     _ assertion: JSONValue, options: JSONValue, ceremony: any PasskeyCeremony, after error: any Error
   ) async {
     guard let failure = error as? WorkspaceError, failure.code == .credentialRejected,
+      failure.details?["reason"]?.stringValue == Self.unknownCredentialReason,
       let relyingParty = try? WebAuthnJSON.assertionRequest(from: options).relyingParty,
       let id = (assertion["rawId"] ?? assertion["id"])?.stringValue,
       let credentialID = WebAuthnJSON.data(base64URL: id)
     else { return }
     await ceremony.reportUnknownCredential(relyingParty: relyingParty, credentialID: credentialID)
   }
+
+  /// The hub's `details.reason` for a passkey no account holds, as the coordinator and the phone pass
+  /// it on.
+  static let unknownCredentialReason = "unknown_credential"
 
   /// "Cancel" on the question: back to the two buttons.
   public func cancelCreateAccount() {

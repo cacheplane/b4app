@@ -60,7 +60,7 @@ in whole seconds.
 | 400 | `invalid_request` | request | The body is not valid JSON for the endpoint (malformed JSON, an unknown or missing field, a wrong value type, a missing or wrong `Content-Type`); a `deviceName`, `platform`, or `fullName` that fails validation; a push with more than 1000 changes; a non-numeric `after`, `limit`, or `wait`; a link request that is not a WebSocket upgrade or whose `B4-Protocol` is not a whole number. |
 | 401 | `unauthorized` | request | The bearer token is missing, malformed, unknown, or belongs to a revoked device. |
 | 401 | `invalid_code` | request | The enrollment code is wrong, expired, or already used (the three are indistinguishable). |
-| 401 | `credential_rejected` | request | A sign-in credential failed verification: a malformed WebAuthn response, a wrong origin or relying party, a bad signature, a passkey no account has, a user handle that is not the passkey's, a counter that went backwards, or a new passkey that already belongs to an account; any failed Apple check (see *Sign in with Apple*); a link's handoff at `POST /v1/auth/handoff`, or one presented by another account's device. Deliberately vague. |
+| 401 | `credential_rejected` | request | A sign-in credential failed verification: a malformed WebAuthn response, a wrong origin or relying party, a bad signature, a passkey no account has, a user handle that is not the passkey's, a counter that went backwards, or a new passkey that already belongs to an account; any failed Apple check (see *Sign in with Apple*); a link's handoff at `POST /v1/auth/handoff`, or one presented by another account's device. Deliberately vague, except that a passkey sign-in whose credential no account has says `details.reason: "unknown_credential"` (see `POST /v1/auth/passkey/finish`). |
 | 403 | `signup_closed` | request | A sign-up (a passkey `attestation`, or an Apple ID no account has) while the hub's sign-up policy is `closed`. |
 | 404 | `not_found` | request | No such route, or a resource that does not exist or is not yours (including another account's identity id). |
 | 405 | `method_not_allowed` | request | The route exists but not for that method. |
@@ -375,6 +375,20 @@ two finishes of one ceremony racing, exactly one succeeds; the other is `ceremon
 Errors: `400 invalid_request` (the body's shape, both or neither response, a bad device),
 `403 signup_closed` (an attestation while sign-up is closed, checked before the ceremony is
 taken), `400 ceremony_expired`, `401 credential_rejected`, `429 rate_limited`.
+
+A refused **assertion** whose credential id no identity holds (never registered, or its account
+was deleted) is the only `credential_rejected` with a reason: `details.reason` is
+`"unknown_credential"`, so the app can tell the password manager to forget that passkey:
+
+```json
+{"error": {"kind": "request_error", "message": "the credential could not be verified",
+           "details": {"code": "credential_rejected", "reason": "unknown_credential"}}}
+```
+
+Every other refusal (a malformed response, a wrong origin or relying party, a bad signature, a
+user handle that is not the passkey's, a counter that went backwards, a refused attestation) carries
+no reason, so a client never forgets a passkey the hub still holds. Credential ids are random, so
+the reason tells a caller nothing it could use to find an account.
 
 #### Sign in with Apple
 

@@ -96,6 +96,11 @@ impl Answer {
             .as_str()
             .unwrap_or_default()
     }
+
+    /// `details.reason`, when the error carries one.
+    pub fn reason(&self) -> Option<&str> {
+        self.body["error"]["details"]["reason"].as_str()
+    }
 }
 
 impl Hub {

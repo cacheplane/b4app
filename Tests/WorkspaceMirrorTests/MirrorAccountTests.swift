@@ -563,6 +563,22 @@ private struct SlowDeleteHub: HubAPI {
     await rig.account.stopSync()
   }
 
+  /// Final review M11: the hub's reason reaches the shared model, which forgets a passkey only on
+  /// `unknown_credential`.
+  @Test func theHubsReasonIsPassedOn() {
+    let unknown = MirrorAccount.accountError(
+      HubError(
+        kind: "request_error", code: "credential_rejected", message: "no", status: 401,
+        reason: HubError.unknownCredential),
+      doing: "sign in")
+    #expect(unknown.code == .credentialRejected)
+    #expect(unknown.details?["reason"]?.stringValue == "unknown_credential")
+    let bare = MirrorAccount.accountError(
+      HubError(kind: "request_error", code: "credential_rejected", message: "no", status: 401),
+      doing: "sign in")
+    #expect(bare.details?["reason"] == nil)
+  }
+
   @Test func callsThatNeedTheAccountRefuseWhileSignedOut() async throws {
     let rig = try Rig()
     let refused = await #expect(throws: WorkspaceError.self) { _ = try await rig.account.identities() }

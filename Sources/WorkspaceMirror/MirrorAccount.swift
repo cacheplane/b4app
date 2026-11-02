@@ -586,6 +586,8 @@ import os
     }
     var details: [String: JSONValue] = ["hubCode": .string(error.code)]
     if let wait = error.retryAfterMs { details["retryAfterMs"] = .number(Double(wait)) }
+    // The hub's reason names no secret (`unknown_credential`, a merge refusal's).
+    if let reason = error.reason { details["reason"] = .string(reason) }
     return WorkspaceError(code, "Could not \(action): \(error.message)", details: .object(details))
   }
 

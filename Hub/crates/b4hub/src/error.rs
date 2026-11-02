@@ -47,6 +47,10 @@ pub enum ErrorKind {
     ExecutionError,
 }
 
+/// `details.reason` of a passkey sign-in's `credential_rejected` when no identity holds the asserted
+/// credential id ([`ApiError::credential_unknown`]).
+pub const UNKNOWN_CREDENTIAL: &str = "unknown_credential";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiError {
     pub kind: ErrorKind,
@@ -151,6 +155,19 @@ impl ApiError {
             "credential_rejected",
             "the credential could not be verified",
         )
+    }
+
+    /// [`ApiError::credential_rejected`] for a passkey sign-in whose credential id no identity holds
+    /// (as after its account was deleted), with `details.reason` [`UNKNOWN_CREDENTIAL`], so the app
+    /// can tell the password manager to forget that passkey. Credential ids are random, so the reason
+    /// tells a caller nothing it could use to find an account. Every other failed check carries no
+    /// reason.
+    pub fn credential_unknown() -> ApiError {
+        let mut error = ApiError::credential_rejected();
+        error
+            .extra
+            .insert("reason".into(), json!(UNKNOWN_CREDENTIAL));
+        error
     }
 
     /// Removing the identity would leave the account with no way to sign in.

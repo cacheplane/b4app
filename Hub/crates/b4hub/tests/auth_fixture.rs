@@ -244,6 +244,17 @@ async fn routes_answer_the_shapes_the_fixture_holds(pool: PgPool) {
     let token = signed_in.body["token"].as_str().unwrap().to_string();
     let auth = bearer(&token);
     let headers = [("authorization", auth.as_str())];
+    // A passkey no identity holds: the fixture's refusal, word for word, its reason included.
+    let mut stranger = Authenticator::new(ORIGIN);
+    let begun = hub.post("/v1/auth/passkey/begin", None).await;
+    stranger.register(&begun.body["registration"]);
+    let begun = hub.post("/v1/auth/passkey/begin", None).await;
+    let mut unknown = example("passkeyFinishAssertion");
+    unknown["ceremonyId"] = begun.body["ceremonyId"].clone();
+    unknown["assertion"] = stranger.assert(&begun.body["authentication"]);
+    let refused = hub.post("/v1/auth/passkey/finish", Some(&unknown)).await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{}", refused.body);
+    assert_eq!(refused.body, example("credentialUnknown"));
 
     // The profile request and the `me` answer, with a passkey and an Apple identity.
     let principal = Principal::from(
