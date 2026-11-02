@@ -103,10 +103,16 @@ async fn readyz_reports_current_after_migrate(pool: PgPool) {
     assert_eq!(body, json!({"ok": true}));
 
     let (status, body) = get(state.clone(), "/readyz").await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         body,
-        json!({"ok": true, "migrations": "current", "minClientProtocol": 1})
+        json!({
+            "ok": true,
+            "migrations": "current",
+            "minClientProtocol": 1,
+            "relay": "ok",
+            "instances": "ok",
+        })
     );
     state.db.pool.close().await;
 }
