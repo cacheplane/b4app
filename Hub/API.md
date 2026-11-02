@@ -18,8 +18,8 @@ Authorization: Bearer <device token>
 ```
 
 The scheme is matched case-insensitively; the token must be non-empty and contain no whitespace.
-The token comes from `POST /v1/enroll` or a sign-in (`POST /v1/auth/passkey/finish`), the only
-places it is ever shown; the hub stores only its SHA-256. Authentication happens before the request body is read, so an unauthenticated
+The token comes from `POST /v1/enroll` or a sign-in (`POST /v1/auth/passkey/finish`, `POST
+/v1/auth/apple/native`, or `POST /v1/auth/handoff`), the only places it is ever shown; the hub stores only its SHA-256. Authentication happens before the request body is read, so an unauthenticated
 request is refused without its body being consumed. A missing header, another scheme, a malformed
 token, an unknown token, and a revoked device all answer the same `401 unauthorized`, so a caller
 learns nothing about which it was.
@@ -56,12 +56,12 @@ in whole seconds.
 
 | HTTP | `details.code` | `kind` | When |
 | --- | --- | --- | --- |
-| 400 | `ceremony_expired` | request | A sign-in ceremony that is unknown, expired (5 minutes), already finished, or (for a sign-up) was begun while sign-up was closed; the cases are indistinguishable. Begin again. |
+| 400 | `ceremony_expired` | request | A sign-in ceremony that is unknown, expired (5 minutes), already finished, of another kind or another user, or (for a sign-up) was begun while sign-up was closed; or a handoff that is unknown, expired (2 minutes), spent, or presented with the wrong verifier. The cases are indistinguishable. Begin again. |
 | 400 | `invalid_request` | request | The body is not valid JSON for the endpoint (malformed JSON, an unknown or missing field, a wrong value type, a missing or wrong `Content-Type`); a `deviceName`, `platform`, or `fullName` that fails validation; a push with more than 1000 changes; a non-numeric `after`, `limit`, or `wait`; a link request that is not a WebSocket upgrade or whose `B4-Protocol` is not a whole number. |
 | 401 | `unauthorized` | request | The bearer token is missing, malformed, unknown, or belongs to a revoked device. |
 | 401 | `invalid_code` | request | The enrollment code is wrong, expired, or already used (the three are indistinguishable). |
-| 401 | `credential_rejected` | request | A sign-in credential failed verification: a malformed WebAuthn response, a wrong origin or relying party, a bad signature, a passkey no account has, a user handle that is not the passkey's, a counter that went backwards, or a new passkey that already belongs to an account. Deliberately vague. |
-| 403 | `signup_closed` | request | A sign-up (a passkey `attestation`) while the hub's sign-up policy is `closed`. |
+| 401 | `credential_rejected` | request | A sign-in credential failed verification: a malformed WebAuthn response, a wrong origin or relying party, a bad signature, a passkey no account has, a user handle that is not the passkey's, a counter that went backwards, or a new passkey that already belongs to an account; any failed Apple check (see *Sign in with Apple*); a link's handoff at `POST /v1/auth/handoff`, or one presented by another account's device. Deliberately vague. |
+| 403 | `signup_closed` | request | A sign-up (a passkey `attestation`, or an Apple ID no account has) while the hub's sign-up policy is `closed`. |
 | 404 | `not_found` | request | No such route, or a resource that does not exist or is not yours (including another account's identity id). |
 | 405 | `method_not_allowed` | request | The route exists but not for that method. |
 | 409 | `last_identity` | request | `DELETE /v1/me/identities/{id}` of the account's only sign-in method, which would leave it unable to sign in. Add another first. |
@@ -182,8 +182,10 @@ Both are validated before the code is redeemed, so a malformed request does not 
 }
 ```
 
-`token` appears in this response and nowhere else; keep it in the Keychain. Errors: `400
-invalid_request`, `401 invalid_code`.
+`token` appears in this response and nowhere else; keep it in the Keychain. The request carries no
+`deviceId`, so every enrollment makes a new device, even for a phone that enrolled before. Errors:
+`400 invalid_request`, `401 invalid_code`, `401 unauthorized` and `409 merge_refused` (below),
+`503 maintenance`.
 
 **Merging a phone-only account.** A phone already signed in to an account of its own (one it
 signed up with, which has never had a Mac) sends that account's token,

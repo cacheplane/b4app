@@ -1,10 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- No tracking, no data collected by the developer (the hub is the owner's own), and no
-     required-reason API in the iOS-linked modules (checked 2026-11-01; D-051). Add an
-     NSPrivacyAccessedAPITypes entry before using UserDefaults, file timestamps, system uptime,
-     or disk space from WorkspaceUI, WorkspaceClient, WorkspaceProtocol, WorkspaceMirror,
-     WorkspaceSync, WorkspaceSecrets, or the iOS app. -->
+<!-- No tracking. Since sign-in (D-064) the hub keeps a name (typed at onboarding, or Apple's),
+     an email (Apple's, when Sign in with Apple gives one), and the hub's user and device ids,
+     each linked to the account and used only to run it. App Store Connect's privacy answers
+     must match before a build with sign-in goes to TestFlight. No required-reason API in the
+     iOS-linked modules (checked 2026-11-02; D-051). Add an NSPrivacyAccessedAPITypes entry
+     before using UserDefaults, file timestamps, system uptime, or disk space from WorkspaceUI,
+     WorkspaceClient, WorkspaceProtocol, WorkspaceMirror, WorkspaceSync, WorkspaceSecrets, or
+     the iOS app. -->
 <plist version="1.0">
 <dict>
   <key>NSPrivacyTracking</key>
@@ -12,7 +15,44 @@
   <key>NSPrivacyTrackingDomains</key>
   <array/>
   <key>NSPrivacyCollectedDataTypes</key>
-  <array/>
+  <array>
+    <dict>
+      <key>NSPrivacyCollectedDataType</key>
+      <string>NSPrivacyCollectedDataTypeName</string>
+      <key>NSPrivacyCollectedDataTypeLinked</key>
+      <true/>
+      <key>NSPrivacyCollectedDataTypeTracking</key>
+      <false/>
+      <key>NSPrivacyCollectedDataTypePurposes</key>
+      <array>
+        <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+      </array>
+    </dict>
+    <dict>
+      <key>NSPrivacyCollectedDataType</key>
+      <string>NSPrivacyCollectedDataTypeEmailAddress</string>
+      <key>NSPrivacyCollectedDataTypeLinked</key>
+      <true/>
+      <key>NSPrivacyCollectedDataTypeTracking</key>
+      <false/>
+      <key>NSPrivacyCollectedDataTypePurposes</key>
+      <array>
+        <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+      </array>
+    </dict>
+    <dict>
+      <key>NSPrivacyCollectedDataType</key>
+      <string>NSPrivacyCollectedDataTypeUserID</string>
+      <key>NSPrivacyCollectedDataTypeLinked</key>
+      <true/>
+      <key>NSPrivacyCollectedDataTypeTracking</key>
+      <false/>
+      <key>NSPrivacyCollectedDataTypePurposes</key>
+      <array>
+        <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+      </array>
+    </dict>
+  </array>
   <key>NSPrivacyAccessedAPITypes</key>
   <array/>
 </dict>

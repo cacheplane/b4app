@@ -2,6 +2,49 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-11-02: Sign-in (fixture gates; live gate pending)
+
+Target: the build MacBook Pro (macOS 26.5, Xcode 26.6), run from the worktree on `blove/sign-in` at code head `e6aaf6d` (Tasks 1 to 17 and X1 of `docs/superpowers/plans/2026-11-01-sign-in.md`, with `origin/main` through PR #40 merged). The documentation commit that records this changes no Swift or Rust, only the iPhone's `PrivacyInfo.xcprivacy` and these documents; the four `xcodebuild` builds ran after that change. Nothing touched the owner's app, its data directory, the Keychain, or the Compose stack. Decisions D-087 to D-109.
+
+### Sign-in (fixture gates)
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Swift format | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass (exit 0, no findings) |
+| Build | `swift build` | Pass |
+| Swift tests | `swift test` | Pass: 1113 tests in 142 suites in 57.5 s (858 when this branch first merged main, 1022 after the second merge), exit 0. The sign-in suites: `FlavorTests`, `LegacyAdoptionTests`, `LegacyAdoptionGateTests`, `CoordinatorAdoptionOrderTests`, `AccountRegistryTests`, `AccountManagerTests`, `AccountCommandTests`, `AccountCLITests`, `AuthWireTests`, `HTTPHubAPITests`, `SignInTests`, `AccountSettingsTests`, `AppleSignInTests`, `MirrorAccountTests`, `MirrorLogOutTests`, `PhoneFlavorTests`, `PairLinkTests` (protocol and mirror), `PairingTests`, `RemoteAccessTests`, `ConnectMacTests`. `HubSyncTests.joinPushesTheBacklogAndMarksItSynced`, seen to fail once in a full run during Task 15, passed |
+| Rust format | `cd Hub && cargo fmt --all -- --check` | Pass |
+| Rust lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| Rust tests | `source <(./scripts/test-db.sh) && cargo test --workspace --locked --no-fail-fast`, then `./scripts/test-db.sh --stop` | Pass: 379 tests against PostgreSQL 17.11 (245 at M8e Part B): `b4hub` 270 (unit 87, `accounts` 14, `apple` 34, `auth` 18, `auth_fixture` 9, `changes` 14, `enroll` 17, `health` 5, `instances` 8, `maintenance` 3, `relay` 60, `request_log` 1), `b4hub-core` 26, `b4hub-db` 83 (unit 3, `accounts` 24, `changes` 35, `instances` 4, `logging` 1, `migrate` 8, `rls` 5, `settings` 3) |
+| Chart | `cd Hub/chart/b4hub && helm unittest . && helm lint . -f ci/kind-values.yaml` | Pass: 56 tests in 4 suites (helm-unittest 1.2.1); lint 1 chart, 0 failed (one `INFO`: icon is recommended) |
+| Project | `./Scripts/generate-project.sh` | `B4App.xcodeproj` regenerated; schemes `B4App-macOS`, `B4App-macOS-Beta`, `B4App-iOS`, `B4App-iOS-Beta` |
+| Apps | `xcodebuild build -project B4App.xcodeproj -scheme <scheme> -destination <'platform=macOS' or 'generic/platform=iOS Simulator'> CODE_SIGNING_ALLOWED=NO` for the four schemes | Four `** BUILD SUCCEEDED **`. Warnings only in code the Beta builds compiled again: unused results in `WorkspaceStorage` (`WorkspaceDatabase`, `Migrator`, `AccountRegistry`) and `Ports.swift`, the deprecated `posix_spawn_file_actions_addchdir_np` in `ManagedProcess.swift`, and the duplicate case at `Remediation.swift:122`. Both iPhone builds carry the new privacy manifest (`plutil -extract NSPrivacyCollectedDataTypes` on each built app: name, email address, user id) |
+| Privacy manifest | `plutil -lint Apps/iOS/B4App/PrivacyInfo.xcprivacy`, and the keys checked against Apple's documentation (`describing-data-use-in-privacy-manifests` and the `NSPrivacyCollectedDataType` and `…Purposes` pages) | OK |
+| CI | the Swift package job, the apps job, the `hub` job, and the chart jobs | Recorded in the pull request, not here |
+
+What the fixtures cannot show, and is left to the live gate or later:
+
+- A real passkey ceremony: the Mac needs a Developer ID package with the `webcredentials:` entitlement and `local.b4.run`'s association file through Apple's CDN; an unsigned build only reaches the failure line. The "no passkey" path (D-101), `excludeCredentials`, the orphan report and the rename (D-102) have run only against fakes.
+- Sign in with Apple on any hub: no hub has the Apple key (the local flavour hides it, and the hosted hubs are not deployed); the hub's side is fixture-tested against a fake Apple.
+- Adoption of the owner's install with the real `launchctl` boot-out and cluster read (D-091). The token in the prod keychain group is not read by the local build (`docs/milestones.md`, M8d), so step 2 below is expected to sign out at the first hub call.
+- The system Camera opening a pair link on a device, the Safari sheet, and the Settings window closing on sign-out in the running app.
+- A Developer ID package of any flavour from this branch (the owner's profiles pass `B4APP_CHECK_PROFILES_ONLY`), a release, and the Homebrew tap.
+- The repository's `Hub/Dockerfile` with the sign-in crates: its pinned base digests could not be pulled through this Mac's Docker Desktop during the build, so the image for the live gate was built from a scratch copy using the cached `rust:1.93.1` tag (the Dockerfile itself is unchanged). CI's `hub-image` and `compose-smoke` jobs are the check.
+
+### Live gate
+
+Pending: the owner's passkey (plan Task 18 Step 4). Local flavour, on the owner's Mac, with the Compose hub (`B4HUB_SIGNUP=open`, `B4HUB_WEBAUTHN_RP_ID=local.b4.run`) and `local.b4.run`'s association file live. Who ran each step is recorded with it.
+
+| Step | Result |
+| --- | --- |
+| 1. Package the local flavour and launch it | pending |
+| 2. The owner's existing threads appear without a sign-in (adoption) | pending |
+| 3. Add a passkey in Settings → Account, log out, sign back in with the passkey: the same threads appear | pending |
+| 4. Sign up a second account with a new passkey and complete onboarding: "Brian's Org" (or the typed name's) | pending |
+| 5. Create a thread, log out, sign in to the first account: its threads appear, the second account's thread does not | pending |
+| 6. `agent-workspace thread list` while signed out: exit 4 with the message | pending |
+| 7. In the iPhone Simulator (local flavour), open the pair link with `xcrun simctl openurl` and see the threads | pending |
+
 ## 2026-11-02: Settings, connections and B4 projects (D-081 to D-084)
 
 Branch `blove/settings-connections-design`.

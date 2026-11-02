@@ -1,6 +1,6 @@
 # Compatibility manifest
 
-Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M8a on 2026-10-31, M8b on 2026-11-01, hosted-hub tooling and M8c on 2026-11-02). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
+Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M8a on 2026-10-31, M8b on 2026-11-01, hosted-hub tooling, M8c, and sign-in on 2026-11-02). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
 
 ## Target machine
 
@@ -157,9 +157,9 @@ webauthn-rs 0.6 verifies with RustCrypto (`crypto-glue`, `p256` 0.14), not OpenS
 
 | Item | Value |
 | --- | --- |
-| Hub environment | `serve` now requires `B4HUB_WEBAUTHN_RP_ID` (a bare domain; the origin is `https://<rp id>`) and `B4HUB_SECRET_KEY` (32 bytes, base64), and reads `B4HUB_SIGNUP` (`open`/`closed`, default `closed`), `B4HUB_TRUST_X_FORWARDED_FOR` (`1`/`true`, `0`/`false`), and the `B4HUB_APPLE_*` set (all or none). A missing or malformed one exits 2. Compose passes `B4HUB_WEBAUTHN_RP_ID` (default `local.b4.run`), `B4HUB_SIGNUP` (default `closed`; `.env.example` sets `open`), and `B4HUB_SECRET_KEY` (required) to `hub` only |
-| Routes | `GET /v1/auth/config`, `POST /v1/auth/passkey/begin`, `POST /v1/auth/passkey/finish`; errors `signup_closed` (403), `ceremony_expired` (400), `credential_rejected` (401), `rate_limited` (429, `details.retryAfterMs` and `Retry-After`) |
-| Rate limits | In memory per process, a fixed one-minute window per client (an IPv4 address or an IPv6 /64): 20 begins, 10 finishes; at most 100,000 tracked clients per limit, swept once a minute |
+| Hub environment | `serve` now requires `B4HUB_WEBAUTHN_RP_ID` (a bare domain; the origin is `https://<rp id>`) and `B4HUB_SECRET_KEY` (32 bytes, base64), and reads `B4HUB_SIGNUP` (`open`/`closed`, default `closed`), `B4HUB_TRUST_X_FORWARDED_FOR` (`1`/`true`, `0`/`false`), and the `B4HUB_APPLE_*` set (all or none). A missing or malformed one exits 2. The secrets also take `_FILE` forms (below). Compose passes `B4HUB_WEBAUTHN_RP_ID` (default `local.b4.run`), `B4HUB_SIGNUP` (default `closed`; `.env.example` sets `open`), and `B4HUB_SECRET_KEY` (required) to `hub` only |
+| Routes | `GET /v1/auth/config`, `POST /v1/auth/passkey/begin`, `POST /v1/auth/passkey/finish` (the account routes are under "accounts and the wire" below); errors `signup_closed` (403), `ceremony_expired` (400), `credential_rejected` (401), `rate_limited` (429, `details.retryAfterMs` and `Retry-After`) |
+| Rate limits | In memory per process, a fixed one-minute window per client (an IPv4 address or an IPv6 /64): 20 begins, 10 finishes, shared by the `/v1/auth/` and `/v1/me/` passkey and Apple routes; at most 100,000 tracked clients per limit, swept once a minute |
 | Logging | The pool disables sqlx's statement logging (SQL text never reaches the log), and a filter layer separate from `B4HUB_LOG` drops every event from a target starting with `webauthn` (webauthn-rs logs responses and challenges at DEBUG and TRACE), so no `B4HUB_LOG` directive can re-enable it |
 | Hub protocol | `minClientProtocol` stays 1: the routes are new and nothing existing changed shape |
 
@@ -184,6 +184,46 @@ New crates, pinned exactly like the rest:
 | Outbound | `https://appleid.apple.com` only, 10 s per call, no redirects followed |
 | Refresh tokens at rest | AES-256-GCM under `B4HUB_SECRET_KEY`, nonce first, the identity row's id as associated data; the plaintext is `{"clientId", "refreshToken"}`. Task 6's format (no associated data, the bare token) was never written outside tests |
 | Hub protocol | `minClientProtocol` stays 1 |
+
+### Hub sign-in additions (accounts and the wire)
+
+| Item | Value |
+| --- | --- |
+| Crates | `aes-gcm` 0.11.1 (default features off; `aes`, `alloc`; already in the lock through webauthn-rs) seals Apple refresh tokens and pending handoffs under `B4HUB_SECRET_KEY`; `getrandom` 0.4.3 moved from a dev dependency of `b4hub` to a normal one, for the seal's nonce |
+| Hub migrations | `0005_accounts.sql` (`users.email` nullable, `full_name`, `onboarded_at`, `deleted_at`; `orgs.personal` and `owner_user_id`; `user_identities`, `auth_ceremonies`, `auth_handoffs`, none with row-level security; existing users backfilled as onboarded, D-094) and `0007_apple_handoffs.sql` (above). Run `migrate` before a new `serve`; a database that already has `0006` and `0008` applies them in number order (`b4hub-db/tests/migrate.rs` expects `[1, 2, 3, 4, 5, 6, 7, 8]`) |
+| Account routes | `GET /v1/me` gains `userId`, `user.fullName`, `onboarded`, and `identities`; new `PUT /v1/me/profile`, `POST /v1/me/passkeys/begin` and `/finish`, `DELETE /v1/me/identities/{id}`, `DELETE /v1/sessions/self`, `DELETE /v1/me`; `POST /v1/enroll` takes an optional bearer that asks for a merge. New errors `last_identity`, `merge_refused` (with `details.reason`: `same_account`, `shared_org`, `has_mac`), and `shared_org`, all `409` |
+| Session answer | `userId` (`users.id`) beside `deviceId`, `token`, `org`, `user`, `needsOnboarding`; Swift decodes it as optional, so an older hub still signs in (the Mac registers a `device:<id>` placeholder until `/v1/me` names the user, D-096) |
+| `device` in a sign-in request | `{deviceName, platform, deviceId?, candidateDeviceIds?}`; up to 32 UUIDs, `deviceId` first (D-093). **A hub older than this refuses `candidateDeviceIds` with `400 invalid_request`** (`deny_unknown_fields`), so a Mac or phone that knows more than one device at a hub cannot sign in to it; a client that knows one sends only `deviceId` |
+| Maintenance | the sign-in and account write routes answer `503 maintenance` (D-100); `GET /v1/auth/config`, `GET /v1/me`, and `GET /v1/auth/apple/start` do not |
+| Secrets from files | `B4HUB_SECRET_KEY_FILE`, `B4HUB_APPLE_TEAM_ID_FILE`, `B4HUB_APPLE_KEY_ID_FILE`, `B4HUB_APPLE_PRIVATE_KEY_FILE` (D-109); the chart's `secrets.useFileVars` defaults to on and the Compose production profile mounts `secret_key`; the development `Hub/compose.yaml` passes `B4HUB_SECRET_KEY` itself |
+| Cross-language fixture | `Tests/Fixtures/sync/auth.json`, read by `AuthWireTests` and the hub's `auth_fixture` test (one example of each sign-in and account request and answer, captured from the hub's own test authenticator, and the `merge_refused` envelope) |
+| Hub protocol | `minClientProtocol` stays 1; every field is additive |
+| Test database | Unchanged. Rust suite: 379 tests on the sign-in head; Swift suite: 1113 tests in 142 suites |
+
+**Upgrade order for sign-in: the hub first, then the Macs, then the phones.** A Mac or phone on this build against an older hub cannot sign in at all (the `/v1/auth/` routes are `404`), and one that knows several devices there is refused for `candidateDeviceIds`. An older Mac against this hub keeps syncing with its enrollment token, and an older phone keeps its mirror; neither can sign in or out the new way. The owner's local hub is rebuilt from this branch before the apps at the live gate.
+
+## Sign-in on the Mac and iPhone
+
+Both apps' deployment target is 26.0 (`project.yml`, `Package.swift`). The account calls are in `Sources/WorkspaceUI/SignIn/` (`PasskeyCeremony.swift`, `AppleCeremony.swift`); everything else goes through the coordinator or `MirrorAccount`. Availability below is from the macOS 26.5 SDK's headers and Swift interfaces (Xcode 26.6). "Reviewed" throughout: none of these has been run against a hub on a device yet (live gate pending).
+
+| API (AuthenticationServices) | Available | Used for |
+| --- | --- | --- |
+| `ASAuthorizationPlatformPublicKeyCredentialProvider` | macOS 12.0, iOS 15.0 | passkey assertion (with `.preferImmediatelyAvailableCredentials`) and registration (attestation `none`), both apps |
+| `ASAuthorizationPlatformPublicKeyCredentialRegistrationRequest.excludedCredentials` | macOS 13.5, iOS 17.4 | the hub's `excludeCredentials`, so a device that already holds the account's passkey refuses (`.matchedExcludedCredential`) |
+| `ASAuthorizationAppleIDProvider` | macOS 10.15, iOS 13.0 | the iPhone's native Sign in with Apple sheet (`.fullName`, `.email`, the hub's hashed nonce); the Mac never uses it (Developer ID apps cannot) |
+| `ASWebAuthenticationSession`, through SwiftUI's `WebAuthenticationSession` | macOS 10.15, iOS 12.0 (`WebAuthenticationSession` macOS 13.3, iOS 16.4; the `.customScheme` callback macOS 14.4, iOS 17.4) | the Mac's Apple web flow, an ephemeral session returning to `b4app`, `b4app-beta`, or `b4app-local` |
+| `ASCredentialUpdater` | macOS and iOS 26.0, deprecated in 26.2 | on 26.0 and 26.1: `reportUnknownPublicKeyCredential` (an orphan passkey, D-102) and `reportPublicKeyCredentialUpdate` (the rename after onboarding) |
+| `ASCredentialDataManager` | macOS and iOS 26.2 | the same two calls on 26.2 and later |
+
+| Item | Value |
+| --- | --- |
+| Entitlements | Mac app: `com.apple.developer.associated-domains` = `webcredentials:<site domain>`, generated by `package.sh` (the Xcode build's entitlements stay empty, so an unsigned or ad hoc Mac build cannot use passkeys). iPhone: `webcredentials:` and `applinks:` for the site domain, plus `com.apple.developer.applesignin` on prod and beta; the local build adds `?mode=developer` and runs only in the Simulator |
+| Association file | served per host by `cacheplane/b4run` (`/.well-known/apple-app-site-association`), listing each flavour's Mac and iPhone app ids; fetched live from `b4.run`, `test.b4.run`, and `local.b4.run` |
+| Mac account registry | the `registry` database in the coordinator's cluster (`<name>_registry` beside a non-default database), migrated by its own list in `Sources/WorkspaceStorage/SQL/registry/`: `0001_registry.sql` (`accounts`: `id`, `hub_user_id`, `hub_url`, `device_id`, `database`, `display_name`, `org_name`, `token_ref`, `last_signed_in_at`, `active`; unique `(hub_url, hub_user_id)`, one active row) and `0002_account_state.sql` (`needs_onboarding`, `hub_session_left_open`). Each account's store is `workspace_<16 hex>` with the existing migrations; the adopted one keeps the name `workspace`. Both migrators refuse a database migrated by a newer build (`incompatible_version`) |
+| Mac data | per flavour: `~/Library/Application Support/b4app`, `b4app-beta`, `b4app-local`; the local flavour moves a pre-flavour `b4app` once (D-091) |
+| iPhone data | the mirror folder and Keychain service per flavour (`b4app`, `b4app-beta`, `b4app-local`), plus `device.json` beside the mirror (up to 8 device ids per hub); links carry a `flavor` marker; no mirror schema change (still `user_version` 3) |
+| Protocol | new commands `account.status`, `account.passkeyBegin`, `account.passkeyFinish`, `account.appleStart`, `account.appleFinish`, `account.appleLinkStart`, `account.appleLinkFinish`, `account.completeProfile`, `account.logout`, `account.dismissNotice`, `account.identities`, `account.addPasskeyBegin`, `account.addPasskeyFinish`, `account.removeIdentity`, `account.delete`; event `account.changed`; errors `signed_out` and `work_running` (coordinator only) and the hub's sign-in codes; `HubStatus.Result.notice`; `HubPair.Result.link`. An app on this build treats a coordinator that answers `account.status` with `unsupported_capability` or `method_unknown` as signed in (D-108) |
+| CLI | `agent-workspace account status [--json]` and `account logout [--stop-work]`; every store command exits 4 while signed out |
 
 ## Provider runtimes
 
