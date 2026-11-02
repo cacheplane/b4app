@@ -1943,6 +1943,78 @@ async fn thread_start_auto_watches_the_new_thread(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn a_refused_thread_start_gives_its_watch_back(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+    let start = |id: &str| {
+        let mut params = params_for(RelayMethod::ThreadStart);
+        params["threadId"] = json!(id);
+        params
+    };
+    let watched = || world.hub.state.relay.watched_by(world.mac_id);
+
+    // Refused before a turn was made (no `turnId`): the watch the start took is let go.
+    phone
+        .command("start-1", RelayMethod::ThreadStart, start("refused-thread"))
+        .await;
+    assert_eq!(mac.expect_command().await.0, "start-1");
+    eventually("the new thread to be watched", || async {
+        (watched() == ["refused-thread"]).then_some(())
+    })
+    .await;
+    mac.reply_error(
+        "start-1",
+        "directory_locked",
+        Some(json!({"blockingTurnId": "turn-9"})),
+    )
+    .await;
+    assert_eq!(phone.expect_reply().await.0, "start-1");
+    eventually("the refused thread's watch to be dropped", || async {
+        watched().is_empty().then_some(())
+    })
+    .await;
+
+    // Refused after its turn was made (`turnId`): the thread exists, so the watch stays.
+    phone
+        .command("start-2", RelayMethod::ThreadStart, start("failed-thread"))
+        .await;
+    assert_eq!(mac.expect_command().await.0, "start-2");
+    mac.reply_error(
+        "start-2",
+        "internal_error",
+        Some(json!({"turnId": "turn-2"})),
+    )
+    .await;
+    assert_eq!(phone.expect_reply().await.0, "start-2");
+    settle().await;
+    assert_eq!(watched(), ["failed-thread"]);
+
+    // So refusals never use up the link's four watches.
+    for n in 3..=6 {
+        let id = format!("start-{n}");
+        phone
+            .command(
+                &id,
+                RelayMethod::ThreadStart,
+                start(&format!("refused-{n}")),
+            )
+            .await;
+        assert_eq!(mac.expect_command().await.0, id);
+        mac.reply_error(&id, "directory_locked", None).await;
+        assert_eq!(phone.expect_reply().await.0, id);
+    }
+    settle().await;
+    assert_eq!(watched(), ["failed-thread"]);
+    world
+        .hub
+        .seed_thread(&world.blove, world.mac_id, "thread-2")
+        .await;
+    phone.watch("thread-2").await;
+    phone.expect_no_frame(QUIET).await;
+}
+
+#[sqlx::test(migrations = false)]
 async fn closing_a_phone_clears_its_watches(pool: PgPool) {
     let world = World::new(spawn_hub(&pool).await).await;
     world

@@ -627,6 +627,20 @@ impl FakeDevice {
         .await;
     }
 
+    /// Sends a host's error `reply`.
+    pub async fn reply_error(&mut self, id: &str, code: &str, details: Option<Value>) {
+        self.send(&RelayMessage::Reply {
+            id: id.to_string(),
+            result: None,
+            error: Some(WireError {
+                code: code.to_string(),
+                message: "refused".to_string(),
+                details,
+            }),
+        })
+        .await;
+    }
+
     /// The next frame that is not a `pong`, a `presence`, or a `watching`. Fails the test if none arrives within
     /// [`FRAME_WAIT`].
     pub async fn next_skipping_chatter(&mut self) -> RelayMessage {

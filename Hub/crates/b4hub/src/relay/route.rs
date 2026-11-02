@@ -573,27 +573,45 @@ async fn forward(
             SendError::Offline => device_offline(owner),
             SendError::Full => relay_timeout(),
         })?;
-    if let Some(thread_id) = started_thread {
+    let mut auto_watch = None;
+    if let Some(thread_id) = &started_thread {
         // The caller's link watches the thread it just started (it counts toward its four), so
         // the Mac streams the first turn without the phone having to race a `watch` against it.
         if let Some(link) = relay.handle(caller.device_id) {
-            if relay.watch(&link, owner.device_id, &thread_id) == Err(WatchError::Limit) {
-                tracing::info!(device = %caller.device_id, "new thread not watched: watch limit");
+            match relay.watch(&link, owner.device_id, thread_id) {
+                Ok(()) => auto_watch = Some(link),
+                Err(WatchError::Limit) => {
+                    tracing::info!(device = %caller.device_id, "new thread not watched: watch limit");
+                }
+                Err(WatchError::Gone) => {}
             }
         }
         relay
             .commands()
-            .remember_thread(caller.user_id, thread_id, owner.device_id);
+            .remember_thread(caller.user_id, thread_id.clone(), owner.device_id);
     }
     let wait = if starts_a_turn(method) {
         REPLY_WAIT_START
     } else {
         REPLY_WAIT_OTHER
     };
-    match tokio::time::timeout(wait, answered).await {
-        Ok(Ok(answer)) => Ok(answer),
-        _ => Err(relay_timeout()),
+    let answer = match tokio::time::timeout(wait, answered).await {
+        Ok(Ok(answer)) => answer,
+        _ => return Err(relay_timeout()),
+    };
+    // A start the Mac refused before making its turn (an error without `details.turnId`) made no
+    // thread, so the watch it took is given back: refusals must not use up the caller's four.
+    if let (Some(link), Some(thread_id), Some(error)) = (auto_watch, &started_thread, &answer.error)
+    {
+        let made_a_turn = error
+            .details
+            .as_ref()
+            .is_some_and(|details| details.get("turnId").is_some());
+        if !made_a_turn {
+            relay.unwatch(&link, thread_id);
+        }
     }
+    Ok(answer)
 }
 
 /// `turn.send` and `thread.start`: never held, waited on longest, and limited per user.

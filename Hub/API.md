@@ -642,8 +642,10 @@ again after every reconnect. A host sending `watch` or `unwatch`, or a client se
 **Auto-watch.** When the hub forwards `thread.start`, the caller's link starts watching the new
 thread, so the first turn streams without a race against a `watch`. It counts toward the link's 4
 (if the link is already at 4 the thread is simply not auto-watched, and the phone can `unwatch`
-another and `watch` it). A `thread.start` the Mac then refuses leaves the watch in place until the
-phone unwatches it or the link closes.
+another and `watch` it). When the Mac's reply to that `thread.start` is an error without
+`details.turnId` (refused before its turn was made, so there is no thread), the hub drops the
+auto-watch again. Any other answer (a result, an error with `details.turnId`, or the hub's own
+`relay_timeout`) leaves the watch in place until the phone unwatches it or the link closes.
 
 **`watching`.** The hub keeps, per host, the set of that host's threads that any client link
 watches, and sends the **whole** set to the host as `watching { threadIds }` (sorted) right after
