@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use b4hub::cli::{self, Cli, ConfigError, Settings};
@@ -14,7 +15,11 @@ async fn main() -> ExitCode {
         Ok(filter) => filter,
         Err(error) => return config_failure(&error),
     };
-    b4hub::logging::subscriber(filter, std::io::stderr).init();
+    let format = match settings.log_format(std::io::stderr().is_terminal()) {
+        Ok(format) => format,
+        Err(error) => return config_failure(&error),
+    };
+    b4hub::logging::subscriber(filter, format, std::io::stderr).init();
 
     match cli::run(cli, &settings).await {
         Ok(()) => ExitCode::SUCCESS,

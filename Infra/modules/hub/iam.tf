@@ -64,10 +64,15 @@ resource "aws_iam_role_policy" "task_exec" {
       {
         # Every secret, the master secret included, is encrypted with the
         # account key; without this, task startup fails resolving secrets.
+        # Only via Secrets Manager: the execution role never decrypts RDS
+        # storage or anything else under the key directly.
         Sid      = "DecryptSecrets"
         Effect   = "Allow"
         Action   = "kms:Decrypt"
         Resource = aws_kms_key.this.arn
+        Condition = {
+          StringEquals = { "kms:ViaService" = "secretsmanager.${var.region}.amazonaws.com" }
+        }
       },
       {
         Sid      = "WriteLogs"

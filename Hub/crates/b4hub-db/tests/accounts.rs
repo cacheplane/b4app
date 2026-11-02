@@ -678,7 +678,7 @@ async fn remove_last_identity_refused(pool: PgPool) {
 
 /// Every table with an `org_id` column. A new one fails `delete_user_removes_every_tenant_row`
 /// until it is listed here and `delete_user` clears it.
-const ORG_TABLES: [&str; 17] = [
+const ORG_TABLES: [&str; 18] = [
     "auth_handoffs",
     "changes",
     "column_clocks",
@@ -689,6 +689,7 @@ const ORG_TABLES: [&str; 17] = [
     "drafts",
     "enrollment_codes",
     "org_sync_horizons",
+    "pairing_mints",
     "projectFolders",
     "projects",
     "runtimeRequests",
@@ -728,7 +729,7 @@ fn insert(seq: i64, table: &str, row: &str, value: serde_json::Value) -> Change 
 }
 
 /// Fills every org table for `who`'s org: the fixture (feed, mirror, clocks), a project and its
-/// folder, a draft, an enrollment code, a handoff, and a horizon.
+/// folder, a draft, an enrollment code, a pairing code (and its mint), a handoff, and a horizon.
 async fn fill_org(admin: &Db, app: &Db, pool: &PgPool, created: &accounts::Created) {
     let who = authed(app, &created.token).await;
     let mut batch = common::filtered_fixture();
@@ -762,6 +763,9 @@ async fn fill_org(admin: &Db, app: &Db, pool: &PgPool, created: &accounts::Creat
     )
     .await
     .unwrap();
+    devices::create_pairing_code(app, created.org_id, created.user_id, created.device_id)
+        .await
+        .unwrap();
     let principal = Principal::from(who);
     let ceremony = ceremonies::create(app, "apple", json!({})).await.unwrap();
     ceremonies::create_handoff(app, ceremony, principal, &hash_token("v"))

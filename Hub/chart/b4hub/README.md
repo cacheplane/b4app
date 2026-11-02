@@ -1,6 +1,6 @@
 # b4hub
 
-![Version: 0.1.0](https://img.shields.io/badge/Version-0.1.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.1.0](https://img.shields.io/badge/AppVersion-0.1.0-informational?style=flat-square)
+![Version: 0.1.1](https://img.shields.io/badge/Version-0.1.1-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.1.0](https://img.shields.io/badge/AppVersion-0.1.0-informational?style=flat-square)
 
 The b4 hub, the sync and relay service for the b4 Personal Agent Workspace, with an external PostgreSQL and a pre-upgrade migration Job.
 
@@ -34,7 +34,7 @@ database:
 Create one Secret with two keys:
 
 - `DATABASE_URL`: the `b4hub_app` role's connection URL. The hub Deployment mounts only this key, at `/etc/b4hub/db/DATABASE_URL`, and reads it through `DATABASE_URL_FILE`.
-- `DATABASE_ADMIN_URL`: the owner connection URL. Only the migration Job mounts it.
+- `DATABASE_ADMIN_URL`: the admin connection URL, for a role that owns the database and has `CREATEROLE` (a superuser works; the CloudNativePG example below uses the `b4hub-db-superuser` Secret). Only the migration Job mounts it.
 
 Key names are overridable with `database.secretKeys`. Pass the Secret as `database.existingSecret`.
 `database.urls.url` and `database.urls.adminUrl` make the chart create `<release>-b4hub-db` instead; that is for evaluation only (the values sit in your values file, and the Secret is a hook resource that `helm uninstall` leaves behind). Use `existingSecret` in production.
@@ -71,11 +71,12 @@ Sign-in needs `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, a
 ```
 
 With neither set, the hub runs without sign-in secrets and the chart renders none.
-`secrets.useFileVars: false` (default) exposes them as environment variables from `secretKeyRef`. `true` mounts them at `/etc/b4hub/secrets/<KEY>` and sets `B4HUB_*_FILE` instead; the hub reads the `_FILE` forms of `B4HUB_SECRET_KEY` and the `B4HUB_APPLE_*` secrets (M8e).
+With `secrets.existingSecret`, all four references are `optional: true`, so Kubernetes no longer refuses to start the pod (`CreateContainerConfigError`) when a key is missing or mistyped; check the key names yourself, because the hub's own startup check is then the only guard.
+`secrets.useFileVars: false` (default) exposes them as environment variables from `secretKeyRef`. `true` mounts them at `/etc/b4hub/secrets/<KEY>` and sets `B4HUB_*_FILE` instead; the hub reads the `_FILE` forms of `B4HUB_SECRET_KEY` and the `B4HUB_APPLE_*` secrets.
 
 ## Ingress or Gateway
 
-Enable one of the two. Both route to the chart Service (port name `http`).
+Enable one of the two. Both route to the chart Service: the Ingress backend names its port (`http`), the HTTPRoute backend uses its port number (`service.port`, default 80), since Gateway API `backendRefs` take a number.
 
 The proxy must pass or append the client address: the hub trusts the last `X-Forwarded-For` hop while `hub.trustXForwardedFor` (`B4HUB_TRUST_X_FORWARDED_FOR`) is true, so turn that off if your proxy does not append it. The hub holds WebSockets and 25 s long-polls open, so the proxy's read timeout must exceed 25 s.
 
@@ -126,9 +127,9 @@ Kubernetes: `>=1.29.0`
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| affinity | object | `{}` | Affinity for the hub pods. |
+| affinity | object | `{}` | Affinity for the hub and migration pods. |
 | database.existingSecret | string | `""` | Name of an existing Secret holding both database URLs. Required unless both `database.urls` are set. |
-| database.secretKeys.adminUrl | string | `"DATABASE_ADMIN_URL"` | Key in the Secret holding the owner (admin) connection URL. Only the migration Job mounts it. |
+| database.secretKeys.adminUrl | string | `"DATABASE_ADMIN_URL"` | Key in the Secret holding the admin connection URL (a role with `CREATEROLE`, or a superuser). Only the migration Job mounts it. |
 | database.secretKeys.url | string | `"DATABASE_URL"` | Key in the Secret holding the `b4hub_app` connection URL. The only key the hub Deployment mounts. |
 | database.urls.adminUrl | string | `""` | For evaluation only; use `existingSecret` in production. |
 | database.urls.url | string | `""` | For evaluation only; use `existingSecret` in production. With `adminUrl`, the chart creates `<release>-b4hub-db`. |
@@ -141,7 +142,7 @@ Kubernetes: `>=1.29.0`
 | httpRoute.timeouts | string | `nil` | Optional `{request, backendRequest}` rule timeouts. Leave unset (`null`): the hub holds WebSockets and 25 s long-polls open, so the route must not add a default timeout. |
 | hub.apple.audiences | list | `[]` | Apple token audiences (`B4HUB_APPLE_AUDIENCES`, joined with commas); rendered only when set. |
 | hub.apple.servicesId | string | `""` | Apple Services ID for web sign-in (`B4HUB_APPLE_SERVICES_ID`); rendered only when set. |
-| hub.extraEnv | list | `[]` | Extra `EnvVar` entries appended verbatim to the hub container (for example `OTEL_EXPORTER_OTLP_*`). |
+| hub.extraEnv | list | `[]` | Extra `EnvVar` entries appended verbatim to the hub container. For OTLP use `otel.endpoint`, `otel.protocol`, and `otel.extraEnv` instead. |
 | hub.log | string | `"info"` | Tracing filter (`B4HUB_LOG`). |
 | hub.publicUrl | string | `""` | Required. The URL clients reach the hub at (`B4HUB_PUBLIC_URL`). |
 | hub.retentionDays | int | `30` | Days the change log is kept (`B4HUB_RETENTION_DAYS`). |
@@ -173,7 +174,7 @@ Kubernetes: `>=1.29.0`
 | preStopSleepSeconds | int | `5` | `preStop` sleep so endpoint removal propagates before SIGTERM. |
 | replicaCount | int | `1` | Hub replicas. Keep 1: the relay routes per process until M8e (D-057). |
 | resources | object | `{"limits":{"memory":"512Mi"},"requests":{"cpu":"100m","memory":"128Mi"}}` | Hub container resources. |
-| secrets.existingSecret | string | `""` | Existing Secret with keys `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, `B4HUB_APPLE_PRIVATE_KEY`. |
+| secrets.existingSecret | string | `""` | Existing Secret with keys `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, `B4HUB_APPLE_PRIVATE_KEY`. Each reference is `optional: true`, so Kubernetes does not catch a missing or mistyped key (no `CreateContainerConfigError`); the hub's startup check is the only guard. |
 | secrets.useFileVars | bool | `false` | `false`: env from `secretKeyRef`. `true`: mount at `/etc/b4hub/secrets/` and set `B4HUB_*_FILE` (needs a hub with the `_FILE` forms, M8e; the sign-in hub has them). |
 | secrets.values | object | `{"appleKeyId":"","applePrivateKey":"","appleTeamId":"","secretKey":""}` | Chart-created `<release>-b4hub-secrets` when `existingSecret` is empty. Pass the PEM with `--set-file secrets.values.applePrivateKey=AuthKey.p8`. |
 | securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true}` | Container security context (Restricted Pod Security Standard). `/tmp` is an `emptyDir`. |

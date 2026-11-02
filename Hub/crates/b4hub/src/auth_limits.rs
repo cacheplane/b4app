@@ -138,7 +138,7 @@ impl AuthLimits {
     pub fn admit(limiter: &RateLimiter, client: ClientIp) -> Result<(), ApiError> {
         limiter
             .check(client.0, Instant::now())
-            .map_err(ApiError::rate_limited)
+            .map_err(ApiError::rate_limited_after)
     }
 }
 

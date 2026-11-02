@@ -115,7 +115,7 @@ impl Config {
             public_url: settings.public_url()?,
             secret_key: secret_key(settings)?,
             apple: apple(settings)?,
-            trust_forwarded_for: flag(settings, "B4HUB_TRUST_X_FORWARDED_FOR")?,
+            trust_forwarded_for: settings.trust_proxy()?,
         }
         .validated()
     }
@@ -202,14 +202,6 @@ fn secret_key(settings: &Settings) -> Result<[u8; 32], ConfigError> {
         .ok()
         .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
         .ok_or_else(|| ConfigError::new(NAME, "must be exactly 32 bytes in base64"))
-}
-
-fn flag(settings: &Settings, name: &str) -> Result<bool, ConfigError> {
-    match settings.var(name) {
-        None | Some("0") => Ok(false),
-        Some("1") => Ok(true),
-        Some(_) => Err(ConfigError::new(name, "must be 1 or 0")),
-    }
 }
 
 fn apple(settings: &Settings) -> Result<Option<AppleConfig>, ConfigError> {
@@ -397,7 +389,7 @@ kZXiwkEnZYzZPc5fQx0VfT+fhjzYhYLgQ+KXi00zbyOb46KPzL6yEFza
         for (name, bad) in [
             ("B4HUB_SIGNUP", "yes"),
             ("B4HUB_SIGNUP", "Open"),
-            ("B4HUB_TRUST_X_FORWARDED_FOR", "true"),
+            ("B4HUB_TRUST_X_FORWARDED_FOR", "yes"),
         ] {
             let error = Config::from_settings(&settings(&[(name, bad)])).unwrap_err();
             assert_eq!(error.name, name, "{bad}");

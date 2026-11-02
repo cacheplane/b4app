@@ -296,3 +296,43 @@ extension WorkspaceDatabase {
     }
   }
 }
+
+// MARK: - Connections and settings (migration 0005)
+
+extension WorkspaceDatabase {
+  /// Set (or with nil clear) the project a local B4 connection serves. The change log records it as an
+  /// update of `projectId` alone, and does not move `updatedAt`. A project that does not exist is
+  /// `protocolInvalid`; a connection that does not exist changes nothing.
+  public func setConnectionProject(id: String, projectId: String?) throws {
+    try write { c in
+      _ = try c.execute(
+        "UPDATE \"connections\" SET \"projectId\" = $2::text WHERE \"id\" = $1", [id, projectId])
+    }
+  }
+
+  /// This Mac's own setting `key`, nil when it was never set. Settings are never synced and never in the
+  /// change log.
+  public func settings(key: String) throws -> JSONValue? {
+    try read { c in
+      guard
+        let text = try c.execute(
+          "SELECT \"value\"::text AS \"value\" FROM \"settings\" WHERE \"key\" = $1", [key]
+        )
+        .rows.first?.text("value")
+      else { return nil }
+      return try JSONCoding.decoder.decode(JSONValue.self, from: Data(text.utf8))
+    }
+  }
+
+  /// Store (replace) the setting `key`.
+  public func setSetting(key: String, value: JSONValue) throws {
+    let json = String(decoding: try JSONCoding.encoder.encode(value), as: UTF8.self)
+    try write { c in
+      _ = try c.execute(
+        """
+        INSERT INTO "settings" ("key", "value") VALUES ($1, $2::jsonb)
+        ON CONFLICT ("key") DO UPDATE SET "value" = EXCLUDED."value"
+        """, [key, json])
+    }
+  }
+}

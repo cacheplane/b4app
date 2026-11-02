@@ -6,10 +6,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::routing::{delete, get, post, put};
-use axum::Router;
+use axum::{middleware, Router};
 use b4hub_db::Db;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
+use url::Url;
 use webauthn_rs::prelude::Webauthn;
 
 use crate::apple::{AppleClient, AppleRevoker, ErasedAppleRevoker, UnconfiguredRevoker};
@@ -18,8 +19,11 @@ use crate::auth_limits::AuthLimits;
 use crate::cli::ConfigError;
 use crate::config::Config;
 use crate::error::ApiError;
+use crate::maintenance::MaintenanceState;
 use crate::notify::Notifier;
-use crate::routes::{apple, auth, changes, devices, enroll, health, me, snapshot};
+use crate::relay::{link, Relay};
+use crate::request_log;
+use crate::routes::{apple, auth, changes, devices, enroll, health, me, pairing, snapshot};
 
 /// How long the listener stays open, answering `/readyz` 503, after shutdown begins, so a load
 /// balancer polling readiness stops routing here before connections are refused. Capped at a
@@ -50,6 +54,13 @@ pub struct AppState {
     /// Revokes Apple refresh tokens when an account is deleted: the Apple client, or (without
     /// Apple) [`UnconfiguredRevoker`], which refuses.
     pub apple_revoker: Arc<dyn ErasedAppleRevoker>,
+    /// `B4HUB_PUBLIC_URL`: the URL clients reach the hub at, handed to a phone with a pairing code.
+    /// [`AppState::new`] copies it from `config`.
+    pub public_url: Option<Url>,
+    /// The device links: who is online, and the means to reach them.
+    pub relay: Relay,
+    /// The maintenance switch as last polled (`maintenance::poll_loop`); writes check it.
+    pub maintenance: MaintenanceState,
 }
 
 impl AppState {
@@ -67,6 +78,7 @@ impl AppState {
             Some(client) => client.clone(),
             None => Arc::new(UnconfiguredRevoker),
         };
+        let public_url = config.public_url.clone();
         Ok(AppState {
             db,
             shutdown: Shutdown::default(),
@@ -77,6 +89,9 @@ impl AppState {
             limits: AuthLimits::default(),
             apple,
             apple_revoker,
+            public_url,
+            relay: Relay::new(),
+            maintenance: MaintenanceState::default(),
         })
     }
 
@@ -117,6 +132,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
         .route("/v1/enroll", post(enroll::enroll))
+        .route("/v1/pairing-codes", post(pairing::create))
         .route("/v1/changes", changes::route())
         .route("/v1/me", get(me::me).delete(me::delete_me))
         .route("/v1/me/profile", put(me::profile))
@@ -138,8 +154,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/auth/apple/start", get(apple::start))
         .route("/v1/auth/apple/callback", post(apple::callback))
         .route("/v1/auth/handoff", post(apple::handoff))
+        .route("/v1/devices/self/link", get(link::upgrade))
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
         .fallback(|| async { ApiError::not_found() })
+        .layer(middleware::from_fn(request_log::trace_request))
         .with_state(state)
 }
 
@@ -158,6 +176,7 @@ pub async fn run(
     let shutdown = state.shutdown.clone();
     let (signalled_tx, signalled_rx) = oneshot::channel::<()>();
 
+    let relay = state.relay.clone();
     let app = router(state).into_make_service_with_connect_info::<SocketAddr>();
     let server = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -167,6 +186,13 @@ pub async fn run(
             tokio::time::sleep(grace).await;
         })
         .into_future();
+    // An upgraded connection is no longer the server's: its link task is, so the drain also
+    // waits for the links, which close themselves (code 1001) as soon as shutdown begins.
+    let server = async move {
+        let served = server.await;
+        relay.drained().await;
+        served
+    };
     let deadline = async move {
         match signalled_rx.await {
             Ok(()) => tokio::time::sleep(wait).await,

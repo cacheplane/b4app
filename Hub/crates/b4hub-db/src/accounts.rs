@@ -684,7 +684,7 @@ async fn owns_personal_org(
 /// reference. `users` and `orgs` follow. A table added later must be added here too; the test
 /// `delete_user_removes_every_tenant_row` lists the tables from the catalogue and fails until it
 /// is.
-const ORG_TABLES: [&str; 16] = [
+const ORG_TABLES: [&str; 17] = [
     "changes",
     "column_clocks",
     "org_sync_horizons",
@@ -697,6 +697,7 @@ const ORG_TABLES: [&str; 16] = [
     "projectFolders",
     "projects",
     "auth_handoffs",
+    "pairing_mints",
     "user_identities",
     "enrollment_codes",
     "device_tokens",

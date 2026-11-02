@@ -32,6 +32,7 @@ use webauthn_rs_proto::{
 use crate::auth_limits::{BeginAllowed, FinishAllowed};
 use crate::config::Signup;
 use crate::error::{ApiError, ApiJson};
+use crate::maintenance::WritesAllowed;
 use crate::routes::enroll::MAX_DEVICE_NAME_CHARS;
 use crate::serve::AppState;
 
@@ -197,6 +198,7 @@ pub async fn config(State(state): State<AppState>) -> Json<AuthConfigResponse> {
 pub async fn passkey_begin(
     State(state): State<AppState>,
     _allowed: BeginAllowed,
+    _writes: WritesAllowed,
 ) -> Result<Json<PasskeyBeginResponse>, ApiError> {
     let (mut authentication, auth_state) = state
         .webauthn
@@ -233,6 +235,7 @@ pub async fn passkey_begin(
 pub async fn passkey_finish(
     State(state): State<AppState>,
     _allowed: FinishAllowed,
+    _writes: WritesAllowed,
     ApiJson(request): ApiJson<PasskeyFinishRequest>,
 ) -> Result<Json<AuthSession>, ApiError> {
     // Everything that can be refused without the ceremony is refused first, so a malformed

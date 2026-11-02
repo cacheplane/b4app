@@ -1859,7 +1859,7 @@ async fn no_secret_in_logs(pool: PgPool) {
         .log_filter()
         .unwrap();
     let captured = Captured::default();
-    b4hub::logging::subscriber(filter, captured.clone())
+    b4hub::logging::subscriber(filter, b4hub::cli::LogFormat::Json, captured.clone())
         .try_init()
         .expect("no other test in this binary sets a subscriber");
 

@@ -129,6 +129,9 @@ final class ProbedHub: HubAPI {
   }
   func snapshot() async throws -> SnapshotResponse { try await probe { try await base.snapshot() } }
   func devices() async throws -> [DeviceInfo] { try await probe { try await base.devices() } }
+  func mintPairingCode() async throws -> PairingCodeResponse {
+    try await probe { try await base.mintPairingCode() }
+  }
   func revokeSelf() async throws { try await probe { try await base.revokeSelf() } }
 }
 
@@ -544,6 +547,7 @@ final class PrunedHub: HubAPI {
     return try await base.snapshot()
   }
   func devices() async throws -> [DeviceInfo] { try await base.devices() }
+  func mintPairingCode() async throws -> PairingCodeResponse { try await base.mintPairingCode() }
   func revokeSelf() async throws { try await base.revokeSelf() }
 }
 

@@ -1,4 +1,7 @@
 # Tests apply against a mocked AWS provider; nothing here needs credentials.
+# The mock_provider blocks below are a copy of the canonical ones in
+# network.tftest.hcl (test files cannot share mocks; see tests/README.md).
+# Change that file first, then copy the change here.
 
 mock_provider "aws" {
   mock_data "aws_caller_identity" {
@@ -230,6 +233,16 @@ run "copy_action_with_region" {
     condition     = length(one(aws_backup_plan.hub.rule).copy_action) == 1 && length(aws_backup_vault.copy) == 1
     error_message = "one copy action and a copy vault with a region"
   }
+
+  assert {
+    condition     = one(one(aws_backup_plan.hub.rule).copy_action).destination_vault_arn == "arn:aws:backup:us-west-2:111111111111:backup-vault:b4hub-test-copy"
+    error_message = "copies land in the copy vault in the copy region"
+  }
+
+  assert {
+    condition     = one(one(one(aws_backup_plan.hub.rule).copy_action).lifecycle).delete_after == 35
+    error_message = "copies are kept 35 days"
+  }
 }
 
 run "backup_role_is_bounded" {
@@ -243,6 +256,11 @@ run "backup_role_is_bounded" {
   assert {
     condition     = jsondecode(aws_iam_role.backup.assume_role_policy).Statement[0].Principal.Service == "backup.amazonaws.com"
     error_message = "the role trusts AWS Backup"
+  }
+
+  assert {
+    condition     = jsondecode(aws_iam_role.backup.assume_role_policy).Statement[0].Condition.StringEquals["aws:SourceAccount"] == "111111111111"
+    error_message = "the backup trust is limited to this account (confused deputy)"
   }
 
   assert {

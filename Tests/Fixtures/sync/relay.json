@@ -1,0 +1,155 @@
+[
+ {
+  "type": "hello",
+  "protocol": 1,
+  "minClientProtocol": 1,
+  "deviceId": "01a194cf-0d12-7418-b3b5-5559dbee2441",
+  "role": "client",
+  "heartbeatSeconds": 10,
+  "hubTime": "2026-11-01T12:00:00.000Z"
+ },
+ {
+  "type": "ping"
+ },
+ {
+  "type": "pong",
+  "hubTime": "2026-11-01T12:00:10.250Z"
+ },
+ {
+  "type": "command",
+  "id": "5b0c1f0e-6a39-4f1c-9a53-0d6a2c8b7e11",
+  "method": "turn.send",
+  "params": {
+   "threadId": "thread-1",
+   "text": "Fix the login bug"
+  }
+ },
+ {
+  "type": "command",
+  "id": "e1a4b9a2-33f2-4a8e-8d3b-6f8f4b1f9c02",
+  "method": "thread.start",
+  "params": {
+   "connectionId": "conn-1",
+   "text": "Start a new thread",
+   "projectId": "project-1"
+  }
+ },
+ {
+  "type": "command",
+  "id": "7c2d9e4f-1b85-4d0a-b1e6-93a5c7d2f833",
+  "method": "turn.lookup",
+  "params": {
+   "operationId": "5b0c1f0e-6a39-4f1c-9a53-0d6a2c8b7e11"
+  }
+ },
+ {
+  "type": "command",
+  "id": "a93f6c1d-8e47-4b2a-95c0-2e1d7b6a4f44",
+  "method": "turn.interrupt",
+  "params": {
+   "threadId": "thread-1"
+  },
+  "deadline": "2026-11-01T12:00:20.000Z",
+  "from": {
+   "deviceId": "0198c3a2-77d0-7a11-8c6e-1f4e2d5b9a07",
+   "name": "Brian's iPhone"
+  }
+ },
+ {
+  "type": "command",
+  "id": "3d8a7b5e-92c1-4f60-a7d4-5c0e9b1a6f55",
+  "method": "request.respond",
+  "params": {
+   "requestId": "request-1",
+   "decision": "approve"
+  },
+  "deadline": "2026-11-01T12:00:20.000Z",
+  "from": {
+   "deviceId": "0198c3a2-77d0-7a11-8c6e-1f4e2d5b9a07",
+   "name": "Brian's iPhone"
+  }
+ },
+ {
+  "type": "reply",
+  "id": "5b0c1f0e-6a39-4f1c-9a53-0d6a2c8b7e11",
+  "result": {
+   "turnId": "turn-1",
+   "status": "accepted"
+  }
+ },
+ {
+  "type": "reply",
+  "id": "a93f6c1d-8e47-4b2a-95c0-2e1d7b6a4f44",
+  "error": {
+   "code": "device_offline",
+   "message": "Brian's Mac is offline.",
+   "details": {
+    "deviceId": "01a194cf-0d12-7418-b3b5-5559dbee2441",
+    "deviceName": "Brian's Mac",
+    "lastSeenAt": "2026-11-01T11:59:41.000Z"
+   }
+  }
+ },
+ {
+  "type": "watch",
+  "threadId": "thread-1"
+ },
+ {
+  "type": "unwatch",
+  "threadId": "thread-1"
+ },
+ {
+  "type": "watching",
+  "threadIds": [
+   "thread-1",
+   "thread-2"
+  ]
+ },
+ {
+  "type": "event",
+  "event": {
+   "kind": "message.delta",
+   "connectionId": "conn-1",
+   "threadId": "thread-1",
+   "turnId": "turn-1",
+   "nativeIds": {
+    "item": "native-item-1"
+   },
+   "adapterGeneration": 1,
+   "at": "2026-11-01T12:00:05Z",
+   "payload": {
+    "itemId": "item-1",
+    "text": "Looking at the login handler"
+   }
+  }
+ },
+ {
+  "type": "stream_gap",
+  "threadId": "thread-1"
+ },
+ {
+  "type": "presence",
+  "hosts": [
+   {
+    "deviceId": "01a194cf-0d12-7418-b3b5-5559dbee2441",
+    "name": "Brian's Mac",
+    "online": true,
+    "lastSeenAt": "2026-11-01T12:00:10.000Z"
+   },
+   {
+    "deviceId": "0198d4b7-2e91-7c35-b0a8-6d3f1e9c4a18",
+    "name": "Studio Mac",
+    "online": false,
+    "lastSeenAt": "2026-10-31T22:15:03.000Z"
+   }
+  ]
+ },
+ {
+  "type": "error",
+  "code": "rate_limited",
+  "message": "Too many commands.",
+  "details": {
+   "retryAfterMs": 2500
+  }
+ }
+]

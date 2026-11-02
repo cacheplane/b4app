@@ -37,11 +37,15 @@ webauthn-rs.workspace = true
 webauthn-rs-proto.workspace = true
 
 [dev-dependencies]
-p256.workspace = true
+futures-util.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
+p256.workspace = true
 sqlx.workspace = true
+# `test-util` for `tokio::time::pause` in the relay tests.
+tokio = { workspace = true, features = ["test-util"] }
+tokio-tungstenite.workspace = true
 tower.workspace = true
 
 [lints]

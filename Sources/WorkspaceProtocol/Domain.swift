@@ -82,6 +82,12 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
   /// carry the scope they were created under; a different scope means another account or server
   /// and old threads are never retargeted (spec 5.1).
   public var nativeScope: String?
+  /// The project a local B4 connection serves: the project of its managed server's folder. Nil for
+  /// every other connection, and absent in payloads older than M8c.
+  public var projectId: String?
+  /// The device id of the Mac that owns the connection, from the phone's mirror; nil on the Mac. The
+  /// phone offers a project only the connections of the Mac that owns that project (M8c).
+  public var ownerDeviceId: String?
   public var capabilities: Capabilities
   public var status: ConnectionStatus
   public var authStatus: AuthStatus
@@ -91,7 +97,8 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
   public init(
     id: String, kind: ConnectionKind, label: String, enabled: Bool = true, profileRevision: Int = 0,
     target: String, routeKey: String? = nil, b4Mode: B4Mode? = nil, localServerId: String? = nil,
-    authReference: String? = nil, nativeScope: String? = nil, capabilities: Capabilities = .unverified,
+    authReference: String? = nil, nativeScope: String? = nil, projectId: String? = nil,
+    ownerDeviceId: String? = nil, capabilities: Capabilities = .unverified,
     status: ConnectionStatus = .unconfigured, authStatus: AuthStatus = .unknown,
     createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now()
   ) {
@@ -106,6 +113,8 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
     self.localServerId = localServerId
     self.authReference = authReference
     self.nativeScope = nativeScope
+    self.projectId = projectId
+    self.ownerDeviceId = ownerDeviceId
     self.capabilities = capabilities
     self.status = status
     self.authStatus = authStatus
@@ -226,6 +235,9 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
   public var activity: ThreadActivity?
   /// The name of the Mac that owns the thread; only the phone's mirror fills it, never a column.
   public var ownerDeviceName: String?
+  /// The device id of the Mac that owns the thread, from the phone's mirror; nil on the Mac. The phone
+  /// matches it against `host.presence` (M8c), so a thread's controls follow its own Mac.
+  public var ownerDeviceId: String?
 
   public init(
     id: String, connectionId: String, nativeThreadId: String, nativeScope: String = "", title: String = "",
@@ -233,7 +245,7 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
     continuity: ThreadContinuity = .available,
     createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now(),
     projectId: String? = nil, readTurnId: String? = nil, activity: ThreadActivity? = nil,
-    ownerDeviceName: String? = nil
+    ownerDeviceName: String? = nil, ownerDeviceId: String? = nil
   ) {
     self.id = id
     self.connectionId = connectionId
@@ -250,6 +262,7 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
     self.readTurnId = readTurnId
     self.activity = activity
     self.ownerDeviceName = ownerDeviceName
+    self.ownerDeviceId = ownerDeviceId
   }
 }
 
@@ -521,16 +534,24 @@ public struct DiagnosticsReport: Codable, Sendable, Equatable {
   public var recentErrors: [RecentError]
   /// The hub link of a mirroring device; nil from the coordinator and absent in older reports.
   public var sync: SyncDiagnostic?
+  /// The Mac's relay link to the hub (M8c), while joined; nil otherwise, from the phone, and absent in
+  /// older reports.
+  public var relay: HubLinkStatus?
+  /// Whether the "keep the Mac awake" power assertion is held (M8c); nil from the phone and absent in
+  /// older reports.
+  public var keepAwakeHeld: Bool?
 
   public init(
     coordinator: CoordinatorInfo, host: HostInfo, runtimes: [RuntimeDiagnostic], recentErrors: [RecentError],
-    sync: SyncDiagnostic? = nil
+    sync: SyncDiagnostic? = nil, relay: HubLinkStatus? = nil, keepAwakeHeld: Bool? = nil
   ) {
     self.coordinator = coordinator
     self.host = host
     self.runtimes = runtimes
     self.recentErrors = recentErrors
     self.sync = sync
+    self.relay = relay
+    self.keepAwakeHeld = keepAwakeHeld
   }
 }
 

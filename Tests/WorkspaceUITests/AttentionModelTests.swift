@@ -19,6 +19,7 @@ final class ScriptedTransport: WorkspaceTransport {
   struct Call: Sendable {
     var method: String
     var params: JSONValue
+    var operationId: String?
   }
 
   private struct State {
@@ -31,6 +32,25 @@ final class ScriptedTransport: WorkspaceTransport {
     var calls: [Call] = []
     var hub = HubStatus.Result(joined: false, unsyncedChanges: 0)
     var hubLeaveError: WorkspaceError?
+    var pair: Result<HubPair.Result, WorkspaceError> = .failure(
+      WorkspaceError(.protocolInvalid, "Join a hub first"))
+    /// `hub.pairStatus` answers these in order and then the last one again.
+    var pairStatuses: [HubPairStatus.Result] = [HubPairStatus.Result(state: .none)]
+    var keepAwake = true
+    var settingsError: WorkspaceError?
+    /// Scripted answers for commands the scripted tables do not serve (the relayed chat commands), in
+    /// order, by method; a `.hold` keeps the request waiting until `release`.
+    var replies: [String: [Reply]] = [:]
+    var held: [(method: String, requestId: String)] = []
+    /// What `events.snapshot` says of presence (the phone's transport fills it; the Mac's never does).
+    var presence: PresenceSnapshot?
+  }
+
+  /// One scripted answer: a result, an error, or no answer until `release`.
+  enum Reply: Sendable {
+    case result(JSONValue)
+    case failure(WorkspaceError)
+    case hold
   }
 
   init() {
@@ -60,6 +80,59 @@ final class ScriptedTransport: WorkspaceTransport {
     }
   }
 
+  /// What `hub.pair` answers (a failure is thrown), and the `hub.pairStatus` answers in order.
+  func setPairing(
+    _ pair: Result<HubPair.Result, WorkspaceError>, statuses: [HubPairStatus.Result] = []
+  ) {
+    state.withLock {
+      $0.pair = pair
+      if !statuses.isEmpty { $0.pairStatuses = statuses }
+    }
+  }
+
+  func setSettings(keepAwake: Bool, error: WorkspaceError? = nil) {
+    state.withLock {
+      $0.keepAwake = keepAwake
+      $0.settingsError = error
+    }
+  }
+
+  /// Every command recorded, with the `operationId` it carried.
+  func recorded(_ method: WorkspaceProtocol.Method) -> [Call] {
+    state.withLock { $0.calls.filter { $0.method == method.rawValue } }
+  }
+
+  func setPresence(_ presence: PresenceSnapshot?) { state.withLock { $0.presence = presence } }
+
+  /// Answers for `method`, used in order; a method with none left is refused as unserved.
+  func script(_ method: WorkspaceProtocol.Method, _ replies: [Reply]) {
+    state.withLock { $0.replies[method.rawValue, default: []].append(contentsOf: replies) }
+  }
+
+  /// Answers the oldest held request for `method`; false when none is held.
+  @discardableResult
+  func release(_ method: WorkspaceProtocol.Method, with reply: Reply) -> Bool {
+    let line: Data? = state.withLock { state in
+      guard let index = state.held.firstIndex(where: { $0.method == method.rawValue }) else { return nil }
+      let requestId = state.held.remove(at: index).requestId
+      switch reply {
+      case .result(let value):
+        return try? NDJSON.encodeLine(ResponseEnvelope.success(requestId, result: value))
+      case .failure(let error):
+        return try? NDJSON.encodeLine(ResponseEnvelope.failure(requestId, error: error))
+      case .hold: return nil
+      }
+    }
+    guard let line else { return false }
+    continuation.yield(line)
+    return true
+  }
+
+  /// How many requests for `method` wait for `release`.
+  func heldCount(_ method: WorkspaceProtocol.Method) -> Int {
+    state.withLock { $0.held.filter { $0.method == method.rawValue }.count }
+  }
+
   func setRead(_ read: ThreadRead.Result) { state.withLock { $0.reads[read.thread.id] = read } }
   func setDraft(_ draft: Draft) { state.withLock { $0.drafts[draft.threadId] = draft } }
 
@@ -81,15 +154,26 @@ final class ScriptedTransport: WorkspaceTransport {
   func send(_ line: Data) async throws {
     let envelope = try JSONCoding.decoder.decode(CommandEnvelope.self, from: line)
     let params = envelope.params ?? .object([:])
-    let response: ResponseEnvelope = state.withLock { state in
-      state.calls.append(Call(method: envelope.method, params: params))
+    let response: ResponseEnvelope? = state.withLock { state in
+      state.calls.append(Call(method: envelope.method, params: params, operationId: envelope.operationId))
+      if var queue = state.replies[envelope.method], !queue.isEmpty {
+        let reply = queue.removeFirst()
+        state.replies[envelope.method] = queue
+        switch reply {
+        case .result(let value): return .success(envelope.requestId, result: value)
+        case .failure(let error): return .failure(envelope.requestId, error: error)
+        case .hold:
+          state.held.append((envelope.method, envelope.requestId))
+          return nil
+        }
+      }
       do {
         return .success(envelope.requestId, result: try answer(envelope.method, params, &state))
       } catch {
         return .failure(envelope.requestId, error: WorkspaceError.from(error))
       }
     }
-    continuation.yield(try NDJSON.encodeLine(response))
+    if let response { continuation.yield(try NDJSON.encodeLine(response)) }
     // `waitUntil` cannot observe the call log, so it is told when the log grows.
     ConditionNudge.post()
   }
@@ -101,7 +185,8 @@ final class ScriptedTransport: WorkspaceTransport {
     case .eventsSnapshot?:
       return try JSONValue(
         encoding: EventsSnapshot.Result(
-          epoch: epoch, sequence: state.sequence, connections: state.connections, threads: state.threads))
+          epoch: epoch, sequence: state.sequence, connections: state.connections, threads: state.threads,
+          presence: state.presence))
     case .projectList?:
       return try JSONValue(encoding: ProjectList.Result(projects: state.projects))
     case .threadRead?:
@@ -147,6 +232,17 @@ final class ScriptedTransport: WorkspaceTransport {
       if let error = state.hubLeaveError { throw error }
       state.hub = HubStatus.Result(joined: false, unsyncedChanges: state.hub.unsyncedChanges)
       return try JSONValue(encoding: state.hub)
+    case .hubPair?:
+      return try JSONValue(encoding: try state.pair.get())
+    case .hubPairStatus?:
+      let next = state.pairStatuses.count > 1 ? state.pairStatuses.removeFirst() : state.pairStatuses[0]
+      return try JSONValue(encoding: next)
+    case .settingsRead?:
+      return try JSONValue(encoding: SettingsRead.Result(keepAwake: state.keepAwake))
+    case .settingsUpdate?:
+      if let error = state.settingsError { throw error }
+      if let value = params["keepAwake"]?.boolValue { state.keepAwake = value }
+      return try JSONValue(encoding: SettingsRead.Result(keepAwake: state.keepAwake))
     default:
       throw WorkspaceError(.unsupportedCapability, "scripted transport does not serve \(method)")
     }

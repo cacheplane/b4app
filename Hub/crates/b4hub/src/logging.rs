@@ -12,22 +12,46 @@ use tracing_subscriber::filter::{filter_fn, EnvFilter};
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
 
+use crate::cli::LogFormat;
+
 /// Whether events and spans with this metadata may be logged at all: nothing from a target
 /// that starts with `webauthn`.
 pub fn may_log(metadata: &Metadata<'_>) -> bool {
     !metadata.target().starts_with("webauthn")
 }
 
-/// The subscriber `main` installs: `filter`, the fixed webauthn filter, and a formatter writing
-/// to `writer`.
-pub fn subscriber<W>(filter: EnvFilter, writer: W) -> impl Subscriber + Send + Sync
+/// The subscriber `main` installs: `filter`, the fixed webauthn filter, and a `format` formatter
+/// writing to `writer`.
+pub fn subscriber<W>(
+    filter: EnvFilter,
+    format: LogFormat,
+    writer: W,
+) -> Box<dyn Subscriber + Send + Sync>
 where
     W: for<'w> MakeWriter<'w> + Send + Sync + 'static,
 {
-    tracing_subscriber::registry()
+    let registry = tracing_subscriber::registry()
         .with(filter)
-        .with(filter_fn(may_log))
-        .with(tracing_subscriber::fmt::layer().with_writer(writer))
+        .with(filter_fn(may_log));
+    match format {
+        LogFormat::Text => {
+            Box::new(registry.with(tracing_subscriber::fmt::layer().with_writer(writer)))
+        }
+        // One object per line; the `request` span's fields (`request_id`, `method`, `path`,
+        // `device_id`) ride on every event under `span`, and the event's own fields are top-level.
+        // Only the innermost span is named: an event inside a further span (a future
+        // `#[instrument]`) would lose `request_id` unless `with_span_list(true)` is switched on.
+        LogFormat::Json => Box::new(
+            registry.with(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .flatten_event(true)
+                    .with_current_span(true)
+                    .with_span_list(false)
+                    .with_writer(writer),
+            ),
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -64,6 +88,12 @@ mod tests {
 
     #[test]
     fn module_qualified_directives_cannot_reenable_webauthn() {
+        for format in [LogFormat::Text, LogFormat::Json] {
+            assert_drops_webauthn(format);
+        }
+    }
+
+    fn assert_drops_webauthn(format: LogFormat) {
         let filter = Settings::from_pairs([(
             "B4HUB_LOG",
             "info,webauthn_rs_core::core=trace,webauthn_rs::interface=trace,\
@@ -72,7 +102,7 @@ mod tests {
         .log_filter()
         .unwrap();
         let captured = Captured::default();
-        tracing::subscriber::with_default(subscriber(filter, captured.clone()), || {
+        tracing::subscriber::with_default(subscriber(filter, format, captured.clone()), || {
             tracing::event!(target: "webauthn_rs_core::core", Level::TRACE, "leak-core-trace");
             tracing::event!(target: "webauthn_rs_core::core", Level::ERROR, "leak-core-error");
             tracing::event!(target: "webauthn_rs_core", Level::DEBUG, "leak-core-debug");

@@ -27,6 +27,7 @@ use crate::apple::open_refresh_token;
 use crate::auth::{bearer_token, AuthedDevice};
 use crate::auth_limits::{BeginAllowed, FinishAllowed};
 use crate::error::{ApiError, ApiJson};
+use crate::maintenance::WritesAllowed;
 use crate::routes::auth::{parse, rejected, start_registration, ACCOUNT_LABEL};
 use crate::serve::AppState;
 
@@ -98,6 +99,7 @@ pub async fn me(
 pub async fn profile(
     State(state): State<AppState>,
     device: AuthedDevice,
+    _writes: WritesAllowed,
     ApiJson(request): ApiJson<ProfileRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let name = request.full_name.trim();
@@ -116,6 +118,7 @@ pub async fn passkey_begin(
     State(state): State<AppState>,
     _allowed: BeginAllowed,
     device: AuthedDevice,
+    _writes: WritesAllowed,
 ) -> Result<Json<AddPasskeyBeginResponse>, ApiError> {
     let principal = Principal::from(*device);
     let existing = accounts::passkey_credentials(&state.db, principal).await?;
@@ -154,6 +157,7 @@ pub async fn passkey_finish(
     State(state): State<AppState>,
     _allowed: FinishAllowed,
     device: AuthedDevice,
+    _writes: WritesAllowed,
     ApiJson(request): ApiJson<AddPasskeyFinishRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let principal = Principal::from(*device);
@@ -215,6 +219,7 @@ pub async fn passkey_finish(
 pub async fn remove_identity(
     State(state): State<AppState>,
     device: AuthedDevice,
+    _writes: WritesAllowed,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let id = Uuid::parse_str(&id).map_err(|_| ApiError::not_found())?;
@@ -236,6 +241,7 @@ pub async fn remove_identity(
 pub async fn end_session(
     State(state): State<AppState>,
     device: AuthedDevice,
+    _writes: WritesAllowed,
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     // The extractor just verified this header.
@@ -254,6 +260,7 @@ pub async fn end_session(
 pub async fn delete_me(
     State(state): State<AppState>,
     device: AuthedDevice,
+    _writes: WritesAllowed,
 ) -> Result<StatusCode, ApiError> {
     let principal = Principal::from(*device);
     let mut to_revoke = accounts::apple_tokens_to_revoke(&state.db, principal).await?;

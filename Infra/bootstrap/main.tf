@@ -145,6 +145,33 @@ data "aws_iam_policy_document" "state_bucket" {
       values   = ["aws:kms"]
     }
   }
+
+  # A request that names a KMS key must name the state key. Both conditions
+  # must hold: Null = false limits the deny to requests that carry the header,
+  # so a plain PutObject that relies on the bucket's default key is unaffected.
+  statement {
+    sid       = "DenyOtherKmsKeys"
+    effect    = "Deny"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.state.arn}/*"]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "s3:x-amz-server-side-encryption-aws-kms-key-id"
+      values   = ["false"]
+    }
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "s3:x-amz-server-side-encryption-aws-kms-key-id"
+      values   = [aws_kms_key.state.arn]
+    }
+  }
 }
 
 resource "aws_s3_bucket_policy" "state" {

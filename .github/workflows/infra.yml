@@ -47,12 +47,25 @@ jobs:
         with:
           terraform_version: 1.17.1
           terraform_wrapper: false
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: v0.65.0
       - name: Format check
         run: terraform fmt -check -recursive Infra
-      - name: Test the hub module against a mocked provider
+      - name: Validate, lint, and test the bootstrap root against a mocked provider
+        working-directory: Infra/bootstrap
+        run: |
+          terraform init -backend=false
+          terraform validate
+          tflint --config ../.tflint.hcl --init
+          tflint --config ../.tflint.hcl
+          terraform test
+      - name: Lint and test the hub module against a mocked provider
         working-directory: Infra/modules/hub
         run: |
           terraform init -backend=false
+          tflint --config ../../.tflint.hcl --init
+          tflint --config ../../.tflint.hcl
           terraform test
 
   plan:
@@ -60,8 +73,10 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # Plans and applies use separate groups so a pull request's plan never
+    # queues behind a 90-minute apply; the plan waits on the state lock instead.
     concurrency:
-      group: infra-${{ matrix.environment }}
+      group: infra-plan-${{ matrix.environment }}
       cancel-in-progress: false
     permissions:
       id-token: write
@@ -139,7 +154,7 @@ jobs:
           tflint --config ../../.tflint.hcl
       - name: Plan
         if: steps.aws.outputs.configured == 'true'
-        run: terraform plan -no-color -input=false -out plan.bin
+        run: terraform plan -no-color -input=false -lock-timeout=10m -out plan.bin
       - name: Summarize the plan
         if: steps.aws.outputs.configured == 'true'
         # The repository is public: the comment carries counts and resource
@@ -190,7 +205,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     concurrency:
-      group: infra-test
+      group: infra-apply-test
       cancel-in-progress: false
     permissions:
       id-token: write
@@ -240,10 +255,10 @@ jobs:
             -backend-config="encrypt=true"
       - name: Plan
         if: steps.aws.outputs.configured == 'true'
-        run: terraform plan -no-color -input=false -out plan.bin
+        run: terraform plan -no-color -input=false -lock-timeout=10m -out plan.bin
       - name: Apply
         if: steps.aws.outputs.configured == 'true'
-        run: terraform apply -no-color -input=false plan.bin
+        run: terraform apply -no-color -input=false -lock-timeout=10m plan.bin
 
   apply-prod:
     name: Apply prod
@@ -253,7 +268,7 @@ jobs:
     timeout-minutes: 90
     environment: production
     concurrency:
-      group: infra-prod
+      group: infra-apply-prod
       cancel-in-progress: false
     permissions:
       id-token: write
@@ -303,7 +318,7 @@ jobs:
             -backend-config="encrypt=true"
       - name: Plan
         if: steps.aws.outputs.configured == 'true'
-        run: terraform plan -no-color -input=false -out plan.bin
+        run: terraform plan -no-color -input=false -lock-timeout=10m -out plan.bin
       - name: Apply
         if: steps.aws.outputs.configured == 'true'
-        run: terraform apply -no-color -input=false plan.bin
+        run: terraform apply -no-color -input=false -lock-timeout=10m plan.bin

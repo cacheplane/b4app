@@ -15,6 +15,7 @@ use b4hub::config::Signup;
 use b4hub::serve::AppState;
 use b4hub_core::change::{Change, ChangeOp};
 use b4hub_db::accounts::{self, Identity, Principal};
+use b4hub_db::settings::{Maintenance, MaintenanceMode};
 use b4hub_db::{changes, devices, orgs, Db};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -1005,7 +1006,8 @@ async fn no_secret_in_logs(pool: PgPool) {
         .log_filter()
         .unwrap();
     let captured = Captured::default();
-    let subscriber = b4hub::logging::subscriber(filter, captured.clone());
+    let subscriber =
+        b4hub::logging::subscriber(filter, b4hub::cli::LogFormat::Json, captured.clone());
     tracing::subscriber::set_global_default(subscriber)
         .expect("no other test in this binary sets a subscriber");
 
@@ -1115,4 +1117,68 @@ async fn no_secret_in_logs(pool: PgPool) {
         );
     }
     assert!(!text.contains("webauthn.create"), "{text}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn maintenance_pauses_sign_in_and_account_writes(pool: PgPool) {
+    let Setup { hub, .. } = setup(&pool).await;
+    let mut authenticator = Authenticator::new(ORIGIN);
+    let session = sign_up(&hub, &mut authenticator, device("iPhone", "ios")).await;
+    let token = session["token"].as_str().unwrap();
+    hub.state.maintenance.set(Some(Maintenance {
+        mode: MaintenanceMode::ReadOnly,
+        message: None,
+        since: "2026-11-02T10:15:30Z".into(),
+    }));
+
+    let ceremony =
+        json!({"ceremonyId": Uuid::nil(), "attestation": {}, "device": device("x", "ios")});
+    for answer in [
+        hub.post(BEGIN, None).await,
+        hub.post(FINISH, Some(&ceremony)).await,
+        call(
+            &hub,
+            "PUT",
+            "/v1/me/profile",
+            Some(&json!({"fullName": "A"})),
+            token,
+        )
+        .await,
+        call(&hub, "POST", ADD_BEGIN, None, token).await,
+        call(
+            &hub,
+            "DELETE",
+            &format!("/v1/me/identities/{}", Uuid::nil()),
+            None,
+            token,
+        )
+        .await,
+        call(&hub, "DELETE", "/v1/sessions/self", None, token).await,
+        call(&hub, "DELETE", "/v1/me", None, token).await,
+    ] {
+        assert_eq!(
+            answer.status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{}",
+            answer.body
+        );
+        assert_eq!(answer.code(), "maintenance");
+        assert_eq!(answer.headers["retry-after"], "30");
+    }
+    // Reads continue, and the session still works once writes resume.
+    assert_eq!(
+        hub.get("/v1/auth/config", None).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(hub.get("/v1/me", Some(token)).await.status, StatusCode::OK);
+    hub.state.maintenance.set(None);
+    let answer = call(
+        &hub,
+        "PUT",
+        "/v1/me/profile",
+        Some(&json!({"fullName": "A"})),
+        token,
+    )
+    .await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
 }

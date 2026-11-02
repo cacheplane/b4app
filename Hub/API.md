@@ -28,6 +28,16 @@ The principal (org, user, device) comes only from the verified token. Nothing in
 query can name a different one, and the wire `Change` carries no device id: the hub attributes
 every change to the authenticated device.
 
+### Request ids
+
+Every response carries `X-Request-Id`: a UUIDv7 the hub mints per request, never a value a caller
+supplied (nothing deployed in front of the hub strips the header, so an honoured inbound id would
+let a client choose the id it is logged under). Every log line the request produces names that id
+(see "Logging"), so an operator can go from a client's error to the hub's lines for it. A caller may
+send its own `X-Request-Id`; when it is 1 to 64 printable ASCII characters without whitespace the
+hub records it as `client_request_id` beside its own id, for correlation with the caller's logs,
+and otherwise ignores it. The id is an opaque string to clients.
+
 ### Errors
 
 Every error uses B4's envelope:
@@ -47,7 +57,7 @@ in whole seconds.
 | HTTP | `details.code` | `kind` | When |
 | --- | --- | --- | --- |
 | 400 | `ceremony_expired` | request | A sign-in ceremony that is unknown, expired (5 minutes), already finished, or (for a sign-up) was begun while sign-up was closed; the cases are indistinguishable. Begin again. |
-| 400 | `invalid_request` | request | The body is not valid JSON for the endpoint (malformed JSON, an unknown or missing field, a wrong value type, a missing or wrong `Content-Type`); a `deviceName`, `platform`, or `fullName` that fails validation; a push with more than 1000 changes; a non-numeric `after`, `limit`, or `wait`. |
+| 400 | `invalid_request` | request | The body is not valid JSON for the endpoint (malformed JSON, an unknown or missing field, a wrong value type, a missing or wrong `Content-Type`); a `deviceName`, `platform`, or `fullName` that fails validation; a push with more than 1000 changes; a non-numeric `after`, `limit`, or `wait`; a link request that is not a WebSocket upgrade or whose `B4-Protocol` is not a whole number. |
 | 401 | `unauthorized` | request | The bearer token is missing, malformed, unknown, or belongs to a revoked device. |
 | 401 | `invalid_code` | request | The enrollment code is wrong, expired, or already used (the three are indistinguishable). |
 | 401 | `credential_rejected` | request | A sign-in credential failed verification: a malformed WebAuthn response, a wrong origin or relying party, a bad signature, a passkey no account has, a user handle that is not the passkey's, a counter that went backwards, or a new passkey that already belongs to an account. Deliberately vague. |
@@ -60,10 +70,23 @@ in whole seconds.
 | 409 | `shared_org` | request | `DELETE /v1/me` by a member of a shared (non-personal) org, such as an operator-seeded user; only the owner of a personal org can delete their account here. Nothing is revoked or deleted. |
 | 410 | `resync_required` | request | The pull cursor is older than the retention horizon: the hub has pruned the changes after it. Restore from `GET /v1/snapshot` (see *Horizon*). |
 | 413 | `payload_too_large` | request | A push body over 32 MiB. (A change whose `value` is over 2 MiB is rejected per change instead; see `POST /v1/changes`.) |
-| 429 | `rate_limited` | request | Too many sign-in requests from this client this minute (see *Limits*); `details.retryAfterMs` says how long to wait. |
+| 429 | `rate_limited` | request | Too many sign-in requests from this client this minute (see *Sign-in*, *Rate limits*); a device opened too many relay links in a minute (the upgrade is refused before it happens); or a user minted an eleventh pairing code in an hour. Always with `details.retryAfterMs`; on the link it is also a `reply` error for a command over its limits (see *Link*, *Commands*). |
 | 500 | `internal_error` | execution | Any unexpected failure; the cause is logged on the hub, never sent. |
 | 503 | `not_ready` | execution | `/readyz`: the database is unreachable or migrations are pending. |
 | 503 | `shutting_down` | execution | `/readyz` after SIGTERM. |
+| 503 | `maintenance` | execution | A write (`POST /v1/enroll`, `POST /v1/changes`, `DELETE /v1/devices/self`, and the sign-in and account writes listed under "Maintenance mode") while the operator has paused writes; carries `Retry-After: 30`. See "Maintenance mode". |
+
+Six more codes exist only on the relay link, never as an HTTP status. They arrive in an `error`
+frame (a problem with the link or a frame) or in a `reply`'s `error` (a problem with one command):
+
+| `code` | `kind` | When |
+| --- | --- | --- |
+| `device_offline` | execution | The Mac that owns the thread has no open link. `details: { deviceId, deviceName, lastSeenAt }`. |
+| `command_expired` | execution | The command's deadline passed before the Mac ran it. |
+| `relay_timeout` | execution | The Mac did not reply within the reply wait. |
+| `link_replaced` | request | A newer link from the same device closed this one (close code 4000). |
+| `client_too_old` | request | The client's `B4-Protocol` is below the hub's minimum. |
+| `watch_limit` | request | The link already watches four threads. |
 
 ### Limits
 
@@ -111,6 +134,9 @@ the container `HEALTHCHECK` calls.
 ```json
 {"ok": true, "migrations": "current", "minClientProtocol": 1}
 ```
+
+While writes are paused (see "Maintenance mode") the body also carries `"maintenance":
+"read_only"`; the status stays `200`, because reads are still served.
 
 `503 not_ready` when the database is unavailable or migrations are pending; `503 shutting_down`
 once SIGTERM has been received (see "Shutdown").
@@ -162,6 +188,27 @@ code is `401 invalid_code` and the phone's account and token are untouched.
 - A token whose account has (or had) a `macos` device, belongs to a shared org, or is the code's
   own account is `409 merge_refused`, and the code stays redeemable.
 - Without the header, enrollment is exactly as before.
+
+### `POST /v1/pairing-codes`
+
+A joined Mac mints a code that pairs a phone. Bearer auth; no body. Only a `macos` device may
+mint: an `ios` or `cli` caller gets `404 not_found`, as if the route did not exist. The code is an
+ordinary enrollment code (same alphabet, hashing, and case-insensitive match) that expires in
+five minutes instead of ten and is single-use. The phone redeems it at `POST /v1/enroll` with
+`platform: "ios"` and becomes a device of the same user. The hub remembers which Mac minted it.
+
+`200`:
+
+```json
+{"code": "ABCD2345", "expiresAt": "2026-11-01T12:05:00.000000Z", "hubURL": "https://hub.example.com/"}
+```
+
+`hubURL` is `B4HUB_PUBLIC_URL`, and is absent when that is not set. Neither the code nor its hash
+is logged.
+
+A user may mint 10 codes in any hour. The eleventh is `429 rate_limited` with
+`details.retryAfterMs`, the milliseconds until the tenth most recent mint is an hour old; the
+refused request stores nothing. Codes of different users are limited separately.
 
 ### Sign-in
 
@@ -626,7 +673,13 @@ revoked). `lastSeenAt` is written at most once a minute per device. Errors: `401
 Revoke the calling device (remove it from the account): its token rows are deleted and
 `devices.revoked_at` is set. To log out and keep the device, use `DELETE /v1/sessions/self`. Changes the
 device already uploaded stay in the feed. `204` with no body. The token stops working
-immediately; the next request with it is `401 unauthorized`. Errors: `401 unauthorized`.
+immediately; the next request with it is `401 unauthorized`. A pairing code the device minted
+that is still unused is withdrawn with it (redeeming it is then `401 invalid_code`). If the device
+has an open link (see *Link*), the hub closes it with code 4001. Errors: `401 unauthorized`.
+
+### `GET /v1/devices/self/link`
+
+The device's WebSocket link to the relay. See *Link*.
 
 ### `POST /v1/changes`
 
@@ -711,7 +764,9 @@ cleared by setting `text` to `""`, never by deleting it.
 **Ownership and scrubbing.** Each mirrored row records `owner_device_id`, the device of its latest
 `insert` (an `update` never changes it; `device_id` remains the last writer). The hub sets
 `connections.authReference`, `connections.localServerId`, and `connections.target` to NULL on
-every insert and update, whatever the change carries.
+every insert and update, whatever the change carries. `connections.projectId`, the Mac project a
+`b4` connection serves, is not scrubbed and is Mac-only like every column not listed above; it
+merges by hub order (`hubSeq`), not by clock.
 
 ### `GET /v1/changes`
 
@@ -814,7 +869,7 @@ that does not wait at all. The client simply reconnects, normally to the replace
   "rowId": "conn-1",
   "op": "insert",
   "column": null,
-  "value": {"id": "conn-1", "kind": "codex", "label": "Codex", "enabled": true, "profileRevision": 1, "target": "/usr/local/bin/codex", "routeKey": null, "b4Mode": null, "localServerId": null, "authReference": "secret:abc", "nativeScope": "/Users/brian/project", "capabilities": {"streaming": "supported", "native_resume": "supported", "history_retrieval": "supported", "explicit_interruption": "supported", "reconnect": "supported", "permission_decisions": "supported", "user_questions": "unsupported", "model_selection": "unverified"}, "status": "ready", "authStatus": "authenticated", "createdAt": "2026-10-31T12:00:00Z", "updatedAt": "2026-10-31T12:00:00Z"},
+  "value": {"id": "conn-1", "kind": "codex", "label": "Codex", "enabled": true, "profileRevision": 1, "target": "/usr/local/bin/codex", "routeKey": null, "b4Mode": null, "localServerId": null, "authReference": "secret:abc", "nativeScope": "/Users/brian/project", "projectId": "project-1", "capabilities": {"streaming": "supported", "native_resume": "supported", "history_retrieval": "supported", "explicit_interruption": "supported", "reconnect": "supported", "permission_decisions": "supported", "user_questions": "unsupported", "model_selection": "unverified"}, "status": "ready", "authStatus": "authenticated", "createdAt": "2026-10-31T12:00:00Z", "updatedAt": "2026-10-31T12:00:00Z"},
   "hlc": "019a396c76e8-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
 }
 ```
@@ -866,11 +921,326 @@ A `Change` plus where it sits in the feed and who wrote it:
 that uploaded the change; `hlc` is the change's clock after the hub's clamp, always present. `value` is the uploaded JSON, stored as `jsonb`: equal as JSON, but
 object key order is not preserved and duplicate keys collapse.
 
+## Link
+
+`GET /v1/devices/self/link` upgrades to a WebSocket that carries the relay: a phone's commands to
+the Mac, the Mac's replies and live events back, and which Macs are online. The frames are JSON
+text, one message each, with a `type` discriminator; absent optional fields are omitted, never
+`null`. `Tests/Fixtures/sync/relay.json` holds one example of every frame, and both the hub's and
+the Swift clients' test suites decode it. This section describes the link itself, presence,
+commands, and live progress (watching and events).
+
+### Opening a link
+
+```
+GET /v1/devices/self/link
+Authorization: Bearer <device token>
+B4-Protocol: 1
+Upgrade: websocket
+```
+
+Authentication happens before the upgrade, so a bad token is the usual `401 unauthorized` and no
+socket. A request that is not a WebSocket upgrade is `400 invalid_request`. A device may attempt
+10 upgrades a minute (a sliding window per device, counted after authentication); the 11th is
+`429 rate_limited` with `retryAfterMs` and no socket. During shutdown the answer is
+`503 shutting_down`.
+
+`B4-Protocol` is the device's link protocol; a missing header counts as `1`, and a value that is
+not a whole number is `400 invalid_request`. The role comes from the device, not the request: a
+`macos` device is a **host**, an `ios` or `cli` device is a **client**.
+
+One link per device. A newer link from a device replaces its older one: the older gets an `error`
+frame `link_replaced`, then close code 4000. The replaced device does not go offline.
+
+### Frames in this version
+
+| Direction | `type` | Body |
+| --- | --- | --- |
+| hub to device | `hello` | `protocol` (1), `minClientProtocol`, `deviceId`, `role` (`host` or `client`), `heartbeatSeconds` (10), `hubTime` |
+| device to hub | `ping` | none |
+| hub to device | `pong` | `hubTime` |
+| hub to client | `presence` | `hosts: [{ deviceId, name, online, lastSeenAt? }]` |
+| client to hub | `watch` | `threadId` |
+| client to hub | `unwatch` | `threadId` |
+| hub to host | `watching` | `threadIds`: every thread of this Mac that some client watches |
+| host to hub | `event` | `event`: an object with a string `threadId` |
+| hub to client | `event` | the same |
+| hub to client | `stream_gap` | `threadId` |
+| client to hub | `command` | `id`, `method`, `params` |
+| hub to host | `command` | `id`, `method`, `params`, `deadline`, `from: { deviceId, name }` |
+| host to hub | `reply` | `id`, and `result` or `error: { code, message, details? }` |
+| hub to client | `reply` | the same |
+| hub to device | `error` | `code`, `message`, `details?` |
+
+`hello` is the hub's first frame on every link. `hubTime` is the hub's clock, RFC 3339 in UTC with
+milliseconds (`2026-11-01T09:30:00.123Z`); a host uses the `hubTime` of `hello` and `pong` to
+estimate the hub's clock. A device whose `B4-Protocol` is below the hub's `minClientProtocol` gets
+no `hello`: it gets an `error` frame `client_too_old` (`details: { minClientProtocol }`) and then
+close code 4002.
+
+A frame that is not valid JSON, not a relay message, binary, or not one the device may send gets
+an `error` frame `invalid_request`; the link stays up. A device may send `ping`; a client may also
+send `command`, `watch`, and `unwatch`, and a host `reply` and `event`. (A `command` with an
+unknown method is answered as a command; see *Commands*. A frame over the size limit is refused
+the same way; see *Frame size*.)
+
+### Heartbeat
+
+The device sends `ping` every 10 seconds and the hub answers `pong`. Any frame from the device
+(including a WebSocket protocol ping) counts as the link being alive. The hub closes a link that
+has sent nothing for 30 seconds with code 4003; a device that has received nothing for 30 seconds
+treats the link as dead and reconnects.
+
+### Presence
+
+A host is online while it has a link. A client receives `presence` once after `hello`, then again
+whenever one of its user's Macs goes online or offline: `hosts` is every non-revoked `macos`
+device of that user (never another user's), with `online` and `lastSeenAt` (RFC 3339 in UTC with
+milliseconds; omitted for a Mac never seen). A Mac that is revoked drops out of the list.
+
+Presence is never lost to a busy phone. If a client's outbound queue is full when presence
+changes, the hub keeps the latest presence for that link, replacing the one it was keeping, and
+queues it as soon as the queue has room. A phone that reads again therefore gets the current
+presence once, after the frames that were already queued, and never an older one after a newer.
+
+`devices.last_seen_at` is written when a link opens, at most once a minute while it is open, and
+when it closes, where it is the time of the link's **last received frame**, not the moment the
+hub noticed the drop: a link closed for 30 seconds of silence reports a time 30 seconds in the
+past. It never moves backwards.
+
+### Commands
+
+A client sends `command { id, method, params }`; `id` is the client's own lowercase UUID, and for
+`turn.send` and `thread.start` it is also the turn's `operationId`, so a resend with the same `id`
+is safe. The hub forwards it to the Mac that owns what it names and sends the Mac's `reply` back,
+or answers itself with a `reply` whose `error` is one of the codes below. Every command gets
+exactly one `reply` with its `id`; nothing is stored, and the hub never reads `params` beyond the
+ids it routes by, nor `result` at all.
+
+| `method` | Routed by | to the owner of |
+| --- | --- | --- |
+| `turn.send` | `params.threadId` | the thread |
+| `turn.interrupt` | `params.threadId` | the thread |
+| `turn.lookup` | `params.threadId` | the thread |
+| `request.respond` | `params.requestId` | the runtime request's thread (`"runtimeRequests"."threadId"`) |
+| `thread.start` | `params.projectId` | the project |
+
+The owner is the row's `owner_device_id` on the hub (the device whose push inserted it). The hub
+checks, in this order:
+
+1. **Role and method.** A `command` from a host link, or with a method outside the five, is
+   `not_found` (a host never sends commands; an unknown method answers by the frame's `id`).
+2. **Limits.** (A resend of a command still in flight is not counted; see *In flight*.) A client device may send 60 commands a minute (a sliding window), in bursts of at
+   most 20 (after a burst, one a second). A user's `turn.send` and `thread.start` together are
+   limited to 20 a minute across all of their devices. Over a limit the answer is `rate_limited`
+   with `details.retryAfterMs`. A command refused by the user's limit still counts toward the
+   device's. Limits are in memory and per hub process.
+3. **Lookup.** The row is looked up by id within the caller's org and user. A missing row,
+   another user's or another org's, a missing routing param, and a row whose owner is not a
+   non-revoked `macos` device of the caller's own user all answer `not_found`, the same way.
+4. **Already answered.** `request.respond` for a request whose state on the hub is set and is not
+   `pending` is `stale_runtime_request` at once, without forwarding. (The Mac stays the authority:
+   a request the hub has not yet seen answered is forwarded, and the Mac answers the same code.)
+5. **Delivery.**
+   - **Owner online:** the command is forwarded with `deadline` (the hub's time plus 10 seconds,
+     RFC 3339 in UTC with milliseconds; the Mac drops a command past it and answers
+     `command_expired`) and `from` (the calling device's id and name). If the Mac's link dropped
+     meanwhile the answer is `device_offline`; if its outbound queue stays full for 5 seconds the
+     answer is `relay_timeout` (the Mac is online but not taking frames in time).
+   - **Owner offline, `turn.send`, `thread.start`, or `turn.lookup`:** `device_offline` at once,
+     with `details: { deviceId, deviceName, lastSeenAt }` (`lastSeenAt` omitted for a Mac never
+     seen). These are never held.
+   - **Owner offline, `turn.interrupt` or `request.respond`:** if the Mac was last heard from less
+     than 60 seconds ago, the command is held in memory until the Mac links again, and then
+     forwarded (after its `hello`) with a fresh deadline; if `lastSeenAt + 60 s` passes first, the
+     answer is `device_offline`. A Mac last seen longer ago gets `device_offline` at once. At most
+     32 commands are held for one Mac; beyond that, `device_offline` at once.
+6. **Reply wait.** The hub waits 30 seconds for the Mac's `reply` to `turn.send` and
+   `thread.start`, 15 seconds for the others (counted from when it was forwarded), then answers
+   `relay_timeout`. A `reply` that arrives later, or for an `id` nothing waits for, is dropped.
+
+**In flight.** A command is in flight from when it arrives (before the limits) until its answer is
+queued for the caller, keyed by the calling *device* and the `id`. A second command with the same
+key while the first is in flight attaches to it: it is not counted against the limits, not
+forwarded again, and the device gets one `reply`. The answer goes to the calling device's link as
+it is when the answer is ready, so a phone that links again mid-command gets the reply on its new
+link. If the caller's outbound queue is full, the reply waits up to 5 seconds for room (it is
+never dropped for a momentarily full queue, unlike `event` frames); a device with no link, or
+whose queue stays full that long, misses it (the phone settles a send with `turn.lookup`). The map lives in memory: after a hub restart, a resend of the same `id` is
+forwarded to the Mac again, and the Mac recognises it.
+
+**A thread just started.** When the hub forwards `thread.start`, it remembers for 5 minutes that
+`params.threadId` belongs to that Mac, for that user, and consults this before the thread lookup.
+So `turn.send` (and `turn.interrupt`, `turn.lookup`) reach the new thread before the Mac's next
+push brings its row. Another user's command for that thread id is still `not_found`.
+
+A host answers each forwarded command once with `reply { id, result }` or
+`reply { id, error }`; the hub passes the Mac's own error codes (`stale_runtime_request`,
+`command_expired`, `protocol_invalid`, ...) through unchanged. A `reply` from a client is
+`invalid_request`. The hub logs each command's method, outcome, and latency, and limit hits; never
+its params, its result, or a token.
+
+| Hub-made answer | When |
+| --- | --- |
+| `not_found` | role, method, lookup, or owner check failed (steps 1 and 3) |
+| `rate_limited` | a limit (step 2); `details.retryAfterMs` |
+| `stale_runtime_request` | step 4 |
+| `device_offline` | step 5; `details: { deviceId, deviceName, lastSeenAt? }` |
+| `relay_timeout` | step 6, or step 5 when the Mac's queue stays full for 5 seconds |
+| `internal_error` | the hub could not read the database to route the command |
+
+### Watching and live events
+
+A phone that has a thread open sends `watch { threadId }`, and `unwatch { threadId }` when it
+leaves the thread or goes to the background. The hub tells the thread's Mac which threads to
+stream, and passes the Mac's `event` frames on to the phones that watch their thread. Nothing here
+is stored: a lost event is harmless, because the change log is the record.
+
+**`watch`.** Authorised like `turn.send`: the thread must be one the caller's user may reach, found
+in the pending-thread map (see *A thread just started*) first and then the thread table, and its
+owner must be a non-revoked `macos` device of the caller's own user. Otherwise the hub answers an
+`error` frame `not_found`; a missing thread, another user's, another org's, and one owned by
+a device that is not the user's Mac all read the same. A success has no answer. The Mac need not
+be online: the watch is kept and the Mac is told when it links. The same link may watch a thread it
+already watches (nothing changes). At most **4** threads per link: a fifth distinct thread gets an
+`error` frame `watch_limit`, and the link and its other watches are untouched. `unwatch` of a
+thread that is not watched is ignored. Watches belong to the link: they end when it closes, and a
+device's newer link (which replaces the older) starts with none. A phone therefore sends `watch`
+again after every reconnect. A host sending `watch` or `unwatch`, or a client sending `watching`,
+`event`, or `stream_gap`, gets `invalid_request`.
+
+**Auto-watch.** When the hub forwards `thread.start`, the caller's link starts watching the new
+thread, so the first turn streams without a race against a `watch`. It counts toward the link's 4
+(if the link is already at 4 the thread is simply not auto-watched, and the phone can `unwatch`
+another and `watch` it). When the Mac's reply to that `thread.start` is an error without
+`details.turnId` (refused before its turn was made, so there is no thread), the hub drops the
+auto-watch again. Any other answer (a result, an error with `details.turnId`, or the hub's own
+`relay_timeout`) leaves the watch in place until the phone unwatches it or the link closes.
+
+**`watching`.** The hub keeps, per host, the set of that host's threads that any client link
+watches, and sends the **whole** set to the host as `watching { threadIds }` (sorted) right after
+`hello` (an empty set when nothing is watched, so a Mac that linked again forgets what it knew),
+and again every time the set changes, including when a watching phone's link closes. A change that
+leaves the host's set the same (a second phone watching a thread already in it) sends nothing.
+The frame is written by the host's link itself, so it is never dropped for a full queue and
+two changes are never reordered. A host streams events only for threads in its latest set.
+
+**`event`.** A host sends `event { event }`, where `event` is an object with a string `threadId`;
+the hub reads that one field. If no client link watches that thread of that host, or `threadId` is
+missing or not a string, the event is dropped without an answer. Otherwise it is queued, unchanged,
+to each watching client link. The hub does not look at the event's kind or content and never logs
+them; which kinds are streamed, and the 256 KiB bound, are the Mac's to apply.
+
+**Catch-up (between the Mac and the phone; the hub passes it on like any event).** When a thread
+enters a Mac's `watching` set (a new watch, or the Mac's own relink, after which every watched
+thread is new to it), the Mac first sends one `message.delta` per message still streaming,
+carrying the whole text so far, with `payload.catchUp: true`; live deltas never carry the field.
+A phone whose item is still open (the Mac relinked mid-reply) shows only what the catch-up adds to
+the text it already has, and nothing when it is the same; one whose shown text does not begin the
+catch-up (after a `stream_gap` or its own reconnect) clears the item's live text and shows the whole
+catch-up. A phone that ignores the field appends it, as before.
+
+**Backpressure and `stream_gap`.** Each link has an outbound queue of 256 frames. When a client's
+queue is full, an `event` for it is dropped (never blocking the Mac or other phones) and the
+thread is marked as having a gap for that link. As soon as the queue has room, the hub queues one
+`stream_gap { threadId }` per marked thread, behind everything already queued; events for the
+marked thread are dropped until that is done, so the `stream_gap` always comes after the hole it
+reports and before anything newer. A phone that gets `stream_gap` drops that thread's in-flight
+text and waits for sync. Frames other than `event` (replies, errors, presence) are not dropped:
+replies and errors wait for room, and presence is kept as described under *Presence*.
+
+### Close codes
+
+| Code | Meaning | The device should |
+| --- | --- | --- |
+| 1001 | the hub is shutting down | reconnect with backoff |
+| 4000 | replaced by a newer link of the same device (after an `error` frame `link_replaced`) | not reconnect |
+| 4001 | the device was revoked | stop until it joins again |
+| 4002 | `client_too_old` | stop and update |
+| 4003 | no frame for 30 seconds | reconnect with backoff |
+
+Reconnect backoff is 1 second doubling to 30 (15 on the phone) with full jitter, reset after a
+link has stayed up for 60 seconds.
+
+### Frame size
+
+A frame is one WebSocket text message. The hub refuses a frame from a **client** over **64 KiB**
+(65,536 bytes) and from a **host** over **256 KiB** (262,144 bytes) with an `error` frame
+`invalid_request` (`details: { maxBytes }`); the frame is not read, not echoed, and not logged,
+and the link stays up. A frame of exactly the limit is accepted. The limits are on what a device
+sends: a phone can receive a 256 KiB `event`. Beneath that, the WebSocket layer reads no message
+over 1 MiB: such a message ends the connection, and the hub drops it without a close frame (no
+close code, not 1009), so a device must not send one. Only that device's link ends; the others
+are unaffected.
+
+| Limit | Value |
+| --- | --- |
+| Frame from a client | 64 KiB |
+| Frame from a host | 256 KiB |
+| Watched threads per client link | 4 |
+| Outbound queue per link | 256 frames |
+
 ## Shutdown
 
 On SIGTERM (or SIGINT) the hub fails `/readyz` with `503 shutting_down` first, wakes every open
 long-poll so each returns its current page, keeps the listener open for a short readiness grace
 (a quarter of the shutdown wait, at most 500 ms) so a load balancer stops routing here, then stops
-accepting connections and lets in-flight requests finish. The whole sequence is bounded by
+accepting connections and lets in-flight requests finish. Every open link is closed with code
+1001 as soon as shutdown begins (an upgraded connection is no longer an in-flight request, so the
+drain waits for the links separately). The whole sequence is bounded by
 `B4HUB_SHUTDOWN_WAIT_MS` (default 30000) from the moment the signal arrives; anything still open
 then is dropped and the process exits.
+
+## Maintenance mode
+
+The operator pauses client writes on every hub instance at once with `b4hub maintenance on
+[--message "<text>"]` and resumes them with `b4hub maintenance off`; `b4hub maintenance status`
+prints the state. "Client writes" means the API's write routes below; the hub's own writes
+(`last_seen_at` touches, the daily prune) continue. The message is public: an unauthenticated
+`POST /v1/enroll` caller sees it, so it must carry no internal detail. The commands connect with
+`DATABASE_ADMIN_URL` (like `seed` and `enroll`) and write one row in `hub_settings`, which the
+serving role can only read; no environment variable changes and no instance restarts. Each
+`serve` reads the switch before it listens and then every `B4HUB_MAINTENANCE_POLL_MS` (default
+5000), so a flip reaches every instance within one interval. A failed read keeps the last value
+and logs a warning on every poll until a read succeeds; an instance whose very first read fails
+therefore starts with maintenance off (fail-open) until the database answers.
+
+While on, the client writes are refused: `POST /v1/enroll`, `POST /v1/changes`, `DELETE
+/v1/devices/self`, and the sign-in and account writes `POST /v1/auth/passkey/begin` and
+`/finish`, `POST /v1/auth/apple/begin`, `/native`, and `/callback`, `POST /v1/auth/handoff`, `PUT
+/v1/me/profile`, `POST /v1/me/passkeys/begin` and `/finish`, `POST /v1/me/apple`, `/native`, and
+`/handoff`, `DELETE /v1/me/identities/{id}`, `DELETE /v1/sessions/self`, and `DELETE /v1/me`. (A
+sign-in begin writes a ceremony, so it is refused too; `GET /v1/auth/config` and `GET
+/v1/auth/apple/start` are reads.) Each answers `503` with `Retry-After: 30` and
+
+```json
+{"error": {"kind": "execution_error", "message": "the hub is in maintenance: <message, or 'writes are paused'>", "details": {"code": "maintenance"}}}
+```
+
+before the body is read; on the authenticated routes after the token is checked (a bad token is
+still `401`), on `POST /v1/enroll` before the code is checked, and on the sign-in routes after
+their rate limit. Reads (`GET /v1/changes`, `GET /v1/snapshot`, `GET /v1/me`,
+`GET /v1/devices`), `/healthz`, and `/readyz` are unchanged, except that `/readyz` reports
+`"maintenance": "read_only"`. A client treats `maintenance` like a transient failure: keep the
+outbox, retry after the header's delay.
+
+## Logging
+
+`b4hub` logs to stderr. `B4HUB_LOG` is the filter (a `tracing` directive such as `info` or
+`b4hub=debug,info`; default `info`). `B4HUB_LOG_FORMAT` is `text` or `json`; by default `text`
+when stderr is a terminal and `json` otherwise, so a container gets one JSON object per line
+without configuration.
+
+Every request runs inside a `request` span with the fields `request_id` (the value of the
+response's `X-Request-Id`), `method`, `path` (the matched route pattern, such as `/v1/changes`, or
+`(unmatched)`; never the raw path or the query string), `client_request_id` (the caller's
+well-formed `X-Request-Id`, when it sent one), and, once the bearer token has been verified,
+`device_id` (the device's UUID; the token is never logged). One completion event per
+request, `request complete`, carries `status` and `elapsed_ms`: at `WARN` for a `503` (the hub
+refusing on purpose: maintenance, shutting down, not ready), `ERROR` for any other 5xx, and `INFO`
+otherwise. Headers and bodies are never logged. In JSON the event's own fields are top-level and
+the span's fields sit under `span`:
+
+```json
+{"timestamp":"2026-11-02T10:15:30.123456Z","level":"INFO","message":"request complete","status":200,"elapsed_ms":12,"target":"b4hub::request_log","span":{"device_id":"0192f0…","method":"POST","path":"/v1/changes","request_id":"0192f0…","name":"request"}}
+```

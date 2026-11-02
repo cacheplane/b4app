@@ -33,10 +33,6 @@ spec:
     spec:
       serviceAccountName: {{ include "b4hub.serviceAccountName" . }}
       {{- include "b4hub.podCommon" . | nindent 6 }}
-      {{- with .Values.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       containers:
         - name: hub
@@ -85,6 +81,7 @@ spec:
                 secretKeyRef:
                   name: {{ $hubSecret }}
                   key: {{ . }}
+                  optional: true
             {{- end }}
             {{- end }}
             {{- end }}
@@ -149,6 +146,7 @@ spec:
           secret:
             secretName: {{ $hubSecret }}
             defaultMode: 0440
+            optional: true
             items:
               {{- range splitList " " (include "b4hub.secrets.keys" .) }}
               - key: {{ . }}

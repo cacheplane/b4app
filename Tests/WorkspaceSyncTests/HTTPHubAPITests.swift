@@ -299,6 +299,47 @@ final class TokenSequence: @unchecked Sendable {
     #expect(requests.allSatisfy { $0.value(forHTTPHeaderField: "Authorization") == "Bearer t0k" })
   }
 
+  @Test func httpMintPairingCodeDecodes() async throws {
+    let recorder = Recorder()
+    let api = make(host: "mint.test") { captured in
+      recorder.add(captured)
+      return .json(
+        200,
+        #"{"code":"ABCD2345","expiresAt":"2026-11-01T12:05:00.000000Z","hubURL":"https://hub.example.com/"}"#
+      )
+    }
+    let minted = try await api.mintPairingCode()
+    #expect(minted.code == "ABCD2345")
+    #expect(minted.expiresAt == "2026-11-01T12:05:00.000000Z")
+    #expect(minted.hubURL == "https://hub.example.com/")
+    let request = try #require(recorder.all.first).request
+    #expect(request.httpMethod == "POST" && request.url?.path == "/v1/pairing-codes")
+    #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer t0k")
+    // The description of a minted code never prints the code.
+    #expect(!"\(minted)".contains("ABCD2345") && !String(reflecting: minted).contains("ABCD2345"))
+
+    // `hubURL` is absent when the hub has no public URL.
+    let bare = make(host: "mint-bare.test") { _ in
+      .json(200, #"{"code":"ABCD2345","expiresAt":"2026-11-01T12:05:00.000000Z"}"#)
+    }
+    #expect(try await bare.mintPairingCode().hubURL == nil)
+  }
+
+  @Test func httpMintPairingCodeReadsARateLimit() async throws {
+    let api = make(host: "mint-limited.test") { _ in
+      .json(
+        429,
+        #"{"error":{"kind":"request_error","message":"too many requests; try again shortly","details":{"code":"rate_limited","retryAfterMs":1234}}}"#
+      )
+    }
+    do {
+      _ = try await api.mintPairingCode()
+      Issue.record("expected a HubError")
+    } catch let error as HubError {
+      #expect(error.status == 429 && error.code == "rate_limited" && error.retryAfterMs == 1234)
+    }
+  }
+
   @Test func aPushResponseWithRejectionsDecodesOverHTTP() async throws {
     let api = make(host: "rejected.test") { _ in
       .json(200, #"{"acceptedThrough":3,"rejected":[{"deviceSeq":2,"code":"payload_too_large"}]}"#)

@@ -2,6 +2,7 @@ import Foundation
 import WorkspacePlatform
 import WorkspaceProtocol
 import WorkspaceStorage
+import WorkspaceSync
 
 public struct CoordinatorOptions: Sendable {
   public var paths: PlatformPaths
@@ -15,11 +16,18 @@ public struct CoordinatorOptions: Sendable {
   /// creates its own data directory (sign-in plan, Task 3). Nil, the default, adopts nothing; the
   /// gate that decides is `LegacyAdoption.planIfExplicitLocal`.
   public var legacyAdoption: LegacyAdoption.Plan?
+  /// Overrides the relay link's WebSocket (tests inject a `FakeHubLinkConnection`); nil uses
+  /// `URLSessionHubLinkConnection`.
+  public var hubLinkConnection: (any HubLinkConnection)?
+  /// Overrides the power assertion for "keep the Mac awake" (tests inject a `FakePowerAssertions`); nil
+  /// uses IOKit.
+  public var powerAssertions: (any PowerAssertions)?
 
   public init(
     paths: PlatformPaths? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
     secretStore: (any SecretStore)? = nil, adapterFactory: SessionService.AdapterFactory? = nil,
-    hubAPIFactory: HubSync.APIFactory? = nil, legacyAdoption: LegacyAdoption.Plan? = nil
+    hubAPIFactory: HubSync.APIFactory? = nil, hubLinkConnection: (any HubLinkConnection)? = nil,
+    powerAssertions: (any PowerAssertions)? = nil, legacyAdoption: LegacyAdoption.Plan? = nil
   ) {
     self.environment = environment
     self.paths = paths ?? PlatformPaths.resolve(environment: environment)
@@ -30,6 +38,8 @@ public struct CoordinatorOptions: Sendable {
     self.adapterFactory = adapterFactory
     self.hubAPIFactory = hubAPIFactory
     self.legacyAdoption = legacyAdoption
+    self.hubLinkConnection = hubLinkConnection
+    self.powerAssertions = powerAssertions
   }
 }
 
@@ -170,6 +180,8 @@ public enum Coordinator {
     do {
       let assigned = try await projects.backfill()
       if assigned > 0 { logger.info("project backfill assigned \(assigned, privacy: .public) threads") }
+      let served = try await projects.backfillConnections()
+      if served > 0 { logger.info("project backfill assigned \(served, privacy: .public) connections") }
     } catch {
       logger.error("project backfill failed: \(String(describing: error), privacy: .public)")
     }
@@ -180,10 +192,26 @@ public enum Coordinator {
         projects: projects, adapterFactory: options.adapterFactory, servers: servers))
     await sessions.start()
     await servers.startAll()
+    let relay = RelayExecutor(
+      sessions: sessions, projects: projects, database: database, diagnostics: diagnostics)
+    let linkConnection = options.hubLinkConnection ?? URLSessionHubLinkConnection()
+    let makeLink: HubSync.LinkFactory = { url, token in
+      HubLink(
+        url: url, token: token, executor: relay, eventLog: eventLog, connection: linkConnection,
+        pathMonitor: NWPathMonitorSignal())
+    }
+    let assertions = options.powerAssertions ?? IOKitPowerAssertions()
     let hub =
       options.hubAPIFactory.map {
-        HubSync(database: database, secretStore: options.secretStore, eventLog: eventLog, makeAPI: $0)
-      } ?? HubSync(database: database, secretStore: options.secretStore, eventLog: eventLog)
+        HubSync(
+          database: database, secretStore: options.secretStore, eventLog: eventLog, makeAPI: $0,
+          makeLink: makeLink, powerAssertions: assertions)
+      }
+      ?? HubSync(
+        database: database, secretStore: options.secretStore, eventLog: eventLog, makeLink: makeLink,
+        powerAssertions: assertions)
+    await diagnostics.attachRelay { [hub] in await hub.linkStatus() }
+    await diagnostics.attachKeepAwake { [hub] in await hub.keepAwakeHeld() }
     let router = Router(
       context: Router.Context(
         database: database, eventLog: eventLog, diagnostics: diagnostics, sessions: sessions,
@@ -198,8 +226,10 @@ public enum Coordinator {
       lock.release()
       throw error
     }
-    // Spec 10.3 sleep/wake: a CLI-spawned coordinator has no app to tell it the Mac woke up.
+    // Spec 10.3 sleep/wake: a CLI-spawned coordinator has no app to tell it the Mac woke up. The relay
+    // link is reopened first, so the phone sees the Mac again without waiting out a backoff (M8c).
     let sleepWatcher = SleepWatcher { [sessions, hub] _ in
+      await hub.reconnectLink()
       _ = await sessions.reconcileAll(reason: "wake")
       _ = try? await hub.pushNow()
     }

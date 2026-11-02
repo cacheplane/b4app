@@ -111,6 +111,12 @@ targets:
         # HTTPS through URLSession only: exempt from export documentation (TestFlight asks otherwise).
         ITSAppUsesNonExemptEncryption: false
         NSLocalNetworkUsageDescription: Agent Workspace connects to your sync hub when it runs on your local network.
+        # Pairing (M8c): the QR code the Mac shows, scanned here or opened as a b4app://pair link.
+        NSCameraUsageDescription: Scan the pairing code your Mac shows.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.cacheplane.b4app.ios
+            CFBundleURLSchemes:
+              - b4app
         # Plain HTTP only to the hub on this machine (the Simulator's localhost); HubURL refuses any
         # other non-HTTPS URL before a request is made. Debug only: the post-build script below
         # removes it from every other configuration, since on a device localhost is the phone.

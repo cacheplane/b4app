@@ -46,6 +46,7 @@ use crate::auth::AuthedDevice;
 use crate::auth_limits::{BeginAllowed, FinishAllowed};
 use crate::config::Signup;
 use crate::error::{ApiError, ApiJson, OptionalJson};
+use crate::maintenance::WritesAllowed;
 use crate::routes::auth::{answer, AuthSession, DeviceRequest};
 use crate::routes::me::{identity_json, MAX_FULL_NAME_CHARS};
 use crate::serve::AppState;
@@ -293,6 +294,7 @@ pub async fn begin(
     State(state): State<AppState>,
     _apple: Apple,
     _allowed: BeginAllowed,
+    _writes: WritesAllowed,
     OptionalJson(request): OptionalJson<AppleBeginRequest>,
 ) -> Result<Json<AppleBeginResponse>, ApiError> {
     let web = web_flow(&state, request)?;
@@ -306,6 +308,7 @@ pub async fn link_begin(
     _apple: Apple,
     _allowed: BeginAllowed,
     device: AuthedDevice,
+    _writes: WritesAllowed,
     OptionalJson(request): OptionalJson<AppleBeginRequest>,
 ) -> Result<Json<AppleBeginResponse>, ApiError> {
     let web = web_flow(&state, request)?;
@@ -327,6 +330,7 @@ pub async fn native(
     State(state): State<AppState>,
     Apple(apple): Apple,
     _allowed: FinishAllowed,
+    _writes: WritesAllowed,
     ApiJson(request): ApiJson<AppleNativeRequest>,
 ) -> Result<Json<AuthSession>, ApiError> {
     // Everything that can be refused without the ceremony is refused first.
@@ -374,6 +378,7 @@ pub async fn link_native(
     Apple(apple): Apple,
     _allowed: FinishAllowed,
     device: AuthedDevice,
+    _writes: WritesAllowed,
     ApiJson(request): ApiJson<AppleLinkNativeRequest>,
 ) -> Result<Json<Value>, ApiError> {
     check_sizes(&request.identity_token, &request.authorization_code)?;
@@ -517,6 +522,7 @@ pub async fn callback(
     State(state): State<AppState>,
     Apple(apple): Apple,
     _allowed: FinishAllowed,
+    _writes: WritesAllowed,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let form = CallbackForm::parse(&body)?;
@@ -718,6 +724,7 @@ pub async fn handoff(
     State(state): State<AppState>,
     Apple(apple): Apple,
     _allowed: FinishAllowed,
+    _writes: WritesAllowed,
     ApiJson(request): ApiJson<HandoffRequest>,
 ) -> Result<Json<AuthSession>, ApiError> {
     let device = request.device.validate()?;
@@ -755,6 +762,7 @@ pub async fn link_handoff(
     Apple(apple): Apple,
     _allowed: FinishAllowed,
     device: AuthedDevice,
+    _writes: WritesAllowed,
     ApiJson(request): ApiJson<AppleLinkHandoffRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let principal = Principal::from(*device);

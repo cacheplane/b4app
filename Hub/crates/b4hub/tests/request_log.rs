@@ -1,0 +1,169 @@
+//! What an authenticated request leaves in the JSON log: the request id and the device id, and
+//! never the bearer token. Run with `source <(../scripts/test-db.sh)` first.
+
+use std::io::Write;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use axum::body::Body;
+use axum::http::{header, Request, StatusCode};
+use b4hub::config::{Config, Signup};
+use b4hub::serve::{self, AppState};
+use b4hub_db::{devices, orgs, Db};
+use serde_json::Value;
+use sqlx::PgPool;
+use tower::ServiceExt;
+use tracing_subscriber::fmt::MakeWriter;
+use url::Url;
+
+fn admin_url(pool: &PgPool) -> String {
+    let base = std::env::var("DATABASE_URL").expect("DATABASE_URL is set by test-db.sh");
+    let mut url = Url::parse(&base).unwrap();
+    let database = pool
+        .connect_options()
+        .get_database()
+        .expect("test pool has a database")
+        .to_string();
+    url.set_path(&format!("/{database}"));
+    url.to_string()
+}
+
+fn app_url(pool: &PgPool) -> String {
+    let mut url = Url::parse(&admin_url(pool)).unwrap();
+    url.set_username("b4hub_app").unwrap();
+    url.set_password(Some("pw-test")).unwrap();
+    url.to_string()
+}
+
+#[derive(Clone, Default)]
+struct Buffer(Arc<Mutex<Vec<u8>>>);
+
+impl Write for Buffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for Buffer {
+    type Writer = Buffer;
+
+    fn make_writer(&'a self) -> Buffer {
+        self.clone()
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn an_authenticated_request_logs_the_ids_and_never_the_token(pool: PgPool) {
+    b4hub_db::migrate::run(&admin_url(&pool), &app_url(&pool))
+        .await
+        .unwrap();
+    let admin = Db::connect(&admin_url(&pool)).await.unwrap();
+    let state = app_state(Db::connect(&app_url(&pool)).await.unwrap());
+    let seeded = orgs::seed(
+        &admin,
+        "cacheplane",
+        "Cacheplane",
+        "blove",
+        "Brian Love",
+        "blove@example.test",
+    )
+    .await
+    .unwrap();
+    let code = devices::create_enrollment_code(
+        &admin,
+        seeded.org_id,
+        seeded.user_id,
+        Duration::from_secs(600),
+    )
+    .await
+    .unwrap();
+    let enrolled = devices::redeem(&state.db, &code, "test device", "macos")
+        .await
+        .unwrap();
+
+    let buffer = Buffer::default();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .flatten_event(true)
+        .with_current_span(true)
+        .with_span_list(false)
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(buffer.clone())
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+
+    let response = serve::router(state.clone())
+        .oneshot(
+            Request::get("/v1/me?after=1")
+                .header(header::AUTHORIZATION, format!("Bearer {}", enrolled.token))
+                .header("X-Request-Id", "edge-7f3a")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let request_id = response.headers()["x-request-id"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(request_id, "edge-7f3a");
+
+    // A wrong token: refused, and the wrong token is not logged either.
+    let response = serve::router(state.clone())
+        .oneshot(
+            Request::get("/v1/me")
+                .header(header::AUTHORIZATION, "Bearer wrong-token-9c1e")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    drop(guard);
+
+    let raw = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+    assert!(!raw.is_empty(), "nothing was logged");
+    assert!(!raw.contains(&enrolled.token), "the token leaked: {raw}");
+    assert!(
+        !raw.contains("wrong-token-9c1e"),
+        "the wrong token leaked: {raw}"
+    );
+    assert!(!raw.contains("after=1"), "the query leaked: {raw}");
+    let lines: Vec<Value> = raw
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let done: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["message"] == "request complete")
+        .collect();
+    assert_eq!(done.len(), 2, "{raw}");
+    assert_eq!(done[0]["span"]["request_id"], request_id);
+    assert_eq!(done[0]["span"]["client_request_id"], "edge-7f3a");
+    assert_eq!(done[0]["span"]["device_id"], enrolled.device_id.to_string());
+    assert_eq!(done[0]["span"]["path"], "/v1/me");
+    assert_eq!(done[0]["status"], 200);
+    assert_eq!(done[1]["status"], 401);
+    assert!(done[1]["span"].get("device_id").is_none(), "{}", done[1]);
+    state.db.pool.close().await;
+}
+
+/// App state over `db` with the sign-in configuration the other suites use (passkeys on
+/// `local.b4.run`, sign-up closed, no Apple).
+fn app_state(db: Db) -> AppState {
+    let config = Config {
+        signup: Signup::Closed,
+        rp_id: "local.b4.run".into(),
+        public_url: None,
+        secret_key: [7; 32],
+        apple: None,
+        trust_forwarded_for: false,
+    };
+    AppState::new(db, config).expect("the test configuration is valid")
+}

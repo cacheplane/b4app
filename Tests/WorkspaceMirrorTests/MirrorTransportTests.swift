@@ -18,7 +18,7 @@ private final class WriteCounter: Sendable {
   func bump() { value.withLock { $0 += 1 } }
 }
 
-@Suite struct MirrorTransportTests {
+@Suite(.timeLimit(.minutes(1))) struct MirrorTransportTests {
   @Test func transportAnswersReadsAndRefusesWrites() async throws {
     let store = try MirrorStore.inMemory()
     _ = try store.apply(try fixtureAsStored())
@@ -50,14 +50,15 @@ private final class WriteCounter: Sendable {
       try await client.request(TurnSend.self, TurnSend.Params(threadId: "thread-1", text: "hi"))
     }
     #expect(refused?.code == .unsupportedCapability)
-    #expect(refused?.message.contains("M8c") == true)
+    #expect(
+      refused?.message == "Until this iPhone is paired with your Mac's hub, chatting is done on the Mac.")
     let refusedWithOperation = await #expect(throws: WorkspaceError.self) {
       try await client.request(
         ThreadCreate.self, .init(connectionId: "conn-1", workingDirectory: "/tmp"),
         options: RequestOptions(operationId: "op-1"))
     }
     #expect(refusedWithOperation?.code == .unsupportedCapability)
-    #expect(refusedWithOperation?.message.contains("M8c") == true)
+    #expect(refusedWithOperation?.message.hasSuffix("is done on the Mac.") == true)
     await client.close()
   }
 
@@ -208,6 +209,8 @@ private final class WriteCounter: Sendable {
     #expect(snapshot.connections.map(\.id) == ["conn-1", "conn-2"])
     #expect(snapshot.threads.map(\.id) == ["thread-1"])
     #expect(snapshot.activeTurns.isEmpty)
+    // Without a relay there is no presence to carry.
+    #expect(snapshot.presence == nil)
     #expect(try await client.request(ConnectionList.self, .init()).connections.map(\.id) == ["conn-1"])
     #expect(
       try await client.request(ConnectionList.self, .init(includeDisabled: true)).connections.count == 2)
@@ -379,4 +382,419 @@ private final class WriteCounter: Sendable {
     #expect(malformed.requestId == "unknown" && malformed.error?.code == .protocolInvalid)
     await transport.close()
   }
+
+  @Test func unservedCommandsSayDoneOnTheMac() async throws {
+    let h = RelayHarness()
+    let client = WorkspaceClient(
+      transport: MirrorTransport(store: try MirrorStore.inMemory(), version: "0.2.0", relay: h.relay))
+    _ = try await client.ready()
+    let options = RequestOptions(operationId: "op-1")
+    var refusals: [WorkspaceError?] = []
+    refusals.append(
+      await #expect(throws: WorkspaceError.self) {
+        try await client.request(
+          ThreadCreate.self, .init(connectionId: "conn-1", workingDirectory: "/tmp"), options: options)
+      })
+    refusals.append(
+      await #expect(throws: WorkspaceError.self) {
+        try await client.request(TurnAbandon.self, .init(threadId: "thread-1"), options: options)
+      })
+    refusals.append(
+      await #expect(throws: WorkspaceError.self) {
+        try await client.request(ServerStart.self, .init(serverId: "s1"), options: options)
+      })
+    refusals.append(
+      await #expect(throws: WorkspaceError.self) {
+        try await client.request(ProjectDelete.self, .init(projectId: "p1"), options: options)
+      })
+    refusals.append(
+      await #expect(throws: WorkspaceError.self) {
+        try await client.request(HubLeave.self, EmptyParams(), options: options)
+      })
+    for refusal in refusals {
+      #expect(refusal?.code == .unsupportedCapability)
+      #expect(refusal?.message.hasSuffix("is done on the Mac.") == true, "\(refusal?.message ?? "")")
+      #expect(refusal?.message.contains("M8c") == false)
+    }
+    await client.close()
+  }
+
+  // MARK: - Through the relay
+
+  @Test func watchesTheMostRecentlyReadThread() async throws {
+    let (store, h, socket) = try await relayedMirror()
+    let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay))
+    _ = try await client.ready()
+    _ = try await client.request(ThreadRead.self, .init(threadId: "thread-1"))
+    #expect(try await RelayHarness.nextFrame(socket) == .watch(threadId: "thread-1"))
+    _ = try await client.request(ThreadRead.self, .init(threadId: "thread-1"))
+    _ = try await client.request(ThreadRead.self, .init(threadId: "thread-2"))
+    #expect(try await RelayHarness.nextFrame(socket) == .unwatch(threadId: "thread-1"))
+    #expect(try await RelayHarness.nextFrame(socket) == .watch(threadId: "thread-2"))
+    #expect(await h.relay.watched == ["thread-2"])
+    await client.close()
+    await h.relay.stop()
+  }
+
+  @Test func lateDeltaForACompletedItemIsIgnored() async throws {
+    let (store, h, socket) = try await relayedMirror()
+    let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay))
+    _ = try await client.ready()
+    var events = (await client.events()).makeAsyncIterator()
+    _ = try await client.request(ThreadRead.self, .init(threadId: "thread-1"))
+
+    // item-2 is stored and its turn has finished; item-4 is stored but its turn still runs.
+    socket.deliver(.event(delta("stale", native: "native-item-2")))
+    socket.deliver(.event(delta(" more", native: "native-item-4")))
+    let item = agent("item-9", native: "native-item-9", text: "Done", sequence: 9)
+    socket.deliver(.event(try itemEvent(.messageCompleted, item)))
+    socket.deliver(.event(delta("late", native: "native-item-9")))
+    socket.deliver(.event(marker()))
+
+    let seen = try await collect(&events, until: .turnStateChanged)
+    #expect(seen.map(\.kind) == [.messageDelta, .messageCompleted, .turnStateChanged])
+    #expect(seen[0].nativeIds["itemId"] == "native-item-4" && seen[0].payload["delta"] == " more")
+    await client.close()
+    await h.relay.stop()
+  }
+
+  @Test func aStreamGapCompletesOpenItemsAndMutesThem() async throws {
+    let (store, h, socket) = try await relayedMirror()
+    let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay))
+    _ = try await client.ready()
+    var events = (await client.events()).makeAsyncIterator()
+    _ = try await client.request(ThreadRead.self, .init(threadId: "thread-1"))
+
+    let started = agent("item-9", native: "native-item-9", text: "", sequence: 9)
+    socket.deliver(.event(try itemEvent(.messageStarted, started)))
+    socket.deliver(.event(delta("Hel", native: "native-item-9")))
+    socket.deliver(.streamGap(threadId: "thread-1"))
+    socket.deliver(.event(delta("lo", native: "native-item-9")))
+    let done = agent("item-9", native: "native-item-9", text: "Hello", sequence: 9)
+    socket.deliver(.event(try itemEvent(.messageCompleted, done)))
+    socket.deliver(.event(delta("!", native: "native-item-9")))
+    socket.deliver(.event(marker()))
+
+    let seen = try await collect(&events, until: .turnStateChanged)
+    #expect(
+      seen.map(\.kind) == [
+        .messageStarted, .messageDelta, .messageCompleted, .messageCompleted, .turnStateChanged,
+      ])
+    // The gap ends the open item's live text (as its last known state), and its later deltas are dropped.
+    #expect(try seen[2].payload["displayItem"]?.decode(DisplayItem.self) == started)
+    #expect(try seen[3].payload["displayItem"]?.decode(DisplayItem.self) == done)
+
+    // A dropped link is a gap too.
+    socket.deliver(
+      .event(
+        try itemEvent(.messageStarted, agent("item-10", native: "native-item-10", text: "", sequence: 10))))
+    socket.deliver(.event(delta("Hi", native: "native-item-10")))
+    _ = try await collect(&events, until: .messageDelta)
+    socket.closeFromHub(code: 1001)
+    let afterDrop = try await collect(&events, until: .messageCompleted)
+    #expect(afterDrop.last?.nativeIds["itemId"] == "native-item-10")
+    await client.close()
+    await h.relay.stop()
+  }
+
+  @Test func aSyncedRowOfAStreamingItemKeepsItsLiveText() async throws {
+    let (store, h, socket) = try await relayedMirror()
+    let transport = MirrorTransport(store: store, version: "0.2.0", relay: h.relay)
+    let client = WorkspaceClient(transport: transport)
+    _ = try await client.ready()
+    var events = (await client.events()).makeAsyncIterator()
+    _ = try await client.request(ThreadRead.self, .init(threadId: "thread-1"))
+
+    let started = agent("item-9", native: "native-item-9", text: "", sequence: 9)
+    socket.deliver(.event(try itemEvent(.messageStarted, started)))
+    socket.deliver(.event(delta("Hel", native: "native-item-9")))
+    _ = try await collect(&events, until: .messageDelta)
+
+    // A relayed item not yet synced is part of the thread when it is read again.
+    let reread = try await client.request(ThreadRead.self, .init(threadId: "thread-1"))
+    #expect(reread.items.map(\.id) == ["item-1", "item-2", "item-3", "item-4", "item-9"])
+
+    // The Mac's started row arrives first: announced as started, so the live text stays.
+    transport.publish(
+      try store.apply([change("displayItems", "item-9", "insert", value: try JSONValue(encoding: started))]))
+    #expect(try await collect(&events, until: .messageStarted).last?.nativeIds["itemId"] == "native-item-9")
+    let done = agent("item-9", native: "native-item-9", text: "Hello", sequence: 9)
+    socket.deliver(.event(try itemEvent(.messageCompleted, done)))
+    _ = try await collect(&events, until: .messageCompleted)
+    // A started row synced after the relayed completion does not take the finished text back.
+    transport.publish(
+      try store.apply([change("displayItems", "item-9", "update", column: "role", value: "assistant")]))
+    let late = try await collect(&events, until: .messageCompleted)
+    #expect(try late.last?.payload["displayItem"]?.decode(DisplayItem.self) == done)
+    // Until the synced row catches up, the relayed completed item is what a read shows.
+    #expect(try await client.request(ThreadRead.self, .init(threadId: "thread-1")).items.last == done)
+
+    // Once complete, a synced row is an ordinary completed item, and the read is the store's alone.
+    transport.publish(
+      try store.apply([
+        change("displayItems", "item-9", "update", column: "payload", value: ["text": "Hello"]),
+        change("turns", "turn-2", "update", column: "status", value: "terminal"),
+      ]))
+    let synced = try await collect(&events, until: .messageCompleted)
+    #expect(try synced.last?.payload["displayItem"]?.decode(DisplayItem.self).payload["text"] == "Hello")
+    let final = try await client.request(ThreadRead.self, .init(threadId: "thread-1"))
+    #expect(final.items.map(\.id) == ["item-1", "item-2", "item-3", "item-4", "item-9"])
+    #expect(final.items.last?.payload["text"] == "Hello")
+    await client.close()
+    await h.relay.stop()
+  }
+
+  @Test func threadStartPlaceholderBuffersAndIsReplacedByTheRow() async throws {
+    let (store, h, socket) = try await relayedMirror()
+    let now = ManualNow()
+    let transport = MirrorTransport(store: store, version: "0.2.0", relay: h.relay, now: now.now)
+    let client = WorkspaceClient(transport: transport)
+    _ = try await client.ready()
+    var events = (await client.events()).makeAsyncIterator()
+
+    let params = ThreadStart.Params(
+      threadId: "thread-new", projectId: "p1", connectionId: "conn-1", folder: "/Users/brian/project",
+      text: "Hi")
+    async let started = client.request(ThreadStart.self, params, options: RequestOptions(operationId: "op-s"))
+    #expect(
+      try await RelayHarness.nextFrame(socket)
+        == .command(id: "op-s", method: .threadStart, params: try JSONValue(encoding: params)))
+
+    // The hub watches the new thread for the phone at once, so its events can beat the reply.
+    let turn = relayTurn("turn-new", threadId: "thread-new", operationId: "op-s")
+    let user = DisplayItem(
+      id: "item-u", threadId: "thread-new", turnId: "turn-new", role: .user, type: "userMessage",
+      payload: ["text": "Hi"], sequence: 1, provenance: .live, createdAt: "2026-11-01T10:00:00.000Z")
+    let reply = agent(
+      "item-a", native: "native-a", turnId: "turn-new", text: "", sequence: 2, threadId: "thread-new")
+    socket.deliver(.event(try itemEvent(.messageStarted, user)))
+    socket.deliver(
+      .event(
+        AdapterEvent(
+          kind: .turnAcknowledged, connectionId: "conn-1", threadId: "thread-new", turnId: "turn-new",
+          payload: ["turn": try JSONValue(encoding: turn)])))
+    socket.deliver(.event(try itemEvent(.messageStarted, reply)))
+    socket.deliver(.event(delta("Hel", native: "native-a", threadId: "thread-new")))
+    socket.deliver(.event(delta("lo", native: "native-a", threadId: "thread-new")))
+    let thread = ConversationThread(
+      id: "thread-new", connectionId: "conn-1", nativeThreadId: "native-new",
+      nativeScope: "/Users/brian/project",
+      title: "Hi", context: "/Users/brian/project", createdAt: "2026-11-01T10:00:00.000Z",
+      updatedAt: "2026-11-01T10:00:00.000Z", projectId: "p1")
+    socket.deliver(
+      .reply(id: "op-s", result: try JSONValue(encoding: ThreadStart.Result(thread: thread, turn: turn))))
+    #expect(try await started.thread == thread)
+
+    // Not in the mirror yet: the read answers with the placeholder and what its events said.
+    let read = try await client.request(ThreadRead.self, .init(threadId: "thread-new"))
+    #expect(read.thread == thread)
+    #expect(read.turns == [turn])
+    #expect(read.items.map(\.id) == ["item-u", "item-a"])
+    #expect(try await RelayHarness.nextFrame(socket) == .watch(threadId: "thread-new"))
+
+    // The buffered text reaches the model with the next delta, so nothing streamed is lost.
+    socket.deliver(.event(delta("!", native: "native-a", threadId: "thread-new")))
+    let first = try await collect(&events, until: .messageDelta)
+    #expect(first.count == 1 && first[0].payload["delta"] == "Hello!")
+
+    // The synced row replaces the placeholder, and outlives its two minutes.
+    var row = try #require(try fixtureAsStored()[1].value?.objectValue)
+    row["id"] = "thread-new"
+    row["nativeThreadId"] = "native-new"
+    row["title"] = "From the Mac"
+    transport.publish(try store.apply([change("threads", "thread-new", "insert", value: .object(row))]))
+    let updated = try await collect(&events, until: .threadUpdated)
+    #expect(updated.last?.threadId == "thread-new")
+    now.advance(by: .seconds(180))
+    let synced = try await client.request(ThreadRead.self, .init(threadId: "thread-new"))
+    #expect(synced.thread.title == "From the Mac")
+    #expect(synced.items.map(\.id) == ["item-u", "item-a"])
+    await client.close()
+    await h.relay.stop()
+  }
+
+  /// A started thread the phone never opened: once its row arrives, nothing of it stays in memory, and
+  /// the hub's auto-watch cannot grow it again.
+  @Test func theRowOfAnUnreadStartedThreadDropsItsRelayedState() async throws {
+    let (store, h, socket) = try await relayedMirror()
+    let transport = MirrorTransport(store: store, version: "0.2.0", relay: h.relay)
+    let client = WorkspaceClient(transport: transport)
+    _ = try await client.ready()
+    var events = (await client.events()).makeAsyncIterator()
+    _ = try await client.request(ThreadRead.self, .init(threadId: "thread-1"))
+
+    let params = ThreadStart.Params(
+      threadId: "thread-new", projectId: "p1", connectionId: "conn-1", text: "Hi")
+    async let started = client.request(ThreadStart.self, params, options: RequestOptions(operationId: "op-s"))
+    _ = try await RelayHarness.nextCommand(socket)
+    let turn = relayTurn("turn-new", threadId: "thread-new", operationId: "op-s")
+    let thread = ConversationThread(id: "thread-new", connectionId: "conn-1", nativeThreadId: "native-new")
+    socket.deliver(
+      .reply(id: "op-s", result: try JSONValue(encoding: ThreadStart.Result(thread: thread, turn: turn))))
+    _ = try await started
+    #expect(transport.overlaidThreadIds == ["thread-1", "thread-new"])
+
+    var row = try #require(try fixtureAsStored()[1].value?.objectValue)
+    row["id"] = "thread-new"
+    row["nativeThreadId"] = "native-new"
+    transport.publish(try store.apply([change("threads", "thread-new", "insert", value: .object(row))]))
+    _ = try await collect(&events, until: .threadUpdated)
+    #expect(transport.overlaidThreadIds == ["thread-1"])
+
+    // Later relayed events for it pass through without being kept.
+    let item = agent(
+      "item-n", native: "native-n", turnId: "turn-new", text: "", sequence: 1, threadId: "thread-new")
+    socket.deliver(.event(try itemEvent(.messageStarted, item)))
+    _ = try await collect(&events, until: .messageStarted)
+    #expect(transport.overlaidThreadIds == ["thread-1"])
+    await client.close()
+    await h.relay.stop()
+  }
+
+  @Test func placeholderExpiresAfterTwoMinutes() async throws {
+    let (store, h, socket) = try await relayedMirror()
+    let now = ManualNow()
+    let client = WorkspaceClient(
+      transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay, now: now.now))
+    _ = try await client.ready()
+    let params = ThreadStart.Params(
+      threadId: "thread-new", projectId: "p1", connectionId: "conn-1", text: "Hi")
+    async let started = client.request(ThreadStart.self, params, options: RequestOptions(operationId: "op-s"))
+    _ = try await RelayHarness.nextFrame(socket)
+    let turn = relayTurn("turn-new", threadId: "thread-new", operationId: "op-s")
+    let thread = ConversationThread(
+      id: "thread-new", connectionId: "conn-1", nativeThreadId: "n", title: "Hi")
+    socket.deliver(
+      .reply(id: "op-s", result: try JSONValue(encoding: ThreadStart.Result(thread: thread, turn: turn))))
+    _ = try await started
+
+    now.advance(by: .seconds(119))
+    #expect(try await client.request(ThreadRead.self, .init(threadId: "thread-new")).thread == thread)
+    now.advance(by: .seconds(2))
+    let gone = await #expect(throws: WorkspaceError.self) {
+      try await client.request(ThreadRead.self, .init(threadId: "thread-new"))
+    }
+    #expect(gone?.code == .notFound)
+
+    // A refused start leaves no placeholder behind.
+    let other = ThreadStart.Params(
+      threadId: "thread-other", projectId: "p1", connectionId: "conn-1", text: "Hi")
+    let refused = Task {
+      try await client.request(ThreadStart.self, other, options: RequestOptions(operationId: "op-t"))
+    }
+    #expect(
+      try await RelayHarness.nextCommand(socket)
+        == .command(id: "op-t", method: .threadStart, params: try JSONValue(encoding: other)))
+    socket.deliver(.reply(id: "op-t", error: RelayWireError(.deviceOffline, "offline")))
+    let refusal = await #expect(throws: WorkspaceError.self) { try await refused.value }
+    #expect(refusal?.code == .deviceOffline)
+    await #expect(throws: WorkspaceError.self) {
+      try await client.request(ThreadRead.self, .init(threadId: "thread-other"))
+    }
+    await client.close()
+    await h.relay.stop()
+  }
+
+  /// The hub watches a started thread for the phone; a start refused before its turn was made gives
+  /// that watch back, so refusals never use up the link's four. One whose turn exists keeps it.
+  @Test func aRefusedStartLetsGoOfItsAutoWatch() async throws {
+    let (store, h, socket) = try await relayedMirror()
+    let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay))
+    _ = try await client.ready()
+    let refused = ThreadStart.Params(
+      threadId: "thread-refused", projectId: "p1", connectionId: "conn-1", text: "Hi")
+    let first = Task {
+      try await client.request(ThreadStart.self, refused, options: RequestOptions(operationId: "op-r"))
+    }
+    #expect(
+      try await RelayHarness.nextCommand(socket)
+        == .command(id: "op-r", method: .threadStart, params: try JSONValue(encoding: refused)))
+    socket.deliver(
+      .reply(
+        id: "op-r",
+        error: RelayWireError(
+          .protocolInvalid, "locked", details: ["reason": "directory_locked", "blockingTurnId": "turn-9"])))
+    await #expect(throws: WorkspaceError.self) { try await first.value }
+    // Sent before the refusal is answered, so ahead of the watch of the thread read next.
+    _ = try await client.request(ThreadRead.self, .init(threadId: "thread-2"))
+    #expect(try await RelayHarness.nextFrame(socket) == .unwatch(threadId: "thread-refused"))
+    #expect(try await RelayHarness.nextFrame(socket) == .watch(threadId: "thread-2"))
+
+    let failed = ThreadStart.Params(
+      threadId: "thread-failed", projectId: "p1", connectionId: "conn-1", text: "Hi")
+    let second = Task {
+      try await client.request(ThreadStart.self, failed, options: RequestOptions(operationId: "op-f"))
+    }
+    #expect(
+      try await RelayHarness.nextCommand(socket)
+        == .command(id: "op-f", method: .threadStart, params: try JSONValue(encoding: failed)))
+    socket.deliver(
+      .reply(id: "op-f", error: RelayWireError(.internalError, "failed", details: ["turnId": "turn-f"])))
+    await #expect(throws: WorkspaceError.self) { try await second.value }
+    // Nothing more is sent: the next frames are the move from thread-2 to the thread read next.
+    _ = try await client.request(ThreadRead.self, .init(threadId: "thread-1"))
+    #expect(try await RelayHarness.nextFrame(socket) == .unwatch(threadId: "thread-2"))
+    #expect(try await RelayHarness.nextFrame(socket) == .watch(threadId: "thread-1"))
+    await client.close()
+    await h.relay.stop()
+  }
+}
+
+// MARK: - Relay helpers
+
+/// The fixture plus a second thread, and a relay connected to a fake hub.
+private func relayedMirror() async throws -> (MirrorStore, RelayHarness, FakeHubLinkSocket) {
+  let store = try MirrorStore.inMemory()
+  _ = try store.apply(try fixtureAsStored())
+  var second = try #require(try fixtureAsStored()[1].value?.objectValue)
+  second["id"] = "thread-2"
+  second["nativeThreadId"] = "native-thread-2"
+  _ = try store.apply([change("threads", "thread-2", "insert", value: .object(second))])
+  let h = RelayHarness()
+  let socket = await h.connect()
+  return (store, h, socket)
+}
+
+private func agent(
+  _ id: String, native: String, turnId: String = "turn-2", text: String, sequence: Int,
+  threadId: String = "thread-1"
+) -> DisplayItem {
+  DisplayItem(
+    id: id, threadId: threadId, turnId: turnId, nativeItemId: native, role: .assistant, type: "agentMessage",
+    payload: ["text": .string(text)], sequence: sequence, provenance: .live,
+    createdAt: "2026-11-01T10:00:02.000Z")
+}
+
+/// A relayed item event as the Mac's coordinator emits it.
+private func itemEvent(_ kind: EventKind, _ item: DisplayItem) throws -> AdapterEvent {
+  AdapterEvent(
+    kind: kind, connectionId: "conn-1", threadId: item.threadId, turnId: item.turnId,
+    nativeIds: item.nativeItemId.map { ["itemId": $0] } ?? [:],
+    payload: ["displayItem": try JSONValue(encoding: item)])
+}
+
+private func delta(_ text: String, native: String, threadId: String = "thread-1") -> AdapterEvent {
+  AdapterEvent(
+    kind: .messageDelta, connectionId: "conn-1", threadId: threadId, nativeIds: ["itemId": native],
+    payload: ["delta": .string(text)])
+}
+
+/// An event that ends a test's batch.
+private func marker() -> AdapterEvent {
+  AdapterEvent(
+    kind: .turnStateChanged, connectionId: "conn-1", threadId: "thread-1", payload: ["status": "running"])
+}
+
+/// Events up to and including the first of `kind`, skipping `host.presence`.
+private func collect(
+  _ events: inout AsyncStream<EventEnvelope>.Iterator, until kind: EventKind,
+  isolation: isolated (any Actor)? = #isolation
+) async throws -> [AdapterEvent] {
+  var seen: [AdapterEvent] = []
+  while let envelope = await events.next(isolation: isolation) {
+    if envelope.event.kind == .hostPresence { continue }
+    seen.append(envelope.event)
+    if envelope.event.kind == kind { return seen }
+  }
+  throw WorkspaceError(.internalError, "the event stream ended")
 }

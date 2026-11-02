@@ -4,8 +4,8 @@ import WorkspacePlatform
 /// Detects a Mac sleep from inside the coordinator (D-034): `ContinuousClock` keeps counting while
 /// the machine sleeps and `SuspendingClock` does not, so after a wake the two have drifted apart by
 /// the time asleep. A gap past the threshold fires `onGap` once, which reconciles every unresolved
-/// turn. The app also listens for `NSWorkspace.didWakeNotification`; this covers a CLI-spawned
-/// coordinator with no app running.
+/// turn and reopens the hub's relay link at once (`HubSync.reconnectLink`, M8c). The app also listens
+/// for `NSWorkspace.didWakeNotification`; this covers a CLI-spawned coordinator with no app running.
 public actor SleepWatcher {
   private let threshold: Duration
   private let interval: Duration

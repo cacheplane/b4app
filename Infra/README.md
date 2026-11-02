@@ -47,7 +47,7 @@ Do this one account at a time: finish steps 3 to 5 for `test` before starting `p
      -backend-config=encrypt=true
    ```
 
-   Answer `yes` to copy the existing state. The key ARN is required: the bucket policy refuses any write that is not SSE-KMS, and `encrypt = true` alone sends AES256. Verify, and only then clean up:
+   Answer `yes` to copy the existing state. The key ARN is required: the bucket policy refuses any write that is not SSE-KMS, and `encrypt = true` alone sends AES256. It must be the full ARN (`arn:aws:kms:...:key/...`), as in every `kms_key_id` below: an alias or a bare key id is refused by the bucket policy, which compares the header with the state key's ARN. Verify, and only then clean up:
 
    ```bash
    terraform plan -var environment=$ENV       # must report: No changes
@@ -108,7 +108,7 @@ The one required input is `alarm_email`, with no default. CI passes it as `TF_VA
 
 ### Initialize a root by hand
 
-The `-backend-config` values are the same five as for bootstrap, with `key=hub.tfstate`:
+The `-backend-config` values are the same five as for bootstrap, with `key=hub.tfstate` (`kms_key_id` is the key ARN, never an alias or bare id):
 
 ```bash
 export ENV=test                            # prod: ENV=prod
@@ -205,6 +205,8 @@ Once per account, after the first `terraform apply` of the root and before the f
    ```
 
    `\du` must list `b4hub_owner` with `Create role`, and `\l` must show `b4hub` owned by it. Then `\q` and `exit`; the task stops. Clear the clipboard (`printf '' | pbcopy`).
+
+   psql takes the raw password. The generated hex passwords are the same raw and inside a URL, so this never matters for them; if you used your own password with URL-reserved characters, the URL in step 5 holds it percent-encoded, and the form pasted here must be the decoded one. Decode the clipboard in place, so the password never reaches a command line: `pbpaste | python3 -c 'import sys, urllib.parse; sys.stdout.write(urllib.parse.unquote(sys.stdin.read()))' | pbcopy`.
 
 5. **Put the two real URLs in the secrets.** `b4hub_owner` is `DATABASE_ADMIN_URL`; `b4hub_app` does not exist yet: the first `b4hub migrate` creates it and sets its password from the `DATABASE_URL` you give here. Back in the first terminal:
 
@@ -434,6 +436,16 @@ Prove a backup restores and holds the data. Two parts: a full drill in the test 
 
    The originals stay in `$tmp/*.orig` for step 6.
 
+   The two `put-secret-value` calls are not atomic. If the second one fails, `database-admin-url` already points at the scratch host and `database-url` still at the live one: put both back from the saved originals before anything else (the same loop as step 6, which is safe to rerun), then start step 3 again:
+
+   ```bash
+   for s in database-admin-url database-url; do
+     aws secretsmanager put-secret-value --secret-id b4hub/$s --secret-string file://$tmp/$s.orig > /dev/null
+   done
+   ```
+
+   No deploy has run yet at this point, so the hub never used the half-written pair. The same holds in step 6: if a restore call fails, rerun the loop until both succeed before deleting anything.
+
 4. Run the normal deploy of the digest test already runs ([runbook 5](#5-deploy-a-given-digest-or-roll-back)): it migrates and serves against the scratch instance. `curl -fsS https://hub.test.b4.run/readyz` must pass.
 5. **Compare.** In `Infra/scripts/admin-shell.sh test psql` run the same query against both instances. The container's `PGHOST` is the live one; the scratch host is `$SCRATCH` from step 2. psql needs the `b4hub_owner` password, which is only on your laptop. The container's environment carries `PGPASSWORD` (the master password), which psql would send for any user and fail, so `unset PGPASSWORD` first (in the container shell, once); psql then prompts. Never print the password: copy it to the clipboard without showing it, paste at each prompt (the paste is not echoed), then clear the clipboard:
 
@@ -449,6 +461,8 @@ Prove a backup restores and holds the data. Two parts: a full drill in the test 
    ```
 
    Then `printf '' | pbcopy` (Linux: `xclip`).
+
+   The password comes out of the URL as stored. A generated hex password needs no decoding; one with percent-escapes (`%40` and so on) must be decoded before it is pasted at the psql prompt, or psql rejects it: run the clipboard through the same `pbpaste | python3 ... unquote ... | pbcopy` pipe as in [runbook 2](#2-bootstrap-the-database-owner) step 4.
 
    The restored `max(hub_seq)` per org must be less than or equal to the live one and no older than the backup interval.
 6. **Put the test account back**, then delete the scratch instance:
@@ -502,6 +516,20 @@ Stop a runaway (the database is untouched; devices reconnect and resume from the
 aws ecs update-service --cluster b4hub-$ENV --service b4hub-$ENV-hub --desired-count 0
 aws ecs update-service --cluster b4hub-$ENV --service b4hub-$ENV-hub --desired-count 1
 ```
+
+Pause client writes without stopping anything (D-074): devices keep reading and `/readyz` stays green with `"maintenance": "read_only"`, while every API write (`POST /v1/enroll`, `POST /v1/changes`, `DELETE /v1/devices/self`) answers `503 maintenance` with `Retry-After: 30` and the Mac keeps its outbox; the hub's own `last_seen_at` touches and the daily prune continue. The `--message` text is public (an unauthenticated enroll caller sees it), so keep internal details out of it. Every instance notices within `B4HUB_MAINTENANCE_POLL_MS` (5 s). An instance that cannot read the database at start runs with maintenance off until it can (fail-open; it warns on every poll), which only matters if the database is reachable from some tasks and not others. Run it in the admin task's `hub` container (runbook 6; it has `DATABASE_ADMIN_URL`):
+
+```bash
+Infra/scripts/admin-shell.sh $ENV hub
+```
+
+```sh
+b4hub maintenance status
+b4hub maintenance on --message "restoring the database, back by 14:00 UTC"
+b4hub maintenance off
+```
+
+On a Compose host the same commands run through the `migrate` service, which carries the admin URL: `docker compose run --rm migrate maintenance on --message "..."`, then `docker compose run --rm migrate maintenance off`. The switch is a row in `hub_settings`, so it survives deploys and restarts: `status` is the first thing to check when writes fail with `maintenance` and nobody remembers turning it on. Expect the `alb-5xx` alarm while it is on with an active Mac: the load balancer counts each refused write as a 5xx (the hub logs them at `WARN`, not `ERROR`), and the Mac client retries its outbox on its own schedule.
 
 Upstream status, each subscribed with the owner's email: Better Stack (the `/readyz` monitors and the status page at `status.b4.run`), the AWS Health Dashboard of each account, `githubstatus.com`, and Apple's developer system status (`developer.apple.com/system-status`).
 

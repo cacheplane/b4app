@@ -27,7 +27,8 @@
 #
 # The task ARN and the command that stops it are printed before the shell
 # opens, so a lost terminal can still be cleaned up by hand. A trap stops the
-# task on every exit path after it starts, including a failed execute-command.
+# task on every exit path after it starts, including a failed execute-command,
+# and removes the task-definition render directory on every exit path.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,6 +41,28 @@ die() {
   echo "admin-shell: $*" >&2
   exit 2
 }
+
+work=""
+task_arn=""
+stopped=false
+# shellcheck disable=SC2329 # invoked by the EXIT trap
+stop_task() {
+  [ -n "$task_arn" ] || return 0
+  [ "$stopped" = true ] && return 0
+  stopped=true
+  echo "stopping $task_arn"
+  if ! aws ecs stop-task --cluster "$cluster" --task "$task_arn" --reason "admin-shell finished" > /dev/null; then
+    echo "admin-shell: could not stop the task. Stop it by hand:  $stop_command" >&2
+  fi
+}
+# shellcheck disable=SC2329 # invoked by the EXIT trap
+on_exit() {
+  if [ -n "$work" ]; then rm -rf "$work"; fi
+  stop_task
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 usage="usage: admin-shell.sh <test|prod> [hub|psql]"
 [ "$#" -ge 1 ] && [ "$#" -le 2 ] || die "$usage"
@@ -121,6 +144,7 @@ if [[ "$service_image" =~ $ECR_DIGEST_REF ]]; then
     ${signin_vars[@]+"${signin_vars[@]}"}
   taskdef="$(register "$work/admin.json")"
   rm -rf "$work"
+  work=""
 else
   echo "::warning::$service runs no deployed image yet (got '${service_image:-${service_td:-nothing}}'), so the admin task runs $taskdef, the placeholder image. Expected only before the first deploy."
 fi
@@ -136,7 +160,7 @@ case "$security_group" in sg-*) ;; *) die "no security group $name-admin (got '$
 [ -n "$subnets" ] && [ "$subnets" != None ] || die "no public subnets named $name-public-*"
 
 echo "starting $taskdef ($container) in $cluster"
-task_arn="$(aws ecs run-task \
+started_arn="$(aws ecs run-task \
   --cluster "$cluster" \
   --task-definition "$taskdef" \
   --launch-type FARGATE \
@@ -145,28 +169,17 @@ task_arn="$(aws ecs run-task \
   --started-by "admin-shell" \
   --network-configuration "awsvpcConfiguration={subnets=[$subnets],securityGroups=[$security_group],assignPublicIp=ENABLED}" \
   --query 'tasks[0].taskArn' --output text)"
-case "$task_arn" in
+case "$started_arn" in
   arn:aws:ecs:*) ;;
   *)
-    echo "admin-shell: the task did not start (run-task returned '$task_arn')." >&2
+    echo "admin-shell: the task did not start (run-task returned '$started_arn')." >&2
     exit 1
     ;;
 esac
 
-stop_command="aws ecs stop-task --cluster $cluster --task $task_arn"
-stopped=false
-# shellcheck disable=SC2329 # invoked by the EXIT trap
-stop_task() {
-  [ "$stopped" = true ] && return 0
-  stopped=true
-  echo "stopping $task_arn"
-  if ! aws ecs stop-task --cluster "$cluster" --task "$task_arn" --reason "admin-shell finished" > /dev/null; then
-    echo "admin-shell: could not stop the task. Stop it by hand:  $stop_command" >&2
-  fi
-}
-trap stop_task EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+# From here on the EXIT trap stops the task.
+stop_command="aws ecs stop-task --cluster $cluster --task $started_arn"
+task_arn="$started_arn"
 
 echo "task: $task_arn"
 echo "if this terminal is lost, stop it with:  $stop_command"

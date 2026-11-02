@@ -45,17 +45,25 @@ public struct WorkspaceRootView: View {
       ThreadsView(model: model)
         .modifier(WorkspaceWindowBackground())
     }
-    // On the split view, not the sidebar: the search sheet hangs off the split view and must move
-    // the iPhone to the thread it opens too.
-    .environment(\.showDetail, { compactColumn = .detail })
+    .environment(\.showDetail, showDetail)
     .tint(LLA.Color.accent)
     .onChange(of: detailOnScreen, initial: true) { _, onScreen in model.isDetailOnScreen = onScreen }
     .task { model.connect() }
-    .sheet(isPresented: $model.showNewThread) { NewThreadSheet(model: model) }
+    .sheet(isPresented: $model.showNewThread) {
+      // The phone starts a thread on the Mac that owns a project, through the hub; the Mac asks its
+      // own coordinator for a connection and a folder.
+      if model.relaysThroughHub {
+        PhoneNewThreadSheet(model: model).environment(\.showDetail, showDetail)
+      } else {
+        NewThreadSheet(model: model).environment(\.showDetail, showDetail)
+      }
+    }
     #if os(macOS)
       .overlay { if model.showSearch { SearchPalette(model: model) } }
     #else
-      .sheet(isPresented: $model.showSearch) { SearchPalette(model: model) }
+      .sheet(isPresented: $model.showSearch) {
+        SearchPalette(model: model).environment(\.showDetail, showDetail)
+      }
     #endif
     #if os(macOS)
       .onChange(of: model.settingsRequest) { openSettings() }
@@ -71,6 +79,10 @@ public struct WorkspaceRootView: View {
       model.pendingLoginURL = nil
     }
   }
+
+  /// Moves the collapsed iPhone to the thread column. A sheet takes its environment from where
+  /// `.sheet` is attached, outside the `.environment` above, so each sheet is given it explicitly.
+  private var showDetail: @MainActor @Sendable () -> Void { { compactColumn = .detail } }
 
   @Environment(\.openURL) private var openURL
   #if os(macOS)

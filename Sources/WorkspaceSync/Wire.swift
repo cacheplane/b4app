@@ -376,10 +376,32 @@ struct DevicesResponse: Codable, Sendable, Equatable {
   var devices: [DeviceInfo]
 }
 
+/// What `POST /v1/pairing-codes` answers: a single-use enrollment code for a phone, valid five minutes.
+/// `hubURL` is the hub's public URL and is absent when the hub has none. The code is a credential: it
+/// is never printed by `description`, and callers keep it no longer than the answer to their caller.
+public struct PairingCodeResponse: Codable, Sendable, Equatable, CustomStringConvertible,
+  CustomDebugStringConvertible
+{
+  public var code: String
+  public var expiresAt: String
+  public var hubURL: String?
+
+  public init(code: String, expiresAt: String, hubURL: String? = nil) {
+    self.code = code
+    self.expiresAt = expiresAt
+    self.hubURL = hubURL
+  }
+
+  public var description: String { "PairingCodeResponse(expiresAt: \(expiresAt))" }
+  public var debugDescription: String { description }
+}
+
 /// B4's error envelope as the hub sends it: `{"error":{"kind","message","details":{"code"}}}`.
 public struct HubErrorBody: Codable, Sendable, Equatable {
   public struct Details: Codable, Sendable, Equatable {
     public var code: String?
+    /// A `rate_limited` answer's wait, in milliseconds.
+    public var retryAfterMs: Int?
   }
 
   public struct Body: Codable, Sendable, Equatable {
@@ -392,20 +414,24 @@ public struct HubErrorBody: Codable, Sendable, Equatable {
 }
 
 /// A failure talking to the hub. `code` is the hub's `details.code` (`invalid_request`, `invalid_code`,
-/// `unauthorized`, `resync_required`, `payload_too_large`, `shutting_down`, ...) or `transport` when
-/// the request never completed or its answer could not be read. `status` is the HTTP status, or 0 when
-/// there was none.
+/// `unauthorized`, `resync_required`, `payload_too_large`, `shutting_down`, `maintenance`, ...) or
+/// `transport` when the request never completed or its answer could not be read. `status` is the HTTP
+/// status, or 0 when there was none. A `maintenance` 503 means the operator paused writes; it is
+/// transient, so the outbox is kept and the push retried.
 public struct HubError: Error, Sendable, Equatable, CustomStringConvertible {
   public var kind: String
   public var code: String
   public var message: String
   public var status: Int
+  /// How long the hub asks the caller to wait, on a `rate_limited` answer.
+  public var retryAfterMs: Int?
 
-  public init(kind: String, code: String, message: String, status: Int) {
+  public init(kind: String, code: String, message: String, status: Int, retryAfterMs: Int? = nil) {
     self.kind = kind
     self.code = code
     self.message = message
     self.status = status
+    self.retryAfterMs = retryAfterMs
   }
 
   public var description: String { "Hub error \(status) \(code): \(message)" }

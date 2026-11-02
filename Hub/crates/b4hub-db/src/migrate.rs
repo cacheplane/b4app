@@ -238,13 +238,15 @@ pub async fn connected_role_is_privileged(db: &Db) -> Result<bool> {
 }
 
 /// Table access for the application role: read and write everything the migrations created,
-/// except the migration ledger, which it may only read (readiness reports from it). Default
+/// except the migration ledger and the hub settings, which it may only read (readiness reports
+/// from the ledger; `serve` polls the maintenance switch, and only an operator flips it). Default
 /// privileges cover the tables later migrations create as this owner.
 async fn grant_table_access(conn: &mut PgConnection) -> Result<()> {
-    const STATEMENTS: [&str; 6] = [
+    const STATEMENTS: [&str; 7] = [
         "GRANT USAGE ON SCHEMA public TO b4hub_app",
         "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO b4hub_app",
         "REVOKE INSERT, UPDATE, DELETE ON _sqlx_migrations FROM b4hub_app",
+        "REVOKE INSERT, UPDATE, DELETE ON hub_settings FROM b4hub_app",
         "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO b4hub_app",
         "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO b4hub_app",
         "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO b4hub_app",
