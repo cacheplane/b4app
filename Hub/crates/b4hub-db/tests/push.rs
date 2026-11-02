@@ -1069,7 +1069,7 @@ async fn token_moves_to_its_new_device(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn delete_token_forgets_the_phone(pool: PgPool) {
     let w = world(&pool).await;
-    push::delete_token(&w.app, w.mac.org_id, w.phones[0].device_id)
+    push::delete_token(&w.app, w.mac.org_id, w.phones[0].device_id, "token-0")
         .await
         .unwrap();
     with_thread(&w, "Quiet").await;
@@ -1081,7 +1081,43 @@ async fn delete_token_forgets_the_phone(pool: PgPool) {
     assert_eq!(outcome.notifications.len(), 1);
     assert_eq!(outcome.notifications[0].device_id, w.phones[1].device_id);
     // Deleting a token that is not there is not an error.
-    push::delete_token(&w.app, w.mac.org_id, w.phones[0].device_id)
+    push::delete_token(&w.app, w.mac.org_id, w.phones[0].device_id, "token-0")
         .await
         .unwrap();
+}
+
+/// A token saved while the rejected one was in flight is not deleted with it.
+#[sqlx::test(migrations = false)]
+async fn delete_token_spares_a_newer_token(pool: PgPool) {
+    let w = world(&pool).await;
+    push::save_token(
+        &w.app,
+        &w.phones[0],
+        "token-new",
+        "sandbox",
+        "com.example.app",
+    )
+    .await
+    .unwrap();
+    push::delete_token(&w.app, w.mac.org_id, w.phones[0].device_id, "token-0")
+        .await
+        .unwrap();
+    with_thread(&w, "Kept").await;
+    let outcome = push_batch(
+        &w,
+        &[request(3, "request-1", "command_approval", "pending")],
+    )
+    .await;
+    let mut told: Vec<_> = outcome
+        .notifications
+        .iter()
+        .map(|n| (n.device_id, n.token.clone()))
+        .collect();
+    told.sort();
+    let mut expected = vec![
+        (w.phones[0].device_id, "token-new".to_string()),
+        (w.phones[1].device_id, "token-1".to_string()),
+    ];
+    expected.sort();
+    assert_eq!(told, expected);
 }

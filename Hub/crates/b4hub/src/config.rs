@@ -236,32 +236,12 @@ fn apple(settings: &Settings) -> Result<Option<AppleConfig>, ConfigError> {
     // Every name here is in `set`, so a secret is `Some` once its `_FILE` is read.
     let secret = |name: &str| settings.secret_value(name).map(Option::unwrap_or_default);
 
-    let apple_id = |name: &str| {
-        let value = secret(name)?;
-        if value.len() == 10
-            && value
-                .chars()
-                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
-        {
-            Ok(value)
-        } else {
-            Err(ConfigError::new(
-                name,
-                "must be 10 uppercase letters and digits, as Apple shows it",
-            ))
-        }
-    };
-    let team_id = apple_id("B4HUB_APPLE_TEAM_ID")?;
-    let key_id = apple_id("B4HUB_APPLE_KEY_ID")?;
-
-    let private_key_pem = secret("B4HUB_APPLE_PRIVATE_KEY")?.trim().to_string();
-    if !is_pkcs8_pem(&private_key_pem) {
-        return Err(ConfigError::new(
-            "B4HUB_APPLE_PRIVATE_KEY",
-            "must be the PEM contents of the .p8 key (-----BEGIN PRIVATE KEY----- ...), \
-             not a path",
-        ));
-    }
+    let team_id = apple_id("B4HUB_APPLE_TEAM_ID", secret("B4HUB_APPLE_TEAM_ID")?)?;
+    let key_id = apple_id("B4HUB_APPLE_KEY_ID", secret("B4HUB_APPLE_KEY_ID")?)?;
+    let private_key_pem = p8_pem(
+        "B4HUB_APPLE_PRIVATE_KEY",
+        &secret("B4HUB_APPLE_PRIVATE_KEY")?,
+    )?;
 
     let audiences: Vec<String> = settings
         .var("B4HUB_APPLE_AUDIENCES")
@@ -312,6 +292,39 @@ fn apple(settings: &Settings) -> Result<Option<AppleConfig>, ConfigError> {
         services_id,
         base_url,
     }))
+}
+
+/// The Apple id setting `name` (a team id or a key id) holding `value`: 10 uppercase letters and
+/// digits, as Apple shows it. Sign in with Apple and APNs both use it; the value is not echoed.
+pub(crate) fn apple_id(name: &str, value: String) -> Result<String, ConfigError> {
+    if value.len() == 10
+        && value
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+    {
+        Ok(value)
+    } else {
+        Err(ConfigError::new(
+            name,
+            "must be 10 uppercase letters and digits, as Apple shows it",
+        ))
+    }
+}
+
+/// The `.p8` key setting `name` holding `value`, trimmed: one PKCS #8 PEM block (see
+/// [`is_pkcs8_pem`]). Sign in with Apple and APNs both use it; the key is not echoed, and it is
+/// parsed where it is used.
+pub(crate) fn p8_pem(name: &str, value: &str) -> Result<String, ConfigError> {
+    let pem = value.trim();
+    if is_pkcs8_pem(pem) {
+        Ok(pem.to_string())
+    } else {
+        Err(ConfigError::new(
+            name,
+            "must be the PEM contents of the .p8 key (-----BEGIN PRIVATE KEY----- ...), \
+             not a path",
+        ))
+    }
 }
 
 /// Whether `pem` is one PKCS #8 `PRIVATE KEY` block whose body is base64 DER (a `SEQUENCE`), the

@@ -157,13 +157,15 @@ pub async fn save_token(
     Ok(())
 }
 
-/// Forgets `device_id`'s push token, for a token Apple says is no longer valid. The phone is told
-/// nothing until it registers a token again. A device with no token is not an error.
-pub async fn delete_token(db: &Db, org_id: Uuid, device_id: Uuid) -> Result<()> {
+/// Forgets `device_id`'s push token `token`, for a token Apple says is no longer valid. The phone
+/// is told nothing until it registers a token again. Only that token is deleted: a newer one the
+/// phone saved while the send was in flight survives. A device with no such token is not an error.
+pub async fn delete_token(db: &Db, org_id: Uuid, device_id: Uuid, token: &str) -> Result<()> {
     let mut tx = db.tenant_tx(org_id).await?;
-    sqlx::query("DELETE FROM push_tokens WHERE org_id = $1 AND device_id = $2")
+    sqlx::query("DELETE FROM push_tokens WHERE org_id = $1 AND device_id = $2 AND token = $3")
         .bind(org_id)
         .bind(device_id)
+        .bind(token)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
