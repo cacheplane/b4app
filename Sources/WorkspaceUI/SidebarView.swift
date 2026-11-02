@@ -21,8 +21,9 @@ struct SidebarView: View {
       .safeAreaInset(edge: .bottom, spacing: 0) { SidebarFooter(model: model) }
   }
 
-  /// New thread, Search, More. New thread is off while the phone's Mac is offline or has left the hub
-  /// (the list's notice says why); Search and More stay, since every thread is still browsable.
+  /// New thread, Search, More. New thread is off while no project's Mac can take a thread: all offline,
+  /// or left the hub (the list's notice says why). Search and More stay, since every thread is still
+  /// browsable.
   private var actionRows: some View {
     VStack(alignment: .leading, spacing: 2) {
       SidebarActionRow(
@@ -30,12 +31,8 @@ struct SidebarView: View {
       ) {
         model.showNewThread = true
       }
-      .disabled(model.conversationReadyConnections.isEmpty || model.newThreadDisabledReason != nil)
-      .help(
-        model.newThreadDisabledReason
-          ?? (model.conversationReadyConnections.isEmpty
-            ? "Add a ready Codex connection first" : "Start a new thread")
-      )
+      .disabled(model.newThreadEntryReason != nil)
+      .help(model.newThreadEntryReason ?? "Start a new thread")
       .accessibilityIdentifier("new-thread-toolbar")
       SidebarActionRow(title: "Search", systemImage: "magnifyingglass", shortcut: shortcut("⌘K")) {
         model.showSearch = true

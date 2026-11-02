@@ -85,6 +85,9 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
   /// The project a local B4 connection serves: the project of its managed server's folder. Nil for
   /// every other connection, and absent in payloads older than M8c.
   public var projectId: String?
+  /// The device id of the Mac that owns the connection, from the phone's mirror; nil on the Mac. The
+  /// phone offers a project only the connections of the Mac that owns that project (M8c).
+  public var ownerDeviceId: String?
   public var capabilities: Capabilities
   public var status: ConnectionStatus
   public var authStatus: AuthStatus
@@ -95,7 +98,7 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
     id: String, kind: ConnectionKind, label: String, enabled: Bool = true, profileRevision: Int = 0,
     target: String, routeKey: String? = nil, b4Mode: B4Mode? = nil, localServerId: String? = nil,
     authReference: String? = nil, nativeScope: String? = nil, projectId: String? = nil,
-    capabilities: Capabilities = .unverified,
+    ownerDeviceId: String? = nil, capabilities: Capabilities = .unverified,
     status: ConnectionStatus = .unconfigured, authStatus: AuthStatus = .unknown,
     createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now()
   ) {
@@ -111,6 +114,7 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
     self.authReference = authReference
     self.nativeScope = nativeScope
     self.projectId = projectId
+    self.ownerDeviceId = ownerDeviceId
     self.capabilities = capabilities
     self.status = status
     self.authStatus = authStatus

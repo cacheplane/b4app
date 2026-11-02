@@ -100,7 +100,7 @@ extension WorkspaceModel {
     return offlineNotice(deviceId: deviceId, fallbackName: thread.ownerDeviceName)
   }
 
-  private func offlineNotice(deviceId: String?, fallbackName: String?) -> HostNoticeMessage? {
+  func offlineNotice(deviceId: String?, fallbackName: String?) -> HostNoticeMessage? {
     guard case .disconnected(let seen) = hostPhase(deviceId: deviceId) else { return nil }
     let named = deviceId.flatMap { hostPresence[$0]?.name }.flatMap { $0.isEmpty ? nil : $0 }
     let name = named ?? fallbackName ?? "Your Mac"

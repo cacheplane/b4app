@@ -95,6 +95,7 @@ public enum ControlState: Sendable, Equatable {
 /// The relay's words, verbatim from the spec.
 public enum RelayCopy {
   public static let sending = "Sending…"
+  public static let starting = "Starting…"
   public static let notConfirmed = "Not confirmed: your Mac may not have received this."
   public static let didNotReach = "Didn't reach your Mac"
   public static let offlineTurn = "Not confirmed while your Mac is offline"
@@ -270,6 +271,11 @@ extension WorkspaceModel {
   /// Start a thread in a project from the phone (`thread.start`): the phone mints the thread id and
   /// tracks the send on it, with `turn.lookup` on that id. Accepted at once, the thread is listed and
   /// opened. Returns the send as its reply left it (nil when nothing was sent).
+  ///
+  /// The project's own Mac decides whether it can start, not the primary Mac, and only a connection
+  /// that `startConnections(for:)` offers is sent. While one start is out, another is refused, so a
+  /// second tap never mints a second thread. A folder is sent only for Codex and Claude: the one the
+  /// caller chose, or the project's only folder.
   @discardableResult
   public func startThread(
     projectId: String, connectionId: String, folder: String?, text: String
@@ -277,10 +283,28 @@ extension WorkspaceModel {
     -> PendingSend?
   {
     let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !text.isEmpty, client != nil, newThreadDisabledReason == nil else { return nil }
+    guard !text.isEmpty, client != nil, !isStartingThread,
+      let project = projects.first(where: { $0.id == projectId }), startBlockedReason(for: project) == nil,
+      let connection = startConnections(for: project).first(where: { $0.id == connectionId })
+    else { return nil }
+    var chosen: String?
+    if connection.kind != .b4 {
+      chosen = folder ?? (project.folders.count == 1 ? project.folders.first?.path : nil)
+      guard chosen != nil else { return nil }
+    }
+    isStartingThread = true
+    defer { isStartingThread = false }
+    // A start that was refused, or never reached the Mac, left nothing behind: forget it.
+    pendingSends = pendingSends.filter { _, send in
+      guard send.start != nil else { return true }
+      switch send.state {
+      case .refused, .didNotReach: return false
+      default: return true
+      }
+    }
     let threadId = UUID().uuidString.lowercased()
     let params = ThreadStart.Params(
-      threadId: threadId, projectId: projectId, connectionId: connectionId, folder: folder, text: text)
+      threadId: threadId, projectId: projectId, connectionId: connectionId, folder: chosen, text: text)
     let send = PendingSend(
       id: UUID().uuidString.lowercased(), threadId: threadId, text: text, tappedAt: now(), start: params)
     pendingSends[threadId] = send
@@ -310,7 +334,12 @@ extension WorkspaceModel {
         let started = try await client.request(
           ThreadStart.self, start,
           options: RequestOptions(operationId: id, timeout: Self.relayTimeout(for: .threadStart)))
-        store(started.thread)
+        var thread = started.thread
+        // The Mac's reply knows no owner; the thread belongs to the Mac that owns its project.
+        if thread.ownerDeviceId == nil {
+          thread.ownerDeviceId = projects.first { $0.id == start.projectId }?.ownerDeviceId
+        }
+        store(thread)
         result = .success(started.turn.id)
       } else {
         let sent = try await client.request(
@@ -392,8 +421,11 @@ extension WorkspaceModel {
 
   private func canLookUp(_ send: PendingSend) -> Bool {
     guard hubLinkPhase == .connected else { return false }
-    let thread = threads.first { $0.id == send.threadId }
-    return hostPhase(deviceId: thread?.ownerDeviceId ?? primaryHostId) == .connected
+    // A thread's own Mac; a start not yet listed asks the Mac that owns its project.
+    let owner =
+      threads.first { $0.id == send.threadId }?.ownerDeviceId
+      ?? send.start.flatMap { start in projects.first { $0.id == start.projectId }?.ownerDeviceId }
+    return hostPhase(deviceId: owner ?? primaryHostId) == .connected
   }
 
   /// Wakes `advancePendingSends` when the next lookup falls due. Ones already due wait for presence.

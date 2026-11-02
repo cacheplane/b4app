@@ -21,7 +21,7 @@ struct ThreadsView: View {
         } else {
           Button("New thread") { model.showNewThread = true }
             .buttonStyle(.llaPrimary)
-            .disabled(model.newThreadDisabledReason != nil)
+            .disabled(model.newThreadEntryReason != nil)
             .accessibilityIdentifier("new-thread")
         }
       }

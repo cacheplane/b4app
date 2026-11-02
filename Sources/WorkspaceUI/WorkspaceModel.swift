@@ -197,6 +197,8 @@ public final class WorkspaceModel {
 
   /// The phone's sends by thread id, one per thread, until settled and shown.
   public internal(set) var pendingSends: [String: PendingSend] = [:]
+  /// A `thread.start` is out: a second tap starts nothing until its call returns.
+  public internal(set) var isStartingThread = false
   /// The phone's Stop by thread id, and its answers by request id, while they wait or after they failed.
   public internal(set) var stopStates: [String: ControlState] = [:]
   public internal(set) var answerStates: [String: ControlState] = [:]

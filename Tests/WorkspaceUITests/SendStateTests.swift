@@ -109,7 +109,12 @@ enum PhoneFixture {
   }
 
   static let connection = Connection(
-    id: "c1", kind: .codex, label: "Codex", target: "", status: .ready)
+    id: "c1", kind: .codex, label: "Codex", target: "", ownerDeviceId: "mac-1", status: .ready)
+
+  /// A project of `mac-1` with one folder, for the tests that start a thread.
+  static let project = Project(
+    id: "p1", name: "Work", folders: [ProjectFolder(id: "f1", projectId: "p1", path: "/work")],
+    ownerDeviceId: "mac-1")
 
   static func turn(
     _ id: String, in threadId: String = "t1", operationId: String, status: TurnStatus = .running
@@ -628,6 +633,7 @@ enum PhoneFixture {
   @Test func threadStartIsTrackedOnItsNewThread() async throws {
     let clock = TestClock()
     let transport = PhoneFixture.transport()
+    transport.set(projects: [PhoneFixture.project])
     transport.script(.threadStart, [PhoneFixture.notConfirmed("link_dropped")])
     let model = try await PhoneFixture.model(transport, clock: clock, open: nil)
     let pending = try #require(
