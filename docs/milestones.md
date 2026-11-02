@@ -211,8 +211,6 @@ Design: `docs/superpowers/specs/2026-11-01-m8c-relay-design.md`. Plan: `docs/sup
 
 Known limitations (the ones a person could notice; the full list is in the build's review notes):
 
-- Reopening a started thread whose turn lookup already found it, before its row has synced to the phone, can show "Not confirmed" again until the next lookup.
-- Reloading the open thread while a reply is streaming drops the start of the live text until the item completes (then the synced item replaces it).
 - The hub's link registry, presence, holds, and limits are in memory and are lost on a hub restart (phones and Macs reconnect and carry on). Since M8e Part B the hub can run several instances, each serving whole users (D-085); limits stay per instance.
 - The camera scanner has been run only in the Simulator, which has no camera; it has not been tried on a physical iPhone. Pairing was designed to work by opening the link (`xcrun simctl openurl`).
 - A phone the hub refused (revoked) stays closed until it logs out and pairs again, but that refusal is not kept across an app relaunch: the first launch afterwards makes one more attempt before it stops again.

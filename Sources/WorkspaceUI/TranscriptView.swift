@@ -46,7 +46,15 @@ struct TranscriptView: View {
         // Dragging the transcript down puts the keyboard away, as in Messages.
         .scrollDismissesKeyboard(.interactively)
       #endif
+      // A thread opens at its latest message. When the content shrinks (a Stop drops a reply's live
+      // text, a reload re-lays the lazy stack), keep the bottom edge in place; scrolling to "bottom" in
+      // the same update reads the old layout and leaves the view past the new end.
+      .defaultScrollAnchor(.bottom, for: .initialOffset)
+      .defaultScrollAnchor(.bottom, for: .sizeChanges)
       .onChange(of: detail.items.count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
+      .onChange(of: detail.turns.filter { $0.status == .terminal }.count) { _, _ in
+        proxy.scrollTo("bottom", anchor: .bottom)
+      }
       .onChange(of: pending?.id) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
       .onChange(of: detail.liveText) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
     }

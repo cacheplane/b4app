@@ -630,9 +630,10 @@ enum PhoneFixture {
     await model.disconnect()
   }
 
-  /// The spec: a started thread whose row never arrives loses its placeholder after 2 minutes "and the
-  /// thread shows 'Not confirmed'" — never the transport's raw not-found text.
-  @Test func aStartedThreadWhosePlaceholderExpiredShowsNotConfirmed() async throws {
+  /// A started thread the Mac confirmed whose row is late loses its placeholder after 2 minutes. The
+  /// read then fails, but the start stays accepted and says the row has not arrived (D-087), never
+  /// "Not confirmed" (the Mac did confirm it) and never the transport's raw not-found text.
+  @Test func aConfirmedStartWhosePlaceholderExpiredStaysStarted() async throws {
     let clock = TestClock()
     let transport = PhoneFixture.transport()
     transport.set(projects: [PhoneFixture.project])
@@ -652,10 +653,38 @@ enum PhoneFixture {
     transport.script(
       .threadRead, [.failure(WorkspaceError(.notFound, "Thread \(send.threadId) does not exist."))])
     await model.openThread(id: send.threadId)
-    #expect(model.lastError == RelayCopy.notConfirmed)
-    #expect(model.pendingSends[send.threadId]?.state == .notConfirmed)
-    #expect(model.sendStatus(for: send.threadId) == RelayCopy.notConfirmed)
+    #expect(model.lastError == RelayCopy.startNotSynced)
+    #expect(model.pendingSends[send.threadId]?.state == .accepted(turnId: "turn-1"))
+    #expect(model.sendStatus(for: send.threadId) == nil)
+    #expect(model.unsettledStartReason == nil)
     #expect(model.threads.contains { $0.id == send.threadId })
+
+    // Opening it again changes nothing, and no lookup is asked for: the Mac already answered.
+    transport.script(
+      .threadRead, [.failure(WorkspaceError(.notFound, "Thread \(send.threadId) does not exist."))])
+    await model.openThread(id: send.threadId)
+    clock.advance(by: .seconds(60))
+    #expect(model.pendingSends[send.threadId]?.state == .accepted(turnId: "turn-1"))
+    #expect(transport.recorded(.turnLookup).isEmpty)
+    await model.disconnect()
+  }
+
+  /// A start that was not confirmed still shows "Not confirmed" when its read fails, per the spec.
+  @Test func anUnconfirmedStartWhoseReadFailsShowsNotConfirmed() async throws {
+    let clock = TestClock()
+    let transport = PhoneFixture.transport()
+    transport.set(projects: [PhoneFixture.project])
+    transport.script(.threadStart, [PhoneFixture.notConfirmed("link_dropped")])
+    let model = try await PhoneFixture.model(transport, clock: clock, open: nil)
+    let pending = try #require(
+      await model.startThread(projectId: "p1", connectionId: "c1", folder: "/work", text: "Start here"))
+    #expect(pending.state == .notConfirmed)
+    transport.script(
+      .threadRead, [.failure(WorkspaceError(.notFound, "Thread \(pending.threadId) does not exist."))])
+    await model.openThread(id: pending.threadId)
+    #expect(model.lastError == RelayCopy.notConfirmed)
+    #expect(model.pendingSends[pending.threadId]?.state == .notConfirmed)
+    #expect(model.sendStatus(for: pending.threadId) == RelayCopy.notConfirmed)
     await model.disconnect()
   }
 
