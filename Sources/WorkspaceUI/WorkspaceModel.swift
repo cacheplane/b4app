@@ -404,9 +404,9 @@ public final class WorkspaceModel {
       snapshot.activeTurns.map { ($0.threadId, $0) }, uniquingKeysWith: { _, new in new })
     servers = (try? await client.request(ServerList.self, EmptyParams()).servers) ?? []
     await refreshProjects()
-    await refreshUsage()
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
     if let id = selectedThreadId, detail != nil { await loadDetail(id: id) }
+    await refreshUsage()
   }
 
   public func refreshDiagnostics() async {
