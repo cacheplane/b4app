@@ -62,6 +62,7 @@ answer the same generic `404 not_found`.
 | 500 | `internal_error` | execution | Any unexpected failure; the cause is logged on the hub, never sent. |
 | 503 | `not_ready` | execution | `/readyz`: the database is unreachable or migrations are pending. |
 | 503 | `shutting_down` | execution | `/readyz` after SIGTERM. |
+| 503 | `maintenance` | execution | A write (`POST /v1/enroll`, `POST /v1/changes`, `DELETE /v1/devices/self`) while the operator has paused writes; carries `Retry-After: 30`. See "Maintenance mode". |
 
 ### Limits
 
@@ -104,6 +105,9 @@ the container `HEALTHCHECK` calls.
 ```json
 {"ok": true, "migrations": "current", "minClientProtocol": 1}
 ```
+
+While writes are paused (see "Maintenance mode") the body also carries `"maintenance":
+"read_only"`; the status stays `200`, because reads are still served.
 
 `503 not_ready` when the database is unavailable or migrations are pending; `503 shutting_down`
 once SIGTERM has been received (see "Shutdown").
@@ -426,6 +430,28 @@ long-poll so each returns its current page, keeps the listener open for a short 
 accepting connections and lets in-flight requests finish. The whole sequence is bounded by
 `B4HUB_SHUTDOWN_WAIT_MS` (default 30000) from the moment the signal arrives; anything still open
 then is dropped and the process exits.
+
+## Maintenance mode
+
+The operator pauses writes on every hub instance at once with `b4hub maintenance on [--message
+"<text>"]` and resumes them with `b4hub maintenance off`; `b4hub maintenance status` prints the
+state. The commands connect with `DATABASE_ADMIN_URL` (like `seed` and `enroll`) and write one row
+in `hub_settings`, which the serving role can only read; no environment variable changes and no
+instance restarts. Each `serve` reads the switch at start and then every
+`B4HUB_MAINTENANCE_POLL_MS` (default 5000), so a flip reaches every instance within one interval;
+a failed read keeps the last value.
+
+While on, `POST /v1/enroll`, `POST /v1/changes`, and `DELETE /v1/devices/self` answer `503` with
+`Retry-After: 30` and
+
+```json
+{"error": {"kind": "execution_error", "message": "the hub is in maintenance: <message, or 'writes are paused'>", "details": {"code": "maintenance"}}}
+```
+
+before reading the body or the token. Reads (`GET /v1/changes`, `GET /v1/snapshot`, `GET /v1/me`,
+`GET /v1/devices`), `/healthz`, and `/readyz` are unchanged, except that `/readyz` reports
+`"maintenance": "read_only"`. A client treats `maintenance` like a transient failure: keep the
+outbox, retry after the header's delay.
 
 ## Logging
 

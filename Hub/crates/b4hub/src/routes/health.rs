@@ -1,5 +1,6 @@
 //! Liveness and readiness. `/healthz` says the process is up; `/readyz` says it should receive
-//! traffic: migrations are current and it has not begun shutting down.
+//! traffic: migrations are current and it has not begun shutting down. Maintenance does not
+//! fail readiness (reads are still served); `/readyz` reports it instead.
 
 use axum::extract::State;
 use axum::Json;
@@ -21,11 +22,17 @@ pub async fn readyz(State(state): State<AppState>) -> Result<Json<Value>, ApiErr
         return Err(ApiError::shutting_down());
     }
     match b4hub_db::migrate::status(&state.db).await {
-        Ok(status) if status.pending == 0 => Ok(Json(json!({
-            "ok": true,
-            "migrations": "current",
-            "minClientProtocol": MIN_CLIENT_PROTOCOL,
-        }))),
+        Ok(status) if status.pending == 0 => {
+            let mut body = json!({
+                "ok": true,
+                "migrations": "current",
+                "minClientProtocol": MIN_CLIENT_PROTOCOL,
+            });
+            if state.maintenance.current().is_some() {
+                body["maintenance"] = json!("read_only");
+            }
+            Ok(Json(body))
+        }
         Ok(status) => {
             tracing::warn!(
                 pending = status.pending,

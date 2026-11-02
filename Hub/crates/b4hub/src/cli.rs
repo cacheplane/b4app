@@ -18,11 +18,13 @@ use b4hub_db::orgs::{self, OrgChoice};
 use b4hub_db::settings::Maintenance;
 use b4hub_db::{devices, Db};
 
+use crate::maintenance;
 use crate::serve::{self, AppState};
 
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_SHUTDOWN_WAIT_MS: u64 = 30_000;
 const DEFAULT_RETENTION_DAYS: u32 = 30;
+const DEFAULT_MAINTENANCE_POLL_MS: u64 = 5000;
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 
 /// How long an enrollment code stays redeemable.
@@ -271,6 +273,25 @@ impl Settings {
         Ok(Duration::from_secs(u64::from(days) * SECONDS_PER_DAY))
     }
 
+    /// `B4HUB_MAINTENANCE_POLL_MS`, default 5000: how often `serve` reads the maintenance
+    /// switch. A whole number of milliseconds, at least 1.
+    pub fn maintenance_poll(&self) -> Result<Duration, ConfigError> {
+        match self.var("B4HUB_MAINTENANCE_POLL_MS") {
+            None => Ok(Duration::from_millis(DEFAULT_MAINTENANCE_POLL_MS)),
+            Some(raw) => raw
+                .parse::<u64>()
+                .ok()
+                .filter(|ms| *ms >= 1)
+                .map(Duration::from_millis)
+                .ok_or_else(|| {
+                    ConfigError::new(
+                        "B4HUB_MAINTENANCE_POLL_MS",
+                        "must be a whole number of milliseconds, at least 1",
+                    )
+                }),
+        }
+    }
+
     /// `B4HUB_PUBLIC_URL`, when set: the URL clients reach the hub at.
     pub fn public_url(&self) -> Result<Option<Url>, ConfigError> {
         match self.var("B4HUB_PUBLIC_URL") {
@@ -427,6 +448,7 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
     let public_url = settings.public_url()?;
     let retention = settings.retention()?;
     let trust_proxy = settings.trust_proxy()?;
+    let maintenance_poll = settings.maintenance_poll()?;
     let db = Db::connect(&settings.database_url()?).await?;
     refuse_privileged_connection(&db).await?;
     let listener = TcpListener::bind(addr).await?;
@@ -436,20 +458,28 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
         shutdown_wait_ms = wait.as_millis() as u64,
         retention_days = retention.as_secs() / SECONDS_PER_DAY,
         trust_proxy,
+        maintenance_poll_ms = maintenance_poll.as_millis() as u64,
         "serving"
     );
     let state = AppState::new(db.clone()).trust_proxy(trust_proxy);
     let pruning = tokio::spawn(serve::prune_loop(
-        db,
+        db.clone(),
         retention,
         serve::PRUNE_INTERVAL,
         state.shutdown.clone(),
     ));
+    let polling = tokio::spawn(maintenance::poll_loop(
+        db,
+        state.maintenance.clone(),
+        maintenance_poll,
+        state.shutdown.clone(),
+    ));
     let shutdown = state.shutdown.clone();
     let served = serve::run(listener, state, wait, serve::os_signal()).await;
-    // However `run` ended, the prune task stops with it; it ends at once on the flag.
+    // However `run` ended, the background tasks stop with it; they end at once on the flag.
     shutdown.trigger();
     let _ = tokio::time::timeout(Duration::from_secs(2), pruning).await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), polling).await;
     served?;
     tracing::info!("stopped");
     Ok(())
@@ -586,6 +616,26 @@ mod tests {
         assert_eq!(s.public_url().unwrap(), None);
         assert_eq!(s.retention().unwrap(), Duration::from_secs(30 * 86_400));
         assert!(s.log_filter().is_ok());
+    }
+
+    #[test]
+    fn maintenance_poll_is_milliseconds_with_a_five_second_default() {
+        assert_eq!(
+            settings(&[]).maintenance_poll().unwrap(),
+            Duration::from_millis(5000)
+        );
+        assert_eq!(
+            settings(&[("B4HUB_MAINTENANCE_POLL_MS", "250")])
+                .maintenance_poll()
+                .unwrap(),
+            Duration::from_millis(250)
+        );
+        for bad in ["0", "-1", "soon"] {
+            let error = settings(&[("B4HUB_MAINTENANCE_POLL_MS", bad)])
+                .maintenance_poll()
+                .unwrap_err();
+            assert_eq!(error.name, "B4HUB_MAINTENANCE_POLL_MS", "{bad}");
+        }
     }
 
     #[test]

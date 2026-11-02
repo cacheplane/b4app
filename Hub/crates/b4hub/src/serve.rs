@@ -13,6 +13,7 @@ use tokio::sync::{oneshot, watch};
 use crate::auth::LastTouched;
 use crate::error::ApiError;
 use crate::logging;
+use crate::maintenance::MaintenanceState;
 use crate::notify::Notifier;
 use crate::routes::{changes, devices, enroll, health, snapshot};
 
@@ -36,6 +37,8 @@ pub struct AppState {
     /// Whether a proxy in front of the hub sets the forwarding headers (`Settings::trust_proxy`),
     /// so an inbound `X-Request-Id` is kept rather than replaced.
     pub trust_proxy: bool,
+    /// The maintenance switch as last polled (`maintenance::poll_loop`); writes check it.
+    pub maintenance: MaintenanceState,
 }
 
 impl AppState {
@@ -46,6 +49,7 @@ impl AppState {
             last_touched: LastTouched::default(),
             notifier: Notifier::default(),
             trust_proxy: false,
+            maintenance: MaintenanceState::default(),
         }
     }
 

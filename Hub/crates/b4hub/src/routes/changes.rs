@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use crate::auth::AuthedDevice;
 use crate::error::{ApiError, ApiJson};
+use crate::maintenance::WritesAllowed;
 use crate::notify::Notifier;
 use crate::serve::{AppState, Shutdown};
 
@@ -40,6 +41,7 @@ pub fn route() -> MethodRouter<AppState> {
 }
 
 async fn push(
+    WritesAllowed: WritesAllowed,
     State(state): State<AppState>,
     device: AuthedDevice,
     ApiJson(request): ApiJson<PushRequest>,
