@@ -31,6 +31,9 @@ public struct WorkspaceRootView: View {
 
   public init(model: WorkspaceModel) {
     LLAFonts.register()
+    #if os(iOS)
+      LLANavigationBar.apply()
+    #endif
     self.model = model
   }
 

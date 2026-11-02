@@ -73,7 +73,7 @@ struct HubConnectView: View {
         .disabled(!canConnect)
       }
       .frame(maxWidth: 480, alignment: .leading)
-      .padding(LLA.Space.xl)
+      .padding(LLA.Metrics.margin)
       .frame(maxWidth: .infinity)
     }
     .background(LLA.Color.bg)

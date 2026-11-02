@@ -95,8 +95,16 @@ public enum LLA {
   public enum Metrics {
     #if os(macOS)
       public static let control: CGFloat = 30
+      /// The least height of a tappable row. The Mac draws rows at their content height.
+      public static let row: CGFloat = 0
+      /// Side margin of a page, the transcript, and the composer.
+      public static let margin: CGFloat = Space.xl
     #else
+      /// Apple's minimum hit target on iPhone, 44 by 44 pt (HIG, Accessibility; D-060).
       public static let control: CGFloat = 44
+      public static let row: CGFloat = 44
+      /// The iPhone's system layout margin, 16 pt, so pages line up with lists and the navigation bar.
+      public static let margin: CGFloat = Space.l
     #endif
     /// Reading column for transcripts and long copy.
     public static let column: CGFloat = 720

@@ -73,7 +73,7 @@ struct ConnectionsView: View {
           }
         }
       }
-      .padding(LLA.Space.xl)
+      .padding(LLA.Metrics.margin)
       .frame(maxWidth: 820, alignment: .leading)
       .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -93,15 +93,24 @@ struct ConnectionsView: View {
 struct ConnectionCard: View {
   @Bindable var model: WorkspaceModel
   let connection: Connection
+  @Environment(\.dynamicTypeSize) private var typeSize
 
   var body: some View {
+    // At accessibility sizes the heading and the sign-in line stack instead of sharing a row each.
+    let stacked = typeSize.isAccessibilitySize
+    let row =
+      stacked
+      ? AnyLayout(VStackLayout(alignment: .leading, spacing: LLA.Space.s))
+      : AnyLayout(HStackLayout(spacing: LLA.Space.s))
     LLACard {
       VStack(alignment: .leading, spacing: LLA.Space.s) {
-        HStack(spacing: LLA.Space.s) {
-          RuntimeMark(kind: connection.kind)
-          Text(connection.label).font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
+        row {
+          HStack(spacing: LLA.Space.s) {
+            RuntimeMark(kind: connection.kind)
+            Text(connection.label).font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
+          }
           Text(connection.kind.rawValue).llaSmallMuted()
-          Spacer()
+          if !stacked { Spacer() }
           StatusBadge(status: connection.status)
         }
         // A mirrored connection carries no path (the Mac never uploads it), so there is no row.
@@ -112,11 +121,15 @@ struct ConnectionCard: View {
           )
           .llaCodeMuted()
         }
-        HStack(spacing: LLA.Space.s) {
-          Text("Signed in as: \(connection.authStatus.rawValue.replacingOccurrences(of: "_", with: " "))")
-            .llaSmallMuted()
-          if let scope = connection.nativeScope { Text(scope).llaCodeMuted().lineLimit(1) }
-          Spacer()
+        row {
+          // The account on its own line under the state, so neither wraps into the buttons.
+          VStack(alignment: .leading, spacing: 2) {
+            Text(signInText).llaSmallMuted()
+            if let scope = connection.nativeScope {
+              Text(scope).llaCodeMuted().lineLimit(stacked ? 3 : 1).truncationMode(.middle)
+            }
+          }
+          if !stacked { Spacer(minLength: LLA.Space.s) }
           Button("Check") { Task { await model.inspectConnection(id: connection.id) } }
             .buttonStyle(.llaSecondary)
             .disabled(model.busy)
@@ -132,6 +145,14 @@ struct ConnectionCard: View {
         .padding(.top, LLA.Space.xs)
       }
     }
+  }
+}
+
+extension ConnectionCard {
+  /// "Signed in as" when an account follows, otherwise the state in words ("Signed in: not authenticated").
+  var signInText: String {
+    if connection.authStatus == .authenticated, connection.nativeScope != nil { return "Signed in as" }
+    return "Signed in: \(connection.authStatus.rawValue.replacingOccurrences(of: "_", with: " "))"
   }
 }
 
@@ -173,28 +194,15 @@ struct RuntimeStatusView: View {
 
   var body: some View {
     if let runtime {
-      Grid(alignment: .leading, horizontalSpacing: LLA.Space.l, verticalSpacing: LLA.Space.xs) {
-        GridRow {
-          Text("Status").llaSmallMuted()
-          StatusBadge(status: runtime.status)
-        }
-        GridRow {
-          Text("Signed in").llaSmallMuted()
+      LLAFacts {
+        LLAFact("Status") { StatusBadge(status: runtime.status) }
+        LLAFact("Signed in") {
           Text(runtime.authStatus.rawValue.replacingOccurrences(of: "_", with: " ")).llaSmall()
         }
-        GridRow {
-          Text("Version").llaSmallMuted()
-          Text(runtime.version ?? "unknown").llaSmall()
-        }
-        GridRow {
-          Text("Executable").llaSmallMuted()
-          Text(runtime.executablePath ?? "not found").llaCodeMuted()
-        }
+        LLAFact("Version") { Text(runtime.version ?? "unknown").llaSmall() }
+        LLAFact("Executable") { Text(runtime.executablePath ?? "not found").llaCodeMuted() }
         if let message = runtime.message {
-          GridRow {
-            Text("Note").llaSmallMuted()
-            Text(message).llaSmall().fixedSize(horizontal: false, vertical: true)
-          }
+          LLAFact("Note") { Text(message).llaSmall().fixedSize(horizontal: false, vertical: true) }
         }
       }
     } else {

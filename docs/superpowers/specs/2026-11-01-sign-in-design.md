@@ -303,7 +303,7 @@ LLA throughout (`2026-10-31-lla-visual-system-design.md`): Hanken Grotesk, ink a
 
 ## Decisions to record
 
-Recorded as D-062 to D-067 (D-059 is `main`'s highest; open PR #30 holds D-060 and D-061; re-check before merging):
+Recorded as D-062 to D-067 (after D-060 and D-061 from PR #30):
 
 - Mac distribution is Developer ID download and Homebrew only; no Mac App Store or TestFlight for Mac (amends D-051), with the sandbox research.
 - Build flavours prod, beta, local with their hubs, domains, and identifiers.
