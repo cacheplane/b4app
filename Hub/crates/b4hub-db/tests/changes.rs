@@ -794,7 +794,8 @@ async fn a_phone_marks_a_thread_deleted_and_the_row_stays(pool: PgPool) {
         outcome,
         PushOutcome {
             accepted_through: 1,
-            rejected: vec![]
+            rejected: vec![],
+            notifications: vec![]
         }
     );
     let thread = row(&app, &mac, "threads", "id", "thread-1").await.unwrap();
