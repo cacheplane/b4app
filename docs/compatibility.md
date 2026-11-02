@@ -101,6 +101,27 @@ webauthn-rs 0.6 verifies with RustCrypto (`crypto-glue`, `p256` 0.14), not OpenS
 | Logging | The pool disables sqlx's statement logging (SQL text never reaches the log), and a filter layer separate from `B4HUB_LOG` drops every event from a target starting with `webauthn` (webauthn-rs logs responses and challenges at DEBUG and TRACE), so no `B4HUB_LOG` directive can re-enable it |
 | Hub protocol | `minClientProtocol` stays 1: the routes are new and nothing existing changed shape |
 
+### Hub sign-in additions (Sign in with Apple)
+
+New crates, pinned exactly like the rest:
+
+| Crate | Version | Used for |
+| --- | --- | --- |
+| jsonwebtoken | 11.1.0 (default features off; `use_pem`, `rust_crypto`) | verifying Apple identity tokens (`RS256`, which Apple's key set uses, and `ES256`) and signing the ES256 client secret with the `.p8` key. `rust_crypto` is RustCrypto (`p256` 0.13, `rsa` 0.9); the default `aws_lc_rs` backend was left off. The hub only verifies RSA signatures, so `rsa`'s timing advisory (RUSTSEC-2023-0071, private-key operations) does not apply |
+| reqwest | 0.12.28 (default features off; `rustls-tls`) | calls to Apple's `/auth/keys`, `/auth/token`, `/auth/revoke`: rustls 0.23 with `ring` and the bundled `webpki-roots`, so no OpenSSL and no system trust store. 0.13.5 is newer, but its `rustls` feature uses `aws-lc-rs` |
+| percent-encoding | 2.3.2 (already a workspace pin) | the authorize URL's query (`%20`, never `+`) |
+| sha2 | 0.10.9, now a normal dependency of `b4hub` | the nonce Apple is handed and the handoff verifier |
+
+`cargo tree -e normal -i openssl-sys` still matches nothing.
+
+| Item | Value |
+| --- | --- |
+| Hub environment | New: `B4HUB_APPLE_SERVICES_ID` (optional; must be one of `B4HUB_APPLE_AUDIENCES`; set without the other `B4HUB_APPLE_*` it exits 2): the web flow's client id. `apple.web` needs it and `B4HUB_PUBLIC_URL`. `B4HUB_APPLE_BASE_URL` stays tests-only. A `B4HUB_APPLE_PRIVATE_KEY` that does not sign exits 2. The hosted hubs set `B4HUB_APPLE_SERVICES_ID=com.cacheplane.b4app.signin` |
+| Routes | `POST /v1/auth/apple/begin`, `POST /v1/auth/apple/native`, `GET /v1/auth/apple/start`, `POST /v1/auth/apple/callback`, `POST /v1/auth/handoff`, `POST /v1/me/apple`, `POST /v1/me/apple/native`; all `404 not_found` without Apple configured |
+| Outbound | `https://appleid.apple.com` only, 10 s per call, no redirects followed |
+| Refresh tokens at rest | AES-256-GCM under `B4HUB_SECRET_KEY`, nonce first, the identity row's id as associated data; the plaintext is `{"clientId", "refreshToken"}`. Task 6's format (no associated data, the bare token) was never written outside tests |
+| Hub protocol | `minClientProtocol` stays 1 |
+
 ## Provider runtimes
 
 | Runtime | Installed on target Mac | Published | Verified behavior | Limits and gates |

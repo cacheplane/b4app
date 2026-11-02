@@ -2,6 +2,13 @@
 
 Material implementation decisions, newest first. The spec (`docs/roadmaps/Personal_Agent_Workspace_Technical_Spec_and_Roadmap.md`) is the requirement source; this log records deviations and choices the spec left open.
 
+## 2026-11-01 (sign-in: Sign in with Apple on the hub)
+
+- **D-068 The hub accepts Apple identity tokens signed `RS256` (and `ES256`), with the key's own algorithm.** The design said ES256, after Apple's documentation; Apple's key set (`https://appleid.apple.com/auth/keys`, checked 2026-11-01) publishes only RSA keys with `alg` `RS256`. The algorithm comes from the key the token's `kid` names, and a header that claims another is refused. The fake Apple in `Hub/crates/b4hub/tests/apple.rs` signs with both. The client secret stays ES256, as Apple requires for the `.p8` key.
+- **D-069 The web flow's client id is a new optional `B4HUB_APPLE_SERVICES_ID`, and the native flow's is the identity token's audience.** Telling the bundle id from the Services ID by their shape would break the day either changes form. Without the variable (or `B4HUB_PUBLIC_URL`) the hub offers only the native flow. Each refresh token is sealed together with the client id it was issued to, because revoking needs that client id; the seal's associated data is the identity row's id.
+- **D-070 One nonce rule, and Apple-side failures redirect back to the app.** Apple is always handed the lowercase hex SHA-256 of the ceremony's nonce, and the identity token must carry exactly that, in both flows. The verifier hash and the app's scheme (`b4app`, `b4app-beta`, or `b4app-local`) are fixed at `POST /v1/auth/apple/begin`, not on the start URL as the design's route table had it, so the URL the browser opens carries nothing but the ceremony id. Once Apple's post names a known ceremony, every outcome is a redirect to that ceremony's scheme (`?handoff=` or `?error=`, `cancelled` included), so the Mac's browser session always closes.
+- **D-071 Linking an Apple ID begins at `POST /v1/me/apple` and finishes natively at `POST /v1/me/apple/native` or through the web flow's callback.** The link ceremony records the user; its callback links, and its handoff answers `{"linked": true}`. A sign-in ceremony cannot finish a link, nor the reverse. An Apple ID on another account is refused before its code is exchanged; so is a new Apple ID while sign-up is closed, so Apple never keeps a grant the hub does not store.
+
 ## 2026-11-01 (sign-in design)
 
 Designed, not built: `docs/superpowers/specs/2026-11-01-sign-in-design.md` and `docs/superpowers/plans/2026-11-01-sign-in.md`. Research: `docs/research/reports/Mac App Store sandbox for agents.md`.

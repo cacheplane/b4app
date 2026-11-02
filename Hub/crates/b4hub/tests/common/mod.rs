@@ -167,6 +167,33 @@ impl Hub {
         }
     }
 
+    /// Posts `pairs` as an `application/x-www-form-urlencoded` body, as a browser posts a form.
+    pub async fn post_form(&self, path: &str, pairs: &[(&str, &str)]) -> Answer {
+        let body: String = url::form_urlencoded::Serializer::new(String::new())
+            .extend_pairs(pairs)
+            .finish();
+        let request = hyper::Request::builder()
+            .method("POST")
+            .uri(format!("{}{path}", self.base))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Full::new(Bytes::from(body)))
+            .unwrap();
+        let response = self.client.request(request).await.unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        };
+        Answer {
+            status,
+            headers,
+            body,
+        }
+    }
+
     pub async fn get(&self, path: &str, token: Option<&str>) -> Answer {
         let bearer = token.map(|t| format!("Bearer {t}"));
         let headers: Vec<(&str, &str)> = bearer

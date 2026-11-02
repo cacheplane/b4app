@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use b4hub::apple::{seal_refresh_token, AppleRevoker, RevokeError};
+use b4hub::apple::{seal_refresh_token, AppleGrant, AppleRevoker, RevokeError};
 use b4hub::config::Signup;
 use b4hub::serve::AppState;
 use b4hub_core::change::{Change, ChangeOp};
@@ -44,8 +44,8 @@ impl Recording {
 }
 
 impl AppleRevoker for Recording {
-    async fn revoke(&self, refresh_token: &str) -> Result<(), RevokeError> {
-        self.seen.lock().unwrap().push(refresh_token.to_string());
+    async fn revoke(&self, grant: &AppleGrant) -> Result<(), RevokeError> {
+        self.seen.lock().unwrap().push(grant.refresh_token.clone());
         if self.fail {
             Err(RevokeError::Failed("the test revoker refuses"))
         } else {
@@ -59,7 +59,7 @@ struct Setup {
     hub: Hub,
 }
 
-/// A hub with sign-up open and the no-op revoker.
+/// A hub with sign-up open and no Apple (whose revoker refuses).
 async fn setup(pool: &PgPool) -> Setup {
     setup_with(pool, None).await
 }
@@ -207,11 +207,22 @@ async fn exists(pool: &PgPool, table: &str, id: Uuid) -> bool {
     .unwrap()
 }
 
-fn apple(sub: &str, sealed: Option<Vec<u8>>) -> Identity {
+/// An Apple identity for `sub` with a fresh row id, holding `refresh` (sealed to that row under
+/// `key`) when given.
+fn apple(key: &[u8; 32], sub: &str, refresh: Option<&str>) -> Identity {
+    let id = b4hub_core::ids::new_uuid();
+    let refresh_enc = refresh.map(|token| {
+        let grant = AppleGrant {
+            client_id: "com.cacheplane.b4app.ios".into(),
+            refresh_token: token.into(),
+        };
+        seal_refresh_token(key, id, &grant).unwrap()
+    });
     Identity::Apple {
+        id,
         sub: sub.into(),
         email: Some(format!("{sub}@privaterelay.appleid.com")),
-        refresh_enc: sealed,
+        refresh_enc,
     }
 }
 
@@ -325,8 +336,8 @@ async fn me_lists_identities(pool: PgPool) {
     let session = sign_up(hub, &mut authenticator, device("Brian's Mac", "macos")).await;
     let t = token(&session);
     let who = principal(hub, t).await;
-    let sealed = seal_refresh_token(&hub.state.config.secret_key, "rt-secret").unwrap();
-    accounts::add_identity(&hub.state.db, who, apple("001.me", Some(sealed)))
+    let key = hub.state.config.secret_key;
+    accounts::add_identity(&hub.state.db, who, apple(&key, "001.me", Some("rt-secret")))
         .await
         .unwrap();
 
@@ -544,7 +555,7 @@ async fn remove_last_identity_is_last_identity(pool: PgPool) {
     assert_eq!(refused.body["error"]["kind"], "request_error");
 
     let who = principal(hub, t).await;
-    accounts::add_identity(&hub.state.db, who, apple("001.second", None))
+    accounts::add_identity(&hub.state.db, who, apple(&[0; 32], "001.second", None))
         .await
         .unwrap();
 
@@ -692,8 +703,7 @@ async fn delete_me_removes_org_rows_and_calls_revoker(pool: PgPool) {
         ("001.b", Some("rt-two")),
         ("001.c", None),
     ] {
-        let sealed = refresh.map(|r| seal_refresh_token(&key, r).unwrap());
-        accounts::add_identity(&hub.state.db, who, apple(sub, sealed))
+        accounts::add_identity(&hub.state.db, who, apple(&key, sub, refresh))
             .await
             .unwrap();
     }
@@ -747,8 +757,8 @@ async fn delete_me_with_a_failed_revoke_deletes_nothing(pool: PgPool) {
     let session = sign_up(hub, &mut authenticator, device("Brian's Mac", "macos")).await;
     let t = token(&session);
     let who = principal(hub, t).await;
-    let sealed = seal_refresh_token(&hub.state.config.secret_key, "rt-one").unwrap();
-    accounts::add_identity(&hub.state.db, who, apple("001.a", Some(sealed)))
+    let key = hub.state.config.secret_key;
+    accounts::add_identity(&hub.state.db, who, apple(&key, "001.a", Some("rt-one")))
         .await
         .unwrap();
     let before = org_rows(&pool, who.org_id).await;
@@ -773,14 +783,14 @@ async fn delete_me_in_a_shared_org_is_shared_org(pool: PgPool) {
     let setup = setup_with(&pool, Some(revoker.clone())).await;
     let hub = &setup.hub;
     let (seeded, blove) = enrolled_blove(&setup).await;
-    let sealed = seal_refresh_token(&hub.state.config.secret_key, "rt-blove").unwrap();
+    let key = hub.state.config.secret_key;
     accounts::add_identity(
         &hub.state.db,
         Principal {
             org_id: seeded.org_id,
             user_id: seeded.user_id,
         },
-        apple("001.blove", Some(sealed)),
+        apple(&key, "001.blove", Some("rt-blove")),
     )
     .await
     .unwrap();
@@ -1062,12 +1072,22 @@ async fn no_secret_in_logs(pool: PgPool) {
     let mut doomed_keys = Authenticator::new(ORIGIN);
     let doomed = sign_up(hub, &mut doomed_keys, device("Mac", "macos")).await;
     secrets.push(token(&doomed).into());
-    let sealed = seal_refresh_token(&hub.state.config.secret_key, "rt-plaintext-secret").unwrap();
-    secrets.push(format!("{sealed:?}"));
+    let identity = apple(
+        &hub.state.config.secret_key,
+        "001.doomed",
+        Some("rt-plaintext-secret"),
+    );
+    if let Identity::Apple {
+        refresh_enc: Some(sealed),
+        ..
+    } = &identity
+    {
+        secrets.push(format!("{sealed:?}"));
+    }
     accounts::add_identity(
         &hub.state.db,
         principal(hub, token(&doomed)).await,
-        apple("001.doomed", Some(sealed)),
+        identity,
     )
     .await
     .unwrap();

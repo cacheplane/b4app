@@ -7,8 +7,11 @@ use std::borrow::Cow;
 use std::time::Duration;
 
 use b4hub_core::change::{Change, ChangeOp};
+use b4hub_core::ids::new_uuid;
 use b4hub_core::tokens::hash_token;
-use b4hub_db::accounts::{self, Deletion, DeviceSpec, Identity, Principal, SealedAppleTokens};
+use b4hub_db::accounts::{
+    self, Deletion, DeviceSpec, Identity, Principal, SealedAppleToken, SealedAppleTokens,
+};
 use b4hub_db::devices::{self, AuthedDevice, Platform};
 use b4hub_db::{ceremonies, changes, orgs, Db, Error};
 use serde_json::json;
@@ -27,6 +30,7 @@ fn passkey(credential: &[u8]) -> Identity {
 
 fn apple(sub: &str) -> Identity {
     Identity::Apple {
+        id: new_uuid(),
         sub: sub.into(),
         email: Some(format!("{sub}@privaterelay.appleid.com")),
         refresh_enc: Some(format!("enc-{sub}").into_bytes()),
@@ -831,7 +835,7 @@ async fn delete_user_removes_every_tenant_row(pool: PgPool) {
     let to_revoke = accounts::apple_tokens_to_revoke(&app, doomed_principal)
         .await
         .unwrap();
-    let mut tokens = to_revoke.0.clone();
+    let mut tokens: Vec<Vec<u8>> = to_revoke.0.iter().map(|t| t.sealed.clone()).collect();
     tokens.sort();
     assert_eq!(
         tokens,
@@ -908,7 +912,7 @@ async fn delete_user_refuses_while_a_token_is_unrevoked(pool: PgPool) {
         .await
         .unwrap();
     // An Apple ID is linked between the revoke and the delete.
-    accounts::add_identity(&app, principal, apple("001.two"))
+    let two = accounts::add_identity(&app, principal, apple("001.two"))
         .await
         .unwrap();
 
@@ -916,7 +920,10 @@ async fn delete_user_refuses_while_a_token_is_unrevoked(pool: PgPool) {
         accounts::delete_user(&app, principal, &revoked)
             .await
             .unwrap(),
-        Deletion::Unrevoked(SealedAppleTokens(vec![b"enc-001.two".to_vec()]))
+        Deletion::Unrevoked(SealedAppleTokens(vec![SealedAppleToken {
+            identity_id: two,
+            sealed: b"enc-001.two".to_vec(),
+        }]))
     );
     assert_eq!(authed(&app, &created.token).await.user_id, created.user_id);
 

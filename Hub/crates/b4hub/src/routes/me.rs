@@ -1,7 +1,8 @@
 //! The signed-in account's own routes, all behind a device token: `GET /v1/me` (the device, its
 //! org and user, and the account's sign-in methods), `PUT /v1/me/profile` (onboarding's full
 //! name), adding a passkey (`POST /v1/me/passkeys/begin`, `POST /v1/me/passkeys/finish`),
-//! unlinking a sign-in method (`DELETE /v1/me/identities/{id}`), logging out
+//! unlinking a sign-in method (`DELETE /v1/me/identities/{id}`; linking an Apple ID is in
+//! [`crate::routes::apple`]), logging out
 //! (`DELETE /v1/sessions/self`), and deleting the account (`DELETE /v1/me`).
 //!
 //! The principal is always the token's; nothing in a body names a user. An identity is listed
@@ -244,10 +245,12 @@ pub async fn end_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `DELETE /v1/me`: deletes the account. Each stored Apple refresh token is opened and revoked
-/// at Apple first; a failed revoke fails the request with nothing deleted, so it can be retried.
-/// Then the user, their tokens, identities, devices, and every row of their personal org go in
-/// one transaction. An account in a shared org is `shared_org`, before anything is revoked.
+/// `DELETE /v1/me`: deletes the account. Every stored Apple refresh token is opened first, and
+/// only when all of them open is each revoked at Apple; a token that does not open revokes
+/// nothing, and a failed revoke deletes nothing, and either fails the request so it can be
+/// retried. Then the user, their tokens, identities, devices, and every row of their personal
+/// org go in one transaction. An account in a shared org is `shared_org`, before anything is
+/// revoked.
 pub async fn delete_me(
     State(state): State<AppState>,
     device: AuthedDevice,
@@ -256,17 +259,24 @@ pub async fn delete_me(
     let mut to_revoke = accounts::apple_tokens_to_revoke(&state.db, principal).await?;
     let mut revoked = SealedAppleTokens::default();
     for _ in 0..DELETE_ROUNDS {
-        for sealed in to_revoke.0 {
-            let token = open_refresh_token(&state.config.secret_key, &sealed).map_err(|error| {
+        let grants = to_revoke
+            .0
+            .iter()
+            .map(|token| {
+                open_refresh_token(&state.config.secret_key, token.identity_id, &token.sealed)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
                 tracing::error!(%error, user_id = %principal.user_id, "deleting an account failed");
                 ApiError::internal()
             })?;
-            state.apple_revoker.revoke(&token).await.map_err(|error| {
+        for grant in &grants {
+            state.apple_revoker.revoke(grant).await.map_err(|error| {
                 tracing::error!(%error, user_id = %principal.user_id, "deleting an account failed");
                 ApiError::internal()
             })?;
-            revoked.0.push(sealed);
         }
+        revoked.0.extend(to_revoke.0);
         match accounts::delete_user(&state.db, principal, &revoked).await? {
             Deletion::Deleted => {
                 tracing::info!(
@@ -312,7 +322,7 @@ async fn describe(state: &AppState, device: &AuthedDevice) -> Result<Value, ApiE
     }))
 }
 
-fn identity_json(identity: &IdentitySummary) -> Value {
+pub(crate) fn identity_json(identity: &IdentitySummary) -> Value {
     json!({
         "id": identity.id.to_string(),
         "kind": identity.kind,

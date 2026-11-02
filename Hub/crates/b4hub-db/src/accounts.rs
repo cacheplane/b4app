@@ -45,10 +45,12 @@ pub struct DeviceSpec {
 /// A verified way to sign in, as it is stored.
 #[derive(Clone, PartialEq)]
 pub enum Identity {
-    /// An Apple ID: the token's `sub`, the (often relay) email Apple gave, and the refresh token
-    /// from the code exchange, already encrypted with `B4HUB_SECRET_KEY`, kept so deleting the
-    /// account can revoke it.
+    /// An Apple ID: the row's id, the token's `sub`, the (often relay) email Apple gave, and the
+    /// refresh token from the code exchange, already encrypted with `B4HUB_SECRET_KEY`, kept so
+    /// deleting the account can revoke it. The caller picks the id (a fresh
+    /// [`b4hub_core::ids::new_uuid`]) because the refresh token is sealed to it.
     Apple {
+        id: Uuid,
         sub: String,
         email: Option<String>,
         refresh_enc: Option<Vec<u8>>,
@@ -145,10 +147,26 @@ impl fmt::Debug for Session {
     }
 }
 
+/// One encrypted Apple refresh token, as stored, with the id of the identity row it is sealed to
+/// (the seal's associated data, so a sealed token copied to another row does not open).
+#[derive(Clone, PartialEq, Eq)]
+pub struct SealedAppleToken {
+    pub identity_id: Uuid,
+    pub sealed: Vec<u8>,
+}
+
+impl fmt::Debug for SealedAppleToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SealedAppleToken")
+            .field("identity_id", &self.identity_id)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The encrypted Apple refresh tokens of an account's identities, as stored (sealed with
 /// `B4HUB_SECRET_KEY`). `Debug` shows only how many there are.
 #[derive(Clone, Default, PartialEq, Eq)]
-pub struct SealedAppleTokens(pub Vec<Vec<u8>>);
+pub struct SealedAppleTokens(pub Vec<SealedAppleToken>);
 
 impl fmt::Debug for SealedAppleTokens {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -186,6 +204,26 @@ impl fmt::Debug for PasskeyCredential {
 /// one user with a generated username (not onboarded), the identity, the device, and its token,
 /// in one transaction. An identity that already exists fails the insert and nothing is created.
 pub async fn create_personal(db: &Db, identity: Identity, device: DeviceSpec) -> Result<Created> {
+    let (principal, session) = create_personal_with(db, identity, "", Some(device)).await?;
+    let session = session.expect("a device was asked for");
+    Ok(Created {
+        user_id: principal.user_id,
+        org_id: principal.org_id,
+        device_id: session.device_id,
+        token: session.token,
+    })
+}
+
+/// [`create_personal`] with the user's `display_name` set (Apple's name on a first sign-in, the
+/// onboarding prefill; empty for none) and the device optional: the web Apple flow creates the
+/// account when Apple answers and the device only when the app redeems the handoff. The user is
+/// not onboarded either way.
+pub async fn create_personal_with(
+    db: &Db,
+    identity: Identity,
+    display_name: &str,
+    device: Option<DeviceSpec>,
+) -> Result<(Principal, Option<Session>)> {
     let mut tx = db.untenanted_tx().await?;
 
     // `orgs` carries no row-level security, so the org goes in before the tenant is set. A slug
@@ -214,12 +252,13 @@ pub async fn create_personal(db: &Db, identity: Identity, device: DeviceSpec) ->
 
     set_tenant(&mut tx, org_id).await?;
     // The org is new, so its one username cannot collide. `display_name` is required; it stays
-    // empty until onboarding gives a full name.
+    // as given (often empty) until onboarding gives a full name.
     let user_id = new_uuid();
-    sqlx::query("INSERT INTO users (id, org_id, username, display_name) VALUES ($1, $2, $3, '')")
+    sqlx::query("INSERT INTO users (id, org_id, username, display_name) VALUES ($1, $2, $3, $4)")
         .bind(user_id)
         .bind(org_id)
         .bind(new_username())
+        .bind(display_name)
         .execute(&mut *tx)
         .await?;
     sqlx::query("UPDATE orgs SET owner_user_id = $2 WHERE id = $1")
@@ -229,25 +268,50 @@ pub async fn create_personal(db: &Db, identity: Identity, device: DeviceSpec) ->
         .await?;
     let principal = Principal { org_id, user_id };
     insert_identity(&mut tx, principal, &identity).await?;
-    let session = create_session(&mut tx, principal, &device, None).await?;
+    let session = match device {
+        Some(device) => Some(create_session(&mut tx, principal, &device, None).await?),
+        None => None,
+    };
     tx.commit().await?;
-
-    Ok(Created {
-        user_id,
-        org_id,
-        device_id: session.device_id,
-        token: session.token,
-    })
+    Ok((principal, session))
 }
 
 /// The account whose Apple identity has `sub`, if any.
 pub async fn find_by_apple_sub(db: &Db, sub: &str) -> Result<Option<Principal>> {
-    let found: Option<(Uuid, Uuid)> =
-        sqlx::query_as("SELECT org_id, user_id FROM user_identities WHERE apple_sub = $1")
-            .bind(sub)
-            .fetch_optional(&db.pool)
-            .await?;
-    Ok(found.map(|(org_id, user_id)| Principal { org_id, user_id }))
+    Ok(find_apple_identity(db, sub)
+        .await?
+        .map(|(principal, _)| principal))
+}
+
+/// The account whose Apple identity has `sub`, and that identity's id, if any.
+pub async fn find_apple_identity(db: &Db, sub: &str) -> Result<Option<(Principal, Uuid)>> {
+    let found: Option<(Uuid, Uuid, Uuid)> = sqlx::query_as(
+        "SELECT org_id, user_id, id FROM user_identities WHERE apple_sub = $1 AND kind = 'apple'",
+    )
+    .bind(sub)
+    .fetch_optional(&db.pool)
+    .await?;
+    Ok(found.map(|(org_id, user_id, id)| (Principal { org_id, user_id }, id)))
+}
+
+/// Records that the Apple identity `identity_id` was just used to sign in: sets `last_used_at`
+/// and, when the code exchange gave one, replaces the stored refresh token with `refresh_enc`
+/// (sealed to `identity_id`).
+pub async fn record_apple_use(
+    db: &Db,
+    identity_id: Uuid,
+    refresh_enc: Option<&[u8]>,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE user_identities SET last_used_at = now(), \
+                apple_refresh_token_enc = COALESCE($2, apple_refresh_token_enc) \
+         WHERE id = $1 AND kind = 'apple'",
+    )
+    .bind(identity_id)
+    .bind(refresh_enc)
+    .execute(&db.pool)
+    .await?;
+    Ok(())
 }
 
 /// The account and stored passkey whose credential id is `credential_id`, if any.
@@ -448,7 +512,7 @@ pub async fn delete_user(
         return Err(Error::SharedOrg);
     }
     let held = sealed_apple_tokens(&mut tx, principal).await?;
-    let unrevoked: Vec<Vec<u8>> = held
+    let unrevoked: Vec<SealedAppleToken> = held
         .0
         .into_iter()
         .filter(|token| !revoked.0.contains(token))
@@ -545,8 +609,8 @@ async fn sealed_apple_tokens(
     tx: &mut Transaction<'_, Postgres>,
     principal: Principal,
 ) -> Result<SealedAppleTokens> {
-    let tokens = sqlx::query_scalar(
-        "SELECT apple_refresh_token_enc FROM user_identities \
+    let rows: Vec<(Uuid, Vec<u8>)> = sqlx::query_as(
+        "SELECT id, apple_refresh_token_enc FROM user_identities \
          WHERE org_id = $1 AND user_id = $2 AND apple_refresh_token_enc IS NOT NULL \
          ORDER BY created_at, id",
     )
@@ -554,7 +618,14 @@ async fn sealed_apple_tokens(
     .bind(principal.user_id)
     .fetch_all(&mut **tx)
     .await?;
-    Ok(SealedAppleTokens(tokens))
+    Ok(SealedAppleTokens(
+        rows.into_iter()
+            .map(|(identity_id, sealed)| SealedAppleToken {
+                identity_id,
+                sealed,
+            })
+            .collect(),
+    ))
 }
 
 /// Whether `principal` is the owner of a personal org that is `principal.org_id`.
@@ -647,9 +718,13 @@ async fn insert_identity_row(
     principal: Principal,
     identity: &Identity,
 ) -> Result<Uuid> {
-    let id = new_uuid();
+    let id = match identity {
+        Identity::Apple { id, .. } => *id,
+        Identity::Passkey { .. } => new_uuid(),
+    };
     match identity {
         Identity::Apple {
+            id: _,
             sub,
             email,
             refresh_enc,

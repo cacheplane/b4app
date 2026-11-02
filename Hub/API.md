@@ -74,11 +74,12 @@ in whole seconds.
 | Pull page | 1000 changes (`limit` is clamped to 1 to 1000; default 1000), and 8 MiB (8,388,608 bytes) of `value` summed over the page (each sized when pushed, as PostgreSQL's `jsonb` text, a few bytes more than compact JSON); whichever comes first, and always at least one change | `GET /v1/changes` |
 | Retention | `B4HUB_RETENTION_DAYS`, default 30 | how long the hub keeps the change log (see *Horizon*) |
 | Long-poll `wait` | 25 seconds | `GET /v1/changes`; a larger `wait` is clamped to 25 |
-| Other request bodies | 2 MiB (axum's default) | `POST /v1/enroll`, `POST /v1/auth/passkey/finish`, `PUT /v1/me/profile`, `POST /v1/me/passkeys/finish` |
-| Sign-in begins | 20 per client IP per minute | `POST /v1/auth/passkey/begin` and `POST /v1/me/passkeys/begin`, together; over it, `429 rate_limited` |
-| Sign-in finishes | 10 per client IP per minute | `POST /v1/auth/passkey/finish` and `POST /v1/me/passkeys/finish`, together, counted before the token is checked or the body read; over it, `429 rate_limited` |
+| Other request bodies | 2 MiB (axum's default) | `POST /v1/enroll`, `POST /v1/auth/passkey/finish`, `PUT /v1/me/profile`, `POST /v1/me/passkeys/finish`, and the Apple routes |
+| Sign-in begins | 20 per client IP per minute | `POST /v1/auth/passkey/begin`, `POST /v1/me/passkeys/begin`, `POST /v1/auth/apple/begin`, `GET /v1/auth/apple/start`, and `POST /v1/me/apple`, together; over it, `429 rate_limited` |
+| Sign-in finishes | 10 per client IP per minute | `POST /v1/auth/passkey/finish`, `POST /v1/me/passkeys/finish`, `POST /v1/auth/apple/native`, `POST /v1/auth/apple/callback`, `POST /v1/auth/handoff`, and `POST /v1/me/apple/native`, together, counted before the token is checked or the body read; over it, `429 rate_limited` |
 | Full name | 1 to 200 characters after trimming | `PUT /v1/me/profile` |
 | Ceremony lifetime | 5 minutes, single use | a `ceremonyId` from a begin |
+| Handoff lifetime | 2 minutes, single use | the code in the web flow's redirect |
 
 The Mac client sends batches of 500 and replaces a `displayItems.payload` over 1 MiB with
 `{"truncated": true, "bytes": n}` before upload, so the hub's 2 MiB limit only ever rejects a
@@ -174,9 +175,16 @@ accident; Compose's `.env.example` sets `open`). `B4HUB_TRUST_X_FORWARDED_FOR=1`
 limits count the right-most `X-Forwarded-For` entry instead of the TCP peer (a bare address,
 `a.b.c.d:port`, `[v6]`, or `[v6]:port`; anything else falls back to the peer). Set it only behind
 exactly one proxy that appends that header: behind two, the right-most entry is the outer proxy
-and every client shares its limit. The `B4HUB_APPLE_*` variables are all set or none (any other
-combination exits 2); Sign in with Apple's routes are not built yet. Every secret is a plain
-environment variable, never a file path. `seed` and `enroll` read none of these.
+and every client shares its limit. Sign in with Apple needs `B4HUB_APPLE_TEAM_ID`,
+`B4HUB_APPLE_KEY_ID`, `B4HUB_APPLE_PRIVATE_KEY` (the `.p8` key's PEM contents, not a path), and
+`B4HUB_APPLE_AUDIENCES` (the comma-separated client ids an identity token may be for: the iOS
+bundle id and the Services ID), all set or none (any other combination exits 2, as does a key that
+does not sign). Without them every Apple route below answers `404 not_found`. The web flow (the
+Mac's) also needs `B4HUB_APPLE_SERVICES_ID`, the Services ID it signs in with (one of the
+audiences), and `B4HUB_PUBLIC_URL`, under which Apple posts back; without either only the native
+flow is offered. `B4HUB_APPLE_BASE_URL` (tests only; default `https://appleid.apple.com`) moves
+every Apple endpoint and the issuer identity tokens must name. Every secret is a plain environment
+variable, never a file path. `seed` and `enroll` read none of these.
 
 **Rate limits** are kept in memory per process (a fixed one-minute window per client), so a hub
 with several replicas admits a client once per replica. A client is an IPv4 address, or an IPv6
@@ -189,17 +197,20 @@ failed verification logs `passkey verification failed` with a fixed reason. weba
 whole responses and challenges at DEBUG and TRACE, so the hub's subscriber has a second filter,
 separate from `B4HUB_LOG`, that drops every event and span whose target starts with `webauthn`
 (`webauthn_rs`, `webauthn_rs_core`, `webauthn_attestation_ca`, and their modules). No
-`B4HUB_LOG` directive, module-qualified or not, gets past it.
+`B4HUB_LOG` directive, module-qualified or not, gets past it. The Apple routes never log an
+identity token, authorization code, client secret, refresh token (sealed or not), handoff,
+verifier, or Apple ID (`sub`); a failed check logs `Apple verification failed` with a fixed reason.
 
 #### `GET /v1/auth/config`
 
 What this hub offers, so a client hides the rest. Not rate limited. `200`:
 
 ```json
-{"passkeys": {"rpId": "b4.run"}, "apple": {"native": false, "web": false}, "signup": "open"}
+{"passkeys": {"rpId": "b4.run"}, "apple": {"native": true, "web": true}, "signup": "open"}
 ```
 
-`apple` is `false` for both until the Apple routes exist.
+`apple.native` is true when the `B4HUB_APPLE_*` set configures Sign in with Apple; `apple.web`
+when, in addition, `B4HUB_APPLE_SERVICES_ID` and `B4HUB_PUBLIC_URL` are set.
 
 #### `POST /v1/auth/passkey/begin`
 
@@ -278,6 +289,122 @@ two finishes of one ceremony racing, exactly one succeeds; the other is `ceremon
 Errors: `400 invalid_request` (the body's shape, both or neither response, a bad device),
 `403 signup_closed` (an attestation while sign-up is closed, checked before the ceremony is
 taken), `400 ceremony_expired`, `401 credential_rejected`, `429 rate_limited`.
+
+#### Sign in with Apple
+
+"Continue with Apple" has two flows that end like a passkey sign-in: the iPhone's **native** flow
+(Apple's sheet, then `POST /v1/auth/apple/native`) and the Mac's **web** flow (Apple's authorize
+page in a browser session, Apple's form post back to the hub, then a one-time handoff to the app).
+Both begin with `POST /v1/auth/apple/begin`.
+
+- **The nonce.** A ceremony holds a random `nonce`. Apple is always handed its lowercase hex
+  SHA-256 (the native app passes `sha256_hex(nonce)` as the request's nonce; the web flow's start
+  URL carries it), and the identity token's `nonce` claim must equal exactly that hash.
+- **Verifying an identity token.** The key the token's `kid` names in Apple's key set
+  (`<base>/auth/keys`), which decides the algorithm: Apple publishes RSA keys (`RS256`); an EC
+  P-256 key (`ES256`) is accepted too, and a header `alg` that is not its key's is refused. The key
+  set is cached and fetched again only for an unknown `kid`, at most once a minute. Then `iss`
+  must be `https://appleid.apple.com` (the base URL), `aud` one of `B4HUB_APPLE_AUDIENCES` (the
+  Services ID, for the web flow), `exp` not past (60 s leeway), and the nonce as above.
+- **The code exchange** (`<base>/auth/token`) uses a client secret the hub signs for each call:
+  an ES256 JWT with `kid` = `B4HUB_APPLE_KEY_ID`, `iss` = the team id, `sub` = the client id in use
+  (the token's `aud`: the bundle id natively, the Services ID on the web), `aud` =
+  `https://appleid.apple.com`, and five minutes to `exp`. The identity token in Apple's answer must
+  be for the same Apple ID, so a code for another Apple ID is refused.
+- **Accounts.** The account is found by the token's `sub`. A new `sub` signs up while sign-up is
+  open (a personal org, as a passkey sign-up makes); while it is closed it is `403 signup_closed`,
+  checked **before** the code is exchanged. Apple's email is stored with the identity (it is the
+  identity's `name` in `GET /v1/me`) but never used to find or merge accounts. On a first sign-up
+  with a name, the user's `displayName` is that name, the onboarding prefill; `needsOnboarding`
+  stays true until `PUT /v1/me/profile`.
+- **The refresh token** from the exchange is stored sealed (AES-256-GCM under `B4HUB_SECRET_KEY`,
+  a random 96-bit nonce first, the identity's id as associated data) with the client id it was
+  issued to, so deleting the account can revoke it. A sign-in replaces it with the newest.
+- **Errors.** Every failed check (signature, key, issuer, audience, expiry, nonce, a refused or
+  mismatched code, an Apple ID another account holds) is `401 credential_rejected`, deliberately
+  the same; so is Apple being unreachable.
+
+##### `POST /v1/auth/apple/begin`
+
+Begins an Apple ceremony (valid 5 minutes, finished once). The body is empty (or `{}`) for the
+native flow; the web flow sends both fields:
+
+```json
+{"verifierHash": "<64 lowercase hex characters>", "scheme": "b4app"}
+```
+
+- `verifierHash` is the lowercase hex SHA-256 of a random verifier (43 to 128 characters of
+  `A-Z a-z 0-9 - . _ ~`) the app keeps for `POST /v1/auth/handoff`.
+- `scheme` is the app's URL scheme, one of `b4app`, `b4app-beta`, `b4app-local`. The callback
+  redirects only there: the scheme comes from the ceremony, never from a later request.
+
+`200`: `{"ceremonyId": "5b0f...", "nonce": "<43 characters>"}`. Errors: `400 invalid_request` (one
+field without the other, a scheme off the list, a malformed hash), `404 not_found` (no Apple, or
+the web flow asked of a hub without it), `429 rate_limited` (a begin).
+
+##### `POST /v1/auth/apple/native`
+
+The iPhone's sheet returned. Request:
+
+```json
+{
+  "ceremonyId": "5b0f...",
+  "identityToken": "<Apple's JWT>",
+  "authorizationCode": "<Apple's code>",
+  "fullName": "Brian Love",
+  "device": {"deviceName": "Brian's iPhone", "platform": "ios", "deviceId": "0198..."}
+}
+```
+
+`fullName` (optional; Apple gives it on the first sign-in only) is trimmed, at most 200
+characters. `device` is as for the passkey finish. The token is verified against the ceremony,
+the code exchanged as the token's `aud`, and the account signed in or up; `200` is the session
+shape of `POST /v1/auth/passkey/finish`. Validation happens before the ceremony is taken. Errors:
+`400 invalid_request`, `400 ceremony_expired` (also a web or link ceremony), `401
+credential_rejected`, `403 signup_closed`, `404 not_found`, `429 rate_limited` (a finish).
+
+##### `GET /v1/auth/apple/start?ceremony=<ceremonyId>`
+
+Opened by the Mac in its browser session for a web ceremony. `302` to Apple's authorize page,
+`<base>/auth/authorize?client_id=<Services ID>&redirect_uri=<B4HUB_PUBLIC_URL>/v1/auth/apple/callback&response_type=code%20id_token&response_mode=form_post&scope=name%20email&state=<ceremonyId>&nonce=<sha256_hex(nonce)>`.
+It does not use the ceremony up, so a reloaded page starts again. Errors: `400 invalid_request`
+(no `ceremony`, not a UUID, or any other parameter), `400 ceremony_expired` (unknown, expired,
+finished, or a native ceremony), `404 not_found` (no web flow), `429 rate_limited` (a begin).
+
+##### `POST /v1/auth/apple/callback`
+
+Apple's `application/x-www-form-urlencoded` form post, sent by the person's browser: `state` (the
+ceremony id), `code`, `id_token`, on the first sign-in `user` (JSON whose `name.firstName` and
+`name.lastName` become the name), or `error`. Fields the hub does not read are ignored (Apple may
+add some); a repeated one is `400 invalid_request`. The ceremony is taken, the token verified
+(for the Services ID), the code exchanged with the redirect URI, and the account signed in, signed
+up, or (for a ceremony from `POST /v1/me/apple`) linked; then a handoff is recorded (2 minutes,
+single use) and the answer is a `302` to the ceremony's scheme:
+
+- `<scheme>://auth?handoff=<43 characters>` on success;
+- `<scheme>://auth?error=<code>` once the ceremony is known: `cancelled` (Apple's
+  `user_cancelled_authorize`), `credential_rejected`, `signup_closed`, or `internal_error`.
+
+A post whose `state` is missing is `400 invalid_request`; one whose ceremony is unknown, spent, or
+not a web ceremony is `400 ceremony_expired` as JSON, having nowhere to redirect. Also `404
+not_found` (no web flow) and `429 rate_limited` (a finish).
+
+##### `POST /v1/auth/handoff`
+
+The Mac hands over the redirect's code with its verifier:
+
+```json
+{"handoff": "<the code>", "verifier": "<the verifier>",
+ "device": {"deviceName": "Brian's MacBook Pro", "platform": "macos", "deviceId": "0198..."}}
+```
+
+The hub matches the code's hash and the verifier's SHA-256 against the handoff, once. For a
+sign-in, `200` is the session shape, for `device`. For a link (`POST /v1/me/apple`'s web flow),
+the link was made at the callback; `device` is ignored and `200` is `{"linked": true}`. A wrong
+verifier is answered exactly like an unknown, expired, or spent code, `400 ceremony_expired`, and
+leaves the handoff redeemable by its rightful holder; of two redemptions racing, exactly one
+succeeds. Errors also: `400 invalid_request` (validated first), `404 not_found`, `429
+rate_limited` (a finish).
 
 ### `GET /v1/me`
 
@@ -375,6 +502,29 @@ is unknown, expired, or used is `400 ceremony_expired`. A malformed or unverifia
 or a passkey that already belongs to an account, is `401 credential_rejected`. Errors also: `400
 invalid_request`, `401 unauthorized`, `429 rate_limited` (counted with the sign-in finishes).
 
+### `POST /v1/me/apple`
+
+Begins linking an Apple ID to the caller's account (Settings, "Connect Apple ID"). The body is
+`POST /v1/auth/apple/begin`'s: empty for the iPhone's native flow, `verifierHash` and `scheme` for
+the Mac's web flow; so is the answer, `{"ceremonyId", "nonce"}`. The ceremony records the caller
+and can finish only a link. On the web the Mac then opens `GET /v1/auth/apple/start`, Apple posts
+to the callback, which links, and `POST /v1/auth/handoff` answers `{"linked": true}`. Errors: as
+the begin, plus `401 unauthorized`.
+
+### `POST /v1/me/apple/native`
+
+Finishes a native link against a ceremony from `POST /v1/me/apple` the same user began:
+
+```json
+{"ceremonyId": "5b0f...", "identityToken": "<Apple's JWT>", "authorizationCode": "<Apple's code>"}
+```
+
+`200` is the new identity, as `POST /v1/me/passkeys/finish` answers one. An Apple ID already on
+this account answers its identity; one on another account is `401 credential_rejected`, before
+the code is exchanged. Errors also: `400 invalid_request`, `400 ceremony_expired` (another user's
+ceremony, a sign-in ceremony, or a web one), `401 unauthorized`, `404 not_found`, `429
+rate_limited` (a finish).
+
 ### `DELETE /v1/me/identities/{id}`
 
 Unlinks one of the caller's sign-in methods, by its `id` from `GET /v1/me`. `204` with no body.
@@ -395,16 +545,18 @@ the account instead, use `DELETE /v1/devices/self`. Errors: `401 unauthorized`.
 Deletes the account (App Store guideline 5.1.1(v)). `204` with no body. In order:
 
 1. An account in a shared org is refused, `409 shared_org`, before anything else.
-2. Each Apple refresh token the account stores is decrypted and revoked at Apple. If any revoke
-   fails, the request fails with `500 internal_error` and **nothing is deleted**; retry it.
+2. Every Apple refresh token the account stores is decrypted first; only if all of them open is
+   each revoked at Apple (`<base>/auth/revoke`, as the client id it was issued to, with a fresh
+   client secret). A token that does not open revokes nothing, and a failed revoke deletes
+   nothing: either way the request fails with `500 internal_error`; retry it. A hub without
+   Sign in with Apple cannot revoke, so an account holding a token fails the same way.
 3. In one transaction that first locks the user, the hub deletes the user's tokens, identities,
    and devices, every row of their personal org in every tenant table (threads, turns, the change
    log, and the rest), then the org and the user. An Apple ID linked between steps 2 and 3 is
    revoked too before the delete goes ahead.
 
 Every token of the account is `401 unauthorized` afterwards, and its passkeys and Apple IDs can
-sign up afresh. (Sign in with Apple is not built yet, so no account stores an Apple refresh token
-today.) Errors also: `401 unauthorized`.
+sign up afresh. Errors also: `401 unauthorized`.
 
 ### `GET /v1/devices`
 

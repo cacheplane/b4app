@@ -1,5 +1,6 @@
 //! Route handlers.
 
+pub mod apple;
 pub mod auth;
 pub mod changes;
 pub mod devices;

@@ -30,8 +30,8 @@ public protocol HubAPI: Sendable {
   func passkeyBegin() async throws -> PasskeyBeginResponse
   /// `POST /v1/auth/passkey/finish`: signs in with an assertion, or up with an attestation.
   func passkeyFinish(_ request: PasskeyFinishRequest) async throws -> AuthSession
-  /// `POST /v1/auth/apple/begin`.
-  func appleBegin() async throws -> AppleBeginResponse
+  /// `POST /v1/auth/apple/begin`. `appleBegin()` begins the native flow.
+  func appleBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse
   /// `POST /v1/auth/apple/native`.
   func appleNative(_ request: AppleNativeRequest) async throws -> AuthSession
   /// `POST /v1/auth/handoff`: ends the Mac's web flow.
@@ -68,7 +68,11 @@ extension HubAPI {
   public func passkeyFinish(_ request: PasskeyFinishRequest) async throws -> AuthSession {
     throw HubError.unsupported("passkeyFinish")
   }
-  public func appleBegin() async throws -> AppleBeginResponse { throw HubError.unsupported("appleBegin") }
+  public func appleBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse {
+    throw HubError.unsupported("appleBegin")
+  }
+  /// Begins the native flow (no verifier or scheme).
+  public func appleBegin() async throws -> AppleBeginResponse { try await appleBegin(AppleBeginRequest()) }
   public func appleNative(_ request: AppleNativeRequest) async throws -> AuthSession {
     throw HubError.unsupported("appleNative")
   }

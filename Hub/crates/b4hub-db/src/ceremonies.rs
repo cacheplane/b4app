@@ -60,6 +60,37 @@ pub async fn take(db: &Db, id: Uuid, kind: &str) -> Result<Value> {
     .ok_or(Error::CeremonyExpired)
 }
 
+/// Takes the ceremony `id` if it is of one of `kinds`, once, and returns its kind and state;
+/// otherwise as [`take`].
+pub async fn take_any(db: &Db, id: Uuid, kinds: &[&str]) -> Result<(String, Value)> {
+    let kinds: Vec<String> = kinds.iter().map(|kind| kind.to_string()).collect();
+    sqlx::query_as(
+        "UPDATE auth_ceremonies SET used_at = now() \
+         WHERE id = $1 AND kind = ANY($2) AND used_at IS NULL AND expires_at > now() \
+         RETURNING kind, state",
+    )
+    .bind(id)
+    .bind(kinds)
+    .fetch_optional(&db.pool)
+    .await?
+    .ok_or(Error::CeremonyExpired)
+}
+
+/// Reads the ceremony `id` without taking it, if it is of one of `kinds` and still open
+/// (unexpired and not taken); otherwise [`Error::CeremonyExpired`].
+pub async fn peek(db: &Db, id: Uuid, kinds: &[&str]) -> Result<(String, Value)> {
+    let kinds: Vec<String> = kinds.iter().map(|kind| kind.to_string()).collect();
+    sqlx::query_as(
+        "SELECT kind, state FROM auth_ceremonies \
+         WHERE id = $1 AND kind = ANY($2) AND used_at IS NULL AND expires_at > now()",
+    )
+    .bind(id)
+    .bind(kinds)
+    .fetch_optional(&db.pool)
+    .await?
+    .ok_or(Error::CeremonyExpired)
+}
+
 /// Records that the ceremony `ceremony_id` signed in `principal`, redeemable with the returned
 /// code and the verifier whose SHA-256 is `verifier_hash`. Only the code's hash is stored; the
 /// code itself goes into the one redirect that hands it over.
@@ -90,17 +121,36 @@ pub async fn create_handoff(
 /// wrong `verifier_hash` is [`Error::CeremonyExpired`], exactly like an unknown, expired, or
 /// spent handoff, and leaves the handoff redeemable by its rightful holder.
 pub async fn take_handoff(db: &Db, code_hash: &[u8], verifier_hash: &[u8]) -> Result<Principal> {
-    let taken: Option<(Uuid, Uuid)> = sqlx::query_as(
-        "UPDATE auth_handoffs SET used_at = now() \
-         WHERE code_hash = $1 AND verifier_hash = $2 AND used_at IS NULL AND expires_at > now() \
-         RETURNING org_id, user_id",
+    Ok(redeem_handoff(db, code_hash, verifier_hash)
+        .await?
+        .principal)
+}
+
+/// What redeeming a handoff found: who it is for, and the kind of the ceremony that recorded it
+/// (a sign-in, or linking an Apple ID to an account that was already signed in).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Redeemed {
+    pub principal: Principal,
+    pub ceremony_kind: String,
+}
+
+/// [`take_handoff`], also answering the kind of the ceremony that recorded the handoff.
+pub async fn redeem_handoff(db: &Db, code_hash: &[u8], verifier_hash: &[u8]) -> Result<Redeemed> {
+    let taken: Option<(Uuid, Uuid, String)> = sqlx::query_as(
+        "UPDATE auth_handoffs h SET used_at = now() FROM auth_ceremonies c \
+         WHERE c.id = h.ceremony_id AND h.code_hash = $1 AND h.verifier_hash = $2 \
+           AND h.used_at IS NULL AND h.expires_at > now() \
+         RETURNING h.org_id, h.user_id, c.kind",
     )
     .bind(code_hash)
     .bind(verifier_hash)
     .fetch_optional(&db.pool)
     .await?;
-    let (org_id, user_id) = taken.ok_or(Error::CeremonyExpired)?;
-    Ok(Principal { org_id, user_id })
+    let (org_id, user_id, ceremony_kind) = taken.ok_or(Error::CeremonyExpired)?;
+    Ok(Redeemed {
+        principal: Principal { org_id, user_id },
+        ceremony_kind,
+    })
 }
 
 /// Deletes handoffs, then ceremonies no remaining handoff points at, that expired more than

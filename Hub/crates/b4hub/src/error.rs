@@ -237,6 +237,32 @@ where
     }
 }
 
+/// A JSON body that may be absent: an empty body is `T::default()`. Otherwise as [`ApiJson`],
+/// without requiring a content type.
+pub struct OptionalJson<T>(pub T);
+
+impl<S, T> FromRequest<S> for OptionalJson<T>
+where
+    S: Send + Sync,
+    T: DeserializeOwned + Default,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(request: Request, state: &S) -> Result<OptionalJson<T>, ApiError> {
+        let body = axum::body::Bytes::from_request(request, state)
+            .await
+            .map_err(|_| ApiError::payload_too_large("the request body is too large"))?;
+        if body.iter().all(u8::is_ascii_whitespace) {
+            return Ok(OptionalJson(T::default()));
+        }
+        serde_json::from_slice(&body)
+            .map(OptionalJson)
+            .map_err(|_| {
+                ApiError::invalid_request("the request body is not valid JSON for this endpoint")
+            })
+    }
+}
+
 fn json_rejection(rejection: &JsonRejection) -> ApiError {
     if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
         ApiError::payload_too_large("the request body is too large")

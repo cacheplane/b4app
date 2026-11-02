@@ -202,10 +202,25 @@ public struct AddPasskeyFinishRequest: Codable, Sendable, Equatable, CustomStrin
 
 // MARK: - Sign in with Apple
 //
-// The hub serves these routes from its Task 13; the shapes follow the design's route table and have no
-// fixture example until the hub does.
+// `Hub/API.md`'s Apple routes (`routes/apple.rs`): `auth.json` holds one example of each.
 
-/// `POST /v1/auth/apple/begin`'s answer. The native flow passes the SHA-256 of `nonce` to Apple.
+/// `POST /v1/auth/apple/begin`'s (and `POST /v1/me/apple`'s) body. The web flow sends both fields: the
+/// lowercase hex SHA-256 of a random verifier the client keeps for `POST /v1/auth/handoff`, and its URL
+/// scheme (`b4app`, `b4app-beta`, or `b4app-local`), the only place the hub's callback redirects to.
+/// The native flow sends neither, which encodes as `{}`.
+public struct AppleBeginRequest: Codable, Sendable, Equatable {
+  public var verifierHash: String?
+  public var scheme: String?
+
+  public init(verifierHash: String? = nil, scheme: String? = nil) {
+    self.verifierHash = verifierHash
+    self.scheme = scheme
+  }
+}
+
+/// `POST /v1/auth/apple/begin`'s answer. Both flows hand Apple the lowercase hex SHA-256 of `nonce`
+/// (the native flow as the request's nonce; the web flow's start URL does it), and the identity token
+/// must carry exactly that.
 public struct AppleBeginResponse: Codable, Sendable, Equatable {
   public var ceremonyId: String
   public var nonce: String
@@ -244,8 +259,30 @@ public struct AppleNativeRequest: Codable, Sendable, Equatable, CustomStringConv
   public var debugDescription: String { description }
 }
 
+/// `POST /v1/me/apple/native`'s body: links the Apple ID of a native sign-in to the signed-in account,
+/// against a ceremony from `POST /v1/me/apple`. Answers the new `Identity`.
+public struct AppleLinkNativeRequest: Codable, Sendable, Equatable, CustomStringConvertible,
+  CustomDebugStringConvertible
+{
+  public var ceremonyId: String
+  public var identityToken: String
+  public var authorizationCode: String
+
+  public init(ceremonyId: String, identityToken: String, authorizationCode: String) {
+    self.ceremonyId = ceremonyId
+    self.identityToken = identityToken
+    self.authorizationCode = authorizationCode
+  }
+
+  public var description: String {
+    "AppleLinkNativeRequest(ceremonyId: \(ceremonyId), identityToken: <redacted>, authorizationCode: <redacted>)"
+  }
+  public var debugDescription: String { description }
+}
+
 /// `POST /v1/auth/handoff`'s body: the one-time code the web flow's redirect carried, with the
-/// verifier that proves this app began the ceremony.
+/// verifier that proves this app began the ceremony (43 to 128 characters; the begin request sent its
+/// SHA-256). For a link ceremony the hub ignores `device` and answers `{"linked": true}`.
 public struct HandoffRequest: Codable, Sendable, Equatable, CustomStringConvertible,
   CustomDebugStringConvertible
 {

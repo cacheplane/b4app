@@ -75,8 +75,8 @@ public final class HTTPHubAPI: HubAPI {
     try await send(.post, "v1/auth/passkey/finish", body: request, authenticated: false)
   }
 
-  public func appleBegin() async throws -> AppleBeginResponse {
-    try await send(.post, "v1/auth/apple/begin", authenticated: false)
+  public func appleBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse {
+    try await send(.post, "v1/auth/apple/begin", body: request, authenticated: false)
   }
 
   public func appleNative(_ request: AppleNativeRequest) async throws -> AuthSession {

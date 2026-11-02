@@ -448,8 +448,15 @@ final class TokenSequence: @unchecked Sendable {
         ceremonyId: "c1", assertion: ["id": "a"], attestation: nil,
         device: DeviceSpec(deviceName: "Mac", platform: "macos", deviceId: "d1")))
     #expect(session.token == "issued" && session.needsOnboarding)
-
     let finish = try #require(recorder.all.last)
+
+    _ = try await api.appleBegin(
+      AppleBeginRequest(verifierHash: String(repeating: "a", count: 64), scheme: "b4app"))
+    _ = try await api.appleBegin()
+    let begins = recorder.all.suffix(2).map { try? JSONCoding.decoder.decode(JSONValue.self, from: $0.body) }
+    #expect(
+      begins == [["verifierHash": .string(String(repeating: "a", count: 64)), "scheme": "b4app"], [:]])
+
     #expect(finish.request.value(forHTTPHeaderField: "Content-Type") == "application/json")
     let body = try JSONCoding.decoder.decode(JSONValue.self, from: finish.body)
     #expect(

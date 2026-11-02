@@ -11,6 +11,10 @@ mod common;
 
 use axum::http::StatusCode;
 use b4hub::config::Signup;
+use b4hub::routes::apple::{
+    AppleBeginRequest, AppleBeginResponse, AppleLinkNativeRequest, AppleNativeRequest,
+    HandoffRequest, SCHEMES,
+};
 use b4hub::routes::auth::{
     AuthConfigResponse, AuthSession, PasskeyBeginResponse, PasskeyFinishRequest,
 };
@@ -112,6 +116,36 @@ fn enroll_request_matches_the_hub_type() {
     assert_eq!(request.platform, "ios");
 }
 
+#[test]
+fn apple_types_match_the_hub_types() {
+    let begin: AppleBeginRequest = round_trips("appleBeginRequest");
+    assert!(SCHEMES.contains(&begin.scheme.as_deref().unwrap()));
+    assert_eq!(begin.verifier_hash.unwrap().len(), 64);
+    // The native flow's begin body is empty, which is the default.
+    assert_eq!(
+        serde_json::to_value(AppleBeginRequest::default()).unwrap(),
+        json!({})
+    );
+
+    let begun: AppleBeginResponse = round_trips("appleBeginResponse");
+    assert!(!begun.nonce.is_empty());
+
+    let native: AppleNativeRequest = round_trips("appleNativeRequest");
+    assert_eq!(native.full_name.as_deref(), Some("Brian Love"));
+    assert_eq!(native.device.platform, "ios");
+    assert!(!format!("{native:?}").contains(&native.identity_token));
+
+    let link: AppleLinkNativeRequest = round_trips("appleLinkNativeRequest");
+    assert_eq!(link.ceremony_id, native.ceremony_id);
+
+    let handoff: HandoffRequest = round_trips("handoffRequest");
+    assert!(handoff.device.device_id.is_some());
+    assert!(!format!("{handoff:?}").contains(&handoff.verifier));
+
+    // What `POST /v1/auth/handoff` answers for a link (built as JSON by the route).
+    assert_eq!(example("handoffLinked"), json!({"linked": true}));
+}
+
 // ---- The answers the routes build as JSON ----
 
 /// The JSON type of `value`, for comparing shapes.
@@ -207,6 +241,7 @@ async fn routes_answer_the_shapes_the_fixture_holds(pool: PgPool) {
         &hub.state.db,
         principal,
         Identity::Apple {
+            id: b4hub_core::ids::new_uuid(),
             sub: "001.fixture".into(),
             email: Some("x7k2@privaterelay.appleid.com".into()),
             refresh_enc: None,

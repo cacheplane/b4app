@@ -1,6 +1,6 @@
 //! Signing in and signing up: `GET /v1/auth/config` and "Continue with a passkey"
 //! (`POST /v1/auth/passkey/begin`, `POST /v1/auth/passkey/finish`). No bearer token; the
-//! credential is the passkey.
+//! credential is the passkey. "Continue with Apple" is in [`crate::routes::apple`].
 //!
 //! One ceremony serves both a sign-in and a sign-up: begin answers discoverable assertion
 //! options (no allow-list, so the OS offers any passkey for the relying party) and, while
@@ -56,7 +56,7 @@ pub struct DeviceRequest {
 }
 
 impl DeviceRequest {
-    fn validate(&self) -> Result<DeviceSpec, ApiError> {
+    pub(crate) fn validate(&self) -> Result<DeviceSpec, ApiError> {
         let name = self.device_name.trim();
         if name.is_empty() || name.chars().count() > MAX_DEVICE_NAME_CHARS {
             return Err(ApiError::invalid_request(
@@ -186,11 +186,9 @@ pub async fn config(State(state): State<AppState>) -> Json<AuthConfigResponse> {
         passkeys: PasskeysOffered {
             rp_id: state.config.rp_id.clone(),
         },
-        // Sign in with Apple's routes are not built yet (sign-in plan Task 13), so the hub does
-        // not offer it whatever B4HUB_APPLE_* says.
         apple: AppleOffered {
-            native: false,
-            web: false,
+            native: state.apple.is_some(),
+            web: crate::routes::apple::callback_url(&state).is_some(),
         },
         signup: state.config.signup,
     })
@@ -416,7 +414,7 @@ async fn sign_up(
     answer(state, principal, created.device_id, created.token).await
 }
 
-async fn answer(
+pub(crate) async fn answer(
     state: &AppState,
     principal: Principal,
     device_id: Uuid,

@@ -125,21 +125,33 @@ import WorkspaceProtocol
     #expect(try roundTrips(EnrollResponse.self, "enrollResponse").user.username == "blove")
   }
 
-  // The Apple routes arrive with the hub's Task 13, so there is no fixture example for them yet; these
-  // pin the names the design's route table gives.
-  @Test func appleTypesUseTheRouteTableNames() throws {
-    let begin = try JSONCoding.decoder.decode(
-      AppleBeginResponse.self, from: Data(#"{"ceremonyId":"c","nonce":"n"}"#.utf8))
-    #expect(begin.ceremonyId == "c" && begin.nonce == "n")
+  @Test func appleRoundTrips() throws {
+    let begin = try roundTrips(AppleBeginRequest.self, "appleBeginRequest")
+    #expect(begin.scheme == "b4app-local" && begin.verifierHash?.count == 64)
+    let begun = try roundTrips(AppleBeginResponse.self, "appleBeginResponse")
+    #expect(begun.ceremonyId == "5b0f1f3e-2d0c-4f6a-9a51-6c2d8e7f4b10")
+    let native = try roundTrips(AppleNativeRequest.self, "appleNativeRequest")
+    #expect(native.fullName == "Brian Love" && native.device.platform == "ios")
+    let link = try roundTrips(AppleLinkNativeRequest.self, "appleLinkNativeRequest")
+    #expect(link.ceremonyId == begun.ceremonyId)
+    let handoff = try roundTrips(HandoffRequest.self, "handoffRequest")
+    #expect(handoff.device.deviceId == "01a19a2b-bbc9-744f-9b64-011001ab330e")
+  }
+
+  // The native flow's begin body is empty, and an absent `fullName` is left out.
+  @Test func appleTypesOmitWhatIsAbsent() throws {
+    let empty = try JSONCoding.decoder.decode(
+      JSONValue.self, from: JSONCoding.encoder.encode(AppleBeginRequest()))
+    #expect(empty == [:])
 
     let native = AppleNativeRequest(
-      ceremonyId: "c", identityToken: "jwt", authorizationCode: "code", fullName: "Brian Love",
+      ceremonyId: "c", identityToken: "jwt", authorizationCode: "code", fullName: nil,
       device: DeviceSpec(deviceName: "iPhone", platform: "ios"))
     let nativeJSON = try JSONCoding.decoder.decode(
       JSONValue.self, from: JSONCoding.encoder.encode(native))
     #expect(
       nativeJSON == [
-        "ceremonyId": "c", "identityToken": "jwt", "authorizationCode": "code", "fullName": "Brian Love",
+        "ceremonyId": "c", "identityToken": "jwt", "authorizationCode": "code",
         "device": ["deviceName": "iPhone", "platform": "ios"],
       ])
 
@@ -163,7 +175,10 @@ import WorkspaceProtocol
     let handoff = HandoffRequest(
       handoff: "handoff-secret", verifier: "verifier-secret",
       device: DeviceSpec(deviceName: "Mac", platform: "macos"))
+    let link = AppleLinkNativeRequest(
+      ceremonyId: "c", identityToken: "jwt-secret", authorizationCode: "code-secret")
     let renderings: [String] = [
+      "\(link)", String(reflecting: link),
       "\(session)", String(reflecting: session), "\(assertion)", String(reflecting: assertion),
       "\(add)", String(reflecting: add), "\(native)", String(reflecting: native), "\(handoff)",
       String(reflecting: handoff),

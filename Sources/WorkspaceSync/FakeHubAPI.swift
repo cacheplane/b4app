@@ -24,6 +24,7 @@ public actor FakeHubAPI: HubAPI {
 
   // What the sign-in calls were sent, oldest first. Nothing else about a request is kept.
   public private(set) var passkeyFinishes: [PasskeyFinishRequest] = []
+  public private(set) var appleBegins: [AppleBeginRequest] = []
   public private(set) var appleNatives: [AppleNativeRequest] = []
   public private(set) var handoffs: [HandoffRequest] = []
   public private(set) var profiles: [ProfileRequest] = []
@@ -216,8 +217,9 @@ public actor FakeHubAPI: HubAPI {
     return signIn(as: request.device)
   }
 
-  public func appleBegin() async throws -> AppleBeginResponse {
+  public func appleBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse {
     try consumeFailure()
+    appleBegins.append(request)
     return appleBeginAnswer
   }
 

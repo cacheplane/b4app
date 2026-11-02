@@ -80,6 +80,10 @@ pub struct AppleConfig {
     /// `B4HUB_APPLE_AUDIENCES`: the client ids an identity token may be for (the iOS bundle id
     /// and the Services ID).
     pub audiences: Vec<String>,
+    /// `B4HUB_APPLE_SERVICES_ID` (optional, one of `audiences`): the client id the web flow
+    /// signs in with. Without it (or without `B4HUB_PUBLIC_URL`) the hub offers only the
+    /// native flow.
+    pub services_id: Option<String>,
     /// `B4HUB_APPLE_BASE_URL`, tests only.
     pub base_url: Url,
 }
@@ -91,6 +95,7 @@ impl fmt::Debug for AppleConfig {
             .field("key_id", &self.key_id)
             .field("private_key_pem", &"<redacted>")
             .field("audiences", &self.audiences)
+            .field("services_id", &self.services_id)
             .field("base_url", &self.base_url.as_str())
             .finish()
     }
@@ -209,11 +214,13 @@ fn apple(settings: &Settings) -> Result<Option<AppleConfig>, ConfigError> {
         .filter(|name| settings.var(name).is_some())
         .collect();
     if set.is_empty() {
-        if settings.var("B4HUB_APPLE_BASE_URL").is_some() {
-            return Err(ConfigError::new(
-                "B4HUB_APPLE_BASE_URL",
-                "is set without the other B4HUB_APPLE_* variables",
-            ));
+        for name in ["B4HUB_APPLE_BASE_URL", "B4HUB_APPLE_SERVICES_ID"] {
+            if settings.var(name).is_some() {
+                return Err(ConfigError::new(
+                    name,
+                    "is set without the other B4HUB_APPLE_* variables",
+                ));
+            }
         }
         return Ok(None);
     }
@@ -268,6 +275,17 @@ fn apple(settings: &Settings) -> Result<Option<AppleConfig>, ConfigError> {
         ));
     }
 
+    let services_id = match settings.var("B4HUB_APPLE_SERVICES_ID").map(str::trim) {
+        None => None,
+        Some(id) if audiences.iter().any(|a| a == id) => Some(id.to_string()),
+        Some(_) => {
+            return Err(ConfigError::new(
+                "B4HUB_APPLE_SERVICES_ID",
+                "must be one of the client ids in B4HUB_APPLE_AUDIENCES",
+            ))
+        }
+    };
+
     let base_url = match settings.var("B4HUB_APPLE_BASE_URL") {
         None => Url::parse(DEFAULT_APPLE_BASE_URL).expect("the default is a URL"),
         Some(raw) => match Url::parse(raw) {
@@ -286,6 +304,7 @@ fn apple(settings: &Settings) -> Result<Option<AppleConfig>, ConfigError> {
         key_id,
         private_key_pem,
         audiences,
+        services_id,
         base_url,
     }))
 }
@@ -445,6 +464,33 @@ kZXiwkEnZYzZPc5fQx0VfT+fhjzYhYLgQ+KXi00zbyOb46KPzL6yEFza
             .apple
             .unwrap();
         assert_eq!(apple.base_url.as_str(), "http://127.0.0.1:9/");
+        assert_eq!(apple.services_id, None);
+    }
+
+    #[test]
+    fn the_services_id_is_one_of_the_audiences() {
+        let mut pairs = apple_pairs();
+        pairs.push(("B4HUB_APPLE_SERVICES_ID", "com.cacheplane.b4app.signin"));
+        let apple = Config::from_settings(&settings(&pairs))
+            .unwrap()
+            .apple
+            .unwrap();
+        assert_eq!(
+            apple.services_id.as_deref(),
+            Some("com.cacheplane.b4app.signin")
+        );
+
+        let mut pairs = apple_pairs();
+        pairs.push(("B4HUB_APPLE_SERVICES_ID", "com.example.other"));
+        let error = Config::from_settings(&settings(&pairs)).unwrap_err();
+        assert_eq!(error.name, "B4HUB_APPLE_SERVICES_ID");
+
+        let error = Config::from_settings(&settings(&[(
+            "B4HUB_APPLE_SERVICES_ID",
+            "com.cacheplane.b4app.signin",
+        )]))
+        .unwrap_err();
+        assert_eq!(error.name, "B4HUB_APPLE_SERVICES_ID");
     }
 
     #[test]

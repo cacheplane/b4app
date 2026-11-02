@@ -12,14 +12,14 @@ use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
 use webauthn_rs::prelude::Webauthn;
 
-use crate::apple::{AppleRevoker, ErasedAppleRevoker, NoopRevoker};
+use crate::apple::{AppleClient, AppleRevoker, ErasedAppleRevoker, UnconfiguredRevoker};
 use crate::auth::LastTouched;
 use crate::auth_limits::AuthLimits;
 use crate::cli::ConfigError;
 use crate::config::Config;
 use crate::error::ApiError;
 use crate::notify::Notifier;
-use crate::routes::{auth, changes, devices, enroll, health, me, snapshot};
+use crate::routes::{apple, auth, changes, devices, enroll, health, me, snapshot};
 
 /// How long the listener stays open, answering `/readyz` 503, after shutdown begins, so a load
 /// balancer polling readiness stops routing here before connections are refused. Capped at a
@@ -44,16 +44,29 @@ pub struct AppState {
     pub webauthn: Arc<Webauthn>,
     /// The sign-in routes' per-IP limits (in memory, per process).
     pub limits: AuthLimits,
-    /// Revokes Apple refresh tokens when an account is deleted ([`NoopRevoker`] until Sign in
-    /// with Apple is built).
+    /// Sign in with Apple, when `B4HUB_APPLE_*` configures it; without it the Apple routes
+    /// answer `not_found`.
+    pub apple: Option<Arc<AppleClient>>,
+    /// Revokes Apple refresh tokens when an account is deleted: the Apple client, or (without
+    /// Apple) [`UnconfiguredRevoker`], which refuses.
     pub apple_revoker: Arc<dyn ErasedAppleRevoker>,
 }
 
 impl AppState {
-    /// The state for `db` and `config`; a relying party webauthn-rs refuses is a configuration
-    /// error.
+    /// The state for `db` and `config`; a relying party webauthn-rs refuses, or an Apple private
+    /// key that does not sign, is a configuration error.
     pub fn new(db: Db, config: Config) -> Result<AppState, ConfigError> {
         let webauthn = config.webauthn()?;
+        let apple = config
+            .apple
+            .as_ref()
+            .map(AppleClient::new)
+            .transpose()?
+            .map(Arc::new);
+        let apple_revoker: Arc<dyn ErasedAppleRevoker> = match &apple {
+            Some(client) => client.clone(),
+            None => Arc::new(UnconfiguredRevoker),
+        };
         Ok(AppState {
             db,
             shutdown: Shutdown::default(),
@@ -62,7 +75,8 @@ impl AppState {
             config: Arc::new(config),
             webauthn: Arc::new(webauthn),
             limits: AuthLimits::default(),
-            apple_revoker: Arc::new(NoopRevoker),
+            apple,
+            apple_revoker,
         })
     }
 
@@ -108,6 +122,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/me/profile", put(me::profile))
         .route("/v1/me/passkeys/begin", post(me::passkey_begin))
         .route("/v1/me/passkeys/finish", post(me::passkey_finish))
+        .route("/v1/me/apple", post(apple::link_begin))
+        .route("/v1/me/apple/native", post(apple::link_native))
         .route("/v1/me/identities/{id}", delete(me::remove_identity))
         .route("/v1/sessions/self", delete(me::end_session))
         .route("/v1/devices", get(devices::list))
@@ -116,6 +132,11 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/auth/config", get(auth::config))
         .route("/v1/auth/passkey/begin", post(auth::passkey_begin))
         .route("/v1/auth/passkey/finish", post(auth::passkey_finish))
+        .route("/v1/auth/apple/begin", post(apple::begin))
+        .route("/v1/auth/apple/native", post(apple::native))
+        .route("/v1/auth/apple/start", get(apple::start))
+        .route("/v1/auth/apple/callback", post(apple::callback))
+        .route("/v1/auth/handoff", post(apple::handoff))
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
         .fallback(|| async { ApiError::not_found() })
         .with_state(state)
