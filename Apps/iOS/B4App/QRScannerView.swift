@@ -14,8 +14,15 @@ struct QRScannerView: View {
 
   enum Access { case checking, granted, denied }
 
-  /// A camera exists on this device.
-  static var isAvailable: Bool { AVCaptureDevice.default(for: .video) != nil }
+  /// A camera exists on this device. A debug build launched with `-B4AppAssumeCamera YES` says so in
+  /// the Simulator too, so the screens that lead with Scan can be seen there (the scanner itself then
+  /// finds no camera and shows nothing).
+  static var isAvailable: Bool {
+    #if DEBUG
+      if UserDefaults.standard.bool(forKey: "B4AppAssumeCamera") { return true }
+    #endif
+    return AVCaptureDevice.default(for: .video) != nil
+  }
 
   var body: some View {
     NavigationStack {
