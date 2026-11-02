@@ -10,15 +10,16 @@ Clients refuse any non-HTTPS URL whose host is not `localhost`, `127.0.0.1`, or 
 
 ### Authentication
 
-Every route except `/healthz`, `/readyz`, and `POST /v1/enroll` requires
+Every route except `/healthz`, `/readyz`, `POST /v1/enroll`, and the sign-in routes under
+`/v1/auth/` requires
 
 ```
 Authorization: Bearer <device token>
 ```
 
 The scheme is matched case-insensitively; the token must be non-empty and contain no whitespace.
-The token comes from `POST /v1/enroll`, which is the only place it is ever shown; the hub stores
-only its SHA-256. Authentication happens before the request body is read, so an unauthenticated
+The token comes from `POST /v1/enroll` or a sign-in (`POST /v1/auth/passkey/finish`), the only
+places it is ever shown; the hub stores only its SHA-256. Authentication happens before the request body is read, so an unauthenticated
 request is refused without its body being consumed. A missing header, another scheme, a malformed
 token, an unknown token, and a revoked device all answer the same `401 unauthorized`, so a caller
 learns nothing about which it was.
@@ -39,17 +40,23 @@ Every error uses B4's envelope:
 `execution_error` (the hub could not do what was asked). `details.code` is the stable,
 machine-readable part; `message` is fixed human-readable text and may change. Messages never
 contain SQL, panic text, or another tenant's data. A missing resource and an inaccessible one
-answer the same generic `404 not_found`.
+answer the same generic `404 not_found`. `rate_limited` alone adds a field,
+`details.retryAfterMs` (milliseconds until the client may try again), and a `Retry-After` header
+in whole seconds.
 
 | HTTP | `details.code` | `kind` | When |
 | --- | --- | --- | --- |
+| 400 | `ceremony_expired` | request | A sign-in ceremony that is unknown, expired (5 minutes), already finished, or (for a sign-up) was begun while sign-up was closed; the cases are indistinguishable. Begin again. |
 | 400 | `invalid_request` | request | The body is not valid JSON for the endpoint (malformed JSON, an unknown or missing field, a wrong value type, a missing or wrong `Content-Type`); a `deviceName` or `platform` that fails validation; a push with more than 1000 changes; a non-numeric `after`, `limit`, or `wait`. |
 | 401 | `unauthorized` | request | The bearer token is missing, malformed, unknown, or belongs to a revoked device. |
 | 401 | `invalid_code` | request | The enrollment code is wrong, expired, or already used (the three are indistinguishable). |
+| 401 | `credential_rejected` | request | A sign-in credential failed verification: a malformed WebAuthn response, a wrong origin or relying party, a bad signature, a passkey no account has, a user handle that is not the passkey's, a counter that went backwards, or a new passkey that already belongs to an account. Deliberately vague. |
+| 403 | `signup_closed` | request | A sign-up (a passkey `attestation`) while the hub's sign-up policy is `closed`. |
 | 404 | `not_found` | request | No such route, or a resource that does not exist or is not yours. |
 | 405 | `method_not_allowed` | request | The route exists but not for that method. |
 | 410 | `resync_required` | request | The pull cursor is older than the retention horizon: the hub has pruned the changes after it. Restore from `GET /v1/snapshot` (see *Horizon*). |
 | 413 | `payload_too_large` | request | A push body over 32 MiB. (A change whose `value` is over 2 MiB is rejected per change instead; see `POST /v1/changes`.) |
+| 429 | `rate_limited` | request | Too many sign-in requests from this client this minute (see *Limits*); `details.retryAfterMs` says how long to wait. |
 | 500 | `internal_error` | execution | Any unexpected failure; the cause is logged on the hub, never sent. |
 | 503 | `not_ready` | execution | `/readyz`: the database is unreachable or migrations are pending. |
 | 503 | `shutting_down` | execution | `/readyz` after SIGTERM. |
@@ -64,7 +71,10 @@ answer the same generic `404 not_found`.
 | Pull page | 1000 changes (`limit` is clamped to 1 to 1000; default 1000), and 8 MiB (8,388,608 bytes) of `value` summed over the page (each sized when pushed, as PostgreSQL's `jsonb` text, a few bytes more than compact JSON); whichever comes first, and always at least one change | `GET /v1/changes` |
 | Retention | `B4HUB_RETENTION_DAYS`, default 30 | how long the hub keeps the change log (see *Horizon*) |
 | Long-poll `wait` | 25 seconds | `GET /v1/changes`; a larger `wait` is clamped to 25 |
-| Other request bodies | 2 MiB (axum's default) | `POST /v1/enroll` |
+| Other request bodies | 2 MiB (axum's default) | `POST /v1/enroll`, `POST /v1/auth/passkey/finish` |
+| Sign-in begins | 20 per client IP per minute | `POST /v1/auth/passkey/begin`; over it, `429 rate_limited` |
+| Sign-in finishes | 10 per client IP per minute | `POST /v1/auth/passkey/finish`, counted before the body is read; over it, `429 rate_limited` |
+| Ceremony lifetime | 5 minutes, single use | a `ceremonyId` from a begin |
 
 The Mac client sends batches of 500 and replaces a `displayItems.payload` over 1 MiB with
 `{"truncated": true, "bytes": n}` before upload, so the hub's 2 MiB limit only ever rejects a
@@ -130,6 +140,116 @@ Both are validated before the code is redeemed, so a malformed request does not 
 
 `token` appears in this response and nowhere else; keep it in the Keychain. Errors: `400
 invalid_request`, `401 invalid_code`.
+
+### Sign-in
+
+Signing in (or up) ends in a device token, exactly as enrollment does. These routes take no
+`Authorization` header.
+
+**Configuration.** `serve` requires `B4HUB_WEBAUTHN_RP_ID`, the passkey relying party (the site
+domain, for example `b4.run`; Compose defaults it to `local.b4.run`), and `B4HUB_SECRET_KEY` (32
+random bytes in base64); without either it exits 2. The WebAuthn origin is `https://<rp id>`.
+`B4HUB_SIGNUP` is `open` or `closed` (default `closed`, so an on-prem hub never grows accounts by
+accident; Compose's `.env.example` sets `open`). `B4HUB_TRUST_X_FORWARDED_FOR=1` makes the rate
+limits count the right-most `X-Forwarded-For` entry instead of the TCP peer; set it only behind a
+proxy that appends that header. The `B4HUB_APPLE_*` variables are all set or none (any other
+combination exits 2); Sign in with Apple's routes are not built yet. Every secret is a plain
+environment variable, never a file path. `seed` and `enroll` read none of these.
+
+**Rate limits** are kept in memory per process (a fixed one-minute window per client IP), so a hub
+with several replicas admits a client once per replica.
+
+**Logging.** No request body of these routes, challenge, credential id, or token is logged. A
+failed verification logs `passkey verification failed` with a fixed reason. `B4HUB_LOG` cannot
+turn on webauthn-rs's own logging, which would print the responses.
+
+#### `GET /v1/auth/config`
+
+What this hub offers, so a client hides the rest. Not rate limited. `200`:
+
+```json
+{"passkeys": {"rpId": "b4.run"}, "apple": {"native": false, "web": false}, "signup": "open"}
+```
+
+`apple` is `false` for both until the Apple routes exist.
+
+#### `POST /v1/auth/passkey/begin`
+
+Begins a passkey ceremony that can end in either a sign-in or a sign-up. No body. `200`:
+
+```json
+{
+  "ceremonyId": "4f0c...",
+  "authentication": {"publicKey": {"challenge": "...", "timeout": 300000, "rpId": "b4.run",
+                                   "allowCredentials": [], "userVerification": "required",
+                                   "extensions": {"uvm": true}}},
+  "registration": {"publicKey": {"rp": {"id": "b4.run", "name": "Agent Workspace"},
+                                 "user": {"id": "...", "name": "Agent Workspace account",
+                                          "displayName": "Agent Workspace account"},
+                                 "challenge": "...", "pubKeyCredParams": [...], "timeout": 300000,
+                                 "authenticatorSelection": {"residentKey": "required",
+                                                            "requireResidentKey": true,
+                                                            "userVerification": "required"},
+                                 "attestation": "none", "extensions": {...}}}
+}
+```
+
+- `ceremonyId` is a random (version 4) UUID, valid for 5 minutes and finished once.
+- `authentication` is a WebAuthn `PublicKeyCredentialRequestOptions` wrapper with no
+  allow-list, so the OS offers any passkey for the relying party (discoverable credentials).
+  Binary fields are base64url without padding.
+- `registration` is a `PublicKeyCredentialCreationOptions` wrapper for a new user with a fresh
+  random user handle (`user.id`). It is **absent** while sign-up is closed.
+
+Errors: `429 rate_limited`.
+
+#### `POST /v1/auth/passkey/finish`
+
+Finishes the ceremony with the authenticator's response: an `assertion` signs in to the
+passkey's account, an `attestation` signs up. Request (exactly one of `assertion` and
+`attestation`; no other fields, here or in `device`):
+
+```json
+{
+  "ceremonyId": "4f0c...",
+  "assertion": { <PublicKeyCredential: id, rawId, response {authenticatorData, clientDataJSON,
+                  signature, userHandle}, type> },
+  "device": {"deviceName": "Brian's MacBook Pro", "platform": "macos", "deviceId": "0198..."}
+}
+```
+
+- `device.deviceName` and `device.platform` are validated as for `POST /v1/enroll`.
+- `device.deviceId` (optional): on a sign-in, when it names an unrevoked device of the same user
+  on the same platform, that device is reused, renamed, and its earlier tokens are deleted;
+  otherwise a new device is made. A sign-up always makes a new device.
+- An **assertion** is verified against the stored ceremony and the passkey found by its
+  credential id; its `userHandle` must be the one the passkey was registered with. Each sign-in
+  records `last_used_at` and stores the passkey's new signature counter and backup state; a
+  counter that does not move forward (when either side is non-zero) is refused, so a cloned key
+  is caught. Synced passkeys that always report 0 keep working.
+- An **attestation** creates the user (username `u-` and 8 characters), a personal org named
+  "My Org", the passkey identity, the device, and its token, in one transaction.
+
+`200`, the same shape for both:
+
+```json
+{
+  "deviceId": "0198...",
+  "token": "<43 characters, base64url>",
+  "org": {"slug": "o-k2m4q7xz", "name": "My Org"},
+  "user": {"username": "u-a3b9c2d7", "displayName": ""},
+  "needsOnboarding": true
+}
+```
+
+`needsOnboarding` is true until the user has given a full name. The token appears here and
+nowhere else.
+
+Validation happens before the ceremony is taken, so a malformed request does not use it up. Of
+two finishes of one ceremony racing, exactly one succeeds; the other is `ceremony_expired`.
+Errors: `400 invalid_request` (the body's shape, both or neither response, a bad device),
+`403 signup_closed` (an attestation while sign-up is closed, checked before the ceremony is
+taken), `400 ceremony_expired`, `401 credential_rejected`, `429 rate_limited`.
 
 ### `GET /v1/me`
 

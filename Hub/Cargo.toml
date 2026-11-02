@@ -28,7 +28,10 @@ tower = { version = "=0.5.3", features = ["util"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
 url = "=2.5.8"
-uuid = { version = "=1.29.0", features = ["v7", "serde"] }
+uuid = { version = "=1.29.0", features = ["v4", "v7", "serde"] }
+webauthn-rs = { version = "=0.6.2", features = ["danger-allow-state-serialisation", "conditional-ui"] }
+webauthn-rs-proto = "=0.6.2"
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa", "std"] }
 b4hub-core = { path = "crates/b4hub-core" }
 b4hub-db = { path = "crates/b4hub-db" }
 

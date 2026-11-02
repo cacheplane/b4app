@@ -1,6 +1,8 @@
 //! Device enrollment, bearer authentication, and the `enroll` command against a real PostgreSQL.
 //! Run with `source <(../scripts/test-db.sh)` first; `#[sqlx::test]` creates one database per test.
 
+mod common;
+
 use std::time::Duration;
 
 use axum::body::{to_bytes, Body};
@@ -49,7 +51,7 @@ async fn migrated(pool: &PgPool) -> (Db, AppState) {
         .unwrap();
     let admin = Db::connect(&admin_url(pool)).await.unwrap();
     let app = Db::connect(&app_url(pool)).await.unwrap();
-    (admin, AppState::new(app))
+    (admin, common::state(app))
 }
 
 async fn seed_blove(admin: &Db) -> orgs::SeedOutcome {

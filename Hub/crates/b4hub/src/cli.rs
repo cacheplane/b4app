@@ -17,12 +17,16 @@ use url::Url;
 use b4hub_db::orgs::{self, OrgChoice};
 use b4hub_db::{devices, Db};
 
+use crate::config::Config;
 use crate::serve::{self, AppState};
 
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_SHUTDOWN_WAIT_MS: u64 = 30_000;
 const DEFAULT_RETENTION_DAYS: u32 = 30;
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
+
+/// Crates whose own logging would leak secrets, kept off whatever `B4HUB_LOG` says.
+const SILENCED_TARGETS: [&str; 3] = ["webauthn_rs", "webauthn_rs_core", "webauthn_attestation_ca"];
 
 /// How long an enrollment code stays redeemable.
 const ENROLLMENT_TTL: Duration = Duration::from_secs(600);
@@ -137,7 +141,7 @@ pub struct ConfigError {
 }
 
 impl ConfigError {
-    fn new(name: &str, reason: impl Into<String>) -> ConfigError {
+    pub fn new(name: &str, reason: impl Into<String>) -> ConfigError {
         ConfigError {
             name: name.to_string(),
             reason: reason.into(),
@@ -190,7 +194,8 @@ impl Settings {
         }
     }
 
-    fn var(&self, name: &str) -> Option<&str> {
+    /// The variable `name`, when it is set and not empty.
+    pub(crate) fn var(&self, name: &str) -> Option<&str> {
         self.vars
             .get(name)
             .map(String::as_str)
@@ -259,10 +264,19 @@ impl Settings {
         }
     }
 
-    /// `B4HUB_LOG`, a tracing filter, default `info`.
+    /// `B4HUB_LOG`, a tracing filter, default `info`. Whatever it says, webauthn-rs is silenced:
+    /// at DEBUG and TRACE it logs the WebAuthn responses and challenges it verifies.
     pub fn log_filter(&self) -> Result<EnvFilter, ConfigError> {
-        EnvFilter::try_new(self.var("B4HUB_LOG").unwrap_or("info"))
-            .map_err(|_| ConfigError::new("B4HUB_LOG", "is not a valid tracing filter"))
+        let filter = EnvFilter::try_new(self.var("B4HUB_LOG").unwrap_or("info"))
+            .map_err(|_| ConfigError::new("B4HUB_LOG", "is not a valid tracing filter"))?;
+        // A directive for the same target replaces the operator's, so these always win.
+        Ok(SILENCED_TARGETS.iter().fold(filter, |filter, target| {
+            filter.add_directive(
+                format!("{target}=off")
+                    .parse()
+                    .expect("a target directive parses"),
+            )
+        }))
     }
 
     /// `DATABASE_URL` (or the contents of the file `DATABASE_URL_FILE` names): the `b4hub_app`
@@ -335,19 +349,23 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
         None => SocketAddr::from(([0, 0, 0, 0], settings.port()?)),
     };
     let wait = settings.shutdown_wait()?;
-    let public_url = settings.public_url()?;
     let retention = settings.retention()?;
+    let config = Config::from_settings(settings)?;
     let db = Db::connect(&settings.database_url()?).await?;
     refuse_privileged_connection(&db).await?;
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(
         %addr,
-        public_url = public_url.as_ref().map(Url::as_str),
+        public_url = config.public_url.as_ref().map(Url::as_str),
         shutdown_wait_ms = wait.as_millis() as u64,
         retention_days = retention.as_secs() / SECONDS_PER_DAY,
+        signup = ?config.signup,
+        rp_id = %config.rp_id,
+        apple = config.apple.is_some(),
+        trust_forwarded_for = config.trust_forwarded_for,
         "serving"
     );
-    let state = AppState::new(db.clone());
+    let state = AppState::new(db.clone(), config)?;
     let pruning = tokio::spawn(serve::prune_loop(
         db,
         retention,
@@ -518,6 +536,54 @@ mod tests {
         let error = run(cli, &settings).await.unwrap_err();
         assert!(matches!(error, CliError::Config(_)), "{error}");
         assert_eq!(error.exit_code(), 2);
+    }
+
+    #[tokio::test]
+    async fn serve_without_the_sign_in_settings_is_a_configuration_error() {
+        let cli = Cli::try_parse_from(["b4hub", "serve", "--bind", "127.0.0.1:0"]).unwrap();
+        let bare = settings(&[("DATABASE_URL", "postgres://b4hub_app:pw@127.0.0.1:1/none")]);
+        let error = run(cli, &bare).await.unwrap_err();
+        match &error {
+            CliError::Config(e) => assert_eq!(e.name, "B4HUB_WEBAUTHN_RP_ID"),
+            other => panic!("expected a configuration error, got {other}"),
+        }
+        assert_eq!(error.exit_code(), 2);
+
+        let cli = Cli::try_parse_from(["b4hub", "serve", "--bind", "127.0.0.1:0"]).unwrap();
+        let short_key = settings(&[
+            ("DATABASE_URL", "postgres://b4hub_app:pw@127.0.0.1:1/none"),
+            ("B4HUB_WEBAUTHN_RP_ID", "local.b4.run"),
+            ("B4HUB_SECRET_KEY", "dG9vIHNob3J0"),
+        ]);
+        let error = run(cli, &short_key).await.unwrap_err();
+        assert!(matches!(&error, CliError::Config(e) if e.name == "B4HUB_SECRET_KEY"));
+        assert!(!error.to_string().contains("dG9vIHNob3J0"));
+    }
+
+    #[test]
+    fn the_log_filter_always_silences_webauthn() {
+        for raw in [
+            None,
+            Some("trace"),
+            Some("info,webauthn_rs_core=trace,webauthn_rs=debug"),
+        ] {
+            let pairs: Vec<(&str, &str)> = raw.map(|r| ("B4HUB_LOG", r)).into_iter().collect();
+            let filter = settings(&pairs).log_filter().unwrap().to_string();
+            for target in SILENCED_TARGETS {
+                assert!(
+                    filter.contains(&format!("{target}=off")),
+                    "{raw:?}: {filter}"
+                );
+                assert!(
+                    !filter.contains(&format!("{target}=trace")),
+                    "{raw:?}: {filter}"
+                );
+                assert!(
+                    !filter.contains(&format!("{target}=debug")),
+                    "{raw:?}: {filter}"
+                );
+            }
+        }
     }
 
     #[test]

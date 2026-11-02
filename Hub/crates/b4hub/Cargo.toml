@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 axum.workspace = true
+base64.workspace = true
 b4hub-core.workspace = true
 b4hub-db.workspace = true
 clap.workspace = true
@@ -26,8 +27,13 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true
 uuid.workspace = true
+webauthn-rs.workspace = true
+webauthn-rs-proto.workspace = true
 
 [dev-dependencies]
+getrandom.workspace = true
+p256.workspace = true
+sha2.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true

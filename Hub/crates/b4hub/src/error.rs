@@ -1,10 +1,13 @@
 //! The public error envelope. It is B4's, so the Swift client decodes both services with one
 //! type: `{"error":{"kind":"request_error"|"execution_error","message":"…","details":{"code":"…"}}}`.
 //! Messages are fixed text chosen here; they never carry SQL, a panic, or another tenant's data.
+//! `rate_limited` adds `details.retryAfterMs` and a `Retry-After` header.
+
+use std::time::Duration;
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Request};
-use axum::http::StatusCode;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::de::DeserializeOwned;
@@ -26,6 +29,8 @@ pub struct ApiError {
     pub code: &'static str,
     pub message: String,
     pub status: StatusCode,
+    /// For `rate_limited`: how long until the caller may try again.
+    pub retry_after: Option<Duration>,
 }
 
 impl ApiError {
@@ -35,6 +40,7 @@ impl ApiError {
             code,
             message: message.into(),
             status,
+            retry_after: None,
         }
     }
 
@@ -48,6 +54,7 @@ impl ApiError {
             code,
             message: message.into(),
             status,
+            retry_after: None,
         }
     }
 
@@ -90,6 +97,46 @@ impl ApiError {
         )
     }
 
+    /// A sign-in with a new Apple ID or passkey while the hub's sign-up policy is closed.
+    pub fn signup_closed() -> ApiError {
+        ApiError::request(
+            StatusCode::FORBIDDEN,
+            "signup_closed",
+            "this hub does not create new accounts",
+        )
+    }
+
+    /// The ceremony or handoff is unknown, expired, or already used (indistinguishably).
+    pub fn ceremony_expired() -> ApiError {
+        ApiError::request(
+            StatusCode::BAD_REQUEST,
+            "ceremony_expired",
+            "the sign-in expired or was already used; start again",
+        )
+    }
+
+    /// Any failed verification of a sign-in credential. Deliberately vague: the caller learns
+    /// nothing about which check failed.
+    pub fn credential_rejected() -> ApiError {
+        ApiError::request(
+            StatusCode::UNAUTHORIZED,
+            "credential_rejected",
+            "the credential could not be verified",
+        )
+    }
+
+    /// Too many sign-in requests from this client; it may try again after `retry_after`.
+    pub fn rate_limited(retry_after: Duration) -> ApiError {
+        ApiError {
+            retry_after: Some(retry_after),
+            ..ApiError::request(
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                "too many sign-in attempts; try again shortly",
+            )
+        }
+    }
+
     pub fn method_not_allowed() -> ApiError {
         ApiError::request(
             StatusCode::METHOD_NOT_ALLOWED,
@@ -129,6 +176,8 @@ impl From<b4hub_db::Error> for ApiError {
         match error {
             b4hub_db::Error::InvalidCode => ApiError::invalid_code(),
             b4hub_db::Error::ResyncRequired => ApiError::resync_required(),
+            b4hub_db::Error::CeremonyExpired => ApiError::ceremony_expired(),
+            b4hub_db::Error::IdentityTaken => ApiError::credential_rejected(),
             other => {
                 tracing::error!(error = %other, "request failed in the database layer");
                 ApiError::internal()
@@ -167,14 +216,26 @@ fn json_rejection(rejection: &JsonRejection) -> ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        let mut details = json!({ "code": self.code });
+        if let Some(wait) = self.retry_after {
+            details["retryAfterMs"] = json!(u64::try_from(wait.as_millis()).unwrap_or(u64::MAX));
+        }
         let body = json!({
             "error": {
                 "kind": self.kind,
                 "message": self.message,
-                "details": { "code": self.code },
+                "details": details,
             }
         });
-        (self.status, Json(body)).into_response()
+        let mut response = (self.status, Json(body)).into_response();
+        if let Some(wait) = self.retry_after {
+            // Whole seconds, rounded up, and at least one.
+            let seconds = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from(seconds.max(1)));
+        }
+        response
     }
 }
 
@@ -198,6 +259,22 @@ mod tests {
                 "details": {"code": "not_ready"},
             }})
         );
+    }
+
+    #[tokio::test]
+    async fn rate_limited_says_when_to_retry() {
+        let response = ApiError::rate_limited(Duration::from_millis(1500)).into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "2");
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body["error"]["details"],
+            json!({"code": "rate_limited", "retryAfterMs": 1500})
+        );
+        assert_eq!(body["error"]["kind"], "request_error");
     }
 
     #[test]

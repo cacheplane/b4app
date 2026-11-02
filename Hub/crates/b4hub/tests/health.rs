@@ -1,6 +1,8 @@
 //! Health, readiness, and shutdown behaviour against a real PostgreSQL. Run with
 //! `source <(../scripts/test-db.sh)` first; `#[sqlx::test]` creates one database per test.
 
+mod common;
+
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -40,7 +42,7 @@ async fn migrated_state(pool: &PgPool) -> AppState {
     b4hub_db::migrate::run(&admin_url(pool), &app_url(pool))
         .await
         .unwrap();
-    AppState::new(Db::connect(&app_url(pool)).await.unwrap())
+    common::state(Db::connect(&app_url(pool)).await.unwrap())
 }
 
 #[sqlx::test(migrations = false)]
@@ -113,7 +115,7 @@ async fn readyz_reports_current_after_migrate(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn readyz_is_503_before_migrate(pool: PgPool) {
-    let state = AppState::new(Db { pool });
+    let state = common::state(Db { pool });
 
     let (status, body) = get(state.clone(), "/healthz").await;
     assert_eq!(
@@ -132,7 +134,7 @@ async fn readyz_is_503_before_migrate(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn unknown_paths_answer_the_error_envelope(pool: PgPool) {
-    let (status, body) = get(AppState::new(Db { pool }), "/nope").await;
+    let (status, body) = get(common::state(Db { pool }), "/nope").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"]["kind"], "request_error");
     assert_eq!(body["error"]["details"]["code"], "not_found");

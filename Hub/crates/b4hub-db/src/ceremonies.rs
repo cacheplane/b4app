@@ -11,7 +11,6 @@
 
 use std::time::Duration;
 
-use b4hub_core::ids::new_uuid;
 use b4hub_core::tokens::{hash_token, new_token};
 use serde_json::Value;
 use sqlx::types::Uuid;
@@ -25,9 +24,14 @@ pub const CEREMONY_TTL: Duration = Duration::from_secs(5 * 60);
 /// How long a handoff can be redeemed after it was recorded.
 pub const HANDOFF_TTL: Duration = Duration::from_secs(2 * 60);
 
-/// Begins a ceremony of `kind` holding `state`, and returns its id.
+/// How long after expiring a ceremony or handoff is kept before pruning deletes it, so a finish
+/// that read the row just before the deadline never finds it gone mid-request.
+pub const PRUNE_GRACE: Duration = Duration::from_secs(60);
+
+/// Begins a ceremony of `kind` holding `state`, and returns its id. The id is a version 4 UUID
+/// (122 random bits, no timestamp): it is what a finish presents, so it must not be guessable.
 pub async fn create(db: &Db, kind: &str, state: Value) -> Result<Uuid> {
-    let id = new_uuid();
+    let id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO auth_ceremonies (id, kind, state, created_at, expires_at) \
          VALUES ($1, $2, $3, now(), now() + make_interval(secs => $4))",
@@ -99,18 +103,24 @@ pub async fn take_handoff(db: &Db, code_hash: &[u8], verifier_hash: &[u8]) -> Re
     Ok(Principal { org_id, user_id })
 }
 
-/// Deletes expired handoffs, then expired ceremonies no remaining handoff points at, and returns
-/// how many rows went. The serve loop runs it with each change-log prune.
+/// Deletes handoffs, then ceremonies no remaining handoff points at, that expired more than
+/// [`PRUNE_GRACE`] ago, and returns how many rows went. The serve loop runs it with each
+/// change-log prune.
 pub async fn prune_expired(db: &Db) -> Result<u64> {
+    let grace = PRUNE_GRACE.as_secs_f64();
     let mut tx = db.untenanted_tx().await?;
-    let handoffs = sqlx::query("DELETE FROM auth_handoffs WHERE expires_at <= now()")
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+    let handoffs = sqlx::query(
+        "DELETE FROM auth_handoffs WHERE expires_at <= now() - make_interval(secs => $1)",
+    )
+    .bind(grace)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
     let ceremonies = sqlx::query(
-        "DELETE FROM auth_ceremonies c WHERE expires_at <= now() \
+        "DELETE FROM auth_ceremonies c WHERE expires_at <= now() - make_interval(secs => $1) \
          AND NOT EXISTS (SELECT 1 FROM auth_handoffs h WHERE h.ceremony_id = c.id)",
     )
+    .bind(grace)
     .execute(&mut *tx)
     .await?
     .rows_affected();

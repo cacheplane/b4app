@@ -80,6 +80,27 @@ No dependency, toolchain, or image changed in M8b. What changed is the contract 
 | New cross-language fixtures | `Tests/Fixtures/sync/conflicts.json` (read by the Swift and Rust suites) and `Tests/Fixtures/sync/attention.json` (read by the coordinator's store and the mirror's store); `changes.json` gained `hlc` on every entry and nothing else, so M8a's count-based assertions stay valid |
 | Test database | Unchanged. Rust suite: 117 tests; Swift suite: 517 tests |
 
+### Hub sign-in additions (passkeys)
+
+New crates, pinned exactly like the rest:
+
+| Crate | Version | Used for |
+| --- | --- | --- |
+| webauthn-rs | 0.6.2 (`danger-allow-state-serialisation`, `conditional-ui`) | passkey registration and discoverable sign-in; ceremony state is serialised into `auth_ceremonies` |
+| webauthn-rs-proto | 0.6.2 | the registration options' `authenticatorSelection` (resident key and user verification required), which `webauthn-rs` does not re-export |
+| uuid | 1.29.0, now also `v4` | random ceremony ids and passkey user handles |
+| p256 | 0.14.0 (`ecdsa`, `std`; dev only) | the tests' software authenticator (`crates/b4hub/tests/common/authenticator.rs`); the same version webauthn-rs already pulls in |
+
+webauthn-rs 0.6 verifies with RustCrypto (`crypto-glue`, `p256` 0.14), not OpenSSL: `cargo tree -i openssl-sys` matches nothing, so the image needs no `libssl`. `webauthn-authenticator-rs` 0.6.2 was not used: its `SoftPasskey` refuses resident keys and needs an allow-list, so it cannot answer a discoverable sign-in.
+
+| Item | Value |
+| --- | --- |
+| Hub environment | `serve` now requires `B4HUB_WEBAUTHN_RP_ID` (a bare domain; the origin is `https://<rp id>`) and `B4HUB_SECRET_KEY` (32 bytes, base64), and reads `B4HUB_SIGNUP` (`open`/`closed`, default `closed`), `B4HUB_TRUST_X_FORWARDED_FOR` (`1`/`0`), and the `B4HUB_APPLE_*` set (all or none). A missing or malformed one exits 2. Compose passes `B4HUB_WEBAUTHN_RP_ID` (default `local.b4.run`), `B4HUB_SIGNUP` (default `closed`; `.env.example` sets `open`), and `B4HUB_SECRET_KEY` (required) to `hub` only |
+| Routes | `GET /v1/auth/config`, `POST /v1/auth/passkey/begin`, `POST /v1/auth/passkey/finish`; errors `signup_closed` (403), `ceremony_expired` (400), `credential_rejected` (401), `rate_limited` (429, `details.retryAfterMs` and `Retry-After`) |
+| Rate limits | In memory per process, a fixed one-minute window per client IP: 20 begins, 10 finishes |
+| Logging | The pool disables sqlx's statement logging (SQL text never reaches the log), and `B4HUB_LOG` can no longer enable `webauthn_rs`, `webauthn_rs_core`, or `webauthn_attestation_ca`, which log responses and challenges at DEBUG and TRACE |
+| Hub protocol | `minClientProtocol` stays 1: the routes are new and nothing existing changed shape |
+
 ## Provider runtimes
 
 | Runtime | Installed on target Mac | Published | Verified behavior | Limits and gates |

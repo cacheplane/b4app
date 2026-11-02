@@ -216,7 +216,7 @@ Start a local hub (needs Docker). Compose publishes the hub as `127.0.0.1:8080:8
 cd Hub && cp .env.example .env
 ```
 
-Fill in `POSTGRES_PASSWORD` and `B4HUB_APP_PASSWORD` in `.env` (URL-safe printable ASCII, for example `openssl rand -hex 24` each; the file is gitignored), then:
+Fill in `POSTGRES_PASSWORD` and `B4HUB_APP_PASSWORD` in `.env` (URL-safe printable ASCII, for example `openssl rand -hex 24` each; the file is gitignored) and `B4HUB_SECRET_KEY` (`openssl rand -base64 32`; the hub refuses to start without it), then:
 
 ```bash
 docker compose build && docker compose up -d && curl -fsS localhost:8080/readyz

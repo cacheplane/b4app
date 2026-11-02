@@ -1,6 +1,7 @@
 //! The HTTP server: router, shared state, and graceful shutdown.
 
 use std::future::{Future, IntoFuture};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,11 +10,15 @@ use axum::Router;
 use b4hub_db::Db;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
+use webauthn_rs::prelude::Webauthn;
 
 use crate::auth::LastTouched;
+use crate::auth_limits::AuthLimits;
+use crate::cli::ConfigError;
+use crate::config::Config;
 use crate::error::ApiError;
 use crate::notify::Notifier;
-use crate::routes::{changes, devices, enroll, health, snapshot};
+use crate::routes::{auth, changes, devices, enroll, health, snapshot};
 
 /// How long the listener stays open, answering `/readyz` 503, after shutdown begins, so a load
 /// balancer polling readiness stops routing here before connections are refused. Capped at a
@@ -32,16 +37,28 @@ pub struct AppState {
     pub last_touched: LastTouched,
     /// Wakes long-polling pulls when a push commits (single replica in M8a).
     pub notifier: Notifier,
+    /// The sign-in configuration `serve` read at start.
+    pub config: Arc<Config>,
+    /// The WebAuthn relying party built from it.
+    pub webauthn: Arc<Webauthn>,
+    /// The sign-in routes' per-IP limits (in memory, per process).
+    pub limits: AuthLimits,
 }
 
 impl AppState {
-    pub fn new(db: Db) -> AppState {
-        AppState {
+    /// The state for `db` and `config`; a relying party webauthn-rs refuses is a configuration
+    /// error.
+    pub fn new(db: Db, config: Config) -> Result<AppState, ConfigError> {
+        let webauthn = config.webauthn()?;
+        Ok(AppState {
             db,
             shutdown: Shutdown::default(),
             last_touched: LastTouched::default(),
             notifier: Notifier::default(),
-        }
+            config: Arc::new(config),
+            webauthn: Arc::new(webauthn),
+            limits: AuthLimits::default(),
+        })
     }
 }
 
@@ -80,12 +97,16 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/devices", get(devices::list))
         .route("/v1/snapshot", get(snapshot::get))
         .route("/v1/devices/self", delete(devices::revoke_self))
+        .route("/v1/auth/config", get(auth::config))
+        .route("/v1/auth/passkey/begin", post(auth::passkey_begin))
+        .route("/v1/auth/passkey/finish", post(auth::passkey_finish))
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
         .fallback(|| async { ApiError::not_found() })
         .with_state(state)
 }
 
-/// Serves `router(state)` on `listener` until `signal` resolves, then shuts down: `/readyz`
+/// Serves `router(state)` on `listener` (with each connection's peer address, which the sign-in
+/// rate limits key on) until `signal` resolves, then shuts down: `/readyz`
 /// turns 503 `shutting_down` and waiters are told, the listener stays open for a short readiness
 /// grace and then closes, and in-flight requests drain. The whole sequence is bounded by `wait`
 /// from the moment the signal arrives; whatever is still open then is dropped.
@@ -99,7 +120,8 @@ pub async fn run(
     let shutdown = state.shutdown.clone();
     let (signalled_tx, signalled_rx) = oneshot::channel::<()>();
 
-    let server = axum::serve(listener, router(state))
+    let app = router(state).into_make_service_with_connect_info::<SocketAddr>();
+    let server = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             signal.await;
             shutdown.trigger();

@@ -2,7 +2,9 @@
 //! envelope (`error`), the long-poll wake-up (`notify`), and the routes (`routes`).
 
 pub mod auth;
+pub mod auth_limits;
 pub mod cli;
+pub mod config;
 pub mod error;
 pub mod notify;
 pub mod routes;

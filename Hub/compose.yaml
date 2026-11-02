@@ -9,7 +9,8 @@
 #
 # `seed` and `enroll` are operator commands: they connect with DATABASE_ADMIN_URL, which only the
 # `migrate` service carries (same image, different command). `hub`, the HTTP service, gets
-# DATABASE_URL (the b4hub_app role) and nothing else.
+# DATABASE_URL (the b4hub_app role) and the sign-in settings, which `seed` and `enroll` never
+# need.
 
 x-b4hub: &b4hub
   build: .
@@ -45,6 +46,9 @@ services:
     command: ["serve"]
     environment:
       DATABASE_URL: postgres://b4hub_app:${B4HUB_APP_PASSWORD:?set B4HUB_APP_PASSWORD in Hub/.env (see .env.example)}@db:5432/b4hub
+      B4HUB_SECRET_KEY: ${B4HUB_SECRET_KEY:?set B4HUB_SECRET_KEY in Hub/.env (see .env.example)}
+      B4HUB_WEBAUTHN_RP_ID: ${B4HUB_WEBAUTHN_RP_ID:-local.b4.run}
+      B4HUB_SIGNUP: ${B4HUB_SIGNUP:-closed}
     ports:
       - "127.0.0.1:8080:8080"
     # The hub drains open long-polls for up to B4HUB_SHUTDOWN_WAIT_MS (30 s); Compose's default

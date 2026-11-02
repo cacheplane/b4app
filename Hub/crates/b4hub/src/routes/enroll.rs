@@ -15,7 +15,7 @@ use crate::serve::AppState;
 const PLATFORMS: [&str; 3] = ["macos", "ios", "cli"];
 
 /// The longest device name accepted, in characters.
-const MAX_DEVICE_NAME_CHARS: usize = 200;
+pub(crate) const MAX_DEVICE_NAME_CHARS: usize = 200;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]

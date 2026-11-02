@@ -427,9 +427,24 @@ async fn prune_expired_removes_old_ceremonies_and_handoffs(pool: PgPool) {
     .await
     .unwrap();
 
-    // The expired ceremony stays while a live handoff still points at it.
-    assert_eq!(ceremonies::prune_expired(&app).await.unwrap(), 0);
+    // Nothing goes within a minute of its expiry, so a finish racing the deadline never has its
+    // row deleted from under it.
     sqlx::query("UPDATE auth_handoffs SET expires_at = now() - interval '1 second'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(ceremonies::prune_expired(&app).await.unwrap(), 0);
+    sqlx::query(
+        "UPDATE auth_ceremonies SET expires_at = now() - interval '61 seconds' WHERE id = $1",
+    )
+    .bind(old)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // The expired ceremony stays while a handoff still points at it.
+    assert_eq!(ceremonies::prune_expired(&app).await.unwrap(), 0);
+    sqlx::query("UPDATE auth_handoffs SET expires_at = now() - interval '61 seconds'")
         .execute(&pool)
         .await
         .unwrap();
@@ -969,4 +984,148 @@ async fn merge_refused_when_source_has_macos_device(pool: PgPool) {
         accounts::merge_phone_only(&app, me, me).await,
         Err(Error::MergeRefused)
     ));
+}
+
+#[sqlx::test(migrations = false)]
+async fn ceremony_ids_are_random(pool: PgPool) {
+    let (_admin, app) = common::migrated(&pool).await;
+    let id = ceremonies::create(&app, "passkey", json!({}))
+        .await
+        .unwrap();
+    // Version 4: 122 random bits and no timestamp, since the id is all a finish presents.
+    assert_eq!(id.get_version_num(), 4);
+}
+
+#[sqlx::test(migrations = false)]
+async fn an_identity_belongs_to_one_account(pool: PgPool) {
+    let (_admin, app) = common::migrated(&pool).await;
+    let first = accounts::create_personal(&app, passkey(b"cred"), device("Mac", Platform::Macos))
+        .await
+        .unwrap();
+    accounts::add_identity(
+        &app,
+        Principal {
+            org_id: first.org_id,
+            user_id: first.user_id,
+        },
+        apple("001.taken"),
+    )
+    .await
+    .unwrap();
+
+    for identity in [passkey(b"cred"), apple("001.taken")] {
+        let again = accounts::create_personal(&app, identity, device("Mac", Platform::Macos)).await;
+        assert!(matches!(again, Err(Error::IdentityTaken)), "{again:?}");
+    }
+    let other = accounts::create_personal(&app, passkey(b"other"), device("Mac", Platform::Macos))
+        .await
+        .unwrap();
+    let other = Principal {
+        org_id: other.org_id,
+        user_id: other.user_id,
+    };
+    for identity in [passkey(b"cred"), apple("001.taken")] {
+        let added = accounts::add_identity(&app, other, identity).await;
+        assert!(matches!(added, Err(Error::IdentityTaken)), "{added:?}");
+    }
+    // A failed sign-up leaves nothing behind: the only orgs are the two that succeeded.
+    let orgs: i64 = sqlx::query_scalar("SELECT count(*) FROM orgs")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(orgs, 2);
+}
+
+#[sqlx::test(migrations = false)]
+async fn passkey_use_is_recorded(pool: PgPool) {
+    let (_admin, app) = common::migrated(&pool).await;
+    accounts::create_personal(&app, passkey(b"cred"), device("Mac", Platform::Macos))
+        .await
+        .unwrap();
+    let (_, stored) = accounts::find_by_credential(&app, b"cred")
+        .await
+        .unwrap()
+        .unwrap();
+
+    // Without a changed passkey only the time moves.
+    accounts::record_passkey_use(&app, stored.identity_id, None)
+        .await
+        .unwrap();
+    let (_, unchanged) = accounts::find_by_credential(&app, b"cred")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged.passkey, stored.passkey);
+
+    let updated = json!({"cred": {"cred_id": b"cred", "counter": 7}});
+    accounts::record_passkey_use(&app, stored.identity_id, Some(&updated))
+        .await
+        .unwrap();
+    let (_, after) = accounts::find_by_credential(&app, b"cred")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.passkey, updated);
+    let used: Option<String> =
+        sqlx::query_scalar("SELECT last_used_at::text FROM user_identities WHERE id = $1")
+            .bind(stored.identity_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(used.is_some());
+}
+
+#[sqlx::test(migrations = false)]
+async fn account_summary_reports_onboarding(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let created = accounts::create_personal(&app, passkey(b"cred"), device("Mac", Platform::Macos))
+        .await
+        .unwrap();
+    let principal = Principal {
+        org_id: created.org_id,
+        user_id: created.user_id,
+    };
+    let summary = accounts::account_summary(&app, principal)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(summary.org_name, "My Org");
+    assert!(summary.org_slug.starts_with("o-"));
+    assert!(summary.username.starts_with("u-"));
+    assert_eq!(summary.display_name, "");
+    assert!(!summary.onboarded);
+
+    let mut tx = app.tenant_tx(created.org_id).await.unwrap();
+    accounts::set_profile(&mut tx, created.user_id, "Brian Love")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let summary = accounts::account_summary(&app, principal)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(summary.onboarded);
+    assert_eq!(summary.org_name, "Brian's Org");
+    assert_eq!(summary.display_name, "Brian Love");
+
+    // An operator-seeded user counts as onboarded; an unknown user is `None`.
+    let seeded = orgs::seed(&admin, "acme", "Acme", "blove", "Brian Love", "b@x.test")
+        .await
+        .unwrap();
+    let seeded = Principal {
+        org_id: seeded.org_id,
+        user_id: seeded.user_id,
+    };
+    assert!(
+        accounts::account_summary(&app, seeded)
+            .await
+            .unwrap()
+            .unwrap()
+            .onboarded
+    );
+    let nobody = Principal {
+        org_id: created.org_id,
+        user_id: Uuid::from_u128(9),
+    };
+    assert_eq!(accounts::account_summary(&app, nobody).await.unwrap(), None);
 }

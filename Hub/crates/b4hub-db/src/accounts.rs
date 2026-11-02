@@ -98,6 +98,17 @@ pub struct IdentitySummary {
     pub last_used_at: Option<String>,
 }
 
+/// What a sign-in answers about the account: the org and user as enrollment reports them, and
+/// whether the user has onboarded (given a full name) yet.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct AccountSummary {
+    pub org_slug: String,
+    pub org_name: String,
+    pub username: String,
+    pub display_name: String,
+    pub onboarded: bool,
+}
+
 /// What a sign-up created. `token` is shown to the caller once and stored nowhere.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Created {
@@ -246,6 +257,38 @@ pub async fn find_by_credential(
             )
         },
     ))
+}
+
+/// Records that the passkey identity `identity_id` was just used to sign in: sets `last_used_at`,
+/// and replaces the stored passkey with `passkey` when the assertion changed it (its counter or
+/// backup state).
+pub async fn record_passkey_use(db: &Db, identity_id: Uuid, passkey: Option<&Value>) -> Result<()> {
+    sqlx::query(
+        "UPDATE user_identities SET last_used_at = now(), passkey = COALESCE($2, passkey) \
+         WHERE id = $1 AND kind = 'passkey'",
+    )
+    .bind(identity_id)
+    .bind(passkey)
+    .execute(&db.pool)
+    .await?;
+    Ok(())
+}
+
+/// `principal`'s org and user as a sign-in reports them; `None` when there is no such user.
+pub async fn account_summary(db: &Db, principal: Principal) -> Result<Option<AccountSummary>> {
+    let mut tx = db.tenant_tx(principal.org_id).await?;
+    let summary = sqlx::query_as(
+        "SELECT o.slug AS org_slug, o.name AS org_name, u.username, u.display_name, \
+                u.onboarded_at IS NOT NULL AS onboarded \
+         FROM users u JOIN orgs o ON o.id = u.org_id \
+         WHERE u.id = $1 AND u.org_id = $2",
+    )
+    .bind(principal.user_id)
+    .bind(principal.org_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(summary)
 }
 
 /// Signs `principal` in on `device`: issues a token for the device `reuse` names when it is an
@@ -472,8 +515,33 @@ async fn delete_org(tx: &mut Transaction<'_, Postgres>, org_id: Uuid) -> Result<
     Ok(())
 }
 
-/// Inserts `identity` for `principal` and returns its id.
+/// The unique constraints that make an Apple ID or a passkey belong to one account.
+const IDENTITY_KEYS: [&str; 2] = [
+    "user_identities_apple_sub_key",
+    "user_identities_credential_id_key",
+];
+
+/// Inserts `identity` for `principal` and returns its id; [`Error::IdentityTaken`] when it already
+/// belongs to an account.
 async fn insert_identity(
+    tx: &mut Transaction<'_, Postgres>,
+    principal: Principal,
+    identity: &Identity,
+) -> Result<Uuid> {
+    insert_identity_row(tx, principal, identity)
+        .await
+        .map_err(|error| match error {
+            Error::Sqlx(sqlx::Error::Database(db))
+                if db.is_unique_violation()
+                    && db.constraint().is_some_and(|c| IDENTITY_KEYS.contains(&c)) =>
+            {
+                Error::IdentityTaken
+            }
+            other => other,
+        })
+}
+
+async fn insert_identity_row(
     tx: &mut Transaction<'_, Postgres>,
     principal: Principal,
     identity: &Identity,
