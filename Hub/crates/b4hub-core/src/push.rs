@@ -78,23 +78,73 @@ pub fn alert_title(thread_title: Option<&str>) -> String {
     trimmed.chars().take(TITLE_LIMIT).collect()
 }
 
-/// The APNs payload. It carries the thread id and no URL; the app builds the link itself.
-pub fn payload(thread_id: &str, title: &str, reason: Reason) -> Value {
+/// What a notification key names: a request or a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Request,
+    Turn,
+}
+
+impl Kind {
+    /// The prefix of a notification key.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Kind::Request => "request",
+            Kind::Turn => "turn",
+        }
+    }
+}
+
+/// The notification key, `request:<id>` or `turn:<id>`. It rides in the payload and is the APNs
+/// collapse id, so the app and the hub name one notification the same way.
+pub fn key(kind: Kind, row_id: &str) -> String {
+    format!("{}:{row_id}", kind.as_str())
+}
+
+/// The APNs alert payload. It carries the thread id, the notification `key`, and the app icon
+/// `badge`, and no URL; the app builds the link itself.
+pub fn payload(thread_id: &str, title: &str, reason: Reason, key: &str, badge: i64) -> Value {
     json!({
         "aps": {
             "alert": { "title": title, "body": reason.body() },
             "sound": "default",
+            "badge": badge,
             "content-available": 1,
             "thread-id": thread_id,
         },
         "threadId": thread_id,
         "reason": reason.as_str(),
+        "key": key,
     })
 }
 
 /// [`payload`] plus the `Simulator Target Bundle` key `simctl push` reads from a `.apns` file.
-pub fn spool_payload(thread_id: &str, title: &str, reason: Reason, bundle_id: &str) -> Value {
-    let mut value = payload(thread_id, title, reason);
+pub fn spool_payload(
+    thread_id: &str,
+    title: &str,
+    reason: Reason,
+    key: &str,
+    badge: i64,
+    bundle_id: &str,
+) -> Value {
+    with_bundle(payload(thread_id, title, reason, key, badge), bundle_id)
+}
+
+/// The background push that withdraws delivered notifications: it names their `keys` and carries
+/// no alert, sound, or badge, which Apple requires of a `content-available` background push.
+pub fn withdrawal_payload(keys: &[String]) -> Value {
+    json!({
+        "aps": { "content-available": 1 },
+        "withdraw": keys,
+    })
+}
+
+/// [`withdrawal_payload`] plus the `Simulator Target Bundle` key.
+pub fn spool_withdrawal_payload(keys: &[String], bundle_id: &str) -> Value {
+    with_bundle(withdrawal_payload(keys), bundle_id)
+}
+
+fn with_bundle(mut value: Value, bundle_id: &str) -> Value {
     value["Simulator Target Bundle"] = Value::String(bundle_id.to_string());
     value
 }
@@ -162,9 +212,10 @@ mod tests {
                 other => panic!("unknown reason {other}"),
             };
             let (thread_id, title) = (str_of(case, "threadId"), str_of(case, "title"));
+            let (key, badge) = (str_of(case, "key"), case["badge"].as_i64().unwrap());
             let bundle = str_of(case, "bundleId");
             assert_eq!(
-                spool_payload(&thread_id, &title, reason, &bundle),
+                spool_payload(&thread_id, &title, reason, &key, badge, &bundle),
                 case["expected"],
                 "spool payload for {thread_id}"
             );
@@ -173,8 +224,51 @@ mod tests {
                 .as_object_mut()
                 .unwrap()
                 .remove("Simulator Target Bundle");
-            assert_eq!(payload(&thread_id, &title, reason), plain);
+            assert_eq!(payload(&thread_id, &title, reason, &key, badge), plain);
         }
+
+        let withdrawals = fixture["withdrawals"].as_array().unwrap();
+        assert!(withdrawals.len() >= 2);
+        for case in withdrawals {
+            let keys: Vec<String> = case["keys"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|k| k.as_str().unwrap().to_string())
+                .collect();
+            let bundle = str_of(case, "bundleId");
+            assert_eq!(
+                spool_withdrawal_payload(&keys, &bundle),
+                case["expected"],
+                "spool withdrawal for {keys:?}"
+            );
+            let mut plain = case["expected"].clone();
+            plain
+                .as_object_mut()
+                .unwrap()
+                .remove("Simulator Target Bundle");
+            assert_eq!(withdrawal_payload(&keys), plain);
+        }
+    }
+
+    #[test]
+    fn keys_name_their_kind() {
+        assert_eq!(Kind::Request.as_str(), "request");
+        assert_eq!(Kind::Turn.as_str(), "turn");
+        assert_eq!(key(Kind::Request, "req-1"), "request:req-1");
+        assert_eq!(key(Kind::Turn, "turn-9"), "turn:turn-9");
+    }
+
+    #[test]
+    fn a_withdrawal_carries_no_alert_sound_or_badge() {
+        let value = withdrawal_payload(&["request:a".to_string()]);
+        assert_eq!(
+            value,
+            json!({ "aps": { "content-available": 1 }, "withdraw": ["request:a"] })
+        );
+        assert!(value["aps"].get("alert").is_none());
+        assert!(value["aps"].get("sound").is_none());
+        assert!(value["aps"].get("badge").is_none());
     }
 
     #[test]

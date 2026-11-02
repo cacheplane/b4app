@@ -404,7 +404,7 @@ async fn spool_writes_a_simulator_file(pool: PgPool) {
         serde_json::from_slice(&std::fs::read(spool.join(&names[0])).unwrap()).unwrap();
     assert_eq!(
         written,
-        spool_payload("thread-1", "Fix the build", Reason::Approval, BUNDLE)
+        spool_payload("thread-1", "Fix the build", Reason::Approval, "", 0, BUNDLE)
     );
     assert_eq!(written["Simulator Target Bundle"], BUNDLE);
 }
