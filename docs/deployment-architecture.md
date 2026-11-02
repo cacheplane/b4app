@@ -243,9 +243,9 @@ Both packagings below are built in this project, not deferred (the owner's decis
 
 - `db`: `postgres:17` pinned to the major (operators upgrade majors deliberately; PostgreSQL does not upgrade its data directory on its own), named volume, `pg_isready` health check, `restart: unless-stopped`.
 - `migrate`: the hub image, `command: ["migrate"]`, `restart: "no"`, `depends_on: db: condition: service_healthy`, both database URLs.
-- `hub`: `command: ["serve"]`, `depends_on: migrate: condition: service_completed_successfully`, `init: true`, `stop_grace_period: 40s`, `restart: unless-stopped`, only `DATABASE_URL` and the hub's public configuration.
+- `hub`: `command: ["serve"]`, `depends_on: migrate: condition: service_completed_successfully`, `init: true`, `stop_grace_period: 40s`, `restart: unless-stopped`, only `DATABASE_URL`, `B4HUB_SECRET_KEY` (both as files), and the hub's public configuration.
 - `caddy` (profile `tls`, optional): `caddy:2` with `reverse_proxy hub:8080` and automatic HTTPS for the operator's hostname; it appends the client address to `X-Forwarded-For`, so `B4HUB_TRUST_X_FORWARDED_FOR=1` is documented alongside it. Operators with their own proxy leave the profile off and are told the hub expects an appending proxy.
-- Secrets: Compose `secrets:` with file sources mounted under `/run/secrets`, read through the hub's `*_FILE` variables (`DATABASE_URL_FILE` and `DATABASE_ADMIN_URL_FILE` exist today; the sign-in secrets get theirs in M8e, below; a variable and its `_FILE` form are mutually exclusive).
+- Secrets: Compose `secrets:` with file sources mounted under `/run/secrets`, read through the hub's `*_FILE` variables (`DATABASE_URL_FILE`, `DATABASE_ADMIN_URL_FILE`, and, since the sign-in hub, `B4HUB_SECRET_KEY_FILE` and the `B4HUB_APPLE_*_FILE` forms; a variable and its `_FILE` form are mutually exclusive).
 - Upgrade runbook: `docker compose pull && docker compose run --rm migrate && docker compose up -d`. Backup: `docker compose exec db pg_dump -Fc` on a schedule, plus the secret files.
 
 ### Helm chart
@@ -265,14 +265,14 @@ Both packagings below are built in this project, not deferred (the owner's decis
 
 These are hub-side changes the architecture depends on. None blocks the "now" tier. The sign-in session agreed the split on 2026-11-02: items marked *sign-in* are in that project's plan; items marked *M8e* belong to the deployable-hub milestone that follows M8c and are tracked here until that milestone is planned.
 
-1. *M8e.* `*_FILE` variants for the remaining secret-bearing variables (`B4HUB_SECRET_KEY_FILE`, `B4HUB_APPLE_PRIVATE_KEY_FILE`, and the other Apple values). `DATABASE_URL_FILE` and `DATABASE_ADMIN_URL_FILE` already exist in `Hub/crates/b4hub/src/cli.rs`. Not needed on AWS; needed before the on-prem docs ship.
+1. *Sign-in (done).* `*_FILE` variants for the remaining secret-bearing variables: `B4HUB_SECRET_KEY_FILE`, `B4HUB_APPLE_PRIVATE_KEY_FILE`, `B4HUB_APPLE_TEAM_ID_FILE`, and `B4HUB_APPLE_KEY_ID_FILE`, read like `DATABASE_URL_FILE` (`Settings::secret_value` in `Hub/crates/b4hub/src/cli.rs`). The Compose profile and the chart (`secrets.useFileVars`, now `true` by default) use them.
 2. *M8e, after M8c's link exists.* `/readyz` exercises a loopback WebSocket upgrade when the relay is enabled, so one HTTP probe covers the relay (observability).
 3. *M8e.* A `request_id` field on every log line and the authenticated `device_id` where known; never a token (observability).
-4. *Sign-in, Task 5.* sqlx statement logging disabled in `serve` through `disable_statement_logging()` regardless of `B4HUB_LOG`.
+4. *Sign-in, Task 5 (done).* sqlx statement logging disabled in `serve` through `disable_statement_logging()` regardless of `B4HUB_LOG`.
 5. *Sign-in, backlog.* A `B4HUB_SECRET_KEY` re-encryption command, so the key can be rotated; until then the key is generated once and never rotated.
 6. *M8e.* Cross-instance relay routing over `LISTEN/NOTIFY` on a dedicated connection, with the change log as the source of truth (the "next" tier).
 7. *M8e.* A read-only or maintenance mode (incident runbook).
-8. *Sign-in, at merge.* The sign-in hub's `serve` requires `B4HUB_SECRET_KEY` and `B4HUB_WEBAUTHN_RP_ID`, so the merge flips `INCLUDE_SIGNIN_SECRETS=1` (serving task, and the admin task's `hub` container so `seed` and `enroll` keep working), passes `B4HUB_SECRET_KEY` to the Compose profile (through `.env` until the `_FILE` form, item 1) and has `test.sh` generate one, and sets the key for the chart's kind install; the checklist is in `Infra/taskdefs/features.env` and `Infra/README.md` runbook 3.
+8. *Sign-in, at merge (done in the sign-in pull request).* The sign-in hub's `serve` requires `B4HUB_SECRET_KEY` and `B4HUB_WEBAUTHN_RP_ID`, so the merge flips `INCLUDE_SIGNIN_SECRETS=1` (serving task, and the admin task's `hub` container), passes the key to the Compose profile as the `secret_key` file (`B4HUB_SECRET_KEY_FILE`) with `test.sh` generating one, and generates the key for the chart's kind install. Runbook 3 in `Infra/README.md` (the owner sets the secrets in each account) must be done before the first deploy.
 
 Confirmed as already sufficient: the hub passes the database URL straight to sqlx, which honours `sslmode=verify-full` and `sslrootcert=<path>` from the URL (rustls), so the RDS CA bundle is referenced by path in the URL and no hub change is needed; the first RDS connect verifies it. A client-IP source setting beyond `B4HUB_TRUST_X_FORWARDED_FOR` is not needed on AWS and is recorded only as what Fly, Render, or DigitalOcean would have required.
 
