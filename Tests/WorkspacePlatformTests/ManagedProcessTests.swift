@@ -140,15 +140,18 @@ private func contentsOnceCreated(_ path: String, timeout: Duration = .seconds(60
     let pidFile = scratchFile("grandchild.pid")
     let process = try ManagedProcess.spawn(
       executable: "/bin/sh",
-      arguments: ["-c", "sleep 30 & echo $! > '\(pidFile).tmp' && mv '\(pidFile).tmp' '\(pidFile)'; wait"],
+      arguments: ["-c", "sleep 600 & echo $! > '\(pidFile).tmp' && mv '\(pidFile).tmp' '\(pidFile)'; wait"],
       environment: ["PATH": "/usr/bin:/bin"], workingDirectory: "/", outputPath: scratchFile("g.log"))
     let text = try await contentsOnceCreated(pidFile)
     let sleeper = try #require(Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)))
+    // Never leave a 10-minute sleeper behind a failed run.
+    defer { if ProcessInspector.isAlive(pid: sleeper) { kill(sleeper, SIGKILL) } }
     #expect(ProcessInspector.isAlive(pid: sleeper))
     #expect(await ManagedProcess.terminateGroup(pid: process.pid, gracePeriod: .seconds(2)))
-    // The group's SIGTERM reaches the grandchild too; it exits on its own schedule, so await that. The
-    // guard stays well under its 30 s sleep, so a grandchild the signal missed still fails here.
-    await waitForExit(pid: sleeper) { !ProcessInspector.isAlive(pid: sleeper) }
+    // The group's SIGTERM reaches the grandchild too; its exit event ends the wait. The guard only
+    // ends a run whose signal missed: it is far under the 600 s sleep, so that still fails here, and
+    // far over the 10 s a loaded CI runner once outlasted (the old guard, under a 30 s sleep).
+    await waitForExit(pid: sleeper, timeout: .seconds(120)) { !ProcessInspector.isAlive(pid: sleeper) }
     #expect(!ProcessInspector.isAlive(pid: sleeper))
   }
 
@@ -226,9 +229,13 @@ private func contentsOnceCreated(_ path: String, timeout: Duration = .seconds(60
 
 @Suite struct PortsTests {
   @Test func portsAllocateAndDetectInUse() throws {
-    let port = try Ports.allocate()
+    // A released port can be handed straight to another socket (a parallel test's connection takes
+    // ephemeral ports from the same range), so "free" is checked on the first of a few allocations
+    // that nobody took in between, and the rest of the test holds the port with its own listener.
+    let port = try #require(
+      (0..<5).lazy.compactMap { _ in try? Ports.allocate() }.first(where: Ports.isFree),
+      "no allocated port stayed free; something else took five in a row")
     #expect(port > 1024)
-    #expect(Ports.isFree(port))
     let fd = socket(AF_INET, SOCK_STREAM, 0)
     defer { close(fd) }
     // A Node listener sets SO_REUSEADDR; the probe must still see it.

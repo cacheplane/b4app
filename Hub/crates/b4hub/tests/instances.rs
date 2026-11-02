@@ -164,6 +164,7 @@ async fn a_dead_heartbeat_lets_the_other_instance_claim_and_the_old_owner_lets_g
     // `a` stops writing its heartbeat (a database that refuses it). Within the window it still
     // holds the user; once the window passes, `b` claims the user for the phone.
     a.state.instances.pause_heartbeat(true);
+    a.state.instances.settle().await;
     let window = a.state.instances.alive_within();
     real_sleep(window / 2).await;
     assert_eq!(
@@ -307,6 +308,9 @@ async fn readiness_reports_a_stale_heartbeat(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
 
     hub.state.instances.pause_heartbeat(true);
+    // A write already past the pause check may still land; once it has, the last write is behind
+    // us and the window below is measured from no later than now.
+    hub.state.instances.settle().await;
     real_sleep(hub.state.instances.alive_within() + BEAT).await;
     let (status, body) = hub.http("GET", "/readyz", None).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");

@@ -31,6 +31,10 @@ public actor FakeHubAPI: HubAPI {
   private var acceptedSeqs: Set<Int> = []
   private var snapshotOverride: SnapshotResponse?
   private var devicesOverride: [DeviceInfo]?
+  /// Long polls parked in `pull`, woken by anything that can change their answer.
+  private var pullWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+  /// Callers of `untilPulling`, each waiting for its count of parked pulls.
+  private var parkWatchers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
   /// The hub refuses a `value` over this many bytes of serialised JSON.
   private static let maxValueBytes = 2_097_152
@@ -43,7 +47,10 @@ public actor FakeHubAPI: HubAPI {
     self.stored = stored
   }
 
-  public func setFailNext(_ error: HubError?) { failNext = error }
+  public func setFailNext(_ error: HubError?) {
+    failNext = error
+    wakePulls()
+  }
   /// Fail the next `me()` only, whatever other calls run first.
   public func setFailMe(_ error: HubError?) { failMe = error }
 
@@ -69,7 +76,20 @@ public actor FakeHubAPI: HubAPI {
   }
 
   /// Adds changes to the feed as if another device had pushed them.
-  public func append(_ changes: [StoredChange]) { stored.append(contentsOf: changes) }
+  public func append(_ changes: [StoredChange]) {
+    stored.append(contentsOf: changes)
+    wakePulls()
+  }
+
+  /// How many pulls are parked in their long poll right now.
+  public var parkedPulls: Int { pullWaiters.count }
+
+  /// Returns once `count` pulls are parked in their long poll, so a test changes the feed after its
+  /// reader is waiting rather than after a guess at how long that takes.
+  public func untilPulling(_ count: Int = 1) async {
+    guard pullWaiters.count < count else { return }
+    await withCheckedContinuation { parkWatchers.append((count, $0)) }
+  }
 
   public func enroll(_ request: EnrollRequest) async throws -> EnrollResponse {
     enrollCalls += 1
@@ -121,6 +141,7 @@ public actor FakeHubAPI: HubAPI {
           wall: change.wall, table: change.table, rowId: change.rowId, op: change.op, column: change.column,
           value: change.value, hlc: change.hlc))
     }
+    wakePulls()
     return PushResponse(
       acceptedThrough: changes.map(\.deviceSeq).max() ?? acceptedSeqs.max() ?? 0, rejected: rejected)
   }
@@ -157,7 +178,7 @@ public actor FakeHubAPI: HubAPI {
         return PullResponse(
           changes: page, next: page.last?.hubSeq ?? after, more: newer.count > page.count)
       }
-      try await Task.sleep(for: .milliseconds(10))
+      try await park(until: deadline)
       try authorize()
     }
   }
@@ -165,6 +186,43 @@ public actor FakeHubAPI: HubAPI {
   public func revokeSelf() async throws {
     try authorize()
     revoked = true
+    wakePulls()
+  }
+
+  // MARK: - Long poll
+
+  /// Waits, as the hub's long poll does, until something that can change the answer happens (an
+  /// `append`, a push, a failure or revocation to report) or the deadline passes, rather than
+  /// re-reading on a clock. A cancelled reader's task ends with `CancellationError`.
+  private func park(until deadline: ContinuousClock.Instant) async throws {
+    let id = UUID()
+    let alarm = Task { [weak self] in
+      _ = try? await Task.sleep(until: deadline, clock: .continuous)
+      await self?.wake(id)
+    }
+    defer { alarm.cancel() }
+    await withTaskCancellationHandler {
+      await withCheckedContinuation { continuation in
+        pullWaiters[id] = continuation
+        let parked = pullWaiters.count
+        let ready = parkWatchers.filter { $0.count <= parked }
+        parkWatchers.removeAll { $0.count <= parked }
+        for watcher in ready { watcher.continuation.resume() }
+      }
+    } onCancel: {
+      Task { await self.wake(id) }
+    }
+    try Task.checkCancellation()
+  }
+
+  private func wake(_ id: UUID) {
+    pullWaiters.removeValue(forKey: id)?.resume()
+  }
+
+  private func wakePulls() {
+    let waiters = pullWaiters.values
+    pullWaiters = [:]
+    for waiter in waiters { waiter.resume() }
   }
 
   // MARK: - Helpers
