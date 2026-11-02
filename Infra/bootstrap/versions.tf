@@ -9,14 +9,13 @@ terraform {
   }
 
   # The first apply uses local state because the state bucket does not exist
-  # yet. After it succeeds, uncomment this block, fill in the bucket name for
-  # the environment, and run `terraform init -migrate-state` (Infra/README.md).
+  # yet. After it succeeds, uncomment this partial configuration and run
+  # `terraform init -migrate-state` with the -backend-config values from
+  # Infra/README.md. The values are passed per environment because the bucket
+  # policy requires SSE-KMS, so kms_key_id must be given (plain `encrypt = true`
+  # would send AES256 and be refused).
   #
   # backend "s3" {
-  #   bucket       = "b4hub-<env>-tfstate"
-  #   key          = "bootstrap/terraform.tfstate"
-  #   region       = "us-east-2"
-  #   encrypt      = true
   #   use_lockfile = true
   # }
 }

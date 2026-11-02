@@ -97,6 +97,31 @@ data "aws_iam_policy_document" "boundary" {
     resources = ["*"]
   }
 
+  # Without this, the infra role could create an unbounded role, attach
+  # AdministratorAccess to it, assume it, and create users and access keys.
+  statement {
+    sid    = "DenyUnboundedRoles"
+    effect = "Deny"
+    actions = [
+      "iam:CreateRole",
+      "iam:PutRolePermissionsBoundary",
+    ]
+    resources = ["*"]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "iam:PermissionsBoundary"
+      values   = [local.boundary_arn]
+    }
+  }
+
+  statement {
+    sid       = "DenyRemovingAnyBoundary"
+    effect    = "Deny"
+    actions   = ["iam:DeleteRolePermissionsBoundary"]
+    resources = ["*"]
+  }
+
   # Applies cannot loosen the guard rails or rewrite the three CI roles.
   statement {
     sid    = "DenyTamperingWithBootstrap"
@@ -117,7 +142,7 @@ data "aws_iam_policy_document" "boundary" {
     ]
     resources = concat(
       values(local.role_arns),
-      ["arn:${local.partition}:iam::${local.account_id}:policy/${local.prefix}-boundary"],
+      [local.boundary_arn],
     )
   }
 }

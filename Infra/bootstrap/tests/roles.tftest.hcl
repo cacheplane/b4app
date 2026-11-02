@@ -126,6 +126,30 @@ run "plan_trust_allows_any_ref_in_repository" {
   }
 }
 
+run "all_trust_policies_require_sts_audience" {
+  command = apply
+
+  variables {
+    environment = "test"
+  }
+
+  assert {
+    condition = alltrue([
+      for d in [
+        data.aws_iam_policy_document.plan_trust,
+        data.aws_iam_policy_document.infra_trust,
+        data.aws_iam_policy_document.deploy_trust,
+      ] :
+      toset(one([for c in d.statement[0].condition : c if c.variable == "token.actions.githubusercontent.com:aud"]).values) == toset(["sts.amazonaws.com"])
+      && one([for c in d.statement[0].condition : c if c.variable == "token.actions.githubusercontent.com:aud"]).test == "StringEquals"
+    ])
+    error_message = "plan, infra, and deploy trust must all require aud = sts.amazonaws.com"
+  }
+}
+
+# Terraform tests cannot enumerate resources, so "no admin on deploy" is checked
+# indirectly: the only AdministratorAccess attachment targets the infra role, and
+# the deploy policy has no wildcard action and no IAM action besides PassRole.
 run "deploy_role_has_no_admin" {
   command = apply
 
@@ -183,6 +207,31 @@ run "deploy_pass_role_is_limited_to_task_roles" {
   }
 }
 
+run "deploy_conditions_are_present" {
+  command = apply
+
+  variables {
+    environment = "prod"
+  }
+
+  assert {
+    condition = (
+      one(one([for s in data.aws_iam_policy_document.deploy.statement : s if contains(tolist(s.actions), "ecs:RunTask")]).condition).variable == "ecs:cluster"
+      && one(one([for s in data.aws_iam_policy_document.deploy.statement : s if contains(tolist(s.actions), "ecs:RunTask")]).condition).test == "ArnEquals"
+      && toset(one(one([for s in data.aws_iam_policy_document.deploy.statement : s if contains(tolist(s.actions), "ecs:RunTask")]).condition).values) == toset(["arn:aws:ecs:us-east-2:123456789012:cluster/b4hub-prod"])
+    )
+    error_message = "RunTask must be limited to the b4hub-<env> cluster"
+  }
+
+  assert {
+    condition = (
+      one(one([for s in data.aws_iam_policy_document.deploy.statement : s if contains(tolist(s.actions), "iam:PassRole")]).condition).variable == "iam:PassedToService"
+      && toset(one(one([for s in data.aws_iam_policy_document.deploy.statement : s if contains(tolist(s.actions), "iam:PassRole")]).condition).values) == toset(["ecs-tasks.amazonaws.com"])
+    )
+    error_message = "PassRole must be limited to ecs-tasks.amazonaws.com"
+  }
+}
+
 run "boundary_denies_iam_users" {
   command = apply
 
@@ -207,6 +256,40 @@ run "boundary_denies_iam_users" {
       ) == toset(["iam:CreateUser", "iam:CreateAccessKey", "iam:CreateLoginProfile", "organizations:*", "account:*"])
     )
     error_message = "boundary must deny user, access key, login profile, organizations, and account actions"
+  }
+
+  assert {
+    condition = (
+      one([for s in data.aws_iam_policy_document.boundary.statement : s if s.sid == "DenyUnboundedRoles"]).effect == "Deny"
+      && toset(one([for s in data.aws_iam_policy_document.boundary.statement : s if s.sid == "DenyUnboundedRoles"]).actions) == toset(["iam:CreateRole", "iam:PutRolePermissionsBoundary"])
+      && one(one([for s in data.aws_iam_policy_document.boundary.statement : s if s.sid == "DenyUnboundedRoles"]).condition).test == "StringNotEquals"
+      && one(one([for s in data.aws_iam_policy_document.boundary.statement : s if s.sid == "DenyUnboundedRoles"]).condition).variable == "iam:PermissionsBoundary"
+      && toset(one(one([for s in data.aws_iam_policy_document.boundary.statement : s if s.sid == "DenyUnboundedRoles"]).condition).values) == toset(["arn:aws:iam::123456789012:policy/b4hub-test-boundary"])
+    )
+    error_message = "CreateRole and PutRolePermissionsBoundary must be denied unless the boundary is the b4hub-<env>-boundary policy"
+  }
+
+  assert {
+    condition = (
+      contains(tolist(one([for s in data.aws_iam_policy_document.boundary.statement : s if s.sid == "DenyRemovingAnyBoundary"]).actions), "iam:DeleteRolePermissionsBoundary")
+      && one([for s in data.aws_iam_policy_document.boundary.statement : s if s.sid == "DenyRemovingAnyBoundary"]).effect == "Deny"
+    )
+    error_message = "removing a role's boundary must be denied"
+  }
+
+  assert {
+    condition = (
+      one([for s in data.aws_iam_policy_document.boundary.statement : s if s.sid == "DenyTamperingWithBootstrap"]).effect == "Deny"
+      && toset(one([for s in data.aws_iam_policy_document.boundary.statement : s if s.sid == "DenyTamperingWithBootstrap"]).resources) == toset([
+        "arn:aws:iam::123456789012:role/b4hub-test-plan",
+        "arn:aws:iam::123456789012:role/b4hub-test-infra",
+        "arn:aws:iam::123456789012:role/b4hub-test-deploy",
+        "arn:aws:iam::123456789012:policy/b4hub-test-boundary",
+      ])
+      && contains(tolist(one([for s in data.aws_iam_policy_document.boundary.statement : s if s.sid == "DenyTamperingWithBootstrap"]).actions), "iam:UpdateAssumeRolePolicy")
+      && contains(tolist(one([for s in data.aws_iam_policy_document.boundary.statement : s if s.sid == "DenyTamperingWithBootstrap"]).actions), "iam:CreatePolicyVersion")
+    )
+    error_message = "the three CI roles and the boundary must be protected from edits"
   }
 }
 

@@ -24,7 +24,9 @@ locals {
     infra  = "${local.prefix}-infra"
     deploy = "${local.prefix}-deploy"
   }
-  role_arns = { for k, n in local.role_names : k => "arn:${local.partition}:iam::${local.account_id}:role/${n}" }
+  # A policy cannot reference itself, so the boundary's ARN is built from its name.
+  boundary_arn = "arn:${local.partition}:iam::${local.account_id}:policy/${local.prefix}-boundary"
+  role_arns    = { for k, n in local.role_names : k => "arn:${local.partition}:iam::${local.account_id}:role/${n}" }
 }
 
 resource "aws_kms_key" "state" {
