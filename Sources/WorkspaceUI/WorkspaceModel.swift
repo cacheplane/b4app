@@ -1164,6 +1164,8 @@ public final class WorkspaceModel {
       applyUsage(event)
     case .connectionChanged:
       noteCheck(event)
+      // A change made elsewhere (a rename, a new key) carries the whole connection.
+      if let connection = try? event.payload["connection"]?.decode(Connection.self) { merge(connection) }
       // A connection this client has not seen (added by the CLI or another window): refetch.
       if !connections.contains(where: { $0.id == event.connectionId }) {
         Task { try? await refreshSnapshot() }
