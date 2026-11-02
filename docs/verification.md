@@ -2,6 +2,65 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-11-02: Settings, connections and B4 projects (D-073 to D-076)
+
+Branch `blove/settings-connections-design`.
+
+**Gates**
+- `swift format lint --strict` was clean.
+- `swift test` passed: 624 tests in 108 suites, before the review fixes. The re-run after them is recorded in the PR.
+- Both `xcodebuild` builds passed: macOS, and iOS for the Simulator.
+
+**New tests**
+- Protocol: `UsageTests`.
+- Storage: `UsageStoreTests`, plus the migration list now includes `0006_usage`.
+- Codex: `CodexUsageTests`, which parse the pinned snapshot and read it through `fake-codex.py`.
+- Claude: `ClaudeUsageTests`, which parse the window variants and emit through `fake-claude.py`.
+- Coordinator: `UsageTests`. These cover:
+  - usage for Codex and for Claude;
+  - B4 tokens counted once;
+  - retries numbered 1, 2 and 3 against a closed port, and no retry on an incompatible route;
+  - update (rename, replace and remove the key, an unknown reference, a shared secret);
+  - the local day and week boundaries on the day daylight time ends.
+- UI model: `ConnectionsModelTests`.
+- UI copy: `UsageFormatTests`, `ConnectionCardTests` and `B4ProjectCardTests`.
+- Snapshots: `ListSnapshotTests.b4ProjectCards` and `settingsSheets`.
+
+**Live checks (2026-11-02, against the owner's installs)**
+- Codex 0.166.0: `account/rateLimits/read`, with no inference.
+  - The plan is `promax`, with `ordinaryUsageAllowed: true`.
+  - There was only a `primary` window: 10080 minutes, 87% used.
+  - This led to the leading-edge meter fix and the plan names (`planCodesReadAsNames`, `windowsFillFromTheLeadingEdge`).
+- Claude Code 2.1.282: one `claude -p` turn on haiku with the plan login (`apiKeySource: none`).
+  - One `rate_limit_event` arrived, with status `allowed_warning` and `rateLimitType: seven_day`, at 0.25.
+  - Its `unifiedWindows` held only `seven_day`.
+
+**Mac, measured on 2x snapshots**
+- Shots: `docs/screenshots/settings-connections-{light,dark}.png`, `settings-b4-projects.png`, `settings-sheets.png`.
+- Connection card:
+  - padding 16 pt;
+  - mark slot 24 pt, with 8 pt to the name;
+  - 12 pt from the header to the meters;
+  - 16 pt between the meters;
+  - the "…" button 30 pt, at the card's 16 pt inset.
+- Sheets:
+  - 24 pt margins, 4 pt from the title to the lede, 16 pt to the group, 24 pt to the buttons;
+  - rows at least 48 pt, with a 96 pt label column and 30 pt fields.
+- Problems found and fixed while measuring:
+  - Secondary pills vanished on the surface, so `llaOutline` was added.
+  - Placeholders drew in ink on the Mac; empty fields are now muted.
+  - The open-time check queried a connection with a turn in progress; such connections are now skipped.
+
+**Phone (iPhone 17 Pro Simulator, default and AX3)**
+- Shot: `docs/screenshots/ios-settings-connections.png`.
+- The cards are read-only, say "Usage shows on your Mac", and have no "…" menu.
+- At AX3 the card headers stack (mark and status above the name), after a letter-by-letter wrap was seen.
+- The Settings page list drops its symbols at accessibility sizes, after "Connecti / ons" was seen.
+
+**Not checked**
+- Clicking the "+" menu, the sheets' Save, and Edit against the running app. The sheets were rendered and their logic is tested; they were not driven by clicks.
+- A retry seen on screen against a real unreachable B4 server.
+
 ## 2026-11-02: Hosted hubs (D-068 to D-072)
 
 Implementation is on `blove/cloud-hub-deployment-arch-4b6348`; nothing has been applied to AWS, because the owner has not created the AWS Organization or the two accounts. The gates are the eight in `docs/deployment-architecture.md` ("Verification gates"), plus 2b (the 9 MiB push through the WAF). Each is `passed` (with evidence), `pending` (with the step that produces the evidence and what it must show), or owned by another project. A gate that needs a live hub is never `passed` from a mock.
