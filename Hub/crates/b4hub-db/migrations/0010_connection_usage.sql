@@ -2,8 +2,8 @@
 -- them in its own `connectionUsage` table. Only the Mac writes it (it is not phone-writable), and like
 -- every synced table it is tenant-private under row-level security.
 --
--- Numbered 0010: 0009 is left for the soft-delete work, and sqlx applies a lower number that lands
--- later (docs/compatibility.md).
+-- Numbered 0010, after the soft-delete work's 0009: like every synced table it has `deleted_at`, so a
+-- `delete` change marks the row instead of removing it (D-089).
 CREATE TABLE "connectionUsage" (
     "connectionId" text NOT NULL,
     "reading" jsonb,
@@ -13,6 +13,7 @@ CREATE TABLE "connectionUsage" (
     user_id         uuid NOT NULL REFERENCES users (id),
     device_id       uuid NOT NULL REFERENCES devices (id),
     owner_device_id uuid NOT NULL REFERENCES devices (id),
+    deleted_at      timestamptz,
     PRIMARY KEY (org_id, "connectionId")
 );
 CREATE INDEX "connectionUsage_by_user" ON "connectionUsage" (org_id, user_id);

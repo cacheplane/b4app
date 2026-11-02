@@ -9,7 +9,7 @@ Branch `blove/delete-threads`, stacked on `blove/phone-usage`.
 **Gates**
 - `swift format lint --strict` was clean.
 - `swift test` passed: 902 tests in 134 suites (after the review's fix pass).
-- Hub: `cargo test --workspace --locked` passed 249 tests on two consecutive runs; `cargo fmt --check` and `clippy -D warnings` were clean. One earlier run had a flaky failure that did not recur, once in `b4hub-db`'s `settings` tests and once in the relay's `presence_is_sent_when_the_queue_has_room_again`.
+- Hub: `cargo test --workspace --locked` passed 249 tests on two consecutive runs; `cargo fmt --check` and `clippy -D warnings` were clean. After merging the updated `blove/phone-usage` (with the soft-delete work, D-089), 250 passed. The relay suite (`b4hub --test relay`, which this branch does not touch) failed one or two timing tests per run, a different one each time: `presence_is_sent_when_the_queue_has_room_again`, `interrupt_is_held_and_delivered_on_reconnect`, `watching_tells_the_mac_the_full_set`. One earlier run also had a flaky `b4hub-db` `settings` failure that did not recur.
 - Both `xcodebuild` builds (macOS, iOS Simulator) succeeded.
 
 **New tests**
@@ -41,7 +41,7 @@ Branch `blove/phone-usage`.
 **Gates**
 - `swift format lint --strict` was clean.
 - `swift test` passed: 868 tests in 125 suites.
-- Hub: `cargo test --workspace --locked` passed 248 tests; `cargo fmt --check` and `clippy -D warnings` were clean.
+- Hub: `cargo test --workspace --locked` passed 248 tests; `cargo fmt --check` and `clippy -D warnings` were clean. After merging the soft-delete work (#45, D-089), `connectionUsage` has `deleted_at` too, and the hub passed 251 tests with fmt and clippy clean.
 - Both `xcodebuild` builds succeeded.
 
 **New tests**
@@ -51,6 +51,14 @@ Branch `blove/phone-usage`.
 - UI: `tokenTotalsAreNamedByTheirDay` and `aUsageEventWithTheWholeUsageReplacesIt`.
 
 **Not run before merge: the live check in the Simulator against the owner's Compose hub.** Running the hub from this branch would apply `0010` to the owner's hub database, and a hub binary without it would then refuse to start (sqlx `VersionMissing`). So the check runs after the merge, on the hub and apps rebuilt from `main`, and is recorded there.
+
+## 2026-11-02: The hub keeps synced rows (D-089)
+
+Branch `blove/dreamy-hamilton-b5adc9`, from main at `3f3cc15`. Hub only; no Swift, wire, or fixture change.
+
+- **Automated.** `cargo test --workspace --locked` passes 249 tests against the throwaway PostgreSQL (`scripts/test-db.sh`); `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` are clean. `swift test` and `swift format lint` were not run: nothing under `Sources`, `Tests`, or `Apps` changed.
+- **New tests** in `Hub/crates/b4hub-db/tests/changes.rs`. `a_delete_keeps_the_row_and_its_clocks_and_the_feed_carries_it`: a deleted thread and turn keep every column and the title's clock; a pull still yields both deletes; the snapshot leaves them and their clocks out and never carries `deleted_at`; a later update, a child insert, the relay's thread lookup, and a second delete all leave the row as it was. `an_insert_revives_a_deleted_row`: a thread re-inserted under an older clock, a project folder removed and added again, and a draft the Mac cleared and the phone wrote again all come back live with the re-insert's values. `a_deleted_row_stays_with_its_user_and_its_org`: another user of the org can neither revive nor see the deleted row, and another org or no tenant sees nothing of it. All three fail on main's hub code and pass with the change; so do the updated assertions in `push_materialises_and_is_idempotent` (the fixture's deleted draft is kept) and `mirrored_columns_are_the_macs_columns` (the new hub column).
+- **Not exercised live.** No hub was migrated to 0009 here; the Compose and hosted hubs pick it up on their next deploy.
 
 ## 2026-11-02: Settings follow-ups (the deferred review minors of D-081 to D-084)
 

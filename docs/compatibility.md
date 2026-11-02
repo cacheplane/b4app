@@ -142,6 +142,13 @@ No new crates and no new features: `uuid`'s `v7` and `tokio`'s `sync`/`time` wer
 | Swift | `ErrorCode.relocated`; `HubLinkConnection.open(url:token:protocolVersion:cookies:)` (defaulted for existing conformers) and `HubLinkSocket.responseCookies` (defaulted) |
 | AWS ALB | application-cookie stickiness on `b4hub-instance`, 3600 s, enabled when `task_count > 1`; `deregistration_delay` 5 s when `task_count > 1` (60 s otherwise) |
 
+### Hub keeps synced rows (D-089)
+
+| Item | Value |
+| --- | --- |
+| Hub migration | `0009_soft_delete.sql` (`deleted_at timestamptz` on `connections`, `projects`, `projectFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`; hub-only, never sent). `0005` and `0007` stay reserved for the sign-in branch |
+| Wire | Unchanged: a `delete` is still in the feed, the snapshot leaves deleted rows out, `Tests/Fixtures/sync/changes.json` is untouched, and no client changes |
+
 ## Provider runtimes
 
 | Runtime | Installed on target Mac | Published | Verified behavior | Limits and gates |
@@ -160,7 +167,7 @@ No new crates and no new features: `uuid`'s `v7` and `tokio`'s `sync`/`time` wer
 
 - Deleting threads (D-118, D-119): Codex 0.166.0 `thread/delete` takes `{ threadId }` (required) and answers `{}` (`codex app-server generate-json-schema`, checked 2026-11-02); an older Codex answers method-not-found (`-32601`), recorded as unsupported. B4 0.15.8 `DELETE /threads/:id` answers `204` (fixture `fake-b4.py`; `404` for an unknown thread, `405` for a server without the route). Claude Code 2.1.282 has no delete command; b4app removes `<sessionId>.jsonl` and `<sessionId>/` from the session's project folder, as the Claude desktop app does. Mac migration `0008_thread_delete`, hub `0011_thread_delete`, mirror schema version 5; a hub without 0011 refuses a phone's `userDeletedAt` and must not run against a database that has it.
 
-- Usage on the phone (D-090): hub migration `0010_connection_usage` adds the synced table `connectionUsage`; Mac migration `0007_connection_usage`; mirror schema version 4. A hub binary without 0010 must not run `migrate` against a database that has it (sqlx `VersionMissing`).
+- Usage on the phone (D-090): hub migration `0010_connection_usage` adds the synced table `connectionUsage` (with the hub-only `deleted_at` of D-089, applied after `0009_soft_delete`); Mac migration `0007_connection_usage`; mirror schema version 4. A hub binary without 0010 must not run `migrate` against a database that has it (sqlx `VersionMissing`).
 
 ## Hosted hub infrastructure (Terraform)
 
