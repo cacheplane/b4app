@@ -101,8 +101,11 @@ final class ProbedHub: HubAPI {
   let base: any HubAPI
   let signal: SyncSignal
   private let waiting = Mutex(0)
+  private let started = Mutex(0)
   /// Pulls asked to wait for news (`wait > 0`) that have not returned.
   var longPollsInFlight: Int { waiting.withLock { $0 } }
+  /// Every hub call that has started, of any kind.
+  var calls: Int { started.withLock { $0 } }
 
   init(_ base: any HubAPI, _ signal: SyncSignal) {
     self.base = base
@@ -110,6 +113,7 @@ final class ProbedHub: HubAPI {
   }
 
   private func probe<T>(_ call: () async throws -> T) async rethrows -> T {
+    started.withLock { $0 += 1 }
     signal.fire()
     defer { signal.fire() }
     return try await call()
@@ -518,6 +522,145 @@ private let link = MirrorLink(
     await running.value
     #expect(ContinuousClock.now - started < .seconds(5))
   }
+
+  // MARK: - Suspension (the app going to the background)
+
+  @Test func suspendCancelsALongPollAndHoldsTheLoopUntilResume() async throws {
+    let store = try MirrorStore.inMemory()
+    try store.saveLink(link)
+    _ = try store.apply(try fixtureAsStored())
+    try store.setCursor(12)
+    let hub = FakeHubAPI(stored: try fixtureAsStored())
+    await hub.setPlatform("ios")
+    let signal = SyncSignal()
+    let probed = ProbedHub(hub, signal)
+    let sync = MirrorSync(store: store, api: probed, onBatch: { _ in })
+    let running = Task { await sync.run() }
+    try await signal.until("parked in its 25 s long poll") { probed.longPollsInFlight > 0 }
+
+    let started = ContinuousClock.now
+    await sync.suspend()
+    #expect(ContinuousClock.now - started < .seconds(2))
+    let callsAtSuspend = probed.calls
+
+    // A local edit and a nudge while suspended reach neither the hub nor the outbox's upload.
+    _ = try store.updateThread(id: "thread-1", title: "While away", pinned: nil, archived: nil)
+    await sync.nudge()
+    // A second suspend returns at once and changes nothing.
+    await sync.suspend()
+    // Proving that nothing happens needs a clock: long enough for a pull or push to have started.
+    try await Task.sleep(for: .milliseconds(500))
+    #expect(probed.calls == callsAtSuspend)
+    #expect(store.outboxCount == 1)
+
+    await sync.resume()
+    try await signal.until("the queued edit pushed after resume", timeout: .seconds(5)) {
+      store.outboxCount == 0
+    }
+    #expect(await hub.stored.last?.value == "While away")
+    // Resuming a running loop is harmless.
+    await sync.resume()
+    await sync.stop()
+    await running.value
+  }
+
+  @Test func suspendWaitsForAPushInFlightToFinishItsStoreWork() async throws {
+    let store = try MirrorStore.inMemory()
+    try store.saveLink(link)
+    _ = try store.apply(try fixtureAsStored())
+    try store.setCursor(12)
+    _ = try store.updateThread(id: "thread-1", title: "In flight", pinned: nil, archived: nil)
+    let fake = FakeHubAPI(stored: try fixtureAsStored())
+    await fake.setPlatform("ios")
+    let gate = Gate()
+    let signal = SyncSignal()
+    let hub = GatedPushHub(base: fake, gate: gate, signal: signal)
+    let probed = ProbedHub(hub, signal)
+    let sync = MirrorSync(store: store, api: probed, onBatch: { _ in })
+    let running = Task { await sync.run() }
+    try await signal.until("the upload waiting at the hub") { hub.waitingPushes > 0 }
+
+    let returned = Mutex(false)
+    let suspending = Task {
+      await sync.suspend()
+      returned.withLock { $0 = true }
+    }
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(returned.withLock { $0 } == false)
+    gate.open()
+    await suspending.value
+    // The push's answer was written to the store before `suspend` returned, and nothing followed it.
+    #expect(store.outboxCount == 0)
+    let callsAtSuspend = probed.calls
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(probed.calls == callsAtSuspend)
+
+    await sync.stop()
+    await running.value
+  }
+
+  @Test func suspendBeforeTheLoopStartsHoldsItAtItsFirstTurn() async throws {
+    let store = try MirrorStore.inMemory()
+    try store.saveLink(link)
+    let signal = SyncSignal()
+    let probed = ProbedHub(FakeHubAPI(stored: Array(try fixtureAsStored().prefix(2))), signal)
+    let sync = MirrorSync(store: store, api: probed, onBatch: { _ in })
+    await sync.suspend()
+    let running = Task { await sync.run() }
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(probed.calls == 0)
+    await sync.resume()
+    try await signal.until("first page after resume", timeout: .seconds(5)) { store.cursor == 2 }
+    await sync.stop()
+    await running.value
+  }
+
+  @Test func stopEndsASuspendedLoop() async throws {
+    let store = try MirrorStore.inMemory()
+    let signal = SyncSignal()
+    let probed = ProbedHub(FakeHubAPI(), signal)
+    let sync = MirrorSync(store: store, api: probed, onBatch: { _ in })
+    let running = Task { await sync.run() }
+    try await signal.until("parked in its long poll") { probed.longPollsInFlight > 0 }
+    await sync.suspend()
+    await sync.stop()
+    await running.value
+  }
+}
+
+/// Holds every non-empty push until `gate` opens, counting the ones waiting (and firing `signal`), so
+/// a test can act while an upload is at the hub. Everything else is the fake's.
+final class GatedPushHub: HubAPI {
+  let base: FakeHubAPI
+  let gate: Gate
+  let signal: SyncSignal
+  private let waiting = Mutex(0)
+  var waitingPushes: Int { waiting.withLock { $0 } }
+
+  init(base: FakeHubAPI, gate: Gate, signal: SyncSignal) {
+    self.base = base
+    self.gate = gate
+    self.signal = signal
+  }
+
+  func enroll(_ request: EnrollRequest) async throws -> EnrollResponse { try await base.enroll(request) }
+  func me() async throws -> MeResponse { try await base.me() }
+  func push(_ changes: [SyncChange]) async throws -> PushResponse {
+    if !changes.isEmpty {
+      waiting.withLock { $0 += 1 }
+      signal.fire()
+      await gate.wait()
+      waiting.withLock { $0 -= 1 }
+    }
+    return try await base.push(changes)
+  }
+  func pull(after: Int, limit: Int, wait: Int) async throws -> PullResponse {
+    try await base.pull(after: after, limit: limit, wait: wait)
+  }
+  func snapshot() async throws -> SnapshotResponse { try await base.snapshot() }
+  func devices() async throws -> [DeviceInfo] { try await base.devices() }
+  func mintPairingCode() async throws -> PairingCodeResponse { try await base.mintPairingCode() }
+  func revokeSelf() async throws { try await base.revokeSelf() }
 }
 
 /// A hub that has pruned its feed: it answers `resync_required` to a pull from past its `tip`, and

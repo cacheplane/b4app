@@ -19,7 +19,9 @@ import os
 /// network.
 ///
 /// The relay's link is held only while the app is active (`RelayLifecycle`): background closes it, and
-/// the next active opens it again with the same watched threads.
+/// the next active opens it again with the same watched threads. The pull loop is paused between turns
+/// (`MirrorSync.suspend`) before the app is suspended, since iOS kills an app that is suspended holding
+/// a lock on a file in the App Group container, and resumed on the next active.
 ///
 /// Attention (M8f): the mirror lives in the App Group so the widget reads it (D-114), every batch that
 /// touched threads or projects reloads the widget's timelines, the APNs token goes to the hub while
@@ -58,6 +60,9 @@ import os
   @ObservationIgnored private var relayControl: Task<Void, Never>?
   /// Watches the relay for the stops it makes on its own.
   @ObservationIgnored private var relayWatch: Task<Void, Never>?
+  /// The sync loop's suspend and resume calls, chained (as the relay's are) so they reach it in the
+  /// order the scene phases and background wakes decided them.
+  @ObservationIgnored private var syncControl: Task<Void, Never>?
   /// The copy for a refused link.
   static let relayRefusedMessage = "The hub no longer accepts this iPhone. Log out, then pair it again."
   /// The shell's model, once `wire` has run: the phone, not a coordinator, supplies its account, its
@@ -266,10 +271,15 @@ import os
     return model.isDetailOnScreen && model.selectedThreadId == threadId
   }
 
-  /// A `content-available` push woke the app: nudge the sync loop, wait up to eight seconds for the
-  /// batch it pulls, and reload the widget. True when a batch arrived.
+  /// A `content-available` push woke the app: let the sync loop run, nudge it, wait up to eight seconds
+  /// for the batch it pulls, and reload the widget. Unless the app is active by then, the loop is
+  /// paused at an idle point before this returns, so the caller's completion handler (after which iOS
+  /// may suspend the app) never runs while the loop holds the mirror. True when a batch arrived.
   func backgroundRefresh() async -> Bool {
     guard let sync else { return false }
+    let assertion = BackgroundAssertion(name: "Refresh the mirror")
+    defer { assertion.end() }
+    await controlSync(.resume)?.value
     let arrived = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
       let id = UUID()
       let timeout = Task {
@@ -280,6 +290,9 @@ import os
       Task { await sync.nudge() }
     }
     WidgetCenter.shared.reloadAllTimelines()
+    if UIApplication.shared.applicationState != .active {
+      await controlSync(.suspend)?.value
+    }
     return arrived
   }
 
@@ -315,8 +328,36 @@ import os
   // MARK: - The relay's link (M8c)
 
   /// The scene's phase changed: active holds the link, background closes it, inactive changes nothing.
+  /// Background also pauses the pull loop at an idle point (under a background task, so the app is not
+  /// suspended before it gets there), and active lets it go again.
   func enter(_ phase: RelayLifecycle.Phase) {
     control(lifecycle.enter(phase))
+    switch phase {
+    case .background: controlSync(.suspend)
+    case .active: controlSync(.resume)
+    case .inactive: break
+    }
+  }
+
+  private enum SyncControl { case suspend, resume }
+
+  /// Queues a suspend or resume behind the ones before it; the returned task ends once it has reached
+  /// the loop (for a suspend, once the loop is idle). A suspend holds a background task from now until
+  /// then.
+  @discardableResult private func controlSync(_ action: SyncControl) -> Task<Void, Never>? {
+    guard let sync else { return nil }
+    let assertion = action == .suspend ? BackgroundAssertion(name: "Pause the mirror sync") : nil
+    let previous = syncControl
+    let task = Task {
+      await previous?.value
+      switch action {
+      case .suspend: await sync.suspend()
+      case .resume: await sync.resume()
+      }
+      assertion?.end()
+    }
+    syncControl = task
+    return task
   }
 
   /// What a `b4app://` link opened on this phone may do. Deciding sends nothing.
@@ -355,6 +396,7 @@ import os
     relayWatch = nil
     relay = nil
     relayRefused = nil
+    syncControl = nil
     await model?.disconnect()
     await sync?.stop()
     sync = nil
@@ -473,5 +515,23 @@ import os
     if let error = error as? WorkspaceError { return error.message }
     if let error = error as? KeychainError { return error.description }
     return error.localizedDescription
+  }
+}
+
+/// A `UIApplication` background task: asks iOS for time to finish before the app is suspended, ended
+/// by `end()` or, when that time runs out, by the expiration handler. Ending twice is harmless.
+@MainActor final class BackgroundAssertion {
+  private var id: UIBackgroundTaskIdentifier = .invalid
+
+  init(name: String) {
+    id = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+      MainActor.assumeIsolated { self?.end() }
+    }
+  }
+
+  func end() {
+    guard id != .invalid else { return }
+    UIApplication.shared.endBackgroundTask(id)
+    id = .invalid
   }
 }

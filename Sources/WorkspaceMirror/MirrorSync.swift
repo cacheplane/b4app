@@ -18,6 +18,10 @@ import os
 /// - `resync_required` (the cursor fell behind the hub's retention) fetches the hub's snapshot and
 ///   replaces the mirror with it, keeping unsent edits. A mirror that was just rebuilt starts the same
 ///   way (`startFromSnapshot`) rather than pulling the whole feed from 0.
+/// - `suspend()` (the app is going to the background) parks the loop between turns, where it holds no
+///   store work, and keeps it there, with no pulls, pushes, or store access, until `resume()`. iOS kills
+///   a suspended app that holds a lock on a file in a shared (App Group) container, so the app waits for
+///   `suspend()` before it lets itself be suspended.
 /// - The device list is refreshed at most once a minute.
 /// - Any other failure is recorded on the link as `lastError` and retried after a backoff that starts at
 ///   two seconds and doubles to a minute. The device token stays inside `api`. Each outcome is also
@@ -33,6 +37,16 @@ public actor MirrorSync {
   private var pulling: Task<PullResponse, any Error>?
   private var stopped = false
   private var nudged = false
+  /// Set by `suspend()`, cleared by `resume()`: the loop parks at the top of its next turn.
+  private var suspended = false
+  /// The parked loop's wake-up, set while it is parked.
+  private var parked: CheckedContinuation<Void, Never>?
+  /// `suspend()` calls waiting for the loop to park.
+  private var idleWaiters: [CheckedContinuation<Void, Never>] = []
+  /// The backoff after a failure, cancelled by `suspend()` so it need not be waited out.
+  private var backingOff: Task<Void, Never>?
+  /// Set when the loop has returned, so a later `suspend()` does not wait for a park that cannot come.
+  private var ended = false
   private var needsSnapshot: Bool
   private var sequenceChecked = false
   private var resyncsInARow = 0
@@ -75,12 +89,57 @@ public actor MirrorSync {
     await task.value
   }
 
-  /// Ends the loop, cancelling a long-poll in flight.
+  /// Ends the loop, cancelling a long-poll in flight (and waking a parked loop so it can end).
   public func stop() {
     stopped = true
     loop?.cancel()
     pulling?.cancel()
+    backingOff?.cancel()
+    wake()
   }
+
+  /// Parks the loop between turns and returns once it is parked, holding no store work: a long-poll in
+  /// flight is cancelled, a backoff is cut short, and a push or apply in progress finishes first. Until
+  /// `resume()` the loop makes no request and touches no store. Returns at once when the loop is already
+  /// parked, is not running (it parks at its first turn), or has stopped; a `resume()` or `stop()` while
+  /// it waits also lets it return.
+  public func suspend() async {
+    suspended = true
+    pulling?.cancel()
+    backingOff?.cancel()
+    guard loop != nil, !stopped, !ended, parked == nil else { return }
+    await withCheckedContinuation { idleWaiters.append($0) }
+  }
+
+  /// Lets a suspended loop go round again at once. Harmless while it runs.
+  public func resume() {
+    suspended = false
+    wake()
+  }
+
+  /// Releases the parked loop and every `suspend()` still waiting.
+  private func wake() {
+    parked?.resume()
+    parked = nil
+    let waiters = idleWaiters
+    idleWaiters = []
+    for waiter in waiters { waiter.resume() }
+  }
+
+  /// Between turns: tells the waiting `suspend()` calls the loop is idle, then waits for `resume()`.
+  private func park() async {
+    let waiters = idleWaiters
+    idleWaiters = []
+    for waiter in waiters { waiter.resume() }
+    await withCheckedContinuation { parked = $0 }
+  }
+
+  /// Ends the turn early when a suspension was asked for; called before each step that reaches the hub.
+  private func checkpoint() throws {
+    if suspended { throw Suspending() }
+  }
+
+  private struct Suspending: Error {}
 
   /// A local write was made: push it now rather than after the long-poll ends.
   public func nudge() {
@@ -91,13 +150,21 @@ public actor MirrorSync {
   private func syncLoop() async {
     var backoff = initialBackoff
     while !stopped, !Task.isCancelled {
+      if suspended {
+        await park()
+        continue
+      }
       // Cleared before the outbox is read, so a write made after the read sets it again.
       nudged = false
       do {
+        try checkpoint()
         try await checkSequence()
         try await pushOutbox()
+        try checkpoint()
         if needsSnapshot { try await fetchSnapshot() }
+        try checkpoint()
         await refreshDevices()
+        try checkpoint()
         let page = try await pull()
         let batch = try store.apply(page.changes)
         try store.setCursor(page.next)
@@ -110,6 +177,8 @@ public actor MirrorSync {
           )
         }
         if !page.changes.isEmpty { await onBatch(batch) }
+      } catch is Suspending {
+        continue
       } catch let error as HubError where error.code == "resync_required" {
         // A hub that asks again straight after a snapshot is failing; do not spin on it.
         resyncsInARow += 1
@@ -117,12 +186,14 @@ public actor MirrorSync {
         needsSnapshot = true
       } catch {
         if stopped || Task.isCancelled { break }
-        // A nudge cancelled the long-poll: not a failure, go round and push.
-        if error is CancellationError, nudged { continue }
+        // A nudge or a suspension cancelled the long-poll: not a failure, go round.
+        if error is CancellationError, nudged || suspended { continue }
         if error is CancellationError { break }
         await failed(error, backoff: &backoff)
       }
     }
+    ended = true
+    wake()
   }
 
   /// The pull for this turn. With a nudge already waiting it does not wait for news.
@@ -147,6 +218,7 @@ public actor MirrorSync {
   /// Uploads the outbox, oldest first, in requests of at most 500 rows and 8 MiB, until it is empty.
   private func pushOutbox() async throws {
     while true {
+      try checkpoint()
       let batch = try store.nextUpload(rows: Self.pushLimit, bytes: Self.pushBytes)
       guard let first = batch.first else { return }
       let response = try await api.push(batch)
@@ -183,7 +255,13 @@ public actor MirrorSync {
 
   private func failed(_ error: any Error, backoff: inout Duration) async {
     await record(error: (error as? HubError)?.description ?? WorkspaceError.from(error).message)
-    try? await Task.sleep(for: backoff)
+    let delay = backoff
+    let wait = Task { _ = try? await Task.sleep(for: delay) }
+    backingOff = wait
+    // A suspension asked for while `record` ran cuts the backoff at once.
+    if suspended { wait.cancel() }
+    await wait.value
+    backingOff = nil
     backoff = min(backoff * 2, maxBackoff)
   }
 
