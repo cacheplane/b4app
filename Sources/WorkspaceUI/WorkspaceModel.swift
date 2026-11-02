@@ -164,6 +164,9 @@ public final class WorkspaceModel {
   public var connectionFilter: String?
   public var showArchived = false
   public var showNewThread = false
+  /// The iPhone's "Other ways to sign in" sheet, over the signed-out screen. On the model, like the
+  /// sheets above, so the app holds a pairing link back until it closes.
+  public var showSignInOptions = false
   /// Draft writes are debounced; the pending one is flushed by `persistDraftNow()`.
   public private(set) var draftSaveTask: Task<Void, Never>?
   private var restoringDraft = false
