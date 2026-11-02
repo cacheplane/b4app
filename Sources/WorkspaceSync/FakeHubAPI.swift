@@ -408,12 +408,15 @@ public actor FakeHubAPI: HubAPI {
     try authorize()
     endSessionCalls += 1
     revoked = true
+    // A parked long poll answers 401 now, as `revokeSelf`'s does.
+    wakePulls()
   }
 
   public func deleteAccount() async throws {
     try authorize()
     deleteAccountCalls += 1
     revoked = true
+    wakePulls()
   }
 
   // MARK: - Helpers
