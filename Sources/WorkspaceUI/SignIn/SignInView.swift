@@ -67,25 +67,29 @@ struct SignInContent: Equatable {
   }
 }
 
-/// The sign-in screen (`docs/superpowers/specs/2026-11-01-sign-in/sign-in.html`): the whole window or
-/// screen on `bg`, a centred column with the b4.run wordmark, the title, one sentence, Continue with
-/// Apple (hidden on the local flavour) and Continue with a passkey, the fine print, and the flavour's
-/// badge at the bottom. Nothing else in the app is reachable from here.
+/// The sign-in screen (`docs/superpowers/specs/2026-11-01-sign-in/sign-in.html`): the whole window on
+/// `bg`, a centred column with the b4.run wordmark, the title, one sentence, Continue with Apple
+/// (hidden on the local flavour) and Continue with a passkey, the fine print, and the flavour's badge at
+/// the bottom. The iPhone shows its own landing instead (`PhoneSignInScreen`: "Connect your Mac", led
+/// by Scan the code). Nothing else in the app is reachable from here.
 public struct SignInView: View {
   @Bindable var model: WorkspaceModel
   @Environment(\.webAuthenticationSession) private var webAuthenticationSession
 
   public init(model: WorkspaceModel) { self.model = model }
 
-  #if os(iOS)
-    private let columnWidth: CGFloat = 214
-    private let wordmarkHeight: CGFloat = 26
-  #else
-    private let columnWidth: CGFloat = 300
-    private let wordmarkHeight: CGFloat = 30
-  #endif
+  private let columnWidth: CGFloat = 300
+  private let wordmarkHeight: CGFloat = 30
 
   public var body: some View {
+    #if os(iOS)
+      PhoneSignInScreen(model: model)
+    #else
+      macScreen
+    #endif
+  }
+
+  @ViewBuilder private var macScreen: some View {
     let content = SignInContent(model: model)
     VStack(spacing: 0) {
       Spacer(minLength: LLA.Space.xl)
