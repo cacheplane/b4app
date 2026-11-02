@@ -253,6 +253,26 @@ async fn maintenance_pauses_writes_and_keeps_reads_and_readiness(pool: PgPool) {
         }})
     );
 
+    // The Mac's pairing-code mint is a write too.
+    let (status, headers, body) = http(
+        &client,
+        "POST",
+        &format!("{base}/v1/pairing-codes"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(headers[header::RETRY_AFTER], "30");
+    assert_eq!(
+        body,
+        json!({"error": {
+            "kind": "execution_error",
+            "message": "the hub is in maintenance: swapping the disk",
+            "details": {"code": "maintenance"},
+        }})
+    );
+
     // A bad token is still a 401, since authentication runs before the guard.
     let (status, _, _) = http(
         &client,

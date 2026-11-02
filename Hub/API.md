@@ -64,7 +64,7 @@ answer the same generic `404 not_found`.
 | 500 | `internal_error` | execution | Any unexpected failure; the cause is logged on the hub, never sent. |
 | 503 | `not_ready` | execution | `/readyz`: the database is unreachable or migrations are pending. |
 | 503 | `shutting_down` | execution | `/readyz` after SIGTERM. |
-| 503 | `maintenance` | execution | A write (`POST /v1/enroll`, `POST /v1/changes`, `DELETE /v1/devices/self`) while the operator has paused writes; carries `Retry-After: 30`. See "Maintenance mode". |
+| 503 | `maintenance` | execution | A write (`POST /v1/enroll`, `POST /v1/pairing-codes`, `POST /v1/changes`, `DELETE /v1/devices/self`) while the operator has paused writes; carries `Retry-After: 30`. See "Maintenance mode". |
 
 Six more codes exist only on the relay link, never as an HTTP status. They arrive in an `error`
 frame (a problem with the link or a frame) or in a `reply`'s `error` (a problem with one command):
@@ -749,15 +749,16 @@ serving role can only read; no environment variable changes and no instance rest
 and logs a warning on every poll until a read succeeds; an instance whose very first read fails
 therefore starts with maintenance off (fail-open) until the database answers.
 
-While on, `POST /v1/enroll`, `POST /v1/changes`, and `DELETE /v1/devices/self` answer `503` with
+While on, `POST /v1/enroll`, `POST /v1/pairing-codes`, `POST /v1/changes`, and
+`DELETE /v1/devices/self` answer `503` with
 `Retry-After: 30` and
 
 ```json
 {"error": {"kind": "execution_error", "message": "the hub is in maintenance: <message, or 'writes are paused'>", "details": {"code": "maintenance"}}}
 ```
 
-before the body is read; on the two authenticated routes after the token is checked (a bad token
-is still `401`), and on `POST /v1/enroll` before the code is checked. Reads (`GET /v1/changes`, `GET /v1/snapshot`, `GET /v1/me`,
+before the body is read; on the authenticated routes after the token is checked (a bad token is
+still `401`), and on `POST /v1/enroll` before the code is checked. Reads (`GET /v1/changes`, `GET /v1/snapshot`, `GET /v1/me`,
 `GET /v1/devices`), `/healthz`, and `/readyz` are unchanged, except that `/readyz` reports
 `"maintenance": "read_only"`. A client treats `maintenance` like a transient failure: keep the
 outbox, retry after the header's delay.
