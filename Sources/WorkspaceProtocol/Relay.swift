@@ -254,7 +254,7 @@ public struct PairLink: Sendable, Equatable {
   }
 
   /// `b4app://pair`, whatever it carries: the links `parse` is the judge of. Other `b4app` links (a
-  /// later `b4app://thread/<id>`) are not.
+  /// `b4app://thread/<id>`, which is `ThreadLink`'s) are not.
   public static func isPairLink(_ url: URL) -> Bool {
     url.scheme?.lowercased() == linkScheme && url.host(percentEncoded: false)?.lowercased() == linkHost
   }

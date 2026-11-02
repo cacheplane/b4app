@@ -59,7 +59,29 @@ public final class HTTPHubAPI: HubAPI {
     _ = try await perform(.delete, "v1/devices/self")
   }
 
+  /// Registers this phone's APNs token (hex) with the hub (D-111). `environment` is `sandbox` or
+  /// `production`; `bundleId` is the app's own, so the hub needs no per-flavour setting. Only the iOS app
+  /// calls this, so it is not on `HubAPI`. The hub answers 403 `forbidden` for a device that is not an
+  /// iPhone. The token is a credential for pushes: callers must not log it.
+  public func registerPushToken(_ token: String, environment: String, bundleId: String) async throws {
+    let body = PushTokenBody(token: token, environment: environment, bundleId: bundleId)
+    let encoded: Data
+    do {
+      encoded = try JSONCoding.encoder.encode(body)
+    } catch {
+      throw HubError(
+        kind: "execution_error", code: "transport", message: "The request could not be encoded.", status: 0)
+    }
+    _ = try await perform(.post, "v1/devices/self/push-token", body: encoded)
+  }
+
   // MARK: - Plumbing
+
+  private struct PushTokenBody: Encodable {
+    var token: String
+    var environment: String
+    var bundleId: String
+  }
 
   private struct PushBody: Encodable {
     var changes: [SyncChange]
