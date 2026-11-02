@@ -18,7 +18,7 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(status.pending, 0);
-    assert_eq!(status.applied, vec![1, 2, 3]);
+    assert_eq!(status.applied, vec![1, 2, 3, 5]);
 
     let app = Db::connect(&app_url).await.unwrap();
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM orgs")
@@ -30,7 +30,7 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
         .fetch_one(&app.pool)
         .await
         .unwrap();
-    assert_eq!(migrations, 3);
+    assert_eq!(migrations, 4);
     app.pool.close().await;
 
     let row =
@@ -127,6 +127,8 @@ async fn tenant_tables_force_row_level_security(pool: PgPool) {
         })
         .collect();
     let expected = [
+        ("auth_ceremonies", false, false),
+        ("auth_handoffs", false, false),
         ("changes", true, true),
         ("column_clocks", true, true),
         ("connections", true, true),
@@ -142,6 +144,7 @@ async fn tenant_tables_force_row_level_security(pool: PgPool) {
         ("runtimeRequests", true, true),
         ("threads", true, true),
         ("turns", true, true),
+        ("user_identities", false, false),
         ("users", true, true),
     ];
     assert_eq!(flags.len(), expected.len(), "{flags:?}");

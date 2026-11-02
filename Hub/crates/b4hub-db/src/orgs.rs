@@ -16,8 +16,10 @@ pub struct SeedOutcome {
 
 /// Ensures the org (by slug) and its user (by username within the org) exist. Idempotent: a
 /// repeat call returns the existing ids and `created == false`, and never overwrites a name or
-/// email. `users` is row-level-secured and the owner is not exempt from forced RLS, so the user
-/// is written inside a transaction that sets the tenant context to the org just resolved.
+/// email. An operator names the user, so a new one counts as onboarded with `display_name` as
+/// their full name, as `0005_accounts.sql` treats the users that already existed. `users` is
+/// row-level-secured and the owner is not exempt from forced RLS, so the user is written inside a
+/// transaction that sets the tenant context to the org just resolved.
 pub async fn seed(
     db: &Db,
     org_slug: &str,
@@ -53,7 +55,8 @@ pub async fn seed(
         .await?;
 
     let new_user: Option<Uuid> = sqlx::query_scalar(
-        "INSERT INTO users (id, org_id, username, display_name, email) VALUES ($1, $2, $3, $4, $5) \
+        "INSERT INTO users (id, org_id, username, display_name, email, full_name, onboarded_at) \
+         VALUES ($1, $2, $3, $4, $5, $4, now()) \
          ON CONFLICT (org_id, username) DO NOTHING RETURNING id",
     )
     .bind(new_uuid())

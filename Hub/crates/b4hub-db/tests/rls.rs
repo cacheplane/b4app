@@ -3,7 +3,11 @@
 
 mod common;
 
+use b4hub_db::accounts::{self, DeviceSpec, Identity, Principal};
+use b4hub_db::devices::{self, Platform};
 use b4hub_db::orgs;
+use serde_json::json;
+use sqlx::types::Uuid;
 use sqlx::PgPool;
 
 /// The SQLSTATE of a database error, if `error` is one.
@@ -128,4 +132,74 @@ async fn owner_role_with_row_security_off_errors_instead_of_filtering(pool: PgPo
         .unwrap_err();
     // query would be affected by row-level security policy
     assert_eq!(sqlstate(&error).as_deref(), Some("42501"), "{error}");
+}
+
+fn phone(credential: &[u8]) -> (Identity, DeviceSpec) {
+    (
+        Identity::Passkey {
+            credential_id: credential.to_vec(),
+            passkey_json: json!({}),
+            user_handle: credential.to_vec(),
+            name: "passkey".into(),
+        },
+        DeviceSpec {
+            name: "iPhone".into(),
+            platform: Platform::Ios,
+        },
+    )
+}
+
+#[sqlx::test(migrations = false)]
+async fn two_personal_orgs_are_isolated(pool: PgPool) {
+    let (_admin, app) = common::migrated(&pool).await;
+    let a = {
+        let (identity, spec) = phone(b"a");
+        accounts::create_personal(&app, identity, spec)
+    }
+    .await
+    .unwrap();
+    let b = {
+        let (identity, spec) = phone(b"b");
+        accounts::create_personal(&app, identity, spec)
+    }
+    .await
+    .unwrap();
+
+    let mut tx = app.tenant_tx(a.org_id).await.unwrap();
+    let users: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM users")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    let device_ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM devices")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(users, vec![a.user_id]);
+    assert_eq!(device_ids, vec![a.device_id]);
+    assert!(devices::me(&app, a.org_id, b.device_id)
+        .await
+        .unwrap()
+        .is_none());
+
+    // Without a tenant the application role sees neither org's users.
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+
+    // A session issued for A cannot reuse B's device.
+    let session = accounts::issue_session(
+        &app,
+        Principal {
+            org_id: a.org_id,
+            user_id: a.user_id,
+        },
+        phone(b"x").1,
+        Some(b.device_id),
+    )
+    .await
+    .unwrap();
+    assert_ne!(session.device_id, b.device_id);
 }
