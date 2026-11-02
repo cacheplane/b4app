@@ -151,17 +151,25 @@ domain, for example `b4.run`; Compose defaults it to `local.b4.run`), and `B4HUB
 random bytes in base64); without either it exits 2. The WebAuthn origin is `https://<rp id>`.
 `B4HUB_SIGNUP` is `open` or `closed` (default `closed`, so an on-prem hub never grows accounts by
 accident; Compose's `.env.example` sets `open`). `B4HUB_TRUST_X_FORWARDED_FOR=1` makes the rate
-limits count the right-most `X-Forwarded-For` entry instead of the TCP peer; set it only behind a
-proxy that appends that header. The `B4HUB_APPLE_*` variables are all set or none (any other
+limits count the right-most `X-Forwarded-For` entry instead of the TCP peer (a bare address,
+`a.b.c.d:port`, `[v6]`, or `[v6]:port`; anything else falls back to the peer). Set it only behind
+exactly one proxy that appends that header: behind two, the right-most entry is the outer proxy
+and every client shares its limit. The `B4HUB_APPLE_*` variables are all set or none (any other
 combination exits 2); Sign in with Apple's routes are not built yet. Every secret is a plain
 environment variable, never a file path. `seed` and `enroll` read none of these.
 
-**Rate limits** are kept in memory per process (a fixed one-minute window per client IP), so a hub
-with several replicas admits a client once per replica.
+**Rate limits** are kept in memory per process (a fixed one-minute window per client), so a hub
+with several replicas admits a client once per replica. A client is an IPv4 address, or an IPv6
+address's /64 prefix (an IPv4-mapped IPv6 peer counts as its IPv4 address). Each limit tracks at
+most 100,000 clients and sweeps ended windows once a minute; while it is full, a client it is not
+already tracking gets `429 rate_limited` until the next sweep.
 
 **Logging.** No request body of these routes, challenge, credential id, or token is logged. A
-failed verification logs `passkey verification failed` with a fixed reason. `B4HUB_LOG` cannot
-turn on webauthn-rs's own logging, which would print the responses.
+failed verification logs `passkey verification failed` with a fixed reason. webauthn-rs logs
+whole responses and challenges at DEBUG and TRACE, so the hub's subscriber has a second filter,
+separate from `B4HUB_LOG`, that drops every event and span whose target starts with `webauthn`
+(`webauthn_rs`, `webauthn_rs_core`, `webauthn_attestation_ca`, and their modules). No
+`B4HUB_LOG` directive, module-qualified or not, gets past it.
 
 #### `GET /v1/auth/config`
 

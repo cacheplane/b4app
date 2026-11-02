@@ -20,7 +20,6 @@ use serde_json::{json, Value};
 use sqlx::types::Uuid;
 use sqlx::PgPool;
 use tracing_subscriber::fmt::MakeWriter;
-use tracing_subscriber::layer::SubscriberExt;
 
 const BEGIN: &str = "/v1/auth/passkey/begin";
 const FINISH: &str = "/v1/auth/passkey/finish";
@@ -596,6 +595,128 @@ async fn device_id_reused_on_second_sign_in(pool: PgPool) {
     assert_ne!(phone.body["deviceId"], device_id);
 }
 
+/// Signs in once with `authenticator` after `tamper` changed it, expecting `credential_rejected`,
+/// then checks an honest sign-in still works (so the rejection was the tampering's).
+async fn assert_rejected_then_recovers(
+    hub: &Hub,
+    authenticator: &mut Authenticator,
+    why: &str,
+    tamper: impl FnOnce(&mut Authenticator),
+    restore: impl FnOnce(&mut Authenticator),
+) {
+    tamper(authenticator);
+    let answer = sign_in(hub, authenticator, device("Mac", "macos")).await;
+    assert_eq!(
+        answer.status,
+        StatusCode::UNAUTHORIZED,
+        "{why}: {}",
+        answer.body
+    );
+    assert_eq!(answer.code(), "credential_rejected", "{why}");
+    restore(authenticator);
+}
+
+#[sqlx::test(migrations = false)]
+async fn assertion_crypto_checks_are_enforced(pool: PgPool) {
+    // Every case below is a well-formed assertion for a registered passkey, the right origin,
+    // and a live ceremony, with one thing wrong; only the check for that thing can refuse it.
+    let hub = hub(&pool, Signup::Open).await;
+    let mut authenticator = Authenticator::new(ORIGIN);
+    sign_up(&hub, &mut authenticator).await;
+
+    // Signed by a key the hub never registered.
+    let mut impostor = Authenticator::new(ORIGIN);
+    {
+        let begun = begin(&hub).await;
+        impostor.register(&begun["registration"]);
+    }
+    impostor.credentials[0].id = authenticator.credentials[0].id.clone();
+    impostor.credentials[0].user_handle = authenticator.credentials[0].user_handle.clone();
+    impostor.credentials[0].counter = 50;
+    impostor.replace_key(0);
+    let answer = sign_in(&hub, &mut impostor, device("Mac", "macos")).await;
+    assert_eq!(answer.status, StatusCode::UNAUTHORIZED, "{}", answer.body);
+    assert_eq!(answer.code(), "credential_rejected");
+
+    // UV unset.
+    assert_rejected_then_recovers(
+        &hub,
+        &mut authenticator,
+        "without user verification",
+        |a| a.user_verified = false,
+        |a| a.user_verified = true,
+    )
+    .await;
+
+    // The rp id hash of another domain, correctly signed.
+    assert_rejected_then_recovers(
+        &hub,
+        &mut authenticator,
+        "another relying party's hash",
+        |a| a.rp_id_hash_for = Some("evil.example".into()),
+        |a| a.rp_id_hash_for = None,
+    )
+    .await;
+
+    // One authenticator-data byte changed after signing: the counter's third byte, so the
+    // counter only goes up and nothing but the signature check can catch it.
+    let begun = begin(&hub).await;
+    let mut assertion = authenticator.assert(&begun["authentication"]);
+    let mut data =
+        common::authenticator::decode(assertion["response"]["authenticatorData"].as_str().unwrap());
+    data[35] ^= 0x01;
+    assertion["response"]["authenticatorData"] = json!(URL_SAFE_NO_PAD.encode(&data));
+    let answer = hub
+        .post(
+            FINISH,
+            Some(&finish_body(
+                &begun["ceremonyId"],
+                "assertion",
+                assertion,
+                device("Mac", "macos"),
+            )),
+        )
+        .await;
+    assert_eq!(answer.status, StatusCode::UNAUTHORIZED, "{}", answer.body);
+    assert_eq!(answer.code(), "credential_rejected");
+
+    // None of those moved the stored counter, and the honest key still signs in.
+    let counter = stored_passkey(&hub, &authenticator.credentials[0].id)
+        .await
+        .0["cred"]["counter"]
+        .clone();
+    assert_eq!(counter, 0, "only refused assertions so far");
+    let answer = sign_in(&hub, &mut authenticator, device("Mac", "macos")).await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+}
+
+#[sqlx::test(migrations = false)]
+async fn registration_without_user_verification_rejected(pool: PgPool) {
+    let hub = hub(&pool, Signup::Open).await;
+    let begun = begin(&hub).await;
+    let mut authenticator = Authenticator::new(ORIGIN);
+    authenticator.user_verified = false;
+    let attestation = authenticator.register(&begun["registration"]);
+    let answer = hub
+        .post(
+            FINISH,
+            Some(&finish_body(
+                &begun["ceremonyId"],
+                "attestation",
+                attestation,
+                device("Mac", "macos"),
+            )),
+        )
+        .await;
+    assert_eq!(answer.status, StatusCode::UNAUTHORIZED, "{}", answer.body);
+    assert_eq!(answer.code(), "credential_rejected");
+    let identities: i64 = sqlx::query_scalar("SELECT count(*) FROM user_identities")
+        .fetch_one(&hub.state.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(identities, 0);
+}
+
 fn assert_rate_limited(answer: &Answer) {
     assert_eq!(
         answer.status,
@@ -715,19 +836,19 @@ impl<'a> MakeWriter<'a> for Captured {
 
 #[sqlx::test(migrations = false)]
 async fn no_secret_in_logs(pool: PgPool) {
-    // The hub's own filter at its most verbose, writing to a buffer, as the process-wide
-    // subscriber: a thread-local one is not enough, because tracing caches a callsite's interest
-    // from whichever thread reaches it first, and the other tests run on other threads. Their
-    // lines land in the buffer too, which only widens the check.
-    let filter = Settings::from_pairs([("B4HUB_LOG", "trace")])
-        .log_filter()
-        .unwrap();
+    // The hub's own subscriber, with the most verbose filter an operator could write (including
+    // module-qualified directives for webauthn-rs, which outrank a crate-level `off`), writing
+    // to a buffer, as the process-wide subscriber: a thread-local one is not enough, because
+    // tracing caches a callsite's interest from whichever thread reaches it first, and the other
+    // tests run on other threads. Their lines land in the buffer too, which only widens the check.
+    let filter = Settings::from_pairs([(
+        "B4HUB_LOG",
+        "trace,webauthn_rs_core::core=trace,webauthn_rs=trace,webauthn_attestation_ca=trace",
+    )])
+    .log_filter()
+    .unwrap();
     let captured = Captured::default();
-    let subscriber = tracing_subscriber::registry().with(filter).with(
-        tracing_subscriber::fmt::layer()
-            .with_ansi(false)
-            .with_writer(captured.clone()),
-    );
+    let subscriber = b4hub::logging::subscriber(filter, captured.clone());
     tracing::subscriber::set_global_default(subscriber)
         .expect("no other test in this binary sets a subscriber");
 
@@ -811,7 +932,8 @@ async fn no_secret_in_logs(pool: PgPool) {
             "{secret} is in the log:\n{text}"
         );
     }
-    // The client data's own fields never appear either.
+    // Nothing from webauthn-rs's own targets, and the client data's own fields never appear.
+    assert!(!text.contains("webauthn_rs"), "{text}");
     assert!(!text.contains("webauthn.get"), "{text}");
     assert!(!text.contains("webauthn.create"), "{text}");
 }

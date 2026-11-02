@@ -6,6 +6,7 @@ pub mod auth_limits;
 pub mod cli;
 pub mod config;
 pub mod error;
+pub mod logging;
 pub mod notify;
 pub mod routes;
 pub mod serve;

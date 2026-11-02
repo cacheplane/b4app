@@ -2,6 +2,8 @@
 //! `none` attestation, discoverable credentials (it answers an assertion with no allow-list and
 //! returns the user handle), user presence and verification always set. It speaks the JSON the
 //! hub sends and expects, so the tests drive the routes the way a platform authenticator would.
+//! The knobs below (`user_verified`, `rp_id_hash_for`, [`Authenticator::replace_key`]) let a
+//! test break one check at a time, to prove the hub enforces it.
 //!
 //! `webauthn-authenticator-rs`'s `SoftPasskey` refuses resident keys and needs an allow-list, so
 //! it cannot do a discoverable sign-in; this is the smallest thing that can.
@@ -37,6 +39,11 @@ pub struct Authenticator {
     pub counts: bool,
     /// The backup-state flag reported with each assertion (backup eligibility is always set).
     pub backed_up: bool,
+    /// Whether the UV (user verified) flag is set; user presence always is.
+    pub user_verified: bool,
+    /// The domain whose SHA-256 goes into the authenticator data as the rp id hash, instead of
+    /// the rp id the options name.
+    pub rp_id_hash_for: Option<String>,
     pub credentials: Vec<Credential>,
 }
 
@@ -46,6 +53,8 @@ impl Authenticator {
             origin: origin.to_string(),
             counts: true,
             backed_up: false,
+            user_verified: true,
+            rp_id_hash_for: None,
             credentials: Vec::new(),
         }
     }
@@ -59,7 +68,7 @@ impl Authenticator {
         let challenge = decode(options["challenge"].as_str().expect("challenge"));
 
         let id = random::<32>().to_vec();
-        let key = SigningKey::from_bytes(&random::<32>().into()).expect("a valid scalar");
+        let key = new_key();
         let point = key.verifying_key().to_sec1_point(false);
 
         // COSE_Key: {1: 2 (EC2), 3: -7 (ES256), -1: 1 (P-256), -2: x, -3: y}
@@ -68,8 +77,8 @@ impl Authenticator {
         cose.push(0x22);
         cbor_bytes(&mut cose, point.y().expect("y"));
 
-        let mut auth_data = Sha256::digest(rp_id.as_bytes()).to_vec();
-        auth_data.push(UP | UV | BE | AT | if self.backed_up { BS } else { 0 });
+        let mut auth_data = self.rp_id_hash(&rp_id);
+        auth_data.push(UP | self.uv() | BE | AT | if self.backed_up { BS } else { 0 });
         auth_data.extend_from_slice(&0u32.to_be_bytes());
         auth_data.extend_from_slice(&[0; 16]); // AAGUID
         auth_data.extend_from_slice(&(id.len() as u16).to_be_bytes());
@@ -118,7 +127,8 @@ impl Authenticator {
         let challenge = decode(options["challenge"].as_str().expect("challenge"));
         let rp_id = options["rpId"].as_str().expect("rpId");
         let client_data = self.client_data("webauthn.get", &challenge);
-        let (counts, backed_up) = (self.counts, self.backed_up);
+        let (counts, backed_up, uv) = (self.counts, self.backed_up, self.uv());
+        let rp_id_hash = self.rp_id_hash(rp_id);
         let credential = &mut self.credentials[index];
         assert_eq!(
             credential.rp_id, rp_id,
@@ -128,8 +138,8 @@ impl Authenticator {
             credential.counter += 1;
         }
 
-        let mut auth_data = Sha256::digest(rp_id.as_bytes()).to_vec();
-        auth_data.push(UP | UV | BE | if backed_up { BS } else { 0 });
+        let mut auth_data = rp_id_hash;
+        auth_data.push(UP | uv | BE | if backed_up { BS } else { 0 });
         auth_data.extend_from_slice(&credential.counter.to_be_bytes());
         let mut signed = auth_data.clone();
         signed.extend_from_slice(&Sha256::digest(&client_data));
@@ -149,6 +159,25 @@ impl Authenticator {
         })
     }
 
+    /// Gives credential `index` a fresh key the hub has never seen, so its next assertion is
+    /// signed by the wrong key.
+    pub fn replace_key(&mut self, index: usize) {
+        self.credentials[index].key = new_key();
+    }
+
+    fn uv(&self) -> u8 {
+        if self.user_verified {
+            UV
+        } else {
+            0
+        }
+    }
+
+    fn rp_id_hash(&self, rp_id: &str) -> Vec<u8> {
+        let domain = self.rp_id_hash_for.as_deref().unwrap_or(rp_id);
+        Sha256::digest(domain.as_bytes()).to_vec()
+    }
+
     fn client_data(&self, kind: &str, challenge: &[u8]) -> Vec<u8> {
         serde_json::to_vec(&json!({
             "type": kind,
@@ -166,6 +195,10 @@ pub fn decode(text: &str) -> Vec<u8> {
         .iter()
         .find_map(|engine| engine.decode(text).ok())
         .unwrap_or_else(|| panic!("not base64: {text}"))
+}
+
+fn new_key() -> SigningKey {
+    SigningKey::from_bytes(&random::<32>().into()).expect("a valid scalar")
 }
 
 fn random<const N: usize>() -> [u8; N] {

@@ -25,9 +25,6 @@ const DEFAULT_SHUTDOWN_WAIT_MS: u64 = 30_000;
 const DEFAULT_RETENTION_DAYS: u32 = 30;
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 
-/// Crates whose own logging would leak secrets, kept off whatever `B4HUB_LOG` says.
-const SILENCED_TARGETS: [&str; 3] = ["webauthn_rs", "webauthn_rs_core", "webauthn_attestation_ca"];
-
 /// How long an enrollment code stays redeemable.
 const ENROLLMENT_TTL: Duration = Duration::from_secs(600);
 
@@ -264,19 +261,11 @@ impl Settings {
         }
     }
 
-    /// `B4HUB_LOG`, a tracing filter, default `info`. Whatever it says, webauthn-rs is silenced:
-    /// at DEBUG and TRACE it logs the WebAuthn responses and challenges it verifies.
+    /// `B4HUB_LOG`, a tracing filter, default `info`. Whatever it allows, the subscriber in
+    /// [`crate::logging`] still drops webauthn-rs's own events.
     pub fn log_filter(&self) -> Result<EnvFilter, ConfigError> {
-        let filter = EnvFilter::try_new(self.var("B4HUB_LOG").unwrap_or("info"))
-            .map_err(|_| ConfigError::new("B4HUB_LOG", "is not a valid tracing filter"))?;
-        // A directive for the same target replaces the operator's, so these always win.
-        Ok(SILENCED_TARGETS.iter().fold(filter, |filter, target| {
-            filter.add_directive(
-                format!("{target}=off")
-                    .parse()
-                    .expect("a target directive parses"),
-            )
-        }))
+        EnvFilter::try_new(self.var("B4HUB_LOG").unwrap_or("info"))
+            .map_err(|_| ConfigError::new("B4HUB_LOG", "is not a valid tracing filter"))
     }
 
     /// `DATABASE_URL` (or the contents of the file `DATABASE_URL_FILE` names): the `b4hub_app`
@@ -558,32 +547,6 @@ mod tests {
         let error = run(cli, &short_key).await.unwrap_err();
         assert!(matches!(&error, CliError::Config(e) if e.name == "B4HUB_SECRET_KEY"));
         assert!(!error.to_string().contains("dG9vIHNob3J0"));
-    }
-
-    #[test]
-    fn the_log_filter_always_silences_webauthn() {
-        for raw in [
-            None,
-            Some("trace"),
-            Some("info,webauthn_rs_core=trace,webauthn_rs=debug"),
-        ] {
-            let pairs: Vec<(&str, &str)> = raw.map(|r| ("B4HUB_LOG", r)).into_iter().collect();
-            let filter = settings(&pairs).log_filter().unwrap().to_string();
-            for target in SILENCED_TARGETS {
-                assert!(
-                    filter.contains(&format!("{target}=off")),
-                    "{raw:?}: {filter}"
-                );
-                assert!(
-                    !filter.contains(&format!("{target}=trace")),
-                    "{raw:?}: {filter}"
-                );
-                assert!(
-                    !filter.contains(&format!("{target}=debug")),
-                    "{raw:?}: {filter}"
-                );
-            }
-        }
     }
 
     #[test]

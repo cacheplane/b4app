@@ -2,6 +2,7 @@ use std::process::ExitCode;
 
 use b4hub::cli::{self, Cli, ConfigError, Settings};
 use clap::Parser;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -13,10 +14,7 @@ async fn main() -> ExitCode {
         Ok(filter) => filter,
         Err(error) => return config_failure(&error),
     };
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .init();
+    b4hub::logging::subscriber(filter, std::io::stderr).init();
 
     match cli::run(cli, &settings).await {
         Ok(()) => ExitCode::SUCCESS,

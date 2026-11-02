@@ -97,8 +97,8 @@ webauthn-rs 0.6 verifies with RustCrypto (`crypto-glue`, `p256` 0.14), not OpenS
 | --- | --- |
 | Hub environment | `serve` now requires `B4HUB_WEBAUTHN_RP_ID` (a bare domain; the origin is `https://<rp id>`) and `B4HUB_SECRET_KEY` (32 bytes, base64), and reads `B4HUB_SIGNUP` (`open`/`closed`, default `closed`), `B4HUB_TRUST_X_FORWARDED_FOR` (`1`/`0`), and the `B4HUB_APPLE_*` set (all or none). A missing or malformed one exits 2. Compose passes `B4HUB_WEBAUTHN_RP_ID` (default `local.b4.run`), `B4HUB_SIGNUP` (default `closed`; `.env.example` sets `open`), and `B4HUB_SECRET_KEY` (required) to `hub` only |
 | Routes | `GET /v1/auth/config`, `POST /v1/auth/passkey/begin`, `POST /v1/auth/passkey/finish`; errors `signup_closed` (403), `ceremony_expired` (400), `credential_rejected` (401), `rate_limited` (429, `details.retryAfterMs` and `Retry-After`) |
-| Rate limits | In memory per process, a fixed one-minute window per client IP: 20 begins, 10 finishes |
-| Logging | The pool disables sqlx's statement logging (SQL text never reaches the log), and `B4HUB_LOG` can no longer enable `webauthn_rs`, `webauthn_rs_core`, or `webauthn_attestation_ca`, which log responses and challenges at DEBUG and TRACE |
+| Rate limits | In memory per process, a fixed one-minute window per client (an IPv4 address or an IPv6 /64): 20 begins, 10 finishes; at most 100,000 tracked clients per limit, swept once a minute |
+| Logging | The pool disables sqlx's statement logging (SQL text never reaches the log), and a filter layer separate from `B4HUB_LOG` drops every event from a target starting with `webauthn` (webauthn-rs logs responses and challenges at DEBUG and TRACE), so no `B4HUB_LOG` directive can re-enable it |
 | Hub protocol | `minClientProtocol` stays 1: the routes are new and nothing existing changed shape |
 
 ## Provider runtimes
