@@ -123,7 +123,11 @@ jobs:
         run: |
           set -euo pipefail
           tag_args=()
+          # Blank lines (a trailing newline, an empty output) are skipped so no
+          # bare "$IMAGE:" tag is passed; the loop is inline, so this comment
+          # stands in for a test. hub-release-tags.sh is covered by test-tag-guard.sh.
           while IFS= read -r version; do
+            [ -n "$version" ] || continue
             tag_args+=(--tag "$IMAGE:$version")
           done <<< "$TAGS"
           [ "${#tag_args[@]}" -gt 0 ] || { echo "::error::no tags to add" >&2; exit 1; }
