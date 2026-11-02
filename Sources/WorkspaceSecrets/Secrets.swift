@@ -24,7 +24,7 @@ public protocol SecretStore: Sendable {
   /// Where values live, for diagnostics; never a value.
   var backend: String { get }
   /// The value this store itself holds for `ref`, with no fallback to another keychain and nothing
-  /// moved: what a copy between two stores checks (D-091). `read` for a store with no fallback.
+  /// moved: what a copy between two stores checks (D-093). `read` for a store with no fallback.
   func readHere(_ ref: SecretRef) async throws -> String?
   /// Stores `value` here and touches no other keychain (`put` on a data-protection store also
   /// deletes a login-keychain copy). `put` for a store with no fallback.

@@ -827,8 +827,14 @@ public final class WorkspaceModel {
         composerText = draft?.text ?? ""
         restoringDraft = false
       }
-      detail = ThreadDetail(
+      var next = ThreadDetail(
         thread: read.thread, turns: read.turns, items: read.items, requests: read.requests)
+      // A reload of the open thread mid-reply keeps the text streamed so far: the next delta appends
+      // to it, and only a completion or the turn's end clears it, as without the reload.
+      if let current = detail, current.thread.id == id, next.activeTurn != nil {
+        next.liveText = current.liveText
+      }
+      detail = next
       store(read.thread)
       resolvePendingSends(with: read.turns)
       prunePendingSends()

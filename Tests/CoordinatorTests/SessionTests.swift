@@ -321,6 +321,40 @@ actor EventCollector {
     await h.stop()
   }
 
+  /// A reply stopped mid-stream keeps what streamed. The runtime never completes the item (or completes
+  /// it empty), so the coordinator stores the text its deltas carried and announces the item before the
+  /// turn's end, so a client clearing live text at the end still shows it.
+  @Test(arguments: ["partial then wait", "partial, emptied on stop"])
+  func aStoppedReplyKeepsItsStreamedText(_ text: String) async throws {
+    let h = try await Harness.start()
+    let connection = try await h.addCodex()
+    let thread = try await h.newThread(connection)
+    let turn = try await h.send(thread, text)
+    try await h.events.waitFor {
+      $0.kind == .messageDelta && $0.threadId == thread.id && $0.payload["delta"]?.stringValue == "so far"
+    }
+    _ = try await h.client.request(
+      TurnInterrupt.self, TurnInterrupt.Params(threadId: thread.id),
+      options: RequestOptions(operationId: UUID().uuidString))
+    let seen = try #require(
+      await h.events.until { $0.contains { $0.kind == .turnFinished && $0.turnId == turn.id } })
+    let finished = try #require(seen.firstIndex { $0.kind == .turnFinished && $0.turnId == turn.id })
+    let completed = try #require(
+      seen.firstIndex {
+        $0.kind == .messageCompleted && $0.turnId == turn.id && $0.payload["role"]?.stringValue == "assistant"
+      })
+    #expect(completed < finished)
+    let item = try #require(try seen[completed].payload["displayItem"]?.decode(DisplayItem.self))
+    #expect(item.payload["text"]?.stringValue == "Partial reply so far")
+    #expect(seen[finished].payload["outcome"]?.stringValue == "cancelled")
+
+    let read = try await h.read(thread)
+    #expect(read.items.map(\.role) == [.user, .assistant])
+    #expect(read.items[1].payload["text"]?.stringValue == "Partial reply so far")
+    #expect(read.items[1].id == item.id)
+    await h.stop()
+  }
+
   @Test func answersAnApprovalExactlyOnce() async throws {
     let h = try await Harness.start()
     let connection = try await h.addCodex()

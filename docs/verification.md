@@ -4,9 +4,9 @@ Gate results and unresolved checks, newest first. Each entry names what was exer
 
 ## 2026-11-02: Sign-in (fixture gates; live gate pending)
 
-Target: the build MacBook Pro (macOS 26.5, Xcode 26.6), run from the worktree on `blove/sign-in` at code head `e6aaf6d` (Tasks 1 to 17 and X1 of `docs/superpowers/plans/2026-11-01-sign-in.md`, with `origin/main` through PR #40 merged). The documentation commit that records this changes no Swift or Rust, only the iPhone's `PrivacyInfo.xcprivacy` and these documents; the four `xcodebuild` builds ran after that change. Nothing touched the owner's app, its data directory, the Keychain, or the Compose stack. Decisions D-087 to D-109.
+Target: the build MacBook Pro (macOS 26.5, Xcode 26.6), run from the worktree on `blove/sign-in` at code head `e6aaf6d` (Tasks 1 to 17 and X1 of `docs/superpowers/plans/2026-11-01-sign-in.md`, with `origin/main` through PR #40 merged). The documentation commit that records this changes no Swift or Rust, only the iPhone's `PrivacyInfo.xcprivacy` and these documents; the four `xcodebuild` builds ran after that change. Nothing touched the owner's app, its data directory, the Keychain, or the Compose stack. Decisions D-089 to D-111.
 
-Rerun after the final review's fix wave (I1, I2, M1, M2, M5 to M9, M11 to M13; D-110 to D-114), including M11 narrowed to the hub's `unknown_credential` reason (D-114): the format, build, Swift and Rust test rows below are that run's; of the app builds, `B4App-macOS` and `B4App-iOS` were rebuilt (`** BUILD SUCCEEDED **` each, `CODE_SIGNING_ALLOWED=NO`), the Beta schemes were not. The `registryMigrations` NOTICE no longer appears in the test output (M12).
+Rerun after the final review's fix wave (I1, I2, M1, M2, M5 to M9, M11 to M13; D-112 to D-116), including M11 narrowed to the hub's `unknown_credential` reason (D-116): the format, build, Swift and Rust test rows below are that run's; of the app builds, `B4App-macOS` and `B4App-iOS` were rebuilt (`** BUILD SUCCEEDED **` each, `CODE_SIGNING_ALLOWED=NO`), the Beta schemes were not. The `registryMigrations` NOTICE no longer appears in the test output (M12).
 
 ### Sign-in (fixture gates)
 
@@ -14,7 +14,7 @@ Rerun after the final review's fix wave (I1, I2, M1, M2, M5 to M9, M11 to M13; D
 | --- | --- | --- |
 | Swift format | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass (exit 0, no findings) |
 | Build | `swift build` | Pass |
-| Swift tests | `swift test` | Pass: 1141 tests in 144 suites in 63.5 s (1113 in 142 before the final fix wave; 858 when this branch first merged main, 1022 after the second merge), exit 0. The sign-in suites: `FlavorTests`, `LegacyAdoptionTests`, `LegacyAdoptionGateTests`, `LegacySecretCopyTests` (Task X2), `CoordinatorAdoptionOrderTests`, `AccountRegistryTests`, `AccountManagerTests`, `AccountCommandTests`, `AccountCLITests`, `AuthWireTests`, `HTTPHubAPITests`, `SignInTests`, `AccountSettingsTests`, `AppleSignInTests`, `MirrorAccountTests`, `MirrorLogOutTests`, `PhoneFlavorTests`, `PairLinkTests` (protocol and mirror), `PairingTests`, `RemoteAccessTests`, `ConnectMacTests`. `HubSyncTests.joinPushesTheBacklogAndMarksItSynced`, seen to fail once in a full run during Task 15, passed |
+| Swift tests | `swift test` | Pass: 1144 tests in 144 suites in 63.5 s (1113 in 142 before the final fix wave; 858 when this branch first merged main, 1022 after the second merge), exit 0. The sign-in suites: `FlavorTests`, `LegacyAdoptionTests`, `LegacyAdoptionGateTests`, `LegacySecretCopyTests` (Task X2), `CoordinatorAdoptionOrderTests`, `AccountRegistryTests`, `AccountManagerTests`, `AccountCommandTests`, `AccountCLITests`, `AuthWireTests`, `HTTPHubAPITests`, `SignInTests`, `AccountSettingsTests`, `AppleSignInTests`, `MirrorAccountTests`, `MirrorLogOutTests`, `PhoneFlavorTests`, `PairLinkTests` (protocol and mirror), `PairingTests`, `RemoteAccessTests`, `ConnectMacTests`. `HubSyncTests.joinPushesTheBacklogAndMarksItSynced`, seen to fail once in a full run during Task 15, passed |
 | Rust format | `cd Hub && cargo fmt --all -- --check` | Pass |
 | Rust lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
 | Rust tests | `source <(./scripts/test-db.sh) && cargo test --workspace --locked --no-fail-fast`, then `./scripts/test-db.sh --stop` | Pass: 387 tests against PostgreSQL 17.11 (379 before the final fix wave, 245 at M8e Part B): `b4hub` 278 (unit 88, `accounts` 14, `apple` 38, `auth` 19, `auth_fixture` 9, `changes` 14, `enroll` 17, `health` 5, `instances` 8, `maintenance` 3, `relay` 62, `request_log` 1), `b4hub-core` 26, `b4hub-db` 83 (unit 3, `accounts` 24, `changes` 35, `instances` 4, `logging` 1, `migrate` 8, `rls` 5, `settings` 3) |
@@ -26,9 +26,9 @@ Rerun after the final review's fix wave (I1, I2, M1, M2, M5 to M9, M11 to M13; D
 
 What the fixtures cannot show, and is left to the live gate or later:
 
-- A real passkey ceremony: the Mac needs a Developer ID package with the `webcredentials:` entitlement and `local.b4.run`'s association file through Apple's CDN; an unsigned build only reaches the failure line. The "no passkey" path (D-101), `excludeCredentials`, the orphan report and the rename (D-102) have run only against fakes.
+- A real passkey ceremony: the Mac needs a Developer ID package with the `webcredentials:` entitlement and `local.b4.run`'s association file through Apple's CDN; an unsigned build only reaches the failure line. The "no passkey" path (D-103), `excludeCredentials`, the orphan report and the rename (D-104) have run only against fakes.
 - Sign in with Apple on any hub: no hub has the Apple key (the local flavour hides it, and the hosted hubs are not deployed); the hub's side is fixture-tested against a fake Apple.
-- Adoption of the owner's install with the real `launchctl` boot-out and cluster read (D-091). The copy of the owner's secrets from the real prod keychain group (Task X2) has run only against in-memory stores; step 2 below is its first real run.
+- Adoption of the owner's install with the real `launchctl` boot-out and cluster read (D-093). The copy of the owner's secrets from the real prod keychain group (Task X2) has run only against in-memory stores; step 2 below is its first real run.
 - The system Camera opening a pair link on a device, the Safari sheet, and the Settings window closing on sign-out in the running app.
 - A Developer ID package of any flavour from this branch (the owner's profiles pass `B4APP_CHECK_PROFILES_ONLY`), a release, and the Homebrew tap.
 - The repository's `Hub/Dockerfile` with the sign-in crates: its pinned base digests could not be pulled through this Mac's Docker Desktop during the build, so the image for the live gate was built from a scratch copy using the cached `rust:1.93.1` tag (the Dockerfile itself is unchanged). CI's `hub-image` and `compose-smoke` jobs are the check.
@@ -40,12 +40,31 @@ Pending: the owner's passkey (plan Task 18 Step 4). Local flavour, on the owner'
 | Step | Result |
 | --- | --- |
 | 1. Package the local flavour and launch it | pending |
-| 2. The owner's existing threads appear without a sign-in (adoption); `~/Library/LaunchAgents/com.cacheplane.b4app.coordinator.plist` is gone afterwards (D-113), and `launchctl print gui/$(id -u)/com.cacheplane.b4app.coordinator` finds no job | pending |
+| 2. The owner's existing threads appear without a sign-in (adoption); `~/Library/LaunchAgents/com.cacheplane.b4app.coordinator.plist` is gone afterwards (D-115), and `launchctl print gui/$(id -u)/com.cacheplane.b4app.coordinator` finds no job | pending |
 | 3. Add a passkey in Settings → Account, log out, sign back in with the passkey: the same threads appear | pending |
 | 4. Sign up a second account with a new passkey and complete onboarding: "Brian's Org" (or the typed name's) | pending |
 | 5. Create a thread, log out, sign in to the first account: its threads appear, the second account's thread does not | pending |
 | 6. `agent-workspace thread list` while signed out: exit 4 with the message | pending |
 | 7. In the iPhone Simulator (local flavour), open the pair link with `xcrun simctl openurl` and see the threads | pending |
+## 2026-11-02: A stopped reply keeps its streamed text (D-088)
+
+Branch `fix/stopped-reply-text`, from main at `3f3cc15`.
+
+- **Automated.** `swift test` passes 852 tests and `swift format lint --strict` is clean. `SessionServiceTests.aStoppedReplyKeepsItsStreamedText` covers two cases, a reply never completed and one completed empty. It failed before the fix: no assistant completion was published, and the item stayed empty.
+- **Live, real Codex on a scratch coordinator** (`.build/debug`, its own `B4APP_RUNTIME_DIR` and `B4APP_DATA_DIR`; the owner's app untouched). A 60-line reply was stopped after 12 s. The turn ended `cancelled`, and its agent message was stored with the 780 characters that had streamed. Before the fix it was stored empty (seen live in the M8c transcript check).
+- **Not exercised live.** The phone showing the stopped reply. That needs the owner's app on this build; the phone applies the same `message.completed` event as the Mac.
+
+## 2026-11-02: M8c phone transcript fixes (D-087)
+
+Branch `fix/m8c-transcript`, from main at `3151915`.
+
+- **Automated.** `swift test` passes 851 tests, `swift format lint --strict` is clean, and the iOS and macOS app builds pass. Each new test fails without its fix and passes with it: `MirrorModelTests.reloadingTheOpenThreadMidReplyKeepsTheLiveText` and `SendStateTests.aConfirmedStartWhosePlaceholderExpiredStaysStarted`. `anUnconfirmedStartWhoseReadFailsShowsNotConfirmed` pins the unchanged spec case.
+- **Live, iPhone 17 Pro Simulator** against the Compose hub and the owner's Mac app (both on main `3151915`), with a real Codex turn:
+  - **Reopen mid-reply.** A 60-line reply was streaming. Going back and reopening the thread showed the reply from its first line, still growing. Before, the text started over from the next delta.
+  - **Stop.** After a Stop mid-reply, the transcript ended at "Turn stopped." with no blank space past it.
+  - **Opening a thread.** A long thread opens at its latest message (before, at its first), and a short thread still starts at the top.
+- **Not exercised live.** A confirmed start whose row is more than 2 minutes late; it needs the Mac's sync held back. It is fixture-tested.
+- **Seen, then fixed in D-088.** A Codex reply stopped mid-stream was stored on the Mac with empty text, so the partial reply disappeared on both the Mac and the phone after a Stop.
 
 ## 2026-11-02: Settings, connections and B4 projects (D-081 to D-084)
 
