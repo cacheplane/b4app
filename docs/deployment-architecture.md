@@ -114,7 +114,7 @@ Per account, one VPC with two availability zones (a third when the second instan
 - `image`: the digest, never a tag (see "Build and release").
 - `command`: `["serve"]`; the image's `ENTRYPOINT` is the binary.
 - `stopTimeout: 60` (ECS allows up to 120 s), so SIGTERM is followed by at least the hub's 30 s drain plus headroom.
-- `environment`: `B4HUB_PORT=8080`, `B4HUB_PUBLIC_URL`, `B4HUB_SIGNUP=open`, `B4HUB_WEBAUTHN_RP_ID` (`b4.run` or `test.b4.run`), `B4HUB_APPLE_AUDIENCES`, `B4HUB_TRUST_X_FORWARDED_FOR=1`, `B4HUB_RETENTION_DAYS`, `B4HUB_LOG=info`. Nothing secret.
+- `environment`: `B4HUB_PORT=8080`, `B4HUB_PUBLIC_URL`, `B4HUB_SIGNUP=open`, `B4HUB_WEBAUTHN_RP_ID` (`b4.run` or `test.b4.run`), `B4HUB_APPLE_AUDIENCES`, `B4HUB_APPLE_SERVICES_ID=com.cacheplane.b4app.signin` (the Services ID for the Mac's web sign-in flow, also listed in the audiences; added by the sign-in project 2026-11-02), `B4HUB_TRUST_X_FORWARDED_FOR=1`, `B4HUB_RETENTION_DAYS`, `B4HUB_LOG=info`. Nothing secret.
 - `secrets`: `DATABASE_URL`, `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, `B4HUB_APPLE_PRIVATE_KEY`, each a `valueFrom` reference to a Secrets Manager secret, injected by the ECS agent as environment variables at task start. Secrets Manager holds multi-line values verbatim, so the PEM arrives intact. `B4HUB_APPLE_BASE_URL` is never set on a hosted hub.
 - Health: the load balancer's target group checks `GET /readyz` every 10 s, healthy after 2, unhealthy after 3; the container `HEALTHCHECK` in the image is kept for Compose and ignored by ECS.
 - Logging: the `awslogs` driver to a log group per environment with 30-day retention (90 for prod, my call; longer retention moves to the observability vendor).
