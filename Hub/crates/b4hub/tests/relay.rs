@@ -2106,3 +2106,95 @@ async fn a_message_past_the_wire_cap_ends_only_that_connection(pool: PgPool) {
     // Nobody else is affected.
     mac.ping().await;
 }
+
+#[sqlx::test(migrations = false)]
+async fn maintenance_refuses_link_writes_and_keeps_reads(pool: PgPool) {
+    use b4hub_db::settings::{self, Maintenance};
+
+    let world = World::new(spawn_hub(&pool).await).await;
+    // The switch as `serve` polls it, on a shortened cadence.
+    let poll = Duration::from_millis(50);
+    tokio::spawn(b4hub::maintenance::poll_loop(
+        world.hub.state.db.clone(),
+        world.hub.state.maintenance.clone(),
+        poll,
+        world.hub.state.shutdown.clone(),
+    ));
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+
+    settings::set_maintenance(
+        &world.hub.admin,
+        Some(&Maintenance::read_only(Some("back soon".into()))),
+    )
+    .await
+    .unwrap();
+    eventually("the hub to see the switch", || async {
+        world.hub.state.maintenance.current().map(|_| ())
+    })
+    .await;
+
+    // The three commands that change something answer `maintenance` with the HTTP guard's message,
+    // and never reach the Mac.
+    for method in [
+        RelayMethod::TurnSend,
+        RelayMethod::ThreadStart,
+        RelayMethod::RequestRespond,
+    ] {
+        phone
+            .command(method.as_str(), method, params_for(method))
+            .await;
+        let (id, error) = phone.expect_refusal().await;
+        assert_eq!(
+            (id.as_str(), error.code.as_str()),
+            (method.as_str(), "maintenance")
+        );
+        assert_eq!(error.message, "the hub is in maintenance: back soon");
+    }
+    mac.expect_quiet(QUIET).await;
+
+    // Reads continue: `turn.lookup` reaches the Mac, and so does a `watch`.
+    phone
+        .command(
+            "lookup-1",
+            RelayMethod::TurnLookup,
+            params_for(RelayMethod::TurnLookup),
+        )
+        .await;
+    let (id, method, ..) = mac.expect_command().await;
+    assert_eq!((id.as_str(), method), ("lookup-1", RelayMethod::TurnLookup));
+    mac.reply("lookup-1", json!({"found": false})).await;
+    assert_eq!(
+        phone.expect_reply().await,
+        ("lookup-1".to_string(), Some(json!({"found": false})), None)
+    );
+    phone.watch("thread-1").await;
+    assert_eq!(mac.expect_watching().await, ["thread-1"]);
+
+    // Off again: a send is forwarded.
+    settings::set_maintenance(&world.hub.admin, None)
+        .await
+        .unwrap();
+    eventually("the hub to see the switch off", || async {
+        world
+            .hub
+            .state
+            .maintenance
+            .current()
+            .is_none()
+            .then_some(())
+    })
+    .await;
+    phone
+        .command(
+            "send-after",
+            RelayMethod::TurnSend,
+            params_for(RelayMethod::TurnSend),
+        )
+        .await;
+    let (id, ..) = mac.expect_command().await;
+    assert_eq!(id, "send-after");
+    mac.reply("send-after", json!({"turnId": "turn-1"})).await;
+    phone.expect_reply().await;
+    world.hub.state.shutdown.trigger();
+}

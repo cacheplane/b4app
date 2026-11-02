@@ -164,6 +164,21 @@ impl ApiError {
         )
     }
 
+    /// A link upgrade that reached an instance other than the one serving the user's links:
+    /// `instance_id` is the owner. The device retries at once (up to three times), so the load
+    /// balancer can land it on the owner; see `Hub/API.md`, "More than one instance".
+    pub fn relocated(instance_id: uuid::Uuid) -> ApiError {
+        let mut error = ApiError::request(
+            StatusCode::CONFLICT,
+            "relocated",
+            "your links are served by another hub instance",
+        );
+        error
+            .extra
+            .insert("instanceId".into(), json!(instance_id.to_string()));
+        error
+    }
+
     pub fn shutting_down() -> ApiError {
         ApiError::execution(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -264,6 +279,25 @@ mod tests {
                 "kind": "execution_error",
                 "message": "the hub is not ready to serve requests",
                 "details": {"code": "not_ready"},
+            }})
+        );
+    }
+
+    #[tokio::test]
+    async fn relocated_names_the_owner() {
+        let owner = uuid::Uuid::from_u128(7);
+        let response = ApiError::relocated(owner).into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body,
+            json!({"error": {
+                "kind": "request_error",
+                "message": "your links are served by another hub instance",
+                "details": {"code": "relocated", "instanceId": owner.to_string()},
             }})
         );
     }

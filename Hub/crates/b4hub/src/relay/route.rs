@@ -29,6 +29,7 @@
 //! host's `event` ([`handle_event`]), which is fanned out to the clients watching its thread.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -39,7 +40,7 @@ use b4hub_core::relay::{
 use b4hub_db::relay::{owner_device, owner_of_project, owner_of_request, owner_of_thread, Owner};
 use b4hub_db::Db;
 use serde_json::{json, Value};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -99,6 +100,12 @@ pub struct Commands {
     pending_threads: Mutex<HashMap<(Uuid, String), PendingThread>>,
     /// How many commands are held for each offline host.
     held: Mutex<HashMap<Uuid, usize>>,
+    /// Set when the instance drains: every hold ends at once with `device_offline`, and nothing
+    /// new is held.
+    holds_released: watch::Sender<bool>,
+    /// Commands that were held and whose answer is not yet queued for the caller; the drain waits
+    /// for it to reach zero before it closes the links.
+    holding: watch::Sender<usize>,
     per_device: RateWithBurst,
     per_user: SlidingWindow,
 }
@@ -109,6 +116,8 @@ impl Default for Commands {
             in_flight: Mutex::default(),
             pending_threads: Mutex::default(),
             held: Mutex::default(),
+            holds_released: watch::channel(false).0,
+            holding: watch::channel(0).0,
             per_device: RateWithBurst::commands(),
             per_user: SlidingWindow::new(STARTS_PER_WINDOW, COMMAND_WINDOW),
         }
@@ -175,6 +184,8 @@ impl Commands {
 struct Claim<'a> {
     commands: &'a Commands,
     key: (Uuid, String),
+    /// The command waited in a hold, so the drain waits for its answer to be queued.
+    held: AtomicBool,
 }
 
 impl<'a> Claim<'a> {
@@ -192,7 +203,18 @@ impl<'a> Claim<'a> {
                 reply: None,
             },
         );
-        Some(Claim { commands, key })
+        Some(Claim {
+            commands,
+            key,
+            held: AtomicBool::new(false),
+        })
+    }
+
+    /// Counts the command as held until its answer is queued (the claim is dropped).
+    fn mark_held(&self) {
+        if !self.held.swap(true, Ordering::SeqCst) {
+            self.commands.holding.send_modify(|count| *count += 1);
+        }
     }
 
     /// Records that the command is about to be forwarded to `host`, whose reply goes to `reply`.
@@ -207,6 +229,11 @@ impl<'a> Claim<'a> {
 impl Drop for Claim<'_> {
     fn drop(&mut self) {
         lock(&self.commands.in_flight).remove(&self.key);
+        if self.held.load(Ordering::SeqCst) {
+            self.commands
+                .holding
+                .send_modify(|count| *count = count.saturating_sub(1));
+        }
     }
 }
 
@@ -251,6 +278,20 @@ impl Relay {
     /// How many commands are held for the offline host `host`.
     pub fn held(&self, host: Uuid) -> usize {
         lock(&self.commands().held).get(&host).copied().unwrap_or(0)
+    }
+
+    /// The drain's first step: every held command is answered `device_offline` now (a hold must
+    /// never time out silently on an instance nobody is connected to any more), nothing new is
+    /// held, and this waits, up to `bound`, until those answers are queued for their callers. The
+    /// links then close, writing what is queued first.
+    pub async fn release_holds(&self, bound: Duration) {
+        let commands = self.commands();
+        commands.holds_released.send_replace(true);
+        let mut holding = commands.holding.subscribe();
+        let answered = tokio::time::timeout(bound, holding.wait_for(|count| *count == 0)).await;
+        if answered.is_err() {
+            tracing::warn!("held commands were not all answered before the links closed");
+        }
     }
 }
 
@@ -424,6 +465,7 @@ async fn deliver(
         if !holdable(method) {
             return Err(device_offline(&owner));
         }
+        claim.mark_held();
         hold(relay, &owner).await?;
     }
     forward(relay, caller, claim, id, method, params, &owner).await
@@ -505,8 +547,12 @@ fn eligible(caller: &LinkHandle, owner: Owner) -> Result<Owner, WireError> {
 async fn hold(relay: &Relay, owner: &Owner) -> Result<(), WireError> {
     // Subscribe before looking, so a registration in between is not missed.
     let mut registered = relay.registrations();
+    let mut released = relay.commands().holds_released.subscribe();
     if relay.online(owner.device_id) {
         return Ok(());
+    }
+    if *released.borrow() {
+        return Err(device_offline(owner));
     }
     let left = owner
         .last_seen_at
@@ -531,6 +577,7 @@ async fn hold(relay: &Relay, owner: &Owner) -> Result<(), WireError> {
                 }
             }
             () = tokio::time::sleep_until(until) => return Err(device_offline(owner)),
+            _ = released.changed() => return Err(device_offline(owner)),
         }
     }
 }

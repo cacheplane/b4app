@@ -59,6 +59,16 @@ impl Close {
         }
     }
 
+    /// Another instance took over the user's links (this instance's heartbeat had stalled). The
+    /// device reconnects and reaches the owner. Code 1001, like shutdown: reconnect with backoff.
+    pub fn relocated() -> Close {
+        Close {
+            code: close_code::SHUTDOWN,
+            reason: "served by another hub instance",
+            error: None,
+        }
+    }
+
     /// The link sent nothing for `DEAD_LINK`.
     pub fn silent() -> Close {
         Close {
@@ -258,6 +268,24 @@ pub struct Identity {
     pub role: Role,
     pub user_id: Uuid,
     pub org_id: Uuid,
+    /// The readiness probe's in-process link (`link::probe`): [`Relay::register`] hands it a
+    /// handle and queues but never enters it in the registry, so it is never online, never in
+    /// presence, and never watches.
+    pub probe: bool,
+}
+
+impl Identity {
+    /// The readiness probe's identity: a client with nil ids that no device or user has.
+    pub fn probe() -> Identity {
+        Identity {
+            device_id: Uuid::nil(),
+            name: "readiness probe".to_string(),
+            role: Role::Client,
+            user_id: Uuid::nil(),
+            org_id: Uuid::nil(),
+            probe: true,
+        }
+    }
 }
 
 /// What the task that serves a link gets back from [`Relay::register`].
@@ -270,6 +298,9 @@ pub struct Registration {
     pub closing: oneshot::Receiver<Close>,
     /// True when this link replaced an older one of the same device.
     pub replaced: bool,
+    /// The probe's own close sender (nothing in the registry can close an unregistered link); kept
+    /// here so `closing` stays pending for as long as the link task holds the registration.
+    pub probe_closer: Option<oneshot::Sender<Close>>,
 }
 
 /// Counts a link as live until dropped; see [`Relay::track`].
@@ -354,6 +385,7 @@ impl Relay {
     }
 
     /// Registers a new link for `who`, replacing and closing any older link of the same device.
+    /// The readiness probe ([`Identity::probe`]) gets its handle and queues but is not registered.
     pub fn register(&self, who: Identity) -> Registration {
         let (tx, outbound) = mpsc::channel(LINK_QUEUE);
         let (closing_tx, closing) = oneshot::channel();
@@ -367,6 +399,15 @@ impl Relay {
             tx,
             missed: Arc::default(),
         };
+        if who.probe {
+            return Registration {
+                handle,
+                outbound,
+                closing,
+                replaced: false,
+                probe_closer: Some(closing_tx),
+            };
+        }
         let (previous, dropped_watches) = {
             let mut links = self.links();
             let previous = links.insert(
@@ -394,6 +435,7 @@ impl Relay {
             outbound,
             closing,
             replaced,
+            probe_closer: None,
         }
     }
 
@@ -435,6 +477,32 @@ impl Relay {
             let _ = closing.send(close);
         }
         true
+    }
+
+    /// Asks every link of `user_id` to close with `close`; returns how many there were.
+    pub fn close_user(&self, user_id: Uuid, close: Close) -> usize {
+        let mut links = self.links();
+        let mut closed = 0;
+        for entry in links.values_mut() {
+            if entry.handle.user_id != user_id {
+                continue;
+            }
+            closed += 1;
+            if let Some(closing) = entry.closing.take() {
+                let _ = closing.send(close.clone());
+            }
+        }
+        closed
+    }
+
+    /// The users with at least one link here, sorted.
+    pub fn users(&self) -> Vec<Uuid> {
+        let users: BTreeSet<Uuid> = self
+            .links()
+            .values()
+            .map(|entry| entry.handle.user_id)
+            .collect();
+        users.into_iter().collect()
     }
 
     /// Whether `device_id` has a link.
@@ -735,7 +803,46 @@ mod tests {
             role,
             user_id: Uuid::from_u128(1000),
             org_id: Uuid::from_u128(2000),
+            probe: false,
         }
+    }
+
+    #[test]
+    fn the_probe_is_never_registered() {
+        let relay = Relay::new();
+        let _mac = relay.register(identity(1, Role::Host));
+        let probe = relay.register(Identity::probe());
+        assert!(!probe.replaced);
+        assert!(!relay.online(Uuid::nil()));
+        assert_eq!(relay.users(), [Uuid::from_u128(1000)]);
+        assert!(relay.presence_subscribers(Uuid::nil()).is_empty());
+        // Its handle cannot watch: it is not the device's current link.
+        assert_eq!(
+            relay.watch(&probe.handle, Uuid::from_u128(1), "t1"),
+            Err(WatchError::Gone)
+        );
+        assert!(!relay.unregister(Uuid::nil(), probe.handle.generation));
+    }
+
+    #[test]
+    fn close_user_closes_every_link_of_that_user_only() {
+        let relay = Relay::new();
+        let mut mac = relay.register(identity(1, Role::Host));
+        let mut phone = relay.register(identity(2, Role::Client));
+        let mut stranger = identity(3, Role::Client);
+        stranger.user_id = Uuid::from_u128(1001);
+        let mut other = relay.register(stranger);
+        assert_eq!(
+            relay.users(),
+            [Uuid::from_u128(1000), Uuid::from_u128(1001)]
+        );
+        assert_eq!(
+            relay.close_user(Uuid::from_u128(1000), Close::relocated()),
+            2
+        );
+        assert_eq!(mac.closing.try_recv().unwrap(), Close::relocated());
+        assert_eq!(phone.closing.try_recv().unwrap(), Close::relocated());
+        assert!(other.closing.try_recv().is_err());
     }
 
     #[test]
