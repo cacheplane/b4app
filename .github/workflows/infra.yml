@@ -93,13 +93,31 @@ jobs:
           tflint_version: v0.65.0
       - name: Format check
         run: terraform fmt -check -recursive ../..
+      - name: Check the AWS repository variables
+        # Until the owner has bootstrapped the account (Infra/README.md runbook 1)
+        # and recorded the role and KMS ARNs as repository variables, there is
+        # nothing to plan against. The job then validates and lints only, and says so.
+        id: aws
+        env:
+          ROLE: ${{ matrix.role }}
+          KMS_KEY: ${{ matrix.kms_key }}
+          ENV_NAME: ${{ matrix.environment }}
+        run: |
+          if [ -n "$ROLE" ] && [ -n "$KMS_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=No AWS account for ${ENV_NAME} yet::AWS_ROLE_PLAN and TFSTATE_KMS_KEY_ARN repository variables are not set for ${ENV_NAME}; running fmt, validate, and tflint only. Bootstrap the account and add the variables (Infra/README.md, runbook 1) to enable plans."
+          fi
       - name: Configure AWS credentials
+        if: steps.aws.outputs.configured == 'true'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ matrix.role }}
           aws-region: us-east-2
           mask-aws-account-id: true
       - name: Initialize
+        if: steps.aws.outputs.configured == 'true'
         env:
           ENV_NAME: ${{ matrix.environment }}
           KMS_KEY: ${{ matrix.kms_key }}
@@ -110,6 +128,9 @@ jobs:
             -backend-config="region=us-east-2" \
             -backend-config="kms_key_id=${KMS_KEY}" \
             -backend-config="encrypt=true"
+      - name: Initialize without a backend
+        if: steps.aws.outputs.configured != 'true'
+        run: terraform init -backend=false -input=false
       - name: Validate
         run: terraform validate
       - name: Lint
@@ -117,8 +138,10 @@ jobs:
           tflint --config ../../.tflint.hcl --init
           tflint --config ../../.tflint.hcl
       - name: Plan
+        if: steps.aws.outputs.configured == 'true'
         run: terraform plan -no-color -input=false -out plan.bin
       - name: Summarize the plan
+        if: steps.aws.outputs.configured == 'true'
         # The repository is public: the comment carries counts and resource
         # addresses only, never attribute values (account id, ARNs, email).
         # The full plan is in the Plan step's log above.
@@ -134,6 +157,7 @@ jobs:
               end
           ' > "$RUNNER_TEMP/plan.txt"
       - name: Comment the plan on the pull request
+        if: steps.aws.outputs.configured == 'true'
         continue-on-error: false
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
@@ -182,13 +206,29 @@ jobs:
         with:
           terraform_version: 1.17.1
           terraform_wrapper: false
+      - name: Check the AWS repository variables
+        # Nothing to apply until the owner has bootstrapped the account and
+        # recorded the role and KMS ARNs (Infra/README.md runbook 1).
+        id: aws
+        env:
+          ROLE: ${{ vars.AWS_ROLE_INFRA_TEST }}
+          KMS_KEY: ${{ vars.TFSTATE_KMS_KEY_ARN_TEST }}
+        run: |
+          if [ -n "$ROLE" ] && [ -n "$KMS_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=No AWS account for test yet::AWS_ROLE_INFRA_TEST and TFSTATE_KMS_KEY_ARN_TEST are not set; skipping the apply. Bootstrap the account and add the variables (Infra/README.md, runbook 1)."
+          fi
       - name: Configure AWS credentials
+        if: steps.aws.outputs.configured == 'true'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_ROLE_INFRA_TEST }}
           aws-region: us-east-2
           mask-aws-account-id: true
       - name: Initialize
+        if: steps.aws.outputs.configured == 'true'
         env:
           KMS_KEY: ${{ vars.TFSTATE_KMS_KEY_ARN_TEST }}
         run: |
@@ -199,8 +239,10 @@ jobs:
             -backend-config="kms_key_id=${KMS_KEY}" \
             -backend-config="encrypt=true"
       - name: Plan
+        if: steps.aws.outputs.configured == 'true'
         run: terraform plan -no-color -input=false -out plan.bin
       - name: Apply
+        if: steps.aws.outputs.configured == 'true'
         run: terraform apply -no-color -input=false plan.bin
 
   apply-prod:
@@ -227,13 +269,29 @@ jobs:
         with:
           terraform_version: 1.17.1
           terraform_wrapper: false
+      - name: Check the AWS repository variables
+        # Nothing to apply until the owner has bootstrapped the account and
+        # recorded the role and KMS ARNs (Infra/README.md runbook 1).
+        id: aws
+        env:
+          ROLE: ${{ vars.AWS_ROLE_INFRA_PROD }}
+          KMS_KEY: ${{ vars.TFSTATE_KMS_KEY_ARN_PROD }}
+        run: |
+          if [ -n "$ROLE" ] && [ -n "$KMS_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=No AWS account for prod yet::AWS_ROLE_INFRA_PROD and TFSTATE_KMS_KEY_ARN_PROD are not set; skipping the apply. Bootstrap the account and add the variables (Infra/README.md, runbook 1)."
+          fi
       - name: Configure AWS credentials
+        if: steps.aws.outputs.configured == 'true'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_ROLE_INFRA_PROD }}
           aws-region: us-east-2
           mask-aws-account-id: true
       - name: Initialize
+        if: steps.aws.outputs.configured == 'true'
         env:
           KMS_KEY: ${{ vars.TFSTATE_KMS_KEY_ARN_PROD }}
         run: |
@@ -244,6 +302,8 @@ jobs:
             -backend-config="kms_key_id=${KMS_KEY}" \
             -backend-config="encrypt=true"
       - name: Plan
+        if: steps.aws.outputs.configured == 'true'
         run: terraform plan -no-color -input=false -out plan.bin
       - name: Apply
+        if: steps.aws.outputs.configured == 'true'
         run: terraform apply -no-color -input=false plan.bin
