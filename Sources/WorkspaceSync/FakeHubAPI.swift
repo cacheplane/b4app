@@ -12,11 +12,16 @@ public actor FakeHubAPI: HubAPI {
   public private(set) var stored: [StoredChange]
   /// Every batch `push` received, including repeats the feed ignored.
   public private(set) var pushed: [[SyncChange]] = []
-  /// Fails the next call of any method once, then clears itself.
-  public private(set) var failNext: HubError?
+  /// Fails the next call of any method once, then clears itself. Setting it wakes a parked pull.
+  public private(set) var failNext: HubError? {
+    didSet { if failNext != nil { wakePulls() } }
+  }
   /// Set by `revokeSelf`, `endSession`, and `deleteAccount`; every later call except `enroll` and the
-  /// sign-in calls answers 401 `unauthorized`, until a sign-in or an enrollment clears it.
-  public private(set) var revoked = false
+  /// sign-in calls answers 401 `unauthorized`, until a sign-in or an enrollment clears it. Setting it
+  /// wakes a parked pull, whichever call sets it, so the pull answers 401 at once.
+  public private(set) var revoked = false {
+    didSet { if revoked { wakePulls() } }
+  }
   /// How many times `enroll` was called, redeemed or not.
   public private(set) var enrollCalls = 0
   public private(set) var meCalls = 0
@@ -84,10 +89,7 @@ public actor FakeHubAPI: HubAPI {
     self.stored = stored
   }
 
-  public func setFailNext(_ error: HubError?) {
-    failNext = error
-    wakePulls()
-  }
+  public func setFailNext(_ error: HubError?) { failNext = error }
   /// Fail the next `me()` only, whatever other calls run first.
   public func setFailMe(_ error: HubError?) { failMe = error }
 
@@ -251,7 +253,6 @@ public actor FakeHubAPI: HubAPI {
   public func revokeSelf() async throws {
     try authorize()
     revoked = true
-    wakePulls()
   }
 
   // MARK: - Long poll
