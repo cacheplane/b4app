@@ -25,6 +25,7 @@ use b4hub_core::change::{
 };
 pub use b4hub_core::change::{Page, StoredChange};
 use b4hub_core::hlc::Hlc;
+use b4hub_core::push::Kind;
 use b4hub_core::writable::{is_clocked, is_phone_writable};
 use serde_json::Value;
 use sqlx::postgres::PgConnection;
@@ -32,7 +33,7 @@ use sqlx::types::Uuid;
 use sqlx::{Acquire, FromRow, Postgres, Transaction};
 
 use crate::devices::{AuthedDevice, Platform};
-use crate::push::{self, Kind, Notification};
+use crate::push::{self, Notification, Withdrawal};
 use crate::{Db, Error, Result};
 
 /// What happened to one change that was new to the hub.
@@ -71,6 +72,9 @@ pub struct PushOutcome {
     /// delivered after the commit: in batch order, then by device id. Empty for a push that
     /// notifies nobody.
     pub notifications: Vec<Notification>,
+    /// The background pushes that withdraw what the push ended (an answered or expired request,
+    /// a read turn, a deleted thread): one per phone, by device id. Empty when nothing ended.
+    pub withdrawals: Vec<Withdrawal>,
 }
 
 /// Why `auth` may not make `change`, if it may not.
@@ -165,8 +169,10 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
     let now = now_ms();
     let mut rejected = Vec::new();
     let (mut applied, mut skipped, mut lost, mut duplicates) = (0usize, 0usize, 0usize, 0usize);
-    // Turns and runtime requests this push changed, for the notification decision below.
+    // Turns and runtime requests this push changed, and threads, for the notification and
+    // withdrawal decisions below.
     let mut touched: Vec<(Kind, String)> = Vec::new();
+    let mut threads: Vec<String> = Vec::new();
     for change in batch {
         if let Some(code) = refusal(auth, change) {
             tracing::warn!(
@@ -217,11 +223,13 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
             Ok(Applied::Yes) => {
                 savepoint.commit().await?;
                 applied += 1;
-                if let Some(kind) = Kind::of_table(&change.table) {
+                if let Some(kind) = push::kind_of_table(&change.table) {
                     let entry = (kind, change.row_id.clone());
                     if !touched.contains(&entry) {
                         touched.push(entry);
                     }
+                } else if change.table == "threads" && !threads.contains(&change.row_id) {
+                    threads.push(change.row_id.clone());
                 }
             }
             Ok(Applied::Lost) => {
@@ -251,9 +259,10 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
             .await?
         }
     };
-    // Which applied rows notify whom is decided here, in the same transaction, so the ledger
-    // commits with the rows and a retried batch cannot notify twice.
-    let notifications = push::detect(&mut tx, auth, &touched).await?;
+    // Which applied rows notify whom, and which notifications they end, is decided here, in the
+    // same transaction, so the ledger commits with the rows and a retried batch cannot notify or
+    // withdraw twice.
+    let (notifications, withdrawals) = push::decide(&mut tx, auth, &touched, &threads).await?;
     tx.commit().await?;
 
     if skipped > 0 {
@@ -270,6 +279,7 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
         accepted_through: accepted,
         rejected,
         notifications,
+        withdrawals,
     })
 }
 

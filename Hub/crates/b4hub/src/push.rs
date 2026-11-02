@@ -62,10 +62,8 @@ impl PushSender for SpoolSender {
                 &message.thread_id,
                 &message.title,
                 message.reason,
-                // Task 2 carries the real key and badge on `Notification`; until then the
-                // spool writes an empty key and a zero badge.
-                "",
-                0,
+                &message.key,
+                message.badge,
                 &message.bundle_id,
             );
             let bytes = serde_json::to_vec_pretty(&payload).map_err(std::io::Error::from)?;
