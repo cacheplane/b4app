@@ -180,12 +180,10 @@ import os
   ) async throws -> (AuthSession, String) {
     let name = Self.deviceName(deviceName)
     let api = makeAPI(base, { nil })
-    let enrolled = try await Self.call("join the hub") {
-      try await api.enroll(
-        EnrollRequest(
-          code: code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(), deviceName: name,
-          platform: "ios"))
-    }
+    let request = EnrollRequest(
+      code: code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
+      device: deviceSpec(hubURL: base, deviceName: name))
+    let enrolled = try await Self.call("join the hub") { try await api.enroll(request) }
     return (Self.session(enrolled), name)
   }
 
@@ -253,7 +251,10 @@ import os
       throw WorkspaceError(.signedOut, "Nobody is signed in on this iPhone.")
     }
     let name = Self.deviceName(deviceName)
-    let request = EnrollRequest(code: pairLink.code, deviceName: name, platform: "ios")
+    // Every device this phone has had at the hub, its current one included: the hub matches them only
+    // against the code's account, so the phone's earlier device there is reused.
+    let request = EnrollRequest(
+      code: pairLink.code, device: deviceSpec(hubURL: pairLink.hub, deviceName: name))
     let api = makeAPI(pairLink.hub, { nil })
     let seen = generation
     await stopSync()
@@ -510,14 +511,16 @@ import os
   /// The flavour's hub with no token: the sign-in calls carry none.
   private func signInAPI() -> any HubAPI { makeAPI(configuration.hubURL, { nil }) }
 
-  /// This phone as a sign-in describes it: every device it has had at this hub, most recent first, so
-  /// the hub reuses the one that is the signing-in user's (the phone cannot know whose passkey or
-  /// Apple ID is coming). The first goes as `deviceId`, the rest as candidates, left out when none.
-  private func deviceSpec() -> DeviceSpec {
-    let known = memory.devices(hubURL: Self.canonical(configuration.hubURL))
+  /// This phone as a sign-in (or an enrollment, at the hub it enrolls with) describes it: every device
+  /// it has had at that hub, most recent first, so the hub reuses the one that is the user's (the phone
+  /// cannot know whose passkey or Apple ID is coming, nor which account a code is for). The first goes
+  /// as `deviceId`, the rest as candidates, left out when none. The flavour's hub and the configured
+  /// name unless given.
+  private func deviceSpec(hubURL: URL? = nil, deviceName: String? = nil) -> DeviceSpec {
+    let known = memory.devices(hubURL: Self.canonical(hubURL ?? configuration.hubURL))
     let rest = Array(known.dropFirst())
     return DeviceSpec(
-      deviceName: configuration.deviceName, platform: "ios", deviceId: known.first,
+      deviceName: deviceName ?? configuration.deviceName, platform: "ios", deviceId: known.first,
       candidateDeviceIds: rest.isEmpty ? nil : rest)
   }
 

@@ -9,12 +9,11 @@
 use std::fmt;
 use std::time::Duration;
 
-use b4hub_core::ids::new_uuid;
-use b4hub_core::tokens::{hash_code, hash_token, new_code, new_token};
+use b4hub_core::tokens::{hash_code, hash_token, new_code};
 use sqlx::types::Uuid;
 use sqlx::{Postgres, Transaction};
 
-use crate::accounts::{self, Principal};
+use crate::accounts::{self, DeviceSpec, Principal};
 use crate::tenant::set_tenant;
 use crate::{Db, Error, Result};
 
@@ -217,27 +216,35 @@ pub async fn create_pairing_code(
 /// that is unknown, expired, or already used is [`Error::InvalidCode`]; nothing is changed then.
 /// `platform` must be one the `devices` table accepts.
 pub async fn redeem(db: &Db, code: &str, name: &str, platform: &str) -> Result<Enrolled> {
-    let mut tx = db.untenanted_tx().await?;
-    let enrolled = redeem_in(&mut tx, code, name, platform, None).await?;
-    tx.commit().await?;
-    Ok(enrolled)
+    let platform = Platform::parse(platform)
+        .ok_or_else(|| sqlx::Error::Decode("unknown device platform".into()))?;
+    let device = DeviceSpec {
+        name: name.to_string(),
+        platform,
+    };
+    redeem_reusing(db, code, &device, &[], None).await
 }
 
-/// Redeems `code` for a phone signed in to the phone-only account `from`: in one transaction the
-/// code is claimed, `from` is merged into the code's account
+/// Redeems `code` for `device`, reusing a device the client already has: the first of
+/// `candidates` that is an unrevoked device of the code's user on `device`'s platform is renamed
+/// and its earlier tokens are deleted (the rule sign-in follows, [`accounts::issue_session`]),
+/// otherwise a new device is made. Candidates are only ever matched against the code's own user.
+///
+/// With `merge_from`, the phone signed in to the phone-only account `from` is paired: in the same
+/// transaction the code is claimed, `from` is merged into the code's account
 /// ([`accounts::merge_phone_only`]: its identities move, its devices, tokens, user, and org are
-/// deleted), and the new device is enrolled. Any failure rolls all of it back:
+/// deleted), and the device is enrolled. Any failure rolls all of it back:
 /// [`Error::InvalidCode`] for the code, [`Error::MergeRefused`] for an account that cannot be
 /// merged (one that has had a Mac, a shared org's member, or the code's own account).
-pub async fn redeem_merging(
+pub async fn redeem_reusing(
     db: &Db,
     code: &str,
-    name: &str,
-    platform: &str,
-    from: Principal,
+    device: &DeviceSpec,
+    candidates: &[Uuid],
+    merge_from: Option<Principal>,
 ) -> Result<Enrolled> {
     let mut tx = db.untenanted_tx().await?;
-    let enrolled = redeem_in(&mut tx, code, name, platform, Some(from)).await?;
+    let enrolled = redeem_in(&mut tx, code, device, candidates, merge_from).await?;
     tx.commit().await?;
     Ok(enrolled)
 }
@@ -245,8 +252,8 @@ pub async fn redeem_merging(
 async fn redeem_in(
     tx: &mut Transaction<'_, Postgres>,
     code: &str,
-    name: &str,
-    platform: &str,
+    device: &DeviceSpec,
+    candidates: &[Uuid],
     merge_from: Option<Principal>,
 ) -> Result<Enrolled> {
     // A single conditional UPDATE is the whole single-use guarantee: of two concurrent
@@ -262,39 +269,22 @@ async fn redeem_in(
     let Some((org_id, user_id)) = claimed else {
         return Err(Error::InvalidCode);
     };
+    let principal = Principal { org_id, user_id };
     if let Some(from) = merge_from {
-        accounts::merge_in(tx, from, Principal { org_id, user_id }).await?;
+        accounts::merge_in(tx, from, principal).await?;
     }
 
     set_tenant(tx, org_id).await?;
-    let device_id = new_uuid();
-    sqlx::query(
-        "INSERT INTO devices (id, org_id, user_id, name, platform) VALUES ($1, $2, $3, $4, $5)",
-    )
-    .bind(device_id)
-    .bind(org_id)
-    .bind(user_id)
-    .bind(name)
-    .bind(platform)
-    .execute(&mut **tx)
-    .await?;
-    let token = new_token();
-    sqlx::query(
-        "INSERT INTO device_tokens (id, org_id, device_id, token_hash) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(new_uuid())
-    .bind(org_id)
-    .bind(device_id)
-    .bind(&hash_token(&token)[..])
-    .execute(&mut **tx)
-    .await?;
-    let info = describe(tx, device_id).await?.ok_or(Error::InvalidCode)?;
+    let session = accounts::create_session(tx, principal, device, candidates).await?;
+    let info = describe(tx, session.device_id)
+        .await?
+        .ok_or(Error::InvalidCode)?;
 
     Ok(Enrolled {
         org_id,
         user_id,
-        device_id,
-        token,
+        device_id: session.device_id,
+        token: session.token,
         org_slug: info.org_slug,
         org_name: info.org_name,
         username: info.username,

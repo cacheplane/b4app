@@ -457,12 +457,13 @@ extension AccountManager {
     scopeContext.makeAPI(flavor.hubURL, { nil })
   }
 
-  /// This Mac, as a sign-in describes it: the device it has with every account it knows on this hub,
-  /// most recently signed in first, so the hub reuses the one that is the signing-in user's. The first
-  /// goes as `deviceId`, which a hub older than `candidateDeviceIds` understands; the rest (at most 31
-  /// more) as candidates, left out when there are none.
-  private func deviceSpec() throws -> DeviceSpec {
-    let base = flavor.hubURL.absoluteString
+  /// This Mac, as a sign-in (or `hub join`, at the hub it joins) describes it: the device it has with
+  /// every account it knows on that hub, most recently signed in first, so the hub reuses the one that
+  /// is the signing-in user's. The first goes as `deviceId`, which a hub older than
+  /// `candidateDeviceIds` understands; the rest (at most 32 more) as candidates, left out when there
+  /// are none. The hub is the flavour's unless `hubURL` names another.
+  func deviceSpec(hubURL: URL? = nil, deviceName: String? = nil) throws -> DeviceSpec {
+    let base = (hubURL ?? flavor.hubURL).absoluteString
     var known: [String] = []
     for row in try registry.all().filter({ Self.sameHub($0.hubURL, base) })
       .sorted(by: { ($0.lastSignedInAt ?? "") > ($1.lastSignedInAt ?? "") })
@@ -472,7 +473,7 @@ extension AccountManager {
     known = Array(known.prefix(DeviceSpec.maxCandidates + 1))
     let rest = Array(known.dropFirst())
     return DeviceSpec(
-      deviceName: HubSync.defaultDeviceName(), platform: "macos", deviceId: known.first,
+      deviceName: deviceName ?? HubSync.defaultDeviceName(), platform: "macos", deviceId: known.first,
       candidateDeviceIds: rest.isEmpty ? nil : rest)
   }
 

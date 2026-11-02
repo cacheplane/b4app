@@ -237,12 +237,13 @@ Design: `docs/superpowers/specs/2026-11-01-sign-in-design.md`. Plan: `docs/super
 - [x] Releases: `Scripts/release-mac.sh` and the cask (D-062). `implemented`; dry runs and a stubbed preflight only. A real release and the tap are the owner's (`docs/release.md`).
 - [x] The iPhone privacy manifest declares the name, email address, and user id, each linked to the user, not tracking, for app functionality. `implemented`; the App Store Connect answers are the owner's before the first TestFlight build with sign-in.
 - [ ] The live gate (plan Task 18 Step 4, seven steps). `open`: live gate pending (owner's passkey).
+- [x] Enrollment reuses this device, as sign-in does: `POST /v1/enroll` takes `deviceId` and `candidateDeviceIds`, `hub join` and the phone's code and pairing enrollments send them (D-095 amended, found at the live gate). `fixture-tested` (`enroll.rs`, `accounts.rs`, `AccountCommandTests`, `PairLinkTests`). `live-tested`: pending.
 - [ ] Pin the Apple callback scheme to the hub's flavour (configuration), refusing any other at begin, or hand back through a domain-verified universal link (D-113). `open`: must be done before Sign in with Apple is enabled on any hosted hub; the scheme is the caller's choice today, which on a hosted hub is account takeover with a malicious app and phishing.
 - [ ] A fresh-assertion step-up for adding or removing a sign-in method and deleting the account (D-112). `open`: these need only a device token today, an accepted risk.
 
 Known limitations (the ones a person could notice; the rest are in the build's review notes):
 
-- A phone joined by an enrollment code makes a new device each time it rejoins, and the old ones stay on the account (D-107); a typed code needs a signed-out phone.
+- A typed enrollment code needs a signed-out phone (D-107).
 - A Mac joined to a hub other than its flavour's shows no QR code, only the hub URL and the code to type (D-109).
 - The same pair link opened twice within 10 s is ignored, so a deliberate rescan inside that window does nothing.
 - One socket connection answers its commands in order, so a log-out sent on a connection that is waiting for a slow command (a `server.start`, up to 90 s) waits for it; the app logs out on a connection of its own (D-100).

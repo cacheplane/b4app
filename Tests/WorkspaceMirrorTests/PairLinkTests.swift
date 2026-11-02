@@ -320,6 +320,44 @@ private let withAMac = [
     await rig.account.stopSync()
   }
 
+  @MainActor @Test func aPhoneThatPairsAgainOffersItsDevice() async throws {
+    // X3: a phone that logged out and scans a new code offers the device it had, as a sign-in does,
+    // so the hub reuses it instead of making a new one each time.
+    let rig = try Rig()
+    let link = PairLink(hub: PhoneFlavor.prod.hubURL, code: code)
+    _ = try await rig.account.pair(link, deviceName: "Brian's iPhone")
+    _ = await rig.account.logOut()
+    await rig.fake.addEnrollmentCode(code, enrolled())
+    _ = try await rig.account.pair(link, deviceName: "Brian's iPhone")
+    let requests = await rig.fake.enrollRequests
+    #expect(requests.map(\.deviceId) == [nil, "dev-paired"])
+    #expect(requests.map(\.candidateDeviceIds) == [nil, nil])
+    #expect(try rig.store.link()?.deviceId == "dev-paired")
+    await rig.account.stopSync()
+  }
+
+  @MainActor @Test func aMergingPairOffersEveryDeviceThePhoneHasHad() async throws {
+    // X3, the merge path: the phone paired once (dev-paired), logged out, signed up on its own
+    // (dev-own), and scans the Mac's code. The enrollment carries every device it has had at the hub;
+    // the hub matches them only against the code's account, so it reuses dev-paired.
+    let rig = try Rig()
+    let link = PairLink(hub: PhoneFlavor.prod.hubURL, code: code)
+    _ = try await rig.account.pair(link, deviceName: "Brian's iPhone")
+    _ = await rig.account.logOut()
+    try await rig.signIn(devices: iPhoneOnly)
+    await rig.fake.addEnrollmentCode(code, enrolled())
+    guard case .signedIn = try await rig.account.pair(link, deviceName: "Brian's iPhone") else {
+      Issue.record("expected a merge")
+      return
+    }
+    #expect(await rig.fake.enrollTokens == [nil, "tok-own-5501"])
+    let merge = try #require(await rig.fake.enrollRequests.last)
+    #expect(merge.deviceId == "dev-own")
+    #expect(merge.candidateDeviceIds == ["dev-paired"])
+    #expect(rig.memory.devices(hubURL: "https://hub.b4.run") == ["dev-paired"])
+    await rig.account.stopSync()
+  }
+
   @MainActor @Test func theMergeIsTriedWhateverTheDevicesSay() async throws {
     // A device list that shows a Mac (perhaps a minute stale) does not stop the merge: the hub judges.
     let rig = try Rig()

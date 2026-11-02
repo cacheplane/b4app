@@ -160,16 +160,26 @@ Exchange a one-time enrollment code for a device token. The code is the credenti
 characters from `BCDFGHJKLMNPQRSTVWXZ23456789`, valid for ten minutes, single-use, and matched
 case-insensitively.
 
-Request (all three fields required, no others allowed):
+Request (`code`, `deviceName`, and `platform` required; `deviceId` and `candidateDeviceIds`
+optional; no others allowed):
 
 ```json
-{"code": "ABCD2345", "deviceName": "Brian's MacBook Pro", "platform": "macos"}
+{"code": "ABCD2345", "deviceName": "Brian's MacBook Pro", "platform": "macos",
+ "deviceId": "0198...", "candidateDeviceIds": ["0198..."]}
 ```
 
 - `deviceName`: 1 to 200 characters after trimming.
 - `platform`: `macos`, `ios`, or `cli`.
+- `deviceId` and `candidateDeviceIds`: the devices the client already has, with the same shape,
+  limits, and rule as a sign-in's `device` object (`POST /v1/auth/passkey/finish`): the first
+  candidate, `deviceId` counting first, that is an unrevoked device of the **code's** user on the
+  same platform is reused, renamed, and its earlier tokens are deleted; otherwise a new device is
+  made. So a Mac or phone that logged out and rejoins with a code keeps its device, and the rows it
+  synced keep their owner. More than 32 candidates, or an id that is not a UUID, is
+  `400 invalid_request`. A hub older than these fields refuses them the same way.
 
-Both are validated before the code is redeemed, so a malformed request does not use the code up.
+All of them are validated before the code is redeemed, so a malformed request does not use the code
+up.
 
 `200`:
 
@@ -182,8 +192,8 @@ Both are validated before the code is redeemed, so a malformed request does not 
 }
 ```
 
-`token` appears in this response and nowhere else; keep it in the Keychain. The request carries no
-`deviceId`, so every enrollment makes a new device, even for a phone that enrolled before. Errors:
+`token` appears in this response and nowhere else; keep it in the Keychain. `deviceId` is the
+reused device's id when one was reused, a new one otherwise. Errors:
 `400 invalid_request`, `401 invalid_code`, `401 unauthorized` and `409 merge_refused` (below),
 `503 maintenance`.
 
@@ -193,7 +203,9 @@ signed up with, which has never had a Mac) sends that account's token,
 one transaction the hub claims the code, moves every identity (passkeys, Apple IDs) of the
 token's account to the code's user, deletes that account's devices (so the phone's old token
 stops working at once), tokens, relay link claim, user, and personal org (which holds no synced
-rows: only a Mac writes them), and enrolls the new device under the code's account. Once it
+rows: only a Mac writes them), and enrolls the device under the code's account (reusing one of the
+code's user's devices by the rule above; a device of the token's account is never reused, since
+candidates match only the code's user). Once it
 commits, the old account's relay links on the instance that served the request close with code
 4001. The answer is the same `200`
 as above, for the code's account. If any step fails nothing has changed: a wrong, expired, or used

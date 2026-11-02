@@ -864,8 +864,9 @@ async fn insert_identity_row(
 }
 
 /// Picks the device (see [`issue_session_reusing`]) and inserts its token. `tx` must carry
-/// `principal.org_id`'s tenant context.
-async fn create_session(
+/// `principal.org_id`'s tenant context. Enrollment ([`crate::devices::redeem_reusing`]) uses it
+/// too, so a code and a sign-in reuse a device by the same rule.
+pub(crate) async fn create_session(
     tx: &mut Transaction<'_, Postgres>,
     principal: Principal,
     device: &DeviceSpec,

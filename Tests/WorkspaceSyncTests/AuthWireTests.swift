@@ -126,7 +126,11 @@ import WorkspaceProtocol
   }
 
   @Test func enrollRoundTrips() throws {
-    #expect(try roundTrips(EnrollRequest.self, "enrollRequest").platform == "ios")
+    let request = try roundTrips(EnrollRequest.self, "enrollRequest")
+    #expect(request.platform == "ios")
+    // An enrollment offers the devices this client has, as a sign-in does.
+    #expect(request.deviceId == "01a19a2b-bbc9-744f-9b64-011001ab330e")
+    #expect(request.candidateDeviceIds == ["01a19a2b-bbc9-744f-9b64-011001ab3310"])
     #expect(try roundTrips(EnrollResponse.self, "enrollResponse").user.username == "blove")
   }
 

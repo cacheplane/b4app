@@ -125,6 +125,9 @@ fn enroll_request_matches_the_hub_type() {
     assert_eq!(request.code, "ABCD2345");
     assert_eq!(request.device_name, "Brian's iPhone");
     assert_eq!(request.platform, "ios");
+    // An enrollment offers the devices this client has, as a sign-in does.
+    assert!(request.device_id.is_some());
+    assert_eq!(request.candidate_device_ids.as_ref().map(Vec::len), Some(1));
 }
 
 #[test]

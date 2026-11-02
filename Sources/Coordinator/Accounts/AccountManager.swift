@@ -371,8 +371,10 @@ public actor AccountManager {
 
   /// `hub join` with an enrollment code, the operator path for a hub with sign-up closed: it enrolls
   /// and signs in as that account, exactly as a sign-in would, asking `/v1/me` for the user's id (a
-  /// `/v1/me` that fails leaves the placeholder, which the next one replaces). Refused while signed in:
-  /// joining would bind the signed-in account's threads to another hub user.
+  /// `/v1/me` that fails leaves the placeholder, which the next one replaces). Like a sign-in it offers
+  /// the devices this Mac has at that hub, so a Mac that logged out and rejoins keeps its device and
+  /// the rows it synced keep their owner. Refused while signed in: joining would bind the signed-in
+  /// account's threads to another hub user.
   public func join(url: String, code: String, deviceName: String) async throws -> HubStatus.Result {
     if let scope = slot.get() {
       let org = scope.account.orgName.isEmpty ? "an account" : scope.account.orgName
@@ -385,8 +387,9 @@ public actor AccountManager {
     guard !name.isEmpty else { throw WorkspaceError(.protocolInvalid, "The device name is empty.") }
     let enrolled: EnrollResponse
     do {
+      let device = try deviceSpec(hubURL: base, deviceName: name)
       enrolled = try await scopeContext.makeAPI(base, { nil }).enroll(
-        EnrollRequest(code: code, deviceName: name, platform: "macos"))
+        EnrollRequest(code: code, device: device))
     } catch let error as HubError {
       throw HubSync.workspaceError(error, doing: "join the hub")
     }

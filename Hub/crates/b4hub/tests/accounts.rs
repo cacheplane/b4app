@@ -955,6 +955,81 @@ async fn enroll_with_token_of_account_with_mac_is_merge_refused(pool: PgPool) {
     assert_eq!(plain.status, StatusCode::OK, "{}", plain.body);
 }
 
+/// A phone that paired with the code's account before (and logged out), then signed up on its own,
+/// pairs again with a merge: it keeps its earlier device of the code's account. A candidate of the
+/// token's (merged-away) account is never reused for the code's account, even when it comes first.
+#[sqlx::test(migrations = false)]
+async fn enroll_merging_reuses_only_a_device_of_the_codes_account(pool: PgPool) {
+    let setup = setup(&pool).await;
+    let hub = &setup.hub;
+    let (seeded, _mac) = enrolled_blove(&setup).await;
+
+    let code = mint_code(&setup, &seeded).await;
+    let paired = hub
+        .post(
+            "/v1/enroll",
+            Some(&json!({"code": code, "deviceName": "iPhone", "platform": "ios"})),
+        )
+        .await;
+    assert_eq!(paired.status, StatusCode::OK, "{}", paired.body);
+    let blove_phone = paired.body["deviceId"].as_str().unwrap().to_string();
+    let logged_out = call(
+        hub,
+        "DELETE",
+        "/v1/sessions/self",
+        None,
+        token(&paired.body),
+    )
+    .await;
+    assert_eq!(
+        logged_out.status,
+        StatusCode::NO_CONTENT,
+        "{}",
+        logged_out.body
+    );
+
+    let mut phone_keys = Authenticator::new(ORIGIN);
+    let phone = sign_up(hub, &mut phone_keys, device("Brian's iPhone", "ios")).await;
+    let own_device: Uuid = phone["deviceId"].as_str().unwrap().parse().unwrap();
+    let phone_who = principal(hub, token(&phone)).await;
+
+    let code = mint_code(&setup, &seeded).await;
+    let body = json!({
+        "code": code,
+        "deviceName": "Brian's iPhone",
+        "platform": "ios",
+        "deviceId": own_device,
+        "candidateDeviceIds": [blove_phone],
+    });
+    let enrolled = call(hub, "POST", "/v1/enroll", Some(&body), token(&phone)).await;
+    assert_eq!(enrolled.status, StatusCode::OK, "{}", enrolled.body);
+    assert_eq!(enrolled.body["user"]["username"], "blove");
+    assert_eq!(enrolled.body["deviceId"], blove_phone.as_str());
+    let me = hub.get("/v1/me", Some(token(&enrolled.body))).await;
+    assert_eq!(me.status, StatusCode::OK, "{}", me.body);
+    assert_eq!(me.body["deviceName"], "Brian's iPhone");
+    // The merged-away account's device is gone, not moved.
+    assert!(!exists(&pool, "devices", own_device).await);
+    assert!(!exists(&pool, "users", phone_who.user_id).await);
+
+    // Offering only the merged-away account's device makes a new one.
+    let mut other_keys = Authenticator::new(ORIGIN);
+    let other = sign_up(hub, &mut other_keys, device("iPad", "ios")).await;
+    let other_device = other["deviceId"].as_str().unwrap().to_string();
+    let code = mint_code(&setup, &seeded).await;
+    let body = json!({
+        "code": code,
+        "deviceName": "iPad",
+        "platform": "ios",
+        "candidateDeviceIds": [other_device],
+    });
+    let enrolled = call(hub, "POST", "/v1/enroll", Some(&body), token(&other)).await;
+    assert_eq!(enrolled.status, StatusCode::OK, "{}", enrolled.body);
+    let new_id = enrolled.body["deviceId"].as_str().unwrap();
+    assert_ne!(new_id, other_device.as_str());
+    assert_ne!(new_id, blove_phone.as_str());
+}
+
 #[sqlx::test(migrations = false)]
 async fn enroll_without_token_unchanged(pool: PgPool) {
     let setup = setup(&pool).await;

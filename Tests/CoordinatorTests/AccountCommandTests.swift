@@ -996,6 +996,46 @@ private func sha256Hex(_ text: String) -> String {
     #expect(device.deviceId == devBob)
   }
 
+  /// X3: a Mac that logged out and rejoins with an enrollment code (`hub join`) offers the hub the
+  /// devices it has there, as a sign-in does, so the hub reuses its device and the rows it synced keep
+  /// their owner. Another hub's devices are not sent.
+  @Test func hubJoinOffersEveryKnownDeviceOfThisHub() async throws {
+    let rig = try await CommandRig.start()
+    defer { Task { await rig.close() } }
+    try await rig.signIn(ann)
+    _ = try await rig.logout()
+    try await rig.signIn(bob)
+    _ = try await rig.logout()
+    let registry = try rig.registry()
+    defer { registry.close() }
+    let other = AccountRegistry.newId()
+    try registry.insert(
+      AccountRow(
+        id: other, hubURL: "https://elsewhere.example.com", hubUserId: "u-x",
+        deviceId: "0197eeee-0000-7000-8000-0000000000e1",
+        database: AccountRegistry.databaseName(id: other), displayName: "X", orgName: "X"))
+    let before = try registry.all().count
+
+    // The hub reuses Ann's device for her code.
+    await rig.hub.fake.addEnrollmentCode(
+      "JOIN2345",
+      EnrollResponse(deviceId: devAnn, token: "tok-ann-again-secret", org: ann.org, user: ann.user))
+    await rig.hub.fake.setUserId(ann.userId)
+    _ = try await rig.accounts.join(url: localHub, code: "JOIN2345", deviceName: "Brian's Mac")
+
+    let request = try #require(await rig.hub.fake.enrollRequests.last)
+    #expect(request.deviceName == "Brian's Mac")
+    #expect(request.platform == "macos")
+    // The most recent account's device first, as `deviceId`; the rest as candidates.
+    #expect(request.deviceId == devBob)
+    #expect(request.candidateDeviceIds == [devAnn])
+    // Ann's account is signed in again on the same row: no new account, the same device.
+    let rows = try registry.all()
+    #expect(rows.count == before)
+    #expect(rows.first { $0.hubUserId == ann.userId }?.deviceId == devAnn)
+    #expect(try rig.accounts.scope().account.deviceId == devAnn)
+  }
+
   /// Ruling 3 again: a joined `workspace` adopted before the hub ever named its user is claimed by a
   /// passkey sign-in that the hub answers on that device.
   @Test func anAdoptedPlaceholderIsClaimedByAPasskeySignIn() async throws {

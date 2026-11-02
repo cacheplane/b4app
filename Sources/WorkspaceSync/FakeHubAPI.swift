@@ -38,6 +38,8 @@ public actor FakeHubAPI: HubAPI {
   public private(set) var removedIdentities: [String] = []
   /// The token each `enroll` call was asked to merge from (`nil` for none), oldest first.
   public private(set) var enrollTokens: [String?] = []
+  /// What each `enroll` call was sent, oldest first.
+  public private(set) var enrollRequests: [EnrollRequest] = []
   public private(set) var endSessionCalls = 0
   public private(set) var deleteAccountCalls = 0
 
@@ -132,6 +134,7 @@ public actor FakeHubAPI: HubAPI {
   /// Redeems the code as `enroll(_:)` does and records `token`; the fake merges no accounts.
   public func enroll(_ request: EnrollRequest, replacingToken token: String?) async throws -> EnrollResponse {
     enrollTokens.append(token)
+    enrollRequests.append(request)
     enrollCalls += 1
     try consumeFailure()
     guard let response = enrollmentCodes.removeValue(forKey: request.code) else {

@@ -146,15 +146,33 @@ extension KeyedDecodingContainer {
   }
 }
 
+/// `POST /v1/enroll`'s body. `deviceId` and then `candidateDeviceIds` are the devices this client
+/// already has at the hub, as in a sign-in's `DeviceSpec`: the first that is an unrevoked device of the
+/// code's user on the same platform is reused, so a Mac or phone that rejoins with a code keeps its
+/// device (and the rows it synced keep their owner). Both are left out when nil.
 public struct EnrollRequest: Codable, Sendable, Equatable {
   public var code: String
   public var deviceName: String
   public var platform: String
+  public var deviceId: String?
+  public var candidateDeviceIds: [String]?
 
-  public init(code: String, deviceName: String, platform: String) {
+  public init(
+    code: String, deviceName: String, platform: String, deviceId: String? = nil,
+    candidateDeviceIds: [String]? = nil
+  ) {
     self.code = code
     self.deviceName = deviceName
     self.platform = platform
+    self.deviceId = deviceId
+    self.candidateDeviceIds = candidateDeviceIds
+  }
+
+  /// Enroll with `code` as `device` describes this client, its known devices included.
+  public init(code: String, device: DeviceSpec) {
+    self.init(
+      code: code, deviceName: device.deviceName, platform: device.platform, deviceId: device.deviceId,
+      candidateDeviceIds: device.candidateDeviceIds)
   }
 }
 

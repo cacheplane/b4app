@@ -46,6 +46,10 @@ Pending: the owner's passkey (plan Task 18 Step 4). Local flavour, on the owner'
 | 5. Create a thread, log out, sign in to the first account: its threads appear, the second account's thread does not | pending |
 | 6. `agent-workspace thread list` while signed out: exit 4 with the message | pending |
 | 7. In the iPhone Simulator (local flavour), open the pair link with `xcrun simctl openurl` and see the threads | pending |
+
+Found at the live gate, and fixed (X3, D-095 amended):
+
+- **A Mac that rejoined with an enrollment code became a new device.** After a log-out (the session ends, the device is kept, D-104), `hub join` with a code made a second `macos` device, because `POST /v1/enroll` took no device id. Every row the Mac had synced kept the old device as its owner, so the phone showed the Mac as offline and relayed turns for those threads went to the dead device. The same gap made a phone that re-paired by code a new device each time (D-107). Fix: `POST /v1/enroll` takes `deviceId` and `candidateDeviceIds` with the sign-in rule (`devices::redeem_reusing`, sharing `accounts::create_session`); `hub join` offers the registry's devices for that hub, and the phone its remembered devices on a typed code, a pairing scan, and the merge-first path. Fixture tests: `enroll.rs` (`enrolling_again_reuses_this_device`, `enrollment_passes_over_foreign_and_revoked_candidates`, `enrollment_candidates_are_capped_and_validated_before_the_code_is_used`), `accounts.rs` (`enroll_merging_reuses_only_a_device_of_the_codes_account`), `AccountCommandTests.hubJoinOffersEveryKnownDeviceOfThisHub`, `PairLinkTests.aPhoneThatPairsAgainOffersItsDevice` and `aMergingPairOffersEveryDeviceThePhoneHasHad`. Not yet rerun live.
 ## 2026-11-02: A stopped reply keeps its streamed text (D-088)
 
 Branch `fix/stopped-reply-text`, from main at `3f3cc15`.
