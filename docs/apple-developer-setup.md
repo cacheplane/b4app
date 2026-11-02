@@ -99,24 +99,24 @@ Six profiles, one per Mac App ID. For each:
 
 The existing `app` profile became invalid when you added Associated Domains in section 1. Either open it in **Profiles**, click **Edit** → **Save** → **Download**, or make a new one as above. The existing `coordinator` profile is still valid; keep it unless the list shows it as invalid.
 
-Move the downloads into place (the portal may name the file after the profile name, as here):
+Move the downloads into place. The portal drops hyphens from the file name (`app-beta` downloads as `appbeta.provisionprofile`), so rename while moving:
 
 ```bash
-mkdir -p ~/.b4app/signing && cd ~/Downloads && for f in app coordinator app-beta coordinator-beta app-local coordinator-local; do [ -f "$f.provisionprofile" ] && mv "$f.provisionprofile" ~/.b4app/signing/; done; ls ~/.b4app/signing
+mkdir -p ~/.b4app/signing && cd ~/Downloads && for f in app coordinator app-beta coordinator-beta app-local coordinator-local; do g=${f//-/}; [ -f "$g.provisionprofile" ] && mv "$g.provisionprofile" ~/.b4app/signing/"$f.provisionprofile"; done; ls ~/.b4app/signing
 ```
 
 Then check each flavour's profiles without building. Each prints any entitlement a profile is missing, or says the profiles are fine:
 
 ```bash
-B4APP_FLAVOR=local B4APP_CHECK_PROFILES_ONLY=1 ./Scripts/package.sh
+B4APP_FLAVOR=local B4APP_TEAM_ID=GJJKL34HCT B4APP_CHECK_PROFILES_ONLY=1 ./Scripts/package.sh
 ```
 
 ```bash
-B4APP_FLAVOR=beta B4APP_CHECK_PROFILES_ONLY=1 ./Scripts/package.sh
+B4APP_FLAVOR=beta B4APP_TEAM_ID=GJJKL34HCT B4APP_CHECK_PROFILES_ONLY=1 ./Scripts/package.sh
 ```
 
 ```bash
-B4APP_FLAVOR=prod B4APP_CHECK_PROFILES_ONLY=1 ./Scripts/package.sh
+B4APP_FLAVOR=prod B4APP_TEAM_ID=GJJKL34HCT B4APP_CHECK_PROFILES_ONLY=1 ./Scripts/package.sh
 ```
 
 A Developer ID profile lasts 18 years. Renewing the Developer ID certificate means regenerating all six (D-051).
@@ -128,6 +128,8 @@ No profiles to download. `Scripts/upload-ios.sh` uses automatic cloud-managed si
 Before the first TestFlight build with sign-in: App Store Connect → the app → **App Privacy** → edit the answers so the app collects **Name**, **Email Address**, and **User ID**, each linked to the user, used for **App Functionality**, not for tracking.
 
 ## 6. Already done (2026-11-01)
+
+- Apple: App IDs, the Services ID, and the Sign in with Apple key (Key ID `V9BJVV23LA`) made by the owner. All six Developer ID profiles are in `~/.b4app/signing/` and pass `B4APP_CHECK_PROFILES_ONLY=1` for local, beta, and prod (each expires 2044-10-28). The key's `.p8` sits beside them with mode 600; it belongs in the password manager and the hosted hubs' secret store, never the repository.
 
 - Vercel: `test.b4.run` and `local.b4.run` added to the b4.run project (`dawnai`), with no redirect, and `APPLE_TEAM_ID=GJJKL34HCT` set for production and preview.
 - `cacheplane/b4run#1129` merged and deployed the same day. `https://{b4.run,test.b4.run,local.b4.run}/.well-known/apple-app-site-association` each answer 200 `application/json` with that flavour's app ids, and `/pair` and `/app/download` answer 200. Apple's CDN picks the files up within a day.
