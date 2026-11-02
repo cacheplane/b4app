@@ -91,6 +91,14 @@ targets:
           - CFBundleURLName: com.cacheplane.b4app.ios
             CFBundleURLSchemes:
               - b4app
+        # The App Group the app and the widget share the mirror through, the scheme of the app's own
+        # links (`<scheme>://thread/<id>`, `<scheme>://pair`), and the entitlements below live here so
+        # flavour builds can override them (D-114). Keep the scheme in step with CFBundleURLSchemes.
+        B4AppAppGroup: group.com.cacheplane.b4app
+        B4AppURLScheme: b4app
+        # A push with `content-available` wakes the app to pull before the banner is tapped (D-113).
+        UIBackgroundModes:
+          - remote-notification
         # Plain HTTP only to the hub on this machine (the Simulator's localhost); HubURL refuses any
         # other non-HTTPS URL before a request is made. Debug only: the post-build script below
         # removes it from every other configuration, since on a device localhost is the phone.
@@ -108,6 +116,13 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+    # XcodeGen writes the tracked .entitlements file from these properties; flavour builds override them.
+    entitlements:
+      path: Apps/iOS/B4App/B4App.entitlements
+      properties:
+        aps-environment: development
+        com.apple.security.application-groups:
+          - group.com.cacheplane.b4app
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.cacheplane.b4app.ios
@@ -141,6 +156,45 @@ targets:
         product: WorkspaceSync
       - package: b4app
         product: WorkspaceSecrets
+      - target: B4App-iOSWidget
+        embed: true
+  # The attention widget (M8f, D-115): the top three threads, read from the mirror in the App Group.
+  # The group id, the URL scheme, and the entitlements are here, as on the app, so flavour builds can
+  # override them; the version keys must match the app's or embedding the extension fails.
+  B4App-iOSWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Apps/iOSWidget
+      - path: Apps/Shared/Assets.xcassets
+    info:
+      path: Apps/iOSWidget/Info.plist
+      properties:
+        CFBundleDisplayName: Agent Workspace
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        B4AppAppGroup: group.com.cacheplane.b4app
+        B4AppURLScheme: b4app
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: Apps/iOSWidget/B4AppWidget.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.cacheplane.b4app
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cacheplane.b4app.ios.widget
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        "CODE_SIGN_IDENTITY[sdk=iphonesimulator*]": "-"
+    dependencies:
+      - package: b4app
+        product: WorkspaceMirror
+      - package: b4app
+        product: WorkspaceProtocol
+      - package: b4app
+        product: WorkspaceUI
 schemes:
   B4App-macOS:
     build:

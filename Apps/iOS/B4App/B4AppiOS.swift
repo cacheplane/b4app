@@ -10,9 +10,11 @@ import WorkspaceUI
 /// goes through the hub's relay to the Mac, whose link is held while the app is active.
 ///
 /// A `b4app://pair` link (the Mac's QR code, opened from anywhere) fills the Connect screen and asks
-/// before enrolling; on a phone that is already paired it says so and does nothing else.
+/// before enrolling; on a phone that is already paired it says so and does nothing else. A
+/// `b4app://thread/<id>` link (a notification tap or a widget row, M8f) opens that thread.
 @main
 struct B4AppiOS: App {
+  @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   @State private var host = MirrorHost.shared
   @State private var model = WorkspaceModel(transportProvider: MirrorHost.transportProvider)
   /// A pairing link waiting for the Connect screen to take it (it holds the code: view state only).
@@ -44,6 +46,8 @@ struct B4AppiOS: App {
   }
 
   private func open(_ url: URL) {
+    // A thread link never reaches pairing, linked or not.
+    if host.handle(url: url) { return }
     switch host.pairLink(url) {
     case .confirm(let link): pairArrival = .offer(link)
     case .invalid: pairArrival = .invalid(PairArrival.invalidLink)
