@@ -18,7 +18,7 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(status.pending, 0);
-    assert_eq!(status.applied, vec![1, 2, 3]);
+    assert_eq!(status.applied, vec![1, 2, 3, 6]);
 
     let app = Db::connect(&app_url).await.unwrap();
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM orgs")
@@ -30,7 +30,7 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
         .fetch_one(&app.pool)
         .await
         .unwrap();
-    assert_eq!(migrations, 3);
+    assert_eq!(migrations, 4);
     app.pool.close().await;
 
     let row =
@@ -135,6 +135,7 @@ async fn tenant_tables_force_row_level_security(pool: PgPool) {
         ("displayItems", true, true),
         ("drafts", true, true),
         ("enrollment_codes", false, false),
+        ("hub_settings", false, false),
         ("org_sync_horizons", true, true),
         ("orgs", false, false),
         ("projectFolders", true, true),
@@ -151,6 +152,63 @@ async fn tenant_tables_force_row_level_security(pool: PgPool) {
             "{relname}: {flags:?}"
         );
     }
+}
+
+/// The hub's migrations are numbered by the branch that claims them, so a lower-numbered one can
+/// land after a higher one is already applied (0004 and 0005 are on unmerged branches; 0006 is
+/// here). sqlx 0.8 applies whatever the ledger lacks, in version order, and refuses nothing: the
+/// finding `docs/compatibility.md` records.
+#[sqlx::test(migrations = false)]
+async fn sqlx_applies_a_lower_numbered_migration_added_later(pool: PgPool) {
+    use sqlx::migrate::Migrator;
+
+    let dir = std::env::temp_dir().join(format!(
+        "b4hub-migrations-{}",
+        b4hub_core::ids::new_uuid().simple()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("0001_a.sql"), "CREATE TABLE a (id int)").unwrap();
+    std::fs::write(dir.join("0003_c.sql"), "CREATE TABLE c (id int)").unwrap();
+    Migrator::new(dir.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+
+    std::fs::write(dir.join("0002_b.sql"), "CREATE TABLE b (id int)").unwrap();
+    Migrator::new(dir.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    let applied: Vec<i64> =
+        sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(applied, vec![1, 2, 3]);
+    let b: i64 = sqlx::query_scalar("SELECT count(*) FROM b")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(b, 0);
+
+    // The other direction is refused: a binary without a migration the ledger holds (a deploy of
+    // a branch that lacks 0002 against this database) fails with VersionMissing.
+    std::fs::remove_file(dir.join("0002_b.sql")).unwrap();
+    let error = Migrator::new(dir.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, sqlx::migrate::MigrateError::VersionMissing(2)),
+        "{error}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[sqlx::test(migrations = false)]

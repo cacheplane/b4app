@@ -1,5 +1,5 @@
 //! Command line, environment settings, and the commands (`serve`, `migrate`, `seed`, `enroll`,
-//! `prune`).
+//! `prune`, `maintenance`).
 //!
 //! A missing or malformed setting is a [`ConfigError`] that names the setting and never echoes
 //! its value (the database URLs carry passwords); `main` prints it on one line and exits 2.
@@ -15,6 +15,7 @@ use tracing_subscriber::EnvFilter;
 use url::Url;
 
 use b4hub_db::orgs::{self, OrgChoice};
+use b4hub_db::settings::Maintenance;
 use b4hub_db::{devices, Db};
 
 use crate::serve::{self, AppState};
@@ -55,6 +56,26 @@ pub enum Command {
     /// Delete change-log entries older than a number of days, once (connects with
     /// DATABASE_ADMIN_URL). `serve` does this itself every 24 hours.
     Prune(PruneArgs),
+    /// Pause writes on every hub instance while reads continue, or resume them (connects with
+    /// DATABASE_ADMIN_URL). `serve` notices within B4HUB_MAINTENANCE_POLL_MS (5 s).
+    Maintenance {
+        #[command(subcommand)]
+        action: MaintenanceAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MaintenanceAction {
+    /// Refuse writes (503 `maintenance`) until `off`.
+    On {
+        /// Text for clients, shown in the error message.
+        #[arg(long, value_parser = parse_non_empty)]
+        message: Option<String>,
+    },
+    /// Accept writes again.
+    Off,
+    /// Print whether writes are paused.
+    Status,
 }
 
 #[derive(Debug, Args)]
@@ -358,7 +379,43 @@ pub async fn run(cli: Cli, settings: &Settings) -> Result<(), CliError> {
         Command::Seed(args) => seed_command(args, settings).await,
         Command::Enroll(args) => enroll_command(args, settings).await,
         Command::Prune(args) => prune_command(args, settings).await,
+        Command::Maintenance { action } => maintenance_command(action, settings).await,
     }
+}
+
+async fn maintenance_command(
+    action: MaintenanceAction,
+    settings: &Settings,
+) -> Result<(), CliError> {
+    let db = Db::connect(&settings.admin_url()?).await?;
+    match action {
+        MaintenanceAction::On { message } => {
+            let maintenance = Maintenance::read_only(message);
+            b4hub_db::settings::set_maintenance(&db, Some(&maintenance)).await?;
+            println!("maintenance on: {}", describe_maintenance(&maintenance));
+        }
+        MaintenanceAction::Off => {
+            b4hub_db::settings::set_maintenance(&db, None).await?;
+            println!("maintenance off: writes resume as each instance polls");
+        }
+        MaintenanceAction::Status => match b4hub_db::settings::maintenance(&db).await? {
+            Some(maintenance) => println!("maintenance on: {}", describe_maintenance(&maintenance)),
+            None => println!("maintenance off"),
+        },
+    }
+    Ok(())
+}
+
+fn describe_maintenance(maintenance: &Maintenance) -> String {
+    format!(
+        "writes paused since {}{}",
+        maintenance.since,
+        maintenance
+            .message
+            .as_deref()
+            .map(|m| format!(" ({m})"))
+            .unwrap_or_default()
+    )
 }
 
 async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<(), CliError> {
