@@ -56,6 +56,18 @@ line_of() { grep -n -m1 -- "$1" "$STUB_LOG" | cut -d: -f1; }
   logged 'curl .*https://hub.test.b4.run/readyz'
 }
 
+@test "a service scaled to zero skips the readiness check with a warning" {
+  export STUB_DESIRED_COUNT=0
+  run "$deploy" test "$digest"
+  [ "$status" -eq 0 ]
+  logged 'aws ecs update-service'
+  logged 'aws ecs wait services-stable'
+  not_logged '^curl'
+  output_has "::warning::"
+  output_has "desiredCount 0"
+  output_has "Runbook 4"
+}
+
 @test "the image is copied to ECR by digest and the task definitions pin it" {
   run "$deploy" test "$digest"
   [ "$status" -eq 0 ]
@@ -94,9 +106,12 @@ line_of() { grep -n -m1 -- "$1" "$STUB_LOG" | cut -d: -f1; }
 }
 
 @test "a hub below protocol 1 fails the readiness check" {
+  # desiredCount > 0 (the stub's default): the check is strict.
   export STUB_MIN_CLIENT_PROTOCOL=0
   run "$deploy" test "$digest"
   [ "$status" -ne 0 ]
+  logged 'curl .*https://hub.test.b4.run/readyz'
+  output_lacks "::warning::"
 }
 
 @test "production deploys to the prod names and hub.b4.run" {

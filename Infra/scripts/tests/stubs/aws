@@ -2,7 +2,8 @@
 # Test stub for the AWS CLI: records every invocation in $STUB_LOG and returns
 # canned JSON. STUB_MIGRATE_EXIT sets the migrate container's exit code
 # ("none" leaves it out); STUB_ROLLOUT sets the primary deployment's state;
-# STUB_ACCOUNT overrides the account id; STUB_WAIT_FAIL=1 makes the
+# STUB_ACCOUNT overrides the account id; STUB_DESIRED_COUNT sets the
+# service's desiredCount (default 1); STUB_WAIT_FAIL=1 makes the
 # tasks-stopped waiter time out; describe-tasks lists a sidecar container
 # before the migrate one so callers must select by name.
 set -euo pipefail
@@ -42,8 +43,8 @@ case "${1:-} ${2:-}" in
     ;;
   "ecs describe-services")
     cluster="$(arg --cluster "$@")"
-    printf '{"services":[{"networkConfiguration":{"awsvpcConfiguration":{"subnets":["subnet-a","subnet-b"],"securityGroups":["sg-task"],"assignPublicIp":"ENABLED"}},"deployments":[{"status":"PRIMARY","taskDefinition":"arn:aws:ecs:%s:%s:task-definition/%s-hub:7","rolloutState":"%s"}]}]}\n' \
-      "$region" "$account" "$cluster" "${STUB_ROLLOUT:-COMPLETED}"
+    printf '{"services":[{"desiredCount":%s,"networkConfiguration":{"awsvpcConfiguration":{"subnets":["subnet-a","subnet-b"],"securityGroups":["sg-task"],"assignPublicIp":"ENABLED"}},"deployments":[{"status":"PRIMARY","taskDefinition":"arn:aws:ecs:%s:%s:task-definition/%s-hub:7","rolloutState":"%s"}]}]}\n' \
+      "${STUB_DESIRED_COUNT:-1}" "$region" "$account" "$cluster" "${STUB_ROLLOUT:-COMPLETED}"
     ;;
   "ec2 describe-security-groups")
     printf '{"SecurityGroups":[{"GroupId":"sg-admin"}]}\n'

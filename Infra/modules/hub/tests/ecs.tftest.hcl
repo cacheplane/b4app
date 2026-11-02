@@ -309,6 +309,48 @@ run "signin_secrets_render" {
   }
 }
 
+# The sign-in hub's serve needs B4HUB_SECRET_KEY, so the admin hub container
+# carries the same gated block as the serving one; off until sign-in merges.
+run "admin_signin_secrets_render" {
+  command = apply
+
+  variables {
+    hostname = "hub.test.b4.run"
+  }
+
+  assert {
+    condition = one([for c in jsondecode(templatefile("${path.module}/../../taskdefs/hub-admin.json.tpl", {
+      image                   = "img"
+      psql_image              = "psql"
+      region                  = "us-east-2"
+      log_group               = "/b4hub/test/admin"
+      rp_id                   = "test.b4.run"
+      db_admin_url_secret_arn = "arn:db-admin-url"
+      db_url_secret_arn       = "arn:db-url"
+      db_master_secret_arn    = "arn:master"
+      db_host                 = "db.example"
+      secret_key_arn          = "arn:secret-key"
+      apple_team_id_arn       = "arn:team"
+      apple_key_id_arn        = "arn:key"
+      apple_private_key_arn   = "arn:private"
+      include_signin_secrets  = true
+      })) : c if c.name == "hub"]).secrets == [
+      { name = "B4HUB_SECRET_KEY", valueFrom = "arn:secret-key" },
+      { name = "B4HUB_APPLE_TEAM_ID", valueFrom = "arn:team" },
+      { name = "B4HUB_APPLE_KEY_ID", valueFrom = "arn:key" },
+      { name = "B4HUB_APPLE_PRIVATE_KEY", valueFrom = "arn:private" },
+      { name = "DATABASE_ADMIN_URL", valueFrom = "arn:db-admin-url" },
+      { name = "DATABASE_URL", valueFrom = "arn:db-url" },
+    ]
+    error_message = "with include_signin_secrets the admin hub container gets the four sign-in secrets"
+  }
+
+  assert {
+    condition     = one([for e in one([for c in jsondecode(aws_ecs_task_definition.admin.container_definitions) : c if c.name == "hub"]).environment : e.value if e.name == "B4HUB_WEBAUTHN_RP_ID"]) == "test.b4.run"
+    error_message = "the admin hub container has the relying party id the sign-in hub's serve requires"
+  }
+}
+
 run "templates_render_valid_json" {
   command = apply
 

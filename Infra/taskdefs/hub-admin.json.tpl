@@ -6,9 +6,16 @@
     "command": ["serve"],
     "environment": [
       { "name": "B4HUB_PORT", "value": "8081" },
-      { "name": "B4HUB_LOG", "value": "info" }
+      { "name": "B4HUB_LOG", "value": "info" },
+      { "name": "B4HUB_WEBAUTHN_RP_ID", "value": "${rp_id}" }
     ],
     "secrets": [
+%{ if include_signin_secrets ~}
+      { "name": "B4HUB_SECRET_KEY", "valueFrom": "${secret_key_arn}" },
+      { "name": "B4HUB_APPLE_TEAM_ID", "valueFrom": "${apple_team_id_arn}" },
+      { "name": "B4HUB_APPLE_KEY_ID", "valueFrom": "${apple_key_id_arn}" },
+      { "name": "B4HUB_APPLE_PRIVATE_KEY", "valueFrom": "${apple_private_key_arn}" },
+%{ endif ~}
       { "name": "DATABASE_ADMIN_URL", "valueFrom": "${db_admin_url_secret_arn}" },
       { "name": "DATABASE_URL", "valueFrom": "${db_url_secret_arn}" }
     ],

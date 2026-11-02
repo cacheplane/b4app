@@ -118,13 +118,20 @@ resource "aws_ecs_task_definition" "migrate" {
 #   the master secret is used. It is the essential container so the task
 #   lives (sleep 3600) on a fresh account, before the b4hub database and
 #   b4hub_app role exist: the operator creates them from psql first.
-# - hub (not essential): the hub image has no shell, so it runs `b4hub serve`
-#   on 8081 only to stay alive for ECS Exec; the operator execs
+# - hub (not essential): the image's ENTRYPOINT is the binary (`/bin/sh`
+#   exists for ECS Exec), so it runs `b4hub serve` on 8081 only to stay alive
+#   for ECS Exec; the operator execs
 #   `b4hub seed|enroll` in it. serve connects at startup, so before the
 #   database exists and `migrate` has run it exits without stopping the task;
 #   after migrate it stays up. serve needs DATABASE_URL and seed/enroll need
 #   DATABASE_ADMIN_URL, so it gets both. It is operator-only and never
 #   receives traffic.
+#   Infra/scripts/admin-shell.sh registers a new revision of this family
+#   before each run, pinned to the ECR digest the service runs, so the
+#   placeholder image below is only used before the first deploy. Once the
+#   sign-in hub merges, serve also needs B4HUB_WEBAUTHN_RP_ID (set already;
+#   the current hub ignores it) and B4HUB_SECRET_KEY, which the same gated
+#   block as the serving task adds.
 # psql: PGSSLMODE is require, not verify-full: the postgres image
 #   lacks the RDS CA bundle. require still encrypts; the hub itself verifies
 #   the server with the bundle baked into its image.
@@ -155,6 +162,15 @@ resource "aws_ecs_task_definition" "admin" {
     db_url_secret_arn       = aws_secretsmanager_secret.this["database-url"].arn
     db_master_secret_arn    = aws_db_instance.hub.master_user_secret[0].secret_arn
     db_host                 = aws_db_instance.hub.address
+    rp_id                   = local.webauthn_rp_id
+    secret_key_arn          = aws_secretsmanager_secret.this["secret-key"].arn
+    apple_team_id_arn       = aws_secretsmanager_secret.this["apple-team-id"].arn
+    apple_key_id_arn        = aws_secretsmanager_secret.this["apple-key-id"].arn
+    apple_private_key_arn   = aws_secretsmanager_secret.this["apple-private-key"].arn
+    # Same gate as the serving task: the sign-in hub's `serve` needs
+    # B4HUB_SECRET_KEY, and this container must start for `b4hub seed|enroll`.
+    # admin-shell.sh renders it from Infra/taskdefs/features.env.
+    include_signin_secrets = false
   })
 }
 

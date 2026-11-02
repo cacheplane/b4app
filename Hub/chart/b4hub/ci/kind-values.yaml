@@ -14,3 +14,10 @@ resources:
     memory: 64Mi
   limits:
     memory: 256Mi
+# Required once sign-in merges: the sign-in hub's serve refuses to start without
+# B4HUB_SECRET_KEY. Uncomment, and have the install job generate the key into a file and
+# pass it with `--set-file secrets.values.secretKey=<file>` (never a --set value). Empty
+# Apple values count as unset, so the chart-created Secret needs nothing else.
+# secrets:
+#   values:
+#     secretKey: ""

@@ -76,6 +76,8 @@ variable "log_retention_days" {
 variable "alarm_email" {
   description = "Email address subscribed to the alarm topic." # used by observability.tf
   type        = string
+  # The repository is public: keep the address out of the plan log.
+  sensitive = true
 }
 
 variable "alb_ssl_policy" {

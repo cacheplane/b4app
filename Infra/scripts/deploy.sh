@@ -12,12 +12,16 @@
 #   3. render and register the hub-migrate and hub task definitions;
 #   4. run the migration task; if it fails, stop: the service is not touched;
 #   5. point the service at the new hub revision and wait for it to settle;
-#   6. check https://<hostname>/readyz.
+#   6. check https://<hostname>/readyz, unless the service is scaled to zero
+#      (a first deploy, before runbook 4 flips desired_count), which warns.
 # Any failing step stops the script. No secret value is read: only ARNs.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 taskdefs="$here/../taskdefs"
+prog=deploy
+# shellcheck source=Infra/scripts/taskdef-lib.sh
+. "$here/taskdef-lib.sh"
 
 die() {
   echo "deploy: $*" >&2
@@ -48,25 +52,9 @@ hub_family="$name-hub"
 migrate_family="$name-hub-migrate"
 source_ref="ghcr.io/cacheplane/b4hub@$digest"
 
-# features.env is data, not a script: read the one key, never source it.
-signin="$(sed -n 's/^INCLUDE_SIGNIN_SECRETS=\([01]\)[[:space:]]*$/\1/p' "$taskdefs/features.env")"
-case "$signin" in
-  0 | 1) ;;
-  *) die "Infra/taskdefs/features.env must set INCLUDE_SIGNIN_SECRETS=0 or 1" ;;
-esac
+signin="$(signin_flag)"
 
 step() { echo "==> $*"; }
-
-# Every value resolved from the account is checked for its shape before use,
-# so an empty answer, "None", or an unexpected format stops the deploy here.
-ARN='^arn:aws:[a-z0-9-]+:[a-z0-9-]*:[0-9]{0,12}:[^[:space:]]+$'
-resolved() { # label pattern value -> value
-  if ! [[ "$3" =~ $2 ]]; then
-    echo "deploy: could not resolve $1 (got '${3:-nothing}')" >&2
-    exit 1
-  fi
-  printf '%s' "$3"
-}
 
 [[ "$region" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]$ ]] || die "unexpected AWS region '$region'"
 
@@ -74,7 +62,8 @@ resolved() { # label pattern value -> value
 account="$(resolved "account id" '^[0-9]{12}$' "$(aws sts get-caller-identity --output json | jq -r .Account)")"
 registry="$(resolved "ECR registry" '^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$' "$account.dkr.ecr.$region.amazonaws.com")"
 ecr_tag="$registry/b4hub:${digest#sha256:}"
-image="$registry/b4hub@$digest"
+# admin-shell.sh accepts the service's image only in this shape.
+image="$(resolved "ECR image reference" "$ECR_DIGEST_REF" "$registry/b4hub@$digest")"
 
 ecr_digest() {
   docker buildx imagetools inspect "$ecr_tag" --format '{{json .Manifest}}' 2> /dev/null | jq -r '.digest // ""'
@@ -97,23 +86,9 @@ echo "$ecr_tag is $digest"
 
 # 2. ARNs and network, resolved from the account (no account id in the repo).
 step "resolving ARNs"
-secret_arn() {
-  resolved "secret b4hub/$1" "$ARN" "$(aws secretsmanager describe-secret --secret-id "b4hub/$1" --output json | jq -r .ARN)"
-}
-task_definition() { # family -> its current revision, as JSON
-  aws ecs describe-task-definition --task-definition "$1" --output json
-}
-
 db_url_arn="$(secret_arn database-url)"
 db_admin_url_arn="$(secret_arn database-admin-url)"
-signin_vars=()
-if [ "$signin" = 1 ]; then
-  for pair in secret_key_arn=secret-key apple_team_id_arn=apple-team-id \
-    apple_key_id_arn=apple-key-id apple_private_key_arn=apple-private-key; do
-    arn="$(secret_arn "${pair#*=}")"
-    signin_vars+=(--var "${pair%%=*}=$arn")
-  done
-fi
+collect_signin_vars "$signin"
 # The new revisions keep the roles Terraform gave each family.
 hub_td="$(task_definition "$hub_family")"
 hub_exec="$(resolved "$hub_family execution role" "$ARN" "$(jq -r .taskDefinition.executionRoleArn <<< "$hub_td")")"
@@ -131,11 +106,6 @@ admin_sg="$(resolved "security group $name-admin" '^sg-[0-9a-z]+$' "$(aws ec2 de
 # 3. Render and register both revisions.
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-
-register() { # rendered file -> new revision ARN
-  resolved "registered revision" '^arn:aws:ecs:[a-z0-9-]+:[0-9]{12}:task-definition/[A-Za-z0-9_-]+:[0-9]+$' "$(aws ecs register-task-definition --cli-input-json "file://$1" --output json |
-    jq -r .taskDefinition.taskDefinitionArn)"
-}
 
 step "registering $migrate_family"
 "$here/render-taskdef.sh" "$taskdefs/hub-migrate.json.tpl" "$work/migrate.json" \
@@ -185,14 +155,21 @@ aws ecs update-service --cluster "$cluster" --service "$service" --task-definiti
 aws ecs wait services-stable --cluster "$cluster" --services "$service"
 # The circuit breaker rolls a failed deployment back, and the rolled-back
 # service is "stable" too: check the new revision is the one serving.
-primary="$(aws ecs describe-services --cluster "$cluster" --services "$service" --output json |
-  jq -r '.services[0].deployments[] | select(.status == "PRIMARY") | "\(.taskDefinition) \(.rolloutState // "")"')"
+settled="$(aws ecs describe-services --cluster "$cluster" --services "$service" --output json)"
+primary="$(jq -r '.services[0].deployments[] | select(.status == "PRIMARY") | "\(.taskDefinition) \(.rolloutState // "")"' <<< "$settled")"
+desired="$(resolved "service desiredCount" '^[0-9]+$' "$(jq -r '.services[0].desiredCount // ""' <<< "$settled")")"
 if [ "$primary" != "$hub_arn COMPLETED" ]; then
   echo "deploy: the service settled on '${primary:-no primary deployment}', not $hub_arn COMPLETED (rolled back?)" >&2
   exit 1
 fi
 
-# 6. Readiness through the public hostname.
+# 6. Readiness through the public hostname. A service scaled to zero has no
+# task to answer: that is the first deploy, before runbook 4 starts one.
+if [ "$desired" -eq 0 ]; then
+  echo "::warning::$service has desiredCount 0, so /readyz was not checked. Runbook 4 (Infra/README.md, First deploy) sets desired_count to start the hub."
+  echo "deployed $digest to $env_name (not running: desiredCount 0)"
+  exit 0
+fi
 step "checking https://$hostname/readyz"
 curl -fsS --retry 5 --retry-delay 5 --retry-all-errors --max-time 10 "https://$hostname/readyz" |
   jq -e '.minClientProtocol >= 1'

@@ -9,4 +9,7 @@
 -- `b4hub migrate` creates, and CREATEROLE is all migrate needs to create and
 -- grant b4hub_app later. The master user is used nowhere else.
 CREATE ROLE b4hub_owner WITH LOGIN CREATEROLE PASSWORD :'owner_password';
+-- PostgreSQL 16+ (createrole_self_grant is empty by default) gives the creator
+-- only ADMIN OPTION on a new role, and CREATE DATABASE ... OWNER needs SET ROLE.
+GRANT b4hub_owner TO CURRENT_USER;
 CREATE DATABASE b4hub OWNER b4hub_owner;

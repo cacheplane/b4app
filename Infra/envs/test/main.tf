@@ -26,6 +26,8 @@ provider "aws" {
 variable "alarm_email" {
   description = "Email address for alarm and budget notifications. CI passes it as TF_VAR_alarm_email from the repository variable B4HUB_ALARM_EMAIL."
   type        = string
+  # The repository is public: keep the address out of the plan log.
+  sensitive = true
 }
 
 module "hub" {
