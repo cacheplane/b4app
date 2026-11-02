@@ -27,11 +27,21 @@ extension PhoneFlavor {
   /// flavour's hub, or (the local flavour only, during M8c's transition) `b4app://pair?hub=&code=` for
   /// a hub on this machine. Nil for anything else, another flavour's site included.
   public func parsePairLink(_ url: URL) -> PairLink? {
-    PairLink.parse(url, siteDomain: siteDomain, hubURL: hubURL, legacyLoopback: self == .local)
+    PairLink.parse(
+      url, siteDomain: siteDomain, hubURL: hubURL, legacyLoopback: self == .local,
+      legacySchemes: legacyPairSchemes)
+  }
+
+  /// The schemes of the old `<scheme>://pair?hub=&code=` link this flavour recognizes: `b4app` for
+  /// every flavour (prod and beta only to refuse it), and the local flavour's own scheme too, since
+  /// D-066 gave `b4app` to prod: a `b4app://pair` link opens the prod app on a device that has both,
+  /// while `b4app-local://pair` reaches the local app even when its universal link is not set up.
+  public var legacyPairSchemes: Set<String> {
+    self == .local ? [PairLink.linkScheme, urlScheme] : [PairLink.linkScheme]
   }
 
   public func pairLinkDecision(_ url: URL) -> PairLinkDecision {
-    guard PairLink.isPairLink(url) else { return .ignored }
+    guard PairLink.isPairLink(url, legacySchemes: legacyPairSchemes) else { return .ignored }
     return parsePairLink(url).map(PairLinkDecision.confirm) ?? .invalid
   }
 }
