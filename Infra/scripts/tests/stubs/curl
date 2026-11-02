@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Test stub for curl: records the call and answers /readyz.
+set -euo pipefail
+printf 'curl %s\n' "$*" >> "${STUB_LOG:?}"
+printf '{"status":"ready","minClientProtocol":%s}\n' "${STUB_MIN_CLIENT_PROTOCOL:-1}"

@@ -1,0 +1,3 @@
+# Module tests
+
+Each `*.tftest.hcl` file here runs against mocked `aws` and `aws.copy` providers, so `terraform init -backend=false && terraform test` needs no credentials. Terraform test files are independent: a `mock_provider` or `override_resource` block declared in one file is not visible in another, and there is no include mechanism, so every file repeats the same mock blocks. `network.tftest.hcl` holds the canonical copy. Change the mocks there first, then copy the change into `alarms`, `data`, `ecs`, and `edge`; `ecs.tftest.hcl` adds its own `override_resource` blocks for distinct role ARNs on top of the shared mocks.

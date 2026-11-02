@@ -1,0 +1,46 @@
+The b4 hub is installed as {{ include "b4hub.fullname" . }} in namespace {{ .Release.Namespace }}.
+
+Reach it inside the cluster at http://{{ include "b4hub.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+(public URL: {{ .Values.hub.publicUrl }}). Check readiness:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "b4hub.fullname" . }} 8080:{{ .Values.service.port }}
+  curl http://127.0.0.1:8080/readyz
+{{- if .Values.migrate.enabled }}
+
+Migrations ran in the pre-install/pre-upgrade hook Job {{ include "b4hub.migrateJobName" . }}.
+A successful Job is deleted; a failed one stays for an hour (Helm does not track hook resources).
+If the release failed at the hook, read its output:
+
+  kubectl logs -n {{ .Release.Namespace }} job/{{ include "b4hub.migrateJobName" . }}
+{{- end }}
+{{- if include "b4hub.db.createSecret" . }}
+
+NOTE: the database Secret was created from database.urls, which is for evaluation only.
+Use database.existingSecret in production.
+{{- end }}
+{{- if .Values.secrets.existingSecret }}
+
+Sign-in secrets come from Secret {{ .Values.secrets.existingSecret }}. Its keys are optional references, so Kubernetes does not
+report a missing or mistyped key; check that it holds B4HUB_SECRET_KEY, B4HUB_APPLE_TEAM_ID, B4HUB_APPLE_KEY_ID, and
+B4HUB_APPLE_PRIVATE_KEY. The hub's startup check is the only guard.
+{{- end }}
+{{- if gt (int .Values.replicaCount) 1 }}
+
+WARNING: replicaCount is {{ .Values.replicaCount }} (strategy {{ .Values.strategy.type }}). The relay routes per process
+until M8e (D-057), so devices on different replicas cannot reach each other. Run one replica.
+{{- end }}
+{{- if .Values.ingress.enabled }}
+
+Ingress {{ include "b4hub.fullname" . }} routes {{ .Values.ingress.host }} to the hub. The proxy must pass or append the
+client address (B4HUB_TRUST_X_FORWARDED_FOR is {{ if .Values.hub.trustXForwardedFor }}on{{ else }}off{{ end }}), and must not cut WebSockets or 25 s long-polls.
+{{- end }}
+{{- if .Values.httpRoute.enabled }}
+
+HTTPRoute {{ include "b4hub.fullname" . }} is attached to the Gateway(s) in httpRoute.parentRefs. Gateway API timeouts default to the
+implementation's; the hub expects httpRoute.timeouts to stay unset unless you know your Gateway's defaults keep
+WebSockets and 25 s long-polls open.
+{{- end }}
+{{- if and .Values.serviceMonitor.enabled (not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1")) }}
+
+serviceMonitor.enabled is true but the monitoring.coreos.com/v1 API is not installed, so no ServiceMonitor was rendered.
+{{- end }}

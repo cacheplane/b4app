@@ -1,0 +1,25 @@
+{{- /*
+The hub does not expose /metrics yet (a later hub milestone); the monitor is wired for when it does.
+Rendered only when the Prometheus Operator CRDs are installed.
+*/}}
+{{- if and .Values.serviceMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "b4hub.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "b4hub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hub
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "b4hub.selectorLabels" (dict "ctx" . "component" "hub") | nindent 6 }}
+  endpoints:
+    - port: http
+      path: {{ .Values.serviceMonitor.path }}
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

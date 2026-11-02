@@ -1,0 +1,127 @@
+{{ template "chart.header" . }}
+{{ template "chart.deprecationWarning" . }}
+
+{{ template "chart.badgesSection" . }}
+
+{{ template "chart.description" . }}
+
+{{ template "chart.homepageLine" . }}
+
+## Prerequisites
+
+- Kubernetes 1.29 or newer and Helm 4.
+- An external PostgreSQL 17, or the CloudNativePG example below (`examples/cnpg-cluster.yaml`).
+
+## Install
+
+```sh
+helm install b4hub oci://ghcr.io/cacheplane/charts/b4hub --version <v> -f values.yaml
+```
+
+Each `hub-v<semver>` release publishes the `Chart.yaml` chart version to `oci://ghcr.io/cacheplane/charts/b4hub` alongside the image, with `appVersion` set to that hub version and the chart signed with cosign.
+
+`hub.publicUrl` and `hub.rpId` are required, plus a database Secret (next section). A minimal `values.yaml`:
+
+```yaml
+hub:
+  publicUrl: https://hub.example.com
+  rpId: example.com
+database:
+  existingSecret: b4hub-db
+```
+
+## Database secret contract
+
+Create one Secret with two keys:
+
+- `DATABASE_URL`: the `b4hub_app` role's connection URL. The hub Deployment mounts only this key, at `/etc/b4hub/db/DATABASE_URL`, and reads it through `DATABASE_URL_FILE`.
+- `DATABASE_ADMIN_URL`: the admin connection URL, for a role that owns the database and has `CREATEROLE` (a superuser works; the CloudNativePG example below uses the `b4hub-db-superuser` Secret). Only the migration Job mounts it.
+
+Key names are overridable with `database.secretKeys`. Pass the Secret as `database.existingSecret`.
+`database.urls.url` and `database.urls.adminUrl` make the chart create `<release>-b4hub-db` instead; that is for evaluation only (the values sit in your values file, and the Secret is a hook resource that `helm uninstall` leaves behind). Use `existingSecret` in production.
+
+### CloudNativePG example
+
+`examples/cnpg-cluster.yaml` is a single-instance CloudNativePG `Cluster` named `b4hub-db` (PostgreSQL 17, 10Gi, database `b4hub`, owner `b4hub_owner`). The chart never applies it. The sequence below builds the `b4hub-db` Secret from it; the chart's CI install test runs exactly this sequence (in the `default` namespace) against CloudNativePG 1.30.
+
+- `DATABASE_ADMIN_URL` uses the superuser from the `b4hub-db-superuser` Secret (keys `username` and `password`), which `enableSuperuserAccess: true` creates. `b4hub migrate` creates the `b4hub_app` role, which needs `CREATEROLE`, and CloudNativePG's database owner `b4hub_owner` (in `b4hub-db-app`) does not have it.
+- `DATABASE_URL` connects as `b4hub_app` with a password you generate: `b4hub migrate` creates the role, or resets its password, from this URL. The hub refuses to serve as the owner or a superuser.
+
+```sh
+kubectl create namespace b4hub
+kubectl -n b4hub apply -f examples/cnpg-cluster.yaml
+kubectl -n b4hub wait --for=condition=Ready cluster/b4hub-db --timeout=300s
+
+ADMIN_USER=$(kubectl -n b4hub get secret b4hub-db-superuser -o jsonpath='{.data.username}' | base64 -d)
+ADMIN_PW=$(kubectl -n b4hub get secret b4hub-db-superuser -o jsonpath='{.data.password}' | base64 -d)
+APP_PW=$(openssl rand -hex 24)
+
+kubectl -n b4hub create secret generic b4hub-db \
+  --from-literal=DATABASE_URL="postgres://b4hub_app:${APP_PW}@b4hub-db-rw:5432/b4hub" \
+  --from-literal=DATABASE_ADMIN_URL="postgres://${ADMIN_USER}:${ADMIN_PW}@b4hub-db-rw:5432/b4hub"
+```
+
+Keep `APP_PW` only in the Secret: every `helm upgrade` reruns the migration, which sets the `b4hub_app` password from `DATABASE_URL` again.
+
+## Sign-in secrets
+
+Sign-in needs `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, and `B4HUB_APPLE_PRIVATE_KEY`. Provide them in an existing Secret with those keys (`secrets.existingSecret`), or let the chart create `<release>-b4hub-secrets` from `secrets.values`, passing the PEM from a file:
+
+```sh
+--set-file secrets.values.applePrivateKey=AuthKey_ABC123.p8
+```
+
+With neither set, the hub runs without sign-in secrets and the chart renders none.
+With `secrets.existingSecret`, all four references are `optional: true`, so Kubernetes no longer refuses to start the pod (`CreateContainerConfigError`) when a key is missing or mistyped; check the key names yourself, because the hub's own startup check is then the only guard (the current hub does not read these keys yet; the sign-in hub does).
+`secrets.useFileVars: false` (default) exposes them as environment variables from `secretKeyRef`. `true` mounts them at `/etc/b4hub/secrets/<KEY>` and sets `B4HUB_*_FILE` instead; turn it on once the hub reads the `_FILE` forms (M8e).
+
+## Ingress or Gateway
+
+Enable one of the two. Both route to the chart Service: the Ingress backend names its port (`http`), the HTTPRoute backend uses its port number (`service.port`, default 80), since Gateway API `backendRefs` take a number.
+
+The proxy must pass or append the client address: the hub trusts the last `X-Forwarded-For` hop while `hub.trustXForwardedFor` (`B4HUB_TRUST_X_FORWARDED_FOR`) is true, so turn that off if your proxy does not append it. The hub holds WebSockets and 25 s long-polls open, so the proxy's read timeout must exceed 25 s.
+
+**Ingress** (`examples/values-ingress.yaml`). The chart assumes no controller-specific annotations; set what your controller needs under `ingress.annotations`:
+
+```yaml
+ingress:
+  annotations:
+    # ingress-nginx style
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    # nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # Traefik style
+    # traefik.ingress.kubernetes.io/router.entrypoints: websecure
+```
+
+**Gateway API** (`examples/values-httproute.yaml`). `httpRoute.parentRefs` is passed through verbatim. Gateway API timeouts default to the implementation's; leave `httpRoute.timeouts` unset (no `timeouts` key is rendered) unless you know your Gateway's defaults keep long-polls open.
+
+## Observability
+
+- OTLP: `otel.endpoint` and `otel.protocol` set `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_PROTOCOL` on the hub container (only when non-empty); `otel.extraEnv` appends further `OTEL_*` variables. The chart is passthrough only and adds no SDK configuration. The migration Job gets none of them.
+- Metrics: `serviceMonitor.enabled` renders a Prometheus Operator `ServiceMonitor` when the `monitoring.coreos.com/v1` API is installed (otherwise nothing is rendered and the install notes say so). The hub does not expose `/metrics` yet (a later hub milestone); the monitor is wired for when it does. Put your Prometheus selector label (for example `release: prometheus`) in `serviceMonitor.labels`.
+
+## Upgrading
+
+`b4hub migrate` runs as a Job with `helm.sh/hook: pre-install,pre-upgrade` (weight `-5`, delete policy `before-hook-creation,hook-succeeded`, `backoffLimit: 0`). A failed migration fails the release before the Deployment changes, so the old hub keeps running. The Job is named `<fullname>-migrate-<revision>`; a failed one is kept for an hour. Helm does not track hook resources, so read a failure with `kubectl logs -n <namespace> job/<name>` (the install notes print the exact command), fix the cause, and run `helm upgrade` again.
+
+## Uninstall
+
+`helm uninstall b4hub` removes the Deployment, Service, and routes. The evaluation database Secret (`<release>-b4hub-db`, from `database.urls`) is a hook resource and is left behind; delete it yourself with `kubectl delete secret`. Your own `existingSecret`s and the database are never touched.
+
+## Replicas
+
+Keep `replicaCount: 1` and `strategy.type: Recreate`. The relay routes per process until M8e (D-057); the install notes warn when `replicaCount` is above 1. `RollingUpdate` and more replicas are supported after M8e.
+
+## Security
+
+The pods meet the Restricted Pod Security Standard by default: non-root UID/GID 10001, no privilege escalation, all capabilities dropped, `RuntimeDefault` seccomp, a read-only root filesystem with an `emptyDir` at `/tmp`, and no service account token.
+
+## Air-gapped installs
+
+`global.imageRegistry` replaces the registry portion of `image.repository` (`ghcr.io`). `image.digest` pins the image by digest and wins over `image.tag`. `--skip-schema-validation` skips `values.schema.json` if your tooling needs it.
+
+{{ template "chart.requirementsSection" . }}
+
+{{ template "chart.valuesSection" . }}
+
+{{ template "helm-docs.versionFooter" . }}
