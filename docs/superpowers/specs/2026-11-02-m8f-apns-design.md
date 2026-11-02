@@ -1,8 +1,8 @@
 # M8f APNs: real notifications on the iPhone
 
-Date: 2026-11-02. Owner: Brian Love. Status: draft for the owner's review.
+Date: 2026-11-02. Owner: Brian Love. Status: for the owner's approval (builder-checked 2026-11-02).
 
-This builds on M8f, "attention on the phone" (the M8f section of `2026-10-31-m8b-remote-workspace-design.md`, plan `docs/superpowers/plans/2026-11-02-m8f-attention.md`, decisions D-121 to D-129). M8f decides on the hub which changes notify, stores each phone's push token, and hands the notification to a swappable `PushSender`; in the Simulator a `spool` sender writes `.apns` files that `Scripts/sim-push.sh` delivers. The `apns` sender was left as a stub that refuses to start. This slice builds it, and adds three behaviours the owner asked for while the notifications become real.
+This builds on M8f, "attention on the phone" (PR #63) (the M8f section of `2026-10-31-m8b-remote-workspace-design.md`, plan `docs/superpowers/plans/2026-11-02-m8f-attention.md`, decisions D-121 to D-129). M8f decides on the hub which changes notify, stores each phone's push token, and hands the notification to a swappable `PushSender`; in the Simulator a `spool` sender writes `.apns` files that `Scripts/sim-push.sh` delivers. The `apns` sender was left as a stub that refuses to start. This slice builds it, and adds three behaviours the owner asked for while the notifications become real.
 
 ## Intent
 
@@ -51,7 +51,7 @@ M8f's payload gains a key and a badge: `{"aps": {"alert": {title, body}, "sound"
 
 ### Withdrawing a notification
 
-- **When.** In the push transaction, alongside M8f's detection: a request that was notified and is no longer `pending` (answered or expired), or a turn that was notified and whose thread's `readTurnId` now names that turn or a later one. `notifications_sent` gains a `withdrawn_at`, so each is withdrawn once.
+- **When.** In the push transaction, alongside M8f's detection: a request that was notified and is no longer `pending` (answered or expired), or a turn that was notified and whose thread's `readTurnId` now names that turn or a later one. `notifications_sent` gains a `withdrawn_at` in a new migration (M8f's `0012_push.sql` is not edited, since databases may already hold it), so each is withdrawn once.
 - **To whom.** The same phones as the notification (signed in, with a token), including the one whose read caused it; it clears its own as well.
 - **How.** A background push: `{"aps": {"content-available": 1}, "withdraw": ["request:<id>", …]}` with no alert, sound, or badge (Apple requires that of a background push). The app wakes, removes the delivered notifications whose `key` is listed, sets its badge, and finishes.
 - **The backstop.** Background pushes are delivered when iOS chooses: they can be delayed or dropped (Low Power Mode, an app swiped away in the switcher). So after every sync the app also removes any delivered notification whose request is no longer pending or whose turn has been read in the mirror. Removal is usually within seconds and certain by the next sync.
@@ -63,19 +63,25 @@ M8f's payload gains a key and a badge: `{"aps": {"alert": {title, body}, "sound"
 
 ### The phone
 
-- **Push environment from the build.** The app reads `aps-environment` from its embedded provisioning profile (`embedded.mobileprovision`): a TestFlight or App Store build says `production`, a development build `development` (sent as `sandbox`); without a profile (the Simulator) it is `sandbox`. This replaces M8f's guess from `#if DEBUG`.
+- **Push environment from the build.** The Simulator, known when the app is compiled (`targetEnvironment(simulator)`), is `sandbox`. On a device, an embedded provisioning profile (`embedded.mobileprovision`, present in development and ad hoc builds) gives its `aps-environment` (`development` is sent as `sandbox`); a device build without one is a TestFlight or App Store build, whose profile Apple strips, and is `production`. This replaces M8f's guess from `#if DEBUG`. (My call, after the builder check pointed out that TestFlight builds carry no profile.)
 - **One device per token.** Saving a token removes it from any other device row of the same org, so a phone that re-enrolled while the hub still holds its old device does not get every notification twice.
 - **A wake does not wait too long.** A background wake waits for a queued suspend of the sync loop at most a few seconds before running its refresh, so the system's completion handler is always called well inside iOS's time budget (an M8f review finding).
 
 ## Deployment
 
 - **Compose (local, the first proof).** `Hub/compose.yaml` gets the three APNs values (the key as a file) as an alternative to the spool; `.env.example` and the README say how to switch. The spool stays the default, so Compose without a key still works for the Simulator.
-- **The test hub.** `Infra/taskdefs/features.env` gains `INCLUDE_APNS_SECRETS=1`, adding `b4hub/apns-key-id`, `b4hub/apns-team-id`, and `b4hub/apns-private-key` from Secrets Manager to the serving task as the sign-in secrets are, and `B4HUB_PUSH_SENDER=apns`. `Infra/README.md` gains a runbook step to put the three values in each account. Putting the key there is Brian's step (his AWS credentials); deploying is the existing pipeline from `main`.
+- **The hosted hubs, in two steps** (my call; `Infra/taskdefs/features.env` drives the test and prod deploys alike, and ECS will not start a task whose secret is still empty):
+  1. This slice's PR adds the code, the three secrets in Terraform (`b4hub/apns-key-id`, `b4hub/apns-team-id`, `b4hub/apns-private-key`, created empty), the gated task-definition block, and `INCLUDE_APNS_SECRETS=0`, plus a runbook step in `Infra/README.md`. Merging it deploys a hub that still uses no sender, so nothing breaks.
+  2. Brian applies the Terraform and puts the three values in both accounts (his AWS credentials). Then a one-line follow-up sets `INCLUDE_APNS_SECRETS=1`, which turns on `B4HUB_PUSH_SENDER=apns` with the secrets on the next deploy, test first.
+
+## Owner's setup, confirmed
+
+On 2026-11-02 Brian confirmed in the Developer portal: the three App Groups exist; `com.cacheplane.b4app.ios` and `com.cacheplane.b4app.ios.local` have Push Notifications and their App Groups; the widget App IDs `com.cacheplane.b4app.ios.widget` and `com.cacheplane.b4app.ios.local.widget` have their App Groups; the APNs key `34GWB4MSB5` is team-scoped for Sandbox and Production. So the Simulator's local build can receive through APNs sandbox.
 
 ## Exit (live)
 
 1. **Simulator through APNs sandbox.** The Compose hub with `B4HUB_PUSH_SENDER=apns` and the key; the Debug app in the Simulator registers a sandbox token; with the app in the background, a fixture approval on the Mac notifies within five seconds, through Apple; answering it on the Mac removes the notification; the badge counts the threads that need input or have an unread reply. If the Simulator's background push is not delivered, the backstop must still clear the notification on the next foreground sync, and that is recorded.
-2. **iPhone through APNs production.** The test hub with the APNs secrets; a TestFlight beta on Brian's iPhone signed in to it registers a production token; a real approval from his Mac notifies on the lock screen; tapping opens the thread; answering on the Mac removes it; reading a reply on the Mac removes its "Replied"; the badge matches the list.
+2. **iPhone through APNs production.** After M8f and this slice are on `main` and step 2 of the deployment has run: the test hub with the APNs secrets; a TestFlight beta on Brian's iPhone signed in to it registers a production token; a real approval from his Mac notifies on the lock screen; tapping opens the thread; answering on the Mac removes it; reading a reply on the Mac removes its "Replied"; the badge matches the list.
 3. Prod follows when `hub.b4.run` serves; not part of this exit.
 
 ## Constraints
@@ -87,4 +93,4 @@ Everything in M8f's constraints, plus: the key, tokens, and JWTs never appear in
 - The HTTP/2 client's setup (timeouts, connection reuse, ALPN), the JWT cache's shape, and the retry waits, within the rules above.
 - `apns-expiration` values (an alert stays useful for hours, a withdrawal for minutes).
 - How the hub's attention rules are expressed (SQL or Rust), provided the shared fixture passes.
-- Decision numbers: the next free after main and the open pull requests when the plan is written.
+- Decision numbers: the next free after main and the open pull requests when the plan is written (D-131 or later: M8f holds D-121 to D-129 and the app icon D-130).
