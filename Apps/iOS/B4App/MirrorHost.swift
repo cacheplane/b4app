@@ -285,7 +285,7 @@ import WorkspaceUI
     self.relay = relay
     relayWatch?.cancel()
     relayWatch = Task {
-      for await update in await relay.updates() {
+      for await update in relay.updates() {
         if case .link(.stopped(let reason)) = update {
           MirrorHost.shared.relayStopped(relay, reason: reason)
         }

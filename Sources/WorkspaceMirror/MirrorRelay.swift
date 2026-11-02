@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import WorkspaceProtocol
 import WorkspaceSync
 
@@ -15,7 +16,8 @@ import WorkspaceSync
 /// - Updates: link changes, presence (with `lastSeenAt` moved onto this device's clock), relayed events,
 ///   and gaps (a `stream_gap`, or the link dropping while threads were watched), in the order they
 ///   happened. Each subscriber first gets the current link state and, while connected, the latest
-///   presence.
+///   presence. `updates()` subscribes synchronously, so a subscriber made before an update is never
+///   too late for it.
 ///
 /// Never logs: params, results, and event content stay out of every log line. Call `stop()` when done.
 public actor MirrorRelay {
@@ -65,7 +67,14 @@ public actor MirrorRelay {
   private var pump: Task<Void, Never>?
   private var pending: [String: [Waiter]] = [:]
   private var nextToken = 0
-  private var subscribers: [UUID: AsyncStream<Update>.Continuation] = [:]
+  /// The subscribers, with the link state and presence a new one starts from, behind a lock so that
+  /// `updates()` can subscribe without suspending.
+  private struct Fanout {
+    var subscribers: [UUID: AsyncStream<Update>.Continuation] = [:]
+    var linkState: RelayLinkState = .stopped(reason: "stopped")
+    var hosts: [RelayHostPresence] = []
+  }
+  private let fanout = Mutex(Fanout())
 
   /// The link as this relay last heard it.
   public private(set) var linkState: RelayLinkState = .stopped(reason: "stopped")
@@ -133,23 +142,35 @@ public actor MirrorRelay {
   // MARK: - Updates
 
   /// A new stream of updates, starting with the current link state and, while connected, the latest
-  /// presence. It ends when the caller stops iterating.
-  public func updates() -> AsyncStream<Update> {
+  /// presence. Subscribed when this returns (it does not suspend), so every later update reaches it.
+  /// It ends when the caller stops iterating.
+  public nonisolated func updates() -> AsyncStream<Update> {
     let id = UUID()
     let (stream, continuation) = AsyncStream.makeStream(of: Update.self)
     continuation.onTermination = { [weak self] _ in
-      Task { await self?.unsubscribe(id) }
+      _ = self?.fanout.withLock { $0.subscribers.removeValue(forKey: id) }
     }
-    continuation.yield(.link(linkState))
-    if isConnected, !hosts.isEmpty { continuation.yield(.presence(hosts)) }
-    subscribers[id] = continuation
+    fanout.withLock { fanout in
+      continuation.yield(.link(fanout.linkState))
+      if case .connected = fanout.linkState, !fanout.hosts.isEmpty {
+        continuation.yield(.presence(fanout.hosts))
+      }
+      fanout.subscribers[id] = continuation
+    }
     return stream
   }
 
-  private func unsubscribe(_ id: UUID) { subscribers[id] = nil }
-
+  /// Sends `update` to every subscriber, recording the link state and presence it carries for the
+  /// next subscriber in the same step.
   private func broadcast(_ update: Update) {
-    for continuation in subscribers.values { continuation.yield(update) }
+    fanout.withLock { fanout in
+      switch update {
+      case .link(let state): fanout.linkState = state
+      case .presence(let hosts): fanout.hosts = hosts
+      case .event, .gap: break
+      }
+      for continuation in fanout.subscribers.values { continuation.yield(update) }
+    }
   }
 
   // MARK: - Watching

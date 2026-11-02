@@ -62,6 +62,17 @@ final class FakeTransport: WorkspaceTransport, @unchecked Sendable {
   func close() async { continuation.finish() }
 }
 
+/// What a test's readers saw, in order (-1 for a desync).
+private actor Delivered {
+  private var seen: [Int] = []
+  func add(_ value: Int) { seen.append(value) }
+  /// What was seen once there are `count` entries, or after two seconds.
+  func wait(count: Int) async -> [Int] {
+    for _ in 0..<200 where seen.count < count { try? await Task.sleep(for: .milliseconds(10)) }
+    return seen
+  }
+}
+
 private let hello = HelloEnvelope(
   epoch: "e1", sequence: 0, coordinator: CoordinatorIdentity(version: "0.0.0", pid: 1))
 
@@ -137,6 +148,41 @@ private let hello = HelloEnvelope(
     var desyncIterator = desync.makeAsyncIterator()
     let reason = await desyncIterator.next()
     #expect(reason == .gap)
+  }
+
+  /// A snapshot answered before events its caller has not got round to yet (it was still awaiting other
+  /// reads) must not move the cursor back: the next event would read as a gap and be dropped.
+  @Test func aSnapshotOlderThanDeliveredEventsKeepsTheCursor() async throws {
+    let transport = FakeTransport()
+    let client = WorkspaceClient(transport: transport)
+    try transport.receive(.hello(hello))
+    _ = try await client.ready()
+    let delivered = Delivered()
+    let events = await client.events()
+    let desync = await client.desync()
+    let readers = [
+      Task { for await envelope in events { await delivered.add(envelope.sequence) } },
+      Task { for await _ in desync { await delivered.add(-1) } },
+    ]
+    defer { for reader in readers { reader.cancel() } }
+    let event = AdapterEvent.connectionChanged(
+      connectionId: "c", status: .ready, authStatus: .unknown, transport: .connected)
+    func deliver(_ epoch: String, _ sequence: Int) throws {
+      try transport.receive(.event(EventEnvelope(epoch: epoch, sequence: sequence, event: event)))
+    }
+    try deliver("e1", 1)
+    try deliver("e1", 2)
+    #expect(await delivered.wait(count: 2) == [1, 2])
+    await client.resetCursor(epoch: "e1", sequence: 0)
+    try deliver("e1", 3)
+    #expect(await delivered.wait(count: 3) == [1, 2, 3])
+    // A later snapshot, or another epoch's, still moves it.
+    await client.resetCursor(epoch: "e1", sequence: 10)
+    try deliver("e1", 11)
+    #expect(await delivered.wait(count: 4) == [1, 2, 3, 11])
+    await client.resetCursor(epoch: "e2", sequence: 4)
+    try deliver("e2", 5)
+    #expect(await delivered.wait(count: 5) == [1, 2, 3, 11, 5])
   }
 
   @Test func failsPendingRequestsWhenTransportCloses() async throws {

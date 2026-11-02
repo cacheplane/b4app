@@ -554,6 +554,8 @@ private struct JoinedHarness {
       HubError(kind: "request_error", code: "unauthorized", message: "Unauthorized.", status: 401))
     _ = try? await h.coordinator.hub.pushNow()
     await waitUntil("closed") { socket.deviceClosedCode != nil }
+    // The socket closes before the link's `.stopped` reaches `HubLink`, so wait for the status too.
+    await waitUntil("offline") { (try? await h.coordinator.hub.status().link?.state) == .offline }
     let link = try #require(try await h.coordinator.hub.status().link)
     #expect(link.state == .offline)
   }

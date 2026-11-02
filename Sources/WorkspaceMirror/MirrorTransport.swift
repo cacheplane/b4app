@@ -186,8 +186,10 @@ public final class MirrorTransport: WorkspaceTransport {
     let watcher = Task {
       for await threadId in targets { await relay.watchOnly(threadId) }
     }
+    // Subscribed here, not in the task: an update the relay has after `init` returns is never missed.
+    let updates = relay.updates()
     let listener = Task { [weak self] in
-      for await update in await relay.updates() {
+      for await update in updates {
         guard let self else { return }
         self.receive(update)
       }
