@@ -190,11 +190,29 @@ public enum SettingsUpdate: WorkspaceCommand {
 // MARK: - The pairing link (M8c)
 
 /// The link a Mac shows as a QR code and the phone opens: `b4app://pair?hub=<URL>&code=<code>`. One
-/// implementation for both apps; the Mac builds it here, and the phone's parser joins it with its
-/// validation rules.
-public enum PairLink {
-  public static let scheme = "b4app"
-  public static let host = "pair"
+/// implementation for both apps; the Mac builds it with `make`, and the phone reads it with `parse`.
+///
+/// A parsed link is only an offer: the phone asks before it enrolls (the code is a credential, so a
+/// `PairLink` is held in view state only, never logged).
+public struct PairLink: Sendable, Equatable {
+  public static let linkScheme = "b4app"
+  public static let linkHost = "pair"
+  /// The enrollment code's alphabet (no vowels, `Y`, `0`, or `1`), as the hub mints it.
+  public static let codeAlphabet = Set("BCDFGHJKLMNPQRSTVWXZ23456789")
+  public static let codeLength = 8
+
+  /// The hub's base URL, as `HubURL.validate` returns it.
+  public let hub: URL
+  /// The one-time enrollment code, upper case.
+  public let code: String
+
+  public init(hub: URL, code: String) {
+    self.hub = hub
+    self.code = code
+  }
+
+  /// The hub's host, for the confirmation prompt.
+  public var host: String { hub.host(percentEncoded: false) ?? hub.absoluteString }
 
   /// Everything but RFC 3986's unreserved characters is escaped, so the hub's `:`, `/`, `?`, `&`, `#`
   /// and `%` stay inside the one `hub` value.
@@ -212,11 +230,43 @@ public enum PairLink {
   /// The pairing link for a hub's URL and a one-time code. The code is a credential: the caller must not
   /// log the result.
   public static func make(url: String, code: String) -> URL {
-    let text = "\(scheme)://\(host)?hub=\(escaped(url))&code=\(escaped(code))"
+    let text = "\(linkScheme)://\(linkHost)?hub=\(escaped(url))&code=\(escaped(code))"
     guard let link = URL(string: text) else {
       // Unreachable: the prefix is fixed and both values are escaped to unreserved characters.
       preconditionFailure("a pairing link built from escaped parts is always a URL")
     }
     return link
+  }
+
+  /// `b4app://pair`, whatever it carries: the links `parse` is the judge of. Other `b4app` links (a
+  /// later `b4app://thread/<id>`) are not.
+  public static func isPairLink(_ url: URL) -> Bool {
+    url.scheme?.lowercased() == linkScheme && url.host(percentEncoded: false)?.lowercased() == linkHost
+  }
+
+  /// The offer a pairing link makes, or nil when it is not one this phone may act on: another scheme or
+  /// host, a user, port, or path on the link; a missing, repeated, or malformed hub or code; a hub that
+  /// `HubURL.validate` refuses (https only, http for localhost, `127.0.0.1`, and `::1`) or that carries
+  /// credentials. Nothing here makes a request.
+  public static func parse(_ url: URL) -> PairLink? {
+    guard isPairLink(url), let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+      parts.user == nil, parts.password == nil, parts.port == nil, parts.path.isEmpty || parts.path == "/",
+      parts.fragment == nil
+    else { return nil }
+    let items = parts.queryItems ?? []
+    func only(_ name: String) -> String? {
+      let values = items.filter { $0.name == name }
+      guard values.count == 1, let value = values[0].value, !value.isEmpty else { return nil }
+      return value
+    }
+    guard let hubText = only("hub"), let codeText = only("code"),
+      let hub = try? HubURL.validate(hubText)
+    else { return nil }
+    guard let hubParts = URLComponents(url: hub, resolvingAgainstBaseURL: false),
+      hubParts.user == nil, hubParts.password == nil
+    else { return nil }
+    let code = codeText.uppercased()
+    guard code.count == codeLength, code.allSatisfy(codeAlphabet.contains) else { return nil }
+    return PairLink(hub: hub, code: code)
   }
 }
