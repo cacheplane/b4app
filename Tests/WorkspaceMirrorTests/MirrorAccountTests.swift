@@ -148,6 +148,34 @@ private final class HeldProfileHub: HubAPI, @unchecked Sendable {
   func endSession() async throws { try await fake.endSession() }
 }
 
+/// Forwards to the fake; `deleteAccount` deletes there, then takes a while to answer, long enough for
+/// a sync still running to meet the 401 the deleted account now gets. With `refusal`, it refuses
+/// instead and deletes nothing.
+private struct SlowDeleteHub: HubAPI {
+  let fake: FakeHubAPI
+  var refusal: HubError? = nil
+  func enroll(_ request: EnrollRequest) async throws -> EnrollResponse { try await fake.enroll(request) }
+  func me() async throws -> MeResponse { try await fake.me() }
+  func push(_ changes: [SyncChange]) async throws -> PushResponse { try await fake.push(changes) }
+  func pull(after: Int, limit: Int, wait: Int) async throws -> PullResponse {
+    try await fake.pull(after: after, limit: limit, wait: min(wait, 1))
+  }
+  func snapshot() async throws -> SnapshotResponse { try await fake.snapshot() }
+  func devices() async throws -> [DeviceInfo] { try await fake.devices() }
+  func mintPairingCode() async throws -> PairingCodeResponse { try await fake.mintPairingCode() }
+  func revokeSelf() async throws { try await fake.revokeSelf() }
+  func passkeyBegin() async throws -> PasskeyBeginResponse { try await fake.passkeyBegin() }
+  func passkeyFinish(_ request: PasskeyFinishRequest) async throws -> AuthSession {
+    try await fake.passkeyFinish(request)
+  }
+  func endSession() async throws { try await fake.endSession() }
+  func deleteAccount() async throws {
+    if let refusal { throw refusal }
+    try await fake.deleteAccount()
+    try await Task.sleep(for: .milliseconds(400))
+  }
+}
+
 @MainActor
 @Suite struct MirrorAccountTests {
   // MARK: Signing in
@@ -489,6 +517,50 @@ private final class HeldProfileHub: HubAPI, @unchecked Sendable {
     #expect(try rig.store.link() == nil)
     // The device went with the account: the next sign-in offers none.
     #expect(rig.memory.devices(hubURL: "https://hub.test.b4.run").isEmpty)
+  }
+
+  /// Final review M8: the sync is stopped before the hub is asked, so the 401 the deleted account gets
+  /// cannot sign the phone out "by the hub" first, and the deleted device is still forgotten.
+  @Test func deleteAccountStopsTheSyncFirst() async throws {
+    let fake = FakeHubAPI()
+    let rig = try Rig(fake: fake, makeAPI: { _, _ in SlowDeleteHub(fake: fake) })
+    try await rig.signIn()
+    try await eventually("the sync's first push") { !(await rig.fake.pushed.isEmpty) }
+    #expect(rig.account.sync != nil)
+    let status = try await rig.account.deleteAccount()
+    #expect(status == AccountStatus.Result(state: .signedOut))
+    #expect(!rig.changes.all.contains { $0.reason != nil })
+    #expect(try rig.store.link() == nil)
+    #expect(rig.memory.devices(hubURL: "https://hub.test.b4.run").isEmpty)
+    #expect(rig.account.sync == nil)
+  }
+
+  @Test func aRefusedDeleteKeepsTheAccountAndSyncsAgain() async throws {
+    let fake = FakeHubAPI()
+    let refusal = HubError(
+      kind: "request_error", code: "shared_org", message: "the account belongs to a shared org", status: 409)
+    let rig = try Rig(fake: fake, makeAPI: { _, _ in SlowDeleteHub(fake: fake, refusal: refusal) })
+    try await rig.signIn()
+    let refused = await #expect(throws: WorkspaceError.self) { _ = try await rig.account.deleteAccount() }
+    #expect(refused?.code == .sharedOrg)
+    #expect(rig.account.accountStatus.state == .signedIn)
+    #expect(try rig.store.link() != nil)
+    #expect(rig.account.sync != nil)
+    #expect(rig.memory.devices(hubURL: "https://hub.test.b4.run").count == 1)
+    await rig.account.stopSync()
+  }
+
+  /// Final review I2: a sign-in empties a mirror that holds rows with no link (left by a log-out that
+  /// another sign-in overtook), so the new account never inherits them.
+  @Test func aSignInEmptiesRowsLeftWithoutALink() async throws {
+    let rig = try Rig()
+    _ = try rig.store.apply(Array(try fixtureAsStored().prefix(4)))
+    #expect(try rig.store.link() == nil)
+    #expect(try rig.store.thread(id: "thread-1") != nil)
+    try await rig.signIn()
+    #expect(try rig.store.thread(id: "thread-1") == nil)
+    #expect(try rig.store.link() != nil)
+    await rig.account.stopSync()
   }
 
   @Test func callsThatNeedTheAccountRefuseWhileSignedOut() async throws {

@@ -28,18 +28,21 @@ public enum MirrorLogOut {
 
   /// Returns whether the hub confirmed the session ended. The token is forgotten and the mirror
   /// emptied either way, within `timeout` of the hub not answering, so an unreachable hub cannot keep
-  /// the phone signed in.
+  /// the phone signed in. `stillCurrent` is asked after the wait: when it answers false (another
+  /// account signed in meanwhile), the token is still forgotten but the mirror, now the other
+  /// account's, is left alone.
   @discardableResult
   public static func run(
     store: MirrorStore, api: (any HubAPI)?, timeout: Duration = standardTimeout,
-    forgetToken: @Sendable () async -> Void
+    forgetToken: @Sendable () async -> Void,
+    stillCurrent: @Sendable () async -> Bool = { true }
   ) async -> Bool {
     var ended = false
     if let api {
       ended = await Bounded.run(within: timeout) { try await api.endSession() }
     }
     await forgetToken()
-    try? store.forgetAccount()
+    if await stillCurrent() { try? store.forgetAccount() }
     return ended
   }
 }

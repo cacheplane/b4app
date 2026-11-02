@@ -328,12 +328,25 @@ import os
     return Self.identity(try await authed("connect the Apple ID") { try await $0.appleLinkNative(request) })
   }
 
-  /// Delete the account at the hub, then sign out and empty the mirror. A refusal changes nothing. The
-  /// device went with the account, so no later sign-in offers it.
+  /// Delete the account at the hub, then sign out and empty the mirror. A refusal changes nothing (the
+  /// sync starts again). The device went with the account, so no later sign-in offers it. The link is
+  /// taken and the sync stopped first, so a 401 the sync meets as the account goes cannot sign the
+  /// phone out with "This iPhone was signed out of …" or change which device is forgotten.
   public func deleteAccount() async throws -> AccountStatus.Result {
-    try await authed("delete the account") { try await $0.deleteAccount() }
-    if let link { memory.forget(hubURL: link.hubURL, deviceId: link.deviceId) }
-    await endLink(endingSession: false, reason: nil)
+    guard let deleting = link else { throw WorkspaceError(.signedOut, "Nobody is signed in on this iPhone.") }
+    generation += 1
+    await stopSync()
+    let seen = generation
+    do {
+      try await authed("delete the account") { try await $0.deleteAccount() }
+    } catch {
+      if seen == generation, link?.tokenRef == deleting.tokenRef { startSync(deleting, fromSnapshot: false) }
+      throw error
+    }
+    memory.forget(hubURL: deleting.hubURL, deviceId: deleting.deviceId)
+    if seen == generation, link?.tokenRef == deleting.tokenRef {
+      await endLink(endingSession: false, reason: nil)
+    }
     return accountStatus
   }
 
@@ -356,15 +369,28 @@ import os
 
   // MARK: - Helpers
 
-  /// Keep the session's token, store the link, start syncing, and publish the new status. A link left
-  /// from before (another account) is ended first, without a hub call.
-  /// `endingPrevious` ends the old link's session at the hub too (a confirmed switch); otherwise it is
-  /// dropped without a call (its token is already dead, or the hub deleted it in a merge).
+  /// Keep the session's token, store the link, start syncing, and publish the new status. Any sync
+  /// still running is stopped and the mirror emptied first, whether or not a link is left from before
+  /// (a log-out still waiting on the hub may already have cleared it), so nothing of another account
+  /// reaches the new one.
+  ///
+  /// A link left from before (another account) is ended: its rows go before the new link is saved, and
+  /// its token only once the new link and token are saved, so the phone is never left holding neither.
+  /// `endingPrevious` then ends the old session at the hub (a confirmed switch; bounded), with the
+  /// token taken before it was forgotten; otherwise it is dropped without a call (its token is already
+  /// dead, or the hub deleted it in a merge). If the new sign-in cannot be kept, the old account is
+  /// gone all the same and `signedOut` is published.
   private func signIn(
     _ session: AuthSession, hubURL: URL? = nil, deviceName: String? = nil, endingPrevious: Bool = false
   ) async throws -> AccountStatus.Result {
     let base = hubURL ?? configuration.hubURL
-    if link != nil { await endLink(endingSession: endingPrevious, reason: nil, publishing: false) }
+    generation += 1
+    await stopSync()
+    let previous = link
+    let previousRef = previous.flatMap { SecretRef(rawValue: $0.tokenRef) }
+    var previousToken: String?
+    if endingPrevious, let previousRef { previousToken = try? await secrets.read(previousRef) }
+    try? store.forgetAccount()
     let ref = SecretRef.make()
     let link = MirrorLink(
       hubURL: Self.canonical(base), deviceId: session.deviceId,
@@ -382,19 +408,36 @@ import os
       let token = session.token
       let orphan = makeAPI(base, { token })
       _ = await Bounded.run(within: configuration.endSessionTimeout) { try await orphan.endSession() }
+      if let previous {
+        await endPrevious(previous, ref: previousRef, token: previousToken)
+        publish(AccountStatus.Result(state: .signedOut))
+      }
       throw WorkspaceError(.internalError, "Could not keep the sign-in on this iPhone.")
     }
     memory.remember(MirrorRememberedDevice(hubURL: link.hubURL, deviceId: link.deviceId))
-    generation += 1
     startSync(link, fromSnapshot: false)
     Self.logger.notice("signed in on device \(link.deviceId, privacy: .public)")
-    return publish(Self.status(for: link))
+    let status = publish(Self.status(for: link))
+    if let previous { await endPrevious(previous, ref: previousRef, token: previousToken) }
+    return status
+  }
+
+  /// Forget a replaced link's token and, given the token (a confirmed switch), end its session at the
+  /// hub, bounded.
+  private func endPrevious(_ previous: MirrorLink, ref: SecretRef?, token: String?) async {
+    if let ref { _ = try? await secrets.remove(ref) }
+    guard let token, let base = try? HubURL.validate(previous.hubURL) else { return }
+    let api = makeAPI(base, { token })
+    _ = await Bounded.run(within: configuration.endSessionTimeout) { try await api.endSession() }
   }
 
   /// Stop syncing, end the session at the hub (when asked; bounded), forget the token, and empty the
-  /// mirror, then publish `signedOut` with `reason`.
-  private func endLink(endingSession: Bool, reason: SignOutReason?, publishing: Bool = true) async {
+  /// mirror, then publish `signedOut` with `reason`. The token forgotten is always the one taken on
+  /// entry; the mirror is emptied and `signedOut` published only if nothing signed in (or out) while
+  /// the hub was being waited for, since a pairing scan can sign another account in meanwhile.
+  private func endLink(endingSession: Bool, reason: SignOutReason?) async {
     generation += 1
+    let entered = generation
     await stopSync()
     let link = self.link
     let ref = link.flatMap { SecretRef(rawValue: $0.tokenRef) }
@@ -402,10 +445,14 @@ import os
     if endingSession, let link, let ref, let base = try? HubURL.validate(link.hubURL) {
       api = makeAPI(base, { [secrets] in try await secrets.read(ref) })
     }
-    await MirrorLogOut.run(store: store, api: api, timeout: configuration.endSessionTimeout) { [secrets] in
-      if let ref { _ = try? await secrets.remove(ref) }
-    }
-    if publishing { publish(AccountStatus.Result(state: .signedOut, reason: reason)) }
+    await MirrorLogOut.run(
+      store: store, api: api, timeout: configuration.endSessionTimeout,
+      forgetToken: { [secrets] in
+        if let ref { _ = try? await secrets.remove(ref) }
+      },
+      stillCurrent: { @MainActor [weak self] in self?.generation == entered })
+    guard generation == entered else { return }
+    publish(AccountStatus.Result(state: .signedOut, reason: reason))
   }
 
   /// The hub refused this link's token: sign out with the reason, unless the link has changed since.

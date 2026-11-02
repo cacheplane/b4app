@@ -46,6 +46,9 @@ private struct LoggingHub: HubAPI {
   let log: CallLog
   var mergeRefusal: String?? = nil
   var refuseToken = false
+  /// When set, `endSession` waits for it and then answers without reaching the fake: the real hub
+  /// ends only the presented token, which the fake (which does not check tokens) cannot model.
+  var holdEndSession: Gate? = nil
 
   func enroll(_ request: EnrollRequest) async throws -> EnrollResponse {
     try await enroll(request, replacingToken: nil)
@@ -77,30 +80,56 @@ private struct LoggingHub: HubAPI {
   }
   func endSession() async throws {
     log.append("endSession")
+    if let holdEndSession {
+      await holdEndSession.wait()
+      log.append("endSession answered")
+      return
+    }
     try await fake.endSession()
   }
+}
+
+/// A memory Keychain whose `put` can be made to fail, as a full or locked Keychain does.
+private actor FlakySecrets: SecretStore {
+  private let base = MemorySecretStore()
+  private var failPuts = false
+  func setFailPuts(_ fail: Bool) { failPuts = fail }
+  func put(_ ref: SecretRef, value: String) async throws {
+    if failPuts { throw WorkspaceError(.internalError, "The Keychain refused the item.") }
+    try await base.put(ref, value: value)
+  }
+  func read(_ ref: SecretRef) async throws -> String? { try await base.read(ref) }
+  func remove(_ ref: SecretRef) async throws -> Bool { try await base.remove(ref) }
 }
 
 /// A phone account over an in-memory mirror, a memory Keychain, and one fake hub.
 @MainActor
 private struct Rig {
   let store: MirrorStore
-  let secrets = MemorySecretStore()
+  let secrets = FlakySecrets()
   let fake: FakeHubAPI
   let memory = MirrorDeviceMemory(url: nil)
   let log = CallLog()
   let account: MirrorAccount
+  let changes = StatusLog()
 
-  init(flavor: PhoneFlavor = .prod, mergeRefusal: String?? = nil, refuseToken: Bool = false) throws {
+  init(
+    flavor: PhoneFlavor = .prod, mergeRefusal: String?? = nil, refuseToken: Bool = false,
+    holdEndSession: Gate? = nil
+  ) throws {
     store = try MirrorStore.inMemory()
     fake = FakeHubAPI(enrollmentCodes: [code: enrolled()])
-    let hub = LoggingHub(fake: fake, log: log, mergeRefusal: mergeRefusal, refuseToken: refuseToken)
+    let hub = LoggingHub(
+      fake: fake, log: log, mergeRefusal: mergeRefusal, refuseToken: refuseToken,
+      holdEndSession: holdEndSession)
     account = MirrorAccount(
       store: store, secrets: secrets,
       configuration: MirrorAccount.Configuration(
         hubURL: flavor.hubURL, deviceName: "Brian's iPhone", syncBackoff: .milliseconds(20),
         flavor: flavor),
       memory: memory, makeAPI: { _, _ in hub })
+    let changes = self.changes
+    account.onChange = { changes.append($0) }
   }
 
   /// Signed in to an account of the phone's own, whose devices are `devices`.
@@ -116,6 +145,12 @@ private struct Rig {
     guard let link = try store.link(), let ref = SecretRef(rawValue: link.tokenRef) else { return nil }
     return try await secrets.read(ref)
   }
+}
+
+@MainActor
+private final class StatusLog {
+  private(set) var all: [AccountStatus.Result] = []
+  func append(_ status: AccountStatus.Result) { all.append(status) }
 }
 
 private let iPhoneOnly = [DeviceInfo(id: "dev-own", name: "Brian's iPhone", platform: "ios")]
@@ -383,6 +418,113 @@ private let withAMac = [
     #expect(try await rig.token() == "tok-paired")
     #expect(try await rig.secrets.read(oldRef) == nil)
     await rig.account.stopSync()
+  }
+
+  /// Final review I2: a pairing scan while a log-out waits on the hub signs another account in. When
+  /// the log-out's wait ends it forgets only the old token; the new account's link, token, and sync
+  /// survive, and nothing of the old account remains.
+  @MainActor @Test func aScanDuringASlowLogOutKeepsTheNewAccount() async throws {
+    let held = Gate()
+    // The old session is being ended, so the hub no longer takes its token for a merge.
+    let rig = try Rig(refuseToken: true, holdEndSession: held)
+    try await rig.signIn(devices: iPhoneOnly)
+    let old = try #require(try rig.store.link())
+    let oldRef = try #require(SecretRef(rawValue: old.tokenRef))
+    _ = try rig.store.apply(Array(try fixtureAsStored().prefix(4)))
+    #expect(try rig.store.thread(id: "thread-1") != nil)
+
+    let logOut = Task { await rig.account.logOut() }
+    try await eventually("the log-out reaches the hub") { rig.log.all.contains("endSession") }
+    let outcome = try await rig.account.pair(
+      PairLink(hub: PhoneFlavor.prod.hubURL, code: code), deviceName: "Brian's iPhone")
+    guard case .signedIn(let signedIn) = outcome else {
+      Issue.record("expected a sign-in, got \(outcome)")
+      return
+    }
+    #expect(signedIn.account?.orgName == "Brian's Org")
+    let new = try #require(try rig.store.link())
+    #expect(new.deviceId == "dev-paired")
+
+    held.open()
+    let status = await logOut.value
+    #expect(rig.log.all.contains("endSession answered"))
+    // The new account is still signed in, with its token and its sync.
+    #expect(status.state == .signedIn)
+    #expect(rig.account.accountStatus.state == .signedIn)
+    #expect(rig.changes.all.last?.state == .signedIn)
+    // (Its `/v1/me` may have filled in names meanwhile; the link is the same sign-in.)
+    #expect(try rig.store.link()?.deviceId == new.deviceId)
+    #expect(try rig.store.link()?.tokenRef == new.tokenRef)
+    #expect(try await rig.token() == "tok-paired")
+    #expect(rig.account.sync != nil)
+    // Nothing of the old account: its token and its rows are gone.
+    #expect(try await rig.secrets.read(oldRef) == nil)
+    #expect(try rig.store.thread(id: "thread-1") == nil)
+    await rig.account.stopSync()
+  }
+
+  /// Final review M9: on a confirmed switch the new link and token are saved before the old session is
+  /// ended (with the token taken before it was forgotten), so a phone killed while the hub is slow
+  /// keeps the new sign-in.
+  @MainActor @Test func aSwitchKeepsTheNewSignInBeforeEndingTheOldSession() async throws {
+    let held = Gate()
+    let rig = try Rig(mergeRefusal: "has_mac", holdEndSession: held)
+    try await rig.signIn(devices: withAMac)
+    let old = try #require(try rig.store.link())
+    let oldRef = try #require(SecretRef(rawValue: old.tokenRef))
+    let link = PairLink(hub: PhoneFlavor.prod.hubURL, code: code)
+    #expect(
+      try await rig.account.pair(link, deviceName: "Brian's iPhone") == .askToSwitch(from: "Phone's Org"))
+
+    let switching = Task { try await rig.account.switchAndPair(link, deviceName: "Brian's iPhone") }
+    try await eventually("the old session is being ended") { rig.log.all.contains("endSession") }
+    // While the hub is still answering, the new sign-in is already kept, and the old token forgotten.
+    #expect(try rig.store.link()?.deviceId == "dev-paired")
+    #expect(try await rig.token() == "tok-paired")
+    #expect(try await rig.secrets.read(oldRef) == nil)
+    held.open()
+    let status = try await switching.value
+    #expect(status.state == .signedIn)
+    #expect(try rig.store.link()?.deviceId == "dev-paired")
+    await rig.account.stopSync()
+  }
+
+  /// Final review M7: a merge whose new token cannot be kept has still lost the old account (the hub
+  /// merged it away): the phone says it is signed out rather than keep showing the old account.
+  @MainActor @Test func aMergeWhoseSignInCannotBeKeptSignsOut() async throws {
+    let rig = try Rig()
+    try await rig.signIn(devices: iPhoneOnly)
+    let old = try #require(try rig.store.link())
+    let oldRef = try #require(SecretRef(rawValue: old.tokenRef))
+    await rig.secrets.setFailPuts(true)
+    await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.account.pair(
+        PairLink(hub: PhoneFlavor.prod.hubURL, code: code), deviceName: "Brian's iPhone")
+    }
+    #expect(rig.account.accountStatus.state == .signedOut)
+    #expect(rig.changes.all.last?.state == .signedOut)
+    #expect(try rig.store.link() == nil)
+    #expect(try await rig.secrets.read(oldRef) == nil)
+    #expect(rig.account.sync == nil)
+  }
+
+  /// M7 on a confirmed switch: the old session is ended at the hub all the same, and the phone is
+  /// signed out.
+  @MainActor @Test func aSwitchWhoseSignInCannotBeKeptSignsOut() async throws {
+    let rig = try Rig(mergeRefusal: "has_mac")
+    try await rig.signIn(devices: withAMac)
+    let link = PairLink(hub: PhoneFlavor.prod.hubURL, code: code)
+    #expect(
+      try await rig.account.pair(link, deviceName: "Brian's iPhone") == .askToSwitch(from: "Phone's Org"))
+    await rig.secrets.setFailPuts(true)
+    await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.account.switchAndPair(link, deviceName: "Brian's iPhone")
+    }
+    #expect(rig.account.accountStatus.state == .signedOut)
+    #expect(rig.changes.all.last?.state == .signedOut)
+    #expect(try rig.store.link() == nil)
+    // The orphaned new session and the old one were both ended.
+    #expect(rig.log.all.filter { $0 == "endSession" }.count == 2)
   }
 
   @MainActor @Test func aRefusedCodeOnSwitchLeavesThePhoneSignedIn() async throws {
