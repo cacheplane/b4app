@@ -11,17 +11,20 @@ public struct CoordinatorOptions: Sendable {
   public var adapterFactory: SessionService.AdapterFactory?
   /// Overrides the hub client construction (tests inject a `FakeHubAPI`); nil builds `HTTPHubAPI`.
   public var hubAPIFactory: HubSync.APIFactory?
+  /// The waits between tries of a connection check that found its runtime unreachable.
+  public var checkRetryDelays: [Duration]
 
   public init(
     paths: PlatformPaths? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
     secretStore: (any SecretStore)? = nil, adapterFactory: SessionService.AdapterFactory? = nil,
-    hubAPIFactory: HubSync.APIFactory? = nil
+    hubAPIFactory: HubSync.APIFactory? = nil, checkRetryDelays: [Duration] = [.seconds(1), .seconds(3)]
   ) {
     self.environment = environment
     self.paths = paths ?? PlatformPaths.resolve(environment: environment)
     self.secretStore = secretStore ?? KeychainSecretStore.forCurrentProcess()
     self.adapterFactory = adapterFactory
     self.hubAPIFactory = hubAPIFactory
+    self.checkRetryDelays = checkRetryDelays
   }
 }
 
@@ -154,7 +157,8 @@ public enum Coordinator {
       context: SessionService.Context(
         database: database, eventLog: eventLog, diagnostics: diagnostics, environment: options.environment,
         clientVersion: CoordinatorVersion.current, secretStore: options.secretStore,
-        projects: projects, adapterFactory: options.adapterFactory, servers: servers))
+        projects: projects, adapterFactory: options.adapterFactory, servers: servers,
+        checkRetryDelays: options.checkRetryDelays))
     await sessions.start()
     await servers.startAll()
     let hub =

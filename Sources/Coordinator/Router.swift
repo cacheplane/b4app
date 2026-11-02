@@ -237,8 +237,11 @@ public actor Router {
     case .hubLeave:
       try await context.hub.leave()
       return try JSONValue(encoding: try await context.hub.status())
-    case .usageRead, .connectionUpdate:
-      throw WorkspaceError.unsupported(command.method.rawValue, plannedFor: "settings connections")
+    case .usageRead:
+      return try JSONValue(encoding: try await sessions.usageRead())
+    case .connectionUpdate:
+      return try JSONValue(
+        encoding: try await sessions.connectionUpdate(try command.params(for: ConnectionUpdate.self)))
     }
   }
 

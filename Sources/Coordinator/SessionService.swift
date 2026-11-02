@@ -25,11 +25,14 @@ public actor SessionService {
     /// Decides which project a new thread joins. The router must be given the same instance: its
     /// project edits and this service's thread inserts serialise on that one actor.
     public var projects: ProjectService
+    /// The waits between tries of a check that found its runtime unreachable (settings connections).
+    public var checkRetryDelays: [Duration]
 
     public init(
       database: WorkspaceDatabase, eventLog: EventLog, diagnostics: DiagnosticsService,
       environment: [String: String], clientVersion: String, secretStore: any SecretStore,
-      projects: ProjectService, adapterFactory: AdapterFactory? = nil, servers: LocalServerService? = nil
+      projects: ProjectService, adapterFactory: AdapterFactory? = nil, servers: LocalServerService? = nil,
+      checkRetryDelays: [Duration] = [.seconds(1), .seconds(3)]
     ) {
       self.database = database
       self.eventLog = eventLog
@@ -40,6 +43,7 @@ public actor SessionService {
       self.adapterFactory = adapterFactory ?? SessionService.defaultAdapterFactory
       self.servers = servers
       self.projects = projects
+      self.checkRetryDelays = checkRetryDelays
     }
   }
 
@@ -53,11 +57,11 @@ public actor SessionService {
     }
   }
 
-  private let context: Context
-  private var adapters: [String: any AgentAdapter] = [:]
-  private var pumps: [String: Task<Void, Never>] = [:]
+  let context: Context
+  var adapters: [String: any AgentAdapter] = [:]
+  var pumps: [String: Task<Void, Never>] = [:]
   private let logger = Log.logger("sessions")
-  private var db: WorkspaceDatabase { context.database }
+  var db: WorkspaceDatabase { context.database }
 
   public init(context: Context) {
     self.context = context
@@ -269,7 +273,7 @@ public actor SessionService {
       inspection = ConnectionInspection(
         status: .offline, authStatus: .notRequired, message: outage.message, error: outage)
     } else {
-      inspection = try await adapter.inspectConnection()
+      inspection = try await inspectRetrying(connection, adapter: adapter)
     }
     let updated =
       try db.updateConnection(id: connection.id) {
@@ -284,6 +288,9 @@ public actor SessionService {
       AdapterEvent.connectionChanged(
         connectionId: connection.id, status: inspection.status, authStatus: inspection.authStatus,
         transport: .disconnected, message: inspection.message))
+    if inspection.status == .ready, inspection.authStatus == .authenticated {
+      await refreshUsage(connectionId: connection.id, adapter: adapter)
+    }
     return ConnectionAdd.Result(connection: updated, inspection: inspection)
   }
 
@@ -935,6 +942,7 @@ public actor SessionService {
         if let touched = try db.updateThread(id: thread.id, { _ in }) {
           await context.eventLog.publish(try AdapterEvent.threadUpdated(touched))
         }
+        try recordTokens(raw, turn: turn, connectionId: thread.connectionId)
         if outcome == .failed,
           let code = raw.payload["errorCode"]?.stringValue.flatMap(ErrorCode.init(rawValue:)),
           let connection = try db.connection(id: thread.connectionId)
@@ -979,6 +987,8 @@ public actor SessionService {
         if let resolved = try db.runtimeRequest(id: request.id) {
           event.payload = merge(raw.payload, ["runtimeRequest": try JSONValue(encoding: resolved)])
         }
+      case .usageChanged:
+        try storeUsage(raw)
       case .adapterError:
         await context.diagnostics.recordError(
           scope: raw.payload["scope"]?.stringValue ?? "adapter",
