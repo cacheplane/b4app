@@ -1,9 +1,56 @@
 import SwiftUI
 import WorkspaceProtocol
 
-/// Sidebar plus detail on both platforms. The sidebar holds the actions and the thread list; the
-/// detail shows the selected thread. Styling comes from `Theme/` (LLA visual system).
+/// The app's root on both platforms: the sign-in screen, onboarding, or the workspace, by the account
+/// state (`WorkspaceModel.rootScreen`). Nothing of the workspace (Settings, New Thread, ⌘K) is
+/// reachable until someone is signed in. Styling comes from `Theme/` (LLA visual system).
 public struct WorkspaceRootView: View {
+  @Bindable var model: WorkspaceModel
+
+  public init(model: WorkspaceModel) {
+    LLAFonts.register()
+    #if os(iOS)
+      LLANavigationBar.apply()
+    #endif
+    self.model = model
+  }
+
+  public var body: some View {
+    RootScreenView(model: model)
+      .task { model.connect() }
+  }
+}
+
+/// The screen for the account state. A container, not a `Group`, so what is attached to it runs once
+/// rather than once per screen.
+struct RootScreenView: View {
+  @Bindable var model: WorkspaceModel
+
+  var body: some View {
+    ZStack {
+      switch model.rootScreen {
+      case .loading:
+        // Not known yet: a blank themed window, so a restart never flashes the sign-in screen.
+        Color.clear
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .background(LLA.Color.bg)
+          .modifier(WorkspaceWindowBackground())
+          .accessibilityHidden(true)
+      case .signIn:
+        SignInView(model: model)
+      case .onboarding:
+        OnboardingView(model: model)
+      case .workspace:
+        WorkspaceShell(model: model)
+      }
+    }
+    .tint(LLA.Color.accent)
+  }
+}
+
+/// Sidebar plus detail on both platforms. The sidebar holds the actions and the thread list; the
+/// detail shows the selected thread.
+struct WorkspaceShell: View {
   @Bindable var model: WorkspaceModel
   /// On a compact width (iPhone) the split view shows one column; choosing a thread in the sidebar
   /// moves to the detail. Ignored where both columns show.
@@ -29,15 +76,7 @@ public struct WorkspaceRootView: View {
     #endif
   }
 
-  public init(model: WorkspaceModel) {
-    LLAFonts.register()
-    #if os(iOS)
-      LLANavigationBar.apply()
-    #endif
-    self.model = model
-  }
-
-  public var body: some View {
+  var body: some View {
     NavigationSplitView(preferredCompactColumn: $compactColumn) {
       SidebarView(model: model)
         .navigationSplitViewColumnWidth(min: 240, ideal: 290)
@@ -46,9 +85,8 @@ public struct WorkspaceRootView: View {
         .modifier(WorkspaceWindowBackground())
     }
     .environment(\.showDetail, showDetail)
-    .tint(LLA.Color.accent)
     .onChange(of: detailOnScreen, initial: true) { _, onScreen in model.isDetailOnScreen = onScreen }
-    .task { model.connect() }
+    .onDisappear { model.isDetailOnScreen = false }
     .sheet(isPresented: $model.showNewThread) {
       // The phone starts a thread on the Mac that owns a project, through the hub; the Mac asks its
       // own coordinator for a connection and a folder.
@@ -88,7 +126,6 @@ public struct WorkspaceRootView: View {
   #if os(macOS)
     @Environment(\.openSettings) private var openSettings
   #endif
-
 }
 
 /// The window's own background in the theme colour on macOS; iOS has no window container.

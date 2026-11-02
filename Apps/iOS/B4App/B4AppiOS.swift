@@ -14,7 +14,9 @@ import WorkspaceUI
 @main
 struct B4AppiOS: App {
   @State private var host = MirrorHost.shared
-  @State private var model = WorkspaceModel(transportProvider: MirrorHost.transportProvider)
+  // The phone's host owns its account (`AccountSource.host`); until Task 14 its root is the workspace.
+  @State private var model = WorkspaceModel(
+    transportProvider: MirrorHost.transportProvider, accountSource: .host)
   /// A pairing link waiting for the Connect screen to take it (it holds the code: view state only).
   @State private var pairArrival: PairArrival?
   @State private var alreadyPaired = false

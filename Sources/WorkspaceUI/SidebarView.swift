@@ -55,6 +55,9 @@ struct SidebarView: View {
   /// The Mac left the hub, or the primary Mac is offline: a persistent notice above the list, which
   /// stays browsable (M8c; this replaced M8b's empty state).
   @ViewBuilder private var listNotice: some View {
+    if let notice = model.accountNotice {
+      AccountNoticeBanner(text: notice) { Task { await model.dismissAccountNotice() } }
+    }
     if let notice = model.listNotice {
       HostNotice(message: notice)
         .accessibilityIdentifier(notice.kind == .leftHub ? "host-disconnected" : "host-notice")

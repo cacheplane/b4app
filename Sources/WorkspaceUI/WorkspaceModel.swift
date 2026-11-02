@@ -190,6 +190,27 @@ public final class WorkspaceModel {
   /// leaves it alone and `logOut()` calls `hostLogOut`.
   public var accountSource: AccountSource = .coordinator
   public var hostLogOut: (@MainActor () async -> Void)?
+
+  // MARK: Signing in (sign-in plan, Task 11; the logic is in SignIn/AccountState.swift)
+
+  /// Who is signed in, from `account.status` and then `account.changed`; the root view follows it.
+  public internal(set) var accountState: AccountState = .unknown
+  /// The last status the coordinator gave, for the org and the display name.
+  public internal(set) var accountStatus: AccountStatus.Result?
+  /// "The last sign-out could not reach the hub; …", shown until dismissed (`dismissAccountNotice`).
+  public internal(set) var accountNotice: String?
+  /// The sign-in screen's busy button, failure line, and "Create a new account?" question.
+  public internal(set) var signInProgress = SignInProgress()
+  /// Onboarding's Continue is out, and the line shown when it failed.
+  public internal(set) var onboardingBusy = false
+  public internal(set) var onboardingFailure: String?
+  /// The flavour's site, Apple flag, and badge; the app sets it (`WorkspaceUI` cannot read `Flavor`).
+  public var signInConfiguration: SignInConfiguration = .local
+  /// A fresh connection to the coordinator for commands that must not queue behind others on the
+  /// main one (`account.logout`). Nil sends them on the main connection.
+  @ObservationIgnored public var sideTransportProvider: TransportProvider?
+  /// The registration offered after "No passkey for …", until Create account or Cancel.
+  @ObservationIgnored var pendingRegistration: PendingRegistration?
   /// The phone's mirror has no joined Mac left: a notice sits above the still browsable list.
   public var hostDisconnected = false
 
@@ -243,8 +264,9 @@ public final class WorkspaceModel {
   /// or a new reply finishes.
   @ObservationIgnored private var unreadHold: Set<String> = []
 
-  public init(transportProvider: @escaping TransportProvider) {
+  public init(transportProvider: @escaping TransportProvider, accountSource: AccountSource = .coordinator) {
     self.transportProvider = transportProvider
+    self.accountSource = accountSource
   }
 
   /// The list under the connection and project filters: pinned first, then needs input,
@@ -374,9 +396,13 @@ public final class WorkspaceModel {
         // Subscribed before the first snapshot, so nothing emitted after it is lost (presence
         // included); the events the snapshot already covers are skipped in `observe`.
         let events = await client.events()
-        try await refreshSnapshot()
+        // Who is signed in comes first: nothing of a store is read, or shown, before it is known.
+        try await readAccountState(client)
+        if accountSource == .host || accountState == .signedIn {
+          try await refreshSnapshot()
+          await refreshAccount()
+        }
         let covered = snapshotPosition ?? (hello.epoch, hello.sequence)
-        await refreshAccount()
         link = .ready
         settleLink()
         await observe(client, events: events, covered: covered)
@@ -418,11 +444,13 @@ public final class WorkspaceModel {
 
   /// Ask the coordinator which hub user it has joined as. A failure keeps the account as it was.
   public func refreshAccount() async {
-    guard accountSource == .coordinator, let client else { return }
+    guard accountSource == .coordinator, accountState == .signedIn, let client else { return }
     guard let status = try? await client.request(HubStatus.self, EmptyParams()) else { return }
     account = WorkspaceAccount(status: status)
     hubJoined = status.joined
     hubLink = status.link
+    // A status read never clears the notice: only `account.dismissNotice` does.
+    if let notice = status.notice { accountNotice = notice }
   }
 
   // MARK: - Remote access (the Mac)
@@ -1013,6 +1041,7 @@ public final class WorkspaceModel {
   /// After the Mac wakes or the link comes back: fresh snapshot, then ask every runtime about every
   /// unresolved turn. Nothing is re-sent.
   public func reconcileAfter(_ reason: String) async {
+    guard accountSource == .host || accountState == .signedIn else { return }
     try? await refreshSnapshot()
     guard let client else { return }
     _ = try? await client.request(
@@ -1159,6 +1188,10 @@ public final class WorkspaceModel {
       }
     case .hostPresence:
       applyPresence(event)
+    case .accountChanged:
+      if accountSource == .coordinator, let status = try? event.payload.decode(AccountStatus.Result.self) {
+        applyAccountStatus(status)
+      }
     case .turnAcknowledged, .turnStateChanged, .turnFinished:
       if let threadId = event.threadId, let turn = try? event.payload["turn"]?.decode(Turn.self) {
         activeTurns[threadId] = turn.status == .terminal ? nil : turn
@@ -1219,6 +1252,30 @@ public final class WorkspaceModel {
     }
     detail = current
     prunePendingSends()
+  }
+
+  /// The rows of an account that is no longer signed in: none of them may stay on screen.
+  func forgetWorkspace() {
+    draftSaveTask?.cancel()
+    draftSaveTask = nil
+    connections = []
+    threads = []
+    projects = []
+    servers = []
+    serverLogs = [:]
+    activeTurns = [:]
+    detail = nil
+    selectedThreadId = nil
+    // With no thread open, clearing the composer schedules no draft save.
+    composerText = ""
+    account = nil
+    hubJoined = false
+    hubLink = nil
+    diagnostics = nil
+    showNewThread = false
+    showSearch = false
+    showProfileMenu = false
+    lastError = nil
   }
 
   static func describe(_ error: any Error) -> String {
