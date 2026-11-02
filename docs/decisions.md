@@ -2,6 +2,23 @@
 
 Material implementation decisions, newest first. The spec (`docs/roadmaps/Personal_Agent_Workspace_Technical_Spec_and_Roadmap.md`) is the requirement source; this log records deviations and choices the spec left open.
 
+## 2026-11-02 (deleting threads)
+
+- **D-118 Deleting a thread hides it everywhere and keeps its data.** The owner deletes a thread for privacy: delete means "do not display and do not use for personal memory", not erase. Design: `docs/superpowers/specs/2026-11-02-delete-threads-design.md`.
+  - **The mark.** A new synced column, `threads.userDeletedAt` (an ISO timestamp), set once and never cleared. It is phone-writable and merges by clock like the thread's other phone-writable columns (Mac migration `0008_thread_delete`, which also redefines the change trigger's clocked list; hub `0011_thread_delete`; mirror schema version 5). It is a column update, not a row delete: the Mac and the hub keep the thread, its turns, items and drafts, as the owner's rule requires (the hub never hard-deletes data unless a full delete is asked for, built later).
+  - **Hidden everywhere.** `thread.list` on the Mac and the phone leaves deleted threads out, archived or not, so search, project groups and attention follow. `thread.read`, `thread.update`, `thread.reconcile` and every turn command answer `not_found` for one. Events about a deleted thread (a late turn) still update its rows but are not published. The apps drop it from the list and close it if open, discarding the unsent text, and ignore anything that arrives about it later.
+  - **Naming.** `userDeletedAt`, not `deletedAt`: the soft-delete work (D-089) adds a hub-internal `deleted_at` with the opposite meaning for snapshots (left out), while a `userDeletedAt` thread is still served so devices learn it is gone.
+  - **No undo.** The confirmation says so. Undo can't be honest once the runtime has deleted its side, and a restored thread could never be continued. There is no "Recently deleted" list.
+  - **The confirmation.** `Delete "<title>"?` with "It's removed from this app and from Codex / Claude Code / the B4 server. You can't undo this." For a disabled connection, the runtime is not named. While a turn runs, it adds "Its running turn will be stopped." Mac: Delete… in the row's context menu and in the thread's toolbar. iPhone: a swipe and the thread's "…" menu.
+- **D-119 The runtime's copy is deleted where the runtime can, and retried until it is.** The owner: "IF their api/cli supports deletion, we do it and honor it as best as we can."
+  - **Per runtime.** Codex: `thread/delete { threadId }`. B4: `DELETE /threads/:id`. Claude Code has no delete command. Like the Claude desktop app, b4app removes the session's transcript `<sessionId>.jsonl` and its subagent folder `<sessionId>/` from the one project folder under `$CLAUDE_CONFIG_DIR/projects` (else `~/.claude/projects`; Claude's auth status names it when known). An id that isn't `^[A-Za-z0-9_-]+$` is refused, and nothing outside that session is touched.
+  - **Outcomes.** These are recorded in a local-only table, `threadDeletes`:
+    - **Done.** The runtime deleted it, or says it's gone; a B4 `404` counts.
+    - **Unsupported, which is final.** Codex method-not-found, a B4 `405`, a disabled or missing connection, or a connection now signed in as another identity.
+    - **Waiting.** Any thrown error. It is retried after 30 seconds, doubling to at most an hour, by a sweep at coordinator start and every 60 seconds.
+  - **Running turns and the phone.** A running turn is interrupted first. If the runtime hasn't ended it after 10 seconds, it is ended locally as cancelled. A delete made on the phone reaches the Mac by pull, and the sweep deletes the runtime's copy then.
+  - **Diagnostics** counts deletes waiting and not supported, by runtime, without thread titles.
+
 ## 2026-11-02 (usage on the phone)
 
 - **D-090 Usage reaches the phone through the hub (revises D-082's "usage stays on the Mac").** The owner: "Usage should reach the phone."
