@@ -96,6 +96,7 @@ async fn ping_gets_pong_with_hub_time(pool: PgPool) {
     let (token, _) = hub.enroll(&blove, "macos", "Mac").await;
     let mut mac = FakeDevice::connect(hub.addr, &token).await;
     mac.next().await; // hello
+    mac.next().await; // watching (a host is told its set after hello)
 
     let before = rfc3339_millis(SystemTime::now());
     mac.send(&RelayMessage::Ping).await;
@@ -157,10 +158,12 @@ async fn a_second_link_replaces_the_first(pool: PgPool) {
 
     let mut first = FakeDevice::connect(hub.addr, &mac_token).await;
     first.next().await; // hello
+    first.next().await; // watching (a host is told its set after hello)
     assert!(hosts_of(phone.next().await)[0].online);
 
     let mut second = FakeDevice::connect(hub.addr, &mac_token).await;
     hello_of(second.next().await);
+    second.next().await; // watching (a host is told its set after hello)
 
     match first.next().await {
         RelayMessage::Error { code, .. } => assert_eq!(code, "link_replaced"),
@@ -184,6 +187,7 @@ async fn a_silent_link_is_closed_after_thirty_seconds(pool: PgPool) {
 
     let mut mac = FakeDevice::connect(hub.addr, &token).await;
     mac.next().await; // hello
+    mac.next().await; // watching (a host is told its set after hello)
     clock.advance(Duration::from_secs(29)).await;
     mac.expect_no_frame(Duration::from_millis(200)).await;
     assert!(hub.state.relay.online(mac_id));
@@ -206,6 +210,7 @@ async fn a_ping_keeps_a_link_alive(pool: PgPool) {
 
     let mut mac = FakeDevice::connect(hub.addr, &token).await;
     mac.next().await; // hello
+    mac.next().await; // watching (a host is told its set after hello)
     for _ in 0..4 {
         clock.advance(Duration::from_secs(10)).await;
         mac.send(&RelayMessage::Ping).await;
@@ -225,6 +230,7 @@ async fn last_seen_is_refreshed_once_a_minute_while_a_link_is_open(pool: PgPool)
     let RelayMessage::Hello { hub_time, .. } = mac.next().await else {
         panic!("expected hello");
     };
+    mac.next().await; // watching (a host is told its set after hello)
     let opened = epoch_seconds(&hub_time);
     for second in (10..=60).step_by(10) {
         clock.advance(Duration::from_secs(10)).await;
@@ -296,6 +302,7 @@ async fn a_device_that_says_goodbye_goes_offline_too(pool: PgPool) {
     phone.next().await; // presence
     let mut mac = FakeDevice::connect(hub.addr, &mac_token).await;
     mac.next().await; // hello
+    mac.next().await; // watching (a host is told its set after hello)
     assert!(hosts_of(phone.next().await)[0].online);
 
     mac.close().await;
@@ -314,6 +321,7 @@ async fn last_seen_is_the_last_frame_heard_after_a_dead_link_close(pool: PgPool)
     let RelayMessage::Hello { hub_time, .. } = mac.next().await else {
         panic!("expected hello");
     };
+    mac.next().await; // watching (a host is told its set after hello)
     let opened = epoch_seconds(&hub_time);
 
     clock.advance(Duration::from_secs(5)).await;
@@ -346,6 +354,7 @@ async fn revoking_closes_the_link(pool: PgPool) {
     phone.next().await; // presence
     let mut mac = FakeDevice::connect(hub.addr, &mac_token).await;
     mac.next().await; // hello
+    mac.next().await; // watching (a host is told its set after hello)
     assert!(hosts_of(phone.next().await)[0].online);
 
     let (status, _) = hub
@@ -371,7 +380,8 @@ async fn shutdown_closes_links_with_1001(pool: PgPool) {
     let (mac_token, mac_id) = hub.enroll(&blove, "macos", "Mac").await;
     let (phone_token, phone_id) = hub.enroll(&blove, "ios", "iPhone").await;
     let mut mac = FakeDevice::connect(hub.addr, &mac_token).await;
-    mac.next().await;
+    mac.next().await; // hello
+    mac.next().await; // watching
     let mut phone = FakeDevice::connect(hub.addr, &phone_token).await;
     phone.next().await;
     // The Mac is heard from once more, a while after it opened its link (not enough to trigger the
@@ -467,7 +477,8 @@ async fn a_frame_the_hub_cannot_use_gets_an_error_and_the_link_stays(pool: PgPoo
     let blove = hub.user("cacheplane", "blove").await;
     let (token, _) = hub.enroll(&blove, "macos", "Mac").await;
     let mut mac = FakeDevice::connect(hub.addr, &token).await;
-    mac.next().await;
+    mac.next().await; // hello
+    mac.next().await; // watching
 
     for text in ["not json", &json!({"type": "teleport"}).to_string()] {
         mac.send_text(text).await;
@@ -499,6 +510,7 @@ async fn a_device_never_reads_offline_before_its_last_seen_is_written(pool: PgPo
     let RelayMessage::Hello { hub_time, .. } = mac.next().await else {
         panic!("expected hello");
     };
+    mac.next().await; // watching (a host is told its set after hello)
     let opened = epoch_seconds(&hub_time);
     clock.advance(Duration::from_secs(5)).await;
     mac.send(&RelayMessage::Ping).await;
@@ -1527,4 +1539,498 @@ async fn a_mac_whose_queue_stays_full_is_relay_timeout_not_offline(pool: PgPool)
         (id.as_str(), error.code.as_str()),
         ("send-1", "relay_timeout")
     );
+}
+
+// ---- watching, live events, and frame limits ------------------------------------------------
+
+/// A second phone of blove's.
+async fn second_phone(world: &World) -> (FakeDevice, Uuid) {
+    let (token, id) = world.hub.enroll(&world.blove, "ios", "iPad").await;
+    (FakeDevice::ready(world.hub.addr, &token).await.0, id)
+}
+
+#[sqlx::test(migrations = false)]
+async fn watching_tells_the_mac_the_full_set(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    world
+        .hub
+        .seed_thread(&world.blove, world.mac_id, "thread-2")
+        .await;
+    let (mut mac, _, first) =
+        FakeDevice::ready_with_watching(world.hub.addr, &world.mac_token).await;
+    // Nothing is watched yet, and the Mac is told so: the set is whole, never a delta.
+    assert!(first.is_empty());
+    let mut phone = world.phone().await;
+    let (mut ipad, _) = second_phone(&world).await;
+
+    phone.watch("thread-1").await;
+    assert_eq!(mac.expect_watching().await, ["thread-1"]);
+    phone.watch("thread-2").await;
+    assert_eq!(mac.expect_watching().await, ["thread-1", "thread-2"]);
+    phone.unwatch("thread-1").await;
+    assert_eq!(mac.expect_watching().await, ["thread-2"]);
+
+    // A second watcher of a thread already in the set changes nothing, so nothing is sent; nor
+    // does the first one letting go of it.
+    ipad.watch("thread-2").await;
+    mac.expect_no_frame(QUIET).await;
+    phone.unwatch("thread-2").await;
+    mac.expect_no_frame(QUIET).await;
+    // Watching twice, and unwatching what was never watched, are harmless.
+    ipad.watch("thread-2").await;
+    phone.unwatch("thread-1").await;
+    mac.expect_no_frame(QUIET).await;
+    ipad.unwatch("thread-2").await;
+    assert!(mac.expect_watching().await.is_empty());
+
+    // The watch outlives the Mac's link: a Mac that links again is told the set after `hello`.
+    phone.watch("thread-1").await;
+    assert_eq!(mac.expect_watching().await, ["thread-1"]);
+    mac.close().await;
+    let (_mac, _, again) = FakeDevice::ready_with_watching(world.hub.addr, &world.mac_token).await;
+    assert_eq!(again, ["thread-1"]);
+}
+
+#[sqlx::test(migrations = false)]
+async fn events_go_only_to_watchers(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mut mac = world.mac().await;
+    let mut watcher = world.phone().await;
+    let (mut bystander, _) = second_phone(&world).await;
+
+    watcher.watch("thread-1").await;
+    mac.expect_watching().await;
+    for n in 0..3 {
+        mac.event("thread-1", "message.delta", &format!("chunk {n}"))
+            .await;
+    }
+    for n in 0..3 {
+        let (thread, kind, text) = watcher.expect_event().await;
+        assert_eq!(
+            (thread.as_str(), kind.as_str(), text),
+            ("thread-1", "message.delta", format!("chunk {n}"))
+        );
+    }
+    bystander.expect_no_frame(QUIET).await;
+    // The Mac hears nothing back for its events.
+    mac.expect_no_frame(QUIET).await;
+
+    // Once the bystander watches too, it gets them as well.
+    bystander.watch("thread-1").await;
+    settle().await;
+    mac.event("thread-1", "turn.finished", "done").await;
+    assert_eq!(watcher.expect_event().await.1, "turn.finished");
+    assert_eq!(bystander.expect_event().await.1, "turn.finished");
+}
+
+#[sqlx::test(migrations = false)]
+async fn an_unwatched_event_from_the_mac_is_dropped(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+
+    // Nobody watches yet.
+    mac.event("thread-1", "message.delta", "before").await;
+    settle().await;
+    phone.watch("thread-1").await;
+    mac.expect_watching().await;
+    // Another thread, an event with no thread, and one whose thread is not text: all dropped,
+    // and none of them an error for the Mac.
+    mac.event("thread-9", "message.delta", "elsewhere").await;
+    mac.send_text(r#"{"type":"event","event":{"kind":"message.delta"}}"#)
+        .await;
+    mac.send_text(r#"{"type":"event","event":{"threadId":7}}"#)
+        .await;
+    mac.send_text(r#"{"type":"event","event":"not an object"}"#)
+        .await;
+    mac.event("thread-1", "message.delta", "after").await;
+    // Only the one for the watched thread arrives, and it is the first thing the phone hears.
+    assert_eq!(phone.expect_event().await.2, "after");
+    phone.expect_no_frame(QUIET).await;
+    mac.expect_no_frame(QUIET).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_fifth_watch_is_refused(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    for n in 2..=6 {
+        world
+            .hub
+            .seed_thread(&world.blove, world.mac_id, &format!("thread-{n}"))
+            .await;
+    }
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+    let (mut ipad, _) = second_phone(&world).await;
+
+    for n in 1..=4 {
+        phone.watch(&format!("thread-{n}")).await;
+        assert_eq!(mac.expect_watching().await.len(), n);
+    }
+    phone.watch("thread-5").await;
+    let (code, _) = phone.expect_error().await;
+    assert_eq!(code, "watch_limit");
+    // The link survives and the refused thread is not in the set.
+    phone.ping().await;
+    mac.expect_no_frame(QUIET).await;
+    // Watching one it already watches is not a fifth.
+    phone.watch("thread-4").await;
+    phone.expect_no_frame(QUIET).await;
+    // The limit is per link: another phone has its own four.
+    ipad.watch("thread-5").await;
+    assert_eq!(mac.expect_watching().await.len(), 5);
+    // Room again after an unwatch.
+    phone.unwatch("thread-1").await;
+    phone.watch("thread-5").await;
+    phone.expect_no_frame(QUIET).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn watching_another_users_thread_is_not_found(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let hub = &world.hub;
+    let alice = hub.user("cacheplane", "alice").await;
+    let (alice_token, alice_mac) = hub.enroll(&alice, "macos", "Alice's Mac").await;
+    hub.seed_thread(&alice, alice_mac, "alice-thread").await;
+    let stranger = hub.user("other-org", "blove").await;
+    let (stranger_token, stranger_mac) = hub.enroll(&stranger, "macos", "Stranger's Mac").await;
+    hub.seed_thread(&stranger, stranger_mac, "stranger-thread")
+        .await;
+    // A row of blove's whose owner is not his Mac.
+    hub.seed_thread(&world.blove, world.phone_id, "phone-thread")
+        .await;
+
+    let mut alice_mac_link = FakeDevice::ready(hub.addr, &alice_token).await.0;
+    let mut stranger_mac_link = FakeDevice::ready(hub.addr, &stranger_token).await.0;
+    let mut phone = world.phone().await;
+
+    let mut answers = Vec::new();
+    for thread in [
+        "alice-thread",
+        "stranger-thread",
+        "phone-thread",
+        "no-such-thread",
+    ] {
+        phone.watch(thread).await;
+        answers.push(phone.expect_error().await);
+    }
+    // Every miss reads the same: no difference between missing and someone else's.
+    assert!(answers.iter().all(|answer| *answer == answers[0]));
+    assert_eq!(answers[0].0, "not_found");
+    // Nobody's Mac is told anything, and nothing is watched.
+    alice_mac_link.expect_no_frame(QUIET).await;
+    stranger_mac_link.expect_no_frame(QUIET).await;
+    assert!(hub.state.relay.watched_by(alice_mac).is_empty());
+    assert!(hub.state.relay.watched_by(stranger_mac).is_empty());
+
+    // A thread of his own is fine, and so is one of an offline Mac of his.
+    let mut mac = world.mac().await;
+    assert!(matches!(phone.next().await, RelayMessage::Presence { .. }));
+    phone.watch("thread-1").await;
+    assert_eq!(mac.expect_watching().await, ["thread-1"]);
+    phone.expect_no_frame(QUIET).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_revoked_macs_thread_cannot_be_watched(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let (status, _) = world
+        .hub
+        .http("DELETE", "/v1/devices/self", Some(&world.mac_token))
+        .await;
+    assert_eq!(status, 204);
+    let mut phone = world.phone().await;
+    phone.watch("thread-1").await;
+    assert_eq!(phone.expect_error().await.0, "not_found");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_slow_phone_gets_a_stream_gap(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+    phone.watch("thread-1").await;
+    mac.expect_watching().await;
+
+    // The phone stops reading until its queue is full; the Mac streams meanwhile.
+    fill_queue(&world.hub.state.relay, world.phone_id).await;
+    mac.event("thread-1", "message.delta", "lost one").await;
+    mac.event("thread-1", "message.delta", "lost two").await;
+    settle().await;
+
+    // Reading again: the backlog, then exactly one `stream_gap`, and none of the lost events.
+    let mut backlog = 0;
+    loop {
+        match phone.next().await {
+            RelayMessage::Event { event } => {
+                assert!(event.get("threadId").is_none(), "a dropped event came late");
+                backlog += 1;
+            }
+            RelayMessage::StreamGap { thread_id } => {
+                assert_eq!(thread_id, "thread-1");
+                break;
+            }
+            RelayMessage::Pong { .. } | RelayMessage::Presence { .. } => {}
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert!(backlog > 100, "the backlog came first ({backlog})");
+    phone.expect_no_frame(QUIET).await;
+
+    // Live again: events flow, and no second gap.
+    mac.event("thread-1", "message.delta", "live").await;
+    assert_eq!(phone.expect_event().await.2, "live");
+    phone.expect_no_frame(QUIET).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn presence_is_sent_when_the_queue_has_room_again(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mac = world.mac().await;
+    let mut phone = world.phone().await;
+
+    // The phone stops reading until its queue is full. The Mac drops and comes back meanwhile:
+    // two changes, neither of which fits.
+    fill_queue(&world.hub.state.relay, world.phone_id).await;
+    mac.close().await;
+    let mac_id = world.mac_id;
+    eventually("the Mac to go offline", || async {
+        (!world.hub.state.relay.online(mac_id)).then_some(())
+    })
+    .await;
+    settle().await;
+    let mac = world.mac().await;
+    settle().await;
+
+    // Reading again: the backlog, then the current presence once (not the stale "offline").
+    let mut presences = Vec::new();
+    loop {
+        match phone.next_within(QUIET).await {
+            Some(RelayMessage::Event { .. }) => {}
+            Some(RelayMessage::Presence { hosts }) => presences.push(hosts),
+            Some(other) => panic!("unexpected {other:?}"),
+            None => break,
+        }
+    }
+    assert_eq!(presences.len(), 1, "{presences:?}");
+    assert_eq!(presences[0].len(), 1);
+    assert_eq!(presences[0][0].device_id, mac_id);
+    assert!(presences[0][0].online, "{presences:?}");
+
+    // The same when the last change is the Mac going away.
+    fill_queue(&world.hub.state.relay, world.phone_id).await;
+    mac.close().await;
+    eventually("the Mac to go offline again", || async {
+        (!world.hub.state.relay.online(mac_id)).then_some(())
+    })
+    .await;
+    settle().await;
+    let mut last = None;
+    while let Some(frame) = phone.next_within(QUIET).await {
+        if let RelayMessage::Presence { hosts } = frame {
+            assert!(last.is_none(), "presence came twice");
+            last = Some(hosts);
+        }
+    }
+    assert!(!last.expect("presence arrived")[0].online);
+}
+
+/// `{"type":"ping"}` padded with trailing spaces to exactly `bytes` bytes: valid JSON, so only
+/// its size can get it refused.
+fn padded_ping(bytes: usize) -> String {
+    let mut text = String::from(r#"{"type":"ping"}"#);
+    text.push_str(&" ".repeat(bytes - text.len()));
+    text
+}
+
+#[sqlx::test(migrations = false)]
+async fn oversized_frames_are_refused_and_the_link_survives(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+
+    // A client: 64 KiB is fine, one byte more is not, and the link carries on.
+    phone.send_text(&padded_ping(64 * 1024)).await;
+    assert!(matches!(phone.next().await, RelayMessage::Pong { .. }));
+    for size in [64 * 1024 + 1, 100 * 1024, 300 * 1024] {
+        phone.send_text(&padded_ping(size)).await;
+        let (code, message) = phone.expect_error().await;
+        assert_eq!(code, "invalid_request", "{size}");
+        assert!(message.len() < 200, "the refusal does not echo the frame");
+    }
+    phone.ping().await;
+    // An oversized frame is refused unread, whatever it says.
+    phone
+        .send_text(&format!(
+            r#"{{"type":"command","id":"x","method":"turn.send","params":{{"text":"{}"}}}}"#,
+            "a".repeat(100 * 1024)
+        ))
+        .await;
+    assert_eq!(phone.expect_error().await.0, "invalid_request");
+    phone.expect_no_frame(QUIET).await;
+    mac.expect_no_frame(QUIET).await;
+
+    // A host: 256 KiB is fine, one byte more is not.
+    mac.send_text(&padded_ping(256 * 1024)).await;
+    assert!(matches!(mac.next().await, RelayMessage::Pong { .. }));
+    for size in [256 * 1024 + 1, 300 * 1024, 600 * 1024] {
+        mac.send_text(&padded_ping(size)).await;
+        assert_eq!(mac.expect_error().await.0, "invalid_request", "{size}");
+    }
+    mac.ping().await;
+
+    // An event just under the host limit still reaches a watching phone; the phone's own limit
+    // applies to what it sends, not to what it receives.
+    phone.watch("thread-1").await;
+    mac.expect_watching().await;
+    mac.event("thread-1", "tool.completed", &"r".repeat(200 * 1024))
+        .await;
+    let (_, kind, text) = phone.expect_event().await;
+    assert_eq!((kind.as_str(), text.len()), ("tool.completed", 200 * 1024));
+    // One over the limit is refused, not forwarded.
+    mac.event("thread-1", "tool.completed", &"r".repeat(300 * 1024))
+        .await;
+    assert_eq!(mac.expect_error().await.0, "invalid_request");
+    phone.expect_no_frame(QUIET).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn thread_start_auto_watches_the_new_thread(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    for n in 1..=4 {
+        world
+            .hub
+            .seed_thread(&world.blove, world.mac_id, &format!("extra-{n}"))
+            .await;
+    }
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+    let (mut ipad, _) = second_phone(&world).await;
+
+    phone
+        .command(
+            "start-1",
+            RelayMethod::ThreadStart,
+            params_for(RelayMethod::ThreadStart),
+        )
+        .await;
+    assert_eq!(mac.expect_command().await.0, "start-1");
+    // The Mac is told the new thread is watched, before its row has reached the hub.
+    eventually("the new thread to be watched", || async {
+        (world.hub.state.relay.watched_by(world.mac_id) == ["new-thread"]).then_some(())
+    })
+    .await;
+    mac.reply("start-1", json!({"thread": {"id": "new-thread"}}))
+        .await;
+    assert_eq!(phone.expect_reply().await.0, "start-1");
+    mac.event("new-thread", "turn.acknowledged", "go").await;
+    assert_eq!(phone.expect_event().await.0, "new-thread");
+    // The caller's link only: another phone of the same user gets nothing.
+    ipad.expect_no_frame(QUIET).await;
+
+    // It counts toward the caller's four.
+    for n in 1..=3 {
+        phone.watch(&format!("extra-{n}")).await;
+    }
+    phone.expect_no_frame(QUIET).await;
+    phone.watch("extra-4").await;
+    assert_eq!(phone.expect_error().await.0, "watch_limit");
+    // Letting it go ends the stream.
+    phone.unwatch("new-thread").await;
+    settle().await;
+    mac.event("new-thread", "message.delta", "late").await;
+    phone.expect_no_frame(QUIET).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn closing_a_phone_clears_its_watches(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    world
+        .hub
+        .seed_thread(&world.blove, world.mac_id, "thread-2")
+        .await;
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+    let (mut ipad, _) = second_phone(&world).await;
+
+    phone.watch("thread-1").await;
+    mac.expect_watching().await;
+    ipad.watch("thread-2").await;
+    assert_eq!(mac.expect_watching().await, ["thread-1", "thread-2"]);
+
+    // The phone goes away; only the iPad's watch is left.
+    phone.close().await;
+    assert_eq!(mac.expect_watching().await, ["thread-2"]);
+
+    // And when the last watcher goes, the set is empty.
+    ipad.close().await;
+    assert!(mac.expect_watching().await.is_empty());
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_replaced_link_takes_its_watches_with_it(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mut mac = world.mac().await;
+    let mut first = world.phone().await;
+    first.watch("thread-1").await;
+    mac.expect_watching().await;
+
+    // The same phone links again: the old link is closed and its watches are gone.
+    let mut second = world.phone().await;
+    assert_eq!(first.expect_error().await.0, "link_replaced");
+    assert!(mac.expect_watching().await.is_empty());
+    // The old link finishing its cleanup later must not touch the new link's watches.
+    second.watch("thread-1").await;
+    assert_eq!(mac.expect_watching().await, ["thread-1"]);
+    drop(first);
+    settle().await;
+    mac.event("thread-1", "message.delta", "still here").await;
+    assert_eq!(second.expect_event().await.2, "still here");
+    mac.expect_no_frame(QUIET).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn frames_from_the_wrong_end_are_invalid(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+
+    mac.watch("thread-1").await;
+    assert_eq!(mac.expect_error().await.0, "invalid_request");
+    mac.unwatch("thread-1").await;
+    assert_eq!(mac.expect_error().await.0, "invalid_request");
+    phone.event("thread-1", "message.delta", "forged").await;
+    assert_eq!(phone.expect_error().await.0, "invalid_request");
+    phone
+        .send(&RelayMessage::Watching {
+            thread_ids: vec!["thread-1".into()],
+        })
+        .await;
+    assert_eq!(phone.expect_error().await.0, "invalid_request");
+    phone
+        .send(&RelayMessage::StreamGap {
+            thread_id: "thread-1".into(),
+        })
+        .await;
+    assert_eq!(phone.expect_error().await.0, "invalid_request");
+    assert!(world.hub.state.relay.watched_by(world.mac_id).is_empty());
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_message_past_the_wire_cap_ends_only_that_connection(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+    // Past 1 MiB the socket layer refuses the message before the hub reads it.
+    phone
+        .send_text_regardless(&padded_ping(2 * 1024 * 1024))
+        .await;
+    phone.expect_close().await;
+    let phone_id = world.phone_id;
+    eventually("the phone's link to be forgotten", || async {
+        (!world.hub.state.relay.online(phone_id)).then_some(())
+    })
+    .await;
+    // Nobody else is affected.
+    mac.ping().await;
 }

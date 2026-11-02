@@ -24,6 +24,9 @@
 //! `id` is then forwarded afresh (the Mac recognises the id).
 //!
 //! The hub logs each command's method, outcome, and latency, never its params or result.
+//!
+//! Also here: a client's `watch` ([`handle_watch`]), which is authorised like `turn.send`, and a
+//! host's `event` ([`handle_event`]), which is fanned out to the clients watching its thread.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
@@ -41,7 +44,8 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use super::limits::{RateWithBurst, SlidingWindow, COMMAND_WINDOW, STARTS_PER_WINDOW};
-use super::{rfc3339_millis, LinkHandle, Relay, SendError};
+use super::registry::WatchError;
+use super::{error_frame, rfc3339_millis, LinkHandle, Relay, SendError};
 use crate::error::relay_code;
 
 /// How long a command or a reply waits for room in a full outbound queue before it is given up:
@@ -338,6 +342,52 @@ pub fn unknown_command(text: &str) -> Option<RelayMessage> {
     })
 }
 
+/// A client's `watch { threadId }`. Authorised like `turn.send`: the thread must be one the
+/// caller's user may reach (the pending-thread map first, then the thread table) and its owner a
+/// non-revoked `macos` device of that user. Returns the `error` frame to answer with: `not_found`
+/// (a missing thread reads the same as someone else's), `watch_limit`, or `internal_error`.
+pub async fn handle_watch(
+    relay: &Relay,
+    db: &Db,
+    client: &LinkHandle,
+    thread_id: &str,
+) -> Option<RelayMessage> {
+    let owner = match thread_owner(relay, db, client, thread_id).await {
+        Ok(owner) => owner,
+        Err(error) => {
+            return Some(RelayMessage::Error {
+                code: error.code,
+                message: error.message,
+                details: error.details,
+            })
+        }
+    };
+    match relay.watch(client, owner.device_id, thread_id) {
+        Ok(()) | Err(WatchError::Gone) => None,
+        Err(WatchError::Limit) => {
+            tracing::info!(device = %client.device_id, "watch limit hit");
+            Some(error_frame(
+                relay_code::WATCH_LIMIT,
+                "a link may watch at most 4 threads",
+            ))
+        }
+    }
+}
+
+/// A host's `event`: sent on to every client link watching its `threadId`, and dropped when none
+/// does (or the event names no thread). The hub reads that one field and nothing else, and logs
+/// nothing about the event.
+pub fn handle_event(relay: &Relay, host: &LinkHandle, event: Value) {
+    let Some(thread_id) = event
+        .get("threadId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    relay.fan_out(host.device_id, &thread_id, &RelayMessage::Event { event });
+}
+
 /// A claimed client command, from the limits on.
 async fn route(
     relay: &Relay,
@@ -390,12 +440,7 @@ async fn find_owner(
     let (org, user) = (caller.org_id, caller.user_id);
     match method {
         RelayMethod::TurnSend | RelayMethod::TurnInterrupt | RelayMethod::TurnLookup => {
-            let thread_id = param(params, "threadId")?;
-            let found = match relay.pending_thread_owner(user, thread_id) {
-                Some(device) => owner_device(db, org, user, device).await,
-                None => owner_of_thread(db, org, user, thread_id).await,
-            };
-            eligible(caller, found.map_err(lookup_failed)?.ok_or_else(not_found)?)
+            thread_owner(relay, db, caller, param(params, "threadId")?).await
         }
         RelayMethod::RequestRespond => {
             let request_id = param(params, "requestId")?;
@@ -419,6 +464,23 @@ async fn find_owner(
             eligible(caller, found.ok_or_else(not_found)?)
         }
     }
+}
+
+/// The Mac that owns `thread_id`, if the caller may reach it: a thread started moments ago through
+/// this hub is found in the pending-thread map first, then the thread table; a miss, or an owner
+/// that is not a non-revoked `macos` device of the caller's own user, is `not_found`.
+async fn thread_owner(
+    relay: &Relay,
+    db: &Db,
+    caller: &LinkHandle,
+    thread_id: &str,
+) -> Result<Owner, WireError> {
+    let (org, user) = (caller.org_id, caller.user_id);
+    let found = match relay.pending_thread_owner(user, thread_id) {
+        Some(device) => owner_device(db, org, user, device).await,
+        None => owner_of_thread(db, org, user, thread_id).await,
+    };
+    eligible(caller, found.map_err(lookup_failed)?.ok_or_else(not_found)?)
 }
 
 async fn reread(db: &Db, caller: &LinkHandle, device_id: Uuid) -> Result<Owner, WireError> {
@@ -512,6 +574,13 @@ async fn forward(
             SendError::Full => relay_timeout(),
         })?;
     if let Some(thread_id) = started_thread {
+        // The caller's link watches the thread it just started (it counts toward its four), so
+        // the Mac streams the first turn without the phone having to race a `watch` against it.
+        if let Some(link) = relay.handle(caller.device_id) {
+            if relay.watch(&link, owner.device_id, &thread_id) == Err(WatchError::Limit) {
+                tracing::info!(device = %caller.device_id, "new thread not watched: watch limit");
+            }
+        }
         relay
             .commands()
             .remember_thread(caller.user_id, thread_id, owner.device_id);

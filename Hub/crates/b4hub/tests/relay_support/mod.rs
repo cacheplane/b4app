@@ -440,6 +440,11 @@ impl FakeDevice {
             .expect("the link accepts a frame");
     }
 
+    /// Sends `text` and does not mind if the hub ends the connection while it is being written.
+    pub async fn send_text_regardless(&mut self, text: &str) {
+        let _ = self.ws.send(Message::Text(text.to_string().into())).await;
+    }
+
     /// The next message, with `wait` of real time to arrive. `None` on a timeout.
     async fn next_message(
         &mut self,
@@ -511,15 +516,93 @@ impl FakeDevice {
 
     /// Opens a link and reads its `hello` (returning its `hubTime`) and, for a client, the
     /// `presence` frame after it.
+    /// A host's `watching` frame that follows `hello` is read too (see
+    /// [`FakeDevice::ready_with_watching`] to keep it).
     pub async fn ready(addr: SocketAddr, token: &str) -> (FakeDevice, String) {
+        let (device, hub_time, _) = FakeDevice::ready_with_watching(addr, token).await;
+        (device, hub_time)
+    }
+
+    /// Like [`FakeDevice::ready`], also returning the thread ids of the host's first `watching`
+    /// frame (empty for a client, which gets none).
+    pub async fn ready_with_watching(
+        addr: SocketAddr,
+        token: &str,
+    ) -> (FakeDevice, String, Vec<String>) {
         let mut device = FakeDevice::connect(addr, token).await;
         let RelayMessage::Hello { hub_time, role, .. } = device.next().await else {
             panic!("expected hello");
         };
-        if role == b4hub_core::relay::Role::Client {
-            assert!(matches!(device.next().await, RelayMessage::Presence { .. }));
+        let mut watching = Vec::new();
+        match role {
+            b4hub_core::relay::Role::Client => {
+                assert!(matches!(device.next().await, RelayMessage::Presence { .. }));
+            }
+            b4hub_core::relay::Role::Host => {
+                watching = device.expect_watching().await;
+            }
         }
-        (device, hub_time)
+        (device, hub_time, watching)
+    }
+
+    /// Sends `watch`.
+    pub async fn watch(&mut self, thread_id: &str) {
+        self.send(&RelayMessage::Watch {
+            thread_id: thread_id.to_string(),
+        })
+        .await;
+    }
+
+    /// Sends `unwatch`.
+    pub async fn unwatch(&mut self, thread_id: &str) {
+        self.send(&RelayMessage::Unwatch {
+            thread_id: thread_id.to_string(),
+        })
+        .await;
+    }
+
+    /// Sends a host's `event` for `thread_id` of `kind`, with `extra` text.
+    pub async fn event(&mut self, thread_id: &str, kind: &str, text: &str) {
+        self.send(&RelayMessage::Event {
+            event: serde_json::json!({ "threadId": thread_id, "kind": kind, "text": text }),
+        })
+        .await;
+    }
+
+    /// The next `watching` frame (past `pong` and `presence`): its thread ids, sorted as sent.
+    pub async fn expect_watching(&mut self) -> Vec<String> {
+        loop {
+            match self.next().await {
+                RelayMessage::Pong { .. } | RelayMessage::Presence { .. } => {}
+                RelayMessage::Watching { thread_ids } => return thread_ids,
+                other => panic!("expected watching, got {other:?}"),
+            }
+        }
+    }
+
+    /// The next `event` frame (past `pong` and `presence`): `(threadId, kind, text)`.
+    pub async fn expect_event(&mut self) -> (String, String, String) {
+        loop {
+            match self.next().await {
+                RelayMessage::Pong { .. } | RelayMessage::Presence { .. } => {}
+                RelayMessage::Event { event } => {
+                    let text = |name: &str| event[name].as_str().unwrap_or_default().to_string();
+                    return (text("threadId"), text("kind"), text("text"));
+                }
+                other => panic!("expected an event, got {other:?}"),
+            }
+        }
+    }
+
+    /// The next `error` frame (past `pong` and `presence`): `(code, message)`.
+    pub async fn expect_error(&mut self) -> (String, String) {
+        loop {
+            match self.next().await {
+                RelayMessage::Pong { .. } | RelayMessage::Presence { .. } => {}
+                RelayMessage::Error { code, message, .. } => return (code, message),
+                other => panic!("expected an error frame, got {other:?}"),
+            }
+        }
     }
 
     /// Sends a `command` as a client does: `id`, `method`, and `params` only.
@@ -544,12 +627,14 @@ impl FakeDevice {
         .await;
     }
 
-    /// The next frame that is not a `pong` or a `presence`. Fails the test if none arrives within
+    /// The next frame that is not a `pong`, a `presence`, or a `watching`. Fails the test if none arrives within
     /// [`FRAME_WAIT`].
     pub async fn next_skipping_chatter(&mut self) -> RelayMessage {
         loop {
             match self.next().await {
-                RelayMessage::Pong { .. } | RelayMessage::Presence { .. } => {}
+                RelayMessage::Pong { .. }
+                | RelayMessage::Presence { .. }
+                | RelayMessage::Watching { .. } => {}
                 other => return other,
             }
         }
@@ -560,7 +645,9 @@ impl FakeDevice {
     pub async fn next_skipping_chatter_within(&mut self, wait: Duration) -> Option<RelayMessage> {
         loop {
             match self.next_within(wait).await? {
-                RelayMessage::Pong { .. } | RelayMessage::Presence { .. } => {}
+                RelayMessage::Pong { .. }
+                | RelayMessage::Presence { .. }
+                | RelayMessage::Watching { .. } => {}
                 other => return Some(other),
             }
         }
@@ -616,7 +703,7 @@ impl FakeDevice {
         loop {
             match self.next().await {
                 RelayMessage::Pong { hub_time } => return hub_time,
-                RelayMessage::Presence { .. } => {}
+                RelayMessage::Presence { .. } | RelayMessage::Watching { .. } => {}
                 other => panic!("expected pong, got {other:?}"),
             }
         }

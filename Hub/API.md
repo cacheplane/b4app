@@ -456,8 +456,8 @@ object key order is not preserved and duplicate keys collapse.
 the Mac, the Mac's replies and live events back, and which Macs are online. The frames are JSON
 text, one message each, with a `type` discriminator; absent optional fields are omitted, never
 `null`. `Tests/Fixtures/sync/relay.json` holds one example of every frame, and both the hub's and
-the Swift clients' test suites decode it. This section describes the link itself and commands;
-watching and events are described as they are implemented.
+the Swift clients' test suites decode it. This section describes the link itself, presence,
+commands, and live progress (watching and events).
 
 ### Opening a link
 
@@ -489,6 +489,12 @@ frame `link_replaced`, then close code 4000. The replaced device does not go off
 | device to hub | `ping` | none |
 | hub to device | `pong` | `hubTime` |
 | hub to client | `presence` | `hosts: [{ deviceId, name, online, lastSeenAt? }]` |
+| client to hub | `watch` | `threadId` |
+| client to hub | `unwatch` | `threadId` |
+| hub to host | `watching` | `threadIds`: every thread of this Mac that some client watches |
+| host to hub | `event` | `event`: an object with a string `threadId` |
+| hub to client | `event` | the same |
+| hub to client | `stream_gap` | `threadId` |
 | client to hub | `command` | `id`, `method`, `params` |
 | hub to host | `command` | `id`, `method`, `params`, `deadline`, `from: { deviceId, name }` |
 | host to hub | `reply` | `id`, and `result` or `error: { code, message, details? }` |
@@ -503,8 +509,9 @@ close code 4002.
 
 A frame that is not valid JSON, not a relay message, binary, or not one the device may send gets
 an `error` frame `invalid_request`; the link stays up. A device may send `ping`; a client may also
-send `command`, and a host `reply`. (A `command` with an unknown method is answered as a command;
-see *Commands*.)
+send `command`, `watch`, and `unwatch`, and a host `reply` and `event`. (A `command` with an
+unknown method is answered as a command; see *Commands*. A frame over the size limit is refused
+the same way; see *Frame size*.)
 
 ### Heartbeat
 
@@ -519,6 +526,11 @@ A host is online while it has a link. A client receives `presence` once after `h
 whenever one of its user's Macs goes online or offline: `hosts` is every non-revoked `macos`
 device of that user (never another user's), with `online` and `lastSeenAt` (RFC 3339 in UTC with
 milliseconds; omitted for a Mac never seen). A Mac that is revoked drops out of the list.
+
+Presence is never lost to a busy phone. If a client's outbound queue is full when presence
+changes, the hub keeps the latest presence for that link, replacing the one it was keeping, and
+queues it as soon as the queue has room. A phone that reads again therefore gets the current
+presence once, after the frames that were already queued, and never an older one after a newer.
 
 `devices.last_seen_at` is written when a link opens, at most once a minute while it is open, and
 when it closes, where it is the time of the link's **last received frame**, not the moment the
@@ -606,6 +618,55 @@ its params, its result, or a token.
 | `relay_timeout` | step 6, or step 5 when the Mac's queue stays full for 5 seconds |
 | `internal_error` | the hub could not read the database to route the command |
 
+### Watching and live events
+
+A phone that has a thread open sends `watch { threadId }`, and `unwatch { threadId }` when it
+leaves the thread or goes to the background. The hub tells the thread's Mac which threads to
+stream, and passes the Mac's `event` frames on to the phones that watch their thread. Nothing here
+is stored: a lost event is harmless, because the change log is the record.
+
+**`watch`.** Authorised like `turn.send`: the thread must be one the caller's user may reach, found
+in the pending-thread map (see *A thread just started*) first and then the thread table, and its
+owner must be a non-revoked `macos` device of the caller's own user. Otherwise the hub answers an
+`error` frame `not_found`; a missing thread, another user's, another org's, and one owned by
+a device that is not the user's Mac all read the same. A success has no answer. The Mac need not
+be online: the watch is kept and the Mac is told when it links. The same link may watch a thread it
+already watches (nothing changes). At most **4** threads per link: a fifth distinct thread gets an
+`error` frame `watch_limit`, and the link and its other watches are untouched. `unwatch` of a
+thread that is not watched is ignored. Watches belong to the link: they end when it closes, and a
+device's newer link (which replaces the older) starts with none. A phone therefore sends `watch`
+again after every reconnect. A host sending `watch` or `unwatch`, or a client sending `watching`,
+`event`, or `stream_gap`, gets `invalid_request`.
+
+**Auto-watch.** When the hub forwards `thread.start`, the caller's link starts watching the new
+thread, so the first turn streams without a race against a `watch`. It counts toward the link's 4
+(if the link is already at 4 the thread is simply not auto-watched, and the phone can `unwatch`
+another and `watch` it). A `thread.start` the Mac then refuses leaves the watch in place until the
+phone unwatches it or the link closes.
+
+**`watching`.** The hub keeps, per host, the set of that host's threads that any client link
+watches, and sends the **whole** set to the host as `watching { threadIds }` (sorted) right after
+`hello` (an empty set when nothing is watched, so a Mac that linked again forgets what it knew),
+and again every time the set changes, including when a watching phone's link closes. A change that
+leaves the host's set the same (a second phone watching a thread already in it) sends nothing.
+The frame is written by the host's link itself, so it is never dropped for a full queue and
+two changes are never reordered. A host streams events only for threads in its latest set.
+
+**`event`.** A host sends `event { event }`, where `event` is an object with a string `threadId`;
+the hub reads that one field. If no client link watches that thread of that host, or `threadId` is
+missing or not a string, the event is dropped without an answer. Otherwise it is queued, unchanged,
+to each watching client link. The hub does not look at the event's kind or content and never logs
+them; which kinds are streamed, and the 256 KiB bound, are the Mac's to apply.
+
+**Backpressure and `stream_gap`.** Each link has an outbound queue of 256 frames. When a client's
+queue is full, an `event` for it is dropped (never blocking the Mac or other phones) and the
+thread is marked as having a gap for that link. As soon as the queue has room, the hub queues one
+`stream_gap { threadId }` per marked thread, behind everything already queued; events for the
+marked thread are dropped until that is done, so the `stream_gap` always comes after the hole it
+reports and before anything newer. A phone that gets `stream_gap` drops that thread's in-flight
+text and waits for sync. Frames other than `event` (replies, errors, presence) are not dropped:
+replies and errors wait for room, and presence is kept as described under *Presence*.
+
 ### Close codes
 
 | Code | Meaning | The device should |
@@ -621,7 +682,19 @@ link has stayed up for 60 seconds.
 
 ### Frame size
 
-The WebSocket layer refuses a message over 256 KiB (the host limit); the connection then ends.
+A frame is one WebSocket text message. The hub refuses a frame from a **client** over **64 KiB**
+(65,536 bytes) and from a **host** over **256 KiB** (262,144 bytes) with an `error` frame
+`invalid_request` (`details: { maxBytes }`); the frame is not read, not echoed, and not logged,
+and the link stays up. A frame of exactly the limit is accepted. The limits are on what a device
+sends: a phone can receive a 256 KiB `event`. Beneath that, the WebSocket layer reads no message
+over 1 MiB: such a message ends the connection (with no close code), so a device must not send one.
+
+| Limit | Value |
+| --- | --- |
+| Frame from a client | 64 KiB |
+| Frame from a host | 256 KiB |
+| Watched threads per client link | 4 |
+| Outbound queue per link | 256 frames |
 
 ## Shutdown
 

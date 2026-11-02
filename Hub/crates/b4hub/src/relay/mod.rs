@@ -25,7 +25,7 @@ pub mod link;
 pub mod registry;
 pub mod route;
 
-pub use registry::{Close, LinkHandle, Registration, Relay, SendError};
+pub use registry::{Close, LinkHandle, Registration, Relay, SendError, WatchError};
 
 /// The link protocol this hub speaks, sent as `protocol` in `hello`.
 pub const PROTOCOL: u32 = 1;

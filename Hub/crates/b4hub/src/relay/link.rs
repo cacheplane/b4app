@@ -13,7 +13,9 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use b4hub_core::relay::{RelayMessage, Role, DEAD_LINK, HEARTBEAT_SECONDS, HOST_FRAME_MAX};
+use b4hub_core::relay::{
+    RelayMessage, Role, CLIENT_FRAME_MAX, DEAD_LINK, HEARTBEAT_SECONDS, HOST_FRAME_MAX,
+};
 use b4hub_db::devices::{self, Platform};
 use b4hub_db::relay::set_last_seen;
 use std::time::Duration;
@@ -31,6 +33,11 @@ const PROTOCOL_HEADER: &str = "b4-protocol";
 /// How often a link that stays up writes `last_seen_at`, the same cadence as the per-request
 /// throttle in `auth`.
 const LAST_SEEN_EVERY: Duration = Duration::from_secs(60);
+
+/// The largest WebSocket message the socket layer reads at all. The per-role limits
+/// (`CLIENT_FRAME_MAX`, `HOST_FRAME_MAX`) are checked on top of it, as a refusal that leaves the
+/// link up; a message past this ends the connection (close code 1009) before the hub sees it.
+const WIRE_MAX: usize = 1024 * 1024;
 
 /// How long the hub waits, after sending a close frame, for the device's own before it drops the
 /// connection.
@@ -67,8 +74,8 @@ pub async fn upgrade(
     };
     let live = state.relay.track();
     Ok(upgrade
-        .max_message_size(HOST_FRAME_MAX)
-        .max_frame_size(HOST_FRAME_MAX)
+        .max_message_size(WIRE_MAX)
+        .max_frame_size(WIRE_MAX)
         .on_upgrade(move |socket| serve_link(state, who, protocol, socket, live))
         .into_response())
 }
@@ -230,6 +237,21 @@ impl Link {
             Role::Host => {}
         }
 
+        // A host is told which of its threads are watched, whole, right after `hello` and again
+        // whenever the set changes. The receiver is made first, so a change that lands while the
+        // first frame is being written is not missed. It is written by this task, not queued: it
+        // is never dropped and never reordered behind a later change.
+        let mut watch_changes = self.state.relay.watch_changes();
+        let is_host = self.handle.role == Role::Host;
+        let mut told = Vec::new();
+        if is_host {
+            told = self.state.relay.watched_by(self.handle.device_id);
+            let watching = RelayMessage::Watching {
+                thread_ids: told.clone(),
+            };
+            write(socket, &watching).await.ok()?;
+        }
+
         let mut stopping = self.state.shutdown.subscribe();
         let dead = tokio::time::sleep_until(self.last_frame + DEAD_LINK);
         tokio::pin!(dead);
@@ -245,6 +267,16 @@ impl Link {
                     // registered, so `None` is not expected; treat it as the end.
                     let message = queued?;
                     write(socket, &message).await.ok()?;
+                    // A frame left the queue: room for what a full queue made this link miss.
+                    self.handle.flush_missed();
+                }
+                _ = watch_changes.changed(), if is_host => {
+                    let now = self.state.relay.watched_by(self.handle.device_id);
+                    if now != told {
+                        let watching = RelayMessage::Watching { thread_ids: now.clone() };
+                        write(socket, &watching).await.ok()?;
+                        told = now;
+                    }
                 }
                 incoming = socket.recv() => {
                     let message = incoming?.ok()?;
@@ -253,7 +285,13 @@ impl Link {
                     dead.as_mut().reset(now + DEAD_LINK);
                     self.keep_last_seen_fresh(now);
                     let reply = match message {
-                        Message::Text(text) => self.on_text(text.as_str()),
+                        Message::Text(text) if text.len() > self.frame_max() => {
+                            Some(self.too_large())
+                        }
+                        Message::Text(text) => self.on_text(text.as_str()).await,
+                        Message::Binary(bytes) if bytes.len() > self.frame_max() => {
+                            Some(self.too_large())
+                        }
                         Message::Binary(_) => {
                             Some(invalid_frame("frames are JSON text, not binary"))
                         }
@@ -273,13 +311,31 @@ impl Link {
         }
     }
 
+    /// The largest frame this link may send: 64 KiB from a client, 256 KiB from a host.
+    fn frame_max(&self) -> usize {
+        match self.handle.role {
+            Role::Client => CLIENT_FRAME_MAX,
+            Role::Host => HOST_FRAME_MAX,
+        }
+    }
+
+    /// The refusal of a frame over [`Link::frame_max`]. The frame is not read, and not echoed.
+    fn too_large(&self) -> RelayMessage {
+        let max = self.frame_max();
+        RelayMessage::Error {
+            code: "invalid_request".to_string(),
+            message: format!("a frame may be at most {max} bytes from this device"),
+            details: Some(serde_json::json!({ "maxBytes": max })),
+        }
+    }
+
     /// Handles one text frame; the returned frame, if any, is written back at once.
-    fn on_text(&self, text: &str) -> Option<RelayMessage> {
+    async fn on_text(&self, text: &str) -> Option<RelayMessage> {
         match serde_json::from_str::<RelayMessage>(text) {
             Ok(RelayMessage::Ping) => Some(RelayMessage::Pong {
                 hub_time: self.state.relay.hub_time(),
             }),
-            Ok(other) => self.on_frame(other),
+            Ok(other) => self.on_frame(other).await,
             // A command whose method is not one of the five is answered as a command, by id.
             // Anything else is not echoed: it may carry content the hub must not log or repeat.
             Err(_) => Some(
@@ -290,9 +346,11 @@ impl Link {
     }
 
     /// A well-formed frame other than `ping`. A command runs on its own task, so a slow Mac never
-    /// holds up this link (or the link's other commands); a host's reply is matched at once.
-    /// Watches and events are routed here as they are implemented.
-    fn on_frame(&self, message: RelayMessage) -> Option<RelayMessage> {
+    /// holds up this link (or the link's other commands); a host's reply and event are matched at
+    /// once. A client's `watch` is decided here, in order with its other watches and unwatches (a
+    /// `watch` followed by an `unwatch` must end unwatched); it costs one indexed lookup.
+    async fn on_frame(&self, message: RelayMessage) -> Option<RelayMessage> {
+        let role = self.handle.role;
         match message {
             RelayMessage::Command {
                 id, method, params, ..
@@ -305,8 +363,20 @@ impl Link {
                 });
                 None
             }
-            RelayMessage::Reply { id, result, error } if self.handle.role == Role::Host => {
+            RelayMessage::Reply { id, result, error } if role == Role::Host => {
                 route::handle_reply(&self.state.relay, &self.handle, &id, result, error);
+                None
+            }
+            RelayMessage::Watch { thread_id } if role == Role::Client => {
+                route::handle_watch(&self.state.relay, &self.state.db, &self.handle, &thread_id)
+                    .await
+            }
+            RelayMessage::Unwatch { thread_id } if role == Role::Client => {
+                self.state.relay.unwatch(&self.handle, &thread_id);
+                None
+            }
+            RelayMessage::Event { event } if role == Role::Host => {
+                route::handle_event(&self.state.relay, &self.handle, event);
                 None
             }
             _ => Some(invalid_frame("this frame is not accepted from a device")),
