@@ -119,12 +119,12 @@ async fn push_materialises_and_is_idempotent(pool: PgPool) {
     assert_eq!(thread["org_id"], device.org_id.to_string());
     assert_eq!(thread["user_id"], device.user_id.to_string());
     assert_eq!(thread["device_id"], device.device_id.to_string());
-    assert!(
-        row(&app, &device, "drafts", "threadId", "thread-1")
-            .await
-            .is_none(),
-        "the draft was inserted then deleted"
-    );
+    // The draft was inserted then deleted: the hub keeps the row, marked deleted (D-089).
+    let draft = row(&app, &device, "drafts", "threadId", "thread-1")
+        .await
+        .expect("a deleted row is kept");
+    assert!(draft["deleted_at"].is_string(), "{draft}");
+    assert!(thread["deleted_at"].is_null());
     assert_eq!(count(&app, &device, "turns").await, 2);
     assert_eq!(count(&app, &device, "displayItems").await, 4);
     assert_eq!(count(&app, &device, "runtimeRequests").await, 1);
@@ -493,8 +493,8 @@ async fn another_org_sees_nothing_of_the_feed_or_the_mirror(pool: PgPool) {
     assert!(page.changes.is_empty());
     for table in std::iter::once("changes").chain(SYNCED_TABLES) {
         assert_eq!(count(&app, &outsider, table).await, 0, "{table}");
-        // The fixture's draft is inserted and then deleted, and it has no projects.
-        if !["drafts", "projects", "projectFolders"].contains(&table) {
+        // The fixture has no projects; its draft is deleted, and kept.
+        if !["projects", "projectFolders"].contains(&table) {
             assert!(count(&app, &device, table).await > 0, "{table}");
         }
     }
@@ -524,7 +524,16 @@ async fn mirrored_columns_are_the_macs_columns(pool: PgPool) {
     for name in SYNCED_TABLES {
         let spec = table_spec(name).unwrap();
         let mut expected: Vec<String> = spec.columns.iter().map(|c| c.to_string()).collect();
-        expected.extend(["org_id", "user_id", "device_id", "owner_device_id"].map(String::from));
+        expected.extend(
+            [
+                "org_id",
+                "user_id",
+                "device_id",
+                "owner_device_id",
+                "deleted_at",
+            ]
+            .map(String::from),
+        );
         expected.sort();
         let mut actual: Vec<String> = sqlx::query_scalar(
             "SELECT column_name::text FROM information_schema.columns \
@@ -2008,4 +2017,325 @@ async fn an_idle_users_cursor_follows_the_org_past_other_users_changes(pool: PgP
         changes::pull(&app, &idle, 0, 1000).await,
         Err(b4hub_db::Error::ResyncRequired)
     ));
+}
+
+// ---- D-089: the hub never removes a synced row ----
+
+/// The stored clock of `table.column` of `row_id`, read under `who`'s tenant context.
+async fn clock_of(
+    app: &Db,
+    who: &AuthedDevice,
+    table: &str,
+    row_id: &str,
+    column: &str,
+) -> Option<String> {
+    let mut tx = app.tenant_tx(who.org_id).await.unwrap();
+    let hlc = sqlx::query_scalar(
+        "SELECT hlc FROM column_clocks WHERE \"table\" = $1 AND row_id = $2 AND \"column\" = $3",
+    )
+    .bind(table)
+    .bind(row_id)
+    .bind(column)
+    .fetch_optional(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    hlc
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_delete_keeps_the_row_and_its_clocks_and_the_feed_carries_it(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let (mac, _phone) = mac_and_phone(&admin, &app).await;
+    let title_clock = clock_of(&app, &mac, "threads", "thread-1", "title")
+        .await
+        .expect("the insert set the title's clock");
+    let batch = vec![
+        at(
+            insert(
+                3,
+                "turns",
+                "turn-1",
+                json!({"id": "turn-1", "threadId": "thread-1", "status": "completed"}),
+            ),
+            150,
+            MAC_CLOCK,
+        ),
+        at(delete(4, "turns", "turn-1"), 200, MAC_CLOCK),
+        at(delete(5, "threads", "thread-1"), 210, MAC_CLOCK),
+    ];
+    push_through(&app, &mac, &batch).await.unwrap();
+
+    // Both rows are still there, every column intact, marked deleted.
+    let turn = row(&app, &mac, "turns", "id", "turn-1").await.unwrap();
+    assert!(turn["deleted_at"].is_string(), "{turn}");
+    assert_eq!(turn["threadId"], "thread-1");
+    assert_eq!(turn["status"], "completed");
+    let thread = row(&app, &mac, "threads", "id", "thread-1").await.unwrap();
+    assert!(thread["deleted_at"].is_string(), "{thread}");
+    assert_eq!(thread["title"], "Original");
+    assert_eq!(thread["device_id"], mac.device_id.to_string());
+    // So are the clocks.
+    assert_eq!(
+        clock_of(&app, &mac, "threads", "thread-1", "title").await,
+        Some(title_clock)
+    );
+
+    // A pull still delivers the deletes, so a phone's mirror drops the rows.
+    let page = changes::pull(&app, &mac, 0, 1000).await.unwrap();
+    let deletes: Vec<(&str, &str)> = page
+        .changes
+        .iter()
+        .filter(|c| c.op == ChangeOp::Delete)
+        .map(|c| (c.table.as_str(), c.row_id.as_str()))
+        .collect();
+    assert_eq!(deletes, vec![("turns", "turn-1"), ("threads", "thread-1")]);
+
+    // The snapshot leaves deleted rows and their clocks out, and never shows `deleted_at`.
+    let snapshot = b4hub_db::snapshot::take(&app, &mac).await.unwrap();
+    let rows: Vec<&str> = snapshot.changes.iter().map(|c| c.row_id.as_str()).collect();
+    assert_eq!(rows, vec!["conn-1"]);
+    assert!(snapshot.clocks.is_empty(), "{:?}", snapshot.clocks);
+    assert!(snapshot.changes[0]
+        .value
+        .as_ref()
+        .unwrap()
+        .get("deleted_at")
+        .is_none());
+
+    // A deleted row takes no update, is no parent, and routes nothing; a second delete is a
+    // no-op. All of them are still recorded.
+    let after = vec![
+        at(
+            update(6, "threads", "thread-1", "title", Some(json!("Late"))),
+            300,
+            MAC_CLOCK,
+        ),
+        at(
+            insert(
+                7,
+                "turns",
+                "turn-2",
+                json!({"id": "turn-2", "threadId": "thread-1"}),
+            ),
+            310,
+            MAC_CLOCK,
+        ),
+        at(delete(8, "threads", "thread-1"), 320, MAC_CLOCK),
+    ];
+    push_through(&app, &mac, &after).await.unwrap();
+    let thread_after = row(&app, &mac, "threads", "id", "thread-1").await.unwrap();
+    assert_eq!(thread_after["title"], "Original");
+    assert_eq!(thread_after["deleted_at"], thread["deleted_at"]);
+    assert!(row(&app, &mac, "turns", "id", "turn-2").await.is_none());
+    assert!(
+        b4hub_db::relay::owner_of_thread(&app, mac.org_id, mac.user_id, "thread-1")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(count(&app, &mac, "changes").await, 8);
+}
+
+#[sqlx::test(migrations = false)]
+async fn an_insert_revives_a_deleted_row(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let (mac, phone) = mac_and_phone(&admin, &app).await;
+
+    // A thread deleted and inserted again, by a clock older than the first insert's (a skewed
+    // Mac): the revived row starts from the re-insert, as a new row did before D-089.
+    let batch = vec![
+        at(delete(3, "threads", "thread-1"), 200, MAC_CLOCK),
+        at(
+            insert(
+                4,
+                "threads",
+                "thread-1",
+                json!({"id": "thread-1", "connectionId": "conn-1", "title": "Again",
+                       "pinned": true, "continuity": "native"}),
+            ),
+            90,
+            MAC_CLOCK,
+        ),
+        // A project folder removed, then added again.
+        at(
+            insert(
+                5,
+                "projects",
+                "proj-1",
+                json!({"id": "proj-1", "name": "b4app", "manual": true}),
+            ),
+            300,
+            MAC_CLOCK,
+        ),
+        at(
+            insert(
+                6,
+                "projectFolders",
+                "folder-1",
+                json!({"id": "folder-1", "projectId": "proj-1", "path": "/Users/b/a"}),
+            ),
+            310,
+            MAC_CLOCK,
+        ),
+        at(delete(7, "projectFolders", "folder-1"), 320, MAC_CLOCK),
+        at(
+            insert(
+                8,
+                "projectFolders",
+                "folder-1",
+                json!({"id": "folder-1", "projectId": "proj-1", "path": "/Users/b/b"}),
+            ),
+            330,
+            MAC_CLOCK,
+        ),
+    ];
+    let outcome = changes::push(&app, &mac, &batch).await.unwrap();
+    assert!(outcome.rejected.is_empty());
+
+    let thread = row(&app, &mac, "threads", "id", "thread-1").await.unwrap();
+    assert!(thread["deleted_at"].is_null(), "{thread}");
+    assert_eq!(thread["title"], "Again");
+    assert_eq!(thread["pinned"], true);
+    assert_eq!(
+        clock_of(&app, &mac, "threads", "thread-1", "title").await,
+        batch[1].hlc
+    );
+    let folder = row(&app, &mac, "projectFolders", "id", "folder-1")
+        .await
+        .unwrap();
+    assert!(folder["deleted_at"].is_null(), "{folder}");
+    assert_eq!(folder["path"], "/Users/b/b");
+
+    // A draft the Mac cleared and the phone wrote again.
+    let draft = |seq, text: &str| {
+        insert(
+            seq,
+            "drafts",
+            "thread-1",
+            json!({"threadId": "thread-1", "text": text, "updatedAt": "t"}),
+        )
+    };
+    push_through(&app, &phone, &[at(draft(1, "hello"), 400, PHONE_CLOCK)])
+        .await
+        .unwrap();
+    push_through(
+        &app,
+        &mac,
+        &[at(delete(9, "drafts", "thread-1"), 410, MAC_CLOCK)],
+    )
+    .await
+    .unwrap();
+    let cleared = row(&app, &mac, "drafts", "threadId", "thread-1")
+        .await
+        .unwrap();
+    assert!(cleared["deleted_at"].is_string());
+    let outcome = changes::push(&app, &phone, &[at(draft(2, "again"), 420, PHONE_CLOCK)])
+        .await
+        .unwrap();
+    assert!(outcome.rejected.is_empty());
+    let revived = row(&app, &mac, "drafts", "threadId", "thread-1")
+        .await
+        .unwrap();
+    assert!(revived["deleted_at"].is_null(), "{revived}");
+    assert_eq!(revived["text"], "again");
+    assert_eq!(revived["owner_device_id"], phone.device_id.to_string());
+
+    // The snapshot holds the revived rows; the feed holds every insert and delete.
+    let snapshot = b4hub_db::snapshot::take(&app, &mac).await.unwrap();
+    let rows: Vec<(&str, &str)> = snapshot
+        .changes
+        .iter()
+        .map(|c| (c.table.as_str(), c.row_id.as_str()))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            ("connections", "conn-1"),
+            ("projects", "proj-1"),
+            ("projectFolders", "folder-1"),
+            ("threads", "thread-1"),
+            ("drafts", "thread-1"),
+        ]
+    );
+    let page = changes::pull(&app, &mac, 0, 1000).await.unwrap();
+    let ops: Vec<(&str, ChangeOp)> = page
+        .changes
+        .iter()
+        .filter(|c| c.table == "projectFolders" || c.table == "drafts")
+        .map(|c| (c.table.as_str(), c.op))
+        .collect();
+    assert_eq!(
+        ops,
+        vec![
+            ("projectFolders", ChangeOp::Insert),
+            ("projectFolders", ChangeOp::Delete),
+            ("projectFolders", ChangeOp::Insert),
+            ("drafts", ChangeOp::Insert),
+            ("drafts", ChangeOp::Delete),
+            ("drafts", ChangeOp::Insert),
+        ]
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_deleted_row_stays_with_its_user_and_its_org(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let alice = common::enrolled(&admin, &app, "alice").await;
+    let bob = common::enrolled(&admin, &app, "bob").await;
+    let outsider = common::enrolled_in(&admin, &app, "other", "eve").await;
+    thread_fixture(&app, &alice, 1).await;
+    push_through(&app, &alice, &[delete(3, "threads", "thread-1")])
+        .await
+        .unwrap();
+
+    // Bob, in the same org, can neither revive nor delete alice's deleted row, nor see it.
+    let batch = vec![
+        insert(
+            1,
+            "connections",
+            "bob-conn",
+            json!({"id": "bob-conn", "kind": "claude"}),
+        ),
+        insert(
+            2,
+            "threads",
+            "thread-1",
+            json!({"id": "thread-1", "connectionId": "bob-conn", "title": "Bobs"}),
+        ),
+        delete(3, "threads", "thread-1"),
+    ];
+    push_through(&app, &bob, &batch).await.unwrap();
+    let thread = row(&app, &alice, "threads", "id", "thread-1")
+        .await
+        .unwrap();
+    assert_eq!(thread["user_id"], alice.user_id.to_string());
+    assert_eq!(thread["title"], "Original");
+    assert!(thread["deleted_at"].is_string());
+    let bobs = b4hub_db::snapshot::take(&app, &bob).await.unwrap();
+    let rows: Vec<&str> = bobs.changes.iter().map(|c| c.row_id.as_str()).collect();
+    assert_eq!(rows, vec!["bob-conn"]);
+    let page = changes::pull(&app, &bob, 0, 1000).await.unwrap();
+    assert!(page.changes.iter().all(|c| c.device_id == bob.device_id));
+
+    // Row-level security hides the kept row from another org and from no tenant at all.
+    assert_eq!(count(&app, &outsider, "threads").await, 0);
+    assert!(row(&app, &outsider, "threads", "id", "thread-1")
+        .await
+        .is_none());
+    let untenanted: i64 = sqlx::query_scalar("SELECT count(*) FROM \"threads\"")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(untenanted, 0);
+    // The other org's own thread-1 is its own row; alice's stays deleted.
+    thread_fixture(&app, &outsider, 1).await;
+    let theirs = row(&app, &outsider, "threads", "id", "thread-1")
+        .await
+        .unwrap();
+    assert!(theirs["deleted_at"].is_null());
+    assert!(row(&app, &alice, "threads", "id", "thread-1")
+        .await
+        .unwrap()["deleted_at"]
+        .is_string());
 }

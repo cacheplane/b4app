@@ -9,7 +9,7 @@ import WorkspaceStorage
 /// `com.cacheplane.b4app.coordinator`, and has a hub link to `http://localhost:8080`. A local-flavour
 /// build moves that directory to `b4app-local` so the owner keeps their threads, and copies the
 /// secrets that data references (the hub token, the connections' keys) from the prod keychain group
-/// to its own, once (D-093).
+/// to its own, once (D-094).
 ///
 /// Nothing here moves a directory unless every check passes and the old install has been stopped:
 /// a failure at any step leaves `b4app` exactly as it was.

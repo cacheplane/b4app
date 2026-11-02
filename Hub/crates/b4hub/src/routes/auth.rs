@@ -366,7 +366,7 @@ async fn sign_in(
             reason = "no account has this credential",
             "passkey verification failed"
         );
-        // The one refusal that says why: the app forgets this passkey (D-116).
+        // The one refusal that says why: the app forgets this passkey (D-117).
         return Err(ApiError::credential_unknown());
     };
     if stored.user_handle != user_handle.as_bytes() {

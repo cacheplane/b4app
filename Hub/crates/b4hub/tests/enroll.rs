@@ -992,7 +992,7 @@ async fn a_revoked_macs_unused_pairing_code_cannot_be_redeemed(pool: PgPool) {
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 
-// ---- Reusing this device (D-095, X3) ----
+// ---- Reusing this device (D-096, X3) ----
 
 /// An enrollment body for `platform` that offers `device_id` and `candidates` to reuse.
 fn reusing_body(

@@ -48,7 +48,7 @@ public actor AccountManager {
     /// with Apple is offered at all.
     public var flavor: Flavor
     /// The prod keychain group the local flavour copies the adopted `workspace`'s secrets from, once
-    /// (D-093; `LegacyAdoption.Plan.legacySecretStore`). Nil, the default and every other flavour's,
+    /// (D-094; `LegacyAdoption.Plan.legacySecretStore`). Nil, the default and every other flavour's,
     /// reads nothing.
     public var legacySecretStore: (any SecretStore)?
 
@@ -229,7 +229,7 @@ public actor AccountManager {
     await install(row: row, database: database)
   }
 
-  /// The local flavour's one read of the prod keychain group (D-063, D-093): before the first hub call
+  /// The local flavour's one read of the prod keychain group (D-063, D-094): before the first hub call
   /// of the account whose database is the adopted `workspace` (at a start, or at a sign-in that claims
   /// that row), copy the secrets it references (its
   /// hub token, its connections' keys) into this flavour's store where they are missing. Only with a
