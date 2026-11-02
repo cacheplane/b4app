@@ -8,7 +8,7 @@ Branch `blove/settings-connections-design`.
 
 **Gates**
 - `swift format lint --strict` was clean.
-- `swift test` passed: 624 tests in 108 suites, before the review fixes. The re-run after them is recorded in the PR.
+- `swift test` passed: 633 tests in 108 suites, after the review fixes.
 - Both `xcodebuild` builds passed: macOS, and iOS for the Simulator.
 
 **New tests**
@@ -56,6 +56,21 @@ Branch `blove/settings-connections-design`.
 - The cards are read-only, say "Usage shows on your Mac", and have no "…" menu.
 - At AX3 the card headers stack (mark and status above the name), after a letter-by-letter wrap was seen.
 - The Settings page list drops its symbols at accessibility sizes, after "Connecti / ons" was seen.
+
+**Review**
+
+A whole-branch review by a fresh reviewer on Opus found no critical issues. It raised four important findings, and two minor ones were re-graded important. Each fix has a test written to fail first:
+
+- Checks on page open ran one after another on the client's single queue and froze Send and approvals. They now run in the background (`connection.inspect background`) and skip a connection checked in the last two minutes.
+- A key change during a running turn dropped the adapter mid-turn. It is now refused with `turn_active`.
+- Codex's sparse `account/rateLimits/updated` overwrote a refusal. It now triggers a full read.
+- A refusal outlived its reset. It now ends when the window that ran out resets.
+- A check that ended early could leave a spinner turning. It now always publishes its closing event, and a snapshot clears check progress.
+- A server that had never reported tokens showed "0 tokens". It now shows no figure.
+
+The rest were deferred as minor; the PR lists them.
+
+While re-running the snapshots, the full Mac snapshot test timed out waiting for an approval. The cause was in `fake-codex.py`, and it predates this branch: while waiting for an approval answer the fake dropped every message, so the coordinator's `thread/read` waited until it timed out. On `main` the test took about 135 s. The fake now answers reads while it waits, and the test passed three runs in three at about 38 s.
 
 **Not checked**
 - Clicking the "+" menu, the sheets' Save, and Edit against the running app. The sheets were rendered and their logic is tested; they were not driven by clicks.
