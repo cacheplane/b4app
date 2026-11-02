@@ -10,7 +10,7 @@ enum ConnectionSummary {
     }
     if let reason = reason(connection, blocked: reading?.blocked ?? false) { return reason }
     if connection.kind == .b4 { return host(connection.target) ?? connection.target }
-    let plan = reading?.planType.map(planName)
+    let plan = reading?.planType.flatMap(planName)
     guard let account = connection.nativeScope, !account.isEmpty else { return plan ?? "Not signed in" }
     return [plan, account].compactMap { $0 }.joined(separator: " · ")
   }
@@ -38,10 +38,24 @@ enum ConnectionSummary {
     return url.port.map { "\(host):\($0)" } ?? host
   }
 
-  /// "pro" → "Pro", "self_serve_business_prolite" → "Self serve business prolite".
-  private static func planName(_ raw: String) -> String {
-    let words = raw.replacingOccurrences(of: "_", with: " ")
-    return words.prefix(1).uppercased() + words.dropFirst()
+  /// The plan as people say it: "promax" → "Pro Max". Codes without a common name are title-cased;
+  /// "unknown" is no name at all.
+  static func planName(_ raw: String) -> String? {
+    let known = [
+      "free": "Free", "go": "Go", "plus": "Plus", "pro": "Pro", "prolite": "Pro Lite", "promax": "Pro Max",
+      "team": "Team", "business": "Business", "enterprise": "Enterprise", "edu": "Edu",
+    ]
+    if raw == "unknown" || raw.isEmpty { return nil }
+    if let name = known[raw] { return name }
+    return raw.split(separator: "_").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
+  }
+
+  /// The windows a reading has, in order (5-hour, then weekly), so a plan with one window shows it
+  /// at the leading edge.
+  static func windows(_ reading: UsageReading) -> [(title: String, window: UsageWindow)] {
+    [("5-hour", reading.fiveHour), ("Weekly", reading.weekly)].compactMap { title, window in
+      window.map { (title, $0) }
+    }
   }
 }
 
@@ -145,18 +159,12 @@ struct ConnectionCardView: View {
       typeSize.isAccessibilitySize
       ? AnyLayout(VStackLayout(alignment: .leading, spacing: LLA.Space.m))
       : AnyLayout(HStackLayout(alignment: .top, spacing: LLA.Space.l))
+    let windows = ConnectionSummary.windows(reading)
     layout {
       Group {
-        if let window = reading.fiveHour {
-          UsageMeter(title: "5-hour", window: window, now: now)
-        } else {
-          Color.clear.frame(height: 0)
-        }
-        if let window = reading.weekly {
-          UsageMeter(title: "Weekly", window: window, now: now)
-        } else {
-          Color.clear.frame(height: 0)
-        }
+        ForEach(windows, id: \.title) { UsageMeter(title: $0.title, window: $0.window, now: now) }
+        // One window keeps the two-column grid, so its bar is as long as on a card with two.
+        if windows.count == 1, !typeSize.isAccessibilitySize { Color.clear.frame(height: 0) }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     }

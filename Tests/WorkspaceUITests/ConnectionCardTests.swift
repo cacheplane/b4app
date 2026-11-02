@@ -72,4 +72,23 @@ private func connection(
     #expect(!B4ConnectionForm.ready(server: "http://remote.example", agent: "/chat#agent"))
     #expect(!B4ConnectionForm.ready(server: "", agent: "/chat#agent"))
   }
+
+  @Test func planCodesReadAsNames() {
+    #expect(ConnectionSummary.planName("pro") == "Pro")
+    #expect(ConnectionSummary.planName("promax") == "Pro Max")
+    #expect(ConnectionSummary.planName("prolite") == "Pro Lite")
+    #expect(ConnectionSummary.planName("plus") == "Plus")
+    #expect(ConnectionSummary.planName("self_serve_business_prolite") == "Self Serve Business Prolite")
+    #expect(ConnectionSummary.planName("unknown") == nil)
+  }
+
+  @Test func windowsFillFromTheLeadingEdge() {
+    let weeklyOnly = UsageReading(
+      weekly: UsageWindow(usedPercent: 87, windowMinutes: 10080), observedAt: "2026-11-02T00:00:00.000Z")
+    #expect(ConnectionSummary.windows(weeklyOnly).map(\.title) == ["Weekly"])
+    let both = UsageReading(
+      fiveHour: UsageWindow(usedPercent: 10), weekly: UsageWindow(usedPercent: 20),
+      observedAt: "2026-11-02T00:00:00.000Z")
+    #expect(ConnectionSummary.windows(both).map(\.title) == ["5-hour", "Weekly"])
+  }
 }
