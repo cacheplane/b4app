@@ -15,7 +15,7 @@
 - The hub binary does not change in this plan except `Hub/Dockerfile`. No AWS SDK, no cloud-specific code path, no new env var. The image's `ENTRYPOINT` stays `["/usr/local/bin/b4hub"]`, `CMD ["serve"]`, user `10001:10001`, `EXPOSE 8080`.
 - Environments: `test` (account `b4hub-test`, `https://hub.test.b4.run`) and `prod` (account `b4hub-prod`, `https://hub.b4.run`), region `us-east-2`, second region later `us-west-2`.
 - Hub env in the serving task: `B4HUB_PORT=8080`, `B4HUB_PUBLIC_URL=https://hub[.test].b4.run`, `B4HUB_SIGNUP=open`, `B4HUB_WEBAUTHN_RP_ID=b4.run|test.b4.run`, `B4HUB_APPLE_AUDIENCES=com.cacheplane.b4app.ios,com.cacheplane.b4app.signin`, `B4HUB_TRUST_X_FORWARDED_FOR=1`, `B4HUB_RETENTION_DAYS=30`, `B4HUB_LOG=info`. Never `B4HUB_APPLE_BASE_URL`.
-- Secrets Manager secrets per account, names exactly: `b4hub/database-admin-url`, `b4hub/database-url`, `b4hub/secret-key`, `b4hub/apple-team-id`, `b4hub/apple-key-id`, `b4hub/apple-private-key`. The `hub` task gets the last five; `hub-migrate` gets the first two; `hub-admin` gets only `database-admin-url`. The first deployments (before the sign-in branch merges) register `hub` with only `database-url`; see Task 10.
+- Secrets Manager secrets per account, names exactly: `b4hub/database-admin-url`, `b4hub/database-url`, `b4hub/secret-key`, `b4hub/apple-team-id`, `b4hub/apple-key-id`, `b4hub/apple-private-key`. The `hub` task gets the last five; `hub-migrate` gets the first two; `hub-admin` gets only `database-admin-url`. The first deployments (before the sign-in branch merges) register `hub` with only `database-url`; see Task 10. Once sign-in merges, `serve` refuses to start without `B4HUB_SECRET_KEY` and `B4HUB_WEBAUTHN_RP_ID`, so the owner fills `b4hub/secret-key` in both accounts before that merge (the rp id is already in the template's environment).
 - Database URLs end in `?sslmode=verify-full&sslrootcert=/etc/ssl/certs/rds-global-bundle.pem`. `DATABASE_ADMIN_URL` is the `b4hub_owner` role, never the RDS master.
 - Timing: ALB idle timeout 120 s; ECS `stopTimeout` 60; target group health check `GET /readyz` every 10 s, healthy 2, unhealthy 3; deployment `minimum_healthy_percent = 0`, `maximum_percent = 100`, circuit breaker with rollback; `desired_count = 1`.
 - No long-lived AWS credential anywhere: every workflow uses `aws-actions/configure-aws-credentials` with `role-to-assume` and `permissions: id-token: write`. No secret value in Terraform code, Terraform state, workflow files, or logs.
@@ -45,7 +45,7 @@
 - Modify: `docs/compatibility.md` (cargo-chef version, RDS bundle date)
 
 **Interfaces:**
-- Produces: an image with `/etc/ssl/certs/rds-global-bundle.pem` present, `libssl3` and `ca-certificates` installed, same `ENTRYPOINT`/`CMD`/user as today; `Hub/scripts/check-image.sh <image-ref>` exits 0 when those hold.
+- Produces: an image with `/etc/ssl/certs/rds-global-bundle.pem` present, `ca-certificates` installed (no OpenSSL: the hub links rustls and webauthn-rs uses RustCrypto), same `ENTRYPOINT`/`CMD`/user as today; `Hub/scripts/check-image.sh <image-ref>` exits 0 when those hold.
 
 - [ ] **Step 1: Write the failing check script**
 
@@ -58,7 +58,7 @@ docker run --rm --entrypoint /bin/sh "$img" -c '
   test -s /etc/ssl/certs/rds-global-bundle.pem &&
   test "$(id -u)" = 10001 &&
   test -x /usr/local/bin/b4hub &&
-  ldconfig -p | grep -q libssl.so.3 &&
+  ! ldconfig -p | grep -q libssl.so &&
   grep -c "BEGIN CERTIFICATE" /etc/ssl/certs/rds-global-bundle.pem | awk "{exit !(\$1 > 50)}"
 '
 docker inspect "$img" --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}' \
@@ -68,7 +68,7 @@ docker inspect "$img" --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}
 - [ ] **Step 2: Run it against the current image to verify it fails**
 
 Run: `cd Hub && docker build -t b4hub:check . && ./scripts/check-image.sh b4hub:check`
-Expected: non-zero exit (no RDS bundle, no libssl3).
+Expected: non-zero exit (no RDS bundle).
 
 - [ ] **Step 3: Rewrite the builder stage with cargo-chef**
 
@@ -76,7 +76,7 @@ In `Hub/Dockerfile`: a `chef` stage `FROM rust@<same digest> AS chef` that `carg
 
 - [ ] **Step 4: Extend the runtime stage**
 
-Add `libssl3` to the `apt-get install` list. Add a stage `FROM debian@<digest> AS rdsca` that `apt-get install --no-install-recommends --yes ca-certificates curl` and `curl -fsSL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem -o /rds-global-bundle.pem`, then `COPY --from=rdsca --chmod=0444 /rds-global-bundle.pem /etc/ssl/certs/rds-global-bundle.pem` into the runtime stage. Add a comment: the bundle is fetched at build time so the image has no network dependency at run time, and the deploy's attestation covers it.
+Leave the `apt-get install` list as it is (`ca-certificates curl`). Add a stage `FROM debian@<digest> AS rdsca` that `apt-get install --no-install-recommends --yes ca-certificates curl` and `curl -fsSL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem -o /rds-global-bundle.pem`, then `COPY --from=rdsca --chmod=0444 /rds-global-bundle.pem /etc/ssl/certs/rds-global-bundle.pem` into the runtime stage. Add a comment: the bundle is fetched at build time so the image has no network dependency at run time, and the deploy's attestation covers it.
 
 - [ ] **Step 5: Build and run the check**
 
@@ -87,7 +87,7 @@ Expected: `OK`. Then `docker build -t b4hub:check .` a second time after `touch 
 
 ```bash
 git add Hub/Dockerfile Hub/scripts/check-image.sh docs/compatibility.md
-git commit -m "build(hub): cargo-chef layering, libssl3, and the RDS CA bundle in the image"
+git commit -m "build(hub): cargo-chef layering and the RDS CA bundle in the image"
 ```
 
 ### Task 2: `hub-image.yml`: multi-arch build, tags, attestations, GHCR cleanup
