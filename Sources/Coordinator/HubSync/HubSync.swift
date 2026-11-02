@@ -427,6 +427,11 @@ public actor HubSync {
     await link.start()
   }
 
+  /// The relay link's status while joined; nil when not joined.
+  public func linkStatus() async -> HubLinkStatus? {
+    await link?.status()
+  }
+
   /// Reopen the relay link at once (the Mac woke up), skipping its backoff.
   public func reconnectLink() async {
     await link?.reconnectNow()

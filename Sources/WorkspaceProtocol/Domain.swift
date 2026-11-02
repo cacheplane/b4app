@@ -526,16 +526,20 @@ public struct DiagnosticsReport: Codable, Sendable, Equatable {
   public var recentErrors: [RecentError]
   /// The hub link of a mirroring device; nil from the coordinator and absent in older reports.
   public var sync: SyncDiagnostic?
+  /// The Mac's relay link to the hub (M8c), while joined; nil otherwise, from the phone, and absent in
+  /// older reports.
+  public var relay: HubLinkStatus?
 
   public init(
     coordinator: CoordinatorInfo, host: HostInfo, runtimes: [RuntimeDiagnostic], recentErrors: [RecentError],
-    sync: SyncDiagnostic? = nil
+    sync: SyncDiagnostic? = nil, relay: HubLinkStatus? = nil
   ) {
     self.coordinator = coordinator
     self.host = host
     self.runtimes = runtimes
     self.recentErrors = recentErrors
     self.sync = sync
+    self.relay = relay
   }
 }
 

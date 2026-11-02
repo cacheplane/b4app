@@ -179,6 +179,7 @@ public enum Coordinator {
           makeLink: makeLink)
       }
       ?? HubSync(database: database, secretStore: options.secretStore, eventLog: eventLog, makeLink: makeLink)
+    await diagnostics.attachRelay { [hub] in await hub.linkStatus() }
     let router = Router(
       context: Router.Context(
         database: database, eventLog: eventLog, diagnostics: diagnostics, sessions: sessions,

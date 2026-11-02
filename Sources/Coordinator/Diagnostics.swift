@@ -20,10 +20,17 @@ public actor DiagnosticsService {
   private let context: Context
   private var cached: (at: Date, runtimes: [RuntimeDiagnostic])?
   private var recentErrors: [RecentError] = []
+  /// The relay link's status (`HubSync.linkStatus`), attached once `HubSync` exists.
+  private var relayStatus: (@Sendable () async -> HubLinkStatus?)?
   private let cacheInterval: TimeInterval = 30
 
   public init(context: Context) {
     self.context = context
+  }
+
+  /// Where the report's `relay` section comes from; `HubSync` is built after this service.
+  public func attachRelay(_ status: @escaping @Sendable () async -> HubLinkStatus?) {
+    relayStatus = status
   }
 
   /// Recent errors are shown to the user and copied into bug reports: known secret shapes are
@@ -50,7 +57,8 @@ public actor DiagnosticsService {
       host: HostInfo(
         platform: "darwin", arch: Self.architecture,
         release: ProcessInfo.processInfo.operatingSystemVersionString),
-      runtimes: cached?.runtimes ?? [], recentErrors: Array(recentErrors.suffix(20)))
+      runtimes: cached?.runtimes ?? [], recentErrors: Array(recentErrors.suffix(20)),
+      relay: await relayStatus?())
   }
 
   private static var architecture: String {

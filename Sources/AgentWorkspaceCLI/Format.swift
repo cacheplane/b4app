@@ -11,6 +11,12 @@ enum Format {
     lines.append("  database    \(report.coordinator.databasePath)")
     if let secrets = report.coordinator.secretStore { lines.append("  secrets     \(secrets)") }
     lines.append("  host        \(report.host.platform) \(report.host.arch) (\(report.host.release))")
+    if let relay = report.relay {
+      var line = "  relay       \(relay.state.rawValue)"
+      if let since = relay.since { line += " since \(since)" }
+      if let error = relay.lastError { line += " (\(error))" }
+      lines.append(line)
+    }
     lines.append("")
     lines.append("Runtimes")
     for runtime in report.runtimes {

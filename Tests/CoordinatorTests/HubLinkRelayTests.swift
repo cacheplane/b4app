@@ -306,7 +306,7 @@ private struct JoinedHarness {
 
 // MARK: - Tests
 
-@Suite(.serialized, .timeLimit(.minutes(2))) struct HubLinkTests {
+@Suite(.serialized, .timeLimit(.minutes(2))) struct HubLinkRelayTests {
   @Test func commandFromTheHubRunsAndReplies() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
@@ -596,6 +596,69 @@ private struct JoinedHarness {
     let left = try await h.coordinator.hub.status()
     #expect(left.joined == false)
     #expect(left.link == nil)
+  }
+
+  /// Review Focus 1 at the link: the executor is given the hub's clock from `hello`, not the Mac's.
+  @Test func deadlineUsesTheHubClockAtTheLink() async throws {
+    let h = try await LinkHarness.start()
+    defer { Task { await h.close() } }
+    let thread = try await h.newThread(try await h.addCodex())
+    await h.link.start()
+    let socket = await h.connection.nextSocket()
+    let params = try JSONValue(encoding: TurnLookup.Params(operationId: "op-1", threadId: thread.id))
+
+    /// Sets the hub's clock to the Mac's plus `skew` (a repeated hello moves the offset), then sends a
+    /// `turn.lookup` due `left` seconds after the hub's now, and returns the reply's error code.
+    func lookup(skew: TimeInterval, left: TimeInterval) async throws -> String? {
+      let hubNow = Date().addingTimeInterval(skew)
+      socket.deliver(hello(hubTime: hubNow))
+      await waitUntil("connected") { await h.link.status().state == .connected }
+      let id = UUID().uuidString.lowercased()
+      socket.deliver(
+        .command(
+          id: id, method: .turnLookup, params: params,
+          deadline: Timestamp.string(from: hubNow.addingTimeInterval(left))))
+      guard case .reply(id, let result, let error) = try await nextFrame(socket) else {
+        Issue.record("expected the reply to \(id)")
+        return "no reply"
+      }
+      if error == nil { #expect(try #require(result).decode(TurnLookup.Result.self).state == .none) }
+      return error?.code
+    }
+
+    let expired = ErrorCode.commandExpired.rawValue
+    // The Mac is 2 minutes ahead: 8 s left on the hub is already past on the Mac's clock. It runs.
+    #expect(try await lookup(skew: -120, left: 8) == nil)
+    // The Mac is 2 minutes behind: 1 s past on the hub still looks far off on the Mac's. Refused.
+    #expect(try await lookup(skew: 120, left: -1) == expired)
+    // The cases where both clocks agree.
+    #expect(try await lookup(skew: 120, left: 8) == nil)
+    #expect(try await lookup(skew: -120, left: -1) == expired)
+  }
+
+  @Test func diagnosticsShowTheRelayLink() async throws {
+    let h = try await JoinedHarness.start()
+    defer { Task { await h.close() } }
+    let notJoined = try await h.coordinator.diagnostics.read()
+    #expect(notJoined.relay == nil)
+    let socket = try await h.join()
+    let connected = try #require(try await h.coordinator.diagnostics.read().relay)
+    #expect(connected.state == .connected)
+    #expect(connected.since.flatMap(Timestamp.date(from:)) != nil)
+    #expect(connected.lastError == nil)
+    socket.closeFromHub(code: 4001)
+    await waitUntil("offline") { (try? await h.coordinator.diagnostics.read().relay?.state) == .offline }
+    let offline = try #require(try await h.coordinator.diagnostics.read().relay)
+    #expect(offline.lastError?.contains("removed from the hub") == true)
+    #expect(offline.since.flatMap(Timestamp.date(from:)) != nil)
+    // The report travels with the section, and an older report without it still decodes.
+    let report = try await h.coordinator.diagnostics.read()
+    let json = try JSONEncoder().encode(report)
+    #expect(try JSONDecoder().decode(DiagnosticsReport.self, from: json).relay == offline)
+    var object = try #require(try JSONSerialization.jsonObject(with: json) as? [String: Any])
+    object["relay"] = nil
+    let old = try JSONSerialization.data(withJSONObject: object)
+    #expect(try JSONDecoder().decode(DiagnosticsReport.self, from: old).relay == nil)
   }
 
   @Test func statusDecodesWithoutALink() throws {

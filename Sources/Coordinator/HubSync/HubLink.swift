@@ -116,6 +116,9 @@ public actor HubLink {
 
   private var relay: RelayLink?
   private var running = false
+  /// Changes on every `start` and `stop`, so a `start` that a `stop` overtook while it was suspended
+  /// leaves nothing running.
+  private var epoch = 0
   private var eventTask: Task<Void, Never>?
   private var senderTask: Task<Void, Never>?
   private var outbox: AsyncStream<Outbound>.Continuation?
@@ -155,6 +158,8 @@ public actor HubLink {
   public func start() async {
     guard !running else { return }
     running = true
+    epoch += 1
+    let started = epoch
     let relay =
       self.relay
       ?? RelayLink(
@@ -172,6 +177,8 @@ public actor HubLink {
       }
     }
     let events = await eventLog.subscribe()
+    // A stop while subscribing has torn down what was set up above; dropping `events` unsubscribes.
+    guard epoch == started else { return }
     eventTask = Task { [weak self] in
       for await envelope in events {
         guard let self else { return }
@@ -180,6 +187,9 @@ public actor HubLink {
     }
     pathMonitor?.start { [weak self] in await self?.reconnectNow() }
     await relay.start()
+    // A stop that ran while the start was on its way to the link must not leave it running (unless a
+    // later start owns it now).
+    if epoch != started, !running { await relay.stop() }
   }
 
   /// Closes the link and ends the subscription. A relayed command still running finishes, and its
@@ -187,10 +197,12 @@ public actor HubLink {
   public func stop() async {
     guard running else { return }
     running = false
+    epoch += 1
+    // Everything but the link's own stop happens before suspending, so a `start` arriving meanwhile
+    // sets up afresh instead of having its new tasks torn down here.
     pathMonitor?.stop()
     eventTask?.cancel()
     eventTask = nil
-    await relay?.stop()
     outbox?.finish()
     outbox = nil
     senderTask?.cancel()
@@ -198,6 +210,7 @@ public actor HubLink {
     watchedThreads = []
     open = [:]
     linkUp = false
+    await relay?.stop()
   }
 
   /// Reopens the link now (after a wake or a network change), skipping any backoff wait.
@@ -219,11 +232,13 @@ public actor HubLink {
   private func received(_ message: RelayMessage) async {
     switch message {
     case .command(let id, let method, let params, let deadline, _):
-      // Taken at receipt, before the command waits for anything (R1: nil only before a hello).
-      let hubNow = await relay?.hubNow() ?? Date()
       let due = deadline.flatMap(Self.date(from:)) ?? .distantPast
       let executor = executor
+      let relay = relay
       Task { [weak self] in
+        // The hub's clock (R1: nil only before a hello), read just before running, so time spent
+        // getting here counts against the deadline.
+        let hubNow = await relay?.hubNow() ?? Date()
         let reply = await executor.execute(
           id: id, method: method, params: params, deadline: due, hubNow: hubNow)
         await self?.enqueue(reply, generation: nil)

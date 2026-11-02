@@ -129,7 +129,7 @@ private struct HubHarness {
     let outcome = try await Coordinator.start(
       options: CoordinatorOptions(
         paths: paths, environment: env, secretStore: secrets, hubAPIFactory: { _, _ in fake },
-        // Never a real socket: the relay link has its own tests (HubLinkTests).
+        // Never a real socket: the relay link has its own tests (HubLinkRelayTests).
         hubLinkConnection: FakeHubLinkConnection()))
     guard case .running(let coordinator) = outcome else {
       throw WorkspaceError(.internalError, "expected running")

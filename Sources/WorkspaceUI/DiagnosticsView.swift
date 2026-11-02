@@ -33,6 +33,14 @@ struct DiagnosticsView: View {
               row("Refused by the hub", Self.uploads(sync.refusedUploads, "refused"), mono: false)
             }
           }
+          if let relay = report.relay {
+            LLASectionHead("Relay link").padding(.top, LLA.Space.l)
+            Grid(alignment: .leading, horizontalSpacing: LLA.Space.l, verticalSpacing: LLA.Space.xs) {
+              row("State", relay.state.rawValue.capitalized)
+              if let since = relay.since { row("Since", since) }
+              if let error = relay.lastError { row("Last error", error) }
+            }
+          }
           LLASectionHead("Runtimes").padding(.top, LLA.Space.l)
           ForEach(Array(report.runtimes.enumerated()), id: \.offset) { _, runtime in
             LLACard {
