@@ -406,10 +406,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         parts = urlparse(self.path).path.strip("/").split("/")
         if parts[0] == "threads" and len(parts) == 2:
+            # FAKE_B4_NO_DELETE=1: a server without the route answers 405.
+            if os.environ.get("FAKE_B4_NO_DELETE") == "1":
+                return self.send_json(405, error_body("Method not allowed"))
             with LOCK:
-                STATE["threads"].pop(parts[1], None)
+                found = STATE["threads"].pop(parts[1], None) is not None
                 save_state()
-            return self.send_json(204)
+            return self.send_json(204) if found else self.send_json(404, error_body("Thread not found"))
         return self.send_json(404, error_body("Not found"))
 
     def do_POST(self):
