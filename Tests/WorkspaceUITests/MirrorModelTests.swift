@@ -213,6 +213,60 @@ private func fixtureAsStored(file: StaticString = #filePath) throws -> [StoredCh
     }
     await model.disconnect()
   }
+
+  /// The Mac's catch-up: one delta carrying the whole text so far, marked `catchUp`.
+  private func catchUp(_ text: String) -> RelayMessage {
+    .event(
+      AdapterEvent(
+        kind: .messageDelta, connectionId: "conn-1", threadId: "thread-1", nativeIds: ["itemId": "native-9"],
+        payload: ["delta": .string(text), "catchUp": true]))
+  }
+
+  /// The Mac relinked mid-reply: its catch-up repeats what the phone already shows, so only the rest is
+  /// added, and nothing when there is no rest.
+  @Test func aCatchUpAfterAMacRelinkResumesTheText() async throws {
+    let (model, _, _, socket) = try await relayedModel()
+    socket.deliver(try itemEvent(.messageStarted, agent("")))
+    socket.deliver(delta("Hel"))
+    try await waitUntil("streamed") { model.detail?.liveText["native-9"] == "Hel" }
+
+    socket.deliver(catchUp("Hello"))
+    try await waitUntil("resumed", timeout: .seconds(10)) { model.detail?.liveText["native-9"] == "Hello" }
+    socket.deliver(catchUp("Hello"))
+    socket.deliver(delta(" there"))
+    try await waitUntil("streaming on", timeout: .seconds(10)) {
+      model.detail?.liveText["native-9"] == "Hello there"
+    }
+    #expect(count(model, "item-9") == 1)
+
+    // A catch-up that does not start with what is shown replaces it.
+    socket.deliver(catchUp("Howdy"))
+    try await waitUntil("replaced", timeout: .seconds(10)) { model.detail?.liveText["native-9"] == "Howdy" }
+    socket.deliver(delta("!"))
+    try await waitUntil("appended", timeout: .seconds(10)) { model.detail?.liveText["native-9"] == "Howdy!" }
+    #expect(count(model, "item-9") == 1)
+    await model.disconnect()
+  }
+
+  /// After a gap (the phone's link dropped), the item's live text was cleared and its deltas muted; the
+  /// catch-up that follows the rewatch shows the whole text, and later deltas append to it.
+  @Test func aCatchUpAfterAGapShowsTheTextAgain() async throws {
+    let (model, _, _, socket) = try await relayedModel()
+    socket.deliver(try itemEvent(.messageStarted, agent("")))
+    socket.deliver(delta("Hel"))
+    try await waitUntil("streamed") { model.detail?.liveText["native-9"] == "Hel" }
+    socket.deliver(.streamGap(threadId: "thread-1"))
+    try await waitUntil("live text dropped") { model.detail?.liveText["native-9"] == nil }
+
+    socket.deliver(catchUp("Hello"))
+    try await waitUntil("caught up", timeout: .seconds(10)) { model.detail?.liveText["native-9"] == "Hello" }
+    socket.deliver(delta(" there"))
+    try await waitUntil("appended", timeout: .seconds(10)) {
+      model.detail?.liveText["native-9"] == "Hello there"
+    }
+    #expect(count(model, "item-9") == 1)
+    await model.disconnect()
+  }
 }
 
 /// Stamps changes after the fixture's clocks, as a Mac writing in order would.

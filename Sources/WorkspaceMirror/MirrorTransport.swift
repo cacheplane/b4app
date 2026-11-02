@@ -30,7 +30,11 @@ import WorkspaceSync
 ///   memory and merged into `thread.read` until the synced rows catch up, so a re-read never loses an
 ///   item still streaming;
 /// - a synced row of a message still streaming is announced as `message.started`, so its live text
-///   keeps going until the relayed completion arrives.
+///   keeps going until the relayed completion arrives;
+/// - a catch-up (`payload.catchUp`, the Mac's whole text so far after a relink or a rewatch) resumes the
+///   item: only what the model does not show yet is passed on. When the shown text is not where the
+///   catch-up starts (after a gap, or a mismatch), the item's live text is cleared as a gap clears it,
+///   the item is no longer muted, and the whole catch-up is passed on.
 ///
 /// A started thread whose row has not reached the mirror is answered by a placeholder held in memory:
 /// the thread from the Mac's reply, with what its relayed events said. Until the first read, its events
@@ -92,6 +96,9 @@ public final class MirrorTransport: WorkspaceTransport {
     var completed: Set<String> = []
     /// Text streamed before the thread was first read, handed over with the item's next delta.
     var owed: [String: String] = [:]
+    /// The live text the model holds for each native item id: what this transport's deltas added since
+    /// the model last cleared it (a completion, or the turn finishing). A catch-up resumes from it.
+    var shown: [String: String] = [:]
   }
 
   struct Placeholder {
@@ -658,10 +665,36 @@ public final class MirrorTransport: WorkspaceTransport {
       guard let native = event.nativeIds["itemId"], let text = event.payload["delta"]?.stringValue else {
         break
       }
+      let isCatchUp = event.payload["catchUp"]?.boolValue == true
+      // A catch-up carries the whole text, so a gap's mute no longer applies.
+      if isCatchUp, !overlay.completed.contains(native) { overlay.muted.remove(native) }
       if overlay.completed.contains(native) || overlay.muted.contains(native)
         || (try? store.item(threadId: threadId, nativeItemId: native))?.final == true
       {
         state.overlays[threadId] = overlay
+        return
+      }
+      if isCatchUp {
+        if holding {
+          // Nothing reached the model yet: the catch-up is all that is owed.
+          overlay.owed[native] = text
+          state.overlays[threadId] = overlay
+          return
+        }
+        overlay.owed[native] = nil
+        overlay.open.insert(native)
+        let shown = overlay.shown[native] ?? ""
+        var rest = text
+        if text.unicodeScalars.starts(with: shown.unicodeScalars) {
+          rest = String(String.UnicodeScalarView(text.unicodeScalars.dropFirst(shown.unicodeScalars.count)))
+          state.overlays[threadId] = overlay
+          if rest.isEmpty { return }
+        } else {
+          state.overlays[threadId] = overlay
+          emit(cleared(native, threadId: threadId, state: state).map { [$0] } ?? [], state: &state)
+        }
+        out.payload = Self.merged(event.payload, ["delta": .string(rest), "catchUp": nil])
+        emit([out], state: &state)
         return
       }
       if holding {
@@ -710,21 +743,13 @@ public final class MirrorTransport: WorkspaceTransport {
   }
 
   /// Events for `threadId` may have been lost: each open message's live text ends with its item as last
-  /// known, and its later deltas wait for its completion or for sync.
+  /// known, and its later deltas wait for its completion, a catch-up, or sync.
   private func gap(_ threadId: String, state: inout State) {
     guard var overlay = state.overlays[threadId] else { return }
     var events: [AdapterEvent] = []
     for native in overlay.open.sorted() {
       overlay.muted.insert(native)
-      let known =
-        overlay.items.values.first { $0.item.nativeItemId == native }?.item
-        ?? (try? store.item(threadId: threadId, nativeItemId: native))?.item
-      guard let known, let payload = try? JSONValue(encoding: known) else { continue }
-      events.append(
-        AdapterEvent(
-          kind: .messageCompleted, connectionId: overlay.connectionId, threadId: threadId,
-          turnId: known.turnId,
-          nativeIds: ["itemId": native], payload: ["displayItem": payload]))
+      if let event = cleared(native, threadId: threadId, state: state) { events.append(event) }
     }
     for native in overlay.owed.keys { overlay.muted.insert(native) }
     overlay.owed = [:]
@@ -733,10 +758,44 @@ public final class MirrorTransport: WorkspaceTransport {
     emit(events, state: &state)
   }
 
-  private static func merged(_ payload: JSONValue, _ fields: [String: JSONValue]) -> JSONValue {
-    guard case .object(var object) = payload else { return .object(fields) }
+  /// The `message.completed` that ends an item's live text in the model, carrying the item as last
+  /// known; nil when the item is not known.
+  private func cleared(_ native: String, threadId: String, state: State) -> AdapterEvent? {
+    let overlay = state.overlays[threadId]
+    let known =
+      overlay?.items.values.first { $0.item.nativeItemId == native }?.item
+      ?? (try? store.item(threadId: threadId, nativeItemId: native))?.item
+    guard let known, let payload = try? JSONValue(encoding: known) else { return nil }
+    return AdapterEvent(
+      kind: .messageCompleted, connectionId: overlay?.connectionId ?? "", threadId: threadId,
+      turnId: known.turnId, nativeIds: ["itemId": native], payload: ["displayItem": payload])
+  }
+
+  /// `payload` with `fields` set; a nil value removes the key.
+  private static func merged(_ payload: JSONValue, _ fields: [String: JSONValue?]) -> JSONValue {
+    var object: [String: JSONValue] = [:]
+    if case .object(let existing) = payload { object = existing }
     for (key, value) in fields { object[key] = value }
     return .object(object)
+  }
+
+  /// Keeps `shown` as the model's live text: a delta adds to it, and what clears the model's (an item's
+  /// completion, the turn finishing) clears it.
+  private static func track(_ event: AdapterEvent, overlay: inout Overlay) {
+    switch event.kind {
+    case .messageDelta:
+      if let native = event.nativeIds["itemId"], let text = event.payload["delta"]?.stringValue {
+        overlay.shown[native, default: ""] += text
+      }
+    case .messageCompleted, .toolCompleted:
+      if let native = (try? event.payload["displayItem"]?.decode(DisplayItem.self))?.nativeItemId {
+        overlay.shown[native] = nil
+      }
+    case .turnFinished:
+      overlay.shown = [:]
+    default:
+      break
+    }
   }
 
   private func refuseWhileUnavailable() throws {
@@ -751,6 +810,9 @@ public final class MirrorTransport: WorkspaceTransport {
   /// Numbers and sends events while the lock is held, so they precede the command's response.
   private func emit(_ events: [AdapterEvent], state: inout State) {
     for event in events {
+      if let threadId = event.threadId, state.overlays[threadId] != nil {
+        Self.track(event, overlay: &state.overlays[threadId]!)
+      }
       state.sequence += 1
       let envelope = EventEnvelope(epoch: epoch, sequence: state.sequence, event: event)
       if let line = try? NDJSON.encodeLine(envelope) { continuation.yield(line) }

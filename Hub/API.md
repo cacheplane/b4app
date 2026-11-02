@@ -661,6 +661,15 @@ missing or not a string, the event is dropped without an answer. Otherwise it is
 to each watching client link. The hub does not look at the event's kind or content and never logs
 them; which kinds are streamed, and the 256 KiB bound, are the Mac's to apply.
 
+**Catch-up (between the Mac and the phone; the hub passes it on like any event).** When a thread
+enters a Mac's `watching` set (a new watch, or the Mac's own relink, after which every watched
+thread is new to it), the Mac first sends one `message.delta` per message still streaming,
+carrying the whole text so far, with `payload.catchUp: true`; live deltas never carry the field.
+A phone whose item is still open (the Mac relinked mid-reply) shows only what the catch-up adds to
+the text it already has, and nothing when it is the same; one whose shown text does not begin the
+catch-up (after a `stream_gap` or its own reconnect) clears the item's live text and shows the whole
+catch-up. A phone that ignores the field appends it, as before.
+
 **Backpressure and `stream_gap`.** Each link has an outbound queue of 256 frames. When a client's
 queue is full, an `event` for it is dropped (never blocking the Mac or other phones) and the
 thread is marked as having a gap for that link. As soon as the queue has room, the hub queues one

@@ -78,7 +78,7 @@ public final class NWPathMonitorSignal: NetworkPathMonitoring, Sendable {
 /// - **Catch-up.** For every active turn (watched or not) the text of each started, uncompleted message
 ///   item is kept from its `message.delta`s, and dropped on `message.completed` and `turn.finished`.
 ///   A thread that enters the watched set first gets one `message.delta` per open item carrying the
-///   whole text so far, then its live events. Both are queued on this actor without suspending, and
+///   whole text so far (marked `payload.catchUp: true`), then its live events. Both are queued on this actor without suspending, and
 ///   one task sends the queue in order, so a live delta can neither overtake nor repeat the catch-up.
 /// - A new link starts with nothing watched: the hub's `watching` after `hello` catches every watched
 ///   thread up again, and events queued for an earlier link are not sent on the new one.
@@ -260,7 +260,9 @@ public actor HubLink {
     for threadId in threadIds where !previous.contains(threadId) {
       for item in open[threadId] ?? [] {
         var catchUp = item.template
-        catchUp.payload = ["delta": .string(item.text)]
+        // Marked, so a phone whose item is still open (a relink mid-reply) resumes from it rather than
+        // appending it; an older phone ignores the field.
+        catchUp.payload = ["delta": .string(item.text), "catchUp": true]
         forward(catchUp)
       }
     }

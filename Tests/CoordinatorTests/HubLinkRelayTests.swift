@@ -475,8 +475,11 @@ private struct JoinedHarness {
     #expect(first.connectionId == "conn-1")
     #expect(first.nativeIds["itemId"] == "i1")
     #expect(first.payload["delta"]?.stringValue == "Hello")
+    #expect(first.payload["catchUp"]?.boolValue == true)
     await h.publish(delta(thread: "t1", item: "i1", "!"))
-    #expect(event(try await nextFrame(socket))?.payload["delta"]?.stringValue == "!")
+    let live = event(try await nextFrame(socket))
+    #expect(live?.payload["delta"]?.stringValue == "!")
+    #expect(live?.payload["catchUp"] == nil)
     // Already watched: a repeat of the set sends no catch-up.
     socket.deliver(.watching(threadIds: ["t1"]))
     await h.publish(plain(.turnFinished, thread: "t1"))
@@ -484,19 +487,28 @@ private struct JoinedHarness {
     #expect(await h.link.openText(threadId: "t1").isEmpty)
   }
 
+  /// A relink mid-reply sends the whole text so far again, marked `catchUp` so the phone (whose item is
+  /// still open) resumes from it instead of appending it to what it has.
   @Test func reconnectCatchesUpTheWatchedThreadsAgain() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.connect()
     await h.watch(socket, ["t1"])
     await h.publish(delta(thread: "t1", item: "i1", "Hi"))
-    #expect(event(try await nextFrame(socket))?.payload["delta"]?.stringValue == "Hi")
+    let live = event(try await nextFrame(socket))
+    #expect(live?.payload["delta"]?.stringValue == "Hi")
+    #expect(live?.payload["catchUp"] == nil)
     await h.link.reconnectNow()
     let again = await h.connection.nextSocket()
     again.deliver(hello())
     again.deliver(.watching(threadIds: ["t1"]))
     let first = event(try await nextFrame(again))
     #expect(first?.payload["delta"]?.stringValue == "Hi")
+    #expect(first?.payload["catchUp"]?.boolValue == true)
+    await h.publish(delta(thread: "t1", item: "i1", " there"))
+    let next = event(try await nextFrame(again))
+    #expect(next?.payload["delta"]?.stringValue == " there")
+    #expect(next?.payload["catchUp"] == nil)
   }
 
   @Test func wakeReconnectsAtOnce() async throws {
