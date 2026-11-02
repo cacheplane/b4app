@@ -517,6 +517,20 @@ aws ecs update-service --cluster b4hub-$ENV --service b4hub-$ENV-hub --desired-c
 aws ecs update-service --cluster b4hub-$ENV --service b4hub-$ENV-hub --desired-count 1
 ```
 
+Pause client writes without stopping anything (D-074): devices keep reading and `/readyz` stays green with `"maintenance": "read_only"`, while every API write (`POST /v1/enroll`, `POST /v1/changes`, `DELETE /v1/devices/self`) answers `503 maintenance` with `Retry-After: 30` and the Mac keeps its outbox; the hub's own `last_seen_at` touches and the daily prune continue. The `--message` text is public (an unauthenticated enroll caller sees it), so keep internal details out of it. Every instance notices within `B4HUB_MAINTENANCE_POLL_MS` (5 s). An instance that cannot read the database at start runs with maintenance off until it can (fail-open; it warns on every poll), which only matters if the database is reachable from some tasks and not others. Run it in the admin task's `hub` container (runbook 6; it has `DATABASE_ADMIN_URL`):
+
+```bash
+Infra/scripts/admin-shell.sh $ENV hub
+```
+
+```sh
+b4hub maintenance status
+b4hub maintenance on --message "restoring the database, back by 14:00 UTC"
+b4hub maintenance off
+```
+
+On a Compose host the same commands run through the `migrate` service, which carries the admin URL: `docker compose run --rm migrate maintenance on --message "..."`, then `docker compose run --rm migrate maintenance off`. The switch is a row in `hub_settings`, so it survives deploys and restarts: `status` is the first thing to check when writes fail with `maintenance` and nobody remembers turning it on. Expect the `alb-5xx` alarm while it is on with an active Mac: the load balancer counts each refused write as a 5xx (the hub logs them at `WARN`, not `ERROR`), and the Mac client retries its outbox on its own schedule.
+
 Upstream status, each subscribed with the owner's email: Better Stack (the `/readyz` monitors and the status page at `status.b4.run`), the AWS Health Dashboard of each account, `githubstatus.com`, and Apple's developer system status (`developer.apple.com/system-status`).
 
 ### 10. The ALB was recreated

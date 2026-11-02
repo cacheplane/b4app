@@ -58,6 +58,14 @@ docker compose run --rm migrate seed --org acme --org-name Acme --user you --nam
 docker compose run --rm migrate enroll --user you
 ```
 
+The same service pauses and resumes writes during maintenance (reads and `/readyz` continue; see `Hub/API.md`, "Maintenance mode"):
+
+```bash
+docker compose run --rm migrate maintenance on --message "back by 14:00 UTC"
+docker compose run --rm migrate maintenance status
+docker compose run --rm migrate maintenance off
+```
+
 ## Your own proxy
 
 `B4HUB_TRUST_X_FORWARDED_FOR=1` is set because Caddy 2 with its default `trusted_proxies` replaces any client-supplied `X-Forwarded-For` with the peer address. If you front the hub with another proxy it must do the same (overwrite or append the peer address; never pass a client-supplied header through unchanged), or rate limits and audit addresses can be spoofed. Proxy to `hub:8080` on the Compose network, or to `127.0.0.1:8080` with the overlay.

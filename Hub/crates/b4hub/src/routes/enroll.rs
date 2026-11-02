@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::{ApiError, ApiJson};
+use crate::maintenance::WritesAllowed;
 use crate::serve::AppState;
 
 /// The platforms a device can enroll as; the `devices` table enforces the same set.
@@ -26,6 +27,7 @@ pub struct EnrollRequest {
 }
 
 pub async fn enroll(
+    WritesAllowed: WritesAllowed,
     State(state): State<AppState>,
     ApiJson(request): ApiJson<EnrollRequest>,
 ) -> Result<Json<Value>, ApiError> {

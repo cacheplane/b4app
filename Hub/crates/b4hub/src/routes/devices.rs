@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 
 use crate::auth::AuthedDevice;
 use crate::error::ApiError;
+use crate::maintenance::WritesAllowed;
 use crate::serve::AppState;
 
 pub async fn me(
@@ -32,6 +33,7 @@ pub async fn me(
 pub async fn revoke_self(
     State(state): State<AppState>,
     device: AuthedDevice,
+    WritesAllowed: WritesAllowed,
 ) -> Result<StatusCode, ApiError> {
     devices::revoke_self(&state.db, device.org_id, device.device_id).await?;
     Ok(StatusCode::NO_CONTENT)
