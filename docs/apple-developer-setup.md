@@ -93,4 +93,4 @@ Before the first TestFlight build with sign-in, update the app's privacy answers
 
 ## 6. Already done (2026-11-01)
 
-- Vercel: `test.b4.run` and `local.b4.run` added to the b4.run project (`dawnai`), no redirect; `APPLE_TEAM_ID=GJJKL34HCT` set for production and preview. The association file answers once `cacheplane/b4run#1129` is merged and deployed.
+- Vercel: `test.b4.run` and `local.b4.run` added to the b4.run project (`dawnai`), no redirect; `APPLE_TEAM_ID=GJJKL34HCT` set for production and preview. `cacheplane/b4run#1129` merged and deployed the same day: `https://{b4.run,test.b4.run,local.b4.run}/.well-known/apple-app-site-association` each answer 200 `application/json` with that flavour's app ids, and `/pair` and `/app/download` answer 200. Apple's CDN picks the files up within a day.
