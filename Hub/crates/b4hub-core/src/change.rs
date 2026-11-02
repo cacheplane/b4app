@@ -106,6 +106,7 @@ const TABLES: [TableSpec; 9] = [
             "updatedAt",
             "projectId",
             "readTurnId",
+            "userDeletedAt",
         ],
         parent: Some(("connectionId", "connections")),
     },

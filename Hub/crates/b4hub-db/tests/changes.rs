@@ -750,6 +750,59 @@ async fn phone_title_edit_applies_and_later_mac_edit_wins(pool: PgPool) {
     assert_eq!(title(&app, &mac).await, "Mac title");
 }
 
+/// Deleting a thread on the phone marks it, by clock like its other columns; the hub keeps the row
+/// and its turns (the owner's rule: no hard delete on the hub).
+#[sqlx::test(migrations = false)]
+async fn a_phone_marks_a_thread_deleted_and_the_row_stays(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let (mac, phone) = mac_and_phone(&admin, &app).await;
+    let turn = at(
+        insert(
+            3,
+            "turns",
+            "turn-1",
+            json!({"id": "turn-1", "threadId": "thread-1", "status": "terminal"}),
+        ),
+        150,
+        MAC_CLOCK,
+    );
+    push_through(&app, &mac, &[turn]).await.unwrap();
+
+    let deleted = at(
+        update(
+            1,
+            "threads",
+            "thread-1",
+            "userDeletedAt",
+            Some(json!("2026-11-02T12:00:00.000Z")),
+        ),
+        200,
+        PHONE_CLOCK,
+    );
+    let outcome = changes::push(&app, &phone, &[deleted]).await.unwrap();
+    assert_eq!(
+        outcome,
+        PushOutcome {
+            accepted_through: 1,
+            rejected: vec![]
+        }
+    );
+    let thread = row(&app, &mac, "threads", "id", "thread-1").await.unwrap();
+    assert_eq!(thread["userDeletedAt"], "2026-11-02T12:00:00.000Z");
+    assert_eq!(thread["title"], "Original");
+    assert!(row(&app, &mac, "turns", "id", "turn-1").await.is_some());
+
+    // An older write by the Mac's clock does not clear it.
+    let stale = at(
+        update(4, "threads", "thread-1", "userDeletedAt", None),
+        180,
+        MAC_CLOCK,
+    );
+    push_through(&app, &mac, &[stale]).await.unwrap();
+    let thread = row(&app, &mac, "threads", "id", "thread-1").await.unwrap();
+    assert_eq!(thread["userDeletedAt"], "2026-11-02T12:00:00.000Z");
+}
+
 #[sqlx::test(migrations = false)]
 async fn stale_phone_edit_loses(pool: PgPool) {
     let (admin, app) = common::migrated(&pool).await;
