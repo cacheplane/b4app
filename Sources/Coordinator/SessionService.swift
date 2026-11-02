@@ -646,12 +646,28 @@ public actor SessionService {
     }
   }
 
+  /// The refusals `turnSend` makes before inserting a turn that can be judged before the thread exists:
+  /// the connection's adapter, a managed server that is not ready, and another thread's active turn in
+  /// `folder` (the canonical directory; nil for B4). A remote `thread.start` asks first, so a start
+  /// that would be refused makes no thread. `threadId` (the thread being started, if it already
+  /// exists) is not in its own way; its own active turn is `turnSend`'s to refuse.
+  public func assertCanStart(connection connectionId: String, folder: String?, threadId: String) async throws
+  {
+    let (connection, _) = try connectionAndAdapter(id: connectionId)
+    if let outage = await managedServerOutage(connection) { throw outage }
+    try assertFolderFree(folder, besides: threadId, connection)
+  }
+
   /// Spec 10.1.5: writable Codex and Claude runs in one canonical directory are serialized through
   /// this app, across connections, and the lock holds through waiting and unknown states (D-033).
   private func assertDirectoryFree(_ thread: ConversationThread, connection: Connection) throws {
-    guard connection.kind != .b4, let directory = thread.context else { return }
-    let canonical = Self.canonicalDirectory(directory)
-    for entry in try db.activeHarnessTurns() where entry.thread.id != thread.id {
+    try assertFolderFree(thread.context, besides: thread.id, connection)
+  }
+
+  private func assertFolderFree(_ folder: String?, besides thread: String, _ connection: Connection) throws {
+    guard connection.kind != .b4, let folder else { return }
+    let canonical = Self.canonicalDirectory(folder)
+    for entry in try db.activeHarnessTurns() where entry.thread.id != thread {
       guard let other = entry.thread.context, Self.canonicalDirectory(other) == canonical else { continue }
       throw WorkspaceError(
         .protocolInvalid,

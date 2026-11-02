@@ -727,6 +727,62 @@ private func failure(
     try await h.waitForFinish(turn)
   }
 
+  /// A start that `turn.send` would refuse before inserting its turn (another thread's turn holds the
+  /// folder) is refused before the thread is made, so neither it nor its retries leave a thread behind.
+  @Test func threadStartInALockedFolderCreatesNothing() async throws {
+    let h = try await RelayHarness.start()
+    defer { Task { await h.close() } }
+    let connection = try await h.addCodex()
+    let work = try h.folder("work")
+    let project = try await h.project("Work", [work])
+    let other = try await h.newThread(connection, in: work)
+    let active = try result(
+      try await run(h.executor, .turnSend, TurnSend.Params(threadId: other.id, text: "hang around")),
+      as: TurnSend.Result.self
+    ).turn
+    let threadId = UUID().uuidString.lowercased()
+    let start = ThreadStart.Params(
+      threadId: threadId, projectId: project.id, connectionId: connection.id, folder: work, text: "beside")
+    let id = UUID().uuidString.lowercased()
+    for _ in 0..<2 {
+      let locked = try #require(failure(try await run(h.executor, id: id, .threadStart, start)))
+      #expect(locked.code == ErrorCode.protocolInvalid.rawValue)
+      #expect(locked.details?["reason"]?.stringValue == "directory_locked")
+      #expect(locked.details?["turnId"] == nil)
+      #expect(locked.details?["blockingTurnId"]?.stringValue == active.id)
+      #expect(try h.db.thread(id: threadId) == nil)
+    }
+    #expect(try h.db.listThreads(ThreadFilter(includeArchived: true)).map(\.id) == [other.id])
+    _ = try await h.coordinator.sessions.turnInterrupt(TurnInterrupt.Params(threadId: other.id))
+    try await h.waitForFinish(active)
+    // Once the folder is free, the same start makes its thread.
+    let started = try result(
+      try await run(h.executor, id: id, .threadStart, start), as: ThreadStart.Result.self)
+    #expect(started.thread.id == threadId)
+    try await h.waitForFinish(started.turn)
+  }
+
+  /// The phone mints the thread id; anything but a lowercase UUID is refused before anything is made.
+  @Test func threadStartRefusesAThreadIdThatIsNotALowercaseUUID() async throws {
+    let h = try await RelayHarness.start()
+    defer { Task { await h.close() } }
+    let connection = try await h.addCodex()
+    let app = try h.folder("app")
+    let project = try await h.project("App", [app])
+    for threadId in ["thread-1", UUID().uuidString.uppercased(), "", UUID().uuidString.lowercased() + " "] {
+      let error = try #require(
+        failure(
+          try await run(
+            h.executor, .threadStart,
+            ThreadStart.Params(
+              threadId: threadId, projectId: project.id, connectionId: connection.id, folder: app, text: "hi")
+          )))
+      #expect(error.code == ErrorCode.protocolInvalid.rawValue)
+      #expect(error.details?["reason"]?.stringValue == "invalid_thread_id")
+    }
+    #expect(try h.db.listThreads(ThreadFilter(includeArchived: true)).isEmpty)
+  }
+
   /// The boundary rule itself: code kept, `turnId` kept, the text replaced only where it may carry
   /// store, process, or foreign-error text.
   @Test func wireErrorKeepsTheCodeAndTurnIdAndReplacesUnsafeText() {

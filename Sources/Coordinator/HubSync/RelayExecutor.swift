@@ -208,11 +208,17 @@ public actor RelayExecutor {
   /// lands on the same thread and the same turn. Refuses with `protocol_invalid` anything the Mac would
   /// not start itself: an unknown project, a Codex or Claude folder that is not one of the project's
   /// folders, a B4 connection that does not serve the project, a remote B4 connection, a connection not
-  /// ready for a conversation, or a thread id already used with another connection or folder.
+  /// ready for a conversation, a thread id that is not a lowercase UUID (`invalid_thread_id`), or one
+  /// already used with another connection or folder. What `turnSend` refuses before inserting a turn
+  /// (`SessionService.assertCanStart`) is refused before the thread is made.
   private func threadStart(
     _ params: ThreadStart.Params, operationId: String
   ) async throws -> ThreadStart.Result {
     try Self.requireStorableText(params.text)
+    // The phone mints the id; the thread row keeps it, so only the form this Mac mints is taken.
+    guard Self.isLowercaseUUID(params.threadId) else {
+      throw Self.refusal("The new thread's id is not valid.", reason: "invalid_thread_id")
+    }
     // A retry of a start that already made its turn gets that answer, whatever changed since (the
     // connection may have gone offline): refusing it now would tell the phone the send never happened.
     if let turn = try db.turn(operationId: operationId) {
@@ -271,6 +277,10 @@ public actor RelayExecutor {
       throw Self.refusal(
         "Connection \(connection.label) is not ready for a conversation.", reason: "connection_not_ready")
     }
+    // What `turnSend` would refuse before inserting the turn is refused before the thread is made, so a
+    // refused start (and each retry) leaves no empty thread behind.
+    try await sessions.assertCanStart(
+      connection: connection.id, folder: folder, threadId: params.threadId)
     let thread: ConversationThread
     if let existing = try db.thread(id: params.threadId) {
       let sameFolder = folder == nil || existing.context.map(SessionService.canonicalDirectory) == folder
@@ -292,6 +302,10 @@ public actor RelayExecutor {
   }
 
   // MARK: - Helpers
+
+  static func isLowercaseUUID(_ text: String) -> Bool {
+    text.count == 36 && UUID(uuidString: text) != nil && text == text.lowercased()
+  }
 
   private func decode<C: WorkspaceCommand>(_ command: C.Type, _ params: JSONValue) throws -> C.Params {
     do {
