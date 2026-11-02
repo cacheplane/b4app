@@ -33,6 +33,10 @@ struct B4AppMac: App {
       WorkspaceRootView(model: sharedModel)
         .frame(minWidth: LLA.Metrics.minimumWindow.width, minHeight: LLA.Metrics.minimumWindow.height)
         .task { CoordinatorHost.wire(sharedModel) }
+        // A `b4app*://auth` callback opened outside Apple's session (a stray or replayed redirect)
+        // belongs to no ceremony: it is dropped here, unread, and opens no second window.
+        .onOpenURL { url in sharedModel.openURL(url) }
+        .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
     }
     .defaultSize(width: 1200, height: 800)
     .commands {

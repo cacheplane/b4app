@@ -82,6 +82,8 @@ public actor AccountManager {
   var refresh: Task<Void, Never>?
   /// The Sign in with Apple web ceremony in flight, with the verifier only this coordinator knows.
   var appleCeremony: AppleCeremony?
+  /// The Connect Apple ID web ceremony in flight (Task 14), for the account that began it.
+  var appleLinkCeremony: AppleLinkCeremony?
   /// Log-out's bounds; tests shorten them.
   var logoutTimeouts = LogoutTimeouts.standard
   /// One transition at a time (`acquire`/`release`).

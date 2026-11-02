@@ -1,3 +1,4 @@
+import AuthenticationServices
 import Foundation
 import SwiftUI
 import WorkspaceClient
@@ -22,8 +23,8 @@ public enum AccountCopy {
   public static let deleteConfirm = "Delete account"
   public static let cancel = "Cancel"
 
-  public static func deleteMessage(orgName: String) -> String {
-    "This deletes your account and everything in \(orgName), at the hub and on this Mac. It can't be undone. Type \(orgName) to confirm."
+  public static func deleteMessage(orgName: String, device: String = "Mac") -> String {
+    "This deletes your account and everything in \(orgName), at the hub and on this \(device). It can't be undone. Type \(orgName) to confirm."
   }
 
   public static func removeTitle(_ line: String) -> String { "Remove \(line)?" }
@@ -34,8 +35,6 @@ public enum AccountCopy {
     "That's the only way to sign in to this account. Add another one before removing it."
   /// The hub deletes only a personal org's owner (`shared_org`).
   public static let sharedOrg = "This account belongs to a shared org, so it can't be deleted here."
-  /// Connect Apple ID before the link calls exist (Task 14).
-  public static let appleNotYet = "Connecting an Apple ID isn't available in this version yet."
   public static let passkeyRejected = "That passkey wasn't accepted. Try again."
   public static let alreadyApple = "This account already has an Apple ID."
   public static let expired = "That took too long. Try again."
@@ -106,11 +105,8 @@ struct AccountSettingsContent: Equatable {
   /// Whether `account.identities` has answered.
   var methodsLoaded: Bool
   var addPasskey = AccountCopy.addPasskey
-  /// "Connect Apple ID", when the flavour offers Apple, the app can link one, and the account has none.
+  /// "Connect Apple ID", when the flavour offers Apple (beta and prod) and the account has none.
   var connectApple: String?
-  /// Whether the app can link an Apple ID. The link calls arrive with Task 14, which turns this on;
-  /// until then the button is not shown at all.
-  static let appleLinking = false
   /// The account the page shows, which Delete account… is bound to.
   var accountId: String?
   var delete = AccountCopy.delete
@@ -128,7 +124,7 @@ struct AccountSettingsContent: Equatable {
         id: $0.id, text: AccountCopy.methodLine($0, now: now, locale: locale),
         removeEnabled: identities.count > 1)
     }
-    if Self.appleLinking, model.signInConfiguration.appleSignIn, model.identities != nil,
+    if model.signInConfiguration.appleSignIn, model.identities != nil,
       !identities.contains(where: { $0.kind == "apple" })
     {
       connectApple = AccountCopy.connectApple
@@ -146,12 +142,14 @@ extension WorkspaceModel {
 
   /// Read the signed-in account's sign-in methods. A transport without accounts leaves them unread.
   public func refreshIdentities() async {
-    guard accountSource == .coordinator, accountState == .signedIn, let client else { return }
+    guard accountSource == .coordinator ? client != nil : hostOwnsAccount, accountState == .signedIn else {
+      return
+    }
     let generation = accountGeneration
     do {
-      let listed = try await client.request(AccountIdentities.self, EmptyParams(), options: Self.signInCall)
+      let listed = try await accountCalls().identities()
       guard generation == accountGeneration else { return }
-      identities = listed.identities
+      identities = listed
     } catch let error as WorkspaceError
       where error.code == .unsupportedCapability || error.code == .methodUnknown
     {
@@ -170,9 +168,7 @@ extension WorkspaceModel {
     defer { accountSettingsBusy = false }
     accountSettingsFailure = nil
     do {
-      let status = try await signInClient().request(
-        AccountCompleteProfile.self, AccountCompleteProfile.Params(fullName: FullName.trimmed(name)),
-        options: Self.accountCall())
+      let status = try await accountCalls().completeProfile(FullName.trimmed(name))
       applyAccountStatus(status)
       await refreshAccount()
     } catch {
@@ -190,25 +186,19 @@ extension WorkspaceModel {
     accountSettingsFailure = nil
     let generation = accountGeneration
     do {
-      let client = try signInClient()
-      let begun = try await client.request(
-        AccountAddPasskeyBegin.self, EmptyParams(), options: Self.signInCall)
+      let calls = try accountCalls()
+      let begun = try await calls.addPasskeyBegin()
       let attestation = try await ceremony.register(begun.registration)
-      let added: AccountAddPasskeyFinish.Result
+      let added: AccountIdentity
       do {
-        added = try await client.request(
-          AccountAddPasskeyFinish.self,
-          AccountAddPasskeyFinish.Params(ceremonyId: begun.ceremonyId, attestation: attestation),
-          options: Self.accountCall())
+        added = try await calls.addPasskeyFinish(
+          AccountAddPasskeyFinish.Params(ceremonyId: begun.ceremonyId, attestation: attestation))
       } catch {
         await reportOrphan(attestation, options: begun.registration, ceremony: ceremony, after: error)
         throw error
       }
       guard generation == accountGeneration else { return }
-      var listed = identities ?? []
-      listed.removeAll { $0.id == added.identity.id }
-      listed.append(added.identity)
-      identities = listed
+      add(identity: added)
     } catch is SignInCanceled {
       return
     } catch is CancellationError {
@@ -224,11 +214,51 @@ extension WorkspaceModel {
     }
   }
 
-  /// "Connect Apple ID". The native and web link calls arrive with the iPhone's Apple flow (sign-in
-  /// plan, Task 14), which also shows the button (`AccountSettingsContent.appleLinking`); until then
-  /// this says it is not available and links nothing.
-  public func connectAppleID() async {
-    accountSettingsFailure = AccountCopy.appleNotYet
+  /// "Connect Apple ID" (beta and prod, while the account has none). On the Mac, Apple's web flow
+  /// through the coordinator, which keeps the verifier (`account.appleLinkStart`, then the session,
+  /// then `account.appleLinkFinish`); on the phone, Apple's native sheet through the host. A closed
+  /// sheet shows nothing; `apple_linked` is one line.
+  public func connectAppleID(using ceremony: any AppleCeremony) async {
+    guard !accountSettingsBusy else { return }
+    accountSettingsBusy = true
+    defer { accountSettingsBusy = false }
+    accountSettingsFailure = nil
+    let generation = accountGeneration
+    do {
+      let linked: AccountIdentity
+      switch try accountCalls() {
+      case .host(let host):
+        let begun = try await host.appleLinkBegin()
+        guard let credential = try await ceremony.nativeSignIn(nonce: begun.nonce) else { return }
+        linked = try await host.linkApple(credential, ceremonyId: begun.ceremonyId)
+      case .coordinator(let client):
+        let start = try await client.request(
+          AccountAppleLinkStart.self, EmptyParams(), options: Self.signInCall)
+        let handoff = try await Self.webHandoff(
+          ceremony, url: start.url, callbackScheme: start.callbackScheme)
+        linked = try await client.request(
+          AccountAppleLinkFinish.self, AccountAppleLinkFinish.Params(handoff: handoff),
+          options: Self.accountCall()
+        ).identity
+      }
+      guard generation == accountGeneration else { return }
+      add(identity: linked)
+    } catch is SignInCanceled {
+      return
+    } catch is CancellationError {
+      return
+    } catch {
+      guard generation == accountGeneration else { return }
+      accountSettingsFailure = AccountCopy.failure(for: WorkspaceError.from(error))
+    }
+  }
+
+  /// A method just added, at the end of the list (once).
+  private func add(identity: AccountIdentity) {
+    var listed = identities ?? []
+    listed.removeAll { $0.id == identity.id }
+    listed.append(identity)
+    identities = listed
   }
 
   /// "Remove" on one sign-in method. The last one is never sent: the hub would refuse it.
@@ -241,10 +271,9 @@ extension WorkspaceModel {
     accountSettingsFailure = nil
     let generation = accountGeneration
     do {
-      let left = try await signInClient().request(
-        AccountRemoveIdentity.self, AccountRemoveIdentity.Params(identityId: id), options: Self.accountCall())
+      let left = try await accountCalls().removeIdentity(id)
       guard generation == accountGeneration else { return }
-      identities = left.identities
+      identities = left
     } catch {
       guard generation == accountGeneration else { return }
       let failure = WorkspaceError.from(error)
@@ -272,8 +301,7 @@ extension WorkspaceModel {
     defer { deleteInFlight = false }
     deleteFailure = nil
     do {
-      let status = try await signInClient().request(
-        AccountDelete.self, EmptyParams(), options: Self.accountCall())
+      let status = try await accountCalls().deleteAccount()
       applyAccountStatus(status)
     } catch {
       let failure = WorkspaceError.from(error)
@@ -298,6 +326,7 @@ extension WorkspaceModel {
 /// at the bottom in the danger style.
 struct AccountSettingsView: View {
   @Bindable var model: WorkspaceModel
+  @Environment(\.webAuthenticationSession) private var webAuthenticationSession
   @State private var name = ""
   @State private var removing: AccountSettingsContent.Method?
   @State private var deleting = false
@@ -419,9 +448,13 @@ struct AccountSettingsView: View {
           .buttonStyle(.llaSecondary)
           .accessibilityIdentifier("account.addPasskey")
           if let apple = content.connectApple {
-            Button(apple) { Task { await model.connectAppleID() } }
-              .buttonStyle(.llaSecondary)
-              .accessibilityIdentifier("account.connectApple")
+            Button(apple) {
+              Task {
+                await model.connectAppleID(using: SystemAppleCeremony(session: webAuthenticationSession))
+              }
+            }
+            .buttonStyle(.llaSecondary)
+            .accessibilityIdentifier("account.connectApple")
           }
         }
         .disabled(model.accountSettingsBusy || model.link != .ready)
@@ -443,9 +476,11 @@ struct DeleteAccountSheet: View {
   var body: some View {
     VStack(alignment: .leading, spacing: LLA.Space.l) {
       Text(AccountCopy.deleteTitle).llaTitle().accessibilityAddTraits(.isHeader)
-      Text(AccountCopy.deleteMessage(orgName: orgName))
-        .llaMuted()
-        .fixedSize(horizontal: false, vertical: true)
+      Text(
+        AccountCopy.deleteMessage(orgName: orgName, device: model.accountSource == .host ? "iPhone" : "Mac")
+      )
+      .llaMuted()
+      .fixedSize(horizontal: false, vertical: true)
       LLAField(orgName, text: $typed)
         .onSubmit(delete)
         .accessibilityLabel("Org name")

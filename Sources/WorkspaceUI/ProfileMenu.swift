@@ -162,7 +162,9 @@ struct SidebarFooter: View {
         }
     }
     .background(LLA.Color.surface)
-    .alert("Log out of the hub?", isPresented: $confirmingLogOut) {
+    .alert(
+      "Log out of \(model.accountStatus?.account?.orgName ?? "the hub")?", isPresented: $confirmingLogOut
+    ) {
       Button("Log out", role: .destructive) { Task { await model.logOut() } }
       Button("Cancel", role: .cancel) {}
     } message: {
@@ -180,9 +182,9 @@ struct SidebarFooter: View {
     }
   }
 
-  /// The phone's log-out (its host unlinks it).
+  /// The phone's log-out (its host ends the session and empties the mirror).
   static let hostLogOutMessage =
-    "This iPhone stops showing your threads until it joins again with a new enrollment code."
+    "This iPhone stops showing your threads until you sign in again. Nothing on your Mac changes."
 
   private var logOutBinding: Binding<Bool> {
     Binding(

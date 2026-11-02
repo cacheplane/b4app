@@ -30,12 +30,12 @@ public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
 
   /// The pages this platform shows. "Account" comes first (sign-in plan, Task 12). "Remote access" is
   /// the Mac's: it mints the pairing code and holds the Mac awake, neither of which the phone does. The
-  /// phone shows "Account" once its mirror reads the account from the hub (Task 14).
+  /// phone's Account page reads its host's account (Task 14).
   nonisolated public static var allCases: [SettingsPage] {
     #if os(macOS)
       [.account, .connections, .servers, .remoteAccess, .diagnostics]
     #else
-      [.connections, .servers, .diagnostics]
+      [.account, .connections, .servers, .diagnostics]
     #endif
   }
 
@@ -200,6 +200,10 @@ public final class WorkspaceModel {
   /// leaves it alone and `logOut()` calls `hostLogOut`.
   public var accountSource: AccountSource = .coordinator
   public var hostLogOut: (@MainActor () async -> Void)?
+  /// The host's own account (the phone's `MirrorAccount`, sign-in plan Task 14). With one, a `.host`
+  /// model signs in, onboards, logs out, and runs Settings → Account through it, and its root follows
+  /// the account as the Mac's does; without one the workspace always shows, as before.
+  public var accountHost: (any AccountHost)?
 
   // MARK: Signing in (sign-in plan, Task 11; the logic is in SignIn/AccountState.swift)
 
@@ -226,6 +230,8 @@ public final class WorkspaceModel {
   @ObservationIgnored var accountGeneration = 0
   /// The registration offered after "No passkey for …", until Create account or Cancel.
   @ObservationIgnored var pendingRegistration: PendingRegistration?
+  /// The passkey this device made at sign-up, renamed once onboarding names the account.
+  @ObservationIgnored var pendingRename: PendingPasskeyRename?
   // MARK: Account settings and log out (sign-in plan, Task 12; SignIn/AccountSettingsView.swift)
 
   /// The profile menu's "Log out of <org name>?", while it is asked.
@@ -276,7 +282,7 @@ public final class WorkspaceModel {
 
   /// Whether the profile menu offers Log out.
   public var canLogOut: Bool {
-    account != nil && (accountSource == .coordinator || hostLogOut != nil)
+    account != nil && (accountSource == .coordinator || accountHost != nil || hostLogOut != nil)
   }
 
   public var versionMismatch: String? {
@@ -426,6 +432,11 @@ public final class WorkspaceModel {
     connectTask = Task { [transportProvider] in
       do {
         let transport = try await transportProvider()
+        // A connect replaced by a newer one (`reconnect()`) leaves the link to it.
+        if Task.isCancelled {
+          await transport.close()
+          return
+        }
         let client = WorkspaceClient(transport: transport)
         self.client = client
         let hello = try await client.ready()
@@ -434,15 +445,17 @@ public final class WorkspaceModel {
         let events = await client.events()
         // Who is signed in comes first: nothing of a store is read, or shown, before it is known.
         try await readAccountState(client)
-        if accountSource == .host || accountState == .signedIn {
+        if showsStore {
           try await refreshSnapshot()
           await refreshAccount()
         }
         let covered = snapshotPosition ?? (hello.epoch, hello.sequence)
+        try Task.checkCancellation()
         link = .ready
         settleLink()
         await observe(client, events: events, covered: covered)
       } catch {
+        guard !Task.isCancelled else { return }
         link = .unavailable
         linkMessage = Self.describe(error)
         settleLink()
@@ -462,6 +475,18 @@ public final class WorkspaceModel {
     linkWaiters = []
     for waiter in waiters { waiter.resume(returning: link) }
   }
+
+  /// Connect again on a fresh transport, closing the old client once the new connection takes over.
+  /// The root does not pass through "unavailable" on the way (the phone, after its account changed).
+  func reconnect() {
+    let old = client
+    client = nil
+    connect()
+    Task { await old?.close() }
+  }
+
+  /// Whether the store is read: someone is signed in, or a host that owns no sign-in shows it always.
+  var showsStore: Bool { (accountSource == .host && accountHost == nil) || accountState == .signedIn }
 
   public func disconnect() async {
     connectTask?.cancel()
@@ -538,7 +563,7 @@ public final class WorkspaceModel {
   /// (`removeThisMac`). The Mac's profile menu logs out with `requestLogOut` instead.
   public func logOut() async {
     if accountSource == .host {
-      await hostLogOut?()
+      _ = await logOut(stopWork: false)
       return
     }
     await removeThisMac()
@@ -559,7 +584,9 @@ public final class WorkspaceModel {
 
   /// Whether the Settings pages can show: someone is signed in (or the host owns the account). When
   /// it turns false an open Settings window closes (`settingsCloseRequest`) and shows a placeholder.
-  public var settingsAvailable: Bool { accountSource == .host || accountState == .signedIn }
+  public var settingsAvailable: Bool {
+    (accountSource == .host && accountHost == nil) || accountState == .signedIn
+  }
 
   public func refreshSnapshot() async throws {
     guard let client else { return }
@@ -1115,7 +1142,7 @@ public final class WorkspaceModel {
   /// After the Mac wakes or the link comes back: fresh snapshot, then ask every runtime about every
   /// unresolved turn. Nothing is re-sent.
   public func reconcileAfter(_ reason: String) async {
-    guard accountSource == .host || accountState == .signedIn else { return }
+    guard showsStore else { return }
     try? await refreshSnapshot()
     guard let client else { return }
     _ = try? await client.request(
@@ -1229,7 +1256,8 @@ public final class WorkspaceModel {
       apply(envelope.event)
     }
     desyncTask.cancel()
-    if link == .ready {
+    // A client replaced by `reconnect()` or `disconnect()` says nothing about the link now.
+    if link == .ready, self.client === client {
       link = .unavailable
       linkMessage = "Coordinator connection closed."
     }
@@ -1376,6 +1404,7 @@ public final class WorkspaceModel {
     identities = nil
     accountSettingsFailure = nil
     deleteFailure = nil
+    pendingRename = nil
   }
 
   static func describe(_ error: any Error) -> String {

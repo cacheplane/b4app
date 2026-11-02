@@ -4,17 +4,19 @@ import WorkspaceProtocol
 import WorkspaceSync
 import WorkspaceUI
 
-/// Joins this device to the hub with a one-time enrollment code: typed (from `b4hub enroll`), scanned
-/// from the QR code the Mac shows, or from a `b4app://pair` link. A scanned or opened link fills the
-/// screen and asks one question, "Pair this iPhone with the hub at <host>?"; nothing enrolls without
-/// that tap. The code lives in this view's state only until the enrollment request returns, then it is
-/// cleared; nothing logs it.
-struct HubConnectView: View {
+/// Signs this phone in with a one-time enrollment code instead of a passkey or Apple (sign-in plan,
+/// Task 14): the operator's path to a hub with sign-up closed, and M8c's pairing redemption. Offered from
+/// the sign-in screen, and shown at once when a `b4app://pair` link or a scanned code arrives while
+/// signed out. The code is typed (from `b4hub enroll`), scanned from the QR code the Mac shows, or taken
+/// from the link. A scanned or opened link fills the sheet and asks one question, "Pair this iPhone with
+/// the hub at <host>?"; nothing enrolls without that tap. The code lives in this view's state only until
+/// the enrollment request returns, then it is cleared; nothing logs it. Task 15 replaces the pairing part.
+struct EnrollView: View {
   let host: MirrorHost
   /// A pairing link opened while this screen shows; taken into `offer` and cleared at once.
   @Binding var incoming: PairArrival?
 
-  @State private var hubURL = HubConnectView.defaultURL
+  @State private var hubURL = EnrollView.defaultURL
   @State private var code = ""
   @State private var deviceName = UIDevice.current.name
   @State private var error: String?
@@ -22,6 +24,7 @@ struct HubConnectView: View {
   /// The link waiting for "Pair". Holds the code until the request returns or Brian cancels.
   @State private var offer: PairLink?
   @State private var scanning = false
+  @Environment(\.dismiss) private var dismiss
 
   static let codeLength = PairLink.codeLength
 
@@ -34,20 +37,28 @@ struct HubConnectView: View {
   }
 
   var body: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: LLA.Space.l) {
-        LLAMarkView(height: 28)
-        if let offer {
-          confirmation(offer)
-        } else {
-          typedEntry
+    NavigationStack {
+      ScrollView {
+        VStack(alignment: .leading, spacing: LLA.Space.l) {
+          if let offer {
+            confirmation(offer)
+          } else {
+            typedEntry
+          }
+        }
+        .frame(maxWidth: 480, alignment: .leading)
+        .padding(LLA.Metrics.margin)
+        .frame(maxWidth: .infinity)
+      }
+      .background(LLA.Color.bg)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Cancel") { dismiss() }
+            .disabled(connecting)
+            .accessibilityIdentifier("enroll.cancel")
         }
       }
-      .frame(maxWidth: 480, alignment: .leading)
-      .padding(LLA.Metrics.margin)
-      .frame(maxWidth: .infinity)
     }
-    .background(LLA.Color.bg)
     .tint(LLA.Color.accent)
     .onChange(of: incoming, initial: true) { _, arrival in
       guard let arrival else { return }
@@ -65,9 +76,9 @@ struct HubConnectView: View {
 
   @ViewBuilder private var typedEntry: some View {
     LLASectionHead(
-      "Connect to your hub",
+      EnrollView.title,
       intro:
-        "This device shows the threads your Mac syncs to the hub. Scan the code your Mac shows in Settings, Remote access, or enter a hub URL and an enrollment code."
+        "For a hub that gives out enrollment codes. Scan the code your Mac shows in Settings, Remote access, or enter the hub URL and the code."
     )
     if QRScannerView.isAvailable {
       Button("Scan QR code") { scanning = true }
@@ -158,6 +169,7 @@ struct HubConnectView: View {
     }
     do {
       try await host.connect(url: link.hub.absoluteString, code: link.code, deviceName: deviceName)
+      dismiss()
     } catch {
       self.error = MirrorHost.describe(error)
     }
@@ -211,8 +223,12 @@ struct HubConnectView: View {
     }
     do {
       try await host.connect(url: hubURL, code: code, deviceName: deviceName)
+      dismiss()
     } catch {
       self.error = MirrorHost.describe(error)
     }
   }
+
+  /// The sheet's heading, and the sign-in screen's link to it.
+  static let title = "Use an enrollment code"
 }

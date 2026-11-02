@@ -87,7 +87,8 @@ public actor Router {
     case .systemPing, .diagnosticsRead, .eventsReplay, .hubJoin, .threadStart, .turnLookup, .accountStatus,
       .accountPasskeyBegin, .accountPasskeyFinish, .accountAppleStart, .accountAppleFinish,
       .accountCompleteProfile, .accountLogout, .accountIdentities, .accountAddPasskeyBegin,
-      .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice:
+      .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice,
+      .accountAppleLinkStart, .accountAppleLinkFinish:
       return false
     case .connectionList, .threadList, .draftRead, .draftSave, .eventsSnapshot, .connectionAdd,
       .connectionInspect, .connectionLogin, .threadCreate, .threadRead, .threadUpdate, .threadReconcile,
@@ -175,6 +176,12 @@ public actor Router {
       return try JSONValue(encoding: try await context.accounts.deleteAccount())
     case .accountDismissNotice:
       return try JSONValue(encoding: try await context.accounts.dismissNotice())
+    case .accountAppleLinkStart:
+      return try JSONValue(encoding: try await context.accounts.appleLinkStart())
+    case .accountAppleLinkFinish:
+      return try JSONValue(
+        encoding: try await context.accounts.appleLinkFinish(
+          try command.params(for: AccountAppleLinkFinish.self)))
     default:
       throw WorkspaceError(.internalError, "\(command.method.rawValue) needs an account.")
     }
@@ -190,7 +197,8 @@ public actor Router {
     case .systemPing, .diagnosticsRead, .eventsReplay, .hubJoin, .threadStart, .turnLookup, .accountStatus,
       .accountPasskeyBegin, .accountPasskeyFinish, .accountAppleStart, .accountAppleFinish,
       .accountCompleteProfile, .accountLogout, .accountIdentities, .accountAddPasskeyBegin,
-      .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice:
+      .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice,
+      .accountAppleLinkStart, .accountAppleLinkFinish:
       throw WorkspaceError(.internalError, "\(command.method.rawValue) needs no account.")
     case .connectionList:
       let params = try command.params(for: ConnectionList.self)

@@ -134,13 +134,18 @@ private func withOpenThread(_ transport: ScriptedTransport) async throws -> Work
 
 /// Stands in for `ASWebAuthenticationSession`: returns the callback URL the test sets.
 @MainActor
-private final class FakeAppleSession: AppleWebSignIn {
+private final class FakeAppleSession: AppleCeremony {
   var callback: Result<URL, any Error> = .success(URL(string: "b4app-beta://auth?handoff=H-one-time")!)
   private(set) var opened: [(url: URL, scheme: String)] = []
 
-  func authenticate(url: URL, callbackScheme: String) async throws -> URL {
+  func webSignIn(url: URL, callbackScheme: String) async throws -> URL? {
     opened.append((url, callbackScheme))
     return try callback.get()
+  }
+
+  func nativeSignIn(nonce: String) async throws -> AppleCredential? {
+    Issue.record("The Mac never runs Apple's native sheet.")
+    return nil
   }
 }
 

@@ -22,16 +22,15 @@ public protocol PasskeyCeremony {
   /// Tell the password manager that a passkey just made is unknown to the relying party (its
   /// registration was refused), so it is not offered again.
   func reportUnknownCredential(relyingParty: String, credentialID: Data) async
+  /// Tell the password manager the new name of the passkey this ceremony made for `userHandle`, once
+  /// the account has one (after onboarding), so the Passwords app shows "Brian Love" rather than the
+  /// placeholder "Agent Workspace account".
+  func renamePasskey(relyingParty: String, userHandle: Data, name: String) async
 }
 
 extension PasskeyCeremony {
   public func reportUnknownCredential(relyingParty: String, credentialID: Data) async {}
-}
-
-/// The Mac's Sign in with Apple web flow: open `url` in an `ASWebAuthenticationSession` waiting for
-/// `callbackScheme`, and return the URL it was called back with. `SignInCanceled` when closed.
-public protocol AppleWebSignIn {
-  func authenticate(url: URL, callbackScheme: String) async throws -> URL
+  public func renamePasskey(relyingParty: String, userHandle: Data, name: String) async {}
 }
 
 // MARK: - The system's passkey sheet
@@ -136,11 +135,23 @@ public final class SystemPasskeyCeremony: NSObject, PasskeyCeremony {
         relyingPartyIdentifier: relyingParty, credentialID: credentialID)
     }
   }
+
+  public func renamePasskey(relyingParty: String, userHandle: Data, name: String) async {
+    // Best effort, like the report above: a password manager that does not take it keeps the
+    // placeholder name, and the passkey works the same.
+    if #available(macOS 26.2, iOS 26.2, *) {
+      try? await ASCredentialDataManager().reportPublicKeyCredentialUpdate(
+        relyingPartyIdentifier: relyingParty, userHandle: userHandle, newName: name)
+    } else {
+      try? await ASCredentialUpdater().reportPublicKeyCredentialUpdate(
+        relyingPartyIdentifier: relyingParty, userHandle: userHandle, newName: name)
+    }
+  }
 }
 
-/// One `ASAuthorizationController` run as an async call.
+/// One `ASAuthorizationController` run as an async call (passkeys, and Apple's native sheet).
 @MainActor
-private final class AuthorizationRun: NSObject, ASAuthorizationControllerDelegate,
+final class AuthorizationRun: NSObject, ASAuthorizationControllerDelegate,
   ASAuthorizationControllerPresentationContextProviding
 {
   private var continuation: CheckedContinuation<ASAuthorization, any Error>?
@@ -197,28 +208,6 @@ private final class AuthorizationRun: NSObject, ASAuthorizationControllerDelegat
       if let key = windows.first(where: \.isKeyWindow), !key.isHidden { return key }
       return windows.first { !$0.isHidden }
     #endif
-  }
-}
-
-// MARK: - The system's web authentication session
-
-/// `AppleWebSignIn` through SwiftUI's `WebAuthenticationSession`, which runs an
-/// `ASWebAuthenticationSession` presented from the view's window. Made by the view from its
-/// environment (`@Environment(\.webAuthenticationSession)`).
-public struct SystemAppleWebSignIn: AppleWebSignIn {
-  private let session: WebAuthenticationSession
-
-  public init(session: WebAuthenticationSession) { self.session = session }
-
-  public func authenticate(url: URL, callbackScheme: String) async throws -> URL {
-    do {
-      // An ephemeral session: Apple's page keeps no cookie in the shared browser.
-      return try await session.authenticate(
-        using: url, callback: .customScheme(callbackScheme), preferredBrowserSession: .ephemeral,
-        additionalHeaderFields: [:])
-    } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
-      throw SignInCanceled()
-    }
   }
 }
 

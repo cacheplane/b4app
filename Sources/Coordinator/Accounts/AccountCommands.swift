@@ -104,12 +104,7 @@ extension AccountManager {
     let api = signInAPI()
     let request = AppleBeginRequest(verifierHash: Self.sha256Hex(verifier), scheme: flavor.urlScheme)
     let begun = try await Self.hubCall("begin Sign in with Apple") { try await api.appleBegin(request) }
-    var components = URLComponents(
-      url: flavor.hubURL.appendingPathComponent("v1/auth/apple/start"), resolvingAgainstBaseURL: false)
-    components?.queryItems = [URLQueryItem(name: "ceremony", value: begun.ceremonyId)]
-    guard let url = components?.url else {
-      throw WorkspaceError(.internalError, "Could not build the Sign in with Apple address.")
-    }
+    let url = try appleStartURL(ceremony: begun.ceremonyId)
     appleCeremony = AppleCeremony(id: begun.ceremonyId, verifier: verifier)
     return AccountAppleStart.Result(url: url.absoluteString, callbackScheme: flavor.urlScheme)
   }
@@ -129,6 +124,71 @@ extension AccountManager {
       handoff: params.handoff, verifier: ceremony.verifier, device: try deviceSpec())
     let session = try await Self.hubCall("finish Sign in with Apple") { try await api.handoff(request) }
     return try await signIn(session: session, hubURL: flavor.hubURL.absoluteString)
+  }
+
+  // MARK: - Connecting an Apple ID (the Mac's web flow, Task 14)
+
+  /// A link's web ceremony: the hub's id, the verifier, and the account that began it.
+  struct AppleLinkCeremony: Sendable {
+    var id: String
+    var verifier: String
+    var accountId: String
+  }
+
+  /// Begin linking an Apple ID to the signed-in account (`POST /v1/me/apple` with a fresh verifier's
+  /// hash and this flavour's scheme), keep the verifier, and answer the start URL. A start replaces a
+  /// link already in flight. `apple_linked` when the account has one.
+  public func appleLinkStart() async throws -> AccountAppleLinkStart.Result {
+    try requireAppleSignIn()
+    let scope = try self.scope()
+    await appleStarts.lock()
+    defer { appleStarts.unlock() }
+    let verifier = Self.newVerifier()
+    let request = AppleBeginRequest(verifierHash: Self.sha256Hex(verifier), scheme: flavor.urlScheme)
+    let begun = try await Self.inScope(scope) {
+      try await Self.hubCall("begin connecting an Apple ID") {
+        try await scope.hub.client().appleLinkBegin(request)
+      }
+    }
+    let url = try appleStartURL(ceremony: begun.ceremonyId)
+    appleLinkCeremony = AppleLinkCeremony(
+      id: begun.ceremonyId, verifier: verifier, accountId: scope.account.id)
+    return AccountAppleLinkStart.Result(url: url.absoluteString, callbackScheme: flavor.urlScheme)
+  }
+
+  /// Redeem a link's handoff with the kept verifier, once, for the account that began it. With no link
+  /// in flight for the signed-in account (a stray or repeated callback), `ceremony_expired` without
+  /// asking the hub.
+  public func appleLinkFinish(
+    _ params: AccountAppleLinkFinish.Params
+  ) async throws -> AccountAppleLinkFinish.Result {
+    try requireAppleSignIn()
+    let scope = try self.scope()
+    let ceremony = appleLinkCeremony
+    // Single use, whatever the hub answers.
+    appleLinkCeremony = nil
+    guard let ceremony, ceremony.accountId == scope.account.id else {
+      throw WorkspaceError(
+        .ceremonyExpired, "No Apple ID is being connected on this Mac. Start again from Settings.")
+    }
+    let request = AppleLinkHandoffRequest(handoff: params.handoff, verifier: ceremony.verifier)
+    let added = try await Self.inScope(scope) {
+      try await Self.hubCall("connect the Apple ID") {
+        try await scope.hub.client().appleLinkHandoff(request)
+      }
+    }
+    return AccountAppleLinkFinish.Result(identity: Self.identity(added))
+  }
+
+  /// `<hub>/v1/auth/apple/start?ceremony=<id>`, which the browser session opens.
+  private func appleStartURL(ceremony: String) throws -> URL {
+    var components = URLComponents(
+      url: flavor.hubURL.appendingPathComponent("v1/auth/apple/start"), resolvingAgainstBaseURL: false)
+    components?.queryItems = [URLQueryItem(name: "ceremony", value: ceremony)]
+    guard let url = components?.url else {
+      throw WorkspaceError(.internalError, "Could not build the Sign in with Apple address.")
+    }
+    return url
   }
 
   private func requireAppleSignIn() throws {

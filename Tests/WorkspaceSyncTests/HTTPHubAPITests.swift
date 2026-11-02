@@ -424,7 +424,9 @@ final class TokenSequence: @unchecked Sendable {
     case "GET /v1/me", "PUT /v1/me/profile": return .json(200, meJSON)
     case "POST /v1/me/passkeys/begin":
       return .json(200, #"{"ceremonyId":"c3","registration":{"publicKey":{"challenge":"y"}}}"#)
-    case "POST /v1/me/passkeys/finish": return .json(200, identityJSON)
+    case "POST /v1/me/passkeys/finish", "POST /v1/me/apple/native", "POST /v1/me/apple/handoff":
+      return .json(200, identityJSON)
+    case "POST /v1/me/apple": return .json(200, #"{"ceremonyId":"c4","nonce":"n4"}"#)
     case "DELETE /v1/me/identities/i2", "DELETE /v1/sessions/self", "DELETE /v1/me":
       return StubProtocol.Reply(status: 204, body: Data())
     default:
@@ -539,6 +541,59 @@ final class TokenSequence: @unchecked Sendable {
     let profileBody = try JSONCoding.decoder.decode(
       JSONValue.self, from: try #require(recorder.all.first).body)
     #expect(profileBody == ["fullName": "Brian Love"])
+  }
+
+  /// Task 14: the three link routes carry the device's bearer and their bodies.
+  @Test func appleLinkCallsSendTheBearerAndTheirBodies() async throws {
+    let recorder = Recorder()
+    let api = make(host: "link.test") { captured in
+      recorder.add(captured)
+      return Self.accountReply(captured)
+    }
+
+    let native = try await api.appleLinkBegin(AppleBeginRequest())
+    #expect(native == AppleBeginResponse(ceremonyId: "c4", nonce: "n4"))
+    _ = try await api.appleLinkBegin(
+      AppleBeginRequest(verifierHash: String(repeating: "b", count: 64), scheme: "b4app-beta"))
+    let linked = try await api.appleLinkNative(
+      AppleLinkNativeRequest(ceremonyId: "c4", identityToken: "jwt", authorizationCode: "code"))
+    #expect(linked.id == "i2")
+    let handed = try await api.appleLinkHandoff(AppleLinkHandoffRequest(handoff: "h", verifier: "v"))
+    #expect(handed.id == "i2")
+
+    let seen = recorder.all.map { "\($0.request.httpMethod ?? "") \($0.request.url?.path ?? "")" }
+    #expect(
+      seen == [
+        "POST /v1/me/apple", "POST /v1/me/apple", "POST /v1/me/apple/native", "POST /v1/me/apple/handoff",
+      ])
+    for captured in recorder.all {
+      #expect(captured.request.value(forHTTPHeaderField: "Authorization") == "Bearer t0k")
+    }
+    let bodies = recorder.all.map { try? JSONCoding.decoder.decode(JSONValue.self, from: $0.body) }
+    #expect(
+      bodies == [
+        [:], ["verifierHash": .string(String(repeating: "b", count: 64)), "scheme": "b4app-beta"],
+        ["ceremonyId": "c4", "identityToken": "jwt", "authorizationCode": "code"],
+        ["handoff": "h", "verifier": "v"],
+      ])
+  }
+
+  @Test func theFakeLinksOneAppleIDAndRecordsTheCalls() async throws {
+    let fake = FakeHubAPI()
+    _ = try await fake.appleLinkBegin(AppleBeginRequest())
+    let first = try await fake.appleLinkNative(
+      AppleLinkNativeRequest(ceremonyId: "fake-apple-ceremony", identityToken: "t", authorizationCode: "c"))
+    #expect(first.kind == "apple")
+    #expect(try await fake.identities().map(\.kind) == ["apple"])
+    // One Apple ID per account: the begin is refused once there is one.
+    let refused = await #expect(throws: HubError.self) {
+      _ = try await fake.appleLinkBegin(AppleBeginRequest())
+    }
+    #expect(refused?.code == "apple_linked" && refused?.status == 409)
+    _ = try await fake.appleLinkHandoff(AppleLinkHandoffRequest(handoff: "h", verifier: "v"))
+    #expect(await fake.appleLinkBegins.count == 2)
+    #expect(await fake.appleLinkNatives.count == 1)
+    #expect(await fake.appleLinkHandoffs.count == 1)
   }
 
   @Test func enrollSendsABearerOnlyWhenGivenAToken() async throws {

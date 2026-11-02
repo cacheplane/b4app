@@ -120,6 +120,18 @@ public final class HTTPHubAPI: HubAPI {
     _ = try await perform(.delete, "v1/me/identities/\(id)")
   }
 
+  public func appleLinkBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse {
+    try await send(.post, "v1/me/apple", body: request)
+  }
+
+  public func appleLinkNative(_ request: AppleLinkNativeRequest) async throws -> Identity {
+    try await send(.post, "v1/me/apple/native", body: request)
+  }
+
+  public func appleLinkHandoff(_ request: AppleLinkHandoffRequest) async throws -> Identity {
+    try await send(.post, "v1/me/apple/handoff", body: request)
+  }
+
   public func endSession() async throws {
     _ = try await perform(.delete, "v1/sessions/self")
   }

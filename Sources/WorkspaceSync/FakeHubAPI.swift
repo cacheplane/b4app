@@ -31,6 +31,9 @@ public actor FakeHubAPI: HubAPI {
   public private(set) var appleBegins: [AppleBeginRequest] = []
   public private(set) var appleNatives: [AppleNativeRequest] = []
   public private(set) var handoffs: [HandoffRequest] = []
+  public private(set) var appleLinkBegins: [AppleBeginRequest] = []
+  public private(set) var appleLinkNatives: [AppleLinkNativeRequest] = []
+  public private(set) var appleLinkHandoffs: [AppleLinkHandoffRequest] = []
   public private(set) var profiles: [ProfileRequest] = []
   public private(set) var removedIdentities: [String] = []
   /// The token each `enroll` call was asked to merge from (`nil` for none), oldest first.
@@ -307,6 +310,37 @@ public actor FakeHubAPI: HubAPI {
       throw Self.error("last_identity", "That is the only way to sign in.", status: 409)
     }
     identityList.remove(at: index)
+  }
+
+  public func appleLinkBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse {
+    try authorize()
+    appleLinkBegins.append(request)
+    if identityList.contains(where: { $0.kind == "apple" }) {
+      throw Self.error("apple_linked", "This account already has an Apple ID.", status: 409)
+    }
+    return appleBeginAnswer
+  }
+
+  public func appleLinkNative(_ request: AppleLinkNativeRequest) async throws -> Identity {
+    try authorize()
+    appleLinkNatives.append(request)
+    return linkApple()
+  }
+
+  public func appleLinkHandoff(_ request: AppleLinkHandoffRequest) async throws -> Identity {
+    try authorize()
+    appleLinkHandoffs.append(request)
+    return linkApple()
+  }
+
+  /// Adds an Apple ID to the account's methods (the one it has, if any) and answers it.
+  private func linkApple() -> Identity {
+    if let linked = identityList.first(where: { $0.kind == "apple" }) { return linked }
+    let identity = Identity(
+      id: "fake-apple-\(identityList.count + 1)", kind: "apple", name: "fake@privaterelay.appleid.com",
+      createdAt: "2026-11-02T12:00:00.000000Z")
+    identityList.append(identity)
+    return identity
   }
 
   public func endSession() async throws {

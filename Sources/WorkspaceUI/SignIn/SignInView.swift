@@ -158,7 +158,8 @@ public struct SignInView: View {
     VStack(spacing: 10) {
       if let apple = content.apple {
         Button {
-          Task { await model.signInWithApple(using: SystemAppleWebSignIn(session: webAuthenticationSession)) }
+          // The Mac opens Apple's page in a browser session; the phone shows Apple's own sheet.
+          Task { await model.signInWithApple(using: SystemAppleCeremony(session: webAuthenticationSession)) }
         } label: {
           pillLabel(apple.text, systemImage: "apple.logo")
         }

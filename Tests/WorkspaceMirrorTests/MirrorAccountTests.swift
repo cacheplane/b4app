@@ -1,0 +1,440 @@
+import Foundation
+import Synchronization
+import Testing
+import WorkspaceProtocol
+import WorkspaceSecrets
+import WorkspaceSync
+
+@testable import WorkspaceMirror
+
+// The iPhone's own account (sign-in plan, Task 14): it signs in at the flavour's hub itself, keeps the
+// token in the Keychain, and on log-out ends the session, forgets the token, and empties the mirror.
+
+private let hub = URL(string: "https://hub.test.b4.run")!
+
+private func session(
+  device: String = "0198aaaa-0000-7000-8000-000000000001", onboarding: Bool = false,
+  displayName: String = "Brian Love", token: String = "tok-secret-4411"
+) -> AuthSession {
+  AuthSession(
+    deviceId: device, token: token, org: OrgInfo(slug: "o-abc", name: "Brian's Org"),
+    user: UserInfo(username: "u-abc", displayName: displayName), needsOnboarding: onboarding,
+    userId: "0197bbbb-0000-7000-8000-000000000001")
+}
+
+/// A mirror account over an in-memory store, a memory Keychain, and one fake hub.
+@MainActor
+private struct Rig {
+  let store: MirrorStore
+  let secrets = MemorySecretStore()
+  let fake: FakeHubAPI
+  let memory: MirrorDeviceMemory
+  let account: MirrorAccount
+  let changes = Changes()
+
+  init(
+    store: MirrorStore? = nil, fake: FakeHubAPI = FakeHubAPI(), memory: MirrorDeviceMemory? = nil,
+    makeAPI: MirrorAccount.APIFactory? = nil, endSessionTimeout: Duration = .seconds(10)
+  ) throws {
+    self.store = try store ?? MirrorStore.inMemory()
+    self.fake = fake
+    self.memory = memory ?? MirrorDeviceMemory(url: nil)
+    account = MirrorAccount(
+      store: self.store, secrets: secrets,
+      configuration: MirrorAccount.Configuration(
+        hubURL: hub, deviceName: "Brian's iPhone", endSessionTimeout: endSessionTimeout,
+        syncBackoff: .milliseconds(20)),
+      memory: self.memory, makeAPI: makeAPI ?? { [fake] _, _ in fake })
+    let changes = self.changes
+    account.onChange = { changes.append($0) }
+  }
+
+  /// Sign in with a passkey assertion as `answer`.
+  @discardableResult
+  func signIn(_ answer: AuthSession = session()) async throws -> AccountStatus.Result {
+    await fake.setSession(answer)
+    let begun = try await account.passkeyBegin()
+    return try await account.signIn(
+      passkey: AccountPasskeyFinish.Params(ceremonyId: begun.ceremonyId, assertion: ["id": "cred"]))
+  }
+
+  func token() async throws -> String? {
+    guard let link = try store.link(), let ref = SecretRef(rawValue: link.tokenRef) else { return nil }
+    return try await secrets.read(ref)
+  }
+}
+
+@MainActor
+private final class Changes {
+  private(set) var all: [AccountStatus.Result] = []
+  func append(_ status: AccountStatus.Result) { all.append(status) }
+}
+
+private func eventually(_ what: String, _ condition: () async throws -> Bool) async throws {
+  let deadline = ContinuousClock.now + .seconds(10)
+  while try await !condition() {
+    guard ContinuousClock.now < deadline else {
+      Issue.record("timed out waiting for \(what)")
+      return
+    }
+    try await Task.sleep(for: .milliseconds(10))
+  }
+}
+
+/// A hub whose `endSession` never answers and ignores cancellation, like one that dropped off the
+/// network mid-request.
+private struct HangingHub: HubAPI {
+  let fake: FakeHubAPI
+  func enroll(_ request: EnrollRequest) async throws -> EnrollResponse { try await fake.enroll(request) }
+  func me() async throws -> MeResponse { try await fake.me() }
+  func push(_ changes: [SyncChange]) async throws -> PushResponse { try await fake.push(changes) }
+  func pull(after: Int, limit: Int, wait: Int) async throws -> PullResponse {
+    try await fake.pull(after: after, limit: limit, wait: min(wait, 1))
+  }
+  func snapshot() async throws -> SnapshotResponse { try await fake.snapshot() }
+  func devices() async throws -> [DeviceInfo] { try await fake.devices() }
+  func mintPairingCode() async throws -> PairingCodeResponse { try await fake.mintPairingCode() }
+  func revokeSelf() async throws { try await fake.revokeSelf() }
+  func passkeyBegin() async throws -> PasskeyBeginResponse { try await fake.passkeyBegin() }
+  func passkeyFinish(_ request: PasskeyFinishRequest) async throws -> AuthSession {
+    try await fake.passkeyFinish(request)
+  }
+  func endSession() async throws {
+    // Answers only after a while, whether or not the call was cancelled.
+    await withCheckedContinuation { (answer: CheckedContinuation<Void, Never>) in
+      DispatchQueue.global().asyncAfter(deadline: .now() + 60) { answer.resume() }
+    }
+  }
+}
+
+@MainActor
+@Suite struct MirrorAccountTests {
+  // MARK: Signing in
+
+  @Test func aPhoneWithNoLinkIsSignedOut() throws {
+    let rig = try Rig()
+    #expect(rig.account.accountStatus == AccountStatus.Result(state: .signedOut))
+    #expect(rig.account.sync == nil)
+  }
+
+  @Test func mirrorSignInStoresTokenAndStartsSync() async throws {
+    let rig = try Rig()
+    let status = try await rig.signIn(session(onboarding: true, displayName: ""))
+    #expect(status.state == .needsOnboarding)
+    #expect(status.account?.orgName == "Brian's Org")
+    #expect(rig.account.accountStatus == status)
+    #expect(rig.changes.all == [status])
+
+    let link = try #require(try rig.store.link())
+    #expect(link.hubURL == "https://hub.test.b4.run")
+    #expect(link.deviceId == "0198aaaa-0000-7000-8000-000000000001")
+    #expect(link.deviceName == "Brian's iPhone")
+    #expect(link.needsOnboarding == true)
+    // The token is in the Keychain under the link's reference, and nowhere in the link itself.
+    #expect(try await rig.token() == "tok-secret-4411")
+    let stored = String(decoding: try JSONCoding.encoder.encode(link), as: UTF8.self)
+    #expect(!stored.contains("tok-secret-4411"))
+    #expect(!status.account.debugDescription.contains("tok-secret-4411"))
+
+    // The phone signed in as an iPhone, and sync runs: its first turn asks the hub for its sequence.
+    let sent = try #require(await rig.fake.passkeyFinishes.last)
+    #expect(sent.device.platform == "ios")
+    #expect(sent.device.deviceName == "Brian's iPhone")
+    #expect(sent.device.deviceId == nil)
+    #expect(rig.account.sync != nil)
+    try await eventually("the sync's first push") { !(await rig.fake.pushed.isEmpty) }
+    await rig.account.stopSync()
+  }
+
+  @Test func appleNativeSendsTheTokenTheCodeAndTheName() async throws {
+    let rig = try Rig()
+    await rig.fake.setSession(session(onboarding: true))
+    let ceremony = try await rig.account.appleBegin()
+    #expect(ceremony == AppleNativeCeremony(ceremonyId: "fake-apple-ceremony", nonce: "fake-nonce"))
+    #expect(!ceremony.description.contains("fake-nonce"))
+    // The native flow begins with an empty body: no verifier, no scheme.
+    #expect(await rig.fake.appleBegins == [AppleBeginRequest()])
+    let status = try await rig.account.signIn(
+      apple: AppleCredential(
+        identityToken: "jwt-secret", authorizationCode: "code-secret", fullName: " Brian Love "),
+      ceremonyId: ceremony.ceremonyId)
+    #expect(status.state == .needsOnboarding)
+    let sent = try #require(await rig.fake.appleNatives.last)
+    #expect(sent.ceremonyId == "fake-apple-ceremony")
+    #expect(sent.identityToken == "jwt-secret")
+    #expect(sent.authorizationCode == "code-secret")
+    #expect(sent.fullName == "Brian Love")
+    #expect(sent.device.platform == "ios")
+    await rig.account.stopSync()
+
+    // No name (every sign-in after Apple's first) sends none.
+    let again = try Rig()
+    await again.fake.setSession(session())
+    _ = try await again.account.signIn(
+      apple: AppleCredential(identityToken: "t", authorizationCode: "c", fullName: "  "), ceremonyId: "x")
+    #expect(try #require(await again.fake.appleNatives.last).fullName == nil)
+    await again.account.stopSync()
+  }
+
+  @Test func completeProfileSignsInAndSurvivesARestart() async throws {
+    let store = try MirrorStore.inMemory()
+    let rig = try Rig(store: store)
+    try await rig.signIn(session(onboarding: true, displayName: ""))
+    let named = try await rig.account.completeProfile(fullName: "  Brian Love ")
+    #expect(named.state == .signedIn)
+    #expect(await rig.fake.profiles == [ProfileRequest(fullName: "Brian Love")])
+    #expect(named.account?.displayName == "Brian Love")
+    #expect(try store.link()?.needsOnboarding == false)
+    await rig.account.stopSync()
+
+    // A relaunch reads the state from the stored link, with no hub call first: no flash.
+    let relaunched = try Rig(store: store, fake: rig.fake)
+    #expect(relaunched.account.accountStatus.state == .signedIn)
+    #expect(relaunched.account.accountStatus.account?.displayName == "Brian Love")
+
+    // Mid-onboarding stays mid-onboarding across a relaunch.
+    let other = try MirrorStore.inMemory()
+    let first = try Rig(store: other)
+    try await first.signIn(session(onboarding: true))
+    await first.account.stopSync()
+    #expect(try Rig(store: other, fake: first.fake).account.accountStatus.state == .needsOnboarding)
+  }
+
+  // MARK: Logging out
+
+  @Test func mirrorLogOutReturnsToSignIn() async throws {
+    let rig = try Rig()
+    try await rig.signIn()
+    let link = try #require(try rig.store.link())
+    _ = try rig.store.apply(Array(try fixtureAsStored().prefix(4)))
+    _ = try rig.store.updateThread(id: "thread-1", title: "Unsent", pinned: nil, archived: nil)
+    #expect(try rig.store.thread(id: "thread-1") != nil)
+
+    let status = await rig.account.logOut()
+    #expect(status == AccountStatus.Result(state: .signedOut))
+    #expect(rig.account.accountStatus == status)
+    #expect(rig.changes.all.last == status)
+    // The session ended at the hub; the device stays enrolled there.
+    #expect(await rig.fake.endSessionCalls == 1)
+    // The token is gone, and the mirror is empty (D-053): rows, the outbox, and the link.
+    #expect(try await rig.secrets.read(try #require(SecretRef(rawValue: link.tokenRef))) == nil)
+    #expect(try rig.store.link() == nil)
+    #expect(try rig.store.thread(id: "thread-1") == nil)
+    #expect(try rig.store.outbox(limit: 10).isEmpty)
+    #expect(rig.account.sync == nil)
+
+    // Signing back in offers the device it had, so the hub reuses it.
+    try await rig.signIn()
+    #expect(try #require(await rig.fake.passkeyFinishes.last).device.deviceId == link.deviceId)
+    await rig.account.stopSync()
+  }
+
+  @Test func logOutWhenTheHubIsDownStillSignsOut() async throws {
+    let rig = try Rig()
+    try await rig.signIn()
+    await rig.account.stopSync()
+    let link = try #require(try rig.store.link())
+    await rig.fake.setFailNext(
+      HubError(kind: "execution_error", code: "transport", message: "offline", status: 0))
+    let status = await rig.account.logOut()
+    #expect(status.state == .signedOut)
+    #expect(try await rig.secrets.read(try #require(SecretRef(rawValue: link.tokenRef))) == nil)
+    #expect(try rig.store.link() == nil)
+  }
+
+  @Test func logOutIsBoundedWhenTheHubNeverAnswers() async throws {
+    let fake = FakeHubAPI()
+    let rig = try Rig(
+      fake: fake, makeAPI: { _, _ in HangingHub(fake: fake) }, endSessionTimeout: .milliseconds(200))
+    try await rig.signIn()
+    let started = ContinuousClock.now
+    let status = await rig.account.logOut()
+    // The hub would answer only after a minute; the log-out is long done (generous for a loaded run).
+    #expect(ContinuousClock.now - started < .seconds(30))
+    #expect(status.state == .signedOut)
+    #expect(try rig.store.link() == nil)
+  }
+
+  @Test func theStandardLogOutWaitsTenSecondsForTheHub() {
+    #expect(MirrorAccount.Configuration(hubURL: hub, deviceName: "x").endSessionTimeout == .seconds(10))
+  }
+
+  // MARK: The hub refusing the token
+
+  @Test func a401OnSyncSignsThePhoneOut() async throws {
+    let rig = try Rig()
+    try await rig.signIn()
+    let link = try #require(try rig.store.link())
+    try await eventually("the sync's first push") { !(await rig.fake.pushed.isEmpty) }
+    // Another device removed this one, or the account was deleted: every call is now 401.
+    try await rig.fake.endSession()
+    try await eventually("the sign-out") { rig.account.accountStatus.state == .signedOut }
+    #expect(rig.account.accountStatus.reason == .rejectedByHub("Brian's Org"))
+    #expect(rig.changes.all.last?.reason == .rejectedByHub("Brian's Org"))
+    #expect(try rig.store.link() == nil)
+    #expect(try await rig.secrets.read(try #require(SecretRef(rawValue: link.tokenRef))) == nil)
+    #expect(rig.account.sync == nil)
+  }
+
+  @Test func a401OnAnAccountCallSignsThePhoneOut() async throws {
+    let rig = try Rig()
+    try await rig.signIn()
+    await rig.account.stopSync()
+    try await rig.fake.endSession()
+    await #expect(throws: WorkspaceError.self) { _ = try await rig.account.identities() }
+    #expect(rig.account.accountStatus.state == .signedOut)
+    #expect(rig.account.accountStatus.reason == .rejectedByHub("Brian's Org"))
+  }
+
+  // MARK: The account's methods
+
+  @Test func identitiesAddAndRemove() async throws {
+    let rig = try Rig()
+    try await rig.signIn()
+    await rig.account.stopSync()
+    await rig.fake.setIdentities([Identity(id: "i1", kind: "passkey", createdAt: "2026-11-01T09:00:00Z")])
+    #expect(try await rig.account.identities().map(\.id) == ["i1"])
+    let begun = try await rig.account.addPasskeyBegin()
+    #expect(begun.ceremonyId == "fake-add-ceremony")
+    let added = try await rig.account.addPasskeyFinish(
+      AccountAddPasskeyFinish.Params(ceremonyId: begun.ceremonyId, attestation: ["id": "new"]))
+    #expect(added.kind == "passkey")
+    #expect(try await rig.account.removeIdentity(id: added.id).map(\.id) == ["i1"])
+    let refused = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.account.removeIdentity(id: "i1")
+    }
+    #expect(refused?.code == .lastIdentity)
+  }
+
+  @Test func linkingAnAppleIDNatively() async throws {
+    let rig = try Rig()
+    try await rig.signIn()
+    await rig.account.stopSync()
+    let ceremony = try await rig.account.appleLinkBegin()
+    #expect(await rig.fake.appleLinkBegins == [AppleBeginRequest()])
+    let linked = try await rig.account.linkApple(
+      AppleCredential(identityToken: "jwt", authorizationCode: "code"), ceremonyId: ceremony.ceremonyId)
+    #expect(linked.kind == "apple")
+    #expect(
+      await rig.fake.appleLinkNatives
+        == [
+          AppleLinkNativeRequest(
+            ceremonyId: "fake-apple-ceremony", identityToken: "jwt", authorizationCode: "code")
+        ])
+    // One Apple ID per account.
+    let refused = await #expect(throws: WorkspaceError.self) { _ = try await rig.account.appleLinkBegin() }
+    #expect(refused?.code == .appleLinked)
+  }
+
+  @Test func deleteAccountSignsOutAndEmptiesTheMirror() async throws {
+    let rig = try Rig()
+    try await rig.signIn()
+    await rig.account.stopSync()
+    let status = try await rig.account.deleteAccount()
+    #expect(status.state == .signedOut)
+    #expect(await rig.fake.deleteAccountCalls == 1)
+    #expect(try rig.store.link() == nil)
+    // The device went with the account: the next sign-in offers none.
+    #expect(rig.memory.load() == nil)
+  }
+
+  @Test func callsThatNeedTheAccountRefuseWhileSignedOut() async throws {
+    let rig = try Rig()
+    let refused = await #expect(throws: WorkspaceError.self) { _ = try await rig.account.identities() }
+    #expect(refused?.code == .signedOut)
+    #expect(await rig.fake.meCalls == 0)
+  }
+
+  @Test func aRefusalKeepsItsCodeAndNoSecret() async throws {
+    let rig = try Rig()
+    await rig.fake.setFailNext(
+      HubError(kind: "request_error", code: "credential_rejected", message: "no", status: 401))
+    let refused = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.account.signIn(
+        passkey: AccountPasskeyFinish.Params(ceremonyId: "c", assertion: ["id": "secret-assertion"]))
+    }
+    #expect(refused?.code == .credentialRejected)
+    #expect(refused?.message.contains("secret-assertion") == false)
+    #expect(rig.account.accountStatus.state == .signedOut)
+    let unreachable = try Rig()
+    await unreachable.fake.setFailNext(
+      HubError(kind: "execution_error", code: "transport", message: "offline", status: 0))
+    let down = await #expect(throws: WorkspaceError.self) { _ = try await unreachable.account.passkeyBegin() }
+    #expect(down?.code == .endpointUnavailable)
+  }
+
+  // MARK: Enrollment codes (an operator's hub, and M8c's pairing)
+
+  @Test func enrollingWithACodeSignsIn() async throws {
+    let fake = FakeHubAPI(enrollmentCodes: [
+      "K7M2Q9XP": EnrollResponse(
+        deviceId: "dev-phone", token: "tok-enrolled", org: OrgInfo(slug: "cacheplane", name: "cacheplane"),
+        user: UserInfo(username: "blove", displayName: "Brian Love"))
+    ])
+    let rig = try Rig(fake: fake)
+    let status = try await rig.account.enroll(
+      url: "http://localhost:8080", code: " k7m2q9xp ", deviceName: "")
+    #expect(status.state == .signedIn)
+    #expect(status.account?.orgName == "cacheplane")
+    #expect(try rig.store.link()?.hubURL == "http://localhost:8080")
+    #expect(try rig.store.link()?.deviceName == "iPhone")
+    #expect(try await rig.token() == "tok-enrolled")
+    await rig.account.stopSync()
+  }
+}
+
+@Suite struct PhoneFlavorTests {
+  @Test func theStorageNamesFollowTheFlavour() {
+    // Prod keeps the names every earlier build used, so nothing moves.
+    #expect(PhoneFlavor.prod.directoryName == "b4app")
+    #expect(PhoneFlavor.prod.keychainService == "b4app")
+    #expect(PhoneFlavor.beta.directoryName == "b4app-beta")
+    #expect(PhoneFlavor.beta.keychainService == "b4app-beta")
+    #expect(PhoneFlavor.local.directoryName == "b4app-local")
+    #expect(PhoneFlavor.local.keychainService == "b4app-local")
+  }
+
+  @Test func theHubAndTheSiteFollowTheFlavour() {
+    #expect(PhoneFlavor.prod.hubURL.absoluteString == "https://hub.b4.run")
+    #expect(PhoneFlavor.beta.hubURL.absoluteString == "https://hub.test.b4.run")
+    #expect(PhoneFlavor.local.hubURL.absoluteString == "http://localhost:8080")
+    #expect(PhoneFlavor.allCases.map(\.siteDomain) == ["b4.run", "test.b4.run", "local.b4.run"])
+    #expect(PhoneFlavor.allCases.map(\.appleSignIn) == [true, true, false])
+    #expect(PhoneFlavor.allCases.map(\.badge) == [nil, "Test hub", "Local hub"])
+    #expect(PhoneFlavor.allCases.map(\.urlScheme) == ["b4app", "b4app-beta", "b4app-local"])
+  }
+
+  @Test func theFlavourComesFromTheEnvironmentThenTheInfoPlist() {
+    #expect(PhoneFlavor.resolve(environment: [:], info: ["B4AppFlavor": "beta"]) == .beta)
+    #expect(
+      PhoneFlavor.resolve(environment: ["B4APP_FLAVOR": "prod"], info: ["B4AppFlavor": "beta"]) == .prod)
+    #expect(
+      PhoneFlavor.resolve(environment: ["B4APP_FLAVOR": "nope"], info: ["B4AppFlavor": "nope"]) == .local)
+    #expect(PhoneFlavor.resolve(environment: [:], info: [:]) == .local)
+  }
+
+  @Test func theRememberedDeviceSurvivesARelaunch() throws {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "device-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: url) }
+    let memory = MirrorDeviceMemory(url: url)
+    #expect(memory.load() == nil)
+    memory.save(MirrorRememberedDevice(hubURL: "https://hub.b4.run", deviceId: "d1"))
+    #expect(
+      MirrorDeviceMemory(url: url).load()
+        == MirrorRememberedDevice(hubURL: "https://hub.b4.run", deviceId: "d1"))
+    memory.clear()
+    #expect(MirrorDeviceMemory(url: url).load() == nil)
+  }
+
+  /// Task 13's carry: a `b4app*://auth?handoff=` (or `?error=`) opened on the phone is no pairing link,
+  /// so nothing redeems it.
+  @Test func aStrayAuthCallbackIsNoPairingLink() {
+    let lifecycle = RelayLifecycle(enrolled: false)
+    for text in [
+      "b4app://auth?handoff=H-stray", "b4app-beta://auth?error=cancelled", "b4app-local://auth?handoff=x",
+    ] {
+      #expect(lifecycle.pairLink(URL(string: text)!) == .ignored, "\(text)")
+    }
+  }
+}

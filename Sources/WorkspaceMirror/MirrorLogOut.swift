@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import WorkspaceSync
 
 extension MirrorStore {
@@ -17,26 +18,79 @@ extension MirrorStore {
   }
 }
 
-/// The phone's Log out: revoke this device at the hub (best effort), forget its token, and empty the
-/// mirror. Unsent edits are discarded rather than uploaded under whatever link comes next.
+/// The phone's Log out: end this device's session at the hub (`DELETE /v1/sessions/self`, best effort
+/// and bounded), forget its token, and empty the mirror. The device stays enrolled at the hub, so the
+/// next sign-in reuses it. Unsent edits are discarded rather than uploaded under whatever link comes
+/// next.
 public enum MirrorLogOut {
-  /// Returns whether the hub confirmed the revoke. The token is forgotten and the mirror emptied
-  /// either way, so an unreachable hub cannot keep the phone signed in.
+  /// How long a log-out waits for the hub.
+  public static let standardTimeout: Duration = .seconds(10)
+
+  /// Returns whether the hub confirmed the session ended. The token is forgotten and the mirror
+  /// emptied either way, within `timeout` of the hub not answering, so an unreachable hub cannot keep
+  /// the phone signed in.
   @discardableResult
   public static func run(
-    store: MirrorStore, api: (any HubAPI)?, forgetToken: @Sendable () async -> Void
+    store: MirrorStore, api: (any HubAPI)?, timeout: Duration = standardTimeout,
+    forgetToken: @Sendable () async -> Void
   ) async -> Bool {
-    var revoked = false
+    var ended = false
     if let api {
-      do {
-        try await api.revokeSelf()
-        revoked = true
-      } catch {
-        revoked = false
-      }
+      ended = await Bounded.run(within: timeout) { try await api.endSession() }
     }
     await forgetToken()
     try? store.forgetAccount()
-    return revoked
+    return ended
+  }
+}
+
+/// Runs work for at most a given time, whether or not the work notices cancellation.
+enum Bounded {
+  /// True when `work` finished without throwing within `timeout`. Past it the work is cancelled and
+  /// left to end on its own; its answer is ignored.
+  static func run(within timeout: Duration, _ work: @escaping @Sendable () async throws -> Void) async -> Bool
+  {
+    let once = Once()
+    return await withCheckedContinuation { continuation in
+      once.set(continuation)
+      let job = Task {
+        do {
+          try await work()
+          once.finish(true)
+        } catch {
+          once.finish(false)
+        }
+      }
+      let timer = Task {
+        try? await Task.sleep(for: timeout)
+        once.finish(false)
+        job.cancel()
+      }
+      once.onFinish { timer.cancel() }
+    }
+  }
+
+  /// Resumes its continuation exactly once.
+  private final class Once: Sendable {
+    private let state = Mutex<(CheckedContinuation<Bool, Never>?, (@Sendable () -> Void)?)>((nil, nil))
+
+    func set(_ continuation: CheckedContinuation<Bool, Never>) { state.withLock { $0.0 = continuation } }
+    func onFinish(_ body: @escaping @Sendable () -> Void) {
+      let finished = state.withLock { state -> Bool in
+        if state.0 == nil { return true }
+        state.1 = body
+        return false
+      }
+      if finished { body() }
+    }
+
+    func finish(_ value: Bool) {
+      let (continuation, after) = state.withLock { state in
+        defer { state = (nil, nil) }
+        return state
+      }
+      continuation?.resume(returning: value)
+      after?()
+    }
   }
 }

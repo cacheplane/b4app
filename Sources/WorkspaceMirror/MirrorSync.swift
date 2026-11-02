@@ -19,6 +19,7 @@ import os
 ///   replaces the mirror with it, keeping unsent edits. A mirror that was just rebuilt starts the same
 ///   way (`startFromSnapshot`) rather than pulling the whole feed from 0.
 /// - The device list is refreshed at most once a minute.
+/// - A 401 (the hub no longer takes the token) ends the loop and calls `onUnauthorized` once.
 /// - Any other failure is recorded on the link as `lastError` and retried after a backoff that starts at
 ///   two seconds and doubles to a minute. The device token stays inside `api`. Each outcome is also
 ///   handed to `onStatus` (when given), so the app can say that what it shows is stale.
@@ -27,6 +28,7 @@ public actor MirrorSync {
   private let api: any HubAPI
   private let onBatch: @Sendable (AppliedBatch) async -> Void
   private let onStatus: (@Sendable (MirrorSyncStatus) async -> Void)?
+  private let onUnauthorized: (@Sendable () async -> Void)?
   private let initialBackoff: Duration
   private let maxBackoff: Duration
   private var loop: Task<Void, Never>?
@@ -55,12 +57,13 @@ public actor MirrorSync {
     store: MirrorStore, api: any HubAPI, onBatch: @escaping @Sendable (AppliedBatch) async -> Void,
     onStatus: (@Sendable (MirrorSyncStatus) async -> Void)? = nil,
     initialBackoff: Duration = .seconds(2), maxBackoff: Duration = .seconds(60),
-    startFromSnapshot: Bool = false
+    startFromSnapshot: Bool = false, onUnauthorized: (@Sendable () async -> Void)? = nil
   ) {
     self.store = store
     self.api = api
     self.onBatch = onBatch
     self.onStatus = onStatus
+    self.onUnauthorized = onUnauthorized
     self.lastSyncAt = try? store.link()?.lastSyncAt
     self.initialBackoff = initialBackoff
     self.maxBackoff = maxBackoff
@@ -90,6 +93,7 @@ public actor MirrorSync {
 
   private func syncLoop() async {
     var backoff = initialBackoff
+    var unauthorized = false
     while !stopped, !Task.isCancelled {
       // Cleared before the outbox is read, so a write made after the read sets it again.
       nudged = false
@@ -110,6 +114,13 @@ public actor MirrorSync {
           )
         }
         if !page.changes.isEmpty { await onBatch(batch) }
+      } catch let error as HubError where error.status == 401 {
+        // The hub no longer takes this token (the session ended, the device was removed, or the
+        // account was deleted): retrying cannot help, so the loop ends and the phone signs out.
+        Self.logger.notice(
+          "the hub refused this device's token (\(error.code, privacy: .public)); mirror sync stops")
+        stopped = true
+        unauthorized = true
       } catch let error as HubError where error.code == "resync_required" {
         // A hub that asks again straight after a snapshot is failing; do not spin on it.
         resyncsInARow += 1
@@ -123,10 +134,14 @@ public actor MirrorSync {
         await failed(error, backoff: &backoff)
       }
     }
+    // Told once, as the loop ends. The handler must not wait for this loop (it is still running).
+    if unauthorized { await onUnauthorized?() }
   }
 
   /// The pull for this turn. With a nudge already waiting it does not wait for news.
   private func pull() async throws -> PullResponse {
+    // Stopped while pushing: no long-poll starts that nothing would cancel.
+    guard !stopped else { throw CancellationError() }
     let cursor = store.cursor
     let wait = nudged ? 0 : Self.waitSeconds
     let api = api

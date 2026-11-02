@@ -193,6 +193,18 @@ private struct ForwardingAPI: HubAPI {
     try await hub.enter("removeIdentity")
     try await fake.removeIdentity(id)
   }
+  func appleLinkBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse {
+    try await hub.enter("appleLinkBegin")
+    return try await fake.appleLinkBegin(request)
+  }
+  func appleLinkNative(_ request: AppleLinkNativeRequest) async throws -> Identity {
+    try await hub.enter("appleLinkNative")
+    return try await fake.appleLinkNative(request)
+  }
+  func appleLinkHandoff(_ request: AppleLinkHandoffRequest) async throws -> Identity {
+    try await hub.enter("appleLinkHandoff")
+    return try await fake.appleLinkHandoff(request)
+  }
   func endSession() async throws {
     try await hub.enter("endSession")
     try await fake.endSession()
@@ -896,6 +908,66 @@ private func sha256Hex(_ text: String) -> String {
     }
     #expect(finish?.code == .unsupportedCapability)
     #expect(await rig.hub.fake.appleBegins.isEmpty)
+  }
+
+  /// Task 14: Connect Apple ID on the Mac. The coordinator begins the link with its own verifier's hash,
+  /// the app shows Apple's page, and the handoff comes back to be redeemed once with that verifier.
+  @Test func appleLinkStartAndFinishAddAnAppleID() async throws {
+    let rig = try await CommandRig.start(flavor: .beta)
+    defer { Task { await rig.close() } }
+    try await rig.signIn(ann)
+    await rig.hub.fake.setAppleBegin(AppleBeginResponse(ceremonyId: "link-1", nonce: "n1"))
+    let started = try await rig.client.request(AccountAppleLinkStart.self, EmptyParams())
+    #expect(started.callbackScheme == "b4app-beta")
+    #expect(started.url == "https://hub.test.b4.run/v1/auth/apple/start?ceremony=link-1")
+    let begin = try #require(await rig.hub.fake.appleLinkBegins.last)
+    #expect(begin.scheme == "b4app-beta")
+    let hash = try #require(begin.verifierHash)
+    // A sign-in ceremony is not a link's, and a link's is not a sign-in's.
+    #expect(await rig.hub.fake.appleBegins.isEmpty)
+
+    let linked = try await rig.client.request(
+      AccountAppleLinkFinish.self, AccountAppleLinkFinish.Params(handoff: "link-handoff-5521"),
+      options: CommandRig.mutation())
+    #expect(linked.identity.kind == "apple")
+    let sent = try #require(await rig.hub.fake.appleLinkHandoffs.last)
+    #expect(sent.handoff == "link-handoff-5521")
+    #expect(sha256Hex(sent.verifier) == hash)
+    // Still signed in to the same account.
+    #expect(try await rig.client.request(AccountStatus.self, EmptyParams()).account?.orgName == "Ann's Org")
+
+    // Single use: the same (or a stray) handoff is dropped without asking the hub.
+    let again = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.client.request(
+        AccountAppleLinkFinish.self, AccountAppleLinkFinish.Params(handoff: "link-handoff-5521"),
+        options: CommandRig.mutation())
+    }
+    #expect(again?.code == .ceremonyExpired)
+    #expect(again?.message.contains("link-handoff-5521") == false)
+    #expect(await rig.hub.fake.appleLinkHandoffs.count == 1)
+
+    // The account has an Apple ID now: the hub refuses another, and the refusal keeps its code.
+    let refused = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.client.request(AccountAppleLinkStart.self, EmptyParams())
+    }
+    #expect(refused?.code == .appleLinked)
+  }
+
+  @Test func appleLinkNeedsAnAccountAndApple() async throws {
+    let rig = try await CommandRig.start(flavor: .beta)
+    defer { Task { await rig.close() } }
+    let signedOut = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.client.request(AccountAppleLinkStart.self, EmptyParams())
+    }
+    #expect(signedOut?.code == .signedOut)
+    let local = try await CommandRig.start(flavor: .local)
+    defer { Task { await local.close() } }
+    try await local.signIn(ann)
+    let unsupported = await #expect(throws: WorkspaceError.self) {
+      _ = try await local.client.request(AccountAppleLinkStart.self, EmptyParams())
+    }
+    #expect(unsupported?.code == .unsupportedCapability)
+    #expect(await local.hub.fake.appleLinkBegins.isEmpty)
   }
 
   /// Ruling 3: the Mac cannot know whose passkey is coming, so it offers the hub every device it has on

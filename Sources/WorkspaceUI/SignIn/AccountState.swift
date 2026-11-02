@@ -16,10 +16,11 @@ public enum AccountState: Sendable, Equatable {
   case needsOnboarding(prefillName: String?)
   case signedIn
 
-  init(_ status: AccountStatus.Result) {
+  /// `device` names this device in the signed-out line: "Mac", or "iPhone" for the phone's host.
+  init(_ status: AccountStatus.Result, device: String = "Mac") {
     switch status.state {
     case .signedOut:
-      self = .signedOut(reason: status.reason.map { SignInCopy.signedOut(of: $0.orgName) })
+      self = .signedOut(reason: status.reason.map { SignInCopy.signedOut(of: $0.orgName, device: device) })
     case .needsOnboarding:
       let name = status.account?.displayName.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
       self = .needsOnboarding(prefillName: name.isEmpty ? nil : name)
@@ -124,7 +125,9 @@ public enum SignInCopy {
     "No passkey for \(siteDomain) on this device. Create a new account?"
   }
 
-  public static func signedOut(of orgName: String) -> String { "This Mac was signed out of \(orgName)." }
+  public static func signedOut(of orgName: String, device: String = "Mac") -> String {
+    "This \(device) was signed out of \(orgName)."
+  }
 
   /// The banner for the coordinator's left-open notice, in the UI's own words whatever its text.
   public static let sessionLeftOpen =
@@ -180,6 +183,14 @@ public struct PasskeyAlreadyOnDevice: Error, Sendable, Equatable {
   public init() {}
 }
 
+/// A passkey this device just made at sign-up, to be renamed with the person's name once onboarding
+/// gives one. Ids only: the relying party and the user handle the hub's options named.
+struct PendingPasskeyRename {
+  var relyingParty: String
+  var userHandle: Data
+  var ceremony: any PasskeyCeremony
+}
+
 /// A registration offered after "No passkey for … Create a new account?", kept until the answer.
 /// It holds the hub's options (no secret) and the ceremony that asked, never a credential.
 struct PendingRegistration {
@@ -198,7 +209,9 @@ extension WorkspaceModel {
   /// What the root view shows. A coordinator that cannot be reached shows the existing
   /// coordinator-unavailable state (the workspace and its notice), not the sign-in screen.
   public var rootScreen: RootScreen {
-    if accountSource == .host { return .workspace }
+    // A host that owns no sign-in (the phone over a mirror it cannot read) shows the workspace, as
+    // before sign-in existed.
+    if accountSource == .host && accountHost == nil { return .workspace }
     switch accountState {
     case .signedIn:
       return .workspace
@@ -214,7 +227,10 @@ extension WorkspaceModel {
   /// Ask the coordinator who is signed in. A transport without accounts (the phone's mirror, an older
   /// coordinator) answers unsupported: its workspace shows as before. Other failures throw.
   func readAccountState(_ client: WorkspaceClient) async throws {
-    guard accountSource == .coordinator else { return }
+    if accountSource == .host {
+      if let accountHost { applyAccountStatus(accountHost.accountStatus, loadStore: false) }
+      return
+    }
     do {
       applyAccountStatus(try await client.request(AccountStatus.self, EmptyParams()), loadStore: false)
     } catch let error as WorkspaceError
@@ -230,16 +246,19 @@ extension WorkspaceModel {
     let wasSignedIn = accountState == .signedIn
     let previousId = accountStatus?.account?.id
     accountStatus = status
-    accountState = AccountState(status)
+    accountState = AccountState(status, device: accountSource == .host ? "iPhone" : "Mac")
     accountNotice = status.state == .signedOut || status.notice == nil ? nil : SignInCopy.sessionLeftOpen
     if status.state != .signedOut {
       // Signed in elsewhere (the CLI, another window) while the screen was asking: nothing is pending.
       pendingRegistration = nil
       signInProgress = SignInProgress()
     }
+    if status.state == .signedOut { pendingRename = nil }
     if status.state != .signedIn {
       if wasSignedIn || status.state == .signedOut { forgetWorkspace() }
       if wasSignedIn { closeAccountWindows() }
+      // The phone's transport carries the relay of the link it was made with: a new one follows.
+      if wasSignedIn, loadStore, hostOwnsAccount { reconnect() }
       return
     }
     // Another account, with no sign-out between (a switch publishes only the new account): nothing of
@@ -250,12 +269,37 @@ extension WorkspaceModel {
       forgetWorkspace()
       closeAccountWindows()
     }
+    // The phone's profile button names the account its host signed in to.
+    if hostOwnsAccount { account = Self.hostProfile(status) }
     if loadStore, !wasSignedIn || switched {
-      Task {
-        try? await refreshSnapshot()
-        await refreshAccount()
+      if hostOwnsAccount {
+        // A fresh transport, over the new link's relay, reads the mirror the new sync fills.
+        reconnect()
+      } else {
+        Task {
+          try? await refreshSnapshot()
+          await refreshAccount()
+        }
       }
     }
+  }
+
+  /// A change the host made on its own (sign-in on the phone, the hub refusing the token, `/v1/me`
+  /// renaming the account), applied as `account.changed` is on the Mac.
+  public func applyHostAccount(_ status: AccountStatus.Result) {
+    guard hostOwnsAccount else { return }
+    applyAccountStatus(status)
+  }
+
+  /// The phone's host owns its sign-in (rather than leaving the workspace always shown).
+  var hostOwnsAccount: Bool { accountSource == .host && accountHost != nil }
+
+  /// The profile button's name for a host's account: its display name, else its org's.
+  static func hostProfile(_ status: AccountStatus.Result) -> WorkspaceAccount? {
+    guard let account = status.account else { return nil }
+    let name = account.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+    let shown = name.isEmpty ? account.orgName : name
+    return shown.isEmpty ? nil : WorkspaceAccount(username: shown, displayName: shown)
   }
 
   /// Whatever needs an account closes: the Settings window and its sheets, and the phone's Settings
@@ -268,6 +312,17 @@ extension WorkspaceModel {
   func signInClient() throws -> WorkspaceClient {
     guard let client else { throw WorkspaceError(.endpointUnavailable, "Coordinator is not connected.") }
     return client
+  }
+
+  /// Where this model's account calls go: the host that owns the account, or the coordinator.
+  func accountCalls() throws -> AccountCalls {
+    if accountSource == .host {
+      guard let accountHost else {
+        throw WorkspaceError(.unsupportedCapability, "This device's account is not managed here.")
+      }
+      return .host(accountHost)
+    }
+    return .coordinator(try signInClient())
   }
 
   /// The hub's answer can take a while (the coordinator signs in and opens the account's store).
@@ -302,8 +357,8 @@ extension WorkspaceModel {
     pendingRegistration = nil
     signInProgress = SignInProgress(inFlight: .passkey)
     do {
-      let client = try signInClient()
-      let begun = try await client.request(AccountPasskeyBegin.self, EmptyParams(), options: Self.signInCall)
+      let calls = try accountCalls()
+      let begun = try await calls.passkeyBegin()
       guard let assertion = try await ceremony.assert(begun.authentication) else {
         // No passkey for this site on this device. Ask before making a second, empty account.
         guard let registration = begun.registration else {
@@ -315,11 +370,10 @@ extension WorkspaceModel {
           confirmation: SignInCopy.noPasskey(siteDomain: signInConfiguration.siteDomain))
         return
       }
-      let status = try await client.request(
-        AccountPasskeyFinish.self,
-        AccountPasskeyFinish.Params(ceremonyId: begun.ceremonyId, assertion: assertion),
-        options: Self.signInMutation())
+      let status = try await calls.passkeyFinish(
+        AccountPasskeyFinish.Params(ceremonyId: begun.ceremonyId, assertion: assertion))
       signInProgress = SignInProgress()
+      pendingRename = nil
       applyAccountStatus(status)
     } catch {
       signInFailed(error)
@@ -333,12 +387,11 @@ extension WorkspaceModel {
     pendingRegistration = nil
     signInProgress = SignInProgress(inFlight: .passkey)
     do {
-      let client = try signInClient()
+      let calls = try accountCalls()
       var ceremonyId = pending.ceremonyId
       var registration = pending.registration
       if now().timeIntervalSince(pending.begunAt) >= Self.ceremonyLifetime {
-        let begun = try await client.request(
-          AccountPasskeyBegin.self, EmptyParams(), options: Self.signInCall)
+        let begun = try await calls.passkeyBegin()
         guard let fresh = begun.registration else {
           throw WorkspaceError(.signupClosed, "Sign-up is closed.")
         }
@@ -348,15 +401,17 @@ extension WorkspaceModel {
       let attestation = try await pending.ceremony.register(registration)
       let status: AccountStatus.Result
       do {
-        status = try await client.request(
-          AccountPasskeyFinish.self,
-          AccountPasskeyFinish.Params(ceremonyId: ceremonyId, attestation: attestation),
-          options: Self.signInMutation())
+        status = try await calls.passkeyFinish(
+          AccountPasskeyFinish.Params(ceremonyId: ceremonyId, attestation: attestation))
       } catch {
         await reportOrphan(attestation, options: registration, ceremony: pending.ceremony, after: error)
         throw error
       }
       signInProgress = SignInProgress()
+      // A new account: its passkey takes the person's name once onboarding gives one.
+      pendingRename = (try? WebAuthnJSON.registrationRequest(from: registration)).map {
+        PendingPasskeyRename(relyingParty: $0.relyingParty, userHandle: $0.userID, ceremony: pending.ceremony)
+      }
       applyAccountStatus(status)
     } catch {
       signInFailed(error)
@@ -392,37 +447,72 @@ extension WorkspaceModel {
     signInProgress = SignInProgress()
   }
 
-  // MARK: Apple on the Mac
+  // MARK: Continue with Apple
 
-  /// Continue with Apple (the Mac's web flow): the coordinator starts the ceremony, the session shows
-  /// Apple's page, and the redirect's one-time handoff goes back to the coordinator, which keeps the
-  /// verifier. A cancelled sheet shows nothing; the next tap starts a new ceremony.
-  public func signInWithApple(using session: any AppleWebSignIn) async {
+  /// Continue with Apple. On the Mac, Apple's web flow: the coordinator starts the ceremony, the
+  /// session shows Apple's page, and the redirect's one-time handoff goes back to the coordinator, which
+  /// keeps the verifier. On the phone, Apple's native sheet against the hub's ceremony, through the
+  /// host. A cancelled sheet shows nothing; the next tap starts a new ceremony.
+  public func signInWithApple(using ceremony: any AppleCeremony) async {
     guard signInProgress.inFlight == nil else { return }
     pendingRegistration = nil
     signInProgress = SignInProgress(inFlight: .apple)
     do {
-      let client = try signInClient()
-      let start = try await client.request(AccountAppleStart.self, EmptyParams(), options: Self.signInCall)
-      guard let url = URL(string: start.url) else {
-        throw WorkspaceError(.protocolInvalid, "The sign-in address is not a URL.")
+      let status: AccountStatus.Result
+      switch try accountCalls() {
+      case .host(let host):
+        let begun = try await host.appleBegin()
+        guard let credential = try await ceremony.nativeSignIn(nonce: begun.nonce) else {
+          throw SignInCanceled()
+        }
+        status = try await host.signIn(apple: credential, ceremonyId: begun.ceremonyId)
+      case .coordinator(let client):
+        let start = try await client.request(AccountAppleStart.self, EmptyParams(), options: Self.signInCall)
+        let handoff = try await Self.webHandoff(
+          ceremony, url: start.url, callbackScheme: start.callbackScheme)
+        status = try await client.request(
+          AccountAppleFinish.self, AccountAppleFinish.Params(handoff: handoff), options: Self.signInMutation()
+        )
       }
-      let callback = try await session.authenticate(url: url, callbackScheme: start.callbackScheme)
-      let query = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems ?? []
-      guard let handoff = query.first(where: { $0.name == "handoff" })?.value, !handoff.isEmpty else {
-        let error = query.first { $0.name == "error" }?.value
-        // The hub sends `error=cancelled` when the person pressed Cancel on Apple's page.
-        if error == "cancelled" { throw SignInCanceled() }
-        let code = error.flatMap(ErrorCode.init(rawValue:))
-        throw WorkspaceError(code ?? .credentialRejected, "Apple's sign-in did not finish.")
-      }
-      let status = try await client.request(
-        AccountAppleFinish.self, AccountAppleFinish.Params(handoff: handoff), options: Self.signInMutation())
       signInProgress = SignInProgress()
+      pendingRename = nil
       applyAccountStatus(status)
     } catch {
       signInFailed(error)
     }
+  }
+
+  /// Run Apple's web flow for a start URL and answer the redirect's one-time handoff, and nothing else
+  /// of it. A closed session or `?error=cancelled` (Cancel on Apple's page) is `SignInCanceled`; any
+  /// other `?error=` is that code.
+  static func webHandoff(
+    _ ceremony: any AppleCeremony, url text: String, callbackScheme: String
+  ) async throws -> String {
+    guard let url = URL(string: text) else {
+      throw WorkspaceError(.protocolInvalid, "The sign-in address is not a URL.")
+    }
+    guard let callback = try await ceremony.webSignIn(url: url, callbackScheme: callbackScheme) else {
+      throw SignInCanceled()
+    }
+    let query = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems ?? []
+    guard let handoff = query.first(where: { $0.name == "handoff" })?.value, !handoff.isEmpty else {
+      let error = query.first { $0.name == "error" }?.value
+      // The hub sends `error=cancelled` when the person pressed Cancel on Apple's page.
+      if error == "cancelled" { throw SignInCanceled() }
+      let code = error.flatMap(ErrorCode.init(rawValue:))
+      throw WorkspaceError(code ?? .credentialRejected, "Apple's sign-in did not finish.")
+    }
+    return handoff
+  }
+
+  // MARK: Links the app is handed
+
+  /// A URL the app was opened with. A `b4app*://auth?handoff=` or `?error=` callback is dropped unread
+  /// (true): a ceremony takes its callback from its own session, so one that arrives this way belongs
+  /// to no ceremony, sign-in or link, and is never redeemed. Anything else is not the model's (false).
+  @discardableResult
+  public func openURL(_ url: URL) -> Bool {
+    AuthCallback.isAuthCallback(url)
   }
 
   // MARK: Onboarding
@@ -437,12 +527,22 @@ extension WorkspaceModel {
     let onboarding: Bool
     if case .needsOnboarding = accountState { onboarding = true } else { onboarding = false }
     do {
-      let status = try await signInClient().request(
-        AccountCompleteProfile.self, AccountCompleteProfile.Params(fullName: FullName.trimmed(fullName)),
-        options: Self.signInMutation())
+      let name = FullName.trimmed(fullName)
+      let status = try await accountCalls().completeProfile(name)
+      let rename = onboarding ? pendingRename : nil
+      pendingRename = nil
       applyAccountStatus(status)
       // A new account on the Mac is offered "Add your iPhone" once, right after naming itself.
-      if onboarding, accountState == .signedIn, WorkspaceDevice.managesWorkspace { showAddPhone = true }
+      if onboarding, accountState == .signedIn, accountSource == .coordinator,
+        WorkspaceDevice.managesWorkspace
+      {
+        showAddPhone = true
+      }
+      // The passkey it signed up with takes the name, in place of the placeholder.
+      if let rename, accountState == .signedIn {
+        await rename.ceremony.renamePasskey(
+          relyingParty: rename.relyingParty, userHandle: rename.userHandle, name: name)
+      }
     } catch {
       onboardingFailure = SignInCopy.accountFailure(for: WorkspaceError.from(error))
     }
@@ -457,6 +557,15 @@ extension WorkspaceModel {
   /// is nothing to log out of, and the outcome says it could not be reached. The state follows the
   /// answer, or `account.changed`.
   public func logOut(stopWork: Bool) async -> LogOutOutcome {
+    if accountSource == .host {
+      // The phone runs no work of its own to stop: its host ends the session and empties the mirror.
+      if let accountHost {
+        applyAccountStatus(await accountHost.logOut())
+      } else {
+        await hostLogOut?()
+      }
+      return .loggedOut
+    }
     let params = AccountLogout.Params(stopWork: stopWork)
     // The coordinator bounds a log-out at 21 s; this waits a little longer for its answer.
     let options = RequestOptions(operationId: UUID().uuidString.lowercased(), timeout: .seconds(40))
@@ -521,5 +630,88 @@ extension WorkspaceModel {
     else { return }
     accountNotice = nil
     applyAccountStatus(status, loadStore: false)
+  }
+}
+
+// MARK: - Where the account calls go
+
+/// The coordinator's `account.*` commands, or the same calls on a host that owns its account (the
+/// phone). Only the flows both share go through here; Apple and log-out differ and branch themselves.
+enum AccountCalls {
+  case coordinator(WorkspaceClient)
+  case host(any AccountHost)
+
+  /// The hub's answer can take a while (the coordinator signs in and opens the account's store).
+  private static func call() -> RequestOptions { RequestOptions(timeout: .seconds(60)) }
+  private static func mutation() -> RequestOptions {
+    RequestOptions(operationId: UUID().uuidString.lowercased(), timeout: .seconds(60))
+  }
+
+  func passkeyBegin() async throws -> AccountPasskeyBegin.Result {
+    switch self {
+    case .coordinator(let client):
+      return try await client.request(AccountPasskeyBegin.self, EmptyParams(), options: Self.call())
+    case .host(let host): return try await host.passkeyBegin()
+    }
+  }
+
+  func passkeyFinish(_ params: AccountPasskeyFinish.Params) async throws -> AccountStatus.Result {
+    switch self {
+    case .coordinator(let client):
+      return try await client.request(AccountPasskeyFinish.self, params, options: Self.mutation())
+    case .host(let host): return try await host.signIn(passkey: params)
+    }
+  }
+
+  func completeProfile(_ fullName: String) async throws -> AccountStatus.Result {
+    switch self {
+    case .coordinator(let client):
+      return try await client.request(
+        AccountCompleteProfile.self, AccountCompleteProfile.Params(fullName: fullName),
+        options: Self.mutation())
+    case .host(let host): return try await host.completeProfile(fullName: fullName)
+    }
+  }
+
+  func identities() async throws -> [AccountIdentity] {
+    switch self {
+    case .coordinator(let client):
+      return try await client.request(AccountIdentities.self, EmptyParams(), options: Self.call()).identities
+    case .host(let host): return try await host.identities()
+    }
+  }
+
+  func addPasskeyBegin() async throws -> AccountAddPasskeyBegin.Result {
+    switch self {
+    case .coordinator(let client):
+      return try await client.request(AccountAddPasskeyBegin.self, EmptyParams(), options: Self.call())
+    case .host(let host): return try await host.addPasskeyBegin()
+    }
+  }
+
+  func addPasskeyFinish(_ params: AccountAddPasskeyFinish.Params) async throws -> AccountIdentity {
+    switch self {
+    case .coordinator(let client):
+      return try await client.request(AccountAddPasskeyFinish.self, params, options: Self.mutation()).identity
+    case .host(let host): return try await host.addPasskeyFinish(params)
+    }
+  }
+
+  func removeIdentity(_ id: String) async throws -> [AccountIdentity] {
+    switch self {
+    case .coordinator(let client):
+      return try await client.request(
+        AccountRemoveIdentity.self, AccountRemoveIdentity.Params(identityId: id), options: Self.mutation()
+      ).identities
+    case .host(let host): return try await host.removeIdentity(id: id)
+    }
+  }
+
+  func deleteAccount() async throws -> AccountStatus.Result {
+    switch self {
+    case .coordinator(let client):
+      return try await client.request(AccountDelete.self, EmptyParams(), options: Self.mutation())
+    case .host(let host): return try await host.deleteAccount()
+    }
   }
 }

@@ -72,6 +72,8 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case accountRemoveIdentity = "account.removeIdentity"
   case accountDelete = "account.delete"
   case accountDismissNotice = "account.dismissNotice"
+  case accountAppleLinkStart = "account.appleLinkStart"
+  case accountAppleLinkFinish = "account.appleLinkFinish"
 
   public var isMutation: Bool {
     switch self {
@@ -84,13 +86,14 @@ public enum Method: String, Codable, Sendable, CaseIterable {
       .databaseImportSQLite, .hubJoin, .hubLeave, .projectCreate, .projectUpdate, .projectRename,
       .projectDelete, .threadMarkRead, .threadStart, .settingsUpdate, .connectionUpdate,
       .accountPasskeyFinish, .accountAppleFinish, .accountCompleteProfile, .accountLogout,
-      .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice:
+      .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice,
+      .accountAppleLinkFinish:
       return true
     case .systemPing, .diagnosticsRead, .connectionList, .threadList, .draftRead, .eventsSnapshot,
       .eventsReplay, .threadRead, .serverList, .serverStatus, .serverLogs, .workspaceActiveWork,
       .databaseStatus, .hubStatus, .projectList, .turnLookup, .hubPair, .hubPairStatus, .settingsRead,
       .usageRead, .accountStatus, .accountPasskeyBegin, .accountAppleStart, .accountIdentities,
-      .accountAddPasskeyBegin:
+      .accountAddPasskeyBegin, .accountAppleLinkStart:
       return false
     }
   }

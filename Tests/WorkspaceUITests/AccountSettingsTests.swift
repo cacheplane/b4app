@@ -412,22 +412,16 @@ private let minted = HubPair.Result(
     #expect(ceremony.reportedUnknown == ["test.b4.run"])
   }
 
-  @Test func connectAppleIDIsHiddenLocallyAndNotFaked() async throws {
+  @Test func connectAppleIDShowsOnBetaAndProdOnly() async throws {
     let transport = ScriptedTransport()
     let model = try await connected(transport: transport, configuration: local)
     transport.script(
       .accountIdentities, [try reply(AccountIdentities.Result(identities: [identity("i1")]))])
     await model.refreshIdentities()
     #expect(AccountSettingsContent(model: model).connectApple == nil)
-
-    // Hidden on beta and prod too, until Task 14 wires the link calls.
+    // Task 14 wires the link calls (`AppleSignInTests`): beta and prod show it while there is none.
     model.signInConfiguration = beta
-    #expect(AccountSettingsContent(model: model).connectApple == nil)
-    #expect(AccountSettingsContent.appleLinking == false)
-    await model.connectAppleID()
-    // Task 14 adds the link calls; until then it says so and links nothing.
-    #expect(model.accountSettingsFailure == AccountCopy.appleNotYet)
-    #expect(model.identities?.map(\.kind) == ["passkey"])
+    #expect(AccountSettingsContent(model: model).connectApple == AccountCopy.connectApple)
   }
 
   // MARK: Add your iPhone

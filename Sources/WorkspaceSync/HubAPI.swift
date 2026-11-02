@@ -52,6 +52,15 @@ public protocol HubAPI: Sendable {
   func addPasskeyFinish(_ request: AddPasskeyFinishRequest) async throws -> Identity
   /// `DELETE /v1/me/identities/{id}`. The account's last one is `last_identity`.
   func removeIdentity(_ id: String) async throws
+  /// `POST /v1/me/apple`: begin linking an Apple ID to the signed-in account. The body is
+  /// `appleBegin`'s (empty natively, the verifier's hash and the scheme on the web); `apple_linked`
+  /// when the account has one already.
+  func appleLinkBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse
+  /// `POST /v1/me/apple/native`: finish a native link; answers the new identity.
+  func appleLinkNative(_ request: AppleLinkNativeRequest) async throws -> Identity
+  /// `POST /v1/me/apple/handoff`: finish a web link with the redirect's handoff and the verifier;
+  /// answers the new identity.
+  func appleLinkHandoff(_ request: AppleLinkHandoffRequest) async throws -> Identity
   /// `DELETE /v1/sessions/self`: logs out. The device stays enrolled and unrevoked.
   func endSession() async throws
   /// `DELETE /v1/me`: deletes the account and everything in its personal org.
@@ -93,6 +102,15 @@ extension HubAPI {
     throw HubError.unsupported("addPasskeyFinish")
   }
   public func removeIdentity(_ id: String) async throws { throw HubError.unsupported("removeIdentity") }
+  public func appleLinkBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse {
+    throw HubError.unsupported("appleLinkBegin")
+  }
+  public func appleLinkNative(_ request: AppleLinkNativeRequest) async throws -> Identity {
+    throw HubError.unsupported("appleLinkNative")
+  }
+  public func appleLinkHandoff(_ request: AppleLinkHandoffRequest) async throws -> Identity {
+    throw HubError.unsupported("appleLinkHandoff")
+  }
   public func endSession() async throws { throw HubError.unsupported("endSession") }
   public func deleteAccount() async throws { throw HubError.unsupported("deleteAccount") }
 }

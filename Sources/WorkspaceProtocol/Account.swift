@@ -295,3 +295,66 @@ public enum AccountDelete: WorkspaceCommand {
   public typealias Result = AccountStatus.Result
   public static let method = Method.accountDelete
 }
+
+// MARK: - Linking an Apple ID (sign-in plan, Task 14)
+
+/// Begin linking an Apple ID to the signed-in account with the web flow (the Mac's Settings →
+/// Account → Connect Apple ID): open `url` in an `ASWebAuthenticationSession` that waits for
+/// `callbackScheme`, then hand the redirect's `handoff` to `account.appleLinkFinish`. The coordinator
+/// keeps the verifier, as for `account.appleStart`; one link is in flight at a time. `apple_linked`
+/// when the account has one already, `unsupported_capability` on the local flavour.
+public enum AccountAppleLinkStart: WorkspaceCommand {
+  public typealias Params = EmptyParams
+  public typealias Result = AccountAppleStart.Result
+  public static let method = Method.accountAppleLinkStart
+}
+
+/// Redeem a link's one-time `handoff` (with the kept verifier) and add the Apple ID to the signed-in
+/// account; answers the new method. `ceremony_expired`, without asking the hub, when no link is in
+/// flight.
+public enum AccountAppleLinkFinish: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
+    public var handoff: String
+    public init(handoff: String) { self.handoff = handoff }
+    public var description: String { "AccountAppleLinkFinish.Params(handoff: <redacted>)" }
+    public var debugDescription: String { description }
+  }
+  public struct Result: Codable, Sendable, Equatable {
+    public var identity: AccountIdentity
+    public init(identity: AccountIdentity) { self.identity = identity }
+  }
+  public static let method = Method.accountAppleLinkFinish
+}
+
+/// A native Sign in with Apple ceremony the hub began (the iPhone's): Apple's sheet is handed the
+/// lowercase hex SHA-256 of `nonce`, and the answer goes back with `ceremonyId`. Never stored; the nonce
+/// prints as `<redacted>`.
+public struct AppleNativeCeremony: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible
+{
+  public var ceremonyId: String
+  public var nonce: String
+  public init(ceremonyId: String, nonce: String) {
+    self.ceremonyId = ceremonyId
+    self.nonce = nonce
+  }
+  public var description: String { "AppleNativeCeremony(ceremonyId: \(ceremonyId), nonce: <redacted>)" }
+  public var debugDescription: String { description }
+}
+
+/// What Apple's native sheet answered: the identity token, the authorization code, and the person's
+/// formatted name (Apple gives it the first time only). Handed to the hub once and never kept; the
+/// token and the code print as `<redacted>`.
+public struct AppleCredential: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
+  public var identityToken: String
+  public var authorizationCode: String
+  public var fullName: String?
+  public init(identityToken: String, authorizationCode: String, fullName: String? = nil) {
+    self.identityToken = identityToken
+    self.authorizationCode = authorizationCode
+    self.fullName = fullName
+  }
+  public var description: String {
+    "AppleCredential(identityToken: <redacted>, authorizationCode: <redacted>, fullName: \(fullName == nil ? "nil" : "set"))"
+  }
+  public var debugDescription: String { description }
+}
