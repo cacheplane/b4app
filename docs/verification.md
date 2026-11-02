@@ -34,7 +34,7 @@ Branch `blove/delete-threads`, stacked on `blove/phone-usage`.
 - **The Simulator check against the owner's Compose hub.** That hub needs `0011`, so it waits until this merges and the hub is rebuilt from main.
 - **A live delete in real Codex, Claude Code or B4.** The fixtures stand in for all three.
 
-## 2026-11-02: Usage on the phone (D-090)
+## 2026-11-02: Usage on the phone (D-118)
 
 Branch `blove/phone-usage`.
 
