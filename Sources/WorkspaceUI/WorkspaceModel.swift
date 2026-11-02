@@ -403,6 +403,7 @@ public final class WorkspaceModel {
     connectTask?.cancel()
     await client?.close()
     client = nil
+    endRelayState()
     link = .unavailable
     settleLink()
   }

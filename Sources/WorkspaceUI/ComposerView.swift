@@ -203,9 +203,9 @@ struct ComposerView: View {
   #endif
 
   /// "Message Codex": the connection's label, or plain "Message". On the phone, why it cannot send
-  /// instead: the Mac is offline, or "Connecting to the hub…".
+  /// instead while its Mac is offline (the field is then off).
   private var placeholder: String {
-    if let reason = unreachable ?? model.hubLinkNotice { return reason }
+    if let reason = unreachable { return reason }
     return model.connection(id: detail.thread.connectionId).map { "Message \($0.label)" } ?? "Message"
   }
 
@@ -284,6 +284,10 @@ struct ComposerView: View {
   /// The phone's relay, in one caption line each: Stop waiting for the Mac or not confirmed, and a
   /// refused send's reason in place of its message (which the transcript no longer shows).
   @ViewBuilder private var relayLines: some View {
+    // Visible whether or not there is a draft, while the phone's own link is down.
+    if let connecting = model.hubLinkNotice {
+      relayLine(connecting, danger: false, waiting: true).accessibilityIdentifier("hub-link")
+    }
     if let stop = model.stopStates[detail.thread.id] {
       relayLine(stop.label, danger: stop != .waiting, waiting: stop == .waiting)
         .accessibilityIdentifier("stop-state")

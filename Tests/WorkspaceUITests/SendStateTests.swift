@@ -447,6 +447,100 @@ enum PhoneFixture {
     await model.disconnect()
   }
 
+  @Test func lookupWaitsForALateRetrysDeadline() async throws {
+    let clock = TestClock()
+    let transport = PhoneFixture.transport()
+    transport.script(.turnSend, [PhoneFixture.notConfirmed("link_dropped")])
+    let model = try await PhoneFixture.model(transport, clock: clock)
+    await send(model).value
+    transport.emit(PhoneFixture.link(.offline))
+    try await waitUntil("link down") { model.hubLinkPhase == .offline }
+
+    // The retry goes out at 29 s (its hub deadline is about 39 s) and is lost with the link too.
+    clock.advance(by: .seconds(29))
+    transport.script(.turnSend, [PhoneFixture.notConfirmed("link_dropped")])
+    transport.emit(PhoneFixture.link(.connected))
+    try await waitUntil("retried") {
+      model.pendingSends["t1"]?.attempts == 2 && model.pendingSends["t1"]?.inFlight == false
+    }
+    #expect(model.pendingSends["t1"]?.state == .notConfirmed)
+    transport.emit(PhoneFixture.link(.offline))
+    try await waitUntil("link down") { model.hubLinkPhase == .offline }
+
+    // Back at 31 s: too late to resend, and too early to ask, since the retry may still run.
+    clock.advance(by: .seconds(2))
+    transport.script(.turnLookup, [PhoneFixture.lookup(.none)])
+    transport.emit(PhoneFixture.link(.connected))
+    transport.emit(PhoneFixture.presence(online: true))
+    try await waitUntil("presence") { model.hostPhase(deviceId: "mac-1") == .connected }
+    // Decided at once, not on a timer: no lookup started, and none is due before 41 s.
+    #expect(model.pendingSends["t1"]?.lookupInFlight == false)
+    #expect(model.pendingSends["t1"]?.nextLookupAt == TestClock.start.addingTimeInterval(41))
+    clock.advance(by: .milliseconds(9_999))
+    await Task.yield()
+    #expect(transport.recorded(.turnLookup).isEmpty)
+    #expect(transport.recorded(.turnSend).count == 2)
+    // At 41 s (the retry's 29 s plus the 10 s deadline and a 2 s margin) the Mac is asked.
+    clock.advance(by: .milliseconds(1))
+    try await waitUntil("asked") { model.pendingSends["t1"]?.state == .didNotReach }
+    #expect(transport.recorded(.turnLookup).count == 1)
+    await model.disconnect()
+  }
+
+  @Test func lookupWithoutAnAnswerBacksOff() async throws {
+    let clock = TestClock()
+    let transport = PhoneFixture.transport()
+    transport.script(.turnSend, [PhoneFixture.notConfirmed("timeout")])
+    let unanswered = ScriptedTransport.Reply.failure(
+      WorkspaceError(.relayTimeout, "Not confirmed: your Mac may not have received this."))
+    // No answer, no answer, `found` without its turn (still unsettled), no answer, then `none`.
+    transport.script(
+      .turnLookup,
+      [unanswered, unanswered, PhoneFixture.lookup(.found), unanswered, PhoneFixture.lookup(.none)])
+    let model = try await PhoneFixture.model(transport, clock: clock)
+    await send(model).value
+
+    func settled(_ count: Int) async throws {
+      try await waitUntil("lookup \(count)") {
+        transport.recorded(.turnLookup).count == count && model.pendingSends["t1"]?.lookupInFlight == false
+      }
+    }
+    clock.advance(by: .seconds(30))
+    try await settled(1)
+    // 5, 10, 20, then 30 s between lookups that got no usable answer.
+    for wait in [5, 10, 20, 30] {
+      #expect(model.pendingSends["t1"]?.state == .notConfirmed)
+      clock.advance(by: .milliseconds(wait * 1000 - 1))
+      await Task.yield()
+      let before = transport.recorded(.turnLookup).count
+      clock.advance(by: .milliseconds(1))
+      try await settled(before + 1)
+    }
+    #expect(model.pendingSends["t1"]?.state == .didNotReach)
+    #expect(transport.recorded(.turnLookup).count == 5)
+    await model.disconnect()
+  }
+
+  @Test func disconnectEndsTheRelayState() async throws {
+    let clock = TestClock()
+    let transport = PhoneFixture.transport()
+    transport.script(.turnSend, [PhoneFixture.notConfirmed("timeout")])
+    let model = try await PhoneFixture.model(transport, clock: clock)
+    await send(model).value
+    transport.emit(PhoneFixture.presence(online: false, lastSeen: 0))
+    try await waitUntil("offline") { model.hostPresence["mac-1"]?.online == false }
+    #expect(model.pendingSends["t1"]?.state == .notConfirmed)
+    #expect(model.sendTimer != nil && model.phaseTimer != nil)
+
+    await model.disconnect()
+    #expect(model.sendTimer == nil && model.phaseTimer == nil)
+    #expect(model.pendingSends.isEmpty && model.stopStates.isEmpty && model.answerStates.isEmpty)
+    #expect(model.hostPresence.isEmpty && model.hubLinkPhase == nil)
+    clock.advance(by: .seconds(120))
+    await Task.yield()
+    #expect(transport.recorded(.turnLookup).isEmpty)
+  }
+
   @Test func syncedTurnResolvesNotConfirmed() async throws {
     let clock = TestClock()
     let transport = PhoneFixture.transport()

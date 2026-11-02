@@ -200,6 +200,17 @@ import WorkspaceProtocol
     #expect(model.accountSource == .coordinator)
     transport.emit(PhoneFixture.link(.offline))
     transport.emit(PhoneFixture.presence(online: false, lastSeen: -600))
+    // A marker the Mac's own path applies, after the presence events: once it shows, they were
+    // processed too (events are applied in order).
+    var marked = PhoneFixture.thread(owner: nil)
+    marked.title = "marker"
+    transport.emit(
+      AdapterEvent(
+        kind: .threadUpdated, connectionId: "c1", threadId: "t1",
+        payload: ["thread": try JSONValue(encoding: marked)]
+      ))
+    try await waitUntil("events applied") { model.threads.first?.title == "marker" }
+    #expect(model.hubLinkPhase == .connected && model.hostPresence["mac-1"] != nil)
     clock.advance(by: .seconds(120))
     await model.openThread(id: "t1")
     let thread = PhoneFixture.thread(owner: nil)

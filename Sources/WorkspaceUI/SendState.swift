@@ -55,8 +55,13 @@ public struct PendingSend: Sendable, Equatable, Identifiable {
   public internal(set) var retryable = false
   /// A `turn.lookup` is waiting for its reply.
   public internal(set) var lookupInFlight = false
-  /// No `turn.lookup` before this: 30 s after the tap, then 5 s after an `in_flight`.
+  /// No `turn.lookup` before this: 30 s after the tap and past every attempt's deadline, then 5 s
+  /// after an `in_flight`, and longer after lookups that got no answer.
   public internal(set) var nextLookupAt: Date
+  /// When the latest attempt went out; its hub deadline is at most 10 s later.
+  public internal(set) var lastSentAt: Date?
+  /// Lookups in a row that got no usable answer, for the backoff.
+  public internal(set) var unansweredLookups = 0
   /// The model's `linkGeneration` when the last attempt went out, so a link that dropped and came
   /// back before that attempt's reply still gets its retry.
   var linkGeneration = 0
@@ -108,6 +113,14 @@ enum SendRules {
   static let lookupAfter: TimeInterval = 30
   /// After `in_flight`, ask again this much later.
   static let lookupAgain: TimeInterval = 5
+  /// A command's hub deadline (10 s) plus a margin: no lookup before this long after an attempt, so
+  /// a late retry cannot still run after the Mac has answered `none`.
+  static let attemptDeadline: TimeInterval = 12
+
+  /// After `count` lookups in a row with no usable answer: 5, 10, 20, then 30 s.
+  static func lookupBackoff(_ count: Int) -> TimeInterval {
+    min(lookupAgain * pow(2, Double(max(count, 1) - 1)), 30)
+  }
 
   /// The state a reply leaves a send in, and whether a lost link may be retried. A retry's refusal
   /// does not undo the first attempt, which may have reached the Mac: only success, a turn, or
@@ -143,14 +156,14 @@ enum SendRules {
     return reason == "link_dropped" || reason == "send_failed"
   }
 
-  static func control(_ error: WorkspaceError) -> ControlState {
+  static func control(_ error: WorkspaceError, now: Date) -> ControlState {
     if error.code == .staleRuntimeRequest { return .alreadyAnswered }
     if mayHaveArrived(error) { return .notConfirmed }
-    return .failed(reason(error))
+    return .failed(reason(error, now: now))
   }
 
   /// A refusal in words: the Mac's name and last-seen time for `device_offline`, else the message.
-  static func reason(_ error: WorkspaceError, now: Date = Date()) -> String {
+  static func reason(_ error: WorkspaceError, now: Date) -> String {
     if error.code == .deviceOffline, let name = error.details?["deviceName"]?.stringValue {
       if let seen = error.details?["lastSeenAt"]?.stringValue.flatMap(Timestamp.date(from:)) {
         return HostNoticeMessage.offline(name: name, lastSeen: seen, now: now)
@@ -287,6 +300,9 @@ extension WorkspaceModel {
     send.inFlight = true
     send.state = .sending
     send.linkGeneration = linkGeneration
+    let sentAt = now()
+    send.lastSentAt = sentAt
+    send.nextLookupAt = max(send.nextLookupAt, sentAt.addingTimeInterval(SendRules.attemptDeadline))
     pendingSends[threadId] = send
     let result: Result<String, WorkspaceError>
     do {
@@ -411,19 +427,41 @@ extension WorkspaceModel {
     pendingSends[threadId] = send
     guard send.state == .notConfirmed else { return }
     switch found?.state {
-    case .found?:
+    case .found? where found?.turn != nil:
       let turnId = found?.turn?.id ?? ""
       accept(threadId: threadId, id: id, as: .accepted(turnId: turnId), turnId: turnId)
       return
     case .none?:
       send.state = .didNotReach
       send.retryable = false
-    case .inFlight?, nil:
-      // Still running on the Mac, or the lookup itself was not answered: ask again shortly.
-      send.nextLookupAt = now().addingTimeInterval(SendRules.lookupAgain)
+    case .inFlight?:
+      // Still running on the Mac: ask again in 5 s.
+      send.unansweredLookups = 0
+      send.nextLookupAt = max(send.nextLookupAt, now().addingTimeInterval(SendRules.lookupAgain))
+    case .found?, nil:
+      // No usable answer (no reply, an error, or `found` without its turn): still unsettled; ask
+      // again, backing off.
+      send.unansweredLookups += 1
+      send.nextLookupAt = max(
+        send.nextLookupAt, now().addingTimeInterval(SendRules.lookupBackoff(send.unansweredLookups)))
     }
     pendingSends[threadId] = send
     scheduleSendTimer()
+  }
+
+  /// Ends the phone's relay state with the client: no timer survives, and no send or presence carries
+  /// over to the next connection, which may be another hub after a log-out and a new pairing.
+  func endRelayState() {
+    sendTimer?.cancel()
+    sendTimer = nil
+    phaseTimer?.cancel()
+    phaseTimer = nil
+    pendingSends = [:]
+    stopStates = [:]
+    answerStates = [:]
+    hostPresence = [:]
+    hubLinkPhase = nil
+    presenceRevision += 1
   }
 
   /// Drop accepted sends whose turn's own message is now in the open transcript.
@@ -450,7 +488,7 @@ extension WorkspaceModel {
       stopStates[threadId] = nil
       resolvePendingSends(with: [result.turn])
     } catch {
-      stopStates[threadId] = SendRules.control(WorkspaceError.from(error))
+      stopStates[threadId] = SendRules.control(WorkspaceError.from(error), now: now())
     }
   }
 
@@ -467,7 +505,7 @@ extension WorkspaceModel {
           operationId: UUID().uuidString.lowercased(), timeout: Self.relayTimeout(for: .requestRespond)))
       answerStates[id] = nil
     } catch {
-      answerStates[id] = SendRules.control(WorkspaceError.from(error))
+      answerStates[id] = SendRules.control(WorkspaceError.from(error), now: now())
     }
   }
 }
