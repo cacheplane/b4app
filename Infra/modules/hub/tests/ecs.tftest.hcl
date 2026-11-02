@@ -1,4 +1,7 @@
 # Tests apply against a mocked AWS provider; nothing here needs credentials.
+# The mock_provider blocks below are a copy of the canonical ones in
+# network.tftest.hcl (test files cannot share mocks; see tests/README.md).
+# Change that file first, then copy the change here.
 
 mock_provider "aws" {
   mock_data "aws_caller_identity" {
@@ -428,6 +431,11 @@ run "psql_container" {
   }
 
   assert {
+    condition     = one([for c in jsondecode(aws_ecs_task_definition.admin.container_definitions) : c if c.name == "psql"]).command == ["sleep", "infinity"]
+    error_message = "psql sleeps until admin-shell.sh stops the task, so a long session is not cut off"
+  }
+
+  assert {
     condition = { for e in one([for c in jsondecode(aws_ecs_task_definition.admin.container_definitions) : c if c.name == "psql"]).environment : e.name => e.value } == {
       PGHOST     = aws_db_instance.hub.address
       PGPORT     = "5432"
@@ -573,6 +581,11 @@ run "exec_role_reads_only_known_secrets" {
   assert {
     condition     = one([for s in jsondecode(aws_iam_role_policy.task_exec.policy).Statement : s if s.Sid == "DecryptSecrets"]).Resource == aws_kms_key.this.arn
     error_message = "the execution role decrypts with the account key"
+  }
+
+  assert {
+    condition     = one([for s in jsondecode(aws_iam_role_policy.task_exec.policy).Statement : s if s.Sid == "DecryptSecrets"]).Condition == { StringEquals = { "kms:ViaService" = "secretsmanager.us-east-2.amazonaws.com" } }
+    error_message = "the execution role decrypts only via Secrets Manager in the hub's region"
   }
 
   assert {

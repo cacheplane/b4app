@@ -38,7 +38,7 @@
     "name": "psql",
     "image": "${psql_image}",
     "essential": true,
-    "command": ["sleep", "3600"],
+    "command": ["sleep", "infinity"],
     "environment": [
       { "name": "PGHOST", "value": "${db_host}" },
       { "name": "PGPORT", "value": "5432" },
