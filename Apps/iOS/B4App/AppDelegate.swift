@@ -38,8 +38,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     refresh(then: completionHandler)
   }
 
-  /// A background-fetch wake (the `fetch` mode): how the Simulator's `simctl push` delivers a
-  /// content-available payload, and a wake iOS may give the app on its own. The same refresh as a push.
+  /// A background-fetch wake: how the Simulator's `simctl push` delivers a content-available payload.
+  /// Only Debug builds declare the `fetch` mode, and the app sets no fetch interval, so on a device
+  /// this is never called; the same refresh as a push.
   func application(
     _ application: UIApplication,
     performFetchWithCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void

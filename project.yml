@@ -97,9 +97,11 @@ targets:
         B4AppAppGroup: group.com.cacheplane.b4app
         B4AppURLScheme: b4app
         # A push with `content-available` wakes the app to pull before the banner is tapped (D-113).
-        # `fetch` too: `xcrun simctl push` delivers a content-available payload as a background-fetch
-        # launch, which iOS refuses without it, and with it the system may also give the app fetch
-        # wakes of its own; both go through the same refresh, so the widget is fresher.
+        # `fetch` is for the Simulator only: `xcrun simctl push` delivers a content-available payload
+        # as a background-fetch launch, which iOS refuses without it. On a device APNs wakes the app
+        # through `remote-notification`, and the app never sets a minimum background-fetch interval,
+        # so the system gives it no fetch wakes of its own. Debug only: the post-build script below
+        # rewrites the array to `remote-notification` alone in every other configuration.
         UIBackgroundModes:
           - remote-notification
           - fetch
@@ -141,11 +143,15 @@ targets:
         # The post-build script edits the processed Info.plist in the build folder.
         ENABLE_USER_SCRIPT_SANDBOXING: NO
     postBuildScripts:
-      - name: Drop the localhost ATS exception outside Debug
+      - name: Drop the localhost ATS exception and the fetch background mode outside Debug
         basedOnDependencyAnalysis: false
         script: |
           if [ "$CONFIGURATION" != "Debug" ]; then
-            /usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity" "$TARGET_BUILD_DIR/$INFOPLIST_PATH" 2>/dev/null || true
+            plist="$TARGET_BUILD_DIR/$INFOPLIST_PATH"
+            /usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity" "$plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Delete :UIBackgroundModes" "$plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" \
+              -c "Add :UIBackgroundModes:0 string remote-notification" "$plist"
           fi
     dependencies:
       - package: b4app
