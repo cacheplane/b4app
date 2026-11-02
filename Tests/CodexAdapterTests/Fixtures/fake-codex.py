@@ -2,7 +2,9 @@
 """A stand-in for `codex app-server` used by fixture tests. It speaks the same NDJSON JSON-RPC
 shapes as codex-cli 0.166.0 for the handful of methods the adapter uses, and scripts its behavior
 from the turn text: "approve" asks for a command approval, "permissions" asks for a permissions
-grant, "question" asks a user question, "hang" waits for turn/interrupt, "crash" exits mid-turn.
+grant, "question" asks a user question, "hang" waits for turn/interrupt, "partial" streams part of a
+reply and then waits for turn/interrupt without completing it (as the real server does when a reply is
+stopped; with "emptied" too, the interrupt completes the item with no text), "crash" exits mid-turn.
 Never run in place of the real server for anything the docs call live-tested."""
 import json
 import os
@@ -196,6 +198,15 @@ while True:
         if "crash" in text:
             log("crashing on request")
             os._exit(1)
+        if "partial" in text:
+            item_id = "item_%s_msg" % turn_id
+            notify("item/started", {"threadId": thread_id, "turnId": turn_id,
+                                    "item": {"id": item_id, "type": "agentMessage", "text": ""}, "startedAtMs": 1})
+            for piece in ("Partial reply ", "so far"):
+                notify("item/agentMessage/delta",
+                       {"threadId": thread_id, "turnId": turn_id, "itemId": item_id, "delta": piece})
+            hanging = (thread_id, turn_id, item_id if "emptied" in text else None)
+            continue
         if "hang" in text:
             hanging = (thread_id, turn_id)
             continue
@@ -246,6 +257,9 @@ while True:
     elif method == "turn/interrupt":
         send({"id": req_id, "result": {}})
         if hanging and hanging[1] == params.get("turnId"):
+            if len(hanging) > 2 and hanging[2]:
+                notify("item/completed", {"threadId": hanging[0], "turnId": hanging[1], "completedAtMs": 3,
+                                          "item": {"id": hanging[2], "type": "agentMessage", "text": ""}})
             finish_turn(hanging[0], hanging[1], "interrupted")
             hanging = None
     elif req_id is not None:
