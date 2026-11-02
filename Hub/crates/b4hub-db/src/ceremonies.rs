@@ -117,40 +117,95 @@ pub async fn create_handoff(
     Ok(code)
 }
 
-/// Redeems the handoff whose code hashes to `code_hash`, once, and returns who it signed in. A
-/// wrong `verifier_hash` is [`Error::CeremonyExpired`], exactly like an unknown, expired, or
+/// Redeems the handoff whose code hashes to `code_hash`, once, and returns who it signed in (only
+/// a handoff that names an account; the Apple flows use [`redeem_apple_handoff`]). A wrong
+/// `verifier_hash` is [`Error::CeremonyExpired`], exactly like an unknown, expired, or
 /// spent handoff, and leaves the handoff redeemable by its rightful holder.
 pub async fn take_handoff(db: &Db, code_hash: &[u8], verifier_hash: &[u8]) -> Result<Principal> {
-    Ok(redeem_handoff(db, code_hash, verifier_hash)
-        .await?
-        .principal)
-}
-
-/// What redeeming a handoff found: who it is for, and the kind of the ceremony that recorded it
-/// (a sign-in, or linking an Apple ID to an account that was already signed in).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Redeemed {
-    pub principal: Principal,
-    pub ceremony_kind: String,
-}
-
-/// [`take_handoff`], also answering the kind of the ceremony that recorded the handoff.
-pub async fn redeem_handoff(db: &Db, code_hash: &[u8], verifier_hash: &[u8]) -> Result<Redeemed> {
-    let taken: Option<(Uuid, Uuid, String)> = sqlx::query_as(
-        "UPDATE auth_handoffs h SET used_at = now() FROM auth_ceremonies c \
-         WHERE c.id = h.ceremony_id AND h.code_hash = $1 AND h.verifier_hash = $2 \
-           AND h.used_at IS NULL AND h.expires_at > now() \
-         RETURNING h.org_id, h.user_id, c.kind",
+    let taken: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "UPDATE auth_handoffs SET used_at = now() \
+         WHERE code_hash = $1 AND verifier_hash = $2 AND used_at IS NULL AND expires_at > now() \
+           AND org_id IS NOT NULL \
+         RETURNING org_id, user_id",
     )
     .bind(code_hash)
     .bind(verifier_hash)
     .fetch_optional(&db.pool)
     .await?;
-    let (org_id, user_id, ceremony_kind) = taken.ok_or(Error::CeremonyExpired)?;
-    Ok(Redeemed {
-        principal: Principal { org_id, user_id },
-        ceremony_kind,
-    })
+    let (org_id, user_id) = taken.ok_or(Error::CeremonyExpired)?;
+    Ok(Principal { org_id, user_id })
+}
+
+/// Records the web Apple flow's handoff for the ceremony `ceremony_id`, redeemable with `code`
+/// (only its hash is stored) and the verifier whose SHA-256 is `verifier_hash`. `pending` is what
+/// the redemption needs, already sealed by the caller; `link` is the account a link ceremony
+/// was begun by (a sign-in names none: the account is found or made at redemption).
+pub async fn create_apple_handoff(
+    db: &Db,
+    code: &str,
+    ceremony_id: Uuid,
+    link: Option<Principal>,
+    verifier_hash: &[u8],
+    pending: &[u8],
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO auth_handoffs \
+             (code_hash, ceremony_id, org_id, user_id, verifier_hash, pending, expires_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, now() + make_interval(secs => $7))",
+    )
+    .bind(&hash_token(code)[..])
+    .bind(ceremony_id)
+    .bind(link.map(|p| p.org_id))
+    .bind(link.map(|p| p.user_id))
+    .bind(verifier_hash)
+    .bind(pending)
+    .bind(HANDOFF_TTL.as_secs_f64())
+    .execute(&db.pool)
+    .await?;
+    Ok(())
+}
+
+/// Redeems, once, the Apple handoff whose code hashes to `code_hash`, presented with the
+/// verifier whose SHA-256 is `verifier_hash`, when its ceremony is of `kind` and (for a link)
+/// it names `link`; answers its sealed pending payload. Anything else is
+/// [`Error::CeremonyExpired`] and uses nothing up. Of two concurrent redemptions the second
+/// waits on the row lock, then matches nothing.
+pub async fn redeem_apple_handoff(
+    db: &Db,
+    code_hash: &[u8],
+    verifier_hash: &[u8],
+    kind: &str,
+    link: Option<Principal>,
+) -> Result<Vec<u8>> {
+    let pending: Option<Option<Vec<u8>>> = sqlx::query_scalar(
+        "UPDATE auth_handoffs h SET used_at = now() FROM auth_ceremonies c \
+         WHERE c.id = h.ceremony_id AND h.code_hash = $1 AND h.verifier_hash = $2 \
+           AND h.used_at IS NULL AND h.expires_at > now() AND c.kind = $3 \
+           AND h.org_id IS NOT DISTINCT FROM $4 AND h.user_id IS NOT DISTINCT FROM $5 \
+         RETURNING h.pending",
+    )
+    .bind(code_hash)
+    .bind(verifier_hash)
+    .bind(kind)
+    .bind(link.map(|p| p.org_id))
+    .bind(link.map(|p| p.user_id))
+    .fetch_optional(&db.pool)
+    .await?;
+    pending.flatten().ok_or(Error::CeremonyExpired)
+}
+
+/// Whether a handoff with this code and verifier is still redeemable at all (by whichever route
+/// and account it belongs to). Only the holder of both can learn this.
+pub async fn handoff_is_live(db: &Db, code_hash: &[u8], verifier_hash: &[u8]) -> Result<bool> {
+    let live: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM auth_handoffs \
+           WHERE code_hash = $1 AND verifier_hash = $2 AND used_at IS NULL AND expires_at > now())",
+    )
+    .bind(code_hash)
+    .bind(verifier_hash)
+    .fetch_one(&db.pool)
+    .await?;
+    Ok(live)
 }
 
 /// Deletes handoffs, then ceremonies no remaining handoff points at, that expired more than

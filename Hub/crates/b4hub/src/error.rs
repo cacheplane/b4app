@@ -144,6 +144,15 @@ impl ApiError {
         )
     }
 
+    /// Linking an Apple ID to an account that already has one.
+    pub fn apple_linked() -> ApiError {
+        ApiError::request(
+            StatusCode::CONFLICT,
+            "apple_linked",
+            "this account already has an Apple ID; remove it before connecting another",
+        )
+    }
+
     /// Deleting an account is only possible for the owner of a personal org.
     pub fn shared_org() -> ApiError {
         ApiError::request(
@@ -209,6 +218,7 @@ impl From<b4hub_db::Error> for ApiError {
             b4hub_db::Error::LastIdentity => ApiError::last_identity(),
             b4hub_db::Error::MergeRefused => ApiError::merge_refused(),
             b4hub_db::Error::SharedOrg => ApiError::shared_org(),
+            b4hub_db::Error::AppleLinked => ApiError::apple_linked(),
             other => {
                 tracing::error!(error = %other, "request failed in the database layer");
                 ApiError::internal()

@@ -124,6 +124,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/me/passkeys/finish", post(me::passkey_finish))
         .route("/v1/me/apple", post(apple::link_begin))
         .route("/v1/me/apple/native", post(apple::link_native))
+        .route("/v1/me/apple/handoff", post(apple::link_handoff))
         .route("/v1/me/identities/{id}", delete(me::remove_identity))
         .route("/v1/sessions/self", delete(me::end_session))
         .route("/v1/devices", get(devices::list))

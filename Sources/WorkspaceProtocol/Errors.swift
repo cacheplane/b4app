@@ -33,6 +33,8 @@ public enum ErrorCode: String, Codable, Sendable, CaseIterable {
   case lastIdentity = "last_identity"
   /// The phone's account cannot be merged into the one the pairing code belongs to.
   case mergeRefused = "merge_refused"
+  /// The account already has an Apple ID; it links at most one.
+  case appleLinked = "apple_linked"
   /// The account belongs to a shared org, which cannot be deleted from here.
   case sharedOrg = "shared_org"
   /// Too many sign-in requests from this client this minute.

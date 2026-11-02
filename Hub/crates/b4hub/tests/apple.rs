@@ -25,6 +25,7 @@ use axum::{Json, Router};
 use b4hub::apple::{open_refresh_token, sha256_hex};
 use b4hub::cli::Settings;
 use b4hub::config::{AppleConfig, Config, Signup};
+use b4hub_db::accounts::{self, Identity};
 use b4hub_db::Db;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -53,6 +54,7 @@ const CALLBACK: &str = "/v1/auth/apple/callback";
 const HANDOFF: &str = "/v1/auth/handoff";
 const LINK: &str = "/v1/me/apple";
 const LINK_NATIVE: &str = "/v1/me/apple/native";
+const LINK_HANDOFF: &str = "/v1/me/apple/handoff";
 
 /// The EC key's id in the fake's key set, and the RSA key's.
 const EC_KID: &str = "ec-1";
@@ -88,6 +90,18 @@ nG56VkpLGb8+vke/PAC+nOUrzmciTDcDMh6oZgb4uB18QxSPPCFm5uiVilsDIetW
 lWzs/4gB6mcRXKZjJFyqwg==
 -----END PRIVATE KEY-----";
 const RSA_N: &str = "sd1DxkH2PvLTFbPvxjcGjaQTmpDgKAtBChG5mFFp5G1OiWrZr4i6APVltT73ecAyTmyTzfB_dqjbOklzai2upF3HJ49HB9aMw6xMDHDhHP8w2VoWpsb1LIVgGkeNb74FciHIZ-wuYgdY8AOfx-7JPRHi6EWG5Nb0C4iANfQB28aUXWnpTDxBslUk__PZBqgDeKXDLX5KulBdJLTM-qUdem0yom_tpeFg88LaEfE_S8C5BsBwdHbH37G0uVLZ-ZKax8IfsAy3WT3psYsS9JQklaFLN0-b_ALu7jM8YfhP7OvBKVyJZBaosZsVHfCDOk3DjXzTq5C9kSoBlQpRCJvrFw";
+
+/// That RSA key's public half, as PEM: what an algorithm-confusion attack uses as an HMAC secret.
+const RSA_PUBLIC_PEM: &str = "-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsd1DxkH2PvLTFbPvxjcG
+jaQTmpDgKAtBChG5mFFp5G1OiWrZr4i6APVltT73ecAyTmyTzfB/dqjbOklzai2u
+pF3HJ49HB9aMw6xMDHDhHP8w2VoWpsb1LIVgGkeNb74FciHIZ+wuYgdY8AOfx+7J
+PRHi6EWG5Nb0C4iANfQB28aUXWnpTDxBslUk//PZBqgDeKXDLX5KulBdJLTM+qUd
+em0yom/tpeFg88LaEfE/S8C5BsBwdHbH37G0uVLZ+ZKax8IfsAy3WT3psYsS9JQk
+laFLN0+b/ALu7jM8YfhP7OvBKVyJZBaosZsVHfCDOk3DjXzTq5C9kSoBlQpRCJvr
+FwIDAQAB
+-----END PUBLIC KEY-----
+";
 
 /// The DER of a PKCS #8 `PrivateKeyInfo` for a P-256 key, up to the 32-byte scalar (no
 /// optional public key), as an Apple `.p8` file holds it.
@@ -186,6 +200,10 @@ struct FakeState {
     codes: HashMap<String, Grant>,
     calls: Calls,
     fail_revoke: bool,
+    /// The key that signs the `id_token` in a code exchange's answer (RS256, as Apple's, unless a
+    /// test asks for the EC key), and whether the answer leaves it out.
+    exchange_kid: &'static str,
+    omit_id_token: bool,
 }
 
 type Shared = Arc<Mutex<FakeState>>;
@@ -233,6 +251,8 @@ impl FakeApple {
             codes: HashMap::new(),
             calls: Calls::default(),
             fail_revoke: false,
+            exchange_kid: RSA_KID,
+            omit_id_token: false,
         }));
         let app = Router::new()
             .route("/auth/keys", get(keys_route))
@@ -254,9 +274,9 @@ impl FakeApple {
         read(&self.state.lock().unwrap().calls)
     }
 
-    /// An identity token as Apple would issue it, signed with the EC key.
+    /// An identity token as Apple would issue it, signed with the RSA key (RS256, as Apple does).
     fn token(&self, sub: &str, aud: &str, nonce: Option<&str>) -> String {
-        self.token_with(EC_KID, &self.claims(sub, aud, nonce))
+        self.token_with(RSA_KID, &self.claims(sub, aud, nonce))
     }
 
     fn claims(&self, sub: &str, aud: &str, nonce: Option<&str>) -> Value {
@@ -366,12 +386,19 @@ async fn token_route(State(state): State<Shared>, body: Bytes) -> axum::response
         "iss": state.issuer, "aud": client_id, "sub": grant.sub, "iat": now(),
         "exp": now() + 600,
     });
-    let id_token = sign_es256(EC_KID, &state.signing, &claims);
-    Json(json!({
+    let id_token = if state.exchange_kid == RSA_KID {
+        sign_rs256(RSA_KID, &claims)
+    } else {
+        sign_es256(state.exchange_kid, &state.signing, &claims)
+    };
+    let mut answer = json!({
         "access_token": "a.unused", "token_type": "Bearer", "expires_in": 3600,
         "refresh_token": refresh, "id_token": id_token,
-    }))
-    .into_response()
+    });
+    if state.omit_id_token {
+        answer.as_object_mut().unwrap().remove("id_token");
+    }
+    Json(answer).into_response()
 }
 
 async fn revoke_route(State(state): State<Shared>, body: Bytes) -> StatusCode {
@@ -582,7 +609,9 @@ async fn native_sign_up_then_sign_in_same_sub(pool: PgPool) {
     );
     assert_eq!(setup.fake.calls(|c| c.bad_secrets), 0);
 
-    // Apple's own algorithm (RS256) signs the next one; the name is not sent again.
+    // Apple's own algorithm (RS256) signs the next one, and the exchange's answer is signed
+    // ES256 this time; the name is not sent again.
+    setup.fake.state.lock().unwrap().exchange_kid = EC_KID;
     let again = native(&setup, "001.alice", RSA_KID, None).await;
     assert_eq!(again.status, StatusCode::OK, "{}", again.body);
     assert_eq!(again.body["org"], up.body["org"]);
@@ -748,6 +777,50 @@ async fn forged_tokens_rejected(pool: PgPool) {
             b64(claims.to_string().as_bytes()),
             b64(&[0; 64])
         )
+    })
+    .await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn algorithm_confusion_rejected(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let fake = &setup.fake;
+    let unsigned = |header: Value, claims: &Value, signature: &[u8]| {
+        format!(
+            "{}.{}.{}",
+            b64(header.to_string().as_bytes()),
+            b64(claims.to_string().as_bytes()),
+            b64(signature)
+        )
+    };
+    // HS256 on the RSA key's kid, with its public key as the HMAC secret (with and without the
+    // trailing newline, as an attacker would try both).
+    for secret in [RSA_PUBLIC_PEM, RSA_PUBLIC_PEM.trim_end()] {
+        assert_native_rejected(&setup, &pool, |nonce| {
+            let mut header = Header::new(Algorithm::HS256);
+            header.kid = Some(RSA_KID.into());
+            jsonwebtoken::encode(
+                &header,
+                &fake.claims("001.x", BUNDLE_ID, Some(&sha256_hex(nonce))),
+                &EncodingKey::from_secret(secret.as_bytes()),
+            )
+            .unwrap()
+        })
+        .await;
+    }
+    // `alg: none` (any spelling), with and without a signature.
+    for alg in ["none", "None", "NONE"] {
+        assert_native_rejected(&setup, &pool, |nonce| {
+            let claims = fake.claims("001.x", BUNDLE_ID, Some(&sha256_hex(nonce)));
+            unsigned(json!({"alg": alg, "kid": RSA_KID}), &claims, b"")
+        })
+        .await;
+    }
+    // ES256 on the RSA key's kid, signed by the EC key Apple did publish.
+    assert_native_rejected(&setup, &pool, |nonce| {
+        let claims = fake.claims("001.x", BUNDLE_ID, Some(&sha256_hex(nonce)));
+        let state = fake.state.lock().unwrap();
+        sign_es256(RSA_KID, &state.signing, &claims)
     })
     .await;
 }
@@ -953,16 +1026,32 @@ async fn callback_exchanges_and_redirects_to_scheme_with_handoff(pool: PgPool) {
     let target = location(&posted);
     let handoff = handoff_in(&target, "b4app-beta");
     assert_eq!(handoff.len(), 43, "{target}");
+    // An unredeemed sign-up changes nothing: no user, org, identity, or device, and the code is
+    // not exchanged until the verifier comes with the handoff.
+    for table in ["users", "orgs", "user_identities", "devices"] {
+        assert_eq!(
+            count(&pool, &format!("SELECT count(*) FROM {table}")).await,
+            0,
+            "{table}"
+        );
+    }
+    assert!(setup.fake.calls(|c| c.exchanges.is_empty()));
+    // What the handoff carries is sealed: neither the code nor the Apple ID is readable.
+    let pending: Vec<u8> = sqlx::query_scalar("SELECT pending FROM auth_handoffs")
+        .fetch_one(&setup.admin.pool)
+        .await
+        .unwrap();
+    for plain in [code.as_bytes(), b"001.bea".as_slice()] {
+        assert!(!pending.windows(plain.len()).any(|w| w == plain));
+    }
+
+    let session = redeem(hub, &handoff, &verifier).await;
+    assert_eq!(session.status, StatusCode::OK, "{}", session.body);
     assert_eq!(
         setup.fake.calls(|c| c.exchanges.clone()),
         [(SERVICES_ID.to_string(), Some(CALLBACK_URL.to_string()))]
     );
-    // The account exists from the callback on; the device only from the handoff.
     assert_eq!(count(&pool, "SELECT count(*) FROM users").await, 1);
-    assert_eq!(count(&pool, "SELECT count(*) FROM devices").await, 0);
-
-    let session = redeem(hub, &handoff, &verifier).await;
-    assert_eq!(session.status, StatusCode::OK, "{}", session.body);
     assert_eq!(session.body["needsOnboarding"], true);
     assert_eq!(session.body["user"]["displayName"], "Bea Beta");
     let me = hub.get("/v1/me", Some(token_of(&session.body))).await;
@@ -1095,6 +1184,47 @@ async fn handoff_requires_verifier(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn the_code_is_exchanged_and_checked_at_the_handoff(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let hub = &setup.hub;
+    // Apple's post carries a code for another Apple ID: the callback cannot tell (it does not
+    // exchange), the handoff can.
+    let (verifier, hash) = new_verifier();
+    let (ceremony, nonce_claim) = begin_web(hub, BEGIN, None, &hash, "b4app").await;
+    let token = setup.fake.token("001.me", SERVICES_ID, Some(&nonce_claim));
+    let code = setup
+        .fake
+        .code("001.someone-else", SERVICES_ID, Some(CALLBACK_URL));
+    let posted = hub
+        .post_form(
+            CALLBACK,
+            &[("state", &ceremony), ("code", &code), ("id_token", &token)],
+        )
+        .await;
+    let handoff = handoff_in(&location(&posted), "b4app");
+    let refused = redeem(hub, &handoff, &verifier).await;
+    assert_eq!(refused.code(), "credential_rejected", "{}", refused.body);
+    assert_eq!(count(&pool, "SELECT count(*) FROM users").await, 0);
+
+    // An exchange answer without an identity token is refused too.
+    setup.fake.state.lock().unwrap().omit_id_token = true;
+    let (handoff, verifier) = web_handoff(&setup, "001.me").await;
+    let refused = redeem(hub, &handoff, &verifier).await;
+    assert_eq!(refused.code(), "credential_rejected", "{}", refused.body);
+    assert_eq!(count(&pool, "SELECT count(*) FROM users").await, 0);
+
+    // Sign-up closing between the callback and the handoff is respected.
+    setup.fake.state.lock().unwrap().omit_id_token = false;
+    let (handoff, verifier) = web_handoff(&setup, "001.me").await;
+    let mut closed = apple_config(&setup.fake, Signup::Closed);
+    closed.secret_key = setup.hub.state.config.secret_key;
+    let closed = Hub::start(setup.hub.state.db.clone(), closed).await;
+    let refused = redeem(&closed, &handoff, &verifier).await;
+    assert_eq!(refused.code(), "signup_closed", "{}", refused.body);
+    assert_eq!(count(&pool, "SELECT count(*) FROM users").await, 0);
+}
+
+#[sqlx::test(migrations = false)]
 async fn handoff_single_use(pool: PgPool) {
     let setup = setup(&pool, Signup::Open).await;
     let (handoff, verifier) = web_handoff(&setup, "001.once").await;
@@ -1175,47 +1305,54 @@ async fn refresh_token_stored_encrypted(pool: PgPool) {
     assert_eq!(grant.refresh_token, issued[1]);
 }
 
+/// A web sign-up for `sub` through its handoff, from a Mac; answers the session.
+async fn web_sign_up(setup: &Setup, sub: &str) -> Value {
+    let (handoff, verifier) = web_handoff(setup, sub).await;
+    let session = redeem(&setup.hub, &handoff, &verifier).await;
+    assert_eq!(session.status, StatusCode::OK, "{}", session.body);
+    session.body
+}
+
 #[sqlx::test(migrations = false)]
 async fn delete_revokes_at_apple(pool: PgPool) {
     let setup = setup(&pool, Signup::Open).await;
     let hub = &setup.hub;
-    let up = native(&setup, "001.del", EC_KID, None).await;
-    assert_eq!(up.status, StatusCode::OK, "{}", up.body);
-    let token = token_of(&up.body).to_string();
-    // A second Apple ID linked on the web: its token was issued to the Services ID.
-    let (verifier, hash) = new_verifier();
-    let (ceremony, nonce_claim) = begin_web(hub, LINK, Some(&token), &hash, "b4app").await;
-    let target = location(&apple_posts(&setup, &ceremony, &nonce_claim, "001.del2", None).await);
-    let linked = redeem(hub, &handoff_in(&target, "b4app"), &verifier).await;
-    assert_eq!(linked.status, StatusCode::OK, "{}", linked.body);
+    // One account from the iPhone (its token issued to the bundle id), one from the Mac (to the
+    // Services ID).
+    let phone = native(&setup, "001.del", EC_KID, None).await;
+    assert_eq!(phone.status, StatusCode::OK, "{}", phone.body);
+    let phone = token_of(&phone.body).to_string();
+    let mac = web_sign_up(&setup, "001.del2").await;
+    let mac = token_of(&mac).to_string();
     let issued = setup.fake.calls(|c| c.refresh_tokens.clone());
     assert_eq!(issued.len(), 2);
 
     // Apple refuses: nothing is deleted.
     setup.fake.state.lock().unwrap().fail_revoke = true;
-    let failed = authed(hub, "DELETE", "/v1/me", None, &token).await;
+    let failed = authed(hub, "DELETE", "/v1/me", None, &phone).await;
     assert_eq!(failed.code(), "internal_error", "{}", failed.body);
-    assert_eq!(hub.get("/v1/me", Some(&token)).await.status, StatusCode::OK);
-    assert_eq!(count(&pool, "SELECT count(*) FROM users").await, 1);
+    assert_eq!(hub.get("/v1/me", Some(&phone)).await.status, StatusCode::OK);
+    assert_eq!(count(&pool, "SELECT count(*) FROM users").await, 2);
 
     setup.fake.state.lock().unwrap().fail_revoke = false;
     setup.fake.state.lock().unwrap().calls.revoked.clear();
-    let deleted = authed(hub, "DELETE", "/v1/me", None, &token).await;
-    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
-    let mut revoked = setup.fake.calls(|c| c.revoked.clone());
-    revoked.sort();
-    let mut expected = vec![
-        (BUNDLE_ID.to_string(), issued[0].clone()),
-        (SERVICES_ID.to_string(), issued[1].clone()),
-    ];
-    expected.sort();
-    assert_eq!(revoked, expected);
+    for token in [&phone, &mac] {
+        let deleted = authed(hub, "DELETE", "/v1/me", None, token).await;
+        assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
+        assert_eq!(
+            hub.get("/v1/me", Some(token)).await.status,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        setup.fake.calls(|c| c.revoked.clone()),
+        [
+            (BUNDLE_ID.to_string(), issued[0].clone()),
+            (SERVICES_ID.to_string(), issued[1].clone()),
+        ]
+    );
     assert_eq!(setup.fake.calls(|c| c.bad_secrets), 0);
     assert_eq!(count(&pool, "SELECT count(*) FROM users").await, 0);
-    assert_eq!(
-        hub.get("/v1/me", Some(&token)).await.status,
-        StatusCode::UNAUTHORIZED
-    );
 }
 
 #[sqlx::test(migrations = false)]
@@ -1223,18 +1360,26 @@ async fn delete_with_a_token_that_does_not_open_revokes_nothing(pool: PgPool) {
     let setup = setup(&pool, Signup::Open).await;
     let up = native(&setup, "001.a", EC_KID, None).await;
     let token = token_of(&up.body).to_string();
-    let (verifier, hash) = new_verifier();
-    let (ceremony, nonce_claim) = begin_web(&setup.hub, LINK, Some(&token), &hash, "b4app").await;
-    let target = location(&apple_posts(&setup, &ceremony, &nonce_claim, "001.b", None).await);
-    redeem(&setup.hub, &handoff_in(&target, "b4app"), &verifier).await;
-    // The second row's sealed token is moved onto the first: it no longer opens there.
-    let stored = stored_refresh(&setup.admin).await;
-    sqlx::query("UPDATE user_identities SET apple_refresh_token_enc = $2 WHERE id = $1")
-        .bind(stored[1].0)
-        .bind(&stored[0].1)
-        .execute(&setup.admin.pool)
+    // A second Apple identity written straight to the store (the routes allow one per account),
+    // holding the first row's sealed token, which does not open under its own id. It sorts after
+    // the good one, so a revoke-as-you-go loop would revoke the good token before failing.
+    let principal = accounts::find_by_apple_sub(&setup.hub.state.db, "001.a")
         .await
+        .unwrap()
         .unwrap();
+    let stored = stored_refresh(&setup.admin).await;
+    accounts::add_identity(
+        &setup.hub.state.db,
+        principal,
+        Identity::Apple {
+            id: b4hub_core::ids::new_uuid(),
+            sub: "001.b".into(),
+            email: None,
+            refresh_enc: Some(stored[0].1.clone()),
+        },
+    )
+    .await
+    .unwrap();
 
     let failed = authed(&setup.hub, "DELETE", "/v1/me", None, &token).await;
     assert_eq!(failed.code(), "internal_error", "{}", failed.body);
@@ -1260,10 +1405,8 @@ async fn delete_on_a_hub_without_apple_cannot_revoke_and_deletes_nothing(pool: P
 
 // ---- Linking ----
 
-#[sqlx::test(migrations = false)]
-async fn link_apple_to_passkey_account(pool: PgPool) {
-    let setup = setup(&pool, Signup::Open).await;
-    let hub = &setup.hub;
+/// Signs up with a new passkey on a Mac; answers the session.
+async fn passkey_account(hub: &Hub) -> Value {
     let mut authenticator = Authenticator::new(ORIGIN);
     let begun = hub.post("/v1/auth/passkey/begin", None).await;
     let attestation = authenticator.register(&begun.body["registration"]);
@@ -1277,31 +1420,87 @@ async fn link_apple_to_passkey_account(pool: PgPool) {
         )
         .await;
     assert_eq!(session.status, StatusCode::OK, "{}", session.body);
-    let token = token_of(&session.body).to_string();
+    session.body
+}
 
-    // The Mac links on the web: the callback links, and the handoff only confirms it.
-    let (verifier, hash) = new_verifier();
-    let (ceremony, nonce_claim) = begin_web(hub, LINK, Some(&token), &hash, "b4app").await;
-    let target = location(&apple_posts(&setup, &ceremony, &nonce_claim, "001.link", None).await);
-    let handoff = handoff_in(&target, "b4app");
-    let linked = redeem(hub, &handoff, &verifier).await;
-    assert_eq!(linked.status, StatusCode::OK, "{}", linked.body);
-    assert_eq!(linked.body, json!({"linked": true}));
-    assert_eq!(count(&pool, "SELECT count(*) FROM device_tokens").await, 1);
-    let me = hub.get("/v1/me", Some(&token)).await;
-    let kinds: Vec<&str> = me.body["identities"]
+async fn kinds(hub: &Hub, token: &str) -> Vec<String> {
+    let me = hub.get("/v1/me", Some(token)).await;
+    me.body["identities"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|i| i["kind"].as_str().unwrap())
-        .collect();
-    assert_eq!(kinds, ["passkey", "apple"]);
+        .map(|i| i["kind"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// A web link for the account `token` up to the redirect: Apple's page completed by `sub`.
+/// Answers the handoff and its verifier.
+async fn web_link_handoff(setup: &Setup, token: &str, sub: &str) -> (String, String) {
+    let (verifier, hash) = new_verifier();
+    let (ceremony, nonce_claim) = begin_web(&setup.hub, LINK, Some(token), &hash, "b4app").await;
+    let target = location(&apple_posts(setup, &ceremony, &nonce_claim, sub, None).await);
+    (handoff_in(&target, "b4app"), verifier)
+}
+
+async fn redeem_link(hub: &Hub, token: &str, handoff: &str, verifier: &str) -> Answer {
+    authed(
+        hub,
+        "POST",
+        LINK_HANDOFF,
+        Some(&json!({"handoff": handoff, "verifier": verifier})),
+        token,
+    )
+    .await
+}
+
+#[sqlx::test(migrations = false)]
+async fn link_apple_to_passkey_account(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let hub = &setup.hub;
+    let session = passkey_account(hub).await;
+    let token = token_of(&session).to_string();
+
+    // The Mac links on the web: nothing changes until the linking device redeems the handoff.
+    let (handoff, verifier) = web_link_handoff(&setup, &token, "001.link").await;
+    assert_eq!(kinds(hub, &token).await, ["passkey"]);
+    assert!(setup.fake.calls(|c| c.exchanges.is_empty()));
+    let identity = redeem_link(hub, &token, &handoff, &verifier).await;
+    assert_eq!(identity.status, StatusCode::OK, "{}", identity.body);
+    assert_eq!(identity.body["kind"], "apple");
+    assert_eq!(identity.body["name"], "001.link@privaterelay.appleid.com");
+    assert_eq!(
+        setup.fake.calls(|c| c.exchanges.clone()),
+        [(SERVICES_ID.to_string(), Some(CALLBACK_URL.to_string()))]
+    );
+    assert_eq!(count(&pool, "SELECT count(*) FROM device_tokens").await, 1);
+    assert_eq!(kinds(hub, &token).await, ["passkey", "apple"]);
+    // Single use.
+    let again = redeem_link(hub, &token, &handoff, &verifier).await;
+    assert_eq!(again.code(), "ceremony_expired", "{}", again.body);
 
     // Signing in with that Apple ID now reaches the passkey's account.
     let apple = native(&setup, "001.link", EC_KID, None).await;
     assert_eq!(apple.status, StatusCode::OK, "{}", apple.body);
-    assert_eq!(apple.body["org"], session.body["org"]);
-    assert_eq!(apple.body["user"], session.body["user"]);
+    assert_eq!(apple.body["org"], session["org"]);
+    assert_eq!(apple.body["user"], session["user"]);
+
+    // Linking needs a device token.
+    let anonymous = hub.post(LINK, Some(&json!({}))).await;
+    assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+    let anonymous = hub
+        .post(
+            LINK_HANDOFF,
+            Some(&json!({"handoff": handoff, "verifier": verifier})),
+        )
+        .await;
+    assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test(migrations = false)]
+async fn link_natively_and_its_refusals(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let hub = &setup.hub;
+    let token = token_of(&passkey_account(hub).await).to_string();
 
     // The iPhone links natively; the answer is the new identity.
     let begun = authed(hub, "POST", LINK, Some(&json!({})), &token).await;
@@ -1319,14 +1518,13 @@ async fn link_apple_to_passkey_account(pool: PgPool) {
 
     // Another account cannot take an Apple ID that is already linked, and a sign-in ceremony
     // cannot finish a link (nor a link ceremony a sign-in).
-    let other = native(&setup, "001.other", EC_KID, None).await;
-    let other_token = token_of(&other.body).to_string();
+    let other_token = token_of(&passkey_account(hub).await).to_string();
     let begun = authed(hub, "POST", LINK, None, &other_token).await;
     let nonce = begun.body["nonce"].as_str().unwrap();
     let steal = json!({
         "ceremonyId": begun.body["ceremonyId"],
-        "identityToken": setup.fake.token("001.link", BUNDLE_ID, Some(&sha256_hex(nonce))),
-        "authorizationCode": setup.fake.code("001.link", BUNDLE_ID, None),
+        "identityToken": setup.fake.token("001.link2", BUNDLE_ID, Some(&sha256_hex(nonce))),
+        "authorizationCode": setup.fake.code("001.link2", BUNDLE_ID, None),
     });
     let refused = authed(hub, "POST", LINK_NATIVE, Some(&steal), &other_token).await;
     assert_eq!(refused.code(), "credential_rejected", "{}", refused.body);
@@ -1350,10 +1548,151 @@ async fn link_apple_to_passkey_account(pool: PgPool) {
     });
     let refused = hub.post(NATIVE, Some(&crossed)).await;
     assert_eq!(refused.code(), "ceremony_expired", "{}", refused.body);
+    assert_eq!(kinds(hub, &other_token).await, ["passkey"]);
+}
 
-    // Linking needs a device token.
-    let anonymous = hub.post(LINK, Some(&json!({}))).await;
-    assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+#[sqlx::test(migrations = false)]
+async fn unredeemed_link_creates_no_identity(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let token = token_of(&passkey_account(&setup.hub).await).to_string();
+    let (_handoff, _verifier) = web_link_handoff(&setup, &token, "001.pending").await;
+    assert_eq!(kinds(&setup.hub, &token).await, ["passkey"]);
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT count(*) FROM user_identities WHERE kind = 'apple'"
+        )
+        .await,
+        0
+    );
+    assert!(setup.fake.calls(|c| c.exchanges.is_empty()));
+    // The Apple ID is still free: it signs up on its own.
+    let own = native(&setup, "001.pending", EC_KID, None).await;
+    assert_eq!(own.status, StatusCode::OK, "{}", own.body);
+    assert_eq!(count(&pool, "SELECT count(*) FROM users").await, 2);
+}
+
+#[sqlx::test(migrations = false)]
+async fn link_handoff_needs_the_linking_users_device(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let hub = &setup.hub;
+    let owner = token_of(&passkey_account(hub).await).to_string();
+    let stranger = token_of(&passkey_account(hub).await).to_string();
+    let (handoff, verifier) = web_link_handoff(&setup, &owner, "001.mine").await;
+
+    // Another user's device, even holding the code and the verifier, cannot redeem it, and does
+    // not use it up.
+    let refused = redeem_link(hub, &stranger, &handoff, &verifier).await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{}", refused.body);
+    assert_eq!(refused.code(), "credential_rejected");
+    assert_eq!(kinds(hub, &stranger).await, ["passkey"]);
+    // Nor does a wrong verifier on the right device.
+    let wrong = redeem_link(hub, &owner, &handoff, &b64(&random::<32>())).await;
+    assert_eq!(wrong.code(), "ceremony_expired", "{}", wrong.body);
+    assert!(setup.fake.calls(|c| c.exchanges.is_empty()));
+
+    let linked = redeem_link(hub, &owner, &handoff, &verifier).await;
+    assert_eq!(linked.status, StatusCode::OK, "{}", linked.body);
+    assert_eq!(kinds(hub, &owner).await, ["passkey", "apple"]);
+}
+
+#[sqlx::test(migrations = false)]
+async fn auth_handoff_refuses_a_link_handoff(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let hub = &setup.hub;
+    let token = token_of(&passkey_account(hub).await).to_string();
+    let (link_handoff, link_verifier) = web_link_handoff(&setup, &token, "001.l").await;
+
+    // A link's handoff cannot sign a device in, and is not used up by trying.
+    let refused = redeem(hub, &link_handoff, &link_verifier).await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{}", refused.body);
+    assert_eq!(refused.code(), "credential_rejected");
+    assert_eq!(count(&pool, "SELECT count(*) FROM device_tokens").await, 1);
+
+    // Nor can a sign-in's handoff link.
+    let (sign_in_handoff, sign_in_verifier) = web_handoff(&setup, "001.s").await;
+    let refused = redeem_link(hub, &token, &sign_in_handoff, &sign_in_verifier).await;
+    assert_eq!(refused.code(), "credential_rejected", "{}", refused.body);
+    assert_eq!(kinds(hub, &token).await, ["passkey"]);
+
+    // Each still works where it belongs.
+    let linked = redeem_link(hub, &token, &link_handoff, &link_verifier).await;
+    assert_eq!(linked.status, StatusCode::OK, "{}", linked.body);
+    let signed_in = redeem(hub, &sign_in_handoff, &sign_in_verifier).await;
+    assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.body);
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_victim_completing_an_attackers_link_links_nothing(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let hub = &setup.hub;
+    // Attacker A, signed in, begins a web link and keeps the verifier.
+    let attacker = token_of(&passkey_account(hub).await).to_string();
+    let (_verifier, hash) = new_verifier();
+    let begun = authed(
+        hub,
+        "POST",
+        LINK,
+        Some(&json!({"verifierHash": hash, "scheme": "b4app"})),
+        &attacker,
+    )
+    .await;
+    let ceremony = begun.body["ceremonyId"].as_str().unwrap().to_string();
+    // A sends the start URL to victim V, whose browser follows it and completes Apple's genuine
+    // page as V.
+    let started = hub
+        .get(&format!("/v1/auth/apple/start?ceremony={ceremony}"), None)
+        .await;
+    let nonce_claim = query(&location(&started))["nonce"].clone();
+    let posted = apple_posts(&setup, &ceremony, &nonce_claim, "001.victim", None).await;
+    // The handoff goes to V's browser, not to A.
+    let _ = handoff_in(&location(&posted), "b4app");
+
+    // Nothing was linked to A, and V's "Continue with Apple" makes V's own account.
+    assert_eq!(kinds(hub, &attacker).await, ["passkey"]);
+    let victim = native(&setup, "001.victim", EC_KID, None).await;
+    assert_eq!(victim.status, StatusCode::OK, "{}", victim.body);
+    let attacker_me = hub.get("/v1/me", Some(&attacker)).await;
+    assert_ne!(victim.body["org"], attacker_me.body["org"]);
+    assert_eq!(victim.body["needsOnboarding"], true);
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_second_apple_id_on_one_account_is_refused(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let hub = &setup.hub;
+    let up = native(&setup, "001.first", EC_KID, None).await;
+    let token = token_of(&up.body).to_string();
+
+    // Beginning a link, natively or on the web, is refused while the account has one.
+    for body in [
+        json!({}),
+        json!({"verifierHash": new_verifier().1, "scheme": "b4app"}),
+    ] {
+        let refused = authed(hub, "POST", LINK, Some(&body), &token).await;
+        assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+        assert_eq!(refused.code(), "apple_linked");
+    }
+
+    // A link begun before the first Apple ID arrived is refused at its finish too.
+    let account = passkey_account(hub).await;
+    let token = token_of(&account).to_string();
+    let native_begun = authed(hub, "POST", LINK, None, &token).await;
+    let (handoff, verifier) = web_link_handoff(&setup, &token, "001.web").await;
+    let nonce = native_begun.body["nonce"].as_str().unwrap();
+    let body = json!({
+        "ceremonyId": native_begun.body["ceremonyId"],
+        "identityToken": setup.fake.token("001.native", BUNDLE_ID, Some(&sha256_hex(nonce))),
+        "authorizationCode": setup.fake.code("001.native", BUNDLE_ID, None),
+    });
+    let first = authed(hub, "POST", LINK_NATIVE, Some(&body), &token).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let second = redeem_link(hub, &token, &handoff, &verifier).await;
+    assert_eq!(second.status, StatusCode::CONFLICT, "{}", second.body);
+    assert_eq!(second.code(), "apple_linked");
+    assert_eq!(kinds(hub, &token).await, ["passkey", "apple"]);
+    // The refused one's code was never exchanged.
+    assert_eq!(setup.fake.calls(|c| c.exchanges.len()), 2);
 }
 
 // ---- Configuration and limits ----
@@ -1397,6 +1736,7 @@ async fn routes_404_without_apple_config(pool: PgPool) {
         hub.post(HANDOFF, Some(&json!({}))).await,
         authed(&hub, "POST", LINK, Some(&json!({})), &token).await,
         authed(&hub, "POST", LINK_NATIVE, Some(&json!({})), &token).await,
+        authed(&hub, "POST", LINK_HANDOFF, Some(&json!({})), &token).await,
     ];
     for answer in answers {
         assert_eq!(answer.status, StatusCode::NOT_FOUND, "{}", answer.body);
@@ -1579,15 +1919,22 @@ async fn no_secret_in_logs(pool: PgPool) {
         handoff,
         token_of(&web.body).to_string(),
     ]);
-    let (verifier, hash) = new_verifier();
-    let (ceremony, nonce_claim) = begin_web(hub, LINK, Some(&token), &hash, "b4app").await;
-    let target = location(&apple_posts(&setup, &ceremony, &nonce_claim, "001.log2", None).await);
-    let handoff = handoff_in(&target, "b4app");
+    // A passkey account links an Apple ID on the web; the pending handoff is sealed.
+    let linker = token_of(&passkey_account(hub).await).to_string();
+    secrets.push(linker.clone());
+    let (handoff, verifier) = web_link_handoff(&setup, &linker, "001.log2").await;
+    let pending: Vec<Vec<u8>> =
+        sqlx::query_scalar("SELECT pending FROM auth_handoffs WHERE pending IS NOT NULL")
+            .fetch_all(&setup.admin.pool)
+            .await
+            .unwrap();
+    assert_eq!(pending.len(), 2);
+    let mut sealed: Vec<Vec<u8>> = pending;
     assert_eq!(
-        redeem(hub, &handoff, &verifier).await.status,
+        redeem_link(hub, &linker, &handoff, &verifier).await.status,
         StatusCode::OK
     );
-    secrets.extend([verifier, hash, handoff]);
+    secrets.extend([verifier, handoff]);
 
     // A token Apple's checks refuse.
     let (ceremony, nonce) = begin_native(hub).await;
@@ -1602,15 +1949,29 @@ async fn no_secret_in_logs(pool: PgPool) {
     .await;
     secrets.push(refused);
 
-    // Delete the account, revoking both refresh tokens.
+    // The sealed refresh tokens, read before the account that holds one is deleted (revoking
+    // it), in every spelling a log line might use.
+    sealed.extend(
+        stored_refresh(&setup.admin)
+            .await
+            .into_iter()
+            .map(|(_, sealed)| sealed),
+    );
+    assert_eq!(sealed.len(), 4);
+    for bytes in &sealed {
+        secrets.extend([
+            format!("{bytes:?}"),
+            STANDARD.encode(bytes),
+            URL_SAFE_NO_PAD.encode(bytes),
+            bytes.iter().map(|b| format!("{b:02x}")).collect(),
+        ]);
+    }
     let deleted = authed(hub, "DELETE", "/v1/me", None, &token).await;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
+    assert_eq!(setup.fake.calls(|c| c.revoked.len()), 1);
     secrets.extend(setup.fake.calls(|c| c.refresh_tokens.clone()));
     secrets.extend(setup.fake.calls(|c| c.client_secrets.clone()));
     assert!(setup.fake.calls(|c| c.client_secrets.len()) >= 5);
-    for (_, sealed) in stored_refresh(&setup.admin).await {
-        secrets.push(format!("{sealed:?}"));
-    }
 
     let text = captured.text();
     for line in [

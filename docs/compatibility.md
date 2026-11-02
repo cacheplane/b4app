@@ -117,7 +117,8 @@ New crates, pinned exactly like the rest:
 | Item | Value |
 | --- | --- |
 | Hub environment | New: `B4HUB_APPLE_SERVICES_ID` (optional; must be one of `B4HUB_APPLE_AUDIENCES`; set without the other `B4HUB_APPLE_*` it exits 2): the web flow's client id. `apple.web` needs it and `B4HUB_PUBLIC_URL`. `B4HUB_APPLE_BASE_URL` stays tests-only. A `B4HUB_APPLE_PRIVATE_KEY` that does not sign exits 2. The hosted hubs set `B4HUB_APPLE_SERVICES_ID=com.cacheplane.b4app.signin` |
-| Routes | `POST /v1/auth/apple/begin`, `POST /v1/auth/apple/native`, `GET /v1/auth/apple/start`, `POST /v1/auth/apple/callback`, `POST /v1/auth/handoff`, `POST /v1/me/apple`, `POST /v1/me/apple/native`; all `404 not_found` without Apple configured |
+| Routes | `POST /v1/auth/apple/begin`, `POST /v1/auth/apple/native`, `GET /v1/auth/apple/start`, `POST /v1/auth/apple/callback`, `POST /v1/auth/handoff`, `POST /v1/me/apple`, `POST /v1/me/apple/native`, `POST /v1/me/apple/handoff`; all `404 not_found` without Apple configured. New error `apple_linked` (409), also Swift's `ErrorCode.appleLinked` |
+| Hub migration | `0006_apple_handoffs.sql`: `auth_handoffs.org_id` and `user_id` become nullable (a sign-in's handoff names no account until it is redeemed) and `pending bytea` holds the callback's verified result, sealed to the handoff's code hash. Additive; run `migrate` before a new `serve` |
 | Outbound | `https://appleid.apple.com` only, 10 s per call, no redirects followed |
 | Refresh tokens at rest | AES-256-GCM under `B4HUB_SECRET_KEY`, nonce first, the identity row's id as associated data; the plaintext is `{"clientId", "refreshToken"}`. Task 6's format (no associated data, the bare token) was never written outside tests |
 | Hub protocol | `minClientProtocol` stays 1 |

@@ -49,6 +49,9 @@ pub enum Error {
     /// is taken), so nothing was created or added.
     #[error("that sign-in method already belongs to an account")]
     IdentityTaken,
+    /// The account already has an Apple ID; one is all an account may link.
+    #[error("the account already has an Apple ID")]
+    AppleLinked,
     /// Deleting a user is only implemented for the owner of a personal org.
     #[error("the account belongs to a shared org")]
     SharedOrg,

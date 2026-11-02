@@ -435,6 +435,43 @@ pub async fn add_identity(db: &Db, principal: Principal, identity: Identity) -> 
     Ok(id)
 }
 
+/// Whether `principal`'s account has an Apple identity.
+pub async fn has_apple_identity(db: &Db, principal: Principal) -> Result<bool> {
+    let has: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM user_identities \
+           WHERE org_id = $1 AND user_id = $2 AND kind = 'apple')",
+    )
+    .bind(principal.org_id)
+    .bind(principal.user_id)
+    .fetch_one(&db.pool)
+    .await?;
+    Ok(has)
+}
+
+/// Links the Apple ID `identity` (an [`Identity::Apple`]) to `principal`'s account and returns
+/// its id: one Apple ID per account, so [`Error::AppleLinked`] when the account already has one.
+/// The user row is locked first, so two links racing cannot both pass the check. An Apple ID
+/// that belongs to any account is [`Error::IdentityTaken`]. (Merging a phone-only account on
+/// pairing moves its identities with no such check.)
+pub async fn add_apple_identity(db: &Db, principal: Principal, identity: Identity) -> Result<Uuid> {
+    let mut tx = db.tenant_tx(principal.org_id).await?;
+    lock_user(&mut tx, principal.user_id).await?;
+    let has: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM user_identities \
+           WHERE org_id = $1 AND user_id = $2 AND kind = 'apple')",
+    )
+    .bind(principal.org_id)
+    .bind(principal.user_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if has {
+        return Err(Error::AppleLinked);
+    }
+    let id = insert_identity(&mut tx, principal, &identity).await?;
+    tx.commit().await?;
+    Ok(id)
+}
+
 /// Removes the identity `identity_id` from `principal`'s account. `false` when the account has
 /// no such identity; [`Error::LastIdentity`] when it is the account's only one.
 pub async fn remove_identity(db: &Db, principal: Principal, identity_id: Uuid) -> Result<bool> {

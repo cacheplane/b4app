@@ -12,8 +12,8 @@ mod common;
 use axum::http::StatusCode;
 use b4hub::config::Signup;
 use b4hub::routes::apple::{
-    AppleBeginRequest, AppleBeginResponse, AppleLinkNativeRequest, AppleNativeRequest,
-    HandoffRequest, SCHEMES,
+    AppleBeginRequest, AppleBeginResponse, AppleLinkHandoffRequest, AppleLinkNativeRequest,
+    AppleNativeRequest, HandoffRequest, SCHEMES,
 };
 use b4hub::routes::auth::{
     AuthConfigResponse, AuthSession, PasskeyBeginResponse, PasskeyFinishRequest,
@@ -142,8 +142,9 @@ fn apple_types_match_the_hub_types() {
     assert!(handoff.device.device_id.is_some());
     assert!(!format!("{handoff:?}").contains(&handoff.verifier));
 
-    // What `POST /v1/auth/handoff` answers for a link (built as JSON by the route).
-    assert_eq!(example("handoffLinked"), json!({"linked": true}));
+    // A link's handoff goes to `POST /v1/me/apple/handoff`, which answers an `identity`.
+    let link_handoff: AppleLinkHandoffRequest = round_trips("appleLinkHandoffRequest");
+    assert!(!format!("{link_handoff:?}").contains(&link_handoff.verifier));
 }
 
 // ---- The answers the routes build as JSON ----

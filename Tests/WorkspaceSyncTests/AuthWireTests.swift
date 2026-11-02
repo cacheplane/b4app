@@ -134,6 +134,8 @@ import WorkspaceProtocol
     #expect(native.fullName == "Brian Love" && native.device.platform == "ios")
     let link = try roundTrips(AppleLinkNativeRequest.self, "appleLinkNativeRequest")
     #expect(link.ceremonyId == begun.ceremonyId)
+    let linkHandoff = try roundTrips(AppleLinkHandoffRequest.self, "appleLinkHandoffRequest")
+    #expect(!"\(linkHandoff)".contains(linkHandoff.verifier))
     let handoff = try roundTrips(HandoffRequest.self, "handoffRequest")
     #expect(handoff.device.deviceId == "01a19a2b-bbc9-744f-9b64-011001ab330e")
   }

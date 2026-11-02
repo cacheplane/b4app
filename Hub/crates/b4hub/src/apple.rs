@@ -22,7 +22,9 @@
 //! **A sealed refresh token** is AES-256-GCM under `B4HUB_SECRET_KEY`: a random 96-bit nonce,
 //! then the ciphertext and its 16-byte tag. The plaintext is the client id the token was issued
 //! to and the token (revoking needs both), as JSON; the associated data is the id of the
-//! identity row that stores it, so a sealed token copied to another row does not open.
+//! identity row that stores it, so a sealed token copied to another row does not open. The web
+//! flow's pending handoff ([`PendingApple`]) is sealed the same way, with the handoff code's
+//! hash as the associated data.
 //!
 //! Neither a token, a code, a client secret, nor a sealed or opened refresh token is ever
 //! logged; every failure carries a fixed reason.
@@ -334,7 +336,7 @@ impl AppleClient {
     }
 
     /// Exchanges an authorization code Apple issued to `client_id` (with the web flow's
-    /// `redirect_uri`) for the tokens the hub keeps. The identity token in Apple's answer must be
+    /// `redirect_uri`) for the tokens the hub keeps. Apple's answer must carry an identity token,
     /// for `client_id` and for the Apple ID `sub` (the one the caller already verified), so a
     /// code for another Apple ID cannot attach its refresh token to this one.
     pub async fn exchange_code(
@@ -369,15 +371,16 @@ impl AppleClient {
         }
         let answer: TokenAnswer = serde_json::from_slice(&body)
             .map_err(|_| AppleError::Unavailable("Apple's token answer is not JSON"))?;
-        if let Some(id_token) = answer.id_token {
-            let claims = self
-                .verify(&id_token, &[client_id.to_string()], None)
-                .await?;
-            if claims.sub != sub {
-                return Err(AppleError::Rejected(
-                    "the authorization code is for another Apple ID",
-                ));
-            }
+        let id_token = answer.id_token.ok_or(AppleError::Rejected(
+            "Apple's token answer has no identity token",
+        ))?;
+        let claims = self
+            .verify(&id_token, &[client_id.to_string()], None)
+            .await?;
+        if claims.sub != sub {
+            return Err(AppleError::Rejected(
+                "the authorization code is for another Apple ID",
+            ));
         }
         Ok(Tokens {
             refresh_token: answer.refresh_token,
@@ -642,7 +645,60 @@ pub fn seal_refresh_token(
     identity_id: Uuid,
     grant: &AppleGrant,
 ) -> Result<Vec<u8>, SealError> {
-    let plaintext = serde_json::to_vec(grant).map_err(|_| SealError::Unopenable)?;
+    seal(key, identity_id.as_bytes(), grant)
+}
+
+/// Opens a grant [`seal_refresh_token`] sealed under `key` for the row `identity_id`.
+pub fn open_refresh_token(
+    key: &[u8; 32],
+    identity_id: Uuid,
+    sealed: &[u8],
+) -> Result<AppleGrant, SealError> {
+    open(key, identity_id.as_bytes(), sealed)
+}
+
+/// What the web flow's callback verified, kept (sealed) with its handoff until the app redeems
+/// it: the Apple ID, its email and name (the name on a first sign-in only), the client id the
+/// code was issued to, and the authorization code, not yet exchanged. `Debug` shows none of it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingApple {
+    pub sub: String,
+    pub email: Option<String>,
+    pub name: Option<String>,
+    pub client_id: String,
+    pub code: String,
+}
+
+impl fmt::Debug for PendingApple {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PendingApple").finish_non_exhaustive()
+    }
+}
+
+/// Seals `pending` under `key` for the handoff whose code hashes to `code_hash`, which is the
+/// associated data: it opens only for the handoff it was recorded with.
+pub fn seal_pending(
+    key: &[u8; 32],
+    code_hash: &[u8],
+    pending: &PendingApple,
+) -> Result<Vec<u8>, SealError> {
+    seal(key, code_hash, pending)
+}
+
+/// Opens what [`seal_pending`] sealed for the handoff `code_hash`.
+pub fn open_pending(
+    key: &[u8; 32],
+    code_hash: &[u8],
+    sealed: &[u8],
+) -> Result<PendingApple, SealError> {
+    open(key, code_hash, sealed)
+}
+
+/// `value` as JSON, AES-256-GCM under `key` with `aad`: a random 96-bit nonce, then the
+/// ciphertext and its tag.
+fn seal<T: Serialize>(key: &[u8; 32], aad: &[u8], value: &T) -> Result<Vec<u8>, SealError> {
+    let plaintext = serde_json::to_vec(value).map_err(|_| SealError::Unopenable)?;
     let mut nonce = [0u8; NONCE_LEN];
     getrandom::fill(&mut nonce).map_err(|_| SealError::Entropy)?;
     let ciphertext = cipher(key)
@@ -650,7 +706,7 @@ pub fn seal_refresh_token(
             &Nonce::from(nonce),
             Payload {
                 msg: &plaintext,
-                aad: identity_id.as_bytes(),
+                aad,
             },
         )
         .map_err(|_| SealError::Unopenable)?;
@@ -660,12 +716,11 @@ pub fn seal_refresh_token(
     Ok(sealed)
 }
 
-/// Opens a grant [`seal_refresh_token`] sealed under `key` for the row `identity_id`.
-pub fn open_refresh_token(
+fn open<T: serde::de::DeserializeOwned>(
     key: &[u8; 32],
-    identity_id: Uuid,
+    aad: &[u8],
     sealed: &[u8],
-) -> Result<AppleGrant, SealError> {
+) -> Result<T, SealError> {
     if sealed.len() < NONCE_LEN {
         return Err(SealError::Unopenable);
     }
@@ -676,7 +731,7 @@ pub fn open_refresh_token(
             &nonce,
             Payload {
                 msg: ciphertext,
-                aad: identity_id.as_bytes(),
+                aad,
             },
         )
         .map_err(|_| SealError::Unopenable)?;
@@ -741,6 +796,30 @@ mod tests {
             Err(SealError::Unopenable)
         );
         assert!(!format!("{:?}", grant("rt.secret")).contains("rt.secret"));
+    }
+
+    #[test]
+    fn a_pending_handoff_opens_only_for_its_handoff() {
+        let key = [7; 32];
+        let pending = PendingApple {
+            sub: "001.p".into(),
+            email: None,
+            name: Some("Bea".into()),
+            client_id: "com.cacheplane.b4app.signin".into(),
+            code: "c.secret-code".into(),
+        };
+        let sealed = seal_pending(&key, b"hash-one", &pending).unwrap();
+        assert!(!sealed.windows(13).any(|w| w == b"c.secret-code"));
+        assert_eq!(open_pending(&key, b"hash-one", &sealed).unwrap(), pending);
+        assert_eq!(
+            open_pending(&key, b"hash-two", &sealed),
+            Err(SealError::Unopenable)
+        );
+        assert_eq!(
+            open_pending(&[8; 32], b"hash-one", &sealed),
+            Err(SealError::Unopenable)
+        );
+        assert!(!format!("{pending:?}").contains("secret"));
     }
 
     #[test]

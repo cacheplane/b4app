@@ -2,14 +2,18 @@
 //! (`POST /v1/auth/apple/begin`, `POST /v1/auth/apple/native`), the web flow for the Mac
 //! (`GET /v1/auth/apple/start`, Apple's form post to `POST /v1/auth/apple/callback`, then
 //! `POST /v1/auth/handoff`), and linking an Apple ID to the signed-in account
-//! (`POST /v1/me/apple`, then `POST /v1/me/apple/native` or the same web flow).
+//! (`POST /v1/me/apple`, then `POST /v1/me/apple/native`, or the web flow ending in
+//! `POST /v1/me/apple/handoff`).
 //!
 //! Every route answers `not_found` unless `B4HUB_APPLE_*` configures Sign in with Apple; the web
 //! flow also needs `B4HUB_APPLE_SERVICES_ID` and `B4HUB_PUBLIC_URL`. A ceremony holds a random
 //! nonce; Apple is handed its SHA-256 in hex, and the identity token must carry exactly that.
 //! A web ceremony also holds the SHA-256 of a verifier the app keeps and the app's URL scheme
 //! (one of [`SCHEMES`]): the callback redirects only to that scheme, never one from the request,
-//! and the handoff it carries is redeemed only with the verifier.
+//! and the handoff it carries is redeemed only with the verifier. The callback changes no account
+//! and exchanges no code: it records the verified result, sealed to the handoff, and everything
+//! happens at the redemption (for a link, only from a device of the account that began it).
+//! An account links at most one Apple ID (`apple_linked`).
 //!
 //! A new Apple ID signs up while sign-up is open (`signup_closed` otherwise, before the code is
 //! exchanged, so Apple keeps no grant for it). Apple's email is stored with the identity but
@@ -30,12 +34,13 @@ use b4hub_core::tokens::{hash_token, new_token};
 use b4hub_db::accounts::{self, Identity, Principal};
 use b4hub_db::ceremonies;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::apple::{
-    seal_refresh_token, sha256_hex, AppleClient, AppleError, AppleGrant, Claims, Tokens,
+    open_pending, seal_pending, seal_refresh_token, sha256_hex, AppleClient, AppleError,
+    AppleGrant, Claims, PendingApple, Tokens,
 };
 use crate::auth::AuthedDevice;
 use crate::auth_limits::{BeginAllowed, FinishAllowed};
@@ -129,9 +134,9 @@ impl fmt::Debug for AppleLinkNativeRequest {
     }
 }
 
-/// `POST /v1/auth/handoff`'s body: the code the callback's redirect carried, the verifier whose
-/// hash the ceremony recorded, and the device (ignored when the ceremony was a link). `Debug`
-/// leaves out the code and the verifier.
+/// `POST /v1/auth/handoff`'s body: the code a sign-in's callback redirect carried, the verifier
+/// whose hash the ceremony recorded, and the device to sign in. `Debug` leaves out the code and
+/// the verifier.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct HandoffRequest {
@@ -144,6 +149,22 @@ impl fmt::Debug for HandoffRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HandoffRequest")
             .field("device", &self.device)
+            .finish_non_exhaustive()
+    }
+}
+
+/// `POST /v1/me/apple/handoff`'s body: the code a link's callback redirect carried, and the
+/// verifier. `Debug` leaves both out.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AppleLinkHandoffRequest {
+    pub handoff: String,
+    pub verifier: String,
+}
+
+impl fmt::Debug for AppleLinkHandoffRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AppleLinkHandoffRequest")
             .finish_non_exhaustive()
     }
 }
@@ -292,6 +313,9 @@ pub async fn link_begin(
         org_id: device.org_id,
         user_id: device.user_id,
     };
+    if accounts::has_apple_identity(&state.db, link.into()).await? {
+        return Err(ApiError::apple_linked());
+    }
     create_ceremony(&state, APPLE_LINK_CEREMONY, web, Some(link)).await
 }
 
@@ -378,12 +402,7 @@ pub async fn link_native(
         None,
     )
     .await?;
-    let identity = accounts::list_identities(&state.db, principal)
-        .await?
-        .into_iter()
-        .find(|identity| identity.id == id)
-        .ok_or_else(ApiError::not_found)?;
-    Ok(Json(identity_json(&identity)))
+    identity_answer(&state, principal, id).await
 }
 
 // ---- The web flow ----
@@ -501,7 +520,7 @@ pub async fn callback(
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let form = CallbackForm::parse(&body)?;
-    let redirect_uri = callback_url(&state).ok_or_else(ApiError::not_found)?;
+    callback_url(&state).ok_or_else(ApiError::not_found)?;
     let ceremony_id = form
         .state
         .as_deref()
@@ -538,18 +557,9 @@ pub async fn callback(
                 "credential_rejected"
             })
         }
-        None => finish_web(
-            &state,
-            &apple,
-            &kind,
-            ceremony_id,
-            &ceremony,
-            web,
-            &form,
-            &redirect_uri,
-        )
-        .await
-        .map_err(|error| error.code),
+        None => finish_web(&state, &apple, &kind, ceremony_id, &ceremony, web, &form)
+            .await
+            .map_err(|error| error.code),
     };
     Ok(match outcome {
         Ok(handoff) => redirect(&format!("{}://auth?handoff={handoff}", web.scheme)),
@@ -557,9 +567,10 @@ pub async fn callback(
     })
 }
 
-/// Verifies Apple's post for a web ceremony, signs in, signs up, or links, and records the
-/// handoff; answers its code.
-#[allow(clippy::too_many_arguments)]
+/// Verifies Apple's post for a web ceremony and records the handoff that carries the result,
+/// sealed, to the app; answers its code. No account changes here and the code is not exchanged:
+/// both happen when the app redeems the handoff with the verifier, so a browser that is not the
+/// app's (a start URL forwarded to someone else, or a leaked ceremony id) achieves nothing.
 async fn finish_web(
     state: &AppState,
     apple: &AppleClient,
@@ -568,7 +579,6 @@ async fn finish_web(
     ceremony: &AppleCeremony,
     web: &WebFlow,
     form: &CallbackForm,
-    redirect_uri: &str,
 ) -> Result<String, ApiError> {
     let (Some(code), Some(id_token)) = (&form.code, &form.id_token) else {
         tracing::info!(
@@ -587,7 +597,8 @@ async fn finish_web(
         );
         return Err(ApiError::credential_rejected());
     }
-    let principal = if kind == APPLE_LINK_CEREMONY {
+    let owner = accounts::find_apple_identity(&state.db, &claims.sub).await?;
+    let link = if kind == APPLE_LINK_CEREMONY {
         let to: Principal = ceremony
             .link
             .ok_or_else(|| {
@@ -595,55 +606,56 @@ async fn finish_web(
                 ApiError::internal()
             })?
             .into();
-        link(
-            state,
-            apple,
-            to,
-            &claims,
-            code,
-            services_id,
-            Some(redirect_uri),
-        )
-        .await?;
-        to
+        check_linkable(state, to, owner).await?;
+        Some(to)
     } else {
-        sign_in_or_up(
-            state,
-            apple,
-            &claims,
-            code,
-            services_id,
-            Some(redirect_uri),
-            form.name().as_deref(),
-        )
-        .await?
+        // Refused early so the browser hears it; checked again at the redemption.
+        if owner.is_none() && state.config.signup == Signup::Closed {
+            tracing::info!("a new Apple ID was refused: sign-up is closed");
+            return Err(ApiError::signup_closed());
+        }
+        None
+    };
+    let pending = PendingApple {
+        sub: claims.sub,
+        email: claims.email,
+        name: if link.is_none() { form.name() } else { None },
+        client_id: services_id.to_string(),
+        code: code.clone(),
     };
     let verifier_hash = decode_hex(&web.verifier_hash).ok_or_else(|| {
         tracing::error!("a stored Apple ceremony's verifier hash is not hex");
         ApiError::internal()
     })?;
-    let handoff =
-        ceremonies::create_handoff(&state.db, ceremony_id, principal, &verifier_hash).await?;
+    let handoff = new_token();
+    let sealed = seal_pending(&state.config.secret_key, &hash_token(&handoff), &pending).map_err(
+        |error| {
+            tracing::error!(%error, "could not seal an Apple handoff");
+            ApiError::internal()
+        },
+    )?;
+    ceremonies::create_apple_handoff(
+        &state.db,
+        &handoff,
+        ceremony_id,
+        link,
+        &verifier_hash,
+        &sealed,
+    )
+    .await?;
+    tracing::info!("recorded an Apple handoff");
     Ok(handoff)
 }
 
-/// `POST /v1/auth/handoff`: redeems the web flow's handoff with the verifier, once. A sign-in's
-/// answers the session for `device`; a link's answers `{"linked": true}`.
-pub async fn handoff(
-    State(state): State<AppState>,
-    _apple: Apple,
-    _allowed: FinishAllowed,
-    ApiJson(request): ApiJson<HandoffRequest>,
-) -> Result<Response, ApiError> {
-    let device = request.device.validate()?;
-    if request.handoff.is_empty() || request.handoff.len() > 256 {
+/// Checks a handoff request's code and verifier and answers their hashes.
+fn handoff_hashes(handoff: &str, verifier: &str) -> Result<([u8; 32], [u8; 32]), ApiError> {
+    if handoff.is_empty() || handoff.len() > 256 {
         return Err(ApiError::invalid_request(
             "handoff must be 1 to 256 characters",
         ));
     }
-    if !VERIFIER_CHARS.contains(&request.verifier.chars().count())
-        || !request
-            .verifier
+    if !VERIFIER_CHARS.contains(&verifier.chars().count())
+        || !verifier
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b))
     {
@@ -651,19 +663,77 @@ pub async fn handoff(
             "verifier must be 43 to 128 letters, digits, or -._~",
         ));
     }
-    let verifier_hash: [u8; 32] = Sha256::digest(request.verifier.as_bytes()).into();
-    let redeemed =
-        ceremonies::redeem_handoff(&state.db, &hash_token(&request.handoff), &verifier_hash)
-            .await?;
-    let principal = redeemed.principal;
-    if redeemed.ceremony_kind == APPLE_LINK_CEREMONY {
-        tracing::info!(
-            org_id = %principal.org_id,
-            user_id = %principal.user_id,
-            "redeemed a handoff for a linked Apple ID"
-        );
-        return Ok(Json(json!({"linked": true})).into_response());
+    Ok((
+        hash_token(handoff),
+        Sha256::digest(verifier.as_bytes()).into(),
+    ))
+}
+
+/// Redeems the Apple handoff `code_hash` once, for a ceremony of `kind` (and, for a link, the
+/// account `link`), and opens what it carries. A live handoff presented to the wrong route or by
+/// the wrong account is `credential_rejected` and stays redeemable where it belongs; an unknown,
+/// expired, or spent one, or a wrong verifier, is `ceremony_expired`.
+async fn redeem_pending(
+    state: &AppState,
+    code_hash: &[u8; 32],
+    verifier_hash: &[u8; 32],
+    kind: &str,
+    link: Option<Principal>,
+) -> Result<PendingApple, ApiError> {
+    let sealed =
+        match ceremonies::redeem_apple_handoff(&state.db, code_hash, verifier_hash, kind, link)
+            .await
+        {
+            Err(b4hub_db::Error::CeremonyExpired) => {
+                if ceremonies::handoff_is_live(&state.db, code_hash, verifier_hash).await? {
+                    tracing::info!(
+                        reason = "the handoff belongs to another route or account",
+                        "Apple verification failed"
+                    );
+                    return Err(ApiError::credential_rejected());
+                }
+                return Err(ApiError::ceremony_expired());
+            }
+            other => other?,
+        };
+    open_pending(&state.config.secret_key, code_hash, &sealed).map_err(|error| {
+        tracing::error!(%error, "a stored Apple handoff does not open");
+        ApiError::internal()
+    })
+}
+
+/// The claims a redeemed handoff carries, as the callback verified them.
+fn pending_claims(pending: &PendingApple) -> Claims {
+    Claims {
+        sub: pending.sub.clone(),
+        aud: pending.client_id.clone(),
+        email: pending.email.clone(),
     }
+}
+
+/// `POST /v1/auth/handoff`: redeems a sign-in's handoff with the verifier, once; exchanges the
+/// code, signs the Apple ID's account in or signs up, and answers the session for `device`. A
+/// link's handoff is `credential_rejected` here (and stays redeemable at `POST /v1/me/apple/handoff`).
+pub async fn handoff(
+    State(state): State<AppState>,
+    Apple(apple): Apple,
+    _allowed: FinishAllowed,
+    ApiJson(request): ApiJson<HandoffRequest>,
+) -> Result<Json<AuthSession>, ApiError> {
+    let device = request.device.validate()?;
+    let (code_hash, verifier_hash) = handoff_hashes(&request.handoff, &request.verifier)?;
+    let redirect_uri = callback_url(&state).ok_or_else(ApiError::not_found)?;
+    let pending = redeem_pending(&state, &code_hash, &verifier_hash, APPLE_CEREMONY, None).await?;
+    let principal = sign_in_or_up(
+        &state,
+        &apple,
+        &pending_claims(&pending),
+        &pending.code,
+        &pending.client_id,
+        Some(&redirect_uri),
+        pending.name.as_deref(),
+    )
+    .await?;
     let session =
         accounts::issue_session(&state.db, principal, device, request.device.device_id).await?;
     tracing::info!(
@@ -672,8 +742,56 @@ pub async fn handoff(
         device_id = %session.device_id,
         "redeemed a handoff"
     );
-    let session = answer(&state, principal, session.device_id, session.token).await?;
-    Ok(Json(session).into_response())
+    answer(&state, principal, session.device_id, session.token)
+        .await
+        .map(Json)
+}
+
+/// `POST /v1/me/apple/handoff`: redeems a link's handoff with the verifier, once, from a device
+/// of the account that began the link; exchanges the code and adds the Apple ID. Answers the
+/// identity.
+pub async fn link_handoff(
+    State(state): State<AppState>,
+    Apple(apple): Apple,
+    _allowed: FinishAllowed,
+    device: AuthedDevice,
+    ApiJson(request): ApiJson<AppleLinkHandoffRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let principal = Principal::from(*device);
+    let (code_hash, verifier_hash) = handoff_hashes(&request.handoff, &request.verifier)?;
+    let redirect_uri = callback_url(&state).ok_or_else(ApiError::not_found)?;
+    let pending = redeem_pending(
+        &state,
+        &code_hash,
+        &verifier_hash,
+        APPLE_LINK_CEREMONY,
+        Some(principal),
+    )
+    .await?;
+    let id = link(
+        &state,
+        &apple,
+        principal,
+        &pending_claims(&pending),
+        &pending.code,
+        &pending.client_id,
+        Some(&redirect_uri),
+    )
+    .await?;
+    identity_answer(&state, principal, id).await
+}
+
+async fn identity_answer(
+    state: &AppState,
+    principal: Principal,
+    id: Uuid,
+) -> Result<Json<Value>, ApiError> {
+    let identity = accounts::list_identities(&state.db, principal)
+        .await?
+        .into_iter()
+        .find(|identity| identity.id == id)
+        .ok_or_else(ApiError::not_found)?;
+    Ok(Json(identity_json(&identity)))
 }
 
 // ---- Shared ----
@@ -752,7 +870,8 @@ async fn sign_in_or_up(
 
 /// Adds the Apple ID of `claims` to `principal`'s account and answers the identity's id; one
 /// already theirs answers its id. One that belongs to another account is `credential_rejected`,
-/// before the code is exchanged.
+/// and any Apple ID while the account has another is `apple_linked`, both before the code is
+/// exchanged.
 async fn link(
     state: &AppState,
     apple: &AppleClient,
@@ -762,17 +881,13 @@ async fn link(
     client_id: &str,
     redirect_uri: Option<&str>,
 ) -> Result<Uuid, ApiError> {
-    match accounts::find_apple_identity(&state.db, &claims.sub).await? {
-        Some((owner, id)) if owner == principal => return Ok(id),
-        Some(_) => {
-            tracing::info!(
-                reason = "the Apple ID belongs to another account",
-                "Apple verification failed"
-            );
-            return Err(ApiError::credential_rejected());
+    let owner = accounts::find_apple_identity(&state.db, &claims.sub).await?;
+    if let Some((owner, id)) = owner {
+        if owner == principal {
+            return Ok(id);
         }
-        None => {}
     }
+    check_linkable(state, principal, owner).await?;
     let tokens = exchange(apple, code, client_id, redirect_uri, &claims.sub).await?;
     let identity_id = new_uuid();
     let identity = Identity::Apple {
@@ -781,7 +896,7 @@ async fn link(
         email: claims.email.clone(),
         refresh_enc: seal(state, identity_id, client_id, tokens)?,
     };
-    let id = match accounts::add_identity(&state.db, principal, identity).await {
+    let id = match accounts::add_apple_identity(&state.db, principal, identity).await {
         Err(b4hub_db::Error::IdentityTaken) => {
             tracing::info!(
                 reason = "the Apple ID belongs to another account",
@@ -798,6 +913,30 @@ async fn link(
         "linked an Apple ID"
     );
     Ok(id)
+}
+
+/// Whether the Apple ID whose account is `owner` may be linked to `principal`: not when another
+/// account holds it (`credential_rejected`), nor when `principal` already has an Apple ID
+/// (`apple_linked`; one per account).
+async fn check_linkable(
+    state: &AppState,
+    principal: Principal,
+    owner: Option<(Principal, Uuid)>,
+) -> Result<(), ApiError> {
+    match owner {
+        Some((owner, _)) if owner == principal => Ok(()),
+        Some(_) => {
+            tracing::info!(
+                reason = "the Apple ID belongs to another account",
+                "Apple verification failed"
+            );
+            Err(ApiError::credential_rejected())
+        }
+        None if accounts::has_apple_identity(&state.db, principal).await? => {
+            Err(ApiError::apple_linked())
+        }
+        None => Ok(()),
+    }
 }
 
 async fn verify(apple: &AppleClient, token: &str, nonce: &str) -> Result<Claims, ApiError> {

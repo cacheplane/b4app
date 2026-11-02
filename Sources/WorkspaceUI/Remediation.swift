@@ -114,7 +114,8 @@ public struct Remediation: Equatable, Sendable {
     case .unsupportedCapability, .notImplemented:
       return Remediation(message: error.message, action: .none)
     case .protocolInvalid, .methodUnknown, .snapshotRequired, .notFound, .internalError,
-      .signupClosed, .ceremonyExpired, .credentialRejected, .lastIdentity, .mergeRefused, .sharedOrg,
+      .signupClosed, .ceremonyExpired, .credentialRejected, .lastIdentity, .mergeRefused, .appleLinked,
+      .sharedOrg,
       .rateLimited, .signedOut, .workRunning:
       return Remediation(message: error.message, action: .none)
     }

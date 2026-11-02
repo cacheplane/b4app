@@ -280,9 +280,28 @@ public struct AppleLinkNativeRequest: Codable, Sendable, Equatable, CustomString
   public var debugDescription: String { description }
 }
 
-/// `POST /v1/auth/handoff`'s body: the one-time code the web flow's redirect carried, with the
+/// `POST /v1/me/apple/handoff`'s body (with the device's bearer): the one-time code a link's web flow
+/// redirect carried, and the verifier. Only a device of the account that began the link redeems it,
+/// and only then does the hub exchange Apple's code and add the Apple ID. Answers the new `Identity`.
+public struct AppleLinkHandoffRequest: Codable, Sendable, Equatable, CustomStringConvertible,
+  CustomDebugStringConvertible
+{
+  public var handoff: String
+  public var verifier: String
+
+  public init(handoff: String, verifier: String) {
+    self.handoff = handoff
+    self.verifier = verifier
+  }
+
+  public var description: String { "AppleLinkHandoffRequest(handoff: <redacted>, verifier: <redacted>)" }
+  public var debugDescription: String { description }
+}
+
+/// `POST /v1/auth/handoff`'s body: the one-time code a sign-in's web flow redirect carried, with the
 /// verifier that proves this app began the ceremony (43 to 128 characters; the begin request sent its
-/// SHA-256). For a link ceremony the hub ignores `device` and answers `{"linked": true}`.
+/// SHA-256). The hub signs in or up only now, exchanging Apple's code. A link's handoff is refused
+/// here (`credential_rejected`); it goes to `POST /v1/me/apple/handoff`.
 public struct HandoffRequest: Codable, Sendable, Equatable, CustomStringConvertible,
   CustomDebugStringConvertible
 {
