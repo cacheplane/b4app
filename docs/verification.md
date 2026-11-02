@@ -2,7 +2,7 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
-## 2026-11-02: Usage on the phone (D-100)
+## 2026-11-02: Usage on the phone (D-090)
 
 Branch `blove/phone-usage`.
 
