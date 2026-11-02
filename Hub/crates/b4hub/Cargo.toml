@@ -28,10 +28,14 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+futures-util.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 sqlx.workspace = true
+# `test-util` for `tokio::time::pause` in the relay tests.
+tokio = { workspace = true, features = ["test-util"] }
+tokio-tungstenite.workspace = true
 tower.workspace = true
 
 [lints]

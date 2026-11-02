@@ -9,13 +9,15 @@ use axum::{middleware, Router};
 use b4hub_db::Db;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
+use url::Url;
 
 use crate::auth::LastTouched;
 use crate::error::ApiError;
 use crate::maintenance::MaintenanceState;
 use crate::notify::Notifier;
+use crate::relay::{link, Relay};
 use crate::request_log;
-use crate::routes::{changes, devices, enroll, health, snapshot};
+use crate::routes::{changes, devices, enroll, health, pairing, snapshot};
 
 /// How long the listener stays open, answering `/readyz` 503, after shutdown begins, so a load
 /// balancer polling readiness stops routing here before connections are refused. Capped at a
@@ -34,6 +36,10 @@ pub struct AppState {
     pub last_touched: LastTouched,
     /// Wakes long-polling pulls when a push commits (single replica in M8a).
     pub notifier: Notifier,
+    /// `B4HUB_PUBLIC_URL`: the URL clients reach the hub at, handed to a phone with a pairing code.
+    pub public_url: Option<Url>,
+    /// The device links: who is online, and the means to reach them.
+    pub relay: Relay,
     /// The maintenance switch as last polled (`maintenance::poll_loop`); writes check it.
     pub maintenance: MaintenanceState,
 }
@@ -45,6 +51,8 @@ impl AppState {
             shutdown: Shutdown::default(),
             last_touched: LastTouched::default(),
             notifier: Notifier::default(),
+            public_url: None,
+            relay: Relay::new(),
             maintenance: MaintenanceState::default(),
         }
     }
@@ -80,11 +88,13 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
         .route("/v1/enroll", post(enroll::enroll))
+        .route("/v1/pairing-codes", post(pairing::create))
         .route("/v1/changes", changes::route())
         .route("/v1/me", get(devices::me))
         .route("/v1/devices", get(devices::list))
         .route("/v1/snapshot", get(snapshot::get))
         .route("/v1/devices/self", delete(devices::revoke_self))
+        .route("/v1/devices/self/link", get(link::upgrade))
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
         .fallback(|| async { ApiError::not_found() })
         .layer(middleware::from_fn(request_log::trace_request))
@@ -105,6 +115,7 @@ pub async fn run(
     let shutdown = state.shutdown.clone();
     let (signalled_tx, signalled_rx) = oneshot::channel::<()>();
 
+    let relay = state.relay.clone();
     let server = axum::serve(listener, router(state))
         .with_graceful_shutdown(async move {
             signal.await;
@@ -113,6 +124,13 @@ pub async fn run(
             tokio::time::sleep(grace).await;
         })
         .into_future();
+    // An upgraded connection is no longer the server's: its link task is, so the drain also
+    // waits for the links, which close themselves (code 1001) as soon as shutdown begins.
+    let server = async move {
+        let served = server.await;
+        relay.drained().await;
+        served
+    };
     let deadline = async move {
         match signalled_rx.await {
             Ok(()) => tokio::time::sleep(wait).await,

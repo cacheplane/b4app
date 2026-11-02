@@ -23,6 +23,9 @@ public enum EventKind: String, Codable, Sendable, CaseIterable {
   case projectChanged = "project.changed"
   /// A runtime reported its plan allowance. `payload["reading"]` is a `UsageReading`.
   case usageChanged = "usage.changed"
+  /// The phone's view of its hub link and of one Mac's presence (M8c). Only the phone's
+  /// `MirrorTransport` emits it; the Mac never does. The payload is described on `HostPresence`.
+  case hostPresence = "host.presence"
 }
 
 /// One normalized adapter event. Identity fields are always present; the payload shape depends on `kind`.

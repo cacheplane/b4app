@@ -49,6 +49,12 @@ extension SettingsPage {
     switch self {
     case .connections: ConnectionsView(model: model)
     case .servers: B4ProjectsView(model: model)
+    case .remoteAccess:
+      #if os(macOS)
+        RemoteAccessView(model: model)
+      #else
+        EmptyView()
+      #endif
     case .diagnostics: DiagnosticsView(model: model)
     }
   }
@@ -116,6 +122,8 @@ public struct WorkspaceSettingsView: View {
         Button("Attach B4 project…") { attachingProject = true }
           .buttonStyle(.llaSecondary)
           .disabled(model.link != .ready || model.busy)
+      case .remoteAccess:
+        EmptyView()
       }
     }
     .padding(.horizontal, LLA.Space.xl)

@@ -21,6 +21,7 @@ struct ThreadsView: View {
         } else {
           Button("New thread") { model.showNewThread = true }
             .buttonStyle(.llaPrimary)
+            .disabled(model.newThreadEntryReason != nil)
             .accessibilityIdentifier("new-thread")
         }
       }
@@ -42,14 +43,19 @@ struct ThreadDetailView: View {
     VStack(spacing: 0) {
       header
       Hairline()
+      // Whether its Mac can be reached; the transcript below stays browsable either way.
+      if let notice = model.threadNotice(for: thread) {
+        HostNotice(message: notice)
+        if notice.kind != .reconnecting { Hairline() }
+      }
       if let detail = model.detail, detail.thread.id == thread.id {
         #if os(iOS)
           // The transcript scrolls on under the composer, behind the system's soft scroll edge, as in
           // Messages; a rule or a hard cut above the field is not needed.
-          TranscriptView(detail: detail)
+          transcript(detail)
             .safeAreaBar(edge: .bottom, spacing: 0) { bottom(detail) }
         #else
-          TranscriptView(detail: detail)
+          transcript(detail)
           Hairline()
           bottom(detail)
         #endif
@@ -89,6 +95,12 @@ struct ThreadDetailView: View {
     } message: {
       Text("The title is local to this app; the runtime's own history is not changed.")
     }
+  }
+
+  private func transcript(_ detail: ThreadDetail) -> some View {
+    TranscriptView(
+      detail: detail, pending: model.pendingMessage(for: thread.id),
+      pendingStatus: model.sendStatus(for: thread.id))
   }
 
   /// Pending requests, the continuity banner, and the composer, under the transcript.
@@ -187,7 +199,7 @@ struct ThreadDetailView: View {
 
   @ViewBuilder private var turnBadge: some View {
     if let turn = model.detail?.activeTurn, model.detail?.thread.id == thread.id {
-      TurnStatusBadge(turn: turn)
+      TurnStatusBadge(turn: turn, offline: model.activeTurnLabel(for: thread))
     }
   }
 }
@@ -237,10 +249,13 @@ struct ContinuityBanner: View {
 
 struct TurnStatusBadge: View {
   let turn: Turn
+  /// "Not confirmed while your Mac is offline" in place of the status and its spinner: the phone does
+  /// not show a turn on an unreachable Mac as working.
+  var offline: String? = nil
 
   var body: some View {
     HStack(spacing: 6) {
-      if turn.status == .running || turn.status == .submitting || turn.status == .stopping {
+      if offline == nil, turn.status == .running || turn.status == .submitting || turn.status == .stopping {
         ProgressView().controlSize(.mini)
       }
       Text(text).lineLimit(1).fixedSize()
@@ -254,6 +269,7 @@ struct TurnStatusBadge: View {
   }
 
   private var text: String {
+    if let offline { return offline }
     switch turn.status {
     case .submitting: return "Sending…"
     case .running: return "Running"

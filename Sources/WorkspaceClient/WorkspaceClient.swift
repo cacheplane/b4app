@@ -55,7 +55,11 @@ public actor WorkspaceClient {
 
   public var currentCursor: EventCursor { cursor }
 
+  /// Positions the cursor after a snapshot. A snapshot of the current epoch older than the events
+  /// already delivered leaves it where it is: its caller may have awaited other reads after it while
+  /// those events arrived (and were delivered), and moving back would read the next one as a gap.
   public func resetCursor(epoch: String, sequence: Int) {
+    if cursor.epoch == epoch, cursor.sequence > sequence { return }
     cursor.reset(epoch: epoch, sequence: sequence)
   }
 

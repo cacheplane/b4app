@@ -21,7 +21,7 @@ private func thread(
     let db = try WorkspaceDatabase.temporary()
     #expect(
       try db.appliedMigrations() == [
-        "0001_init", "0002_changes", "0003_hub", "0004_organisation", "0006_usage",
+        "0001_init", "0002_changes", "0003_hub", "0004_organisation", "0005_relay", "0006_usage",
       ])
     // Reopening the same database applies nothing further and keeps the data.
     _ = try db.insertConnection(connection("c1"))
@@ -29,7 +29,7 @@ private func thread(
     let again = try WorkspaceDatabase(endpoint: db.endpoint, binDir: db.endpoint.binDir!)
     #expect(
       try again.appliedMigrations() == [
-        "0001_init", "0002_changes", "0003_hub", "0004_organisation", "0006_usage",
+        "0001_init", "0002_changes", "0003_hub", "0004_organisation", "0005_relay", "0006_usage",
       ])
     #expect(try again.connection(id: "c1")?.label == "c1")
     try again.close()

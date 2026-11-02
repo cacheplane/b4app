@@ -4,12 +4,16 @@ import WorkspaceProtocol
 /// Cached items plus live streaming text. Agent output is rendered as text, never executed.
 struct TranscriptView: View {
   let detail: ThreadDetail
+  /// The phone's message still on its way to the Mac, shown after the items with its state, until its
+  /// turn's own message arrives (M8c). Always nil on the Mac.
+  var pending: PendingSend? = nil
+  var pendingStatus: String? = nil
 
   var body: some View {
     ScrollViewReader { proxy in
       ScrollView {
         LazyVStack(alignment: .leading, spacing: LLA.Space.l) {
-          if detail.items.isEmpty {
+          if detail.items.isEmpty && pending == nil {
             Text("No messages yet. Say something below.").llaMuted()
           }
           ForEach(detail.items) { item in
@@ -18,6 +22,9 @@ struct TranscriptView: View {
           }
           ForEach(detail.turns.filter { $0.status == .terminal && $0.outcome != .completed }) { turn in
             TurnNoteRow(turn: turn)
+          }
+          if let pending {
+            PendingMessageRow(send: pending, status: pendingStatus).id("pending-\(pending.id)")
           }
           if let turn = detail.activeTurn, turn.status == .reconciling {
             HStack(alignment: .top, spacing: LLA.Space.s) {
@@ -40,8 +47,46 @@ struct TranscriptView: View {
         .scrollDismissesKeyboard(.interactively)
       #endif
       .onChange(of: detail.items.count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
+      .onChange(of: pending?.id) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
       .onChange(of: detail.liveText) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
     }
+  }
+}
+
+/// The phone's own message before the Mac has it: the user's bubble as the transcript draws it, with
+/// "Sending…", "Not confirmed: …", or "Didn't reach your Mac" under it.
+struct PendingMessageRow: View {
+  let send: PendingSend
+  let status: String?
+
+  var body: some View {
+    VStack(alignment: .trailing, spacing: LLA.Space.xs) {
+      HStack {
+        Spacer(minLength: 60)
+        Text(send.text)
+          .llaBody()
+          .textSelection(.enabled)
+          .padding(.horizontal, LLA.Space.l)
+          .padding(.vertical, LLA.Space.m)
+          .background(
+            RoundedRectangle(cornerRadius: LLA.Radius.card, style: .continuous).fill(LLA.Color.surface)
+          )
+          .opacity(send.state == .sending ? 0.7 : 1)
+      }
+      if let status {
+        HStack(spacing: LLA.Space.xs) {
+          if send.state == .sending { ProgressView().controlSize(.mini).accessibilityHidden(true) }
+          Text(status)
+            .font(LLAFont.caption)
+            .foregroundStyle(send.state == .sending ? LLA.Color.muted : LLA.Color.danger)
+            .multilineTextAlignment(.trailing)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .trailing)
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("pending-message")
   }
 }
 

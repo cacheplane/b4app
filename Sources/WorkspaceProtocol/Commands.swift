@@ -41,6 +41,10 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case hubJoin = "hub.join"
   case hubStatus = "hub.status"
   case hubLeave = "hub.leave"
+  case hubPair = "hub.pair"
+  case hubPairStatus = "hub.pairStatus"
+  case settingsRead = "settings.read"
+  case settingsUpdate = "settings.update"
   case projectList = "project.list"
   case projectCreate = "project.create"
   case projectUpdate = "project.update"
@@ -49,6 +53,10 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case threadMarkRead = "thread.markRead"
   case usageRead = "usage.read"
   case connectionUpdate = "connection.update"
+  /// Relayed from the hub only (`RelayExecutor`); `Router` refuses both over the local socket. Listed so
+  /// `MirrorTransport` can serve `thread.start` through the relay.
+  case threadStart = "thread.start"
+  case turnLookup = "turn.lookup"
 
   public var isMutation: Bool {
     switch self {
@@ -59,11 +67,12 @@ public enum Method: String, Codable, Sendable, CaseIterable {
       .serverStop, .serverInspect, .workspaceStopLocalWork, .workspaceReconcile, .databaseBackup,
       .databaseRestore,
       .databaseImportSQLite, .hubJoin, .hubLeave, .projectCreate, .projectUpdate, .projectRename,
-      .projectDelete, .threadMarkRead, .connectionUpdate:
+      .projectDelete, .threadMarkRead, .threadStart, .settingsUpdate, .connectionUpdate:
       return true
     case .systemPing, .diagnosticsRead, .connectionList, .threadList, .draftRead, .eventsSnapshot,
       .eventsReplay, .threadRead, .serverList, .serverStatus, .serverLogs, .workspaceActiveWork,
-      .databaseStatus, .hubStatus, .projectList, .usageRead:
+      .databaseStatus, .hubStatus, .projectList, .turnLookup, .hubPair, .hubPairStatus, .settingsRead,
+      .usageRead:
       return false
     }
   }
@@ -175,18 +184,24 @@ public enum EventsSnapshot: WorkspaceCommand {
     public var connections: [Connection]
     public var threads: [ConversationThread]
     public var activeTurns: [Turn]
+    /// The phone's hub link and Macs as of this snapshot (M8c), from `MirrorTransport` with a relay;
+    /// absent from the Mac's coordinator. Events at or before `sequence` are covered by it.
+    public var presence: PresenceSnapshot?
     public init(
       epoch: String, sequence: Int, connections: [Connection], threads: [ConversationThread],
-      activeTurns: [Turn] = []
+      activeTurns: [Turn] = [], presence: PresenceSnapshot? = nil
     ) {
       self.epoch = epoch
       self.sequence = sequence
       self.connections = connections
       self.threads = threads
       self.activeTurns = activeTurns
+      self.presence = presence
     }
 
-    private enum CodingKeys: String, CodingKey { case epoch, sequence, connections, threads, activeTurns }
+    private enum CodingKeys: String, CodingKey {
+      case epoch, sequence, connections, threads, activeTurns, presence
+    }
 
     public init(from decoder: any Decoder) throws {
       let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -195,6 +210,7 @@ public enum EventsSnapshot: WorkspaceCommand {
       connections = try container.decode([Connection].self, forKey: .connections)
       threads = try container.decode([ConversationThread].self, forKey: .threads)
       activeTurns = try container.decodeIfPresent([Turn].self, forKey: .activeTurns) ?? []
+      presence = try container.decodeIfPresent(PresenceSnapshot.self, forKey: .presence)
     }
   }
   public static let method = Method.eventsSnapshot
@@ -262,7 +278,7 @@ public enum ConnectionInspect: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
     public var connectionId: String
     /// Answer at once with the stored connection and report the check through `connection.changed`, so
-    /// a check that retries never holds the client's requests (settings connections, D-075).
+    /// a check that retries never holds the client's requests (settings connections, D-081).
     public var background: Bool?
     public init(connectionId: String, background: Bool? = nil) {
       self.connectionId = connectionId
@@ -297,10 +313,16 @@ public enum ThreadCreate: WorkspaceCommand {
     public var connectionId: String
     public var workingDirectory: String?
     public var title: String?
-    public init(connectionId: String, workingDirectory: String? = nil, title: String? = nil) {
+    /// The new thread's id, minted by the phone for `thread.start`; nil mints one here. Only the relay
+    /// sets it (`Router` drops it from a local `thread.create`).
+    public var threadId: String?
+    public init(
+      connectionId: String, workingDirectory: String? = nil, title: String? = nil, threadId: String? = nil
+    ) {
       self.connectionId = connectionId
       self.workingDirectory = workingDirectory
       self.title = title
+      self.threadId = threadId
     }
   }
   public struct Result: Codable, Sendable, Equatable {
@@ -761,10 +783,16 @@ public enum HubStatus: WorkspaceCommand {
     public var unsyncedChanges: Int
     public var lastPushAt: String?
     public var lastError: String?
+    /// The relay link to the hub (M8c), while joined; absent from an older coordinator.
+    public var link: HubLinkStatus?
+    /// Whether the "keep the Mac awake" power assertion is held right now (M8c); absent from an older
+    /// coordinator.
+    public var keepAwakeHeld: Bool?
     public init(
       joined: Bool, url: String? = nil, deviceId: String? = nil, deviceName: String? = nil,
       orgSlug: String? = nil, username: String? = nil, displayName: String? = nil, unsyncedChanges: Int,
-      lastPushAt: String? = nil, lastError: String? = nil
+      lastPushAt: String? = nil, lastError: String? = nil, link: HubLinkStatus? = nil,
+      keepAwakeHeld: Bool? = nil
     ) {
       self.joined = joined
       self.url = url
@@ -776,9 +804,34 @@ public enum HubStatus: WorkspaceCommand {
       self.unsyncedChanges = unsyncedChanges
       self.lastPushAt = lastPushAt
       self.lastError = lastError
+      self.link = link
+      self.keepAwakeHeld = keepAwakeHeld
     }
   }
   public static let method = Method.hubStatus
+}
+
+/// Where this Mac's relay link to the hub is (M8c). `since` is when it entered `state` (`Timestamp`
+/// form); `lastError` says why it is not connected, and never carries a token.
+public struct HubLinkStatus: Codable, Sendable, Equatable {
+  public enum State: String, Codable, Sendable {
+    case connected, connecting, offline
+
+    /// A state this build does not know (a newer coordinator's) reads as `offline`.
+    public init(from decoder: Decoder) throws {
+      self = State(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .offline
+    }
+  }
+
+  public var state: State
+  public var since: String?
+  public var lastError: String?
+
+  public init(state: State, since: String? = nil, lastError: String? = nil) {
+    self.state = state
+    self.since = since
+    self.lastError = lastError
+  }
 }
 
 /// Revoke this device at the hub (best effort), forget its token, and stop pushing. What was already

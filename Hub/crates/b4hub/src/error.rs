@@ -2,6 +2,8 @@
 //! type: `{"error":{"kind":"request_error"|"execution_error","message":"…","details":{"code":"…"}}}`.
 //! Messages are fixed text chosen here; they never carry SQL, a panic, or another tenant's data.
 
+use std::time::Duration;
+
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Request};
 use axum::http::StatusCode;
@@ -10,6 +12,30 @@ use axum::Json;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::json;
+
+/// The error codes the relay adds. They travel in `error` frames and in a `reply`'s `error` on the
+/// link; only `rate_limited` is also an HTTP status (429, before a link upgrade). `not_found` and
+/// `stale_runtime_request` are reused from the table above.
+pub mod relay_code {
+    pub const DEVICE_OFFLINE: &str = "device_offline";
+    pub const COMMAND_EXPIRED: &str = "command_expired";
+    pub const RELAY_TIMEOUT: &str = "relay_timeout";
+    pub const RATE_LIMITED: &str = "rate_limited";
+    pub const LINK_REPLACED: &str = "link_replaced";
+    pub const CLIENT_TOO_OLD: &str = "client_too_old";
+    pub const WATCH_LIMIT: &str = "watch_limit";
+
+    /// Every code above, for tests and for validating a host's `reply`.
+    pub const ALL: [&str; 7] = [
+        DEVICE_OFFLINE,
+        COMMAND_EXPIRED,
+        RELAY_TIMEOUT,
+        RATE_LIMITED,
+        LINK_REPLACED,
+        CLIENT_TOO_OLD,
+        WATCH_LIMIT,
+    ];
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -26,6 +52,8 @@ pub struct ApiError {
     pub code: &'static str,
     pub message: String,
     pub status: StatusCode,
+    /// Fields added to `details` beside `code`, such as a `rate_limited` answer's `retryAfterMs`.
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl ApiError {
@@ -35,6 +63,7 @@ impl ApiError {
             code,
             message: message.into(),
             status,
+            extra: serde_json::Map::new(),
         }
     }
 
@@ -48,6 +77,7 @@ impl ApiError {
             code,
             message: message.into(),
             status,
+            extra: serde_json::Map::new(),
         }
     }
 
@@ -88,6 +118,25 @@ impl ApiError {
             "resync_required",
             "the cursor is older than the retained changes; start again from the beginning",
         )
+    }
+
+    /// A caller is over a rate limit; used before a link upgrade, where the answer is HTTP.
+    pub fn rate_limited() -> ApiError {
+        ApiError::request(
+            StatusCode::TOO_MANY_REQUESTS,
+            relay_code::RATE_LIMITED,
+            "too many requests; try again shortly",
+        )
+    }
+
+    /// `rate_limited` with the wait the caller should honour before trying again.
+    pub fn rate_limited_after(retry_after: Duration) -> ApiError {
+        let mut error = ApiError::rate_limited();
+        let millis = u64::try_from(retry_after.as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        error.extra.insert("retryAfterMs".into(), json!(millis));
+        error
     }
 
     pub fn method_not_allowed() -> ApiError {
@@ -143,6 +192,9 @@ impl From<b4hub_db::Error> for ApiError {
         match error {
             b4hub_db::Error::InvalidCode => ApiError::invalid_code(),
             b4hub_db::Error::ResyncRequired => ApiError::resync_required(),
+            b4hub_db::Error::RateLimited { retry_after } => {
+                ApiError::rate_limited_after(retry_after)
+            }
             other => {
                 tracing::error!(error = %other, "request failed in the database layer");
                 ApiError::internal()
@@ -181,11 +233,13 @@ fn json_rejection(rejection: &JsonRejection) -> ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        let mut details = self.extra;
+        details.insert("code".into(), json!(self.code));
         let body = json!({
             "error": {
                 "kind": self.kind,
                 "message": self.message,
-                "details": { "code": self.code },
+                "details": details,
             }
         });
         (self.status, Json(body)).into_response()
@@ -212,6 +266,42 @@ mod tests {
                 "details": {"code": "not_ready"},
             }})
         );
+    }
+
+    #[test]
+    fn relay_codes_are_the_swift_wire_strings() {
+        assert_eq!(
+            relay_code::ALL,
+            [
+                "device_offline",
+                "command_expired",
+                "relay_timeout",
+                "rate_limited",
+                "link_replaced",
+                "client_too_old",
+                "watch_limit",
+            ]
+        );
+        let error = ApiError::rate_limited();
+        assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(error.code, "rate_limited");
+    }
+
+    #[tokio::test]
+    async fn rate_limited_carries_retry_after_ms_beside_the_code() {
+        let response = ApiError::rate_limited_after(Duration::from_millis(1500)).into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body["error"]["details"],
+            json!({"code": "rate_limited", "retryAfterMs": 1500})
+        );
+        // Never zero: a client that waits "0 ms" would hammer the hub.
+        let tiny = ApiError::rate_limited_after(Duration::ZERO);
+        assert_eq!(tiny.extra["retryAfterMs"], json!(1));
     }
 
     #[test]

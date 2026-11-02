@@ -117,7 +117,14 @@ let package = Package(
       name: "WorkspaceProtocolTests", dependencies: ["WorkspaceProtocol"], swiftSettings: concurrency),
     .testTarget(name: "WorkspaceClientTests", dependencies: ["WorkspaceClient"], swiftSettings: concurrency),
     .testTarget(
-      name: "WorkspaceSyncTests", dependencies: ["WorkspaceSync"],
+      name: "WorkspaceSyncTests",
+      dependencies: [
+        "WorkspaceSync",
+        .product(name: "NIOCore", package: "swift-nio"),
+        .product(name: "NIOPosix", package: "swift-nio"),
+        .product(name: "NIOHTTP1", package: "swift-nio"),
+        .product(name: "NIOWebSocket", package: "swift-nio"),
+      ],
       swiftSettings: concurrency),
     // Reads `Tests/Fixtures/sync/changes.json` in place (see `WireTests`), so it declares no resource.
     .testTarget(
