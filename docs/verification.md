@@ -2,7 +2,7 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
-## 2026-11-02: M8f attention on the phone (D-110 to D-117)
+## 2026-11-02: M8f attention on the phone (D-121 to D-128)
 
 Branch `blove/m8f-attention`, from main at `3f3cc15`. Plan `docs/superpowers/plans/2026-11-02-m8f-attention.md`.
 
@@ -40,7 +40,7 @@ Setup, isolated from the owner's app, the Compose hub on port 8080, and the sign
 | A finished turn notifies | Pass. Answering the approval on the Mac (`request respond --accept`) completed the turn: hub 17:57:02.352Z, banner "M8f approval check" / "Replied" in the same second. |
 | Tapping opens the thread | Pass for a banner: tapping the "Replied" banner opened "M8f approval check" at its transcript. Not shown: a tap on the lock screen's notification list did not respond to the Simulator's synthetic touches (the system "Open" swipe action appeared but did not launch). |
 | The widget shows the three most urgent threads | Pass. The medium widget, added from the gallery, listed the three threads with the project "work"; the small one showed the same in the gallery. |
-| The widget updates after the notification | First run failed: SpringBoard refused the background launch ("this app doesn't declare the proper UIBackgroundMode"), because `simctl push` wakes through background fetch (D-117). After adding the `fetch` mode, with the app in the background: a "Replied" push (hub 18:03:00.105Z) and a new approval on another thread (18:03:04.282Z) each woke the phone, which pulled at 18:03:00.835Z and 18:03:04.581Z; the widget moved "M8f quiet thread" to the top with the needs-input dot and showed "M8f reply check" as unread. No launch was refused. |
+| The widget updates after the notification | First run failed: SpringBoard refused the background launch ("this app doesn't declare the proper UIBackgroundMode"), because `simctl push` wakes through background fetch (D-128). After adding the `fetch` mode, with the app in the background: a "Replied" push (hub 18:03:00.105Z) and a new approval on another thread (18:03:04.282Z) each woke the phone, which pulled at 18:03:00.835Z and 18:03:04.581Z; the widget moved "M8f quiet thread" to the top with the needs-input dot and showed "M8f reply check" as unread. No launch was refused. |
 
 Screenshots: notification, banner, the thread opened from it, the widget before and after (kept with the session; not committed).
 

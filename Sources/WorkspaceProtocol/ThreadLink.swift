@@ -1,6 +1,6 @@
 import Foundation
 
-/// Why the hub pushed a notification (D-110, D-113). The raw values are the payload's `reason`.
+/// Why the hub pushed a notification (D-121, D-124). The raw values are the payload's `reason`.
 public enum PushReason: String, Codable, Sendable {
   case approval
   case question
@@ -9,7 +9,7 @@ public enum PushReason: String, Codable, Sendable {
 }
 
 /// `<scheme>://thread/<id>`: the one link a notification tap, a widget row, and the app's own routing
-/// share (D-113). The push payload carries no URL, only the thread id; the app builds the link with its
+/// share (D-124). The push payload carries no URL, only the thread id; the app builds the link with its
 /// own scheme and sends it through `onOpenURL`. Pure parsing and building; nothing here opens anything.
 public enum ThreadLink {
   public static let host = "thread"

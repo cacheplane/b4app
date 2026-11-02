@@ -1,4 +1,4 @@
-//! Sending a notification to a phone (decision D-112). A [`PushSender`] takes one
+//! Sending a notification to a phone (decision D-123). A [`PushSender`] takes one
 //! [`Notification`] the hub decided on inside the push transaction; [`deliver`] runs the sends
 //! after the commit on a task of their own, so a push never waits on, or fails because of, a
 //! sender. Two senders exist: [`SpoolSender`] writes `.apns` files that `xcrun simctl push` reads

@@ -93,10 +93,10 @@ targets:
               - b4app
         # The App Group the app and the widget share the mirror through, the scheme of the app's own
         # links (`<scheme>://thread/<id>`, `<scheme>://pair`), and the entitlements below live here so
-        # flavour builds can override them (D-114). Keep the scheme in step with CFBundleURLSchemes.
+        # flavour builds can override them (D-125). Keep the scheme in step with CFBundleURLSchemes.
         B4AppAppGroup: group.com.cacheplane.b4app
         B4AppURLScheme: b4app
-        # A push with `content-available` wakes the app to pull before the banner is tapped (D-113).
+        # A push with `content-available` wakes the app to pull before the banner is tapped (D-124).
         # `fetch` is for the Simulator only: `xcrun simctl push` delivers a content-available payload
         # as a background-fetch launch, which iOS refuses without it. On a device APNs wakes the app
         # through `remote-notification`, and the app never sets a minimum background-fetch interval,
@@ -168,7 +168,7 @@ targets:
         product: WorkspaceSecrets
       - target: B4App-iOSWidget
         embed: true
-  # The attention widget (M8f, D-115): the top three threads, read from the mirror in the App Group.
+  # The attention widget (M8f, D-126): the top three threads, read from the mirror in the App Group.
   # The group id, the URL scheme, and the entitlements are here, as on the app, so flavour builds can
   # override them; the version keys must match the app's or embedding the extension fails.
   B4App-iOSWidget:

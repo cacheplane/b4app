@@ -1,5 +1,5 @@
 //! `POST /v1/devices/self/push-token`: a phone registers the APNs token the hub notifies it at
-//! (decision D-111).
+//! (decision D-122).
 
 use axum::extract::State;
 use axum::http::StatusCode;

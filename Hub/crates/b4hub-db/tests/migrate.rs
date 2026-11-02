@@ -18,7 +18,7 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(status.pending, 0);
-    assert_eq!(status.applied, vec![1, 2, 3, 4, 6, 8, 9, 11]);
+    assert_eq!(status.applied, vec![1, 2, 3, 4, 6, 8, 9, 12]);
 
     let app = Db::connect(&app_url).await.unwrap();
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM orgs")

@@ -1,5 +1,5 @@
-//! Which applied changes notify which phones, decided in the push transaction (decisions D-110
-//! and D-111). Run with `source <(./scripts/test-db.sh)` first.
+//! Which applied changes notify which phones, decided in the push transaction (decisions D-121
+//! and D-122). Run with `source <(./scripts/test-db.sh)` first.
 
 mod common;
 

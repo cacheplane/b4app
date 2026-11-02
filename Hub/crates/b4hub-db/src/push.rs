@@ -1,6 +1,6 @@
 //! Push tokens and the notification decision. A phone registers its APNs token (`save_token`);
 //! when a push applies a turn or a runtime request, the hub decides, inside that same
-//! transaction, whether it notifies the user's other phones (decision D-110). The rules are
+//! transaction, whether it notifies the user's other phones (decision D-121). The rules are
 //! `b4hub_core::push`; this module reads the rows, asks the rules, and writes the at-most-once
 //! ledger `notifications_sent`, so a retried batch or a later update to the same row notifies
 //! nobody twice. Sending happens after the commit, elsewhere.

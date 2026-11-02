@@ -1,4 +1,4 @@
-//! When the hub notifies a phone, and what the notification says (decisions D-110 and D-113).
+//! When the hub notifies a phone, and what the notification says (decisions D-121 and D-124).
 //! Pure rules and payloads; the database detection and the sender live elsewhere. A notification
 //! body is one of four fixed phrases, never transcript, command, or path text.
 

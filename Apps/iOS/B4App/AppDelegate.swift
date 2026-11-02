@@ -5,7 +5,7 @@ import os
 
 /// The UIKit side of attention (M8f): the APNs token, the background wake a `content-available` push
 /// makes, and the notification delegate. Everything it learns goes to `MirrorHost`; a tap becomes the
-/// thread link the app opens like any other (D-113).
+/// thread link the app opens like any other (D-124).
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
   private static let logger = Logger(subsystem: "com.cacheplane.b4app", category: "attention")
 

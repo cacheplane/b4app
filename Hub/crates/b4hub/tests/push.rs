@@ -1,4 +1,4 @@
-//! The push-token route and delivery after commit (decisions D-111 to D-113) against a real
+//! The push-token route and delivery after commit (decisions D-122 to D-124) against a real
 //! PostgreSQL. Run with `source <(../scripts/test-db.sh)` first; `#[sqlx::test]` creates one
 //! database per test.
 

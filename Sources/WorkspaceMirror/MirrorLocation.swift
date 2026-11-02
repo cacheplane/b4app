@@ -1,7 +1,7 @@
 import Foundation
 
 /// Where the phone's mirror file lives. The app and the widget extension share it through the App Group
-/// container, so the widget reads what the app wrote (D-114). Foundation only: the app and the widget
+/// container, so the widget reads what the app wrote (D-125). Foundation only: the app and the widget
 /// each pass their own App Group id, read from their Info.plist.
 public enum MirrorLocation {
   public static let fileName = "mirror.sqlite"

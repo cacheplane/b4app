@@ -23,9 +23,9 @@ import os
 /// (`MirrorSync.suspend`) before the app is suspended, since iOS kills an app that is suspended holding
 /// a lock on a file in the App Group container, and resumed on the next active.
 ///
-/// Attention (M8f): the mirror lives in the App Group so the widget reads it (D-114), every batch that
+/// Attention (M8f): the mirror lives in the App Group so the widget reads it (D-125), every batch that
 /// touched threads or projects reloads the widget's timelines, the APNs token goes to the hub while
-/// linked (D-111), and a thread link (a notification tap, a widget row) opens its thread (D-113).
+/// linked (D-122), and a thread link (a notification tap, a widget row) opens its thread (D-124).
 @MainActor @Observable final class MirrorHost {
   static let shared = MirrorHost()
 
@@ -73,7 +73,7 @@ import os
   @ObservationIgnored private weak var model: WorkspaceModel?
   /// The hub user's display name from `/v1/me`, fetched once per sync start.
   @ObservationIgnored private var displayName: String?
-  /// This phone's APNs token, hex-encoded. Kept in memory only and never logged (D-111).
+  /// This phone's APNs token, hex-encoded. Kept in memory only and never logged (D-122).
   @ObservationIgnored private(set) var pushToken: String?
   /// A thread a link asked for before `wire` handed over the model (a cold launch from a tap).
   @ObservationIgnored private var pendingOpen: String?
@@ -129,7 +129,7 @@ import os
     lifecycle = RelayLifecycle(enrolled: isLinked, hasRelay: relay != nil)
   }
 
-  /// `<group container>/b4app` (D-114), after moving a mirror left in `<Application Support>/b4app` by
+  /// `<group container>/b4app` (D-125), after moving a mirror left in `<Application Support>/b4app` by
   /// an earlier build; the old directory when the App Group is not available. Either is readable once
   /// the device has been unlocked after boot, so the pull loop and the widget work while it is locked.
   private static func directory() throws -> URL {

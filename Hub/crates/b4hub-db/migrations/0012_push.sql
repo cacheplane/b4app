@@ -1,10 +1,10 @@
 -- M8f: attention on the phone. The hub decides, in the push transaction, which applied changes
--- notify which phones (decisions D-110 and D-111).
+-- notify which phones (decisions D-121 and D-122).
 --
--- This is 0011 because open work already claims the numbers below it: 0005 and 0007 belong to the
--- sign-in branch, 0009 is `0009_soft_delete.sql` (PR #45), and 0010 is `0010_connection_usage.sql`
--- (PR #46). Each branch numbers its own migrations; sqlx applies whichever versions the ledger
--- lacks, in order, so the gaps are fine.
+-- This is 0012 because open work already claims the numbers below it: 0005 and 0007 belong to the
+-- sign-in branch, 0009 is `0009_soft_delete.sql`, 0010 is `0010_connection_usage.sql` (PR #46), and
+-- 0011 is `0011_thread_delete.sql` (PR #51). Each branch numbers its own migrations; sqlx
+-- applies whichever versions the ledger lacks, in order, so the gaps are fine.
 --
 -- `push_tokens` holds one APNs device token per iOS device, replaced on each registration. The
 -- bundle id comes from the phone, so the hub needs no per-flavour configuration.

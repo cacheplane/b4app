@@ -59,7 +59,7 @@ public final class HTTPHubAPI: HubAPI {
     _ = try await perform(.delete, "v1/devices/self")
   }
 
-  /// Registers this phone's APNs token (hex) with the hub (D-111). `environment` is `sandbox` or
+  /// Registers this phone's APNs token (hex) with the hub (D-122). `environment` is `sandbox` or
   /// `production`; `bundleId` is the app's own, so the hub needs no per-flavour setting. Only the iOS app
   /// calls this, so it is not on `HubAPI`. The hub answers 403 `forbidden` for a device that is not an
   /// iPhone. The token is a credential for pushes: callers must not log it.

@@ -5,7 +5,7 @@ import WorkspaceMirror
 import WorkspaceProtocol
 import WorkspaceUI
 
-/// The top three threads, most urgent first (D-115), read from the mirror the app keeps in the App
+/// The top three threads, most urgent first (D-126), read from the mirror the app keeps in the App
 /// Group. Small is one tap target that opens the first thread; medium makes each row a link.
 struct AttentionWidget: Widget {
   var body: some WidgetConfiguration {
@@ -18,7 +18,7 @@ struct AttentionWidget: Widget {
   }
 }
 
-/// The App Group and URL scheme from this extension's Info.plist (D-114); the app keeps its own copy.
+/// The App Group and URL scheme from this extension's Info.plist (D-125); the app keeps its own copy.
 nonisolated enum AppInfo {
   static var appGroup: String? {
     let value = (Bundle.main.object(forInfoDictionaryKey: "B4AppAppGroup") as? String)?
