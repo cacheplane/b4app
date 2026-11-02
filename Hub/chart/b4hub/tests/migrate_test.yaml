@@ -1,0 +1,146 @@
+suite: migrate
+templates:
+  - templates/migrate-job.yaml
+  - templates/NOTES.txt
+release:
+  name: t
+  namespace: hub
+  revision: 3
+set:
+  database.existingSecret: hub-db
+  hub.publicUrl: https://hub.example.com
+  hub.rpId: example.com
+tests:
+  - it: is a pre-install and pre-upgrade hook with the exact annotations
+    template: templates/migrate-job.yaml
+    asserts:
+      - isKind:
+          of: Job
+      - equal:
+          path: metadata.annotations
+          value:
+            helm.sh/hook: pre-install,pre-upgrade
+            helm.sh/hook-weight: "-5"
+            helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+
+  - it: is named per revision and never retries
+    template: templates/migrate-job.yaml
+    asserts:
+      - equal:
+          path: metadata.name
+          value: t-b4hub-migrate-3
+      - equal:
+          path: spec.backoffLimit
+          value: 0
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 600
+      - equal:
+          path: spec.ttlSecondsAfterFinished
+          value: 3600
+      - equal:
+          path: spec.template.spec.restartPolicy
+          value: Never
+      - equal:
+          path: spec.template.metadata.labels["app.kubernetes.io/component"]
+          value: migrate
+
+  - it: runs migrate with exactly the two database file variables
+    template: templates/migrate-job.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value: [migrate]
+      - notExists:
+          path: spec.template.spec.containers[0].command
+      - equal:
+          path: spec.template.spec.containers[0].env
+          value:
+            - name: DATABASE_ADMIN_URL_FILE
+              value: /etc/b4hub/db/DATABASE_ADMIN_URL
+            - name: DATABASE_URL_FILE
+              value: /etc/b4hub/db/DATABASE_URL
+      - notExists:
+          path: spec.template.spec.containers[0].envFrom
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: db
+            secret:
+              secretName: hub-db
+              defaultMode: 0440
+              items:
+                - key: DATABASE_ADMIN_URL
+                  path: DATABASE_ADMIN_URL
+                - key: DATABASE_URL
+                  path: DATABASE_URL
+
+  - it: carries no sign-in secrets even when they are configured
+    template: templates/migrate-job.yaml
+    set:
+      secrets.existingSecret: hub-secrets
+      secrets.useFileVars: true
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.containers[0].env
+          count: 2
+      - notContains:
+          path: spec.template.spec.volumes
+          content: {name: hub-secrets}
+          any: true
+
+  - it: uses the same image and Restricted security context as the hub
+    template: templates/migrate-job.yaml
+    set:
+      image.digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/cacheplane/b4hub@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+      - equal:
+          path: spec.template.spec.containers[0].securityContext
+          value:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+
+  - it: can be turned off
+    template: templates/migrate-job.yaml
+    set:
+      migrate.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: says how to inspect the migration
+    template: templates/NOTES.txt
+    asserts:
+      - matchRegexRaw:
+          pattern: kubectl logs -n hub job/t-b4hub-migrate-3
+
+  - it: does not warn with one replica
+    template: templates/NOTES.txt
+    asserts:
+      - notMatchRegexRaw:
+          pattern: D-057
+
+  - it: warns about D-057 when more than one replica keeps Recreate
+    template: templates/NOTES.txt
+    set:
+      replicaCount: 2
+    asserts:
+      - matchRegexRaw:
+          pattern: "(?s)WARNING: replicaCount is 2 with strategy Recreate.*D-057"

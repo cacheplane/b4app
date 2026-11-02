@@ -1,0 +1,260 @@
+suite: networking and observability
+templates:
+  - templates/ingress.yaml
+  - templates/httproute.yaml
+  - templates/servicemonitor.yaml
+  - templates/deployment.yaml
+  - templates/migrate-job.yaml
+release:
+  name: t
+  namespace: hub
+set:
+  database.existingSecret: hub-db
+  hub.publicUrl: https://hub.example.com
+  hub.rpId: example.com
+tests:
+  - it: renders no Ingress, HTTPRoute, or ServiceMonitor by default
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/ingress.yaml
+      - hasDocuments:
+          count: 0
+        template: templates/httproute.yaml
+      - hasDocuments:
+          count: 0
+        template: templates/servicemonitor.yaml
+
+  - it: renders an Ingress with host, path, pathType, class, annotations, and tls
+    template: templates/ingress.yaml
+    set:
+      ingress.enabled: true
+      ingress.className: nginx
+      ingress.host: hub.example.com
+      ingress.path: /
+      ingress.pathType: Prefix
+      ingress.annotations:
+        nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+      ingress.tls:
+        - secretName: hub-tls
+          hosts: [hub.example.com]
+    asserts:
+      - isKind:
+          of: Ingress
+      - equal:
+          path: apiVersion
+          value: networking.k8s.io/v1
+      - equal:
+          path: metadata.name
+          value: t-b4hub
+      - equal:
+          path: spec.ingressClassName
+          value: nginx
+      - equal:
+          path: metadata.annotations
+          value:
+            nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+      - equal:
+          path: spec.rules
+          value:
+            - host: hub.example.com
+              http:
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: t-b4hub
+                        port:
+                          name: http
+      - equal:
+          path: spec.tls
+          value:
+            - secretName: hub-tls
+              hosts: [hub.example.com]
+
+  - it: omits ingressClassName, annotations, and tls when unset
+    template: templates/ingress.yaml
+    set:
+      ingress.enabled: true
+      ingress.host: hub.example.com
+    asserts:
+      - notExists:
+          path: spec.ingressClassName
+      - notExists:
+          path: metadata.annotations
+      - notExists:
+          path: spec.tls
+
+  - it: renders an HTTPRoute with no timeouts key by default
+    template: templates/httproute.yaml
+    set:
+      httpRoute.enabled: true
+      httpRoute.hostnames: [hub.example.com]
+      httpRoute.parentRefs:
+        - name: shared-gateway
+          namespace: gateway-system
+          sectionName: https
+    asserts:
+      - isKind:
+          of: HTTPRoute
+      - equal:
+          path: apiVersion
+          value: gateway.networking.k8s.io/v1
+      - equal:
+          path: spec.parentRefs
+          value:
+            - name: shared-gateway
+              namespace: gateway-system
+              sectionName: https
+      - equal:
+          path: spec.hostnames
+          value: [hub.example.com]
+      - equal:
+          path: spec.rules
+          value:
+            - backendRefs:
+                - name: t-b4hub
+                  port: 80
+      - notExists:
+          path: spec.rules[0].timeouts
+
+  - it: renders HTTPRoute timeouts only when set
+    template: templates/httproute.yaml
+    set:
+      httpRoute.enabled: true
+      httpRoute.parentRefs:
+        - name: shared-gateway
+      httpRoute.timeouts:
+        request: 0s
+        backendRequest: 0s
+    asserts:
+      - equal:
+          path: spec.rules[0].timeouts
+          value:
+            request: 0s
+            backendRequest: 0s
+      - notExists:
+          path: spec.hostnames
+
+  - it: uses the configured service port in the HTTPRoute backend
+    template: templates/httproute.yaml
+    set:
+      httpRoute.enabled: true
+      httpRoute.parentRefs:
+        - name: gw
+      service.port: 8081
+    asserts:
+      - equal:
+          path: spec.rules[0].backendRefs[0].port
+          value: 8081
+
+  - it: skips the ServiceMonitor when enabled but the API is missing
+    template: templates/servicemonitor.yaml
+    set:
+      serviceMonitor.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders the ServiceMonitor when enabled and the API exists
+    template: templates/servicemonitor.yaml
+    capabilities:
+      apiVersions:
+        - monitoring.coreos.com/v1
+    set:
+      serviceMonitor.enabled: true
+      serviceMonitor.interval: 15s
+      serviceMonitor.path: /metrics
+      serviceMonitor.labels:
+        release: prometheus
+    asserts:
+      - isKind:
+          of: ServiceMonitor
+      - equal:
+          path: metadata.labels.release
+          value: prometheus
+      - equal:
+          path: spec.selector.matchLabels
+          value:
+            app.kubernetes.io/name: b4hub
+            app.kubernetes.io/instance: t
+            app.kubernetes.io/component: hub
+      - equal:
+          path: spec.endpoints
+          value:
+            - port: http
+              path: /metrics
+              interval: 15s
+
+  - it: skips the ServiceMonitor when the API exists but it is disabled
+    template: templates/servicemonitor.yaml
+    capabilities:
+      apiVersions:
+        - monitoring.coreos.com/v1
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders no OTLP env by default
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_EXPORTER_OTLP_ENDPOINT
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_EXPORTER_OTLP_PROTOCOL
+          any: true
+
+  - it: passes OTLP endpoint, protocol, and extraEnv through
+    template: templates/deployment.yaml
+    set:
+      otel.endpoint: http://collector.observability:4318
+      otel.protocol: http/protobuf
+      otel.extraEnv:
+        - name: OTEL_SERVICE_NAME
+          value: b4hub
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_EXPORTER_OTLP_ENDPOINT
+            value: http://collector.observability:4318
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_EXPORTER_OTLP_PROTOCOL
+            value: http/protobuf
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_SERVICE_NAME
+            value: b4hub
+
+  - it: leaves the migration Job without OTLP env
+    template: templates/migrate-job.yaml
+    set:
+      otel.endpoint: http://collector.observability:4318
+      otel.protocol: grpc
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_EXPORTER_OTLP_ENDPOINT
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_EXPORTER_OTLP_PROTOCOL
+          any: true
+
+  - it: rejects an unknown key under ingress
+    template: templates/ingress.yaml
+    set:
+      ingress.bogus: true
+    asserts:
+      - failedTemplate: {}

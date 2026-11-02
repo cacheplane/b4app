@@ -1,0 +1,13 @@
+# Minimal Ingress install. Add controller annotations under ingress.annotations as needed.
+hub:
+  publicUrl: https://hub.example.com
+  rpId: example.com
+database:
+  existingSecret: b4hub-db
+ingress:
+  enabled: true
+  className: nginx
+  host: hub.example.com
+  tls:
+    - secretName: hub-tls
+      hosts: [hub.example.com]
