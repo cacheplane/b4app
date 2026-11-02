@@ -267,4 +267,19 @@ struct Rig {
     }
     await rig.adapter.dispose()
   }
+
+  /// The CLI's "No conversation found" line can arrive after its exit is seen (a grandchild still
+  /// holds stderr, or the pipe simply drains late); the session reads stderr to its end before it
+  /// reports the exit, so a missing session is still told apart from a crash.
+  @Test func aMissingSessionIsRecognisedWhenStderrTrailsTheExit() async throws {
+    let rig = try Rig()
+    do {
+      _ = try await rig.turn(
+        NativeSessionRef(nativeSessionId: "missing-late", nativeScope: "owner@example.com"), "hi")
+      Issue.record("expected native_session_missing")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .nativeSessionMissing)
+    }
+    await rig.adapter.dispose()
+  }
 }

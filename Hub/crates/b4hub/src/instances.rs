@@ -42,6 +42,9 @@ struct Inner {
     last_ok: Mutex<Instant>,
     /// A test seam: while set, the heartbeat loop writes nothing, as if the database refused it.
     paused: AtomicBool,
+    /// Held by the heartbeat loop from its pause check until its write is recorded, so
+    /// [`InstancesState::settle`] can wait out a write that was already on its way.
+    beat: tokio::sync::Mutex<()>,
 }
 
 /// This instance's identity and heartbeat health. Cheap to clone.
@@ -70,6 +73,7 @@ impl InstancesState {
             heartbeat,
             last_ok: Mutex::new(Instant::now()),
             paused: AtomicBool::new(false),
+            beat: tokio::sync::Mutex::new(()),
         }))
     }
 
@@ -110,6 +114,13 @@ impl InstancesState {
     /// Stops (or resumes) the heartbeat writes. A test seam; nothing in the hub calls it.
     pub fn pause_heartbeat(&self, paused: bool) {
         self.0.paused.store(paused, Ordering::SeqCst);
+    }
+
+    /// Returns once no heartbeat write is in progress. After `pause_heartbeat(true)` and this, the
+    /// last successful write is in the past and no other lands, so staleness depends on the clock
+    /// alone. A test seam; nothing in the hub calls it.
+    pub async fn settle(&self) {
+        drop(self.0.beat.lock().await);
     }
 
     fn paused(&self) -> bool {
@@ -156,6 +167,7 @@ pub async fn heartbeat_loop(
             () = tokio::time::sleep(instances.heartbeat()) => {}
             _ = stopping.wait_for(|down| *down) => return,
         }
+        let beat = instances.0.beat.lock().await;
         if instances.paused() {
             continue;
         }
@@ -167,6 +179,7 @@ pub async fn heartbeat_loop(
                 continue;
             }
         }
+        drop(beat);
         let users = relay.users();
         match b4hub_db::instances::lost_claims(&db, instances.id(), &users).await {
             Ok(lost) => {

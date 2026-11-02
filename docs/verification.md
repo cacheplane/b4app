@@ -80,6 +80,19 @@ Branch `blove/settings-connections-minors`. Gates: `swift format lint --strict` 
 
 Not covered by a test: B4 token counts are now recorded last in `turn.finished`, and a failure there is ignored. Observing that needs a fault injected into the database.
 
+## 2026-11-02: Flaky CI tests now await events
+
+Branch `fix/flaky-tests-await-events`. These are tests that failed on `main` or a PR and passed on rerun. Each now waits for the event it depends on instead of a fixed time, or a fixed time that a loaded runner can outlast:
+
+- **`HTTPHubAPITests.appendFeedsAReaderAndALongPollWakesForIt`.** `FakeHubAPI`'s long poll used to re-read every 10 ms. It now parks until something can change its answer: `append`, a push, `setFailNext`, `revokeSelf`, its deadline, or cancellation. `untilPulling()` lets the test append once the pull is parked, replacing a 50 ms sleep.
+- **`ClaudeSessionTests.resumesKnownSessionsAndReportsMissingOnes`.** A real race in `ClaudeSession`. A missing session is recognised by its stderr line, which could arrive after the exit was seen, giving `endpoint_unavailable`. The read loop now awaits stderr's end (`waitForStderrEnd()`, bounded at 2 s for a grandchild that keeps it open) before reporting the exit. `aMissingSessionIsRecognisedWhenStderrTrailsTheExit` reproduces it deterministically: `fake-claude.py` `missing-late` writes the line from a grandchild 300 ms after exiting. It fails without the fix.
+- **`ManagedProcessTests.portsAllocateAndDetectInUse`** (failed twice). A just-released port can go to a parallel test's connection. The test now checks "free" on the first of up to five allocations that stayed free, then holds the port with its own listener.
+- **`ManagedProcessTests.terminateGroupKillsAGrandchild`.** It already waited on the grandchild's exit event, but its 10 s guard sat under a 30 s sleep. The sleep is now 600 s and the guard 120 s, so a missed signal still fails and a slow runner doesn't. A `defer` kills a leftover sleeper.
+- **Rust `instances::readiness_reports_a_stale_heartbeat`** (and the claim-takeover test, which pauses the same way). A heartbeat write already past the pause check could land after the pause and refresh the instance. `InstancesState::settle()` returns once no write is in progress, and the tests await it after pausing.
+- **Already fixed on `main`:** `MirrorSyncTests.failuresAreRecordedAndRetriedWithBackoff` (`3e3427a`) and `request_log::a_503_is_a_warning_…` (`828e6f9`).
+
+`swift test` passes 864 tests; lint, `cargo fmt` and `cargo clippy` are clean.
+
 ## 2026-11-02: A stopped reply keeps its streamed text (D-088)
 
 Branch `fix/stopped-reply-text`, from main at `3f3cc15`.
@@ -293,10 +306,10 @@ Static checks run in CI and locally: `actionlint`, `shellcheck` over the deploy 
 
 Every pending gate above waits on these (details in `Infra/README.md`). None is recorded as done.
 
-1. Create the AWS Organization and the test and production accounts.
-2. Bootstrap both accounts (runbook 1, "Bootstrap runbook").
+1. Create the `b4hub-test` and `b4hub-prod` accounts inside the `b4run` OU of the existing cacheplane Organization (runbook 1, "Bootstrap runbook"). Done 2026-11-02: `355069727528` and `268895852483`.
+2. Sign the CLI in with `aws login` and configure the `b4hub-test` and `b4hub-prod` profiles (done 2026-11-02: both answer `sts get-caller-identity`), then bootstrap both accounts (runbook 1, "Bootstrap runbook"). Test bootstrapped 2026-11-02 (18 resources; state in `b4hub-test-tfstate`, plan clean after migration; roles `b4hub-test-{plan,infra,deploy}`, state key `d9c975b5-6ea7-4610-99ae-7020f3091262`; re-applied the same day to pin GitHub's immutable OIDC subject `repo:cacheplane@269322961/b4app@1440075505`, without which `Plan test` failed `AssumeRoleWithWebIdentity`). Prod bootstrapped 2026-11-02 the same way (state in `b4hub-prod-tfstate`, state key `496dd803-4674-4422-b959-3e74e44043bd`, plan clean). Repository variables `AWS_ROLE_PLAN_<ENV>` and `TFSTATE_KMS_KEY_ARN_<ENV>` are set for both so PR plans run; `AWS_ROLE_INFRA_<ENV>` and `AWS_ROLE_DEPLOY_<ENV>` are deliberately withheld until `B4HUB_ALARM_EMAIL`, the Vercel CNAMEs, and (for prod) the `production` Environment exist, since a push to main would otherwise apply the test hub root. `B4HUB_ALARM_EMAIL` set 2026-11-02. ACM certificates for `hub.test.b4.run` and `hub.b4.run` were created by targeted applies the same day; their validation CNAMEs and CAA records allowing the Amazon issuers were added at Vercel (the apex CAA set allows only Let's Encrypt, Sectigo, and Google); both certificates were issued within minutes.
 3. Add repository variables: `AWS_ROLE_PLAN_*`, `AWS_ROLE_INFRA_*`, `AWS_ROLE_DEPLOY_*`, `TFSTATE_KMS_KEY_ARN_*` (`TEST` and `PROD`), and `B4HUB_ALARM_EMAIL`.
-4. Create the `production` GitHub Environment (required reviewer: the owner; deployment branches and tags: `main` and `hub-v*`). Create none for test.
+4. Create the `production` GitHub Environment (required reviewer: the owner; deployment branches and tags: `main` and `hub-v*`). Create none for test. Done 2026-11-02 (the Environment had been auto-created empty by a workflow run; reviewer `blove`, branch `main`, tag `hub-v*`).
 5. Make the GHCR package `ghcr.io/cacheplane/b4hub` public.
 6. Add the Vercel CNAMEs (`hub.test.b4.run`, `hub.b4.run`) and the ACM validation records the first apply prints.
 7. Set the database owner and sign-in secrets (runbooks 2 and 3).
