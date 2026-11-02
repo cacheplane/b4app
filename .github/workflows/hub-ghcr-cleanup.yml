@@ -45,8 +45,10 @@ jobs:
           package: b4hub
           use-regex: true
           # Dated nightlies are managed by the step above, so they do not take
-          # slots from sha-* images; the rest are protected outright.
-          exclude-tags: '^latest$,^main$,^nightly$,^nightly-[0-9]{8}$,^[0-9]+(\.[0-9]+){0,2}$'
+          # slots from sha-* images; the rest are protected outright. The three
+          # version forms are spelled out: the action rejects a nested
+          # quantifier such as `([0-9]+){0,2}` as ReDoS-prone.
+          exclude-tags: '^latest$,^main$,^nightly$,^nightly-[0-9]{8}$,^[0-9]+$,^[0-9]+\.[0-9]+$,^[0-9]+\.[0-9]+\.[0-9]+$'
           keep-n-tagged: 30
           delete-untagged: true
           # Per-platform manifests are pushed by digest, untagged, until the
