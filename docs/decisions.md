@@ -2,6 +2,12 @@
 
 Material implementation decisions, newest first. The spec (`docs/roadmaps/Personal_Agent_Workspace_Technical_Spec_and_Roadmap.md`) is the requirement source; this log records deviations and choices the spec left open.
 
+## 2026-11-02 (b4 app icon)
+
+- **D-130 The app icon is the b4.run "dark" icon.** The owner chose the b4.run brand kit's dark icon (a white "b4" on near-black `#17181B`, D2.2 / Paper Relay) for both apps. This amends D-036 and D-037 for the app icon only: the in-app LLA visual system (`LLAMark`, the sign-in screen, every colour) is unchanged, and the LLA icon SVGs stay because `LLAMark` and `ThemeTests` still use them.
+  - **Source.** `Sources/WorkspaceUI/Resources/Brand/b4-icon-dark.svg` is `apps/web/public/brand/identity/icons/icon-dark.svg` from the b4run repository's `origin/main` at `c1e1796556d0863da735e47822014bafa015ef3f`, vendored unchanged apart from a one-line provenance comment. It is a 256 by 256 square, not drawn in the app; `Scripts/make-app-icon.swift` rasterises it into `Apps/Shared/Assets.xcassets/AppIcon.appiconset`.
+  - **Sizes.** The iOS 1024 fills the square edge to edge, opaque (iOS masks its own corners). The macOS sizes are the standard rounded-square tile (corner radius 22.37% of the tile) with the same 10% margin as before, clipped by the script because the SVG is a plain square. The dark kit has no separate small variant, so the Mac 16 px and 32 px renders (16@1x, 16@2x, 32@1x) use the kit's own `icon-dark-16.png` and `icon-dark-32.png`, vendored unchanged in `Scripts/app-icon-sources/` from the same commit, filling the tile with no margin: a rasterised SVG with a margin was muddy there, and the kit PNGs read clearly. Every other size is drawn from the SVG.
+
 ## 2026-11-02 (deleting threads)
 
 - **D-119 Deleting a thread hides it everywhere and keeps its data.** The owner deletes a thread for privacy: delete means "do not display and do not use for personal memory", not erase. Design: `docs/superpowers/specs/2026-11-02-delete-threads-design.md`.
