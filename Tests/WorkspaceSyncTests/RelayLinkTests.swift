@@ -336,6 +336,68 @@ struct RelayLinkTests {
     #expect(h.connection.openCount == 2)
   }
 
+  @Test func relocatedIsRetriedAtOnceThreeTimesThenBacksOff() async throws {
+    let h = LinkHarness()
+    h.connection.refuseWith(status: 409, times: 4)
+    await h.link.start()
+    // Three immediate retries, then the fourth 409 waits out the backoff.
+    await waitUntil("backoff") { h.clock.sleeperCount == 1 }
+    #expect(h.connection.openCount == 4)
+    #expect(h.clock.nextWake == .seconds(1))
+    #expect(await h.recorder.last == .connecting(attempt: 5, lastError: "relocated"))
+    h.clock.advance(by: .seconds(1))
+    let socket = await h.connection.nextSocket()
+    #expect(h.connection.openCount == 5)
+
+    // A link resets the count: the next three 409s are immediate again.
+    socket.deliver(helloMessage())
+    await waitUntil("connected") { if case .connected? = await h.recorder.last { true } else { false } }
+    h.connection.refuseWith(status: 409, times: 3)
+    let seen = await h.recorder.states.count
+    socket.closeFromHub(code: 1001)
+    // The 1001 drop itself backs off; the three relocations after it do not.
+    let backoff = await h.awaitBackoff(pastStates: seen)
+    h.clock.advance(by: backoff.delay)
+    _ = await h.connection.nextSocket()
+    #expect(h.connection.openCount == 9)
+  }
+
+  @Test func theLastUpgradesCookiesAreSentAndARelocationDropsThem() async throws {
+    let h = LinkHarness()
+    let sticky = ["b4hub-instance": "inst-a", "AWSALBAPP-0": "opaque"]
+    let moved = ["b4hub-instance": "inst-b", "AWSALBAPP-0": "other"]
+    h.connection.setCookiesOnNextOpen(sticky)
+    let first = await h.connect()
+    #expect(first.responseCookies == sticky)
+    #expect(h.connection.cookiesSent == [[:]])
+
+    // The reconnect replays the cookies, but the user's links moved: the 409 drops them and the retry
+    // goes at once, without them, and lands where the new instance sets its own.
+    h.connection.refuseWith(status: 409)
+    h.connection.setCookiesOnNextOpen(moved)
+    let seen = await h.recorder.states.count
+    first.closeFromHub(code: 1001)
+    let backoff = await h.awaitBackoff(pastStates: seen)
+    h.clock.advance(by: backoff.delay)
+    let second = await h.connection.nextSocket()
+    #expect(h.connection.cookiesSent == [[:], sticky, [:]])
+    #expect(second.responseCookies == moved)
+
+    // Linked: the next upgrade sends the new instance's cookies.
+    second.deliver(helloMessage())
+    await waitUntil("connected") { if case .connected? = await h.recorder.last { true } else { false } }
+    await h.link.reconnectNow()
+    _ = await h.connection.nextSocket()
+    #expect(h.connection.cookiesSent == [[:], sticky, [:], moved])
+  }
+
+  @Test func cookieHeaderIsSortedAndOmittedWhenEmpty() {
+    #expect(URLSessionHubLinkConnection.cookieHeader([:]) == nil)
+    #expect(
+      URLSessionHubLinkConnection.cookieHeader(["b4hub-instance": "a", "AWSALBAPP-0": "x"])
+        == "AWSALBAPP-0=x; b4hub-instance=a")
+  }
+
   @Test func replacedStops() async throws {
     let h = LinkHarness()
     let socket = await h.connect()
