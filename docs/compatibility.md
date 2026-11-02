@@ -82,6 +82,21 @@ No dependency, toolchain, or image changed in M8b. What changed is the contract 
 | New cross-language fixtures | `Tests/Fixtures/sync/conflicts.json` (read by the Swift and Rust suites) and `Tests/Fixtures/sync/attention.json` (read by the coordinator's store and the mirror's store); `changes.json` gained `hlc` on every entry and nothing else, so M8a's count-based assertions stay valid |
 | Test database | Unchanged. Rust suite: 117 tests; Swift suite: 517 tests |
 
+### Hub operability additions (M8e Part A)
+
+Feature flags on two already-pinned crates, one crate already in the lock used from a second place, and one new transitive crate; nothing else changed.
+
+| Item | Value |
+| --- | --- |
+| axum features | `matched-path` added (the `request` span's `path` is the matched route pattern) |
+| tracing-subscriber features | `json` added, which pulls `tracing-serde` 0.2.0 (new in the lock) and `serde_json` |
+| b4hub-db | now depends on `serde` (derive) for the `hub_settings` value |
+| Hub migration | `0006_settings.sql` (`hub_settings`: `key`, `value jsonb`, `updated_at`; not tenant-scoped; `migrate` revokes writes from `b4hub_app`). `0004` and `0005` are reserved for the relay and accounts branches |
+| sqlx 0.8.6 migration ordering | Verified in `Hub/crates/b4hub-db/tests/migrate.rs` (`sqlx_applies_a_lower_numbered_migration_added_later`) and by reading `Migrator::run_direct`: the migrator applies every embedded migration whose version the `_sqlx_migrations` ledger lacks, in version order, with no "newer than the latest applied" check, so `0004` and `0005` apply cleanly after `0006` is already in a database. The reverse is refused: a binary that lacks a version the ledger holds fails with `VersionMissing` (and a changed file with `VersionMismatch`), so a hub built from a branch without `0006` must not run `migrate` against a database that has it; merge order between branches is otherwise free |
+| New environment | `B4HUB_LOG_FORMAT` (`text`, `json`; default by terminal), `B4HUB_TRUST_X_FORWARDED_FOR` (`1`/`true`, default off; the sign-in branch reads the same name for the client address), `B4HUB_MAINTENANCE_POLL_MS` (default 5000) |
+| New wire | `X-Request-Id` on every response; `503 maintenance` with `Retry-After: 30`; `"maintenance": "read_only"` on `/readyz`; all additive, `minClientProtocol` stays 1 |
+| Test database | Unchanged. Rust suite: 135 tests |
+
 ## Provider runtimes
 
 | Runtime | Installed on target Mac | Published | Verified behavior | Limits and gates |

@@ -503,6 +503,20 @@ aws ecs update-service --cluster b4hub-$ENV --service b4hub-$ENV-hub --desired-c
 aws ecs update-service --cluster b4hub-$ENV --service b4hub-$ENV-hub --desired-count 1
 ```
 
+Pause writes without stopping anything (D-074): devices keep reading and `/readyz` stays green with `"maintenance": "read_only"`, while every write answers `503 maintenance` with `Retry-After: 30` and the Mac keeps its outbox. Every instance notices within `B4HUB_MAINTENANCE_POLL_MS` (5 s). Run it in the admin task's `hub` container (runbook 6; it has `DATABASE_ADMIN_URL`):
+
+```bash
+Infra/scripts/admin-shell.sh $ENV hub
+```
+
+```sh
+b4hub maintenance status
+b4hub maintenance on --message "restoring the database, back by 14:00 UTC"
+b4hub maintenance off
+```
+
+On a Compose host the same commands run through the `migrate` service, which carries the admin URL: `docker compose run --rm migrate maintenance on --message "..."`, then `docker compose run --rm migrate maintenance off`. The switch is a row in `hub_settings`, so it survives deploys and restarts: `status` is the first thing to check when writes fail with `maintenance` and nobody remembers turning it on.
+
 Upstream status, each subscribed with the owner's email: Better Stack (the `/readyz` monitors and the status page at `status.b4.run`), the AWS Health Dashboard of each account, `githubstatus.com`, and Apple's developer system status (`developer.apple.com/system-status`).
 
 ### 10. The ALB was recreated
