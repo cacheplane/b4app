@@ -1,0 +1,222 @@
+name: Infra
+
+# Plans both environment roots on every pull request that touches Infra, and
+# applies on main: test first, then prod behind the `production` environment's
+# required reviewer. Roles come from repository variables (ARNs, not secrets):
+# AWS_ROLE_PLAN_<ENV> for plans, AWS_ROLE_INFRA_<ENV> for applies, and the
+# state key from TFSTATE_KMS_KEY_ARN_<ENV>. B4HUB_ALARM_EMAIL is the address
+# the alarm topic and budget notify.
+
+on:
+  pull_request:
+    paths:
+      - "Infra/**"
+      - ".github/workflows/infra.yml"
+  push:
+    branches: [main]
+    paths:
+      - "Infra/**"
+      - ".github/workflows/infra.yml"
+
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  test:
+    name: Module tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.1
+          terraform_wrapper: false
+      - name: Format check
+        run: terraform fmt -check -recursive Infra
+      - name: Test the hub module against a mocked provider
+        working-directory: Infra/modules/hub
+        run: |
+          terraform init -backend=false
+          terraform test
+
+  plan:
+    name: Plan ${{ matrix.environment }}
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: infra-${{ matrix.environment }}
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - environment: test
+            role: ${{ vars.AWS_ROLE_PLAN_TEST }}
+            kms_key: ${{ vars.TFSTATE_KMS_KEY_ARN_TEST }}
+          - environment: prod
+            role: ${{ vars.AWS_ROLE_PLAN_PROD }}
+            kms_key: ${{ vars.TFSTATE_KMS_KEY_ARN_PROD }}
+    env:
+      TF_VAR_alarm_email: ${{ vars.B4HUB_ALARM_EMAIL }}
+    defaults:
+      run:
+        working-directory: Infra/envs/${{ matrix.environment }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.1
+          terraform_wrapper: false
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+      - name: Format check
+        run: terraform fmt -check -recursive ../..
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ matrix.role }}
+          aws-region: us-east-2
+      - name: Initialize
+        env:
+          ENV_NAME: ${{ matrix.environment }}
+          KMS_KEY: ${{ matrix.kms_key }}
+        run: |
+          terraform init \
+            -backend-config="bucket=b4hub-${ENV_NAME}-tfstate" \
+            -backend-config="key=hub.tfstate" \
+            -backend-config="region=us-east-2" \
+            -backend-config="kms_key_id=${KMS_KEY}" \
+            -backend-config="encrypt=true"
+      - name: Validate
+        run: terraform validate
+      - name: Lint
+        run: tflint --config ../../.tflint.hcl
+      - name: Plan
+        run: terraform plan -no-color -input=false -out plan.bin
+      - name: Render the plan
+        run: terraform show -no-color plan.bin > "$RUNNER_TEMP/plan.txt"
+      - name: Comment the plan on the pull request
+        continue-on-error: false
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ENV_NAME: ${{ matrix.environment }}
+          PLAN_FILE: ${{ runner.temp }}/plan.txt
+        with:
+          script: |
+            const fs = require('fs');
+            const env = process.env.ENV_NAME;
+            const marker = `<!-- infra-plan-${env} -->`;
+            let plan = fs.readFileSync(process.env.PLAN_FILE, 'utf8');
+            const limit = 60000;
+            if (plan.length > limit) {
+              plan = plan.slice(0, limit) + '\n... truncated; see the job log for the full plan';
+            }
+            const body = `${marker}\n### Terraform plan: ${env}\n\n<details><summary>Show plan</summary>\n\n\`\`\`\n${plan}\n\`\`\`\n\n</details>`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find((c) => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+  apply-test:
+    name: Apply test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: test
+    concurrency:
+      group: infra-test
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      TF_VAR_alarm_email: ${{ vars.B4HUB_ALARM_EMAIL }}
+    defaults:
+      run:
+        working-directory: Infra/envs/test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.1
+          terraform_wrapper: false
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_INFRA_TEST }}
+          aws-region: us-east-2
+      - name: Initialize
+        env:
+          KMS_KEY: ${{ vars.TFSTATE_KMS_KEY_ARN_TEST }}
+        run: |
+          terraform init \
+            -backend-config="bucket=b4hub-test-tfstate" \
+            -backend-config="key=hub.tfstate" \
+            -backend-config="region=us-east-2" \
+            -backend-config="kms_key_id=${KMS_KEY}" \
+            -backend-config="encrypt=true"
+      - name: Plan
+        run: terraform plan -no-color -input=false -out plan.bin
+      - name: Apply
+        run: terraform apply -no-color -input=false plan.bin
+
+  apply-prod:
+    name: Apply prod
+    if: github.event_name == 'push'
+    needs: apply-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: production
+    concurrency:
+      group: infra-prod
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      TF_VAR_alarm_email: ${{ vars.B4HUB_ALARM_EMAIL }}
+    defaults:
+      run:
+        working-directory: Infra/envs/prod
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.1
+          terraform_wrapper: false
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_INFRA_PROD }}
+          aws-region: us-east-2
+      - name: Initialize
+        env:
+          KMS_KEY: ${{ vars.TFSTATE_KMS_KEY_ARN_PROD }}
+        run: |
+          terraform init \
+            -backend-config="bucket=b4hub-prod-tfstate" \
+            -backend-config="key=hub.tfstate" \
+            -backend-config="region=us-east-2" \
+            -backend-config="kms_key_id=${KMS_KEY}" \
+            -backend-config="encrypt=true"
+      - name: Plan
+        run: terraform plan -no-color -input=false -out plan.bin
+      - name: Apply
+        run: terraform apply -no-color -input=false plan.bin

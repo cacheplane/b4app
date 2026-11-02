@@ -82,6 +82,18 @@ mock_provider "aws" {
       arn = "arn:aws:ecs:us-east-2:111111111111:task-definition/b4hub-test-hub:1"
     }
   }
+
+  mock_resource "aws_sns_topic" {
+    defaults = {
+      arn = "arn:aws:sns:us-east-2:111111111111:b4hub-test-alerts"
+    }
+  }
+
+  mock_resource "aws_cloudwatch_event_rule" {
+    defaults = {
+      arn = "arn:aws:events:us-east-2:111111111111:rule/b4hub-test-migrate-stopped"
+    }
+  }
 }
 
 mock_provider "aws" {
@@ -95,8 +107,9 @@ mock_provider "aws" {
 }
 
 variables {
-  environment = "test"
-  alarm_email = "ops@example.com"
+  environment        = "test"
+  alarm_email        = "ops@example.com"
+  monthly_budget_usd = 70
 }
 
 run "no_secret_values_in_terraform" {

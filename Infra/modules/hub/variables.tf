@@ -89,3 +89,8 @@ variable "admin_psql_image" {
   type        = string
   default     = "public.ecr.aws/docker/library/postgres:17"
 }
+
+variable "monthly_budget_usd" {
+  description = "Monthly cost budget in US dollars; actual spend above 150 percent of it emails alarm_email." # used by observability.tf
+  type        = number
+}
