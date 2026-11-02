@@ -206,6 +206,8 @@ Once per account, after the first `terraform apply` of the root and before the f
 
    `\du` must list `b4hub_owner` with `Create role`, and `\l` must show `b4hub` owned by it. Then `\q` and `exit`; the task stops. Clear the clipboard (`printf '' | pbcopy`).
 
+   psql takes the raw password. The generated hex passwords are the same raw and inside a URL, so this never matters for them; if you used your own password with URL-reserved characters, the URL in step 5 holds it percent-encoded, and the form pasted here must be the decoded one. Decode the clipboard in place, so the password never reaches a command line: `pbpaste | python3 -c 'import sys, urllib.parse; sys.stdout.write(urllib.parse.unquote(sys.stdin.read()))' | pbcopy`.
+
 5. **Put the two real URLs in the secrets.** `b4hub_owner` is `DATABASE_ADMIN_URL`; `b4hub_app` does not exist yet: the first `b4hub migrate` creates it and sets its password from the `DATABASE_URL` you give here. Back in the first terminal:
 
    ```bash
@@ -434,6 +436,16 @@ Prove a backup restores and holds the data. Two parts: a full drill in the test 
 
    The originals stay in `$tmp/*.orig` for step 6.
 
+   The two `put-secret-value` calls are not atomic. If the second one fails, `database-admin-url` already points at the scratch host and `database-url` still at the live one: put both back from the saved originals before anything else (the same loop as step 6, which is safe to rerun), then start step 3 again:
+
+   ```bash
+   for s in database-admin-url database-url; do
+     aws secretsmanager put-secret-value --secret-id b4hub/$s --secret-string file://$tmp/$s.orig > /dev/null
+   done
+   ```
+
+   No deploy has run yet at this point, so the hub never used the half-written pair. The same holds in step 6: if a restore call fails, rerun the loop until both succeed before deleting anything.
+
 4. Run the normal deploy of the digest test already runs ([runbook 5](#5-deploy-a-given-digest-or-roll-back)): it migrates and serves against the scratch instance. `curl -fsS https://hub.test.b4.run/readyz` must pass.
 5. **Compare.** In `Infra/scripts/admin-shell.sh test psql` run the same query against both instances. The container's `PGHOST` is the live one; the scratch host is `$SCRATCH` from step 2. psql needs the `b4hub_owner` password, which is only on your laptop. The container's environment carries `PGPASSWORD` (the master password), which psql would send for any user and fail, so `unset PGPASSWORD` first (in the container shell, once); psql then prompts. Never print the password: copy it to the clipboard without showing it, paste at each prompt (the paste is not echoed), then clear the clipboard:
 
@@ -449,6 +461,8 @@ Prove a backup restores and holds the data. Two parts: a full drill in the test 
    ```
 
    Then `printf '' | pbcopy` (Linux: `xclip`).
+
+   The password comes out of the URL as stored. A generated hex password needs no decoding; one with percent-escapes (`%40` and so on) must be decoded before it is pasted at the psql prompt, or psql rejects it: run the clipboard through the same `pbpaste | python3 ... unquote ... | pbcopy` pipe as in [runbook 2](#2-bootstrap-the-database-owner) step 4.
 
    The restored `max(hub_seq)` per org must be less than or equal to the live one and no older than the backup interval.
 6. **Put the test account back**, then delete the scratch instance:
