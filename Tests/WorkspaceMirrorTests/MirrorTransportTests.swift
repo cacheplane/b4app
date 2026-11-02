@@ -50,7 +50,8 @@ private final class WriteCounter: Sendable {
       try await client.request(TurnSend.self, TurnSend.Params(threadId: "thread-1", text: "hi"))
     }
     #expect(refused?.code == .unsupportedCapability)
-    #expect(refused?.message.hasSuffix("is done on the Mac.") == true)
+    #expect(
+      refused?.message == "Until this iPhone is paired with your Mac's hub, chatting is done on the Mac.")
     let refusedWithOperation = await #expect(throws: WorkspaceError.self) {
       try await client.request(
         ThreadCreate.self, .init(connectionId: "conn-1", workingDirectory: "/tmp"),
@@ -606,6 +607,44 @@ private final class WriteCounter: Sendable {
     let synced = try await client.request(ThreadRead.self, .init(threadId: "thread-new"))
     #expect(synced.thread.title == "From the Mac")
     #expect(synced.items.map(\.id) == ["item-u", "item-a"])
+    await client.close()
+    await h.relay.stop()
+  }
+
+  /// A started thread the phone never opened: once its row arrives, nothing of it stays in memory, and
+  /// the hub's auto-watch cannot grow it again.
+  @Test func theRowOfAnUnreadStartedThreadDropsItsRelayedState() async throws {
+    let (store, h, socket) = try await relayedMirror()
+    let transport = MirrorTransport(store: store, version: "0.2.0", relay: h.relay)
+    let client = WorkspaceClient(transport: transport)
+    _ = try await client.ready()
+    var events = (await client.events()).makeAsyncIterator()
+    _ = try await client.request(ThreadRead.self, .init(threadId: "thread-1"))
+
+    let params = ThreadStart.Params(
+      threadId: "thread-new", projectId: "p1", connectionId: "conn-1", text: "Hi")
+    async let started = client.request(ThreadStart.self, params, options: RequestOptions(operationId: "op-s"))
+    _ = try await RelayHarness.nextCommand(socket)
+    let turn = relayTurn("turn-new", threadId: "thread-new", operationId: "op-s")
+    let thread = ConversationThread(id: "thread-new", connectionId: "conn-1", nativeThreadId: "native-new")
+    socket.deliver(
+      .reply(id: "op-s", result: try JSONValue(encoding: ThreadStart.Result(thread: thread, turn: turn))))
+    _ = try await started
+    #expect(transport.overlaidThreadIds == ["thread-1", "thread-new"])
+
+    var row = try #require(try fixtureAsStored()[1].value?.objectValue)
+    row["id"] = "thread-new"
+    row["nativeThreadId"] = "native-new"
+    transport.publish(try store.apply([change("threads", "thread-new", "insert", value: .object(row))]))
+    _ = try await collect(&events, until: .threadUpdated)
+    #expect(transport.overlaidThreadIds == ["thread-1"])
+
+    // Later relayed events for it pass through without being kept.
+    let item = agent(
+      "item-n", native: "native-n", turnId: "turn-new", text: "", sequence: 1, threadId: "thread-new")
+    socket.deliver(.event(try itemEvent(.messageStarted, item)))
+    _ = try await collect(&events, until: .messageStarted)
+    #expect(transport.overlaidThreadIds == ["thread-1"])
     await client.close()
     await h.relay.stop()
   }

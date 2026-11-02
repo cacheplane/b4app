@@ -169,6 +169,22 @@ private func writeVersion1File(_ path: String) throws {
     #expect(
       try raw.integer(#"SELECT count(*) FROM pragma_table_info('connections') WHERE name = 'projectId'"#) == 1
     )
+    #expect(try raw.integer(Self.nativeItemIndex) == 1)
+  }
+
+  /// The index the relay's per-delta lookup uses: on `displayItems`, by thread then native item id.
+  static let nativeItemIndex = """
+    SELECT count(*) FROM sqlite_master m WHERE m.type = 'index' AND m.tbl_name = 'displayItems'
+      AND (SELECT group_concat(name, ',') FROM pragma_index_info(m.name)) = 'threadId,nativeItemId'
+    """
+
+  @Test func aNewFileHasTheNativeItemIndex() throws {
+    let path = temporaryPath()
+    defer { MirrorStoreTests.remove(path) }
+    do { _ = try MirrorStore(path: path) }
+    let raw = try RawSQLite(path: path)
+    defer { raw.close() }
+    #expect(try raw.integer(Self.nativeItemIndex) == 1)
   }
 
   /// The Mac's `projectId` (a local B4 connection's project) arrives in the change log and is kept.

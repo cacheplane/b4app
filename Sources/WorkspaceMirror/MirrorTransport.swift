@@ -130,7 +130,7 @@ public final class MirrorTransport: WorkspaceTransport {
     case .projectCreate, .projectUpdate, .projectDelete:
       return macRefusal
     case .turnSend, .turnInterrupt, .requestRespond, .threadStart, .turnLookup:
-      return "Chatting before this iPhone is linked to the hub is done on the Mac."
+      return "Until this iPhone is paired with your Mac's hub, chatting is done on the Mac."
     case .threadCreate:
       return "Starting a thread outside a project is done on the Mac."
     case .turnAbandon, .threadReconcile, .workspaceReconcile, .workspaceStopLocalWork:
@@ -232,6 +232,9 @@ public final class MirrorTransport: WorkspaceTransport {
     WorkspaceError(.endpointUnavailable, "The mirror transport is closed.")
   }
 
+  /// The threads whose relayed state is held in memory (for tests).
+  var overlaidThreadIds: Set<String> { state.withLock { Set($0.overlays.keys) } }
+
   public func close() async {
     state.withLock { state in
       state.closed = true
@@ -266,9 +269,12 @@ public final class MirrorTransport: WorkspaceTransport {
     }
     state.withLock { state in
       guard !state.closed else { return }
-      // The row replaces a started thread's placeholder.
+      // The row replaces a started thread's placeholder. A thread the phone has not opened keeps
+      // nothing in memory: reading it later reads the mirror, and the hub's watch cannot grow it.
       for id in batch.touchedThreadIds where state.placeholders[id] != nil {
-        if (try? store.thread(id: id)) != nil { state.placeholders[id] = nil }
+        guard (try? store.thread(id: id)) != nil else { continue }
+        state.placeholders[id] = nil
+        if id != state.lastReadThreadId { state.overlays[id] = nil }
       }
       var open: [AdapterEvent] = []
       for item in batch.touchedItems where item.threadId == state.lastReadThreadId {
