@@ -374,7 +374,7 @@ struct SocketRig {
     let fake = FakeHubAPI()
     await fake.addEnrollmentCode(pairingEnrollCode, pairingMacEnrollment)
     let assertions = FakePowerAssertions()
-    let outcome = try await Coordinator.start(
+    let outcome = try await Coordinator.startSignedIn(
       options: CoordinatorOptions(
         paths: paths, environment: env, secretStore: MemorySecretStore(), hubAPIFactory: { _, _ in fake },
         hubLinkConnection: FakeHubLinkConnection(), powerAssertions: assertions))

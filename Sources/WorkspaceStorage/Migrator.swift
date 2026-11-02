@@ -28,12 +28,21 @@ public enum Migrator {
       }
   }
 
-  /// Apply every pending migration. Returns the names applied this time.
+  /// Apply every pending migration. Returns the names applied this time. A database that records a
+  /// migration newer than every bundled one was written by a newer build: it is refused with
+  /// `incompatible_version` before anything is applied.
   @discardableResult
   static func migrate(_ connection: PostgresConnection) throws -> [String] {
     let done = Set(try applied(connection))
+    let files = try files()
+    if let newest = files.last?.name, let future = done.filter({ $0 > newest }).min() {
+      throw WorkspaceError(
+        .incompatibleVersion,
+        "The database was migrated by a newer version of Agent Workspace (\(future)); this version knows migrations up to \(newest). Update Agent Workspace."
+      )
+    }
     var appliedNow: [String] = []
-    for file in try files() where !done.contains(file.name) {
+    for file in files where !done.contains(file.name) {
       try connection.execute("BEGIN")
       do {
         try connection.execute(file.sql)

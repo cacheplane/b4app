@@ -25,7 +25,7 @@ private func isolatedEnvironment(_ paths: PlatformPaths) -> [String: String] {
 
 private func startIsolated() async throws -> RunningCoordinator {
   let paths = try temporaryPaths()
-  let outcome = try await Coordinator.start(
+  let outcome = try await Coordinator.startSignedIn(
     options: CoordinatorOptions(
       paths: paths, environment: isolatedEnvironment(paths), secretStore: MemorySecretStore()))
   guard case .running(let coordinator) = outcome else {
@@ -140,7 +140,7 @@ private func connect(_ coordinator: RunningCoordinator) async throws -> Workspac
 
   @Test func refusesSecondCoordinatorWhileLockIsHeld() async throws {
     let coordinator = try await startIsolated()
-    let second = try await Coordinator.start(
+    let second = try await Coordinator.startSignedIn(
       options: CoordinatorOptions(
         paths: coordinator.paths, environment: isolatedEnvironment(coordinator.paths),
         secretStore: MemorySecretStore()))
@@ -163,7 +163,7 @@ private func connect(_ coordinator: RunningCoordinator) async throws -> Workspac
     let paths = coordinator.paths
     let firstEpoch = coordinator.epoch
     await coordinator.close()
-    let outcome = try await Coordinator.start(
+    let outcome = try await Coordinator.startSignedIn(
       options: CoordinatorOptions(
         paths: paths, environment: isolatedEnvironment(paths), secretStore: MemorySecretStore()))
     guard case .running(let restarted) = outcome else {

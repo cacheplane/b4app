@@ -30,6 +30,7 @@ struct ModelHarness {
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = "/nonexistent/node"
     env["ANTHROPIC_API_KEY"] = nil
+    try signInTestAccount(paths)
     guard
       case .running(let coordinator) = try await Coordinator.start(
         options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
@@ -49,6 +50,23 @@ struct ModelHarness {
     await model.disconnect()
     await coordinator.close()
   }
+}
+
+/// Since the per-account split (sign-in plan, Task 9) a coordinator with nobody signed in refuses store
+/// commands: register an active local account whose database is the coordinator's own, which the
+/// coordinator restores at start.
+nonisolated func signInTestAccount(_ paths: PlatformPaths) throws {
+  let endpoint = paths.postgres
+  let registry = try AccountRegistry(
+    endpoint: endpoint, binDir: endpoint.binDir!,
+    databaseName: AccountManager.registryDatabaseName(for: endpoint))
+  defer { registry.close() }
+  guard try registry.active() == nil else { return }
+  let row = AccountRow(
+    id: AccountRegistry.newId(), hubURL: "http://localhost:8080", hubUserId: "o-test/u-ui", deviceId: "local",
+    database: endpoint.database, displayName: "Test", orgName: "Test Org")
+  try registry.insert(row)
+  try registry.activate(id: row.id, tokenRef: SecretRef.make().rawValue)
 }
 
 /// One wake-up of `waitUntil`: fired by a change to observed state the condition read, by a
@@ -181,12 +199,13 @@ func waitUntil(
     model.composerText = "half a thought"
     #expect(model.draftSaveTask != nil)
     try await waitUntil("debounced save") { model.draftSaveTask == nil }
-    let saved = try h.coordinator.database.draft(threadId: thread.id)
+    let saved = try h.coordinator.accounts.current!.database.draft(threadId: thread.id)
     #expect(saved?.text == "half a thought")
 
     model.composerText = "half a thought, then quit"
     await model.persistDraftNow()
-    #expect(try h.coordinator.database.draft(threadId: thread.id)?.text == "half a thought, then quit")
+    let store = try #require(h.coordinator.accounts.current).database
+    #expect(try store.draft(threadId: thread.id)?.text == "half a thought, then quit")
 
     // Reopening restores the draft without scheduling another write.
     model.selectedThreadId = nil

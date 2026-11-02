@@ -27,6 +27,11 @@ import WorkspaceSync
 /// power assertion (`settings`, `updateSettings`) are `KeepAwake`'s. The assertion is held exactly while
 /// the preference is on and this Mac is joined: it follows `start`, `join`, `leave`, and `stop`.
 ///
+/// A 401 from a push, the pull, or the relay link (which reports it through its own `onUnauthorized`)
+/// also calls `onUnauthorized` once, in a task of its own: the coordinator's `AccountManager` signs the
+/// account out, which stops this actor, its pull, and its link, so the callback must never be awaited
+/// from inside any of them. `close()` is that stop: after it nothing here sends another request.
+///
 /// The enrollment code, the pairing code (it appears only in `pair`'s result), the token, and the token's
 /// `SecretRef` never appear in a log line, a status, or an error message.
 public actor HubSync {
@@ -42,6 +47,7 @@ public actor HubSync {
   private let eventLog: EventLog
   private let makeAPI: APIFactory
   private let makeLink: LinkFactory?
+  private let onUnauthorized: (@Sendable () async -> Void)?
   private let logger = Log.logger("hub")
 
   private var api: (any HubAPI)?
@@ -54,6 +60,10 @@ public actor HubSync {
   private var token: HubToken?
   /// Set by a 401; cleared by `join`. Background pushes skip while it is set.
   private var suspended = false
+  /// Set once a 401 has been reported through `onUnauthorized`, so it is reported once.
+  private var reportedUnauthorized = false
+  /// Set by `close()`: the account is gone, and nothing here talks to the hub again.
+  private var closed = false
   private var joining = false
   private var inFlight: Task<Int, any Error>?
   private var nudgeTask: Task<Void, Never>?
@@ -74,16 +84,19 @@ public actor HubSync {
   static let keepAwakeKey = "keepAwake"
 
   /// `pairing` and `powerAssertions` are for tests: a manual poll clock and a fake power assertion.
+  /// `onUnauthorized` is called (once, unawaited) when the hub refuses the token.
   init(
     database: WorkspaceDatabase, secretStore: any SecretStore, eventLog: EventLog,
     makeAPI: @escaping APIFactory = { HTTPHubAPI(baseURL: $0, token: $1) }, makeLink: LinkFactory? = nil,
-    pairing: Pairing = Pairing(), powerAssertions: any PowerAssertions = IOKitPowerAssertions()
+    pairing: Pairing = Pairing(), powerAssertions: any PowerAssertions = IOKitPowerAssertions(),
+    onUnauthorized: (@Sendable () async -> Void)? = nil
   ) {
     self.database = database
     self.secretStore = secretStore
     self.eventLog = eventLog
     self.makeAPI = makeAPI
     self.makeLink = makeLink
+    self.onUnauthorized = onUnauthorized
     self.pairing = pairing
     self.keepAwake = KeepAwake(assertions: powerAssertions)
   }
@@ -93,6 +106,7 @@ public actor HubSync {
   /// Load the link (if this Mac has joined), tag local writes with its device id, and start the
   /// write nudge and the 30 s timer.
   public func start() async {
+    guard !closed else { return }
     do {
       if let link = try database.hubLink() {
         if let url = URL(string: link.url), let ref = SecretRef(rawValue: link.tokenRef) {
@@ -147,9 +161,27 @@ public actor HubSync {
     keepAwake.release()
   }
 
+  /// Stop for good, as the account's scope closes: `stop()`, then forget the client and the token, so
+  /// no push, pull, link, pairing, or name lookup sends another request. A push already in flight
+  /// ends at its current request.
+  public func close() async {
+    closed = true
+    await stop()
+    api = nil
+    token = nil
+    baseURL = nil
+  }
+
+  /// `GET /v1/me` with this Mac's token (the account manager refreshes the account's names with it).
+  public func me() async throws -> MeResponse {
+    guard let api, !closed else { throw WorkspaceError(.protocolInvalid, "Join a hub first") }
+    return try await api.me()
+  }
+
   // MARK: - Commands
 
   public func join(url: String, code: String, deviceName: String) async throws -> HubStatus.Result {
+    guard !closed else { throw WorkspaceError(.signedOut, AccountManager.signedOutMessage) }
     let base = try HubURL.validate(url)
     let linked = try database.hubLink() != nil
     if joining || linked {
@@ -189,6 +221,7 @@ public actor HubSync {
     baseURL = base
     displayName = enrolled.user.displayName
     suspended = false
+    reportedUnauthorized = false
     refreshKeepAwake()
     logger.info(
       "joined \(base.host ?? "hub", privacy: .public) as device \(enrolled.deviceId, privacy: .public)")
@@ -364,7 +397,7 @@ public actor HubSync {
     var pushed = false
     var refused: [RejectedChange] = []
     do {
-      while true {
+      while !closed {
         let records = try database.unsyncedChanges(limit: Self.batchRows)
         guard !records.isEmpty else { break }
         let (batch, through) = Self.batch(records)
@@ -398,6 +431,7 @@ public actor HubSync {
       if (error as? HubError)?.code == "unauthorized" {
         suspended = true
         await link?.stop()
+        reportUnauthorized()
       }
       try? record(error: Self.describe(error), pushed: false)
       throw error
@@ -478,6 +512,15 @@ public actor HubSync {
     pull = nil
     suspended = true
     await link?.stop()
+    reportUnauthorized()
+  }
+
+  /// Tell the owner, once and without waiting, that the hub refused the token: the owner stops this
+  /// actor (and the pull loop that may be the caller), so awaiting it here would deadlock.
+  private func reportUnauthorized() {
+    guard !reportedUnauthorized, !closed, let onUnauthorized else { return }
+    reportedUnauthorized = true
+    Task { await onUnauthorized() }
   }
 
   // MARK: - Relay link
@@ -522,7 +565,7 @@ public actor HubSync {
     return WorkspaceError.from(error).message
   }
 
-  private static func workspaceError(_ error: HubError, doing action: String) -> WorkspaceError {
+  static func workspaceError(_ error: HubError, doing action: String) -> WorkspaceError {
     let code: ErrorCode =
       switch error.status {
       case 401, 403: .authRequired

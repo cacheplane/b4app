@@ -377,6 +377,21 @@ public actor LocalServerService {
   }
 
   /// Monitors stop; servers keep running across a coordinator exit.
+  /// Stop every server this store remembers a process for, through `stop`'s identity check (a pid that
+  /// is no longer the server it started is left untouched), as an account signs out. Each stop is
+  /// bounded by the grace period before SIGKILL; a failure is logged and the rest still stop.
+  public func stopAll() async {
+    for server in (try? db.listLocalServers()) ?? [] where server.pid != nil {
+      do {
+        _ = try await stop(id: server.id, force: true)
+      } catch {
+        let message = WorkspaceError.from(error).message
+        logger.warning(
+          "could not stop \(server.name, privacy: .public): \(message, privacy: .public)")
+      }
+    }
+  }
+
   public func shutdown() async {
     for (id, instance) in running {
       instance.monitor?.cancel()

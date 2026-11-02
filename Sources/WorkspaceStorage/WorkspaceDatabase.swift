@@ -44,10 +44,12 @@ public final class WorkspaceDatabase: Sendable {
     }
   }
 
-  /// Connect to a running cluster, create the database when it is missing, and migrate. `wall` is the
-  /// clock's time source (tests pin it to replay recorded clocks).
+  /// Connect to a running cluster, create the database when it is missing (unless `createIfMissing` is
+  /// false, when a missing one is `not_found`), and migrate. A failed migration closes the pool and
+  /// throws. `wall` is the clock's time source (tests pin it to replay recorded clocks).
   public init(
-    endpoint: PostgresEndpoint, binDir: String, wall: @escaping @Sendable () -> UInt64 = epochMillis
+    endpoint: PostgresEndpoint, binDir: String, createIfMissing: Bool = true,
+    wall: @escaping @Sendable () -> UInt64 = epochMillis
   ) throws {
     self.endpoint = endpoint
     clock = HybridClock(deviceId: "local", wall: wall)
@@ -56,9 +58,19 @@ public final class WorkspaceDatabase: Sendable {
     adminConnectionString = base + " dbname=postgres"
     let admin = try PostgresConnection(lib: lib, connectionString: adminConnectionString)
     let exists = try admin.execute("SELECT 1 FROM pg_database WHERE datname = $1", [endpoint.database]).rows
-    if exists.isEmpty { try admin.execute("CREATE DATABASE \(Rows.quote(endpoint.database))") }
+    if exists.isEmpty {
+      guard createIfMissing else {
+        throw WorkspaceError(.notFound, "The database \(endpoint.database) does not exist.")
+      }
+      try admin.execute("CREATE DATABASE \(Rows.quote(endpoint.database))")
+    }
     pool = try ConnectionPool(lib: lib, connectionString: base + " dbname=\(endpoint.database)", size: 4)
-    try pool.withConnection { try Migrator.migrate($0) }
+    do {
+      try pool.withConnection { try Migrator.migrate($0) }
+    } catch {
+      pool.close()
+      throw error
+    }
   }
 
   /// A fresh database on the shared ephemeral test cluster.

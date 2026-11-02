@@ -147,6 +147,17 @@ public final class AccountRegistry: Sendable {
     }
   }
 
+  /// Record the names the hub reports for the account (a sign-in, or `/v1/me`) and the device it
+  /// gave this Mac.
+  public func updateProfile(id: String, deviceId: String, displayName: String, orgName: String) throws {
+    try run { c in
+      let updated = try c.execute(
+        "UPDATE \"accounts\" SET \"device_id\" = $2, \"display_name\" = $3, \"org_name\" = $4 WHERE \"id\" = $1",
+        [id, deviceId, displayName, orgName])
+      guard updated.affected == 1 else { throw WorkspaceError(.notFound, "No account \(id).") }
+    }
+  }
+
   public func remove(id: String) throws {
     try run { try $0.execute("DELETE FROM \"accounts\" WHERE \"id\" = $1", [id]) }
   }

@@ -29,7 +29,7 @@ struct ServerHarness {
     }
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = fakeNodePath()
-    let outcome = try await Coordinator.start(
+    let outcome = try await Coordinator.startSignedIn(
       options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
     guard case .running(let coordinator) = outcome else {
       throw WorkspaceError(.internalError, "expected running")

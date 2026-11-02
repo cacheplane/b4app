@@ -209,7 +209,7 @@ private struct LinkHarness {
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = "/nonexistent/node"
     env["ANTHROPIC_API_KEY"] = nil
-    let outcome = try await Coordinator.start(
+    let outcome = try await Coordinator.startSignedIn(
       options: CoordinatorOptions(
         paths: paths, environment: env, secretStore: MemorySecretStore(), adapterFactory: adapterFactory))
     guard case .running(let coordinator) = outcome else {
@@ -282,7 +282,7 @@ private struct JoinedHarness {
     let fake = FakeHubAPI()
     await fake.addEnrollmentCode(enrollCode, enrolled)
     let connection = FakeHubLinkConnection()
-    let outcome = try await Coordinator.start(
+    let outcome = try await Coordinator.startSignedIn(
       options: CoordinatorOptions(
         paths: paths, environment: env, secretStore: MemorySecretStore(), hubAPIFactory: { _, _ in fake },
         hubLinkConnection: connection))
@@ -626,14 +626,17 @@ private struct JoinedHarness {
     let h = try await JoinedHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.join()
+    let hub = h.coordinator.hub
     await h.fake.setFailNext(
       HubError(kind: "request_error", code: "unauthorized", message: "Unauthorized.", status: 401))
-    _ = try? await h.coordinator.hub.pushNow()
+    _ = try? await hub.pushNow()
     await waitUntil("closed") { socket.deviceClosedCode != nil }
     // The socket closes before the link's `.stopped` reaches `HubLink`, so wait for the status too.
-    await waitUntil("offline") { (try? await h.coordinator.hub.status().link?.state) == .offline }
-    let link = try #require(try await h.coordinator.hub.status().link)
+    await waitUntil("offline") { await hub.linkStatus()?.state == .offline }
+    let link = try #require(await hub.linkStatus())
     #expect(link.state == .offline)
+    // Since the per-account split (Task 9) the refusal also signs the account out.
+    await waitUntil("signed out") { await h.coordinator.accounts.status().state == .signedOut }
   }
 
   @Test func statusReportsConnectedAndLastError() async throws {

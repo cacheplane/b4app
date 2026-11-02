@@ -130,7 +130,7 @@ private struct HubHarness {
     let fake = FakeHubAPI()
     await fake.addEnrollmentCode(code, enrolled)
     let secrets = MemorySecretStore()
-    let outcome = try await Coordinator.start(
+    let outcome = try await Coordinator.startSignedIn(
       options: CoordinatorOptions(
         paths: paths, environment: env, secretStore: secrets, hubAPIFactory: { _, _ in fake },
         // Never a real socket: the relay link has its own tests (HubLinkRelayTests).
@@ -382,22 +382,31 @@ private struct HubHarness {
     let json = String(decoding: try JSONCoding.encoder.encode(joined), as: UTF8.self)
     for secret in ["tok-very-secret", link.tokenRef, code] { #expect(!json.contains(secret)) }
 
-    // A 401 is recorded, leaves the rows unsynced, and stops write-driven pushes until the next join.
+    // A 401 is recorded and leaves the rows unsynced; since the per-account split (Task 9) it also signs
+    // the account out, so no write-driven push follows.
+    let accounts = h.coordinator.accounts
+    // Unsynced rows written straight to the store (no event, so no push yet); the 401 then arrives on
+    // whichever hub call comes next, the pull's long-poll as a rule.
+    _ = try db.insertConnection(
+      Connection(id: "c-after", kind: .claude, label: "After", target: "/bin/claude"))
     await h.fake.setFailNext(unauthorized)
-    try await h.addThread()
-    // Polled: HubSync records the 401 on the link and stops, with no event or later hub call after it.
-    var status = try await h.status()
+    // Polled: HubSync records the 401 on the link, and the account manager signs out, with no event
+    // or later hub call after it.
     let deadline = ContinuousClock.now + .seconds(10)
-    while status.lastError == nil, ContinuousClock.now < deadline {
+    while await accounts.status().state != .signedOut, ContinuousClock.now < deadline {
       try await Task.sleep(for: .milliseconds(50))
-      status = try await h.status()
     }
-    #expect(status.lastError?.contains("unauthorized") == true)
-    #expect(status.unsyncedChanges > 0)
-    #expect(try db.changes(after: 0).last?.deviceId == "dev-mac")
+    #expect(await accounts.status().state == .signedOut)
+    // The account's store, opened again: the 401 is on the link and the rows are still unsynced.
+    let reopened = try WorkspaceDatabase(endpoint: db.endpoint, binDir: db.endpoint.binDir!)
+    defer { try? reopened.close() }
+    #expect(try reopened.hubLink()?.lastError?.contains("unauthorized") == true)
+    #expect(try reopened.unsyncedChangeCount() > 0)
+    #expect(try reopened.changes(after: 0).last?.deviceId == "dev-mac")
     let attempts = await h.fake.pushed.count
-    try await h.addThread()
-    // Timed on purpose: past the 250 ms write debounce, no push may follow; an absence has no event.
+    // A write is now refused, signed out. Timed on purpose: past the 250 ms write debounce, no push may
+    // follow; an absence has no event.
+    await #expect(throws: WorkspaceError.self) { try await h.addThread() }
     try await Task.sleep(for: .milliseconds(600))
     #expect(await h.fake.pushed.count == attempts)
   }

@@ -48,17 +48,15 @@ public enum StartOutcome: Sendable {
   case alreadyRunning(LockRecord?, paths: PlatformPaths)
 }
 
-/// A started coordinator: lock, database, event log, diagnostics, router, socket server.
+/// A started coordinator: lock, cluster, event log, diagnostics, accounts, router, socket server. The
+/// signed-in account's services (database, sessions, servers, projects, hub) are its `AccountScope`,
+/// `accounts.current`, nil while nobody is signed in (sign-in plan, Task 9).
 public final class RunningCoordinator: Sendable {
   public let paths: PlatformPaths
   public let startedAt: String
-  public let database: WorkspaceDatabase
   public let eventLog: EventLog
   public let diagnostics: DiagnosticsService
-  public let sessions: SessionService
-  public let servers: LocalServerService
-  public let hub: HubSync
-  public let projects: ProjectService
+  public let accounts: AccountManager
   public let router: Router
   public let server: SocketServer
   public let sleepWatcher: SleepWatcher
@@ -70,21 +68,15 @@ public final class RunningCoordinator: Sendable {
   public var epoch: String { eventLog.epoch }
 
   init(
-    paths: PlatformPaths, startedAt: String, database: WorkspaceDatabase, eventLog: EventLog,
-    diagnostics: DiagnosticsService, sessions: SessionService, servers: LocalServerService, hub: HubSync,
-    projects: ProjectService, router: Router, server: SocketServer, sleepWatcher: SleepWatcher,
-    postgres: PostgresServer?,
-    lock: SingletonLock
+    paths: PlatformPaths, startedAt: String, eventLog: EventLog, diagnostics: DiagnosticsService,
+    accounts: AccountManager, router: Router, server: SocketServer, sleepWatcher: SleepWatcher,
+    postgres: PostgresServer?, lock: SingletonLock
   ) {
     self.paths = paths
     self.startedAt = startedAt
-    self.database = database
     self.eventLog = eventLog
     self.diagnostics = diagnostics
-    self.sessions = sessions
-    self.servers = servers
-    self.hub = hub
-    self.projects = projects
+    self.accounts = accounts
     self.router = router
     self.server = server
     self.sleepWatcher = sleepWatcher
@@ -97,15 +89,14 @@ public final class RunningCoordinator: Sendable {
     await eventLog.publish(event)
   }
 
+  /// Stop everything. The signed-in account stays signed in, and its managed servers keep running for
+  /// the next start to adopt.
   public func close() async {
     guard await closed.setIfClear() else { return }
     await sleepWatcher.stop()
-    await hub.stop()
     await server.close()
-    await sessions.shutdown()
-    await servers.shutdown()
+    await accounts.shutdown()
     await eventLog.finish()
-    try? database.close()
     if let postgres { try? await postgres.stop() }
     lock.release()
     Log.logger("coordinator").info(
@@ -123,7 +114,7 @@ private actor Flag {
 }
 
 public enum Coordinator {
-  /// Start the coordinator: private dirs, singleton lock, database, event log, socket server.
+  /// Start the coordinator: private dirs, singleton lock, cluster, event log, accounts, socket server.
   /// If a live coordinator already holds the lock, returns `.alreadyRunning` so the caller connects
   /// to it instead. Never kills another process or removes a live lock.
   public static func start(options: CoordinatorOptions = CoordinatorOptions()) async throws -> StartOutcome {
@@ -158,80 +149,62 @@ public enum Coordinator {
     }
 
     let startedAt = Timestamp.now()
-    let store: StoreBoot
+    // The cluster and the account registry are shared; each account's database is opened by its scope.
+    let cluster: StoreCluster
+    let registry: AccountRegistry
     do {
-      store = try await StoreBoot.open(paths: paths, environment: options.environment)
+      cluster = try await StoreCluster.start(paths: paths, environment: options.environment)
     } catch {
       lock.release()
       throw error
     }
-    let database = store.database
+    do {
+      try importPre02Store(paths: paths, cluster: cluster)
+      registry = try AccountRegistry(
+        endpoint: cluster.endpoint, binDir: cluster.binDir,
+        databaseName: AccountManager.registryDatabaseName(for: cluster.endpoint))
+    } catch {
+      await cluster.stopIfOwned()
+      lock.release()
+      throw error
+    }
     let eventLog = EventLog()
     let diagnostics = DiagnosticsService(
       context: DiagnosticsService.Context(
-        paths: paths, startedAt: startedAt, environment: options.environment, database: database,
+        paths: paths, startedAt: startedAt, environment: options.environment,
         secretStore: options.secretStore, eventLog: eventLog))
-    let servers = LocalServerService(
-      context: LocalServerService.Context(
-        database: database, eventLog: eventLog, environment: options.environment, paths: paths))
-    let projects = ProjectService(database: database, eventLog: eventLog)
-    // Migrations have run; give every existing thread without a project the project of its folder. A
-    // failure here must not keep the coordinator from starting: the next start tries again.
-    do {
-      let assigned = try await projects.backfill()
-      if assigned > 0 { logger.info("project backfill assigned \(assigned, privacy: .public) threads") }
-      let served = try await projects.backfillConnections()
-      if served > 0 { logger.info("project backfill assigned \(served, privacy: .public) connections") }
-    } catch {
-      logger.error("project backfill failed: \(String(describing: error), privacy: .public)")
-    }
-    let sessions = SessionService(
-      context: SessionService.Context(
-        database: database, eventLog: eventLog, diagnostics: diagnostics, environment: options.environment,
-        clientVersion: CoordinatorVersion.current, secretStore: options.secretStore,
-        projects: projects, adapterFactory: options.adapterFactory, servers: servers))
-    await sessions.start()
-    await servers.startAll()
-    let relay = RelayExecutor(
-      sessions: sessions, projects: projects, database: database, diagnostics: diagnostics)
-    let linkConnection = options.hubLinkConnection ?? URLSessionHubLinkConnection()
-    let makeLink: HubSync.LinkFactory = { url, token in
-      HubLink(
-        url: url, token: token, executor: relay, eventLog: eventLog, connection: linkConnection,
-        pathMonitor: NWPathMonitorSignal())
-    }
-    let assertions = options.powerAssertions ?? IOKitPowerAssertions()
-    let hub =
-      options.hubAPIFactory.map {
-        HubSync(
-          database: database, secretStore: options.secretStore, eventLog: eventLog, makeAPI: $0,
-          makeLink: makeLink, powerAssertions: assertions)
-      }
-      ?? HubSync(
-        database: database, secretStore: options.secretStore, eventLog: eventLog, makeLink: makeLink,
-        powerAssertions: assertions)
-    await diagnostics.attachRelay { [hub] in await hub.linkStatus() }
-    await diagnostics.attachKeepAwake { [hub] in await hub.keepAwakeHeld() }
+    let accounts = AccountManager(
+      context: AccountManager.Context(
+        cluster: cluster, registry: registry,
+        scope: AccountScope.Context(
+          paths: paths, environment: options.environment, secretStore: options.secretStore,
+          eventLog: eventLog, diagnostics: diagnostics, adapterFactory: options.adapterFactory,
+          hubAPIFactory: options.hubAPIFactory, hubLinkConnection: options.hubLinkConnection,
+          powerAssertions: options.powerAssertions)))
+    await diagnostics.attachAccounts { [accounts] in accounts.current }
+    // Restore the active account (or adopt a joined `workspace`) before the socket opens, so the first
+    // client sees it signed in.
+    await accounts.start()
     let router = Router(
       context: Router.Context(
-        database: database, eventLog: eventLog, diagnostics: diagnostics, sessions: sessions,
-        servers: servers, hub: hub, projects: projects,
-        startedAt: startedAt, paths: paths))
-    await hub.start()
+        eventLog: eventLog, diagnostics: diagnostics, accounts: accounts, startedAt: startedAt, paths: paths))
     let server: SocketServer
     do {
       server = try await SocketServer.start(socketPath: paths.socketPath, router: router, eventLog: eventLog)
     } catch {
-      try? database.close()
+      await accounts.shutdown()
+      await cluster.stopIfOwned()
       lock.release()
       throw error
     }
     // Spec 10.3 sleep/wake: a CLI-spawned coordinator has no app to tell it the Mac woke up. The relay
-    // link is reopened first, so the phone sees the Mac again without waiting out a backoff (M8c).
-    let sleepWatcher = SleepWatcher { [sessions, hub] _ in
-      await hub.reconnectLink()
-      _ = await sessions.reconcileAll(reason: "wake")
-      _ = try? await hub.pushNow()
+    // link is reopened first, so the phone sees the Mac again without waiting out a backoff (M8c). It acts
+    // on whichever account is signed in when the Mac wakes, if any.
+    let sleepWatcher = SleepWatcher { [accounts] _ in
+      guard let scope = accounts.current else { return }
+      await scope.hub.reconnectLink()
+      _ = await scope.sessions.reconcileAll(reason: "wake")
+      _ = try? await scope.hub.pushNow()
     }
     await sleepWatcher.start()
     logger.info(
@@ -239,10 +212,20 @@ public enum Coordinator {
     )
     return .running(
       RunningCoordinator(
-        paths: paths, startedAt: startedAt, database: database, eventLog: eventLog, diagnostics: diagnostics,
-        sessions: sessions, servers: servers, hub: hub, projects: projects, router: router,
-        server: server,
-        sleepWatcher: sleepWatcher,
-        postgres: store.ownedServer, lock: lock))
+        paths: paths, startedAt: startedAt, eventLog: eventLog, diagnostics: diagnostics, accounts: accounts,
+        router: router, server: server, sleepWatcher: sleepWatcher, postgres: cluster.ownedServer,
+        lock: lock))
+  }
+
+  /// The one-time import of a pre-0.2 SQLite file goes into the store's default database (`workspace`),
+  /// which the first account then adopts. Without such a file nothing is opened.
+  private static func importPre02Store(paths: PlatformPaths, cluster: StoreCluster) throws {
+    guard FileManager.default.fileExists(atPath: paths.databasePath) else { return }
+    let database = try WorkspaceDatabase(endpoint: cluster.endpoint, binDir: cluster.binDir)
+    defer { try? database.close() }
+    if let imported = try StoreBoot.importLegacySQLite(paths: paths, into: database) {
+      Log.logger("coordinator").notice(
+        "imported \(imported.rows.values.reduce(0, +), privacy: .public) rows from the pre-0.2 store")
+    }
   }
 }
