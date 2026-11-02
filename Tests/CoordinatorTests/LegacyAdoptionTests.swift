@@ -39,6 +39,16 @@ private struct TemporaryHome {
 
   func remove() { try? FileManager.default.removeItem(at: home) }
   func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
+  func putCluster(in directory: URL) throws {
+    try FileManager.default.createDirectory(
+      at: directory.appendingPathComponent("pg"), withIntermediateDirectories: true)
+    try Data("17".utf8).write(to: directory.appendingPathComponent("pg/PG_VERSION"))
+  }
+  /// Directories set aside next to `b4app-local` by an adoption.
+  var asides: [URL] {
+    let names = (try? FileManager.default.contentsOfDirectory(atPath: support.path)) ?? []
+    return names.filter { $0.hasPrefix("b4app-local.") }.map { support.appendingPathComponent($0) }
+  }
 }
 
 @Suite struct LegacyAdoptionTests {
@@ -93,14 +103,82 @@ private struct TemporaryHome {
     #expect(result.calls.reads.isEmpty)
   }
 
-  @Test func leavesDataWhenTargetExists() async throws {
+  @Test func leavesDataWhenTargetHoldsACluster() async throws {
     let fixture = try TemporaryHome(local: true)
     defer { fixture.remove() }
+    try fixture.putCluster(in: fixture.local)
     let result = try await run(fixture)
     #expect(!result.moved)
     #expect(fixture.exists(fixture.legacy))
     #expect(result.calls.bootOuts == 0)
     #expect(result.calls.reads.isEmpty)
+  }
+
+  @Test func anEmptyTargetDoesNotBlockTheMove() async throws {
+    let fixture = try TemporaryHome(local: true)
+    defer { fixture.remove() }
+    let result = try await run(fixture)
+    #expect(result.moved)
+    #expect(!fixture.exists(fixture.legacy))
+    #expect(fixture.exists(fixture.local.appendingPathComponent("pg/PG_VERSION")))
+    #expect(fixture.asides.isEmpty)
+  }
+
+  @Test func aTargetWithOnlyEmptyLogsDoesNotBlockTheMoveAndLeavesNothingBehind() async throws {
+    // What the CLI launcher or an early Coordinator.start leaves: logs/ and a zero-byte log file.
+    let fixture = try TemporaryHome(local: true)
+    defer { fixture.remove() }
+    let logs = fixture.local.appendingPathComponent("logs")
+    try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+    FileManager.default.createFile(
+      atPath: logs.appendingPathComponent("coordinator.stdout.log").path, contents: nil)
+    let result = try await run(fixture)
+    #expect(result.moved)
+    #expect(!fixture.exists(fixture.legacy))
+    #expect(fixture.exists(fixture.local.appendingPathComponent("pg/PG_VERSION")))
+    #expect(!fixture.exists(fixture.local.appendingPathComponent("logs/coordinator.stdout.log")))
+    #expect(fixture.asides.isEmpty)
+  }
+
+  @Test func aTargetHoldingDataIsSetAsideNotDeleted() async throws {
+    let fixture = try TemporaryHome(local: true)
+    defer { fixture.remove() }
+    let logs = fixture.local.appendingPathComponent("logs")
+    try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+    try Data("a line of output".utf8).write(to: logs.appendingPathComponent("coordinator.stdout.log"))
+    let result = try await run(fixture)
+    #expect(result.moved)
+    #expect(fixture.exists(fixture.local.appendingPathComponent("pg/PG_VERSION")))
+    let aside = try #require(fixture.asides.first)
+    #expect(fixture.asides.count == 1)
+    #expect(
+      try String(contentsOf: aside.appendingPathComponent("logs/coordinator.stdout.log"), encoding: .utf8)
+        == "a line of output")
+  }
+
+  @Test func aFailedMoveRestoresTheSetAsideTarget() async throws {
+    let fixture = try TemporaryHome(local: true)
+    defer { fixture.remove() }
+    try Data("keep me".utf8).write(to: fixture.local.appendingPathComponent("notes.txt"))
+    // The boot-out succeeds and then the legacy directory is gone, so the rename fails.
+    await #expect(throws: (any Error).self) {
+      _ = try await LegacyAdoption.moveDataIfNeeded(
+        flavor: .local, home: fixture.home, readHubURL: { _ in "http://localhost:8080" },
+        bootOutLegacy: { try FileManager.default.removeItem(at: fixture.legacy) })
+    }
+    #expect(
+      try String(contentsOf: fixture.local.appendingPathComponent("notes.txt"), encoding: .utf8) == "keep me")
+    #expect(fixture.asides.isEmpty)
+  }
+
+  @Test func aTargetThatIsAFileIsNeverReplaced() async throws {
+    let fixture = try TemporaryHome()
+    defer { fixture.remove() }
+    try Data("x".utf8).write(to: fixture.local)
+    let result = try await run(fixture)
+    #expect(!result.moved)
+    #expect(fixture.exists(fixture.legacy))
+    #expect(result.calls.bootOuts == 0)
   }
 
   @Test func leavesDataWhenTargetIsADanglingSymlink() async throws {
@@ -279,4 +357,27 @@ private struct ForgetfulSecretStore: SecretStore {
   func put(_ ref: SecretRef, value: String) async throws {}
   func read(_ ref: SecretRef) async throws -> String? { nil }
   func remove(_ ref: SecretRef) async throws -> Bool { false }
+}
+
+@Suite struct LegacyAdoptionGateTests {
+  private func plan(
+    flavor: Flavor = .local, source: Flavor.Source = .environment, environment: [String: String] = [:]
+  ) -> LegacyAdoption.Plan? {
+    LegacyAdoption.planIfExplicitLocal(
+      environment: environment, resolution: Flavor.Resolution(flavor: flavor, source: source))
+  }
+
+  @Test func onlyAnExplicitLocalFlavourAdopts() {
+    #expect(plan(source: .environment) != nil)
+    #expect(plan(source: .bundle) != nil)
+    // The fallback default is what any binary outside an app bundle resolves to.
+    #expect(plan(source: .default) == nil)
+    #expect(plan(flavor: .prod, source: .bundle) == nil)
+    #expect(plan(flavor: .beta, source: .environment) == nil)
+  }
+
+  @Test func anExplicitDataDirectoryOrClusterNeverAdopts() {
+    #expect(plan(environment: ["B4APP_DATA_DIR": "/tmp/x"]) == nil)
+    #expect(plan(environment: ["B4APP_POSTGRES_SOCKET_DIR": "/tmp/x"]) == nil)
+  }
 }

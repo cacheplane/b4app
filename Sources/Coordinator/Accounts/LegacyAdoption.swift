@@ -18,15 +18,22 @@ public enum LegacyAdoption {
 
   // MARK: - The move
 
-  /// Move `b4app` to `b4app-local` when this is the local flavour, `b4app-local` does not exist,
-  /// `b4app` is a directory, and its hub link points at this Mac. Returns true when it moved.
+  /// Move `b4app` to `b4app-local` when this is the local flavour, `b4app` is a directory, its hub
+  /// link points at this Mac, and `b4app-local` does not hold a cluster. Returns true when it moved.
+  ///
+  /// `b4app-local` that is absent, or a directory without `pg/PG_VERSION`, counts as not yet adopted:
+  /// the CLI launcher or an early start can leave `logs/` there. An empty one (directories and
+  /// zero-byte files only) is removed to make room; one holding anything else is renamed aside
+  /// (`b4app-local.aside-<time>`), never deleted, and renamed back if the move fails. Anything else at
+  /// that path (a file, a symbolic link, a directory with a cluster) stops the adoption.
   ///
   /// `home` is the user's home directory; both data directories live under
   /// `Library/Application Support`. `readHubURL` is given the legacy data directory and returns the
   /// URL of its hub link (nil when it has none); it must leave the legacy install as it found it.
   /// `bootOutLegacy` stops the old install's LaunchAgent and cluster; it runs only after the link
   /// has been read and found local, and the directory is moved only after it returns. Any throw from
-  /// either closure leaves the data in place and propagates.
+  /// either closure leaves the data in place and propagates. The caller holds the coordinator's
+  /// singleton lock, which keeps two coordinators from adopting at once.
   public static func moveDataIfNeeded(
     flavor: Flavor, home: URL, readHubURL: (URL) async throws -> String?,
     bootOutLegacy: () async throws -> Void
@@ -35,10 +42,56 @@ public enum LegacyAdoption {
     let support = home.appendingPathComponent("Library/Application Support", isDirectory: true)
     let legacy = support.appendingPathComponent(PlatformPaths.directoryName(for: .prod), isDirectory: true)
     let target = support.appendingPathComponent(PlatformPaths.directoryName(for: .local), isDirectory: true)
-    guard isRealDirectory(legacy), !existsAtAll(target) else { return false }
+    guard isRealDirectory(legacy), targetIsFree(target) else { return false }
     guard let link = try await readHubURL(legacy), pointsAtThisMac(link) else { return false }
     try await bootOutLegacy()
-    try FileManager.default.moveItem(at: legacy, to: target)
+    try moveIntoPlace(legacy, to: target)
+    return true
+  }
+
+  /// True when nothing is at `target`, or a real directory that holds no cluster.
+  private static func targetIsFree(_ target: URL) -> Bool {
+    guard existsAtAll(target) else { return true }
+    return isRealDirectory(target)
+      && !FileManager.default.fileExists(atPath: target.appendingPathComponent("pg/PG_VERSION").path)
+  }
+
+  private static func moveIntoPlace(_ legacy: URL, to target: URL) throws {
+    let fileManager = FileManager.default
+    var aside: URL?
+    if existsAtAll(target) {
+      if holdsNoData(target) {
+        try fileManager.removeItem(at: target)
+      } else {
+        let stamp = Int(Date().timeIntervalSince1970)
+        let name = "\(target.lastPathComponent).aside-\(stamp)-\(UUID().uuidString.prefix(6))"
+        let destination = target.deletingLastPathComponent().appendingPathComponent(name)
+        try fileManager.moveItem(at: target, to: destination)
+        aside = destination
+      }
+    }
+    do {
+      try fileManager.moveItem(at: legacy, to: target)
+    } catch {
+      if let aside { try? fileManager.moveItem(at: aside, to: target) }
+      throw error
+    }
+  }
+
+  /// True for a tree of directories and zero-byte regular files, which a launcher or an early start
+  /// creates and which hold nothing worth keeping. A symbolic link or anything else says no.
+  private static func holdsNoData(_ directory: URL) -> Bool {
+    let fileManager = FileManager.default
+    guard let entries = try? fileManager.contentsOfDirectory(atPath: directory.path) else { return false }
+    for name in entries {
+      let child = directory.appendingPathComponent(name)
+      guard let attributes = try? fileManager.attributesOfItem(atPath: child.path) else { return false }
+      switch attributes[.type] as? FileAttributeType {
+      case .typeDirectory: if !holdsNoData(child) { return false }
+      case .typeRegular: if (attributes[.size] as? NSNumber)?.intValue != 0 { return false }
+      default: return false
+      }
+    }
     return true
   }
 
@@ -122,6 +175,37 @@ public enum LegacyAdoption {
 
   // MARK: - Production wiring
 
+  /// What `Coordinator.start` needs to adopt: where the home is and the two closures
+  /// `moveDataIfNeeded` takes. Tests build one from fakes; `Production.plan` is the real one.
+  public struct Plan: Sendable {
+    public var home: URL
+    public var readHubURL: @Sendable (URL) async throws -> String?
+    public var bootOutLegacy: @Sendable () async throws -> Void
+
+    public init(
+      home: URL, readHubURL: @escaping @Sendable (URL) async throws -> String?,
+      bootOutLegacy: @escaping @Sendable () async throws -> Void
+    ) {
+      self.home = home
+      self.readHubURL = readHubURL
+      self.bootOutLegacy = bootOutLegacy
+    }
+  }
+
+  /// The gate: a plan for the real Mac only when the local flavour was chosen explicitly
+  /// (`B4APP_FLAVOR=local`, or `B4AppFlavor` in the enclosing app's Info.plist; never the fallback a
+  /// binary outside any bundle gets, so `swift run b4app-coordinator` adopts nothing) and no data
+  /// directory or cluster was named (an explicit one means a test or an experiment).
+  public static func planIfExplicitLocal(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    resolution: Flavor.Resolution = Flavor.currentResolution
+  ) -> Plan? {
+    guard resolution.flavor == .local, resolution.source != .default,
+      environment["B4APP_DATA_DIR"] == nil, environment["B4APP_POSTGRES_SOCKET_DIR"] == nil
+    else { return nil }
+    return Production(environment: environment).plan
+  }
+
   /// The two closures `moveDataIfNeeded` takes, for the real Mac: they start and stop the old
   /// install's PostgreSQL cluster through `PostgresServer` (which checks that the postmaster is a
   /// `postgres` serving that directory, D-025) and its LaunchAgent through `launchctl`. Tests do not
@@ -145,6 +229,10 @@ public enum LegacyAdoption {
     var legacyRuntimeDir: String {
       let tmp = environment["TMPDIR"] ?? NSTemporaryDirectory()
       return (tmp as NSString).appendingPathComponent(PlatformPaths.directoryName(for: .prod))
+    }
+
+    var plan: Plan {
+      Plan(home: home, readHubURL: { try await readHubURL($0) }, bootOutLegacy: { try await bootOutLegacy() })
     }
 
     private func cluster(legacyDirectory: URL) throws -> PostgresCluster {

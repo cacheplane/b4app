@@ -11,11 +11,15 @@ public struct CoordinatorOptions: Sendable {
   public var adapterFactory: SessionService.AdapterFactory?
   /// Overrides the hub client construction (tests inject a `FakeHubAPI`); nil builds `HTTPHubAPI`.
   public var hubAPIFactory: HubSync.APIFactory?
+  /// Adopt the pre-flavour install's data directory once this process holds the lock and before it
+  /// creates its own data directory (sign-in plan, Task 3). Nil, the default, adopts nothing; the
+  /// gate that decides is `LegacyAdoption.planIfExplicitLocal`.
+  public var legacyAdoption: LegacyAdoption.Plan?
 
   public init(
     paths: PlatformPaths? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
     secretStore: (any SecretStore)? = nil, adapterFactory: SessionService.AdapterFactory? = nil,
-    hubAPIFactory: HubSync.APIFactory? = nil
+    hubAPIFactory: HubSync.APIFactory? = nil, legacyAdoption: LegacyAdoption.Plan? = nil
   ) {
     self.environment = environment
     self.paths = paths ?? PlatformPaths.resolve(environment: environment)
@@ -25,6 +29,7 @@ public struct CoordinatorOptions: Sendable {
         flavorSuffix: Flavor.current.keychainGroupSuffix)
     self.adapterFactory = adapterFactory
     self.hubAPIFactory = hubAPIFactory
+    self.legacyAdoption = legacyAdoption
   }
 }
 
@@ -114,9 +119,9 @@ public enum Coordinator {
   public static func start(options: CoordinatorOptions = CoordinatorOptions()) async throws -> StartOutcome {
     let logger = Log.logger("coordinator")
     let paths = options.paths
+    // The lock lives in the runtime directory, so that comes first; nothing creates the data
+    // directory until the lock is ours, because the adoption below moves a directory into its place.
     try PrivateFiles.ensurePrivateDirectory(paths.runtimeDir)
-    try PrivateFiles.ensurePrivateDirectory(paths.dataDir)
-    try PrivateFiles.ensurePrivateDirectory(paths.logDir)
 
     let lock: SingletonLock
     switch try SingletonLock.acquire(path: paths.lockPath, socketPath: paths.socketPath) {
@@ -125,6 +130,21 @@ public enum Coordinator {
       return .alreadyRunning(record, paths: paths)
     case .acquired(let acquired):
       lock = acquired
+    }
+    do {
+      if let adoption = options.legacyAdoption {
+        if try await LegacyAdoption.moveDataIfNeeded(
+          flavor: .local, home: adoption.home, readHubURL: adoption.readHubURL,
+          bootOutLegacy: adoption.bootOutLegacy)
+        {
+          logger.notice("adopted the previous install's data directory b4app as b4app-local")
+        }
+      }
+      try PrivateFiles.ensurePrivateDirectory(paths.dataDir)
+      try PrivateFiles.ensurePrivateDirectory(paths.logDir)
+    } catch {
+      lock.release()
+      throw error
     }
 
     let startedAt = Timestamp.now()

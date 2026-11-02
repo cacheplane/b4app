@@ -52,6 +52,29 @@ import Testing
       Flavor.resolve(environment: [:], executableURL: URL(fileURLWithPath: "/usr/bin/true")) == .local)
   }
 
+  @Test func resolutionSaysWhereTheFlavourCameFrom() throws {
+    let local = try makeApp(flavor: "local")
+    let bare = try makeApp(flavor: nil)
+    defer {
+      try? FileManager.default.removeItem(at: local.root)
+      try? FileManager.default.removeItem(at: bare.root)
+    }
+    func resolve(_ env: [String: String], _ url: URL?) -> Flavor.Resolution {
+      Flavor.resolution(environment: env, executableURL: url)
+    }
+    #expect(
+      resolve(["B4APP_FLAVOR": "local"], bare.executable)
+        == Flavor.Resolution(flavor: .local, source: .environment))
+    #expect(resolve([:], local.executable) == Flavor.Resolution(flavor: .local, source: .bundle))
+    // The fallback is never explicit: no variable, no flavour in the bundle, an unknown value.
+    #expect(resolve([:], bare.executable) == Flavor.Resolution(flavor: .local, source: .default))
+    #expect(resolve([:], nil) == Flavor.Resolution(flavor: .local, source: .default))
+    #expect(resolve(["B4APP_FLAVOR": "staging"], nil) == Flavor.Resolution(flavor: .local, source: .default))
+    #expect(
+      resolve(["B4APP_FLAVOR": "staging"], local.executable)
+        == Flavor.Resolution(flavor: .local, source: .bundle))
+  }
+
   @Test func rawValuesAreTheEnvironmentSpellings() {
     #expect(Flavor.allCases.map(\.rawValue) == ["prod", "beta", "local"])
   }

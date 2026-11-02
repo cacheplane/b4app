@@ -9,18 +9,41 @@ import Foundation
 public enum Flavor: String, Sendable, CaseIterable {
   case prod, beta, local
 
+  /// Where a resolved flavour came from. Only `.environment` and `.bundle` are explicit choices;
+  /// `.default` is the fallback for a binary outside any app bundle and no `B4APP_FLAVOR`, which says
+  /// nothing about what the owner meant to run.
+  public enum Source: Sendable, Equatable { case environment, bundle, `default` }
+
+  public struct Resolution: Sendable, Equatable {
+    public var flavor: Flavor
+    public var source: Source
+    public init(flavor: Flavor, source: Source) {
+      self.flavor = flavor
+      self.source = source
+    }
+  }
+
   /// The flavour of this process, resolved once.
-  public static let current: Flavor = resolve(
+  public static let current: Flavor = currentResolution.flavor
+
+  /// How the flavour of this process was resolved, resolved once.
+  public static let currentResolution: Resolution = resolution(
     environment: ProcessInfo.processInfo.environment, executableURL: Bundle.main.executableURL)
 
   public static func resolve(environment: [String: String], executableURL: URL?) -> Flavor {
-    if let value = environment["B4APP_FLAVOR"], let flavor = Flavor(rawValue: value) { return flavor }
+    resolution(environment: environment, executableURL: executableURL).flavor
+  }
+
+  public static func resolution(environment: [String: String], executableURL: URL?) -> Resolution {
+    if let value = environment["B4APP_FLAVOR"], let flavor = Flavor(rawValue: value) {
+      return Resolution(flavor: flavor, source: .environment)
+    }
     if let executableURL, let value = bundleFlavor(enclosing: executableURL),
       let flavor = Flavor(rawValue: value)
     {
-      return flavor
+      return Resolution(flavor: flavor, source: .bundle)
     }
-    return .local
+    return Resolution(flavor: .local, source: .default)
   }
 
   /// `B4AppFlavor` from `Contents/Info.plist` of the nearest ancestor of `url` named `*.app`.

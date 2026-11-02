@@ -187,3 +187,106 @@ private func connect(_ coordinator: RunningCoordinator) async throws -> Workspac
     #expect(await log.replay(epoch: "other", afterSequence: 2) == nil)
   }
 }
+
+private final class AdoptionProbe: @unchecked Sendable {
+  private let lock = NSLock()
+  private var _reads = 0
+  private var _state: (runtime: Bool, lock: Bool, data: Bool, logs: Bool)?
+  var reads: Int { lock.withLock { _reads } }
+  var state: (runtime: Bool, lock: Bool, data: Bool, logs: Bool)? { lock.withLock { _state } }
+  func record(_ paths: PlatformPaths) {
+    let fm = FileManager.default
+    lock.withLock {
+      _reads += 1
+      _state = (
+        fm.fileExists(atPath: paths.runtimeDir), fm.fileExists(atPath: paths.lockPath),
+        fm.fileExists(atPath: paths.dataDir), fm.fileExists(atPath: paths.logDir)
+      )
+    }
+  }
+}
+
+private struct AdoptionFailure: Error {}
+
+/// The pre-flavour adoption runs inside `Coordinator.start`, under the singleton lock and before the
+/// data directory exists (sign-in plan, Task 3 fix round 1). Plans here use fake closures and a
+/// temporary home.
+@Suite(.serialized) struct CoordinatorAdoptionOrderTests {
+  private func plan(
+    _ probe: AdoptionProbe, paths: PlatformPaths, fails: Bool = false
+  ) -> LegacyAdoption.Plan {
+    LegacyAdoption.Plan(
+      home: URL(fileURLWithPath: paths.runtimeDir).deletingLastPathComponent().appendingPathComponent("home"),
+      readHubURL: { _ in
+        probe.record(paths)
+        if fails { throw AdoptionFailure() }
+        return nil
+      },
+      bootOutLegacy: {})
+  }
+
+  private func options(_ paths: PlatformPaths, plan: LegacyAdoption.Plan?) -> CoordinatorOptions {
+    CoordinatorOptions(
+      paths: paths, environment: isolatedEnvironment(paths), secretStore: MemorySecretStore(),
+      legacyAdoption: plan)
+  }
+
+  @Test func adoptionRunsUnderTheLockBeforeTheDataDirectoryExists() async throws {
+    let paths = try temporaryPaths()
+    let home = URL(fileURLWithPath: paths.runtimeDir).deletingLastPathComponent().appendingPathComponent(
+      "home")
+    let legacy = home.appendingPathComponent("Library/Application Support/b4app")
+    try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+    let probe = AdoptionProbe()
+    let outcome = try await Coordinator.start(options: options(paths, plan: plan(probe, paths: paths)))
+    guard case .running(let coordinator) = outcome else {
+      Issue.record("expected running")
+      return
+    }
+    defer { Task { await coordinator.close() } }
+    #expect(probe.reads == 1)
+    let seen = try #require(probe.state)
+    #expect(seen.runtime && seen.lock)
+    #expect(!seen.data && !seen.logs)
+    #expect(FileManager.default.fileExists(atPath: paths.dataDir))
+    await coordinator.close()
+  }
+
+  @Test func aCoordinatorThatLosesTheLockNeverAdopts() async throws {
+    let paths = try temporaryPaths()
+    let first = try await Coordinator.start(options: options(paths, plan: nil))
+    guard case .running(let running) = first else {
+      Issue.record("expected running")
+      return
+    }
+    let probe = AdoptionProbe()
+    let second = try await Coordinator.start(options: options(paths, plan: plan(probe, paths: paths)))
+    guard case .alreadyRunning = second else {
+      Issue.record("expected alreadyRunning")
+      await running.close()
+      return
+    }
+    #expect(probe.reads == 0)
+    await running.close()
+  }
+
+  @Test func aFailedAdoptionFailsTheStartAndReleasesTheLock() async throws {
+    let paths = try temporaryPaths()
+    let home = URL(fileURLWithPath: paths.runtimeDir).deletingLastPathComponent().appendingPathComponent(
+      "home")
+    try FileManager.default.createDirectory(
+      at: home.appendingPathComponent("Library/Application Support/b4app"), withIntermediateDirectories: true)
+    let probe = AdoptionProbe()
+    await #expect(throws: AdoptionFailure.self) {
+      _ = try await Coordinator.start(options: options(paths, plan: plan(probe, paths: paths, fails: true)))
+    }
+    #expect(!FileManager.default.fileExists(atPath: paths.dataDir))
+    // The lock is free again: a start without the plan runs.
+    let retry = try await Coordinator.start(options: options(paths, plan: nil))
+    guard case .running(let coordinator) = retry else {
+      Issue.record("expected running after the failed adoption")
+      return
+    }
+    await coordinator.close()
+  }
+}

@@ -257,7 +257,9 @@ actor CoordinatorHost {
       }
     }
     if running == nil {
-      switch try await Coordinator.start(options: CoordinatorOptions(paths: paths)) {
+      switch try await Coordinator.start(
+        options: CoordinatorOptions(paths: paths, legacyAdoption: LegacyAdoption.planIfExplicitLocal()))
+      {
       case .running(let coordinator): running = coordinator
       case .alreadyRunning: break
       }
