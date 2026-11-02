@@ -251,9 +251,10 @@ Request (all three fields required, no other field allowed):
 - `bundleId`: the app's bundle identifier, `^[A-Za-z0-9][A-Za-z0-9.-]{0,154}$`. It comes from the
   phone, so the hub needs no per-flavour configuration.
 
-`204` with no body. Errors: `401 unauthorized`; `403 forbidden` when the device is not an `ios`
-device (checked first); `400 invalid_request` for a malformed body, an unknown field, or a field
-that fails the rules above; `503 maintenance` while writes are paused. The token is never logged.
+`204` with no body. Errors, in the order the hub checks them: `401 unauthorized`; `503
+maintenance` while writes are paused; `400 invalid_request` for a malformed body, a missing or
+unknown field; `403 forbidden` when the device is not an `ios` device; then `400 invalid_request`
+for a field that fails the rules above. The token is never logged.
 
 #### When the hub notifies
 
