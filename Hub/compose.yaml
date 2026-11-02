@@ -47,7 +47,8 @@ services:
       DATABASE_URL: postgres://b4hub_app:${B4HUB_APP_PASSWORD:?set B4HUB_APP_PASSWORD in Hub/.env (see .env.example)}@db:5432/b4hub
       # Notifications for a phone in the Simulator: the hub writes `.apns` files into /spool, and
       # B4HUB_PUSH_SPOOL_HOST_DIR (default ./push-spool) is where they appear on this machine.
-      # Each file is what `xcrun simctl push booted - < file` reads.
+      # Run `Scripts/sim-push.sh` to feed each file to the booted Simulator
+      # (`xcrun simctl push` reads them), moving it to sent/ or failed/.
       B4HUB_PUSH_SENDER: spool
       B4HUB_PUSH_SPOOL_DIR: /spool
     volumes:
