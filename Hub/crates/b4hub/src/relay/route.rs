@@ -210,10 +210,21 @@ impl<'a> Claim<'a> {
         })
     }
 
-    /// Counts the command as held until its answer is queued (the claim is dropped).
+    /// Counts the command as held: until [`Claim::unmark_held`] when the Mac came back and it is
+    /// forwarded, or else until its `device_offline` answer is queued (the claim is dropped), so
+    /// the drain waits for that answer and no longer.
     fn mark_held(&self) {
         if !self.held.swap(true, Ordering::SeqCst) {
             self.commands.holding.send_modify(|count| *count += 1);
+        }
+    }
+
+    /// The hold ended with the Mac back online: the command is no longer the drain's business.
+    fn unmark_held(&self) {
+        if self.held.swap(false, Ordering::SeqCst) {
+            self.commands
+                .holding
+                .send_modify(|count| *count = count.saturating_sub(1));
         }
     }
 
@@ -467,6 +478,7 @@ async fn deliver(
         }
         claim.mark_held();
         hold(relay, &owner).await?;
+        claim.unmark_held();
     }
     forward(relay, caller, claim, id, method, params, &owner).await
 }

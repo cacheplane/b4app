@@ -785,9 +785,12 @@ drain waits for the links separately). Just before that, every command held for 
 answered `device_offline` (a hold never times out silently on an instance nobody is connected to),
 and a link writes what is already queued before its close. Once the links are closed, the instance
 deletes its claims and its instance row, so its users are claimed at once by the instance they
-reconnect to. The whole sequence is bounded by
-`B4HUB_SHUTDOWN_WAIT_MS` (default 30000) from the moment the signal arrives; anything still open
-then is dropped and the process exits.
+reconnect to. The whole sequence, the release of the claims included, is bounded by
+`B4HUB_SHUTDOWN_WAIT_MS` (default 30000) from the moment the signal arrives: the drain gets the
+wait less a reserve for the release (an eighth of it, at most 1 second), anything still open then
+is dropped, the release gets what is left, and the process exits. Behind the AWS load balancer with
+more than one task, the target group's deregistration delay is 5 seconds, so SIGTERM follows
+deregistration almost at once and this drain, not the load balancer, closes the links.
 
 ## Maintenance mode
 

@@ -58,6 +58,10 @@ const CLOSE_GRACE: Duration = Duration::from_secs(2);
 /// How long [`probe`] may take, `hello` exchange included.
 pub const PROBE_WAIT: Duration = Duration::from_secs(2);
 
+/// How long [`probe`] waits for its link task to finish after the exchange before aborting it, so
+/// a failing `/readyz` still answers well inside the container `HEALTHCHECK --timeout=4s`.
+const PROBE_JOIN_WAIT: Duration = Duration::from_millis(500);
+
 /// What a link task reads and writes: the upgraded WebSocket, or the readiness probe's in-memory
 /// socket. The link task is the same code over either.
 pub trait LinkSocket: Send {
@@ -183,7 +187,7 @@ pub enum ProbeFailure {
 pub async fn probe(state: &AppState) -> Result<(), ProbeFailure> {
     let (hub_end, mut device) = MemorySocket::pair();
     let live = state.relay.track();
-    let task = tokio::spawn(serve_link(
+    let mut task = tokio::spawn(serve_link(
         state.clone(),
         Identity::probe(),
         PROTOCOL,
@@ -214,11 +218,20 @@ pub async fn probe(state: &AppState) -> Result<(), ProbeFailure> {
         Ok(outcome) => outcome,
         Err(_) => Err(ProbeFailure::Timeout),
     };
+    if outcome.is_err() {
+        // A wedged link task must not linger in the relay's live count (shutdown waits on it).
+        task.abort();
+        return outcome;
+    }
     // Close politely, then hang up: the link task sees the close, and then the end of the socket.
-    let _ = device.send(Message::Close(None)).await;
+    let _ = tokio::time::timeout(PROBE_JOIN_WAIT, device.send(Message::Close(None))).await;
     drop(device);
-    if tokio::time::timeout(PROBE_WAIT, task).await.is_err() {
-        tracing::warn!("the readiness probe's link task did not finish");
+    if tokio::time::timeout(PROBE_JOIN_WAIT, &mut task)
+        .await
+        .is_err()
+    {
+        task.abort();
+        tracing::warn!("the readiness probe's link task did not finish; aborted");
     }
     outcome
 }

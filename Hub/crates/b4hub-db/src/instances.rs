@@ -55,13 +55,29 @@ pub async fn heartbeat(db: &Db, instance_id: Uuid) -> Result<bool> {
 
 /// Claims `user_id`'s links for `instance_id`, unless another instance whose heartbeat is younger
 /// than `alive_within` holds them, and says who holds them now. One statement decides: two
-/// instances claiming at once both read the winner afterwards.
+/// instances claiming at once both read the winner afterwards. If the row vanished between the
+/// two statements (its owner released its claims just then), the claim is tried once more.
 pub async fn claim_user(
     db: &Db,
     user_id: Uuid,
     instance_id: Uuid,
     alive_within: Duration,
 ) -> Result<Claim> {
+    for _ in 0..2 {
+        if let Some(claim) = try_claim(db, user_id, instance_id, alive_within).await? {
+            return Ok(claim);
+        }
+    }
+    // Vanished twice in a row: not a race worth chasing further.
+    Err(sqlx::Error::RowNotFound.into())
+}
+
+async fn try_claim(
+    db: &Db,
+    user_id: Uuid,
+    instance_id: Uuid,
+    alive_within: Duration,
+) -> Result<Option<Claim>> {
     sqlx::query(
         "INSERT INTO user_links (user_id, instance_id, claimed_at) VALUES ($1, $2, now()) \
          ON CONFLICT (user_id) DO UPDATE \
@@ -76,15 +92,18 @@ pub async fn claim_user(
     .bind(alive_within.as_secs_f64())
     .execute(&db.pool)
     .await?;
-    let owner: Uuid = sqlx::query_scalar("SELECT instance_id FROM user_links WHERE user_id = $1")
-        .bind(user_id)
-        .fetch_one(&db.pool)
-        .await?;
-    Ok(if owner == instance_id {
-        Claim::Ours
-    } else {
-        Claim::Other(owner)
-    })
+    let owner: Option<Uuid> =
+        sqlx::query_scalar("SELECT instance_id FROM user_links WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(&db.pool)
+            .await?;
+    Ok(owner.map(|owner| {
+        if owner == instance_id {
+            Claim::Ours
+        } else {
+            Claim::Other(owner)
+        }
+    }))
 }
 
 /// The instance holding `user_id`'s claim, if any.

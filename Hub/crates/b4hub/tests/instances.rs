@@ -343,3 +343,42 @@ async fn set_cookie_of(hub: &Hub, path: &str) -> Option<String> {
         .get(header::SET_COOKIE)
         .map(|value| value.to_str().unwrap().to_string())
 }
+
+#[sqlx::test(migrations = false)]
+async fn a_hold_that_was_forwarded_does_not_delay_the_drain(pool: PgPool) {
+    let hub = spawn_instance(&pool, BEAT).await;
+    let blove = user(&hub).await;
+    let (mac, _) = link(&hub, &blove.mac_token, None).await;
+    mac.close().await;
+    eventually("the Mac to go offline", || async {
+        (!hub.state.relay.online(blove.mac_id)).then_some(())
+    })
+    .await;
+    let (mut phone, _) = link(&hub, &blove.phone_token, None).await;
+    phone
+        .command(
+            "stop-1",
+            RelayMethod::TurnInterrupt,
+            json!({"threadId": "thread-1"}),
+        )
+        .await;
+    eventually("the interrupt to be held", || async {
+        (hub.state.relay.held(blove.mac_id) == 1).then_some(())
+    })
+    .await;
+    // The Mac comes back and gets the command; it has not answered yet.
+    let (mut mac, _) = link(&hub, &blove.mac_token, None).await;
+    let (id, ..) = mac.expect_command().await;
+    assert_eq!(id, "stop-1");
+
+    // Nothing is held any more, so answering holds is immediate rather than the full bound.
+    let started = std::time::Instant::now();
+    hub.state.relay.release_holds(Duration::from_secs(1)).await;
+    assert!(
+        started.elapsed() < Duration::from_millis(200),
+        "{:?}",
+        started.elapsed()
+    );
+    mac.reply("stop-1", json!({})).await;
+    assert_eq!(phone.expect_reply().await.0, "stop-1");
+}

@@ -29,6 +29,10 @@ const READINESS_GRACE_MAX: Duration = Duration::from_millis(500);
 /// at a quarter of the shutdown wait.
 const HOLD_RELEASE_MAX: Duration = Duration::from_secs(1);
 
+/// The part of the shutdown wait kept back for releasing the instance's claims after the drain,
+/// capped at an eighth of the wait.
+const RELEASE_RESERVE_MAX: Duration = Duration::from_secs(1);
+
 /// How often `serve` prunes every org's change log.
 pub const PRUNE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -111,14 +115,18 @@ pub fn router(state: AppState) -> Router {
 
 /// Serves `router(state)` on `listener` until `signal` resolves, then shuts down: `/readyz`
 /// turns 503 `shutting_down` and waiters are told, the listener stays open for a short readiness
-/// grace and then closes, and in-flight requests drain. The whole sequence is bounded by `wait`
-/// from the moment the signal arrives; whatever is still open then is dropped.
+/// grace and then closes, and in-flight requests drain.
 ///
 /// Around that, the instance: it registers before serving and heartbeats while it serves
 /// (`instances::heartbeat_loop`); when the signal arrives, commands held for offline Macs are
 /// answered `device_offline` first (so the answers go out before the links close), and once the
-/// links are closed (or the wait ran out) the instance releases its claims, so its users are
-/// claimed at once by the instance they reconnect to.
+/// links are closed the instance releases its claims, so its users are claimed at once by the
+/// instance they reconnect to.
+///
+/// The whole sequence, from the signal to the claims released, is bounded by `wait`: the drain
+/// (holds, readiness grace, requests, links) gets `wait` less a reserve for the release (an
+/// eighth of `wait`, at most 1 s), whatever is still open then is dropped, and the release gets
+/// what is left.
 pub async fn run(
     listener: TcpListener,
     state: AppState,
@@ -129,6 +137,9 @@ pub async fn run(
     let hold_release = (wait / 4).min(HOLD_RELEASE_MAX);
     let shutdown = state.shutdown.clone();
     let (signalled_tx, signalled_rx) = oneshot::channel::<()>();
+    let release_reserve = (wait / 8).min(RELEASE_RESERVE_MAX);
+    // When the signal arrived, so the release after the drain knows what is left of `wait`.
+    let signalled_at = Arc::new(std::sync::Mutex::new(None::<tokio::time::Instant>));
 
     let public_url = state.public_url.as_ref().map(|url| url.to_string());
     instances::register(&state.db, &state.instances, public_url.as_deref()).await;
@@ -144,12 +155,15 @@ pub async fn run(
 
     let relay = state.relay.clone();
     let holds = state.relay.clone();
+    let marked = Arc::clone(&signalled_at);
     let server = axum::serve(listener, router(state))
         .with_graceful_shutdown(async move {
             signal.await;
+            // The deadline starts now, before anything else the drain does.
+            *marked.lock().unwrap_or_else(|p| p.into_inner()) = Some(tokio::time::Instant::now());
+            let _ = signalled_tx.send(());
             holds.release_holds(hold_release).await;
             shutdown.trigger();
-            let _ = signalled_tx.send(());
             tokio::time::sleep(grace).await;
         })
         .into_future();
@@ -162,7 +176,7 @@ pub async fn run(
     };
     let deadline = async move {
         match signalled_rx.await {
-            Ok(()) => tokio::time::sleep(wait).await,
+            Ok(()) => tokio::time::sleep(wait - release_reserve).await,
             Err(_) => std::future::pending().await,
         }
     };
@@ -170,12 +184,26 @@ pub async fn run(
     let result = tokio::select! {
         result = server => result,
         () = deadline => {
-            tracing::warn!(wait_ms = wait.as_millis() as u64, "shutdown deadline reached; dropping open connections");
+            tracing::warn!(
+                wait_ms = (wait - release_reserve).as_millis() as u64,
+                "shutdown deadline reached; dropping open connections"
+            );
             Ok(())
         }
     };
     drop(heartbeat);
-    instances::release(&db, &instance).await;
+    let left = signalled_at
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .map_or(wait, |at| {
+            (at + wait).saturating_duration_since(tokio::time::Instant::now())
+        });
+    if tokio::time::timeout(left, instances::release(&db, &instance))
+        .await
+        .is_err()
+    {
+        tracing::warn!("releasing the instance's claims did not finish within the shutdown wait");
+    }
     result
 }
 
