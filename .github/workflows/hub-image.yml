@@ -1,0 +1,226 @@
+name: Hub image
+
+# Builds the hub image once per architecture on a native runner (no QEMU),
+# merges the two into one multi-arch index, attests it, and checks the image
+# contract. A release never rebuilds: it adds semver tags to an existing digest.
+# The `workflow_call` path hands the index digest to the deploy flow.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Hub/**"
+      - ".github/workflows/hub-image.yml"
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      digest:
+        description: The multi-arch index digest (sha256:...)
+        value: ${{ jobs.merge.outputs.digest }}
+      image:
+        description: The image repository
+        value: ${{ jobs.merge.outputs.image }}
+
+concurrency:
+  group: hub-image-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/cacheplane/b4hub
+
+jobs:
+  changed:
+    name: Skip unchanged nightly
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      packages: read
+      actions: read
+    outputs:
+      skip: ${{ steps.decide.outputs.skip }}
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Decide whether the nightly can be skipped
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          skip=false
+          if [ "$EVENT" = "schedule" ]; then
+            # Missing image or label means "build"; only a clean match skips.
+            revision="$(docker buildx imagetools inspect "$IMAGE:nightly" --format '{{json .}}' 2>/dev/null \
+              | jq -r '[.. | objects | .Labels? // empty | ."org.opencontainers.image.revision"? // empty] | first // ""' || true)"
+            previous="$(gh run list --repo "$REPO" --workflow hub-image.yml --event schedule \
+              --status completed --limit 1 --json conclusion --jq '.[0].conclusion // ""')"
+            echo "nightly revision: ${revision:-none}; previous scheduled run: ${previous:-none}"
+            if [ "$revision" = "$SHA" ] && [ "$previous" = "success" ]; then
+              skip=true
+            fi
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: changed
+    if: needs.changed.outputs.skip != 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    # Provenance and the SBOM ride along as attestation manifests in the
+    # registry; the signed GitHub attestation is made once, in `merge`.
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: Hub
+          platforms: ${{ matrix.platform }}
+          push: true
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true
+          cache-from: type=gha,scope=hub-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=hub-${{ matrix.platform }}
+          provenance: mode=max
+          sbom: true
+      - name: Export the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+          echo "PAIR=${PLATFORM//\//-}" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digests-${{ env.PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Merge, tag, attest
+    needs: [changed, build]
+    if: needs.changed.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    outputs:
+      digest: ${{ steps.index.outputs.digest }}
+      image: ${{ steps.index.outputs.image }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute tags
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,format=long,prefix=sha-
+            type=ref,event=branch
+            type=schedule,pattern=nightly
+            type=schedule,pattern=nightly-{{date 'YYYYMMDD'}}
+            type=match,pattern=hub-v(.*),group=1
+            type=match,pattern=hub-v(\d+\.\d+),group=1
+            type=match,pattern=hub-v(\d+),group=1
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/hub-v') }}
+      - name: Create the multi-arch index
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          TAGS_JSON: ${{ steps.meta.outputs.json }}
+        run: |
+          set -euo pipefail
+          tag_args=()
+          while IFS= read -r tag; do tag_args+=(-t "$tag"); done < <(jq -r '.tags[]' <<< "$TAGS_JSON")
+          sources=()
+          for digest in *; do sources+=("$IMAGE@sha256:$digest"); done
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+      - name: Read the index digest
+        id: index
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "$IMAGE:sha-$SHA" --format '{{json .Manifest}}' | jq -r .digest)"
+          case "$digest" in sha256:*) ;; *) echo "unexpected digest: $digest" >&2; exit 1 ;; esac
+          docker buildx imagetools inspect "$IMAGE@$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          push-to-registry: true
+
+  check:
+    name: Image contract
+    needs: [changed, merge]
+    if: needs.changed.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check the image
+        env:
+          DIGEST: ${{ needs.merge.outputs.digest }}
+        run: Hub/scripts/check-image.sh "$IMAGE@$DIGEST"

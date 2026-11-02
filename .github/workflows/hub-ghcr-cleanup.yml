@@ -1,0 +1,34 @@
+name: Hub GHCR cleanup
+
+# Prunes the b4hub package weekly. Semver, latest, main, and nightly stay;
+# the rest keeps the newest 30, dated nightlies keep the newest 14.
+
+on:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    name: Prune b4hub
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      packages: write
+    steps:
+      - name: Prune old dated nightlies
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        with:
+          package: b4hub
+          tags: "nightly-*"
+          keep-n-tagged: 14
+      - name: Prune old tagged and untagged images
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        with:
+          package: b4hub
+          keep-n-tagged: 30
+          exclude-tags: 'latest,main,nightly,^[0-9]+(\.[0-9]+){0,2}$'
+          delete-untagged: true
