@@ -194,7 +194,7 @@ Exit gate status: the fixture gates pass (design exit items 4 to 6, locally: a c
 
 ## Settings: connections, usage, B4 projects (D-081 to D-084)
 
-- [x] Connection cards with icon status, plan usage (Codex, Claude) and B4 token totals, checks that retry, the "+" menu, the B4 form with a Keychain-stored key, Edit (name, key), and the B4 projects page (renamed from Local servers) with agent rows and the attach sheet. `implemented` and `fixture-tested` (adapter, storage, coordinator, model, and format tests; Mac snapshots measured); usage reading `live-tested` against the owner's Codex and Claude Code (2026-11-02). Usage reaches the phone through the hub (D-090). Not built: removing a connection or a project (needs a decision on its threads and connections). The review's deferred minors were fixed on 2026-11-02 (see `docs/verification.md`).
+- [x] Connection cards with icon status, plan usage (Codex, Claude) and B4 token totals, checks that retry, the "+" menu, the B4 form with a Keychain-stored key, Edit (name, key), and the B4 projects page (renamed from Local servers) with agent rows and the attach sheet. `implemented` and `fixture-tested` (adapter, storage, coordinator, model, and format tests; Mac snapshots measured); usage reading `live-tested` against the owner's Codex and Claude Code (2026-11-02). Usage reaches the phone through the hub (D-118). Not built: removing a connection or a project (needs a decision on its threads and connections). The review's deferred minors were fixed on 2026-11-02 (see `docs/verification.md`).
 
 ## M8c: relay (D-054 to D-059, D-075 to D-080)
 

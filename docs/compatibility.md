@@ -165,7 +165,7 @@ No new crates and no new features: `uuid`'s `v7` and `tokio`'s `sync`/`time` wer
 
 - Plan usage (settings connections, D-082; checked 2026-11-02): Codex 0.166.0 answers `account/rateLimits/read` (params may be null) with `{ rateLimits: { primary, secondary, planType, rateLimitReachedType, credits }, ordinaryUsageAllowed, … }`, each window `{ usedPercent, windowDurationMins, resetsAt (epoch s) }`, and pushes `account/rateLimits/updated { rateLimits }`; live on the owner's `promax` account it reported only `primary` with a 10080-minute window. Claude Code 2.1.282 emits `{"type":"rate_limit_event","rate_limit_info":{status, rateLimitType, utilization, resetsAt, isUsingOverage, unifiedWindows}}` during a turn (not on demand); `unifiedWindows` is marked `@internal` in its bundled schema and live carried only `seven_day` for the owner's plan login. If a later Claude Code drops `unifiedWindows`, the card falls back to the one window `rateLimitType` names.
 
-- Usage on the phone (D-090): hub migration `0010_connection_usage` adds the synced table `connectionUsage` (with the hub-only `deleted_at` of D-089, applied after `0009_soft_delete`); Mac migration `0007_connection_usage`; mirror schema version 4. A hub binary without 0010 must not run `migrate` against a database that has it (sqlx `VersionMissing`).
+- Usage on the phone (D-118): hub migration `0010_connection_usage` adds the synced table `connectionUsage` (with the hub-only `deleted_at` of D-089, applied after `0009_soft_delete`); Mac migration `0007_connection_usage`; mirror schema version 4. A hub binary without 0010 must not run `migrate` against a database that has it (sqlx `VersionMissing`).
 
 ## Hosted hub infrastructure (Terraform)
 
