@@ -1,6 +1,6 @@
 # M8f APNs: real notifications on the iPhone
 
-Date: 2026-11-02. Owner: Brian Love. Status: for the owner's approval (builder-checked 2026-11-02).
+Date: 2026-11-02. Owner: Brian Love. Status: approved by the owner 2026-11-02 (builder-checked).
 
 This builds on M8f, "attention on the phone" (PR #63) (the M8f section of `2026-10-31-m8b-remote-workspace-design.md`, plan `docs/superpowers/plans/2026-11-02-m8f-attention.md`, decisions D-121 to D-129). M8f decides on the hub which changes notify, stores each phone's push token, and hands the notification to a swappable `PushSender`; in the Simulator a `spool` sender writes `.apns` files that `Scripts/sim-push.sh` delivers. The `apns` sender was left as a stub that refuses to start. This slice builds it, and adds three behaviours the owner asked for while the notifications become real.
 
