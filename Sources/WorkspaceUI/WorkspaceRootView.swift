@@ -91,6 +91,8 @@ struct WorkspaceShell: View {
     .onChange(of: model.detailRequest, initial: true) { _, count in
       if count > 0 { compactColumn = .detail }
     }
+    // The open thread was deleted (here or on another device): the iPhone goes back to the list.
+    .onChange(of: model.selectedThreadId) { _, id in if id == nil { compactColumn = .sidebar } }
     .onDisappear { model.isDetailOnScreen = false }
     .sheet(isPresented: $model.showNewThread) {
       // The phone starts a thread on the Mac that owns a project, through the hub; the Mac asks its

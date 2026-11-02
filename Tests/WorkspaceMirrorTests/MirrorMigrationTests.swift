@@ -97,8 +97,8 @@ private func writeVersion1File(_ path: String) throws {
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
     #expect(try raw.integer("PRAGMA user_version") == MirrorSchema.version)
-    #expect(MirrorSchema.version == 3)
-    #expect(MirrorSchema.migrations.map(\.version) == [1, 2, 3])
+    #expect(MirrorSchema.version == 5)
+    #expect(MirrorSchema.migrations.map(\.version) == [1, 2, 3, 4, 5])
     for table in ["projects", "projectFolders", "devices", "outbox", "columnClocks"] {
       #expect(try raw.integer("SELECT count(*) FROM sqlite_master WHERE name = '\(table)'") == 1, "\(table)")
     }
@@ -123,7 +123,7 @@ private func writeVersion1File(_ path: String) throws {
 
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
-    #expect(try raw.integer("PRAGMA user_version") == 3)
+    #expect(try raw.integer("PRAGMA user_version") == 5)
     for (table, column) in [
       ("threads", "projectId"), ("threads", "readTurnId"), ("threads", "ownerDeviceId"),
       ("connections", "ownerDeviceId"), ("projects", "ownerDeviceId"), ("connections", "projectId"),
@@ -165,7 +165,7 @@ private func writeVersion1File(_ path: String) throws {
     #expect(connection.id == "conn-1" && connection.projectId == nil)
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
-    #expect(try raw.integer("PRAGMA user_version") == 3)
+    #expect(try raw.integer("PRAGMA user_version") == 5)
     #expect(
       try raw.integer(#"SELECT count(*) FROM pragma_table_info('connections') WHERE name = 'projectId'"#) == 1
     )
@@ -210,7 +210,7 @@ private func writeVersion1File(_ path: String) throws {
     }
     do {
       let raw = try RawSQLite(path: path)
-      try raw.exec("PRAGMA user_version = 4")
+      try raw.exec("PRAGMA user_version = 6")
       raw.close()
     }
     let before = bytes(path)
@@ -220,7 +220,7 @@ private func writeVersion1File(_ path: String) throws {
     #expect(bytes(path) == before)
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
-    #expect(try raw.integer("PRAGMA user_version") == 4)
+    #expect(try raw.integer("PRAGMA user_version") == 6)
     #expect(try raw.integer(#"SELECT count(*) FROM "outbox""#) == 1)
   }
 
@@ -273,7 +273,7 @@ private func writeVersion1File(_ path: String) throws {
           + #"VALUES (\#(outboxSeq), '019a396c76e8-0000-phone-1', 'threads', 'thread-1', 'update', 'title', '"x"')"#
       )
     }
-    try raw.exec("PRAGMA user_version = 4")
+    try raw.exec("PRAGMA user_version = 6")
   }
 
   /// The first local write after a rebuild, on the fixture's thread.
@@ -323,7 +323,7 @@ private func writeVersion1File(_ path: String) throws {
         .replacingOccurrences(of: "'", with: "''")
       try raw.exec(#"CREATE TABLE "syncState" ("id" INTEGER PRIMARY KEY, "link" TEXT, "lastDeviceSeq")"#)
       try raw.exec(#"INSERT INTO "syncState" VALUES (1, '\#(link)', 'seven')"#)
-      try raw.exec("PRAGMA user_version = 4")
+      try raw.exec("PRAGMA user_version = 6")
     }
     let store = try MirrorStore.rebuild(path: path)
     #expect(try store.link() == nil)
@@ -351,7 +351,7 @@ private func writeVersion1File(_ path: String) throws {
       let raw = try RawSQLite(path: path)
       try raw.exec("PRAGMA journal_mode = WAL")
       try raw.exec(#"CREATE TABLE "something" ("id" TEXT)"#)
-      try raw.exec("PRAGMA user_version = 4")
+      try raw.exec("PRAGMA user_version = 6")
       raw.close()
     }
     #expect(throws: MirrorStoreError.needsRebuild(outboxEmpty: true)) { try MirrorStore(path: path) }

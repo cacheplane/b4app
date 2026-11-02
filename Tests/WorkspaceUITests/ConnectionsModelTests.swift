@@ -117,4 +117,15 @@ actor CountingSecretStore: SecretStore {
     model.apply(event)
     #expect(model.connections.first { $0.id == codex.id }?.label == "Renamed elsewhere")
   }
+
+  @Test func aUsageEventWithTheWholeUsageReplacesIt() async throws {
+    let h = try await ModelHarness.start()
+    defer { Task { await h.stop() } }
+    let model = h.model
+    let usage = ConnectionUsage(connectionId: "c", tokens: TokenTotals(today: 7, week: 22))
+    model.apply(
+      AdapterEvent(kind: .usageChanged, connectionId: "c", payload: ["usage": try JSONValue(encoding: usage)])
+    )
+    #expect(model.usage["c"] == usage)
+  }
 }

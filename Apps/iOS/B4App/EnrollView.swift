@@ -6,7 +6,7 @@ import WorkspaceSync
 import WorkspaceUI
 
 /// Signs this phone in with a one-time enrollment code instead of a passkey or Apple (sign-in plan,
-/// Task 14), and pairs it with a Mac (Task 15, D-066). Offered from the sign-in screen for an operator's
+/// Task 14), and pairs it with a Mac (Task 15, D-066). Offered from "Other ways to sign in" for an operator's
 /// hub with sign-up closed (the code typed, from `b4hub enroll`), and shown at once, signed in or not,
 /// when a pairing link arrives: the Mac's `https://<site>/pair#c=<code>` from the system Camera, the
 /// in-app scanner, or any link. A link fills the sheet and asks one question, "Pair this iPhone with
@@ -306,6 +306,6 @@ struct EnrollView: View {
     }
   }
 
-  /// The sheet's heading, and the sign-in screen's link to it.
-  static let title = "Use an enrollment code"
+  /// The sheet's heading, and the sign-in sheet's row that opens it.
+  static let title = ConnectMacCopy.enroll
 }

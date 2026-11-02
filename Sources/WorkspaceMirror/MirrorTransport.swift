@@ -126,7 +126,7 @@ public final class MirrorTransport: WorkspaceTransport {
   static let served: Set<WorkspaceProtocol.Method> = [
     .systemPing, .eventsSnapshot, .eventsReplay, .connectionList, .threadList, .threadRead, .draftRead,
     .serverList, .workspaceActiveWork, .diagnosticsRead, .projectList, .projectRename, .threadUpdate,
-    .threadMarkRead, .draftSave,
+    .threadMarkRead, .draftSave, .usageRead, .threadDelete,
   ]
 
   /// The methods the phone leaves to the Mac, whose projects it only reads and renames.
@@ -270,6 +270,15 @@ public final class MirrorTransport: WorkspaceTransport {
           transport: .disconnected))
     }
     for id in batch.touchedProjectIds.sorted() { events.append(.projectChanged(projectId: id)) }
+    // The whole usage rides on the event, so an open Connections page updates without a read.
+    if !batch.touchedUsageIds.isEmpty, let usage = try? store.connectionUsage() {
+      for entry in usage where batch.touchedUsageIds.contains(entry.connectionId) {
+        if let value = try? JSONValue(encoding: entry) {
+          events.append(
+            AdapterEvent(kind: .usageChanged, connectionId: entry.connectionId, payload: ["usage": value]))
+        }
+      }
+    }
     for id in batch.touchedThreadIds.sorted() {
       if let thread = try? store.thread(id: id), let event = try? AdapterEvent.threadUpdated(thread) {
         events.append(event)
@@ -400,6 +409,8 @@ public final class MirrorTransport: WorkspaceTransport {
           details: ["epoch": .string(epoch), "sequence": .number(Double(state.sequence))])
       }
       return try JSONValue(encoding: EventsReplay.Result(events: []))
+    case .usageRead:
+      return try JSONValue(encoding: UsageRead.Result(usage: try store.connectionUsage()))
     case .connectionList:
       let params = try command.params(for: ConnectionList.self)
       let all = try store.connections()
@@ -417,7 +428,7 @@ public final class MirrorTransport: WorkspaceTransport {
       let params = try command.params(for: ThreadRead.self)
       expirePlaceholders(state: &state)
       let thread: ConversationThread
-      if let stored = try store.thread(id: params.threadId) {
+      if let stored = try store.thread(id: params.threadId), stored.userDeletedAt == nil {
         thread = stored
         state.placeholders[stored.id] = nil
       } else if let placeholder = state.placeholders[params.threadId], let started = placeholder.thread {
@@ -446,9 +457,24 @@ public final class MirrorTransport: WorkspaceTransport {
       state.wrote = true
       emit([.projectChanged(projectId: project.id)], state: &state)
       return try JSONValue(encoding: ProjectRename.Result(project: project))
+    case .threadDelete:
+      try refuseWhileUnavailable()
+      let params = try command.params(for: ThreadDelete.self)
+      guard let before = try store.thread(id: params.threadId),
+        let thread = try store.deleteThread(id: params.threadId, at: Timestamp.now())
+      else { throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.") }
+      if before.userDeletedAt == nil {
+        state.wrote = true
+        state.placeholders[thread.id] = nil
+        emit([try AdapterEvent.threadUpdated(thread)], state: &state)
+      }
+      return try JSONValue(encoding: ThreadDelete.Result(thread: thread))
     case .threadUpdate:
       try refuseWhileUnavailable()
       let params = try command.params(for: ThreadUpdate.self)
+      guard try store.thread(id: params.threadId)?.userDeletedAt == nil else {
+        throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.")
+      }
       guard
         let thread = try store.updateThread(
           id: params.threadId, title: params.title, pinned: params.pinned, archived: params.archived)

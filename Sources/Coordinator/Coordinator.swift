@@ -25,6 +25,8 @@ public struct CoordinatorOptions: Sendable {
   /// Overrides the power assertion for "keep the Mac awake" (tests inject a `FakePowerAssertions`); nil
   /// uses IOKit.
   public var powerAssertions: (any PowerAssertions)?
+  /// How often deleted threads' runtime copies are retried; zero runs no background sweep (tests).
+  public var threadDeleteSweep: Duration
   /// Which hub a sign-in goes to and whether Sign in with Apple is offered; tests pick one.
   public var flavor: Flavor
 
@@ -33,7 +35,8 @@ public struct CoordinatorOptions: Sendable {
     secretStore: (any SecretStore)? = nil, adapterFactory: SessionService.AdapterFactory? = nil,
     hubAPIFactory: HubSync.APIFactory? = nil, hubLinkConnection: (any HubLinkConnection)? = nil,
     powerAssertions: (any PowerAssertions)? = nil, legacyAdoption: LegacyAdoption.Plan? = nil,
-    flavor: Flavor = .current, checkRetryDelays: [Duration] = [.seconds(1), .seconds(3)]
+    flavor: Flavor = .current, checkRetryDelays: [Duration] = [.seconds(1), .seconds(3)],
+    threadDeleteSweep: Duration = .seconds(60)
   ) {
     self.flavor = flavor
     self.environment = environment
@@ -48,6 +51,7 @@ public struct CoordinatorOptions: Sendable {
     self.checkRetryDelays = checkRetryDelays
     self.hubLinkConnection = hubLinkConnection
     self.powerAssertions = powerAssertions
+    self.threadDeleteSweep = threadDeleteSweep
   }
 }
 
@@ -189,7 +193,8 @@ public enum Coordinator {
           paths: paths, environment: options.environment, secretStore: options.secretStore,
           eventLog: eventLog, diagnostics: diagnostics, adapterFactory: options.adapterFactory,
           hubAPIFactory: options.hubAPIFactory, hubLinkConnection: options.hubLinkConnection,
-          powerAssertions: options.powerAssertions, checkRetryDelays: options.checkRetryDelays),
+          powerAssertions: options.powerAssertions, checkRetryDelays: options.checkRetryDelays,
+          threadDeleteSweep: options.threadDeleteSweep),
         flavor: options.flavor, legacySecretStore: options.legacyAdoption?.legacySecretStore))
     await diagnostics.attachAccounts { [accounts] in accounts.current }
     // Restore the active account (or adopt a joined `workspace`) before the socket opens, so the first

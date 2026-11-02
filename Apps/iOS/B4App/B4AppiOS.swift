@@ -12,8 +12,9 @@ import WorkspaceUI
 /// The root is `WorkspaceRootView`'s (sign-in plan, Task 14): the sign-in screen while signed out,
 /// onboarding while the new account has no name, and the workspace otherwise; while the account has no
 /// Mac, "Connect your Mac" takes the thread list's place (Task 15). The phone signs in at its flavour's
-/// hub itself, through its host's account. Under the sign-in screen, "Use an enrollment code" opens the
-/// sheet for a hub that gives out codes.
+/// hub itself, through its host's account. The sign-in screen leads with "Scan the code" (this app's
+/// scanner); its "Other ways to sign in" sheet holds Apple, the passkey, and "Use an enrollment code",
+/// which opens this app's sheet for a hub that gives out codes (`phoneSignIn`).
 ///
 /// Pairing (D-066): the Mac's QR code is `https://<site>/pair#c=<code>`. The system Camera opens it as
 /// a universal link (`onContinueUserActivity`), the in-app scanner reads it, and any other route
@@ -29,7 +30,8 @@ struct B4AppiOS: App {
   /// A pairing link waiting for the enrollment sheet to take it (it holds the code: view state only).
   @State private var pairArrival: PairArrival?
   @State private var enrolling = false
-  /// "Scan the code" on Connect your Mac: the scanner, then the enrollment sheet with what it read.
+  /// "Scan the code" on the sign-in screen or Connect your Mac: the scanner, then the enrollment sheet
+  /// with what it read.
   @State private var scanning = false
   /// A pairing link refused on a signed-in phone, said in an alert rather than the sign-in sheet.
   @State private var refusedLink: String?
@@ -50,15 +52,12 @@ struct B4AppiOS: App {
             SyncBanner(status: host.syncStatus, relayRefused: host.relayRefused)
           }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-          if model.rootScreen == .signIn {
-            Button(EnrollView.title) { enrolling = true }
-              .font(LLAFont.small)
-              .foregroundStyle(LLA.Color.accent)
-              .padding(.bottom, LLA.Space.l)
-              .accessibilityIdentifier("signIn.enroll")
-          }
-        }
+        .environment(
+          \.phoneSignIn,
+          PhoneSignInHooks(
+            hasCamera: QRScannerView.isAvailable, scan: { scanning = true }, enroll: { enrolling = true },
+            sheetClosed: presentPending)
+        )
         .environment(\.connectMacContent) {
           AnyView(ConnectMacView(siteDomain: MirrorHost.flavor.siteDomain) { scanning = true })
         }
@@ -116,11 +115,15 @@ struct B4AppiOS: App {
     model.showSettingsSheet || model.showNewThread || model.showSearch
   }
 
+  /// The sign-in screen's "Other ways to sign in" is up. Not in `workspaceSheetUp`, whose change shows
+  /// a held arrival at once: this one says when it has gone (`PhoneSignInHooks.sheetClosed`).
+  private var signInSheetUp: Bool { model.showSignInOptions }
+
   /// Into the enrollment sheet if it is up; otherwise now, or once whatever is in front has gone.
   private func deliver(_ arrival: PairArrival) {
     if enrolling {
       pairArrival = arrival
-    } else if scanning || workspaceSheetUp || refusedLink != nil {
+    } else if scanning || workspaceSheetUp || signInSheetUp || refusedLink != nil {
       pending = arrival
     } else {
       present(arrival)
@@ -128,7 +131,8 @@ struct B4AppiOS: App {
   }
 
   private func presentPending() {
-    guard let arrival = pending, !enrolling, !scanning, !workspaceSheetUp, refusedLink == nil else { return }
+    guard let arrival = pending, !enrolling, !scanning, !workspaceSheetUp, !signInSheetUp, refusedLink == nil
+    else { return }
     pending = nil
     present(arrival)
   }

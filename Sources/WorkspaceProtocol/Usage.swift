@@ -37,14 +37,36 @@ public struct UsageReading: Codable, Sendable, Equatable {
 }
 
 /// Tokens a B4 connection used, summed from its finished turns: since local midnight and since the start
-/// of the local week (Monday).
+/// of the local week (Monday). `day` and `weekStart` name the Mac's local day and week the figures
+/// cover (`yyyy-MM-dd`), so a phone that reads them later can tell "today" from an earlier day.
 public struct TokenTotals: Codable, Sendable, Equatable {
   public var today: Int
   public var week: Int
+  public var day: String?
+  public var weekStart: String?
 
-  public init(today: Int, week: Int) {
+  public init(today: Int, week: Int, day: String? = nil, weekStart: String? = nil) {
     self.today = today
     self.week = week
+    self.day = day
+    self.weekStart = weekStart
+  }
+}
+
+/// A local calendar day and the Monday that starts its week, as `yyyy-MM-dd`.
+public enum UsageDay {
+  public static func local(
+    _ date: Date, calendar base: Calendar = .current
+  ) -> (day: String, weekStart: String) {
+    var calendar = base
+    calendar.firstWeekday = 2
+    let start = calendar.dateInterval(of: .weekOfYear, for: date)?.start ?? calendar.startOfDay(for: date)
+    return (string(date, calendar), string(start, calendar))
+  }
+
+  private static func string(_ date: Date, _ calendar: Calendar) -> String {
+    let parts = calendar.dateComponents([.year, .month, .day], from: date)
+    return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
   }
 }
 

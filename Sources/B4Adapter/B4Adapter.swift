@@ -152,6 +152,18 @@ public actor B4Adapter: AgentAdapter {
     return inspection
   }
 
+  /// `DELETE /threads/:id`: 404 means the server no longer has it; 405 means it cannot delete threads.
+  public func deleteSession(_ ref: NativeSessionRef) async throws -> SessionDeletion {
+    let client = try requireClient()
+    let (status, body) = try await client.json("DELETE", "/threads/\(ref.nativeSessionId)")
+    switch status {
+    case 200, 204: return .deleted
+    case 404: return .alreadyGone
+    case 405: return .unsupported
+    default: throw B4Protocol.error(status: status, body: body, operation: "thread deletion")
+    }
+  }
+
   public func createSession(_ input: NewSessionInput) async throws -> NativeSessionRef {
     let client = try requireClient()
     let route = try requireAgentRoute()

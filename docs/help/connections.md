@@ -20,7 +20,7 @@ Codex and Claude show the plan's two windows: the 5-hour window and the weekly w
 
 B4 has no plan limits. Its card shows the tokens its turns used today and this week (the week starts on Monday).
 
-Usage stays on your Mac: the phone shows each connection's status but not its usage.
+Your phone shows the same usage: the Mac sends each connection's latest figures through your hub. Token totals are counted on the Mac, so when you look at them on another day, the card names the day they cover instead of saying "Today".
 
 ## Server
 
