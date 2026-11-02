@@ -58,11 +58,12 @@ answer the same generic `404 not_found`.
 | 401 | `invalid_code` | request | The enrollment code is wrong, expired, or already used (the three are indistinguishable). |
 | 404 | `not_found` | request | No such route, or a resource that does not exist or is not yours. |
 | 405 | `method_not_allowed` | request | The route exists but not for that method. |
+| 409 | `relocated` | request | `GET /v1/devices/self/link` reached an instance other than the one serving this user's links; `details.instanceId` names that instance. No socket is opened. Retry at once, at most 3 times, then with the normal backoff (see *Link*, *More than one instance*). |
 | 410 | `resync_required` | request | The pull cursor is older than the retention horizon: the hub has pruned the changes after it. Restore from `GET /v1/snapshot` (see *Horizon*). |
 | 413 | `payload_too_large` | request | A push body over 32 MiB. (A change whose `value` is over 2 MiB is rejected per change instead; see `POST /v1/changes`.) |
 | 429 | `rate_limited` | request | A device opened too many relay links in a minute (the upgrade is refused before it happens), or a user minted an eleventh pairing code in an hour. Always with `details.retryAfterMs`; on the link it is also a `reply` error for a command over its limits (see *Link*, *Commands*). |
 | 500 | `internal_error` | execution | Any unexpected failure; the cause is logged on the hub, never sent. |
-| 503 | `not_ready` | execution | `/readyz`: the database is unreachable or migrations are pending. |
+| 503 | `not_ready` | execution | `/readyz`: the database is unreachable, migrations are pending, the relay probe failed (`details.relay: "failed"`), or this instance's heartbeat is stale (`details.instances: "stale"`). |
 | 503 | `shutting_down` | execution | `/readyz` after SIGTERM. |
 | 503 | `maintenance` | execution | A write (`POST /v1/enroll`, `POST /v1/changes`, `DELETE /v1/devices/self`) while the operator has paused writes; carries `Retry-After: 30`. See "Maintenance mode". |
 
@@ -111,19 +112,30 @@ Liveness. No authentication. Always `200`:
 
 ### `GET /readyz`
 
-Readiness: the database answers and every migration is applied. No authentication. This is what
-the container `HEALTHCHECK` calls.
+Readiness: the database answers, every migration is applied, the relay serves a link, and this
+instance's heartbeat is fresh. No authentication. This is what the container `HEALTHCHECK` and the
+load balancer's health check call.
 
 `200`:
 
 ```json
-{"ok": true, "migrations": "current", "minClientProtocol": 1}
+{"ok": true, "migrations": "current", "minClientProtocol": 1, "relay": "ok", "instances": "ok"}
 ```
+
+`relay` is an in-process probe: the hub runs its own link task over an in-memory socket with a
+probe identity that never registers (it is never online, never in a `presence` frame, and never
+watches), and expects `hello`, `presence`, and a `pong` to a `ping` within 2 seconds. No device is
+minted and no row is written. `instances` is `"stale"` once this instance has not written its
+heartbeat for the liveness window (20 seconds; see *More than one instance*), because the other
+instances already count it dead and may take its users. Either failure is `503 not_ready` with
+`details.relay` and `details.instances` beside the code. Every `/readyz` answer, success or not,
+carries `Set-Cookie: b4hub-instance=<this instance's id>; Path=/; Max-Age=3600; Secure; HttpOnly`.
 
 While writes are paused (see "Maintenance mode") the body also carries `"maintenance":
 "read_only"`; the status stays `200`, because reads are still served.
 
-`503 not_ready` when the database is unavailable or migrations are pending; `503 shutting_down`
+`503 not_ready` when the database is unavailable, migrations are pending, the relay probe failed, or
+the heartbeat is stale; `503 shutting_down`
 once SIGTERM has been received (see "Shutdown").
 
 ### `POST /v1/enroll`
@@ -496,6 +508,44 @@ not a whole number is `400 invalid_request`. The role comes from the device, not
 One link per device. A newer link from a device replaces its older one: the older gets an `error`
 frame `link_replaced`, then close code 4000. The replaced device does not go offline.
 
+A successful upgrade's `101` response carries `Set-Cookie: b4hub-instance=<this instance's id>;
+Path=/; Max-Age=3600; Secure; HttpOnly`. An upgrade that reached the wrong instance is
+`409 relocated` (next section).
+
+### More than one instance
+
+A hub may run several instances behind one load balancer. Every link of one user (all of that
+user's Macs and phones) is served by **one instance at a time**, so commands, replies, watches,
+events, holds, and presence never cross instances; no frame is ever forwarded between instances.
+
+- **The claim.** Each instance registers with a UUIDv7 and writes a heartbeat every 5 seconds
+  (`B4HUB_HEARTBEAT_MS`); one whose heartbeat is older than four intervals (20 seconds) is dead.
+  On an upgrade, after authentication and the revocation check and before the socket exists, the
+  instance claims the device's user: if no instance holds the user, or the holder is dead, the
+  claim is taken and the link is served here. If another live instance holds the user, the answer
+  is
+
+  ```json
+  {"error": {"kind": "request_error", "message": "your links are served by another hub instance", "details": {"code": "relocated", "instanceId": "<owner instance id>"}}}
+  ```
+
+  with status `409` and no socket, so the device hears no `hello` and the refused link never
+  appears in presence or `watching`. A live owner keeps its claim; a draining instance releases
+  its claims after its links close, and a dead one's are taken over by the next instance a link
+  of that user reaches. An instance whose heartbeat stalled and recovers closes, with code 1001,
+  the links of any user another instance took over meanwhile.
+- **The cookie.** Every instance sets `Set-Cookie: b4hub-instance=<its own id>` on its `101`
+  upgrade responses and on `/readyz`. With the AWS load balancer's application-cookie stickiness
+  (cookie name `b4hub-instance`), the load balancer adds its own `AWSALBAPP-*` cookie naming the
+  target that sent it, and routes a later request that carries both cookies to that target. The
+  `409` deliberately carries no cookie: the load balancer would bind it to the instance that
+  refused, which is the wrong one.
+- **The client rule.** A device keeps the cookies (name and value) of its last successful upgrade
+  response and sends them as `Cookie` on its next upgrade. On `409 relocated` it drops them (they
+  point at the wrong target) and retries at once, at most 3 times in a row; after that it uses the
+  normal reconnect backoff. A successful link resets the count and keeps the new cookies.
+  `instanceId` is informational: a device cannot address an instance directly.
+
 ### Frames in this version
 
 | Direction | `type` | Body |
@@ -697,7 +747,7 @@ replies and errors wait for room, and presence is kept as described under *Prese
 
 | Code | Meaning | The device should |
 | --- | --- | --- |
-| 1001 | the hub is shutting down | reconnect with backoff |
+| 1001 | the hub is shutting down, or another instance now serves this user's links | reconnect with backoff |
 | 4000 | replaced by a newer link of the same device (after an `error` frame `link_replaced`) | not reconnect |
 | 4001 | the device was revoked | stop until it joins again |
 | 4002 | `client_too_old` | stop and update |
@@ -731,7 +781,11 @@ long-poll so each returns its current page, keeps the listener open for a short 
 (a quarter of the shutdown wait, at most 500 ms) so a load balancer stops routing here, then stops
 accepting connections and lets in-flight requests finish. Every open link is closed with code
 1001 as soon as shutdown begins (an upgraded connection is no longer an in-flight request, so the
-drain waits for the links separately). The whole sequence is bounded by
+drain waits for the links separately). Just before that, every command held for an offline Mac is
+answered `device_offline` (a hold never times out silently on an instance nobody is connected to),
+and a link writes what is already queued before its close. Once the links are closed, the instance
+deletes its claims and its instance row, so its users are claimed at once by the instance they
+reconnect to. The whole sequence is bounded by
 `B4HUB_SHUTDOWN_WAIT_MS` (default 30000) from the moment the signal arrives; anything still open
 then is dropped and the process exits.
 
@@ -761,6 +815,10 @@ is still `401`), and on `POST /v1/enroll` before the code is checked. Reads (`GE
 `GET /v1/devices`), `/healthz`, and `/readyz` are unchanged, except that `/readyz` reports
 `"maintenance": "read_only"`. A client treats `maintenance` like a transient failure: keep the
 outbox, retry after the header's delay.
+
+Over the link, a client's `turn.send`, `thread.start`, and `request.respond` are answered at once
+with a `reply` whose error is `maintenance` and the same message, and are not forwarded.
+`turn.lookup`, `turn.interrupt`, and `watch` continue.
 
 ## Logging
 
