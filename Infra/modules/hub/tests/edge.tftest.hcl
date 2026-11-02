@@ -36,6 +36,43 @@ mock_provider "aws" {
       arn = "arn:aws:wafv2:us-east-2:111111111111:regional/webacl/b4hub-test-web-acl/00000000-0000-0000-0000-000000000000"
     }
   }
+
+  mock_resource "aws_kms_key" {
+    defaults = {
+      arn = "arn:aws:kms:us-east-2:111111111111:key/00000000-0000-0000-0000-000000000000"
+    }
+  }
+
+  mock_resource "aws_db_instance" {
+    defaults = {
+      arn = "arn:aws:rds:us-east-2:111111111111:db:b4hub-test"
+      master_user_secret = [{
+        secret_arn = "arn:aws:secretsmanager:us-east-2:111111111111:secret:rds!db-00000000-0000-0000-0000-000000000000-AbCdEf"
+      }]
+    }
+  }
+
+  mock_resource "aws_backup_vault" {
+    defaults = {
+      arn = "arn:aws:backup:us-east-2:111111111111:backup-vault:b4hub-test"
+    }
+  }
+
+  mock_resource "aws_iam_role" {
+    defaults = {
+      arn = "arn:aws:iam::111111111111:role/b4hub-test-backup"
+    }
+  }
+}
+
+mock_provider "aws" {
+  alias = "copy"
+
+  mock_resource "aws_backup_vault" {
+    defaults = {
+      arn = "arn:aws:backup:us-west-2:111111111111:backup-vault:b4hub-test-copy"
+    }
+  }
 }
 
 variables {

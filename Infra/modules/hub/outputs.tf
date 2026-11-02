@@ -69,3 +69,39 @@ output "web_acl_arn" {
   description = "ARN of the WAF web ACL on the load balancer."
   value       = aws_wafv2_web_acl.hub.arn
 }
+
+# Data
+output "db_endpoint" {
+  description = "Database endpoint as host:port."
+  value       = aws_db_instance.hub.endpoint
+}
+
+output "db_address" {
+  description = "Database hostname."
+  value       = aws_db_instance.hub.address
+}
+
+output "db_port" {
+  description = "Database port."
+  value       = aws_db_instance.hub.port
+}
+
+output "db_master_secret_arn" {
+  description = "ARN of the RDS-managed master user secret."
+  value       = aws_db_instance.hub.master_user_secret[0].secret_arn
+}
+
+output "secret_arns" {
+  description = "Secrets Manager ARNs keyed by short name (database-url, secret-key, ...)."
+  value       = { for k, s in aws_secretsmanager_secret.this : k => s.arn }
+}
+
+output "kms_key_arn" {
+  description = "ARN of the customer-managed key for the account's data."
+  value       = aws_kms_key.this.arn
+}
+
+output "backup_vault_arn" {
+  description = "ARN of the primary backup vault."
+  value       = aws_backup_vault.hub.arn
+}
