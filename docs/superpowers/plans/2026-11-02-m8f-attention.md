@@ -21,7 +21,7 @@
 - No `UIApplication` or WidgetKit code in `WorkspaceMirror`; app and extension specifics stay in `Apps/iOS` and `Apps/iOSWidget`. `WorkspaceUI` talks only to `WorkspaceClient`. `SessionService` stays the only writer of turns, display items, and runtime requests.
 - App Group id, URL scheme, and entitlements live in `project.yml` (the sign-in branch rebases its flavour changes over them).
 - Secrets and push tokens never appear in logs, JSON results, or UI.
-- Hub migration is `0009_push.sql` (0005 and 0007 belong to the sign-in branch). Decisions are D-110 onward (sign-in holds D-088 to D-109).
+- Hub migration is `0011_push.sql` (0005 and 0007 belong to the sign-in branch; 0009 and 0010 to PRs #45 and #46). Decisions are D-110 onward (sign-in holds D-088 to D-109).
 - Gates: `swift build`, `swift test`, `swift format lint --strict --recursive Sources Tests Apps Package.swift`; from `Hub/`: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked` (after `source <(./scripts/test-db.sh)`); both `xcodebuild` app builds.
 - Commits end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
@@ -70,13 +70,13 @@
 ### Task 2: Push tokens, the ledger, and detection in the push transaction
 
 **Files:**
-- Create: `Hub/crates/b4hub-db/migrations/0009_push.sql`, `Hub/crates/b4hub-db/src/push.rs`, `Hub/crates/b4hub-db/tests/push.rs`
+- Create: `Hub/crates/b4hub-db/migrations/0011_push.sql`, `Hub/crates/b4hub-db/src/push.rs`, `Hub/crates/b4hub-db/tests/push.rs`
 - Modify: `Hub/crates/b4hub-db/src/changes.rs` (collect touched rows; detect before commit; `PushOutcome.notifications`), `Hub/crates/b4hub-db/src/lib.rs`, `Hub/crates/b4hub-db/src/prune.rs` (prune `notifications_sent` older than the retention window), `Hub/crates/b4hub-db/tests/rls.rs` (the two new tables isolate by org)
 
 **Interfaces:**
 - Consumes: Task 1's `request_reason`, `turn_reason`, `alert_title`, `Reason`, `TURN_RECENCY_SECS`.
 - Produces:
-  - Migration: `push_tokens (org_id uuid NOT NULL REFERENCES orgs, device_id uuid PRIMARY KEY REFERENCES devices, token text NOT NULL, environment text NOT NULL CHECK (environment IN ('sandbox','production')), bundle_id text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())` and `notifications_sent (org_id uuid NOT NULL REFERENCES orgs, kind text NOT NULL CHECK (kind IN ('request','turn')), row_id text NOT NULL, user_id uuid NOT NULL, thread_id text NOT NULL, reason text NOT NULL, sent_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (org_id, kind, row_id))`, both with `ENABLE`/`FORCE ROW LEVEL SECURITY` and the `tenant_isolation` policy used in `0004_relay.sql`. A header comment says why 0009.
+  - Migration: `push_tokens (org_id uuid NOT NULL REFERENCES orgs, device_id uuid PRIMARY KEY REFERENCES devices, token text NOT NULL, environment text NOT NULL CHECK (environment IN ('sandbox','production')), bundle_id text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())` and `notifications_sent (org_id uuid NOT NULL REFERENCES orgs, kind text NOT NULL CHECK (kind IN ('request','turn')), row_id text NOT NULL, user_id uuid NOT NULL, thread_id text NOT NULL, reason text NOT NULL, sent_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (org_id, kind, row_id))`, both with `ENABLE`/`FORCE ROW LEVEL SECURITY` and the `tenant_isolation` policy used in `0004_relay.sql`. A header comment says why 0011.
   - `b4hub_db::push::save_token(db: &Db, auth: &AuthedDevice, token: &str, environment: &str, bundle_id: &str) -> Result<()>` (upsert on `device_id`).
   - `pub struct Notification { pub device_id: Uuid, pub token: String, pub environment: String, pub bundle_id: String, pub thread_id: String, pub title: String, pub reason: Reason }` (Debug must not print `token`: implement `Debug` by hand).
   - `PushOutcome` gains `pub notifications: Vec<Notification>`.
