@@ -6,3 +6,13 @@ extension Array where Element == DeviceInfo {
     !isEmpty && !contains { $0.platform == "macos" && $0.revokedAt == nil }
   }
 }
+
+extension Array where Element == DeviceInfo {
+  /// Whether the account has, or had, a Mac: any device with platform `macos`, revoked or not. A Mac
+  /// that left still counts, as the hub counts it when it refuses a merge (`merge_refused`).
+  public var hasMac: Bool { contains { $0.platform == "macos" } }
+
+  /// A phone-only account (sign-in plan, Task 15): the list is known (an empty one is a phone that has
+  /// not asked yet, so a phone that has a Mac never flashes "Connect your Mac") and holds no Mac.
+  public var phoneOnly: Bool { !isEmpty && !hasMac }
+}

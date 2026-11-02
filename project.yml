@@ -102,20 +102,19 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         B4AppFlavor: $(B4APP_FLAVOR)
-        # One URL type (a second `CFBundleURLTypes` key would replace this one): the flavour's own scheme,
-        # and `b4app` for M8c's `b4app://pair` links until Task 15 moves pairing to the https link. On
-        # prod the two are the same scheme.
+        # One URL type (a second `CFBundleURLTypes` key would replace this one): the flavour's own scheme
+        # only (`b4app`, `b4app-beta`, `b4app-local`). Pairing is the https link `/pair` (applinks in
+        # the entitlements, D-066), so beta and local no longer claim prod's `b4app`.
         CFBundleURLTypes:
           - CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
             CFBundleTypeRole: Editor
             CFBundleURLSchemes:
               - $(B4APP_URL_SCHEME)
-              - b4app
         LSRequiresIPhoneOS: true
         # HTTPS through URLSession only: exempt from export documentation (TestFlight asks otherwise).
         ITSAppUsesNonExemptEncryption: false
         NSLocalNetworkUsageDescription: Agent Workspace connects to your sync hub when it runs on your local network.
-        # Pairing (M8c): the QR code the Mac shows, scanned here or opened as a b4app://pair link.
+        # Pairing (M8c, D-066): the QR code the Mac shows, scanned here or opened by the system Camera.
         NSCameraUsageDescription: Scan the pairing code your Mac shows.
         # Plain HTTP only to the hub on this machine (the Simulator's localhost); HubURL refuses any
         # other non-HTTPS URL before a request is made. Debug only: the post-build script below

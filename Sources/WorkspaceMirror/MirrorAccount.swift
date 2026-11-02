@@ -63,6 +63,9 @@ import os
   /// Called after every change of `accountStatus`: a sign-in, onboarding, a log-out, or the hub
   /// refusing the token.
   public var onChange: (@MainActor (AccountStatus.Result) -> Void)?
+  /// Called after the sync (or a pairing scan) has read the account's devices, so the app can say
+  /// whether the account has a Mac (`hasNoMac`).
+  public var onDevices: (@MainActor () -> Void)?
   /// The running sync, while signed in.
   public private(set) var sync: MirrorSync?
   private var syncTask: Task<Void, Never>?
@@ -89,6 +92,11 @@ import os
 
   /// The stored link, while signed in.
   public var link: MirrorLink? { try? store.link() }
+
+  /// The account is known to have no Mac (`GET /v1/devices`, as the sync last read it): "Connect your
+  /// Mac" replaces the thread list. False while signed out and before the list is read, so a phone
+  /// that has a Mac never shows it.
+  public var hasNoMac: Bool { link != nil && ((try? store.devices()) ?? []).phoneOnly }
 
   /// Start syncing the stored link (at launch). `fromSnapshot` after the mirror was rebuilt.
   public func startSync(fromSnapshot: Bool = false) {
@@ -168,6 +176,92 @@ import os
       deviceId: enrolled.deviceId, token: enrolled.token, org: enrolled.org, user: enrolled.user,
       needsOnboarding: false)
     return try await signIn(session, hubURL: base, deviceName: name.isEmpty ? "iPhone" : name)
+  }
+
+  // MARK: - Pairing by QR code (D-066)
+
+  /// A pairing link the person confirmed ("Pair this iPhone with the hub at <host>?"):
+  /// - signed out, it enrolls into the code's account, which signs the phone in;
+  /// - signed in to a phone-only account (no `macos` device in `GET /v1/devices`, read now) at the
+  ///   code's hub, it enrolls with the current token, so the hub merges that account into the code's;
+  /// - otherwise (the account has a Mac, the hub refused the merge with `merge_refused`, or the code is
+  ///   for another hub) it sends nothing more and answers the switch question to ask.
+  ///
+  /// The code is not kept; neither it nor the token is logged or put in an error.
+  public func pair(_ pairLink: PairLink, deviceName: String) async throws -> MirrorPairOutcome {
+    guard let current = link else { return .signedIn(try await enroll(pairLink, deviceName: deviceName)) }
+    let from = current.orgName ?? current.orgSlug
+    guard Self.canonical(pairLink.hub) == current.hubURL else {
+      return .askToSwitch(from: from, alreadyPaired: false)
+    }
+    let devices = await readDevices()
+    // Reading the devices may have found the token refused, which signed the phone out.
+    guard let current = link else { return .signedIn(try await enroll(pairLink, deviceName: deviceName)) }
+    guard devices.phoneOnly else { return .askToSwitch(from: from, alreadyPaired: devices.hasMac) }
+    do {
+      return .signedIn(try await merge(pairLink, into: current, deviceName: deviceName))
+    } catch let error as HubError where error.code == "merge_refused" {
+      Self.logger.notice("the hub refused to merge this phone's account; asking to switch")
+      return .askToSwitch(from: from, alreadyPaired: false)
+    }
+  }
+
+  /// The switch question was confirmed: log out (as the profile menu's Log out does), then enroll into
+  /// the code's account. A refused code leaves the phone signed out, with the refusal thrown.
+  public func switchAndPair(_ pairLink: PairLink, deviceName: String) async throws -> AccountStatus.Result {
+    _ = await logOut()
+    return try await enroll(pairLink, deviceName: deviceName)
+  }
+
+  private func enroll(_ pairLink: PairLink, deviceName: String) async throws -> AccountStatus.Result {
+    try await enroll(url: pairLink.hub.absoluteString, code: pairLink.code, deviceName: deviceName)
+  }
+
+  /// The account's devices from the hub now, kept in the mirror; the mirror's list when the hub cannot
+  /// say.
+  private func readDevices() async -> [DeviceInfo] {
+    if let fresh = try? await authed("list your devices", { try await $0.devices() }) {
+      if (try? store.saveDevices(fresh)) != nil { onDevices?() }
+      return fresh
+    }
+    return (try? store.devices()) ?? []
+  }
+
+  /// Enroll with this phone's own token, which merges its phone-only account into the code's. The sync
+  /// is stopped first, since the hub deletes the old device and its token as it merges; a refusal
+  /// restarts it on the account the phone still is. A token the hub no longer takes signs that
+  /// account out, and the confirmed pairing goes ahead without a merge.
+  private func merge(
+    _ pairLink: PairLink, into current: MirrorLink, deviceName: String
+  ) async throws -> AccountStatus.Result {
+    guard let ref = SecretRef(rawValue: current.tokenRef), let token = try? await secrets.read(ref) else {
+      throw WorkspaceError(.signedOut, "Nobody is signed in on this iPhone.")
+    }
+    let name = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+    let request = EnrollRequest(
+      code: pairLink.code, deviceName: name.isEmpty ? "iPhone" : name, platform: "ios")
+    let api = makeAPI(pairLink.hub, { nil })
+    let seen = generation
+    await stopSync()
+    let enrolled: EnrollResponse
+    do {
+      enrolled = try await api.enroll(request, replacingToken: token)
+    } catch let error as HubError where error.status == 401 && error.code == "unauthorized" {
+      await rejected(generation: seen)
+      return try await enroll(pairLink, deviceName: deviceName)
+    } catch {
+      if seen == generation, link?.tokenRef == current.tokenRef { startSync(current, fromSnapshot: false) }
+      if let error = error as? HubError, error.code == "merge_refused" { throw error }
+      if let error = error as? HubError { throw Self.accountError(error, doing: "join the hub") }
+      throw error
+    }
+    // The hub deleted the old account's device with it: no later sign-in offers it.
+    memory.forget(hubURL: current.hubURL, deviceId: current.deviceId)
+    Self.logger.notice("merged this phone's account into the pairing code's")
+    let session = AuthSession(
+      deviceId: enrolled.deviceId, token: enrolled.token, org: enrolled.org, user: enrolled.user,
+      needsOnboarding: false)
+    return try await signIn(session, hubURL: pairLink.hub, deviceName: request.deviceName)
   }
 
   // MARK: - The signed-in account
@@ -322,10 +416,17 @@ import os
       onUnauthorized: { [weak self] in
         // Not awaited by the loop's caller: signing out waits for the loop, which is still running.
         Task { @MainActor in await self?.rejected(generation: seen) }
-      })
+      },
+      onDevices: { [weak self] in await self?.devicesRead(generation: seen) })
     self.sync = sync
     syncTask = Task { await sync.run() }
     Task { await refreshProfile() }
+  }
+
+  /// The sync stored the account's devices; told only for the link it was syncing.
+  private func devicesRead(generation seen: Int) {
+    guard seen == generation else { return }
+    onDevices?()
   }
 
   /// The signed-in hub's client, its token read from the Keychain for each request. A 401 signs out.

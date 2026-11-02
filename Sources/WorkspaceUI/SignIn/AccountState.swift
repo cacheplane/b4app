@@ -60,6 +60,10 @@ public struct SignInConfiguration: Sendable, Equatable {
 
   public var termsURL: URL { URL(string: "https://\(siteDomain)/app/terms")! }
   public var privacyURL: URL { URL(string: "https://\(siteDomain)/app/privacy")! }
+  /// Where the Mac app is downloaded, which "Connect your Mac" copies.
+  public var downloadURL: URL { URL(string: "https://\(siteDomain)/app/download")! }
+  /// The iPhone's help page, which "Connect your Mac" opens in a Safari sheet.
+  public var iPhoneHelpURL: URL { URL(string: "https://\(siteDomain)/app/help/iphone")! }
 }
 
 public enum SignInMethod: Sendable, Equatable {

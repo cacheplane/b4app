@@ -10,11 +10,15 @@ import WorkspaceUI
 /// app is active.
 ///
 /// The root is `WorkspaceRootView`'s (sign-in plan, Task 14): the sign-in screen while signed out,
-/// onboarding while the new account has no name, and the workspace otherwise. The phone signs in at its
-/// flavour's hub itself, through its host's account. Under the sign-in screen, "Use an enrollment code"
-/// opens the sheet for a hub that gives out codes; a `b4app://pair` link (the Mac's QR code, opened from
-/// anywhere) opens it too and asks before enrolling. On a phone that is signed in it says so and does
-/// nothing else. A stray `b4app*://auth` callback is dropped.
+/// onboarding while the new account has no name, and the workspace otherwise; while the account has no
+/// Mac, "Connect your Mac" takes the thread list's place (Task 15). The phone signs in at its flavour's
+/// hub itself, through its host's account. Under the sign-in screen, "Use an enrollment code" opens the
+/// sheet for a hub that gives out codes.
+///
+/// Pairing (D-066): the Mac's QR code is `https://<site>/pair#c=<code>`. The system Camera opens it as
+/// a universal link (`onContinueUserActivity`), the in-app scanner reads it, and any other route
+/// arrives through `onOpenURL`; all three take one path, `MirrorHost.pairLinkDecision`, then the
+/// enrollment sheet's one confirmation. A stray `b4app*://auth` callback is dropped.
 @main
 struct B4AppiOS: App {
   @State private var host = MirrorHost.shared
@@ -22,7 +26,10 @@ struct B4AppiOS: App {
   /// A pairing link waiting for the enrollment sheet to take it (it holds the code: view state only).
   @State private var pairArrival: PairArrival?
   @State private var enrolling = false
-  @State private var alreadyPaired = false
+  /// "Scan the code" on Connect your Mac: the scanner, then the enrollment sheet with what it read.
+  @State private var scanning = false
+  /// A pairing link refused on a signed-in phone, said in an alert rather than the sign-in sheet.
+  @State private var refusedLink: String?
   @Environment(\.scenePhase) private var scenePhase
 
   var body: some Scene {
@@ -44,16 +51,44 @@ struct B4AppiOS: App {
               .accessibilityIdentifier("signIn.enroll")
           }
         }
+        .environment(\.connectMacContent) {
+          AnyView(ConnectMacView(siteDomain: MirrorHost.flavor.siteDomain) { scanning = true })
+        }
         .sheet(isPresented: $enrolling) {
           EnrollView(host: host, incoming: $pairArrival)
         }
+        .sheet(
+          isPresented: $scanning,
+          onDismiss: {
+            // The scanner is gone, so the sheet that confirms can come up in its place. The scanner is
+            // reached from Connect your Mac, signed in, so a refused code is said in an alert.
+            if case .invalid(let message) = pairArrival {
+              pairArrival = nil
+              refusedLink = message
+            } else if pairArrival != nil {
+              enrolling = true
+            }
+          }
+        ) {
+          QRScannerView { text in
+            pairArrival = PairArrival(scanned: text, decide: host.pairLinkDecision)
+          }
+        }
         .onChange(of: scenePhase, initial: true) { _, phase in host.enter(RelayLifecycle.Phase(phase)) }
-        .onChange(of: model.rootScreen) { _, screen in
-          // Signed in by any route: nothing is left to enroll.
-          if screen != .signIn { enrolling = false }
+        .onChange(of: model.rootScreen) { old, screen in
+          // Signed in from the sign-in screen by another route: nothing is left to enroll. A sheet
+          // opened on a signed-in phone (pairing, a switch) closes itself.
+          if old == .signIn, screen != .signIn { enrolling = false }
         }
         .onOpenURL { url in open(url) }
-        .alert(PairLink.alreadyPaired, isPresented: $alreadyPaired) {
+        // The system Camera and a tapped `https://<site>/pair` link arrive as a universal link.
+        .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+          if let url = activity.webpageURL { open(url) }
+        }
+        .alert(
+          refusedLink ?? "",
+          isPresented: Binding(get: { refusedLink != nil }, set: { if !$0 { refusedLink = nil } })
+        ) {
           Button("OK", role: .cancel) {}
         }
     }
@@ -62,14 +97,15 @@ struct B4AppiOS: App {
   private func open(_ url: URL) {
     // A sign-in callback opened from outside a ceremony belongs to none: dropped, never redeemed.
     if model.openURL(url) { return }
-    switch host.pairLink(url) {
+    switch host.pairLinkDecision(url) {
     case .confirm(let link):
       pairArrival = .offer(link)
       enrolling = true
-    case .invalid:
+    case .invalid where model.rootScreen == .signIn:
       pairArrival = .invalid(PairArrival.invalidLink)
       enrolling = true
-    case .alreadyPaired: alreadyPaired = true
+    case .invalid:
+      refusedLink = PairArrival.invalidLink
     case .ignored: break
     }
   }

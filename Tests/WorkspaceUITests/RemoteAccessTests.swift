@@ -47,30 +47,33 @@ private final class ClockBox: @unchecked Sendable {
 @Suite struct RemoteAccessTests {
   // MARK: The link
 
-  @Test func pairLinkPercentEncodesTheHub() throws {
-    let link = PairLink.make(url: "https://hub.example.com:8443/base?x=1&y=2#frag", code: "K7M2Q9XP")
+  @Test func pairLinkIsTheSitesWithTheCodeInTheFragment() throws {
+    // D-066: the site implies the hub, so the link carries none, and the code after `#` never reaches
+    // a web server's log.
+    let link = PairLink.make(siteDomain: "b4.run", code: "K7M2Q9XP")
+    #expect(link.absoluteString == "https://b4.run/pair#c=K7M2Q9XP")
+    let parts = try #require(URLComponents(url: link, resolvingAgainstBaseURL: false))
+    #expect(parts.scheme == "https" && parts.host == "b4.run" && parts.path == "/pair")
+    #expect(parts.query == nil)
+    #expect(parts.fragment == "c=K7M2Q9XP")
+  }
+
+  @Test func theOldLinkPercentEncodesTheHub() throws {
+    // M8c's form, which the local flavour's phone still reads for a hub on this machine.
+    let link = PairLink.makeLegacy(url: "https://hub.example.com:8443/base?x=1&y=2#frag", code: "K7M2Q9XP")
     #expect(
       link.absoluteString
         == "b4app://pair?hub=https%3A%2F%2Fhub.example.com%3A8443%2Fbase%3Fx%3D1%26y%3D2%23frag&code=K7M2Q9XP"
     )
-    // The hub stays one query value, and decodes back to exactly what went in.
     let parts = try #require(URLComponents(url: link, resolvingAgainstBaseURL: false))
-    #expect(parts.scheme == "b4app" && parts.host == "pair")
-    #expect(parts.queryItems?.map(\.name) == ["hub", "code"])
     #expect(parts.queryItems?.first?.value == "https://hub.example.com:8443/base?x=1&y=2#frag")
-    #expect(parts.queryItems?.last?.value == "K7M2Q9XP")
     #expect(parts.fragment == nil)
-  }
-
-  @Test func pairLinkOfAPlainHub() {
-    let link = PairLink.make(url: "http://localhost:8080", code: "AAAA2222")
-    #expect(link.absoluteString == "b4app://pair?hub=http%3A%2F%2Flocalhost%3A8080&code=AAAA2222")
   }
 
   // MARK: The QR code
 
   @Test func qrRoundTripsThroughCIDetector() throws {
-    let link = PairLink.make(url: "https://hub.example.com:8443/base?x=1&y=2#frag", code: "K7M2Q9XP")
+    let link = PairLink.make(siteDomain: "test.b4.run", code: "K7M2Q9XP")
     let image = try #require(QRCode.image(for: link.absoluteString))
     // Crisp: whole pixels per module, and big enough to scan on screen.
     #expect(image.width == image.height && image.width >= 200)
@@ -113,13 +116,16 @@ private final class ClockBox: @unchecked Sendable {
     transport.setHub(joined)
     transport.setPairing(.success(minted), statuses: [HubPairStatus.Result(state: .waiting)])
     let model = try await connectedModel(transport)
+    model.signInConfiguration = SignInConfiguration(
+      siteDomain: "test.b4.run", appleSignIn: true, badge: "Test hub")
     let flow = PairingFlow(model: model)
     flow.sleep = { _ in try await Task.sleep(for: .milliseconds(5)) }
     let running = Task { await flow.run() }
     // While waiting the sheet holds the code, the link built from it, and the time left.
     try await waitUntil("the sheet to show the code") { flow.phase == .waiting && flow.secondsLeft != nil }
     #expect(flow.code == "K7M2Q9XP")
-    #expect(flow.link == PairLink.make(url: "https://hub.example.com", code: "K7M2Q9XP"))
+    // The flavour's site, whatever hub URL the coordinator answered.
+    #expect(flow.link == PairLink.make(siteDomain: "test.b4.run", code: "K7M2Q9XP"))
     #expect((0...300).contains(flow.secondsLeft ?? -1))
     running.cancel()
     await running.value

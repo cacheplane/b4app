@@ -255,6 +255,9 @@ public final class WorkspaceModel {
   public internal(set) var settingsCloseRequest = 0
   /// The phone's mirror has no joined Mac left: a notice sits above the still browsable list.
   public var hostDisconnected = false
+  /// The phone's account has never had a Mac (`GET /v1/devices`, read by the host): "Connect your Mac"
+  /// replaces the thread list (sign-in plan, Task 15). The host sets it; false until the list is read.
+  public var accountHasNoMac = false
 
   // MARK: The phone's relay (M8c; the logic is in SendState.swift and HostNotice.swift)
 

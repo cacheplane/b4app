@@ -124,7 +124,8 @@
       guard !Task.isCancelled else { return }
       guard account == model.accountGeneration else { return endForAnotherAccount() }
       code = minted.code
-      link = PairLink.make(url: minted.url, code: minted.code)
+      // D-066: the flavour's site implies the hub, so the link names the site, not `minted.url`.
+      link = PairLink.make(siteDomain: model.signInConfiguration.siteDomain, code: minted.code)
       let deadline = uptime().advanced(by: Self.lifetime)
       secondsLeft = Int(Self.lifetime.components.seconds)
       phase = .waiting

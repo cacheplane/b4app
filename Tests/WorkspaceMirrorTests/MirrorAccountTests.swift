@@ -600,11 +600,12 @@ private final class HeldProfileHub: HubAPI, @unchecked Sendable {
   /// Task 13's carry: a `b4app*://auth?handoff=` (or `?error=`) opened on the phone is no pairing link,
   /// so nothing redeems it.
   @Test func aStrayAuthCallbackIsNoPairingLink() {
-    let lifecycle = RelayLifecycle(enrolled: false)
     for text in [
       "b4app://auth?handoff=H-stray", "b4app-beta://auth?error=cancelled", "b4app-local://auth?handoff=x",
     ] {
-      #expect(lifecycle.pairLink(URL(string: text)!) == .ignored, "\(text)")
+      for flavor in PhoneFlavor.allCases {
+        #expect(flavor.pairLinkDecision(URL(string: text)!) == .ignored, "\(text)")
+      }
     }
   }
 }

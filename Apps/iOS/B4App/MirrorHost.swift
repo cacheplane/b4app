@@ -122,6 +122,7 @@ extension MirrorAccount: @retroactive AccountHost {}
       account = nil
     }
     account?.onChange = { status in MirrorHost.shared.accountChanged(status) }
+    account?.onDevices = { MirrorHost.shared.refreshHostState() }
     if let account, let link = account.link {
       makeRelay(link)
       account.startSync(fromSnapshot: fromSnapshot)
@@ -192,18 +193,35 @@ extension MirrorAccount: @retroactive AccountHost {}
     model?.applyHostAccount(status)
   }
 
-  /// Join a hub with a one-time enrollment code (an operator's hub, or a pairing link): validates the
-  /// URL before any request, enrolls as an `ios` device, and signs in. The code is not kept.
+  /// Join a hub with a typed one-time enrollment code (an operator's hub): validates the URL before
+  /// any request, enrolls as an `ios` device, and signs in. The code is not kept.
   func connect(url: String, code: String, deviceName: String) async throws {
+    _ = try await phoneAccount().enroll(url: url, code: code, deviceName: deviceName)
+  }
+
+  /// A pairing link the person confirmed (D-066): signs a signed-out phone in, merges a phone-only
+  /// account into the code's, or answers the switch question to ask (`MirrorAccount.pair`).
+  func pair(_ link: PairLink, deviceName: String) async throws -> MirrorPairOutcome {
+    try await phoneAccount().pair(link, deviceName: deviceName)
+  }
+
+  /// The switch question was confirmed: log out, then enroll into the code's account.
+  func switchAndPair(_ link: PairLink, deviceName: String) async throws {
+    _ = try await phoneAccount().switchAndPair(link, deviceName: deviceName)
+  }
+
+  private func phoneAccount() throws -> MirrorAccount {
     guard let account else {
       throw WorkspaceError(.endpointUnavailable, storeError ?? "The mirror could not be opened.")
     }
-    _ = try await account.enroll(url: url, code: code, deviceName: deviceName)
+    return account
   }
 
-  /// The mirror's devices table names no joined Mac. Empty (not fetched yet) is not disconnected.
+  /// From the mirror's devices table: no joined Mac left (the list's notice), and no Mac ever
+  /// ("Connect your Mac"). Empty (not fetched yet) is neither, so a phone with a Mac never flashes it.
   private func refreshHostState() {
     model?.hostDisconnected = (try? store?.devices())?.hostDisconnected ?? false
+    model?.accountHasNoMac = account?.hasNoMac ?? false
   }
 
   // MARK: - The relay's link (M8c)
@@ -213,9 +231,9 @@ extension MirrorAccount: @retroactive AccountHost {}
     control(lifecycle.enter(phase))
   }
 
-  /// What a `b4app://` link opened on this phone may do. Deciding sends nothing.
-  func pairLink(_ url: URL) -> RelayLifecycle.PairLinkDecision {
-    lifecycle.pairLink(url)
+  /// What a link opened on this phone, or a scanned QR code, may do. Deciding sends nothing.
+  func pairLinkDecision(_ url: URL) -> PairLinkDecision {
+    Self.flavor.pairLinkDecision(url)
   }
 
   /// A relay for `link`'s hub, asking the Keychain for the token on every attempt; the read runs on a

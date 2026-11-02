@@ -29,6 +29,7 @@ public actor MirrorSync {
   private let onBatch: @Sendable (AppliedBatch) async -> Void
   private let onStatus: (@Sendable (MirrorSyncStatus) async -> Void)?
   private let onUnauthorized: (@Sendable () async -> Void)?
+  private let onDevices: (@Sendable () async -> Void)?
   private let initialBackoff: Duration
   private let maxBackoff: Duration
   private var loop: Task<Void, Never>?
@@ -57,13 +58,15 @@ public actor MirrorSync {
     store: MirrorStore, api: any HubAPI, onBatch: @escaping @Sendable (AppliedBatch) async -> Void,
     onStatus: (@Sendable (MirrorSyncStatus) async -> Void)? = nil,
     initialBackoff: Duration = .seconds(2), maxBackoff: Duration = .seconds(60),
-    startFromSnapshot: Bool = false, onUnauthorized: (@Sendable () async -> Void)? = nil
+    startFromSnapshot: Bool = false, onUnauthorized: (@Sendable () async -> Void)? = nil,
+    onDevices: (@Sendable () async -> Void)? = nil
   ) {
     self.store = store
     self.api = api
     self.onBatch = onBatch
     self.onStatus = onStatus
     self.onUnauthorized = onUnauthorized
+    self.onDevices = onDevices
     self.lastSyncAt = try? store.link()?.lastSyncAt
     self.initialBackoff = initialBackoff
     self.maxBackoff = maxBackoff
@@ -188,12 +191,14 @@ public actor MirrorSync {
     await onBatch(batch)
   }
 
-  /// At most once a minute, and never a reason to stop syncing.
+  /// At most once a minute, and never a reason to stop syncing. Read before the turn's long-poll, so
+  /// the first turn after a sign-in says at once whether the account has a Mac (`onDevices`).
   private func refreshDevices() async {
     let now = ContinuousClock.now
     if let last = devicesFetchedAt, now - last < Self.devicesInterval { return }
     devicesFetchedAt = now
-    if let devices = try? await api.devices() { try? store.saveDevices(devices) }
+    guard let devices = try? await api.devices(), (try? store.saveDevices(devices)) != nil else { return }
+    await onDevices?()
   }
 
   private func failed(_ error: any Error, backoff: inout Duration) async {
