@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 use crate::auth::bearer_token;
 use crate::error::{ApiError, ApiJson};
 use crate::maintenance::WritesAllowed;
+use crate::relay::Close;
 use crate::serve::AppState;
 
 /// The platforms a device can enroll as; the `devices` table enforces the same set.
@@ -71,6 +72,8 @@ pub async fn enroll(
             let enrolled =
                 devices::redeem_merging(&state.db, &request.code, name, &request.platform, from)
                     .await?;
+            // The merged-away account and its tokens are gone; its links end now.
+            state.relay.close_user(from.user_id, Close::revoked());
             tracing::info!(
                 from_user_id = %from.user_id,
                 into_org_id = %enrolled.org_id,

@@ -186,6 +186,18 @@ pub enum Deletion {
     Unrevoked(SealedAppleTokens),
 }
 
+/// What [`remove_identity`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Removal {
+    /// The identity is gone.
+    Removed,
+    /// The account has no such identity.
+    NotFound,
+    /// The identity is an Apple ID holding a refresh token the caller did not say it revoked;
+    /// nothing was removed. Revoke this one, then remove again passing it.
+    Unrevoked(SealedAppleToken),
+}
+
 /// A passkey of a user, as adding another one needs it: the credential id to exclude, and the
 /// user handle it was registered with.
 #[derive(Clone, PartialEq, Eq)]
@@ -486,31 +498,50 @@ pub async fn add_apple_identity(db: &Db, principal: Principal, identity: Identit
     Ok(id)
 }
 
-/// Removes the identity `identity_id` from `principal`'s account. `false` when the account has
-/// no such identity; [`Error::LastIdentity`] when it is the account's only one.
-pub async fn remove_identity(db: &Db, principal: Principal, identity_id: Uuid) -> Result<bool> {
+/// Removes the identity `identity_id` from `principal`'s account, as [`Removal`] says. An Apple
+/// identity that holds a refresh token is removed only once the caller has revoked that token at
+/// Apple and passes it as `revoked`; otherwise nothing is removed and the token is handed back
+/// ([`Removal::Unrevoked`]) to revoke first. [`Error::LastIdentity`] when it is the account's only
+/// one, checked before any token is handed back.
+pub async fn remove_identity(
+    db: &Db,
+    principal: Principal,
+    identity_id: Uuid,
+    revoked: Option<&SealedAppleToken>,
+) -> Result<Removal> {
     let mut tx = db.untenanted_tx().await?;
     // Locking every identity of the user serialises concurrent removals, so two of them cannot
-    // each see the other's identity and leave the account with none.
-    let ids: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM user_identities WHERE org_id = $1 AND user_id = $2 FOR UPDATE",
+    // each see the other's identity and leave the account with none. It also holds off a sign-in
+    // replacing the refresh token between this check and the delete.
+    let rows: Vec<(Uuid, Option<Vec<u8>>)> = sqlx::query_as(
+        "SELECT id, apple_refresh_token_enc FROM user_identities \
+         WHERE org_id = $1 AND user_id = $2 FOR UPDATE",
     )
     .bind(principal.org_id)
     .bind(principal.user_id)
     .fetch_all(&mut *tx)
     .await?;
-    if !ids.contains(&identity_id) {
-        return Ok(false);
-    }
-    if ids.len() == 1 {
+    let Some((_, sealed)) = rows.iter().find(|(id, _)| *id == identity_id) else {
+        return Ok(Removal::NotFound);
+    };
+    if rows.len() == 1 {
         return Err(Error::LastIdentity);
+    }
+    if let Some(sealed) = sealed {
+        let held = SealedAppleToken {
+            identity_id,
+            sealed: sealed.clone(),
+        };
+        if revoked != Some(&held) {
+            return Ok(Removal::Unrevoked(held));
+        }
     }
     sqlx::query("DELETE FROM user_identities WHERE id = $1")
         .bind(identity_id)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    Ok(true)
+    Ok(Removal::Removed)
 }
 
 /// `principal`'s identities, oldest first.
@@ -723,8 +754,9 @@ const ORG_TABLES: [&str; 17] = [
     "devices",
 ];
 
-/// Deletes every row of `org_id` in every tenant table, then its users and the org itself. `tx`
-/// must carry `org_id`'s tenant context, which the row-secured tables need.
+/// Deletes every row of `org_id` in every tenant table, then its users' relay link claims
+/// (`user_links`), its users, and the org itself. `tx` must carry `org_id`'s tenant context, which
+/// the row-secured tables need.
 async fn delete_org(tx: &mut Transaction<'_, Postgres>, org_id: Uuid) -> Result<()> {
     for table in ORG_TABLES {
         sqlx::query(&format!("DELETE FROM \"{table}\" WHERE org_id = $1"))
@@ -732,6 +764,12 @@ async fn delete_org(tx: &mut Transaction<'_, Postgres>, org_id: Uuid) -> Result<
             .execute(&mut **tx)
             .await?;
     }
+    // The users' relay link claims are hub-internal rows with no foreign key to `users`, so they
+    // go explicitly, while the users are still there to name them.
+    sqlx::query("DELETE FROM user_links WHERE user_id IN (SELECT id FROM users WHERE org_id = $1)")
+        .bind(org_id)
+        .execute(&mut **tx)
+        .await?;
     // Deleting the users clears `orgs.owner_user_id` (ON DELETE SET NULL).
     sqlx::query("DELETE FROM users WHERE org_id = $1")
         .bind(org_id)

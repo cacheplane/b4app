@@ -14,7 +14,10 @@ use std::fmt;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use b4hub_db::accounts::{self, Deletion, Identity, IdentitySummary, Principal, SealedAppleTokens};
+use b4hub_db::accounts::{
+    self, Deletion, Identity, IdentitySummary, Principal, Removal, SealedAppleToken,
+    SealedAppleTokens,
+};
 use b4hub_db::{ceremonies, devices};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -28,6 +31,7 @@ use crate::auth::{bearer_token, AuthedDevice};
 use crate::auth_limits::{BeginAllowed, FinishAllowed};
 use crate::error::{ApiError, ApiJson};
 use crate::maintenance::WritesAllowed;
+use crate::relay::Close;
 use crate::routes::auth::{parse, rejected, start_registration, ACCOUNT_LABEL};
 use crate::serve::AppState;
 
@@ -37,8 +41,9 @@ pub const ADD_PASSKEY_CEREMONY: &str = "passkey_add";
 /// The longest full name accepted, in characters after trimming.
 pub const MAX_FULL_NAME_CHARS: usize = 200;
 
-/// How many times deleting an account revokes newly found Apple tokens and tries again before
-/// giving up (each round only happens when an Apple ID was linked during the one before).
+/// How many times deleting an account (or unlinking an Apple ID) revokes newly found Apple tokens
+/// and tries again before giving up (each round only happens when an Apple ID was linked, or its
+/// refresh token replaced by a sign-in, during the one before).
 const DELETE_ROUNDS: usize = 3;
 
 // ---- Wire types ----
@@ -215,7 +220,10 @@ pub async fn passkey_finish(
 }
 
 /// `DELETE /v1/me/identities/{id}`: unlinks one of the caller's sign-in methods. An id that is
-/// not one of theirs (or not an id) is `not_found`; their last one is `last_identity`.
+/// not one of theirs (or not an id) is `not_found`; their last one is `last_identity`. An Apple ID
+/// holding a refresh token is revoked at Apple first: a token that does not open, or a revoke
+/// that fails (as it always does on a hub without Sign in with Apple), removes nothing and fails
+/// the request so it can be retried, as deleting the account does.
 pub async fn remove_identity(
     State(state): State<AppState>,
     device: AuthedDevice,
@@ -224,16 +232,47 @@ pub async fn remove_identity(
 ) -> Result<StatusCode, ApiError> {
     let id = Uuid::parse_str(&id).map_err(|_| ApiError::not_found())?;
     let principal = Principal::from(*device);
-    if !accounts::remove_identity(&state.db, principal, id).await? {
-        return Err(ApiError::not_found());
+    let mut revoked: Option<SealedAppleToken> = None;
+    for _ in 0..DELETE_ROUNDS {
+        match accounts::remove_identity(&state.db, principal, id, revoked.as_ref()).await? {
+            Removal::Removed => {
+                tracing::info!(
+                    org_id = %principal.org_id,
+                    user_id = %principal.user_id,
+                    identity_id = %id,
+                    "removed a sign-in method"
+                );
+                return Ok(StatusCode::NO_CONTENT);
+            }
+            Removal::NotFound => return Err(ApiError::not_found()),
+            Removal::Unrevoked(token) => {
+                let fail = |error: &dyn fmt::Display| {
+                    tracing::error!(
+                        %error,
+                        user_id = %principal.user_id,
+                        identity_id = %id,
+                        "removing a sign-in method failed"
+                    );
+                    ApiError::internal()
+                };
+                let grant =
+                    open_refresh_token(&state.config.secret_key, token.identity_id, &token.sealed)
+                        .map_err(|error| fail(&error))?;
+                state
+                    .apple_revoker
+                    .revoke(&grant)
+                    .await
+                    .map_err(|error| fail(&error))?;
+                revoked = Some(token);
+            }
+        }
     }
-    tracing::info!(
-        org_id = %principal.org_id,
+    tracing::error!(
         user_id = %principal.user_id,
         identity_id = %id,
-        "removed a sign-in method"
+        "removing a sign-in method failed: its Apple refresh token kept changing"
     );
-    Ok(StatusCode::NO_CONTENT)
+    Err(ApiError::internal())
 }
 
 /// `DELETE /v1/sessions/self`: log out. Deletes the presented token only; the device stays
@@ -286,6 +325,9 @@ pub async fn delete_me(
         revoked.0.extend(to_revoke.0);
         match accounts::delete_user(&state.db, principal, &revoked).await? {
             Deletion::Deleted => {
+                // Every token is gone with the account; its links end now, not at each client's
+                // next request.
+                state.relay.close_user(principal.user_id, Close::revoked());
                 tracing::info!(
                     org_id = %principal.org_id,
                     user_id = %principal.user_id,

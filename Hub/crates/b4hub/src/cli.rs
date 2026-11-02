@@ -6,6 +6,7 @@
 //! Everything else that fails exits 1.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -202,9 +203,19 @@ pub enum LogFormat {
 }
 
 /// A snapshot of the environment, so settings parse the same way in tests as in production.
-#[derive(Debug, Clone, Default)]
+/// `Debug` prints the variable names only, sorted, never a value: the environment holds
+/// `B4HUB_SECRET_KEY`, `B4HUB_APPLE_PRIVATE_KEY`, and the database passwords.
+#[derive(Clone, Default)]
 pub struct Settings {
     vars: HashMap<String, String>,
+}
+
+impl fmt::Debug for Settings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut names: Vec<&str> = self.vars.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        f.debug_struct("Settings").field("vars", &names).finish()
+    }
 }
 
 impl Settings {
@@ -663,6 +674,27 @@ mod tests {
         assert_eq!(s.public_url().unwrap(), None);
         assert_eq!(s.retention().unwrap(), Duration::from_secs(30 * 86_400));
         assert!(s.log_filter().is_ok());
+    }
+
+    #[test]
+    fn debug_names_the_variables_but_prints_no_value() {
+        let s = settings(&[
+            ("B4HUB_SECRET_KEY", "c2VjcmV0LWtleS12YWx1ZQ"),
+            (
+                "B4HUB_APPLE_PRIVATE_KEY",
+                "-----BEGIN PRIVATE KEY-----pem-body",
+            ),
+            ("DATABASE_URL", "postgres://app:hunter2@db/b4hub"),
+        ]);
+        let printed = format!("{s:?}");
+        assert_eq!(
+            printed,
+            r#"Settings { vars: ["B4HUB_APPLE_PRIVATE_KEY", "B4HUB_SECRET_KEY", "DATABASE_URL"] }"#
+        );
+        for value in ["c2VjcmV0", "pem-body", "hunter2"] {
+            assert!(!printed.contains(value), "{printed}");
+            assert!(!format!("{s:#?}").contains(value));
+        }
     }
 
     #[test]

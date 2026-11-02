@@ -10,7 +10,7 @@ use b4hub_core::change::{Change, ChangeOp};
 use b4hub_core::ids::new_uuid;
 use b4hub_core::tokens::hash_token;
 use b4hub_db::accounts::{
-    self, Deletion, DeviceSpec, Identity, Principal, SealedAppleToken, SealedAppleTokens,
+    self, Deletion, DeviceSpec, Identity, Principal, Removal, SealedAppleToken, SealedAppleTokens,
 };
 use b4hub_db::devices::{self, AuthedDevice, Platform};
 use b4hub_db::{ceremonies, changes, orgs, Db, Error, MergeRefusal};
@@ -657,9 +657,12 @@ async fn identities_are_listed_added_and_removed(pool: PgPool) {
         org_id: other.org_id,
         user_id: other.user_id,
     };
-    assert!(!accounts::remove_identity(&app, outsider, added)
-        .await
-        .unwrap());
+    assert_eq!(
+        accounts::remove_identity(&app, outsider, added, None)
+            .await
+            .unwrap(),
+        Removal::NotFound
+    );
     assert_eq!(
         accounts::list_identities(&app, outsider)
             .await
@@ -668,9 +671,37 @@ async fn identities_are_listed_added_and_removed(pool: PgPool) {
         1
     );
 
-    assert!(accounts::remove_identity(&app, principal, added)
+    // The Apple ID holds a refresh token: it stays until the caller says it revoked that token.
+    let held = SealedAppleToken {
+        identity_id: added,
+        sealed: b"enc-001.z".to_vec(),
+    };
+    assert_eq!(
+        accounts::remove_identity(&app, principal, added, None)
+            .await
+            .unwrap(),
+        Removal::Unrevoked(held.clone())
+    );
+    let stale = SealedAppleToken {
+        identity_id: added,
+        sealed: b"enc-older".to_vec(),
+    };
+    assert_eq!(
+        accounts::remove_identity(&app, principal, added, Some(&stale))
+            .await
+            .unwrap(),
+        Removal::Unrevoked(held.clone())
+    );
+    assert!(accounts::find_by_apple_sub(&app, "001.z")
         .await
-        .unwrap());
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        accounts::remove_identity(&app, principal, added, Some(&held))
+            .await
+            .unwrap(),
+        Removal::Removed
+    );
     assert_eq!(
         accounts::find_by_apple_sub(&app, "001.z").await.unwrap(),
         None
@@ -689,7 +720,7 @@ async fn remove_last_identity_refused(pool: PgPool) {
     };
     let only = accounts::list_identities(&app, principal).await.unwrap()[0].id;
     assert!(matches!(
-        accounts::remove_identity(&app, principal, only).await,
+        accounts::remove_identity(&app, principal, only, None).await,
         Err(Error::LastIdentity)
     ));
     assert!(accounts::find_by_credential(&app, b"one")
@@ -702,11 +733,16 @@ async fn remove_last_identity_refused(pool: PgPool) {
         .await
         .unwrap();
     let (one, two) = (app.clone(), app.clone());
-    let a = tokio::spawn(async move { accounts::remove_identity(&one, principal, only).await });
-    let b = tokio::spawn(async move { accounts::remove_identity(&two, principal, second).await });
+    let a =
+        tokio::spawn(async move { accounts::remove_identity(&one, principal, only, None).await });
+    let b =
+        tokio::spawn(async move { accounts::remove_identity(&two, principal, second, None).await });
     let results = [a.await.unwrap(), b.await.unwrap()];
     assert_eq!(
-        results.iter().filter(|r| matches!(r, Ok(true))).count(),
+        results
+            .iter()
+            .filter(|r| matches!(r, Ok(Removal::Removed)))
+            .count(),
         1,
         "{results:?}"
     );
@@ -829,6 +865,24 @@ async fn fill_org(admin: &Db, app: &Db, pool: &PgPool, created: &accounts::Creat
         .unwrap();
 }
 
+/// Gives `user_id` a relay link claim (`user_links`), as an instance serving its links writes.
+async fn claim_links(pool: &PgPool, user_id: Uuid) {
+    sqlx::query("INSERT INTO user_links (user_id, instance_id, claimed_at) VALUES ($1, $2, now())")
+        .bind(user_id)
+        .bind(new_uuid())
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn has_link_claim(pool: &PgPool, user_id: Uuid) -> bool {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM user_links WHERE user_id = $1)")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
 #[sqlx::test(migrations = false)]
 async fn delete_user_removes_every_tenant_row(pool: PgPool) {
     let (admin, app) = common::migrated(&pool).await;
@@ -882,6 +936,8 @@ async fn delete_user_removes_every_tenant_row(pool: PgPool) {
         );
     }
     let kept_before = org_counts(&pool, kept.org_id).await;
+    claim_links(&pool, doomed.user_id).await;
+    claim_links(&pool, kept.user_id).await;
 
     let doomed_principal = Principal {
         org_id: doomed.org_id,
@@ -916,6 +972,9 @@ async fn delete_user_removes_every_tenant_row(pool: PgPool) {
         .unwrap();
     assert_eq!(orgs_left, 0);
     assert_eq!(org_counts(&pool, kept.org_id).await, kept_before);
+    // The deleted user's relay link claim went with it; the other user's stays.
+    assert!(!has_link_claim(&pool, doomed.user_id).await);
+    assert!(has_link_claim(&pool, kept.user_id).await);
     assert!(devices::authenticate(&app, &doomed.token)
         .await
         .unwrap()
@@ -1016,10 +1075,14 @@ async fn merge_moves_identities_and_deletes_empty_user(pool: PgPool) {
         .unwrap();
     let mac = common::enrolled(&admin, &app, "blove").await;
     let into = Principal::from(mac);
+    claim_links(&pool, phone.user_id).await;
+    claim_links(&pool, into.user_id).await;
 
     accounts::merge_phone_only(&app, phone_principal, into)
         .await
         .unwrap();
+    assert!(!has_link_claim(&pool, phone.user_id).await);
+    assert!(has_link_claim(&pool, into.user_id).await);
 
     assert_eq!(
         accounts::find_by_credential(&app, b"phone")

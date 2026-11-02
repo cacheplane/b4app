@@ -301,12 +301,30 @@ impl Hub {
 
     /// One HTTP request, in process, through the same router and state the listener serves.
     pub async fn http(&self, method: &str, path: &str, token: Option<&str>) -> (StatusCode, Value) {
+        self.http_with(method, path, token, None).await
+    }
+
+    /// [`Hub::http`] with an optional JSON body.
+    pub async fn http_with(
+        &self,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        body: Option<&Value>,
+    ) -> (StatusCode, Value) {
         let mut request = Request::builder().method(method).uri(path);
         if let Some(token) = token {
             request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
         }
+        let body = match body {
+            Some(json) => {
+                request = request.header(header::CONTENT_TYPE, "application/json");
+                Body::from(json.to_string())
+            }
+            None => Body::empty(),
+        };
         let response = serve::router(self.state.clone())
-            .oneshot(request.body(Body::empty()).unwrap())
+            .oneshot(request.body(body).unwrap())
             .await
             .unwrap();
         let status = response.status();

@@ -192,8 +192,10 @@ signed up with, which has never had a Mac) sends that account's token,
 `Authorization: Bearer <phone token>`, so pairing does not leave the person with two accounts. In
 one transaction the hub claims the code, moves every identity (passkeys, Apple IDs) of the
 token's account to the code's user, deletes that account's devices (so the phone's old token
-stops working at once), tokens, user, and personal org (which holds no synced rows: only a Mac
-writes them), and enrolls the new device under the code's account. The answer is the same `200`
+stops working at once), tokens, relay link claim, user, and personal org (which holds no synced
+rows: only a Mac writes them), and enrolls the new device under the code's account. Once it
+commits, the old account's relay links on the instance that served the request close with code
+4001. The answer is the same `200`
 as above, for the code's account. If any step fails nothing has changed: a wrong, expired, or used
 code is `401 invalid_code` and the phone's account and token are untouched.
 
@@ -650,8 +652,16 @@ rate_limited` (a finish).
 Unlinks one of the caller's sign-in methods, by its `id` from `GET /v1/me`. `204` with no body.
 An id that is not one of the caller's identities (another account's, an unknown one, or not a
 UUID) is `404 not_found`. The account's only remaining identity is `409 last_identity`; of two
-removals racing, at most one succeeds when they would together remove the last. Errors also:
-`401 unauthorized`.
+removals racing, at most one succeeds when they would together remove the last. Both are checked
+before anything is revoked.
+
+An Apple ID whose refresh token the hub stores is revoked at Apple first, as `DELETE /v1/me`
+revokes one (decrypted, then `<base>/auth/revoke` as the client id it was issued to), and only
+then is the identity deleted, so unlinking never leaves a grant at Apple that the hub can no longer
+revoke. A token that does not open, or a revoke that fails, removes nothing: the request fails with
+`500 internal_error`; retry it. A hub without Sign in with Apple cannot revoke, so unlinking an
+Apple ID that holds a token fails the same way. A sign-in that replaces the token meanwhile has the
+new one revoked too before the delete. Errors also: `401 unauthorized`.
 
 ### `DELETE /v1/sessions/self`
 
@@ -675,8 +685,10 @@ Deletes the account (App Store guideline 5.1.1(v)). `204` with no body. In order
    log, and the rest), then the org and the user. An Apple ID linked between steps 2 and 3 is
    revoked too before the delete goes ahead.
 
-Every token of the account is `401 unauthorized` afterwards, and its passkeys and Apple IDs can
-sign up afresh. Errors also: `401 unauthorized`.
+The same transaction deletes the user's relay link claim (`user_links`). Once it commits, every
+token of the account is `401 unauthorized`, and every relay link of the account on the instance
+that served the request is closed with code 4001 (device revoked) at once; its passkeys and Apple
+IDs can sign up afresh. Errors also: `401 unauthorized`.
 
 ### `GET /v1/devices`
 

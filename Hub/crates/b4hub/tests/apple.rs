@@ -1503,6 +1503,129 @@ async fn delete_on_a_hub_without_apple_cannot_revoke_and_deletes_nothing(pool: P
     assert!(setup.fake.calls(|c| c.revoked.is_empty()));
 }
 
+// ---- Unlinking ----
+
+/// Links the Apple ID `sub` natively to the account `token` (the iPhone's flow); answers the new
+/// identity's id.
+async fn native_link(setup: &Setup, token: &str, sub: &str) -> String {
+    let hub = &setup.hub;
+    let begun = authed(hub, "POST", LINK, Some(&json!({})), token).await;
+    assert_eq!(begun.status, StatusCode::OK, "{}", begun.body);
+    let nonce = begun.body["nonce"].as_str().unwrap();
+    let body = json!({
+        "ceremonyId": begun.body["ceremonyId"],
+        "identityToken": setup.fake.token(sub, BUNDLE_ID, Some(&sha256_hex(nonce))),
+        "authorizationCode": setup.fake.code(sub, BUNDLE_ID, None),
+    });
+    let identity = authed(hub, "POST", LINK_NATIVE, Some(&body), token).await;
+    assert_eq!(identity.status, StatusCode::OK, "{}", identity.body);
+    identity.body["id"].as_str().unwrap().to_string()
+}
+
+fn unlink_path(id: &str) -> String {
+    format!("/v1/me/identities/{id}")
+}
+
+#[sqlx::test(migrations = false)]
+async fn unlinking_an_apple_id_revokes_it_at_apple_first(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let hub = &setup.hub;
+    let token = token_of(&passkey_account(hub).await).to_string();
+    let apple_id = native_link(&setup, &token, "001.unlink").await;
+    let issued = setup.fake.calls(|c| c.refresh_tokens.clone());
+    assert_eq!(issued.len(), 1);
+
+    // Apple refuses: the Apple ID stays linked, and the request can be retried.
+    setup.fake.state.lock().unwrap().fail_revoke = true;
+    let failed = authed(hub, "DELETE", &unlink_path(&apple_id), None, &token).await;
+    assert_eq!(failed.code(), "internal_error", "{}", failed.body);
+    assert_eq!(kinds(hub, &token).await, ["passkey", "apple"]);
+    assert_eq!(stored_refresh(&setup.admin).await.len(), 1);
+
+    setup.fake.state.lock().unwrap().fail_revoke = false;
+    setup.fake.state.lock().unwrap().calls.revoked.clear();
+    let removed = authed(hub, "DELETE", &unlink_path(&apple_id), None, &token).await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.body);
+    assert_eq!(kinds(hub, &token).await, ["passkey"]);
+    // Revoked once, as the client id it was issued to, before the row (and the token) went.
+    assert_eq!(
+        setup.fake.calls(|c| c.revoked.clone()),
+        [(BUNDLE_ID.to_string(), issued[0].clone())]
+    );
+    assert_eq!(setup.fake.calls(|c| c.bad_secrets), 0);
+    assert!(stored_refresh(&setup.admin).await.is_empty());
+
+    // Deleting the account afterwards has nothing left to revoke, and nothing was lost to it.
+    let deleted = authed(hub, "DELETE", "/v1/me", None, &token).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
+    assert_eq!(setup.fake.calls(|c| c.revoked.len()), 1);
+}
+
+#[sqlx::test(migrations = false)]
+async fn unlinking_checks_ownership_and_the_last_identity_before_revoking(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let hub = &setup.hub;
+    // An Apple-only account: its one identity cannot be removed, and is not revoked trying.
+    let up = native(&setup, "001.only", EC_KID, None).await;
+    let only_token = token_of(&up.body).to_string();
+    let me = hub.get("/v1/me", Some(&only_token)).await;
+    let only = me.body["identities"][0]["id"].as_str().unwrap().to_string();
+    let refused = authed(hub, "DELETE", &unlink_path(&only), None, &only_token).await;
+    assert_eq!(refused.code(), "last_identity", "{}", refused.body);
+    // Another account cannot unlink it either.
+    let stranger = token_of(&passkey_account(hub).await).to_string();
+    let refused = authed(hub, "DELETE", &unlink_path(&only), None, &stranger).await;
+    assert_eq!(refused.code(), "not_found", "{}", refused.body);
+    assert!(setup.fake.calls(|c| c.revoked.is_empty()));
+    assert_eq!(stored_refresh(&setup.admin).await.len(), 1);
+}
+
+#[sqlx::test(migrations = false)]
+async fn unlinking_with_a_token_that_does_not_open_revokes_and_removes_nothing(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let hub = &setup.hub;
+    let token = token_of(&passkey_account(hub).await).to_string();
+    let apple_id = native_link(&setup, &token, "001.sealed").await;
+    // The sealed token is overwritten with one sealed to another row, so it does not open here.
+    let id = Uuid::parse_str(&apple_id).unwrap();
+    let other = b4hub::apple::seal_refresh_token(
+        &hub.state.config.secret_key,
+        Uuid::new_v4(),
+        &b4hub::apple::AppleGrant {
+            client_id: BUNDLE_ID.into(),
+            refresh_token: "r.elsewhere".into(),
+        },
+    )
+    .unwrap();
+    sqlx::query("UPDATE user_identities SET apple_refresh_token_enc = $2 WHERE id = $1")
+        .bind(id)
+        .bind(other)
+        .execute(&setup.admin.pool)
+        .await
+        .unwrap();
+
+    let failed = authed(hub, "DELETE", &unlink_path(&apple_id), None, &token).await;
+    assert_eq!(failed.code(), "internal_error", "{}", failed.body);
+    assert!(setup.fake.calls(|c| c.revoked.is_empty()));
+    assert_eq!(kinds(hub, &token).await, ["passkey", "apple"]);
+}
+
+#[sqlx::test(migrations = false)]
+async fn unlinking_on_a_hub_without_apple_cannot_revoke_and_removes_nothing(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let token = token_of(&passkey_account(&setup.hub).await).to_string();
+    let apple_id = native_link(&setup, &token, "001.later").await;
+    // The same database, served later by a hub whose Apple configuration was removed: as
+    // deleting the account, unlinking fails rather than drop a grant it cannot revoke.
+    let mut config = common::config(Signup::Open);
+    config.secret_key = setup.hub.state.config.secret_key;
+    let bare = Hub::start(setup.hub.state.db.clone(), config).await;
+    let failed = authed(&bare, "DELETE", &unlink_path(&apple_id), None, &token).await;
+    assert_eq!(failed.code(), "internal_error", "{}", failed.body);
+    assert_eq!(kinds(&bare, &token).await, ["passkey", "apple"]);
+    assert!(setup.fake.calls(|c| c.revoked.is_empty()));
+}
+
 // ---- Linking ----
 
 /// Signs up with a new passkey on a Mac; answers the session.
@@ -2066,9 +2189,28 @@ async fn no_secret_in_logs(pool: PgPool) {
             bytes.iter().map(|b| format!("{b:02x}")).collect(),
         ]);
     }
+    // The linker unlinks its Apple ID: refused once by Apple, then revoked and removed.
+    let me = hub.get("/v1/me", Some(&linker)).await;
+    let linked = me.body["identities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "apple")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    setup.fake.state.lock().unwrap().fail_revoke = true;
+    let failed = authed(hub, "DELETE", &unlink_path(&linked), None, &linker).await;
+    assert_eq!(failed.code(), "internal_error", "{}", failed.body);
+    setup.fake.state.lock().unwrap().fail_revoke = false;
+    setup.fake.state.lock().unwrap().calls.revoked.clear();
+    let unlinked = authed(hub, "DELETE", &unlink_path(&linked), None, &linker).await;
+    assert_eq!(unlinked.status, StatusCode::NO_CONTENT, "{}", unlinked.body);
+
     let deleted = authed(hub, "DELETE", "/v1/me", None, &token).await;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
-    assert_eq!(setup.fake.calls(|c| c.revoked.len()), 1);
+    assert_eq!(setup.fake.calls(|c| c.revoked.len()), 2);
     secrets.extend(setup.fake.calls(|c| c.refresh_tokens.clone()));
     secrets.extend(setup.fake.calls(|c| c.client_secrets.clone()));
     assert!(setup.fake.calls(|c| c.client_secrets.len()) >= 5);
@@ -2080,6 +2222,8 @@ async fn no_secret_in_logs(pool: PgPool) {
         "redeemed a handoff",
         "linked an Apple ID",
         "Apple verification failed",
+        "removing a sign-in method failed",
+        "removed a sign-in method",
         "deleted an account",
     ] {
         assert!(text.contains(line), "{line} is not logged:\n{text}");
