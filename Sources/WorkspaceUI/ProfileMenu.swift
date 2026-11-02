@@ -24,7 +24,9 @@ public struct LogOutConfirmation: Sendable, Equatable {
   public var stopsWork: Bool { !work.turns.isEmpty || !work.servers.isEmpty }
 
   public var title: String { "Log out of \(orgName)?" }
-  public var confirmTitle: String { stopsWork ? "Stop and log out" : "Log out" }
+  /// Whether anything on this Mac stops: remote runs alone keep going where they run.
+  public var stopsLocalWork: Bool { !work.localTurns.isEmpty || !work.servers.isEmpty }
+  public var confirmTitle: String { stopsLocalWork ? "Stop and log out" : "Log out" }
   /// The buttons, in order.
   public var buttons: [String] { [confirmTitle, Self.cancelTitle] }
 

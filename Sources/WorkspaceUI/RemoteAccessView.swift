@@ -100,14 +100,18 @@
     /// code is replaced up to `renewsExpiredCodes` times.
     func run() async {
       var renewals = renewsExpiredCodes
+      let account = model.accountGeneration
       while true {
-        await runOnce()
-        guard phase == .expired, renewals > 0, !Task.isCancelled else { return }
+        await runOnce(account: account)
+        guard phase == .expired, renewals > 0, !Task.isCancelled, account == model.accountGeneration
+        else { return }
         renewals -= 1
       }
     }
 
-    private func runOnce() async {
+    /// One code. It stops, and drops the code, once the account it was minted for is no longer the
+    /// signed-in one (a sign-out or a switch): its status would be asked of the next account.
+    private func runOnce(account: Int) async {
       clear()
       phase = .minting
       let minted: HubPair.Result
@@ -118,6 +122,7 @@
         return
       }
       guard !Task.isCancelled else { return }
+      guard account == model.accountGeneration else { return endForAnotherAccount() }
       code = minted.code
       link = PairLink.make(url: minted.url, code: minted.code)
       let deadline = uptime().advanced(by: Self.lifetime)
@@ -127,10 +132,12 @@
       while !Task.isCancelled {
         do { try await sleep(pollInterval) } catch { return }
         guard !Task.isCancelled else { return }
+        guard account == model.accountGeneration else { return endForAnotherAccount() }
         let left = deadline - uptime()
         secondsLeft = max(0, Int(Self.seconds(left).rounded(.up)))
         if let status = await model.pairStatus() {
           guard !Task.isCancelled else { return }
+          guard account == model.accountGeneration else { return endForAnotherAccount() }
           switch status.state {
           case .paired:
             clear()
@@ -151,6 +158,11 @@
           return
         }
       }
+    }
+
+    private func endForAnotherAccount() {
+      clear()
+      phase = .expired
     }
 
     private static func seconds(_ duration: Duration) -> Double {

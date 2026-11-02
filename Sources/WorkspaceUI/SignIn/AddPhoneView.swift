@@ -68,9 +68,14 @@
 
     init(model: WorkspaceModel) {
       self.model = model
+      _flow = State(initialValue: Self.makeFlow(model: model))
+    }
+
+    /// The flow this view runs: M8c's, renewing an expired code `renewals` times.
+    static func makeFlow(model: WorkspaceModel) -> PairingFlow {
       let flow = PairingFlow(model: model)
-      flow.renewsExpiredCodes = Self.renewals
-      _flow = State(initialValue: flow)
+      flow.renewsExpiredCodes = renewals
+      return flow
     }
 
     var body: some View {

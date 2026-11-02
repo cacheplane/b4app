@@ -77,7 +77,8 @@ public struct WorkspaceSettingsView: View {
   public var body: some View {
     Group {
       if model.settingsAvailable {
-        pages
+        // Keyed by the account, so a switch also drops every page's sheets and flows.
+        pages.id(model.accountStatus?.account?.id)
       } else {
         // Signed out while the window was open: it closes (below); until then nothing of the account
         // shows.

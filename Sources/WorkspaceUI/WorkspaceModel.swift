@@ -547,6 +547,8 @@ public final class WorkspaceModel {
   /// "Remove this Mac from your account" (Remote access): `hub.leave` revokes this Mac's device at the
   /// hub and signs it out. A failure keeps the account and sets `lastError`.
   public func removeThisMac() async {
+    // The sign-out that follows forgets the composer; its text is saved first, as at a log-out.
+    await persistDraftNow()
     guard
       await perform({ client in
         try await client.request(HubLeave.self, EmptyParams(), options: Self.mutation())
@@ -1370,6 +1372,7 @@ public final class WorkspaceModel {
     lastError = nil
     showAddPhone = false
     logOutConfirmation = nil
+    logOutFailure = nil
     identities = nil
     accountSettingsFailure = nil
     deleteFailure = nil

@@ -147,6 +147,10 @@ public enum SignInCopy {
   public static let passkeysNotSetUp =
     "This device can't save passkeys yet. Turn on Passwords in iCloud settings, then try again."
 
+  /// The device already has a passkey for this account (`.matchedExcludedCredential`).
+  public static let passkeyAlreadyOnDevice =
+    "This device already has a passkey for this account."
+
   /// The coordinator could not be reached for a log-out; nothing changed.
   static let coordinatorUnreachable = "Can't reach the coordinator. Try again in a moment."
 
@@ -167,6 +171,12 @@ public struct SignInCanceled: Error, Sendable, Equatable {
 
 /// Raised by a ceremony when the device cannot make a passkey at all.
 public struct PasskeysNotSetUp: Error, Sendable, Equatable {
+  public init() {}
+}
+
+/// Raised by a ceremony when the device already holds a passkey for this account (the hub's
+/// `excludeCredentials` matched): nothing was made, so nothing is reported as an orphan.
+public struct PasskeyAlreadyOnDevice: Error, Sendable, Equatable {
   public init() {}
 }
 
@@ -229,24 +239,30 @@ extension WorkspaceModel {
     }
     if status.state != .signedIn {
       if wasSignedIn || status.state == .signedOut { forgetWorkspace() }
-      if wasSignedIn {
-        // Whatever needs an account closes: the Settings window, the phone's sheet (forgetWorkspace
-        // already closed the sheets and menus of the workspace).
-        showSettingsSheet = false
-        settingsCloseRequest += 1
-      }
+      if wasSignedIn { closeAccountWindows() }
       return
     }
     // Another account, with no sign-out between (a switch publishes only the new account): nothing of
-    // the old one may stay on screen or be written to the new store.
+    // the old one may stay on screen or be written to the new store, and what Settings had open for
+    // it (Add your iPhone's code, Delete account…) closes exactly as at a sign-out.
     let switched = wasSignedIn && previousId != status.account?.id
-    if switched { forgetWorkspace() }
+    if switched {
+      forgetWorkspace()
+      closeAccountWindows()
+    }
     if loadStore, !wasSignedIn || switched {
       Task {
         try? await refreshSnapshot()
         await refreshAccount()
       }
     }
+  }
+
+  /// Whatever needs an account closes: the Settings window and its sheets, and the phone's Settings
+  /// sheet (`forgetWorkspace` already closed the workspace's own sheets and menus).
+  private func closeAccountWindows() {
+    showSettingsSheet = false
+    settingsCloseRequest += 1
   }
 
   func signInClient() throws -> WorkspaceClient {
@@ -268,6 +284,10 @@ extension WorkspaceModel {
     }
     if error is PasskeysNotSetUp {
       signInProgress = SignInProgress(failure: SignInCopy.passkeysNotSetUp)
+      return
+    }
+    if error is PasskeyAlreadyOnDevice {
+      signInProgress = SignInProgress(failure: SignInCopy.passkeyAlreadyOnDevice)
       return
     }
     signInProgress = SignInProgress(failure: SignInCopy.failure(for: WorkspaceError.from(error)))

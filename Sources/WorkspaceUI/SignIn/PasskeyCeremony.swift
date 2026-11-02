@@ -76,8 +76,10 @@ public final class SystemPasskeyCeremony: NSObject, PasskeyCeremony {
     }
   }
 
-  public func register(_ options: JSONValue) async throws -> JSONValue {
-    let request = try WebAuthnJSON.registrationRequest(from: options)
+  /// The system's registration request for the hub's options.
+  nonisolated static func platformRequest(
+    for request: WebAuthnJSON.RegistrationRequest
+  ) -> ASAuthorizationPlatformPublicKeyCredentialRegistrationRequest {
     let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(
       relyingPartyIdentifier: request.relyingParty)
     let registration = provider.createCredentialRegistrationRequest(
@@ -87,6 +89,17 @@ public final class SystemPasskeyCeremony: NSObject, PasskeyCeremony {
         rawValue: preference)
     }
     registration.attestationPreference = .none
+    // The account's passkeys: a device that already holds one for this account refuses to make
+    // another (`.matchedExcludedCredential`) rather than overwriting it under the same user handle,
+    // which would leave the hub holding a passkey that no longer exists anywhere.
+    registration.excludedCredentials = request.excludedCredentials.map {
+      ASAuthorizationPlatformPublicKeyCredentialDescriptor(credentialID: $0)
+    }
+    return registration
+  }
+
+  public func register(_ options: JSONValue) async throws -> JSONValue {
+    let registration = Self.platformRequest(for: try WebAuthnJSON.registrationRequest(from: options))
     let run = AuthorizationRun()
     do {
       let authorization = try await run.perform(registration, options: [])
@@ -107,6 +120,7 @@ public final class SystemPasskeyCeremony: NSObject, PasskeyCeremony {
     switch error.code {
     case .canceled: return SignInCanceled()
     case .deviceNotConfiguredForPasskeyCreation: return PasskeysNotSetUp()
+    case .matchedExcludedCredential: return PasskeyAlreadyOnDevice()
     default: return error
     }
   }
@@ -225,6 +239,8 @@ public enum WebAuthnJSON {
     public var name: String
     public var userID: Data
     public var userVerification: String?
+    /// `excludeCredentials`' ids: the passkeys the account already has.
+    public var excludedCredentials: [Data] = []
   }
 
   static func invalid(_ what: String) -> WorkspaceError {
@@ -251,9 +267,19 @@ public enum WebAuthnJSON {
       throw invalid("user.id")
     }
     guard let name = key["user"]?["name"]?.stringValue, !name.isEmpty else { throw invalid("user.name") }
+    var excluded: [Data] = []
+    if case .array(let descriptors)? = key["excludeCredentials"] {
+      for descriptor in descriptors {
+        guard let id = descriptor["id"]?.stringValue.flatMap(data(base64URL:)) else {
+          throw invalid("an id for each excluded credential")
+        }
+        excluded.append(id)
+      }
+    }
     return RegistrationRequest(
       relyingParty: rpId, challenge: challenge, name: name, userID: userID,
-      userVerification: key["authenticatorSelection"]?["userVerification"]?.stringValue)
+      userVerification: key["authenticatorSelection"]?["userVerification"]?.stringValue,
+      excludedCredentials: excluded)
   }
 
   public static func assertion(

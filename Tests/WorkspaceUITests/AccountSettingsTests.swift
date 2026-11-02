@@ -1,3 +1,4 @@
+import AuthenticationServices
 import Foundation
 import Testing
 import WorkspaceClient
@@ -152,7 +153,9 @@ private let minted = HubPair.Result(
       work: WorkspaceActiveWork.Result(
         turns: [turn("r1", local: false), turn("r2", local: false)], servers: []))
     #expect(remote.message.hasPrefix("2 remote B4 runs keep going on their servers."))
-    #expect(remote.buttons == ["Stop and log out", "Cancel"])
+    // Nothing on this Mac stops: the button says Log out, though the coordinator needs stopWork.
+    #expect(remote.buttons == ["Log out", "Cancel"])
+    #expect(remote.stopsWork)
 
     // "Stop and log out" sends stopWork, and nothing else is asked.
     transport.script(.accountLogout, [try status(signedOut)])
@@ -280,6 +283,7 @@ private let minted = HubPair.Result(
     await model.refreshIdentities()
     let page = AccountSettingsContent(model: model, now: today, locale: gb)
     #expect(page.fullName == "Brian Love")
+    #expect(page.nameHint == "Your org is named after your first name.")
     #expect(page.orgName == "Brian's Org")
     #expect(
       page.methods.map(\.text) == ["Apple ID · added 1 Nov", "Passkey · Brian Love · added 4 Mar 2025"])
@@ -310,12 +314,20 @@ private let minted = HubPair.Result(
     await model.refreshIdentities()
     #expect(
       AccountSettingsContent(model: model, now: today, locale: gb).methods.allSatisfy { $0.removeEnabled })
+    // The list is read again, so the stale row stops offering Remove.
     transport.script(.accountRemoveIdentity, [.failure(WorkspaceError(.lastIdentity, "hub detail"))])
+    transport.script(
+      .accountIdentities, [try reply(AccountIdentities.Result(identities: [identity("i1")]))])
     await model.removeIdentity(id: "i2")
     #expect(model.accountSettingsFailure == AccountCopy.lastIdentity)
-    #expect(model.identities?.count == 2)
+    #expect(model.identities?.map(\.id) == ["i1"])
+    #expect(AccountSettingsContent(model: model).methods.first?.removeEnabled == false)
 
     // A removal that works shows what is left.
+    transport.script(
+      .accountIdentities,
+      [try reply(AccountIdentities.Result(identities: [identity("i1"), identity("i2", kind: "apple")]))])
+    await model.refreshIdentities()
     transport.script(
       .accountRemoveIdentity, [try reply(AccountIdentities.Result(identities: [identity("i1")]))])
     await model.removeIdentity(id: "i2")
@@ -331,23 +343,23 @@ private let minted = HubPair.Result(
     #expect(!model.canDeleteAccount(typed: "brian's org"))
     #expect(!model.canDeleteAccount(typed: "Brian's Org "))
     #expect(model.canDeleteAccount(typed: "Brian's Org"))
-    await model.deleteAccount(typed: "Brians Org")
+    await model.deleteAccount(typed: "Brians Org", accountId: theAccount.id)
     #expect(transport.calls(.accountDelete).isEmpty)
 
     // A shared org is refused at the hub: one line, nothing changes.
     transport.script(.accountDelete, [.failure(WorkspaceError(.sharedOrg, "hub detail"))])
-    await model.deleteAccount(typed: "Brian's Org")
+    await model.deleteAccount(typed: "Brian's Org", accountId: theAccount.id)
     #expect(transport.calls(.accountDelete).count == 1)
     #expect(model.deleteFailure == AccountCopy.sharedOrg)
     #expect(model.accountState == .signedIn)
 
     transport.script(.accountDelete, [.failure(WorkspaceError(.internalError, "secret hub detail"))])
-    await model.deleteAccount(typed: "Brian's Org")
+    await model.deleteAccount(typed: "Brian's Org", accountId: theAccount.id)
     #expect(model.deleteFailure == "That didn't work. Try again.")
     #expect(model.accountState == .signedIn)
 
     transport.script(.accountDelete, [try status(signedOut)])
-    await model.deleteAccount(typed: "Brian's Org")
+    await model.deleteAccount(typed: "Brian's Org", accountId: theAccount.id)
     #expect(model.deleteFailure == nil)
     #expect(model.accountState == .signedOut(reason: nil))
   }
@@ -408,8 +420,10 @@ private let minted = HubPair.Result(
     await model.refreshIdentities()
     #expect(AccountSettingsContent(model: model).connectApple == nil)
 
+    // Hidden on beta and prod too, until Task 14 wires the link calls.
     model.signInConfiguration = beta
-    #expect(AccountSettingsContent(model: model).connectApple == "Connect Apple ID")
+    #expect(AccountSettingsContent(model: model).connectApple == nil)
+    #expect(AccountSettingsContent.appleLinking == false)
     await model.connectAppleID()
     // Task 14 adds the link calls; until then it says so and links nothing.
     #expect(model.accountSettingsFailure == AccountCopy.appleNotYet)
@@ -495,5 +509,178 @@ private let minted = HubPair.Result(
     await once.run()
     #expect(transport.calls(.hubPair).count == before + 1)
     #expect(once.phase == .paired("P"))
+  }
+  // MARK: Fix round 1
+
+  @Test func registrationExcludesTheAccountsPasskeys() throws {
+    let options: JSONValue = [
+      "publicKey": [
+        "challenge": "SaCNwlH3QwCt591RUpzizyufYVups0FttxAuD4EuN98",
+        "rp": ["id": "test.b4.run", "name": "b4.run"],
+        "user": ["id": "x1DZeP_JTHG6OCuGv4E2CQ", "name": "Agent Workspace account"],
+        "excludeCredentials": [
+          ["type": "public-key", "id": "AQID"], ["type": "public-key", "id": "-_8B"],
+        ],
+      ]
+    ]
+    let request = try WebAuthnJSON.registrationRequest(from: options)
+    #expect(request.excludedCredentials == [Data([1, 2, 3]), Data([0xfb, 0xff, 0x01])])
+    let platform = SystemPasskeyCeremony.platformRequest(for: request)
+    #expect(
+      platform.excludedCredentials?.map(\.credentialID) == [Data([1, 2, 3]), Data([0xfb, 0xff, 0x01])])
+    // None to exclude (a new account) is an empty list.
+    #expect(try WebAuthnJSON.registrationRequest(from: registrationOptions).excludedCredentials.isEmpty)
+    // The device holding one of them is its own error.
+    #expect(
+      SystemPasskeyCeremony.registrationError(ASAuthorizationError(.matchedExcludedCredential))
+        is PasskeyAlreadyOnDevice)
+  }
+
+  @Test func aPasskeyAlreadyOnTheDeviceIsOneLineAndNoOrphan() async throws {
+    let transport = ScriptedTransport()
+    let model = try await connected(transport: transport)
+    let begun = AccountAddPasskeyBegin.Result(ceremonyId: "c9", registration: registrationOptions)
+    transport.script(.accountAddPasskeyBegin, [try reply(begun)])
+    let ceremony = FakeCeremony()
+    ceremony.registerError = PasskeyAlreadyOnDevice()
+    await model.addPasskey(using: ceremony)
+    #expect(model.accountSettingsFailure == "This device already has a passkey for this account.")
+    #expect(transport.calls(.accountAddPasskeyFinish).isEmpty)
+    #expect(ceremony.reportedUnknown.isEmpty)
+  }
+
+  @Test func anAccountSwitchClosesSettings() async throws {
+    let transport = ScriptedTransport()
+    let model = try await connected(transport: transport)
+    model.openSettings(.account)
+    model.showSettingsSheet = true
+    let before = model.settingsCloseRequest
+    var other = signedIn
+    other.account?.id = "ffffffffffffffff"
+    transport.emit(try .accountChanged(other))
+    try await waitUntil("the switch") { model.accountStatus?.account?.id == "ffffffffffffffff" }
+    #expect(model.accountState == .signedIn)
+    #expect(model.settingsCloseRequest == before + 1)
+    #expect(model.showSettingsSheet == false)
+  }
+
+  @Test func deleteIsBoundToTheAccountItWasOpenedFor() async throws {
+    let transport = ScriptedTransport()
+    let model = try await connected(transport: transport)
+    let openedFor = AccountSettingsContent(model: model).accountId
+    #expect(openedFor == theAccount.id)
+    // A switch to another account whose org has the same name.
+    var other = signedIn
+    other.account?.id = "ffffffffffffffff"
+    model.applyAccountStatus(other)
+    #expect(model.canDeleteAccount(typed: "Brian's Org"))
+    await model.deleteAccount(typed: "Brian's Org", accountId: openedFor)
+    #expect(transport.calls(.accountDelete).isEmpty)
+    await model.deleteAccount(typed: "Brian's Org", accountId: nil)
+    #expect(transport.calls(.accountDelete).isEmpty)
+  }
+
+  @Test func addPhoneStopsOnAnAccountSwitch() async throws {
+    let transport = ScriptedTransport()
+    transport.setHub(joined)
+    transport.setPairing(.success(minted), statuses: [HubPairStatus.Result(state: .waiting)])
+    let model = try await connected(transport: transport)
+    let flow = AddPhoneView.makeFlow(model: model)
+    flow.sleep = { _ in try await Task.sleep(for: .milliseconds(5)) }
+    let running = Task { await flow.run() }
+    try await waitUntil("a poll") { transport.calls(.hubPairStatus).count >= 1 }
+    var other = signedIn
+    other.account?.id = "ffffffffffffffff"
+    model.applyAccountStatus(other)
+    // It ends by itself, drops the code, and mints nothing for the new account.
+    await running.value
+    #expect(flow.code == nil && flow.link == nil)
+    #expect(transport.calls(.hubPair).count == 1)
+    let polls = transport.calls(.hubPairStatus).count
+    try await Task.sleep(for: .milliseconds(40))
+    #expect(transport.calls(.hubPairStatus).count == polls)
+  }
+
+  @Test func addPhoneRenewsAnExpiredCodeTwice() async throws {
+    let transport = ScriptedTransport()
+    transport.setHub(joined)
+    transport.setPairing(.success(minted), statuses: [HubPairStatus.Result(state: .expired)])
+    let model = try await connected(transport: transport)
+    let flow = AddPhoneView.makeFlow(model: model)
+    #expect(flow.renewsExpiredCodes == 2)
+    flow.sleep = { _ in await Task.yield() }
+    await flow.run()
+    // The first code and two renewals, then it waits for New code.
+    #expect(transport.calls(.hubPair).count == 3)
+    #expect(flow.phase == .expired)
+    // New code (`restart`) runs the view's task again.
+    let generation = flow.generation
+    flow.restart()
+    #expect(flow.generation == generation + 1)
+  }
+
+  @Test func signingOutClearsTheLogOutFailure() async throws {
+    let transport = ScriptedTransport()
+    let model = try await connected(transport: transport)
+    await model.requestLogOut()
+    transport.script(.accountLogout, [.failure(WorkspaceError(.internalError, "no"))])
+    await model.confirmLogOut()
+    #expect(model.logOutFailure != nil)
+    transport.emit(try .accountChanged(signedOut))
+    try await waitUntil("the sign-out") { model.accountState == .signedOut(reason: nil) }
+    #expect(model.logOutFailure == nil)
+  }
+
+  @Test func removeThisMacSavesTheDraftFirst() async throws {
+    let transport = ScriptedTransport()
+    let open = ConversationThread(
+      id: "t1", connectionId: "c1", nativeThreadId: "n-t1", title: "t1", pinned: false, archived: false,
+      createdAt: "2026-11-01T10:00:00Z", updatedAt: "2026-11-01T10:00:00Z")
+    transport.set(threads: [open])
+    transport.setRead(ThreadRead.Result(thread: open, turns: [], items: [], requests: []))
+    transport.setHub(joined)
+    let model = try await connected(transport: transport)
+    model.draftSaveDelay = .seconds(600)
+    await model.openThread(id: "t1")
+    model.composerText = "half a thought"
+    let saved = Draft(threadId: "t1", text: "half a thought", updatedAt: "2026-11-01T10:00:00Z")
+    transport.script(.draftSave, [try reply(DraftSave.Result(draft: saved))])
+    await model.removeThisMac()
+    let methods = transport.methods()
+    let save = try #require(methods.lastIndex(of: "draft.save"))
+    let leave = try #require(methods.lastIndex(of: "hub.leave"))
+    #expect(save < leave)
+    #expect(transport.calls(.draftSave).last == ["threadId": "t1", "text": "half a thought"])
+  }
+
+  @Test func aDeletedAccountWhoseLocalDataStayedSaysSo() async throws {
+    let transport = ScriptedTransport()
+    let model = try await connected(transport: transport)
+    // The coordinator signed out, then answered that the drop failed.
+    transport.script(
+      .accountDelete,
+      [
+        .failure(
+          WorkspaceError(
+            .internalError,
+            "The account was deleted at the hub, but its data on this Mac could not be removed",
+            details: ["database": "workspace_a1b2c3d4e5f60718"]))
+      ])
+    await model.deleteAccount(typed: "Brian's Org", accountId: theAccount.id)
+    #expect(model.deleteFailure == AccountCopy.deletedLocalDataKept)
+    #expect(!AccountCopy.deletedLocalDataKept.contains("Try again"))
+
+    // The sign-out usually lands first and closes Settings: the sign-in screen says it then.
+    transport.script(.accountDelete, [.hold])
+    let deleting = Task { await model.deleteAccount(typed: "Brian's Org", accountId: theAccount.id) }
+    try await waitUntil("the delete to be sent") { transport.heldCount(.accountDelete) == 1 }
+    transport.emit(try .accountChanged(signedOut))
+    try await waitUntil("the sign-out") { model.accountState == .signedOut(reason: nil) }
+    transport.release(
+      .accountDelete,
+      with: .failure(WorkspaceError(.internalError, "x", details: ["database": "workspace_a1b2c3d4e5f60718"]))
+    )
+    await deleting.value
+    #expect(model.signInProgress.failure == AccountCopy.deletedLocalDataKept)
   }
 }

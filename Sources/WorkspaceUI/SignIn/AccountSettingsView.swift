@@ -6,6 +6,8 @@ import WorkspaceProtocol
 /// The Account page's words (sign-in plan, Task 12; spec "Linking and Settings → Account").
 public enum AccountCopy {
   public static let fullName = "Full name"
+  /// Under the name: saving it renames a personal org to "<first word>'s Org" (the hub's `set_profile`).
+  public static let nameHint = "Your org is named after your first name."
   public static let org = "Org"
   public static let save = "Save"
   public static let methods = "Sign-in methods"
@@ -37,6 +39,10 @@ public enum AccountCopy {
   public static let passkeyRejected = "That passkey wasn't accepted. Try again."
   public static let alreadyApple = "This account already has an Apple ID."
   public static let expired = "That took too long. Try again."
+  /// The hub deleted the account, but the coordinator could not drop its database on this Mac. Nothing
+  /// retries that, so the line says only what happened.
+  public static let deletedLocalDataKept =
+    "Your account was deleted, but its data on this Mac couldn't be removed."
 
   /// One line for a refused Account page call: never the code or the hub's own text.
   public static func failure(for error: WorkspaceError) -> String {
@@ -94,19 +100,26 @@ struct AccountSettingsContent: Equatable {
   }
 
   var fullName: String
+  var nameHint = AccountCopy.nameHint
   var orgName: String
   var methods: [Method]
   /// Whether `account.identities` has answered.
   var methodsLoaded: Bool
   var addPasskey = AccountCopy.addPasskey
-  /// "Connect Apple ID", when the flavour offers Apple and the account has none.
+  /// "Connect Apple ID", when the flavour offers Apple, the app can link one, and the account has none.
   var connectApple: String?
+  /// Whether the app can link an Apple ID. The link calls arrive with Task 14, which turns this on;
+  /// until then the button is not shown at all.
+  static let appleLinking = false
+  /// The account the page shows, which Delete account… is bound to.
+  var accountId: String?
   var delete = AccountCopy.delete
   var failure: String?
 
   init(model: WorkspaceModel, now: Date = Date(), locale: Locale = .current) {
     fullName = model.accountStatus?.account?.displayName ?? model.account?.name ?? ""
     orgName = model.accountStatus?.account?.orgName ?? ""
+    accountId = model.accountStatus?.account?.id
     let identities = model.identities ?? []
     methodsLoaded = model.identities != nil
     // The last method can't go: the hub refuses it (`last_identity`), so the button says so first.
@@ -115,7 +128,7 @@ struct AccountSettingsContent: Equatable {
         id: $0.id, text: AccountCopy.methodLine($0, now: now, locale: locale),
         removeEnabled: identities.count > 1)
     }
-    if model.signInConfiguration.appleSignIn, model.identities != nil,
+    if Self.appleLinking, model.signInConfiguration.appleSignIn, model.identities != nil,
       !identities.contains(where: { $0.kind == "apple" })
     {
       connectApple = AccountCopy.connectApple
@@ -202,6 +215,9 @@ extension WorkspaceModel {
       return
     } catch is PasskeysNotSetUp {
       accountSettingsFailure = SignInCopy.passkeysNotSetUp
+    } catch is PasskeyAlreadyOnDevice {
+      // The device refused before making anything: there is no new passkey to report.
+      accountSettingsFailure = SignInCopy.passkeyAlreadyOnDevice
     } catch {
       guard generation == accountGeneration else { return }
       accountSettingsFailure = AccountCopy.failure(for: WorkspaceError.from(error))
@@ -209,7 +225,8 @@ extension WorkspaceModel {
   }
 
   /// "Connect Apple ID". The native and web link calls arrive with the iPhone's Apple flow (sign-in
-  /// plan, Task 14); until then this says it is not available and links nothing.
+  /// plan, Task 14), which also shows the button (`AccountSettingsContent.appleLinking`); until then
+  /// this says it is not available and links nothing.
   public func connectAppleID() async {
     accountSettingsFailure = AccountCopy.appleNotYet
   }
@@ -230,7 +247,10 @@ extension WorkspaceModel {
       identities = left.identities
     } catch {
       guard generation == accountGeneration else { return }
-      accountSettingsFailure = AccountCopy.failure(for: WorkspaceError.from(error))
+      let failure = WorkspaceError.from(error)
+      accountSettingsFailure = AccountCopy.failure(for: failure)
+      // Another device changed the methods: show what the hub has now.
+      if failure.code == .lastIdentity { await refreshIdentities() }
     }
   }
 
@@ -240,10 +260,14 @@ extension WorkspaceModel {
     return typed == org
   }
 
-  /// Delete the account at the hub and its data on this Mac, once the org name is typed exactly. A
-  /// refusal (`shared_org`, or any other) is one line and changes nothing.
-  public func deleteAccount(typed: String) async {
-    guard canDeleteAccount(typed: typed), !deleteInFlight else { return }
+  /// Delete the account at the hub and its data on this Mac, once the org name is typed exactly, and
+  /// only while `accountId` (the account the sheet was opened for) is still the signed-in one: after a
+  /// switch to an account whose org has the same name, nothing is sent. A refusal (`shared_org`, or any
+  /// other) is one line and changes nothing.
+  public func deleteAccount(typed: String, accountId: String?) async {
+    guard let accountId, accountId == accountStatus?.account?.id, canDeleteAccount(typed: typed),
+      !deleteInFlight
+    else { return }
     deleteInFlight = true
     defer { deleteInFlight = false }
     deleteFailure = nil
@@ -252,7 +276,17 @@ extension WorkspaceModel {
         AccountDelete.self, EmptyParams(), options: Self.accountCall())
       applyAccountStatus(status)
     } catch {
-      deleteFailure = AccountCopy.failure(for: WorkspaceError.from(error))
+      let failure = WorkspaceError.from(error)
+      if failure.code == .internalError, failure.details?["database"] != nil {
+        // Deleted at the hub, and signed out here; only the local drop failed. The Settings window
+        // closes with the sign-out, so the sign-in screen says it.
+        deleteFailure = AccountCopy.deletedLocalDataKept
+        if accountState != .signedIn {
+          signInProgress = SignInProgress(failure: AccountCopy.deletedLocalDataKept)
+        }
+        return
+      }
+      deleteFailure = AccountCopy.failure(for: failure)
     }
   }
 }
@@ -311,7 +345,7 @@ struct AccountSettingsView: View {
       Text(AccountCopy.removeMessage)
     }
     .sheet(isPresented: $deleting) {
-      DeleteAccountSheet(model: model, orgName: content.orgName)
+      DeleteAccountSheet(model: model, orgName: content.orgName, accountId: content.accountId)
     }
   }
 
@@ -334,6 +368,10 @@ struct AccountSettingsView: View {
             .disabled(!canSave(content))
             .accessibilityIdentifier("account.save")
         }
+        Text(content.nameHint)
+          .llaSmallMuted()
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("account.nameHint")
         Hairline()
         LLAFacts {
           LLAFact(AccountCopy.org) {
@@ -397,6 +435,8 @@ struct AccountSettingsView: View {
 struct DeleteAccountSheet: View {
   @Bindable var model: WorkspaceModel
   let orgName: String
+  /// The account the sheet was opened for; a delete after a switch sends nothing.
+  let accountId: String?
   @State private var typed = ""
   @Environment(\.dismiss) private var dismiss
 
@@ -440,7 +480,7 @@ struct DeleteAccountSheet: View {
     guard model.canDeleteAccount(typed: typed), !model.deleteInFlight else { return }
     let typed = self.typed
     Task {
-      await model.deleteAccount(typed: typed)
+      await model.deleteAccount(typed: typed, accountId: accountId)
       if model.deleteFailure == nil { dismiss() }
     }
   }
