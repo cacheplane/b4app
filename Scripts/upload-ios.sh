@@ -67,7 +67,8 @@ echo "==> Archiving B4App-iOS $VERSION ($BUILD), $FLAVOR flavour, for team $TEAM
 rm -rf "$OUT"
 mkdir -p "$OUT"
 # The archive is left unsigned: an automatically signed archive needs a development profile, which
-# needs a registered device, and the export below signs everything for distribution anyway.
+# needs a registered device. The export below signs everything for distribution, but it can only
+# carry entitlements the archive already has, so the bundles are signed ad hoc with theirs first.
 xcodebuild archive -project B4App.xcodeproj -scheme B4App-iOS -configuration "$XCODE_CONFIG" \
   -destination 'generic/platform=iOS' -archivePath "$ARCHIVE" -derivedDataPath .build/DerivedData-ios \
   DEVELOPMENT_TEAM="$TEAM_ID" MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
@@ -94,6 +95,15 @@ done
   exit 1
 }
 
+echo "==> Attaching entitlements to the archive"
+APP="$ARCHIVE/Products/Applications/Agent Workspace.app"
+WIDGET="$APP/PlugIns/B4App-iOSWidget.appex"
+python3 Scripts/ios-entitlements.py resolve B4App.xcodeproj B4App-iOSWidget "$XCODE_CONFIG" "$OUT/widget.entitlements"
+python3 Scripts/ios-entitlements.py resolve B4App.xcodeproj B4App-iOS "$XCODE_CONFIG" "$OUT/app.entitlements"
+# The widget first: signing the app seals its nested code.
+codesign --force --sign - --entitlements "$OUT/widget.entitlements" "$WIDGET"
+codesign --force --sign - --entitlements "$OUT/app.entitlements" "$APP"
+
 if [ "${B4APP_TESTFLIGHT_EXTERNAL:-0}" = 1 ]; then INTERNAL=false; else INTERNAL=true; fi
 cat > "$OUT/ExportOptions.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -117,6 +127,13 @@ echo "==> Exporting and signing for App Store Connect"
 xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportOptionsPlist "$OUT/ExportOptions.plist" \
   -exportPath "$OUT/export" $AUTH
 IPA="$OUT/export/Agent Workspace.ipa"
+
+echo "==> Checking the exported entitlements"
+rm -rf "$OUT/ipa"
+mkdir -p "$OUT/ipa"
+(cd "$OUT/ipa" && unzip -q "../export/Agent Workspace.ipa")
+python3 Scripts/ios-entitlements.py check "$OUT/ipa/Payload/Agent Workspace.app" "$OUT/app.entitlements"
+python3 Scripts/ios-entitlements.py check "$OUT/ipa/Payload/Agent Workspace.app/PlugIns/B4App-iOSWidget.appex" "$OUT/widget.entitlements"
 ALTOOL_AUTH="--apiKey $KEY_ID --apiIssuer $ISSUER_ID"
 if [ -n "${B4APP_ASC_KEY_PATH:-}" ]; then
   # altool looks for AuthKey_<id>.p8 in ~/.appstoreconnect/private_keys and a few other folders.

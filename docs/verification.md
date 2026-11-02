@@ -71,6 +71,10 @@ The phone code changed in the merge (flavours, accounts), so the gate ran again 
 
 The approval card read "cannot be answered here" because the script's request payload lacks fields a real Codex approval carries; it does not bear on M8f.
 
+### TestFlight export with entitlements (D-129), 2026-11-02
+
+`B4APP_UPLOAD=0 ./Scripts/upload-ios.sh` (prod, build 2611022136) archived, attached the entitlements, exported with cloud-managed signing (`Apple Distribution: Brian Love`), and passed the new check: the app is signed with `aps-environment` (`production`), `com.apple.developer.applesignin`, `com.apple.developer.associated-domains` (`webcredentials:b4.run`, `applinks:b4.run`), and `com.apple.security.application-groups` (`group.com.cacheplane.b4app`), the widget with the App Group. App Store Connect validation reported no errors; nothing was uploaded. The same check run against an export made the old way reports all four entitlements missing. The profiles came from the export, refreshed after the portal gained the App Groups, push, and the widget App ID (`iOS Team Store Provisioning Profile: com.cacheplane.b4app.ios` and `….ios.widget`, valid to 2027-11-01); Xcode first reused a stale cached app profile without them until it was moved aside. Not run: the beta flavour's export (same App ID and profiles, its own group and site domain) and an actual upload.
+
 ### Not exercised, and blocked
 
 - APNs, a real iPhone, and TestFlight: `blocked` on the deploy slice (Developer Program key, the App Group, push capability, and the widget's App ID on the portal). `B4HUB_PUSH_SENDER=apns` refuses to start.
