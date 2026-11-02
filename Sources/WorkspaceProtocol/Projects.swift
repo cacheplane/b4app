@@ -25,10 +25,13 @@ public struct Project: Codable, Sendable, Equatable, Identifiable {
   public var updatedAt: String
   /// Filled on read, oldest first; never a column of `projects`.
   public var folders: [ProjectFolder]
+  /// The device id of the Mac that owns the project (the one whose folders it lists), from the phone's
+  /// mirror; nil on the Mac. A new thread from the phone goes to this Mac (M8c).
+  public var ownerDeviceId: String?
 
   public init(
     id: String, name: String = "", manual: Bool = false, createdAt: String = Timestamp.now(),
-    updatedAt: String = Timestamp.now(), folders: [ProjectFolder] = []
+    updatedAt: String = Timestamp.now(), folders: [ProjectFolder] = [], ownerDeviceId: String? = nil
   ) {
     self.id = id
     self.name = name
@@ -36,6 +39,7 @@ public struct Project: Codable, Sendable, Equatable, Identifiable {
     self.createdAt = createdAt
     self.updatedAt = updatedAt
     self.folders = folders
+    self.ownerDeviceId = ownerDeviceId
   }
 
   public init(from decoder: any Decoder) throws {
@@ -46,6 +50,7 @@ public struct Project: Codable, Sendable, Equatable, Identifiable {
     createdAt = try c.decode(String.self, forKey: .createdAt)
     updatedAt = try c.decode(String.self, forKey: .updatedAt)
     folders = try c.decodeIfPresent([ProjectFolder].self, forKey: .folders) ?? []
+    ownerDeviceId = try c.decodeIfPresent(String.self, forKey: .ownerDeviceId)
   }
 
   /// `name` when it is not empty, else the last path component of the oldest folder, else

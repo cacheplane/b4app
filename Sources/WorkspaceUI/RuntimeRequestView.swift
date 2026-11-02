@@ -76,7 +76,8 @@ struct RuntimeRequestCard: View {
             .accessibilityIdentifier("deny")
           }
           .padding(.top, LLA.Space.xs)
-          .disabled(model.busy)
+          .disabled(!model.canAnswer(request))
+          answerState
         } else {
           Text("This request type cannot be answered here and was declined automatically.").llaCaption()
         }
@@ -124,7 +125,26 @@ struct RuntimeRequestCard: View {
       Task { await model.answer(requestId: request.id, answers: payload) }
     }
     .buttonStyle(.llaPrimary)
-    .disabled(model.busy || answers.values.allSatisfy(\.isEmpty))
+    .disabled(!model.canAnswer(request) || answers.values.allSatisfy(\.isEmpty))
+    answerState
+  }
+
+  /// The phone's answer: "Waiting for your Mac…", then "Not confirmed: …", "Already answered", or the
+  /// reason. The buttons stay while the request is still pending; sync resolves the card.
+  @ViewBuilder private var answerState: some View {
+    if let state = model.answerStates[request.id] {
+      HStack(spacing: LLA.Space.xs) {
+        if state == .waiting { ProgressView().controlSize(.mini).accessibilityHidden(true) }
+        Text(state.label)
+          .font(LLAFont.caption)
+          .foregroundStyle(
+            state == .waiting || state == .alreadyAnswered ? LLA.Color.muted : LLA.Color.danger
+          )
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .accessibilityElement(children: .combine)
+      .accessibilityIdentifier("answer-state")
+    }
   }
 
   private func binding(for id: String) -> Binding<String> {

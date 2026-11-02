@@ -462,7 +462,8 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
         maintenance_poll_ms = maintenance_poll.as_millis() as u64,
         "serving"
     );
-    let state = AppState::new(db.clone());
+    let mut state = AppState::new(db.clone());
+    state.public_url = public_url;
     // Know the switch before the first request, not one poll later.
     maintenance::refresh(&db, &state.maintenance).await;
     let pruning = tokio::spawn(serve::prune_loop(

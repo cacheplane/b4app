@@ -1,5 +1,4 @@
 import Foundation
-import WorkspaceProtocol
 
 public enum HubURL {
   private static let loopbackHosts: Set<String> = ["localhost", "127.0.0.1", "::1"]

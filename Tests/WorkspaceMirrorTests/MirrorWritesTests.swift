@@ -400,6 +400,10 @@ private func pulled(
     ])
     #expect(try store.thread(id: "thread-1")?.ownerDeviceName == "Brian's MacBook Pro")
     #expect(try store.ownerDeviceId(table: "connections", rowId: "conn-1") == macId)
+    // The phone reads the owner of a connection and of a project, to send a new thread to the right Mac.
+    #expect(try store.connections().first { $0.id == "conn-1" }?.ownerDeviceId == macId)
+    _ = try store.apply([change("projects", "p1", "insert", value: projectJSON("p1"))])
+    #expect(try store.projects().first { $0.id == "p1" }?.ownerDeviceId == macId)
     // A change cannot set the owner directly.
     let refused = try store.apply([
       change("threads", "thread-1", "update", column: "ownerDeviceId", value: "other")

@@ -1,6 +1,6 @@
 # Compatibility manifest
 
-Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M8a on 2026-10-31, M8b on 2026-11-01, hosted-hub tooling on 2026-11-02). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
+Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M8a on 2026-10-31, M8b on 2026-11-01, hosted-hub tooling and M8c on 2026-11-02). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
 
 ## Target machine
 
@@ -39,7 +39,7 @@ Pinned exactly (`=`) in `Hub/Cargo.toml` `[workspace.dependencies]`, resolved in
 
 | Crate | Version | Used for |
 | --- | --- | --- |
-| axum | 0.8.9 (`http1`, `tokio`, `json`) | HTTP routes |
+| axum | 0.8.9 (`http1`, `tokio`, `json`, and since M8c `ws`) | HTTP routes and the relay's WebSocket upgrade |
 | tokio | 1.54.1 | runtime, signals, timers |
 | sqlx | 0.8.6 (`runtime-tokio`, `tls-rustls-ring`, `postgres`, `migrate`, `uuid`, `macros`, `json`) | PostgreSQL, migrations, `#[sqlx::test]` |
 | serde / serde_json | 1.0.229 / 1.0.154 | wire types |
@@ -81,6 +81,39 @@ No dependency, toolchain, or image changed in M8b. What changed is the contract 
 | iOS mirror schema | `user_version` 2 (`projects`, `projectFolders`, `devices`, `outbox`, `columnClocks`, `ownerDeviceId`, `threads.projectId` and `readTurnId`, `syncState.refusedUploads`), reached by ordered migrations from v1; a file the app cannot migrate is rebuilt only with an empty outbox |
 | New cross-language fixtures | `Tests/Fixtures/sync/conflicts.json` (read by the Swift and Rust suites) and `Tests/Fixtures/sync/attention.json` (read by the coordinator's store and the mirror's store); `changes.json` gained `hlc` on every entry and nothing else, so M8a's count-based assertions stay valid |
 | Test database | Unchanged. Rust suite: 117 tests; Swift suite: 517 tests |
+
+### Hub link (M8c)
+
+The relay link adds WebSocket support to the hub. Pinned exactly (`=`) in `Hub/Cargo.toml`, resolved in the committed `Hub/Cargo.lock`.
+
+| Crate | Version | Used for |
+| --- | --- | --- |
+| axum | 0.8.9, `ws` feature added | the `GET /v1/devices/self/link` upgrade; brings `tungstenite` 0.29.0 and `sha1` 0.10.7 into the hub |
+| tokio-tungstenite | 0.29.0 (dev dependency; the version axum's `ws` resolves to, so there is one copy of `tungstenite`) | the fake Macs and phones in the relay tests |
+| futures-util | 0.3.34 (`sink`, `std`; dev dependency, the version already in the lock) | `SinkExt`/`StreamExt` on the test sockets |
+| tokio `test-util` | 1.54.1 (dev dependency feature) | `tokio::time::pause()` in the relay tests |
+
+Locking `tokio-tungstenite` and `tungstenite` also adds `data-encoding` 2.11.1 and a second `rand` line (0.9.5, with `rand_chacha` 0.9.0, `rand_core` 0.9.5, `getrandom` 0.3.4, `r-efi` 5.3.0, `wasip2` 1.0.4, `wit-bindgen` 0.57.1) beside the existing `rand` 0.8.8 that `sqlx` uses; no existing version moved.
+
+| Item | Value |
+| --- | --- |
+| Link protocol | `protocol` 1 and `minClientProtocol` 1 in `hello`; a device names its protocol in `B4-Protocol` (missing counts as 1) |
+| Close codes | 1001 shutdown; 4000 replaced; 4001 revoked; 4002 `client_too_old`; 4003 silent for 30 s (`Hub/API.md`, "Link") |
+| Swift test-only packages | `NIOWebSocket` and `NIOHTTP1` (both from swift-nio 2.104.0, already pinned) are linked only by the `WorkspaceSyncTests` target (`Package.swift`), for the fake hub in `URLSessionLinkTests`; no shipped target links them. The shipped link uses `URLSessionWebSocketTask` (`URLSessionHubLinkConnection`), so the phone adds no dependency |
+| Rust test-only crates | `tokio-tungstenite` 0.29.0 and `futures-util` 0.3.34 (both `[dev-dependencies]` of `b4hub`, pinned `=` in the workspace manifest and in `Hub/Cargo.lock`), and tokio's `test-util` feature; none is in the release binary's own code (`tungstenite` 0.29.0 and `sha1` 0.10.7 are, through axum's `ws`) |
+| Hub API additions | `GET /v1/devices/self/link` (WebSocket upgrade; `429 rate_limited` after 10 upgrades a minute) and `POST /v1/pairing-codes` (`macos` devices only, `404` for others; ten codes per user per hour, then `429 rate_limited`). `DELETE /v1/devices/self` now also withdraws that device's unused pairing codes. The error table gains the HTTP `429 rate_limited` and six codes that appear only on the link (`device_offline`, `command_expired`, `relay_timeout`, `link_replaced`, `client_too_old`, `watch_limit`); a Mac's own codes such as `stale_runtime_request` pass through unchanged. `Hub/API.md` "Link" and "POST /v1/pairing-codes" are the reference |
+| Hub migration | `0004_relay.sql`: `connections."projectId"` (nullable, no foreign key), `enrollment_codes.created_by_device_id`, and `pairing_mints` (with row-level security). Run `migrate` before starting the new `serve` |
+| Mac-only column | `connections.projectId` is written by `macos` devices only (a phone's write is refused as `column_not_writable`), unscrubbed, and holds a project id already on the hub, never a path |
+| Local store, mirror | No local PostgreSQL migration. The iOS mirror is `user_version` 3 (adds the index `displayItems("threadId","nativeItemId")` and `connections.projectId`), reached by the ordered migrations from v1 or v2 |
+| New cross-language fixture | `Tests/Fixtures/sync/relay.json`, one example of every relay frame, decoded by `b4hub-core` and by `RelayWireTests`; `changes.json` gained `connections[].projectId` |
+| Minimum client protocol | Still `1`. The link is new rather than changed, so no M8a or M8b client can mis-speak it, and a device that does not send `B4-Protocol` counts as 1 |
+
+**Upgrade order: the hub first, then the Macs, then the phones.** Every addition is backward compatible in that direction; the reverse order loses nothing permanently but gives a degraded app until the hub catches up:
+
+- A Mac on M8c against a hub from before M8c has no link to open (`GET /v1/devices/self/link` is a `404`), so its `RelayLink` retries with backoff (only a `401` stops it) and the Mac reads as reconnecting; "Pair iPhone…" gets a `404` and shows an error. Nothing else is affected: sync works as before.
+- Its pushes carry `connections.projectId`. A hub without migration `0004` does not refuse that: `b4hub-core`'s table spec for `connections` has no `projectId` column, so an insert's extra key is ignored when the row is materialised, an `update` of that column is skipped (counted, not rejected, and `acceptedThrough` still covers it), and the change is still recorded with its whole value in the feed. The push neither fails nor blocks (a Rust test pins that unknown update columns are skipped, `b4hub-db/tests/changes.rs`). The cost: a connection row pushed while the hub was old has no `projectId` in the hub's tables, and so none in a snapshot, until that column next changes on the Mac (the backfill does not re-push a value that is already set). A phone that pulls the feed still receives the value.
+- A phone on M8c against an old hub can sync and read as before but cannot link or pair, because the Mac cannot mint a code.
+- A Mac that has not been updated never opens a link, so a new hub shows it offline and the phone's sends to it are refused with `device_offline`.
 
 ### Hub operability additions (M8e Part A)
 
@@ -151,7 +184,7 @@ Read from `.github/workflows/hub-chart.yml`, `ci.yml`, `Infra/`, and `Hub/chart/
 - Runtime request kinds the app cannot present (`item/permissions/requestApproval`, `mcpServer/elicitation/request`, `item/tool/call`, token refresh, attestation) are declined automatically with a valid response and shown as resolved.
 - A turn whose `codex app-server` process exits stays `reconciling` until the thread is reopened and Codex reports the turn's final status; the composer refuses a new turn until then.
 - The packaged app installs a per-user LaunchAgent plist (`~/Library/LaunchAgents`, D-042) that runs the bundled coordinator, which starts the PostgreSQL cluster; an Xcode-run app or a failed bootstrap falls back to in-process hosting. `SMAppService` is not used while builds are ad hoc: launchd pins the managed program's hash and a rebuild leaves it unspawnable. The coordinator has no idle shutdown. `coordinator restart` and the app's Coordinator menu replace a coordinator left behind by an upgrade.
-- iOS reads a SQLite mirror of what the hub holds (D-046) and, since M8b, writes titles, pins, archive, read markers, project names, and drafts through an outbox (D-049). It still cannot create or edit projects, send turns, or answer approvals; the relay is M8c. Turns and runtime requests now publish their thread live. The shell still shows Mac wording on the phone ("Coordinator connected"), with a one-line "Not synced since …" banner above it while pulls fail; a phone whose pulls succeed cannot tell that the Mac is asleep (presence is M8c), and the thread header shows the Mac's working directory (`threads.context`).
+- iOS reads a SQLite mirror of what the hub holds (D-046) and, since M8b, writes titles, pins, archive, read markers, project names, and drafts through an outbox (D-049). It still cannot create or edit projects. Since M8c it sends turns, answers approvals, stops turns, and starts threads in a project's folders through the relay (D-054 to D-059, D-075 to D-080) while its Mac is linked; a send to an offline Mac is refused, and the live gate for that is pending. Turns and runtime requests now publish their thread live. The shell still shows Mac wording on the phone ("Coordinator connected"), with a one-line "Not synced since …" banner above it while pulls fail; since M8c the phone knows whether its Mac is linked (presence, with the disconnect notice after 60 s), and the thread header shows the Mac's working directory (`threads.context`).
 - On macOS the Keychain is the file-based login keychain; the macOS data-protection keychain needs a provisioning profile, which needs a signing identity (D-008, D-039). On iOS the token lives in the data-protection keychain, which works with ad hoc signing (the M8a Task 9 Simulator run used Xcode's "Sign to Run Locally"); only an unsigned build fails, with -34018.
 - The store is a private PostgreSQL cluster per Mac (D-041); the schema is `0001_init`, `0002_changes`, `0003_hub`, and `0004_organisation`; backups are JSON-lines archives from `db backup`, not `pg_dump`; a pre-0.2 `workspace.sqlite` is imported once and retired. Sync is M8a's push plus M8b's pull and phone writes (D-043 to D-050): a Mac that ran `hub join` pushes its change log and applies the phone's edits of titles, pins, archive, read markers, project names, and drafts (a narrow merge, never a row copy); everything else is Mac-only. Compose publishes the hub on `127.0.0.1:8080` only (plain HTTP on the loopback interface; the Simulator shares the Mac's loopback). `database.restore` fails with `invalid input syntax for type json` on an archive whose change log holds an `update` of a scalar jsonb value (found during M8a, not fixed; see `docs/verification.md`).
 - Packaging is ad hoc: the app runs on the Mac that built it. Developer ID signing and notarisation are untested (no certificate). Removing a registration and changing a server's port are still missing.

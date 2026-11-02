@@ -250,6 +250,23 @@ public final class MirrorStore: @unchecked Sendable {
     }
   }
 
+  /// The stored item with this native id in the thread, and whether it is final: it belongs to no turn,
+  /// or its turn has finished (a row written while its turn runs may be a message still streaming).
+  public func item(threadId: String, nativeItemId: String) throws -> (item: DisplayItem, final: Bool)? {
+    try locked {
+      guard
+        let item = try one(
+          DisplayItem.self, "displayItems",
+          #"SELECT * FROM "displayItems" WHERE "threadId" = ? AND "nativeItemId" = ? ORDER BY "sequence" LIMIT 1"#,
+          [.text(threadId), .text(nativeItemId)])
+      else { return nil }
+      guard let turnId = item.turnId else { return (item, true) }
+      let status = try query(#"SELECT "status" FROM "turns" WHERE "id" = ?"#, [.text(turnId)]).first?[
+        "status"]
+      return (item, status == .text(TurnStatus.terminal.rawValue))
+    }
+  }
+
   /// Every runtime request of the thread, in any state, oldest first.
   public func requests(threadId: String) throws -> [RuntimeRequest] {
     try locked {

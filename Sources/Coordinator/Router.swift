@@ -42,7 +42,9 @@ public actor Router {
       return .failure(requestId, error: failure)
     }
     let requestId = command.envelope.requestId
-    if let operationId = command.envelope.operationId, var previous = completedOperations[operationId] {
+    if let operationId = command.envelope.operationId, var previous = completedOperations[operationId],
+      command.method != .hubPair
+    {
       previous.requestId = requestId
       return previous
     }
@@ -59,7 +61,8 @@ public actor Router {
       }
       response = .failure(requestId, error: failure)
     }
-    if let operationId = command.envelope.operationId {
+    // A pairing code is a credential: it is answered once, to the caller who asked, and never kept.
+    if let operationId = command.envelope.operationId, command.method != .hubPair {
       completedOperations[operationId] = response
       operationOrder.append(operationId)
       if operationOrder.count > operationCacheLimit {
@@ -132,8 +135,12 @@ public actor Router {
       return try JSONValue(
         encoding: try await sessions.connectionLogin(try command.params(for: ConnectionLogin.self)))
     case .threadCreate:
-      return try JSONValue(
-        encoding: try await sessions.threadCreate(try command.params(for: ThreadCreate.self)))
+      // A caller-chosen thread id is for `thread.start` through the relay only.
+      var params = try command.params(for: ThreadCreate.self)
+      params.threadId = nil
+      return try JSONValue(encoding: try await sessions.threadCreate(params))
+    case .threadStart, .turnLookup:
+      throw WorkspaceError(.unsupportedCapability, "Only relayed from the hub.")
     case .threadRead:
       return try JSONValue(encoding: try await sessions.threadRead(try command.params(for: ThreadRead.self)))
     case .threadUpdate:
@@ -237,6 +244,15 @@ public actor Router {
     case .hubLeave:
       try await context.hub.leave()
       return try JSONValue(encoding: try await context.hub.status())
+    case .hubPair:
+      return try JSONValue(encoding: try await context.hub.pair())
+    case .hubPairStatus:
+      return try JSONValue(encoding: await context.hub.pairStatus())
+    case .settingsRead:
+      return try JSONValue(encoding: try await context.hub.settings())
+    case .settingsUpdate:
+      return try JSONValue(
+        encoding: try await context.hub.updateSettings(try command.params(for: SettingsUpdate.self)))
     }
   }
 

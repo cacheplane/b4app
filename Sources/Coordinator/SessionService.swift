@@ -56,6 +56,10 @@ public actor SessionService {
   private let context: Context
   private var adapters: [String: any AgentAdapter] = [:]
   private var pumps: [String: Task<Void, Never>] = [:]
+  /// Runtime requests whose answer is with the adapter right now. `requestRespond` suspends on the
+  /// adapter before it marks the request resolved, so without this a second answer (one from the Mac,
+  /// one relayed from the phone) could reach the runtime too.
+  private var answering: Set<String> = []
   private let logger = Log.logger("sessions")
   private var db: WorkspaceDatabase { context.database }
 
@@ -230,11 +234,13 @@ public actor SessionService {
     {
       return try await connectionInspect(ConnectionInspect.Params(connectionId: existing.id))
     }
-    let connection = try db.insertConnection(
-      Connection(
-        id: UUID().uuidString.lowercased(), kind: .b4,
-        label: params.label ?? "\(route.displayName) @ \(server.name)", target: "http://127.0.0.1:\(port)",
-        routeKey: route.key, b4Mode: .managedLocal, localServerId: server.id, status: .connecting))
+    var managed = Connection(
+      id: UUID().uuidString.lowercased(), kind: .b4,
+      label: params.label ?? "\(route.displayName) @ \(server.name)", target: "http://127.0.0.1:\(port)",
+      routeKey: route.key, b4Mode: .managedLocal, localServerId: server.id, status: .connecting)
+    // The connection serves its server folder's project, from its first change-log entry on.
+    managed.projectId = try await context.projects.projectId(forConnection: managed)
+    let connection = try db.insertConnection(managed)
     return try await connectionInspect(ConnectionInspect.Params(connectionId: connection.id))
   }
 
@@ -334,7 +340,8 @@ public actor SessionService {
     }
     let title = params.title?.trimmingCharacters(in: .whitespaces)
     let newThread = ConversationThread(
-      id: UUID().uuidString.lowercased(), connectionId: connection.id, nativeThreadId: ref.nativeSessionId,
+      id: params.threadId ?? UUID().uuidString.lowercased(), connectionId: connection.id,
+      nativeThreadId: ref.nativeSessionId,
       nativeScope: ref.nativeScope, title: (title?.isEmpty == false ? title : nil) ?? defaultTitle,
       context: threadContext)
     // The thread joins the project of its folder (created on first use) in one step with its insert, so
@@ -639,12 +646,28 @@ public actor SessionService {
     }
   }
 
+  /// The refusals `turnSend` makes before inserting a turn that can be judged before the thread exists:
+  /// the connection's adapter, a managed server that is not ready, and another thread's active turn in
+  /// `folder` (the canonical directory; nil for B4). A remote `thread.start` asks first, so a start
+  /// that would be refused makes no thread. `threadId` (the thread being started, if it already
+  /// exists) is not in its own way; its own active turn is `turnSend`'s to refuse.
+  public func assertCanStart(connection connectionId: String, folder: String?, threadId: String) async throws
+  {
+    let (connection, _) = try connectionAndAdapter(id: connectionId)
+    if let outage = await managedServerOutage(connection) { throw outage }
+    try assertFolderFree(folder, besides: threadId, connection)
+  }
+
   /// Spec 10.1.5: writable Codex and Claude runs in one canonical directory are serialized through
   /// this app, across connections, and the lock holds through waiting and unknown states (D-033).
   private func assertDirectoryFree(_ thread: ConversationThread, connection: Connection) throws {
-    guard connection.kind != .b4, let directory = thread.context else { return }
-    let canonical = Self.canonicalDirectory(directory)
-    for entry in try db.activeHarnessTurns() where entry.thread.id != thread.id {
+    try assertFolderFree(thread.context, besides: thread.id, connection)
+  }
+
+  private func assertFolderFree(_ folder: String?, besides thread: String, _ connection: Connection) throws {
+    guard connection.kind != .b4, let folder else { return }
+    let canonical = Self.canonicalDirectory(folder)
+    for entry in try db.activeHarnessTurns() where entry.thread.id != thread {
       guard let other = entry.thread.context, Self.canonicalDirectory(other) == canonical else { continue }
       throw WorkspaceError(
         .protocolInvalid,
@@ -831,6 +854,11 @@ public actor SessionService {
       throw WorkspaceError(
         .staleRuntimeRequest, "Runtime request \(request.id) is already \(request.state.rawValue).")
     }
+    // First answer wins at the runtime: checked and claimed with no suspension point in between.
+    guard answering.insert(request.id).inserted else {
+      throw WorkspaceError(.staleRuntimeRequest, "Runtime request \(request.id) is already being answered.")
+    }
+    defer { answering.remove(request.id) }
     let (thread, connection, adapter) = try threadContext(id: request.threadId)
     let response: RuntimeResponse
     if params.decline == true {

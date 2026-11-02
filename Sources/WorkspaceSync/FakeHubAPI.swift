@@ -19,6 +19,10 @@ public actor FakeHubAPI: HubAPI {
   /// How many times `enroll` was called, redeemed or not.
   public private(set) var enrollCalls = 0
   public private(set) var meCalls = 0
+  /// How many times `mintPairingCode` was called, refused or not.
+  public private(set) var mintCalls = 0
+  private var mintFailure: HubError?
+  private var mintResponse: PairingCodeResponse?
   private var failMe: HubError?
 
   private var device: EnrollResponse?
@@ -52,6 +56,13 @@ public actor FakeHubAPI: HubAPI {
 
   /// What `devices()` answers. Without it the fake lists the enrolled device alone.
   public func setDevices(_ devices: [DeviceInfo]?) { devicesOverride = devices }
+
+  /// What `mintPairingCode()` answers until changed. Without it the fake answers a fresh `FAKE`-prefixed
+  /// code that expires in five minutes.
+  public func setPairingCode(_ response: PairingCodeResponse?) { mintResponse = response }
+
+  /// Fails `mintPairingCode()` (every call, until cleared with `nil`), as the hub's rate limit does.
+  public func setMintFailure(_ error: HubError?) { mintFailure = error }
 
   public func addEnrollmentCode(_ code: String, _ response: EnrollResponse) {
     enrollmentCodes[code] = response
@@ -124,6 +135,16 @@ public actor FakeHubAPI: HubAPI {
     if let devicesOverride { return devicesOverride }
     guard let device else { return [] }
     return [DeviceInfo(id: device.deviceId, name: deviceName, platform: platform)]
+  }
+
+  public func mintPairingCode() async throws -> PairingCodeResponse {
+    mintCalls += 1
+    try authorize()
+    if let mintFailure { throw mintFailure }
+    guard platform == "macos" else { throw Self.error("not_found", "Not found.", status: 404) }
+    if let mintResponse { return mintResponse }
+    return PairingCodeResponse(
+      code: "FAKE\(2345 + mintCalls)", expiresAt: Timestamp.string(from: Date().addingTimeInterval(300)))
   }
 
   public func pull(after: Int, limit: Int, wait: Int) async throws -> PullResponse {

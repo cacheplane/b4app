@@ -11,5 +11,8 @@ public protocol HubAPI: Sendable {
   func snapshot() async throws -> SnapshotResponse
   /// `GET /v1/devices`: this user's devices, oldest enrolled first, revoked ones included.
   func devices() async throws -> [DeviceInfo]
+  /// `POST /v1/pairing-codes`: a single-use code that enrolls a phone, valid five minutes. A `macos`
+  /// device only; the eleventh in an hour is `429 rate_limited` with `retryAfterMs`.
+  func mintPairingCode() async throws -> PairingCodeResponse
   func revokeSelf() async throws
 }

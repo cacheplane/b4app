@@ -14,6 +14,10 @@ import Foundation
 /// `SyncColumns.clocked` column's latest write), and `outbox` (the phone's own edits waiting to be
 /// pushed). `threads.projectId` has no foreign key, as on the hub: the phone never decides
 /// membership, and a thread is never refused because its project row has not arrived.
+///
+/// Version 3 (M8c) adds `connections.projectId`, the project a local B4 connection serves (a Mac-only
+/// column the phone reads to offer B4 connections when starting a thread), and an index on
+/// `displayItems ("threadId", "nativeItemId")` for the relay's lookup on every streamed delta.
 enum MirrorSchema {
   /// `PRAGMA user_version` once every migration has run.
   static var version: Int { migrations.last?.version ?? 0 }
@@ -54,7 +58,7 @@ enum MirrorSchema {
   /// Ordered migrations keyed by the `user_version` each leaves behind. A file at version `n` runs
   /// every migration after `n`, all in one transaction.
   static let migrations: [(version: Int, statements: [String])] = [
-    (1, version1), (2, version2),
+    (1, version1), (2, version2), (3, version3),
   ]
 
   /// M8a's schema.
@@ -224,5 +228,12 @@ enum MirrorSchema {
     """,
     #"ALTER TABLE "syncState" ADD COLUMN "lastDeviceSeq" INTEGER NOT NULL DEFAULT 0"#,
     #"ALTER TABLE "syncState" ADD COLUMN "refusedUploads" INTEGER NOT NULL DEFAULT 0"#,
+  ]
+
+  /// M8c: the project a local B4 connection serves, and an index for the relay's per-delta lookup of
+  /// an item by its native id.
+  static let version3 = [
+    #"ALTER TABLE "connections" ADD COLUMN "projectId" TEXT"#,
+    #"CREATE INDEX IF NOT EXISTS "displayItemsByNativeId" ON "displayItems" ("threadId", "nativeItemId")"#,
   ]
 }

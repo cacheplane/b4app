@@ -65,6 +65,7 @@ mod tests {
             ("projectFolders", "path"),
             ("turns", "status"),
             ("connections", "label"),
+            ("connections", "projectId"),
         ] {
             assert!(!is_phone_writable(table, column), "{table}.{column}");
         }

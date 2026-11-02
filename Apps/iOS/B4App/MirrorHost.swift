@@ -7,11 +7,15 @@ import WorkspaceSecrets
 import WorkspaceSync
 import WorkspaceUI
 
-/// The phone's side of the hub (M8a, M8b): the SQLite mirror, the device token in the Keychain, and the
+/// The phone's side of the hub (M8a, M8b, M8c): the SQLite mirror, the device token in the Keychain, the
 /// loop that keeps the mirror and the hub in step (it pulls the Mac's changes and pushes the phone's own
-/// edits). The shared `WorkspaceModel` reads and writes the mirror through a `MirrorTransport`, exactly
-/// as the Mac's talks to the coordinator through its socket; the UI never sees the store, the token, or
-/// the network.
+/// edits), and the relay that carries the phone's chat commands to the Mac and its live events back.
+/// The shared `WorkspaceModel` reads and writes the mirror through a `MirrorTransport`, exactly as the
+/// Mac's talks to the coordinator through its socket; the UI never sees the store, the token, or the
+/// network.
+///
+/// The relay's link is held only while the app is active (`RelayLifecycle`): background closes it, and
+/// the next active opens it again with the same watched threads.
 @MainActor @Observable final class MirrorHost {
   static let shared = MirrorHost()
 
@@ -30,11 +34,24 @@ import WorkspaceUI
   @ObservationIgnored private var unreadableReason: String?
   /// The pull loop's last outcome; `lastError` is set while the mirror is not keeping up with the hub.
   private(set) var syncStatus = MirrorSyncStatus()
+  /// Set when the hub refused the relay's link (`unauthorized`, `revoked`): the link stays closed until
+  /// this phone logs out and pairs again, and the banner says so.
+  private(set) var relayRefused: String?
 
   @ObservationIgnored private let store: MirrorStore?
   @ObservationIgnored private let secrets: any SecretStore = KeychainSecretStore(service: "b4app")
   @ObservationIgnored private var sync: MirrorSync?
   @ObservationIgnored private var transport: MirrorTransport?
+  /// The phone's link to the hub for chat (M8c), made once enrolled; nil before, and after log-out.
+  @ObservationIgnored private var relay: MirrorRelay?
+  /// Whether the relay should be running, from the scene phase and enrollment.
+  @ObservationIgnored private var lifecycle = RelayLifecycle(enrolled: false)
+  /// The relay's start and stop calls, chained so they reach it in the order they were decided.
+  @ObservationIgnored private var relayControl: Task<Void, Never>?
+  /// Watches the relay for the stops it makes on its own.
+  @ObservationIgnored private var relayWatch: Task<Void, Never>?
+  /// The copy for a refused link.
+  static let relayRefusedMessage = "The hub no longer accepts this iPhone. Log out, then pair it again."
   /// The shell's model, once `wire` has run: the phone, not a coordinator, supplies its account, its
   /// log-out, and whether the Mac is still joined.
   @ObservationIgnored private weak var model: WorkspaceModel?
@@ -78,6 +95,7 @@ import WorkspaceUI
       isLinked = true
       startSync(link, fromSnapshot: fromSnapshot)
     }
+    lifecycle = RelayLifecycle(enrolled: isLinked, hasRelay: relay != nil)
   }
 
   /// `<Application Support>/b4app`, readable once the device has been unlocked after boot so the
@@ -99,7 +117,8 @@ import WorkspaceUI
     let transport: MirrorTransport
     if let store {
       transport = MirrorTransport(
-        store: store, version: Self.version, onLocalWrite: { Task { await MirrorHost.shared.nudge() } })
+        store: store, version: Self.version, onLocalWrite: { Task { await MirrorHost.shared.nudge() } },
+        relay: relay)
     } else if let unreadableReason {
       // An empty stand-in that answers reads, refuses writes, and puts the reason in Diagnostics.
       transport = MirrorTransport(
@@ -141,10 +160,50 @@ import WorkspaceUI
     refreshAccount()
   }
 
-  /// Log out from the profile menu: stop syncing, then `MirrorLogOut` revokes this device (best
-  /// effort), forgets the token, and empties the mirror, unsent edits included. The Connect screen
-  /// shows next.
+  // MARK: - The relay's link (M8c)
+
+  /// The scene's phase changed: active holds the link, background closes it, inactive changes nothing.
+  func enter(_ phase: RelayLifecycle.Phase) {
+    control(lifecycle.enter(phase))
+  }
+
+  /// What a `b4app://` link opened on this phone may do. Deciding sends nothing.
+  func pairLink(_ url: URL) -> RelayLifecycle.PairLinkDecision {
+    lifecycle.pairLink(url)
+  }
+
+  /// The relay stopped itself. A refusal keeps it closed (and says so) until the phone pairs again.
+  private func relayStopped(_ stopped: MirrorRelay, reason: String) {
+    guard stopped === relay else { return }
+    control(lifecycle.linkStopped(reason: reason))
+    if lifecycle.refused { relayRefused = Self.relayRefusedMessage }
+  }
+
+  private func control(_ action: RelayLifecycle.Action?) {
+    // The lifecycle decides only while a relay exists (`hasRelay`), so this guard never drops a decision.
+    guard let action, let relay else { return }
+    let previous = relayControl
+    relayControl = Task {
+      await previous?.value
+      switch action {
+      case .start: await relay.start()
+      case .stop: await relay.stop()
+      }
+    }
+  }
+
+  /// Log out from the profile menu: close the relay's link and clear the model's relay state, stop
+  /// syncing, then `MirrorLogOut` revokes this device (best effort), forgets the token, and empties the
+  /// mirror, unsent edits included. The Connect screen shows next.
   func logOut() async {
+    control(lifecycle.setEnrolled(false, hasRelay: false))
+    await relayControl?.value
+    relayControl = nil
+    relayWatch?.cancel()
+    relayWatch = nil
+    relay = nil
+    relayRefused = nil
+    await model?.disconnect()
     await sync?.stop()
     sync = nil
     syncStatus = MirrorSyncStatus()
@@ -211,6 +270,7 @@ import WorkspaceUI
     }
     startSync(link, fromSnapshot: false)
     isLinked = true
+    control(lifecycle.setEnrolled(true, hasRelay: relay != nil))
     refreshAccount()
   }
 
@@ -219,6 +279,18 @@ import WorkspaceUI
       let ref = SecretRef(rawValue: link.tokenRef)
     else { return }
     let api = Self.api(base: base, ref: ref, secrets: secrets)
+    // The relay adds `/v1/devices/self/link` itself, and asks for the token on every attempt; the read
+    // runs on a thread of its own (D-052), and the token is never kept or logged here.
+    let relay = MirrorRelay(url: base, token: { [secrets] in try await secrets.read(ref) })
+    self.relay = relay
+    relayWatch?.cancel()
+    relayWatch = Task {
+      for await update in relay.updates() {
+        if case .link(.stopped(let reason)) = update {
+          MirrorHost.shared.relayStopped(relay, reason: reason)
+        }
+      }
+    }
     let sync = MirrorSync(
       store: store, api: api,
       onBatch: { batch in await MirrorHost.shared.publish(batch) },
