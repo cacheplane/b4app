@@ -23,6 +23,7 @@ import os
 ///   a suspended app that holds a lock on a file in a shared (App Group) container, so the app waits for
 ///   `suspend()` before it lets itself be suspended.
 /// - The device list is refreshed at most once a minute.
+/// - A 401 (the hub no longer takes the token) ends the loop and calls `onUnauthorized` once.
 /// - Any other failure is recorded on the link as `lastError` and retried after a backoff that starts at
 ///   two seconds and doubles to a minute. The device token stays inside `api`. Each outcome is also
 ///   handed to `onStatus` (when given), so the app can say that what it shows is stale.
@@ -31,6 +32,8 @@ public actor MirrorSync {
   private let api: any HubAPI
   private let onBatch: @Sendable (AppliedBatch) async -> Void
   private let onStatus: (@Sendable (MirrorSyncStatus) async -> Void)?
+  private let onUnauthorized: (@Sendable () async -> Void)?
+  private let onDevices: (@Sendable () async -> Void)?
   private let initialBackoff: Duration
   private let maxBackoff: Duration
   private var loop: Task<Void, Never>?
@@ -69,16 +72,21 @@ public actor MirrorSync {
     store: MirrorStore, api: any HubAPI, onBatch: @escaping @Sendable (AppliedBatch) async -> Void,
     onStatus: (@Sendable (MirrorSyncStatus) async -> Void)? = nil,
     initialBackoff: Duration = .seconds(2), maxBackoff: Duration = .seconds(60),
-    startFromSnapshot: Bool = false
+    startFromSnapshot: Bool = false, onUnauthorized: (@Sendable () async -> Void)? = nil,
+    onDevices: (@Sendable () async -> Void)? = nil, startSuspended: Bool = false
   ) {
     self.store = store
     self.api = api
     self.onBatch = onBatch
     self.onStatus = onStatus
+    self.onUnauthorized = onUnauthorized
+    self.onDevices = onDevices
     self.lastSyncAt = try? store.link()?.lastSyncAt
     self.initialBackoff = initialBackoff
     self.maxBackoff = maxBackoff
     self.needsSnapshot = startFromSnapshot
+    // Made while the app is in the background: parked at its first turn, before any store work.
+    self.suspended = startSuspended
   }
 
   /// Syncs until `stop()`. A second call while running, or a call after `stop()`, returns at once.
@@ -149,6 +157,7 @@ public actor MirrorSync {
 
   private func syncLoop() async {
     var backoff = initialBackoff
+    var unauthorized = false
     while !stopped, !Task.isCancelled {
       if suspended {
         await park()
@@ -179,6 +188,13 @@ public actor MirrorSync {
         if !page.changes.isEmpty { await onBatch(batch) }
       } catch is Suspending {
         continue
+      } catch let error as HubError where error.status == 401 {
+        // The hub no longer takes this token (the session ended, the device was removed, or the
+        // account was deleted): retrying cannot help, so the loop ends and the phone signs out.
+        Self.logger.notice(
+          "the hub refused this device's token (\(error.code, privacy: .public)); mirror sync stops")
+        stopped = true
+        unauthorized = true
       } catch let error as HubError where error.code == "resync_required" {
         // A hub that asks again straight after a snapshot is failing; do not spin on it.
         resyncsInARow += 1
@@ -194,10 +210,14 @@ public actor MirrorSync {
     }
     ended = true
     wake()
+    // Told once, as the loop ends. The handler must not wait for this loop (it is still running).
+    if unauthorized { await onUnauthorized?() }
   }
 
   /// The pull for this turn. With a nudge already waiting it does not wait for news.
   private func pull() async throws -> PullResponse {
+    // Stopped while pushing: no long-poll starts that nothing would cancel.
+    guard !stopped else { throw CancellationError() }
     let cursor = store.cursor
     let wait = nudged ? 0 : Self.waitSeconds
     let api = api
@@ -245,12 +265,14 @@ public actor MirrorSync {
     await onBatch(batch)
   }
 
-  /// At most once a minute, and never a reason to stop syncing.
+  /// At most once a minute, and never a reason to stop syncing. Read before the turn's long-poll, so
+  /// the first turn after a sign-in says at once whether the account has a Mac (`onDevices`).
   private func refreshDevices() async {
     let now = ContinuousClock.now
     if let last = devicesFetchedAt, now - last < Self.devicesInterval { return }
     devicesFetchedAt = now
-    if let devices = try? await api.devices() { try? store.saveDevices(devices) }
+    guard let devices = try? await api.devices(), (try? store.saveDevices(devices)) != nil else { return }
+    await onDevices?()
   }
 
   private func failed(_ error: any Error, backoff: inout Duration) async {

@@ -1,7 +1,7 @@
 import Foundation
 
-/// The App Group and URL scheme this build was made with, from the Info.plist keys `project.yml` sets
-/// (D-125), so a flavour build changes them in one place. The widget extension keeps its own copy of
+/// The App Group and URL scheme this build was made with, from the Info.plist keys `project.yml` fills
+/// from the flavour's xcconfig (`B4APP_APP_GROUP`, `B4APP_URL_SCHEME`; D-125). The widget extension keeps its own copy of
 /// this reader, since a target cannot share an app file without a module.
 nonisolated enum AppInfo {
   /// The App Group the app and the widget share the mirror through; nil when the key is missing or empty.

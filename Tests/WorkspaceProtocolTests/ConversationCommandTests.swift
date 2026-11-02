@@ -34,11 +34,30 @@ private func parse(_ json: String) throws -> ParsedCommand { try parseCommand(Da
       .serverStop, .serverInspect, .workspaceStopLocalWork, .workspaceReconcile, .databaseBackup,
       .databaseRestore, .databaseImportSQLite, .hubJoin, .hubLeave, .projectCreate, .projectUpdate,
       .projectRename, .projectDelete, .threadMarkRead, .threadStart, .settingsUpdate, .connectionUpdate,
-      .credentialRemove,
+      .accountPasskeyFinish, .accountAppleFinish, .accountCompleteProfile, .accountLogout,
+      .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice,
+      .accountAppleLinkFinish, .credentialRemove,
     ]
     for method in WorkspaceProtocol.Method.allCases {
       #expect(method.isMutation == mutations.contains(method), "\(method)")
     }
+  }
+
+  /// The account commands' secrets (a WebAuthn response, an Apple handoff) never print, and a log-out
+  /// without `stopWork` refuses to stop work.
+  @Test func accountParamsRedactTheirSecretsAndDefaultToNotStoppingWork() throws {
+    let finish = AccountPasskeyFinish.Params(ceremonyId: "c", assertion: ["signature": "sig-secret-1"])
+    #expect(!"\(finish)".contains("sig-secret-1"))
+    #expect(!String(reflecting: finish).contains("sig-secret-1"))
+    let apple = AccountAppleFinish.Params(handoff: "handoff-secret-2")
+    #expect(!"\(apple)".contains("handoff-secret-2"))
+    let added = AccountAddPasskeyFinish.Params(ceremonyId: "c", attestation: ["object": "att-secret-3"])
+    #expect(!"\(added)".contains("att-secret-3"))
+    let logout = try parse(
+      #"{"protocolVersion":1,"kind":"command","requestId":"r","operationId":"op","method":"account.logout","params":{}}"#
+    )
+    #expect(try logout.params(for: AccountLogout.self).stopWork == false)
+    #expect(AccountStatus.method == .accountStatus)
   }
 
   @Test func projectAndReadCommandsDecodeTheirParams() throws {

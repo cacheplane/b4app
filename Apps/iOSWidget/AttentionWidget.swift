@@ -18,7 +18,8 @@ struct AttentionWidget: Widget {
   }
 }
 
-/// The App Group and URL scheme from this extension's Info.plist (D-125); the app keeps its own copy.
+/// The flavour's App Group and URL scheme from this extension's Info.plist (D-125); the app keeps its own
+/// copy.
 nonisolated enum AppInfo {
   static var appGroup: String? {
     let value = (Bundle.main.object(forInfoDictionaryKey: "B4AppAppGroup") as? String)?
@@ -59,10 +60,13 @@ nonisolated struct GlanceProvider: TimelineProvider {
     completion(Timeline(entries: entries, policy: .after(glance.reloadDate(now: now))))
   }
 
-  /// `<group container>/b4app/mirror.sqlite`, or the unlinked glance when the group is unavailable.
+  /// `<group container>/<flavour's folder>/mirror.sqlite`, the path the app's `MirrorHost` uses (the
+  /// flavour is `B4AppFlavor` in this extension's Info.plist, as in the app's), or the unlinked glance
+  /// when the group is unavailable.
   static func load() -> Glance {
     let location = MirrorLocation.storeDirectory(
-      appGroup: AppInfo.appGroup, fallback: URL(fileURLWithPath: "/"))
+      appGroup: AppInfo.appGroup, folder: PhoneFlavor.current.directoryName,
+      fallback: URL(fileURLWithPath: "/"))
     guard location.inGroup else { return Glance(linked: false, rows: [], asOf: nil) }
     return MirrorGlance.load(path: location.directory.appendingPathComponent(MirrorLocation.fileName).path)
   }

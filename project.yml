@@ -3,7 +3,6 @@
 # gitignored (decision D-003). Info.plist keys live under `info.properties` below.
 name: B4App
 options:
-  bundleIdPrefix: com.cacheplane
   deploymentTarget:
     macOS: "26.0"
     iOS: "26.0"
@@ -20,11 +19,25 @@ settings:
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
-# DEVELOPMENT_TEAM comes from Config/Signing.xcconfig and its gitignored local include, never from
-# this file, because a value here would override the xcconfig (D-051).
+# Flavours (sign-in plan): each configuration includes one Config/Flavor-*.xcconfig, which sets
+# B4APP_FLAVOR, the bundle id, the site domain, and the URL scheme. Debug is local and Release is
+# prod, so the plain schemes keep working; the Beta configurations belong to the *-Beta schemes, and
+# Release-Local lets Scripts/package.sh build a local flavour. Each flavour file includes
+# Config/Signing.xcconfig, so DEVELOPMENT_TEAM still comes from there and its gitignored local
+# include, never from this file, because a value here would override the xcconfig (D-051). The same
+# goes for PRODUCT_BUNDLE_IDENTIFIER, which the xcconfig sets per SDK and no target may set.
+configs:
+  Debug: debug
+  Release: release
+  Debug-Beta: debug
+  Release-Beta: release
+  Release-Local: release
 configFiles:
-  Debug: Config/Signing.xcconfig
-  Release: Config/Signing.xcconfig
+  Debug: Config/Flavor-local.xcconfig
+  Release: Config/Flavor-prod.xcconfig
+  Debug-Beta: Config/Flavor-beta.xcconfig
+  Release-Beta: Config/Flavor-beta.xcconfig
+  Release-Local: Config/Flavor-local.xcconfig
 packages:
   b4app:
     path: .
@@ -41,16 +54,23 @@ targets:
         CFBundleDisplayName: Agent Workspace
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        B4AppFlavor: $(B4APP_FLAVOR)
+        CFBundleURLTypes:
+          - CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
+            CFBundleTypeRole: Editor
+            CFBundleURLSchemes:
+              - $(B4APP_URL_SCHEME)
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: Personal tool. Not for distribution.
     entitlements:
       path: Apps/macOS/B4App/B4App.entitlements
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.cacheplane.b4app
         PRODUCT_NAME: Agent Workspace
         # Xcode builds sign ad hoc; Scripts/package.sh re-signs the packaged app with a Developer ID
-        # identity, its provisioning profile, and entitlements generated from the team id (D-051).
+        # identity, its provisioning profile, and entitlements generated from the team id and the
+        # flavour (D-051). This file stays empty: a restricted entitlement without a profile kills an
+        # ad hoc app at launch.
         CODE_SIGN_IDENTITY: "-"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_APP_SANDBOX: NO
@@ -81,21 +101,26 @@ targets:
         CFBundleDisplayName: Agent Workspace
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        B4AppFlavor: $(B4APP_FLAVOR)
+        # One URL type (a second `CFBundleURLTypes` key would replace this one): the flavour's own scheme
+        # only (`b4app`, `b4app-beta`, `b4app-local`). Pairing is the https link `/pair` (applinks in
+        # the entitlements, D-066), so beta and local no longer claim prod's `b4app`.
+        CFBundleURLTypes:
+          - CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
+            CFBundleTypeRole: Editor
+            CFBundleURLSchemes:
+              - $(B4APP_URL_SCHEME)
         LSRequiresIPhoneOS: true
         # HTTPS through URLSession only: exempt from export documentation (TestFlight asks otherwise).
         ITSAppUsesNonExemptEncryption: false
         NSLocalNetworkUsageDescription: Agent Workspace connects to your sync hub when it runs on your local network.
-        # Pairing (M8c): the QR code the Mac shows, scanned here or opened as a b4app://pair link.
+        # Pairing (M8c, D-066): the QR code the Mac shows, scanned here or opened by the system Camera.
         NSCameraUsageDescription: Scan the pairing code your Mac shows.
-        CFBundleURLTypes:
-          - CFBundleURLName: com.cacheplane.b4app.ios
-            CFBundleURLSchemes:
-              - b4app
-        # The App Group the app and the widget share the mirror through, the scheme of the app's own
-        # links (`<scheme>://thread/<id>`, `<scheme>://pair`), and the entitlements below live here so
-        # flavour builds can override them (D-125). Keep the scheme in step with CFBundleURLSchemes.
-        B4AppAppGroup: group.com.cacheplane.b4app
-        B4AppURLScheme: b4app
+        # The App Group the app and the widget share the mirror through and the scheme of the app's own
+        # links (`<scheme>://thread/<id>`), both the flavour's (Config/Flavor-*.xcconfig, D-125), so
+        # flavours installed side by side never share a mirror. The scheme is CFBundleURLSchemes' above.
+        B4AppAppGroup: $(B4APP_APP_GROUP)
+        B4AppURLScheme: $(B4APP_URL_SCHEME)
         # A push with `content-available` wakes the app to pull before the banner is tapped (D-124).
         # `fetch` is for the Simulator only: `xcrun simctl push` delivers a content-available payload
         # as a background-fetch launch, which iOS refuses without it. On a device APNs wakes the app
@@ -122,19 +147,14 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-    # XcodeGen writes the tracked .entitlements file from these properties; flavour builds override them.
-    entitlements:
-      path: Apps/iOS/B4App/B4App.entitlements
-      properties:
-        aps-environment: development
-        com.apple.security.application-groups:
-          - group.com.cacheplane.b4app
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.cacheplane.b4app.ios
         PRODUCT_NAME: Agent Workspace
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_FILE: Apps/iOS/B4App/Info.plist
+        # B4APP_IOS_ENTITLEMENTS comes from the flavour's xcconfig: no Sign in with Apple for local. Each
+        # file also carries push (aps-environment) and the flavour's App Group, $(B4APP_APP_GROUP) (M8f).
+        CODE_SIGN_ENTITLEMENTS: $(B4APP_IOS_ENTITLEMENTS)
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
         # Simulator builds sign to run locally (the Keychain needs a signature); device builds and
@@ -169,8 +189,11 @@ targets:
       - target: B4App-iOSWidget
         embed: true
   # The attention widget (M8f, D-126): the top three threads, read from the mirror in the App Group.
-  # The group id, the URL scheme, and the entitlements are here, as on the app, so flavour builds can
-  # override them; the version keys must match the app's or embedding the extension fails.
+  # The flavour, the group id, and the URL scheme come from the flavour's xcconfig, as the app's do, so
+  # each flavour's widget reads its own app's mirror; the version keys must match the app's or embedding
+  # the extension fails. Its bundle id is the app's plus `.widget`: the xcconfig appends
+  # B4APP_BUNDLE_ID_SUFFIX to the iOS id, and this target sets only that suffix (no target sets
+  # PRODUCT_BUNDLE_IDENTIFIER).
   B4App-iOSWidget:
     type: app-extension
     platform: iOS
@@ -183,18 +206,16 @@ targets:
         CFBundleDisplayName: Agent Workspace
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        B4AppAppGroup: group.com.cacheplane.b4app
-        B4AppURLScheme: b4app
+        B4AppFlavor: $(B4APP_FLAVOR)
+        B4AppAppGroup: $(B4APP_APP_GROUP)
+        B4AppURLScheme: $(B4APP_URL_SCHEME)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
-    entitlements:
-      path: Apps/iOSWidget/B4AppWidget.entitlements
-      properties:
-        com.apple.security.application-groups:
-          - group.com.cacheplane.b4app
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.cacheplane.b4app.ios.widget
+        B4APP_BUNDLE_ID_SUFFIX: .widget
+        # The App Group only, as $(B4APP_APP_GROUP), which Xcode substitutes when it signs.
+        CODE_SIGN_ENTITLEMENTS: Apps/iOSWidget/B4AppWidget.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
         "CODE_SIGN_IDENTITY[sdk=iphonesimulator*]": "-"
@@ -212,9 +233,45 @@ schemes:
         B4App-macOS: all
     run:
       config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+  B4App-macOS-Beta:
+    build:
+      targets:
+        B4App-macOS: all
+    run:
+      config: Debug-Beta
+    profile:
+      config: Release-Beta
+    analyze:
+      config: Debug-Beta
+    archive:
+      config: Release-Beta
   B4App-iOS:
     build:
       targets:
         B4App-iOS: all
     run:
       config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+  B4App-iOS-Beta:
+    build:
+      targets:
+        B4App-iOS: all
+    run:
+      config: Debug-Beta
+    profile:
+      config: Release-Beta
+    analyze:
+      config: Debug-Beta
+    archive:
+      config: Release-Beta

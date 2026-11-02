@@ -6,6 +6,7 @@
 //! Everything else that fails exits 1.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,6 +21,7 @@ use b4hub_db::orgs::{self, OrgChoice};
 use b4hub_db::settings::Maintenance;
 use b4hub_db::{devices, Db};
 
+use crate::config::Config;
 use crate::instances::InstancesState;
 use crate::maintenance;
 use crate::push::{ApnsSender, PushError, PushSender, SpoolSender};
@@ -165,7 +167,7 @@ pub struct ConfigError {
 }
 
 impl ConfigError {
-    fn new(name: &str, reason: impl Into<String>) -> ConfigError {
+    pub fn new(name: &str, reason: impl Into<String>) -> ConfigError {
         ConfigError {
             name: name.to_string(),
             reason: reason.into(),
@@ -215,9 +217,19 @@ pub enum PushChoice {
 }
 
 /// A snapshot of the environment, so settings parse the same way in tests as in production.
-#[derive(Debug, Clone, Default)]
+/// `Debug` prints the variable names only, sorted, never a value: the environment holds
+/// `B4HUB_SECRET_KEY`, `B4HUB_APPLE_PRIVATE_KEY`, and the database passwords.
+#[derive(Clone, Default)]
 pub struct Settings {
     vars: HashMap<String, String>,
+}
+
+impl fmt::Debug for Settings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut names: Vec<&str> = self.vars.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        f.debug_struct("Settings").field("vars", &names).finish()
+    }
 }
 
 impl Settings {
@@ -236,11 +248,40 @@ impl Settings {
         }
     }
 
-    fn var(&self, name: &str) -> Option<&str> {
+    /// The variable `name`, when it is set and not empty.
+    pub(crate) fn var(&self, name: &str) -> Option<&str> {
         self.vars
             .get(name)
             .map(String::as_str)
             .filter(|v| !v.is_empty())
+    }
+
+    /// Whether `name` or its `NAME_FILE` form is set (and not empty). It does not read the file.
+    pub(crate) fn secret_is_set(&self, name: &str) -> bool {
+        self.var(name).is_some() || self.var(&format!("{name}_FILE")).is_some()
+    }
+
+    /// The secret `name`: the variable itself, or the contents of the file `NAME_FILE` names, with
+    /// the file's trailing line ending (`\n` or `\r\n`) removed and nothing else touched, so a
+    /// multi-line PEM keeps its inner newlines. `None` when neither is set.
+    ///
+    /// Setting both is an error naming both, and so is a file that cannot be read (missing, a
+    /// directory, not UTF-8) naming `NAME_FILE`. No error carries the value or the file's bytes.
+    pub(crate) fn secret_value(&self, name: &str) -> Result<Option<String>, ConfigError> {
+        let file_name = format!("{name}_FILE");
+        match (self.var(name), self.var(&file_name)) {
+            (Some(_), Some(_)) => Err(ConfigError::new(
+                name,
+                format!("and {file_name} are both set; set only one"),
+            )),
+            (Some(value), None) => Ok(Some(value.to_string())),
+            (None, Some(path)) => {
+                let contents = std::fs::read_to_string(path)
+                    .map_err(|_| ConfigError::new(&file_name, "the file cannot be read"))?;
+                Ok(Some(contents.trim_end_matches(['\r', '\n']).to_string()))
+            }
+            (None, None) => Ok(None),
+        }
     }
 
     /// `B4HUB_PORT`, default 8080.
@@ -365,7 +406,8 @@ impl Settings {
         }
     }
 
-    /// `B4HUB_LOG`, a tracing filter, default `info`.
+    /// `B4HUB_LOG`, a tracing filter, default `info`. Whatever it allows, the subscriber in
+    /// [`crate::logging`] still drops webauthn-rs's own events.
     pub fn log_filter(&self) -> Result<EnvFilter, ConfigError> {
         EnvFilter::try_new(self.var("B4HUB_LOG").unwrap_or("info"))
             .map_err(|_| ConfigError::new("B4HUB_LOG", "is not a valid tracing filter"))
@@ -384,8 +426,9 @@ impl Settings {
     }
 
     /// `B4HUB_TRUST_X_FORWARDED_FOR` (`1` or `true`), default false: the hub is behind a proxy
-    /// that appends the client address to `X-Forwarded-For`. Validated here; the sign-in
-    /// branch's per-client limits read it. The request id never depends on it.
+    /// that appends the client address to `X-Forwarded-For`, and the sign-in routes' per-client
+    /// limits key on that address (`Config::trust_forwarded_for`). The request id never depends
+    /// on it.
     pub fn trust_proxy(&self) -> Result<bool, ConfigError> {
         match self.var("B4HUB_TRUST_X_FORWARDED_FOR") {
             None | Some("0" | "false") => Ok(false),
@@ -418,26 +461,9 @@ impl Settings {
     }
 
     fn secret_url(&self, name: &str) -> Result<String, ConfigError> {
-        let file_name = format!("{name}_FILE");
-        let value = match (self.var(name), self.var(&file_name)) {
-            (Some(_), Some(_)) => {
-                return Err(ConfigError::new(
-                    name,
-                    format!("and {file_name} are both set; set only one"),
-                ))
-            }
-            (Some(value), None) => value.to_string(),
-            (None, Some(path)) => std::fs::read_to_string(path)
-                .map_err(|_| ConfigError::new(&file_name, "the file cannot be read"))?
-                .trim()
-                .to_string(),
-            (None, None) => {
-                return Err(ConfigError::new(
-                    name,
-                    format!("is not set (set {name} or {file_name})"),
-                ))
-            }
-        };
+        let value = self.secret_value(name)?.ok_or_else(|| {
+            ConfigError::new(name, format!("is not set (set {name} or {name}_FILE)"))
+        })?;
         match Url::parse(&value) {
             Ok(url) if matches!(url.scheme(), "postgres" | "postgresql") && url.has_host() => {
                 Ok(value)
@@ -503,9 +529,8 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
         None => SocketAddr::from(([0, 0, 0, 0], settings.port()?)),
     };
     let wait = settings.shutdown_wait()?;
-    let public_url = settings.public_url()?;
     let retention = settings.retention()?;
-    let trust_proxy = settings.trust_proxy()?;
+    let config = Config::from_settings(settings)?;
     let maintenance_poll = settings.maintenance_poll()?;
     let heartbeat = settings.heartbeat()?;
     // Before the database: a sender that cannot start stops `serve` before anything else does.
@@ -523,16 +548,18 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(
         %addr,
-        public_url = public_url.as_ref().map(Url::as_str),
+        public_url = config.public_url.as_ref().map(Url::as_str),
         shutdown_wait_ms = wait.as_millis() as u64,
         retention_days = retention.as_secs() / SECONDS_PER_DAY,
-        trust_proxy,
+        signup = ?config.signup,
+        rp_id = %config.rp_id,
+        apple = config.apple.is_some(),
+        trust_proxy = config.trust_forwarded_for,
         maintenance_poll_ms = maintenance_poll.as_millis() as u64,
         heartbeat_ms = heartbeat.as_millis() as u64,
         "serving"
     );
-    let mut state = AppState::new(db.clone());
-    state.public_url = public_url;
+    let mut state = AppState::new(db.clone(), config)?;
     state.push = push;
     state.instances = InstancesState::new(heartbeat);
     // Know the switch before the first request, not one poll later.
@@ -742,6 +769,27 @@ mod tests {
     }
 
     #[test]
+    fn debug_names_the_variables_but_prints_no_value() {
+        let s = settings(&[
+            ("B4HUB_SECRET_KEY", "c2VjcmV0LWtleS12YWx1ZQ"),
+            (
+                "B4HUB_APPLE_PRIVATE_KEY",
+                "-----BEGIN PRIVATE KEY-----pem-body",
+            ),
+            ("DATABASE_URL", "postgres://app:hunter2@db/b4hub"),
+        ]);
+        let printed = format!("{s:?}");
+        assert_eq!(
+            printed,
+            r#"Settings { vars: ["B4HUB_APPLE_PRIVATE_KEY", "B4HUB_SECRET_KEY", "DATABASE_URL"] }"#
+        );
+        for value in ["c2VjcmV0", "pem-body", "hunter2"] {
+            assert!(!printed.contains(value), "{printed}");
+            assert!(!format!("{s:#?}").contains(value));
+        }
+    }
+
+    #[test]
     fn heartbeat_is_milliseconds_with_a_five_second_default() {
         assert_eq!(
             settings(&[]).heartbeat().unwrap(),
@@ -847,6 +895,28 @@ mod tests {
         assert_eq!(error.exit_code(), 2);
     }
 
+    #[tokio::test]
+    async fn serve_without_the_sign_in_settings_is_a_configuration_error() {
+        let cli = Cli::try_parse_from(["b4hub", "serve", "--bind", "127.0.0.1:0"]).unwrap();
+        let bare = settings(&[("DATABASE_URL", "postgres://b4hub_app:pw@127.0.0.1:1/none")]);
+        let error = run(cli, &bare).await.unwrap_err();
+        match &error {
+            CliError::Config(e) => assert_eq!(e.name, "B4HUB_WEBAUTHN_RP_ID"),
+            other => panic!("expected a configuration error, got {other}"),
+        }
+        assert_eq!(error.exit_code(), 2);
+
+        let cli = Cli::try_parse_from(["b4hub", "serve", "--bind", "127.0.0.1:0"]).unwrap();
+        let short_key = settings(&[
+            ("DATABASE_URL", "postgres://b4hub_app:pw@127.0.0.1:1/none"),
+            ("B4HUB_WEBAUTHN_RP_ID", "local.b4.run"),
+            ("B4HUB_SECRET_KEY", "dG9vIHNob3J0"),
+        ]);
+        let error = run(cli, &short_key).await.unwrap_err();
+        assert!(matches!(&error, CliError::Config(e) if e.name == "B4HUB_SECRET_KEY"));
+        assert!(!error.to_string().contains("dG9vIHNob3J0"));
+    }
+
     #[test]
     fn malformed_settings_name_themselves_and_not_their_value() {
         let e = settings(&[("B4HUB_PORT", "eighty")]).port().unwrap_err();
@@ -915,6 +985,51 @@ mod tests {
             .database_url()
             .unwrap_err();
         assert_eq!(missing.name, "DATABASE_URL_FILE");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn secret_value_reads_the_variable_or_its_file() {
+        let dir = std::env::temp_dir().join(format!("b4hub-cli-{}", b4hub_core::ids::new_uuid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, contents: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, contents).unwrap();
+            path.to_str().unwrap().to_string()
+        };
+
+        assert_eq!(settings(&[]).secret_value("X").unwrap(), None);
+        assert!(!settings(&[]).secret_is_set("X"));
+        assert_eq!(
+            settings(&[("X", " as is\n")]).secret_value("X").unwrap(),
+            Some(" as is\n".to_string()),
+            "the variable is never trimmed"
+        );
+
+        for (contents, want) in [
+            ("v", "v"),
+            ("v\n", "v"),
+            ("v\r\n", "v"),
+            ("a\nb\n", "a\nb"),
+            (" v \n", " v "),
+        ] {
+            let path = write("f", contents);
+            let s = settings(&[("X_FILE", &path)]);
+            assert!(s.secret_is_set("X"));
+            assert_eq!(s.secret_value("X").unwrap().as_deref(), Some(want));
+        }
+
+        let path = write("g", "v");
+        let both = settings(&[("X", "v"), ("X_FILE", &path)])
+            .secret_value("X")
+            .unwrap_err();
+        let text = both.to_string();
+        assert!(text.contains("X") && text.contains("X_FILE") && text.contains("both set"));
+
+        let missing = settings(&[("X_FILE", dir.join("nope").to_str().unwrap())])
+            .secret_value("X")
+            .unwrap_err();
+        assert_eq!(missing.name, "X_FILE");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

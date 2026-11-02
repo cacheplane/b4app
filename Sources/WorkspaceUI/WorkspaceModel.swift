@@ -26,15 +26,16 @@ public enum ThreadRowState: String, Sendable, Equatable, CaseIterable {
 
 /// A page of the Settings window (the Mac) or sheet (the iPhone).
 public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
-  case connections, servers, remoteAccess, diagnostics
+  case account, connections, servers, remoteAccess, diagnostics
 
-  /// The pages this platform shows. "Remote access" is the Mac's: it mints the pairing code and holds
-  /// the Mac awake, neither of which the phone does.
+  /// The pages this platform shows. "Account" comes first (sign-in plan, Task 12). "Remote access" is
+  /// the Mac's: it mints the pairing code and holds the Mac awake, neither of which the phone does. The
+  /// phone's Account page reads its host's account (Task 14).
   nonisolated public static var allCases: [SettingsPage] {
     #if os(macOS)
-      [.connections, .servers, .remoteAccess, .diagnostics]
+      [.account, .connections, .servers, .remoteAccess, .diagnostics]
     #else
-      [.connections, .servers, .diagnostics]
+      [.account, .connections, .servers, .diagnostics]
     #endif
   }
 
@@ -42,6 +43,7 @@ public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
 
   public var title: String {
     switch self {
+    case .account: return "Account"
     case .connections: return "Connections"
     case .servers: return "B4 projects"
     case .remoteAccess: return "Remote access"
@@ -51,6 +53,7 @@ public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
 
   public var systemImage: String {
     switch self {
+    case .account: return "person.crop.circle"
     case .connections: return "link"
     case .servers: return "server.rack"
     case .remoteAccess: return "iphone"
@@ -147,7 +150,7 @@ public final class WorkspaceModel {
   public var projectFilter: ProjectFilter = .all
   /// The Settings page to show, and a counter the root view watches to open Settings (a window on the
   /// Mac, a sheet on the iPhone); a counter so asking twice opens it twice.
-  public var settingsPage: SettingsPage = .connections
+  public var settingsPage: SettingsPage = SettingsPage.allCases[0]
   public var settingsRequest = 0
   /// A thread a notification tap or widget row asked for before the link was ready; `connect()` opens
   /// it once the first snapshot is in. A later request replaces an earlier one.
@@ -202,8 +205,64 @@ public final class WorkspaceModel {
   /// leaves it alone and `logOut()` calls `hostLogOut`.
   public var accountSource: AccountSource = .coordinator
   public var hostLogOut: (@MainActor () async -> Void)?
+  /// The host's own account (the phone's `MirrorAccount`, sign-in plan Task 14). With one, a `.host`
+  /// model signs in, onboards, logs out, and runs Settings → Account through it, and its root follows
+  /// the account as the Mac's does; without one the workspace always shows, as before.
+  public var accountHost: (any AccountHost)?
+
+  // MARK: Signing in (sign-in plan, Task 11; the logic is in SignIn/AccountState.swift)
+
+  /// Who is signed in, from `account.status` and then `account.changed`; the root view follows it.
+  public internal(set) var accountState: AccountState = .unknown
+  /// The last status the coordinator gave, for the org and the display name.
+  public internal(set) var accountStatus: AccountStatus.Result?
+  /// "The last sign-out could not reach the hub; …", shown until dismissed (`dismissAccountNotice`).
+  public internal(set) var accountNotice: String?
+  /// The sign-in screen's busy button, failure line, and "Create a new account?" question.
+  public internal(set) var signInProgress = SignInProgress()
+  /// Onboarding's Continue is out, and the line shown when it failed.
+  public internal(set) var onboardingBusy = false
+  public internal(set) var onboardingFailure: String?
+  /// The flavour's site, Apple flag, and badge; the app sets it (`WorkspaceUI` cannot read `Flavor`).
+  public var signInConfiguration: SignInConfiguration = .local
+  /// A fresh connection to the coordinator for commands that must not queue behind others on the
+  /// main one (`account.logout`). Nil sends them on the main connection.
+  @ObservationIgnored public var sideTransportProvider: TransportProvider?
+  /// How long a log-out waits for its side connection's hello before it gives up.
+  @ObservationIgnored public var sideReadyTimeout: Duration = .seconds(5)
+  /// Bumped by `forgetWorkspace()` whenever the signed-in account ends or changes. A read sent under
+  /// an older generation belongs to that account: its answer is dropped, not stored.
+  @ObservationIgnored var accountGeneration = 0
+  /// The registration offered after "No passkey for …", until Create account or Cancel.
+  @ObservationIgnored var pendingRegistration: PendingRegistration?
+  /// The passkey this device made at sign-up, renamed once onboarding names the account.
+  @ObservationIgnored var pendingRename: PendingPasskeyRename?
+  // MARK: Account settings and log out (sign-in plan, Task 12; SignIn/AccountSettingsView.swift)
+
+  /// The profile menu's "Log out of <org name>?", while it is asked.
+  public internal(set) var logOutConfirmation: LogOutConfirmation?
+  /// A log-out is out; the menu's Log out does nothing until it answers.
+  public internal(set) var logOutInFlight = false
+  /// The one line a refused log-out shows, until dismissed.
+  public internal(set) var logOutFailure: String?
+  /// The signed-in account's sign-in methods, from `account.identities`; nil until read.
+  public internal(set) var identities: [AccountIdentity]?
+  /// An Account page call is out (save the name, add or remove a method).
+  public internal(set) var accountSettingsBusy = false
+  /// The Account page's one failure line.
+  public internal(set) var accountSettingsFailure: String?
+  /// "Delete account…": the call is out, and the one line a refusal shows.
+  public internal(set) var deleteInFlight = false
+  public internal(set) var deleteFailure: String?
+  /// "Add your iPhone": set once after a new account finishes onboarding on the Mac, and by the views.
+  public var showAddPhone = false
+  /// Bumped when the account leaves `.signedIn`, so an open Settings window closes.
+  public internal(set) var settingsCloseRequest = 0
   /// The phone's mirror has no joined Mac left: a notice sits above the still browsable list.
   public var hostDisconnected = false
+  /// The phone's account has never had a Mac (`GET /v1/devices`, read by the host): "Connect your Mac"
+  /// replaces the thread list (sign-in plan, Task 15). The host sets it; false until the list is read.
+  public var accountHasNoMac = false
 
   // MARK: The phone's relay (M8c; the logic is in SendState.swift and HostNotice.swift)
 
@@ -231,7 +290,7 @@ public final class WorkspaceModel {
 
   /// Whether the profile menu offers Log out.
   public var canLogOut: Bool {
-    account != nil && (accountSource == .coordinator || hostLogOut != nil)
+    account != nil && (accountSource == .coordinator || accountHost != nil || hostLogOut != nil)
   }
 
   public var versionMismatch: String? {
@@ -255,8 +314,9 @@ public final class WorkspaceModel {
   /// or a new reply finishes.
   @ObservationIgnored private var unreadHold: Set<String> = []
 
-  public init(transportProvider: @escaping TransportProvider) {
+  public init(transportProvider: @escaping TransportProvider, accountSource: AccountSource = .coordinator) {
     self.transportProvider = transportProvider
+    self.accountSource = accountSource
   }
 
   /// The list under the connection and project filters: pinned first, then needs input,
@@ -379,16 +439,29 @@ public final class WorkspaceModel {
     linkMessage = nil
     connectTask = Task { [transportProvider] in
       do {
+        // Replaced before it began: the provider is not asked (the phone's host keeps the newest
+        // transport it made, which must be the newer connect's).
+        if Task.isCancelled { return }
         let transport = try await transportProvider()
+        // A connect replaced by a newer one (`reconnect()`) leaves the link to it.
+        if Task.isCancelled {
+          await transport.close()
+          return
+        }
         let client = WorkspaceClient(transport: transport)
         self.client = client
         let hello = try await client.ready()
         // Subscribed before the first snapshot, so nothing emitted after it is lost (presence
         // included); the events the snapshot already covers are skipped in `observe`.
         let events = await client.events()
-        try await refreshSnapshot()
+        // Who is signed in comes first: nothing of a store is read, or shown, before it is known.
+        try await readAccountState(client)
+        if showsStore {
+          try await refreshSnapshot()
+          await refreshAccount()
+        }
         let covered = snapshotPosition ?? (hello.epoch, hello.sequence)
-        await refreshAccount()
+        try Task.checkCancellation()
         link = .ready
         let requested = pendingThreadOpen
         pendingThreadOpen = nil
@@ -397,6 +470,7 @@ public final class WorkspaceModel {
         if let requested { Task { await openThread(id: requested) } }
         await observe(client, events: events, covered: covered)
       } catch {
+        guard !Task.isCancelled else { return }
         link = .unavailable
         linkMessage = Self.describe(error)
         settleLink()
@@ -416,6 +490,18 @@ public final class WorkspaceModel {
     linkWaiters = []
     for waiter in waiters { waiter.resume(returning: link) }
   }
+
+  /// Connect again on a fresh transport, closing the old client once the new connection takes over.
+  /// The root does not pass through "unavailable" on the way (the phone, after its account changed).
+  func reconnect() {
+    let old = client
+    client = nil
+    connect()
+    Task { await old?.close() }
+  }
+
+  /// Whether the store is read: someone is signed in, or a host that owns no sign-in shows it always.
+  var showsStore: Bool { (accountSource == .host && accountHost == nil) || accountState == .signedIn }
 
   public func disconnect() async {
     connectTask?.cancel()
@@ -447,11 +533,16 @@ public final class WorkspaceModel {
 
   /// Ask the coordinator which hub user it has joined as. A failure keeps the account as it was.
   public func refreshAccount() async {
-    guard accountSource == .coordinator, let client else { return }
-    guard let status = try? await client.request(HubStatus.self, EmptyParams()) else { return }
+    guard accountSource == .coordinator, accountState == .signedIn, let client else { return }
+    let generation = accountGeneration
+    guard let status = try? await client.request(HubStatus.self, EmptyParams()),
+      generation == accountGeneration
+    else { return }
     account = WorkspaceAccount(status: status)
     hubJoined = status.joined
     hubLink = status.link
+    // A status read never clears the notice: only `account.dismissNotice` does.
+    if status.notice != nil { accountNotice = SignInCopy.sessionLeftOpen }
   }
 
   // MARK: - Remote access (the Mac)
@@ -496,13 +587,21 @@ public final class WorkspaceModel {
     return try? await client.request(HubPairStatus.self, EmptyParams())
   }
 
-  /// Leave the hub (the Mac) or unlink (the phone, through `hostLogOut`). A failure keeps the account
-  /// and sets `lastError`.
+  /// Unlink the phone (through `hostLogOut`), or on the Mac remove this Mac from the account
+  /// (`removeThisMac`). The Mac's profile menu logs out with `requestLogOut` instead.
   public func logOut() async {
     if accountSource == .host {
-      await hostLogOut?()
+      _ = await logOut(stopWork: false)
       return
     }
+    await removeThisMac()
+  }
+
+  /// "Remove this Mac from your account" (Remote access): `hub.leave` revokes this Mac's device at the
+  /// hub and signs it out. A failure keeps the account and sets `lastError`.
+  public func removeThisMac() async {
+    // The sign-out that follows forgets the composer; its text is saved first, as at a log-out.
+    await persistDraftNow()
     guard
       await perform({ client in
         try await client.request(HubLeave.self, EmptyParams(), options: Self.mutation())
@@ -511,9 +610,17 @@ public final class WorkspaceModel {
     await refreshAccount()
   }
 
+  /// Whether the Settings pages can show: someone is signed in (or the host owns the account). When
+  /// it turns false an open Settings window closes (`settingsCloseRequest`) and shows a placeholder.
+  public var settingsAvailable: Bool {
+    (accountSource == .host && accountHost == nil) || accountState == .signedIn
+  }
+
   public func refreshSnapshot() async throws {
     guard let client else { return }
+    let generation = accountGeneration
     let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
+    guard generation == accountGeneration else { return }
     connections = snapshot.connections
     // Progress from before the snapshot may never see its closing event.
     checks = [:]
@@ -522,8 +629,11 @@ public final class WorkspaceModel {
       snapshot.activeTurns.map { ($0.threadId, $0) }, uniquingKeysWith: { _, new in new })
     resolvePendingSends(with: snapshot.activeTurns)
     if let presence = snapshot.presence { applyPresence(presence) }
-    servers = (try? await client.request(ServerList.self, EmptyParams()).servers) ?? []
+    let listed = (try? await client.request(ServerList.self, EmptyParams()).servers) ?? []
+    guard generation == accountGeneration else { return }
+    servers = listed
     await refreshProjects()
+    guard generation == accountGeneration else { return }
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
     snapshotPosition = (snapshot.epoch, snapshot.sequence)
     if let id = selectedThreadId, detail != nil { await loadDetail(id: id) }
@@ -723,15 +833,18 @@ public final class WorkspaceModel {
     guard let client else { return }
     detailLoading = true
     defer { detailLoading = false }
+    let generation = accountGeneration
     do {
       let read = try await client.request(
         ThreadRead.self, ThreadRead.Params(threadId: id), options: RequestOptions(timeout: .seconds(60)))
+      guard generation == accountGeneration else { return }
       // The saved draft is restored only when switching threads, and before the detail is published
       // so the composer is live only once it is settled. A refresh of the open thread (snapshot,
       // wake, a connection change) keeps whatever is being typed: restoring from disk there would
       // overwrite it, and the save already scheduled would then persist the overwrite.
       if detail?.thread.id != id {
         let draft = try? await client.request(DraftRead.self, DraftRead.Params(threadId: id)).draft
+        guard generation == accountGeneration else { return }
         restoringDraft = true
         composerText = draft?.text ?? ""
         restoringDraft = false
@@ -754,6 +867,7 @@ public final class WorkspaceModel {
       }
       lastError = nil
     } catch {
+      guard generation == accountGeneration else { return }
       if startedThreadMissing(threadId: id, error: error) { return }
       lastError = Self.describe(error)
     }
@@ -777,6 +891,12 @@ public final class WorkspaceModel {
       await self.saveDraft(threadId: threadId)
       self.draftSaveTask = nil
     }
+  }
+
+  /// Drop the debounced draft write; the caller saves the text itself.
+  func cancelPendingDraftSave() {
+    draftSaveTask?.cancel()
+    draftSaveTask = nil
   }
 
   /// Flush the pending draft write now (app termination, window close).
@@ -818,7 +938,10 @@ public final class WorkspaceModel {
   // MARK: - Projects
 
   public func refreshProjects() async {
-    guard let client, let list = try? await client.request(ProjectList.self, EmptyParams()) else { return }
+    let generation = accountGeneration
+    guard let client, let list = try? await client.request(ProjectList.self, EmptyParams()),
+      generation == accountGeneration
+    else { return }
     projects = list.projects
   }
 
@@ -961,10 +1084,12 @@ public final class WorkspaceModel {
   }
 
   private func refetch(threadId: String) async {
+    let generation = accountGeneration
     guard let client,
       let read = try? await client.request(
         ThreadRead.self, ThreadRead.Params(threadId: threadId), options: RequestOptions(timeout: .seconds(60))
-      )
+      ),
+      generation == accountGeneration
     else { return }
     if var current = detail, current.thread.id == threadId {
       current.turns = read.turns
@@ -1034,10 +1159,10 @@ public final class WorkspaceModel {
   // MARK: - Lifecycle (spec 10.3)
 
   /// What the coordinator is running now, for the Quit choice. Nil when the coordinator is unreachable.
-  public func activeWork() async -> WorkspaceActiveWork.Result? {
+  public func activeWork(timeout: Duration = .seconds(10)) async -> WorkspaceActiveWork.Result? {
     guard let client else { return nil }
     return try? await client.request(
-      WorkspaceActiveWork.self, EmptyParams(), options: RequestOptions(timeout: .seconds(10)))
+      WorkspaceActiveWork.self, EmptyParams(), options: RequestOptions(timeout: timeout))
   }
 
   /// Stop owned local work (local turns, owned servers); remote runs are detached, not cancelled.
@@ -1051,6 +1176,7 @@ public final class WorkspaceModel {
   /// After the Mac wakes or the link comes back: fresh snapshot, then ask every runtime about every
   /// unresolved turn. Nothing is re-sent.
   public func reconcileAfter(_ reason: String) async {
+    guard showsStore else { return }
     try? await refreshSnapshot()
     guard let client else { return }
     _ = try? await client.request(
@@ -1164,7 +1290,8 @@ public final class WorkspaceModel {
       apply(envelope.event)
     }
     desyncTask.cancel()
-    if link == .ready {
+    // A client replaced by `reconnect()` or `disconnect()` says nothing about the link now.
+    if link == .ready, self.client === client {
       link = .unavailable
       linkMessage = "Coordinator connection closed."
     }
@@ -1202,6 +1329,10 @@ public final class WorkspaceModel {
       }
     case .hostPresence:
       applyPresence(event)
+    case .accountChanged:
+      if accountSource == .coordinator, let status = try? event.payload.decode(AccountStatus.Result.self) {
+        applyAccountStatus(status)
+      }
     case .turnAcknowledged, .turnStateChanged, .turnFinished:
       if let threadId = event.threadId, let turn = try? event.payload["turn"]?.decode(Turn.self) {
         activeTurns[threadId] = turn.status == .terminal ? nil : turn
@@ -1266,6 +1397,50 @@ public final class WorkspaceModel {
     }
     detail = current
     prunePendingSends()
+  }
+
+  /// Everything of an account that is no longer the signed-in one: no row, filter, pending send (they
+  /// hold message text), or timer of it may stay, or write into the next account's store.
+  func forgetWorkspace() {
+    accountGeneration += 1
+    draftSaveTask?.cancel()
+    draftSaveTask = nil
+    for task in refetchTasks.values { task.cancel() }
+    refetchTasks = [:]
+    markedRead = []
+    unreadHold = []
+    endRelayState()
+    isStartingThread = false
+    projectFilter = .all
+    connectionFilter = nil
+    showArchived = false
+    pendingForceStop = nil
+    diagnosticsError = nil
+    connections = []
+    threads = []
+    projects = []
+    servers = []
+    serverLogs = [:]
+    activeTurns = [:]
+    detail = nil
+    selectedThreadId = nil
+    // With no thread open, clearing the composer schedules no draft save.
+    composerText = ""
+    account = nil
+    hubJoined = false
+    hubLink = nil
+    diagnostics = nil
+    showNewThread = false
+    showSearch = false
+    showProfileMenu = false
+    lastError = nil
+    showAddPhone = false
+    logOutConfirmation = nil
+    logOutFailure = nil
+    identities = nil
+    accountSettingsFailure = nil
+    deleteFailure = nil
+    pendingRename = nil
   }
 
   static func describe(_ error: any Error) -> String {

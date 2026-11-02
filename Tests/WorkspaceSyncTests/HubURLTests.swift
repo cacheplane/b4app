@@ -5,6 +5,13 @@ import WorkspaceProtocol
 @testable import WorkspaceSync
 
 @Suite struct HubURLTests {
+  @Test func canonicalSpellingsOfOneHubAreEqual() throws {
+    #expect(try HubURL.canonical("http://localhost:8080/") == "http://localhost:8080")
+    #expect(try HubURL.canonical("HTTP://LOCALHOST:8080") == "http://localhost:8080")
+    #expect(try HubURL.canonical(" https://hub.b4.run// ") == "https://hub.b4.run")
+    #expect(throws: WorkspaceError.self) { try HubURL.canonical("http://hub.example.test") }
+  }
+
   @Test func rejectsPlainHTTPOffLoopback() {
     #expect(throws: WorkspaceError.self) { try HubURL.validate("http://192.168.1.10:8080") }
     #expect(throws: WorkspaceError.self) { try HubURL.validate("http://hub.example.test") }

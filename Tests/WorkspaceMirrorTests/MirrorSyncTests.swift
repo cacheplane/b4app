@@ -178,6 +178,35 @@ private let link = MirrorLink(
     await running.value
   }
 
+  /// Task 14: a 401 means the hub no longer takes this token. The loop stops (retrying could not help)
+  /// and says so once, so the phone signs out.
+  @Test func a401StopsTheLoopAndReportsItOnce() async throws {
+    let store = try MirrorStore.inMemory()
+    try store.saveLink(link)
+    let hub = FakeHubAPI()
+    try await hub.revokeSelf()
+    let refused = Mutex(0)
+    let sync = MirrorSync(
+      store: store, api: hub, onBatch: { _ in }, initialBackoff: .milliseconds(5),
+      onUnauthorized: { refused.withLock { $0 += 1 } })
+    // `run()` returns once the loop has ended.
+    await sync.run()
+    #expect(refused.withLock { $0 } == 1)
+    // Other failures keep retrying, as before.
+    let flaky = FakeHubAPI()
+    await flaky.setFailNext(HubError(kind: "execution_error", code: "transport", message: "down", status: 0))
+    let signal = SyncSignal()
+    let calls = Mutex(0)
+    let other = MirrorSync(
+      store: store, api: ProbedHub(flaky, signal), onBatch: { _ in }, initialBackoff: .milliseconds(5),
+      onUnauthorized: { calls.withLock { $0 += 1 } })
+    let running = Task { await other.run() }
+    try await signal.until("a pull after the failure") { await flaky.pushed.count >= 1 }
+    await other.stop()
+    await running.value
+    #expect(calls.withLock { $0 } == 0)
+  }
+
   @Test func resyncUsesTheSnapshot() async throws {
     let store = try MirrorStore.inMemory()
     try store.saveLink(link)

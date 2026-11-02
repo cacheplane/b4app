@@ -10,15 +10,16 @@ Clients refuse any non-HTTPS URL whose host is not `localhost`, `127.0.0.1`, or 
 
 ### Authentication
 
-Every route except `/healthz`, `/readyz`, and `POST /v1/enroll` requires
+Every route except `/healthz`, `/readyz`, `POST /v1/enroll` (where the header is optional and
+asks for a merge; see that route), and the sign-in routes under `/v1/auth/` requires
 
 ```
 Authorization: Bearer <device token>
 ```
 
 The scheme is matched case-insensitively; the token must be non-empty and contain no whitespace.
-The token comes from `POST /v1/enroll`, which is the only place it is ever shown; the hub stores
-only its SHA-256. Authentication happens before the request body is read, so an unauthenticated
+The token comes from `POST /v1/enroll` or a sign-in (`POST /v1/auth/passkey/finish`, `POST
+/v1/auth/apple/native`, or `POST /v1/auth/handoff`), the only places it is ever shown; the hub stores only its SHA-256. Authentication happens before the request body is read, so an unauthenticated
 request is refused without its body being consumed. A missing header, another scheme, a malformed
 token, an unknown token, and a revoked device all answer the same `401 unauthorized`, so a caller
 learns nothing about which it was.
@@ -49,24 +50,33 @@ Every error uses B4's envelope:
 `execution_error` (the hub could not do what was asked). `details.code` is the stable,
 machine-readable part; `message` is fixed human-readable text and may change. Messages never
 contain SQL, panic text, or another tenant's data. A missing resource and an inaccessible one
-answer the same generic `404 not_found`.
+answer the same generic `404 not_found`. `rate_limited` alone adds a field,
+`details.retryAfterMs` (milliseconds until the client may try again), and a `Retry-After` header
+in whole seconds.
 
 | HTTP | `details.code` | `kind` | When |
 | --- | --- | --- | --- |
-| 400 | `invalid_request` | request | The body is not valid JSON for the endpoint (malformed JSON, an unknown or missing field, a wrong value type, a missing or wrong `Content-Type`); a `deviceName` or `platform` that fails validation; a push token, environment, or bundle id that fails validation; a push with more than 1000 changes; a non-numeric `after`, `limit`, or `wait`; a link request that is not a WebSocket upgrade or whose `B4-Protocol` is not a whole number. |
+| 400 | `ceremony_expired` | request | A sign-in ceremony that is unknown, expired (5 minutes), already finished, of another kind or another user, or (for a sign-up) was begun while sign-up was closed; or a handoff that is unknown, expired (2 minutes), spent, or presented with the wrong verifier. The cases are indistinguishable. Begin again. |
+| 400 | `invalid_request` | request | The body is not valid JSON for the endpoint (malformed JSON, an unknown or missing field, a wrong value type, a missing or wrong `Content-Type`); a `deviceName`, `platform`, or `fullName` that fails validation; a push token, environment, or bundle id that fails validation; a push with more than 1000 changes; a non-numeric `after`, `limit`, or `wait`; a link request that is not a WebSocket upgrade or whose `B4-Protocol` is not a whole number. |
 | 401 | `unauthorized` | request | The bearer token is missing, malformed, unknown, or belongs to a revoked device. |
 | 401 | `invalid_code` | request | The enrollment code is wrong, expired, or already used (the three are indistinguishable). |
+| 401 | `credential_rejected` | request | A sign-in credential failed verification: a malformed WebAuthn response, a wrong origin or relying party, a bad signature, a passkey no account has, a user handle that is not the passkey's, a counter that went backwards, or a new passkey that already belongs to an account; any failed Apple check (see *Sign in with Apple*); a link's handoff at `POST /v1/auth/handoff`, or one presented by another account's device. Deliberately vague, except that a passkey sign-in whose credential no account has says `details.reason: "unknown_credential"` (see `POST /v1/auth/passkey/finish`). |
 | 403 | `forbidden` | request | The device is authenticated but may not do this: `POST /v1/devices/self/push-token` from a device that is not `ios`. |
-| 404 | `not_found` | request | No such route, or a resource that does not exist or is not yours. |
+| 403 | `signup_closed` | request | A sign-up (a passkey `attestation`, or an Apple ID no account has) while the hub's sign-up policy is `closed`. |
+| 404 | `not_found` | request | No such route, or a resource that does not exist or is not yours (including another account's identity id). |
 | 405 | `method_not_allowed` | request | The route exists but not for that method. |
+| 409 | `last_identity` | request | `DELETE /v1/me/identities/{id}` of the account's only sign-in method, which would leave it unable to sign in. Add another first. |
+| 409 | `apple_linked` | request | `POST /v1/me/apple`, `/v1/me/apple/native`, or `/v1/me/apple/handoff` (or a link's callback) for an account that already has an Apple ID: an account links at most one. |
+| 409 | `merge_refused` | request | `POST /v1/enroll` with a token whose account cannot be merged into the code's. `details.reason` says why, checked in this order: `same_account` (the token's org is the code's own: the phone is already in it, whichever user of that org it is), `shared_org` (a member of a shared org rather than the owner of a personal one), or `has_mac` (it has, or ever had, a `macos` device). It is absent when the hub cannot say (the token's user is gone). Nothing changes, and the code stays redeemable. |
+| 409 | `shared_org` | request | `DELETE /v1/me` by a member of a shared (non-personal) org, such as an operator-seeded user; only the owner of a personal org can delete their account here. Nothing is revoked or deleted. |
 | 409 | `relocated` | request | `GET /v1/devices/self/link` reached an instance other than the one serving this user's links; `details.instanceId` names that instance. No socket is opened. Retry at once, at most 3 times, then with the normal backoff (see *Link*, *More than one instance*). |
 | 410 | `resync_required` | request | The pull cursor is older than the retention horizon: the hub has pruned the changes after it. Restore from `GET /v1/snapshot` (see *Horizon*). |
 | 413 | `payload_too_large` | request | A push body over 32 MiB. (A change whose `value` is over 2 MiB is rejected per change instead; see `POST /v1/changes`.) |
-| 429 | `rate_limited` | request | A device opened too many relay links in a minute (the upgrade is refused before it happens), or a user minted an eleventh pairing code in an hour. Always with `details.retryAfterMs`; on the link it is also a `reply` error for a command over its limits (see *Link*, *Commands*). |
+| 429 | `rate_limited` | request | Too many sign-in requests from this client this minute (see *Sign-in*, *Rate limits*); a device opened too many relay links in a minute (the upgrade is refused before it happens); or a user minted an eleventh pairing code in an hour. Always with `details.retryAfterMs`; on the link it is also a `reply` error for a command over its limits (see *Link*, *Commands*). |
 | 500 | `internal_error` | execution | Any unexpected failure; the cause is logged on the hub, never sent. |
 | 503 | `not_ready` | execution | `/readyz`: the database is unreachable, migrations are pending, the relay probe failed (`details.relay: "failed"`), or this instance's heartbeat is stale (`details.instances: "stale"`). |
 | 503 | `shutting_down` | execution | `/readyz` after SIGTERM. |
-| 503 | `maintenance` | execution | A write (`POST /v1/enroll`, `POST /v1/pairing-codes`, `POST /v1/changes`, `POST /v1/devices/self/push-token`, `DELETE /v1/devices/self`) while the operator has paused writes; carries `Retry-After: 30`. See "Maintenance mode". |
+| 503 | `maintenance` | execution | A write (`POST /v1/enroll`, `POST /v1/pairing-codes`, `POST /v1/changes`, `POST /v1/devices/self/push-token`, `DELETE /v1/devices/self`, and the sign-in and account writes listed under "Maintenance mode") while the operator has paused writes; carries `Retry-After: 30`. See "Maintenance mode". |
 
 Six more codes exist only on the relay link, never as an HTTP status. They arrive in an `error`
 frame (a problem with the link or a frame) or in a `reply`'s `error` (a problem with one command):
@@ -90,7 +100,12 @@ frame (a problem with the link or a frame) or in a `reply`'s `error` (a problem 
 | Pull page | 1000 changes (`limit` is clamped to 1 to 1000; default 1000), and 8 MiB (8,388,608 bytes) of `value` summed over the page (each sized when pushed, as PostgreSQL's `jsonb` text, a few bytes more than compact JSON); whichever comes first, and always at least one change | `GET /v1/changes` |
 | Retention | `B4HUB_RETENTION_DAYS`, default 30 | how long the hub keeps the change log (see *Horizon*) |
 | Long-poll `wait` | 25 seconds | `GET /v1/changes`; a larger `wait` is clamped to 25 |
-| Other request bodies | 2 MiB (axum's default) | `POST /v1/enroll` |
+| Other request bodies | 2 MiB (axum's default) | `POST /v1/enroll`, `POST /v1/auth/passkey/finish`, `PUT /v1/me/profile`, `POST /v1/me/passkeys/finish`, and the Apple routes |
+| Sign-in begins | 20 per client IP per minute | `POST /v1/auth/passkey/begin`, `POST /v1/me/passkeys/begin`, `POST /v1/auth/apple/begin`, `GET /v1/auth/apple/start`, and `POST /v1/me/apple`, together; over it, `429 rate_limited` |
+| Sign-in finishes | 10 per client IP per minute | `POST /v1/auth/passkey/finish`, `POST /v1/me/passkeys/finish`, `POST /v1/auth/apple/native`, `POST /v1/auth/apple/callback`, `POST /v1/auth/handoff`, `POST /v1/me/apple/native`, and `POST /v1/me/apple/handoff`, together, counted before the token is checked or the body read; over it, `429 rate_limited` |
+| Full name | 1 to 200 characters after trimming | `PUT /v1/me/profile` |
+| Ceremony lifetime | 5 minutes, single use | a `ceremonyId` from a begin |
+| Handoff lifetime | 2 minutes, single use | the code in the web flow's redirect |
 
 The Mac client sends batches of 500 and replaces a `displayItems.payload` over 1 MiB with
 `{"truncated": true, "bytes": n}` before upload, so the hub's 2 MiB limit only ever rejects a
@@ -141,21 +156,31 @@ once SIGTERM has been received (see "Shutdown").
 
 ### `POST /v1/enroll`
 
-Exchange a one-time enrollment code for a device token. No `Authorization` header: the code is
-the credential. The operator mints a code with `b4hub enroll --user <username>`; it is eight
+Exchange a one-time enrollment code for a device token. The code is the credential; the
+`Authorization` header is optional (see *Merging a phone-only account* below). The operator mints a code with `b4hub enroll --user <username>`; it is eight
 characters from `BCDFGHJKLMNPQRSTVWXZ23456789`, valid for ten minutes, single-use, and matched
 case-insensitively.
 
-Request (all three fields required, no others allowed):
+Request (`code`, `deviceName`, and `platform` required; `deviceId` and `candidateDeviceIds`
+optional; no others allowed):
 
 ```json
-{"code": "ABCD2345", "deviceName": "Brian's MacBook Pro", "platform": "macos"}
+{"code": "ABCD2345", "deviceName": "Brian's MacBook Pro", "platform": "macos",
+ "deviceId": "0198...", "candidateDeviceIds": ["0198..."]}
 ```
 
 - `deviceName`: 1 to 200 characters after trimming.
 - `platform`: `macos`, `ios`, or `cli`.
+- `deviceId` and `candidateDeviceIds`: the devices the client already has, with the same shape,
+  limits, and rule as a sign-in's `device` object (`POST /v1/auth/passkey/finish`): the first
+  candidate, `deviceId` counting first, that is an unrevoked device of the **code's** user on the
+  same platform is reused, renamed, and its earlier tokens are deleted; otherwise a new device is
+  made. So a Mac or phone that logged out and rejoins with a code keeps its device, and the rows it
+  synced keep their owner. More than 32 candidates, or an id that is not a UUID, is
+  `400 invalid_request`. A hub older than these fields refuses them the same way.
 
-Both are validated before the code is redeemed, so a malformed request does not use the code up.
+All of them are validated before the code is redeemed, so a malformed request does not use the code
+up.
 
 `200`:
 
@@ -168,8 +193,32 @@ Both are validated before the code is redeemed, so a malformed request does not 
 }
 ```
 
-`token` appears in this response and nowhere else; keep it in the Keychain. Errors: `400
-invalid_request`, `401 invalid_code`.
+`token` appears in this response and nowhere else; keep it in the Keychain. `deviceId` is the
+reused device's id when one was reused, a new one otherwise. Errors:
+`400 invalid_request`, `401 invalid_code`, `401 unauthorized` and `409 merge_refused` (below),
+`503 maintenance`.
+
+**Merging a phone-only account.** A phone already signed in to an account of its own (one it
+signed up with, which has never had a Mac) sends that account's token,
+`Authorization: Bearer <phone token>`, so pairing does not leave the person with two accounts. In
+one transaction the hub claims the code, moves every identity (passkeys, Apple IDs) of the
+token's account to the code's user, deletes that account's devices (so the phone's old token
+stops working at once), tokens, relay link claim, user, and personal org (which holds no synced
+rows: only a Mac writes them), and enrolls the device under the code's account (reusing one of the
+code's user's devices by the rule above; a device of the token's account is never reused, since
+candidates match only the code's user). Once it
+commits, the old account's relay links on the instance that served the request close with code
+4001. The answer is the same `200`
+as above, for the code's account. If any step fails nothing has changed: a wrong, expired, or used
+code is `401 invalid_code` and the phone's account and token are untouched.
+
+- A header that is present but not a valid token (another scheme, malformed, unknown, revoked) is
+  `401 unauthorized`, before the code is looked at.
+- A token whose account is in the code's own org, belongs to a shared org, or has (or had) a
+  `macos` device is `409 merge_refused` with `details.reason` `same_account`, `shared_org`, or
+  `has_mac`, and the code stays redeemable. The code is checked first: a wrong, expired, or used
+  one is `401 invalid_code` whatever the token.
+- Without the header, enrollment is exactly as before.
 
 ### `POST /v1/pairing-codes`
 
@@ -177,7 +226,9 @@ A joined Mac mints a code that pairs a phone. Bearer auth; no body. Only a `maco
 mint: an `ios` or `cli` caller gets `404 not_found`, as if the route did not exist. The code is an
 ordinary enrollment code (same alphabet, hashing, and case-insensitive match) that expires in
 five minutes instead of ten and is single-use. The phone redeems it at `POST /v1/enroll` with
-`platform: "ios"` and becomes a device of the same user. The hub remembers which Mac minted it.
+`platform: "ios"` and becomes a device of the same user. Redeemed as any other platform it is
+`401 invalid_code` and stays redeemable, so a code's holder can never take over the Mac's own
+device through `candidateDeviceIds`. The hub remembers which Mac minted it.
 
 `200`:
 
@@ -192,22 +243,481 @@ A user may mint 10 codes in any hour. The eleventh is `429 rate_limited` with
 `details.retryAfterMs`, the milliseconds until the tenth most recent mint is an hour old; the
 refused request stores nothing. Codes of different users are limited separately.
 
-### `GET /v1/me`
+### Sign-in
 
-The authenticated device and the org and user it belongs to. `200`:
+Signing in (or up) ends in a device token, exactly as enrollment does. These routes take no
+`Authorization` header.
+
+**Configuration.** `serve` requires `B4HUB_WEBAUTHN_RP_ID`, the passkey relying party (the site
+domain, for example `b4.run`; Compose defaults it to `local.b4.run`), and `B4HUB_SECRET_KEY` (32
+random bytes in base64); without either it exits 2. The WebAuthn origin is `https://<rp id>`.
+`B4HUB_SIGNUP` is `open` or `closed` (default `closed`, so an on-prem hub never grows accounts by
+accident; Compose's `.env.example` sets `open`). `B4HUB_TRUST_X_FORWARDED_FOR=1` makes the rate
+limits count the right-most `X-Forwarded-For` entry instead of the TCP peer (a bare address,
+`a.b.c.d:port`, `[v6]`, or `[v6]:port`; anything else falls back to the peer). Set it only behind
+exactly one proxy that appends that header: behind two, the right-most entry is the outer proxy
+and every client shares its limit. Sign in with Apple needs `B4HUB_APPLE_TEAM_ID`,
+`B4HUB_APPLE_KEY_ID`, `B4HUB_APPLE_PRIVATE_KEY` (the `.p8` key's PEM contents, not a path), and
+`B4HUB_APPLE_AUDIENCES` (the comma-separated client ids an identity token may be for: the iOS
+bundle id and the Services ID), all set or none (any other combination exits 2, as does a key that
+does not sign). Without them every Apple route below answers `404 not_found`. The web flow (the
+Mac's) also needs `B4HUB_APPLE_SERVICES_ID`, the Services ID it signs in with (one of the
+audiences), and `B4HUB_PUBLIC_URL`, under which Apple posts back; without either only the native
+flow is offered. `B4HUB_APPLE_BASE_URL` (tests only; default `https://appleid.apple.com`) moves
+every Apple endpoint and the issuer identity tokens must name. A secret's variable holds the value
+itself, never a path (`B4HUB_APPLE_PRIVATE_KEY` is the PEM contents). `seed` and `enroll` read none
+of these.
+
+**Secrets from files.** For Docker and Kubernetes secrets mounted as files, each of
+`B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, and `B4HUB_APPLE_PRIVATE_KEY` has a
+`_FILE` form (`B4HUB_SECRET_KEY_FILE`, and so on) that names a file holding the value; so do
+`DATABASE_URL` and `DATABASE_ADMIN_URL` (`DATABASE_URL_FILE`, `DATABASE_ADMIN_URL_FILE`). A
+variable and its `_FILE` form are mutually exclusive: setting both exits 2, naming both. A `_FILE`
+that is missing, a directory, or not UTF-8 exits 2 naming the `_FILE` variable; no error ever
+carries the file's contents. One trailing line ending (`\n` or `\r\n`) is removed from the file and
+nothing else is, so the PEM keeps its inner newlines. For Sign in with Apple's all-or-none rule, a
+`_FILE` form counts as setting its variable. The values themselves are validated exactly as when
+they come from the environment.
+
+**Rate limits** are kept in memory per process (a fixed one-minute window per client), so a hub
+with several replicas admits a client once per replica. A client is an IPv4 address, or an IPv6
+address's /64 prefix (an IPv4-mapped IPv6 peer counts as its IPv4 address). Each limit tracks at
+most 100,000 clients and sweeps ended windows once a minute; while it is full, a client it is not
+already tracking gets `429 rate_limited` until the next sweep.
+
+**Logging.** No request body of these routes, challenge, credential id, or token is logged. A
+failed verification logs `passkey verification failed` with a fixed reason. webauthn-rs logs
+whole responses and challenges at DEBUG and TRACE, so the hub's subscriber has a second filter,
+separate from `B4HUB_LOG`, that drops every event and span whose target starts with `webauthn`
+(`webauthn_rs`, `webauthn_rs_core`, `webauthn_attestation_ca`, and their modules). No
+`B4HUB_LOG` directive, module-qualified or not, gets past it. The Apple routes never log an
+identity token, authorization code, client secret, refresh token (sealed or not), handoff,
+verifier, or Apple ID (`sub`); a failed check logs `Apple verification failed` with a fixed reason.
+
+#### `GET /v1/auth/config`
+
+What this hub offers, so a client hides the rest. Not rate limited. `200`:
+
+```json
+{"passkeys": {"rpId": "b4.run"}, "apple": {"native": true, "web": true}, "signup": "open"}
+```
+
+`apple.native` is true when the `B4HUB_APPLE_*` set configures Sign in with Apple; `apple.web`
+when, in addition, `B4HUB_APPLE_SERVICES_ID` and `B4HUB_PUBLIC_URL` are set.
+
+#### `POST /v1/auth/passkey/begin`
+
+Begins a passkey ceremony that can end in either a sign-in or a sign-up. No body. `200`:
+
+```json
+{
+  "ceremonyId": "4f0c...",
+  "authentication": {"publicKey": {"challenge": "...", "timeout": 300000, "rpId": "b4.run",
+                                   "allowCredentials": [], "userVerification": "required",
+                                   "extensions": {"uvm": true}}},
+  "registration": {"publicKey": {"rp": {"id": "b4.run", "name": "Agent Workspace"},
+                                 "user": {"id": "...", "name": "Agent Workspace account",
+                                          "displayName": "Agent Workspace account"},
+                                 "challenge": "...", "pubKeyCredParams": [...], "timeout": 300000,
+                                 "authenticatorSelection": {"residentKey": "required",
+                                                            "requireResidentKey": true,
+                                                            "userVerification": "required"},
+                                 "attestation": "none", "extensions": {...}}}
+}
+```
+
+- `ceremonyId` is a random (version 4) UUID, valid for 5 minutes and finished once.
+- `authentication` is a WebAuthn `PublicKeyCredentialRequestOptions` wrapper with no
+  allow-list, so the OS offers any passkey for the relying party (discoverable credentials).
+  Binary fields are base64url without padding.
+- `registration` is a `PublicKeyCredentialCreationOptions` wrapper for a new user with a fresh
+  random user handle (`user.id`). It is **absent** while sign-up is closed.
+
+Errors: `429 rate_limited`.
+
+#### `POST /v1/auth/passkey/finish`
+
+Finishes the ceremony with the authenticator's response: an `assertion` signs in to the
+passkey's account, an `attestation` signs up. Request (exactly one of `assertion` and
+`attestation`; no other fields, here or in `device`):
+
+```json
+{
+  "ceremonyId": "4f0c...",
+  "assertion": { <PublicKeyCredential: id, rawId, response {authenticatorData, clientDataJSON,
+                  signature, userHandle}, type> },
+  "device": {"deviceName": "Brian's MacBook Pro", "platform": "macos", "deviceId": "0198...",
+             "candidateDeviceIds": ["0198..."]}
+}
+```
+
+- `device.deviceName` and `device.platform` are validated as for `POST /v1/enroll`.
+- `device.deviceId` (optional): on a sign-in, when it names an unrevoked device of the same user
+  on the same platform, that device is reused, renamed, and its earlier tokens are deleted;
+  otherwise a new device is made. A sign-up always makes a new device.
+- `device.candidateDeviceIds` (optional): up to 32 more device ids, for a client that cannot know
+  which account a sign-in is for (a Mac that has signed in to several accounts sends the device it
+  has with each). `deviceId` counts as the first candidate; the first candidate that passes the rule
+  above is reused, and the others are passed over. More than 32, or one that is not a UUID, is
+  `400 invalid_request`.
+- An **assertion** is verified against the stored ceremony and the passkey found by its
+  credential id; its `userHandle` must be the one the passkey was registered with. Each sign-in
+  records `last_used_at` and stores the passkey's new signature counter and backup state; a
+  counter that does not move forward (when either side is non-zero) is refused, so a cloned key
+  is caught. Synced passkeys that always report 0 keep working.
+- An **attestation** creates the user (username `u-` and 8 characters), a personal org named
+  "My Org", the passkey identity, the device, and its token, in one transaction.
+
+`200`, the same shape for both:
 
 ```json
 {
   "deviceId": "0198...",
-  "deviceName": "Brian's MacBook Pro",
-  "platform": "macos",
-  "org": {"slug": "cacheplane", "name": "cacheplane"},
-  "user": {"username": "blove", "displayName": "Brian Love"},
-  "createdAt": "2026-10-31T12:00:00.000000Z"
+  "userId": "0197...",
+  "token": "<43 characters, base64url>",
+  "org": {"slug": "o-k2m4q7xz", "name": "My Org"},
+  "user": {"username": "u-a3b9c2d7", "displayName": ""},
+  "needsOnboarding": true
 }
 ```
 
-`createdAt` is RFC 3339 in UTC with microseconds. Errors: `401 unauthorized`.
+`userId` is the user's id (`users.id`), which never changes and is never reused; a client keys its
+local accounts on it. `needsOnboarding` is true until the user has given a full name. The token
+appears here and nowhere else.
+
+Validation happens before the ceremony is taken, so a malformed request does not use it up. Of
+two finishes of one ceremony racing, exactly one succeeds; the other is `ceremony_expired`.
+Errors: `400 invalid_request` (the body's shape, both or neither response, a bad device),
+`403 signup_closed` (an attestation while sign-up is closed, checked before the ceremony is
+taken), `400 ceremony_expired`, `401 credential_rejected`, `429 rate_limited`.
+
+A refused **assertion** whose credential id no identity holds (never registered, or its account
+was deleted) is the only `credential_rejected` with a reason: `details.reason` is
+`"unknown_credential"`, so the app can tell the password manager to forget that passkey:
+
+```json
+{"error": {"kind": "request_error", "message": "the credential could not be verified",
+           "details": {"code": "credential_rejected", "reason": "unknown_credential"}}}
+```
+
+Every other refusal (a malformed response, a wrong origin or relying party, a bad signature, a
+user handle that is not the passkey's, a counter that went backwards, a refused attestation) carries
+no reason, so a client never forgets a passkey the hub still holds. Credential ids are random, so
+the reason tells a caller nothing it could use to find an account.
+
+#### Sign in with Apple
+
+"Continue with Apple" has two flows that end like a passkey sign-in: the iPhone's **native** flow
+(Apple's sheet, then `POST /v1/auth/apple/native`) and the Mac's **web** flow (Apple's authorize
+page in a browser session, Apple's form post back to the hub, then a one-time handoff to the app).
+Both begin with `POST /v1/auth/apple/begin`.
+
+- **The nonce.** A ceremony holds a random `nonce`. Apple is always handed its lowercase hex
+  SHA-256 (the native app passes `sha256_hex(nonce)` as the request's nonce; the web flow's start
+  URL carries it), and the identity token's `nonce` claim must equal exactly that hash.
+- **Verifying an identity token.** The key the token's `kid` names in Apple's key set
+  (`<base>/auth/keys`), which decides the algorithm: Apple publishes RSA keys (`RS256`); an EC
+  P-256 key (`ES256`) is accepted too, and a header `alg` that is not its key's is refused. The key
+  set is cached and fetched again only for an unknown `kid`, at most once a minute. Then `iss`
+  must be `https://appleid.apple.com` (the base URL), `aud` one of `B4HUB_APPLE_AUDIENCES` (the
+  Services ID, for the web flow), `exp` not past (60 s leeway), and the nonce as above.
+- **The code exchange** (`<base>/auth/token`) uses a client secret the hub signs for each call:
+  an ES256 JWT with `kid` = `B4HUB_APPLE_KEY_ID`, `iss` = the team id, `sub` = the client id in use
+  (the token's `aud`: the bundle id natively, the Services ID on the web), `aud` =
+  `https://appleid.apple.com`, and five minutes to `exp`. Apple's answer must carry an identity
+  token, verified like any other (without the nonce) and for the same Apple ID, so a code for
+  another Apple ID is refused.
+- **Accounts.** The account is found by the token's `sub`. A new `sub` signs up while sign-up is
+  open (a personal org, as a passkey sign-up makes); while it is closed it is `403 signup_closed`,
+  checked **before** the code is exchanged. Apple's email is stored with the identity (it is the
+  identity's `name` in `GET /v1/me`) but never used to find or merge accounts. On a first sign-up
+  with a name, the user's `displayName` is that name, the onboarding prefill; `needsOnboarding`
+  stays true until `PUT /v1/me/profile`. In the web flow all of this happens when the app redeems
+  the handoff, never at Apple's callback.
+- **Linking.** An account links at most one Apple ID (`409 apple_linked` otherwise).
+- **The refresh token** from the exchange is stored sealed (AES-256-GCM under `B4HUB_SECRET_KEY`,
+  a random 96-bit nonce first, the identity's id as associated data) with the client id it was
+  issued to, so deleting the account can revoke it. A sign-in replaces it with the newest.
+- **Errors.** Every failed check (signature, key, issuer, audience, expiry, nonce, a refused or
+  mismatched code, an Apple ID another account holds) is `401 credential_rejected`, deliberately
+  the same; so is Apple being unreachable.
+
+##### `POST /v1/auth/apple/begin`
+
+Begins an Apple ceremony (valid 5 minutes, finished once). The body is empty (or `{}`) for the
+native flow; the web flow sends both fields:
+
+```json
+{"verifierHash": "<64 lowercase hex characters>", "scheme": "b4app"}
+```
+
+- `verifierHash` is the lowercase hex SHA-256 of a random verifier (43 to 128 characters of
+  `A-Z a-z 0-9 - . _ ~`) the app keeps for `POST /v1/auth/handoff`.
+- `scheme` is the app's URL scheme, one of `b4app`, `b4app-beta`, `b4app-local`. The callback
+  redirects only there: the scheme comes from the ceremony, never from a later request.
+
+`200`: `{"ceremonyId": "5b0f...", "nonce": "<43 characters>"}`. Errors: `400 invalid_request` (one
+field without the other, a scheme off the list, a malformed hash), `404 not_found` (no Apple, or
+the web flow asked of a hub without it), `429 rate_limited` (a begin).
+
+##### `POST /v1/auth/apple/native`
+
+The iPhone's sheet returned. Request:
+
+```json
+{
+  "ceremonyId": "5b0f...",
+  "identityToken": "<Apple's JWT>",
+  "authorizationCode": "<Apple's code>",
+  "fullName": "Brian Love",
+  "device": {"deviceName": "Brian's iPhone", "platform": "ios", "deviceId": "0198..."}
+}
+```
+
+`fullName` (optional; Apple gives it on the first sign-in only) is trimmed, at most 200
+characters. `device` is as for the passkey finish. The token is verified against the ceremony,
+the code exchanged as the token's `aud`, and the account signed in or up; `200` is the session
+shape of `POST /v1/auth/passkey/finish`. Validation happens before the ceremony is taken. Errors:
+`400 invalid_request`, `400 ceremony_expired` (also a web or link ceremony), `401
+credential_rejected`, `403 signup_closed`, `404 not_found`, `429 rate_limited` (a finish).
+
+##### `GET /v1/auth/apple/start?ceremony=<ceremonyId>`
+
+Opened by the Mac in its browser session for a web ceremony. `302` to Apple's authorize page,
+`<base>/auth/authorize?client_id=<Services ID>&redirect_uri=<B4HUB_PUBLIC_URL>/v1/auth/apple/callback&response_type=code%20id_token&response_mode=form_post&scope=name%20email&state=<ceremonyId>&nonce=<sha256_hex(nonce)>`.
+It does not use the ceremony up, so a reloaded page starts again. Errors: `400 invalid_request`
+(no `ceremony`, not a UUID, or any other parameter), `400 ceremony_expired` (unknown, expired,
+finished, or a native ceremony), `404 not_found` (no web flow), `429 rate_limited` (a begin).
+
+##### `POST /v1/auth/apple/callback`
+
+Apple's `application/x-www-form-urlencoded` form post, sent by the person's browser: `state` (the
+ceremony id), `code`, `id_token`, on the first sign-in `user` (JSON whose `name.firstName` and
+`name.lastName` become the name), or `error`. Fields the hub does not read are ignored (Apple may
+add some); a repeated one is `400 invalid_request`. The ceremony is taken and the identity token
+verified (signature, issuer, the Services ID as audience, expiry, nonce). **Nothing else happens
+here**: no user, org, identity, or device is created and the code is not exchanged, so a browser
+that is not the app's (a start URL forwarded to someone else, a leaked ceremony id) achieves
+nothing. The hub records a handoff (2 minutes, single use) carrying the verified Apple ID, its
+email and (on a first sign-in) name, the client id, and the authorization code, all sealed with
+`B4HUB_SECRET_KEY` with the handoff code's hash as associated data; everything happens when the
+app redeems it with its verifier. For a link ceremony, an Apple ID another account holds is
+refused here (`credential_rejected`), as is a link to an account that already has an Apple ID
+(`apple_linked`); for a sign-in, a new Apple ID while sign-up is closed (`signup_closed`, checked
+again at the redemption). The answer is a `302` to the ceremony's scheme:
+
+- `<scheme>://auth?handoff=<43 characters>` on success: a sign-in's goes to `POST
+  /v1/auth/handoff`, a link's to `POST /v1/me/apple/handoff`;
+- `<scheme>://auth?error=<code>` once the ceremony is known: `cancelled` (Apple's
+  `user_cancelled_authorize`), `credential_rejected`, `signup_closed`, `apple_linked`, or
+  `internal_error`.
+
+A post whose `state` is missing is `400 invalid_request`; one whose ceremony is unknown, spent, or
+not a web ceremony is `400 ceremony_expired` as JSON, having nowhere to redirect. Also `404
+not_found` (no web flow) and `429 rate_limited` (a finish).
+
+##### `POST /v1/auth/handoff`
+
+The Mac hands over the redirect's code with its verifier:
+
+```json
+{"handoff": "<the code>", "verifier": "<the verifier>",
+ "device": {"deviceName": "Brian's MacBook Pro", "platform": "macos", "deviceId": "0198..."}}
+```
+
+The hub matches the code's hash and the verifier's SHA-256 against a sign-in's handoff, once,
+then exchanges the code (Apple's answer must carry an identity token for the same Apple ID),
+signs the Apple ID's account in or signs it up (`403 signup_closed` while sign-up is closed), and
+answers the session shape for `device` (as for the passkey finish, `deviceId` and
+`candidateDeviceIds` included). A wrong verifier is answered exactly like an unknown, expired, or
+spent code, `400 ceremony_expired`, and leaves the handoff redeemable by its rightful
+holder; of two redemptions racing, exactly one succeeds. **A link's handoff is `401
+credential_rejected` here** and is not used up (it belongs at `POST /v1/me/apple/handoff`). A
+refused exchange is `401 credential_rejected` and the handoff is spent. Errors also: `400
+invalid_request` (validated first), `404 not_found`, `429 rate_limited` (a finish).
+
+### `GET /v1/me`
+
+The authenticated device, the org and user it belongs to, and the account's sign-in methods.
+`200`:
+
+```json
+{
+  "deviceId": "0198...",
+  "userId": "0197...",
+  "deviceName": "Brian's MacBook Pro",
+  "platform": "macos",
+  "org": {"slug": "cacheplane", "name": "cacheplane"},
+  "user": {"username": "blove", "displayName": "Brian Love", "fullName": "Brian Love"},
+  "createdAt": "2026-10-31T12:00:00.000000Z",
+  "onboarded": true,
+  "identities": [
+    {"id": "0199...", "kind": "passkey", "name": "Agent Workspace account",
+     "createdAt": "2026-11-01T09:00:00.000000Z", "lastUsedAt": "2026-11-01T10:00:00.000000Z"},
+    {"id": "019a...", "kind": "apple", "name": "x7k2@privaterelay.appleid.com",
+     "createdAt": "2026-11-01T11:00:00.000000Z", "lastUsedAt": null}
+  ]
+}
+```
+
+- The fields before `onboarded` are unchanged from enrollment, so an older client still decodes
+  the answer; `userId` (the same id a sign-in answers), `user.fullName`, `onboarded`, and
+  `identities` were added with sign-in.
+- `user.fullName` is the name given at onboarding, `null` until then. `onboarded` is false until
+  `PUT /v1/me/profile` has been called once (an operator-seeded user counts as onboarded).
+- `identities` is every sign-in method of the user, oldest first: `kind` is `passkey` or `apple`;
+  `name` is a passkey's name or an Apple ID's (often relay) email, or `null`; `lastUsedAt` is
+  `null` for one never used to sign in. An operator-enrolled user may have none. No credential
+  id, stored passkey, Apple `sub`, or refresh token is ever included.
+
+Timestamps are RFC 3339 in UTC with microseconds. Errors: `401 unauthorized`.
+
+### `PUT /v1/me/profile`
+
+Onboarding: records the user's full name. Request (no other fields):
+
+```json
+{"fullName": "Brian Love"}
+```
+
+`fullName` is trimmed and must then be 1 to 200 characters (`400 invalid_request` otherwise,
+with nothing changed). The hub stores it as the user's full and display name, marks the user
+onboarded (the first time), and renames the user's **personal** org to "<first word>'s Org"
+("Brian's Org"); a shared org, such as an operator-seeded one, keeps its name. It may be called
+again to change the name, which renames a personal org again. `200` with the `GET /v1/me` answer.
+Errors: `400 invalid_request`, `401 unauthorized`.
+
+### `POST /v1/me/passkeys/begin`
+
+Begins adding a passkey to the signed-in user (Settings → Account → Add a passkey; also how an
+operator-enrolled user gets their first one). No body. `200`:
+
+```json
+{
+  "ceremonyId": "4f0c...",
+  "registration": {"publicKey": {"rp": {...}, "user": {"id": "...",
+                                 "name": "Agent Workspace account",
+                                 "displayName": "Agent Workspace account"},
+                                 "challenge": "...", "excludeCredentials": [{"type": "public-key",
+                                 "id": "..."}], "authenticatorSelection": {"residentKey":
+                                 "required", "requireResidentKey": true,
+                                 "userVerification": "required"}, "attestation": "none", ...}}
+}
+```
+
+The options are the sign-up's (see `POST /v1/auth/passkey/begin`), for the user handle of the
+user's existing passkeys (a fresh one when they have none), with `excludeCredentials` listing
+every passkey the user already has (absent when none), so an authenticator holding one of them
+refuses instead of making a duplicate. The ceremony is bound to the calling user, is valid for 5
+minutes, and is finished once. Errors: `401 unauthorized`, `429 rate_limited` (counted with the
+sign-in begins).
+
+### `POST /v1/me/passkeys/finish`
+
+Request (no other fields):
+
+```json
+{"ceremonyId": "4f0c...", "attestation": { <RegisterPublicKeyCredential> }}
+```
+
+Verifies the attestation against the ceremony and adds the passkey to the caller's account; from
+then on either passkey signs in to it. `200` with the new identity, in `GET /v1/me`'s
+`identities` shape:
+
+```json
+{"id": "019b...", "kind": "passkey", "name": "Agent Workspace account",
+ "createdAt": "2026-11-01T12:00:00.000000Z", "lastUsedAt": null}
+```
+
+A ceremony that another user began, that a sign-in began (`POST /v1/auth/passkey/begin`), or that
+is unknown, expired, or used is `400 ceremony_expired`. A malformed or unverifiable attestation,
+or a passkey that already belongs to an account, is `401 credential_rejected`. Errors also: `400
+invalid_request`, `401 unauthorized`, `429 rate_limited` (counted with the sign-in finishes).
+
+### `POST /v1/me/apple`
+
+Begins linking an Apple ID to the caller's account (Settings, "Connect Apple ID"). The body is
+`POST /v1/auth/apple/begin`'s: empty for the iPhone's native flow, `verifierHash` and `scheme` for
+the Mac's web flow; so is the answer, `{"ceremonyId", "nonce"}`. The ceremony records the caller
+and can finish only a link. On the web the Mac then opens `GET /v1/auth/apple/start`, Apple posts
+to the callback, and the Mac redeems the handoff at `POST /v1/me/apple/handoff`. An account links
+at most one Apple ID ("Connect Apple ID" shows only when there is none): with one already, this is
+`409 apple_linked`. (Merging a phone-only account on pairing moves its identities without that
+check.) Errors: as the begin, plus `401 unauthorized` and `409 apple_linked`.
+
+### `POST /v1/me/apple/handoff`
+
+Finishes a web link, with the device's token:
+
+```json
+{"handoff": "<the code>", "verifier": "<the verifier>"}
+```
+
+The handoff must be a link's, begun by **this** account: one presented by a device of another
+account, or a sign-in's handoff, is `401 credential_rejected` and stays redeemable where it
+belongs; a wrong verifier, or an unknown, expired, or spent code, is `400 ceremony_expired`. Then
+the code is exchanged and the Apple ID added; `200` is the new identity, as `POST
+/v1/me/passkeys/finish` answers one. An Apple ID already on this account answers its identity;
+one on another account is `401 credential_rejected`, and any other while the account has one is
+`409 apple_linked`, both before the code is exchanged. Errors also: `400 invalid_request`, `401
+unauthorized`, `404 not_found`, `429 rate_limited` (a finish).
+
+### `POST /v1/me/apple/native`
+
+Finishes a native link against a ceremony from `POST /v1/me/apple` the same user began:
+
+```json
+{"ceremonyId": "5b0f...", "identityToken": "<Apple's JWT>", "authorizationCode": "<Apple's code>"}
+```
+
+`200` is the new identity, as `POST /v1/me/passkeys/finish` answers one. An Apple ID already on
+this account answers its identity; one on another account is `401 credential_rejected`, and any
+other while the account has one is `409 apple_linked`, both before the code is exchanged. Errors also: `400 invalid_request`, `400 ceremony_expired` (another user's
+ceremony, a sign-in ceremony, or a web one), `401 unauthorized`, `404 not_found`, `429
+rate_limited` (a finish).
+
+### `DELETE /v1/me/identities/{id}`
+
+Unlinks one of the caller's sign-in methods, by its `id` from `GET /v1/me`. `204` with no body.
+An id that is not one of the caller's identities (another account's, an unknown one, or not a
+UUID) is `404 not_found`. The account's only remaining identity is `409 last_identity`; of two
+removals racing, at most one succeeds when they would together remove the last. Both are checked
+before anything is revoked.
+
+An Apple ID whose refresh token the hub stores is revoked at Apple first, as `DELETE /v1/me`
+revokes one (decrypted, then `<base>/auth/revoke` as the client id it was issued to), and only
+then is the identity deleted, so unlinking never leaves a grant at Apple that the hub can no longer
+revoke. A token that does not open, or a revoke that fails, removes nothing: the request fails with
+`500 internal_error`; retry it. A hub without Sign in with Apple cannot revoke, so unlinking an
+Apple ID that holds a token fails the same way. A sign-in that replaces the token meanwhile has the
+new one revoked too before the delete. Errors also: `401 unauthorized`.
+
+### `DELETE /v1/sessions/self`
+
+Log out: deletes the presented token and nothing else. `204` with no body. The token is `401
+unauthorized` from then on, but the device stays enrolled and **unrevoked**: a later sign-in that
+sends its `deviceId` reuses it, and sync continues from where it was. To remove the device from
+the account instead, use `DELETE /v1/devices/self`. Errors: `401 unauthorized`.
+
+### `DELETE /v1/me`
+
+Deletes the account (App Store guideline 5.1.1(v)). `204` with no body. In order:
+
+1. An account in a shared org is refused, `409 shared_org`, before anything else.
+2. Every Apple refresh token the account stores is decrypted first; only if all of them open is
+   each revoked at Apple (`<base>/auth/revoke`, as the client id it was issued to, with a fresh
+   client secret). A token that does not open revokes nothing, and a failed revoke deletes
+   nothing: either way the request fails with `500 internal_error`; retry it. A hub without
+   Sign in with Apple cannot revoke, so an account holding a token fails the same way.
+3. In one transaction that first locks the user, the hub deletes the user's tokens, identities,
+   and devices, every row of their personal org in every tenant table (threads, turns, the change
+   log, and the rest), then the org and the user. An Apple ID linked between steps 2 and 3 is
+   revoked too before the delete goes ahead.
+
+The same transaction deletes the user's relay link claim (`user_links`). Once it commits, every
+token of the account is `401 unauthorized`, and every relay link of the account on the instance
+that served the request is closed with code 4001 (device revoked) at once; its passkeys and Apple
+IDs can sign up afresh. Errors also: `401 unauthorized`.
 
 ### `GET /v1/devices`
 
@@ -228,7 +738,8 @@ revoked). `lastSeenAt` is written at most once a minute per device. Errors: `401
 
 ### `DELETE /v1/devices/self`
 
-Revoke the calling device: its token rows are deleted and `devices.revoked_at` is set. Changes the
+Revoke the calling device (remove it from the account): its token rows are deleted and
+`devices.revoked_at` is set. To log out and keep the device, use `DELETE /v1/sessions/self`. Changes the
 device already uploaded stay in the feed. `204` with no body. The token stops working
 immediately; the next request with it is `401 unauthorized`. A pairing code the device minted
 that is still unused is withdrawn with it (redeeming it is then `401 invalid_code`). If the device
@@ -891,16 +1402,21 @@ serving role can only read; no environment variable changes and no instance rest
 and logs a warning on every poll until a read succeeds; an instance whose very first read fails
 therefore starts with maintenance off (fail-open) until the database answers.
 
-While on, `POST /v1/enroll`, `POST /v1/pairing-codes`, `POST /v1/changes`,
-`POST /v1/devices/self/push-token`, and `DELETE /v1/devices/self` answer `503` with
-`Retry-After: 30` and
+While on, the client writes are refused: `POST /v1/enroll`, `POST /v1/pairing-codes`, `POST
+/v1/changes`, `POST /v1/devices/self/push-token`, `DELETE /v1/devices/self`, and the sign-in and account writes `POST /v1/auth/passkey/begin` and
+`/finish`, `POST /v1/auth/apple/begin`, `/native`, and `/callback`, `POST /v1/auth/handoff`, `PUT
+/v1/me/profile`, `POST /v1/me/passkeys/begin` and `/finish`, `POST /v1/me/apple`, `/native`, and
+`/handoff`, `DELETE /v1/me/identities/{id}`, `DELETE /v1/sessions/self`, and `DELETE /v1/me`. (A
+sign-in begin writes a ceremony, so it is refused too; `GET /v1/auth/config` and `GET
+/v1/auth/apple/start` are reads.) Each answers `503` with `Retry-After: 30` and
 
 ```json
 {"error": {"kind": "execution_error", "message": "the hub is in maintenance: <message, or 'writes are paused'>", "details": {"code": "maintenance"}}}
 ```
 
 before the body is read; on the authenticated routes after the token is checked (a bad token is
-still `401`), and on `POST /v1/enroll` before the code is checked. Reads (`GET /v1/changes`, `GET /v1/snapshot`, `GET /v1/me`,
+still `401`), on `POST /v1/enroll` before the code is checked, and on the sign-in routes after
+their rate limit. Reads (`GET /v1/changes`, `GET /v1/snapshot`, `GET /v1/me`,
 `GET /v1/devices`), `/healthz`, and `/readyz` are unchanged, except that `/readyz` reports
 `"maintenance": "read_only"`. A client treats `maintenance` like a transient failure: keep the
 outbox, retry after the header's delay.

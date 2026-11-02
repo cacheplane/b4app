@@ -2,9 +2,13 @@ import Foundation
 
 /// Where the phone's mirror file lives. The app and the widget extension share it through the App Group
 /// container, so the widget reads what the app wrote (D-125). Foundation only: the app and the widget
-/// each pass their own App Group id, read from their Info.plist.
+/// each pass their own App Group id, read from their Info.plist, and the flavour's folder name
+/// (`PhoneFlavor.directoryName`: `b4app`, `b4app-beta`, `b4app-local`). The group is already the
+/// flavour's (`B4APP_APP_GROUP`); the folder keeps the name the mirror had in Application Support.
 public enum MirrorLocation {
   public static let fileName = "mirror.sqlite"
+  /// The folder inside the group when none is named: prod's.
+  public static let defaultFolder = "b4app"
 
   /// What `move(from:to:)` did.
   public enum Move: Equatable, Sendable {
@@ -16,11 +20,11 @@ public enum MirrorLocation {
     case keptGroupCopy
   }
 
-  /// `<group container>/b4app`, created when missing with `completeUntilFirstUserAuthentication` (the
-  /// widget must read it while the phone is locked, after the first unlock). Nil when the group
+  /// `<group container>/<folder>`, created when missing with `completeUntilFirstUserAuthentication`
+  /// (the widget must read it while the phone is locked, after the first unlock). Nil when the group
   /// container is unavailable.
-  public static func groupDirectory(appGroup: String) -> URL? {
-    let resolved = storeDirectory(appGroup: appGroup, fallback: URL(fileURLWithPath: "/"))
+  public static func groupDirectory(appGroup: String, folder: String = defaultFolder) -> URL? {
+    let resolved = storeDirectory(appGroup: appGroup, folder: folder, fallback: URL(fileURLWithPath: "/"))
     guard resolved.inGroup else { return nil }
     do {
       try FileManager.default.createDirectory(
@@ -32,16 +36,16 @@ public enum MirrorLocation {
     }
   }
 
-  /// The directory the mirror lives in: `<resolved container>/b4app` (and `inGroup` true) when
+  /// The directory the mirror lives in: `<resolved container>/<folder>` (and `inGroup` true) when
   /// `appGroup` is set and `resolve` finds its container, else `fallback`. Creates nothing.
   public static func storeDirectory(
-    appGroup: String?, fallback: URL,
+    appGroup: String?, folder: String = defaultFolder, fallback: URL,
     resolve: (String) -> URL? = {
       FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0)
     }
   ) -> (directory: URL, inGroup: Bool) {
     guard let appGroup, let container = resolve(appGroup) else { return (fallback, false) }
-    return (container.appendingPathComponent("b4app", isDirectory: true), true)
+    return (container.appendingPathComponent(folder, isDirectory: true), true)
   }
 
   /// Moves `mirror.sqlite` and its `-wal` and `-shm` (each only if it exists) from `old` to `new`,

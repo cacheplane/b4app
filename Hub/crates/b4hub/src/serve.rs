@@ -1,17 +1,23 @@
 //! The HTTP server: router, shared state, and graceful shutdown.
 
 use std::future::{Future, IntoFuture};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{middleware, Router};
 use b4hub_db::Db;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
 use url::Url;
+use webauthn_rs::prelude::Webauthn;
 
+use crate::apple::{AppleClient, AppleRevoker, ErasedAppleRevoker, UnconfiguredRevoker};
 use crate::auth::LastTouched;
+use crate::auth_limits::AuthLimits;
+use crate::cli::ConfigError;
+use crate::config::Config;
 use crate::error::ApiError;
 use crate::instances::{self, InstancesState};
 use crate::maintenance::MaintenanceState;
@@ -19,7 +25,9 @@ use crate::notify::Notifier;
 use crate::push::PushSender;
 use crate::relay::{link, Relay};
 use crate::request_log;
-use crate::routes::{changes, devices, enroll, health, pairing, push_token, snapshot};
+use crate::routes::{
+    apple, auth, changes, devices, enroll, health, me, pairing, push_token, snapshot,
+};
 
 /// How long the listener stays open, answering `/readyz` 503, after shutdown begins, so a load
 /// balancer polling readiness stops routing here before connections are refused. Capped at a
@@ -46,7 +54,20 @@ pub struct AppState {
     pub last_touched: LastTouched,
     /// Wakes long-polling pulls when a push commits (single replica in M8a).
     pub notifier: Notifier,
+    /// The sign-in configuration `serve` read at start.
+    pub config: Arc<Config>,
+    /// The WebAuthn relying party built from it.
+    pub webauthn: Arc<Webauthn>,
+    /// The sign-in routes' per-IP limits (in memory, per process).
+    pub limits: AuthLimits,
+    /// Sign in with Apple, when `B4HUB_APPLE_*` configures it; without it the Apple routes
+    /// answer `not_found`.
+    pub apple: Option<Arc<AppleClient>>,
+    /// Revokes Apple refresh tokens when an account is deleted: the Apple client, or (without
+    /// Apple) [`UnconfiguredRevoker`], which refuses.
+    pub apple_revoker: Arc<dyn ErasedAppleRevoker>,
     /// `B4HUB_PUBLIC_URL`: the URL clients reach the hub at, handed to a phone with a pairing code.
+    /// [`AppState::new`] copies it from `config`.
     pub public_url: Option<Url>,
     /// The device links: who is online, and the means to reach them.
     pub relay: Relay,
@@ -60,18 +81,43 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(db: Db) -> AppState {
-        AppState {
+    /// The state for `db` and `config`; a relying party webauthn-rs refuses, or an Apple private
+    /// key that does not sign, is a configuration error.
+    pub fn new(db: Db, config: Config) -> Result<AppState, ConfigError> {
+        let webauthn = config.webauthn()?;
+        let apple = config
+            .apple
+            .as_ref()
+            .map(AppleClient::new)
+            .transpose()?
+            .map(Arc::new);
+        let apple_revoker: Arc<dyn ErasedAppleRevoker> = match &apple {
+            Some(client) => client.clone(),
+            None => Arc::new(UnconfiguredRevoker),
+        };
+        let public_url = config.public_url.clone();
+        Ok(AppState {
             db,
             shutdown: Shutdown::default(),
             last_touched: LastTouched::default(),
             notifier: Notifier::default(),
-            public_url: None,
+            config: Arc::new(config),
+            webauthn: Arc::new(webauthn),
+            limits: AuthLimits::default(),
+            apple,
+            apple_revoker,
+            public_url,
             relay: Relay::new(),
             maintenance: MaintenanceState::default(),
             instances: InstancesState::default(),
             push: None,
-        }
+        })
+    }
+
+    /// This state with `revoker` revoking Apple refresh tokens.
+    pub fn with_apple_revoker(mut self, revoker: impl AppleRevoker) -> AppState {
+        self.apple_revoker = Arc::new(revoker);
+        self
     }
 }
 
@@ -107,10 +153,26 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/enroll", post(enroll::enroll))
         .route("/v1/pairing-codes", post(pairing::create))
         .route("/v1/changes", changes::route())
-        .route("/v1/me", get(devices::me))
+        .route("/v1/me", get(me::me).delete(me::delete_me))
+        .route("/v1/me/profile", put(me::profile))
+        .route("/v1/me/passkeys/begin", post(me::passkey_begin))
+        .route("/v1/me/passkeys/finish", post(me::passkey_finish))
+        .route("/v1/me/apple", post(apple::link_begin))
+        .route("/v1/me/apple/native", post(apple::link_native))
+        .route("/v1/me/apple/handoff", post(apple::link_handoff))
+        .route("/v1/me/identities/{id}", delete(me::remove_identity))
+        .route("/v1/sessions/self", delete(me::end_session))
         .route("/v1/devices", get(devices::list))
         .route("/v1/snapshot", get(snapshot::get))
         .route("/v1/devices/self", delete(devices::revoke_self))
+        .route("/v1/auth/config", get(auth::config))
+        .route("/v1/auth/passkey/begin", post(auth::passkey_begin))
+        .route("/v1/auth/passkey/finish", post(auth::passkey_finish))
+        .route("/v1/auth/apple/begin", post(apple::begin))
+        .route("/v1/auth/apple/native", post(apple::native))
+        .route("/v1/auth/apple/start", get(apple::start))
+        .route("/v1/auth/apple/callback", post(apple::callback))
+        .route("/v1/auth/handoff", post(apple::handoff))
         .route("/v1/devices/self/link", get(link::upgrade))
         .route("/v1/devices/self/push-token", post(push_token::save))
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
@@ -119,7 +181,8 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Serves `router(state)` on `listener` until `signal` resolves, then shuts down: `/readyz`
+/// Serves `router(state)` on `listener` (with each connection's peer address, which the sign-in
+/// rate limits key on) until `signal` resolves, then shuts down: `/readyz`
 /// turns 503 `shutting_down` and waiters are told, the listener stays open for a short readiness
 /// grace and then closes, and in-flight requests drain.
 ///
@@ -162,7 +225,8 @@ pub async fn run(
     let relay = state.relay.clone();
     let holds = state.relay.clone();
     let marked = Arc::clone(&signalled_at);
-    let server = axum::serve(listener, router(state))
+    let app = router(state).into_make_service_with_connect_info::<SocketAddr>();
+    let server = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             signal.await;
             // The deadline starts now, before anything else the drain does.
@@ -255,7 +319,7 @@ pub async fn os_signal() {
 /// shutdown ends the wait between passes and abandons a prune in flight (its transaction rolls
 /// back), so the task never holds up the drain.
 ///
-/// Each pass also prunes dead instances and the claims no live instance holds
+/// Each pass also deletes expired sign-in ceremonies and handoffs, and prunes dead instances and the claims no live instance holds
 /// (`b4hub_db::instances::prune`, with the instances' liveness window `alive_within`).
 pub async fn prune_loop(
     db: Db,
@@ -290,6 +354,13 @@ pub async fn prune_loop(
                 }
             }
             Err(error) => tracing::error!(%error, "listing orgs to prune failed"),
+        }
+        let pruned = tokio::select! {
+            pruned = b4hub_db::ceremonies::prune_expired(&db) => pruned,
+            _ = stopping.wait_for(|down| *down) => return,
+        };
+        if let Err(error) = pruned {
+            tracing::error!(%error, "pruning expired sign-in ceremonies failed");
         }
         tokio::select! {
             () = tokio::time::sleep(interval) => {}

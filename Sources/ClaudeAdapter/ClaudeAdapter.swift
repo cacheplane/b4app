@@ -25,6 +25,8 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable {
   private let environment: [String: String]
   private let clientVersion: String
   private var sessions: [String: ClaudeSession] = [:]
+  /// Set by `dispose()`, for good: no `claude` process is started after it.
+  private var disposed = false
   private var trackers: [String: ClaudeTurnTracker] = [:]
   private var pumps: [String: Task<Void, Never>] = [:]
   private var pendingRequests: [String: PendingRequest] = [:]
@@ -56,6 +58,7 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable {
   // MARK: - Executable and account
 
   private func locate() throws -> String {
+    if disposed { throw Self.disposedError }
     guard let found = ExecutableLocator.find("claude", explicitPath: executablePath, environment: environment)
     else {
       throw WorkspaceError(.missingExecutable, "Claude Code not found. \(ClaudeInspector.installGuidance)")
@@ -122,6 +125,11 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable {
           details: failure.details)
       }
       throw failure
+    }
+    // A dispose while this session was starting owns the adapter now: the process does not outlive it.
+    if disposed {
+      await session.close()
+      throw Self.disposedError
     }
     sessions[id] = session
     trackers[id] = ClaudeTurnTracker(connectionId: connectionId, sessionId: id, generation: generation)
@@ -342,7 +350,12 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable {
 
   public nonisolated func events() -> AsyncStream<AdapterEvent> { eventStream }
 
+  static let disposedError = WorkspaceError(
+    .endpointUnavailable, "This Claude connection was shut down; no Claude Code process is started again.")
+
+  /// Final: every session's process stops, and every later call refuses instead of starting one.
   public func dispose() async {
+    disposed = true
     for session in sessions.values { await session.close() }
   }
 

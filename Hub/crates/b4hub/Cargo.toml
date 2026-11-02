@@ -14,24 +14,34 @@ name = "b4hub"
 path = "src/main.rs"
 
 [dependencies]
+aes-gcm.workspace = true
 axum.workspace = true
+base64.workspace = true
 b4hub-core.workspace = true
 b4hub-db.workspace = true
 clap.workspace = true
+getrandom.workspace = true
+jsonwebtoken.workspace = true
+percent-encoding.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true
 uuid.workspace = true
+webauthn-rs.workspace = true
+webauthn-rs-proto.workspace = true
 
 [dev-dependencies]
 futures-util.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
+p256.workspace = true
 sqlx.workspace = true
 # `test-util` for `tokio::time::pause` in the relay tests.
 tokio = { workspace = true, features = ["test-util"] }

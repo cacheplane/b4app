@@ -79,6 +79,19 @@ struct Rig {
 }
 
 @Suite(.serialized) struct ClaudeSessionTests {
+  /// A dispose is final: no `claude` process starts after it.
+  @Test func aDisposedAdapterStartsNoProcessAgain() async throws {
+    let rig = try Rig()
+    let ref = try await rig.adapter.createSession(NewSessionInput(workingDirectory: rig.workDir))
+    await rig.adapter.dispose()
+    let sent = await #expect(throws: WorkspaceError.self) { _ = try await rig.turn(ref, "hello") }
+    #expect(sent?.code == .endpointUnavailable)
+    await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.adapter.createSession(NewSessionInput(workingDirectory: rig.workDir))
+    }
+    await #expect(throws: WorkspaceError.self) { _ = try await rig.adapter.startLogin() }
+  }
+
   @Test func inspectsThroughTheFixture() async throws {
     let rig = try Rig()
     let inspection = try await rig.adapter.inspectConnection()

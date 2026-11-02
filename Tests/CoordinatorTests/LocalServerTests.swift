@@ -29,7 +29,7 @@ struct ServerHarness {
     }
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = fakeNodePath()
-    let outcome = try await Coordinator.start(
+    let outcome = try await Coordinator.startSignedIn(
       options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
     guard case .running(let coordinator) = outcome else {
       throw WorkspaceError(.internalError, "expected running")
@@ -327,6 +327,28 @@ struct ServerHarness {
     #expect(elapsed < .seconds(20))
     #expect(Ports.isFree(added.requestedPort!))
     #expect(!ProcessInspector.isAlive(pid: started.pid!))
+  }
+
+  /// An account signing out stops its servers side by side, within the budget, even when they ignore
+  /// SIGTERM (Task 9's review: one after another, each with its 10 s grace, had no bound).
+  @Test func stopAllStopsServersSideBySideWithinItsBudget() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    var started: [LocalServer] = []
+    for name in ["one", "two"] {
+      let path = try h.project(name)
+      try "FAKE_B4_HANG_ON_TERM=30\n".write(toFile: path + "/.env", atomically: true, encoding: .utf8)
+      started.append(try await h.start(try await h.add(path, name: name)))
+    }
+    let clock = ContinuousClock()
+    var finished = false
+    let elapsed = await clock.measure { finished = await h.coordinator.servers.stopAll(within: .seconds(4)) }
+    #expect(finished)
+    #expect(elapsed < .seconds(6), "the stops were not bounded: \(elapsed)")
+    for server in started {
+      #expect(!ProcessInspector.isAlive(pid: server.pid!))
+      #expect(try await h.status(server).health == .stopped)
+    }
   }
 
   @Test func liveServerIsReAdoptedAfterACoordinatorRestart() async throws {

@@ -9,7 +9,20 @@ import WorkspaceProtocol
 import WorkspaceUI
 
 /// One model for the scene and the app delegate (Quit needs it to flush the draft and ask about work).
-@MainActor let sharedModel = WorkspaceModel(transportProvider: CoordinatorHost.transport)
+/// The flavour's sign-in settings come from here, since `WorkspaceUI` does not link `WorkspacePlatform`;
+/// a log-out goes on a connection of its own, so it never waits behind a slow command.
+@MainActor let sharedModel: WorkspaceModel = {
+  let model = WorkspaceModel(transportProvider: CoordinatorHost.transport)
+  let flavor = Flavor.current
+  model.signInConfiguration = SignInConfiguration(
+    siteDomain: flavor.siteDomain, appleSignIn: flavor.appleSignIn, badge: flavor.badge)
+  // Connect only: a log-out never starts a coordinator (or the agent). With none running, there is no
+  // session here to end, and the log-out says the coordinator could not be reached.
+  model.sideTransportProvider = {
+    try await UnixSocketTransport.connect(path: PlatformPaths.resolve().socketPath, timeout: .seconds(2))
+  }
+  return model
+}()
 
 @main
 struct B4AppMac: App {
@@ -20,13 +33,23 @@ struct B4AppMac: App {
       WorkspaceRootView(model: sharedModel)
         .frame(minWidth: LLA.Metrics.minimumWindow.width, minHeight: LLA.Metrics.minimumWindow.height)
         .task { CoordinatorHost.wire(sharedModel) }
+        // A `b4app*://auth` callback opened outside Apple's session (a stray or replayed redirect)
+        // belongs to no ceremony: it is dropped here, unread, and opens no second window.
+        .onOpenURL { url in sharedModel.openURL(url) }
+        .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
     }
     .defaultSize(width: 1200, height: 800)
     .commands {
+      // Nothing that needs an account is reachable from the menus while nobody is signed in.
       CommandGroup(replacing: .newItem) {
         Button("New Thread") { sharedModel.showNewThread = true }
           .keyboardShortcut("n")
-          .disabled(sharedModel.conversationReadyConnections.isEmpty)
+          .disabled(sharedModel.accountState != .signedIn || sharedModel.conversationReadyConnections.isEmpty)
+      }
+      CommandGroup(replacing: .appSettings) {
+        SettingsLink { Text("Settings…") }
+          .keyboardShortcut(",")
+          .disabled(sharedModel.rootScreen != .workspace)
       }
       CommandMenu("Coordinator") {
         Button("Restart Coordinator") { Task { await CoordinatorHost.restartAndReconnect(sharedModel) } }
@@ -257,7 +280,9 @@ actor CoordinatorHost {
       }
     }
     if running == nil {
-      switch try await Coordinator.start(options: CoordinatorOptions(paths: paths)) {
+      switch try await Coordinator.start(
+        options: CoordinatorOptions(paths: paths, legacyAdoption: LegacyAdoption.planIfExplicitLocal()))
+      {
       case .running(let coordinator): running = coordinator
       case .alreadyRunning: break
       }

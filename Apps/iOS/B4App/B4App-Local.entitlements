@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- local flavour: developer mode makes the device fetch the association file straight from the
+       site instead of Apple's CDN, and there is no Sign in with Apple (Flavor.appleSignIn). -->
+  <key>com.apple.developer.associated-domains</key>
+  <array>
+    <string>webcredentials:$(B4APP_SITE_DOMAIN)?mode=developer</string>
+    <string>applinks:$(B4APP_SITE_DOMAIN)?mode=developer</string>
+  </array>
+  <!-- Attention (M8f): notifications, and the flavour's App Group the widget reads the mirror from
+       (B4APP_APP_GROUP: group.com.cacheplane.b4app.local, D-125). -->
+  <key>aps-environment</key>
+  <string>development</string>
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>$(B4APP_APP_GROUP)</string>
+  </array>
+</dict>
+</plist>

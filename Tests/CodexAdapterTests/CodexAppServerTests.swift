@@ -62,6 +62,23 @@ private func makeAdapter() -> CodexAdapter {
 }
 
 @Suite(.serialized) struct CodexAppServerTests {
+  /// A dispose is final: the coordinator disposes adapters as an account signs out, and a call still
+  /// on its way must not start an app server that nobody stops.
+  @Test func aDisposedAdapterStartsNoAppServerAgain() async throws {
+    let adapter = makeAdapter()
+    let ref = try await adapter.createSession(NewSessionInput(workingDirectory: "/tmp/work"))
+    await adapter.dispose()
+    let created = await #expect(throws: WorkspaceError.self) {
+      _ = try await adapter.createSession(NewSessionInput(workingDirectory: "/tmp/work"))
+    }
+    #expect(created?.code == .endpointUnavailable)
+    await #expect(throws: WorkspaceError.self) {
+      _ = try await adapter.sendTurn(ref, input: TurnInput(operationId: "op1", text: "hello"))
+    }
+    await #expect(throws: WorkspaceError.self) { _ = try await adapter.reconcile(ref, turn: nil) }
+    await #expect(throws: WorkspaceError.self) { _ = try await adapter.startLogin() }
+  }
+
   @Test func inspectsThroughTheHandshakeAndAccountRead() async throws {
     let adapter = makeAdapter()
     let inspection = try await adapter.inspectConnection()

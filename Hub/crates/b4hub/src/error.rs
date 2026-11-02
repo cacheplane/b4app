@@ -1,12 +1,13 @@
 //! The public error envelope. It is B4's, so the Swift client decodes both services with one
 //! type: `{"error":{"kind":"request_error"|"execution_error","message":"…","details":{"code":"…"}}}`.
 //! Messages are fixed text chosen here; they never carry SQL, a panic, or another tenant's data.
+//! `rate_limited` adds `details.retryAfterMs` and a `Retry-After` header.
 
 use std::time::Duration;
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Request};
-use axum::http::StatusCode;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::de::DeserializeOwned;
@@ -46,12 +47,18 @@ pub enum ErrorKind {
     ExecutionError,
 }
 
+/// `details.reason` of a passkey sign-in's `credential_rejected` when no identity holds the asserted
+/// credential id ([`ApiError::credential_unknown`]).
+pub const UNKNOWN_CREDENTIAL: &str = "unknown_credential";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiError {
     pub kind: ErrorKind,
     pub code: &'static str,
     pub message: String,
     pub status: StatusCode,
+    /// For `rate_limited`: how long until the caller may try again, sent as `Retry-After`.
+    pub retry_after: Option<Duration>,
     /// Fields added to `details` beside `code`, such as a `rate_limited` answer's `retryAfterMs`.
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -63,6 +70,7 @@ impl ApiError {
             code,
             message: message.into(),
             status,
+            retry_after: None,
             extra: serde_json::Map::new(),
         }
     }
@@ -77,6 +85,7 @@ impl ApiError {
             code,
             message: message.into(),
             status,
+            retry_after: None,
             extra: serde_json::Map::new(),
         }
     }
@@ -125,6 +134,89 @@ impl ApiError {
         )
     }
 
+    /// A sign-in with a new Apple ID or passkey while the hub's sign-up policy is closed.
+    pub fn signup_closed() -> ApiError {
+        ApiError::request(
+            StatusCode::FORBIDDEN,
+            "signup_closed",
+            "this hub does not create new accounts",
+        )
+    }
+
+    /// The ceremony or handoff is unknown, expired, or already used (indistinguishably).
+    pub fn ceremony_expired() -> ApiError {
+        ApiError::request(
+            StatusCode::BAD_REQUEST,
+            "ceremony_expired",
+            "the sign-in expired or was already used; start again",
+        )
+    }
+
+    /// Any failed verification of a sign-in credential. Deliberately vague: the caller learns
+    /// nothing about which check failed.
+    pub fn credential_rejected() -> ApiError {
+        ApiError::request(
+            StatusCode::UNAUTHORIZED,
+            "credential_rejected",
+            "the credential could not be verified",
+        )
+    }
+
+    /// [`ApiError::credential_rejected`] for a passkey sign-in whose credential id no identity holds
+    /// (as after its account was deleted), with `details.reason` [`UNKNOWN_CREDENTIAL`], so the app
+    /// can tell the password manager to forget that passkey. Credential ids are random, so the reason
+    /// tells a caller nothing it could use to find an account. Every other failed check carries no
+    /// reason.
+    pub fn credential_unknown() -> ApiError {
+        let mut error = ApiError::credential_rejected();
+        error
+            .extra
+            .insert("reason".into(), json!(UNKNOWN_CREDENTIAL));
+        error
+    }
+
+    /// Removing the identity would leave the account with no way to sign in.
+    pub fn last_identity() -> ApiError {
+        ApiError::request(
+            StatusCode::CONFLICT,
+            "last_identity",
+            "the last sign-in method of an account cannot be removed",
+        )
+    }
+
+    /// The signed-in account cannot be merged into the code's account: it is already in the
+    /// code's org, is a member of a shared org, or has (or had) a Mac. `details.reason` says which
+    /// (`same_account`, `shared_org`, `has_mac`) when the hub knows.
+    pub fn merge_refused(reason: Option<b4hub_db::MergeRefusal>) -> ApiError {
+        let mut error = ApiError::request(
+            StatusCode::CONFLICT,
+            "merge_refused",
+            "this account cannot be merged into another",
+        );
+        if let Some(reason) = reason {
+            error.extra.insert("reason".into(), json!(reason.as_str()));
+        }
+        error
+    }
+
+    /// Linking an Apple ID to an account that already has one.
+    pub fn apple_linked() -> ApiError {
+        ApiError::request(
+            StatusCode::CONFLICT,
+            "apple_linked",
+            "this account already has an Apple ID; remove it before connecting another",
+        )
+    }
+
+    /// Deleting an account is only possible for the owner of a personal org.
+    pub fn shared_org() -> ApiError {
+        ApiError::request(
+            StatusCode::CONFLICT,
+            "shared_org",
+            "an account in a shared org cannot be deleted here",
+        )
+    }
+
     /// A caller is over a rate limit; used before a link upgrade, where the answer is HTTP.
     pub fn rate_limited() -> ApiError {
         ApiError::request(
@@ -141,6 +233,7 @@ impl ApiError {
             .unwrap_or(u64::MAX)
             .max(1);
         error.extra.insert("retryAfterMs".into(), json!(millis));
+        error.retry_after = Some(retry_after);
         error
     }
 
@@ -212,6 +305,12 @@ impl From<b4hub_db::Error> for ApiError {
         match error {
             b4hub_db::Error::InvalidCode => ApiError::invalid_code(),
             b4hub_db::Error::ResyncRequired => ApiError::resync_required(),
+            b4hub_db::Error::CeremonyExpired => ApiError::ceremony_expired(),
+            b4hub_db::Error::IdentityTaken => ApiError::credential_rejected(),
+            b4hub_db::Error::LastIdentity => ApiError::last_identity(),
+            b4hub_db::Error::MergeRefused(reason) => ApiError::merge_refused(reason),
+            b4hub_db::Error::SharedOrg => ApiError::shared_org(),
+            b4hub_db::Error::AppleLinked => ApiError::apple_linked(),
             b4hub_db::Error::RateLimited { retry_after } => {
                 ApiError::rate_limited_after(retry_after)
             }
@@ -243,6 +342,32 @@ where
     }
 }
 
+/// A JSON body that may be absent: an empty body is `T::default()`. Otherwise as [`ApiJson`],
+/// without requiring a content type.
+pub struct OptionalJson<T>(pub T);
+
+impl<S, T> FromRequest<S> for OptionalJson<T>
+where
+    S: Send + Sync,
+    T: DeserializeOwned + Default,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(request: Request, state: &S) -> Result<OptionalJson<T>, ApiError> {
+        let body = axum::body::Bytes::from_request(request, state)
+            .await
+            .map_err(|_| ApiError::payload_too_large("the request body is too large"))?;
+        if body.iter().all(u8::is_ascii_whitespace) {
+            return Ok(OptionalJson(T::default()));
+        }
+        serde_json::from_slice(&body)
+            .map(OptionalJson)
+            .map_err(|_| {
+                ApiError::invalid_request("the request body is not valid JSON for this endpoint")
+            })
+    }
+}
+
 fn json_rejection(rejection: &JsonRejection) -> ApiError {
     if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
         ApiError::payload_too_large("the request body is too large")
@@ -262,7 +387,15 @@ impl IntoResponse for ApiError {
                 "details": details,
             }
         });
-        (self.status, Json(body)).into_response()
+        let mut response = (self.status, Json(body)).into_response();
+        if let Some(wait) = self.retry_after {
+            // Whole seconds, rounded up, and at least one.
+            let seconds = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from(seconds.max(1)));
+        }
+        response
     }
 }
 
@@ -286,6 +419,22 @@ mod tests {
                 "details": {"code": "not_ready"},
             }})
         );
+    }
+
+    #[tokio::test]
+    async fn rate_limited_says_when_to_retry() {
+        let response = ApiError::rate_limited_after(Duration::from_millis(1500)).into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "2");
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body["error"]["details"],
+            json!({"code": "rate_limited", "retryAfterMs": 1500})
+        );
+        assert_eq!(body["error"]["kind"], "request_error");
     }
 
     #[tokio::test]

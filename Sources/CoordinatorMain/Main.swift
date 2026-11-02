@@ -12,7 +12,8 @@ struct CoordinatorMain {
     signal(SIGPIPE, SIG_IGN)
     let outcome: StartOutcome
     do {
-      outcome = try await Coordinator.start()
+      outcome = try await Coordinator.start(
+        options: CoordinatorOptions(legacyAdoption: LegacyAdoption.planIfExplicitLocal()))
     } catch {
       // A clear line and exit status, not a Swift trap: the launcher shows this log to the user.
       FileHandle.standardError.write(Data("coordinator failed to start: \(error)\n".utf8))

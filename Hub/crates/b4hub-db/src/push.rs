@@ -151,6 +151,8 @@ pub(crate) async fn detect(
              JOIN devices d ON d.id = p.device_id AND d.org_id = p.org_id \
              WHERE p.org_id = $1 AND d.user_id = $2 AND d.platform = 'ios' \
                AND d.revoked_at IS NULL AND d.id <> $3 \
+               AND EXISTS (SELECT 1 FROM device_tokens t \
+                           WHERE t.device_id = d.id AND t.revoked_at IS NULL) \
              ORDER BY d.id",
         )
         .bind(auth.org_id)

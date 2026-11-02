@@ -2,6 +2,8 @@
 //! PostgreSQL. Run with `source <(../scripts/test-db.sh)` first; `#[sqlx::test]` creates one
 //! database per test.
 
+mod common;
+
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -56,7 +58,7 @@ async fn world(pool: &PgPool) -> World {
         .unwrap();
     let admin = Db::connect(&admin_url(pool)).await.unwrap();
     let app = Db::connect(&app_url(pool)).await.unwrap();
-    let state = AppState::new(app);
+    let state = common::state(app);
     let seeded = orgs::seed(
         &admin,
         "cacheplane",

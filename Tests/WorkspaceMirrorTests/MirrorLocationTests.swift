@@ -134,4 +134,13 @@ private func read(_ url: URL) throws -> String {
     // Resolving creates nothing.
     #expect(!FileManager.default.fileExists(atPath: resolved.directory.path))
   }
+
+  @Test func flavourFolderIsUsedInsideTheGroup() {
+    let root = URL(fileURLWithPath: "/tmp/group", isDirectory: true)
+    let resolved = MirrorLocation.storeDirectory(
+      appGroup: "group.example.app", folder: PhoneFlavor.beta.directoryName,
+      fallback: URL(fileURLWithPath: "/tmp/fallback"), resolve: { _ in root })
+    #expect(resolved.directory == root.appendingPathComponent("b4app-beta", isDirectory: true))
+    #expect(resolved.inGroup)
+  }
 }

@@ -370,6 +370,22 @@ async fn revoked_or_tokenless_phones_get_nothing(pool: PgPool) {
     assert_eq!(ledger(&w).await.len(), 2);
 }
 
+/// A phone that logged out (`DELETE /v1/sessions/self` deletes its session token) stays enrolled
+/// and keeps its push-token row, but is told nothing until it signs in again.
+#[sqlx::test(migrations = false)]
+async fn a_phone_with_no_session_gets_nothing(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Quiet").await;
+    sqlx::query("DELETE FROM device_tokens WHERE device_id = $1")
+        .bind(w.phones[0].device_id)
+        .execute(&w.admin.pool)
+        .await
+        .unwrap();
+    let outcome = push_batch(&w, &[request(3, "request-1", "tool_permission", "pending")]).await;
+    assert_eq!(outcome.notifications.len(), 1);
+    assert_eq!(outcome.notifications[0].device_id, w.phones[1].device_id);
+}
+
 #[sqlx::test(migrations = false)]
 async fn other_users_phones_are_not_told(pool: PgPool) {
     let w = world(&pool).await;

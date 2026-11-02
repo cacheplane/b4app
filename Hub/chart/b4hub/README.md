@@ -1,6 +1,6 @@
 # b4hub
 
-![Version: 0.1.1](https://img.shields.io/badge/Version-0.1.1-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.1.0](https://img.shields.io/badge/AppVersion-0.1.0-informational?style=flat-square)
+![Version: 0.2.0](https://img.shields.io/badge/Version-0.2.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.1.0](https://img.shields.io/badge/AppVersion-0.1.0-informational?style=flat-square)
 
 The b4 hub, the sync and relay service for the b4 Personal Agent Workspace, with an external PostgreSQL and a pre-upgrade migration Job.
 
@@ -71,8 +71,8 @@ Sign-in needs `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, a
 ```
 
 With neither set, the hub runs without sign-in secrets and the chart renders none.
-With `secrets.existingSecret`, all four references are `optional: true`, so Kubernetes no longer refuses to start the pod (`CreateContainerConfigError`) when a key is missing or mistyped; check the key names yourself, because the hub's own startup check is then the only guard (the current hub does not read these keys yet; the sign-in hub does).
-`secrets.useFileVars: false` (default) exposes them as environment variables from `secretKeyRef`. `true` mounts them at `/etc/b4hub/secrets/<KEY>` and sets `B4HUB_*_FILE` instead; turn it on once the hub reads the `_FILE` forms (M8e).
+With `secrets.existingSecret`, all four references are `optional: true`, so Kubernetes no longer refuses to start the pod (`CreateContainerConfigError`) when a key is missing or mistyped; check the key names yourself, because the hub's own startup check is then the only guard.
+`secrets.useFileVars: false` (default) exposes them as environment variables from `secretKeyRef`. `true` mounts them at `/etc/b4hub/secrets/<KEY>` and sets `B4HUB_*_FILE` instead; the hub reads the `_FILE` forms of `B4HUB_SECRET_KEY` and the `B4HUB_APPLE_*` secrets.
 
 ## Ingress or Gateway
 
@@ -175,7 +175,7 @@ Kubernetes: `>=1.29.0`
 | replicaCount | int | `1` | Hub replicas. Keep 1: the relay routes per process until M8e (D-057). |
 | resources | object | `{"limits":{"memory":"512Mi"},"requests":{"cpu":"100m","memory":"128Mi"}}` | Hub container resources. |
 | secrets.existingSecret | string | `""` | Existing Secret with keys `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, `B4HUB_APPLE_PRIVATE_KEY`. Each reference is `optional: true`, so Kubernetes does not catch a missing or mistyped key (no `CreateContainerConfigError`); the hub's startup check is the only guard. |
-| secrets.useFileVars | bool | `false` | `false`: env from `secretKeyRef`. `true`: mount at `/etc/b4hub/secrets/` and set `B4HUB_*_FILE` (needs a hub with the `_FILE` forms, M8e). |
+| secrets.useFileVars | bool | `true` | `true` (default): mount at `/etc/b4hub/secrets/` and set `B4HUB_*_FILE`, so no secret is in the container's environment. `false`: env from `secretKeyRef`, for a hub older than the `_FILE` forms of these secrets. |
 | secrets.values | object | `{"appleKeyId":"","applePrivateKey":"","appleTeamId":"","secretKey":""}` | Chart-created `<release>-b4hub-secrets` when `existingSecret` is empty. Pass the PEM with `--set-file secrets.values.applePrivateKey=AuthKey.p8`. |
 | securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true}` | Container security context (Restricted Pod Security Standard). `/tmp` is an `emptyDir`. |
 | service.port | int | `80` | Service port in front of the hub's `http` port (8080). |

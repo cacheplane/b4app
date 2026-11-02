@@ -164,16 +164,16 @@ terraform init \
 The first apply of each root waits on certificate validation (up to 60 minutes; the apply jobs allow 90). The validation CNAMEs must already exist at Vercel before the first prod apply is approved, otherwise that apply sits waiting; the same goes for the first test apply. Read the records first with `terraform apply -target=module.hub.aws_acm_certificate.hub` (it needs the root's `-var alarm_email=...` or `TF_VAR_alarm_email`), add the `acm_validation_records` CNAMEs and a CNAME from the hostname to `alb_dns_name` at Vercel, then run the full apply (locally, or by merging).
 
 
-**CAA.** Vercel publishes default CAA records on `b4.run` that allow only Let's Encrypt, Sectigo, and Google (`dig CAA b4.run`), so ACM can never issue for a name under it until Amazon's CAs are allowed. Do not edit the apex set (Vercel's own certificates depend on it); add the four Amazon issuers on the hub names themselves, once per hostname. The records and the validation CNAMEs are managed with the Vercel CLI in the `cacheplane` team (`vercel dns add b4.run <name> <type> <value> --scope cacheplane`), which is what the owner did on 2026-11-02:
+**CAA.** Vercel publishes default CAA records on `b4.run` that allow only Let's Encrypt, Sectigo, and Google (`dig CAA b4.run`), so ACM can never issue for a name under it until Amazon's CAs are allowed. The Amazon issuers go on the apex, beside the three Vercel needs (once any explicit CAA record exists, the defaults no longer apply, so all seven are listed): a hub hostname is a CNAME, and a CNAME cannot share its name with a CAA record, so the CAA set the hub names inherit is the apex one. The records and the validation CNAMEs are managed with the Vercel CLI in the `cacheplane` team (`vercel dns add b4.run <name> <type> <value> --scope cacheplane`; the apex name is `''`), which is what the owner did on 2026-11-02:
 
 ```bash
-for sub in hub.test hub; do
-  for ca in amazon.com amazontrust.com awstrust.com amazonaws.com; do
-    vercel dns add b4.run $sub CAA "0 issue \"$ca\"" --scope cacheplane
-  done
+for ca in letsencrypt.org sectigo.com pki.goog amazon.com amazontrust.com awstrust.com amazonaws.com; do
+  vercel dns add b4.run '' CAA "0 issue \"$ca\"" --scope cacheplane
 done
-# then one CNAME per environment from acm_validation_records (name relative to b4.run):
+# one validation CNAME per environment from acm_validation_records (name relative to b4.run):
 vercel dns add b4.run _<hash>.hub.test CNAME _<hash>.<id>.acm-validations.aws. --scope cacheplane
+# after the root's full apply, the hostname itself:
+vercel dns add b4.run hub.test CNAME <alb_dns_name>. --scope cacheplane
 ```
 
 By hand, the targeted certificate apply runs in the root with `AWS_PROFILE=b4hub-$ENV` and `TF_VAR_alarm_email` set; it leaves the certificate in the state, which the full apply then validates.
@@ -199,7 +199,7 @@ Wipe a temp file with `rm -P <file>` on macOS or `shred -u <file>` on Linux; the
 
 ### 2. Bootstrap the database owner
 
-Once per account, after the first `terraform apply` of the root and before the first deploy. It creates the role `b4hub_owner` and the database `b4hub` with the RDS master credential, which this step uses and nothing else does.
+Once per account, after the first `terraform apply` of the root and before the first deploy. It creates the role `b4hub_owner` and the database `b4hub` with the RDS master credential, which this step uses and nothing else does. Before the first deploy the admin task's `hub` container runs the placeholder image `ghcr.io/cacheplane/b4hub:main`, and Fargate stops a task whose image it cannot pull, so the GHCR package must already be public (owner step 4) or this task never reaches `RUNNING`.
 
 1. **Give the two database secrets a throwaway value.** ECS refuses to start a task whose `valueFrom` secret has no value, and the `hub-admin` task references both URLs. Step 5 replaces these with the real URLs before any deploy:
 
@@ -271,7 +271,7 @@ Once per account, after the first `terraform apply` of the root and before the f
 
 ### 3. Set the sign-in secrets
 
-Do this before the sign-in hub merges to `main`, because the deploy then adds these four secrets to the serving task and ECS will not start a task whose secret is empty.
+Do this before the first deploy. The sign-in hub is on `main` and `Infra/taskdefs/features.env` sets `INCLUDE_SIGNIN_SECRETS=1`, so the deploy adds these four secrets to the serving task (and `admin-shell.sh` to the admin task's `hub` container), and ECS will not start a task whose secret is empty.
 
 1. `B4HUB_SECRET_KEY` (32 random bytes; it encrypts Apple refresh tokens at rest):
 
@@ -296,14 +296,11 @@ Do this before the sign-in hub merges to `main`, because the deploy then adds th
    ```
 
 3. Do both accounts (`ENV=test`, then `ENV=prod`; set `AWS_PROFILE=b4hub-$ENV` first). The Apple values are the same in both; `secret-key` is not: generate one per account.
-4. In the pull request that merges the sign-in hub (its `serve` requires `B4HUB_SECRET_KEY` and `B4HUB_WEBAUTHN_RP_ID`), work through the checklist at the top of `Infra/taskdefs/features.env`. Not before: with `0` the deploy renders a task with `DATABASE_URL` only, which is what a hub without sign-in expects.
-   - Set `INCLUDE_SIGNIN_SECRETS=1` in `Infra/taskdefs/features.env`. The deploy then adds the four secrets to the serving task, and `admin-shell.sh` adds them to the admin task's `hub` container (the gated block in `hub-admin.json.tpl`), so `b4hub seed|enroll` keep working. Both already set `B4HUB_WEBAUTHN_RP_ID`.
-   - Compose: uncomment `B4HUB_SECRET_KEY` in `Hub/deploy/compose/.env.example`, pass it to `hub` in `compose.yaml` (a `secret_key` file with `B4HUB_SECRET_KEY_FILE` once the hub reads `_FILE` forms, M8e), and make `test.sh` generate one. `B4HUB_WEBAUTHN_RP_ID` is already required there.
-   - Helm: uncomment the secret key in `Hub/chart/b4hub/ci/kind-values.yaml` and have the `install` job generate the key file it is set from.
+4. Nothing else is needed here: the pull request that merged the sign-in hub set `INCLUDE_SIGNIN_SECRETS=1`, gave the Compose profile its `secret_key` file (`B4HUB_SECRET_KEY_FILE`, which `Hub/deploy/compose/test.sh` generates), and made the chart's kind install generate its key. Both task definitions already set `B4HUB_WEBAUTHN_RP_ID`.
 
 ### 4. First deploy
 
-1. Runbook 2 (and 3, if the sign-in hub is on `main`) is done for `test`.
+1. Runbooks 2 and 3 are done for `test`.
 2. Merge to `main`. Watch `hub-image.yml` build and attest the image, which calls `hub-deploy.yml` for `test`:
 
    ```bash

@@ -74,11 +74,19 @@ public actor HubPull {
     loop = Task { await self.pullLoop() }
   }
 
-  /// Ends the loop, cancelling a long-poll in flight, and waits until it has.
+  /// How long `stop()` waits for the loop to end after cancelling it.
+  static let stopWait: Duration = .seconds(1)
+
+  /// Ends the loop, cancelling a long-poll in flight, and waits until it has, or `stopWait` has passed:
+  /// a request that ignores its cancellation is left to end on its own (the loop then stops, since
+  /// `stopped` is set), so an account's close never hangs on the hub.
   public func stop() async {
     stopped = true
-    loop?.cancel()
-    await loop?.value
+    guard let loop else { return }
+    loop.cancel()
+    if await !Bounded.run(within: Self.stopWait, { await loop.value }) {
+      Log.logger("hub").warning("the pull did not stop in time; it ends with its request")
+    }
   }
 
   private func pullLoop() async {
