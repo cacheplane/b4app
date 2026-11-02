@@ -102,9 +102,18 @@ the repository has none. image.digest wins over image.tag.
 {{- end }}
 {{- end }}
 
-{{/* The hub secret keys, in a fixed order. */}}
+{{/*
+The hub secret keys the Deployment reads, in a fixed order: all four for an existing Secret (each
+reference is optional, so a missing key is skipped), only the set ones for the chart-created Secret.
+*/}}
 {{- define "b4hub.secrets.keys" -}}
-B4HUB_SECRET_KEY B4HUB_APPLE_TEAM_ID B4HUB_APPLE_KEY_ID B4HUB_APPLE_PRIVATE_KEY
+{{- $keys := list }}
+{{- $v := .Values.secrets.values }}
+{{- if or .Values.secrets.existingSecret $v.secretKey }}{{ $keys = append $keys "B4HUB_SECRET_KEY" }}{{ end }}
+{{- if or .Values.secrets.existingSecret $v.appleTeamId }}{{ $keys = append $keys "B4HUB_APPLE_TEAM_ID" }}{{ end }}
+{{- if or .Values.secrets.existingSecret $v.appleKeyId }}{{ $keys = append $keys "B4HUB_APPLE_KEY_ID" }}{{ end }}
+{{- if or .Values.secrets.existingSecret $v.applePrivateKey }}{{ $keys = append $keys "B4HUB_APPLE_PRIVATE_KEY" }}{{ end }}
+{{- join " " $keys }}
 {{- end }}
 
 {{/* Name of the migration Job for this revision. */}}
@@ -127,6 +136,10 @@ nodeSelector:
 {{- end }}
 {{- with .Values.tolerations }}
 tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .Values.affinity }}
+affinity:
   {{- toYaml . | nindent 2 }}
 {{- end }}
 {{- end }}

@@ -47,6 +47,10 @@ resource "aws_iam_role" "backup" {
       Effect    = "Allow"
       Action    = "sts:AssumeRole"
       Principal = { Service = "backup.amazonaws.com" }
+      # Only AWS Backup acting for this account may assume the role (confused deputy).
+      Condition = {
+        StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
+      }
     }]
   })
 }
@@ -66,4 +70,8 @@ resource "aws_backup_selection" "hub" {
   plan_id      = aws_backup_plan.hub.id
   iam_role_arn = aws_iam_role.backup.arn
   resources    = [aws_db_instance.hub.arn]
+
+  # The selection is validated against the role's permissions when it is
+  # created, so the managed policies must be attached first.
+  depends_on = [aws_iam_role_policy_attachment.backup]
 }

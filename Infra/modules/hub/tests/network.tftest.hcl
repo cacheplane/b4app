@@ -1,4 +1,7 @@
 # Tests apply against a mocked AWS provider; nothing here needs credentials.
+# This file holds the canonical mock_provider blocks; the other test files
+# carry copies (test files cannot share mocks; see tests/README.md). Change
+# them here first, then copy the change to every *.tftest.hcl in this folder.
 
 mock_provider "aws" {
   mock_data "aws_caller_identity" {
