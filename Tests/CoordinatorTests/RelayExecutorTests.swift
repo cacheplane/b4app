@@ -23,7 +23,9 @@ private struct RelayHarness {
   let base: String
   var db: WorkspaceDatabase { coordinator.database }
 
-  static func start(extraEnvironment: [String: String] = [:]) async throws -> RelayHarness {
+  static func start(
+    extraEnvironment: [String: String] = [:], adapterFactory: SessionService.AdapterFactory? = nil
+  ) async throws -> RelayHarness {
     let base = NSTemporaryDirectory() + "b4r-\(UUID().uuidString.prefix(8))"
     try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
     let paths = try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
@@ -32,7 +34,8 @@ private struct RelayHarness {
     env["ANTHROPIC_API_KEY"] = nil
     for (key, value) in extraEnvironment { env[key] = value }
     let outcome = try await Coordinator.start(
-      options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
+      options: CoordinatorOptions(
+        paths: paths, environment: env, secretStore: MemorySecretStore(), adapterFactory: adapterFactory))
     guard case .running(let coordinator) = outcome else {
       throw WorkspaceError(.internalError, "expected running")
     }
@@ -40,7 +43,8 @@ private struct RelayHarness {
     let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
     let executor = RelayExecutor(
-      sessions: coordinator.sessions, projects: coordinator.projects, database: coordinator.database)
+      sessions: coordinator.sessions, projects: coordinator.projects, database: coordinator.database,
+      diagnostics: coordinator.diagnostics)
     return RelayHarness(
       coordinator: coordinator, client: client, events: EventCollector(await client.events()),
       executor: executor, base: base)
@@ -77,6 +81,43 @@ private struct RelayHarness {
     await client.close()
     await coordinator.close()
   }
+}
+
+/// Counts the native sessions a runtime was asked to create.
+private actor SessionCounter {
+  private(set) var created = 0
+  func record() { created += 1 }
+}
+
+/// A real adapter (the fake Codex runtime) whose `createSession` is slow and counted, so a second start
+/// of the same thread arrives while the first is still creating it.
+private struct SlowCreateAdapter: AgentAdapter {
+  let inner: any AgentAdapter
+  let counter: SessionCounter
+  var kind: ConnectionKind { inner.kind }
+  func inspectConnection() async throws -> ConnectionInspection { try await inner.inspectConnection() }
+  func createSession(_ input: NewSessionInput) async throws -> NativeSessionRef {
+    await counter.record()
+    try await Task.sleep(for: .milliseconds(300))
+    return try await inner.createSession(input)
+  }
+  func loadSession(_ ref: NativeSessionRef) async throws -> SessionSnapshot {
+    try await inner.loadSession(ref)
+  }
+  func sendTurn(_ ref: NativeSessionRef, input: TurnInput) async throws -> SubmissionReceipt {
+    try await inner.sendTurn(ref, input: input)
+  }
+  func interrupt(_ ref: NativeSessionRef, turn: ActiveTurnRef) async throws -> StopReceipt {
+    try await inner.interrupt(ref, turn: turn)
+  }
+  func respond(_ ref: RuntimeRequestRef, response: RuntimeResponse) async throws {
+    try await inner.respond(ref, response: response)
+  }
+  func reconcile(_ ref: NativeSessionRef, turn: ActiveTurnRef?) async throws -> ReconcileResult {
+    try await inner.reconcile(ref, turn: turn)
+  }
+  func events() -> AsyncStream<AdapterEvent> { inner.events() }
+  func dispose() async { await inner.dispose() }
 }
 
 /// One relayed command as `HubLink` passes it: a deadline 8 s after the hub's now, by default.
@@ -274,7 +315,8 @@ private func failure(
     #expect(connection.status == .ready)
     let projectId = try #require(connection.projectId)
     let executor = RelayExecutor(
-      sessions: h.coordinator.sessions, projects: h.coordinator.projects, database: h.coordinator.database)
+      sessions: h.coordinator.sessions, projects: h.coordinator.projects, database: h.coordinator.database,
+      diagnostics: h.coordinator.diagnostics)
 
     // A folder is not part of a B4 thread.
     let withFolder = try await run(
@@ -304,7 +346,16 @@ private func failure(
     let connection = try await h.addCodex()
     let project = try await h.project("App", [try h.folder("app")])
     let threadId = UUID().uuidString.lowercased()
-    for folder in [try h.folder("elsewhere"), nil] {
+    let elsewhere = try h.folder("elsewhere")
+    // Folders compare in canonical form: `..` and symlinks that lead out of the project are outside it.
+    let fm = FileManager.default
+    try fm.createSymbolicLink(atPath: h.base + "/app/escape", withDestinationPath: elsewhere)
+    try fm.createSymbolicLink(atPath: h.base + "/looks-like-app", withDestinationPath: elsewhere)
+    let outside: [String?] = [
+      elsewhere, h.base + "/app/../elsewhere", h.base + "/app/escape", h.base + "/looks-like-app",
+      h.base + "/app/..", nil,
+    ]
+    for folder in outside {
       let reply = try await run(
         h.executor, .threadStart,
         ThreadStart.Params(
@@ -337,7 +388,8 @@ private func failure(
     ).project
     #expect(other.id != own)
     let executor = RelayExecutor(
-      sessions: h.coordinator.sessions, projects: h.coordinator.projects, database: h.coordinator.database)
+      sessions: h.coordinator.sessions, projects: h.coordinator.projects, database: h.coordinator.database,
+      diagnostics: h.coordinator.diagnostics)
     let threadId = UUID().uuidString.lowercased()
     let reply = try await run(
       executor, .threadStart,
@@ -455,6 +507,135 @@ private func failure(
     #expect(try h.db.turns(threadId: first.thread.id).count == 1)
   }
 
+  /// Two starts of one new thread under different command ids: the second waits for the first, so the
+  /// thread (and its native session) is created once and no store error reaches the reply.
+  @Test func concurrentStartsOfOneNewThreadCreateItOnce() async throws {
+    let counter = SessionCounter()
+    let h = try await RelayHarness.start(adapterFactory: { connection, environment, version, secrets in
+      SlowCreateAdapter(
+        inner: try SessionService.defaultAdapterFactory(connection, environment, version, secrets),
+        counter: counter)
+    })
+    defer { Task { await h.close() } }
+    let connection = try await h.addCodex()
+    let app = try h.folder("app")
+    let project = try await h.project("App", [app])
+    let threadId = UUID().uuidString.lowercased()
+    let params = ThreadStart.Params(
+      threadId: threadId, projectId: project.id, connectionId: connection.id, folder: app, text: "hi")
+    async let first = run(h.executor, .threadStart, params)
+    async let second = run(h.executor, .threadStart, params)
+    let replies = try await [first, second]
+    let successes = replies.compactMap { reply -> ThreadStart.Result? in
+      guard case .reply(_, let result?, nil) = reply else { return nil }
+      return try? result.decode(ThreadStart.Result.self)
+    }
+    let started = try #require(successes.first)
+    #expect(started.thread.id == threadId)
+    for reply in replies {
+      guard case .reply(_, _, let error?) = reply else { continue }
+      // The second may find the first turn still running; it is never a store failure.
+      #expect(error.code == ErrorCode.protocolInvalid.rawValue)
+      #expect(error.message != RelayExecutor.couldNotRun)
+    }
+    #expect(try h.db.listThreads(ThreadFilter(includeArchived: true)).map(\.id) == [threadId])
+    #expect(await counter.created == 1)
+    try await h.waitForFinish(started.turn)
+  }
+
+  // MARK: - Errors that stay on the Mac
+
+  /// A store failure, a process launch failure, and an internal error reach the hub only as their code
+  /// (and `turnId`); the text, which can carry SQL, row values, and paths, goes to the log and
+  /// Diagnostics on this Mac.
+  @Test func storeAndLaunchFailuresKeepTheirTextOnTheMac() async throws {
+    let h = try await RelayHarness.start()
+    defer { Task { await h.close() } }
+    let project = try await h.project("App", [try h.folder("app")])
+
+    // A runtime that exists but cannot be executed: "Could not start <path>: …".
+    let broken = h.base + "/bin/codex"
+    try FileManager.default.createDirectory(atPath: h.base + "/bin", withIntermediateDirectories: true)
+    FileManager.default.createFile(
+      atPath: broken, contents: Data("not a program".utf8), attributes: [.posixPermissions: 0o755])
+    let unrunnable = try h.db.insertConnection(
+      Connection(id: "c-broken", kind: .codex, label: "Broken", target: broken, status: .ready))
+    let launch = try #require(
+      failure(
+        try await run(
+          h.executor, .threadStart,
+          ThreadStart.Params(
+            threadId: UUID().uuidString.lowercased(), projectId: project.id, connectionId: unrunnable.id,
+            folder: h.base + "/app", text: "hi"))))
+    #expect(launch.code == ErrorCode.missingExecutable.rawValue)
+
+    // A store failure: PostgreSQL refuses a NUL in the message's jsonb payload (internal_error).
+    let connection = try await h.addCodex()
+    let thread = try await h.newThread(connection, in: try h.folder("work"))
+    let store = try #require(
+      failure(
+        try await run(h.executor, .turnSend, TurnSend.Params(threadId: thread.id, text: "a \u{0} b"))))
+    #expect(store.code == ErrorCode.internalError.rawValue)
+    #expect(store.details == nil)
+
+    for error in [launch, store] {
+      #expect(error.message == RelayExecutor.couldNotRun)
+      let encoded = String(decoding: try JSONCoding.encoder.encode(error), as: UTF8.self)
+      #expect(!encoded.contains("PostgreSQL"))
+      #expect(!encoded.contains("/bin/codex"))
+      #expect(!encoded.contains(h.base))
+      #expect(!encoded.contains(SessionService.canonicalDirectory(h.base)))
+    }
+    // The text is kept on this Mac, in Diagnostics.
+    let recorded = try await h.coordinator.diagnostics.read().recentErrors
+    #expect(
+      recorded.contains {
+        $0.scope == "relay:thread.start" && $0.code == "missing_executable"
+          && $0.message.hasPrefix("Could not start ")
+      })
+    #expect(
+      recorded.contains {
+        $0.scope == "relay:turn.send" && $0.code == ErrorCode.internalError.rawValue
+          && $0.message.hasPrefix("PostgreSQL:")
+      })
+  }
+
+  /// The boundary rule itself: code kept, `turnId` kept, the text replaced only where it may carry
+  /// store, process, or foreign-error text.
+  @Test func wireErrorKeepsTheCodeAndTurnIdAndReplacesUnsafeText() {
+    let row = "PostgreSQL: [23505] duplicate key value DETAIL: Key (id)=(t-1) already exists."
+    let internalWithTurn = RelayExecutor.wireError(
+      WorkspaceError(.internalError, row, details: ["turnId": "turn-1", "cause": ["sql": "SELECT 1"]]))
+    #expect(internalWithTurn.replaced)
+    #expect(internalWithTurn.error.code == ErrorCode.internalError.rawValue)
+    #expect(internalWithTurn.error.message == RelayExecutor.couldNotRun)
+    #expect(internalWithTurn.error.details == ["turnId": "turn-1"])
+
+    let foreign = RelayExecutor.wireError(WorkspaceError(.internalError, "Error Domain=NSPOSIXErrorDomain"))
+    #expect(foreign.error.message == RelayExecutor.couldNotRun)
+    #expect(foreign.error.details == nil)
+
+    let constraint = RelayExecutor.wireError(
+      WorkspaceError(
+        .protocolInvalid, "PostgreSQL: [23502] Failing row contains (/Users/me/app, secret text).",
+        details: ["reason": "x", "turnId": "turn-2"]))
+    #expect(constraint.error.code == "protocol_invalid")
+    #expect(constraint.error.message == RelayExecutor.couldNotRun)
+    #expect(constraint.error.details == ["reason": "x", "turnId": "turn-2"])
+
+    let launch = RelayExecutor.wireError(
+      WorkspaceError(.missingExecutable, "Could not start /opt/tools/codex: Exec format error"))
+    #expect(launch.error.code == "missing_executable")
+    #expect(launch.error.message == RelayExecutor.couldNotRun)
+
+    let ordinary = RelayExecutor.wireError(
+      WorkspaceError(
+        .submissionUnknown, "The runtime did not acknowledge the turn.", details: ["turnId": "t"]))
+    #expect(!ordinary.replaced)
+    #expect(ordinary.error.message == "The runtime did not acknowledge the turn.")
+    #expect(ordinary.error.details == ["turnId": "t"])
+  }
+
   // MARK: - turn.lookup
 
   @Test func turnLookupReportsInFlightFoundAndNone() async throws {
@@ -463,10 +644,11 @@ private func failure(
     let connection = try await h.addCodex()
     let thread = try await h.newThread(connection, in: try h.folder("work"))
     let id = UUID().uuidString.lowercased()
-    func lookup(_ operationId: String) async throws -> TurnLookup.Result {
+    func lookup(_ operationId: String, on threadId: String? = nil) async throws -> TurnLookup.Result {
       try result(
         try await run(
-          h.executor, .turnLookup, TurnLookup.Params(operationId: operationId, threadId: thread.id)),
+          h.executor, .turnLookup,
+          TurnLookup.Params(operationId: operationId, threadId: threadId ?? thread.id)),
         as: TurnLookup.Result.self)
     }
 
@@ -483,6 +665,19 @@ private func failure(
     }
     #expect(seen == .inFlight)
     #expect(try await lookup(id).turn == nil)
+    // In flight on this thread only: asked about another thread, the answer is `none`.
+    #expect(try await lookup(id, on: "t-other").state == .none)
+    // The same id as another method, while the send runs, is refused rather than handed its reply.
+    let app = try h.folder("app")
+    let project = try await h.project("App", [app])
+    let reused = try await run(
+      h.executor, id: id, .threadStart,
+      ThreadStart.Params(
+        threadId: UUID().uuidString.lowercased(), projectId: project.id, connectionId: connection.id,
+        folder: app, text: "hi"))
+    let refusal = try #require(failure(reused))
+    #expect(refusal.code == ErrorCode.protocolInvalid.rawValue)
+    #expect(refusal.details?["reason"]?.stringValue == "operation_reused")
 
     // Ended with an error, but the turn exists: `found`.
     _ = try await send.value
