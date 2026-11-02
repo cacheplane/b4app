@@ -149,6 +149,11 @@ public final class WorkspaceModel {
   /// Mac, a sheet on the iPhone); a counter so asking twice opens it twice.
   public var settingsPage: SettingsPage = .connections
   public var settingsRequest = 0
+  /// A thread a notification tap or widget row asked for before the link was ready; `connect()` opens
+  /// it once the first snapshot is in. A later request replaces an earlier one.
+  public private(set) var pendingThreadOpen: String?
+  /// Counts every `requestOpenThread`; the root view moves the iPhone to the thread column on a change.
+  public private(set) var detailRequest = 0
   /// The iPhone's Settings sheet.
   public var showSettingsSheet = false
   /// Set by the Settings views while they are on screen.
@@ -385,7 +390,10 @@ public final class WorkspaceModel {
         let covered = snapshotPosition ?? (hello.epoch, hello.sequence)
         await refreshAccount()
         link = .ready
+        let requested = pendingThreadOpen
+        pendingThreadOpen = nil
         settleLink()
+        if let requested { await openThread(id: requested) }
         await observe(client, events: events, covered: covered)
       } catch {
         link = .unavailable
@@ -415,6 +423,19 @@ public final class WorkspaceModel {
     endRelayState()
     link = .unavailable
     settleLink()
+  }
+
+  /// Open the thread a notification or widget row asked for. When the link is ready it opens at once;
+  /// otherwise (a cold launch) the id waits and `connect()` opens it right after the first snapshot. An
+  /// id that is not in the list still goes through `openThread`; the detail read decides.
+  public func requestOpenThread(_ id: String) {
+    detailRequest += 1
+    guard link == .ready else {
+      pendingThreadOpen = id
+      return
+    }
+    pendingThreadOpen = nil
+    Task { await openThread(id: id) }
   }
 
   /// Open Settings, at `page` when given.
