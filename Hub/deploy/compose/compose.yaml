@@ -22,7 +22,10 @@ services:
     volumes:
       - b4hub-db:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d b4hub"]
+      # -h 127.0.0.1 forces TCP. Without it pg_isready asks the Unix socket, which the image's
+      # temporary first-boot initdb server also serves, so "healthy" could arrive before the real
+      # server listens on TCP and `migrate` would fail with connection refused.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d b4hub"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -53,8 +56,8 @@ services:
       B4HUB_PUBLIC_URL: ${B4HUB_PUBLIC_URL:?set B4HUB_PUBLIC_URL in .env}
       B4HUB_WEBAUTHN_RP_ID: ${B4HUB_WEBAUTHN_RP_ID:?set B4HUB_WEBAUTHN_RP_ID in .env}
       B4HUB_SIGNUP: ${B4HUB_SIGNUP:-closed}
-      # Correct behind the bundled Caddy, which appends the client address to X-Forwarded-For.
-      # Behind your own proxy it is only correct if that proxy appends too (see README.md).
+      # Correct behind the bundled Caddy, which sets X-Forwarded-For to the peer address.
+      # Behind your own proxy it is only correct if that proxy does the same (see README.md).
       B4HUB_TRUST_X_FORWARDED_FOR: "1"
       B4HUB_LOG: info
     secrets: [database_url]
@@ -75,7 +78,7 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      CADDY_HOSTNAME: ${CADDY_HOSTNAME:?set CADDY_HOSTNAME in .env}
+      CADDY_HOSTNAME: ${CADDY_HOSTNAME:-localhost}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

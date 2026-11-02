@@ -11,7 +11,7 @@ cd Hub/deploy/compose
 cp .env.example .env
 ```
 
-Edit `.env`: set `B4HUB_VERSION` (a released tag or `sha-<commit>`), `B4HUB_PUBLIC_URL`, `B4HUB_WEBAUTHN_RP_ID` (the hostname), and `CADDY_HOSTNAME` if you use Caddy. `B4HUB_SIGNUP=closed` means only users you seed can enroll.
+Edit `.env`: set `B4HUB_VERSION` (a released tag or `sha-<commit>`), `B4HUB_PUBLIC_URL`, `B4HUB_WEBAUTHN_RP_ID` (the hostname), and `CADDY_HOSTNAME` (required with `--profile tls`; defaults to `localhost` otherwise). `B4HUB_SIGNUP=closed` means only users you seed can enroll.
 
 ## Secrets
 
@@ -60,7 +60,7 @@ docker compose run --rm migrate enroll --user you
 
 ## Your own proxy
 
-`B4HUB_TRUST_X_FORWARDED_FOR=1` is set because the bundled Caddy appends the real client address to `X-Forwarded-For`. If you front the hub with another proxy it must append the same way (never pass a client-supplied header through unchanged), or rate limits and audit addresses can be spoofed. Proxy to `hub:8080` on the Compose network, or to `127.0.0.1:8080` with the overlay.
+`B4HUB_TRUST_X_FORWARDED_FOR=1` is set because Caddy 2 with its default `trusted_proxies` replaces any client-supplied `X-Forwarded-For` with the peer address. If you front the hub with another proxy it must do the same (overwrite or append the peer address; never pass a client-supplied header through unchanged), or rate limits and audit addresses can be spoofed. Proxy to `hub:8080` on the Compose network, or to `127.0.0.1:8080` with the overlay.
 
 ## Upgrade
 
@@ -75,14 +75,19 @@ docker compose pull && docker compose run --rm migrate && docker compose up -d
 ## Backup and restore
 
 ```bash
-docker compose exec db pg_dump -Fc -U postgres b4hub > b4hub-$(date +%F).dump
+docker compose exec -T db pg_dump -Fc -U postgres b4hub > b4hub-$(date +%F).dump
 ```
 
 Back up the `secrets/` directory with it; a dump is useless without the passwords the URLs carry (and the `b4hub_app` role is recreated by `migrate`).
 
-Restore outline: bring up an empty stack (`docker compose up -d db`), then
-`docker compose exec -T db pg_restore -U postgres -d b4hub --clean --if-exists < b4hub-DATE.dump`,
-run `docker compose run --rm migrate` to recreate the app role and grants, and `docker compose up -d`.
+Restore outline: stop the hub (`docker compose stop hub`). The target database must be empty, so either start from a fresh volume or drop and recreate `b4hub`. Then restore, re-run `migrate`, and start everything:
+
+```bash
+docker compose up -d db
+docker compose exec -T db pg_restore -U postgres -d b4hub --clean --if-exists < b4hub-DATE.dump
+docker compose run --rm migrate
+docker compose up -d
+```
 
 ## Smoke test
 
