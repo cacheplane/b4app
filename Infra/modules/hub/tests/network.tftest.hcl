@@ -63,6 +63,25 @@ mock_provider "aws" {
       arn = "arn:aws:iam::111111111111:role/b4hub-test-backup"
     }
   }
+
+  mock_resource "aws_ecr_repository" {
+    defaults = {
+      arn            = "arn:aws:ecr:us-east-2:111111111111:repository/b4hub"
+      repository_url = "111111111111.dkr.ecr.us-east-2.amazonaws.com/b4hub"
+    }
+  }
+
+  mock_resource "aws_ecs_cluster" {
+    defaults = {
+      arn = "arn:aws:ecs:us-east-2:111111111111:cluster/b4hub-test"
+    }
+  }
+
+  mock_resource "aws_ecs_task_definition" {
+    defaults = {
+      arn = "arn:aws:ecs:us-east-2:111111111111:task-definition/b4hub-test-hub:1"
+    }
+  }
 }
 
 mock_provider "aws" {

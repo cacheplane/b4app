@@ -68,7 +68,7 @@ variable "backup_copy_region" {
 }
 
 variable "log_retention_days" {
-  description = "Days to keep CloudWatch logs." # used by observability.tf
+  description = "Days to keep CloudWatch logs."
   type        = number
   default     = 30
 }
@@ -82,4 +82,10 @@ variable "alb_ssl_policy" {
   description = "TLS policy of the HTTPS listener." # used by alb.tf
   type        = string
   default     = "ELBSecurityPolicy-TLS13-1-2-Res-2021-06"
+}
+
+variable "admin_psql_image" {
+  description = "Image of the admin task's psql container."
+  type        = string
+  default     = "public.ecr.aws/docker/library/postgres:17"
 }

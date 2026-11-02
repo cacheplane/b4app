@@ -105,3 +105,54 @@ output "backup_vault_arn" {
   description = "ARN of the primary backup vault."
   value       = aws_backup_vault.hub.arn
 }
+
+# Compute
+output "cluster_name" {
+  description = "Name of the ECS cluster."
+  value       = aws_ecs_cluster.hub.name
+}
+
+output "cluster_arn" {
+  description = "ARN of the ECS cluster."
+  value       = aws_ecs_cluster.hub.arn
+}
+
+output "service_name" {
+  description = "Name of the hub ECS service."
+  value       = aws_ecs_service.hub.name
+}
+
+output "ecr_repository_url" {
+  description = "URL of the hub image repository."
+  value       = aws_ecr_repository.hub.repository_url
+}
+
+output "ecr_repository_arn" {
+  description = "ARN of the hub image repository."
+  value       = aws_ecr_repository.hub.arn
+}
+
+output "task_exec_role_arn" {
+  description = "ARN of the task execution role shared by all three task definitions."
+  value       = aws_iam_role.task_exec.arn
+}
+
+output "task_role_arn" {
+  description = "ARN of the serving and migrate tasks' role."
+  value       = aws_iam_role.task.arn
+}
+
+output "admin_task_role_arn" {
+  description = "ARN of the admin task's role (ECS Exec)."
+  value       = aws_iam_role.admin_task.arn
+}
+
+output "taskdef_families" {
+  description = "Task definition families keyed by hub, migrate, admin."
+  value       = local.taskdef_families
+}
+
+output "log_group_names" {
+  description = "CloudWatch log group names keyed by hub, migrate, admin."
+  value       = { for k, g in aws_cloudwatch_log_group.hub : k => g.name }
+}
