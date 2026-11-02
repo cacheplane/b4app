@@ -212,6 +212,8 @@ The hub (`Hub/`, a Rust service backed by PostgreSQL) mirrors conversations crea
 
 The hub image is published to GHCR as `ghcr.io/cacheplane/b4hub` (linux/amd64 and linux/arm64) by `.github/workflows/hub-image.yml`: tagged `sha-<commit>` and `main` on every change to `Hub/`, plus a `nightly` rebuild that is skipped when nothing changed. Each image carries a signed build-provenance attestation; check one with `gh attestation verify oci://ghcr.io/cacheplane/b4hub@sha256:<digest> -R cacheplane/b4app`. The first push creates the package private: the owner makes it public once in the package settings (GitHub, Packages, `b4hub`, Package settings, Change visibility). `.github/workflows/hub-ghcr-cleanup.yml` prunes old tags weekly; it only logs (dry run) until the repository variable `HUB_GHCR_CLEANUP_LIVE` is set to `true`.
 
+To self-host a hub for real use (PostgreSQL, migrations, file secrets, optional Caddy TLS), see `Hub/deploy/compose/README.md`.
+
 Start a local hub (needs Docker). Compose publishes the hub as `127.0.0.1:8080:8080`: plain HTTP on the Mac's loopback interface only, which the Mac and the Simulator reach as `localhost` (any other device needs a hub behind TLS, since the clients refuse plain HTTP for any host but `localhost`); the database is not published:
 
 ```bash

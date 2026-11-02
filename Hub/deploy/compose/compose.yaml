@@ -1,0 +1,99 @@
+# Production profile for self-hosting the b4 hub: PostgreSQL, the one-shot migrate step, the hub,
+# and an optional Caddy that terminates TLS. See README.md. Nothing publishes a port unless you
+# opt in: `-f compose.local.yaml` (loopback) or `--profile tls` (80 and 443).
+#
+# Secrets are files under ./secrets/ (never .env, never this file). The hub reads them through
+# DATABASE_URL_FILE and DATABASE_ADMIN_URL_FILE; only `migrate` gets the admin URL.
+
+name: b4hub
+
+x-image: &image
+  image: ${B4HUB_IMAGE:-ghcr.io/cacheplane/b4hub:${B4HUB_VERSION:?set B4HUB_VERSION in .env}}
+
+services:
+  db:
+    # Pin the major. A data directory written by one PostgreSQL major will not start under another;
+    # moving to 18 means a dump and restore, not a changed tag.
+    image: postgres:17
+    environment:
+      POSTGRES_DB: b4hub
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes:
+      - b4hub-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d b4hub"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  # Creates the b4hub_app role and applies migrations, then exits. Also the operator command
+  # runner (`docker compose run --rm migrate seed|enroll ...`): it alone holds the admin URL.
+  migrate:
+    <<: *image
+    command: ["migrate"]
+    environment:
+      DATABASE_ADMIN_URL_FILE: /run/secrets/database_admin_url
+      DATABASE_URL_FILE: /run/secrets/database_url
+    secrets: [database_admin_url, database_url]
+    depends_on:
+      db:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    restart: "no"
+
+  hub:
+    <<: *image
+    command: ["serve"]
+    init: true
+    environment:
+      DATABASE_URL_FILE: /run/secrets/database_url
+      B4HUB_PUBLIC_URL: ${B4HUB_PUBLIC_URL:?set B4HUB_PUBLIC_URL in .env}
+      B4HUB_WEBAUTHN_RP_ID: ${B4HUB_WEBAUTHN_RP_ID:?set B4HUB_WEBAUTHN_RP_ID in .env}
+      B4HUB_SIGNUP: ${B4HUB_SIGNUP:-closed}
+      # Correct behind the bundled Caddy, which appends the client address to X-Forwarded-For.
+      # Behind your own proxy it is only correct if that proxy appends too (see README.md).
+      B4HUB_TRUST_X_FORWARDED_FOR: "1"
+      B4HUB_LOG: info
+    secrets: [database_url]
+    expose: ["8080"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs: [/tmp]
+    # The hub drains open long-polls for up to 30 s on SIGTERM; the default 10 s would kill it first.
+    stop_grace_period: 40s
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    profiles: [tls]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      CADDY_HOSTNAME: ${CADDY_HOSTNAME:?set CADDY_HOSTNAME in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      hub:
+        condition: service_healthy
+    restart: unless-stopped
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  database_admin_url:
+    file: ./secrets/database_admin_url
+  database_url:
+    file: ./secrets/database_url
+
+volumes:
+  b4hub-db:
+  caddy_data:
+  caddy_config:

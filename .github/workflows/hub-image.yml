@@ -225,11 +225,33 @@ jobs:
           DIGEST: ${{ needs.merge.outputs.digest }}
         run: Hub/scripts/check-image.sh "$IMAGE@$DIGEST"
 
+  compose-smoke:
+    name: Compose smoke test
+    needs: [changed, merge, check]
+    if: needs.changed.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Bring up the production Compose profile
+        env:
+          DIGEST: ${{ needs.merge.outputs.digest }}
+        run: Hub/deploy/compose/test.sh "$IMAGE@$DIGEST"
+
   # A push to main deploys the digest just built to test; nightly and manual
   # runs only build. Called workflows get at most the caller job's permissions.
   deploy-test:
     name: Deploy to test
-    needs: [changed, merge, check]
+    needs: [changed, merge, check, compose-smoke]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changed.outputs.skip != 'true'
     permissions:
       contents: read
