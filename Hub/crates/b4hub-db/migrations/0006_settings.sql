@@ -14,3 +14,14 @@ CREATE TABLE hub_settings (
     value      jsonb NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- `migrate` revokes writes from the application role after every run; this does the same here, so
+-- the split holds even if `migrate` fails between the migrator and that step. The role does not
+-- exist yet on a fresh database (it is provisioned after the migrations), hence the condition.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'b4hub_app') THEN
+        REVOKE INSERT, UPDATE, DELETE ON hub_settings FROM b4hub_app;
+    END IF;
+END
+$$;

@@ -503,7 +503,7 @@ aws ecs update-service --cluster b4hub-$ENV --service b4hub-$ENV-hub --desired-c
 aws ecs update-service --cluster b4hub-$ENV --service b4hub-$ENV-hub --desired-count 1
 ```
 
-Pause writes without stopping anything (D-074): devices keep reading and `/readyz` stays green with `"maintenance": "read_only"`, while every write answers `503 maintenance` with `Retry-After: 30` and the Mac keeps its outbox. Every instance notices within `B4HUB_MAINTENANCE_POLL_MS` (5 s). Run it in the admin task's `hub` container (runbook 6; it has `DATABASE_ADMIN_URL`):
+Pause client writes without stopping anything (D-074): devices keep reading and `/readyz` stays green with `"maintenance": "read_only"`, while every API write (`POST /v1/enroll`, `POST /v1/changes`, `DELETE /v1/devices/self`) answers `503 maintenance` with `Retry-After: 30` and the Mac keeps its outbox; the hub's own `last_seen_at` touches and the daily prune continue. The `--message` text is public (an unauthenticated enroll caller sees it), so keep internal details out of it. Every instance notices within `B4HUB_MAINTENANCE_POLL_MS` (5 s). An instance that cannot read the database at start runs with maintenance off until it can (fail-open; it warns on every poll), which only matters if the database is reachable from some tasks and not others. Run it in the admin task's `hub` container (runbook 6; it has `DATABASE_ADMIN_URL`):
 
 ```bash
 Infra/scripts/admin-shell.sh $ENV hub

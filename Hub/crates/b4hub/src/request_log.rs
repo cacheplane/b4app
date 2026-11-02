@@ -1,40 +1,38 @@
-//! Request-scoped logging: every request gets a request id and runs inside a `request` span that
-//! names the id, the method, the matched route pattern (never the raw path or query), and, once
+//! Request-scoped logging: every request gets a hub-minted request id and runs inside a `request`
+//! span that names the id, the method, the matched route pattern (never the raw path or query),
+//! the caller's own `X-Request-Id` when it sent a well-formed one, and, once
 //! [`crate::auth::AuthedDevice`] has run, the device id. One completion event per request carries
-//! the status and the elapsed time. Headers and bodies are never logged; the id is the only header
-//! value the hub reads into a log.
+//! the status and the elapsed time. Headers and bodies are never logged; the caller's id is the
+//! only header value the hub reads into a log, and it never replaces the hub's own id (nothing
+//! deployed in front of the hub strips the header, so a caller could otherwise choose the id it
+//! is logged under).
 
 use std::time::Instant;
 
-use axum::extract::{MatchedPath, Request, State};
+use axum::extract::{MatchedPath, Request};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use tracing::Instrument;
 
-/// The header a request id travels in, both ways.
+/// The header the hub's request id is answered in, and the one a caller's own id is read from.
 pub const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 
 /// What the span's `path` says for a request no route matched. The raw path is never logged.
 pub const UNMATCHED_ROUTE: &str = "(unmatched)";
 
-/// The longest inbound request id kept.
-const MAX_REQUEST_ID_LEN: usize = 64;
+/// The longest caller id recorded.
+const MAX_CLIENT_REQUEST_ID_LEN: usize = 64;
 
 /// The request's id, in the request extensions for anything that wants to echo it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestId(pub String);
 
-/// The middleware on every route: picks the request id, opens the `request` span, runs the rest
+/// The middleware on every route: mints the request id, opens the `request` span, runs the rest
 /// of the stack inside it, sets `X-Request-Id` on the response, and logs the completion event.
-/// `trust_proxy` is `Settings::trust_proxy()`.
-pub async fn trace_request(
-    State(trust_proxy): State<bool>,
-    mut request: Request,
-    next: Next,
-) -> Response {
-    let id = accept_inbound(request.headers().get(&REQUEST_ID_HEADER), trust_proxy)
-        .unwrap_or_else(|| b4hub_core::ids::new_uuid().to_string());
+pub async fn trace_request(mut request: Request, next: Next) -> Response {
+    let id = b4hub_core::ids::new_uuid().to_string();
+    let client_request_id = client_request_id(request.headers().get(&REQUEST_ID_HEADER));
     let path = request
         .extensions()
         .get::<MatchedPath>()
@@ -45,8 +43,12 @@ pub async fn trace_request(
         request_id = %id,
         method = %request.method(),
         path = %path,
+        client_request_id = tracing::field::Empty,
         device_id = tracing::field::Empty,
     );
+    if let Some(client_id) = &client_request_id {
+        span.record("client_request_id", client_id.as_str());
+    }
     request.extensions_mut().insert(RequestId(id.clone()));
 
     let started = Instant::now();
@@ -72,15 +74,13 @@ pub async fn trace_request(
     .await
 }
 
-/// The inbound id when there is one, it is well-formed (1 to 64 printable ASCII characters with
-/// no whitespace), and a trusted proxy put it there; otherwise `None`, and a fresh id is minted.
-pub fn accept_inbound(value: Option<&HeaderValue>, trust_proxy: bool) -> Option<String> {
-    if !trust_proxy {
-        return None;
-    }
+/// The caller's `X-Request-Id` when there is one and it is well-formed (1 to 64 printable ASCII
+/// characters with no whitespace); otherwise `None`. It is recorded for correlation with the
+/// caller's own logs and never becomes the hub's request id.
+pub fn client_request_id(value: Option<&HeaderValue>) -> Option<String> {
     let value = value?.to_str().ok()?;
     let well_formed = !value.is_empty()
-        && value.len() <= MAX_REQUEST_ID_LEN
+        && value.len() <= MAX_CLIENT_REQUEST_ID_LEN
         && value.bytes().all(|b| b.is_ascii_graphic());
     well_formed.then(|| value.to_string())
 }
@@ -132,25 +132,34 @@ mod tests {
         }
     }
 
-    fn router(trust_proxy: bool) -> Router {
+    fn router() -> Router {
         Router::new()
             .route("/items/{id}", get(|| async { "ok" }))
-            .layer(middleware::from_fn_with_state(trust_proxy, trace_request))
+            .layer(middleware::from_fn(trace_request))
     }
 
-    async fn call(
-        trust_proxy: bool,
-        path: &str,
-        inbound: Option<&str>,
-    ) -> axum::response::Response {
+    async fn call(path: &str, inbound: Option<&str>) -> axum::response::Response {
         let mut request = Request::get(path);
         if let Some(inbound) = inbound {
             request = request.header(REQUEST_ID_HEADER, inbound);
         }
-        router(trust_proxy)
+        router()
             .oneshot(request.body(Body::empty()).unwrap())
             .await
             .unwrap()
+    }
+
+    fn json_buffer() -> (Buffer, tracing::subscriber::DefaultGuard) {
+        let buffer = Buffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_current_span(true)
+            .with_span_list(false)
+            .with_writer(buffer.clone())
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        (buffer, guard)
     }
 
     fn header_value(response: &axum::response::Response) -> String {
@@ -164,51 +173,75 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_generated_id_is_a_uuid_set_on_the_response() {
-        let response = call(false, "/items/1", None).await;
+    async fn the_id_is_a_fresh_uuid_set_on_the_response() {
+        let response = call("/items/1", None).await;
         assert_eq!(response.status(), StatusCode::OK);
         let id = header_value(&response);
         let parsed = uuid::Uuid::parse_str(&id).expect("a UUID");
         assert_eq!(parsed.get_version_num(), 7);
+        let again = header_value(&call("/items/1", None).await);
+        assert_ne!(id, again);
     }
 
     #[tokio::test]
-    async fn an_inbound_id_is_honoured_only_behind_a_trusted_proxy() {
-        let response = call(false, "/items/1", Some("edge-abc123")).await;
-        assert_ne!(header_value(&response), "edge-abc123");
-        let response = call(true, "/items/1", Some("edge-abc123")).await;
-        assert_eq!(header_value(&response), "edge-abc123");
+    async fn a_callers_id_never_replaces_the_hubs() {
+        let response = call("/items/1", Some("edge-abc123")).await;
+        let id = header_value(&response);
+        assert_ne!(id, "edge-abc123");
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
     }
 
     #[tokio::test]
-    async fn a_malformed_inbound_id_is_replaced_even_when_trusted() {
-        for bad in ["", "has space", "tab\there", &"x".repeat(65)] {
-            let response = call(true, "/items/1", Some(bad)).await;
-            let id = header_value(&response);
-            assert_ne!(id, bad);
-            assert!(uuid::Uuid::parse_str(&id).is_ok(), "{bad:?}");
-        }
-        let response = call(true, "/items/1", Some(&"x".repeat(64))).await;
-        assert_eq!(header_value(&response), "x".repeat(64));
+    async fn a_well_formed_callers_id_is_recorded_and_a_malformed_one_dropped() {
+        let (buffer, guard) = json_buffer();
+        call("/items/1", Some("edge-abc123")).await;
+        call("/items/1", Some("has space")).await;
+        call("/items/1", None).await;
+        drop(guard);
+
+        let lines = buffer.lines();
+        let done: Vec<&Value> = lines
+            .iter()
+            .filter(|line| line["message"] == "request complete")
+            .collect();
+        assert_eq!(done.len(), 3);
+        assert_eq!(done[0]["span"]["client_request_id"], "edge-abc123");
+        assert_ne!(done[0]["span"]["request_id"], "edge-abc123");
+        assert!(
+            done[1]["span"].get("client_request_id").is_none(),
+            "{}",
+            done[1]
+        );
+        assert!(
+            done[2]["span"].get("client_request_id").is_none(),
+            "{}",
+            done[2]
+        );
+        let raw = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+        assert!(!raw.contains("has space"), "{raw}");
     }
 
     #[test]
-    fn inbound_ids_are_checked_strictly() {
+    fn callers_ids_are_checked_strictly() {
         let value = |s: &str| HeaderValue::from_str(s).ok();
         assert_eq!(
-            accept_inbound(value("abc-123").as_ref(), true).as_deref(),
+            client_request_id(value("abc-123").as_ref()).as_deref(),
             Some("abc-123")
         );
-        assert_eq!(accept_inbound(value("abc-123").as_ref(), false), None);
-        assert_eq!(accept_inbound(None, true), None);
-        assert_eq!(accept_inbound(value("").as_ref(), true), None);
-        assert_eq!(accept_inbound(value("a b").as_ref(), true), None);
-        assert_eq!(accept_inbound(value("a\u{7f}b").as_ref(), true), None);
-        assert_eq!(accept_inbound(value(&"y".repeat(65)).as_ref(), true), None);
+        assert_eq!(
+            client_request_id(value(&"x".repeat(64)).as_ref()).as_deref(),
+            Some("x".repeat(64).as_str())
+        );
+        assert_eq!(client_request_id(None), None);
+        assert_eq!(client_request_id(value("").as_ref()), None);
+        assert_eq!(client_request_id(value("a b").as_ref()), None);
+        assert_eq!(client_request_id(value("tab\there").as_ref()), None);
+        assert_eq!(client_request_id(value("a\u{7f}b").as_ref()), None);
+        assert_eq!(client_request_id(value(&"y".repeat(65)).as_ref()), None);
         assert_eq!(
             HeaderValue::from_bytes(b"caf\xe9")
                 .ok()
-                .and_then(|v| accept_inbound(Some(&v), true)),
+                .and_then(|v| client_request_id(Some(&v))),
             None,
             "non-ASCII bytes are refused"
         );
@@ -216,19 +249,11 @@ mod tests {
 
     #[tokio::test]
     async fn the_span_names_the_route_pattern_and_not_the_raw_path() {
-        let buffer = Buffer::default();
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .flatten_event(true)
-            .with_current_span(true)
-            .with_span_list(false)
-            .with_writer(buffer.clone())
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
-
-        let response = call(true, "/items/42?token=secret-query&x=1", Some("req-1")).await;
+        let (buffer, guard) = json_buffer();
+        let response = call("/items/42?token=secret-query&x=1", Some("req-1")).await;
         assert_eq!(response.status(), StatusCode::OK);
-        drop(_guard);
+        let id = header_value(&response);
+        drop(guard);
 
         let raw = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
         assert!(!raw.contains("secret-query"), "{raw}");
@@ -242,7 +267,8 @@ mod tests {
         assert_eq!(done["status"], 200);
         assert!(done["elapsed_ms"].is_u64(), "{done}");
         assert_eq!(done["span"]["name"], "request");
-        assert_eq!(done["span"]["request_id"], "req-1");
+        assert_eq!(done["span"]["request_id"], id);
+        assert_eq!(done["span"]["client_request_id"], "req-1");
         assert_eq!(done["span"]["method"], "GET");
         assert_eq!(done["span"]["path"], "/items/{id}");
         assert!(done["span"].get("device_id").is_none(), "{done}");
@@ -250,20 +276,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_503_is_a_warning_a_5xx_an_error_and_the_raw_path_is_never_logged() {
-        let buffer = Buffer::default();
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .flatten_event(true)
-            .with_current_span(true)
-            .with_span_list(false)
-            .with_writer(buffer.clone())
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let (buffer, _guard) = json_buffer();
 
         let router = Router::new()
             .route("/boom", get(|| async { StatusCode::INTERNAL_SERVER_ERROR }))
             .route("/paused", get(|| async { StatusCode::SERVICE_UNAVAILABLE }))
-            .layer(middleware::from_fn_with_state(false, trace_request));
+            .layer(middleware::from_fn(trace_request));
         let response = router
             .clone()
             .oneshot(Request::get("/boom").body(Body::empty()).unwrap())

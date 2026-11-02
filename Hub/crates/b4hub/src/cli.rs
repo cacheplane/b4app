@@ -327,7 +327,8 @@ impl Settings {
     }
 
     /// `B4HUB_TRUST_X_FORWARDED_FOR` (`1` or `true`), default false: the hub is behind a proxy
-    /// that sets the forwarding headers, so an inbound `X-Request-Id` is the edge's and is kept.
+    /// that appends the client address to `X-Forwarded-For`. Validated here; the sign-in
+    /// branch's per-client limits read it. The request id never depends on it.
     pub fn trust_proxy(&self) -> Result<bool, ConfigError> {
         match self.var("B4HUB_TRUST_X_FORWARDED_FOR") {
             None | Some("0" | "false") => Ok(false),
@@ -461,7 +462,7 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
         maintenance_poll_ms = maintenance_poll.as_millis() as u64,
         "serving"
     );
-    let state = AppState::new(db.clone()).trust_proxy(trust_proxy);
+    let state = AppState::new(db.clone());
     // Know the switch before the first request, not one poll later.
     maintenance::refresh(&db, &state.maintenance).await;
     let pruning = tokio::spawn(serve::prune_loop(

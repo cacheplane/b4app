@@ -62,7 +62,7 @@ async fn an_authenticated_request_logs_the_ids_and_never_the_token(pool: PgPool)
         .await
         .unwrap();
     let admin = Db::connect(&admin_url(&pool)).await.unwrap();
-    let state = AppState::new(Db::connect(&app_url(&pool)).await.unwrap()).trust_proxy(true);
+    let state = AppState::new(Db::connect(&app_url(&pool)).await.unwrap());
     let seeded = orgs::seed(
         &admin,
         "cacheplane",
@@ -107,24 +107,48 @@ async fn an_authenticated_request_logs_the_ids_and_never_the_token(pool: PgPool)
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.headers()["x-request-id"], "edge-7f3a");
+    let request_id = response.headers()["x-request-id"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(request_id, "edge-7f3a");
+
+    // A wrong token: refused, and the wrong token is not logged either.
+    let response = serve::router(state.clone())
+        .oneshot(
+            Request::get("/v1/me")
+                .header(header::AUTHORIZATION, "Bearer wrong-token-9c1e")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     drop(guard);
 
     let raw = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
     assert!(!raw.is_empty(), "nothing was logged");
     assert!(!raw.contains(&enrolled.token), "the token leaked: {raw}");
+    assert!(
+        !raw.contains("wrong-token-9c1e"),
+        "the wrong token leaked: {raw}"
+    );
     assert!(!raw.contains("after=1"), "the query leaked: {raw}");
     let lines: Vec<Value> = raw
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    let done = lines
+    let done: Vec<&Value> = lines
         .iter()
-        .find(|line| line["message"] == "request complete")
-        .unwrap_or_else(|| panic!("no completion event in {raw}"));
-    assert_eq!(done["span"]["request_id"], "edge-7f3a");
-    assert_eq!(done["span"]["device_id"], enrolled.device_id.to_string());
-    assert_eq!(done["span"]["path"], "/v1/me");
-    assert_eq!(done["status"], 200);
+        .filter(|line| line["message"] == "request complete")
+        .collect();
+    assert_eq!(done.len(), 2, "{raw}");
+    assert_eq!(done[0]["span"]["request_id"], request_id);
+    assert_eq!(done[0]["span"]["client_request_id"], "edge-7f3a");
+    assert_eq!(done[0]["span"]["device_id"], enrolled.device_id.to_string());
+    assert_eq!(done[0]["span"]["path"], "/v1/me");
+    assert_eq!(done[0]["status"], 200);
+    assert_eq!(done[1]["status"], 401);
+    assert!(done[1]["span"].get("device_id").is_none(), "{}", done[1]);
     state.db.pool.close().await;
 }

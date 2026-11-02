@@ -234,7 +234,7 @@ async fn maintenance_pauses_writes_and_keeps_reads_and_readiness(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     assert_eq!(headers[header::RETRY_AFTER], "30");
-    let (status, _, body) = http(
+    let (status, headers, body) = http(
         &client,
         "DELETE",
         &format!("{base}/v1/devices/self"),
@@ -243,6 +243,15 @@ async fn maintenance_pauses_writes_and_keeps_reads_and_readiness(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(headers[header::RETRY_AFTER], "30");
+    assert_eq!(
+        body,
+        json!({"error": {
+            "kind": "execution_error",
+            "message": "the hub is in maintenance: swapping the disk",
+            "details": {"code": "maintenance"},
+        }})
+    );
 
     // A bad token is still a 401, since authentication runs before the guard.
     let (status, _, _) = http(
@@ -266,6 +275,23 @@ async fn maintenance_pauses_writes_and_keeps_reads_and_readiness(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["changes"].as_array().unwrap().len(), 1);
+    // A long-poll that has to wait is served too: it waits out its (short) window and answers.
+    let started = Instant::now();
+    let (status, _, body) = http(
+        &client,
+        "GET",
+        &format!("{changes}?after=1&wait=1"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["changes"].as_array().unwrap().len(), 0);
+    assert!(
+        started.elapsed() >= Duration::from_millis(900),
+        "{:?}",
+        started.elapsed()
+    );
     let (status, _, _) = http(&client, "GET", &format!("{base}/v1/me"), Some(&token), None).await;
     assert_eq!(status, StatusCode::OK);
     let (status, _, body) = http(&client, "GET", &format!("{base}/readyz"), None, None).await;
