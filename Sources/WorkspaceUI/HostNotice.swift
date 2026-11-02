@@ -144,7 +144,14 @@ extension WorkspaceModel {
       hubLinkPhase = link
       if link != .connected { hostPresence = [:] }
     }
-    if let host = event.presenceHost, hubLinkPhase == .connected { hostPresence[host.deviceId] = host }
+    if hubLinkPhase == .connected {
+      // A whole presence frame replaces what the model held, so a Mac that left it (revoked) is gone.
+      if let hosts = event.presenceHosts {
+        hostPresence = Dictionary(hosts.map { ($0.deviceId, $0) }, uniquingKeysWith: { _, new in new })
+      } else if let host = event.presenceHost {
+        hostPresence[host.deviceId] = host
+      }
+    }
     presenceChanged(wasConnected: wasConnected)
   }
 

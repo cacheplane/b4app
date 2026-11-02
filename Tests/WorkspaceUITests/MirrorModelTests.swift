@@ -118,6 +118,26 @@ private func fixtureAsStored(file: StaticString = #filePath) throws -> [StoredCh
     await relay.stop()
   }
 
+  /// Each presence frame is the whole set of the user's Macs: one that leaves it (revoked) is dropped,
+  /// from the model and from the snapshot a reconnecting model reads.
+  @Test func aMacMissingFromTheNextPresenceIsDropped() async throws {
+    let (model, _, _, socket) = try await relayedModel()
+    model.accountSource = .host
+    let mac = RelayHostPresence(deviceId: "mac-1", name: "Brian's MacBook Pro", online: true)
+    let studio = RelayHostPresence(deviceId: "mac-2", name: "Studio", online: true)
+    socket.deliver(.presence(hosts: [mac, studio]))
+    try await waitUntil("both Macs", timeout: .seconds(10)) {
+      Set(model.hostPresence.keys) == ["mac-1", "mac-2"]
+    }
+    socket.deliver(.presence(hosts: [studio]))
+    try await waitUntil("the revoked Mac dropped", timeout: .seconds(10)) {
+      Set(model.hostPresence.keys) == ["mac-2"]
+    }
+    socket.deliver(.presence(hosts: []))
+    try await waitUntil("no Macs", timeout: .seconds(10)) { model.hostPresence.isEmpty }
+    await model.disconnect()
+  }
+
   private func agent(_ text: String) -> DisplayItem {
     DisplayItem(
       id: "item-9", threadId: "thread-1", turnId: "turn-2", nativeItemId: "native-9", role: .assistant,

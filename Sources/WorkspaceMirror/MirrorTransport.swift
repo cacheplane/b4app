@@ -42,8 +42,8 @@ import WorkspaceSync
 /// replaces it; with no row after 2 minutes it is dropped and the read answers `not_found`.
 ///
 /// Presence and the phone's own link reach the model as `host.presence` events (see
-/// `AdapterEvent.hostPresence`): one per Mac on every presence frame, and one with no host whenever the
-/// link's phase changes.
+/// `AdapterEvent.hostPresence`): one carrying the whole set of Macs on every presence frame (a Mac
+/// missing from it is dropped), and one with no host whenever the link's phase changes.
 public final class MirrorTransport: WorkspaceTransport {
   public let incoming: AsyncStream<Data>
   private let continuation: AsyncStream<Data>.Continuation
@@ -628,8 +628,13 @@ public final class MirrorTransport: WorkspaceTransport {
         let presences = hosts.map {
           HostPresence(deviceId: $0.deviceId, name: $0.name, online: $0.online, lastSeenAt: $0.lastSeenAt)
         }
-        if state.link == .connected { for host in presences { state.hosts[host.deviceId] = host } }
-        emit(presences.compactMap { try? AdapterEvent.hostPresence($0, link: state.link) }, state: &state)
+        // Each frame is the whole set: a Mac missing from it (revoked) is dropped.
+        if state.link == .connected {
+          state.hosts = Dictionary(presences.map { ($0.deviceId, $0) }, uniquingKeysWith: { _, new in new })
+        }
+        if let event = try? AdapterEvent.hostPresence(hosts: presences, link: state.link) {
+          emit([event], state: &state)
+        }
       case .event(let event):
         relayed(event, state: &state)
       case .gap(let threadId):

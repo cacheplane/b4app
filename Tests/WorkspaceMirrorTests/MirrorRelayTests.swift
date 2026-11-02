@@ -400,11 +400,11 @@ struct MirrorRelayTests {
         RelayHostPresence(deviceId: "mac-2", name: "Studio", online: true),
       ]))
     var hosts: [HostPresence] = []
-    while hosts.count < 2, let envelope = await iterator.next() {
+    while hosts.isEmpty, let envelope = await iterator.next() {
       #expect(envelope.event.kind == .hostPresence)
-      if let host = envelope.event.presenceHost {
+      if let set = envelope.event.presenceHosts {
         #expect(envelope.event.presenceLink == .connected)
-        hosts.append(host)
+        hosts = set
       }
     }
     #expect(hosts.map(\.deviceId) == ["mac-1", "mac-2"])
@@ -416,6 +416,17 @@ struct MirrorRelayTests {
     // The snapshot carries the same, so a model that connects after these events still knows them.
     let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
     #expect(snapshot.presence == PresenceSnapshot(link: .connected, hosts: hosts))
+
+    // The next frame is the whole set again: a Mac missing from it (revoked) is gone.
+    socket.deliver(.presence(hosts: [RelayHostPresence(deviceId: "mac-2", name: "Studio", online: true)]))
+    while let envelope = await iterator.next() {
+      if let set = envelope.event.presenceHosts {
+        #expect(set.map(\.deviceId) == ["mac-2"])
+        break
+      }
+    }
+    let after = try await client.request(EventsSnapshot.self, EmptyParams())
+    #expect(after.presence?.hosts.map(\.deviceId) == ["mac-2"])
 
     // The phone's own link going down makes every host unknown.
     socket.closeFromHub(code: 1001)

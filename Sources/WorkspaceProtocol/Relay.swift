@@ -92,12 +92,27 @@ public struct PresenceSnapshot: Codable, Sendable, Equatable {
 
 extension AdapterEvent {
   /// `host.presence`. `payload.link` is the phone's own hub link (`connected`, `connecting`, or
-  /// `offline`); `payload.host` is one Mac's presence, absent when the event only reports the link. While
-  /// the link is not `connected`, every host's presence is unknown.
+  /// `offline`); `payload.host` is one Mac's presence, absent when the event only reports the link (or
+  /// carries the whole set as `payload.hosts`). While the link is not `connected`, every host's presence
+  /// is unknown.
   public static func hostPresence(_ host: HostPresence?, link: HubLinkStatus.State) throws -> AdapterEvent {
     var payload: [String: JSONValue] = ["link": .string(link.rawValue)]
     if let host { payload["host"] = try JSONValue(encoding: host) }
     return AdapterEvent(kind: .hostPresence, connectionId: "", payload: .object(payload))
+  }
+
+  /// `host.presence` for a whole presence frame: `payload.hosts` is every Mac of the user's the hub
+  /// reported, so a Mac missing from it (revoked) is no longer known.
+  public static func hostPresence(hosts: [HostPresence], link: HubLinkStatus.State) throws -> AdapterEvent {
+    AdapterEvent(
+      kind: .hostPresence, connectionId: "",
+      payload: ["link": .string(link.rawValue), "hosts": try JSONValue(encoding: hosts)])
+  }
+
+  /// The whole set of Macs a `host.presence` event reports, when it reports one.
+  public var presenceHosts: [HostPresence]? {
+    guard kind == .hostPresence else { return nil }
+    return try? payload["hosts"]?.decode([HostPresence].self)
   }
 
   /// The Mac a `host.presence` event is about, if any.
