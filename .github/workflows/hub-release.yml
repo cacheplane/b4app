@@ -123,9 +123,8 @@ jobs:
         run: |
           set -euo pipefail
           tag_args=()
-          # Blank lines (a trailing newline, an empty output) are skipped so no
-          # bare "$IMAGE:" tag is passed; the loop is inline, so this comment
-          # stands in for a test. hub-release-tags.sh is covered by test-tag-guard.sh.
+          # Skip blank lines (a trailing newline, an empty output) so no bare
+          # "$IMAGE:" tag is passed. hub-release-tags.sh is covered by test-tag-guard.sh.
           while IFS= read -r version; do
             [ -n "$version" ] || continue
             tag_args+=(--tag "$IMAGE:$version")

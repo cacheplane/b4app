@@ -10,7 +10,7 @@ docker run --rm --entrypoint /bin/sh "$img" -c '
   test "$(id -u)" = 10001 &&
   test -x /usr/local/bin/b4hub &&
   /usr/local/bin/b4hub --version | grep -q "^b4hub " &&
-  ldd /usr/local/bin/b4hub | grep -q libc &&
+  ldd /usr/local/bin/b4hub | grep -q libc.so &&
   ! ldd /usr/local/bin/b4hub | grep -q libssl &&
   grep -c "BEGIN CERTIFICATE" /etc/ssl/certs/rds-global-bundle.pem | awk "{exit !(\$1 > 50)}"
 '

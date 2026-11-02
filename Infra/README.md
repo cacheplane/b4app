@@ -47,7 +47,7 @@ Do this one account at a time: finish steps 3 to 5 for `test` before starting `p
      -backend-config=encrypt=true
    ```
 
-   Answer `yes` to copy the existing state. The key ARN is required: the bucket policy refuses any write that is not SSE-KMS, and `encrypt = true` alone sends AES256. Verify, and only then clean up:
+   Answer `yes` to copy the existing state. The key ARN is required: the bucket policy refuses any write that is not SSE-KMS, and `encrypt = true` alone sends AES256. It must be the full ARN (`arn:aws:kms:...:key/...`), as in every `kms_key_id` below: an alias or a bare key id is refused by the bucket policy, which compares the header with the state key's ARN. Verify, and only then clean up:
 
    ```bash
    terraform plan -var environment=$ENV       # must report: No changes
@@ -108,7 +108,7 @@ The one required input is `alarm_email`, with no default. CI passes it as `TF_VA
 
 ### Initialize a root by hand
 
-The `-backend-config` values are the same five as for bootstrap, with `key=hub.tfstate`:
+The `-backend-config` values are the same five as for bootstrap, with `key=hub.tfstate` (`kms_key_id` is the key ARN, never an alias or bare id):
 
 ```bash
 export ENV=test                            # prod: ENV=prod

@@ -124,6 +124,10 @@ data "aws_iam_policy_document" "boundary" {
 
   # Applies cannot loosen the guard rails or rewrite the three CI roles.
   statement {
+    # The OIDC provider is covered for delete, thumbprint, and audience removal.
+    # iam:AddClientIDToOpenIDConnectProvider and iam:TagOpenIDConnectProvider are
+    # deliberately left allowed: an added audience grants nothing without a role
+    # trusting it, and the roles above are themselves protected.
     sid    = "DenyTamperingWithBootstrap"
     effect = "Deny"
     actions = [
