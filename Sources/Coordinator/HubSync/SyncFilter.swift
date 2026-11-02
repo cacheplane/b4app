@@ -9,8 +9,8 @@ import WorkspaceSync
 ///
 /// - Only `WorkspaceDatabase.syncedTables` travel; `localServers`, `devices`, and `hubLink` never do.
 /// - A `connections` insert carries only the known columns (`connectionColumns`, the Mac schema's and
-///   the hub's), so a column a later migration adds never uploads by accident; one whose value is not
-///   an object is not sent at all.
+///   the hub's; `projectId` is one, and uploads), so a column a later migration adds never uploads by
+///   accident; one whose value is not an object is not sent at all.
 /// - `connections.authReference`, `.localServerId`, and `.target` are machine-local (a secret
 ///   reference, a managed-server id, a path or URL): an insert carries them blanked, and an update of
 ///   one of them is not sent at all.
@@ -26,10 +26,11 @@ import WorkspaceSync
 enum SyncFilter {
   static let payloadLimit = 1_048_576
   static let blankedConnectionColumns: Set<String> = ["authReference", "localServerId", "target"]
-  /// The 16 columns of `connections` in `0001_init.sql`, equal to the hub's `TableSpec`.
+  /// The 17 columns of `connections` (`0001_init.sql` and `0005_relay.sql`), equal to the hub's `TableSpec`.
   static let connectionColumns: Set<String> = [
     "id", "kind", "label", "enabled", "profileRevision", "target", "routeKey", "b4Mode", "localServerId",
-    "authReference", "nativeScope", "capabilities", "status", "authStatus", "createdAt", "updatedAt",
+    "authReference", "nativeScope", "projectId", "capabilities", "status", "authStatus", "createdAt",
+    "updatedAt",
   ]
   private static let scopedTables: Set<String> = ["connections", "threads"]
   private static let payloadTables: Set<String> = ["displayItems", "runtimeRequests"]

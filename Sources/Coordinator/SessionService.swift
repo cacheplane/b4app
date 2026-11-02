@@ -230,11 +230,13 @@ public actor SessionService {
     {
       return try await connectionInspect(ConnectionInspect.Params(connectionId: existing.id))
     }
-    let connection = try db.insertConnection(
-      Connection(
-        id: UUID().uuidString.lowercased(), kind: .b4,
-        label: params.label ?? "\(route.displayName) @ \(server.name)", target: "http://127.0.0.1:\(port)",
-        routeKey: route.key, b4Mode: .managedLocal, localServerId: server.id, status: .connecting))
+    var managed = Connection(
+      id: UUID().uuidString.lowercased(), kind: .b4,
+      label: params.label ?? "\(route.displayName) @ \(server.name)", target: "http://127.0.0.1:\(port)",
+      routeKey: route.key, b4Mode: .managedLocal, localServerId: server.id, status: .connecting)
+    // The connection serves its server folder's project, from its first change-log entry on.
+    managed.projectId = try await context.projects.projectId(forConnection: managed)
+    let connection = try db.insertConnection(managed)
     return try await connectionInspect(ConnectionInspect.Params(connectionId: connection.id))
   }
 

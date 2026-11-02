@@ -298,7 +298,8 @@ private struct HubHarness {
     }
     #expect(sent["futureSecret"] == nil)
     #expect(Set(sent.keys) == SyncFilter.connectionColumns)
-    #expect(sent.count == 16)
+    #expect(sent.count == 17)
+    #expect(sent["projectId"] == .string("v-projectId"))
     #expect(sent["authReference"] == .null)
     #expect(sent["localServerId"] == .null)
     #expect(sent["target"] == .string(""))
@@ -308,6 +309,37 @@ private struct HubHarness {
 }
 
 @Suite(.serialized) struct HubSyncTests {
+  @Test func connectionProjectIdIsUploaded() async throws {
+    let h = try await HubHarness.start()
+    defer { Task { await h.close() } }
+    let db = h.coordinator.database
+    let project = try db.insertProject(Project(id: "p1"), folders: ["/tmp/b4-project"])
+    let server = try db.insertLocalServer(
+      LocalServer(
+        id: "s1", name: "proj", projectPath: "/tmp/b4-project", nodePath: "/usr/bin/node",
+        cliPath: "/tmp/b4-project/cli.js", launchMode: .development))
+    _ = try db.insertConnection(
+      Connection(
+        id: "c-b4", kind: .b4, label: "Local B4", target: "http://127.0.0.1:9", routeKey: "/chat#agent",
+        b4Mode: .managedLocal, localServerId: server.id, projectId: project.id))
+
+    _ = try await h.join()
+    let pushed = await h.fake.pushed.flatMap { $0 }
+    let insert = try #require(pushed.first { $0.table == "connections" && $0.rowId == "c-b4" })
+    #expect(insert.value?["projectId"] == .string("p1"))
+    // The machine-local columns are still blank.
+    #expect(insert.value?["target"] == .string(""))
+    #expect(insert.value?["localServerId"] == .null)
+
+    // A later move travels as an update of the one column, a clear as a JSON null.
+    try db.setConnectionProject(id: "c-b4", projectId: nil)
+    let update = try #require(
+      try db.changes(after: 0).last { $0.table == "connections" && $0.column == "projectId" })
+    let out = try #require(SyncFilter.outbound(update))
+    #expect(out.column == "projectId")
+    #expect(out.value == .null)
+  }
+
   @Test func joinPushesTheBacklogAndMarksItSynced() async throws {
     let h = try await HubHarness.start()
     defer { Task { await h.close() } }

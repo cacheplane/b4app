@@ -147,6 +147,8 @@ public enum Coordinator {
     do {
       let assigned = try await projects.backfill()
       if assigned > 0 { logger.info("project backfill assigned \(assigned, privacy: .public) threads") }
+      let served = try await projects.backfillConnections()
+      if served > 0 { logger.info("project backfill assigned \(served, privacy: .public) connections") }
     } catch {
       logger.error("project backfill failed: \(String(describing: error), privacy: .public)")
     }

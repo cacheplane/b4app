@@ -30,11 +30,25 @@ public actor ProjectService {
       guard let context = thread.context, !context.isEmpty else { return nil }
       return SessionService.canonicalDirectory(context)
     case .b4:
-      guard let serverId = connection.localServerId, let server = try db.localServer(id: serverId),
-        !server.projectPath.isEmpty
-      else { return nil }
-      return SessionService.canonicalDirectory(server.projectPath)
+      return try serverFolder(of: connection)
     }
+  }
+
+  /// The canonical project directory of the managed server a local B4 connection runs on; nil for any
+  /// other connection, or when the server row is gone.
+  private func serverFolder(of connection: Connection) throws -> String? {
+    guard connection.kind == .b4, let serverId = connection.localServerId,
+      let server = try db.localServer(id: serverId), !server.projectPath.isEmpty
+    else { return nil }
+    return SessionService.canonicalDirectory(server.projectPath)
+  }
+
+  /// The project a local B4 connection serves: the project of its managed server's folder, created
+  /// (automatic, empty name) when none owns it. Nil for a Codex or Claude connection, a remote or
+  /// attached B4 connection, and one whose server is gone.
+  public func projectId(forConnection connection: Connection) async throws -> String? {
+    guard let folder = try serverFolder(of: connection) else { return nil }
+    return try await ensureProject(folder: folder).id
   }
 
   /// The project a new thread joins, created (automatic, empty name) when its folder has none; nil for a
@@ -113,6 +127,34 @@ public actor ProjectService {
     return byProject.values.reduce(0) { $0 + $1.count }
   }
 
+  /// Give every local B4 connection with no project the project of its server's folder, once after
+  /// migration 0005. Idempotent like `backfill()`: it looks only at connections with
+  /// `projectId IS NULL`, and a connection with no server folder stays unassigned. The writes land in
+  /// the change log (the hub has not heard of the column yet). Returns how many it assigned.
+  @discardableResult
+  public func backfillConnections() async throws -> Int {
+    try await alignConnections(onlyUnassigned: true)
+  }
+
+  /// Point every local B4 connection at the project that now owns its server's folder; returns how many
+  /// moved. Called after any edit that moves folders, since a folder's move or a project's deletion can
+  /// change which project a connection's folder is in.
+  @discardableResult
+  private func alignConnections(onlyUnassigned: Bool = false) async throws -> Int {
+    var moved = 0
+    for connection in try db.listConnections(includeDisabled: true)
+    where connection.kind == .b4 && connection.localServerId != nil
+      && (!onlyUnassigned || connection.projectId == nil)
+    {
+      guard let projectId = try await projectId(forConnection: connection),
+        projectId != connection.projectId
+      else { continue }
+      try db.setConnectionProject(id: connection.id, projectId: projectId)
+      moved += 1
+    }
+    return moved
+  }
+
   // MARK: - Commands
 
   public func list() throws -> ProjectList.Result {
@@ -129,6 +171,7 @@ public actor ProjectService {
     let placing = folders.map { FolderPlacement(path: $0, threadIds: threadsByFolder[$0] ?? []) }
     let edit = try db.createManualProject(
       Project(id: Self.newId(), name: name, manual: true), placing: placing)
+    try await alignConnections()
     await publish(edit, threadIds: placing.flatMap(\.threadIds))
     return ProjectCreate.Result(project: try require(edit.project))
   }
@@ -172,6 +215,7 @@ public actor ProjectService {
     let name = params.name.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     let edit = try db.updateProject(
       id: project.id, name: name, placing: placing, releasing: releasing)
+    try await alignConnections()
     await publish(edit, threadIds: placing.flatMap(\.threadIds) + releasing.flatMap(\.threadIds))
     return ProjectUpdate.Result(project: try require(edit.project))
   }
@@ -207,6 +251,7 @@ public actor ProjectService {
     // Threads that pointed here with no folder behind them become unassigned; tell viewers too.
     let orphaned = try db.listThreads(ThreadFilter(includeArchived: true, projectId: project.id)).map(\.id)
     let edit = try db.deleteManualProject(id: project.id, releasing: releasing)
+    try await alignConnections()
     await publish(edit, threadIds: orphaned + releasing.flatMap(\.threadIds))
     return ProjectDelete.Result(projectId: project.id)
   }

@@ -250,7 +250,11 @@ public final class WorkspaceDatabase: Sendable {
     id: String, _ mutate: @Sendable (inout Connection) -> Void
   ) throws -> Connection? {
     try write { c in
-      guard var connection = try byId(c, Connection.self, "connections", id) else { return nil }
+      // Locked, so a concurrent `setConnectionProject` is never overwritten by this row's old copy.
+      guard
+        var connection = try one(
+          c, Connection.self, "SELECT * FROM \"connections\" WHERE \"id\" = $1 FOR UPDATE", [id])
+      else { return nil }
       mutate(&connection)
       connection.updatedAt = Timestamp.now()
       try update(c, "connections", connection)

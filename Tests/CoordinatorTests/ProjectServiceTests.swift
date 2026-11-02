@@ -570,3 +570,143 @@ private struct ProjectHarness {
     }
   }
 }
+
+/// `connections.projectId` (migration 0005): a local B4 connection belongs to the project of its managed
+/// server's folder, and follows that folder when a project edit moves it.
+@Suite(.serialized) struct ConnectionProjectTests {
+  private func connect(_ h: ServerHarness, _ server: LocalServer) async throws -> Connection {
+    try await h.client.request(
+      ConnectionAdd.self, ConnectionAdd.Params(kind: .b4, route: "/chat#agent", serverId: server.id),
+      options: h.mutation()
+    ).connection
+  }
+
+  private func stored(_ h: ServerHarness, _ connection: Connection) throws -> Connection {
+    try #require(try h.coordinator.database.connection(id: connection.id))
+  }
+
+  @Test func localB4ConnectionGetsItsServersProject() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let path = try h.project("research-agent")
+    let server = try await h.add(path)
+    let connection = try await connect(h, server)
+
+    let projectId = try #require(try stored(h, connection).projectId)
+    #expect(connection.projectId == projectId)
+    let project = try #require(try h.coordinator.database.project(id: projectId))
+    #expect(project.folders.map(\.path) == [SessionService.canonicalDirectory(path)])
+    #expect(project.displayName == "research-agent")
+    // The connection's insert already carries the project, in the one change that creates the row.
+    let insert = try #require(
+      try h.coordinator.database.changes(after: 0).first {
+        $0.table == "connections" && $0.op == "insert" && $0.rowId == connection.id
+      })
+    #expect(insert.value?["projectId"] == .string(projectId))
+    // A second connection on the same server finds the same project rather than making another.
+    #expect(try h.coordinator.database.listProjects().count == 1)
+  }
+
+  @Test func movingTheServerFolderMovesTheConnection() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let path = try h.project("research-agent")
+    let server = try await h.add(path)
+    let connection = try await connect(h, server)
+    let automatic = try #require(try stored(h, connection).projectId)
+
+    // A manual project takes the folder: the connection follows.
+    let manual = try await h.client.request(
+      ProjectCreate.self, ProjectCreate.Params(name: "Research", folders: [path]), options: h.mutation()
+    ).project
+    #expect(try stored(h, connection).projectId == manual.id)
+    #expect(try h.coordinator.database.project(id: automatic) == nil)
+
+    // The folder leaves it (the manual project is kept, empty): the connection gets an automatic project.
+    _ = try await h.client.request(
+      ProjectUpdate.self, ProjectUpdate.Params(projectId: manual.id, removeFolders: [path]),
+      options: h.mutation())
+    let afterRemove = try #require(try stored(h, connection).projectId)
+    #expect(afterRemove != manual.id)
+    #expect(
+      try h.coordinator.database.project(id: afterRemove)?.folders.map(\.path) == [
+        SessionService.canonicalDirectory(path)
+      ])
+
+    // Another manual project takes it and is then deleted: the connection returns to an automatic one.
+    let second = try await h.client.request(
+      ProjectCreate.self, ProjectCreate.Params(name: "Second", folders: [path]), options: h.mutation()
+    ).project
+    #expect(try stored(h, connection).projectId == second.id)
+    _ = try await h.client.request(
+      ProjectDelete.self, ProjectDelete.Params(projectId: second.id), options: h.mutation())
+    let afterDelete = try #require(try stored(h, connection).projectId)
+    #expect(afterDelete != second.id)
+    #expect(
+      try h.coordinator.database.project(id: afterDelete)?.folders.map(\.path) == [
+        SessionService.canonicalDirectory(path)
+      ])
+    // The change log recorded each move as an update of the one column.
+    let moves = try h.coordinator.database.changes(after: 0).filter {
+      $0.table == "connections" && $0.op == "update" && $0.column == "projectId"
+        && $0.rowId == connection.id
+    }
+    #expect(moves.count >= 3)
+  }
+
+  @Test func codexAndRemoteB4ConnectionsHaveNoProject() async throws {
+    let h = try await ProjectHarness.start()
+    defer { Task { await h.close() } }
+    let codex = try await h.addCodex()
+    let remote = try h.db.insertConnection(
+      Connection(
+        id: "c-remote", kind: .b4, label: "Remote", target: "https://b4.example.com",
+        routeKey: "/chat#agent", b4Mode: .remote))
+    // A managed-mode connection with no server behind it has no folder either.
+    let unserved = try h.db.insertConnection(
+      Connection(
+        id: "c-unserved", kind: .b4, label: "Unserved", target: "http://127.0.0.1:1",
+        routeKey: "/chat#agent", b4Mode: .managedLocal))
+    let projects = h.coordinator.projects
+    for connection in [codex, remote, unserved] {
+      #expect(try await projects.projectId(forConnection: connection) == nil, "\(connection.label)")
+    }
+    #expect(try await projects.backfillConnections() == 0)
+    for id in [codex.id, remote.id, unserved.id] {
+      #expect(try h.db.connection(id: id)?.projectId == nil)
+    }
+    #expect(try h.db.listProjects().isEmpty)
+  }
+
+  @Test func backfillSetsExistingConnections() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let path = try h.project("research-agent")
+    let server = try await h.add(path)
+    let db = h.coordinator.database
+    // Rows as an older build left them: a local B4 connection with no project, and a remote one.
+    let local = try db.insertConnection(
+      Connection(
+        id: "c-local", kind: .b4, label: "Local", target: "http://127.0.0.1:1", routeKey: "/chat#agent",
+        b4Mode: .managedLocal, localServerId: server.id))
+    _ = try db.insertConnection(
+      Connection(
+        id: "c-remote", kind: .b4, label: "Remote", target: "https://b4.example.com",
+        routeKey: "/chat#agent", b4Mode: .remote))
+    #expect(local.projectId == nil)
+    let before = try db.changes(after: 0).last?.seq ?? 0
+
+    #expect(try await h.coordinator.projects.backfillConnections() == 1)
+    let projectId = try #require(try db.connection(id: "c-local")?.projectId)
+    #expect(try db.project(id: projectId)?.folders.map(\.path) == [SessionService.canonicalDirectory(path)])
+    #expect(try db.connection(id: "c-remote")?.projectId == nil)
+    // It ran with the change log on, so the hub hears of it as an update of the one column.
+    let updates = try db.changes(after: before).filter { $0.table == "connections" && $0.op == "update" }
+    #expect(updates.map(\.column) == ["projectId"])
+    #expect(updates.first?.value == .string(projectId))
+    #expect(updates.first?.rowId == "c-local")
+    // Idempotent: nothing left to assign, and no second project for the same folder.
+    #expect(try await h.coordinator.projects.backfillConnections() == 0)
+    #expect(try db.listProjects().count == 1)
+  }
+}
