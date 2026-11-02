@@ -274,7 +274,7 @@ Known limitations:
 - A pending request still pending after its ledger row is pruned (30 days by default) could notify a second time.
 - Opportunistic background fetches on a device are at iOS's discretion; a `BGAppRefreshTask` would ask for them.
 - The App Groups, the push capability, and the widget's App IDs must be enabled on the Developer portal before the next TestFlight upload (`blocked` on the owner). Since the sign-in merge each flavour has its own group (`group.com.cacheplane.b4app`, `.beta`, `.local`; D-125) and widget id (the app's id plus `.widget`: `com.cacheplane.b4app.ios.widget`, `com.cacheplane.b4app.ios.local.widget`). Prod and beta share the iPhone App ID `com.cacheplane.b4app.ios` (and its widget's), so that App ID needs both the prod and the beta group.
-- A phone that logs out stays enrolled with its push token on the hub; the hub tells only phones that still hold a session token, so it is told nothing until it signs in again.
+- A phone that logs out stays enrolled with its push token on the hub; the hub tells only phones that still hold a session token, so it is told nothing until it signs in again, provided the log-out reached the hub; the phone also unregisters from remote notifications on log-out, which covers a log-out made offline.
 
 Exit gate status: the design's exit passes in the Simulator: with the app in the background, a fixture approval on the Mac produced a notification within a second of the hub receiving it, tapping it opened the thread, and the widget showed the three most urgent threads and updated after the notification. APNs on a real iPhone is the deploy slice's.
 
