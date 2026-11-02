@@ -164,16 +164,16 @@ terraform init \
 The first apply of each root waits on certificate validation (up to 60 minutes; the apply jobs allow 90). The validation CNAMEs must already exist at Vercel before the first prod apply is approved, otherwise that apply sits waiting; the same goes for the first test apply. Read the records first with `terraform apply -target=module.hub.aws_acm_certificate.hub` (it needs the root's `-var alarm_email=...` or `TF_VAR_alarm_email`), add the `acm_validation_records` CNAMEs and a CNAME from the hostname to `alb_dns_name` at Vercel, then run the full apply (locally, or by merging).
 
 
-**CAA.** Vercel publishes default CAA records on `b4.run` that allow only Let's Encrypt, Sectigo, and Google (`dig CAA b4.run`), so ACM can never issue for a name under it until Amazon's CAs are allowed. Do not edit the apex set (Vercel's own certificates depend on it); add the four Amazon issuers on the hub names themselves, once per hostname. The records and the validation CNAMEs are managed with the Vercel CLI in the `cacheplane` team (`vercel dns add b4.run <name> <type> <value> --scope cacheplane`), which is what the owner did on 2026-11-02:
+**CAA.** Vercel publishes default CAA records on `b4.run` that allow only Let's Encrypt, Sectigo, and Google (`dig CAA b4.run`), so ACM can never issue for a name under it until Amazon's CAs are allowed. The Amazon issuers go on the apex, beside the three Vercel needs (once any explicit CAA record exists, the defaults no longer apply, so all seven are listed): a hub hostname is a CNAME, and a CNAME cannot share its name with a CAA record, so the CAA set the hub names inherit is the apex one. The records and the validation CNAMEs are managed with the Vercel CLI in the `cacheplane` team (`vercel dns add b4.run <name> <type> <value> --scope cacheplane`; the apex name is `''`), which is what the owner did on 2026-11-02:
 
 ```bash
-for sub in hub.test hub; do
-  for ca in amazon.com amazontrust.com awstrust.com amazonaws.com; do
-    vercel dns add b4.run $sub CAA "0 issue \"$ca\"" --scope cacheplane
-  done
+for ca in letsencrypt.org sectigo.com pki.goog amazon.com amazontrust.com awstrust.com amazonaws.com; do
+  vercel dns add b4.run '' CAA "0 issue \"$ca\"" --scope cacheplane
 done
-# then one CNAME per environment from acm_validation_records (name relative to b4.run):
+# one validation CNAME per environment from acm_validation_records (name relative to b4.run):
 vercel dns add b4.run _<hash>.hub.test CNAME _<hash>.<id>.acm-validations.aws. --scope cacheplane
+# after the root's full apply, the hostname itself:
+vercel dns add b4.run hub.test CNAME <alb_dns_name>. --scope cacheplane
 ```
 
 By hand, the targeted certificate apply runs in the root with `AWS_PROFILE=b4hub-$ENV` and `TF_VAR_alarm_email` set; it leaves the certificate in the state, which the full apply then validates.
