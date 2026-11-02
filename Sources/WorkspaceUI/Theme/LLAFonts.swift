@@ -44,28 +44,76 @@ public enum LLAFonts {
 #if os(iOS)
   /// Navigation-bar titles in Hanken Grotesk SemiBold rather than SF Pro, so a pushed title, a
   /// sheet's title, and Settings' large title carry the same face as the rest of the app (D-036). Set
-  /// on the appearance proxy, which leaves the bar's own background and glass alone; `UIFontMetrics`
-  /// scales the faces with Dynamic Type as the system titles do.
+  /// on the appearance proxy, which leaves the bar's own background and glass alone, and set again
+  /// whenever the text size changes: the proxy reaches the bars made from then on, and the bars
+  /// already on screen are given the new faces directly (D-060).
   @MainActor enum LLANavigationBar {
-    private static var applied = false
+    private static var observing = false
 
+    /// Sets the faces for the current text size and follows its changes. Idempotent.
     static func apply() {
-      guard !applied, LLAFonts.register(),
-        let inline = UIFont(name: LLAFonts.sansSemiBold, size: 17),
+      guard LLAFonts.register() else { return }
+      update()
+      guard !observing else { return }
+      observing = true
+      NotificationCenter.default.addObserver(
+        forName: UIContentSizeCategory.didChangeNotification, object: nil, queue: .main
+      ) { _ in
+        MainActor.assumeIsolated { update() }
+      }
+    }
+
+    private static func update() {
+      guard let faces = faces(for: UIApplication.shared.preferredContentSizeCategory) else { return }
+      let proxy = UINavigationBar.appearance()
+      proxy.titleTextAttributes = faces.inline
+      proxy.largeTitleTextAttributes = faces.large
+      for bar in openBars() {
+        bar.titleTextAttributes = faces.inline
+        bar.largeTitleTextAttributes = faces.large
+      }
+    }
+
+    /// The title attributes for a text size. The inline title stops growing at the largest
+    /// non-accessibility size, as a bar's title does, since the bar's height is fixed; the large
+    /// title, which has its own row, keeps growing.
+    static func faces(
+      for category: UIContentSizeCategory
+    )
+      -> (inline: [NSAttributedString.Key: Any], large: [NSAttributedString.Key: Any])?
+    {
+      guard let inline = UIFont(name: LLAFonts.sansSemiBold, size: 17),
         let large = UIFont(name: LLAFonts.sansSemiBold, size: 34)
-      else { return }
-      applied = true
+      else { return nil }
+      // Explicit traits: without them `scaledFont(for:)` measures against whatever trait collection
+      // is current, which outside a view's layout is the default size.
+      let inlineTraits = UITraitCollection(preferredContentSizeCategory: min(category, .extraExtraExtraLarge))
+      let largeTraits = UITraitCollection(preferredContentSizeCategory: category)
       let ink = UIColor {
         UIColor(hex: $0.userInterfaceStyle == .dark ? LLA.Palette.ink.dark : LLA.Palette.ink.light)
       }
-      let bar = UINavigationBar.appearance()
-      bar.titleTextAttributes = [
-        .font: UIFontMetrics(forTextStyle: .headline).scaledFont(for: inline), .foregroundColor: ink,
-      ]
-      bar.largeTitleTextAttributes = [
-        .font: UIFontMetrics(forTextStyle: .largeTitle).scaledFont(for: large), .foregroundColor: ink,
-        .kern: -0.6,
-      ]
+      return (
+        [
+          .font: UIFontMetrics(forTextStyle: .headline).scaledFont(for: inline, compatibleWith: inlineTraits),
+          .foregroundColor: ink,
+        ],
+        [
+          .font: UIFontMetrics(forTextStyle: .largeTitle).scaledFont(for: large, compatibleWith: largeTraits),
+          .foregroundColor: ink, .kern: -0.6,
+        ]
+      )
+    }
+
+    private static func openBars() -> [UINavigationBar] {
+      UIApplication.shared.connectedScenes
+        .compactMap { $0 as? UIWindowScene }
+        .flatMap(\.windows)
+        .flatMap(bars(in:))
+    }
+
+    private static func bars(in view: UIView) -> [UINavigationBar] {
+      if let bar = view as? UINavigationBar { return [bar] }
+      return view.subviews.flatMap(bars(in:))
     }
   }
 #endif
