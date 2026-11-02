@@ -97,6 +97,7 @@ tests:
     set:
       hub.apple.audiences: [com.example.ios, com.example.signin]
       hub.apple.servicesId: com.example.signin
+      hub.apple.callbackScheme: b4app-beta
       hub.extraEnv:
         - name: OTEL_SERVICE_NAME
           value: b4hub
@@ -130,6 +131,9 @@ tests:
           content: {name: B4HUB_APPLE_SERVICES_ID, value: com.example.signin}
       - contains:
           path: spec.template.spec.containers[0].env
+          content: {name: B4HUB_APPLE_CALLBACK_SCHEME, value: b4app-beta}
+      - contains:
+          path: spec.template.spec.containers[0].env
           content: {name: OTEL_SERVICE_NAME, value: b4hub}
 
   - it: leaves out the optional Apple settings and X-Forwarded-For trust when unset
@@ -143,6 +147,10 @@ tests:
       - notContains:
           path: spec.template.spec.containers[0].env
           content: {name: B4HUB_APPLE_SERVICES_ID}
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content: {name: B4HUB_APPLE_CALLBACK_SCHEME}
           any: true
       - notContains:
           path: spec.template.spec.containers[0].env
