@@ -212,7 +212,8 @@ public final class MirrorStore: @unchecked Sendable {
   ) throws
     -> [ConversationThread]
   {
-    var clauses: [String] = []
+    // A deleted thread is never listed; `thread(id:)` still finds it.
+    var clauses: [String] = [#"t."userDeletedAt" IS NULL"#]
     var binds: [Bind] = []
     if let connectionId {
       clauses.append(#"t."connectionId" = ?"#)

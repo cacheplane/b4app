@@ -60,7 +60,7 @@ enum MirrorSchema {
   /// Ordered migrations keyed by the `user_version` each leaves behind. A file at version `n` runs
   /// every migration after `n`, all in one transaction.
   static let migrations: [(version: Int, statements: [String])] = [
-    (1, version1), (2, version2), (3, version3), (4, version4),
+    (1, version1), (2, version2), (3, version3), (4, version4), (5, version5),
   ]
 
   /// M8a's schema.
@@ -250,5 +250,10 @@ enum MirrorSchema {
       "updatedAt" TEXT
     ) STRICT
     """
+  ]
+
+  /// Deleting threads: a deleted thread keeps its row, marked by `userDeletedAt`, and is never listed.
+  static let version5 = [
+    #"ALTER TABLE "threads" ADD COLUMN "userDeletedAt" TEXT"#
   ]
 }
