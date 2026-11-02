@@ -24,6 +24,8 @@ security_group="$4"
 log_group="$5"
 stream_prefix="$6"
 shift 6
+# The container name Infra/taskdefs/hub-migrate.json.tpl gives the migration.
+container=migrate
 
 public_ip=ENABLED
 while [ "$#" -gt 0 ]; do
@@ -70,8 +72,7 @@ for _ in 1 2 3; do
 done
 
 described="$(aws ecs describe-tasks --cluster "$cluster" --tasks "$task_arn" --output json)"
-container="$(jq -r '.tasks[0].containers[0].name // "migrate"' <<< "$described")"
-exit_code="$(jq -r '.tasks[0].containers[0].exitCode // ""' <<< "$described")"
+exit_code="$(jq -r --arg c "$container" '.tasks[0].containers[]? | select(.name == $c) | .exitCode // ""' <<< "$described")"
 reason="$(jq -r '.tasks[0].stoppedReason // "none"' <<< "$described")"
 
 echo "---- $log_group $stream_prefix/$container/$task_id (last 200 lines)"
@@ -88,7 +89,13 @@ fi
 echo "----"
 
 if [ "$stopped" != true ]; then
-  echo "run-migrate: task $task_id did not stop within 30 minutes; it is still running" >&2
+  {
+    echo "run-migrate: task $task_id did not stop within 30 minutes and may still be running."
+    echo "  It was left running: a migration interrupted mid-way is worse than a slow one."
+    echo "  Watch it:  aws ecs describe-tasks --cluster $cluster --tasks $task_arn"
+    echo "  Stop it:   aws ecs stop-task --cluster $cluster --task $task_arn --reason 'migration timed out'"
+    echo "  The service was not updated."
+  } >&2
   exit 1
 fi
 case "$exit_code" in

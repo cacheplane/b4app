@@ -130,3 +130,28 @@ line_of() { grep -n -m1 -- "$1" "$STUB_LOG" | cut -d: -f1; }
   [ "$status" -eq 0 ]
   logged 'assignPublicIp=DISABLED'
 }
+
+@test "a malformed account id stops the deploy before the image is copied" {
+  export STUB_ACCOUNT=None
+  run "$deploy" test "$digest"
+  [ "$status" -ne 0 ]
+  output_has "could not resolve account id"
+  not_logged '^docker'
+  not_logged 'register-task-definition'
+}
+
+@test "run-migrate reads the migrate container's exit code, not the first container's" {
+  export STUB_MIGRATE_EXIT=4
+  run "$migrate" b4hub-test arn:td subnet-a sg-admin /b4hub/test/migrate migrate
+  [ "$status" -eq 4 ]
+}
+
+@test "a migration that outlasts the wait is left running, with guidance, and fails the deploy" {
+  export STUB_WAIT_FAIL=1
+  run "$deploy" test "$digest"
+  [ "$status" -ne 0 ]
+  output_has "may still be running"
+  output_has "aws ecs stop-task --cluster b4hub-test --task arn:aws:ecs:us-east-2:123456789012:task/b4hub-test/0123abcd"
+  not_logged 'stop-task'
+  not_logged 'update-service'
+}

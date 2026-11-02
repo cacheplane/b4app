@@ -240,4 +240,3 @@ jobs:
     with:
       environment: test
       digest: ${{ needs.merge.outputs.digest }}
-    secrets: inherit

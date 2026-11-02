@@ -57,16 +57,22 @@ esac
 
 step() { echo "==> $*"; }
 
-nonempty() { # label value
-  case "$2" in
-    "" | null | None) echo "deploy: could not resolve $1" >&2; exit 1 ;;
-  esac
-  printf '%s' "$2"
+# Every value resolved from the account is checked for its shape before use,
+# so an empty answer, "None", or an unexpected format stops the deploy here.
+ARN='^arn:aws:[a-z0-9-]+:[a-z0-9-]*:[0-9]{0,12}:[^[:space:]]+$'
+resolved() { # label pattern value -> value
+  if ! [[ "$3" =~ $2 ]]; then
+    echo "deploy: could not resolve $1 (got '${3:-nothing}')" >&2
+    exit 1
+  fi
+  printf '%s' "$3"
 }
 
+[[ "$region" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]$ ]] || die "unexpected AWS region '$region'"
+
 # 1. The image, copied by digest into this account's ECR.
-account="$(nonempty "account id" "$(aws sts get-caller-identity --output json | jq -r .Account)")"
-registry="$account.dkr.ecr.$region.amazonaws.com"
+account="$(resolved "account id" '^[0-9]{12}$' "$(aws sts get-caller-identity --output json | jq -r .Account)")"
+registry="$(resolved "ECR registry" '^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$' "$account.dkr.ecr.$region.amazonaws.com")"
 ecr_tag="$registry/b4hub:${digest#sha256:}"
 image="$registry/b4hub@$digest"
 
@@ -92,7 +98,7 @@ echo "$ecr_tag is $digest"
 # 2. ARNs and network, resolved from the account (no account id in the repo).
 step "resolving ARNs"
 secret_arn() {
-  nonempty "secret b4hub/$1" "$(aws secretsmanager describe-secret --secret-id "b4hub/$1" --output json | jq -r .ARN)"
+  resolved "secret b4hub/$1" "$ARN" "$(aws secretsmanager describe-secret --secret-id "b4hub/$1" --output json | jq -r .ARN)"
 }
 task_definition() { # family -> its current revision, as JSON
   aws ecs describe-task-definition --task-definition "$1" --output json
@@ -110,16 +116,16 @@ if [ "$signin" = 1 ]; then
 fi
 # The new revisions keep the roles Terraform gave each family.
 hub_td="$(task_definition "$hub_family")"
-hub_exec="$(nonempty "$hub_family execution role" "$(jq -r .taskDefinition.executionRoleArn <<< "$hub_td")")"
-hub_task="$(nonempty "$hub_family task role" "$(jq -r .taskDefinition.taskRoleArn <<< "$hub_td")")"
+hub_exec="$(resolved "$hub_family execution role" "$ARN" "$(jq -r .taskDefinition.executionRoleArn <<< "$hub_td")")"
+hub_task="$(resolved "$hub_family task role" "$ARN" "$(jq -r .taskDefinition.taskRoleArn <<< "$hub_td")")"
 migrate_td="$(task_definition "$migrate_family")"
-migrate_exec="$(nonempty "$migrate_family execution role" "$(jq -r .taskDefinition.executionRoleArn <<< "$migrate_td")")"
-migrate_task="$(nonempty "$migrate_family task role" "$(jq -r .taskDefinition.taskRoleArn <<< "$migrate_td")")"
+migrate_exec="$(resolved "$migrate_family execution role" "$ARN" "$(jq -r .taskDefinition.executionRoleArn <<< "$migrate_td")")"
+migrate_task="$(resolved "$migrate_family task role" "$ARN" "$(jq -r .taskDefinition.taskRoleArn <<< "$migrate_td")")"
 
 services="$(aws ecs describe-services --cluster "$cluster" --services "$service" --output json)"
-subnets="$(nonempty "service subnets" "$(jq -r '.services[0].networkConfiguration.awsvpcConfiguration.subnets // [] | join(",")' <<< "$services")")"
-public_ip="$(nonempty "service public IP setting" "$(jq -r '.services[0].networkConfiguration.awsvpcConfiguration.assignPublicIp // ""' <<< "$services")")"
-admin_sg="$(nonempty "security group $name-admin" "$(aws ec2 describe-security-groups \
+subnets="$(resolved "service subnets" '^subnet-[0-9a-z]+(,subnet-[0-9a-z]+)*$' "$(jq -r '.services[0].networkConfiguration.awsvpcConfiguration.subnets // [] | join(",")' <<< "$services")")"
+public_ip="$(resolved "service public IP setting" '^(ENABLED|DISABLED)$' "$(jq -r '.services[0].networkConfiguration.awsvpcConfiguration.assignPublicIp // ""' <<< "$services")")"
+admin_sg="$(resolved "security group $name-admin" '^sg-[0-9a-z]+$' "$(aws ec2 describe-security-groups \
   --filters "Name=group-name,Values=$name-admin" --output json | jq -r '.SecurityGroups[0].GroupId // ""')")"
 
 # 3. Render and register both revisions.
@@ -127,7 +133,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 register() { # rendered file -> new revision ARN
-  nonempty "registered revision" "$(aws ecs register-task-definition --cli-input-json "file://$1" --output json |
+  resolved "registered revision" '^arn:aws:ecs:[a-z0-9-]+:[0-9]{12}:task-definition/[A-Za-z0-9_-]+:[0-9]+$' "$(aws ecs register-task-definition --cli-input-json "file://$1" --output json |
     jq -r .taskDefinition.taskDefinitionArn)"
 }
 

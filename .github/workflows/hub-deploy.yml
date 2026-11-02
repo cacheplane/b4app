@@ -106,6 +106,11 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Trust chain: this digest -> a provenance attestation signed by
+      # hub-image.yml in cacheplane/b4app -> on a GitHub-hosted runner -> from
+      # refs/heads/main. A digest built by dispatching hub-image.yml on another
+      # branch fails here. Releases are cut from commits on main whose image
+      # the push-to-main run built, so production checks the same ref.
       - name: Verify the build attestation
         env:
           GH_TOKEN: ${{ github.token }}
@@ -113,7 +118,9 @@ jobs:
         run: |
           gh attestation verify "oci://$IMAGE@$DIGEST" \
             --repo cacheplane/b4app \
-            --signer-workflow cacheplane/b4app/.github/workflows/hub-image.yml
+            --signer-workflow cacheplane/b4app/.github/workflows/hub-image.yml \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
@@ -160,6 +167,11 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Trust chain: this digest -> a provenance attestation signed by
+      # hub-image.yml in cacheplane/b4app -> on a GitHub-hosted runner -> from
+      # refs/heads/main. A digest built by dispatching hub-image.yml on another
+      # branch fails here. Releases are cut from commits on main whose image
+      # the push-to-main run built, so production checks the same ref.
       - name: Verify the build attestation
         env:
           GH_TOKEN: ${{ github.token }}
@@ -167,7 +179,9 @@ jobs:
         run: |
           gh attestation verify "oci://$IMAGE@$DIGEST" \
             --repo cacheplane/b4app \
-            --signer-workflow cacheplane/b4app/.github/workflows/hub-image.yml
+            --signer-workflow cacheplane/b4app/.github/workflows/hub-image.yml \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:

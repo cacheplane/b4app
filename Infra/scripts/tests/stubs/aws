@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Test stub for the AWS CLI: records every invocation in $STUB_LOG and returns
 # canned JSON. STUB_MIGRATE_EXIT sets the migrate container's exit code
-# ("none" leaves it out); STUB_ROLLOUT sets the primary deployment's state.
+# ("none" leaves it out); STUB_ROLLOUT sets the primary deployment's state;
+# STUB_ACCOUNT overrides the account id; STUB_WAIT_FAIL=1 makes the
+# tasks-stopped waiter time out; describe-tasks lists a sidecar container
+# before the migrate one so callers must select by name.
 set -euo pipefail
 printf 'aws %s\n' "$*" >> "${STUB_LOG:?}"
 
@@ -14,7 +17,7 @@ arg() { # value following flag $1
   return 1
 }
 
-account=123456789012
+account="${STUB_ACCOUNT:-123456789012}"
 region=us-east-2
 case "${1:-} ${2:-}" in
   "sts get-caller-identity")
@@ -49,13 +52,17 @@ case "${1:-} ${2:-}" in
     printf '{"tasks":[{"taskArn":"arn:aws:ecs:%s:%s:task/b4hub-test/0123abcd"}],"failures":[]}\n' "$region" "$account"
     ;;
   "ecs wait")
+    if [ "${3:-}" = tasks-stopped ] && [ "${STUB_WAIT_FAIL:-0}" = 1 ]; then
+      echo "Waiter TasksStopped failed: Max attempts exceeded" >&2
+      exit 255
+    fi
     ;;
   "ecs describe-tasks")
     code="${STUB_MIGRATE_EXIT:-0}"
     if [ "$code" = none ]; then
-      printf '{"tasks":[{"stoppedReason":"CannotPullContainerError: pull failed","containers":[{"name":"migrate"}]}]}\n'
+      printf '{"tasks":[{"stoppedReason":"CannotPullContainerError: pull failed","containers":[{"name":"sidecar","exitCode":0},{"name":"migrate"}]}]}\n'
     else
-      printf '{"tasks":[{"stoppedReason":"Essential container in task exited","containers":[{"name":"migrate","exitCode":%s}]}]}\n' "$code"
+      printf '{"tasks":[{"stoppedReason":"Essential container in task exited","containers":[{"name":"sidecar","exitCode":0},{"name":"migrate","exitCode":%s}]}]}\n' "$code"
     fi
     ;;
   "logs get-log-events")

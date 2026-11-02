@@ -27,14 +27,23 @@ jobs:
           mkdir -p "$RUNNER_TEMP/actionlint"
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP/actionlint" actionlint
           echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
-      - name: Install shellcheck and bats
-        run: sudo apt-get update && sudo apt-get install -y shellcheck bats
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Install bats 1.14.0
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/bats.tar.gz" \
+            https://github.com/bats-core/bats-core/archive/refs/tags/v1.14.0.tar.gz
+          echo "bb537b70b15b732f6d8827dd6578e3d8ce166636ce1f18ea9a074184fcce9177  $RUNNER_TEMP/bats.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/bats.tar.gz" -C "$RUNNER_TEMP"
+          sudo "$RUNNER_TEMP/bats-core-1.14.0/install.sh" /usr/local
+          bats --version
       - name: actionlint
         run: actionlint
       - name: shellcheck
         run: |
           shopt -s nullglob
-          shellcheck .github/scripts/*.sh Hub/scripts/*.sh Infra/scripts/*.sh
+          shellcheck .github/scripts/*.sh Hub/scripts/*.sh Infra/scripts/*.sh Infra/scripts/tests/stubs/* Infra/scripts/tests/helpers.bash
       - name: Release tag guard test
         run: .github/scripts/test-tag-guard.sh
       - name: Deploy script tests

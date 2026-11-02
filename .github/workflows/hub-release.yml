@@ -109,4 +109,3 @@ jobs:
     with:
       environment: production
       digest: ${{ needs.promote.outputs.digest }}
-    secrets: inherit
