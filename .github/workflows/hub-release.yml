@@ -37,6 +37,22 @@ jobs:
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: .github/scripts/is-hub-release.sh "$TAG"
+      - name: Validate the release version
+        id: version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          if ! tags="$(.github/scripts/hub-release-tags.sh "$TAG")"; then
+            echo "::error::$TAG is not hub-v<MAJOR>.<MINOR>.<PATCH>[-prerelease]; refusing to tag or deploy"
+            exit 1
+          fi
+          echo "image tags: $(paste -sd' ' - <<< "$tags")"
+          {
+            echo "tags<<EOF"
+            echo "$tags"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Log in to GHCR
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
@@ -51,7 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           manifest=""
-          if ! manifest="$(docker buildx imagetools inspect "$IMAGE:sha-$SHA" --format '{{json .Manifest}}' 2>/dev/null)"; then
+          if ! manifest="$(docker buildx imagetools inspect "$IMAGE:sha-$SHA" --format '{{json .Manifest}}')"; then
             manifest=""
           fi
           digest="$(jq -r '.digest // ""' <<< "${manifest:-null}" 2>/dev/null || true)"
@@ -66,14 +82,15 @@ jobs:
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - name: Add the semver tags to that digest
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAGS: ${{ steps.version.outputs.tags }}
           DIGEST: ${{ steps.resolve.outputs.digest }}
         run: |
           set -euo pipefail
           tag_args=()
           while IFS= read -r version; do
             tag_args+=(--tag "$IMAGE:$version")
-          done < <(.github/scripts/hub-release-tags.sh "$TAG")
+          done <<< "$TAGS"
+          [ "${#tag_args[@]}" -gt 0 ] || { echo "::error::no tags to add" >&2; exit 1; }
           docker buildx imagetools create "${tag_args[@]}" "$IMAGE@$DIGEST"
           docker buildx imagetools inspect "$IMAGE@$DIGEST"
 
