@@ -285,12 +285,15 @@ struct PhoneNewThreadSheet: View {
     .interactiveDismissDisabled(draft.submitting)
     .onChange(of: draft.finished) { _, finished in
       guard finished else { return }
-      Task {
-        await draft.openStartedThread()
-        showDetail()
-        dismiss()
-      }
+      // Move the compact split view to the thread's detail as the sheet closes, the way the search
+      // sheet does (select, show the detail, close), then make sure the thread is the open one.
+      showDetail()
+      dismiss()
+      Task { await draft.openStartedThread() }
     }
+    // Once the sheet is gone, move to the detail again: a column change made while the sheet still
+    // covers the split view can be lost, and this one cannot.
+    .onDisappear { if draft.finished { showDetail() } }
   }
 
   // MARK: Fields
