@@ -122,10 +122,13 @@ jobs:
         run: |
           set -euo pipefail
           terraform show -json plan.bin | jq -r '
-            [.resource_changes[] | select(.change.actions != ["no-op"] and .change.actions != ["read"])] as $c
-            | "Plan: \([$c[] | select(.change.actions == ["create"])] | length) to add, \([$c[] | select(.change.actions == ["update"])] | length) to change, \([$c[] | select(.change.actions | index("delete"))] | length) to destroy (replacements count as destroy and add).",
-              "",
-              ($c[] | "- `\(.address)`: \(.change.actions | join(" + "))")
+            [(.resource_changes // [])[] | select(.change.actions != ["no-op"] and .change.actions != ["read"])] as $c
+            | if ($c | length) == 0 then "No resource changes."
+              else
+                "Plan: \([$c[] | select(.change.actions | index("create"))] | length) to add, \([$c[] | select(.change.actions == ["update"])] | length) to change, \([$c[] | select(.change.actions | index("delete"))] | length) to destroy (a replacement counts as both an add and a destroy).",
+                "",
+                ($c[] | "- `\(.address)`: \(.change.actions | join(" + "))")
+              end
           ' > "$RUNNER_TEMP/plan.txt"
       - name: Comment the plan on the pull request
         continue-on-error: false
