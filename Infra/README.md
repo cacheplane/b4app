@@ -14,14 +14,42 @@ Contents: [Bootstrap runbook](#bootstrap-runbook) · [Boundary rules](#boundary-
 
 Do this one account at a time: finish steps 3 to 5 for `test` before starting `prod`. Every account starts from a clean `.terraform` and local state, and gets its own backend values, so nothing is shared between the two applies.
 
-1. **Organization and accounts.** In the management account create an AWS Organization, then two member accounts, `b4hub-test` and `b4hub-prod`. Turn on MFA for the management account root user and do not use root afterwards.
-2. **Identity Center.** Enable IAM Identity Center in the management account, create one user for yourself, one permission set with the `AdministratorAccess` managed policy, and assign it to both member accounts. Require MFA for sign-in. Configure two SSO profiles with `aws configure sso`, named `b4hub-test` and `b4hub-prod`.
+1. **Accounts.** cacheplane already has an AWS Organization (`o-63b985q63d`, all features enabled; management account "cacheplane Management Account", `091823298178`), so do not create a second one: AWS allows one Organization per management account, and an OU is the grouping. The `b4run` OU (`ou-nrev-p1ta3hem`) exists under the root for the hub accounts. In the management account create the two member accounts `b4hub-test` and `b4hub-prod` inside it (Organizations, AWS accounts, Add an AWS account, Create), each with a unique email (for example `aws+b4hub-test@cacheplane.ai`) and the IAM role name left as `OrganizationAccountAccessRole`. Turn on MFA for the management account root user and do not use root afterwards.
+2. **CLI access.** IAM Identity Center is already enabled as an organization instance in `us-east-1` (identity source: AWS Builder ID; delegated administrator: the "cacheplane Identity Delegated Admin" account, `895757147641`). It has no permission sets: the owner reaches the management account through IAM's account access manager, which assigns the existing `AccountFullAccessRole` (`AdministratorAccess`) to the Identity Center user. The two member accounts need no assignment of their own: each was created by Organizations with `OrganizationAccountAccessRole`, which trusts the management account, so the CLI reaches them by assuming that role from a management-account session. The AWS CLI must be 2.32 or newer for `aws login` (the Intel `.pkg` install from 2022 is not; `brew install awscli` puts a current arm64 build first on `PATH`). Sign the CLI in once, then add the two profiles (nothing long-lived is stored: `aws login` keeps a refresh token for the console session, at most 12 hours, and renews the temporary credentials itself):
+
+   ```bash
+   aws login --profile cacheplane-mgmt      # opens the browser; pick the management account session
+   aws sts get-caller-identity --profile cacheplane-mgmt
+   ```
+
+   ```ini
+   # ~/.aws/config
+   [profile cacheplane-mgmt]
+   login_session = <written by aws login>
+   region = us-east-1
+
+   # Terraform and the other SDKs cannot follow a login_session source profile,
+   # so the profile they use delegates to the CLI through credential_process.
+   [profile b4hub-test-role]
+   role_arn = arn:aws:iam::355069727528:role/OrganizationAccountAccessRole
+   source_profile = cacheplane-mgmt
+   role_session_name = b4hub-test
+   region = us-east-1
+
+   [profile b4hub-test]
+   credential_process = /opt/homebrew/bin/aws configure export-credentials --profile b4hub-test-role --format process
+   region = us-east-1
+
+   # b4hub-prod-role and b4hub-prod: the same with 268895852483
+   ```
+
+   `aws sts get-caller-identity --profile b4hub-test` (and `b4hub-prod`) must answer with that account's id. When a command fails with an expired token, run the `aws login` line again; `aws login --remote` prints the URL and asks for the code instead of opening a browser. Turn on MFA for the Builder ID.
 3. **Apply bootstrap** (shown for `test`; do the whole of steps 3 to 5 for `test`, then repeat them for `prod` with `ENV=prod`):
 
    ```bash
    export ENV=test                            # prod: ENV=prod
    export AWS_PROFILE=b4hub-$ENV
-   aws sso login
+   aws login --profile cacheplane-mgmt        # only when the session has expired
    cd Infra/bootstrap
    rm -rf .terraform terraform.tfstate*       # nothing carried over from the other account
    terraform init
@@ -62,7 +90,7 @@ Do this one account at a time: finish steps 3 to 5 for `test` before starting `p
 ```bash
 export ENV=test                            # prod: ENV=prod
 export AWS_PROFILE=b4hub-$ENV
-aws sso login
+aws login --profile cacheplane-mgmt     # only when the session has expired
 cd Infra/bootstrap
 rm -rf .terraform
 # uncomment the backend "s3" block in versions.tf, as in step 5, then:
@@ -87,9 +115,11 @@ Every IAM role a root creates through the infra role must set `permissions_bound
 
 | Role | Trusted subject | Permissions |
 | --- | --- | --- |
-| `b4hub-<env>-plan` | `repo:cacheplane/b4app:*` (any ref) | `ReadOnlyAccess`, read state, lock object write |
+| `b4hub-<env>-plan` | `repo:cacheplane@269322961/b4app@1440075505:*` (any ref) | `ReadOnlyAccess`, read state, lock object write |
 | `b4hub-<env>-infra` | test: `ref:refs/heads/main`; prod: `environment:production` | `AdministratorAccess` capped by `b4hub-<env>-boundary` (no IAM users, access keys, login profiles, Organizations, or account actions; cannot edit the three roles or the boundary) |
 | `b4hub-<env>-deploy` | same as infra | ECS rollout in cluster `b4hub-<env>`, `iam:PassRole` for the two task roles, push and pull on ECR repository `b4hub`, read `/b4hub/<env>/*` logs, `secretsmanager:DescribeSecret` on `b4hub/*` (ARNs only, never values), `ec2:DescribeSecurityGroups` (to find `b4hub-<env>-admin` for the migration task). An account bootstrapped before the last two were added needs bootstrap re-applied before its first deploy. |
+
+Subjects use GitHub's immutable format, `repo:<owner>@<owner id>/<name>@<repository id>:<ref or environment>`, which this repository's tokens carry (`gh api repos/cacheplane/b4app/actions/oidc/customization/sub` reports `use_immutable_subject: true`); the ids are the `github_owner_id` and `github_repository_id` variables of `bootstrap/`. A trust policy written with the plain `repo:cacheplane/b4app:` prefix fails with `Not authorized to perform sts:AssumeRoleWithWebIdentity`.
 
 ## Environment roots
 
@@ -133,6 +163,20 @@ terraform init \
 
 The first apply of each root waits on certificate validation (up to 60 minutes; the apply jobs allow 90). The validation CNAMEs must already exist at Vercel before the first prod apply is approved, otherwise that apply sits waiting; the same goes for the first test apply. Read the records first with `terraform apply -target=module.hub.aws_acm_certificate.hub` (it needs the root's `-var alarm_email=...` or `TF_VAR_alarm_email`), add the `acm_validation_records` CNAMEs and a CNAME from the hostname to `alb_dns_name` at Vercel, then run the full apply (locally, or by merging).
 
+
+**CAA.** Vercel publishes default CAA records on `b4.run` that allow only Let's Encrypt, Sectigo, and Google (`dig CAA b4.run`), so ACM can never issue for a name under it until Amazon's CAs are allowed. Do not edit the apex set (Vercel's own certificates depend on it); add the four Amazon issuers on the hub names themselves, once per hostname. The records and the validation CNAMEs are managed with the Vercel CLI in the `cacheplane` team (`vercel dns add b4.run <name> <type> <value> --scope cacheplane`), which is what the owner did on 2026-11-02:
+
+```bash
+for sub in hub.test hub; do
+  for ca in amazon.com amazontrust.com awstrust.com amazonaws.com; do
+    vercel dns add b4.run $sub CAA "0 issue \"$ca\"" --scope cacheplane
+  done
+done
+# then one CNAME per environment from acm_validation_records (name relative to b4.run):
+vercel dns add b4.run _<hash>.hub.test CNAME _<hash>.<id>.acm-validations.aws. --scope cacheplane
+```
+
+By hand, the targeted certificate apply runs in the root with `AWS_PROFILE=b4hub-$ENV` and `TF_VAR_alarm_email` set; it leaves the certificate in the state, which the full apply then validates.
 ### First deploy: flip `desired_count`
 
 Both roots are created with `desired_count = 0`, since no image has been deployed. After the first deploy (the deploy workflow, Task 10) rolls the service out and `/readyz` is healthy, edit `desired_count = 0` to `1` in `envs/<env>/main.tf` and merge. That apply also creates the `RunningTaskCount` alarm, which only exists while `desired_count > 0`.
@@ -149,7 +193,7 @@ Seven CloudWatch alarms (5xx, unhealthy hosts, p99 latency, running tasks, datab
 
 ## Operator runbooks
 
-Each is a numbered sequence you can repeat. Runbook 1 is the [bootstrap runbook](#bootstrap-runbook) above. Commands use `ENV` (`test` or `prod`) and the owner's Identity Center profile; nothing here runs from CI except the deploy workflow. **No step puts a secret on a command line or in a committed file:** values go through shell variables (builtins are not visible in `ps`), mode-0600 temp files that are wiped afterwards, or the terminal's own prompt.
+Each is a numbered sequence you can repeat. Runbook 1 is the [bootstrap runbook](#bootstrap-runbook) above. Commands use `ENV` (`test` or `prod`) and the owner's `b4hub-<env>` profile (runbook step 2); nothing here runs from CI except the deploy workflow. **No step puts a secret on a command line or in a committed file:** values go through shell variables (builtins are not visible in `ps`), mode-0600 temp files that are wiped afterwards, or the terminal's own prompt.
 
 Wipe a temp file with `rm -P <file>` on macOS or `shred -u <file>` on Linux; the examples name each file rather than a glob.
 
@@ -162,7 +206,7 @@ Once per account, after the first `terraform apply` of the root and before the f
    ```bash
    export ENV=test                            # prod: ENV=prod
    export AWS_PROFILE=b4hub-$ENV AWS_REGION=us-east-2
-   aws sso login
+   aws login --profile cacheplane-mgmt   # only when the session has expired
    for s in database-admin-url database-url; do
      aws secretsmanager put-secret-value --secret-id b4hub/$s --secret-string placeholder > /dev/null
    done
@@ -227,7 +271,7 @@ Once per account, after the first `terraform apply` of the root and before the f
 
 ### 3. Set the sign-in secrets
 
-Do this before the sign-in hub merges to `main`, because the deploy then adds these four secrets to the serving task and ECS will not start a task whose secret is empty.
+Do this before the first deploy. The sign-in hub is on `main` and `Infra/taskdefs/features.env` sets `INCLUDE_SIGNIN_SECRETS=1`, so the deploy adds these four secrets to the serving task (and `admin-shell.sh` to the admin task's `hub` container), and ECS will not start a task whose secret is empty.
 
 1. `B4HUB_SECRET_KEY` (32 random bytes; it encrypts Apple refresh tokens at rest):
 
@@ -252,14 +296,11 @@ Do this before the sign-in hub merges to `main`, because the deploy then adds th
    ```
 
 3. Do both accounts (`ENV=test`, then `ENV=prod`; set `AWS_PROFILE=b4hub-$ENV` first). The Apple values are the same in both; `secret-key` is not: generate one per account.
-4. In the pull request that merges the sign-in hub (its `serve` requires `B4HUB_SECRET_KEY` and `B4HUB_WEBAUTHN_RP_ID`), work through the checklist at the top of `Infra/taskdefs/features.env`. Not before: with `0` the deploy renders a task with `DATABASE_URL` only, which is what a hub without sign-in expects.
-   - Set `INCLUDE_SIGNIN_SECRETS=1` in `Infra/taskdefs/features.env`. The deploy then adds the four secrets to the serving task, and `admin-shell.sh` adds them to the admin task's `hub` container (the gated block in `hub-admin.json.tpl`), so `b4hub seed|enroll` keep working. Both already set `B4HUB_WEBAUTHN_RP_ID`.
-   - Compose: uncomment `B4HUB_SECRET_KEY` in `Hub/deploy/compose/.env.example`, pass it to `hub` in `compose.yaml` (a `secret_key` file with `B4HUB_SECRET_KEY_FILE` once the hub reads `_FILE` forms, M8e), and make `test.sh` generate one. `B4HUB_WEBAUTHN_RP_ID` is already required there.
-   - Helm: uncomment the secret key in `Hub/chart/b4hub/ci/kind-values.yaml` and have the `install` job generate the key file it is set from.
+4. Nothing else is needed here: the pull request that merged the sign-in hub set `INCLUDE_SIGNIN_SECRETS=1`, gave the Compose profile its `secret_key` file (`B4HUB_SECRET_KEY_FILE`, which `Hub/deploy/compose/test.sh` generates), and made the chart's kind install generate its key. Both task definitions already set `B4HUB_WEBAUTHN_RP_ID`.
 
 ### 4. First deploy
 
-1. Runbook 2 (and 3, if the sign-in hub is on `main`) is done for `test`.
+1. Runbooks 2 and 3 are done for `test`.
 2. Merge to `main`. Watch `hub-image.yml` build and attest the image, which calls `hub-deploy.yml` for `test`:
 
    ```bash

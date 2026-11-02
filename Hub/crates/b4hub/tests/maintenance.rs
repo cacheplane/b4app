@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use axum::http::{header, StatusCode};
 use b4hub::cli::{self, Cli, Settings};
+use b4hub::config::{Config, Signup};
 use b4hub::maintenance::{self, MaintenanceState};
 use b4hub::serve::{self, AppState};
 use b4hub_db::settings::{self, Maintenance};
@@ -150,7 +151,7 @@ async fn within_two_seconds(mut probe: impl AsyncFnMut() -> bool) -> bool {
 #[sqlx::test(migrations = false)]
 async fn maintenance_pauses_writes_and_keeps_reads_and_readiness(pool: PgPool) {
     let admin = migrated(&pool).await;
-    let state = AppState::new(Db::connect(&app_url(&pool)).await.unwrap());
+    let state = app_state(Db::connect(&app_url(&pool)).await.unwrap());
     let seeded = orgs::seed(
         &admin,
         "cacheplane",
@@ -359,4 +360,18 @@ fn the_default_message_names_paused_writes() {
         "the hub is in maintenance: writes are paused"
     );
     assert_eq!(error.code, "maintenance");
+}
+
+/// App state over `db` with the sign-in configuration the other suites use (passkeys on
+/// `local.b4.run`, sign-up closed, no Apple).
+fn app_state(db: Db) -> AppState {
+    let config = Config {
+        signup: Signup::Closed,
+        rp_id: "local.b4.run".into(),
+        public_url: None,
+        secret_key: [7; 32],
+        apple: None,
+        trust_forwarded_for: false,
+    };
+    AppState::new(db, config).expect("the test configuration is valid")
 }

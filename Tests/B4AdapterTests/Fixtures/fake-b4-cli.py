@@ -16,7 +16,8 @@ Commands, with the real CLI's observable behavior:
 Env knobs: FAKE_B4_MARK (echoed as "FAKE_B4_MARK=<value>" at boot so a test can see an env-file value
 reached the child), FAKE_B4_ECHO_ENV=1 (echoes OPENAI_API_KEY=… at boot for redaction tests),
 FAKE_B4_HANG_ON_TERM=<s> (ignore SIGTERM for that long), FAKE_B4_FAIL_START=1 (print "boot failed"
-and exit 2 instead of listening), FAKE_B4_ROUTES_FAIL=1 (routes fails and echoes OPENAI_API_KEY on
+and exit 2 instead of listening), FAKE_B4_READY_DELAY=<s> (boot that long before listening, so a
+start is still in flight), FAKE_B4_ROUTES_FAIL=1 (routes fails and echoes OPENAI_API_KEY on
 stderr for redaction tests). Never a substitute for the real CLI in anything the docs call
 live-tested."""
 import json
@@ -103,6 +104,9 @@ def boot_lines():
     if os.environ.get("FAKE_B4_FAIL_START") == "1":
         err("boot failed")
         sys.exit(2)
+    delay = float(os.environ.get("FAKE_B4_READY_DELAY", "0"))
+    if delay > 0:
+        time.sleep(delay)
 
 
 def install_term_handler(child=None):

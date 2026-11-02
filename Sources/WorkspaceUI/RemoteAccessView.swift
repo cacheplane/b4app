@@ -54,12 +54,19 @@
 
     private(set) var phase = Phase.minting
     private(set) var code: String?
+    /// The site's pairing link to show as a QR code; nil when the Mac is joined to a hub other than its
+    /// flavour's (the coordinator decides, `HubPair.Result.link`), which the phone joins by typing.
     private(set) var link: URL?
+    /// The hub's URL, for typing on the phone when there is no link.
+    private(set) var hubURL: String?
     private(set) var secondsLeft: Int?
     /// Bumped by "New code" so the view restarts `run()`.
     private(set) var generation = 0
 
     @ObservationIgnored private let model: WorkspaceModel
+    /// How many times an expired code is replaced by a new one without a tap ("Add your iPhone" keeps a
+    /// code on screen; the hub mints at most 10 an hour, so this stays small). Then it waits for New code.
+    @ObservationIgnored var renewsExpiredCodes = 0
     /// Seams for tests: how long to wait between polls, and the monotonic clock.
     @ObservationIgnored var pollInterval: Duration = .seconds(1)
     @ObservationIgnored var sleep: @MainActor (Duration) async throws -> Void = {
@@ -89,12 +96,27 @@
     func clear() {
       code = nil
       link = nil
+      hubURL = nil
       secondsLeft = nil
     }
 
     /// Mint a code, then ask the coordinator about it about once a second until a phone pairs, the code
-    /// expires, or the task is cancelled (the sheet closing). Nothing is polled after that.
+    /// expires, or the task is cancelled (the sheet closing). Nothing is polled after that. An expired
+    /// code is replaced up to `renewsExpiredCodes` times.
     func run() async {
+      var renewals = renewsExpiredCodes
+      let account = model.accountGeneration
+      while true {
+        await runOnce(account: account)
+        guard phase == .expired, renewals > 0, !Task.isCancelled, account == model.accountGeneration
+        else { return }
+        renewals -= 1
+      }
+    }
+
+    /// One code. It stops, and drops the code, once the account it was minted for is no longer the
+    /// signed-in one (a sign-out or a switch): its status would be asked of the next account.
+    private func runOnce(account: Int) async {
       clear()
       phase = .minting
       let minted: HubPair.Result
@@ -105,8 +127,11 @@
         return
       }
       guard !Task.isCancelled else { return }
+      guard account == model.accountGeneration else { return endForAnotherAccount() }
       code = minted.code
-      link = PairLink.make(url: minted.url, code: minted.code)
+      // D-066: the site link only for the flavour's own hub, which the coordinator knows.
+      link = minted.link.flatMap(URL.init(string:))
+      hubURL = minted.url
       let deadline = uptime().advanced(by: Self.lifetime)
       secondsLeft = Int(Self.lifetime.components.seconds)
       phase = .waiting
@@ -114,10 +139,12 @@
       while !Task.isCancelled {
         do { try await sleep(pollInterval) } catch { return }
         guard !Task.isCancelled else { return }
+        guard account == model.accountGeneration else { return endForAnotherAccount() }
         let left = deadline - uptime()
         secondsLeft = max(0, Int(Self.seconds(left).rounded(.up)))
         if let status = await model.pairStatus() {
           guard !Task.isCancelled else { return }
+          guard account == model.accountGeneration else { return endForAnotherAccount() }
           switch status.state {
           case .paired:
             clear()
@@ -140,6 +167,11 @@
       }
     }
 
+    private func endForAnotherAccount() {
+      clear()
+      phase = .expired
+    }
+
     private static func seconds(_ duration: Duration) -> Double {
       Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
     }
@@ -158,106 +190,6 @@
     }
   }
 
-  // MARK: - The sheet
-
-  /// "Pair iPhone…": the code as a QR image, in text, and counting down.
-  struct PairingSheet: View {
-    let model: WorkspaceModel
-    @State private var flow: PairingFlow
-    @Environment(\.dismiss) private var dismiss
-
-    init(model: WorkspaceModel) {
-      self.model = model
-      _flow = State(initialValue: PairingFlow(model: model))
-    }
-
-    var body: some View {
-      VStack(alignment: .leading, spacing: LLA.Space.l) {
-        Text("Pair iPhone").llaDisplay()
-        content
-        HStack(spacing: LLA.Space.s) {
-          Spacer()
-          if canAskAgain {
-            Button("New code") { flow.restart() }
-              .buttonStyle(.llaPrimary)
-              .keyboardShortcut(.defaultAction)
-              .accessibilityIdentifier("new-pairing-code")
-          }
-          Button(isPaired ? "Done" : "Cancel") { dismiss() }
-            .buttonStyle(.llaSecondary)
-            .keyboardShortcut(.cancelAction)
-        }
-      }
-      .padding(LLA.Space.xl)
-      .frame(width: 420)
-      .background(LLA.Color.bg)
-      .task(id: flow.generation) {
-        await flow.run()
-        // A paired phone closes the sheet after a moment to read "Paired with …".
-        if case .paired = flow.phase {
-          try? await Task.sleep(for: .seconds(2))
-          if !Task.isCancelled { dismiss() }
-        }
-      }
-      .onDisappear { flow.clear() }
-    }
-
-    private var isPaired: Bool {
-      if case .paired = flow.phase { return true }
-      return false
-    }
-
-    private var canAskAgain: Bool {
-      switch flow.phase {
-      case .expired, .failed: return true
-      default: return false
-      }
-    }
-
-    @ViewBuilder private var content: some View {
-      switch flow.phase {
-      case .minting:
-        Text(flow.message).llaMuted()
-      case .waiting:
-        Text(flow.message).llaMuted().fixedSize(horizontal: false, vertical: true)
-        if let link = flow.link, let image = QRCode.image(for: link.absoluteString) {
-          Image(decorative: image, scale: 1)
-            .interpolation(.none)
-            .resizable()
-            .frame(width: 240, height: 240)
-            .clipShape(RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous))
-            .overlay(
-              RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
-                .stroke(LLA.Color.rule, lineWidth: 1)
-            )
-            .frame(maxWidth: .infinity)
-            .accessibilityLabel("QR code for pairing your iPhone")
-        }
-        if let code = flow.code {
-          Text(code)
-            .font(LLAFont.mono(22, weight: .semibold, relativeTo: .title2))
-            .foregroundStyle(LLA.Color.ink)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity)
-            .accessibilityLabel("Pairing code \(code.map(String.init).joined(separator: " "))")
-        }
-        if let left = flow.secondsLeft {
-          Text("Expires in \(left / 60):\(String(format: "%02d", left % 60))")
-            .llaSmallMuted()
-            .monospacedDigit()
-            .frame(maxWidth: .infinity)
-        }
-      case .paired:
-        Text(flow.message).llaBody()
-      case .failed:
-        Text(flow.message).font(LLAFont.small).foregroundStyle(LLA.Color.danger)
-          .fixedSize(horizontal: false, vertical: true)
-      case .expired, .notJoined:
-        Text(flow.message).llaMuted()
-      }
-    }
-  }
-
   // MARK: - The page
 
   /// Settings > Remote access: pair a phone, and keep the Mac awake while it is joined so the phone can
@@ -265,6 +197,12 @@
   struct RemoteAccessView: View {
     @Bindable var model: WorkspaceModel
     @State private var pairing = false
+    @State private var confirmingRemove = false
+
+    static let removeButton = "Remove this Mac from your account"
+    static let removeTitle = "Remove this Mac from your account?"
+    static let removeMessage =
+      "This Mac stops syncing, your iPhone stops seeing its threads, and this Mac signs out. Threads, connections, and servers stay on this Mac. Signing in again adds it back as a new device."
 
     static let keepAwakeHelp =
       "While Agent Workspace is joined to a hub, your Mac stays awake so your phone can reach it. The display can still sleep. A Mac with its lid closed on battery power sleeps anyway."
@@ -303,7 +241,7 @@
                   .accessibilityIdentifier("relay-link-status")
               }
               HStack(spacing: LLA.Space.m) {
-                Button("Pair iPhone…") { pairing = true }
+                Button("Add your iPhone…") { pairing = true }
                   .buttonStyle(.llaPrimary)
                   .disabled(!model.canPair)
                   .accessibilityIdentifier("pair-iphone")
@@ -329,6 +267,20 @@
               Text(Self.keepAwakeHelp).llaSmallMuted().fixedSize(horizontal: false, vertical: true)
             }
           }
+          LLASectionHead("This Mac")
+          LLACard {
+            VStack(alignment: .leading, spacing: LLA.Space.s) {
+              Text(
+                "Log out from the profile menu to keep this Mac in your account. Removing it revokes it at the hub."
+              )
+              .llaSmallMuted()
+              .fixedSize(horizontal: false, vertical: true)
+              Button(Self.removeButton) { confirmingRemove = true }
+                .buttonStyle(.llaDanger)
+                .disabled(model.link != .ready || !model.hubJoined || model.busy)
+                .accessibilityIdentifier("remove-this-mac")
+            }
+          }
           if let error = model.lastError, model.settingsVisible, model.settingsPage == .remoteAccess {
             Text(error).font(LLAFont.small).foregroundStyle(LLA.Color.danger)
           }
@@ -339,7 +291,13 @@
       }
       .background(LLA.Color.bg)
       .navigationTitle("Remote access")
-      .sheet(isPresented: $pairing) { PairingSheet(model: model) }
+      .sheet(isPresented: $pairing) { AddPhoneView(model: model) }
+      .alert(Self.removeTitle, isPresented: $confirmingRemove) {
+        Button("Remove", role: .destructive) { Task { await model.removeThisMac() } }
+        Button("Cancel", role: .cancel) {}
+      } message: {
+        Text(Self.removeMessage)
+      }
       .task(id: model.link) {
         guard model.link == .ready else { return }
         await model.refreshRemoteAccess()

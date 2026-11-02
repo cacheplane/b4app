@@ -1,0 +1,12 @@
+// Build flavour "beta" (sign-in plan, Task 2). The values mirror Flavor.swift in WorkspacePlatform; a
+// scheme or a Scripts/package.sh run picks the configuration that includes this file. The signing
+// settings come first so DEVELOPMENT_TEAM is still set from Signing.local.xcconfig (D-051).
+#include "Signing.xcconfig"
+
+B4APP_FLAVOR = beta
+B4APP_SITE_DOMAIN = test.b4.run
+B4APP_URL_SCHEME = b4app-beta
+B4APP_IOS_ENTITLEMENTS = Apps/iOS/B4App/B4App.entitlements
+
+PRODUCT_BUNDLE_IDENTIFIER[sdk=macosx*] = com.cacheplane.b4app.beta
+PRODUCT_BUNDLE_IDENTIFIER[sdk=iphone*] = com.cacheplane.b4app.ios

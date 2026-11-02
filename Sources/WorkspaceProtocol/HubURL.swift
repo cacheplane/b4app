@@ -26,4 +26,18 @@ public enum HubURL {
     guard let url = components.url else { throw invalid }
     return url
   }
+
+  /// Whether `url`'s host is this machine (`localhost`, `127.0.0.1`, or `::1`).
+  public static func isLoopback(_ url: URL) -> Bool {
+    guard let host = url.host(percentEncoded: false)?.lowercased() else { return false }
+    return loopbackHosts.contains(host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")))
+  }
+
+  /// `validate`'s URL as a string with no trailing `/`, so two spellings of one hub compare equal
+  /// (`http://localhost:8080/` and `http://localhost:8080`).
+  public static func canonical(_ string: String) throws -> String {
+    var text = try validate(string).absoluteString
+    while text.hasSuffix("/") { text.removeLast() }
+    return text
+  }
 }

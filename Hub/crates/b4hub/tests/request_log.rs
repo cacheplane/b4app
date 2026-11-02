@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
+use b4hub::config::{Config, Signup};
 use b4hub::serve::{self, AppState};
 use b4hub_db::{devices, orgs, Db};
 use serde_json::Value;
@@ -62,7 +63,7 @@ async fn an_authenticated_request_logs_the_ids_and_never_the_token(pool: PgPool)
         .await
         .unwrap();
     let admin = Db::connect(&admin_url(&pool)).await.unwrap();
-    let state = AppState::new(Db::connect(&app_url(&pool)).await.unwrap());
+    let state = app_state(Db::connect(&app_url(&pool)).await.unwrap());
     let seeded = orgs::seed(
         &admin,
         "cacheplane",
@@ -151,4 +152,18 @@ async fn an_authenticated_request_logs_the_ids_and_never_the_token(pool: PgPool)
     assert_eq!(done[1]["status"], 401);
     assert!(done[1]["span"].get("device_id").is_none(), "{}", done[1]);
     state.db.pool.close().await;
+}
+
+/// App state over `db` with the sign-in configuration the other suites use (passkeys on
+/// `local.b4.run`, sign-up closed, no Apple).
+fn app_state(db: Db) -> AppState {
+    let config = Config {
+        signup: Signup::Closed,
+        rp_id: "local.b4.run".into(),
+        public_url: None,
+        secret_key: [7; 32],
+        apple: None,
+        trust_forwarded_for: false,
+    };
+    AppState::new(db, config).expect("the test configuration is valid")
 }

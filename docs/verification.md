@@ -20,6 +20,64 @@ Branch `blove/phone-usage`.
 
 **Not run before merge: the live check in the Simulator against the owner's Compose hub.** Running the hub from this branch would apply `0010` to the owner's hub database, and a hub binary without it would then refuse to start (sqlx `VersionMissing`). So the check runs after the merge, on the hub and apps rebuilt from `main`, and is recorded there.
 
+## 2026-11-02: Sign-in (fixture gates; live gate, owner's passkey steps pending)
+
+Target: the build MacBook Pro (macOS 26.5, Xcode 26.6), run from the worktree on `blove/sign-in` at code head `e6aaf6d` (Tasks 1 to 17 and X1 of `docs/superpowers/plans/2026-11-01-sign-in.md`, with `origin/main` through PR #40 merged). The documentation commit that records this changes no Swift or Rust, only the iPhone's `PrivacyInfo.xcprivacy` and these documents; the four `xcodebuild` builds ran after that change. Nothing touched the owner's app, its data directory, the Keychain, or the Compose stack. Decisions D-090 to D-112.
+
+Rerun after the final review's fix wave (I1, I2, M1, M2, M5 to M9, M11 to M13; D-113 to D-117), including M11 narrowed to the hub's `unknown_credential` reason (D-117): the format, build, Swift and Rust test rows below are that run's; of the app builds, `B4App-macOS` and `B4App-iOS` were rebuilt (`** BUILD SUCCEEDED **` each, `CODE_SIGNING_ALLOWED=NO`), the Beta schemes were not. The `registryMigrations` NOTICE no longer appears in the test output (M12).
+
+### Sign-in (fixture gates)
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Swift format | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass (exit 0, no findings) |
+| Build | `swift build` | Pass |
+| Swift tests | `swift test` | Pass: 1158 tests in 144 suites after merging main's #43 (1147 at `2cc466c`; 1144 before X3; 1113 in 142 before the final fix wave; 858 when this branch first merged main, 1022 after the second merge), exit 0. The sign-in suites: `FlavorTests`, `LegacyAdoptionTests`, `LegacyAdoptionGateTests`, `LegacySecretCopyTests` (Task X2), `CoordinatorAdoptionOrderTests`, `AccountRegistryTests`, `AccountManagerTests`, `AccountCommandTests`, `AccountCLITests`, `AuthWireTests`, `HTTPHubAPITests`, `SignInTests`, `AccountSettingsTests`, `AppleSignInTests`, `MirrorAccountTests`, `MirrorLogOutTests`, `PhoneFlavorTests`, `PairLinkTests` (protocol and mirror), `PairingTests`, `RemoteAccessTests`, `ConnectMacTests`. `HubSyncTests.joinPushesTheBacklogAndMarksItSynced`, seen to fail once in a full run during Task 15, passed |
+| Rust format | `cd Hub && cargo fmt --all -- --check` | Pass |
+| Rust lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| Rust tests | `source <(./scripts/test-db.sh) && cargo test --workspace --locked --no-fail-fast`, then `./scripts/test-db.sh --stop` | Pass: 392 tests against PostgreSQL 17.11 at `2cc466c` (387 before X3 and the pairing-code fix) (379 before the final fix wave, 245 at M8e Part B): `b4hub` 278 (unit 88, `accounts` 14, `apple` 38, `auth` 19, `auth_fixture` 9, `changes` 14, `enroll` 17, `health` 5, `instances` 8, `maintenance` 3, `relay` 62, `request_log` 1), `b4hub-core` 26, `b4hub-db` 83 (unit 3, `accounts` 24, `changes` 35, `instances` 4, `logging` 1, `migrate` 8, `rls` 5, `settings` 3) |
+| Chart | `cd Hub/chart/b4hub && helm unittest . && helm lint . -f ci/kind-values.yaml` | Pass: 56 tests in 4 suites (helm-unittest 1.2.1); lint 1 chart, 0 failed (one `INFO`: icon is recommended) |
+| Project | `./Scripts/generate-project.sh` | `B4App.xcodeproj` regenerated; schemes `B4App-macOS`, `B4App-macOS-Beta`, `B4App-iOS`, `B4App-iOS-Beta` |
+| Apps | `xcodebuild build -project B4App.xcodeproj -scheme <scheme> -destination <'platform=macOS' or 'generic/platform=iOS Simulator'> CODE_SIGNING_ALLOWED=NO` for the four schemes | Four `** BUILD SUCCEEDED **`. Warnings only in code the Beta builds compiled again: unused results in `WorkspaceStorage` (`WorkspaceDatabase`, `Migrator`, `AccountRegistry`) and `Ports.swift`, the deprecated `posix_spawn_file_actions_addchdir_np` in `ManagedProcess.swift`, and the duplicate case at `Remediation.swift:122`. Both iPhone builds carry the new privacy manifest (`plutil -extract NSPrivacyCollectedDataTypes` on each built app: name, email address, user id) |
+| Privacy manifest | `plutil -lint Apps/iOS/B4App/PrivacyInfo.xcprivacy`, and the keys checked against Apple's documentation (`describing-data-use-in-privacy-manifests` and the `NSPrivacyCollectedDataType` and `…Purposes` pages) | OK |
+| CI | the Swift package job, the apps job, the `hub` job, and the chart jobs | Recorded in the pull request, not here |
+
+What the fixtures cannot show, and is left to the live gate or later:
+
+- A real passkey ceremony: the Mac needs a Developer ID package with the `webcredentials:` entitlement and `local.b4.run`'s association file through Apple's CDN; an unsigned build only reaches the failure line. The "no passkey" path (D-104), `excludeCredentials`, the orphan report and the rename (D-105) have run only against fakes.
+- Sign in with Apple on any hub: no hub has the Apple key (the local flavour hides it, and the hosted hubs are not deployed); the hub's side is fixture-tested against a fake Apple.
+- Adoption of the owner's install with the real `launchctl` boot-out and cluster read (D-094). The copy of the owner's secrets from the real prod keychain group (Task X2) has run only against in-memory stores; step 2 below is its first real run.
+- The system Camera opening a pair link on a device, the Safari sheet, and the Settings window closing on sign-out in the running app.
+- A Developer ID package of any flavour from this branch (the owner's profiles pass `B4APP_CHECK_PROFILES_ONLY`), a release, and the Homebrew tap.
+- The repository's `Hub/Dockerfile` with the sign-in crates: its pinned base digests could not be pulled through this Mac's Docker Desktop during the build, so the image for the live gate was built from a scratch copy using the cached `rust:1.93.1` tag (the Dockerfile itself is unchanged). CI's `hub-image` and `compose-smoke` jobs are the check.
+
+### Live gate
+
+Run on 2026-11-02 between 17:18Z and 18:00Z on the owner's MacBook Pro, by the build session while the owner was away (steps 2, 6, 7), from `blove/sign-in`: the Mac app and the hub image at `df7a85d` for the first pass, then `aac49ec` (X3) for the rejoin recheck and the second pairing. Steps 3 to 5 need a real passkey at Touch ID and are the owner's; they stay pending.
+
+Setup:
+- Backups first, outside both data directories: `agent-workspace db backup` (544 rows), a `pg_dumpall` of the hub, and a copy of `Hub/.env`, in `~/Library/Application Support/b4app-signin-gate-backups/20261102T171856Z/`. Main's hub image was kept as `b4hub:main-before-signin`.
+- `Hub/.env` gained `B4HUB_SECRET_KEY` (generated, never printed), `B4HUB_SIGNUP=open`, and `B4HUB_WEBAUTHN_RP_ID=local.b4.run`.
+- The hub image was built from a copy of `Hub/Dockerfile` that names the cached `rust:1.93.1` tag instead of the pinned digest, because Docker Desktop's proxy hangs pulling the digest on this Mac; the repository's Dockerfile is unchanged and CI builds from the pin. The Compose stack moved to the branch's `Hub/` on the same `hub_b4hub-db` volume; `migrate` reported "migrated: 8 applied, 0 pending", and `/readyz` showed migrations current, relay and instances ok; `/v1/auth/config` answered `{"passkeys":{"rpId":"local.b4.run"},"apple":{"native":false,"web":false},"signup":"open"}`.
+- The Mac app: `B4APP_FLAVOR=local B4APP_SKIP_NOTARIZE=1 B4APP_SIGN_IDENTITY="Developer ID Application: …" ./Scripts/package.sh`; the package's entitlements carry `webcredentials:local.b4.run` and both keychain groups (`…b4app.local.shared`, `…b4app.shared`) on the app and the coordinator. Main's app was quit, and `Agent Workspace (Local).app` was installed beside it in `~/repos/b4app/dist`.
+- The phone is the iPhone 17 Pro Simulator (iOS 26.5), the local flavour built from the branch.
+
+| Step | Result |
+| --- | --- |
+| 1. Package the local flavour and launch it | Pass (build session) |
+| 2. The owner's existing threads appear without a sign-in (adoption) | Pass (build session). `b4app` became `b4app-local`; the app came up signed in to `blove@cacheplane` with no sign-in screen; `hub status` showed the relay connected and `account status` `signedIn`, so the hub token was copied from the prod keychain group (D-094, D-116); the Codex, Claude Code, and B4 connections were ready. The legacy plist was gone. **Found (minor, not fixed):** the legacy job `com.cacheplane.b4app.coordinator` was still loaded ("spawn scheduled", last exit 78) and needed `launchctl bootout` by hand: adoption's boot-out reads a timed-out `launchctl print` as "not loaded" (Task 3's deferred minor). With the plist gone it would not have come back at the next login |
+| 3. Add a passkey in Settings → Account, log out, sign back in with the passkey: the same threads appear | Pending (owner: needs Touch ID) |
+| 4. Sign up a second account with a new passkey and complete onboarding: "Brian's Org" (or the typed name's) | Pending (owner) |
+| 5. Create a thread, log out, sign in to the first account: its threads appear, the second account's thread does not | Pending (owner) |
+| 6. `agent-workspace thread list` while signed out: exit 4 with the message | Pass (build session). `account logout` with the `research` server running was refused with `work_running` listing it; `account logout --stop-work` logged out in under a second; `thread list` then printed "error [signed_out]: Nobody is signed in. Sign in from the Agent Workspace app." and exited 4. The Mac signed back in with an operator enrollment code piped into `hub join` (never printed): the same registry row and database, all 7 threads |
+| 7. In the iPhone Simulator (local flavour), open the pair link with `xcrun simctl openurl` and see the threads | Pass (build session). The Mac's `hub.pair` (sent over the coordinator's socket; the link went straight to `simctl openurl`, never printed) answered a `https://local.b4.run/pair#c=…` link. The first link after a fresh install opened Safari (b4.run's `/pair` page), before the Simulator had fetched `local.b4.run`'s association file; the next one opened the app at "Pair this iPhone with the hub at localhost?", and Pair signed the phone in with the account's threads. On the recheck after X3 a clean install paired the same way and showed all 7 threads with the Mac online |
+
+Found at the live gate:
+
+- **A Mac that rejoined with an enrollment code became a new device (fixed: X3, D-096 amended).** After the step-6 log-out (the session ends, the device is kept, D-105), `hub join` with a code made a second `macos` device, because `POST /v1/enroll` took no device id. Every row the Mac had synced kept the old device as its owner, so the phone showed "Brian's MacBook Pro (2) is offline · last seen 09:26" and relayed turns for those threads would have gone to the dead device. The same gap made a phone that re-paired by code a new device each time (D-108). Fix: `POST /v1/enroll` takes `deviceId` and `candidateDeviceIds` with the sign-in rule (`devices::redeem_reusing`, sharing `accounts::create_session`); `hub join` offers the registry's devices for that hub, and the phone its remembered devices on a typed code, a pairing scan, and the merge-first path. Fixture tests: `enroll.rs` (`enrolling_again_reuses_this_device`, `enrollment_passes_over_foreign_and_revoked_candidates`, `enrollment_candidates_are_capped_and_validated_before_the_code_is_used`), `accounts.rs` (`enroll_merging_reuses_only_a_device_of_the_codes_account`), `AccountCommandTests.hubJoinOffersEveryKnownDeviceOfThisHub`, `PairLinkTests.aPhoneThatPairsAgainOffersItsDevice` and `aMergingPairOffersEveryDeviceThePhoneHasHad`. **Rerun live** with `aac49ec`: log out, then rejoin by code kept device `01a19d4c`, and every thread kept it as owner. Review follow-up `2cc466c`: a pairing code is redeemable only as `ios`, so its holder cannot take over the Mac's device through a candidate (`enroll.rs` `a_pairing_code_pairs_only_a_phone`).
+- **The owner's local hub was repaired by hand** for the first rejoin, before the fix: in one transaction, `owner_device_id` moved from the old device `01a1988c…` to `01a19d4c…` in `connections` (4 rows), `displayItems` (45), `drafts` (2), `projectFolders` (3), `projects` (3), `runtimeRequests` (6), `threads` (7), and `turns` (14), and `01a1988c…` was revoked. The pre-gate dump above is the way back.
+- **Minor, not fixed:** on the local flavour the sign-in screen still says "New here? Either one creates your account." with only one button; and while the pairing confirmation closes after Pair, the "Use an enrollment code" form shows for a moment before the sheet dismisses.
+
 ## 2026-11-02: The hub keeps synced rows (D-089)
 
 Branch `blove/dreamy-hamilton-b5adc9`, from main at `3f3cc15`. Hub only; no Swift, wire, or fixture change.
@@ -40,6 +98,19 @@ Branch `blove/settings-connections-minors`. Gates: `swift format lint --strict` 
 - **Saved edits.** Deleting a replaced key is best effort once the edit is saved (`aSavedKeyChangeIsNotReportedFailedWhenTheOldKeyStays`).
 
 Not covered by a test: B4 token counts are now recorded last in `turn.finished`, and a failure there is ignored. Observing that needs a fault injected into the database.
+
+## 2026-11-02: Flaky CI tests now await events
+
+Branch `fix/flaky-tests-await-events`. These are tests that failed on `main` or a PR and passed on rerun. Each now waits for the event it depends on instead of a fixed time, or a fixed time that a loaded runner can outlast:
+
+- **`HTTPHubAPITests.appendFeedsAReaderAndALongPollWakesForIt`.** `FakeHubAPI`'s long poll used to re-read every 10 ms. It now parks until something can change its answer: `append`, a push, `setFailNext`, `revokeSelf`, its deadline, or cancellation. `untilPulling()` lets the test append once the pull is parked, replacing a 50 ms sleep.
+- **`ClaudeSessionTests.resumesKnownSessionsAndReportsMissingOnes`.** A real race in `ClaudeSession`. A missing session is recognised by its stderr line, which could arrive after the exit was seen, giving `endpoint_unavailable`. The read loop now awaits stderr's end (`waitForStderrEnd()`, bounded at 2 s for a grandchild that keeps it open) before reporting the exit. `aMissingSessionIsRecognisedWhenStderrTrailsTheExit` reproduces it deterministically: `fake-claude.py` `missing-late` writes the line from a grandchild 300 ms after exiting. It fails without the fix.
+- **`ManagedProcessTests.portsAllocateAndDetectInUse`** (failed twice). A just-released port can go to a parallel test's connection. The test now checks "free" on the first of up to five allocations that stayed free, then holds the port with its own listener.
+- **`ManagedProcessTests.terminateGroupKillsAGrandchild`.** It already waited on the grandchild's exit event, but its 10 s guard sat under a 30 s sleep. The sleep is now 600 s and the guard 120 s, so a missed signal still fails and a slow runner doesn't. A `defer` kills a leftover sleeper.
+- **Rust `instances::readiness_reports_a_stale_heartbeat`** (and the claim-takeover test, which pauses the same way). A heartbeat write already past the pause check could land after the pause and refresh the instance. `InstancesState::settle()` returns once no write is in progress, and the tests await it after pausing.
+- **Already fixed on `main`:** `MirrorSyncTests.failuresAreRecordedAndRetriedWithBackoff` (`3e3427a`) and `request_log::a_503_is_a_warning_…` (`828e6f9`).
+
+`swift test` passes 864 tests; lint, `cargo fmt` and `cargo clippy` are clean.
 
 ## 2026-11-02: A stopped reply keeps its streamed text (D-088)
 
@@ -216,6 +287,21 @@ Not exercised: an AWS load balancer (the `AWSALBAPP` behaviour is from AWS's doc
 
 Fixture run on the build Mac for the request-id logging and maintenance mode branch (`blove/m8e-hub-operability-61a040`), against the throwaway PostgreSQL 17.11 from `Hub/scripts/test-db.sh`: `cargo fmt --all -- --check` clean, `cargo clippy --workspace --all-targets --locked -- -D warnings` clean, `cargo test --workspace --locked` 135 tests passed, 0 failed (b4hub 65 across the unit tests and `changes`, `enroll`, `health`, `maintenance`, `request_log`; b4hub-core 19; b4hub-db 51 across the unit tests and `changes`, `migrate`, `rls`, `settings`). What the new tests show: the id is a fresh UUIDv7 on every response and a caller's `X-Request-Id` never replaces it (a well-formed one is recorded as `client_request_id`, a malformed one is dropped and never appears in the log); the span's `path` is the route pattern and the raw path and query string appear nowhere in the log; a 5xx completes at `ERROR`; an authenticated `GET /v1/me` logs `request_id`, `client_request_id`, and `device_id` and never the bearer token, and a wrong token answers 401 with no `device_id` and without the wrong token in the log; `maintenance on` makes `POST /v1/changes`, `POST /v1/enroll`, and `DELETE /v1/devices/self` answer `503 maintenance` with `Retry-After: 30` and the full envelope within one 50 ms poll while `GET /v1/changes` (including a long-poll that waits out a 1 s window), `GET /v1/me`, and `/readyz` (`200`, `"maintenance": "read_only"`) keep answering; `maintenance off` restores writes within one poll; `b4hub_app` gets `42501` on `INSERT`, `UPDATE`, and `DELETE` against `hub_settings` and can `SELECT`; sqlx 0.8 applies a lower-numbered migration added after a higher one and refuses only the reverse. Not exercised: a hosted hub (none is deployed), CloudWatch's rendering of the JSON lines, and the Swift client's reaction to `503 maintenance` beyond what already holds for any hub error (the code is a free string; the outbox is kept on failure).
 
+## 2026-11-01: Flavoured builds, entitlements, and packaging (sign-in plan, Task 2)
+
+Run from `blove/sign-in` on macOS 26.5. Nothing was signed with a Developer ID identity, notarized, or uploaded.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Project | `./Scripts/generate-project.sh` | Generated; schemes `B4App-macOS`, `B4App-macOS-Beta`, `B4App-iOS`, `B4App-iOS-Beta` |
+| Four schemes | `xcodebuild build -scheme <scheme> -destination <platform=macOS or generic/platform=iOS Simulator> CODE_SIGNING_ALLOWED=NO` | Four `** BUILD SUCCEEDED **` |
+| Info.plist | `plutil -p` on each built app | Mac local `com.cacheplane.b4app.local`, Mac beta `com.cacheplane.b4app.beta`, iOS local `com.cacheplane.b4app.ios.local`, iOS beta `com.cacheplane.b4app.ios`; `B4AppFlavor` and the `CFBundleURLSchemes` entry agree with each |
+| iOS entitlements | Simulator builds signed ad hoc, `*-Simulated.xcent` | Beta: `webcredentials:test.b4.run`, `applinks:test.b4.run`, Sign in with Apple. Local: the same two with `local.b4.run?mode=developer`, no Sign in with Apple |
+| Ad hoc packages | `B4APP_FLAVOR=local ./Scripts/package.sh` and `B4APP_FLAVOR=beta ./Scripts/package.sh`, no identity | `Agent Workspace (Local).app` and `(Beta).app` with `Agent-Workspace-Local-<v>.zip` and `-Beta-`; `B4AppFlavor` and the flavoured bundle id in the app and `B4AppCoordinator.app`; LaunchAgent plist and label `com.cacheplane.b4app.<flavour>.coordinator`; CLI identifier `com.cacheplane.b4app.<flavour>.agent-workspace`. The packaged CLI, run with no environment, emits the beta label, so the walk up to its `.app` works |
+| Profile check, dry | `B4APP_CHECK_PROFILES_ONLY=1 B4APP_TEAM_ID=<team> B4APP_FLAVOR=<flavour> ./Scripts/package.sh` | Refuses for all three flavours, as intended: prod names the missing `webcredentials:b4.run` in the owner's existing profile; beta and local name the missing profile files, the associated domain, and each keychain group |
+
+Open: a Developer ID package of any flavour. It needs profiles regenerated with Associated Domains (all flavours, app profile) and new App IDs for beta and local (`~/.b4app/signing/{app,coordinator}-{beta,local}.provisionprofile`), so `codesign -d --entitlements -` on a signed local package, listing the associated domain and both keychain groups, is not yet run. The checks that match profile contents against the flavour were exercised only with hand-written profiles, not Apple-issued ones.
+
 ## 2026-11-02: Hosted hubs (D-068 to D-072)
 
 Implementation is on `blove/cloud-hub-deployment-arch-4b6348`; nothing has been applied to AWS, because the owner has not created the AWS Organization or the two accounts. The gates are the eight in `docs/deployment-architecture.md` ("Verification gates"), plus 2b (the 9 MiB push through the WAF). Each is `passed` (with evidence), `pending` (with the step that produces the evidence and what it must show), or owned by another project. A gate that needs a live hub is never `passed` from a mock.
@@ -239,10 +325,10 @@ Static checks run in CI and locally: `actionlint`, `shellcheck` over the deploy 
 
 Every pending gate above waits on these (details in `Infra/README.md`). None is recorded as done.
 
-1. Create the AWS Organization and the test and production accounts.
-2. Bootstrap both accounts (runbook 1, "Bootstrap runbook").
+1. Create the `b4hub-test` and `b4hub-prod` accounts inside the `b4run` OU of the existing cacheplane Organization (runbook 1, "Bootstrap runbook"). Done 2026-11-02: `355069727528` and `268895852483`.
+2. Sign the CLI in with `aws login` and configure the `b4hub-test` and `b4hub-prod` profiles (done 2026-11-02: both answer `sts get-caller-identity`), then bootstrap both accounts (runbook 1, "Bootstrap runbook"). Test bootstrapped 2026-11-02 (18 resources; state in `b4hub-test-tfstate`, plan clean after migration; roles `b4hub-test-{plan,infra,deploy}`, state key `d9c975b5-6ea7-4610-99ae-7020f3091262`; re-applied the same day to pin GitHub's immutable OIDC subject `repo:cacheplane@269322961/b4app@1440075505`, without which `Plan test` failed `AssumeRoleWithWebIdentity`). Prod bootstrapped 2026-11-02 the same way (state in `b4hub-prod-tfstate`, state key `496dd803-4674-4422-b959-3e74e44043bd`, plan clean). Repository variables `AWS_ROLE_PLAN_<ENV>` and `TFSTATE_KMS_KEY_ARN_<ENV>` are set for both so PR plans run; `AWS_ROLE_INFRA_<ENV>` and `AWS_ROLE_DEPLOY_<ENV>` are deliberately withheld until `B4HUB_ALARM_EMAIL`, the Vercel CNAMEs, and (for prod) the `production` Environment exist, since a push to main would otherwise apply the test hub root. `B4HUB_ALARM_EMAIL` set 2026-11-02. ACM certificates for `hub.test.b4.run` and `hub.b4.run` were created by targeted applies the same day; their validation CNAMEs and CAA records allowing the Amazon issuers were added at Vercel (the apex CAA set allows only Let's Encrypt, Sectigo, and Google); both certificates were issued within minutes.
 3. Add repository variables: `AWS_ROLE_PLAN_*`, `AWS_ROLE_INFRA_*`, `AWS_ROLE_DEPLOY_*`, `TFSTATE_KMS_KEY_ARN_*` (`TEST` and `PROD`), and `B4HUB_ALARM_EMAIL`.
-4. Create the `production` GitHub Environment (required reviewer: the owner; deployment branches and tags: `main` and `hub-v*`). Create none for test.
+4. Create the `production` GitHub Environment (required reviewer: the owner; deployment branches and tags: `main` and `hub-v*`). Create none for test. Done 2026-11-02 (the Environment had been auto-created empty by a workflow run; reviewer `blove`, branch `main`, tag `hub-v*`).
 5. Make the GHCR package `ghcr.io/cacheplane/b4hub` public.
 6. Add the Vercel CNAMEs (`hub.test.b4.run`, `hub.b4.run`) and the ACM validation records the first apply prints.
 7. Set the database owner and sign-in secrets (runbooks 2 and 3).
@@ -432,6 +518,7 @@ To be run only after the owner's go-ahead, because it rebuilds the owner's packa
 | 3. Live convergence | `docker compose stop hub`; rename the same thread and edit the same draft on both devices, the Mac's edit later; `docker compose start hub`; both must show the Mac's values (and, with the phone's edit later, the phone's) | not run |
 
 Also record for the live run: `agent-workspace hub status` shows `unsynced 0`; `agent-workspace coordinator status` shows a pid started after the restart; a screenshot of the Simulator list and the Mac sidebar; and that the owner's app, once restored from `main`, is rebuilt with the same dev loop.
+
 ## 2026-10-31: Developer ID signing and notarization (D-039 gate)
 
 Target: the same MacBook Pro (macOS 26.5, Xcode 26.6, notarytool 1.1.2). The owner created the certificate and the `b4app` notarytool profile; neither password passed through the script or this session. The owner's running app was quit, `~/repos/b4app/dist` was moved aside and replaced from the stapled zip, `agent-workspace coordinator restart` ran, and the app was reopened.

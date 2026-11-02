@@ -15,20 +15,23 @@ import WorkspaceProtocol
     parts.queryItems = [
       hub.map { URLQueryItem(name: "hub", value: $0) }, code.map { URLQueryItem(name: "code", value: $0) },
     ].compactMap { $0 }
-    return PairLink.parse(try #require(parts.url))
+    return PairLink.parseLegacy(try #require(parts.url))
   }
 
   @Test func parsesAValidLink() throws {
     let parsed = try #require(
-      PairLink.parse(try link("b4app://pair?hub=https%3A%2F%2FHub.Example.com%3A8443%2Fbase&code=K7M2Q9XP")))
+      PairLink.parseLegacy(
+        try link("b4app://pair?hub=https%3A%2F%2FHub.Example.com%3A8443%2Fbase&code=K7M2Q9XP")))
     #expect(parsed.hub == URL(string: "https://hub.example.com:8443/base"))
     #expect(parsed.code == "K7M2Q9XP")
     #expect(parsed.host == "hub.example.com")
     // The code is case-insensitive; it is kept upper case, as the hub minted it.
     #expect(try parse(hub: "https://hub.example.com", code: "k7m2q9xp")?.code == "K7M2Q9XP")
     // The scheme and host of the link itself are case-insensitive too.
-    #expect(PairLink.parse(try link("B4APP://PAIR?hub=https%3A%2F%2Fhub.example.com&code=BCDFGHJK")) != nil)
-    #expect(PairLink.parse(try link("b4app://pair/?hub=https%3A%2F%2Fhub.example.com&code=BCDFGHJK")) != nil)
+    #expect(
+      PairLink.parseLegacy(try link("B4APP://PAIR?hub=https%3A%2F%2Fhub.example.com&code=BCDFGHJK")) != nil)
+    #expect(
+      PairLink.parseLegacy(try link("b4app://pair/?hub=https%3A%2F%2Fhub.example.com&code=BCDFGHJK")) != nil)
   }
 
   @Test func refusesMissingOrBadCode() throws {
@@ -48,7 +51,8 @@ import WorkspaceProtocol
     #expect(try parse(hub: hub, code: "bcdfghß") == nil)
     // Two codes are ambiguous, so neither is taken.
     #expect(
-      PairLink.parse(try link("b4app://pair?hub=https%3A%2F%2Fhub.example.com&code=BCDFGHJK&code=MNPQRSTV"))
+      PairLink.parseLegacy(
+        try link("b4app://pair?hub=https%3A%2F%2Fhub.example.com&code=BCDFGHJK&code=MNPQRSTV"))
         == nil)
   }
 
@@ -66,7 +70,7 @@ import WorkspaceProtocol
     #expect(try parse(hub: "https://user:secret@hub.example.com", code: code) == nil)
     // Two hubs are ambiguous, so neither is taken.
     #expect(
-      PairLink.parse(
+      PairLink.parseLegacy(
         try link("b4app://pair?hub=https%3A%2F%2Fa.example.com&hub=https%3A%2F%2Fb.example.com&code=BCDFGHJK")
       )
         == nil)
@@ -87,7 +91,7 @@ import WorkspaceProtocol
       "https://pair\(query)", "b4apps://pair\(query)", "b4app://user@pair\(query)", "b4app://pair:80\(query)",
       "b4app://pair/extra\(query)", "b4app:pair\(query)",
     ] {
-      #expect(PairLink.parse(try link(text)) == nil, "\(text)")
+      #expect(PairLink.parseLegacy(try link(text)) == nil, "\(text)")
     }
     #expect(PairLink.isPairLink(try link("b4app://pair\(query)")))
     #expect(PairLink.isPairLink(try link("B4App://Pair")))
@@ -100,7 +104,7 @@ import WorkspaceProtocol
       ("https://hub.example.com:8443/base?x=1&y=2#frag", "K7M2Q9XP"), ("http://localhost:8080", "BCDFGHJK"),
       ("https://hub.example.com", "ZXWV9876"),
     ] {
-      let parsed = try #require(PairLink.parse(PairLink.make(url: url, code: code)))
+      let parsed = try #require(PairLink.parseLegacy(PairLink.makeLegacy(url: url, code: code)))
       #expect(parsed == PairLink(hub: try HubURL.validate(url), code: code))
     }
   }

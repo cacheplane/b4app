@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
+use b4hub::config::{Config, Signup};
 use b4hub::instances::InstancesState;
 use b4hub::relay::{Relay, SendError, WallClock};
 use b4hub::serve::{self, AppState};
@@ -163,7 +164,7 @@ pub async fn migrated(pool: &PgPool) -> (Db, AppState) {
         .unwrap();
     let admin = Db::connect(&admin_url(pool)).await.unwrap();
     let app = Db::connect(&app_url(pool)).await.unwrap();
-    (admin, AppState::new(app))
+    (admin, app_state(app))
 }
 
 /// A user the tests seeded.
@@ -300,12 +301,30 @@ impl Hub {
 
     /// One HTTP request, in process, through the same router and state the listener serves.
     pub async fn http(&self, method: &str, path: &str, token: Option<&str>) -> (StatusCode, Value) {
+        self.http_with(method, path, token, None).await
+    }
+
+    /// [`Hub::http`] with an optional JSON body.
+    pub async fn http_with(
+        &self,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        body: Option<&Value>,
+    ) -> (StatusCode, Value) {
         let mut request = Request::builder().method(method).uri(path);
         if let Some(token) = token {
             request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
         }
+        let body = match body {
+            Some(json) => {
+                request = request.header(header::CONTENT_TYPE, "application/json");
+                Body::from(json.to_string())
+            }
+            None => Body::empty(),
+        };
         let response = serve::router(self.state.clone())
-            .oneshot(request.body(Body::empty()).unwrap())
+            .oneshot(request.body(body).unwrap())
             .await
             .unwrap();
         let status = response.status();
@@ -805,4 +824,18 @@ pub fn epoch_seconds(rfc3339: &str) -> f64 {
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     let days = era * 146_097 + day_of_era - 719_468;
     days as f64 * 86_400.0 + hours * 3_600.0 + minutes * 60.0 + seconds
+}
+
+/// App state over `db` with the sign-in configuration the other suites use (passkeys on
+/// `local.b4.run`, sign-up closed, no Apple).
+fn app_state(db: Db) -> AppState {
+    let config = Config {
+        signup: Signup::Closed,
+        rp_id: "local.b4.run".into(),
+        public_url: None,
+        secret_key: [7; 32],
+        apple: None,
+        trust_forwarded_for: false,
+    };
+    AppState::new(db, config).expect("the test configuration is valid")
 }

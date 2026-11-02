@@ -1,6 +1,6 @@
 # b4app: Personal Agent Workspace
 
-A native Swift app for running Codex, Claude Code, and B4 agent conversations side by side on one Mac, with an iOS companion built from the same code. Everything is local by default: no accounts, no telemetry, and nothing leaves the Mac unless you run a hub and join it (see "Hub (optional)").
+A native Swift app for running Codex, Claude Code, and B4 agent conversations side by side on one Mac, with an iOS companion built from the same code. The app opens on a sign-in screen: it needs an account on its hub, made with a passkey or an Apple ID (see "Signing in"). The agents run on the Mac; conversations created in the app sync to that hub so the iPhone can show them, nothing else leaves the Mac, and there is no telemetry.
 
 The interface follows the LiveLoveApp visual system (`docs/superpowers/specs/2026-10-31-lla-visual-system-design.md`): ink on white, one cobalt accent, Hanken Grotesk and JetBrains Mono, hairlines and pills, with a derived dark appearance.
 
@@ -55,7 +55,7 @@ xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generi
 ./Scripts/package.sh
 ```
 
-That builds `dist/Agent Workspace.app` (version from `Sources/Coordinator/Version.swift`) with the CLI and the coordinator (`B4AppCoordinator.app`, a background-only bundle that can hold its own provisioning profile) inside `Contents/Helpers`, the PostgreSQL server under `Contents/SharedSupport`, signs it (ad hoc unless `B4APP_SIGN_IDENTITY` is set, below), verifies, and zips it. Copy the app to `/Applications` and open it. On first launch the app writes `~/Library/LaunchAgents/com.cacheplane.b4app.coordinator.plist`, pointing at the coordinator inside the app, and loads it; macOS may show "Agent Workspace added items that can run in the background". The coordinator then outlives the window. If launchd cannot start it, the link status at the bottom of the sidebar says so and the window hosts the coordinator itself until the next launch repairs the agent.
+That builds the prod flavour's `dist/Agent Workspace.app` (version from `Sources/Coordinator/Version.swift`; see "Build flavours" for the others) with the CLI and the coordinator (`B4AppCoordinator.app`, a background-only bundle that can hold its own provisioning profile) inside `Contents/Helpers`, the PostgreSQL server under `Contents/SharedSupport`, signs it (ad hoc unless `B4APP_SIGN_IDENTITY` is set, below), verifies, and zips it. Copy the app to `/Applications` and open it. On first launch the app writes `~/Library/LaunchAgents/com.cacheplane.b4app.coordinator.plist`, pointing at the coordinator inside the app, and loads it; macOS may show "Agent Workspace added items that can run in the background". The coordinator then outlives the window. If launchd cannot start it, the link status at the bottom of the sidebar says so and the window hosts the coordinator itself until the next launch repairs the agent.
 
 Put the CLI on your PATH as a link to the bundled one, so the app and the CLI always agree on a version:
 
@@ -92,7 +92,30 @@ B4APP_ASC_KEY_ID=<key-id> B4APP_ASC_ISSUER_ID=<issuer-id> ./Scripts/upload-ios.s
 
 It archives Release with the team from the Developer ID certificate (or `B4APP_TEAM_ID`) and a build number from the UTC time (or `B4APP_BUILD_NUMBER`). It checks that the archive has a privacy manifest and no localhost ATS exception, then uploads with method `app-store-connect`. Builds are for internal testers unless `B4APP_TESTFLIGHT_EXTERNAL=1`, which needs Beta App Review and a reachable hub; `B4APP_UPLOAD=0` exports the `.ipa` to `dist/ios` instead of uploading. A phone needs a hub it can reach over HTTPS: `localhost` on a device is the phone itself.
 
-### First sign-in
+### Build flavours
+
+| | prod | beta | local |
+| --- | --- | --- | --- |
+| Mac build | b4.run download, Homebrew cask | b4.run beta download | `package.sh` or Xcode Debug, on the owner's Mac |
+| iPhone build | App Store | TestFlight | Xcode, Simulator only |
+| Hub | `https://hub.b4.run` | `https://hub.test.b4.run` | `http://localhost:8080` |
+| Site domain (passkeys, pair links) | `b4.run` | `test.b4.run` | `local.b4.run` |
+| Sign in with Apple | yes | yes | no |
+| Mac bundle id | `com.cacheplane.b4app` | `com.cacheplane.b4app.beta` | `com.cacheplane.b4app.local` |
+| Data directory and URL scheme | `b4app` | `b4app-beta` | `b4app-local` |
+| Badge | none | "Test hub" | "Local hub" |
+
+`B4APP_FLAVOR=beta ./Scripts/package.sh` (or `local`; the default is `prod`) builds `Agent Workspace (Beta).app` or `Agent Workspace (Local).app`. Each flavour has its own LaunchAgent label (`com.cacheplane.b4app.beta.coordinator`, …), keychain group, and data, so they live side by side on one Mac. The `B4App-macOS` and `B4App-iOS` schemes build local in Debug and prod in Release; the `-Beta` schemes build beta. The CLI takes the flavour of the app it sits in; outside an app it is local unless `B4APP_FLAVOR` says otherwise. The iPhone's prod and beta builds share the bundle id `com.cacheplane.b4app.ios`, so only one is installed at a time.
+
+### Signing in
+
+Nothing in either app is reachable until someone signs in. "Continue with a passkey" uses the system password manager; "Continue with Apple" (prod and beta) uses your Apple ID. Either one signs in to an existing account or, after asking, creates one with a private org; onboarding asks only for your full name, and the org is named after your first name ("Brian's Org").
+
+- **Mac.** Every hub call goes through the coordinator, so the app never holds a token. Passkeys need a Developer ID package (`package.sh` adds the `webcredentials:` entitlement) and the site's association file, so an Xcode or ad hoc build only shows the failure line; Apple opens the hub's web flow in a browser sheet. Each account has its own database on the Mac, so logging out and signing in again, as the same or another account, picks up where that account left off. Log out is in the profile menu: it asks first when turns or servers are running, stops local work (a remote B4 run keeps going on its server), uploads what hasn't synced, and ends the session at the hub, keeping the device. Settings → Account changes your name, adds or removes a passkey, connects an Apple ID, and deletes the account. After onboarding, "Add your iPhone" shows a QR code (also under Settings → Remote access).
+- **iPhone.** The same screen, with Apple's own sheet. Scanning the Mac's code with the Camera or the app's scanner signs the phone in to that account; a phone that signed up on its own, with no Mac, is merged into it. A phone with no Mac in its account shows "Connect your Mac" instead of the list. Log out ends the session and empties the phone's copy. "Use an enrollment code" on the sign-in screen takes a hub URL and an operator's code.
+- **CLI.** `agent-workspace account status [--json]` and `agent-workspace account logout [--stop-work]`. While nobody is signed in, every thread, turn, project, draft, server, and hub command prints "Nobody is signed in. Sign in from the Agent Workspace app." and exits 4. Signed out, `agent-workspace hub join <url>` signs in with an enrollment code, the operator's path for a hub with sign-up closed.
+
+### First sign-in to Codex and Claude
 
 - Codex: install the Codex CLI (`brew install --cask codex`), then under Connections add a Codex connection and press "Sign in with ChatGPT"; the official browser flow runs and the connection shows the account it is signed in as. Or from a terminal: `agent-workspace connection add --kind codex` and `agent-workspace connection login codex`.
 - Claude Code: install the `claude` executable, then add a Claude connection and press "Sign in to Claude" (or run `claude auth login` in a terminal). Plan allowances apply; the app never switches to API-key billing on its own.
@@ -106,7 +129,7 @@ It archives Release with the team from the Developer ID certificate (or `B4APP_T
 
 ### The store
 
-Each Mac keeps its workspace in a private PostgreSQL cluster under `~/Library/Application Support/b4app/pg`, reachable only through a Unix socket in the runtime directory; the app's bundle carries the server under `Contents/SharedSupport/postgres`. The coordinator starts the cluster when it starts and stops it when it stops cleanly; a cluster left running is adopted next time when it runs this install's `postgres`, and restarted with it otherwise (after an app update). A `workspace.sqlite` from an earlier version is imported on the first start and renamed `.imported`.
+Each Mac keeps its workspace in a private PostgreSQL cluster under `~/Library/Application Support/b4app/pg` (`b4app-beta`, `b4app-local` for the other flavours), with a `registry` database of the accounts that signed in and one database per account (`workspace_<id>`; the first account adopts `workspace`), reachable only through a Unix socket in the runtime directory; the app's bundle carries the server under `Contents/SharedSupport/postgres`. The coordinator starts the cluster when it starts and stops it when it stops cleanly; a cluster left running is adopted next time when it runs this install's `postgres`, and restarted with it otherwise (after an app update). A `workspace.sqlite` from an earlier version is imported on the first start and renamed `.imported`.
 
 ```bash
 agent-workspace db status
@@ -120,13 +143,15 @@ agent-workspace db backup
 
 ### Upgrade
 
+From a build before sign-in (the owner's install): upgrade the hub first (`docs/compatibility.md`), then package the local flavour, and open the app before you use the CLI. The local flavour adopts the old `b4app` data directory when its hub link is `localhost`, moving it to `b4app-local`, but only in a coordinator the app starts: one the CLI starts never adopts, and if it runs first it creates `b4app-local` and the old data stays in `b4app`. The adoption boots the old LaunchAgent out and then deletes its plist, `~/Library/LaunchAgents/com.cacheplane.b4app.coordinator.plist`, when that plist runs another program than the local build's (so the next login does not start the old coordinator, which would make a fresh, empty `b4app`); one it keeps (its program unreadable) you remove by hand. After the first local start, delete the old app; opening it again registers its agent again.
+
 Replace the app in `/Applications`. The running coordinator keeps the old version until it is restarted; the sidebar shows "The running coordinator is X; this app is Y" with a Restart coordinator link, the Coordinator menu has the same, and so does `agent-workspace coordinator restart`.
 
 Launching the new app once refreshes the agent when the app has moved; `agent-workspace coordinator status` shows launchd's view of the job and `coordinator restart` starts the new coordinator in place of the old one.
 
 ### Uninstall
 
-Coordinator menu › "Remove Background Agent…" (boots the agent out and deletes its plist from `~/Library/LaunchAgents`), quit, then delete the app, `~/Library/Application Support/b4app` (the database and logs), the `agent-workspace` symlink, and the Keychain items whose service starts with `com.cacheplane.b4app`. Registered B4 projects are not touched.
+Coordinator menu › "Remove Background Agent…" (boots the agent out and deletes its plist from `~/Library/LaunchAgents`), quit, then delete the app, `~/Library/Application Support/b4app` (the database and logs; `b4app-beta` or `b4app-local` for those flavours), the `agent-workspace` symlink, and the Keychain items whose service starts with `com.cacheplane.b4app`. Registered B4 projects are not touched.
 
 ## CLI
 
@@ -222,7 +247,7 @@ Start a local hub (needs Docker). Compose publishes the hub as `127.0.0.1:8080:8
 cd Hub && cp .env.example .env
 ```
 
-Fill in `POSTGRES_PASSWORD` and `B4HUB_APP_PASSWORD` in `.env` (URL-safe printable ASCII, for example `openssl rand -hex 24` each; the file is gitignored), then:
+Fill in `POSTGRES_PASSWORD` and `B4HUB_APP_PASSWORD` in `.env` (URL-safe printable ASCII, for example `openssl rand -hex 24` each; the file is gitignored) and `B4HUB_SECRET_KEY` (`openssl rand -base64 32`; the hub refuses to start without it, and it seals what the hub keeps encrypted, so keep it). `.env.example` also sets `B4HUB_WEBAUTHN_RP_ID=local.b4.run`, the local flavour's passkey domain, and `B4HUB_SIGNUP=open` (the hub's own default is `closed`, so an on-prem hub grows accounts only by `seed`). A hub that offers Sign in with Apple also needs `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, `B4HUB_APPLE_PRIVATE_KEY` (the `.p8` key's contents), and `B4HUB_APPLE_AUDIENCES`, plus `B4HUB_APPLE_SERVICES_ID` and `B4HUB_PUBLIC_URL` for the Mac's web flow; each secret also takes a `_FILE` form. `Hub/API.md` ("Sign-in") has the details. Then:
 
 ```bash
 docker compose build && docker compose up -d && curl -fsS localhost:8080/readyz
@@ -240,13 +265,13 @@ docker compose run --rm migrate enroll --user blove
 
 During maintenance, `docker compose run --rm migrate maintenance on|off|status` pauses and resumes writes while reads continue (`Hub/API.md`, "Maintenance mode").
 
-The code is eight characters, valid for ten minutes, and works once. Join the Mac (the code is read from a hidden prompt or one line of stdin, never an argument):
+With sign-up open, the apps can instead sign up on this hub with a passkey (see "Signing in"); a seeded user adds one in Settings → Account after joining by code. The code is eight characters, valid for ten minutes, and works once. Join the Mac while it is signed out (the code is read from a hidden prompt or one line of stdin, never an argument); it signs the Mac in:
 
 ```bash
 .build/debug/agent-workspace hub join http://localhost:8080
 ```
 
-Join the phone by entering the same hub URL, a second enrollment code, and a device name on the iOS app's Connect screen. The Mac pushes its history and every later change; the phone's thread list and open transcripts update without a refresh. The clients accept `http` only for `localhost`, `127.0.0.1`, and `::1`; any other hub must be `https`, and both sides refuse anything else before sending a request. The Simulator reaches the hub at `http://localhost:8080`. Simulator builds need code signing for the Keychain (Xcode's default "Sign to Run Locally" works; `CODE_SIGNING_ALLOWED=NO` builds fail with Keychain error -34018 when the app tries to store its device token).
+Join the phone with "Use an enrollment code" on its sign-in screen: the same hub URL and a second code. Or pair it from the Mac's "Add your iPhone", which needs no code typed. The Mac pushes its history and every later change; the phone's thread list and open transcripts update without a refresh. The clients accept `http` only for `localhost`, `127.0.0.1`, and `::1`; any other hub must be `https`, and both sides refuse anything else before sending a request. The Simulator reaches the hub at `http://localhost:8080`. Simulator builds need code signing for the Keychain (Xcode's default "Sign to Run Locally" works; `CODE_SIGNING_ALLOWED=NO` builds fail with Keychain error -34018 when the app tries to store its device token).
 
 ```bash
 .build/debug/agent-workspace hub status
@@ -256,7 +281,7 @@ Join the phone by entering the same hub URL, a second enrollment code, and a dev
 .build/debug/agent-workspace hub leave
 ```
 
-`hub status` shows the hub, this device, the account, and how many changes are still unsynced. `hub leave` revokes this device at the hub and stops pushing; what it already uploaded stays on the hub. While a Mac is joined, `db restore` is refused: leave first, restore, then join again. A restore marks every restored change unsynced, so the next join uploads the restored history. (`hub join`, `hub status`, and the push were exercised live in M8a; `hub leave`, the restore refusal, and history surviving a revoke are fixture-tested only.) On the phone, removing the app is the only way to disconnect for now, and it leaves the device unrevoked at the hub.
+`hub status` shows the hub, this device, the account, and how many changes are still unsynced. `hub leave` revokes this device at the hub, stops pushing, and signs out; what it already uploaded stays on the hub. `hub join` is refused while signed in. `db restore` works only for an account that has joined no hub, because the hub would ignore restored changes. (`hub join`, `hub status`, and the push were exercised live in M8a; `hub leave`, the restore refusal, and history surviving a revoke are fixture-tested only.) On the phone, Log out ends its session, keeps the device for the next sign-in, and empties its copy.
 
 ## Layout
 

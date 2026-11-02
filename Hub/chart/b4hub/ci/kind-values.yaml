@@ -14,10 +14,11 @@ resources:
     memory: 64Mi
   limits:
     memory: 256Mi
-# Required once sign-in merges: the sign-in hub's serve refuses to start without
-# B4HUB_SECRET_KEY. Uncomment, and have the install job generate the key into a file and
-# pass it with `--set-file secrets.values.secretKey=<file>` (never a --set value). Empty
-# Apple values count as unset, so the chart-created Secret needs nothing else.
-# secrets:
-#   values:
-#     secretKey: ""
+# The hub's serve refuses to start without B4HUB_SECRET_KEY. The install job
+# (.github/scripts/chart-kind-test.sh) generates the key into a file and passes it with
+# `--set-file secrets.values.secretKey=<file>` (never a --set value); the empty value here
+# only documents the key. Empty Apple values count as unset, so the chart-created Secret
+# needs nothing else. useFileVars is the default (true): the hub reads B4HUB_SECRET_KEY_FILE.
+secrets:
+  values:
+    secretKey: ""

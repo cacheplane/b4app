@@ -66,6 +66,22 @@ import Testing
     }
   }
 
+  @Test func wordmarkLoadsEveryLetterInItsOwnColour() throws {
+    // Six groups, each moved by its own translate, one of them a circle (the dot).
+    for (name, fill) in [("wordmark-ink", UInt32(0x111111)), ("wordmark-white", 0xFFFFFF)] {
+      let art = try #require(BrandArt.load(named: name), "\(name).svg did not parse")
+      #expect(art.viewBox == CGRect(x: -5, y: -5, width: 522, height: 115))
+      #expect(art.fill == fill)
+      let box = art.path.boundingRect
+      // From the b's left edge to the n's right edge (430 + 82), and from the top to the u's tail.
+      #expect(abs(box.minX) < 0.5 && abs(box.maxX - 512) < 0.5)
+      #expect(abs(box.minY) < 0.5 && abs(box.maxY - 105) < 0.5)
+      // The dot sits at 216 + 17, between the 4 and the r.
+      #expect(art.path.contains(CGPoint(x: 233, y: 83)))
+      #expect(!art.path.contains(CGPoint(x: 255, y: 83)))
+    }
+  }
+
   @Test func registersBundledFonts() {
     #expect(LLAFonts.register() == true)
     #expect(LLAFonts.isAvailable(LLAFonts.sansRegular))

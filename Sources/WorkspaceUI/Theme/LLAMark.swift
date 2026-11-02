@@ -49,6 +49,8 @@ public struct LLAMarkView: View {
 nonisolated struct BrandArt: Sendable {
   var viewBox: CGRect
   var path: Path
+  /// The first `fill="#rrggbb"` in the file, for art drawn in its own colour (the b4.run wordmark).
+  var fill: UInt32?
 
   private static let cache = Mutex<[String: BrandArt]>([:])
 
@@ -65,17 +67,62 @@ nonisolated struct BrandArt: Sendable {
     return art
   }
 
-  /// Reads `viewBox` and the first `<path d>` of an outlined SVG.
+  /// Reads `viewBox` and every `<path d>` and `<circle>` of an outlined SVG, each moved by the
+  /// `translate(x y)` of the `<g>` elements around it (the wordmark sets each letter in a group).
   static func parse(svg: String) -> BrandArt? {
-    guard let box = capture(#"viewBox="([^"]+)""#, in: svg), let d = capture(#"\sd="([^"]+)""#, in: svg)
-    else {
-      return nil
-    }
+    guard let box = capture(#"viewBox="([^"]+)""#, in: svg) else { return nil }
     let numbers = box.split(whereSeparator: { $0 == " " || $0 == "," }).compactMap { Double($0) }
     guard numbers.count == 4 else { return nil }
+    guard let elements = try? NSRegularExpression(pattern: #"<(/?)(g|path|circle)\b([^>]*)>"#) else {
+      return nil
+    }
+    var offsets: [CGPoint] = [.zero]
+    var path = Path()
+    var fill: UInt32?
+    for match in elements.matches(in: svg, range: NSRange(svg.startIndex..., in: svg)) {
+      guard let closing = Range(match.range(at: 1), in: svg).map({ !svg[$0].isEmpty }),
+        let tag = Range(match.range(at: 2), in: svg).map({ String(svg[$0]) }),
+        let attributes = Range(match.range(at: 3), in: svg).map({ String(svg[$0]) })
+      else { continue }
+      if closing {
+        if tag == "g", offsets.count > 1 { offsets.removeLast() }
+        continue
+      }
+      let base = offsets.last ?? .zero
+      let moved = translation(attributes)
+      let origin = CGPoint(x: base.x + moved.x, y: base.y + moved.y)
+      fill =
+        fill ?? capture(##"\sfill="#([0-9A-Fa-f]{6})""##, in: attributes).flatMap { UInt32($0, radix: 16) }
+      switch tag {
+      case "g":
+        if !attributes.hasSuffix("/") { offsets.append(origin) }
+      case "path":
+        guard let d = capture(#"\sd="([^"]+)""#, in: attributes) else { continue }
+        path.addPath(SVGPathData.parse(d), transform: CGAffineTransform(translationX: origin.x, y: origin.y))
+      default:  // circle
+        guard let cx = number("cx", in: attributes), let cy = number("cy", in: attributes),
+          let r = number("r", in: attributes)
+        else { continue }
+        path.addEllipse(in: CGRect(x: origin.x + cx - r, y: origin.y + cy - r, width: 2 * r, height: 2 * r))
+      }
+    }
+    guard !path.isEmpty else { return nil }
     return BrandArt(
-      viewBox: CGRect(x: numbers[0], y: numbers[1], width: numbers[2], height: numbers[3]),
-      path: SVGPathData.parse(d))
+      viewBox: CGRect(x: numbers[0], y: numbers[1], width: numbers[2], height: numbers[3]), path: path,
+      fill: fill)
+  }
+
+  private static func number(_ name: String, in attributes: String) -> CGFloat? {
+    capture(#"\s"# + name + #"="([-0-9.eE]+)""#, in: attributes).flatMap(Double.init).map { CGFloat($0) }
+  }
+
+  /// `transform="translate(x y)"`, or zero.
+  private static func translation(_ attributes: String) -> CGPoint {
+    guard let transform = capture(#"\stransform="translate\(([^)]*)\)""#, in: attributes) else {
+      return .zero
+    }
+    let parts = transform.split(whereSeparator: { $0 == " " || $0 == "," }).compactMap { Double($0) }
+    return CGPoint(x: parts.first ?? 0, y: parts.count > 1 ? parts[1] : 0)
   }
 
   private static func capture(_ pattern: String, in text: String) -> String? {
@@ -84,6 +131,34 @@ nonisolated struct BrandArt: Sendable {
       let range = Range(match.range(at: 1), in: text)
     else { return nil }
     return String(text[range])
+  }
+}
+
+/// The b4.run wordmark, vendored from the b4run repository (`Resources/Brand/wordmark-ink.svg` and
+/// `wordmark-white.svg` for dark mode) and drawn in its own colour. It appears only on the sign-in
+/// screen; the rest of the app keeps the LLA mark. The guideline's clear space, one dot diameter,
+/// is kept around it.
+public struct B4Wordmark: View {
+  public var height: CGFloat
+  @Environment(\.colorScheme) private var colorScheme
+
+  public init(height: CGFloat = 30) { self.height = height }
+
+  /// The dot is 34 units across in the 115-unit-high viewBox.
+  public static func clearSpace(height: CGFloat) -> CGFloat { height * 34 / 115 }
+
+  public var body: some View {
+    let name = colorScheme == .dark ? "wordmark-white" : "wordmark-ink"
+    let art = BrandArt.load(named: name)
+    let aspect = art.map { $0.viewBox.height > 0 ? $0.viewBox.width / $0.viewBox.height : 1 } ?? 1
+    let fill = art?.fill.map { LLA.Dynamic(light: $0, dark: $0).color } ?? LLA.Color.ink
+    BrandShape(name: name)
+      .fill(fill, style: FillStyle(eoFill: true))
+      .frame(width: height * aspect, height: height)
+      .padding(Self.clearSpace(height: height))
+      .accessibilityElement()
+      .accessibilityLabel("b4.run")
+      .accessibilityAddTraits(.isImage)
   }
 }
 

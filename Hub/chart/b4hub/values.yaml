@@ -72,8 +72,8 @@ hub:
 secrets:
   # -- Existing Secret with keys `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, `B4HUB_APPLE_PRIVATE_KEY`. Each reference is `optional: true`, so Kubernetes does not catch a missing or mistyped key (no `CreateContainerConfigError`); the hub's startup check is the only guard.
   existingSecret: ""
-  # -- `false`: env from `secretKeyRef`. `true`: mount at `/etc/b4hub/secrets/` and set `B4HUB_*_FILE` (needs a hub with the `_FILE` forms, M8e).
-  useFileVars: false
+  # -- `true` (default): mount at `/etc/b4hub/secrets/` and set `B4HUB_*_FILE`, so no secret is in the container's environment. `false`: env from `secretKeyRef`, for a hub older than the `_FILE` forms of these secrets.
+  useFileVars: true
   # -- Chart-created `<release>-b4hub-secrets` when `existingSecret` is empty. Pass the PEM with `--set-file secrets.values.applePrivateKey=AuthKey.p8`.
   values:
     secretKey: ""

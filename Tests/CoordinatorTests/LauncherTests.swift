@@ -53,7 +53,8 @@ import WorkspaceProtocol
     #expect(
       plist.contains(
         "<string>Contents/Helpers/B4AppCoordinator.app/Contents/MacOS/b4app-coordinator</string>"))
-    #expect(plist.contains("<string>com.cacheplane.b4app.coordinator</string>"))
+    #expect(plist.contains("<string>\(LaunchAgentControl.label)</string>"))
+    #expect(LaunchAgentControl.label == "com.cacheplane.b4app\(Flavor.current.idSuffix).coordinator")
     #expect(plist.contains("<key>LimitLoadToSessionType</key><string>Aqua</string>"))
     let parsed =
       try PropertyListSerialization.propertyList(from: Data(plist.utf8), format: nil) as? [String: Any]

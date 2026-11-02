@@ -62,7 +62,7 @@ run "prod_trust_is_environment_scoped" {
   assert {
     condition = (
       one([for c in data.aws_iam_policy_document.infra_trust.statement[0].condition : c if c.variable == "token.actions.githubusercontent.com:sub"]).test == "StringEquals"
-      && toset(one([for c in data.aws_iam_policy_document.infra_trust.statement[0].condition : c if c.variable == "token.actions.githubusercontent.com:sub"]).values) == toset(["repo:cacheplane/b4app:environment:production"])
+      && toset(one([for c in data.aws_iam_policy_document.infra_trust.statement[0].condition : c if c.variable == "token.actions.githubusercontent.com:sub"]).values) == toset(["repo:cacheplane@269322961/b4app@1440075505:environment:production"])
     )
     error_message = "prod infra role must trust only the production GitHub environment"
   }
@@ -70,7 +70,7 @@ run "prod_trust_is_environment_scoped" {
   assert {
     condition = (
       one([for c in data.aws_iam_policy_document.deploy_trust.statement[0].condition : c if c.variable == "token.actions.githubusercontent.com:sub"]).test == "StringEquals"
-      && toset(one([for c in data.aws_iam_policy_document.deploy_trust.statement[0].condition : c if c.variable == "token.actions.githubusercontent.com:sub"]).values) == toset(["repo:cacheplane/b4app:environment:production"])
+      && toset(one([for c in data.aws_iam_policy_document.deploy_trust.statement[0].condition : c if c.variable == "token.actions.githubusercontent.com:sub"]).values) == toset(["repo:cacheplane@269322961/b4app@1440075505:environment:production"])
     )
     error_message = "prod deploy role must trust only the production GitHub environment"
   }
@@ -95,8 +95,8 @@ run "test_trust_is_main_branch" {
 
   assert {
     condition = (
-      toset(one([for c in data.aws_iam_policy_document.infra_trust.statement[0].condition : c if c.variable == "token.actions.githubusercontent.com:sub"]).values) == toset(["repo:cacheplane/b4app:ref:refs/heads/main"])
-      && toset(one([for c in data.aws_iam_policy_document.deploy_trust.statement[0].condition : c if c.variable == "token.actions.githubusercontent.com:sub"]).values) == toset(["repo:cacheplane/b4app:ref:refs/heads/main"])
+      toset(one([for c in data.aws_iam_policy_document.infra_trust.statement[0].condition : c if c.variable == "token.actions.githubusercontent.com:sub"]).values) == toset(["repo:cacheplane@269322961/b4app@1440075505:ref:refs/heads/main"])
+      && toset(one([for c in data.aws_iam_policy_document.deploy_trust.statement[0].condition : c if c.variable == "token.actions.githubusercontent.com:sub"]).values) == toset(["repo:cacheplane@269322961/b4app@1440075505:ref:refs/heads/main"])
     )
     error_message = "test infra and deploy roles must trust only pushes to main"
   }
@@ -120,7 +120,7 @@ run "plan_trust_allows_any_ref_in_repository" {
   assert {
     condition = (
       one([for c in data.aws_iam_policy_document.plan_trust.statement[0].condition : c if c.variable == "token.actions.githubusercontent.com:sub"]).test == "StringLike"
-      && toset(one([for c in data.aws_iam_policy_document.plan_trust.statement[0].condition : c if c.variable == "token.actions.githubusercontent.com:sub"]).values) == toset(["repo:cacheplane/b4app:*"])
+      && toset(one([for c in data.aws_iam_policy_document.plan_trust.statement[0].condition : c if c.variable == "token.actions.githubusercontent.com:sub"]).values) == toset(["repo:cacheplane@269322961/b4app@1440075505:*"])
     )
     error_message = "plan role must trust any ref in cacheplane/b4app via StringLike"
   }

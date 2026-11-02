@@ -26,7 +26,7 @@ struct SyncRig {
   let secrets: MemorySecretStore
 
   static func make(
-    joined: Bool = true, wrap: @Sendable (FakeHubAPI) -> any HubAPI = { $0 }
+    joined: Bool = true, wrap: @Sendable (FakeHubAPI) -> any HubAPI = { $0 }, flavor: Flavor = .local
   ) async throws -> SyncRig {
     let database = try WorkspaceDatabase.temporary()
     let fake = FakeHubAPI()
@@ -40,7 +40,7 @@ struct SyncRig {
       pairing: Pairing(
         pollInterval: .seconds(2), sleep: { try await clock.sleep(for: $0) },
         uptime: { clock.now.offset }),
-      powerAssertions: assertions)
+      powerAssertions: assertions, flavor: flavor)
     let rig = SyncRig(
       sync: sync, database: database, fake: fake, clock: clock, assertions: assertions,
       secrets: secrets)
@@ -48,8 +48,8 @@ struct SyncRig {
     return rig
   }
 
-  func join() async throws -> HubStatus.Result {
-    try await sync.join(url: "http://127.0.0.1:8080", code: pairingEnrollCode, deviceName: "Test Mac")
+  func join(url: String = "http://127.0.0.1:8080") async throws -> HubStatus.Result {
+    try await sync.join(url: url, code: pairingEnrollCode, deviceName: "Test Mac")
   }
 
   /// A second `HubSync` over the same store, as after a coordinator restart.
@@ -147,6 +147,29 @@ private func mac() -> DeviceInfo { DeviceInfo(id: "dev-mac", name: "Test Mac", p
     #expect(fallback.url == joinedURL && fallback.code == "QRST6789")
     #expect(await rig.fake.mintCalls == 2)
     await rig.sync.stop()
+  }
+
+  @Test func theSiteLinkComesOnlyFromTheFlavoursOwnHub() async throws {
+    // Joined to the local flavour's hub (another spelling of it): the site link, code in the fragment.
+    let own = try await SyncRig.make(joined: false, flavor: .local)
+    _ = try await own.join(url: "HTTP://LOCALHOST:8080/")
+    await own.fake.setPairingCode(code("WXYZ2345"))
+    let minted = try await own.sync.pair()
+    #expect(minted.link == "https://local.b4.run/pair#c=WXYZ2345")
+    #expect(!"\(minted)".contains("WXYZ2345"))
+    await own.sync.stop()
+
+    // Joined to any other hub (an operator's, or this machine by another name): no link, so no QR
+    // code that would send the phone to the wrong hub; the code and `url` are still answered.
+    let other = try await SyncRig.make(flavor: .local)
+    await other.fake.setPairingCode(code("WXYZ2345"))
+    let elsewhere = try await other.sync.pair()
+    #expect(elsewhere.link == nil)
+    #expect(elsewhere.code == "WXYZ2345")
+    await other.sync.stop()
+    #expect(HubSync.isFlavorHub(URL(string: "https://hub.b4.run/")!, .prod))
+    #expect(!HubSync.isFlavorHub(URL(string: "https://hub.b4.run")!, .beta))
+    #expect(!HubSync.isFlavorHub(URL(string: "https://hub.example.com")!, .prod))
   }
 
   @Test func pairStatusIsNoneBeforeAnyPairing() async throws {
@@ -374,6 +397,7 @@ struct SocketRig {
     let fake = FakeHubAPI()
     await fake.addEnrollmentCode(pairingEnrollCode, pairingMacEnrollment)
     let assertions = FakePowerAssertions()
+    // Signed out until `join()` signs in through the account path (`hub join` while signed out).
     let outcome = try await Coordinator.start(
       options: CoordinatorOptions(
         paths: paths, environment: env, secretStore: MemorySecretStore(), hubAPIFactory: { _, _ in fake },
@@ -402,15 +426,20 @@ struct SocketRig {
   @Test func pairIsRoutedAndNeverReplayedFromTheOperationCache() async throws {
     let rig = try await SocketRig.start()
     defer { Task { await rig.close() } }
+    // Before joining nobody is signed in, so there is nothing to pair.
     do {
       _ = try await rig.client.request(HubPair.self, EmptyParams())
       Issue.record("expected a refusal before joining")
     } catch let error as WorkspaceError {
-      #expect(error.message == "Join a hub first")
+      #expect(error.code == .signedOut)
     }
-    #expect(try await rig.client.request(HubPairStatus.self, EmptyParams()).state == .none)
+    await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.client.request(HubPairStatus.self, EmptyParams())
+    }
 
     _ = try await rig.join()
+    #expect(try await rig.client.request(HubPairStatus.self, EmptyParams()).state == .none)
+
     await rig.fake.setPairingCode(
       PairingCodeResponse(code: "AAAA1111", expiresAt: "2026-11-01T12:05:00.000000Z"))
     // Even with an operationId, a code is never kept to be answered again.

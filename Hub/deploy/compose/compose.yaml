@@ -3,7 +3,8 @@
 # opt in: `-f compose.local.yaml` (loopback) or `--profile tls` (80 and 443).
 #
 # Secrets are files under ./secrets/ (never .env, never this file). The hub reads them through
-# DATABASE_URL_FILE and DATABASE_ADMIN_URL_FILE; only `migrate` gets the admin URL.
+# DATABASE_URL_FILE, DATABASE_ADMIN_URL_FILE, and B4HUB_SECRET_KEY_FILE; only `migrate` gets the
+# admin URL, and only `hub` gets the secret key.
 
 name: b4hub
 
@@ -53,6 +54,7 @@ services:
     init: true
     environment:
       DATABASE_URL_FILE: /run/secrets/database_url
+      B4HUB_SECRET_KEY_FILE: /run/secrets/secret_key
       B4HUB_PUBLIC_URL: ${B4HUB_PUBLIC_URL:?set B4HUB_PUBLIC_URL in .env}
       B4HUB_WEBAUTHN_RP_ID: ${B4HUB_WEBAUTHN_RP_ID:?set B4HUB_WEBAUTHN_RP_ID in .env}
       B4HUB_SIGNUP: ${B4HUB_SIGNUP:-closed}
@@ -60,7 +62,7 @@ services:
       # Behind your own proxy it is only correct if that proxy does the same (see README.md).
       B4HUB_TRUST_X_FORWARDED_FOR: "1"
       B4HUB_LOG: info
-    secrets: [database_url]
+    secrets: [database_url, secret_key]
     expose: ["8080"]
     depends_on:
       migrate:
@@ -95,6 +97,8 @@ secrets:
     file: ./secrets/database_admin_url
   database_url:
     file: ./secrets/database_url
+  secret_key:
+    file: ./secrets/secret_key
 
 volumes:
   b4hub-db:

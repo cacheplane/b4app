@@ -1,8 +1,9 @@
 use std::io::IsTerminal;
 use std::process::ExitCode;
 
-use b4hub::cli::{self, Cli, ConfigError, LogFormat, Settings};
+use b4hub::cli::{self, Cli, ConfigError, Settings};
 use clap::Parser;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -18,22 +19,7 @@ async fn main() -> ExitCode {
         Ok(format) => format,
         Err(error) => return config_failure(&error),
     };
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr);
-    match format {
-        LogFormat::Text => subscriber.init(),
-        // One object per line; the `request` span's fields (`request_id`, `method`, `path`,
-        // `device_id`) ride on every event under `span`, and the event's own fields are top-level.
-        // Only the innermost span is named: an event inside a further span (a future
-        // `#[instrument]`) would lose `request_id` unless `with_span_list(true)` is switched on.
-        LogFormat::Json => subscriber
-            .json()
-            .flatten_event(true)
-            .with_current_span(true)
-            .with_span_list(false)
-            .init(),
-    }
+    b4hub::logging::subscriber(filter, format, std::io::stderr).init();
 
     match cli::run(cli, &settings).await {
         Ok(()) => ExitCode::SUCCESS,

@@ -1,6 +1,95 @@
 import SwiftUI
 import WorkspaceProtocol
 
+// MARK: - Log out (sign-in plan, Task 12)
+
+/// "Log out of <org name>?" (`pairing.html`, right): with work running, its message lists it and the
+/// button is "Stop and log out"; without, the message is one neutral line and the button "Log out".
+public struct LogOutConfirmation: Sendable, Equatable {
+  public static let neutralMessage =
+    "Logging out uploads what hasn't synced and keeps everything on this Mac for when you sign back in."
+  public static let cancelTitle = "Cancel"
+
+  public var orgName: String
+  /// What the coordinator said is running; empty when nothing is, or it could not be asked.
+  public var work: WorkspaceActiveWork.Result
+
+  public init(orgName: String, work: WorkspaceActiveWork.Result?) {
+    self.orgName = orgName
+    self.work = work ?? WorkspaceActiveWork.Result(turns: [], servers: [])
+  }
+
+  /// Whether confirming sends `stopWork`. Remote runs count: the coordinator refuses a log-out while
+  /// any turn is open, and leaves those running where they run.
+  public var stopsWork: Bool { !work.turns.isEmpty || !work.servers.isEmpty }
+
+  public var title: String { "Log out of \(orgName)?" }
+  /// Whether anything on this Mac stops: remote runs alone keep going where they run.
+  public var stopsLocalWork: Bool { !work.localTurns.isEmpty || !work.servers.isEmpty }
+  public var confirmTitle: String { stopsLocalWork ? "Stop and log out" : "Log out" }
+  /// The buttons, in order.
+  public var buttons: [String] { [confirmTitle, Self.cancelTitle] }
+
+  public var message: String {
+    let turns = work.localTurns.count
+    let servers = work.servers.count
+    let remote = work.remoteTurns.count
+    var running: [String] = []
+    if turns > 0 { running.append(turns == 1 ? "1 turn is running" : "\(turns) turns are running") }
+    if servers > 0 {
+      running.append(servers == 1 ? "1 local server is up" : "\(servers) local servers are up")
+    }
+    let elsewhere =
+      remote == 0
+      ? nil
+      : remote == 1
+        ? "1 remote B4 run keeps going on its server."
+        : "\(remote) remote B4 runs keep going on their servers."
+    if running.isEmpty {
+      return [elsewhere, Self.neutralMessage].compactMap { $0 }.joined(separator: " ")
+    }
+    let stops =
+      "\(running.joined(separator: " and ")). Logging out stops them, uploads what hasn't synced, and keeps everything on this Mac for when you sign back in."
+    return [stops, elsewhere].compactMap { $0 }.joined(separator: " ")
+  }
+}
+
+extension WorkspaceModel {
+  /// The profile menu's Log out on the Mac: ask what is running, then ask "Log out of <org name>?".
+  /// What runs is read with a short wait; if it cannot be read the question is the plain one, and the
+  /// coordinator's `work_running` brings the list back (`confirmLogOut`).
+  public func requestLogOut() async {
+    guard accountSource == .coordinator, !logOutInFlight else { return }
+    logOutFailure = nil
+    let work = await activeWork(timeout: .seconds(3))
+    guard accountState == .signedIn else { return }
+    logOutConfirmation = LogOutConfirmation(
+      orgName: accountStatus?.account?.orgName ?? "your account", work: work)
+  }
+
+  /// "Stop and log out" or "Log out": the draft is saved first, then `account.logout` goes on its own
+  /// connection (`logOut(stopWork:)`). Work that appeared since the question asks again, with the
+  /// fresh list; any other refusal is one line in the sidebar.
+  public func confirmLogOut(_ asked: LogOutConfirmation? = nil) async {
+    guard let confirmation = asked ?? logOutConfirmation, !logOutInFlight else { return }
+    logOutConfirmation = nil
+    logOutInFlight = true
+    defer { logOutInFlight = false }
+    switch await logOut(stopWork: confirmation.stopsWork) {
+    case .loggedOut:
+      break
+    case .workRunning(let work):
+      logOutConfirmation = LogOutConfirmation(orgName: confirmation.orgName, work: work)
+    case .failed(let line):
+      logOutFailure = line
+    }
+  }
+
+  public func cancelLogOut() { logOutConfirmation = nil }
+
+  public func dismissLogOutFailure() { logOutFailure = nil }
+}
+
 /// Links the app opens in the default browser.
 enum WorkspaceLinks {
   static let github = URL(string: "https://github.com/cacheplane/b4app")!
@@ -53,7 +142,13 @@ struct SidebarFooter: View {
           if model.showProfileMenu {
             ProfileMenuPanel(model: model, dismiss: { setMenu(open: false) }) {
               setMenu(open: false)
-              confirmingLogOut = true
+              // The phone's host unlinks as before; the Mac asks "Log out of <org name>?" with the
+              // work that would stop.
+              if model.accountSource == .host {
+                confirmingLogOut = true
+              } else {
+                Task { await model.requestLogOut() }
+              }
             }
             // Its own height, not the button's: the overlay proposes the button's size.
             .fixedSize(horizontal: false, vertical: true)
@@ -67,20 +162,34 @@ struct SidebarFooter: View {
         }
     }
     .background(LLA.Color.surface)
-    .alert("Log out of the hub?", isPresented: $confirmingLogOut) {
+    .alert(
+      "Log out of \(model.accountStatus?.account?.orgName ?? "the hub")?", isPresented: $confirmingLogOut
+    ) {
       Button("Log out", role: .destructive) { Task { await model.logOut() } }
       Button("Cancel", role: .cancel) {}
     } message: {
-      Text(Self.logOutMessage)
+      Text(Self.hostLogOutMessage)
+    }
+    .alert(
+      model.logOutConfirmation?.title ?? "", isPresented: logOutBinding, presenting: model.logOutConfirmation
+    ) { confirmation in
+      Button(confirmation.confirmTitle, role: .destructive) {
+        Task { await model.confirmLogOut(confirmation) }
+      }
+      Button(LogOutConfirmation.cancelTitle, role: .cancel) { model.cancelLogOut() }
+    } message: { confirmation in
+      Text(confirmation.message)
     }
   }
 
-  static var logOutMessage: String {
-    #if os(macOS)
-      "This Mac stops syncing and the phone stops receiving its threads. Threads, connections, and servers stay on this Mac. To join again, run `agent-workspace hub join` with a new enrollment code."
-    #else
-      "This iPhone stops showing your threads until it joins again with a new enrollment code."
-    #endif
+  /// The phone's log-out (its host ends the session and empties the mirror).
+  static let hostLogOutMessage =
+    "This iPhone stops showing your threads until you sign in again. Nothing on your Mac changes."
+
+  private var logOutBinding: Binding<Bool> {
+    Binding(
+      get: { model.logOutConfirmation != nil },
+      set: { if !$0 { model.cancelLogOut() } })
   }
 
   private func setMenu(open: Bool) {
@@ -100,6 +209,9 @@ struct SidebarFooter: View {
       notice(note, id: "host-note", actionTitle: model.hostActionTitle) {
         if let action = model.hostAction { Task { await action() } }
       }
+    }
+    if let failure = model.logOutFailure {
+      notice(failure, id: "logout-failure", actionTitle: "OK") { model.dismissLogOutFailure() }
     }
     if let mismatch = model.versionMismatch {
       notice(

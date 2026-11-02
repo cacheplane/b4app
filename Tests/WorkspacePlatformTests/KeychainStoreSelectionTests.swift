@@ -21,6 +21,24 @@ import WorkspacePlatform
     #expect("ABCDE12345.com.cacheplane.b4app.shared".hasSuffix(KeychainSecretStore.sharedGroupSuffix))
   }
 
+  /// Each flavour claims its own group, and a process picks only that one (sign-in plan, Task 1).
+  @Test func eachFlavourSelectsItsOwnGroup() {
+    let claimed = [
+      "ABCDE12345.com.cacheplane.b4app.shared",
+      "ABCDE12345.com.cacheplane.b4app.beta.shared",
+      "ABCDE12345.com.cacheplane.b4app.local.shared",
+    ]
+    for flavor in Flavor.allCases {
+      let group = KeychainSecretStore.selectGroup(
+        from: claimed, flavorSuffix: flavor.keychainGroupSuffix)
+      #expect(group == "ABCDE12345.com.cacheplane.b4app\(flavor.keychainGroupSuffix).shared")
+    }
+    #expect(KeychainSecretStore.selectGroup(from: [], flavorSuffix: ".beta") == nil)
+    #expect(
+      KeychainSecretStore.selectGroup(
+        from: ["ABCDE12345.com.cacheplane.b4app.shared"], flavorSuffix: ".beta") == nil)
+  }
+
   /// Without an explicit `false`, an entitled process's legacy delete also removes the
   /// data-protection copy, which lost the hub token on the first migration.
   @Test func everyQueryNamesItsKeychain() throws {
