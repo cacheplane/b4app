@@ -336,6 +336,70 @@ private struct JoinedHarness {
     #expect(try h.coordinator.database.turns(threadId: thread.id).map(\.outcome) == [.completed])
   }
 
+  @Test func relayedInterruptAndAnswerRunFromTheLink() async throws {
+    let h = try await LinkHarness.start()
+    defer { Task { await h.close() } }
+    let thread = try await h.newThread(try await h.addCodex())
+    let socket = try await h.connect()
+    /// One command frame through the fake socket, and the `reply` frame that comes back for it.
+    func command(
+      _ method: RelayMethod, _ params: some Encodable
+    ) async throws -> (JSONValue?, RelayWireError?) {
+      let id = UUID().uuidString.lowercased()
+      socket.deliver(
+        .command(
+          id: id, method: method, params: try JSONValue(encoding: params),
+          deadline: Timestamp.string(from: Date().addingTimeInterval(8)),
+          from: RelayFrom(deviceId: "phone-1", name: "iPhone")))
+      guard case .reply(let replyId, let result, let error) = try await nextFrame(socket) else {
+        Issue.record("expected a reply")
+        return (nil, nil)
+      }
+      #expect(replyId == id)
+      return (result, error)
+    }
+    func send(_ text: String) async throws -> Turn {
+      let (result, error) = try await command(.turnSend, TurnSend.Params(threadId: thread.id, text: text))
+      #expect(error == nil)
+      return try #require(result).decode(TurnSend.Result.self).turn
+    }
+    /// Waits on a stream made before the action that causes the event.
+    func wait(_ stream: AsyncStream<EventEnvelope>, _ kind: EventKind, turn: String? = nil) async {
+      for await envelope in stream
+      where envelope.event.kind == kind && (turn == nil || envelope.event.turnId == turn) {
+        return
+      }
+    }
+    let eventLog = h.coordinator.eventLog
+
+    // Interrupt: a turn that keeps running stops, and the reply carries it.
+    let hangingEnded = await eventLog.subscribe()
+    let hanging = try await send("hang around")
+    let (stopResult, stopError) = try await command(.turnInterrupt, TurnInterrupt.Params(threadId: thread.id))
+    #expect(stopError == nil)
+    #expect(try #require(stopResult).decode(TurnInterrupt.Result.self).turn.id == hanging.id)
+    await wait(hangingEnded, .turnFinished, turn: hanging.id)
+    #expect(try h.coordinator.database.turn(id: hanging.id)?.outcome == .cancelled)
+
+    // Answer: an approval is resolved, and the same answer again is stale.
+    let opened = await eventLog.subscribe()
+    let approving = try await send("please approve this")
+    let approvingEnded = await eventLog.subscribe()
+    var opening: RuntimeRequest?
+    for await envelope in opened where envelope.event.kind == .runtimeRequestOpened {
+      opening = try envelope.event.payload["runtimeRequest"]?.decode(RuntimeRequest.self)
+      break
+    }
+    let pending = try #require(opening)
+    let params = RequestRespond.Params(requestId: pending.id, decision: .allowOnce)
+    let (answerResult, answerError) = try await command(.requestRespond, params)
+    #expect(answerError == nil)
+    #expect(try #require(answerResult).decode(RequestRespond.Result.self).request.state == .resolved)
+    await wait(approvingEnded, .turnFinished, turn: approving.id)
+    let (_, staleError) = try await command(.requestRespond, params)
+    #expect(staleError?.code == ErrorCode.staleRuntimeRequest.rawValue)
+  }
+
   @Test func commandsDoNotHoldUpTheLink() async throws {
     let gate = TurnGate()
     let h = try await LinkHarness.start(adapterFactory: { connection, environment, version, secrets in

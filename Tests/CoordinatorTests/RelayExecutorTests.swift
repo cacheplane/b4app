@@ -146,6 +146,49 @@ private func seamHarness(_ seams: Seams) async throws -> RelayHarness {
   })
 }
 
+/// The native request ids that reached the runtime's `respond`, in order.
+private actor AnswerLog {
+  private(set) var answered: [String] = []
+  func record(_ nativeRequestId: String) { answered.append(nativeRequestId) }
+}
+
+/// A real adapter (the fake Codex runtime) that records each answer on its way to the runtime.
+private struct CountingAdapter: AgentAdapter {
+  let inner: any AgentAdapter
+  let log: AnswerLog
+  var kind: ConnectionKind { inner.kind }
+  func inspectConnection() async throws -> ConnectionInspection { try await inner.inspectConnection() }
+  func createSession(_ input: NewSessionInput) async throws -> NativeSessionRef {
+    try await inner.createSession(input)
+  }
+  func loadSession(_ ref: NativeSessionRef) async throws -> SessionSnapshot {
+    try await inner.loadSession(ref)
+  }
+  func sendTurn(_ ref: NativeSessionRef, input: TurnInput) async throws -> SubmissionReceipt {
+    try await inner.sendTurn(ref, input: input)
+  }
+  func interrupt(_ ref: NativeSessionRef, turn: ActiveTurnRef) async throws -> StopReceipt {
+    try await inner.interrupt(ref, turn: turn)
+  }
+  func respond(_ ref: RuntimeRequestRef, response: RuntimeResponse) async throws {
+    await log.record(ref.nativeRequestId)
+    try await inner.respond(ref, response: response)
+  }
+  func reconcile(_ ref: NativeSessionRef, turn: ActiveTurnRef?) async throws -> ReconcileResult {
+    try await inner.reconcile(ref, turn: turn)
+  }
+  func events() -> AsyncStream<AdapterEvent> { inner.events() }
+  func dispose() async { await inner.dispose() }
+}
+
+/// A harness whose adapters record each answer in `log`.
+private func countingHarness(_ log: AnswerLog) async throws -> RelayHarness {
+  try await RelayHarness.start(adapterFactory: { connection, environment, version, secrets in
+    CountingAdapter(
+      inner: try SessionService.defaultAdapterFactory(connection, environment, version, secrets), log: log)
+  })
+}
+
 /// One relayed command as `HubLink` passes it: a deadline 8 s after the hub's now, by default.
 private func run(
   _ executor: RelayExecutor, id: String = UUID().uuidString.lowercased(), _ method: RelayMethod,
@@ -817,6 +860,82 @@ private func failure(
     #expect(!ordinary.replaced)
     #expect(ordinary.error.message == "The runtime did not acknowledge the turn.")
     #expect(ordinary.error.details == ["turnId": "t"])
+  }
+
+  // MARK: - turn.interrupt and request.respond
+
+  @Test func relayedInterruptStopsARunningTurn() async throws {
+    let h = try await RelayHarness.start()
+    defer { Task { await h.close() } }
+    let connection = try await h.addCodex()
+    let thread = try await h.newThread(connection, in: try h.folder("work"))
+    // The fixture keeps a "hang" turn running until it is interrupted.
+    let started = try result(
+      try await run(h.executor, .turnSend, TurnSend.Params(threadId: thread.id, text: "hang around")),
+      as: TurnSend.Result.self
+    ).turn
+    #expect(started.status != .terminal)
+    let reply = try await run(h.executor, .turnInterrupt, TurnInterrupt.Params(threadId: thread.id))
+    let stopped = try result(reply, as: TurnInterrupt.Result.self).turn
+    #expect(stopped.id == started.id)
+    #expect([.stopping, .terminal].contains(stopped.status))
+    try await h.waitForFinish(started)
+    let ended = try #require(try h.db.turn(id: started.id))
+    #expect(ended.status == .terminal)
+    #expect(ended.outcome == .cancelled)
+    // Nothing is active any more: a second interrupt is the local `not_found`, as a reply.
+    let again = try #require(
+      failure(try await run(h.executor, .turnInterrupt, TurnInterrupt.Params(threadId: thread.id))))
+    #expect(again.code == ErrorCode.notFound.rawValue)
+  }
+
+  /// Opens a pending approval on a new thread and returns it with the turn that is waiting on it.
+  private func openApproval(_ h: RelayHarness) async throws -> (turn: Turn, request: RuntimeRequest) {
+    let connection = try await h.addCodex()
+    let thread = try await h.newThread(connection, in: try h.folder("work"))
+    let turn = try result(
+      try await run(h.executor, .turnSend, TurnSend.Params(threadId: thread.id, text: "please approve this")),
+      as: TurnSend.Result.self
+    ).turn
+    let opened = try await h.events.waitFor { $0.kind == .runtimeRequestOpened && $0.threadId == thread.id }
+    let request = try #require(try opened.payload["runtimeRequest"]?.decode(RuntimeRequest.self))
+    return (turn, request)
+  }
+
+  @Test func relayedAnswerResolvesAPendingRequest() async throws {
+    let log = AnswerLog()
+    let h = try await countingHarness(log)
+    defer { Task { await h.close() } }
+    let (turn, request) = try await openApproval(h)
+    #expect(try h.db.runtimeRequest(id: request.id)?.state == .pending)
+    let reply = try await run(
+      h.executor, .requestRespond, RequestRespond.Params(requestId: request.id, decision: .allowOnce))
+    let resolved = try result(reply, as: RequestRespond.Result.self).request
+    #expect(resolved.id == request.id)
+    #expect(resolved.state == .resolved)
+    #expect(await log.answered == [request.nativeRequestId])
+    #expect(try h.db.runtimeRequest(id: request.id)?.state == .resolved)
+    try await h.waitForFinish(turn)
+    #expect(try h.db.turn(id: turn.id)?.outcome == .completed)
+    #expect(await log.answered.count == 1)
+  }
+
+  @Test func relayedAnswerToAnAnsweredRequestIsStale() async throws {
+    let log = AnswerLog()
+    let h = try await countingHarness(log)
+    defer { Task { await h.close() } }
+    let (turn, request) = try await openApproval(h)
+    // The Mac answers first, locally.
+    _ = try await h.coordinator.sessions.requestRespond(
+      RequestRespond.Params(requestId: request.id, decision: .allowOnce))
+    let late = try #require(
+      failure(
+        try await run(
+          h.executor, .requestRespond, RequestRespond.Params(requestId: request.id, decision: .deny))))
+    #expect(late.code == ErrorCode.staleRuntimeRequest.rawValue)
+    #expect(await log.answered == [request.nativeRequestId])
+    #expect(try h.db.runtimeRequest(id: request.id)?.state == .resolved)
+    try await h.waitForFinish(turn)
   }
 
   // MARK: - turn.lookup
