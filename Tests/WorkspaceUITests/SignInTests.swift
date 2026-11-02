@@ -1,3 +1,4 @@
+import AuthenticationServices
 import Foundation
 import SwiftUI
 import Synchronization
@@ -77,6 +78,11 @@ private final class FakeCeremony: PasskeyCeremony {
   var registerOutcome: Outcome = .credential(["id": "new-cred", "type": "public-key"])
   private(set) var asserted: [JSONValue] = []
   private(set) var registered: [JSONValue] = []
+  private(set) var reportedUnknown: [(relyingParty: String, credentialID: Data)] = []
+
+  func reportUnknownCredential(relyingParty: String, credentialID: Data) async {
+    reportedUnknown.append((relyingParty, credentialID))
+  }
 
   func assert(_ options: JSONValue) async throws -> JSONValue? {
     asserted.append(options)
@@ -97,6 +103,33 @@ private final class FakeCeremony: PasskeyCeremony {
     case .failure(let error): throw error
     }
   }
+}
+
+/// A coordinator that accepts the connection and never says hello.
+private final class SilentTransport: WorkspaceTransport {
+  let incoming = AsyncStream<Data> { _ in }
+  func send(_ line: Data) async throws {}
+  func close() async {}
+}
+
+private func thread(_ id: String, project: String? = nil) -> ConversationThread {
+  ConversationThread(
+    id: id, connectionId: "c1", nativeThreadId: "n-\(id)", title: id, pinned: false, archived: false,
+    createdAt: "2026-11-01T10:00:00Z", updatedAt: "2026-11-01T10:00:00Z", projectId: project)
+}
+
+/// A model signed in as `theAccount` with thread `t1` open and text in its composer.
+@MainActor
+private func withOpenThread(_ transport: ScriptedTransport) async throws -> WorkspaceModel {
+  let open = thread("t1", project: "p1")
+  transport.set(threads: [open], projects: [Project(id: "p1", name: "Site")])
+  transport.setRead(ThreadRead.Result(thread: open, turns: [], items: [], requests: []))
+  let model = try await connected(signedIn, transport: transport)
+  model.draftSaveDelay = .seconds(600)
+  await model.openThread(id: "t1")
+  try #require(model.detail?.thread.id == "t1")
+  model.composerText = "half a thought"
+  return model
 }
 
 /// Stands in for `ASWebAuthenticationSession`: returns the callback URL the test sets.
@@ -198,6 +231,49 @@ extension Array where Element == ScreenElement {
     transport.emit(try .accountChanged(signedOut))
     try await waitUntil("sign-in") { model.rootScreen == .signIn }
     #expect(model.threads.isEmpty && model.account == nil)
+  }
+
+  @Test func switchingAccountsForgetsTheOldOne() async throws {
+    // Signing in as B while A is signed in publishes only `signedIn(B)`.
+    let transport = ScriptedTransport()
+    let model = try await withOpenThread(transport)
+    transport.script(.draftSave, [.hold])
+    let snapshots = transport.calls(.eventsSnapshot).count
+    var other = signedIn
+    other.account?.id = "b1b2b3b4b5b6b7b8"
+    other.account?.orgName = "Other Org"
+    transport.set(threads: [], projects: [])
+    transport.emit(try .accountChanged(other))
+    try await waitUntil("B's store read") { transport.calls(.eventsSnapshot).count > snapshots }
+    #expect(model.detail == nil && model.selectedThreadId == nil)
+    #expect(model.composerText.isEmpty)
+    #expect(model.threads.isEmpty)
+    // A's thread is not re-read or written into B's store.
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(transport.calls(.threadRead).count == 1)
+    #expect(transport.calls(.draftSave).isEmpty)
+  }
+
+  @Test func signingOutForgetsFiltersSendsAndTimers() async throws {
+    let transport = ScriptedTransport()
+    let model = try await withOpenThread(transport)
+    model.projectFilter = .project("p1")
+    model.connectionFilter = "c1"
+    model.showArchived = true
+    model.pendingForceStop = ("s1", false, ["t1"])
+    model.pendingSends["t1"] = PendingSend(
+      id: "send-1", threadId: "t1", text: "a secret plan", tappedAt: Date())
+    model.stopStates["t1"] = .waiting
+    model.sendTimer = Task {}
+    transport.emit(try .accountChanged(signedOut))
+    try await waitUntil("sign-in") { model.rootScreen == .signIn }
+    #expect(model.projectFilter == .all)
+    #expect(model.connectionFilter == nil)
+    #expect(model.showArchived == false)
+    #expect(model.pendingForceStop == nil)
+    #expect(model.pendingSends.isEmpty && model.stopStates.isEmpty)
+    #expect(model.sendTimer == nil)
+    #expect(model.detail == nil && model.composerText.isEmpty)
   }
 
   @Test func aSignedOutAnswerWhileSignedInIsNotASignOut() async throws {
@@ -303,10 +379,14 @@ extension Array where Element == ScreenElement {
   @Test func cancelShowsNoError() async throws {
     let transport = ScriptedTransport()
     let model = try await connected(signedOut, transport: transport)
+    // Closing the sheet that would make the passkey shows nothing.
     transport.script(.accountPasskeyBegin, [try begin()])
     let ceremony = FakeCeremony()
-    ceremony.assertOutcome = .cancel
+    ceremony.assertOutcome = .noCredential
+    ceremony.registerOutcome = .cancel
     await model.signInWithPasskey(using: ceremony)
+    await model.confirmCreateAccount()
+    #expect(ceremony.registered.count == 1)
     #expect(model.signInProgress == SignInProgress())
     #expect(transport.calls(.accountPasskeyFinish).isEmpty)
     #expect(model.lastError == nil)
@@ -326,6 +406,72 @@ extension Array where Element == ScreenElement {
     #expect(transport.calls(.accountAppleFinish).isEmpty)
     let tree = signInScreen(model)
     #expect(!tree.has("signIn.failure"))
+
+    // Cancel on Apple's own page comes back from the hub as `?error=cancelled`: silent as well.
+    transport.script(
+      .accountAppleStart,
+      [
+        .result([
+          "url": "https://hub.test.b4.run/v1/auth/apple/start?ceremony=y", "callbackScheme": "b4app-beta",
+        ])
+      ])
+    apple.callback = .success(URL(string: "b4app-beta://auth?error=cancelled")!)
+    await model.signInWithApple(using: apple)
+    #expect(apple.opened.count == 2)
+    #expect(model.signInProgress == SignInProgress())
+    #expect(transport.calls(.accountAppleFinish).isEmpty)
+  }
+
+  @Test func everySystemCancelOfAnAssertionMeansNoPasskey() async throws {
+    // Apple reports "no passkey for this site" as `.canceled`, like a closed sheet, on purpose; both
+    // lead to the question, which has its own Cancel.
+    #expect(SystemPasskeyCeremony.meansNoCredential(ASAuthorizationError(.canceled)))
+    #expect(SystemPasskeyCeremony.meansNoCredential(ASAuthorizationError(.notInteractive)))
+    #expect(!SystemPasskeyCeremony.meansNoCredential(ASAuthorizationError(.failed)))
+    #expect(!SystemPasskeyCeremony.meansNoCredential(SignInCanceled()))
+    #expect(SystemPasskeyCeremony.registrationError(ASAuthorizationError(.canceled)) is SignInCanceled)
+    #expect(
+      SystemPasskeyCeremony.registrationError(ASAuthorizationError(.deviceNotConfiguredForPasskeyCreation))
+        is PasskeysNotSetUp)
+    #expect(SystemPasskeyCeremony.registrationError(ASAuthorizationError(.failed)) is ASAuthorizationError)
+
+    // A device with nowhere to keep a passkey gets its own line, not "try again".
+    let transport = ScriptedTransport()
+    let model = try await connected(signedOut, transport: transport)
+    transport.script(.accountPasskeyBegin, [try begin()])
+    let ceremony = FakeCeremony()
+    ceremony.assertOutcome = .noCredential
+    ceremony.registerOutcome = .failure(PasskeysNotSetUp())
+    await model.signInWithPasskey(using: ceremony)
+    #expect(model.signInProgress.confirmation != nil)
+    await model.confirmCreateAccount()
+    #expect(model.signInProgress.failure == SignInCopy.passkeysNotSetUp)
+    #expect(transport.calls(.accountPasskeyFinish).isEmpty)
+  }
+
+  @Test func aRefusedRegistrationReportsTheNewPasskeyAsUnknown() async throws {
+    let transport = ScriptedTransport()
+    let model = try await connected(signedOut, transport: transport)
+    let ceremony = FakeCeremony()
+    ceremony.assertOutcome = .noCredential
+    ceremony.registerOutcome = .credential(["id": "-_8B", "rawId": "-_8B", "type": "public-key"])
+
+    // The hub refused the new passkey: the password manager is told, then the line shows.
+    transport.script(.accountPasskeyBegin, [try begin()])
+    transport.script(.accountPasskeyFinish, [.failure(WorkspaceError(.ceremonyExpired, "expired"))])
+    await model.signInWithPasskey(using: ceremony)
+    await model.confirmCreateAccount()
+    #expect(ceremony.reportedUnknown.map(\.relyingParty) == ["test.b4.run"])
+    #expect(ceremony.reportedUnknown.map(\.credentialID) == [Data([0xfb, 0xff, 0x01])])
+    #expect(model.signInProgress.failure == SignInCopy.failure(for: WorkspaceError(.ceremonyExpired, "")))
+
+    // A lost answer may have reached the hub, which may have kept the passkey: nothing is reported.
+    transport.script(.accountPasskeyBegin, [try begin()])
+    transport.script(.accountPasskeyFinish, [.failure(WorkspaceError(.endpointUnavailable, "timed out"))])
+    await model.signInWithPasskey(using: ceremony)
+    await model.confirmCreateAccount()
+    #expect(ceremony.reportedUnknown.count == 1)
+    #expect(model.signInProgress.failure != nil)
   }
 
   @Test func failureShowsOneLine() async throws {
@@ -469,6 +615,40 @@ extension Array where Element == ScreenElement {
     #expect(model.accountState == .signedOut(reason: nil))
   }
 
+  @Test func logOutSavesTheDraftThenLogsOutOnTheSideConnection() async throws {
+    // The main connection is stuck behind a slow command: neither the draft nor the log-out waits.
+    let transport = ScriptedTransport()
+    let model = try await withOpenThread(transport)
+    transport.script(.draftSave, [.hold])
+    let side = ScriptedTransport()
+    let saved = Draft(threadId: "t1", text: "half a thought", updatedAt: "2026-11-01T10:00:00Z")
+    side.script(.draftSave, [.result(try JSONValue(encoding: DraftSave.Result(draft: saved)))])
+    side.script(.accountLogout, [try status(signedOut)])
+    model.sideTransportProvider = { side }
+    #expect(await model.logOut(stopWork: false) == .loggedOut)
+    #expect(side.methods() == ["draft.save", "account.logout"])
+    #expect(side.calls(.draftSave) == [["threadId": "t1", "text": "half a thought"]])
+    #expect(transport.calls(.draftSave).isEmpty)
+    #expect(transport.calls(.accountLogout).isEmpty)
+    #expect(model.accountState == .signedOut(reason: nil))
+  }
+
+  @Test func logOutNeverWaitsLongForTheSideConnection() async throws {
+    let transport = ScriptedTransport()
+    let model = try await connected(signedIn, transport: transport)
+    // A coordinator that never says hello: given up after the short timeout.
+    model.sideReadyTimeout = .milliseconds(200)
+    model.sideTransportProvider = { SilentTransport() }
+    let started = ContinuousClock.now
+    #expect(await model.logOut(stopWork: false) == .failed(SignInCopy.coordinatorUnreachable))
+    #expect(ContinuousClock.now - started < .seconds(5))
+    // None running: nothing is started, and nothing goes on the main connection instead.
+    model.sideTransportProvider = { throw WorkspaceError(.endpointUnavailable, "no socket") }
+    #expect(await model.logOut(stopWork: false) == .failed(SignInCopy.coordinatorUnreachable))
+    #expect(transport.calls(.accountLogout).isEmpty)
+    #expect(model.accountState == .signedIn)
+  }
+
   @Test func logOutRefusedListsTheWork() async throws {
     let transport = ScriptedTransport()
     let model = try await connected(signedIn, transport: transport)
@@ -489,7 +669,8 @@ extension Array where Element == ScreenElement {
     let text = "The last sign-out could not reach the hub; that session was left open there."
     let transport = ScriptedTransport()
     var withNotice = signedIn
-    withNotice.notice = text
+    // The banner shows the UI's own copy, whatever the coordinator's wording.
+    withNotice.notice = "left open (coordinator wording)"
     transport.setHub(
       HubStatus.Result(
         joined: true, url: "https://hub.test.b4.run", deviceId: "d", deviceName: "Mac", orgSlug: "o",

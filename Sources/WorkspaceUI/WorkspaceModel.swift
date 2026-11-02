@@ -209,6 +209,8 @@ public final class WorkspaceModel {
   /// A fresh connection to the coordinator for commands that must not queue behind others on the
   /// main one (`account.logout`). Nil sends them on the main connection.
   @ObservationIgnored public var sideTransportProvider: TransportProvider?
+  /// How long a log-out waits for its side connection's hello before it gives up.
+  @ObservationIgnored public var sideReadyTimeout: Duration = .seconds(5)
   /// The registration offered after "No passkey for …", until Create account or Cancel.
   @ObservationIgnored var pendingRegistration: PendingRegistration?
   /// The phone's mirror has no joined Mac left: a notice sits above the still browsable list.
@@ -450,7 +452,7 @@ public final class WorkspaceModel {
     hubJoined = status.joined
     hubLink = status.link
     // A status read never clears the notice: only `account.dismissNotice` does.
-    if let notice = status.notice { accountNotice = notice }
+    if status.notice != nil { accountNotice = SignInCopy.sessionLeftOpen }
   }
 
   // MARK: - Remote access (the Mac)
@@ -767,6 +769,12 @@ public final class WorkspaceModel {
       await self.saveDraft(threadId: threadId)
       self.draftSaveTask = nil
     }
+  }
+
+  /// Drop the debounced draft write; the caller saves the text itself.
+  func cancelPendingDraftSave() {
+    draftSaveTask?.cancel()
+    draftSaveTask = nil
   }
 
   /// Flush the pending draft write now (app termination, window close).
@@ -1254,10 +1262,22 @@ public final class WorkspaceModel {
     prunePendingSends()
   }
 
-  /// The rows of an account that is no longer signed in: none of them may stay on screen.
+  /// Everything of an account that is no longer the signed-in one: no row, filter, pending send (they
+  /// hold message text), or timer of it may stay, or write into the next account's store.
   func forgetWorkspace() {
     draftSaveTask?.cancel()
     draftSaveTask = nil
+    for task in refetchTasks.values { task.cancel() }
+    refetchTasks = [:]
+    markedRead = []
+    unreadHold = []
+    endRelayState()
+    isStartingThread = false
+    projectFilter = .all
+    connectionFilter = nil
+    showArchived = false
+    pendingForceStop = nil
+    diagnosticsError = nil
     connections = []
     threads = []
     projects = []

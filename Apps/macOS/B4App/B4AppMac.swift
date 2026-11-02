@@ -16,7 +16,11 @@ import WorkspaceUI
   let flavor = Flavor.current
   model.signInConfiguration = SignInConfiguration(
     siteDomain: flavor.siteDomain, appleSignIn: flavor.appleSignIn, badge: flavor.badge)
-  model.sideTransportProvider = CoordinatorHost.transport
+  // Connect only: a log-out never starts a coordinator (or the agent). With none running, there is no
+  // session here to end, and the log-out says the coordinator could not be reached.
+  model.sideTransportProvider = {
+    try await UnixSocketTransport.connect(path: PlatformPaths.resolve().socketPath, timeout: .seconds(2))
+  }
   return model
 }()
 

@@ -145,6 +145,9 @@ final class ScriptedTransport: WorkspaceTransport {
     ConditionNudge.post()
   }
 
+  /// Every command's method, in the order received.
+  func methods() -> [String] { state.withLock { $0.calls.map(\.method) } }
+
   func calls(_ method: WorkspaceProtocol.Method) -> [JSONValue] {
     state.withLock { $0.calls.filter { $0.method == method.rawValue }.map(\.params) }
   }

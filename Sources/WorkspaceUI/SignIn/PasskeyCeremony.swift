@@ -13,11 +13,19 @@ import WorkspaceProtocol
 /// answers are the WebAuthn JSON the hub speaks (`{"publicKey": {...}}` in, a `PublicKeyCredential`
 /// out), passed through as `JSONValue`.
 public protocol PasskeyCeremony {
-  /// Sign in with a passkey the device already has for the relying party. Nil when it has none (no
-  /// sheet was shown); `SignInCanceled` when the person closed the sheet.
+  /// Sign in with a passkey the device already has for the relying party. Nil when there is none the
+  /// person wants to use (none on the device, or the sheet closed: the system does not tell them apart).
   func assert(_ options: JSONValue) async throws -> JSONValue?
-  /// Make a new passkey. `SignInCanceled` when the person closed the sheet.
+  /// Make a new passkey. `SignInCanceled` when the person closed the sheet, `PasskeysNotSetUp` when
+  /// the device cannot keep one.
   func register(_ options: JSONValue) async throws -> JSONValue
+  /// Tell the password manager that a passkey just made is unknown to the relying party (its
+  /// registration was refused), so it is not offered again.
+  func reportUnknownCredential(relyingParty: String, credentialID: Data) async
+}
+
+extension PasskeyCeremony {
+  public func reportUnknownCredential(relyingParty: String, credentialID: Data) async {}
 }
 
 /// The Mac's Sign in with Apple web flow: open `url` in an `ASWebAuthenticationSession` waiting for
@@ -32,12 +40,18 @@ public protocol AppleWebSignIn {
 /// immediately available credentials, so a device without a passkey for the site shows no sheet.
 @MainActor
 public final class SystemPasskeyCeremony: NSObject, PasskeyCeremony {
-  /// With `preferImmediatelyAvailableCredentials` the system reports "no passkey here" as a cancel
-  /// that comes before any sheet. A cancel this soon after the request, or before the controller ever
-  /// asked where to present, is read as no credential rather than as the person's cancel.
-  static let noCredentialWindow: TimeInterval = 0.6
-
   override public init() {}
+
+  /// Whether an assertion's error means "no passkey to use". With
+  /// `preferImmediatelyAvailableCredentials`, Apple reports a device with no passkey for the site as
+  /// `.canceled`, the same code as the person closing the sheet, and keeps the two indistinguishable on
+  /// purpose, for privacy (Apple Developer Forums 713321 and 735867; Apple's passkeys sample treats
+  /// `.canceled` either way). Every `.canceled` is read as no credential: the model then asks "Create
+  /// a new account?", which has its own Cancel.
+  nonisolated static func meansNoCredential(_ error: any Error) -> Bool {
+    guard let error = error as? ASAuthorizationError else { return false }
+    return error.code == .canceled || error.code == .notInteractive
+  }
 
   public func assert(_ options: JSONValue) async throws -> JSONValue? {
     let request = try WebAuthnJSON.assertionRequest(from: options)
@@ -57,14 +71,8 @@ public final class SystemPasskeyCeremony: NSObject, PasskeyCeremony {
         credentialID: credential.credentialID, authenticatorData: credential.rawAuthenticatorData,
         clientDataJSON: credential.rawClientDataJSON, signature: credential.signature,
         userID: credential.userID)
-    } catch let error as ASAuthorizationError {
-      switch error.code {
-      case .notInteractive: return nil
-      case .canceled:
-        if !run.presented || run.elapsed < Self.noCredentialWindow { return nil }
-        throw SignInCanceled()
-      default: throw error
-      }
+    } catch  where Self.meansNoCredential(error) {
+      return nil
     }
   }
 
@@ -89,14 +97,34 @@ public final class SystemPasskeyCeremony: NSObject, PasskeyCeremony {
       return WebAuthnJSON.attestation(
         credentialID: credential.credentialID, attestationObject: attestationObject,
         clientDataJSON: credential.rawClientDataJSON)
-    } catch let error as ASAuthorizationError where error.code == .canceled {
-      throw SignInCanceled()
+    } catch let error as ASAuthorizationError {
+      throw Self.registrationError(error)
+    }
+  }
+
+  /// A registration's system error as the model reads it.
+  nonisolated static func registrationError(_ error: ASAuthorizationError) -> any Error {
+    switch error.code {
+    case .canceled: return SignInCanceled()
+    case .deviceNotConfiguredForPasskeyCreation: return PasskeysNotSetUp()
+    default: return error
+    }
+  }
+
+  public func reportUnknownCredential(relyingParty: String, credentialID: Data) async {
+    // Best effort: a password manager that cannot take the report keeps the passkey, and the hub
+    // refuses it at the next sign-in as before.
+    if #available(macOS 26.2, iOS 26.2, *) {
+      try? await ASCredentialDataManager().reportUnknownPublicKeyCredential(
+        relyingPartyIdentifier: relyingParty, credentialID: credentialID)
+    } else {
+      try? await ASCredentialUpdater().reportUnknownPublicKeyCredential(
+        relyingPartyIdentifier: relyingParty, credentialID: credentialID)
     }
   }
 }
 
-/// One `ASAuthorizationController` run as an async call, noting whether the system asked where to
-/// present its sheet.
+/// One `ASAuthorizationController` run as an async call.
 @MainActor
 private final class AuthorizationRun: NSObject, ASAuthorizationControllerDelegate,
   ASAuthorizationControllerPresentationContextProviding
@@ -104,9 +132,6 @@ private final class AuthorizationRun: NSObject, ASAuthorizationControllerDelegat
   private var continuation: CheckedContinuation<ASAuthorization, any Error>?
   private var controller: ASAuthorizationController?
   private var window: ASPresentationAnchor?
-  private var started = Date()
-  private(set) var presented = false
-  var elapsed: TimeInterval { Date().timeIntervalSince(started) }
 
   func perform(
     _ request: ASAuthorizationRequest, options: ASAuthorizationController.RequestOptions
@@ -119,7 +144,6 @@ private final class AuthorizationRun: NSObject, ASAuthorizationControllerDelegat
     controller.delegate = self
     controller.presentationContextProvider = self
     self.controller = controller
-    started = Date()
     defer {
       self.controller = nil
       self.window = nil
@@ -143,20 +167,21 @@ private final class AuthorizationRun: NSObject, ASAuthorizationControllerDelegat
   }
 
   func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
-    presented = true
     // `perform` resolves the window before the request runs and refuses to start without one.
     if let window = window ?? Self.anchor() { return window }
     preconditionFailure("The passkey sheet asked for a window while the app has none.")
   }
 
-  /// The key window, else any window of the app.
+  /// The key window, else the first visible window that can be a main window; never a hidden one.
   static func anchor() -> ASPresentationAnchor? {
     #if canImport(AppKit)
-      return NSApplication.shared.keyWindow ?? NSApplication.shared.windows.first
+      if let key = NSApplication.shared.keyWindow, key.isVisible { return key }
+      return NSApplication.shared.windows.first { $0.isVisible && $0.canBecomeMain }
     #else
       let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(
         \.windows)
-      return windows.first(where: \.isKeyWindow) ?? windows.first
+      if let key = windows.first(where: \.isKeyWindow), !key.isHidden { return key }
+      return windows.first { !$0.isHidden }
     #endif
   }
 }

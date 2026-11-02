@@ -90,7 +90,8 @@ public struct OnboardingView: View {
         Task { await logOut() }
       }
       .buttonStyle(OnboardingLinkStyle())
-      .disabled(loggingOut)
+      // Not while Continue is out: a log-out would race the profile write.
+      .disabled(loggingOut || model.onboardingBusy)
       .frame(maxWidth: .infinity)
       .padding(.top, 14)
       .accessibilityLabel(content.logOut.text)

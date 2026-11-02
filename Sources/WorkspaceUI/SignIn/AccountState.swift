@@ -126,6 +126,10 @@ public enum SignInCopy {
 
   public static func signedOut(of orgName: String) -> String { "This Mac was signed out of \(orgName)." }
 
+  /// The banner for the coordinator's left-open notice, in the UI's own words whatever its text.
+  public static let sessionLeftOpen =
+    "The last sign-out could not reach the hub; that session was left open there."
+
   /// One short line for a failed sign-in. Never the code or the hub's own text, which can carry
   /// detail meant for logs.
   public static func failure(for error: WorkspaceError) -> String {
@@ -139,6 +143,13 @@ public enum SignInCopy {
     }
   }
 
+  /// The device has nowhere to keep a passkey (Passwords or iCloud Keychain is off).
+  public static let passkeysNotSetUp =
+    "This device can't save passkeys yet. Turn on Passwords in iCloud settings, then try again."
+
+  /// The coordinator could not be reached for a log-out; nothing changed.
+  static let coordinatorUnreachable = "Can't reach the coordinator. Try again in a moment."
+
   /// A failed onboarding or log-out, in the same style.
   static func accountFailure(for error: WorkspaceError) -> String {
     switch error.code {
@@ -151,6 +162,11 @@ public enum SignInCopy {
 
 /// Raised by a ceremony when the person closes the sheet; the model shows nothing for it.
 public struct SignInCanceled: Error, Sendable, Equatable {
+  public init() {}
+}
+
+/// Raised by a ceremony when the device cannot make a passkey at all.
+public struct PasskeysNotSetUp: Error, Sendable, Equatable {
   public init() {}
 }
 
@@ -205,7 +221,7 @@ extension WorkspaceModel {
     let previousId = accountStatus?.account?.id
     accountStatus = status
     accountState = AccountState(status)
-    accountNotice = status.state == .signedOut ? nil : status.notice
+    accountNotice = status.state == .signedOut || status.notice == nil ? nil : SignInCopy.sessionLeftOpen
     if status.state != .signedOut {
       // Signed in elsewhere (the CLI, another window) while the screen was asking: nothing is pending.
       pendingRegistration = nil
@@ -215,7 +231,11 @@ extension WorkspaceModel {
       if wasSignedIn || status.state == .signedOut { forgetWorkspace() }
       return
     }
-    if loadStore, !wasSignedIn || previousId != status.account?.id {
+    // Another account, with no sign-out between (a switch publishes only the new account): nothing of
+    // the old one may stay on screen or be written to the new store.
+    let switched = wasSignedIn && previousId != status.account?.id
+    if switched { forgetWorkspace() }
+    if loadStore, !wasSignedIn || switched {
       Task {
         try? await refreshSnapshot()
         await refreshAccount()
@@ -238,6 +258,10 @@ extension WorkspaceModel {
   private func signInFailed(_ error: any Error) {
     if error is SignInCanceled || error is CancellationError {
       signInProgress = SignInProgress()
+      return
+    }
+    if error is PasskeysNotSetUp {
+      signInProgress = SignInProgress(failure: SignInCopy.passkeysNotSetUp)
       return
     }
     signInProgress = SignInProgress(failure: SignInCopy.failure(for: WorkspaceError.from(error)))
@@ -296,15 +320,35 @@ extension WorkspaceModel {
         registration = fresh
       }
       let attestation = try await pending.ceremony.register(registration)
-      let status = try await client.request(
-        AccountPasskeyFinish.self,
-        AccountPasskeyFinish.Params(ceremonyId: ceremonyId, attestation: attestation),
-        options: Self.signInMutation())
+      let status: AccountStatus.Result
+      do {
+        status = try await client.request(
+          AccountPasskeyFinish.self,
+          AccountPasskeyFinish.Params(ceremonyId: ceremonyId, attestation: attestation),
+          options: Self.signInMutation())
+      } catch {
+        await reportOrphan(attestation, ceremony: pending.ceremony, after: error)
+        throw error
+      }
       signInProgress = SignInProgress()
       applyAccountStatus(status)
     } catch {
       signInFailed(error)
     }
+  }
+
+  /// The OS made a passkey the hub then refused: tell the password manager it is unknown, so the next
+  /// tap finds no passkey and asks to create an account again instead of offering one the hub will
+  /// always reject. Not when the answer was lost (`endpoint_unavailable`): the hub may have stored it.
+  private func reportOrphan(
+    _ attestation: JSONValue, ceremony: any PasskeyCeremony, after error: any Error
+  ) async {
+    guard WorkspaceError.from(error).code != .endpointUnavailable, !(error is CancellationError),
+      let id = (attestation["rawId"] ?? attestation["id"])?.stringValue,
+      let credentialID = WebAuthnJSON.data(base64URL: id)
+    else { return }
+    await ceremony.reportUnknownCredential(
+      relyingParty: signInConfiguration.siteDomain, credentialID: credentialID)
   }
 
   /// "Cancel" on the question: back to the two buttons.
@@ -331,7 +375,10 @@ extension WorkspaceModel {
       let callback = try await session.authenticate(url: url, callbackScheme: start.callbackScheme)
       let query = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems ?? []
       guard let handoff = query.first(where: { $0.name == "handoff" })?.value, !handoff.isEmpty else {
-        let code = query.first { $0.name == "error" }?.value.flatMap(ErrorCode.init(rawValue:))
+        let error = query.first { $0.name == "error" }?.value
+        // The hub sends `error=cancelled` when the person pressed Cancel on Apple's page.
+        if error == "cancelled" { throw SignInCanceled() }
+        let code = error.flatMap(ErrorCode.init(rawValue:))
         throw WorkspaceError(code ?? .credentialRejected, "Apple's sign-in did not finish.")
       }
       let status = try await client.request(
@@ -365,22 +412,35 @@ extension WorkspaceModel {
   // MARK: Log out
 
   /// Log out of the signed-in account. The pending draft is saved first (the coordinator buffers none).
-  /// The command goes on a connection of its own when the app gives one (`sideTransportProvider`): one
-  /// connection's commands are answered in order, so a log-out behind a slow `server.start` would
-  /// wait for it. The state follows the answer, or `account.changed`.
+  /// With a side connection (`sideTransportProvider`), both the draft save and the log-out go on it,
+  /// in that order: one connection's commands are answered in order, so neither waits behind a slow
+  /// `server.start` on the main one. The provider never starts a coordinator; with none running there
+  /// is nothing to log out of, and the outcome says it could not be reached. The state follows the
+  /// answer, or `account.changed`.
   public func logOut(stopWork: Bool) async -> LogOutOutcome {
-    await persistDraftNow()
+    let params = AccountLogout.Params(stopWork: stopWork)
+    // The coordinator bounds a log-out at 21 s; this waits a little longer for its answer.
+    let options = RequestOptions(operationId: UUID().uuidString.lowercased(), timeout: .seconds(40))
     do {
-      let params = AccountLogout.Params(stopWork: stopWork)
-      // The coordinator bounds a log-out at 21 s; this waits a little longer for its answer.
-      let options = RequestOptions(operationId: UUID().uuidString.lowercased(), timeout: .seconds(40))
       let status: AccountStatus.Result
       if let side = sideTransportProvider {
-        let sideClient = WorkspaceClient(transport: try await side())
+        let sideClient: WorkspaceClient
+        do {
+          sideClient = WorkspaceClient(transport: try await side())
+          try await Self.ready(sideClient, within: sideReadyTimeout)
+        } catch {
+          return .failed(SignInCopy.coordinatorUnreachable)
+        }
         defer { Task { await sideClient.close() } }
-        _ = try await sideClient.ready()
+        cancelPendingDraftSave()
+        if let threadId = detail?.thread.id {
+          _ = try? await sideClient.request(
+            DraftSave.self, DraftSave.Params(threadId: threadId, text: composerText),
+            options: RequestOptions(operationId: UUID().uuidString.lowercased(), timeout: .seconds(10)))
+        }
         status = try await sideClient.request(AccountLogout.self, params, options: options)
       } else {
+        await persistDraftNow()
         status = try await signInClient().request(AccountLogout.self, params, options: options)
       }
       applyAccountStatus(status)
@@ -393,6 +453,21 @@ extension WorkspaceModel {
         return .workRunning(work)
       }
       return .failed(SignInCopy.accountFailure(for: failure))
+    }
+  }
+
+  /// The client's hello, or a throw after `timeout` (with the client closed).
+  private static func ready(_ client: WorkspaceClient, within timeout: Duration) async throws {
+    try await withThrowingTaskGroup(of: Void.self) { group in
+      group.addTask { _ = try await client.ready() }
+      group.addTask {
+        try await Task.sleep(for: timeout)
+        // Closing ends the hello wait too, so the group can finish.
+        await client.close()
+        throw WorkspaceError(.endpointUnavailable, "The coordinator did not answer.")
+      }
+      defer { group.cancelAll() }
+      try await group.next()
     }
   }
 
