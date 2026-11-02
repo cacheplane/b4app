@@ -270,6 +270,15 @@ public final class MirrorTransport: WorkspaceTransport {
           transport: .disconnected))
     }
     for id in batch.touchedProjectIds.sorted() { events.append(.projectChanged(projectId: id)) }
+    // The whole usage rides on the event, so an open Connections page updates without a read.
+    if !batch.touchedUsageIds.isEmpty, let usage = try? store.connectionUsage() {
+      for entry in usage where batch.touchedUsageIds.contains(entry.connectionId) {
+        if let value = try? JSONValue(encoding: entry) {
+          events.append(
+            AdapterEvent(kind: .usageChanged, connectionId: entry.connectionId, payload: ["usage": value]))
+        }
+      }
+    }
     for id in batch.touchedThreadIds.sorted() {
       if let thread = try? store.thread(id: id), let event = try? AdapterEvent.threadUpdated(thread) {
         events.append(event)

@@ -41,18 +41,21 @@ public struct AppliedBatch: Sendable, Equatable {
   public var touchedItems: [DisplayItem]
   public var touchedConnectionIds: Set<String>
   public var touchedProjectIds: Set<String>
+  /// Connections whose `connectionUsage` row changed.
+  public var touchedUsageIds: Set<String>
   public var skipped: Int
   public var undecodableRows: Int
 
   public init(
     touchedThreadIds: Set<String> = [], touchedItems: [DisplayItem] = [],
     touchedConnectionIds: Set<String> = [], touchedProjectIds: Set<String> = [],
-    skipped: Int = 0, undecodableRows: Int = 0
+    touchedUsageIds: Set<String> = [], skipped: Int = 0, undecodableRows: Int = 0
   ) {
     self.touchedThreadIds = touchedThreadIds
     self.touchedItems = touchedItems
     self.touchedConnectionIds = touchedConnectionIds
     self.touchedProjectIds = touchedProjectIds
+    self.touchedUsageIds = touchedUsageIds
     self.skipped = skipped
     self.undecodableRows = undecodableRows
   }

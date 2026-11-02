@@ -361,6 +361,33 @@ private final class WriteCounter: Sendable {
     await client.close()
   }
 
+  /// A usage row from the Mac is announced, so an open Connections page updates without a reload.
+  @Test func publishAnnouncesUsage() async throws {
+    let store = try MirrorStore.inMemory()
+    let transport = MirrorTransport(store: store, version: "0.2.0")
+    let client = WorkspaceClient(transport: transport)
+    _ = try await client.ready()
+    let events = await client.events()
+    _ = try store.apply(Array(try fixtureAsStored().prefix(1)))
+    transport.publish(
+      try store.apply([
+        StoredChange(
+          hubSeq: 20, deviceId: "mac-1", deviceSeq: 20, wall: 20, table: "connectionUsage", rowId: "conn-1",
+          op: "insert", column: nil,
+          value: [
+            "connectionId": "conn-1", "tokens": ["today": 7, "week": 22],
+            "updatedAt": "2026-11-02T10:00:01.000Z",
+          ])
+      ]))
+    var usage: ConnectionUsage?
+    for await envelope in events where envelope.event.kind == .usageChanged {
+      usage = try envelope.event.payload["usage"]?.decode(ConnectionUsage.self)
+      break
+    }
+    #expect(usage == ConnectionUsage(connectionId: "conn-1", tokens: TokenTotals(today: 7, week: 22)))
+    await client.close()
+  }
+
   @Test func diagnosticsCountUndecodableRowsWithoutReadingTheRowTables() async throws {
     let store = try MirrorStore.inMemory()
     _ = try store.apply(try fixtureAsStored())
