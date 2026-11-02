@@ -269,13 +269,17 @@
     static let keepAwakeHelp =
       "While Agent Workspace is joined to a hub, your Mac stays awake so your phone can reach it. The display can still sleep. A Mac with its lid closed on battery power sleeps anyway."
 
-    /// The relay link in a few words.
-    static func linkLine(joined: Bool, link: HubLinkStatus?) -> String {
+    /// The relay link in a few words: connected since when, or reconnecting with its last error.
+    static func linkLine(joined: Bool, link: HubLinkStatus?, now: Date = Date()) -> String {
       guard joined else { return "Not joined to a hub" }
       guard let link else { return "Joined to the hub" }
       switch link.state {
-      case .connected: return "Connected to the hub"
-      case .connecting: return "Connecting to the hub…"
+      case .connected:
+        guard let since = link.since.flatMap(Timestamp.date(from:)) else { return "Connected to the hub" }
+        return "Connected since \(HostNoticeMessage.lastSeen(since, now: now))"
+      case .connecting:
+        guard let error = link.lastError, !error.isEmpty else { return "Connecting to the hub…" }
+        return "Reconnecting to the hub… last error: \(error)"
       case .offline:
         guard let error = link.lastError, !error.isEmpty else { return "Offline" }
         return "Offline: \(error)"

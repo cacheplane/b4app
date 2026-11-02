@@ -248,7 +248,11 @@ private final class ClockBox: @unchecked Sendable {
     let model = try await connectedModel(transport)
     await model.refreshRemoteAccess()
     #expect(model.hubLink?.state == .connected)
-    #expect(RemoteAccessView.linkLine(joined: model.hubJoined, link: model.hubLink) == "Connected to the hub")
+    #expect(
+      RemoteAccessView.linkLine(joined: model.hubJoined, link: model.hubLink).hasPrefix("Connected since "))
+    #expect(
+      RemoteAccessView.linkLine(joined: true, link: HubLinkStatus(state: .connected))
+        == "Connected to the hub")
     #expect(RemoteAccessView.linkLine(joined: false, link: nil) == "Not joined to a hub")
     #expect(
       RemoteAccessView.linkLine(joined: true, link: HubLinkStatus(state: .connecting))
@@ -256,6 +260,23 @@ private final class ClockBox: @unchecked Sendable {
     #expect(
       RemoteAccessView.linkLine(joined: true, link: HubLinkStatus(state: .offline, lastError: "no route"))
         == "Offline: no route")
+  }
+
+  /// The spec: "connected since, or reconnecting with its last error".
+  @Test func theLinkLineSaysSinceWhenAndTheLastError() throws {
+    let since = try #require(Timestamp.date(from: "2026-11-01T09:30:00.000Z"))
+    let now = since.addingTimeInterval(3_600)
+    let time = HostNoticeMessage.lastSeen(since, now: now)
+    #expect(
+      RemoteAccessView.linkLine(
+        joined: true, link: HubLinkStatus(state: .connected, since: Timestamp.string(from: since)), now: now)
+        == "Connected since \(time)")
+    #expect(
+      RemoteAccessView.linkLine(joined: true, link: HubLinkStatus(state: .connecting, lastError: "no route"))
+        == "Reconnecting to the hub… last error: no route")
+    #expect(
+      RemoteAccessView.linkLine(joined: true, link: HubLinkStatus(state: .connecting))
+        == "Connecting to the hub…")
   }
 
   @Test func theWordsAreTheOnesTheSpecGave() {
