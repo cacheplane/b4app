@@ -72,7 +72,7 @@ hub:
 secrets:
   # -- Existing Secret with keys `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, `B4HUB_APPLE_PRIVATE_KEY`.
   existingSecret: ""
-  # -- `false`: env from `secretKeyRef`. `true`: mount at `/etc/b4hub/secrets/` and set `B4HUB_*_FILE` (needs a hub with the `_FILE` forms, M8e).
+  # -- `false`: env from `secretKeyRef`. `true`: mount at `/etc/b4hub/secrets/` and set `B4HUB_*_FILE` (needs a hub with the `_FILE` forms, M8e; the sign-in hub has them).
   useFileVars: false
   # -- Chart-created `<release>-b4hub-secrets` when `existingSecret` is empty. Pass the PEM with `--set-file secrets.values.applePrivateKey=AuthKey.p8`.
   values:

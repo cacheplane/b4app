@@ -199,6 +199,34 @@ impl Settings {
             .filter(|v| !v.is_empty())
     }
 
+    /// Whether `name` or its `NAME_FILE` form is set (and not empty). It does not read the file.
+    pub(crate) fn secret_is_set(&self, name: &str) -> bool {
+        self.var(name).is_some() || self.var(&format!("{name}_FILE")).is_some()
+    }
+
+    /// The secret `name`: the variable itself, or the contents of the file `NAME_FILE` names, with
+    /// the file's trailing line ending (`\n` or `\r\n`) removed and nothing else touched, so a
+    /// multi-line PEM keeps its inner newlines. `None` when neither is set.
+    ///
+    /// Setting both is an error naming both, and so is a file that cannot be read (missing, a
+    /// directory, not UTF-8) naming `NAME_FILE`. No error carries the value or the file's bytes.
+    pub(crate) fn secret_value(&self, name: &str) -> Result<Option<String>, ConfigError> {
+        let file_name = format!("{name}_FILE");
+        match (self.var(name), self.var(&file_name)) {
+            (Some(_), Some(_)) => Err(ConfigError::new(
+                name,
+                format!("and {file_name} are both set; set only one"),
+            )),
+            (Some(value), None) => Ok(Some(value.to_string())),
+            (None, Some(path)) => {
+                let contents = std::fs::read_to_string(path)
+                    .map_err(|_| ConfigError::new(&file_name, "the file cannot be read"))?;
+                Ok(Some(contents.trim_end_matches(['\r', '\n']).to_string()))
+            }
+            (None, None) => Ok(None),
+        }
+    }
+
     /// `B4HUB_PORT`, default 8080.
     pub fn port(&self) -> Result<u16, ConfigError> {
         match self.var("B4HUB_PORT") {
@@ -289,26 +317,9 @@ impl Settings {
     }
 
     fn secret_url(&self, name: &str) -> Result<String, ConfigError> {
-        let file_name = format!("{name}_FILE");
-        let value = match (self.var(name), self.var(&file_name)) {
-            (Some(_), Some(_)) => {
-                return Err(ConfigError::new(
-                    name,
-                    format!("and {file_name} are both set; set only one"),
-                ))
-            }
-            (Some(value), None) => value.to_string(),
-            (None, Some(path)) => std::fs::read_to_string(path)
-                .map_err(|_| ConfigError::new(&file_name, "the file cannot be read"))?
-                .trim()
-                .to_string(),
-            (None, None) => {
-                return Err(ConfigError::new(
-                    name,
-                    format!("is not set (set {name} or {file_name})"),
-                ))
-            }
-        };
+        let value = self.secret_value(name)?.ok_or_else(|| {
+            ConfigError::new(name, format!("is not set (set {name} or {name}_FILE)"))
+        })?;
         match Url::parse(&value) {
             Ok(url) if matches!(url.scheme(), "postgres" | "postgresql") && url.has_host() => {
                 Ok(value)
@@ -617,6 +628,51 @@ mod tests {
             .database_url()
             .unwrap_err();
         assert_eq!(missing.name, "DATABASE_URL_FILE");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn secret_value_reads_the_variable_or_its_file() {
+        let dir = std::env::temp_dir().join(format!("b4hub-cli-{}", b4hub_core::ids::new_uuid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, contents: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, contents).unwrap();
+            path.to_str().unwrap().to_string()
+        };
+
+        assert_eq!(settings(&[]).secret_value("X").unwrap(), None);
+        assert!(!settings(&[]).secret_is_set("X"));
+        assert_eq!(
+            settings(&[("X", " as is\n")]).secret_value("X").unwrap(),
+            Some(" as is\n".to_string()),
+            "the variable is never trimmed"
+        );
+
+        for (contents, want) in [
+            ("v", "v"),
+            ("v\n", "v"),
+            ("v\r\n", "v"),
+            ("a\nb\n", "a\nb"),
+            (" v \n", " v "),
+        ] {
+            let path = write("f", contents);
+            let s = settings(&[("X_FILE", &path)]);
+            assert!(s.secret_is_set("X"));
+            assert_eq!(s.secret_value("X").unwrap().as_deref(), Some(want));
+        }
+
+        let path = write("g", "v");
+        let both = settings(&[("X", "v"), ("X_FILE", &path)])
+            .secret_value("X")
+            .unwrap_err();
+        let text = both.to_string();
+        assert!(text.contains("X") && text.contains("X_FILE") && text.contains("both set"));
+
+        let missing = settings(&[("X_FILE", dir.join("nope").to_str().unwrap())])
+            .secret_value("X")
+            .unwrap_err();
+        assert_eq!(missing.name, "X_FILE");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

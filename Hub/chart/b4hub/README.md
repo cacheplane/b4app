@@ -71,7 +71,7 @@ Sign-in needs `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, a
 ```
 
 With neither set, the hub runs without sign-in secrets and the chart renders none.
-`secrets.useFileVars: false` (default) exposes them as environment variables from `secretKeyRef`. `true` mounts them at `/etc/b4hub/secrets/<KEY>` and sets `B4HUB_*_FILE` instead; turn it on once the hub reads the `_FILE` forms (M8e).
+`secrets.useFileVars: false` (default) exposes them as environment variables from `secretKeyRef`. `true` mounts them at `/etc/b4hub/secrets/<KEY>` and sets `B4HUB_*_FILE` instead; the hub reads the `_FILE` forms of `B4HUB_SECRET_KEY` and the `B4HUB_APPLE_*` secrets (M8e).
 
 ## Ingress or Gateway
 
@@ -174,7 +174,7 @@ Kubernetes: `>=1.29.0`
 | replicaCount | int | `1` | Hub replicas. Keep 1: the relay routes per process until M8e (D-057). |
 | resources | object | `{"limits":{"memory":"512Mi"},"requests":{"cpu":"100m","memory":"128Mi"}}` | Hub container resources. |
 | secrets.existingSecret | string | `""` | Existing Secret with keys `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, `B4HUB_APPLE_PRIVATE_KEY`. |
-| secrets.useFileVars | bool | `false` | `false`: env from `secretKeyRef`. `true`: mount at `/etc/b4hub/secrets/` and set `B4HUB_*_FILE` (needs a hub with the `_FILE` forms, M8e). |
+| secrets.useFileVars | bool | `false` | `false`: env from `secretKeyRef`. `true`: mount at `/etc/b4hub/secrets/` and set `B4HUB_*_FILE` (needs a hub with the `_FILE` forms, M8e; the sign-in hub has them). |
 | secrets.values | object | `{"appleKeyId":"","applePrivateKey":"","appleTeamId":"","secretKey":""}` | Chart-created `<release>-b4hub-secrets` when `existingSecret` is empty. Pass the PEM with `--set-file secrets.values.applePrivateKey=AuthKey.p8`. |
 | securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true}` | Container security context (Restricted Pod Security Standard). `/tmp` is an `emptyDir`. |
 | service.port | int | `80` | Service port in front of the hub's `http` port (8080). |

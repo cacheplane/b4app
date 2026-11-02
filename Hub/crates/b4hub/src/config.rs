@@ -2,9 +2,12 @@
 //! party, the public URL, the secret key, Sign in with Apple, and whether to trust
 //! `X-Forwarded-For`.
 //!
-//! Every secret is a plain environment variable, never a file path, so any host's secret manager
-//! can inject it. A missing or malformed setting is a [`ConfigError`] naming the variable and
-//! never its value; `serve` exits 2 on one.
+//! Every secret is an environment variable holding the value itself (`B4HUB_APPLE_PRIVATE_KEY` holds
+//! the PEM contents, not a path), so any host's secret manager can inject it. `B4HUB_SECRET_KEY` and
+//! the Apple team id, key id, and private key also have a `_FILE` form naming a file that holds the
+//! value, for Docker and Kubernetes secrets mounted as files; the two forms are mutually
+//! exclusive (see [`Settings::secret_value`]). A missing or malformed setting is a [`ConfigError`]
+//! naming the variable and never its value; `serve` exits 2 on one.
 
 use std::fmt;
 
@@ -20,7 +23,8 @@ use crate::cli::{ConfigError, Settings};
 /// Where Apple's endpoints live unless `B4HUB_APPLE_BASE_URL` (tests only) says otherwise.
 pub const DEFAULT_APPLE_BASE_URL: &str = "https://appleid.apple.com";
 
-/// The four variables that configure Sign in with Apple; all or none must be set.
+/// The four variables that configure Sign in with Apple; all or none must be set. The first
+/// three are secrets and may be given as `NAME_FILE` instead.
 const APPLE_VARS: [&str; 4] = [
     "B4HUB_APPLE_TEAM_ID",
     "B4HUB_APPLE_KEY_ID",
@@ -186,10 +190,11 @@ fn rp_id(settings: &Settings) -> Result<String, ConfigError> {
 
 fn secret_key(settings: &Settings) -> Result<[u8; 32], ConfigError> {
     const NAME: &str = "B4HUB_SECRET_KEY";
-    let raw = settings.var(NAME).ok_or_else(|| {
+    let raw = settings.secret_value(NAME)?.ok_or_else(|| {
         ConfigError::new(
             NAME,
-            "is not set (32 random bytes in base64: openssl rand -base64 32)",
+            "is not set (set B4HUB_SECRET_KEY or B4HUB_SECRET_KEY_FILE; 32 random bytes in \
+             base64: openssl rand -base64 32)",
         )
     })?;
     STANDARD
@@ -211,7 +216,11 @@ fn apple(settings: &Settings) -> Result<Option<AppleConfig>, ConfigError> {
     let set: Vec<&str> = APPLE_VARS
         .iter()
         .copied()
-        .filter(|name| settings.var(name).is_some())
+        .filter(|name| match *name {
+            "B4HUB_APPLE_AUDIENCES" => settings.var(name).is_some(),
+            // `NAME_FILE` sets `NAME` as far as this rule goes.
+            _ => settings.secret_is_set(name),
+        })
         .collect();
     if set.is_empty() {
         for name in ["B4HUB_APPLE_BASE_URL", "B4HUB_APPLE_SERVICES_ID"] {
@@ -228,19 +237,21 @@ fn apple(settings: &Settings) -> Result<Option<AppleConfig>, ConfigError> {
         return Err(ConfigError::new(
             missing,
             "is not set; Sign in with Apple needs all of B4HUB_APPLE_TEAM_ID, \
-             B4HUB_APPLE_KEY_ID, B4HUB_APPLE_PRIVATE_KEY, and B4HUB_APPLE_AUDIENCES, or none",
+             B4HUB_APPLE_KEY_ID, B4HUB_APPLE_PRIVATE_KEY (each also as NAME_FILE), and \
+             B4HUB_APPLE_AUDIENCES, or none",
         ));
     }
-    let var = |name: &str| settings.var(name).unwrap_or_default();
+    // Every name here is in `set`, so a secret is `Some` once its `_FILE` is read.
+    let secret = |name: &str| settings.secret_value(name).map(Option::unwrap_or_default);
 
     let apple_id = |name: &str| {
-        let value = var(name);
+        let value = secret(name)?;
         if value.len() == 10
             && value
                 .chars()
                 .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
         {
-            Ok(value.to_string())
+            Ok(value)
         } else {
             Err(ConfigError::new(
                 name,
@@ -251,7 +262,7 @@ fn apple(settings: &Settings) -> Result<Option<AppleConfig>, ConfigError> {
     let team_id = apple_id("B4HUB_APPLE_TEAM_ID")?;
     let key_id = apple_id("B4HUB_APPLE_KEY_ID")?;
 
-    let private_key_pem = var("B4HUB_APPLE_PRIVATE_KEY").trim().to_string();
+    let private_key_pem = secret("B4HUB_APPLE_PRIVATE_KEY")?.trim().to_string();
     if !is_pkcs8_pem(&private_key_pem) {
         return Err(ConfigError::new(
             "B4HUB_APPLE_PRIVATE_KEY",
@@ -260,7 +271,9 @@ fn apple(settings: &Settings) -> Result<Option<AppleConfig>, ConfigError> {
         ));
     }
 
-    let audiences: Vec<String> = var("B4HUB_APPLE_AUDIENCES")
+    let audiences: Vec<String> = settings
+        .var("B4HUB_APPLE_AUDIENCES")
+        .unwrap_or_default()
         .split(',')
         .map(str::trim)
         .map(str::to_string)
@@ -513,5 +526,236 @@ kZXiwkEnZYzZPc5fQx0VfT+fhjzYhYLgQ+KXi00zbyOb46KPzL6yEFza
             assert_eq!(error.name, name, "{bad}");
             assert!(!error.to_string().contains(bad), "{error}");
         }
+    }
+
+    /// A scratch directory of secret files, removed on drop.
+    struct SecretFiles(std::path::PathBuf);
+
+    impl SecretFiles {
+        fn new() -> SecretFiles {
+            let dir =
+                std::env::temp_dir().join(format!("b4hub-config-{}", b4hub_core::ids::new_uuid()));
+            std::fs::create_dir_all(&dir).unwrap();
+            SecretFiles(dir)
+        }
+
+        /// Writes `contents` verbatim to a file and returns its path.
+        fn write(&self, name: &str, contents: &str) -> String {
+            let path = self.0.join(name);
+            std::fs::write(&path, contents).unwrap();
+            path.to_str().unwrap().to_string()
+        }
+
+        fn missing(&self, name: &str) -> String {
+            self.0.join(name).to_str().unwrap().to_string()
+        }
+    }
+
+    impl Drop for SecretFiles {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Settings with the rp id and the given pairs only (no `B4HUB_SECRET_KEY`).
+    fn bare(pairs: &[(&str, &str)]) -> Settings {
+        let mut all = vec![("B4HUB_WEBAUTHN_RP_ID", "local.b4.run")];
+        all.extend_from_slice(pairs);
+        Settings::from_pairs(all)
+    }
+
+    /// Every `_FILE` variant of the sign-in secrets, with a good value for each.
+    fn file_variants() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("B4HUB_SECRET_KEY", KEY),
+            ("B4HUB_APPLE_TEAM_ID", "ABCDE12345"),
+            ("B4HUB_APPLE_KEY_ID", "KEY1234567"),
+            ("B4HUB_APPLE_PRIVATE_KEY", PEM),
+        ]
+    }
+
+    #[test]
+    fn every_secret_can_come_from_a_file() {
+        let files = SecretFiles::new();
+        let mut pairs: Vec<(String, String)> = vec![(
+            "B4HUB_APPLE_AUDIENCES".into(),
+            "com.cacheplane.b4app.ios".into(),
+        )];
+        for (name, value) in file_variants() {
+            let path = files.write(name, &format!("{value}\n"));
+            pairs.push((format!("{name}_FILE"), path));
+        }
+        let pairs: Vec<(&str, &str)> = pairs
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let config = Config::from_settings(&bare(&pairs)).unwrap();
+        assert_eq!(config.secret_key, [7u8; 32]);
+        let apple = config.apple.expect("Apple is configured");
+        assert_eq!(apple.team_id, "ABCDE12345");
+        assert_eq!(apple.key_id, "KEY1234567");
+        assert_eq!(apple.private_key_pem, PEM);
+    }
+
+    #[test]
+    fn a_trailing_newline_is_trimmed_and_the_pem_is_read_verbatim() {
+        let files = SecretFiles::new();
+        for ending in ["", "\n", "\r\n"] {
+            let key = files.write("key", &format!("{KEY}{ending}"));
+            let team = files.write("team", &format!("ABCDE12345{ending}"));
+            let key_id = files.write("key_id", &format!("KEY1234567{ending}"));
+            let pem = files.write("pem", &format!("{PEM}{ending}"));
+            let mut config = Config::from_settings(&bare(&[
+                ("B4HUB_SECRET_KEY_FILE", &key),
+                ("B4HUB_APPLE_TEAM_ID_FILE", &team),
+                ("B4HUB_APPLE_KEY_ID_FILE", &key_id),
+                ("B4HUB_APPLE_PRIVATE_KEY_FILE", &pem),
+                ("B4HUB_APPLE_AUDIENCES", "com.cacheplane.b4app.ios"),
+            ]))
+            .unwrap_or_else(|e| panic!("{ending:?}: {e}"));
+            let apple = config.apple.take().unwrap();
+            assert_eq!(apple.team_id, "ABCDE12345", "{ending:?}");
+            assert_eq!(apple.key_id, "KEY1234567", "{ending:?}");
+            // Multi-line, with its inner newlines intact.
+            assert_eq!(apple.private_key_pem, PEM, "{ending:?}");
+            // And it still parses as the signing key.
+            crate::apple::AppleClient::new(&apple).unwrap_or_else(|e| panic!("{ending:?}: {e}"));
+            assert_eq!(config.secret_key, [7u8; 32], "{ending:?}");
+        }
+    }
+
+    #[test]
+    fn a_variable_and_its_file_form_are_mutually_exclusive() {
+        let files = SecretFiles::new();
+        for (name, value) in file_variants() {
+            let path = files.write(name, value);
+            let file_name = format!("{name}_FILE");
+            let mut pairs = apple_pairs();
+            pairs.retain(|(n, _)| *n != name);
+            pairs.push((name, value));
+            pairs.push((&file_name, &path));
+            let settings = if name == "B4HUB_SECRET_KEY" {
+                // `settings` already sets the key; use the bare form so it is set once.
+                let mut all = apple_pairs();
+                all.push((name, value));
+                all.push((&file_name, &path));
+                bare(&all)
+            } else {
+                settings(&pairs)
+            };
+            let error = Config::from_settings(&settings).unwrap_err();
+            assert_eq!(error.name, name);
+            let text = error.to_string();
+            assert!(text.contains(name) && text.contains(&file_name), "{text}");
+            assert!(text.contains("both set"), "{text}");
+            assert!(!text.contains(value), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_missing_or_unreadable_file_names_the_file_variable() {
+        let files = SecretFiles::new();
+        let dir = files.0.to_str().unwrap().to_string();
+        for (name, _) in file_variants() {
+            let file_name = format!("{name}_FILE");
+            for path in [files.missing("nope"), dir.clone()] {
+                let others: Vec<(&str, &str)> = apple_pairs()
+                    .into_iter()
+                    .filter(|(n, _)| *n != name)
+                    .collect();
+                let mut pairs = others.clone();
+                pairs.push((&file_name, &path));
+                let settings = if name == "B4HUB_SECRET_KEY" {
+                    bare(&pairs)
+                } else {
+                    settings(&pairs)
+                };
+                let error = Config::from_settings(&settings).unwrap_err();
+                assert_eq!(error.name, file_name, "{path}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_apple_rule_counts_a_file_form_as_setting_the_variable() {
+        let files = SecretFiles::new();
+        let paths: Vec<(String, String)> = file_variants()
+            .into_iter()
+            .skip(1)
+            .map(|(name, value)| (format!("{name}_FILE"), files.write(name, value)))
+            .collect();
+        let with_files = |skip: &str| {
+            let mut pairs: Vec<(&str, &str)> = apple_pairs()
+                .into_iter()
+                .filter(|(n, _)| *n == "B4HUB_APPLE_AUDIENCES")
+                .collect();
+            for (name, path) in &paths {
+                if name.trim_end_matches("_FILE") != skip {
+                    pairs.push((name, path));
+                }
+            }
+            Config::from_settings(&settings(&pairs))
+        };
+        assert!(with_files("").unwrap().apple.is_some());
+        for skip in [
+            "B4HUB_APPLE_TEAM_ID",
+            "B4HUB_APPLE_KEY_ID",
+            "B4HUB_APPLE_PRIVATE_KEY",
+        ] {
+            let error = with_files(skip).unwrap_err();
+            assert_eq!(error.name, skip);
+            assert!(error.reason.contains("is not set"), "{error}");
+        }
+
+        // One file form alone is the same error as the plain variable alone.
+        let key_file = &paths[2].1;
+        let alone_file =
+            Config::from_settings(&settings(&[("B4HUB_APPLE_PRIVATE_KEY_FILE", key_file)]))
+                .unwrap_err();
+        let alone_plain =
+            Config::from_settings(&settings(&[("B4HUB_APPLE_PRIVATE_KEY", PEM)])).unwrap_err();
+        assert_eq!(alone_file.name, alone_plain.name);
+        assert_eq!(alone_file.name, "B4HUB_APPLE_TEAM_ID");
+
+        // And the tests-only extras still need Apple configured.
+        let error =
+            Config::from_settings(&settings(&[("B4HUB_APPLE_BASE_URL", "http://h")])).unwrap_err();
+        assert_eq!(error.name, "B4HUB_APPLE_BASE_URL");
+    }
+
+    #[test]
+    fn errors_about_file_contents_never_contain_them() {
+        let files = SecretFiles::new();
+        let bad_key = "hunter2-not-a-key";
+        let key = files.write("key", bad_key);
+        let error = Config::from_settings(&bare(&[("B4HUB_SECRET_KEY_FILE", &key)])).unwrap_err();
+        assert_eq!(error.name, "B4HUB_SECRET_KEY");
+        assert!(!error.to_string().contains(bad_key), "{error}");
+
+        for (name, bad) in [
+            ("B4HUB_APPLE_TEAM_ID", "hunter2-team"),
+            ("B4HUB_APPLE_KEY_ID", "hunter2-key"),
+            ("B4HUB_APPLE_PRIVATE_KEY", "hunter2-not-a-pem"),
+        ] {
+            let path = files.write(name, bad);
+            let file_name = format!("{name}_FILE");
+            let mut pairs: Vec<(&str, &str)> = apple_pairs()
+                .into_iter()
+                .filter(|(n, _)| *n != name)
+                .collect();
+            pairs.push((&file_name, &path));
+            let error = Config::from_settings(&settings(&pairs)).unwrap_err();
+            assert_eq!(error.name, name);
+            assert!(!error.to_string().contains(bad), "{error}");
+        }
+
+        // A file that is not UTF-8 is unreadable, and the error says nothing of its bytes.
+        let path = files.0.join("binary");
+        std::fs::write(&path, b"hunter2\xff\xfe").unwrap();
+        let error =
+            Config::from_settings(&bare(&[("B4HUB_SECRET_KEY_FILE", path.to_str().unwrap())]))
+                .unwrap_err();
+        assert_eq!(error.name, "B4HUB_SECRET_KEY_FILE");
+        assert!(!error.to_string().contains("hunter2"), "{error}");
     }
 }

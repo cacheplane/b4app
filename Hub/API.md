@@ -184,8 +184,20 @@ does not sign). Without them every Apple route below answers `404 not_found`. Th
 Mac's) also needs `B4HUB_APPLE_SERVICES_ID`, the Services ID it signs in with (one of the
 audiences), and `B4HUB_PUBLIC_URL`, under which Apple posts back; without either only the native
 flow is offered. `B4HUB_APPLE_BASE_URL` (tests only; default `https://appleid.apple.com`) moves
-every Apple endpoint and the issuer identity tokens must name. Every secret is a plain environment
-variable, never a file path. `seed` and `enroll` read none of these.
+every Apple endpoint and the issuer identity tokens must name. A secret's variable holds the value
+itself, never a path (`B4HUB_APPLE_PRIVATE_KEY` is the PEM contents). `seed` and `enroll` read none
+of these.
+
+**Secrets from files.** For Docker and Kubernetes secrets mounted as files, each of
+`B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, and `B4HUB_APPLE_PRIVATE_KEY` has a
+`_FILE` form (`B4HUB_SECRET_KEY_FILE`, and so on) that names a file holding the value; so do
+`DATABASE_URL` and `DATABASE_ADMIN_URL` (`DATABASE_URL_FILE`, `DATABASE_ADMIN_URL_FILE`). A
+variable and its `_FILE` form are mutually exclusive: setting both exits 2, naming both. A `_FILE`
+that is missing, a directory, or not UTF-8 exits 2 naming the `_FILE` variable; no error ever
+carries the file's contents. One trailing line ending (`\n` or `\r\n`) is removed from the file and
+nothing else is, so the PEM keeps its inner newlines. For Sign in with Apple's all-or-none rule, a
+`_FILE` form counts as setting its variable. The values themselves are validated exactly as when
+they come from the environment.
 
 **Rate limits** are kept in memory per process (a fixed one-minute window per client), so a hub
 with several replicas admits a client once per replica. A client is an IPv4 address, or an IPv6
