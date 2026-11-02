@@ -1,6 +1,7 @@
 //! The relay: the WebSocket links that let a phone drive conversations on a Mac through the hub.
 //! `registry` holds the live links and the presence they imply, `link` is the endpoint and the
-//! task that serves one link, and `limits` holds the in-memory rate limits. The wire frames are
+//! task that serves one link, `route` takes a client's command to the Mac that owns its target
+//! and the reply back, and `limits` holds the in-memory rate limits. The wire frames are
 //! `b4hub_core::relay`; `Hub/API.md` ("Link") is the reference.
 //!
 //! # Time
@@ -22,6 +23,7 @@ use crate::error::relay_code;
 pub mod limits;
 pub mod link;
 pub mod registry;
+pub mod route;
 
 pub use registry::{Close, LinkHandle, Registration, Relay, SendError};
 

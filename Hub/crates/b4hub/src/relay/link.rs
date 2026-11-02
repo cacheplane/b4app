@@ -20,7 +20,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use super::registry::{Close, Identity, LinkHandle, LiveLink, Registration};
-use super::{invalid_frame, PROTOCOL};
+use super::{invalid_frame, route, PROTOCOL};
 use crate::auth::AuthedDevice;
 use crate::error::ApiError;
 use crate::serve::AppState;
@@ -253,7 +253,7 @@ impl Link {
                     dead.as_mut().reset(now + DEAD_LINK);
                     self.keep_last_seen_fresh(now);
                     let reply = match message {
-                        Message::Text(text) => self.on_text(text.as_str()).await,
+                        Message::Text(text) => self.on_text(text.as_str()),
                         Message::Binary(_) => {
                             Some(invalid_frame("frames are JSON text, not binary"))
                         }
@@ -274,21 +274,43 @@ impl Link {
     }
 
     /// Handles one text frame; the returned frame, if any, is written back at once.
-    async fn on_text(&self, text: &str) -> Option<RelayMessage> {
+    fn on_text(&self, text: &str) -> Option<RelayMessage> {
         match serde_json::from_str::<RelayMessage>(text) {
             Ok(RelayMessage::Ping) => Some(RelayMessage::Pong {
                 hub_time: self.state.relay.hub_time(),
             }),
-            Ok(other) => self.on_frame(other).await,
-            // The frame is not echoed: it may carry content the hub must not log or repeat.
-            Err(_) => Some(invalid_frame("the frame is not a valid relay message")),
+            Ok(other) => self.on_frame(other),
+            // A command whose method is not one of the five is answered as a command, by id.
+            // Anything else is not echoed: it may carry content the hub must not log or repeat.
+            Err(_) => Some(
+                route::unknown_command(text)
+                    .unwrap_or_else(|| invalid_frame("the frame is not a valid relay message")),
+            ),
         }
     }
 
-    /// A well-formed frame other than `ping`. Commands, replies, watches and events are routed
-    /// here as they are implemented; until then the hub accepts only `ping` from a device.
-    async fn on_frame(&self, _message: RelayMessage) -> Option<RelayMessage> {
-        Some(invalid_frame("this frame is not accepted from a device"))
+    /// A well-formed frame other than `ping`. A command runs on its own task, so a slow Mac never
+    /// holds up this link (or the link's other commands); a host's reply is matched at once.
+    /// Watches and events are routed here as they are implemented.
+    fn on_frame(&self, message: RelayMessage) -> Option<RelayMessage> {
+        match message {
+            RelayMessage::Command {
+                id, method, params, ..
+            } => {
+                let relay = self.state.relay.clone();
+                let db = self.state.db.clone();
+                let caller = self.handle.clone();
+                tokio::spawn(async move {
+                    route::handle_command(&relay, &db, &caller, id, method, params).await;
+                });
+                None
+            }
+            RelayMessage::Reply { id, result, error } if self.handle.role == Role::Host => {
+                route::handle_reply(&self.state.relay, &self.handle, &id, result, error);
+                None
+            }
+            _ => Some(invalid_frame("this frame is not accepted from a device")),
+        }
     }
 
     /// Writes `last_seen_at` at most once a minute while the link is up, off the link's task so

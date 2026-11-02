@@ -18,6 +18,7 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use super::limits::SlidingWindow;
+use super::route::Commands;
 use super::{close_code, link_replaced, WallClock, MIN_CLIENT_PROTOCOL};
 use crate::error::relay_code;
 
@@ -170,6 +171,10 @@ struct Inner {
     gate: Mutex<Option<Arc<RegistrationGate>>>,
     upgrades: SlidingWindow,
     live: watch::Sender<usize>,
+    /// Bumped on every registration, so a held command learns its Mac is back.
+    registered: watch::Sender<u64>,
+    /// The router's in-memory state: commands in flight, held commands, started threads, limits.
+    commands: Commands,
 }
 
 /// The registry of live links and the relay-wide settings. Cheap to clone.
@@ -203,6 +208,8 @@ impl Relay {
             gate: Mutex::new(None),
             upgrades: SlidingWindow::upgrades(),
             live: watch::channel(0).0,
+            registered: watch::channel(0).0,
+            commands: Commands::default(),
         }))
     }
 
@@ -227,6 +234,7 @@ impl Relay {
             },
         );
         let replaced = previous.is_some();
+        self.0.registered.send_modify(|count| *count += 1);
         if let Some(older) = previous.and_then(|entry| entry.closing) {
             // The older task may already be gone; then there is nobody to tell.
             let _ = older.send(Close::replaced());
@@ -405,6 +413,16 @@ impl Relay {
         let mut live = self.0.live.subscribe();
         // `wait_for` only fails if the sender is gone, and this `Relay` holds it.
         let _ = live.wait_for(|count| *count == 0).await;
+    }
+
+    /// A receiver that changes whenever a link registers (from the moment of this call on).
+    pub(super) fn registrations(&self) -> watch::Receiver<u64> {
+        self.0.registered.subscribe()
+    }
+
+    /// The router's state.
+    pub(super) fn commands(&self) -> &Commands {
+        &self.0.commands
     }
 
     fn links(&self) -> MutexGuard<'_, HashMap<Uuid, Entry>> {

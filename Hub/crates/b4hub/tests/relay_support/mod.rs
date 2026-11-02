@@ -21,7 +21,7 @@ use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use b4hub::relay::{Relay, WallClock};
 use b4hub::serve::{self, AppState};
-use b4hub_core::relay::RelayMessage;
+use b4hub_core::relay::{RelayMessage, RelayMethod, WireError};
 use b4hub_db::{devices, orgs, Db};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
@@ -86,6 +86,22 @@ pub fn pause_clock() -> PausedClock {
 }
 
 impl PausedClock {
+    /// Moves the clock forward by `by` in steps of at most 10 seconds, with every device in
+    /// `alive` pinging after each step, so none of them is closed as silent. Fails the test if one
+    /// of them receives anything but its `pong` (or a `presence`).
+    pub async fn advance_alive(&self, by: Duration, alive: &mut [&mut FakeDevice]) {
+        let step = Duration::from_secs(10);
+        let mut left = by;
+        while !left.is_zero() {
+            let now = left.min(step);
+            self.advance(now).await;
+            left -= now;
+            for device in alive.iter_mut() {
+                device.ping().await;
+            }
+        }
+    }
+
     /// Moves the clock forward by `by`, after letting the hub finish what it is doing so a
     /// database call in flight does not straddle the jump.
     pub async fn advance(&self, by: Duration) {
@@ -250,6 +266,61 @@ impl Hub {
         (status, body)
     }
 
+    /// Inserts, as the owner, the thread `thread_id` of `who`, owned by `owner` (as if `owner`
+    /// had pushed it).
+    pub async fn seed_thread(&self, who: &Seeded, owner: Uuid, thread_id: &str) {
+        self.seed(
+            "INSERT INTO \"threads\" (\"id\", org_id, user_id, device_id, owner_device_id) \
+             VALUES ($4, $1, $2, $3, $3)",
+            who,
+            owner,
+            &[thread_id],
+        )
+        .await;
+    }
+
+    /// Inserts the runtime request `request_id` on `thread_id`, in `state`.
+    pub async fn seed_request(
+        &self,
+        who: &Seeded,
+        owner: Uuid,
+        request_id: &str,
+        thread_id: &str,
+        state: &str,
+    ) {
+        self.seed(
+            "INSERT INTO \"runtimeRequests\" (\"id\", \"threadId\", \"state\", org_id, user_id, \
+             device_id, owner_device_id) VALUES ($4, $5, $6, $1, $2, $3, $3)",
+            who,
+            owner,
+            &[request_id, thread_id, state],
+        )
+        .await;
+    }
+
+    /// Inserts the project `project_id`.
+    pub async fn seed_project(&self, who: &Seeded, owner: Uuid, project_id: &str) {
+        self.seed(
+            "INSERT INTO \"projects\" (\"id\", org_id, user_id, device_id, owner_device_id) \
+             VALUES ($4, $1, $2, $3, $3)",
+            who,
+            owner,
+            &[project_id],
+        )
+        .await;
+    }
+
+    async fn seed(&self, statement: &str, who: &Seeded, owner: Uuid, text: &[&str]) {
+        let mut query = sqlx::query(statement)
+            .bind(who.org_id)
+            .bind(who.user_id)
+            .bind(owner);
+        for value in text {
+            query = query.bind(*value);
+        }
+        query.execute(&self.admin.pool).await.unwrap();
+    }
+
     /// `devices.last_seen_at` of `device_id` as seconds since the epoch.
     pub async fn last_seen(&self, who: &Seeded, device_id: Uuid) -> Option<f64> {
         let mut tx = self.state.db.tenant_tx(who.org_id).await.unwrap();
@@ -410,6 +481,119 @@ impl FakeDevice {
                 Some(Some(Ok(_))) => {}
                 // The hub dropped the connection without a close frame.
                 Some(_) => return 1006,
+            }
+        }
+    }
+
+    /// Opens a link and reads its `hello` (returning its `hubTime`) and, for a client, the
+    /// `presence` frame after it.
+    pub async fn ready(addr: SocketAddr, token: &str) -> (FakeDevice, String) {
+        let mut device = FakeDevice::connect(addr, token).await;
+        let RelayMessage::Hello { hub_time, role, .. } = device.next().await else {
+            panic!("expected hello");
+        };
+        if role == b4hub_core::relay::Role::Client {
+            assert!(matches!(device.next().await, RelayMessage::Presence { .. }));
+        }
+        (device, hub_time)
+    }
+
+    /// Sends a `command` as a client does: `id`, `method`, and `params` only.
+    pub async fn command(&mut self, id: &str, method: RelayMethod, params: Value) {
+        self.send(&RelayMessage::Command {
+            id: id.to_string(),
+            method,
+            params,
+            deadline: None,
+            from: None,
+        })
+        .await;
+    }
+
+    /// Sends a host's successful `reply`.
+    pub async fn reply(&mut self, id: &str, result: Value) {
+        self.send(&RelayMessage::Reply {
+            id: id.to_string(),
+            result: Some(result),
+            error: None,
+        })
+        .await;
+    }
+
+    /// The next frame that is not a `pong` or a `presence`. Fails the test if none arrives within
+    /// [`FRAME_WAIT`].
+    pub async fn next_skipping_chatter(&mut self) -> RelayMessage {
+        loop {
+            match self.next().await {
+                RelayMessage::Pong { .. } | RelayMessage::Presence { .. } => {}
+                other => return other,
+            }
+        }
+    }
+
+    /// Like [`FakeDevice::next_skipping_chatter`], with `wait` of real time; `None` if nothing
+    /// else arrives.
+    pub async fn next_skipping_chatter_within(&mut self, wait: Duration) -> Option<RelayMessage> {
+        loop {
+            match self.next_within(wait).await? {
+                RelayMessage::Pong { .. } | RelayMessage::Presence { .. } => {}
+                other => return Some(other),
+            }
+        }
+    }
+
+    /// Fails the test if a frame other than `pong` or `presence` arrives within `wait`.
+    pub async fn expect_quiet(&mut self, wait: Duration) {
+        if let Some(frame) = self.next_skipping_chatter_within(wait).await {
+            panic!("expected nothing, got {frame:?}");
+        }
+    }
+
+    /// The next `command` frame: `(id, method, params, deadline, from)`.
+    pub async fn expect_command(
+        &mut self,
+    ) -> (
+        String,
+        RelayMethod,
+        Value,
+        Option<String>,
+        Option<b4hub_core::relay::From>,
+    ) {
+        match self.next_skipping_chatter().await {
+            RelayMessage::Command {
+                id,
+                method,
+                params,
+                deadline,
+                from,
+            } => (id, method, params, deadline, from),
+            other => panic!("expected a command, got {other:?}"),
+        }
+    }
+
+    /// The next `reply` frame: `(id, result, error)`.
+    pub async fn expect_reply(&mut self) -> (String, Option<Value>, Option<WireError>) {
+        match self.next_skipping_chatter().await {
+            RelayMessage::Reply { id, result, error } => (id, result, error),
+            other => panic!("expected a reply, got {other:?}"),
+        }
+    }
+
+    /// The next `reply`, which must be an error: `(id, error)`.
+    pub async fn expect_refusal(&mut self) -> (String, WireError) {
+        let (id, result, error) = self.expect_reply().await;
+        assert!(result.is_none(), "expected an error, got {result:?}");
+        (id, error.expect("a reply carries a result or an error"))
+    }
+
+    /// Sends `ping` and waits for its `pong`, failing the test if any other frame comes first.
+    pub async fn ping(&mut self) -> String {
+        self.send(&RelayMessage::Ping).await;
+        loop {
+            match self.next().await {
+                RelayMessage::Pong { hub_time } => return hub_time,
+                RelayMessage::Presence { .. } => {}
+                other => panic!("expected pong, got {other:?}"),
             }
         }
     }

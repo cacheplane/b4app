@@ -50,7 +50,7 @@ answer the same generic `404 not_found`.
 | 405 | `method_not_allowed` | request | The route exists but not for that method. |
 | 410 | `resync_required` | request | The pull cursor is older than the retention horizon: the hub has pruned the changes after it. Restore from `GET /v1/snapshot` (see *Horizon*). |
 | 413 | `payload_too_large` | request | A push body over 32 MiB. (A change whose `value` is over 2 MiB is rejected per change instead; see `POST /v1/changes`.) |
-| 429 | `rate_limited` | request | A device opened too many relay links in a minute (the upgrade is refused before it happens), or a user minted an eleventh pairing code in an hour. Always with `details.retryAfterMs`; on the link it is also an `error` frame or a `reply` error. |
+| 429 | `rate_limited` | request | A device opened too many relay links in a minute (the upgrade is refused before it happens), or a user minted an eleventh pairing code in an hour. Always with `details.retryAfterMs`; on the link it is also a `reply` error for a command over its limits (see *Link*, *Commands*). |
 | 500 | `internal_error` | execution | Any unexpected failure; the cause is logged on the hub, never sent. |
 | 503 | `not_ready` | execution | `/readyz`: the database is unreachable or migrations are pending. |
 | 503 | `shutting_down` | execution | `/readyz` after SIGTERM. |
@@ -456,8 +456,8 @@ object key order is not preserved and duplicate keys collapse.
 the Mac, the Mac's replies and live events back, and which Macs are online. The frames are JSON
 text, one message each, with a `type` discriminator; absent optional fields are omitted, never
 `null`. `Tests/Fixtures/sync/relay.json` holds one example of every frame, and both the hub's and
-the Swift clients' test suites decode it. This section describes the link itself; commands,
-watching, and events are described as they are implemented.
+the Swift clients' test suites decode it. This section describes the link itself and commands;
+watching and events are described as they are implemented.
 
 ### Opening a link
 
@@ -489,6 +489,10 @@ frame `link_replaced`, then close code 4000. The replaced device does not go off
 | device to hub | `ping` | none |
 | hub to device | `pong` | `hubTime` |
 | hub to client | `presence` | `hosts: [{ deviceId, name, online, lastSeenAt? }]` |
+| client to hub | `command` | `id`, `method`, `params` |
+| hub to host | `command` | `id`, `method`, `params`, `deadline`, `from: { deviceId, name }` |
+| host to hub | `reply` | `id`, and `result` or `error: { code, message, details? }` |
+| hub to client | `reply` | the same |
 | hub to device | `error` | `code`, `message`, `details?` |
 
 `hello` is the hub's first frame on every link. `hubTime` is the hub's clock, RFC 3339 in UTC with
@@ -498,8 +502,9 @@ no `hello`: it gets an `error` frame `client_too_old` (`details: { minClientProt
 close code 4002.
 
 A frame that is not valid JSON, not a relay message, binary, or not one the device may send gets
-an `error` frame `invalid_request`; the link stays up. (Until commands and the rest are
-implemented, a device may send only `ping`.)
+an `error` frame `invalid_request`; the link stays up. A device may send `ping`; a client may also
+send `command`, and a host `reply`. (A `command` with an unknown method is answered as a command;
+see *Commands*.)
 
 ### Heartbeat
 
@@ -519,6 +524,84 @@ milliseconds; omitted for a Mac never seen). A Mac that is revoked drops out of 
 when it closes, where it is the time of the link's **last received frame**, not the moment the
 hub noticed the drop: a link closed for 30 seconds of silence reports a time 30 seconds in the
 past. It never moves backwards.
+
+### Commands
+
+A client sends `command { id, method, params }`; `id` is the client's own lowercase UUID, and for
+`turn.send` and `thread.start` it is also the turn's `operationId`, so a resend with the same `id`
+is safe. The hub forwards it to the Mac that owns what it names and sends the Mac's `reply` back,
+or answers itself with a `reply` whose `error` is one of the codes below. Every command gets
+exactly one `reply` with its `id`; nothing is stored, and the hub never reads `params` beyond the
+ids it routes by, nor `result` at all.
+
+| `method` | Routed by | to the owner of |
+| --- | --- | --- |
+| `turn.send` | `params.threadId` | the thread |
+| `turn.interrupt` | `params.threadId` | the thread |
+| `turn.lookup` | `params.threadId` | the thread |
+| `request.respond` | `params.requestId` | the runtime request's thread (`"runtimeRequests"."threadId"`) |
+| `thread.start` | `params.projectId` | the project |
+
+The owner is the row's `owner_device_id` on the hub (the device whose push inserted it). The hub
+checks, in this order:
+
+1. **Role and method.** A `command` from a host link, or with a method outside the five, is
+   `not_found` (a host never sends commands; an unknown method answers by the frame's `id`).
+2. **Limits.** A client device may send 60 commands a minute (a sliding window), in bursts of at
+   most 20 (after a burst, one a second). A user's `turn.send` and `thread.start` together are
+   limited to 20 a minute across all of their devices. Over a limit the answer is `rate_limited`
+   with `details.retryAfterMs`. A command refused by the user's limit still counts toward the
+   device's. Limits are in memory and per hub process.
+3. **Lookup.** The row is looked up by id within the caller's org and user. A missing row,
+   another user's or another org's, a missing routing param, and a row whose owner is not a
+   non-revoked `macos` device of the caller's own user all answer `not_found`, the same way.
+4. **Already answered.** `request.respond` for a request whose state on the hub is set and is not
+   `pending` is `stale_runtime_request` at once, without forwarding. (The Mac stays the authority:
+   a request the hub has not yet seen answered is forwarded, and the Mac answers the same code.)
+5. **Delivery.**
+   - **Owner online:** the command is forwarded with `deadline` (the hub's time plus 10 seconds,
+     RFC 3339 in UTC with milliseconds; the Mac drops a command past it and answers
+     `command_expired`) and `from` (the calling device's id and name). If the Mac's link cannot
+     take it (it dropped meanwhile, or its queue is full) the answer is `device_offline`.
+   - **Owner offline, `turn.send`, `thread.start`, or `turn.lookup`:** `device_offline` at once,
+     with `details: { deviceId, deviceName, lastSeenAt }` (`lastSeenAt` omitted for a Mac never
+     seen). These are never held.
+   - **Owner offline, `turn.interrupt` or `request.respond`:** if the Mac was last heard from less
+     than 60 seconds ago, the command is held in memory until the Mac links again, and then
+     forwarded (after its `hello`) with a fresh deadline; if `lastSeenAt + 60 s` passes first, the
+     answer is `device_offline`. A Mac last seen longer ago gets `device_offline` at once. At most
+     32 commands are held for one Mac; beyond that, `device_offline` at once.
+6. **Reply wait.** The hub waits 30 seconds for the Mac's `reply` to `turn.send` and
+   `thread.start`, 15 seconds for the others (counted from when it was forwarded), then answers
+   `relay_timeout`. A `reply` that arrives later, or for an `id` nothing waits for, is dropped.
+
+**In flight.** A command is in flight from when it passes the limits until it is answered, keyed by
+the calling *device* and the `id`. A second command with the same key while the first is in flight
+attaches to it: it is not forwarded again, and the device gets one `reply`. The answer goes to the
+calling device's link as it is when the answer is ready, so a phone that links again mid-command
+gets the reply on its new link; a device with no link then misses it (the phone settles a send
+with `turn.lookup`). The map lives in memory: after a hub restart, a resend of the same `id` is
+forwarded to the Mac again, and the Mac recognises it.
+
+**A thread just started.** When the hub forwards `thread.start`, it remembers for 5 minutes that
+`params.threadId` belongs to that Mac, for that user, and consults this before the thread lookup.
+So `turn.send` (and `turn.interrupt`, `turn.lookup`) reach the new thread before the Mac's next
+push brings its row. Another user's command for that thread id is still `not_found`.
+
+A host answers each forwarded command once with `reply { id, result }` or
+`reply { id, error }`; the hub passes the Mac's own error codes (`stale_runtime_request`,
+`command_expired`, `protocol_invalid`, ...) through unchanged. A `reply` from a client is
+`invalid_request`. The hub logs each command's method, outcome, and latency, and limit hits; never
+its params, its result, or a token.
+
+| Hub-made answer | When |
+| --- | --- |
+| `not_found` | role, method, lookup, or owner check failed (steps 1 and 3) |
+| `rate_limited` | a limit (step 2); `details.retryAfterMs` |
+| `stale_runtime_request` | step 4 |
+| `device_offline` | step 5; `details: { deviceId, deviceName, lastSeenAt? }` |
+| `relay_timeout` | step 6 |
+| `internal_error` | the hub could not read the database to route the command |
 
 ### Close codes
 

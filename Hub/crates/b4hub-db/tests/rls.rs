@@ -129,3 +129,106 @@ async fn owner_role_with_row_security_off_errors_instead_of_filtering(pool: PgPo
     // query would be affected by row-level security policy
     assert_eq!(sqlstate(&error).as_deref(), Some("42501"), "{error}");
 }
+
+/// Seeds, as the owner, a thread, a runtime request on it, and a project, all owned by `owner`
+/// and belonging to `who`.
+async fn seed_owned_rows(
+    admin: &b4hub_db::Db,
+    who: &b4hub_db::devices::AuthedDevice,
+    owner: sqlx::types::Uuid,
+) {
+    for statement in [
+        "INSERT INTO \"threads\" (\"id\", org_id, user_id, device_id, owner_device_id) \
+         VALUES ('thread-1', $1, $2, $3, $3)",
+        "INSERT INTO \"runtimeRequests\" (\"id\", \"threadId\", \"state\", org_id, user_id, \
+         device_id, owner_device_id) VALUES ('request-1', 'thread-1', 'pending', $1, $2, $3, $3)",
+        "INSERT INTO \"projects\" (\"id\", org_id, user_id, device_id, owner_device_id) \
+         VALUES ('project-1', $1, $2, $3, $3)",
+    ] {
+        sqlx::query(statement)
+            .bind(who.org_id)
+            .bind(who.user_id)
+            .bind(owner)
+            .execute(&admin.pool)
+            .await
+            .unwrap();
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn relay_lookups_respect_rls(pool: PgPool) {
+    use b4hub_db::relay::{owner_device, owner_of_project, owner_of_request, owner_of_thread};
+
+    let (admin, app) = common::migrated(&pool).await;
+    let mac = common::enrolled_in(&admin, &app, "cacheplane", "blove").await;
+    let stranger = common::enrolled_in(&admin, &app, "elsewhere", "eve").await;
+    seed_owned_rows(&admin, &mac, mac.device_id).await;
+
+    // As `b4hub_app`, in the right tenant, each lookup finds the Mac.
+    let found = owner_of_thread(&app, mac.org_id, mac.user_id, "thread-1")
+        .await
+        .unwrap()
+        .expect("the user's own thread");
+    assert_eq!(
+        (found.device_id, found.platform.as_str(), found.revoked),
+        (mac.device_id, "macos", false)
+    );
+    let request = owner_of_request(&app, mac.org_id, mac.user_id, "request-1")
+        .await
+        .unwrap()
+        .expect("the user's own request");
+    assert_eq!(request.owner.device_id, mac.device_id);
+    assert_eq!(request.state.as_deref(), Some("pending"));
+    assert!(owner_of_project(&app, mac.org_id, mac.user_id, "project-1")
+        .await
+        .unwrap()
+        .is_some());
+    assert!(owner_device(&app, mac.org_id, mac.user_id, mac.device_id)
+        .await
+        .unwrap()
+        .is_some());
+
+    // With another org's id, nothing: not the rows, and not the device.
+    let other = stranger.org_id;
+    assert!(owner_of_thread(&app, other, mac.user_id, "thread-1")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(owner_of_request(&app, other, mac.user_id, "request-1")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(owner_of_project(&app, other, mac.user_id, "project-1")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(owner_device(&app, other, mac.user_id, mac.device_id)
+        .await
+        .unwrap()
+        .is_none());
+    // Another user's id in the right org: nothing either.
+    let colleague = common::enrolled(&admin, &app, "colleague").await;
+    assert!(
+        owner_of_thread(&app, mac.org_id, colleague.user_id, "thread-1")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // A row of this org whose owner is a device of another org (the foreign key does not stop it):
+    // the lookup keeps to the org and row-level security hides that device anyway, so the answer
+    // is nothing, never another tenant's device.
+    sqlx::query("UPDATE \"threads\" SET owner_device_id = $1 WHERE \"id\" = 'thread-1'")
+        .bind(stranger.device_id)
+        .execute(&admin.pool)
+        .await
+        .unwrap();
+    assert!(owner_of_thread(&app, mac.org_id, mac.user_id, "thread-1")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(owner_of_request(&app, mac.org_id, mac.user_id, "request-1")
+        .await
+        .unwrap()
+        .is_none());
+}
