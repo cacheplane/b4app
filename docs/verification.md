@@ -2,7 +2,7 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
-## 2026-11-02: Sign-in polish from the live gate (D-131, D-132)
+## 2026-11-02: Sign-in polish from the live gate (D-132, D-133)
 
 Branch `blove/sign-in-polish`, from main at `b5c0f5b`. Fixes the five minor findings of the sign-in live gate (below): the profile button's name, the added passkey's name, the local flavour's "New here?" line, the enrollment sheet's flash after Pair, and the old LaunchAgent left loaded by adoption. No hub, wire, or fixture change.
 
@@ -14,6 +14,19 @@ Branch `blove/sign-in-polish`, from main at `b5c0f5b`. Fixes the five minor find
 | iPhone app | `xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO` | `** BUILD SUCCEEDED **` (`EnrollView` is compiled only here) |
 
 Not run live: the passkey rename in Passwords, the enrollment sheet's dismissal on a device or Simulator, and the boot-out on a fresh adoption (the owner's install is already adopted). A new account starting with no connections is expected (connections are per account, D-065); recorded in `docs/milestones.md`.
+
+## 2026-11-02: The iPhone's thread list toolbar (D-131)
+
+Run in the iPhone 17 Pro Simulator (local flavour, Debug, this branch) against the owner's Local app and Compose hub.
+
+- **The layout:** the list opens under a large "Threads" title, with the filter and compose buttons at the top right and the search field at the bottom (iOS 26's placement). The first thread is where the New thread row used to be.
+- **Search:** "b4run" narrowed the list to the three b4run threads, matching regardless of case. Clearing it brought back all seven. The field no longer capitalises what is typed.
+- **The filter button:** it opened the project and connection filters. Choosing "B4 Run (Mac)" retitled the list to that project, filled the filter icon, and showed its four threads. "All projects" restored "Threads".
+- **Compose:** it opened New thread.
+- **Gates:**
+  - `swift format lint --strict` is clean.
+  - `swift test --filter WorkspaceUITests` passed 273 tests, including `ListSearchTests.theListSearchMatchesShownTitles`, which failed first.
+  - Both `xcodebuild` builds (iOS Simulator, macOS) succeeded.
 
 ## 2026-11-02: Live deletes in each runtime, the Mac's Delete menu, and pairing the Simulator by link
 

@@ -180,7 +180,7 @@ extension WorkspaceModel {
   /// goes to the coordinator once. A closed sheet shows nothing; a passkey the hub refused is reported
   /// unknown to the password manager, as at sign-up. A passkey the hub kept takes the account's name
   /// in the password manager, in place of the hub's placeholder, as the sign-up passkey does after
-  /// onboarding (D-105, D-131).
+  /// onboarding (D-105, D-132).
   public func addPasskey(using ceremony: any PasskeyCeremony) async {
     guard !accountSettingsBusy else { return }
     accountSettingsBusy = true
