@@ -5,7 +5,7 @@ import WorkspaceProtocol
 /// The packaged app's LaunchAgent (M6, D-038). `SMAppService` registers it from the app; both the
 /// app and the CLI use `launchctl` to restart or query it, since the framework has no start call.
 public enum LaunchAgentControl {
-  public static let label = "com.cacheplane.b4app.coordinator"
+  public static let label = "com.cacheplane.b4app\(Flavor.current.idSuffix).coordinator"
   public static let plistName = "\(label).plist"
 
   public static var domain: String { "gui/\(getuid())" }

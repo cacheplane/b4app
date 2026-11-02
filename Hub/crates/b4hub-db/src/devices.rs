@@ -9,11 +9,11 @@
 use std::fmt;
 use std::time::Duration;
 
-use b4hub_core::ids::new_uuid;
-use b4hub_core::tokens::{hash_code, hash_token, new_code, new_token};
+use b4hub_core::tokens::{hash_code, hash_token, new_code};
 use sqlx::types::Uuid;
 use sqlx::{Postgres, Transaction};
 
+use crate::accounts::{self, DeviceSpec, Principal};
 use crate::tenant::set_tenant;
 use crate::{Db, Error, Result};
 
@@ -93,6 +93,9 @@ pub struct DeviceInfo {
     pub org_name: String,
     pub username: String,
     pub display_name: String,
+    /// The full name the user gave at onboarding; `None` until then.
+    pub full_name: Option<String>,
+    pub onboarded: bool,
 }
 
 /// One of a user's devices as `GET /v1/devices` lists it. Timestamps are RFC 3339 in UTC with
@@ -213,54 +216,80 @@ pub async fn create_pairing_code(
 /// that is unknown, expired, or already used is [`Error::InvalidCode`]; nothing is changed then.
 /// `platform` must be one the `devices` table accepts.
 pub async fn redeem(db: &Db, code: &str, name: &str, platform: &str) -> Result<Enrolled> {
-    let mut tx = db.untenanted_tx().await?;
+    let platform = Platform::parse(platform)
+        .ok_or_else(|| sqlx::Error::Decode("unknown device platform".into()))?;
+    let device = DeviceSpec {
+        name: name.to_string(),
+        platform,
+    };
+    redeem_reusing(db, code, &device, &[], None).await
+}
 
+/// Redeems `code` for `device`, reusing a device the client already has: the first of
+/// `candidates` that is an unrevoked device of the code's user on `device`'s platform is renamed
+/// and its earlier tokens are deleted (the rule sign-in follows, [`accounts::issue_session`]),
+/// otherwise a new device is made. Candidates are only ever matched against the code's own user.
+///
+/// With `merge_from`, the phone signed in to the phone-only account `from` is paired: in the same
+/// transaction the code is claimed, `from` is merged into the code's account
+/// ([`accounts::merge_phone_only`]: its identities move, its devices, tokens, user, and org are
+/// deleted), and the device is enrolled. Any failure rolls all of it back:
+/// [`Error::InvalidCode`] for the code, [`Error::MergeRefused`] for an account that cannot be
+/// merged (one that has had a Mac, a shared org's member, or the code's own account).
+pub async fn redeem_reusing(
+    db: &Db,
+    code: &str,
+    device: &DeviceSpec,
+    candidates: &[Uuid],
+    merge_from: Option<Principal>,
+) -> Result<Enrolled> {
+    let mut tx = db.untenanted_tx().await?;
+    let enrolled = redeem_in(&mut tx, code, device, candidates, merge_from).await?;
+    tx.commit().await?;
+    Ok(enrolled)
+}
+
+async fn redeem_in(
+    tx: &mut Transaction<'_, Postgres>,
+    code: &str,
+    device: &DeviceSpec,
+    candidates: &[Uuid],
+    merge_from: Option<Principal>,
+) -> Result<Enrolled> {
     // A single conditional UPDATE is the whole single-use guarantee: of two concurrent
     // redemptions the second waits on the row lock, then finds `used_at` set and matches nothing.
+    // A pairing code (one a Mac minted, `created_by_device_id` set) pairs a phone and nothing else:
+    // redeemed as any other platform it matches nothing and stays usable, so its holder cannot
+    // take over the Mac's own device through `candidateDeviceIds`.
     let claimed: Option<(Uuid, Uuid)> = sqlx::query_as(
         "UPDATE enrollment_codes SET used_at = now() \
          WHERE code_hash = $1 AND used_at IS NULL AND expires_at > now() \
+           AND (created_by_device_id IS NULL OR $2 = 'ios') \
          RETURNING org_id, user_id",
     )
     .bind(&hash_code(code)[..])
-    .fetch_optional(&mut *tx)
+    .bind(device.platform.as_str())
+    .fetch_optional(&mut **tx)
     .await?;
     let Some((org_id, user_id)) = claimed else {
         return Err(Error::InvalidCode);
     };
+    let principal = Principal { org_id, user_id };
+    if let Some(from) = merge_from {
+        accounts::merge_in(tx, from, principal).await?;
+    }
 
-    set_tenant(&mut tx, org_id).await?;
-    let device_id = new_uuid();
-    sqlx::query(
-        "INSERT INTO devices (id, org_id, user_id, name, platform) VALUES ($1, $2, $3, $4, $5)",
-    )
-    .bind(device_id)
-    .bind(org_id)
-    .bind(user_id)
-    .bind(name)
-    .bind(platform)
-    .execute(&mut *tx)
-    .await?;
-    let token = new_token();
-    sqlx::query(
-        "INSERT INTO device_tokens (id, org_id, device_id, token_hash) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(new_uuid())
-    .bind(org_id)
-    .bind(device_id)
-    .bind(&hash_token(&token)[..])
-    .execute(&mut *tx)
-    .await?;
-    let info = describe(&mut tx, device_id)
+    set_tenant(tx, org_id).await?;
+    let session = accounts::create_session(tx, principal, device, candidates).await?;
+    let info = describe(tx, session.device_id)
         .await?
         .ok_or(Error::InvalidCode)?;
-    tx.commit().await?;
 
     Ok(Enrolled {
         org_id,
         user_id,
-        device_id,
-        token,
+        device_id: session.device_id,
+        token: session.token,
         org_slug: info.org_slug,
         org_name: info.org_name,
         username: info.username,
@@ -355,6 +384,16 @@ pub async fn revoke_self(db: &Db, org_id: Uuid, device_id: Uuid) -> Result<()> {
     Ok(())
 }
 
+/// Ends the session `token` is: deletes that one token row and nothing else, so the device stays
+/// enrolled and unrevoked and a later sign-in can reuse it. Idempotent.
+pub async fn end_session(db: &Db, token: &str) -> Result<()> {
+    sqlx::query("DELETE FROM device_tokens WHERE token_hash = $1")
+        .bind(&hash_token(token)[..])
+        .execute(&db.pool)
+        .await?;
+    Ok(())
+}
+
 /// Records that the device was just seen. Callers throttle this (the service writes it at most
 /// once a minute per device); this function always writes.
 pub async fn touch_last_seen(db: &Db, org_id: Uuid, device_id: Uuid) -> Result<()> {
@@ -377,7 +416,8 @@ async fn describe(
         "SELECT d.id AS device_id, d.name AS device_name, d.platform, \
                 to_char(d.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') \
                     AS created_at, \
-                o.slug AS org_slug, o.name AS org_name, u.username, u.display_name \
+                o.slug AS org_slug, o.name AS org_name, u.username, u.display_name, \
+                u.full_name, u.onboarded_at IS NOT NULL AS onboarded \
          FROM devices d \
          JOIN users u ON u.id = d.user_id \
          JOIN orgs o ON o.id = d.org_id \

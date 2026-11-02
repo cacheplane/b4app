@@ -11,6 +11,8 @@ use std::time::{Duration, SystemTime};
 
 use b4hub::relay::{close_code, rfc3339_millis};
 use b4hub_core::relay::{RelayMessage, RelayMethod, Role};
+use b4hub_db::accounts::{self, DeviceSpec, Identity, Principal};
+use b4hub_db::devices::{self, Platform};
 use serde_json::{json, Value};
 use sqlx::types::Uuid;
 use sqlx::PgPool;
@@ -341,6 +343,103 @@ async fn last_seen_is_the_last_frame_heard_after_a_dead_link_close(pool: PgPool)
         "last_seen_at {seen} should be about {} (t = 5), not t = 35",
         opened + 5.0
     );
+}
+
+/// A personal account made by signing up with a passkey from a device of `first` (a Mac, or a
+/// phone for a phone-only account), as the sign-in routes make one, plus a phone signed in to it;
+/// answers the account and both tokens.
+async fn personal_account(
+    hub: &Hub,
+    credential: &[u8],
+    first: Platform,
+) -> (Principal, String, String) {
+    let created = accounts::create_personal(
+        &hub.state.db,
+        Identity::Passkey {
+            credential_id: credential.to_vec(),
+            passkey_json: json!({"cred": {"cred_id": credential}}),
+            user_handle: b"handle".to_vec(),
+            name: "iCloud Keychain".into(),
+        },
+        DeviceSpec {
+            name: "First".into(),
+            platform: first,
+        },
+    )
+    .await
+    .unwrap();
+    let principal = Principal {
+        org_id: created.org_id,
+        user_id: created.user_id,
+    };
+    let phone = accounts::issue_session(
+        &hub.state.db,
+        principal,
+        DeviceSpec {
+            name: "iPhone".into(),
+            platform: Platform::Ios,
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    (principal, created.token, phone.token)
+}
+
+#[sqlx::test(migrations = false)]
+async fn deleting_the_account_closes_its_links(pool: PgPool) {
+    let hub = spawn_hub(&pool).await;
+    let (_, mac_token, phone_token) = personal_account(&hub, b"doomed", Platform::Macos).await;
+    let bystander = hub.user("cacheplane", "blove").await;
+    let (other_token, other_id) = hub.enroll(&bystander, "macos", "Other Mac").await;
+    let (mut mac, _) = FakeDevice::ready(hub.addr, &mac_token).await;
+    let (mut phone, _) = FakeDevice::ready(hub.addr, &phone_token).await;
+    let (mut other, _) = FakeDevice::ready(hub.addr, &other_token).await;
+
+    let (status, body) = hub.http("DELETE", "/v1/me", Some(&mac_token)).await;
+    assert_eq!(status, 204, "{body}");
+    // Both of the account's links end at once, as revoked, not at their next heartbeat.
+    assert_eq!(mac.expect_close().await, close_code::REVOKED);
+    assert_eq!(phone.expect_close().await, close_code::REVOKED);
+    // Another user's link stays up.
+    other.expect_no_frame(Duration::from_millis(300)).await;
+    assert!(hub.state.relay.online(other_id));
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_phone_merge_closes_the_merged_accounts_links(pool: PgPool) {
+    let hub = spawn_hub(&pool).await;
+    let (from, first_token, phone_token) =
+        personal_account(&hub, b"phone-only", Platform::Ios).await;
+    let blove = hub.user("cacheplane", "blove").await;
+    let (mac_token, mac_id) = hub.enroll(&blove, "macos", "Mac").await;
+    let (mut old_phone, _) = FakeDevice::ready(hub.addr, &phone_token).await;
+    let (mut other_phone, _) = FakeDevice::ready(hub.addr, &first_token).await;
+    let (mut mac, _) = FakeDevice::ready(hub.addr, &mac_token).await;
+    let code = devices::create_enrollment_code(
+        &hub.admin,
+        blove.org_id,
+        blove.user_id,
+        Duration::from_secs(600),
+    )
+    .await
+    .unwrap();
+
+    let (status, body) = hub
+        .http_with(
+            "POST",
+            "/v1/enroll",
+            Some(&phone_token),
+            Some(&json!({"code": code, "deviceName": "iPhone", "platform": "ios"})),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(old_phone.expect_close().await, close_code::REVOKED);
+    assert_eq!(other_phone.expect_close().await, close_code::REVOKED);
+    // The account it merged into keeps its links.
+    assert!(hub.state.relay.online(mac_id));
+    assert!(!hub.state.relay.users().contains(&from.user_id));
+    mac.expect_no_frame(Duration::from_millis(300)).await;
 }
 
 #[sqlx::test(migrations = false)]

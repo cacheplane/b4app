@@ -223,3 +223,37 @@ struct HostNotice: View {
     .accessibilityIdentifier("host-notice")
   }
 }
+
+/// The account's notice ("The last sign-out could not reach the hub; that session was left open
+/// there."): `HostNotice`'s persistent line, with a close button, since it stays until dismissed.
+struct AccountNoticeBanner: View {
+  let text: String
+  let dismiss: () -> Void
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: LLA.Space.s) {
+      Circle().fill(LLA.Color.danger).frame(width: 8, height: 8).accessibilityHidden(true)
+      Text(text)
+        .font(LLAFont.small)
+        .foregroundStyle(LLA.Color.ink)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      Button(action: dismiss) {
+        Image(systemName: "xmark")
+          .font(LLAFont.caption)
+          .foregroundStyle(LLA.Color.muted)
+          .frame(minWidth: LLA.Metrics.row, minHeight: LLA.Metrics.row)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Dismiss")
+      .accessibilityIdentifier("account-notice.dismiss")
+    }
+    .padding(.horizontal, LLA.Metrics.margin)
+    .padding(.vertical, LLA.Space.s)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(LLA.Color.surfaceRaised)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("account-notice")
+  }
+}

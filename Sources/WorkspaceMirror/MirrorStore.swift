@@ -14,10 +14,22 @@ public struct MirrorLink: Codable, Sendable, Equatable {
   public var username: String
   public var lastSyncAt: String?
   public var lastError: String?
+  // Signing in (sign-in plan, Task 14). Optional, so a link stored before them still decodes.
+  /// The hub user's id, from the sign-in.
+  public var userId: String?
+  /// The user's display name and the org's name, as the profile button and the sign-in screen say them.
+  public var displayName: String?
+  public var orgName: String?
+  /// Signed up, not named yet: the phone shows onboarding until `PUT /v1/me/profile`.
+  public var needsOnboarding: Bool?
+  /// The flavour of the build that wrote the link (`PhoneFlavor`'s raw value). Every link written since
+  /// the flavoured storage sets it; nil marks one from before, which may be another flavour's.
+  public var flavor: String?
 
   public init(
     hubURL: String, deviceId: String, deviceName: String, tokenRef: String, orgSlug: String, username: String,
-    lastSyncAt: String? = nil, lastError: String? = nil
+    lastSyncAt: String? = nil, lastError: String? = nil, userId: String? = nil, displayName: String? = nil,
+    orgName: String? = nil, needsOnboarding: Bool? = nil, flavor: String? = nil
   ) {
     self.hubURL = hubURL
     self.deviceId = deviceId
@@ -27,6 +39,11 @@ public struct MirrorLink: Codable, Sendable, Equatable {
     self.username = username
     self.lastSyncAt = lastSyncAt
     self.lastError = lastError
+    self.userId = userId
+    self.displayName = displayName
+    self.orgName = orgName
+    self.needsOnboarding = needsOnboarding
+    self.flavor = flavor
   }
 }
 

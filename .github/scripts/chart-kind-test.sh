@@ -106,6 +106,14 @@ run() {
   : "${IMAGE_REPOSITORY:?}" "${IMAGE_TAG:?}" "${CNPG_CHART_VERSION:?}" "${CURL_IMAGE:?}"
   local values="$CHART_DIR/ci/kind-values.yaml"
   local image_args=(--set "image.repository=$IMAGE_REPOSITORY" --set "image.tag=$IMAGE_TAG")
+  # The hub's secret key, generated into a private file and handed over with --set-file, so it is
+  # never on a command line. The same key on install and upgrade: a new one would make sealed
+  # rows unreadable.
+  local key_dir
+  key_dir="$(mktemp -d)"
+  chmod 700 "$key_dir"
+  openssl rand -base64 32 | tr -d '\n' > "$key_dir/secret_key"
+  image_args+=(--set-file "secrets.values.secretKey=$key_dir/secret_key")
   if [ -n "${IMAGE_PULL_SECRET:-}" ]; then
     image_args+=(--set "imagePullSecrets[0].name=$IMAGE_PULL_SECRET")
   fi
@@ -156,6 +164,13 @@ run() {
     || fail "the migration did not provision b4hub_app"
   kubectl -n "$NS" rollout status "deployment/$FULLNAME" --timeout=120s
   assert_ready
+  local env_names
+  env_names="$(kubectl -n "$NS" get deployment "$FULLNAME" \
+    -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}{"\n"}{end}')"
+  grep -qx B4HUB_SECRET_KEY_FILE <<<"$env_names" || fail "the hub does not read B4HUB_SECRET_KEY_FILE"
+  if grep -qx B4HUB_SECRET_KEY <<<"$env_names"; then
+    fail "the hub has B4HUB_SECRET_KEY in its environment"
+  fi
   local before
   before="$(deployment_revision)"
   endgroup

@@ -15,7 +15,7 @@ Edit `.env`: set `B4HUB_VERSION` (a released tag or `sha-<commit>`), `B4HUB_PUBL
 
 ## Secrets
 
-Secrets are files, not environment variables. Generate two passwords and write the three files; the two URLs must carry the passwords below, and the app password is the one `migrate` gives the `b4hub_app` role.
+Secrets are files, not environment variables. Generate two passwords and write the three database files, plus the hub's secret key (32 random bytes, base64; it encrypts what the hub keeps sealed, such as Apple refresh tokens, so keep a copy: a new key makes those unreadable); the two URLs must carry the passwords below, and the app password is the one `migrate` gives the `b4hub_app` role.
 
 ```bash
 mkdir -p secrets && chmod 700 secrets
@@ -23,10 +23,11 @@ pg="$(openssl rand -hex 24)"; app="$(openssl rand -hex 24)"
 printf '%s' "$pg" > secrets/postgres_password
 printf 'postgres://postgres:%s@db:5432/b4hub' "$pg" > secrets/database_admin_url
 printf 'postgres://b4hub_app:%s@db:5432/b4hub' "$app" > secrets/database_url
+openssl rand -base64 32 | tr -d '\n' > secrets/secret_key
 chmod 644 secrets/*
 ```
 
-The directory is private to your user; the files are world-readable only so the containers (other uids) can read them. `secrets/*` is git-ignored. Only `migrate` mounts the admin URL; `hub` never sees it. The passwords are fixed once the database is first created: changing `postgres_password` later does not change the existing database's password.
+The directory is private to your user; the files are world-readable only so the containers (other uids) can read them. `secrets/*` is git-ignored. Only `migrate` mounts the admin URL; `hub` never sees it. Only `hub` mounts `secret_key` (as `B4HUB_SECRET_KEY_FILE`). The passwords are fixed once the database is first created: changing `postgres_password` later does not change the existing database's password.
 
 ## First run
 

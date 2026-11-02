@@ -1,6 +1,8 @@
 //! `POST /v1/changes` and the long-poll `GET /v1/changes` against a real PostgreSQL. Run with
 //! `source <(../scripts/test-db.sh)` first; `#[sqlx::test]` creates one database per test.
 
+mod common;
+
 use std::time::{Duration, Instant};
 
 use axum::body::{to_bytes, Body};
@@ -48,7 +50,7 @@ async fn migrated(pool: &PgPool) -> (Db, AppState) {
         .unwrap();
     let admin = Db::connect(&admin_url(pool)).await.unwrap();
     let app = Db::connect(&app_url(pool)).await.unwrap();
-    (admin, AppState::new(app))
+    (admin, common::state(app))
 }
 
 /// Seeds `username` in the org `cacheplane`, enrolls a device for them, and returns its token.

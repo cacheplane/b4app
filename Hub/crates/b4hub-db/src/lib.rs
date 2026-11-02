@@ -1,10 +1,13 @@
 //! PostgreSQL access for the hub: the pool, migrations, and the queries behind the CLI commands.
 
+use std::str::FromStr;
 use std::time::Duration;
 
-use sqlx::postgres::PgPoolOptions;
-use sqlx::PgPool;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::{ConnectOptions, PgPool};
 
+pub mod accounts;
+pub mod ceremonies;
 pub mod changes;
 pub mod devices;
 pub mod instances;
@@ -38,6 +41,51 @@ pub enum Error {
     RateLimited { retry_after: std::time::Duration },
     #[error("the b4hub_app role has SUPERUSER or BYPASSRLS; refusing to continue")]
     PrivilegedRole,
+    /// A ceremony or handoff that is unknown, expired, already used, of another kind, or (for a
+    /// handoff) presented with the wrong verifier; the cases are indistinguishable.
+    #[error("the sign-in expired or was already used")]
+    CeremonyExpired,
+    /// Removing the identity would leave the user unable to sign in.
+    #[error("the last identity of an account cannot be removed")]
+    LastIdentity,
+    /// The account to merge away has (or had) a Mac, is not a personal account, or is the
+    /// account it would merge into; the reason, when it is one of those (`None` when its user row
+    /// is gone).
+    #[error("this account cannot be merged into another")]
+    MergeRefused(Option<MergeRefusal>),
+    /// The Apple ID or passkey already belongs to an account (its `apple_sub` or `credential_id`
+    /// is taken), so nothing was created or added.
+    #[error("that sign-in method already belongs to an account")]
+    IdentityTaken,
+    /// The account already has an Apple ID; one is all an account may link.
+    #[error("the account already has an Apple ID")]
+    AppleLinked,
+    /// Deleting a user is only implemented for the owner of a personal org.
+    #[error("the account belongs to a shared org")]
+    SharedOrg,
+}
+
+/// Why [`Error::MergeRefused`] refused, as `merge_refused`'s `details.reason` names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeRefusal {
+    /// The code's org is the caller's own: the phone is already in it (another user of the same
+    /// org counts too).
+    SameAccount,
+    /// The caller's account has, or ever had, a `macos` device.
+    HasMac,
+    /// The caller is not the owner of a personal org (a member of a shared one).
+    SharedOrg,
+}
+
+impl MergeRefusal {
+    /// The wire value: `same_account`, `has_mac`, or `shared_org`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MergeRefusal::SameAccount => "same_account",
+            MergeRefusal::HasMac => "has_mac",
+            MergeRefusal::SharedOrg => "shared_org",
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -50,11 +98,15 @@ pub struct Db {
 }
 
 impl Db {
+    /// Connects to `url`, with sqlx's statement logging (every statement at DEBUG, slow ones at
+    /// WARN) switched off, so SQL never reaches the hub's log whatever `B4HUB_LOG` allows. TLS
+    /// settings (`sslmode`, `sslrootcert`) still come from the URL.
     pub async fn connect(url: &str) -> Result<Db> {
+        let options = PgConnectOptions::from_str(url)?.disable_statement_logging();
         let pool = PgPoolOptions::new()
             .max_connections(10)
             .acquire_timeout(Duration::from_secs(5))
-            .connect(url)
+            .connect_with(options)
             .await?;
         Ok(Db { pool })
     }

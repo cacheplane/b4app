@@ -16,7 +16,8 @@ enum Exit {
     switch error.code {
     case .notImplemented: return notImplemented
     case .endpointUnavailable, .missingExecutable: return unavailable
-    case .protocolInvalid, .methodUnknown: return invalid
+    // Nobody is signed in: every store command (threads, turns, servers, the hub) says so and exits 4.
+    case .protocolInvalid, .methodUnknown, .signedOut: return invalid
     default: return failure
     }
   }
@@ -56,6 +57,7 @@ struct AgentWorkspace: AsyncParsableCommand {
     subcommands: [
       Doctor.self, ConnectionCommand.self, ThreadCommand.self, TurnCommand.self, RequestCommand.self,
       Server.self, Credential.self, CoordinatorCommand.self, DatabaseCommand.self, HubCommand.self,
+      AccountCommand.self,
     ])
 }
 

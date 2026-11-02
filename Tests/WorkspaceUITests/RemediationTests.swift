@@ -79,11 +79,11 @@ import WorkspaceProtocol
   @Test func pagesHaveTheirTitlesAndSymbols() {
     #expect(
       SettingsPage.allCases.map(\.title) == [
-        "Connections", "B4 projects", "Remote access", "Diagnostics",
+        "Account", "Connections", "B4 projects", "Remote access", "Diagnostics",
       ])
     #expect(
       SettingsPage.allCases.map(\.systemImage) == [
-        "link", "server.rack", "iphone", "waveform.path.ecg",
+        "person.crop.circle", "link", "server.rack", "iphone", "waveform.path.ecg",
       ])
   }
 }
