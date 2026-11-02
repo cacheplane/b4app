@@ -186,6 +186,24 @@ extension Harness {
     await restarted.stop()
   }
 
+  /// The wait counts from when the try failed, not from when the sweep began: a slow failure (a request
+  /// that hangs until its timeout) is not due again the moment it ends.
+  @Test func aRetryWaitsFromTheFailedTry() async throws {
+    let server = try await FakeB4.start()
+    let calls = RuntimeCalls()
+    let h = try await Harness.start(adapterFactory: recording(calls))
+    let b4 = try await h.addB4(server).connection
+    let thread = try await h.newB4Thread(b4)
+    await server.stop()
+    _ = try h.coordinator.database.markThreadDeleted(id: thread.id, at: Timestamp.now())
+    // A sweep that began an hour before its try failed.
+    await h.coordinator.sessions.sweepThreadDeletes(now: Date().addingTimeInterval(-3600))
+    #expect(await calls.deletes.count == 1)
+    await h.coordinator.sessions.sweepThreadDeletes(now: Date())
+    #expect(await calls.deletes.count == 1)
+    await h.stop()
+  }
+
   @Test func anUnsupportedRuntimeIsFinal() async throws {
     let server = try await FakeB4.start(environment: ["FAKE_B4_NO_DELETE": "1"])
     let calls = RuntimeCalls()

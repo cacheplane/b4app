@@ -106,11 +106,13 @@ extension SessionService {
         }
       } catch {
         let attempts = try db.threadDeleteAttempts(threadId: thread.id)
+        // Counted from when this try failed (a request can hang until its timeout), or from the sweep's
+        // clock when that is later.
         let wait = min(30 * pow(2, Double(attempts)), Self.threadDeleteBackoffCap)
         try db.recordThreadDelete(
           threadId: thread.id, outcome: .waiting,
           error: LogRedactor.redact(WorkspaceError.from(error).message),
-          nextAttemptAt: Timestamp.string(from: now.addingTimeInterval(wait)))
+          nextAttemptAt: Timestamp.string(from: max(now, Date()).addingTimeInterval(wait)))
         return
       }
       try db.recordThreadDelete(threadId: thread.id, outcome: outcome, error: nil, nextAttemptAt: nil)
