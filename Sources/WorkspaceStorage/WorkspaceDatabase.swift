@@ -333,7 +333,7 @@ public final class WorkspaceDatabase: Sendable {
   /// `createdAt`, ties by greatest `id`), the count of pending runtime requests, and the newest of the
   /// thread's `createdAt` and its latest turn's and latest request's `updatedAt`. Timestamps are ISO-8601
   /// text, compared bytewise (`COLLATE "C"`). Callers append a WHERE clause on `t`.
-  private static let threadWithActivity = """
+  static let threadWithActivity = """
     SELECT t.*, jsonb_build_object(
       'latestTurnId', lt."id",
       'latestTurnStatus', lt."status",
@@ -355,7 +355,8 @@ public final class WorkspaceDatabase: Sendable {
 
   public func listThreads(_ filter: ThreadFilter = ThreadFilter()) throws -> [ConversationThread] {
     try read { c in
-      var clauses: [String] = []
+      // A deleted thread is never listed, archived or not; `thread(id:)` still finds it.
+      var clauses: [String] = ["t.\"userDeletedAt\" IS NULL"]
       var params: [String?] = []
       if let connectionId = filter.connectionId {
         params.append(connectionId)
