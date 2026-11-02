@@ -31,11 +31,14 @@ import os
     public var endSessionTimeout: Duration
     /// The sync's first wait after a failure.
     public var syncBackoff: Duration
+    /// This build's flavour, recorded on every link it writes (`MirrorLink.flavor`).
+    public var flavor: PhoneFlavor
 
     public init(
       hubURL: URL, deviceName: String, endSessionTimeout: Duration = MirrorLogOut.standardTimeout,
-      syncBackoff: Duration = .seconds(2)
+      syncBackoff: Duration = .seconds(2), flavor: PhoneFlavor = .local
     ) {
+      self.flavor = flavor
       self.hubURL = hubURL
       self.deviceName = deviceName
       self.endSessionTimeout = endSessionTimeout
@@ -262,7 +265,7 @@ import os
       tokenRef: ref.rawValue, orgSlug: session.org.slug, username: session.user.username,
       userId: session.userId,
       displayName: session.user.displayName, orgName: session.org.name,
-      needsOnboarding: session.needsOnboarding)
+      needsOnboarding: session.needsOnboarding, flavor: configuration.flavor.rawValue)
     do {
       try await secrets.put(ref, value: session.token)
       try store.saveLink(link)
@@ -437,11 +440,17 @@ extension MirrorAccount {
   /// answers its token's reference for the caller to forget. Builds before the flavoured folders kept
   /// every flavour's mirror in `b4app`, prod's folder, and prod and beta share the app's container, so a
   /// prod install can inherit a beta mirror whose link points at the test hub; it starts clean
-  /// instead. Only another flavour's hub counts: a link to an operator's hub, joined with an enrollment
-  /// code, is this phone's own.
+  /// instead.
+  ///
+  /// Only that case counts: the prod folder (`b4app-beta` and `b4app-local` are new, so all they hold
+  /// is this build's own), a link with no `flavor` (written before the flavoured folders), and another
+  /// flavour's hub. A link this build wrote, to whatever hub (a code for another flavour's hub, a
+  /// pairing link, an operator's hub), is this phone's own and is kept.
   public nonisolated static func discardForeignLink(in store: MirrorStore, flavor: PhoneFlavor) -> SecretRef?
   {
-    guard let link = try? store.link(), let hub = try? HubURL.canonical(link.hubURL) else { return nil }
+    guard flavor == .prod, let link = try? store.link(), link.flavor == nil,
+      let hub = try? HubURL.canonical(link.hubURL)
+    else { return nil }
     let others = PhoneFlavor.allCases.filter { $0 != flavor }.compactMap {
       try? HubURL.canonical($0.hubURL.absoluteString)
     }

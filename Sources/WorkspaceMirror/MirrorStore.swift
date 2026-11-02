@@ -22,11 +22,14 @@ public struct MirrorLink: Codable, Sendable, Equatable {
   public var orgName: String?
   /// Signed up, not named yet: the phone shows onboarding until `PUT /v1/me/profile`.
   public var needsOnboarding: Bool?
+  /// The flavour of the build that wrote the link (`PhoneFlavor`'s raw value). Every link written since
+  /// the flavoured storage sets it; nil marks one from before, which may be another flavour's.
+  public var flavor: String?
 
   public init(
     hubURL: String, deviceId: String, deviceName: String, tokenRef: String, orgSlug: String, username: String,
     lastSyncAt: String? = nil, lastError: String? = nil, userId: String? = nil, displayName: String? = nil,
-    orgName: String? = nil, needsOnboarding: Bool? = nil
+    orgName: String? = nil, needsOnboarding: Bool? = nil, flavor: String? = nil
   ) {
     self.hubURL = hubURL
     self.deviceId = deviceId
@@ -40,6 +43,7 @@ public struct MirrorLink: Codable, Sendable, Equatable {
     self.displayName = displayName
     self.orgName = orgName
     self.needsOnboarding = needsOnboarding
+    self.flavor = flavor
   }
 }
 

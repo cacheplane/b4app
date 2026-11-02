@@ -34,7 +34,8 @@ private struct Rig {
 
   init(
     store: MirrorStore? = nil, fake: FakeHubAPI = FakeHubAPI(), memory: MirrorDeviceMemory? = nil,
-    makeAPI: MirrorAccount.APIFactory? = nil, endSessionTimeout: Duration = .seconds(10)
+    makeAPI: MirrorAccount.APIFactory? = nil, endSessionTimeout: Duration = .seconds(10),
+    flavor: PhoneFlavor = .local
   ) throws {
     self.store = try store ?? MirrorStore.inMemory()
     self.fake = fake
@@ -43,7 +44,7 @@ private struct Rig {
       store: self.store, secrets: secrets,
       configuration: MirrorAccount.Configuration(
         hubURL: hub, deviceName: "Brian's iPhone", endSessionTimeout: endSessionTimeout,
-        syncBackoff: .milliseconds(20)),
+        syncBackoff: .milliseconds(20), flavor: flavor),
       memory: self.memory, makeAPI: makeAPI ?? { [fake] _, _ in fake })
     let changes = self.changes
     account.onChange = { changes.append($0) }
@@ -316,6 +317,43 @@ private final class HeldProfileHub: HubAPI, @unchecked Sendable {
 
   // MARK: Another flavour's mirror (review M4)
 
+  /// Review I2: a link this build wrote is this phone's own, whatever hub it names: a code for the test
+  /// hub entered on a local build survives every launch.
+  @Test func aLinkThisBuildEnrolledAtAnotherFlavoursHubSurvivesARestart() async throws {
+    for flavor in [PhoneFlavor.local, .prod] {
+      let store = try MirrorStore.inMemory()
+      let fake = FakeHubAPI(enrollmentCodes: [
+        "K7M2Q9XP": EnrollResponse(
+          deviceId: "dev-\(flavor)", token: "tok", org: OrgInfo(slug: "o", name: "O"),
+          user: UserInfo(username: "u", displayName: "U"))
+      ])
+      let rig = try Rig(store: store, fake: fake, flavor: flavor)
+      _ = try await rig.account.enroll(url: "https://hub.test.b4.run", code: "K7M2Q9XP", deviceName: "iPhone")
+      await rig.account.stopSync()
+      #expect(try store.link()?.flavor == flavor.rawValue)
+      // The next launch: the rule runs first, then the account reads the link.
+      #expect(MirrorAccount.discardForeignLink(in: store, flavor: flavor) == nil, "\(flavor)")
+      let relaunched = try Rig(store: store, fake: fake, flavor: flavor)
+      #expect(relaunched.account.accountStatus.state == .signedIn, "\(flavor)")
+      #expect(try store.link()?.hubURL == "https://hub.test.b4.run")
+    }
+  }
+
+  @Test func onlyTheProdFolderIsCheckedForAnotherFlavoursMirror() throws {
+    // The beta and local folders are new: an unmarked link in one cannot be another flavour's.
+    for flavor in [PhoneFlavor.beta, .local] {
+      let store = try MirrorStore.inMemory()
+      try store.saveLink(
+        MirrorLink(
+          hubURL: "https://hub.b4.run", deviceId: "d", deviceName: "iPhone", tokenRef: "secret:t",
+          orgSlug: "o",
+          username: "u"))
+      #expect(MirrorAccount.discardForeignLink(in: store, flavor: flavor) == nil, "\(flavor)")
+      #expect(try store.link() != nil)
+    }
+  }
+
+  /// An old build's link (no `flavor`) to the test hub, in the prod folder: still emptied.
   @Test func aMirrorLeftByAnotherFlavourIsEmptied() throws {
     let store = try MirrorStore.inMemory()
     let beta = MirrorLink(

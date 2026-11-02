@@ -114,7 +114,7 @@ extension MirrorAccount: @retroactive AccountHost {}
       account = MirrorAccount(
         store: opened, secrets: secrets,
         configuration: MirrorAccount.Configuration(
-          hubURL: Self.flavor.hubURL, deviceName: UIDevice.current.name),
+          hubURL: Self.flavor.hubURL, deviceName: UIDevice.current.name, flavor: Self.flavor),
         memory: MirrorDeviceMemory(url: directory?.appendingPathComponent("device.json")),
         onBatch: { batch in await MirrorHost.shared.publish(batch) },
         onSyncStatus: { status in await MirrorHost.shared.update(status) })
