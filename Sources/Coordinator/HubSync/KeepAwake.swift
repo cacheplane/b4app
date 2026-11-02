@@ -47,7 +47,7 @@ public final class FakePowerAssertions: PowerAssertions, @unchecked Sendable {
 
   public init() {}
 
-  /// The next `take` fails, as when the system refuses.
+  /// While set, every `take` fails, as when the system refuses.
   public var refuse: Bool {
     get { lock.withLock { state.refuse } }
     set { lock.withLock { state.refuse = newValue } }

@@ -39,7 +39,12 @@ struct DiagnosticsView: View {
               row("State", relay.state.rawValue.capitalized)
               if let since = relay.since { row("Since", since) }
               if let error = relay.lastError { row("Last error", error) }
-              if let held = report.keepAwakeHeld { row("Keeping Mac awake", held ? "Yes" : "No") }
+            }
+          }
+          if let held = report.keepAwakeHeld {
+            LLASectionHead("Keep awake").padding(.top, LLA.Space.l)
+            Grid(alignment: .leading, horizontalSpacing: LLA.Space.l, verticalSpacing: LLA.Space.xs) {
+              row("Keeping Mac awake", held ? "Yes" : "No")
             }
           }
           LLASectionHead("Runtimes").padding(.top, LLA.Space.l)

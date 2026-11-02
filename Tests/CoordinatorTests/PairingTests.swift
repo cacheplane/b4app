@@ -15,15 +15,6 @@ let pairingMacEnrollment = EnrollResponse(
   user: UserInfo(username: "brian", displayName: "Brian"))
 let pairingEnrollCode = "BCDF2345"
 
-/// A wall clock tests move by hand, for `Pairing`'s expiry check.
-final class WallBox: @unchecked Sendable {
-  private let lock = NSLock()
-  private var current: Date
-  init(_ date: Date) { current = date }
-  var date: Date { lock.withLock { current } }
-  func set(_ date: Date) { lock.withLock { current = date } }
-}
-
 /// A `HubSync` over a scratch store and a `FakeHubAPI`, with a manual poll clock and fake power
 /// assertions. It has not run `start()`, so there is no pull and no relay link.
 struct SyncRig {
@@ -31,28 +22,27 @@ struct SyncRig {
   let database: WorkspaceDatabase
   let fake: FakeHubAPI
   let clock: LinkTestClock
-  let wall: WallBox
   let assertions: FakePowerAssertions
   let secrets: MemorySecretStore
 
-  /// 2026-11-01T12:00:00Z
-  static let noon = Date(timeIntervalSince1970: 1_793_534_400)
-
-  static func make(joined: Bool = true) async throws -> SyncRig {
+  static func make(
+    joined: Bool = true, wrap: @Sendable (FakeHubAPI) -> any HubAPI = { $0 }
+  ) async throws -> SyncRig {
     let database = try WorkspaceDatabase.temporary()
     let fake = FakeHubAPI()
     await fake.addEnrollmentCode(pairingEnrollCode, pairingMacEnrollment)
     let clock = LinkTestClock()
-    let wall = WallBox(noon)
+    let api = wrap(fake)
     let assertions = FakePowerAssertions()
     let secrets = MemorySecretStore()
     let sync = HubSync(
-      database: database, secretStore: secrets, eventLog: EventLog(), makeAPI: { _, _ in fake },
+      database: database, secretStore: secrets, eventLog: EventLog(), makeAPI: { _, _ in api },
       pairing: Pairing(
-        pollInterval: .seconds(2), sleep: { try await clock.sleep(for: $0) }, now: { wall.date }),
+        pollInterval: .seconds(2), sleep: { try await clock.sleep(for: $0) },
+        uptime: { clock.now.offset }),
       powerAssertions: assertions)
     let rig = SyncRig(
-      sync: sync, database: database, fake: fake, clock: clock, wall: wall, assertions: assertions,
+      sync: sync, database: database, fake: fake, clock: clock, assertions: assertions,
       secrets: secrets)
     if joined { _ = try await rig.join() }
     return rig
@@ -82,6 +72,54 @@ func waitUntilTrue(
     try? await Task.sleep(for: .milliseconds(2))
   }
   Issue.record("timed out waiting for \(comment)", sourceLocation: sourceLocation)
+}
+
+/// Holds `mintPairingCode` open until the test lets it go.
+actor MintGate {
+  private var isOpen = false
+  private var waiting: [CheckedContinuation<Void, Never>] = []
+  private var arrivals = 0
+  private var arrivalWaiters: [CheckedContinuation<Void, Never>] = []
+
+  func pass() async {
+    arrivals += 1
+    for waiter in arrivalWaiters { waiter.resume() }
+    arrivalWaiters = []
+    if isOpen { return }
+    await withCheckedContinuation { waiting.append($0) }
+  }
+
+  /// Returns once a mint is being held.
+  func arrived() async {
+    if arrivals > 0 { return }
+    await withCheckedContinuation { arrivalWaiters.append($0) }
+  }
+
+  func open() {
+    isOpen = true
+    for waiter in waiting { waiter.resume() }
+    waiting = []
+  }
+}
+
+/// The fake hub with `mintPairingCode` held at a gate, after the hub has answered.
+struct GatedMintAPI: HubAPI {
+  let base: FakeHubAPI
+  let gate: MintGate
+  func enroll(_ request: EnrollRequest) async throws -> EnrollResponse { try await base.enroll(request) }
+  func me() async throws -> MeResponse { try await base.me() }
+  func push(_ changes: [SyncChange]) async throws -> PushResponse { try await base.push(changes) }
+  func pull(after: Int, limit: Int, wait: Int) async throws -> PullResponse {
+    try await base.pull(after: after, limit: limit, wait: wait)
+  }
+  func snapshot() async throws -> SnapshotResponse { try await base.snapshot() }
+  func devices() async throws -> [DeviceInfo] { try await base.devices() }
+  func mintPairingCode() async throws -> PairingCodeResponse {
+    let minted = try await base.mintPairingCode()
+    await gate.pass()
+    return minted
+  }
+  func revokeSelf() async throws { try await base.revokeSelf() }
 }
 
 private func mac() -> DeviceInfo { DeviceInfo(id: "dev-mac", name: "Test Mac", platform: "macos") }
@@ -151,38 +189,78 @@ private func mac() -> DeviceInfo { DeviceInfo(id: "dev-mac", name: "Test Mac", p
     #expect(rig.clock.sleeperCount == 0)
   }
 
-  @Test func pairStatusExpires() async throws {
-    let rig = try await SyncRig.make()
-    await rig.fake.setPairingCode(code())
-    _ = try await rig.sync.pair()
-    await waitUntilTrue("the watcher to sleep") { rig.clock.sleeperCount == 1 }
-    rig.wall.set(SyncRig.noon.addingTimeInterval(299))
-    rig.clock.advance(by: .seconds(2))
-    await waitUntilTrue("the next poll") { rig.clock.sleeperCount == 1 }
-    #expect(await rig.sync.pairStatus().state == .waiting)
+  @Test func pairStatusExpiresFiveMinutesAfterTheMintWhateverTheMacsWallClockSays() async throws {
+    // The hub's `expiresAt` is returned as sent, but the watch never compares it with the Mac's clock: a
+    // Mac two minutes ahead (an `expiresAt` already past) or behind (one far ahead) expires the same.
+    for expiresAt in ["2020-01-01T00:00:00.000000Z", "2099-01-01T00:00:00.000000Z"] {
+      let rig = try await SyncRig.make()
+      await rig.fake.setPairingCode(code(expires: expiresAt))
+      let minted = try await rig.sync.pair()
+      #expect(minted.expiresAt == expiresAt)
+      await waitUntilTrue("the watcher to sleep") { rig.clock.sleeperCount == 1 }
+      // 298 s in: two seconds short.
+      rig.clock.advance(by: .seconds(298))
+      await waitUntilTrue("the next poll") { rig.clock.sleeperCount == 1 }
+      #expect(await rig.sync.pairStatus().state == .waiting)
 
-    rig.wall.set(SyncRig.noon.addingTimeInterval(301))
-    rig.clock.advance(by: .seconds(2))
-    await waitUntilTrue("the status to expire") { await rig.sync.pairStatus().state == .expired }
-    #expect(await rig.sync.pairStatus() == HubPairStatus.Result(state: .expired))
-    #expect(rig.clock.sleeperCount == 0)
+      rig.clock.advance(by: .seconds(2))
+      await waitUntilTrue("the status to expire") { await rig.sync.pairStatus().state == .expired }
+      #expect(await rig.sync.pairStatus() == HubPairStatus.Result(state: .expired))
+      #expect(rig.clock.sleeperCount == 0)
 
-    // A new code starts over.
-    _ = try await rig.sync.pair()
-    #expect(await rig.sync.pairStatus().state == .waiting)
-    await rig.sync.stop()
+      // A new code starts over.
+      _ = try await rig.sync.pair()
+      #expect(await rig.sync.pairStatus().state == .waiting)
+      await rig.sync.stop()
+    }
   }
 
   @Test func aPhoneThatPairsOnTheLastPollBeforeExpiryCounts() async throws {
     let rig = try await SyncRig.make()
-    await rig.fake.setPairingCode(code())
     _ = try await rig.sync.pair()
     await waitUntilTrue("the watcher to sleep") { rig.clock.sleeperCount == 1 }
     await rig.fake.setDevices([mac(), DeviceInfo(id: "p", name: "Phone", platform: "ios")])
-    rig.wall.set(SyncRig.noon.addingTimeInterval(301))
-    rig.clock.advance(by: .seconds(2))
+    rig.clock.advance(by: .seconds(301))
     await waitUntilTrue("the status to settle") { await rig.sync.pairStatus().state != .waiting }
     #expect(await rig.sync.pairStatus().state == .paired)
+  }
+
+  @Test func aLeaveDuringAnInFlightMintLeavesNothingBehind() async throws {
+    let gate = MintGate()
+    let rig = try await SyncRig.make { GatedMintAPI(base: $0, gate: gate) }
+    let minting = Task { try await rig.sync.pair() }
+    await gate.arrived()
+    try await rig.sync.leave()
+    await gate.open()
+    do {
+      _ = try await minting.value
+      Issue.record("a mint across a leave must be refused")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .protocolInvalid && error.message == "Join a hub first")
+    }
+    #expect(await rig.sync.pairStatus() == HubPairStatus.Result(state: .none))
+    #expect(rig.clock.sleeperCount == 0)
+    // Give a wrongly started watcher time to register its sleep.
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(rig.clock.sleeperCount == 0)
+  }
+
+  @Test func stoppingDuringAnInFlightMintLeavesNothingBehind() async throws {
+    let gate = MintGate()
+    let rig = try await SyncRig.make { GatedMintAPI(base: $0, gate: gate) }
+    let minting = Task { try await rig.sync.pair() }
+    await gate.arrived()
+    await rig.sync.stop()
+    await gate.open()
+    do {
+      _ = try await minting.value
+      Issue.record("a mint across a stop must be refused")
+    } catch let error as WorkspaceError {
+      #expect(error.message == "Join a hub first")
+    }
+    #expect(await rig.sync.pairStatus().state == .none)
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(rig.clock.sleeperCount == 0)
   }
 
   @Test func aNewCodeReplacesTheWatchOfTheOldOne() async throws {
