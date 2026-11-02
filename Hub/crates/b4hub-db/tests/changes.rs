@@ -493,8 +493,9 @@ async fn another_org_sees_nothing_of_the_feed_or_the_mirror(pool: PgPool) {
     assert!(page.changes.is_empty());
     for table in std::iter::once("changes").chain(SYNCED_TABLES) {
         assert_eq!(count(&app, &outsider, table).await, 0, "{table}");
-        // The fixture has no projects; its draft is deleted, and kept.
-        if !["projects", "projectFolders"].contains(&table) {
+        // The fixture has no projects or usage (`connection_usage_is_mirrored_and_pulled` covers
+        // that table); its draft is deleted, and kept.
+        if !["projects", "projectFolders", "connectionUsage"].contains(&table) {
             assert!(count(&app, &device, table).await > 0, "{table}");
         }
     }
@@ -516,6 +517,56 @@ async fn another_org_sees_nothing_of_the_feed_or_the_mirror(pool: PgPool) {
     assert_eq!(accepted, 12);
     assert_eq!(count(&app, &outsider, "threads").await, 1);
     assert_eq!(count(&app, &device, "changes").await, 12);
+}
+
+/// A connection's usage (plan windows, B4 token totals) is mirrored like any synced row, so a phone
+/// pulls it; its JSON documents arrive whole.
+#[sqlx::test(migrations = false)]
+async fn connection_usage_is_mirrored_and_pulled(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let mac = common::enrolled(&admin, &app, "blove").await;
+    thread_fixture(&app, &mac, 1).await;
+    let reading = json!({"weekly": {"usedPercent": 87, "windowMinutes": 10080}, "blocked": false,
+                         "planType": "promax", "observedAt": "2026-11-02T10:00:00.000Z"});
+    push_through(
+        &app,
+        &mac,
+        &[insert(
+            3,
+            "connectionUsage",
+            "conn-1",
+            json!({"connectionId": "conn-1", "reading": reading, "updatedAt": "2026-11-02T10:00:01.000Z"}),
+        )],
+    )
+    .await
+    .unwrap();
+    let stored = row(&app, &mac, "connectionUsage", "connectionId", "conn-1")
+        .await
+        .unwrap();
+    assert_eq!(stored["reading"]["planType"], "promax");
+    let tokens = json!({"today": 7, "week": 22, "day": "2026-11-02", "weekStart": "2026-10-26"});
+    push_through(
+        &app,
+        &mac,
+        &[update(
+            4,
+            "connectionUsage",
+            "conn-1",
+            "tokens",
+            Some(tokens.clone()),
+        )],
+    )
+    .await
+    .unwrap();
+    let stored = row(&app, &mac, "connectionUsage", "connectionId", "conn-1")
+        .await
+        .unwrap();
+    assert_eq!(stored["tokens"], tokens);
+    let page = changes::pull(&app, &mac, 0, 100).await.unwrap();
+    assert!(page
+        .changes
+        .iter()
+        .any(|change| change.table == "connectionUsage" && change.row_id == "conn-1"));
 }
 
 #[sqlx::test(migrations = false)]
@@ -706,6 +757,59 @@ async fn phone_title_edit_applies_and_later_mac_edit_wins(pool: PgPool) {
     );
     push_through(&app, &mac, &[from_mac]).await.unwrap();
     assert_eq!(title(&app, &mac).await, "Mac title");
+}
+
+/// Deleting a thread on the phone marks it, by clock like its other columns; the hub keeps the row
+/// and its turns (the owner's rule: no hard delete on the hub).
+#[sqlx::test(migrations = false)]
+async fn a_phone_marks_a_thread_deleted_and_the_row_stays(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let (mac, phone) = mac_and_phone(&admin, &app).await;
+    let turn = at(
+        insert(
+            3,
+            "turns",
+            "turn-1",
+            json!({"id": "turn-1", "threadId": "thread-1", "status": "terminal"}),
+        ),
+        150,
+        MAC_CLOCK,
+    );
+    push_through(&app, &mac, &[turn]).await.unwrap();
+
+    let deleted = at(
+        update(
+            1,
+            "threads",
+            "thread-1",
+            "userDeletedAt",
+            Some(json!("2026-11-02T12:00:00.000Z")),
+        ),
+        200,
+        PHONE_CLOCK,
+    );
+    let outcome = changes::push(&app, &phone, &[deleted]).await.unwrap();
+    assert_eq!(
+        outcome,
+        PushOutcome {
+            accepted_through: 1,
+            rejected: vec![]
+        }
+    );
+    let thread = row(&app, &mac, "threads", "id", "thread-1").await.unwrap();
+    assert_eq!(thread["userDeletedAt"], "2026-11-02T12:00:00.000Z");
+    assert_eq!(thread["title"], "Original");
+    assert!(row(&app, &mac, "turns", "id", "turn-1").await.is_some());
+
+    // An older write by the Mac's clock does not clear it.
+    let stale = at(
+        update(4, "threads", "thread-1", "userDeletedAt", None),
+        180,
+        MAC_CLOCK,
+    );
+    push_through(&app, &mac, &[stale]).await.unwrap();
+    let thread = row(&app, &mac, "threads", "id", "thread-1").await.unwrap();
+    assert_eq!(thread["userDeletedAt"], "2026-11-02T12:00:00.000Z");
 }
 
 #[sqlx::test(migrations = false)]

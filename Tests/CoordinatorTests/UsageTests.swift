@@ -94,11 +94,13 @@ actor RefusingRemoveStore: SecretStore {
       _ = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
       try await server.waitForRunToEnd(nativeThreadId: thread.nativeThreadId)
     }
-    #expect(try await h.usage(b4.id)?.tokens == TokenTotals(today: 22, week: 22))
+    #expect(try await h.usage(b4.id)?.tokens?.today == 22)
+    #expect(try await h.usage(b4.id)?.tokens?.week == 22)
     _ = try await h.client.request(
       ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id),
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
-    #expect(try await h.usage(b4.id)?.tokens == TokenTotals(today: 22, week: 22))
+    #expect(try await h.usage(b4.id)?.tokens?.today == 22)
+    #expect(try await h.usage(b4.id)?.tokens?.week == 22)
     await h.stop()
     await server.stop()
   }
@@ -308,6 +310,23 @@ actor RefusingRemoveStore: SecretStore {
     let replacement = try await h.storeCredential("new")
     let updated = try await h.update(ConnectionUpdate.Params(connectionId: b4.id, authReference: replacement))
     #expect(updated.connection.authReference == replacement)
+    await h.stop()
+    await server.stop()
+  }
+
+  @Test func usageIsWrittenForThePhone() async throws {
+    let server = try await FakeB4.start()
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let synced = try #require(try h.coordinator.database.syncedUsage(connectionId: codex.id))
+    #expect(synced.reading?.fiveHour?.usedPercent == 62)
+    let b4 = try await h.addB4(server).connection
+    let thread = try await h.newB4Thread(b4)
+    let turn = try await h.send(thread, "hello")
+    _ = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    let tokens = try #require(try h.coordinator.database.syncedUsage(connectionId: b4.id)?.tokens)
+    #expect(tokens.today == 7)
+    #expect(tokens.day == UsageDay.local(Date()).day)
     await h.stop()
     await server.stop()
   }

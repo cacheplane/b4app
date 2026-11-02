@@ -2,6 +2,57 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-11-02: Deleting threads (D-119, D-120)
+
+Branch `blove/delete-threads`, stacked on `blove/phone-usage`.
+
+**Gates**
+- `swift format lint --strict` was clean.
+- `swift test` passed: 902 tests in 134 suites (after the review's fix pass).
+- Hub: `cargo test --workspace --locked` passed 249 tests on two consecutive runs; `cargo fmt --check` and `clippy -D warnings` were clean. After merging the updated `blove/phone-usage` (with the soft-delete work, D-089), 250 passed. The relay suite (`b4hub --test relay`, which this branch does not touch) failed one or two timing tests per run, a different one each time: `presence_is_sent_when_the_queue_has_room_again`, `interrupt_is_held_and_delivered_on_reconnect`, `watching_tells_the_mac_the_full_set`. One earlier run also had a flaky `b4hub-db` `settings` failure that did not recur.
+- Both `xcodebuild` builds (macOS, iOS Simulator) succeeded.
+
+**New tests**
+- Storage: `ThreadDeleteStoreTests`. A deleted thread leaves every list; the mark keeps its first time and is logged; the runtime-delete record and its backoff; the Diagnostics counts. `OrganisationSchemaTests` pins `userDeletedAt` as a clocked column of the change trigger.
+- Adapters: `CodexDeleteTests`, `ClaudeDeleteTests` and `B4DeleteTests`. These cover deleted, already gone and unsupported for each runtime. For Claude, only the one session's `.jsonl` and folder go; `../x`, `a/b`, `.` and `s1.jsonl` are refused and touch nothing.
+- Coordinator: `ThreadDeleteTests`.
+  - A Codex delete hides the thread and reaches `thread/delete`.
+  - A running B4 turn is interrupted before the `DELETE`.
+  - A phone's delete is swept later.
+  - An unreachable B4 is retried after its backoff and then done.
+  - A server without the route is final.
+  - A late event for a deleted thread publishes nothing. Disabling that guard fails the test.
+  - After merging sign-in (#49): `aRetryWaitsFromTheFailedTry`. CI ran a delete against a stopped B4 server that hung for 70 s instead of being refused, and the retry was then due at once; the wait now counts from the failed try. `thread.delete` is gated on a signed-in account (`Router.needsAccount`).
+  - From the review's fix pass: `aPhonesDeleteStopsTheRunningTurn` (a delete pulled from the phone interrupts the running B4 turn before the `DELETE`, and nothing is left in active work), `aReconcilingTurnOfADeletedThreadIsEnded`, and `deletingAnswersBeforeASlowRuntimeDelete` (the command answers in under 3 seconds while the runtime delete takes 5).
+- Hub: `a_phone_marks_a_thread_deleted_and_the_row_stays`. A phone's mark is applied by clock, an older Mac write does not clear it, and the row and its turns stay. Also the `writable.rs` lists and the `0011` migration guards.
+- Mirror: `MirrorDeleteTests`. A phone delete hides the thread, makes it unreadable, and queues one `userDeletedAt` update; a repeat queues nothing; a pulled mark hides it too. The schema version 5 migration guards are covered as well.
+- UI: `ThreadDeleteDiagnosticsTests` (the Diagnostics "Deleted threads" counts by runtime) and `ThreadDeleteModelTests`. Deleting the open thread closes it and discards the unsent text; the confirmation copy covers each runtime, a disabled connection and a running turn; a late turn event keeps the thread gone.
+
+**Checked by hand:** Codex 0.166.0's generated schema has `ThreadDeleteParams { threadId }` and an empty `ThreadDeleteResponse`.
+
+**Not run before merge**
+- **The alert and the iPhone swipe on screen.** SwiftUI alerts don't render in the offscreen snapshot harness.
+- **The Simulator check against the owner's Compose hub.** That hub needs `0011`, so it waits until this merges and the hub is rebuilt from main.
+- **A live delete in real Codex, Claude Code or B4.** The fixtures stand in for all three.
+
+## 2026-11-02: Usage on the phone (D-118)
+
+Branch `blove/phone-usage`.
+
+**Gates**
+- `swift format lint --strict` was clean.
+- `swift test` passed: 868 tests in 125 suites.
+- Hub: `cargo test --workspace --locked` passed 248 tests; `cargo fmt --check` and `clippy -D warnings` were clean. After merging the soft-delete work (#45, D-089), `connectionUsage` has `deleted_at` too, and the hub passed 251 tests with fmt and clippy clean.
+- Both `xcodebuild` builds succeeded.
+
+**New tests**
+- Mac: `syncedUsageIsLoggedWhenItChanges` (the synced row is logged when it moves, and not when it doesn't) and `usageIsWrittenForThePhone` (a Codex check and a B4 turn write the row).
+- Hub: `connection_usage_syncs_under_its_connection` and `connection_usage_is_mirrored_and_pulled`. The migration guards now include `0010` and the table's row-level security.
+- Mirror: `usageReadServesTheMacsUsage`, `publishAnnouncesUsage`, and the schema version 4 migration tests.
+- UI: `tokenTotalsAreNamedByTheirDay` and `aUsageEventWithTheWholeUsageReplacesIt`.
+
+**Not run before merge: the live check in the Simulator against the owner's Compose hub.** Running the hub from this branch would apply `0010` to the owner's hub database, and a hub binary without it would then refuse to start (sqlx `VersionMissing`). So the check runs after the merge, on the hub and apps rebuilt from `main`, and is recorded there.
+
 ## 2026-11-02: Claude completions find their streamed items; M8c device checks
 
 Branch `fix/claude-block-ids`.
@@ -72,6 +123,7 @@ Found at the live gate:
 - **A Mac that rejoined with an enrollment code became a new device (fixed: X3, D-096 amended).** After the step-6 log-out (the session ends, the device is kept, D-105), `hub join` with a code made a second `macos` device, because `POST /v1/enroll` took no device id. Every row the Mac had synced kept the old device as its owner, so the phone showed "Brian's MacBook Pro (2) is offline · last seen 09:26" and relayed turns for those threads would have gone to the dead device. The same gap made a phone that re-paired by code a new device each time (D-108). Fix: `POST /v1/enroll` takes `deviceId` and `candidateDeviceIds` with the sign-in rule (`devices::redeem_reusing`, sharing `accounts::create_session`); `hub join` offers the registry's devices for that hub, and the phone its remembered devices on a typed code, a pairing scan, and the merge-first path. Fixture tests: `enroll.rs` (`enrolling_again_reuses_this_device`, `enrollment_passes_over_foreign_and_revoked_candidates`, `enrollment_candidates_are_capped_and_validated_before_the_code_is_used`), `accounts.rs` (`enroll_merging_reuses_only_a_device_of_the_codes_account`), `AccountCommandTests.hubJoinOffersEveryKnownDeviceOfThisHub`, `PairLinkTests.aPhoneThatPairsAgainOffersItsDevice` and `aMergingPairOffersEveryDeviceThePhoneHasHad`. **Rerun live** with `aac49ec`: log out, then rejoin by code kept device `01a19d4c`, and every thread kept it as owner. Review follow-up `2cc466c`: a pairing code is redeemable only as `ios`, so its holder cannot take over the Mac's device through a candidate (`enroll.rs` `a_pairing_code_pairs_only_a_phone`).
 - **The owner's local hub was repaired by hand** for the first rejoin, before the fix: in one transaction, `owner_device_id` moved from the old device `01a1988c…` to `01a19d4c…` in `connections` (4 rows), `displayItems` (45), `drafts` (2), `projectFolders` (3), `projects` (3), `runtimeRequests` (6), `threads` (7), and `turns` (14), and `01a1988c…` was revoked. The pre-gate dump above is the way back.
 - **Minor, not fixed:** on the local flavour the sign-in screen still says "New here? Either one creates your account." with only one button; and while the pairing confirmation closes after Pair, the "Use an enrollment code" form shows for a moment before the sheet dismisses.
+
 ## 2026-11-02: The hub keeps synced rows (D-089)
 
 Branch `blove/dreamy-hamilton-b5adc9`, from main at `3f3cc15`. Hub only; no Swift, wire, or fixture change.
@@ -512,6 +564,7 @@ To be run only after the owner's go-ahead, because it rebuilds the owner's packa
 | 3. Live convergence | `docker compose stop hub`; rename the same thread and edit the same draft on both devices, the Mac's edit later; `docker compose start hub`; both must show the Mac's values (and, with the phone's edit later, the phone's) | not run |
 
 Also record for the live run: `agent-workspace hub status` shows `unsynced 0`; `agent-workspace coordinator status` shows a pid started after the restart; a screenshot of the Simulator list and the Mac sidebar; and that the owner's app, once restored from `main`, is rebuilt with the same dev loop.
+
 ## 2026-10-31: Developer ID signing and notarization (D-039 gate)
 
 Target: the same MacBook Pro (macOS 26.5, Xcode 26.6, notarytool 1.1.2). The owner created the certificate and the `b4app` notarytool profile; neither password passed through the script or this session. The owner's running app was quit, `~/repos/b4app/dist` was moved aside and replaced from the stapled zip, `agent-workspace coordinator restart` ran, and the app was reopened.

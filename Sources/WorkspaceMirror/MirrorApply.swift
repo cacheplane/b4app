@@ -116,6 +116,7 @@ extension MirrorStore {
       // A draft's row id is its thread id; the open composer reloads on the thread's event.
       case "drafts": state.batch.touchedThreadIds.insert(change.rowId)
       case "projects": state.batch.touchedProjectIds.insert(change.rowId)
+      case "connectionUsage": state.batch.touchedUsageIds.insert(change.rowId)
       case "turns", "runtimeRequests": state.batch.touchedThreadIds.formUnion(parents)
       case "projectFolders": state.batch.touchedProjectIds.formUnion(parents)
       case "displayItems" where change.op != "delete":

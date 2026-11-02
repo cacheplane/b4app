@@ -80,6 +80,8 @@ public final class AccountScope: Sendable {
     public var powerAssertions: (any PowerAssertions)?
     /// The waits between tries of a connection check that found its runtime unreachable.
     public var checkRetryDelays: [Duration]
+    /// How often deleted threads' runtime copies are retried; zero runs no background sweep (tests).
+    public var threadDeleteSweep: Duration
     /// The app's flavour: whether the joined hub is the one its pairing links' site implies.
     public var flavor: Flavor = .current
 
@@ -88,7 +90,7 @@ public final class AccountScope: Sendable {
       diagnostics: DiagnosticsService, adapterFactory: SessionService.AdapterFactory? = nil,
       hubAPIFactory: HubSync.APIFactory? = nil, hubLinkConnection: (any HubLinkConnection)? = nil,
       powerAssertions: (any PowerAssertions)? = nil,
-      checkRetryDelays: [Duration] = [.seconds(1), .seconds(3)]
+      checkRetryDelays: [Duration] = [.seconds(1), .seconds(3)], threadDeleteSweep: Duration = .zero
     ) {
       self.paths = paths
       self.environment = environment
@@ -100,6 +102,7 @@ public final class AccountScope: Sendable {
       self.hubLinkConnection = hubLinkConnection
       self.powerAssertions = powerAssertions
       self.checkRetryDelays = checkRetryDelays
+      self.threadDeleteSweep = threadDeleteSweep
     }
 
     /// The hub client for `url`, as `HubSync` builds it.
@@ -203,7 +206,8 @@ public final class AccountScope: Sendable {
         database: database, eventLog: eventLog, diagnostics: context.diagnostics,
         environment: context.environment, clientVersion: CoordinatorVersion.current,
         secretStore: context.secretStore, projects: projects, adapterFactory: context.adapterFactory,
-        servers: servers, checkRetryDelays: context.checkRetryDelays))
+        servers: servers, checkRetryDelays: context.checkRetryDelays,
+        threadDeleteSweep: context.threadDeleteSweep))
     await sessions.start()
     await servers.startAll()
     let relay = RelayExecutor(

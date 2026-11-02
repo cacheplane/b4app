@@ -22,6 +22,7 @@ private func thread(
     #expect(
       try db.appliedMigrations() == [
         "0001_init", "0002_changes", "0003_hub", "0004_organisation", "0005_relay", "0006_usage",
+        "0007_connection_usage", "0008_thread_delete",
       ])
     // Reopening the same database applies nothing further and keeps the data.
     _ = try db.insertConnection(connection("c1"))
@@ -30,6 +31,7 @@ private func thread(
     #expect(
       try again.appliedMigrations() == [
         "0001_init", "0002_changes", "0003_hub", "0004_organisation", "0005_relay", "0006_usage",
+        "0007_connection_usage", "0008_thread_delete",
       ])
     #expect(try again.connection(id: "c1")?.label == "c1")
     try again.close()

@@ -58,18 +58,21 @@ public struct AppliedBatch: Sendable, Equatable {
   public var touchedItems: [DisplayItem]
   public var touchedConnectionIds: Set<String>
   public var touchedProjectIds: Set<String>
+  /// Connections whose `connectionUsage` row changed.
+  public var touchedUsageIds: Set<String>
   public var skipped: Int
   public var undecodableRows: Int
 
   public init(
     touchedThreadIds: Set<String> = [], touchedItems: [DisplayItem] = [],
     touchedConnectionIds: Set<String> = [], touchedProjectIds: Set<String> = [],
-    skipped: Int = 0, undecodableRows: Int = 0
+    touchedUsageIds: Set<String> = [], skipped: Int = 0, undecodableRows: Int = 0
   ) {
     self.touchedThreadIds = touchedThreadIds
     self.touchedItems = touchedItems
     self.touchedConnectionIds = touchedConnectionIds
     self.touchedProjectIds = touchedProjectIds
+    self.touchedUsageIds = touchedUsageIds
     self.skipped = skipped
     self.undecodableRows = undecodableRows
   }
@@ -184,6 +187,14 @@ public final class MirrorStore: @unchecked Sendable {
 
   // MARK: - Reads
 
+  /// Each connection's usage as the Mac last wrote it.
+  public func connectionUsage() throws -> [ConnectionUsage] {
+    try locked {
+      try all(
+        ConnectionUsage.self, "connectionUsage", #"SELECT * FROM "connectionUsage" ORDER BY "connectionId""#)
+    }
+  }
+
   public func connections() throws -> [Connection] {
     try locked {
       try all(Connection.self, "connections", #"SELECT * FROM "connections" ORDER BY "createdAt""#)
@@ -218,7 +229,8 @@ public final class MirrorStore: @unchecked Sendable {
   ) throws
     -> [ConversationThread]
   {
-    var clauses: [String] = []
+    // A deleted thread is never listed; `thread(id:)` still finds it.
+    var clauses: [String] = [#"t."userDeletedAt" IS NULL"#]
     var binds: [Bind] = []
     if let connectionId {
       clauses.append(#"t."connectionId" = ?"#)
@@ -510,6 +522,7 @@ public final class MirrorStore: @unchecked Sendable {
     case "displayItems": return decode(DisplayItem.self, table: table, row) != nil
     case "runtimeRequests": return decode(RuntimeRequest.self, table: table, row) != nil
     case "drafts": return decode(Draft.self, table: table, row) != nil
+    case "connectionUsage": return decode(ConnectionUsage.self, table: table, row) != nil
     default: return true
     }
   }

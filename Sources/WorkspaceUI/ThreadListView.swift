@@ -194,6 +194,7 @@ struct ThreadRow: View {
   let thread: ConversationThread
   @State private var renaming = false
   @State private var newTitle = ""
+  @State private var deleting: ConversationThread?
   @Environment(\.showDetail) private var showDetail
   @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -256,7 +257,10 @@ struct ThreadRow: View {
       ) {
         Task { await model.updateThread(id: thread.id, archived: !thread.archived) }
       }
+      Divider()
+      Button("Delete…", systemImage: "trash", role: .destructive) { deleting = thread }
     }
+    .deleteThreadAlert(model: model, thread: $deleting)
     .alert("Rename thread", isPresented: $renaming) {
       TextField("Title", text: $newTitle)
       Button("Rename") { Task { await model.updateThread(id: thread.id, title: newTitle) } }
@@ -316,6 +320,7 @@ struct ThreadListView: View {
 /// Meant to sit inside a `List`; it supplies the swipe actions.
 struct FlatThreadRows: View {
   @Bindable var model: WorkspaceModel
+  @State private var deleting: ConversationThread?
 
   var body: some View {
     let rows = model.orderedThreads
@@ -331,6 +336,10 @@ struct FlatThreadRows: View {
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+          // Not `role: .destructive`, which would remove the row before the confirmation is answered.
+          Button("Delete", systemImage: "trash") { deleting = thread }
+            .tint(.red)
+            .accessibilityIdentifier("swipe-delete")
           Button(
             thread.archived ? "Unarchive" : "Archive",
             systemImage: thread.archived ? "tray.and.arrow.up" : "archivebox"
@@ -352,6 +361,7 @@ struct FlatThreadRows: View {
           }
         }
     }
+    .deleteThreadAlert(model: model, thread: $deleting)
   }
 }
 

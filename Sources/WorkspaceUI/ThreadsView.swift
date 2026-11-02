@@ -34,6 +34,7 @@ struct ThreadDetailView: View {
   @Bindable var model: WorkspaceModel
   let thread: ConversationThread
   @State private var renaming = false
+  @State private var deleting: ConversationThread?
   @State private var newTitle = ""
   @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -95,6 +96,7 @@ struct ThreadDetailView: View {
     } message: {
       Text("The title is local to this app; the runtime's own history is not changed.")
     }
+    .deleteThreadAlert(model: model, thread: $deleting)
   }
 
   private func transcript(_ detail: ThreadDetail) -> some View {
@@ -117,7 +119,7 @@ struct ThreadDetailView: View {
     }
   }
 
-  /// Rename, Pin, Archive: toolbar buttons on the Mac, the overflow menu's items on the phone.
+  /// Rename, Pin, Archive, Delete: toolbar buttons on the Mac, the overflow menu's items on the phone.
   @ViewBuilder private var threadActions: some View {
     Button("Rename", systemImage: "pencil") {
       newTitle = thread.title
@@ -135,6 +137,11 @@ struct ThreadDetailView: View {
       Task { await model.updateThread(id: thread.id, archived: !thread.archived) }
     }
     .accessibilityIdentifier("archive")
+    #if os(iOS)
+      Divider()
+    #endif
+    Button("Delete…", systemImage: "trash", role: .destructive) { deleting = thread }
+      .accessibilityIdentifier("delete")
   }
 
   /// Connection, kind, and directory or route; "on <device>" when the phone's mirror knows the Mac
