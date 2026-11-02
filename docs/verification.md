@@ -11,11 +11,11 @@ Branch `blove/m8f-attention`, from main at `3f3cc15`. Plan `docs/superpowers/pla
 | Check | Command | Result |
 | --- | --- | --- |
 | Swift format | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass |
-| Swift tests | `swift test` | Pass: 894 tests in 129 suites (851 before M8f) |
+| Swift tests | `swift test` | Pass: 906 tests in 129 suites after merging main (852 on main) |
 | macOS app | `xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'platform=macOS'` | `** BUILD SUCCEEDED **` |
 | iOS app and widget | `xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'` | `** BUILD SUCCEEDED **`; Debug lists `remote-notification` and `fetch`, Release only `remote-notification` |
 | Rust format and lint | `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
-| Rust tests | `cargo test --workspace --locked` against the throwaway PostgreSQL 17.11 | Pass: 269 tests (`b4hub` 173, `b4hub-core` 26, `b4hub-db` 70) |
+| Rust tests | `cargo test --workspace --locked` against the throwaway PostgreSQL 17.11 | Pass: 275 tests after merging main (`b4hub` 173, `b4hub-core` 26, `b4hub-db` 76, of which `push` 15, including soft-deleted rows never notifying) |
 
 What the new tests show, by the design's requirements:
 
