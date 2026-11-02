@@ -33,7 +33,7 @@ private func parse(_ json: String) throws -> ParsedCommand { try parseCommand(Da
       .serverRestart,
       .serverStop, .serverInspect, .workspaceStopLocalWork, .workspaceReconcile, .databaseBackup,
       .databaseRestore, .databaseImportSQLite, .hubJoin, .hubLeave, .projectCreate, .projectUpdate,
-      .projectRename, .projectDelete, .threadMarkRead,
+      .projectRename, .projectDelete, .threadMarkRead, .threadStart,
     ]
     for method in WorkspaceProtocol.Method.allCases {
       #expect(method.isMutation == mutations.contains(method), "\(method)")

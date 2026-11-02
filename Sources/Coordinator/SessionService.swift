@@ -56,6 +56,10 @@ public actor SessionService {
   private let context: Context
   private var adapters: [String: any AgentAdapter] = [:]
   private var pumps: [String: Task<Void, Never>] = [:]
+  /// Runtime requests whose answer is with the adapter right now. `requestRespond` suspends on the
+  /// adapter before it marks the request resolved, so without this a second answer (one from the Mac,
+  /// one relayed from the phone) could reach the runtime too.
+  private var answering: Set<String> = []
   private let logger = Log.logger("sessions")
   private var db: WorkspaceDatabase { context.database }
 
@@ -336,7 +340,8 @@ public actor SessionService {
     }
     let title = params.title?.trimmingCharacters(in: .whitespaces)
     let newThread = ConversationThread(
-      id: UUID().uuidString.lowercased(), connectionId: connection.id, nativeThreadId: ref.nativeSessionId,
+      id: params.threadId ?? UUID().uuidString.lowercased(), connectionId: connection.id,
+      nativeThreadId: ref.nativeSessionId,
       nativeScope: ref.nativeScope, title: (title?.isEmpty == false ? title : nil) ?? defaultTitle,
       context: threadContext)
     // The thread joins the project of its folder (created on first use) in one step with its insert, so
@@ -833,6 +838,11 @@ public actor SessionService {
       throw WorkspaceError(
         .staleRuntimeRequest, "Runtime request \(request.id) is already \(request.state.rawValue).")
     }
+    // First answer wins at the runtime: checked and claimed with no suspension point in between.
+    guard answering.insert(request.id).inserted else {
+      throw WorkspaceError(.staleRuntimeRequest, "Runtime request \(request.id) is already being answered.")
+    }
+    defer { answering.remove(request.id) }
     let (thread, connection, adapter) = try threadContext(id: request.threadId)
     let response: RuntimeResponse
     if params.decline == true {

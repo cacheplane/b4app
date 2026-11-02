@@ -132,8 +132,12 @@ public actor Router {
       return try JSONValue(
         encoding: try await sessions.connectionLogin(try command.params(for: ConnectionLogin.self)))
     case .threadCreate:
-      return try JSONValue(
-        encoding: try await sessions.threadCreate(try command.params(for: ThreadCreate.self)))
+      // A caller-chosen thread id is for `thread.start` through the relay only.
+      var params = try command.params(for: ThreadCreate.self)
+      params.threadId = nil
+      return try JSONValue(encoding: try await sessions.threadCreate(params))
+    case .threadStart, .turnLookup:
+      throw WorkspaceError(.unsupportedCapability, "Only relayed from the hub.")
     case .threadRead:
       return try JSONValue(encoding: try await sessions.threadRead(try command.params(for: ThreadRead.self)))
     case .threadUpdate:

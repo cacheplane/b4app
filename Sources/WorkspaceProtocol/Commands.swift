@@ -47,6 +47,10 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case projectRename = "project.rename"
   case projectDelete = "project.delete"
   case threadMarkRead = "thread.markRead"
+  /// Relayed from the hub only (`RelayExecutor`); `Router` refuses both over the local socket. Listed so
+  /// `MirrorTransport` can serve `thread.start` through the relay.
+  case threadStart = "thread.start"
+  case turnLookup = "turn.lookup"
 
   public var isMutation: Bool {
     switch self {
@@ -57,11 +61,11 @@ public enum Method: String, Codable, Sendable, CaseIterable {
       .serverStop, .serverInspect, .workspaceStopLocalWork, .workspaceReconcile, .databaseBackup,
       .databaseRestore,
       .databaseImportSQLite, .hubJoin, .hubLeave, .projectCreate, .projectUpdate, .projectRename,
-      .projectDelete, .threadMarkRead:
+      .projectDelete, .threadMarkRead, .threadStart:
       return true
     case .systemPing, .diagnosticsRead, .connectionList, .threadList, .draftRead, .eventsSnapshot,
       .eventsReplay, .threadRead, .serverList, .serverStatus, .serverLogs, .workspaceActiveWork,
-      .databaseStatus, .hubStatus, .projectList:
+      .databaseStatus, .hubStatus, .projectList, .turnLookup:
       return false
     }
   }
@@ -289,10 +293,16 @@ public enum ThreadCreate: WorkspaceCommand {
     public var connectionId: String
     public var workingDirectory: String?
     public var title: String?
-    public init(connectionId: String, workingDirectory: String? = nil, title: String? = nil) {
+    /// The new thread's id, minted by the phone for `thread.start`; nil mints one here. Only the relay
+    /// sets it (`Router` drops it from a local `thread.create`).
+    public var threadId: String?
+    public init(
+      connectionId: String, workingDirectory: String? = nil, title: String? = nil, threadId: String? = nil
+    ) {
       self.connectionId = connectionId
       self.workingDirectory = workingDirectory
       self.title = title
+      self.threadId = threadId
     }
   }
   public struct Result: Codable, Sendable, Equatable {

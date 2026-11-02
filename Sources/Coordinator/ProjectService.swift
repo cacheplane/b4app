@@ -36,7 +36,7 @@ public actor ProjectService {
 
   /// The canonical project directory of the managed server a local B4 connection runs on; nil for any
   /// other connection, or when the server row is gone.
-  private func serverFolder(of connection: Connection) throws -> String? {
+  func serverFolder(of connection: Connection) throws -> String? {
     guard connection.kind == .b4, let serverId = connection.localServerId,
       let server = try db.localServer(id: serverId), !server.projectPath.isEmpty
     else { return nil }

@@ -78,7 +78,8 @@ private struct Harness {
   let events: EventCollector
 
   static func start(
-    paths: PlatformPaths? = nil, extraEnvironment: [String: String] = [:]
+    paths: PlatformPaths? = nil, extraEnvironment: [String: String] = [:],
+    adapterFactory: SessionService.AdapterFactory? = nil
   ) async throws -> Harness {
     let paths = try paths ?? temporaryPaths()
     // The fixture is a Python script, so the child needs the real PATH; Node lookups stay isolated.
@@ -88,7 +89,8 @@ private struct Harness {
     env["ANTHROPIC_API_KEY"] = nil
     for (key, value) in extraEnvironment { env[key] = value }
     let outcome = try await Coordinator.start(
-      options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
+      options: CoordinatorOptions(
+        paths: paths, environment: env, secretStore: MemorySecretStore(), adapterFactory: adapterFactory))
     guard case .running(let coordinator) = outcome else {
       throw WorkspaceError(.internalError, "expected running")
     }
@@ -157,6 +159,43 @@ private struct Harness {
     await client.close()
     await coordinator.close()
   }
+}
+
+/// Counts the answers that reach a runtime, and holds each one long enough for a second answer to the
+/// same request to arrive while the first is still with the runtime.
+private actor RespondRecorder {
+  private(set) var responses: [String] = []
+  func record(_ nativeRequestId: String) { responses.append(nativeRequestId) }
+}
+
+/// A real adapter (here the fake Codex runtime) with a slow `respond` that records each call.
+private struct SlowRespondAdapter: AgentAdapter {
+  let inner: any AgentAdapter
+  let recorder: RespondRecorder
+  var kind: ConnectionKind { inner.kind }
+  func inspectConnection() async throws -> ConnectionInspection { try await inner.inspectConnection() }
+  func createSession(_ input: NewSessionInput) async throws -> NativeSessionRef {
+    try await inner.createSession(input)
+  }
+  func loadSession(_ ref: NativeSessionRef) async throws -> SessionSnapshot {
+    try await inner.loadSession(ref)
+  }
+  func sendTurn(_ ref: NativeSessionRef, input: TurnInput) async throws -> SubmissionReceipt {
+    try await inner.sendTurn(ref, input: input)
+  }
+  func interrupt(_ ref: NativeSessionRef, turn: ActiveTurnRef) async throws -> StopReceipt {
+    try await inner.interrupt(ref, turn: turn)
+  }
+  func respond(_ ref: RuntimeRequestRef, response: RuntimeResponse) async throws {
+    await recorder.record(ref.nativeRequestId)
+    try await Task.sleep(for: .milliseconds(500))
+    try await inner.respond(ref, response: response)
+  }
+  func reconcile(_ ref: NativeSessionRef, turn: ActiveTurnRef?) async throws -> ReconcileResult {
+    try await inner.reconcile(ref, turn: turn)
+  }
+  func events() -> AsyncStream<AdapterEvent> { inner.events() }
+  func dispose() async { await inner.dispose() }
 }
 
 actor EventCollector {
@@ -310,6 +349,50 @@ actor EventCollector {
     let tool = read.items.first { $0.role == .tool }
     #expect(tool?.payload["status"]?.stringValue == "completed")
     #expect(read.items.last?.payload["text"]?.stringValue == "Command completed.")
+    await h.stop()
+  }
+
+  /// First answer wins at the runtime, not only in the database: an answer that arrives while another
+  /// is still with the runtime is refused before it reaches the adapter.
+  @Test func simultaneousAnswersReachTheRuntimeOnce() async throws {
+    let recorder = RespondRecorder()
+    let h = try await Harness.start(adapterFactory: { connection, environment, version, secrets in
+      SlowRespondAdapter(
+        inner: try SessionService.defaultAdapterFactory(connection, environment, version, secrets),
+        recorder: recorder)
+    })
+    let connection = try await h.addCodex()
+    let thread = try await h.newThread(connection)
+    let turn = try await h.send(thread, "please approve this")
+    let opened = try await h.events.waitFor { $0.kind == .runtimeRequestOpened && $0.threadId == thread.id }
+    let request = try #require(try opened.payload["runtimeRequest"]?.decode(RuntimeRequest.self))
+    let sessions = h.coordinator.sessions
+    func answer(_ decision: RuntimeDecision) async -> Result<RuntimeRequest, WorkspaceError> {
+      do {
+        return .success(
+          try await sessions.requestRespond(RequestRespond.Params(requestId: request.id, decision: decision))
+            .request)
+      } catch { return .failure(WorkspaceError.from(error)) }
+    }
+    async let mac = answer(.allowOnce)
+    async let phone = answer(.deny)
+    let outcomes = await [mac, phone]
+    let resolved = outcomes.compactMap { try? $0.get() }
+    let refused = outcomes.compactMap { outcome -> WorkspaceError? in
+      if case .failure(let error) = outcome { return error }
+      return nil
+    }
+    #expect(resolved.map(\.state) == [.resolved])
+    #expect(refused.map(\.code) == [.staleRuntimeRequest])
+    #expect(await recorder.responses == [request.nativeRequestId])
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    // Once the first answer is done, a late one is stale as before (and never reaches the runtime).
+    if case .failure(let late) = await answer(.deny) {
+      #expect(late.code == .staleRuntimeRequest)
+    } else {
+      Issue.record("a late answer must be stale")
+    }
+    #expect(await recorder.responses.count == 1)
     await h.stop()
   }
 
