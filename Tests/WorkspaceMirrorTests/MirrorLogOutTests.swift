@@ -55,15 +55,17 @@ private func populated() throws -> MirrorStore {
     try expectEmptied(store)
   }
 
-  @Test func logOutWaitsForTheHubOnlySoLong() async throws {
+  @Test(.timeLimit(.minutes(2))) func logOutWaitsForTheHubOnlySoLong() async throws {
     let store = try populated()
     let forgotten = Mutex(false)
-    let started = ContinuousClock.now
-    let ended = await MirrorLogOut.run(store: store, api: SilentHub(), timeout: .milliseconds(100)) {
+    let hub = SilentHub()
+    // The hub answers only when the test lets it, after the log-out has returned: a log-out that
+    // waited for the hub would never return, and the time limit fails the test. No wall-clock check,
+    // which a stalled runner once outlasted.
+    let ended = await MirrorLogOut.run(store: store, api: hub, timeout: .milliseconds(100)) {
       forgotten.withLock { $0 = true }
     }
-    // The hub would answer only after a minute; the log-out is long done (generous for a loaded run).
-    #expect(ContinuousClock.now - started < .seconds(30))
+    hub.answer()
     #expect(!ended)
     #expect(forgotten.withLock { $0 })
     try expectEmptied(store)
@@ -74,8 +76,19 @@ private func populated() throws -> MirrorStore {
   }
 }
 
-/// A hub whose `endSession` never answers, cancelled or not.
-private struct SilentHub: HubAPI {
+/// A hub whose `endSession` answers only when the test calls `answer()`, cancelled or not.
+private final class SilentHub: HubAPI, Sendable {
+  private let gate = Mutex<(open: Bool, waiting: [CheckedContinuation<Void, Never>])>((false, []))
+
+  func answer() {
+    let waiting = gate.withLock { state in
+      state.open = true
+      defer { state.waiting = [] }
+      return state.waiting
+    }
+    for call in waiting { call.resume() }
+  }
+
   func enroll(_ request: EnrollRequest) async throws -> EnrollResponse { throw CancellationError() }
   func me() async throws -> MeResponse { throw CancellationError() }
   func push(_ changes: [SyncChange]) async throws -> PushResponse { throw CancellationError() }
@@ -85,9 +98,12 @@ private struct SilentHub: HubAPI {
   func mintPairingCode() async throws -> PairingCodeResponse { throw CancellationError() }
   func revokeSelf() async throws {}
   func endSession() async throws {
-    // Answers only after a while, whether or not the call was cancelled.
-    await withCheckedContinuation { (answer: CheckedContinuation<Void, Never>) in
-      DispatchQueue.global().asyncAfter(deadline: .now() + 60) { answer.resume() }
+    await withCheckedContinuation { (call: CheckedContinuation<Void, Never>) in
+      let open = gate.withLock { state in
+        if !state.open { state.waiting.append(call) }
+        return state.open
+      }
+      if open { call.resume() }
     }
   }
 }

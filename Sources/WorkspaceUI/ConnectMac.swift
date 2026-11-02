@@ -2,16 +2,22 @@ import Foundation
 import Observation
 import SwiftUI
 
-/// "Connect your Mac" (sign-in plan, Task 15; `pairing.html`, middle): on a phone whose account has no
-/// Mac, it replaces the thread list. The sidebar's footer and the profile menu stay. Threads run on a
-/// Mac, so there is nothing to list until one joins; the phone's next sync (at most a minute) finds it.
-/// The app draws it (its scanner and Safari sheet are the app's), through `connectMacContent`.
+/// "Connect your Mac" (sign-in plan, Task 15; mockup A2, approved 2026-11-02): the iPhone's signed-out
+/// screen leads with it, and on a phone whose account has no Mac it replaces the thread list in the
+/// same layout. The sidebar's footer and the profile menu stay. Threads run on a Mac, so there is
+/// nothing to list until one joins; the phone's next sync (at most a minute) finds it. Both are drawn
+/// from `PhoneLandingContent`; the scanner and the enrollment sheet are the app's.
 public enum ConnectMacCopy {
   public static let title = "Connect your Mac"
-  public static let message =
-    "Your threads run on your Mac. Install Agent Workspace there, sign in, and scan the code it shows."
+  public static let message = "Scan the code Agent Workspace shows on your Mac."
   public static let scan = "Scan the code"
-  public static let copyLink = "Copy download link"
+  /// The signed-out screen's one quiet link, to the sheet of other sign-ins.
+  public static let otherWays = "Other ways to sign in"
+  /// The sheet's passkey row (the Mac's button stays `SignInCopy.passkey`).
+  public static let passkey = "Sign in with a passkey"
+  public static let enroll = "Use an enrollment code"
+  /// Copies `https://<site>/app/download`, then reads `copied` for two seconds.
+  public static let getMacApp = "Get the Mac app"
   public static let copied = "Copied"
   public static let help = "Help"
 }
@@ -24,7 +30,7 @@ extension WorkspaceModel {
   }
 }
 
-/// The view's state: what Copy download link copies and how long it reads "Copied", and the help page
+/// The view's state: what Get the Mac app copies and how long it reads "Copied", and the help page
 /// a Safari sheet shows. The pasteboard and the clock are the app's.
 @MainActor @Observable
 public final class ConnectMac {
@@ -63,7 +69,7 @@ public final class ConnectMac {
     self.sleep = sleep
   }
 
-  public var copyLabel: String { copied ? ConnectMacCopy.copied : ConnectMacCopy.copyLink }
+  public var copyLabel: String { copied ? ConnectMacCopy.copied : ConnectMacCopy.getMacApp }
 
   /// Copies the download link, then reads "Copied" for two seconds (from the latest tap).
   public func copyDownloadLink() async {

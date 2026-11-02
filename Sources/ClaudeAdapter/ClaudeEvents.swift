@@ -14,6 +14,10 @@ public struct ClaudeTurnTracker: Sendable {
   private var interruptRequested = false
   private var currentMessageId: String?
   private var blocks: [Int: (type: String, itemId: String)] = [:]
+  /// Text and thinking blocks the stream started and no `assistant` frame has completed yet, by
+  /// message id, in stream order. Claude Code sends each block in its own `assistant` frame, so a
+  /// frame's position is not the block's stream index; a completion takes the first of its type here.
+  private var unfinished: [String: [(type: String, itemId: String)]] = [:]
   private var toolUses: [String: (name: String, input: JSONValue)] = [:]
   private var lastErrorCode: ErrorCode?
 
@@ -149,6 +153,7 @@ public struct ClaudeTurnTracker: Sendable {
       case "text":
         let itemId = "\(messageId)#\(index)"
         blocks[index] = ("text", itemId)
+        unfinished[messageId, default: []].append(("text", itemId))
         return [event(.messageStarted, item("agentMessage", role: .assistant, ["text": ""]), itemId: itemId)]
       case "tool_use":
         guard let id = block["id"]?.stringValue else { return [] }
@@ -158,6 +163,7 @@ public struct ClaudeTurnTracker: Sendable {
       case "thinking":
         let itemId = "\(messageId)#\(index)"
         blocks[index] = ("thinking", itemId)
+        unfinished[messageId, default: []].append(("thinking", itemId))
         return [event(.toolStarted, item("thinking", role: .assistant, ["text": ""]), itemId: itemId)]
       default:
         return []
@@ -192,7 +198,7 @@ public struct ClaudeTurnTracker: Sendable {
     for (index, block) in (message["content"]?.arrayValue ?? []).enumerated() {
       switch block["type"]?.stringValue {
       case "text":
-        let itemId = "\(messageId)#\(index)"
+        let itemId = completedItemId(type: "text", messageId: messageId, index: index)
         events.append(
           event(
             .messageCompleted, item("agentMessage", role: .assistant, ["text": block["text"] ?? ""]),
@@ -202,7 +208,7 @@ public struct ClaudeTurnTracker: Sendable {
         toolUses[id] = (block["name"]?.stringValue ?? "tool", block["input"] ?? .null)
         events.append(event(.toolStarted, toolItem(id: id, status: "inProgress"), itemId: id))
       case "thinking":
-        let itemId = "\(messageId)#\(index)"
+        let itemId = completedItemId(type: "thinking", messageId: messageId, index: index)
         events.append(
           event(
             .toolCompleted, item("thinking", role: .assistant, ["text": block["thinking"] ?? ""]),
@@ -212,6 +218,16 @@ public struct ClaudeTurnTracker: Sendable {
       }
     }
     return events
+  }
+
+  /// The item a completed text or thinking block belongs to: the first block of that type the stream
+  /// started for this message and nothing has completed yet; without one (nothing was streamed), the
+  /// block's position in the frame.
+  private mutating func completedItemId(type: String, messageId: String, index: Int) -> String {
+    if let position = unfinished[messageId]?.firstIndex(where: { $0.type == type }) {
+      return unfinished[messageId]!.remove(at: position).itemId
+    }
+    return "\(messageId)#\(index)"
   }
 
   private mutating func toolResults(_ value: JSONValue) -> [AdapterEvent] {
@@ -265,6 +281,7 @@ public struct ClaudeTurnTracker: Sendable {
     activeTurnUuid = nil
     interruptRequested = false
     blocks = [:]
+    unfinished = [:]
     return [finished]
   }
 
