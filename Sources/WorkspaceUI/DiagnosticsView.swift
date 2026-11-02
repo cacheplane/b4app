@@ -99,3 +99,20 @@ struct DiagnosticsView: View {
     }
   }
 }
+
+/// A connection status in words, for Diagnostics' runtime table.
+struct StatusBadge: View {
+  let status: ConnectionStatus
+
+  var body: some View {
+    LLABadge(status.rawValue, tone: tone, raised: true)
+  }
+
+  private var tone: LLABadge.Tone {
+    switch status {
+    case .ready: return .neutral
+    case .error, .incompatible, .offline: return .danger
+    case .connecting, .unconfigured: return .muted
+    }
+  }
+}

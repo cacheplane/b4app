@@ -59,6 +59,7 @@ extension SettingsPage {
 /// window keeps one sidebar and a fixed minimum.
 public struct WorkspaceSettingsView: View {
   @Bindable var model: WorkspaceModel
+  @State private var addingB4 = false
 
   public init(model: WorkspaceModel) {
     LLAFonts.register()
@@ -105,9 +106,7 @@ public struct WorkspaceSettingsView: View {
       Spacer(minLength: LLA.Space.m)
       switch model.settingsPage {
       case .connections:
-        Button("Re-check runtimes") { Task { await model.refreshDiagnostics() } }
-          .buttonStyle(.llaSecondary)
-          .disabled(model.link != .ready || model.diagnosticsLoading)
+        ConnectionAddMenu(model: model) { addingB4 = true }
       case .diagnostics:
         Button("Refresh") { Task { await model.refreshDiagnostics() } }
           .buttonStyle(.llaSecondary)
@@ -118,6 +117,7 @@ public struct WorkspaceSettingsView: View {
     }
     .padding(.horizontal, LLA.Space.xl)
     .padding(.top, LLA.Space.xl)
+    .sheet(isPresented: $addingB4) { B4ConnectionSheet(model: model, connection: nil) }
   }
 }
 
