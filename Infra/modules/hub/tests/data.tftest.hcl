@@ -119,12 +119,12 @@ run "no_secret_values_in_terraform" {
   command = apply
 
   assert {
-    condition     = length(aws_secretsmanager_secret.this) == 6
-    error_message = "six secrets exist"
+    condition     = length(aws_secretsmanager_secret.this) == 9
+    error_message = "nine secrets exist"
   }
 
   assert {
-    condition     = toset(keys(aws_secretsmanager_secret.this)) == toset(["database-admin-url", "database-url", "secret-key", "apple-team-id", "apple-key-id", "apple-private-key"])
+    condition     = toset(keys(aws_secretsmanager_secret.this)) == toset(["database-admin-url", "database-url", "secret-key", "apple-team-id", "apple-key-id", "apple-private-key", "apns-key-id", "apns-team-id", "apns-private-key"])
     error_message = "secrets are keyed by short name"
   }
 

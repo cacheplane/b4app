@@ -274,6 +274,17 @@ With sign-up open, the apps can instead sign up on this hub with a passkey (see 
 
 Join the phone with "Use an enrollment code" on its sign-in screen: the same hub URL and a second code. Or pair it from the Mac's "Add your iPhone", which needs no code typed. The Mac pushes its history and every later change; the phone's thread list and open transcripts update without a refresh. The clients accept `http` only for `localhost`, `127.0.0.1`, and `::1`; any other hub must be `https`, and both sides refuse anything else before sending a request. The Simulator reaches the hub at `http://localhost:8080`. Simulator builds need code signing for the Keychain (Xcode's default "Sign to Run Locally" works; `CODE_SIGNING_ALLOWED=NO` builds fail with Keychain error -34018 when the app tries to store its device token).
 
+Notifications from the local hub: by default Compose runs the hub with `B4HUB_PUSH_SENDER=spool`, which writes each notification as a `.apns` file into `Hub/push-spool` (or `B4HUB_PUSH_SPOOL_HOST_DIR`); `Scripts/sim-push.sh` feeds them to the booted Simulator, so no Apple account is needed. To send through Apple instead (the Simulator registers a sandbox token, a device a production one; the hub sends each token to the matching APNs host), put these in `Hub/.env` and recreate the hub with `docker compose up -d hub`:
+
+```
+B4HUB_PUSH_SENDER=apns
+B4HUB_APNS_KEY_ID=<the key's 10-character id>
+B4HUB_APNS_TEAM_ID=<your 10-character team id>
+B4HUB_APNS_KEY_HOST_PATH=/Users/<you>/.b4app/signing/AuthKey_<key id>.p8
+```
+
+Compose mounts that `.p8` read-only at `/run/secrets/apns.p8` and passes it as `B4HUB_APNS_PRIVATE_KEY_FILE`; the key never goes in `.env` or an argument. The hub refuses to start on a missing id, a missing file, or a key that is not a P-256 PEM, and names the variable. With `spool` (the default) the three `B4HUB_APNS_*` values are ignored, so leaving them empty is fine. Switch back by setting `B4HUB_PUSH_SENDER=spool`.
+
 ```bash
 .build/debug/agent-workspace hub status
 ```

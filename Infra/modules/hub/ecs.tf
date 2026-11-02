@@ -78,9 +78,14 @@ resource "aws_ecs_task_definition" "hub" {
     apple_team_id_arn     = aws_secretsmanager_secret.this["apple-team-id"].arn
     apple_key_id_arn      = aws_secretsmanager_secret.this["apple-key-id"].arn
     apple_private_key_arn = aws_secretsmanager_secret.this["apple-private-key"].arn
+    apns_key_id_arn       = aws_secretsmanager_secret.this["apns-key-id"].arn
+    apns_team_id_arn      = aws_secretsmanager_secret.this["apns-team-id"].arn
+    apns_private_key_arn  = aws_secretsmanager_secret.this["apns-private-key"].arn
     # The sign-in hub is not on main yet, and ECS refuses to start a task
-    # whose secret has no value; the placeholder leaves those four out.
+    # whose secret has no value; the placeholder leaves those four out, and
+    # the three APNs secrets and B4HUB_PUSH_SENDER=apns with them.
     include_signin_secrets = false
+    include_apns_secrets   = false
   })
 }
 

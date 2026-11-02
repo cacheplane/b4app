@@ -300,7 +300,11 @@ run "signin_secrets_render" {
       apple_team_id_arn      = "arn:team"
       apple_key_id_arn       = "arn:key"
       apple_private_key_arn  = "arn:private"
+      apns_key_id_arn        = "arn:apns-key"
+      apns_team_id_arn       = "arn:apns-team"
+      apns_private_key_arn   = "arn:apns-private"
       include_signin_secrets = true
+      include_apns_secrets   = false
       }))[0].secrets == [
       { name = "B4HUB_SECRET_KEY", valueFrom = "arn:secret-key" },
       { name = "B4HUB_APPLE_TEAM_ID", valueFrom = "arn:team" },
@@ -309,6 +313,71 @@ run "signin_secrets_render" {
       { name = "DATABASE_URL", valueFrom = "arn:db-url" },
     ]
     error_message = "with include_signin_secrets the template renders valid JSON with the four sign-in secrets"
+  }
+}
+
+# The APNs block is gated on its own flag: with it on, the serving task gets
+# the three APNs secrets and B4HUB_PUSH_SENDER=apns, and nothing else moves.
+run "apns_secrets_render" {
+  command = apply
+
+  variables {
+    hostname = "hub.test.b4.run"
+  }
+
+  assert {
+    condition = jsondecode(templatefile("${path.module}/../../taskdefs/hub.json.tpl", {
+      image                  = "img"
+      region                 = "us-east-2"
+      log_group              = "/b4hub/test/hub"
+      environment_name       = "test"
+      public_url             = "https://hub.test.b4.run"
+      rp_id                  = "test.b4.run"
+      db_url_secret_arn      = "arn:db-url"
+      secret_key_arn         = "arn:secret-key"
+      apple_team_id_arn      = "arn:team"
+      apple_key_id_arn       = "arn:key"
+      apple_private_key_arn  = "arn:private"
+      apns_key_id_arn        = "arn:apns-key"
+      apns_team_id_arn       = "arn:apns-team"
+      apns_private_key_arn   = "arn:apns-private"
+      include_signin_secrets = false
+      include_apns_secrets   = true
+      }))[0].secrets == [
+      { name = "B4HUB_APNS_KEY_ID", valueFrom = "arn:apns-key" },
+      { name = "B4HUB_APNS_TEAM_ID", valueFrom = "arn:apns-team" },
+      { name = "B4HUB_APNS_PRIVATE_KEY", valueFrom = "arn:apns-private" },
+      { name = "DATABASE_URL", valueFrom = "arn:db-url" },
+    ]
+    error_message = "with include_apns_secrets the serving task gets the three APNs secrets"
+  }
+
+  assert {
+    condition = one([for e in jsondecode(templatefile("${path.module}/../../taskdefs/hub.json.tpl", {
+      image                  = "img"
+      region                 = "us-east-2"
+      log_group              = "/b4hub/test/hub"
+      environment_name       = "test"
+      public_url             = "https://hub.test.b4.run"
+      rp_id                  = "test.b4.run"
+      db_url_secret_arn      = "arn:db-url"
+      secret_key_arn         = "arn:secret-key"
+      apple_team_id_arn      = "arn:team"
+      apple_key_id_arn       = "arn:key"
+      apple_private_key_arn  = "arn:private"
+      apns_key_id_arn        = "arn:apns-key"
+      apns_team_id_arn       = "arn:apns-team"
+      apns_private_key_arn   = "arn:apns-private"
+      include_signin_secrets = false
+      include_apns_secrets   = true
+    }))[0].environment : e.value if e.name == "B4HUB_PUSH_SENDER"]) == "apns"
+    error_message = "with include_apns_secrets the serving task sends through APNs"
+  }
+
+  # Terraform's own registration keeps the flag off: no push sender yet.
+  assert {
+    condition     = !contains(jsondecode(aws_ecs_task_definition.hub.container_definitions)[0].environment[*].name, "B4HUB_PUSH_SENDER")
+    error_message = "the placeholder serving task sets no push sender"
   }
 }
 

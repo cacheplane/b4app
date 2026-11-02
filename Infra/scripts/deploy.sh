@@ -53,6 +53,7 @@ migrate_family="$name-hub-migrate"
 source_ref="ghcr.io/cacheplane/b4hub@$digest"
 
 signin="$(signin_flag)"
+apns="$(apns_flag)"
 
 step() { echo "==> $*"; }
 
@@ -89,6 +90,7 @@ step "resolving ARNs"
 db_url_arn="$(secret_arn database-url)"
 db_admin_url_arn="$(secret_arn database-admin-url)"
 collect_signin_vars "$signin"
+collect_apns_vars "$apns"
 # The new revisions keep the roles Terraform gave each family.
 hub_td="$(task_definition "$hub_family")"
 hub_exec="$(resolved "$hub_family execution role" "$ARN" "$(jq -r .taskDefinition.executionRoleArn <<< "$hub_td")")"
@@ -133,8 +135,10 @@ step "registering $hub_family"
   --exec-role "$hub_exec" \
   --task-role "$hub_task" \
   --include-signin-secrets "$signin" \
+  --include-apns-secrets "$apns" \
   --var "db_url_secret_arn=$db_url_arn" \
-  ${signin_vars[@]+"${signin_vars[@]}"}
+  ${signin_vars[@]+"${signin_vars[@]}"} \
+  ${apns_vars[@]+"${apns_vars[@]}"}
 hub_arn="$(register "$work/hub.json")"
 echo "$hub_arn"
 
