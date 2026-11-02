@@ -25,6 +25,8 @@ async fn main() -> ExitCode {
         LogFormat::Text => subscriber.init(),
         // One object per line; the `request` span's fields (`request_id`, `method`, `path`,
         // `device_id`) ride on every event under `span`, and the event's own fields are top-level.
+        // Only the innermost span is named: an event inside a further span (a future
+        // `#[instrument]`) would lose `request_id` unless `with_span_list(true)` is switched on.
         LogFormat::Json => subscriber
             .json()
             .flatten_event(true)

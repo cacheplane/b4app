@@ -515,7 +515,7 @@ b4hub maintenance on --message "restoring the database, back by 14:00 UTC"
 b4hub maintenance off
 ```
 
-On a Compose host the same commands run through the `migrate` service, which carries the admin URL: `docker compose run --rm migrate maintenance on --message "..."`, then `docker compose run --rm migrate maintenance off`. The switch is a row in `hub_settings`, so it survives deploys and restarts: `status` is the first thing to check when writes fail with `maintenance` and nobody remembers turning it on.
+On a Compose host the same commands run through the `migrate` service, which carries the admin URL: `docker compose run --rm migrate maintenance on --message "..."`, then `docker compose run --rm migrate maintenance off`. The switch is a row in `hub_settings`, so it survives deploys and restarts: `status` is the first thing to check when writes fail with `maintenance` and nobody remembers turning it on. Expect the `alb-5xx` alarm while it is on with an active Mac: the load balancer counts each refused write as a 5xx (the hub logs them at `WARN`, not `ERROR`), and the Mac client retries its outbox on its own schedule.
 
 Upstream status, each subscribed with the owner's email: Better Stack (the `/readyz` monitors and the status page at `status.b4.run`), the AWS Health Dashboard of each account, `githubstatus.com`, and Apple's developer system status (`developer.apple.com/system-status`).
 

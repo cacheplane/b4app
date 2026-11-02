@@ -162,10 +162,17 @@ async fn tenant_tables_force_row_level_security(pool: PgPool) {
 async fn sqlx_applies_a_lower_numbered_migration_added_later(pool: PgPool) {
     use sqlx::migrate::Migrator;
 
-    let dir = std::env::temp_dir().join(format!(
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let scratch = Scratch(std::env::temp_dir().join(format!(
         "b4hub-migrations-{}",
         b4hub_core::ids::new_uuid().simple()
-    ));
+    )));
+    let dir = scratch.0.clone();
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("0001_a.sql"), "CREATE TABLE a (id int)").unwrap();
     std::fs::write(dir.join("0003_c.sql"), "CREATE TABLE c (id int)").unwrap();
@@ -208,7 +215,6 @@ async fn sqlx_applies_a_lower_numbered_migration_added_later(pool: PgPool) {
         matches!(error, sqlx::migrate::MigrateError::VersionMissing(2)),
         "{error}"
     );
-    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[sqlx::test(migrations = false)]

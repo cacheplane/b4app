@@ -462,6 +462,8 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
         "serving"
     );
     let state = AppState::new(db.clone()).trust_proxy(trust_proxy);
+    // Know the switch before the first request, not one poll later.
+    maintenance::refresh(&db, &state.maintenance).await;
     let pruning = tokio::spawn(serve::prune_loop(
         db.clone(),
         retention,

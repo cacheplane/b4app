@@ -41,9 +41,9 @@ pub fn route() -> MethodRouter<AppState> {
 }
 
 async fn push(
-    WritesAllowed: WritesAllowed,
     State(state): State<AppState>,
     device: AuthedDevice,
+    WritesAllowed: WritesAllowed,
     ApiJson(request): ApiJson<PushRequest>,
 ) -> Result<Json<Value>, ApiError> {
     if request.changes.len() > MAX_PUSH_CHANGES {

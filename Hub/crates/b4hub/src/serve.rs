@@ -12,9 +12,9 @@ use tokio::sync::{oneshot, watch};
 
 use crate::auth::LastTouched;
 use crate::error::ApiError;
-use crate::logging;
 use crate::maintenance::MaintenanceState;
 use crate::notify::Notifier;
+use crate::request_log;
 use crate::routes::{changes, devices, enroll, health, snapshot};
 
 /// How long the listener stays open, answering `/readyz` 503, after shutdown begins, so a load
@@ -99,7 +99,7 @@ pub fn router(state: AppState) -> Router {
         .fallback(|| async { ApiError::not_found() })
         .layer(middleware::from_fn_with_state(
             trust_proxy,
-            logging::trace_request,
+            request_log::trace_request,
         ))
         .with_state(state)
 }

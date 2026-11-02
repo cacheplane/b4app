@@ -31,9 +31,9 @@ pub async fn me(
 }
 
 pub async fn revoke_self(
-    WritesAllowed: WritesAllowed,
     State(state): State<AppState>,
     device: AuthedDevice,
+    WritesAllowed: WritesAllowed,
 ) -> Result<StatusCode, ApiError> {
     devices::revoke_self(&state.db, device.org_id, device.device_id).await?;
     Ok(StatusCode::NO_CONTENT)

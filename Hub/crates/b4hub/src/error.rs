@@ -4,8 +4,7 @@
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Request};
-use axum::http::header::RETRY_AFTER;
-use axum::http::{HeaderValue, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::de::DeserializeOwned;
@@ -124,8 +123,9 @@ impl ApiError {
         )
     }
 
-    /// A write while the operator has paused writes (`b4hub maintenance on`). The response
-    /// carries `Retry-After` (see `IntoResponse`). `message` is the operator's text, if any.
+    /// A write while the operator has paused writes (`b4hub maintenance on`). `message` is the
+    /// operator's text, if any. `maintenance::Refused` is what a handler answers with, so the
+    /// response also carries `Retry-After`.
     pub fn maintenance(message: Option<&str>) -> ApiError {
         ApiError::execution(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -188,14 +188,7 @@ impl IntoResponse for ApiError {
                 "details": { "code": self.code },
             }
         });
-        let mut response = (self.status, Json(body)).into_response();
-        if self.code == "maintenance" {
-            response.headers_mut().insert(
-                RETRY_AFTER,
-                HeaderValue::from(crate::maintenance::RETRY_AFTER_SECS),
-            );
-        }
-        response
+        (self.status, Json(body)).into_response()
     }
 }
 
@@ -219,31 +212,6 @@ mod tests {
                 "details": {"code": "not_ready"},
             }})
         );
-    }
-
-    #[tokio::test]
-    async fn a_maintenance_refusal_says_when_to_retry() {
-        let response = ApiError::maintenance(Some("back soon")).into_response();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(response.headers()[RETRY_AFTER], "30");
-        let bytes = axum::body::to_bytes(response.into_body(), 4096)
-            .await
-            .unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(
-            body["error"]["message"],
-            "the hub is in maintenance: back soon"
-        );
-        assert_eq!(body["error"]["details"]["code"], "maintenance");
-        assert_eq!(
-            ApiError::maintenance(None).message,
-            "the hub is in maintenance: writes are paused"
-        );
-        assert!(ApiError::not_ready()
-            .into_response()
-            .headers()
-            .get(RETRY_AFTER)
-            .is_none());
     }
 
     #[test]

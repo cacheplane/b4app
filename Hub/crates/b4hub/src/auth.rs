@@ -42,7 +42,7 @@ impl FromRequestParts<AppState> for AuthedDevice {
         let device = devices::authenticate(&state.db, token)
             .await?
             .ok_or_else(ApiError::unauthorized)?;
-        // The request span's `device_id` (see `logging`): the id, never the token.
+        // The request span's `device_id` (see `request_log`): the id, never the token.
         tracing::Span::current().record("device_id", tracing::field::display(device.device_id));
         if state.last_touched.due(device.device_id, Instant::now()) {
             // A failed touch must not fail the request it rode on.

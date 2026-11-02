@@ -92,7 +92,6 @@ async fn the_maintenance_command_switches_the_database_flag(pool: PgPool) {
     assert_eq!(error.exit_code(), 2);
     assert!(Cli::try_parse_from(["b4hub", "maintenance"]).is_err());
     assert!(Cli::try_parse_from(["b4hub", "maintenance", "on", "--message", ""]).is_err());
-    let _ = Maintenance::read_only(None);
 }
 
 type HttpClient = Client<HttpConnector, Full<Bytes>>;
@@ -245,6 +244,17 @@ async fn maintenance_pauses_writes_and_keeps_reads_and_readiness(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
 
+    // A bad token is still a 401, since authentication runs before the guard.
+    let (status, _, _) = http(
+        &client,
+        "POST",
+        &changes,
+        Some("not-a-token"),
+        Some(small_push(2)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
     // Reads continue, the device is still valid, and the hub still reports ready.
     let (status, _, body) = http(
         &client,
@@ -290,7 +300,7 @@ fn the_default_message_names_paused_writes() {
     let state = MaintenanceState::default();
     assert!(state.current().is_none());
     state.set(Some(Maintenance::read_only(None)));
-    let error = maintenance::refused(&state.current().unwrap());
+    let error = maintenance::refused(&state.current().unwrap()).0;
     assert_eq!(
         error.message,
         "the hub is in maintenance: writes are paused"

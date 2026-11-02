@@ -32,7 +32,7 @@ every change to the authenticated device.
 Every response carries `X-Request-Id`. The hub mints a UUIDv7 per request, or keeps the inbound
 `X-Request-Id` when it is 1 to 64 printable ASCII characters without whitespace and the hub runs
 with `B4HUB_TRUST_X_FORWARDED_FOR=1` (a proxy in front sets it; otherwise a client could choose the
-id its request is logged under). Every log line the request produces names the same id (see
+id its request is logged under; `0` or unset is off). Every log line the request produces names the same id (see
 "Logging"), so an operator can go from a client's error to the hub's lines for it. The id is an
 opaque string to clients.
 
@@ -448,7 +448,7 @@ While on, `POST /v1/enroll`, `POST /v1/changes`, and `DELETE /v1/devices/self` a
 {"error": {"kind": "execution_error", "message": "the hub is in maintenance: <message, or 'writes are paused'>", "details": {"code": "maintenance"}}}
 ```
 
-before reading the body or the token. Reads (`GET /v1/changes`, `GET /v1/snapshot`, `GET /v1/me`,
+after the token is checked (a bad token is still `401`) and before the body is read. Reads (`GET /v1/changes`, `GET /v1/snapshot`, `GET /v1/me`,
 `GET /v1/devices`), `/healthz`, and `/readyz` are unchanged, except that `/readyz` reports
 `"maintenance": "read_only"`. A client treats `maintenance` like a transient failure: keep the
 outbox, retry after the header's delay.
@@ -464,10 +464,11 @@ Every request runs inside a `request` span with the fields `request_id` (the val
 response's `X-Request-Id`), `method`, `path` (the matched route pattern, such as `/v1/changes`, or
 `(unmatched)`; never the raw path or the query string), and, once the bearer token has been
 verified, `device_id` (the device's UUID; the token is never logged). One completion event per
-request, `request complete`, carries `status` and `elapsed_ms`, at `ERROR` for a 5xx and `INFO`
+request, `request complete`, carries `status` and `elapsed_ms`: at `WARN` for a `503` (the hub
+refusing on purpose: maintenance, shutting down, not ready), `ERROR` for any other 5xx, and `INFO`
 otherwise. Headers and bodies are never logged. In JSON the event's own fields are top-level and
 the span's fields sit under `span`:
 
 ```json
-{"timestamp":"2026-11-02T10:15:30.123456Z","level":"INFO","message":"request complete","status":200,"elapsed_ms":12,"target":"b4hub::logging","span":{"device_id":"0192f0…","method":"POST","path":"/v1/changes","request_id":"0192f0…","name":"request"}}
+{"timestamp":"2026-11-02T10:15:30.123456Z","level":"INFO","message":"request complete","status":200,"elapsed_ms":12,"target":"b4hub::request_log","span":{"device_id":"0192f0…","method":"POST","path":"/v1/changes","request_id":"0192f0…","name":"request"}}
 ```

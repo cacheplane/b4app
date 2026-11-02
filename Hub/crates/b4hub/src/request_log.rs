@@ -7,7 +7,7 @@
 use std::time::Instant;
 
 use axum::extract::{MatchedPath, Request, State};
-use axum::http::{HeaderName, HeaderValue};
+use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use tracing::Instrument;
@@ -54,7 +54,11 @@ pub async fn trace_request(
         let mut response = next.run(request).await;
         let status = response.status();
         let elapsed_ms = started.elapsed().as_millis() as u64;
-        if status.is_server_error() {
+        // A 503 is the hub refusing on purpose (maintenance, shutting down, not ready), so it is
+        // a warning; any other 5xx is a failure.
+        if status == StatusCode::SERVICE_UNAVAILABLE {
+            tracing::warn!(status = status.as_u16(), elapsed_ms, "request complete");
+        } else if status.is_server_error() {
             tracing::error!(status = status.as_u16(), elapsed_ms, "request complete");
         } else {
             tracing::info!(status = status.as_u16(), elapsed_ms, "request complete");
@@ -87,7 +91,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use axum::body::Body;
-    use axum::http::{header, HeaderValue, Request, StatusCode};
+    use axum::http::{header, Request};
     use axum::routing::get;
     use axum::{middleware, Router};
     use serde_json::Value;
@@ -245,7 +249,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unmatched_route_and_a_5xx_are_logged_at_error_without_the_raw_path() {
+    async fn a_503_is_a_warning_a_5xx_an_error_and_the_raw_path_is_never_logged() {
         let buffer = Buffer::default();
         let subscriber = tracing_subscriber::fmt()
             .json()
@@ -258,6 +262,7 @@ mod tests {
 
         let router = Router::new()
             .route("/boom", get(|| async { StatusCode::INTERNAL_SERVER_ERROR }))
+            .route("/paused", get(|| async { StatusCode::SERVICE_UNAVAILABLE }))
             .layer(middleware::from_fn_with_state(false, trace_request));
         let response = router
             .clone()
@@ -265,6 +270,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let response = router
+            .clone()
+            .oneshot(Request::get("/paused").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let response = router
             .oneshot(
                 Request::get("/no/such/thing?q=1")
@@ -287,6 +298,9 @@ mod tests {
         let boom = done.next().unwrap();
         assert_eq!(boom["level"], "ERROR");
         assert_eq!(boom["status"], 500);
+        let paused = done.next().unwrap();
+        assert_eq!(paused["level"], "WARN");
+        assert_eq!(paused["status"], 503);
         let missing = done.next().unwrap();
         assert_eq!(missing["level"], "INFO");
         assert_eq!(missing["status"], 404);
