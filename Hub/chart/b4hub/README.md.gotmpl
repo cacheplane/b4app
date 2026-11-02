@@ -7,9 +7,30 @@
 
 {{ template "chart.homepageLine" . }}
 
-## Before you install
+## Prerequisites
 
-The hub needs an external PostgreSQL. Create one Secret with two keys:
+- Kubernetes 1.29 or newer and Helm 4.
+- An external PostgreSQL 17, or the CloudNativePG example below (`examples/cnpg-cluster.yaml`).
+
+## Install
+
+```sh
+helm install b4hub oci://ghcr.io/cacheplane/charts/b4hub --version <v> -f values.yaml
+```
+
+`hub.publicUrl` and `hub.rpId` are required, plus a database Secret (next section). A minimal `values.yaml`:
+
+```yaml
+hub:
+  publicUrl: https://hub.example.com
+  rpId: example.com
+database:
+  existingSecret: b4hub-db
+```
+
+## Database secret contract
+
+Create one Secret with two keys:
 
 - `DATABASE_URL`: the `b4hub_app` role's connection URL. The hub Deployment mounts only this key, at `/etc/b4hub/db/DATABASE_URL`, and reads it through `DATABASE_URL_FILE`.
 - `DATABASE_ADMIN_URL`: the owner connection URL. Only the migration Job mounts it.
@@ -17,19 +38,24 @@ The hub needs an external PostgreSQL. Create one Secret with two keys:
 Key names are overridable with `database.secretKeys`. Pass the Secret as `database.existingSecret`.
 `database.urls.url` and `database.urls.adminUrl` make the chart create `<release>-b4hub-db` instead; that is for evaluation only (the values sit in your values file, and the Secret is a hook resource that `helm uninstall` leaves behind). Use `existingSecret` in production.
 
-`hub.publicUrl` and `hub.rpId` are required.
+### CloudNativePG example
+
+`examples/cnpg-cluster.yaml` is a single-instance CloudNativePG `Cluster` named `b4hub-db` (PostgreSQL 17, 10Gi, database `b4hub`, owner `b4hub_owner`). The chart never applies it. The sequence below builds the `b4hub-db` Secret from CNPG's generated secrets. The CNPG secret names (`b4hub-db-app`, `b4hub-db-superuser`) and their key names (`password`) are **to be confirmed against the CloudNativePG docs** before you rely on them, and the `b4hub_app` role the hub connects as must exist with the grants the migration expects; the example uses the owner role for both URLs, which suits evaluation only.
 
 ```sh
-helm install hub oci://ghcr.io/cacheplane/charts/b4hub \
-  --namespace b4hub --create-namespace \
-  --set database.existingSecret=b4hub-db \
-  --set hub.publicUrl=https://hub.example.com \
-  --set hub.rpId=example.com
+kubectl create namespace b4hub
+kubectl -n b4hub apply -f examples/cnpg-cluster.yaml
+kubectl -n b4hub wait --for=condition=Ready cluster/b4hub-db --timeout=300s
+
+APP_PW=$(kubectl -n b4hub get secret b4hub-db-app -o jsonpath='{.data.password}' | base64 -d)
+ADMIN_PW=$(kubectl -n b4hub get secret b4hub-db-superuser -o jsonpath='{.data.password}' | base64 -d)
+
+kubectl -n b4hub create secret generic b4hub-db \
+  --from-literal=DATABASE_URL="postgres://b4hub_owner:${APP_PW}@b4hub-db-rw:5432/b4hub" \
+  --from-literal=DATABASE_ADMIN_URL="postgres://postgres:${ADMIN_PW}@b4hub-db-rw:5432/b4hub"
 ```
 
-## Migrations
-
-`b4hub migrate` runs as a Job with `helm.sh/hook: pre-install,pre-upgrade` (weight `-5`, delete policy `before-hook-creation,hook-succeeded`, `backoffLimit: 0`). A failed migration fails the release before the Deployment changes. The Job is named `<fullname>-migrate-<revision>`; a failed one is kept for an hour. Helm does not track hook resources, so read a failure with `kubectl logs job/<name>` (the install notes print the exact command).
+`enableSuperuserAccess: true` in the example is what creates `b4hub-db-superuser`.
 
 ## Sign-in secrets
 
@@ -41,6 +67,39 @@ Sign-in needs `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, a
 
 With neither set, the hub runs without sign-in secrets and the chart renders none.
 `secrets.useFileVars: false` (default) exposes them as environment variables from `secretKeyRef`. `true` mounts them at `/etc/b4hub/secrets/<KEY>` and sets `B4HUB_*_FILE` instead; turn it on once the hub reads the `_FILE` forms (M8e).
+
+## Ingress or Gateway
+
+Enable one of the two. Both route to the chart Service (port name `http`).
+
+The proxy must pass or append the client address: the hub trusts the last `X-Forwarded-For` hop while `hub.trustXForwardedFor` (`B4HUB_TRUST_X_FORWARDED_FOR`) is true, so turn that off if your proxy does not append it. The hub holds WebSockets and 25 s long-polls open, so the proxy's read timeout must exceed 25 s.
+
+**Ingress** (`examples/values-ingress.yaml`). The chart assumes no controller-specific annotations; set what your controller needs under `ingress.annotations`:
+
+```yaml
+ingress:
+  annotations:
+    # ingress-nginx style
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    # nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # Traefik style
+    # traefik.ingress.kubernetes.io/router.entrypoints: websecure
+```
+
+**Gateway API** (`examples/values-httproute.yaml`). `httpRoute.parentRefs` is passed through verbatim. Gateway API timeouts default to the implementation's; leave `httpRoute.timeouts` unset (no `timeouts` key is rendered) unless you know your Gateway's defaults keep long-polls open.
+
+## Observability
+
+- OTLP: `otel.endpoint` and `otel.protocol` set `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_PROTOCOL` on the hub container (only when non-empty); `otel.extraEnv` appends further `OTEL_*` variables. The chart is passthrough only and adds no SDK configuration. The migration Job gets none of them.
+- Metrics: `serviceMonitor.enabled` renders a Prometheus Operator `ServiceMonitor` when the `monitoring.coreos.com/v1` API is installed (otherwise nothing is rendered and the install notes say so). The hub does not expose `/metrics` yet (a later hub milestone); the monitor is wired for when it does. Put your Prometheus selector label (for example `release: prometheus`) in `serviceMonitor.labels`.
+
+## Upgrading
+
+`b4hub migrate` runs as a Job with `helm.sh/hook: pre-install,pre-upgrade` (weight `-5`, delete policy `before-hook-creation,hook-succeeded`, `backoffLimit: 0`). A failed migration fails the release before the Deployment changes, so the old hub keeps running. The Job is named `<fullname>-migrate-<revision>`; a failed one is kept for an hour. Helm does not track hook resources, so read a failure with `kubectl logs -n <namespace> job/<name>` (the install notes print the exact command), fix the cause, and run `helm upgrade` again.
+
+## Uninstall
+
+`helm uninstall b4hub` removes the Deployment, Service, and routes. The evaluation database Secret (`<release>-b4hub-db`, from `database.urls`) is a hook resource and is left behind; delete it yourself with `kubectl delete secret`. Your own `existingSecret`s and the database are never touched.
 
 ## Replicas
 

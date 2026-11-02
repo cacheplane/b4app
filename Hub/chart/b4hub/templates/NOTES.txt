@@ -23,3 +23,18 @@ Use database.existingSecret in production.
 WARNING: replicaCount is {{ .Values.replicaCount }} with strategy Recreate. The relay routes per process
 until M8e (D-057), so devices on different replicas cannot reach each other. Run one replica.
 {{- end }}
+{{- if .Values.ingress.enabled }}
+
+Ingress {{ include "b4hub.fullname" . }} routes {{ .Values.ingress.host }} to the hub. The proxy must pass or append the
+client address (B4HUB_TRUST_X_FORWARDED_FOR is {{ if .Values.hub.trustXForwardedFor }}on{{ else }}off{{ end }}), and must not cut WebSockets or 25 s long-polls.
+{{- end }}
+{{- if .Values.httpRoute.enabled }}
+
+HTTPRoute {{ include "b4hub.fullname" . }} is attached to the Gateway(s) in httpRoute.parentRefs. Gateway API timeouts default to the
+implementation's; the hub expects httpRoute.timeouts to stay unset unless you know your Gateway's defaults keep
+WebSockets and 25 s long-polls open.
+{{- end }}
+{{- if and .Values.serviceMonitor.enabled (not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1")) }}
+
+serviceMonitor.enabled is true but the monitoring.coreos.com/v1 API is not installed, so no ServiceMonitor was rendered.
+{{- end }}

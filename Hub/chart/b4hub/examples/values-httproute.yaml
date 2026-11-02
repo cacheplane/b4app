@@ -1,0 +1,13 @@
+# Minimal Gateway API install. Leave httpRoute.timeouts unset.
+hub:
+  publicUrl: https://hub.example.com
+  rpId: example.com
+database:
+  existingSecret: b4hub-db
+httpRoute:
+  enabled: true
+  hostnames: [hub.example.com]
+  parentRefs:
+    - name: shared-gateway
+      namespace: gateway-system
+      sectionName: https

@@ -101,6 +101,52 @@ service:
   # -- Service port in front of the hub's `http` port (8080).
   port: 80
 
+ingress:
+  # -- Render a `networking.k8s.io/v1` Ingress for the hub.
+  enabled: false
+  # -- `ingressClassName`; omitted when empty.
+  className: ""
+  # -- Free-form Ingress annotations. No controller-specific annotations are assumed (see the README for examples).
+  annotations: {}
+  # -- Host the rule matches. Usually the host of `hub.publicUrl`.
+  host: ""
+  # -- Path routed to the hub.
+  path: /
+  # -- `Prefix`, `Exact`, or `ImplementationSpecific`.
+  pathType: Prefix
+  # -- TLS entries (`secretName`, `hosts`), passed through.
+  tls: []
+
+httpRoute:
+  # -- Render a Gateway API `HTTPRoute` (`gateway.networking.k8s.io/v1`) for the hub.
+  enabled: false
+  # -- Gateway API `ParentReference` objects, passed through verbatim.
+  parentRefs: []
+  # -- Hostnames the route matches.
+  hostnames: []
+  # -- Annotations for the HTTPRoute.
+  annotations: {}
+  # -- Optional `{request, backendRequest}` rule timeouts. Leave unset (`null`): the hub holds WebSockets and 25 s long-polls open, so the route must not add a default timeout.
+  timeouts: null
+
+serviceMonitor:
+  # -- Render a Prometheus Operator `ServiceMonitor` (only when the `monitoring.coreos.com/v1` API is installed). The hub does not expose `/metrics` yet.
+  enabled: false
+  # -- Scrape interval.
+  interval: 30s
+  # -- Extra labels on the ServiceMonitor, for Prometheus operator selection (for example `release: prometheus`).
+  labels: {}
+  # -- Metrics path.
+  path: /metrics
+
+otel:
+  # -- `OTEL_EXPORTER_OTLP_ENDPOINT` for the hub; the env var is set only when this is non-empty.
+  endpoint: ""
+  # -- `OTEL_EXPORTER_OTLP_PROTOCOL` (`grpc`, `http/protobuf`, `http/json`); set only when non-empty.
+  protocol: ""
+  # -- Extra `EnvVar` entries appended after the OTLP variables (for example `OTEL_SERVICE_NAME`).
+  extraEnv: []
+
 # -- Annotations for the hub pods.
 podAnnotations: {}
 

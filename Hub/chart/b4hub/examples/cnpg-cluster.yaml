@@ -1,0 +1,18 @@
+# A single-instance CloudNativePG cluster for evaluating the b4 hub. See the chart README
+# ("Database secret contract") for the kubectl sequence that builds the b4hub-db Secret from it.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: b4hub-db
+spec:
+  instances: 1
+  # PostgreSQL 17 from the CloudNativePG catalog. Confirm the exact tag against the CloudNativePG docs at install time.
+  imageName: ghcr.io/cloudnative-pg/postgresql:17
+  # Creates the b4hub-db-superuser secret, which the migration Job's admin URL needs.
+  enableSuperuserAccess: true
+  storage:
+    size: 10Gi
+  bootstrap:
+    initdb:
+      database: b4hub
+      owner: b4hub_owner

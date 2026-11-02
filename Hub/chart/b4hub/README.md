@@ -6,9 +6,30 @@ The b4 hub, the sync and relay service for the b4 Personal Agent Workspace, with
 
 **Homepage:** <https://b4.run>
 
-## Before you install
+## Prerequisites
 
-The hub needs an external PostgreSQL. Create one Secret with two keys:
+- Kubernetes 1.29 or newer and Helm 4.
+- An external PostgreSQL 17, or the CloudNativePG example below (`examples/cnpg-cluster.yaml`).
+
+## Install
+
+```sh
+helm install b4hub oci://ghcr.io/cacheplane/charts/b4hub --version <v> -f values.yaml
+```
+
+`hub.publicUrl` and `hub.rpId` are required, plus a database Secret (next section). A minimal `values.yaml`:
+
+```yaml
+hub:
+  publicUrl: https://hub.example.com
+  rpId: example.com
+database:
+  existingSecret: b4hub-db
+```
+
+## Database secret contract
+
+Create one Secret with two keys:
 
 - `DATABASE_URL`: the `b4hub_app` role's connection URL. The hub Deployment mounts only this key, at `/etc/b4hub/db/DATABASE_URL`, and reads it through `DATABASE_URL_FILE`.
 - `DATABASE_ADMIN_URL`: the owner connection URL. Only the migration Job mounts it.
@@ -16,19 +37,24 @@ The hub needs an external PostgreSQL. Create one Secret with two keys:
 Key names are overridable with `database.secretKeys`. Pass the Secret as `database.existingSecret`.
 `database.urls.url` and `database.urls.adminUrl` make the chart create `<release>-b4hub-db` instead; that is for evaluation only (the values sit in your values file, and the Secret is a hook resource that `helm uninstall` leaves behind). Use `existingSecret` in production.
 
-`hub.publicUrl` and `hub.rpId` are required.
+### CloudNativePG example
+
+`examples/cnpg-cluster.yaml` is a single-instance CloudNativePG `Cluster` named `b4hub-db` (PostgreSQL 17, 10Gi, database `b4hub`, owner `b4hub_owner`). The chart never applies it. The sequence below builds the `b4hub-db` Secret from CNPG's generated secrets. The CNPG secret names (`b4hub-db-app`, `b4hub-db-superuser`) and their key names (`password`) are **to be confirmed against the CloudNativePG docs** before you rely on them, and the `b4hub_app` role the hub connects as must exist with the grants the migration expects; the example uses the owner role for both URLs, which suits evaluation only.
 
 ```sh
-helm install hub oci://ghcr.io/cacheplane/charts/b4hub \
-  --namespace b4hub --create-namespace \
-  --set database.existingSecret=b4hub-db \
-  --set hub.publicUrl=https://hub.example.com \
-  --set hub.rpId=example.com
+kubectl create namespace b4hub
+kubectl -n b4hub apply -f examples/cnpg-cluster.yaml
+kubectl -n b4hub wait --for=condition=Ready cluster/b4hub-db --timeout=300s
+
+APP_PW=$(kubectl -n b4hub get secret b4hub-db-app -o jsonpath='{.data.password}' | base64 -d)
+ADMIN_PW=$(kubectl -n b4hub get secret b4hub-db-superuser -o jsonpath='{.data.password}' | base64 -d)
+
+kubectl -n b4hub create secret generic b4hub-db \
+  --from-literal=DATABASE_URL="postgres://b4hub_owner:${APP_PW}@b4hub-db-rw:5432/b4hub" \
+  --from-literal=DATABASE_ADMIN_URL="postgres://postgres:${ADMIN_PW}@b4hub-db-rw:5432/b4hub"
 ```
 
-## Migrations
-
-`b4hub migrate` runs as a Job with `helm.sh/hook: pre-install,pre-upgrade` (weight `-5`, delete policy `before-hook-creation,hook-succeeded`, `backoffLimit: 0`). A failed migration fails the release before the Deployment changes. The Job is named `<fullname>-migrate-<revision>`; a failed one is kept for an hour. Helm does not track hook resources, so read a failure with `kubectl logs job/<name>` (the install notes print the exact command).
+`enableSuperuserAccess: true` in the example is what creates `b4hub-db-superuser`.
 
 ## Sign-in secrets
 
@@ -40,6 +66,39 @@ Sign-in needs `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, a
 
 With neither set, the hub runs without sign-in secrets and the chart renders none.
 `secrets.useFileVars: false` (default) exposes them as environment variables from `secretKeyRef`. `true` mounts them at `/etc/b4hub/secrets/<KEY>` and sets `B4HUB_*_FILE` instead; turn it on once the hub reads the `_FILE` forms (M8e).
+
+## Ingress or Gateway
+
+Enable one of the two. Both route to the chart Service (port name `http`).
+
+The proxy must pass or append the client address: the hub trusts the last `X-Forwarded-For` hop while `hub.trustXForwardedFor` (`B4HUB_TRUST_X_FORWARDED_FOR`) is true, so turn that off if your proxy does not append it. The hub holds WebSockets and 25 s long-polls open, so the proxy's read timeout must exceed 25 s.
+
+**Ingress** (`examples/values-ingress.yaml`). The chart assumes no controller-specific annotations; set what your controller needs under `ingress.annotations`:
+
+```yaml
+ingress:
+  annotations:
+    # ingress-nginx style
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    # nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # Traefik style
+    # traefik.ingress.kubernetes.io/router.entrypoints: websecure
+```
+
+**Gateway API** (`examples/values-httproute.yaml`). `httpRoute.parentRefs` is passed through verbatim. Gateway API timeouts default to the implementation's; leave `httpRoute.timeouts` unset (no `timeouts` key is rendered) unless you know your Gateway's defaults keep long-polls open.
+
+## Observability
+
+- OTLP: `otel.endpoint` and `otel.protocol` set `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_PROTOCOL` on the hub container (only when non-empty); `otel.extraEnv` appends further `OTEL_*` variables. The chart is passthrough only and adds no SDK configuration. The migration Job gets none of them.
+- Metrics: `serviceMonitor.enabled` renders a Prometheus Operator `ServiceMonitor` when the `monitoring.coreos.com/v1` API is installed (otherwise nothing is rendered and the install notes say so). The hub does not expose `/metrics` yet (a later hub milestone); the monitor is wired for when it does. Put your Prometheus selector label (for example `release: prometheus`) in `serviceMonitor.labels`.
+
+## Upgrading
+
+`b4hub migrate` runs as a Job with `helm.sh/hook: pre-install,pre-upgrade` (weight `-5`, delete policy `before-hook-creation,hook-succeeded`, `backoffLimit: 0`). A failed migration fails the release before the Deployment changes, so the old hub keeps running. The Job is named `<fullname>-migrate-<revision>`; a failed one is kept for an hour. Helm does not track hook resources, so read a failure with `kubectl logs -n <namespace> job/<name>` (the install notes print the exact command), fix the cause, and run `helm upgrade` again.
+
+## Uninstall
+
+`helm uninstall b4hub` removes the Deployment, Service, and routes. The evaluation database Secret (`<release>-b4hub-db`, from `database.urls`) is a hook resource and is left behind; delete it yourself with `kubectl delete secret`. Your own `existingSecret`s and the database are never touched.
 
 ## Replicas
 
@@ -69,6 +128,11 @@ Kubernetes: `>=1.29.0`
 | database.urls.url | string | `""` | For evaluation only; use `existingSecret` in production. With `adminUrl`, the chart creates `<release>-b4hub-db`. |
 | fullnameOverride | string | `""` | Override the full resource name prefix (default `<release>-b4hub`). |
 | global.imageRegistry | string | `""` | Replaces the registry portion of every image reference (`ghcr.io`), for air-gapped mirrors. |
+| httpRoute.annotations | object | `{}` | Annotations for the HTTPRoute. |
+| httpRoute.enabled | bool | `false` | Render a Gateway API `HTTPRoute` (`gateway.networking.k8s.io/v1`) for the hub. |
+| httpRoute.hostnames | list | `[]` | Hostnames the route matches. |
+| httpRoute.parentRefs | list | `[]` | Gateway API `ParentReference` objects, passed through verbatim. |
+| httpRoute.timeouts | string | `nil` | Optional `{request, backendRequest}` rule timeouts. Leave unset (`null`): the hub holds WebSockets and 25 s long-polls open, so the route must not add a default timeout. |
 | hub.apple.audiences | list | `[]` | Apple token audiences (`B4HUB_APPLE_AUDIENCES`, joined with commas); rendered only when set. |
 | hub.apple.servicesId | string | `""` | Apple Services ID for web sign-in (`B4HUB_APPLE_SERVICES_ID`); rendered only when set. |
 | hub.extraEnv | list | `[]` | Extra `EnvVar` entries appended verbatim to the hub container (for example `OTEL_EXPORTER_OTLP_*`). |
@@ -83,11 +147,21 @@ Kubernetes: `>=1.29.0`
 | image.repository | string | `"ghcr.io/cacheplane/b4hub"` | The hub image. One image serves both `serve` and `migrate`. |
 | image.tag | string | `""` | Image tag; defaults to the chart's `appVersion`. |
 | imagePullSecrets | list | `[]` | Pull secrets for a private registry or mirror. |
+| ingress.annotations | object | `{}` | Free-form Ingress annotations. No controller-specific annotations are assumed (see the README for examples). |
+| ingress.className | string | `""` | `ingressClassName`; omitted when empty. |
+| ingress.enabled | bool | `false` | Render a `networking.k8s.io/v1` Ingress for the hub. |
+| ingress.host | string | `""` | Host the rule matches. Usually the host of `hub.publicUrl`. |
+| ingress.path | string | `"/"` | Path routed to the hub. |
+| ingress.pathType | string | `"Prefix"` | `Prefix`, `Exact`, or `ImplementationSpecific`. |
+| ingress.tls | list | `[]` | TLS entries (`secretName`, `hosts`), passed through. |
 | migrate.activeDeadlineSeconds | int | `600` | Deadline for the migration Job. |
 | migrate.enabled | bool | `true` | Run `b4hub migrate` as a pre-install and pre-upgrade hook Job. |
 | migrate.resources | object | `{}` | Resources for the migration container. |
 | nameOverride | string | `""` | Override the chart name used in resource names. |
 | nodeSelector | object | `{}` | Node selector for the hub and migration pods. |
+| otel.endpoint | string | `""` | `OTEL_EXPORTER_OTLP_ENDPOINT` for the hub; the env var is set only when this is non-empty. |
+| otel.extraEnv | list | `[]` | Extra `EnvVar` entries appended after the OTLP variables (for example `OTEL_SERVICE_NAME`). |
+| otel.protocol | string | `""` | `OTEL_EXPORTER_OTLP_PROTOCOL` (`grpc`, `http/protobuf`, `http/json`); set only when non-empty. |
 | podAnnotations | object | `{}` | Annotations for the hub pods. |
 | podSecurityContext | object | `{"fsGroup":10001,"runAsGroup":10001,"runAsNonRoot":true,"runAsUser":10001,"seccompProfile":{"type":"RuntimeDefault"}}` | Pod security context (Restricted Pod Security Standard). |
 | preStopSleepSeconds | int | `5` | `preStop` sleep so endpoint removal propagates before SIGTERM. |
@@ -101,6 +175,10 @@ Kubernetes: `>=1.29.0`
 | serviceAccount.annotations | object | `{}` | Annotations for the ServiceAccount. |
 | serviceAccount.create | bool | `true` | Create a ServiceAccount for the hub. |
 | serviceAccount.name | string | `""` | Name of the ServiceAccount (default: the full name when `create`, else `default`). |
+| serviceMonitor.enabled | bool | `false` | Render a Prometheus Operator `ServiceMonitor` (only when the `monitoring.coreos.com/v1` API is installed). The hub does not expose `/metrics` yet. |
+| serviceMonitor.interval | string | `"30s"` | Scrape interval. |
+| serviceMonitor.labels | object | `{}` | Extra labels on the ServiceMonitor, for Prometheus operator selection (for example `release: prometheus`). |
+| serviceMonitor.path | string | `"/metrics"` | Metrics path. |
 | strategy.type | string | `"Recreate"` | `Recreate` (default) or `RollingUpdate`. `RollingUpdate` and `replicaCount > 1` are supported after M8e (D-057). |
 | terminationGracePeriodSeconds | int | `45` | Seconds Kubernetes waits after SIGTERM. The hub drains open long-polls for up to 30 s. |
 | tolerations | list | `[]` | Tolerations for the hub and migration pods. |
