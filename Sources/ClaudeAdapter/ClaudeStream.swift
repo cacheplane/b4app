@@ -192,6 +192,8 @@ public enum ClaudeStream {
     case controlResponse(ControlResponseFrame)
     case controlCancel(requestId: String)
     case keepAlive
+    /// `rate_limit_event`'s `rate_limit_info`: the plan windows (`ClaudeUsage`).
+    case rateLimit(JSONValue)
     case unknown(type: String?, body: JSONValue)
   }
 
@@ -253,6 +255,7 @@ public enum ClaudeStream {
     case "control_cancel_request":
       return .controlCancel(requestId: value["request_id"]?.stringValue ?? "")
     case "keep_alive": return .keepAlive
+    case "rate_limit_event": return .rateLimit(value["rate_limit_info"] ?? .null)
     default: return .unknown(type: type, body: value)
     }
   }

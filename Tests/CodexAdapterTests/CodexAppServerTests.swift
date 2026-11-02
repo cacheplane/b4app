@@ -89,7 +89,7 @@ private func makeAdapter() -> CodexAdapter {
     #expect(finished.nativeIds["threadId"] == "thr_1")
     let kinds = await collector.kinds()
     #expect(kinds.contains(.connectionChanged))
-    let turnKinds = kinds.filter { $0 != .connectionChanged && $0 != .turnStateChanged }
+    let turnKinds = kinds.filter { ![.connectionChanged, .turnStateChanged, .usageChanged].contains($0) }
     #expect(
       turnKinds == [
         .turnAcknowledged, .messageStarted, .messageDelta, .messageDelta, .messageCompleted, .turnFinished,

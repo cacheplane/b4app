@@ -21,7 +21,7 @@ enum WorkspaceDevice {
   }
 
   /// The sentence a read-only page shows in place of its controls.
-  static let managedOnMac = "Connections, their sign-in, and local servers are managed on your Mac."
+  static let managedOnMac = "Connections, their sign-in, and B4 projects are managed on your Mac."
 }
 
 /// A Settings page's one action (re-check, refresh): a toolbar button, except in the Mac's Settings
@@ -48,7 +48,7 @@ extension SettingsPage {
   @MainActor @ViewBuilder func view(model: WorkspaceModel) -> some View {
     switch self {
     case .connections: ConnectionsView(model: model)
-    case .servers: LocalServersView(model: model)
+    case .servers: B4ProjectsView(model: model)
     case .remoteAccess:
       #if os(macOS)
         RemoteAccessView(model: model)
@@ -65,6 +65,8 @@ extension SettingsPage {
 /// window keeps one sidebar and a fixed minimum.
 public struct WorkspaceSettingsView: View {
   @Bindable var model: WorkspaceModel
+  @State private var addingB4 = false
+  @State private var attachingProject = false
 
   public init(model: WorkspaceModel) {
     LLAFonts.register()
@@ -111,23 +113,40 @@ public struct WorkspaceSettingsView: View {
       Spacer(minLength: LLA.Space.m)
       switch model.settingsPage {
       case .connections:
-        Button("Re-check runtimes") { Task { await model.refreshDiagnostics() } }
-          .buttonStyle(.llaSecondary)
-          .disabled(model.link != .ready || model.diagnosticsLoading)
+        ConnectionAddMenu(model: model) { addingB4 = true }
       case .diagnostics:
         Button("Refresh") { Task { await model.refreshDiagnostics() } }
           .buttonStyle(.llaSecondary)
           .disabled(model.link != .ready || model.diagnosticsLoading)
-      case .servers, .remoteAccess:
+      case .servers:
+        Button("Attach B4 project…") { attachingProject = true }
+          .buttonStyle(.llaSecondary)
+          .disabled(model.link != .ready || model.busy)
+      case .remoteAccess:
         EmptyView()
       }
     }
     .padding(.horizontal, LLA.Space.xl)
     .padding(.top, LLA.Space.xl)
+    .sheet(isPresented: $addingB4) { B4ConnectionSheet(model: model, connection: nil) }
+    .sheet(isPresented: $attachingProject) { AttachB4ProjectSheet(model: model) }
   }
 }
 
 #if os(iOS)
+  /// A page row's label: the symbol and the title, or the title alone at accessibility sizes.
+  struct SettingsRowLabelStyle: LabelStyle {
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    func makeBody(configuration: Configuration) -> some View {
+      if typeSize.isAccessibilitySize {
+        configuration.title
+      } else {
+        Label(configuration)
+      }
+    }
+  }
+
   /// The iPhone's Settings: a sheet with the pages in a list, each pushing its view.
   struct SettingsSheet: View {
     @Bindable var model: WorkspaceModel
@@ -140,6 +159,8 @@ public struct WorkspaceSettingsView: View {
             Label(page.title, systemImage: page.systemImage)
               .font(LLAFont.body)
               .foregroundStyle(LLA.Color.ink)
+              // At accessibility sizes the symbol column left "Connections" a letter-by-letter wrap.
+              .labelStyle(SettingsRowLabelStyle())
           }
           .listRowBackground(LLA.Color.surface)
         }

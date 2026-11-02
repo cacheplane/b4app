@@ -183,6 +183,11 @@ public struct LoginStart: Codable, Sendable, Equatable {
   }
 }
 
+/// Adapters whose runtime answers a plan-usage question on demand (Codex). Nil: nothing reported.
+public protocol UsageReporting: Sendable {
+  func readUsage() async throws -> UsageReading?
+}
+
 /// Adapters whose runtime offers an official browser sign-in the app can start.
 public protocol LoginCapable: Sendable {
   func startLogin() async throws -> LoginStart

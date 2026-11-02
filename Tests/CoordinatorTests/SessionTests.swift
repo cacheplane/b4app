@@ -21,7 +21,7 @@ private let fakeB4 =
 
 /// The B4 fixture server as a child process (a copy of the adapter tests' launcher; test targets
 /// cannot share code). It outlives a coordinator restart, like a real server would.
-private final class FakeB4: Sendable {
+final class FakeB4: Sendable {
   let process: StreamingProcess
   let port: Int
   var baseURL: String { "http://127.0.0.1:\(port)" }
@@ -71,7 +71,7 @@ private func temporaryPaths() throws -> PlatformPaths {
   return try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
 }
 
-private struct Harness {
+struct Harness {
   let coordinator: RunningCoordinator
   let client: WorkspaceClient
   let workDir: String
@@ -79,6 +79,7 @@ private struct Harness {
 
   static func start(
     paths: PlatformPaths? = nil, extraEnvironment: [String: String] = [:],
+    secretStore: any SecretStore = MemorySecretStore(), checkRetryDelays: [Duration] = [.zero, .zero],
     adapterFactory: SessionService.AdapterFactory? = nil
   ) async throws -> Harness {
     let paths = try paths ?? temporaryPaths()
@@ -88,9 +89,11 @@ private struct Harness {
     env["FAKE_CLAUDE_PROJECTS"] = (paths.dataDir as NSString).deletingLastPathComponent + "/claude-projects"
     env["ANTHROPIC_API_KEY"] = nil
     for (key, value) in extraEnvironment { env[key] = value }
+    // A check retries without waiting here, so a failing check costs nothing in other tests.
     let outcome = try await Coordinator.start(
       options: CoordinatorOptions(
-        paths: paths, environment: env, secretStore: MemorySecretStore(), adapterFactory: adapterFactory))
+        paths: paths, environment: env, secretStore: secretStore, adapterFactory: adapterFactory,
+        checkRetryDelays: checkRetryDelays))
     guard case .running(let coordinator) = outcome else {
       throw WorkspaceError(.internalError, "expected running")
     }

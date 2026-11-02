@@ -1,0 +1,166 @@
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  .lla { --ink:#0d0d0d; --bg:#fff; --surface:#f7f7f8; --raised:#ececee; --rule:#e8e8e8; --muted:#5d5d5d; --accent:#002fa7; --danger:#962e1f; --ghost:#b8b8bc;
+    font-family:'Hanken Grotesk',system-ui,sans-serif; color:var(--ink); font-size:13px; line-height:18px; }
+  .lla .mono { font-family:'JetBrains Mono',ui-monospace,monospace; font-size:12px; }
+  .lla .muted { color:var(--muted); }
+  .page { width:100%; box-sizing:border-box; max-width:560px; margin:0 auto; background:var(--bg); padding:20px; border-radius:12px; border:1px solid var(--rule); }
+  .mark { width:22px; height:22px; border-radius:6px; background:var(--ink); color:#fff; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:600; flex:none; }
+  .name { font-size:15px; font-weight:600; }
+  .icon { width:16px; height:16px; flex:none; }
+  .spin { animation:spin 1s linear infinite; transform-origin:50% 50%; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .bar { height:4px; border-radius:2px; background:var(--raised); overflow:hidden; }
+  .bar > i { display:block; height:100%; background:var(--ink); border-radius:2px; }
+  .bar.hot > i { background:var(--danger); }
+  .iconbtn { width:26px; height:26px; border-radius:7px; display:flex; align-items:center; justify-content:center; color:var(--muted); }
+  .iconbtn:hover { background:var(--raised); }
+  /* A rows */
+  .a-list { border:1px solid var(--rule); border-radius:10px; background:var(--surface); }
+  .a-row { display:grid; grid-template-columns:22px 1fr 150px 16px; gap:12px; align-items:center; padding:10px 14px; border-top:1px solid var(--rule); }
+  .a-row:first-child { border-top:none; }
+  .a-meter { display:grid; grid-template-columns:28px 1fr; gap:3px 6px; align-items:center; font-size:11px; color:var(--muted); }
+  /* B cards */
+  .b-card { border:1px solid var(--rule); border-radius:12px; background:var(--surface); padding:14px 16px; margin-top:10px; }
+  .b-card:first-child { margin-top:0; }
+  .b-head { display:flex; align-items:center; gap:10px; }
+  .b-head .grow { flex:1; min-width:0; }
+  .b-meters { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:12px; }
+  .b-m .top { display:flex; justify-content:space-between; font-size:12px; margin-bottom:5px; }
+  .b-m .sub { font-size:11px; color:var(--muted); margin-top:4px; }
+  .b-note { font-size:11px; color:var(--muted); margin-top:10px; }
+  .b-tokens { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:12px; }
+  .b-tokens .v { font-size:17px; font-weight:600; font-variant-numeric:tabular-nums; }
+  /* C rings */
+  .c-card { display:flex; align-items:center; gap:12px; border:1px solid var(--rule); border-radius:12px; background:var(--surface); padding:12px 14px; margin-top:10px; }
+  .c-card:first-child { margin-top:0; }
+  .c-card .grow { flex:1; min-width:0; }
+  .ring { display:flex; flex-direction:column; align-items:center; gap:2px; font-size:10px; color:var(--muted); width:46px; }
+  .ring svg { width:34px; height:34px; }
+  .ring b { font-size:10px; font-weight:600; color:var(--ink); font-variant-numeric:tabular-nums; }
+  .legend { display:flex; gap:18px; flex-wrap:wrap; margin-top:14px; font-size:12px; color:var(--muted); }
+  .legend span { display:flex; align-items:center; gap:6px; }
+</style>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="ok" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#0d0d0d"/><path d="M4.8 8.2l2.1 2.1 4.3-4.6" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="warn" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#962e1f"/><path d="M8 4.3v4.6" stroke="#fff" stroke-width="1.7" stroke-linecap="round"/><circle cx="8" cy="11.4" r="1" fill="#fff"/></symbol>
+    <symbol id="off" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2" fill="none" stroke="#b8b8bc" stroke-width="1.6"/></symbol>
+    <symbol id="busy" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2" fill="none" stroke="#ececee" stroke-width="1.8"/><path d="M8 1.8a6.2 6.2 0 0 1 6.2 6.2" fill="none" stroke="#002fa7" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="dots" viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="1.3" fill="currentColor"/><circle cx="8" cy="8" r="1.3" fill="currentColor"/><circle cx="12.5" cy="8" r="1.3" fill="currentColor"/></symbol>
+    <symbol id="redo" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </defs>
+</svg>
+
+<h2>Connection card: which direction?</h2>
+<p class="subtitle">Same four connections in each: Codex (signed in, real limits), Claude (signed in, last reading from a turn), B4 (token totals), and a second B4 being checked. Status is an icon only; hovering or VoiceOver gives the words. Mac width shown; the phone gets the same pieces stacked.</p>
+
+<div class="lla legend">
+  <span><svg class="icon"><use href="#ok"/></svg>Connected</span>
+  <span><svg class="icon spin"><use href="#busy"/></svg>Checking (retries quietly)</span>
+  <span><svg class="icon"><use href="#warn"/></svg>Needs you (sign-in, unreachable after retries)</span>
+  <span><svg class="icon"><use href="#off"/></svg>Not checked / off</span>
+</div>
+
+<div class="cards lla" style="margin-top:18px;grid-template-columns:1fr">
+
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="aspect-ratio:auto;padding:16px;background:#fafafa">
+      <div class="page">
+        <div class="a-list">
+          <div class="a-row">
+            <div class="mark">Cx</div>
+            <div><div class="name" style="font-size:13px">Codex</div><div class="muted" style="font-size:11px">Pro · brian@…</div></div>
+            <div class="a-meter"><span>5h</span><div class="bar"><i style="width:62%"></i></div><span>Week</span><div class="bar"><i style="width:31%"></i></div></div>
+            <svg class="icon"><use href="#ok"/></svg>
+          </div>
+          <div class="a-row">
+            <div class="mark">A\</div>
+            <div><div class="name" style="font-size:13px">Claude</div><div class="muted" style="font-size:11px">Max · as of 20 min ago</div></div>
+            <div class="a-meter"><span>5h</span><div class="bar hot"><i style="width:91%"></i></div><span>Week</span><div class="bar"><i style="width:48%"></i></div></div>
+            <svg class="icon"><use href="#ok"/></svg>
+          </div>
+          <div class="a-row">
+            <div class="mark">B4</div>
+            <div><div class="name" style="font-size:13px">B4 local</div><div class="muted" style="font-size:11px">localhost:3000</div></div>
+            <div class="muted" style="font-size:11px;text-align:right"><span class="mono" style="color:#0d0d0d">412k</span> today · <span class="mono" style="color:#0d0d0d">2.1M</span> week</div>
+            <svg class="icon"><use href="#ok"/></svg>
+          </div>
+          <div class="a-row">
+            <div class="mark">B4</div>
+            <div><div class="name" style="font-size:13px">B4 staging</div><div class="muted" style="font-size:11px">Checking… try 2 of 3</div></div>
+            <div></div>
+            <svg class="icon spin"><use href="#busy"/></svg>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body"><h3>A · List rows</h3><p>One grouped list, like System Settings. A row per connection: name and account on the left, two hairline meters, status icon at the end. Densest; times hide until you open the row.</p></div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="aspect-ratio:auto;padding:16px;background:#fafafa">
+      <div class="page">
+        <div class="b-card">
+          <div class="b-head"><div class="mark">Cx</div><div class="grow"><div class="name">Codex</div><div class="muted" style="font-size:12px">Pro · brian@brianflove.com</div></div><svg class="icon"><use href="#ok"/></svg><div class="iconbtn"><svg class="icon"><use href="#dots"/></svg></div></div>
+          <div class="b-meters">
+            <div class="b-m"><div class="top"><span>5-hour</span><span style="font-variant-numeric:tabular-nums">62%</span></div><div class="bar"><i style="width:62%"></i></div><div class="sub">Resets in 2h 14m</div></div>
+            <div class="b-m"><div class="top"><span>Weekly</span><span style="font-variant-numeric:tabular-nums">31%</span></div><div class="bar"><i style="width:31%"></i></div><div class="sub">Resets Thu 9:00</div></div>
+          </div>
+        </div>
+        <div class="b-card">
+          <div class="b-head"><div class="mark">A\</div><div class="grow"><div class="name">Claude</div><div class="muted" style="font-size:12px">Max · brian@brianflove.com</div></div><svg class="icon"><use href="#ok"/></svg><div class="iconbtn"><svg class="icon"><use href="#dots"/></svg></div></div>
+          <div class="b-meters">
+            <div class="b-m"><div class="top"><span>5-hour</span><span style="font-variant-numeric:tabular-nums;color:#962e1f">91%</span></div><div class="bar hot"><i style="width:91%"></i></div><div class="sub">Resets in 38m</div></div>
+            <div class="b-m"><div class="top"><span>Weekly</span><span style="font-variant-numeric:tabular-nums">48%</span></div><div class="bar"><i style="width:48%"></i></div><div class="sub">Resets Sat 14:00</div></div>
+          </div>
+          <div class="b-note">As of 20 min ago, from the last turn</div>
+        </div>
+        <div class="b-card">
+          <div class="b-head"><div class="mark">B4</div><div class="grow"><div class="name">B4 local</div><div class="muted mono">localhost:3000</div></div><svg class="icon"><use href="#ok"/></svg><div class="iconbtn"><svg class="icon"><use href="#dots"/></svg></div></div>
+          <div class="b-tokens">
+            <div><div class="muted" style="font-size:12px">Today</div><div class="v">412k <span class="muted" style="font-size:12px;font-weight:400">tokens</span></div></div>
+            <div><div class="muted" style="font-size:12px">This week</div><div class="v">2.1M <span class="muted" style="font-size:12px;font-weight:400">tokens</span></div></div>
+          </div>
+        </div>
+        <div class="b-card">
+          <div class="b-head"><div class="mark">B4</div><div class="grow"><div class="name">B4 staging</div><div class="muted" style="font-size:12px">Checking… try 2 of 3</div></div><svg class="icon spin"><use href="#busy"/></svg><div class="iconbtn"><svg class="icon"><use href="#dots"/></svg></div></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body"><h3>B · Cards with meters</h3><p>A card per connection: name, account, status icon, and a "…" menu (Check, Edit, Sign in, Remove). Two labelled meters with the percent and the time to reset. Roomiest and the easiest to read at a glance.</p></div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="aspect-ratio:auto;padding:16px;background:#fafafa">
+      <div class="page">
+        <div class="c-card">
+          <div class="mark">Cx</div>
+          <div class="grow"><div class="name">Codex</div><div class="muted" style="font-size:12px">Pro · 5h resets in 2h 14m</div></div>
+          <div class="ring"><svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" fill="none" stroke="#ececee" stroke-width="3.5"/><circle cx="18" cy="18" r="15" fill="none" stroke="#0d0d0d" stroke-width="3.5" stroke-dasharray="58.4 94.2" stroke-linecap="round" transform="rotate(-90 18 18)"/><text x="18" y="21.5" text-anchor="middle" font-size="9" font-weight="600" fill="#0d0d0d" font-family="Hanken Grotesk">62</text></svg>5h</div>
+          <div class="ring"><svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" fill="none" stroke="#ececee" stroke-width="3.5"/><circle cx="18" cy="18" r="15" fill="none" stroke="#0d0d0d" stroke-width="3.5" stroke-dasharray="29.2 94.2" stroke-linecap="round" transform="rotate(-90 18 18)"/><text x="18" y="21.5" text-anchor="middle" font-size="9" font-weight="600" fill="#0d0d0d" font-family="Hanken Grotesk">31</text></svg>Week</div>
+          <svg class="icon"><use href="#ok"/></svg>
+        </div>
+        <div class="c-card">
+          <div class="mark">A\</div>
+          <div class="grow"><div class="name">Claude</div><div class="muted" style="font-size:12px">Max · 5h resets in 38m · 20 min ago</div></div>
+          <div class="ring"><svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" fill="none" stroke="#ececee" stroke-width="3.5"/><circle cx="18" cy="18" r="15" fill="none" stroke="#962e1f" stroke-width="3.5" stroke-dasharray="85.7 94.2" stroke-linecap="round" transform="rotate(-90 18 18)"/><text x="18" y="21.5" text-anchor="middle" font-size="9" font-weight="600" fill="#962e1f" font-family="Hanken Grotesk">91</text></svg>5h</div>
+          <div class="ring"><svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" fill="none" stroke="#ececee" stroke-width="3.5"/><circle cx="18" cy="18" r="15" fill="none" stroke="#0d0d0d" stroke-width="3.5" stroke-dasharray="45.2 94.2" stroke-linecap="round" transform="rotate(-90 18 18)"/><text x="18" y="21.5" text-anchor="middle" font-size="9" font-weight="600" fill="#0d0d0d" font-family="Hanken Grotesk">48</text></svg>Week</div>
+          <svg class="icon"><use href="#ok"/></svg>
+        </div>
+        <div class="c-card">
+          <div class="mark">B4</div>
+          <div class="grow"><div class="name">B4 local</div><div class="muted" style="font-size:12px"><span class="mono" style="color:#0d0d0d">412k</span> tokens today · <span class="mono" style="color:#0d0d0d">2.1M</span> this week</div></div>
+          <svg class="icon"><use href="#ok"/></svg>
+        </div>
+        <div class="c-card">
+          <div class="mark">B4</div>
+          <div class="grow"><div class="name">B4 staging</div><div class="muted" style="font-size:12px">Checking… try 2 of 3</div></div>
+          <svg class="icon spin"><use href="#busy"/></svg>
+        </div>
+      </div>
+    </div>
+    <div class="card-body"><h3>C · Compact with rings</h3><p>One line per connection with two small rings (5-hour, weekly), like Activity rings. Very glanceable and compact; the nearest reset sits in the subtitle. Rings are harder to compare than bars.</p></div>
+  </div>
+</div>

@@ -21,6 +21,8 @@ public enum EventKind: String, Codable, Sendable, CaseIterable {
   case serverChanged = "server.changed"
   /// A project, or the set of its folders, changed. `payload["projectId"]` names it.
   case projectChanged = "project.changed"
+  /// A runtime reported its plan allowance. `payload["reading"]` is a `UsageReading`.
+  case usageChanged = "usage.changed"
   /// The phone's view of its hub link and of one Mac's presence (M8c). Only the phone's
   /// `MirrorTransport` emits it; the Mac never does. The payload is described on `HostPresence`.
   case hostPresence = "host.presence"
@@ -54,14 +56,20 @@ public struct AdapterEvent: Codable, Sendable, Equatable {
 
   public static func connectionChanged(
     connectionId: String, status: ConnectionStatus, authStatus: AuthStatus, transport: TransportStatus,
-    message: String? = nil, adapterGeneration: Int = 0
+    message: String? = nil, adapterGeneration: Int = 0, attempt: Int? = nil, attempts: Int? = nil
   ) -> AdapterEvent {
-    AdapterEvent(
+    var payload: [String: JSONValue] = [
+      "status": .string(status.rawValue), "authStatus": .string(authStatus.rawValue),
+      "transport": .string(transport.rawValue), "message": message.map(JSONValue.string) ?? .null,
+    ]
+    // A check in progress says which try it is on, so the card can show "try 2 of 3".
+    if let attempt, let attempts {
+      payload["attempt"] = .number(Double(attempt))
+      payload["attempts"] = .number(Double(attempts))
+    }
+    return AdapterEvent(
       kind: .connectionChanged, connectionId: connectionId, adapterGeneration: adapterGeneration,
-      payload: [
-        "status": .string(status.rawValue), "authStatus": .string(authStatus.rawValue),
-        "transport": .string(transport.rawValue), "message": message.map(JSONValue.string) ?? .null,
-      ])
+      payload: .object(payload))
   }
 
   /// A managed server row changed (health, pid, port, routes). Not tied to a connection.

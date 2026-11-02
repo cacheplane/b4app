@@ -51,6 +51,8 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case projectRename = "project.rename"
   case projectDelete = "project.delete"
   case threadMarkRead = "thread.markRead"
+  case usageRead = "usage.read"
+  case connectionUpdate = "connection.update"
   /// Relayed from the hub only (`RelayExecutor`); `Router` refuses both over the local socket. Listed so
   /// `MirrorTransport` can serve `thread.start` through the relay.
   case threadStart = "thread.start"
@@ -65,11 +67,12 @@ public enum Method: String, Codable, Sendable, CaseIterable {
       .serverStop, .serverInspect, .workspaceStopLocalWork, .workspaceReconcile, .databaseBackup,
       .databaseRestore,
       .databaseImportSQLite, .hubJoin, .hubLeave, .projectCreate, .projectUpdate, .projectRename,
-      .projectDelete, .threadMarkRead, .threadStart, .settingsUpdate:
+      .projectDelete, .threadMarkRead, .threadStart, .settingsUpdate, .connectionUpdate:
       return true
     case .systemPing, .diagnosticsRead, .connectionList, .threadList, .draftRead, .eventsSnapshot,
       .eventsReplay, .threadRead, .serverList, .serverStatus, .serverLogs, .workspaceActiveWork,
-      .databaseStatus, .hubStatus, .projectList, .turnLookup, .hubPair, .hubPairStatus, .settingsRead:
+      .databaseStatus, .hubStatus, .projectList, .turnLookup, .hubPair, .hubPairStatus, .settingsRead,
+      .usageRead:
       return false
     }
   }
@@ -274,7 +277,13 @@ public enum ConnectionAdd: WorkspaceCommand {
 public enum ConnectionInspect: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
     public var connectionId: String
-    public init(connectionId: String) { self.connectionId = connectionId }
+    /// Answer at once with the stored connection and report the check through `connection.changed`, so
+    /// a check that retries never holds the client's requests (settings connections, D-081).
+    public var background: Bool?
+    public init(connectionId: String, background: Bool? = nil) {
+      self.connectionId = connectionId
+      self.background = background
+    }
   }
   public typealias Result = ConnectionAdd.Result
   public static let method = Method.connectionInspect

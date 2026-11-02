@@ -87,8 +87,9 @@ pub fn client_request_id(value: Option<&HeaderValue>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::io::Write;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, OnceLock};
 
     use axum::body::Body;
     use axum::http::{header, Request};
@@ -100,7 +101,7 @@ mod tests {
 
     use super::*;
 
-    /// A `MakeWriter` over a shared buffer, so a test can read back what a JSON subscriber wrote.
+    /// What one test's log lines are collected into.
     #[derive(Clone, Default)]
     struct Buffer(Arc<Mutex<Vec<u8>>>);
 
@@ -115,12 +116,72 @@ mod tests {
         }
     }
 
-    impl<'a> MakeWriter<'a> for Buffer {
-        type Writer = Buffer;
+    thread_local! {
+        /// The buffer the current test thread's lines go to; `None` discards them.
+        static SINK: RefCell<Option<Buffer>> = const { RefCell::new(None) };
+    }
 
-        fn make_writer(&'a self) -> Buffer {
-            self.clone()
+    /// A `MakeWriter` that writes each line into the emitting thread's [`SINK`]. The tests use
+    /// one process-wide subscriber with this writer rather than a scoped `set_default` each:
+    /// `tracing-core` caches a callsite's `Interest` globally, and while exactly one scoped
+    /// dispatcher is registered it computes that interest from the *registering* thread's
+    /// thread-local default, so a parallel test thread that had not set one yet could cache
+    /// `Interest::never` for `request complete` and make another test's event vanish (seen in
+    /// about one run in 25). A global default is registered once, so the cache never changes.
+    struct ThreadSink;
+
+    impl<'a> MakeWriter<'a> for ThreadSink {
+        type Writer = ThreadSink;
+
+        fn make_writer(&'a self) -> ThreadSink {
+            ThreadSink
         }
+    }
+
+    impl Write for ThreadSink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            SINK.with(|sink| {
+                if let Some(buffer) = sink.borrow_mut().as_mut() {
+                    buffer.write_all(bytes)?;
+                }
+                Ok(bytes.len())
+            })
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Clears the thread's sink when the test is done, so a later test on the same thread (the
+    /// harness reuses threads) starts clean.
+    struct Capture;
+
+    impl Drop for Capture {
+        fn drop(&mut self) {
+            SINK.with(|sink| sink.borrow_mut().take());
+        }
+    }
+
+    /// Starts collecting this thread's JSON log lines. `#[tokio::test]` drives the request on the
+    /// test thread, so every line the request produces lands in the returned buffer and nowhere
+    /// else.
+    fn json_buffer() -> (Buffer, Capture) {
+        static INSTALLED: OnceLock<()> = OnceLock::new();
+        INSTALLED.get_or_init(|| {
+            let subscriber = tracing_subscriber::fmt()
+                .json()
+                .flatten_event(true)
+                .with_current_span(true)
+                .with_span_list(false)
+                .with_writer(ThreadSink)
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("no other test in this binary installs a global subscriber");
+        });
+        let buffer = Buffer::default();
+        SINK.with(|sink| *sink.borrow_mut() = Some(buffer.clone()));
+        (buffer, Capture)
     }
 
     impl Buffer {
@@ -147,19 +208,6 @@ mod tests {
             .oneshot(request.body(Body::empty()).unwrap())
             .await
             .unwrap()
-    }
-
-    fn json_buffer() -> (Buffer, tracing::subscriber::DefaultGuard) {
-        let buffer = Buffer::default();
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .flatten_event(true)
-            .with_current_span(true)
-            .with_span_list(false)
-            .with_writer(buffer.clone())
-            .finish();
-        let guard = tracing::subscriber::set_default(subscriber);
-        (buffer, guard)
     }
 
     fn header_value(response: &axum::response::Response) -> String {
