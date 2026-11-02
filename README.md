@@ -274,6 +274,8 @@ With sign-up open, the apps can instead sign up on this hub with a passkey (see 
 
 Join the phone with "Use an enrollment code" on its sign-in screen: the same hub URL and a second code. Or pair it from the Mac's "Add your iPhone", which needs no code typed. The Mac pushes its history and every later change; the phone's thread list and open transcripts update without a refresh. The clients accept `http` only for `localhost`, `127.0.0.1`, and `::1`; any other hub must be `https`, and both sides refuse anything else before sending a request. The Simulator reaches the hub at `http://localhost:8080`. Simulator builds need code signing for the Keychain (Xcode's default "Sign to Run Locally" works; `CODE_SIGNING_ALLOWED=NO` builds fail with Keychain error -34018 when the app tries to store its device token).
 
+To pair the Simulator from a script, open the link with `xcrun simctl openurl <device> <link>`. The Mac's `https://local.b4.run/pair#c=<code>` link opens the app only once iOS has fetched `local.b4.run`'s association file. That fetch can time out after an install, and iOS then sends the link to Safari's pairing page until it retries. The local flavour also reads `b4app-local://pair?hub=http%3A%2F%2Flocalhost%3A8080&code=<code>`, under its own scheme, which opens the app whatever the association's state. It is for a hub on this machine only, and the app still asks before pairing.
+
 ```bash
 .build/debug/agent-workspace hub status
 ```
