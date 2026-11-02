@@ -254,6 +254,41 @@ extension Array where Element == ScreenElement {
     #expect(transport.calls(.draftSave).isEmpty)
   }
 
+  @Test func readsSentForTheOldAccountAreDropped() async throws {
+    let transport = ScriptedTransport()
+    let model = try await withOpenThread(transport)
+    // A snapshot and a thread read are out for account A when it signs out.
+    transport.script(.eventsSnapshot, [.hold])
+    transport.script(.threadRead, [.hold])
+    let snapshot = Task { try? await model.refreshSnapshot() }
+    let reopen = Task { await model.openThread(id: "t1") }
+    try await waitUntil("both reads sent") {
+      transport.heldCount(.eventsSnapshot) == 1 && transport.heldCount(.threadRead) == 1
+    }
+    transport.emit(try .accountChanged(signedOut))
+    try await waitUntil("sign-in") { model.rootScreen == .signIn }
+    // A's answers arrive after the forget: none of them is stored.
+    let old = thread("t1", project: "p1")
+    #expect(
+      transport.release(
+        .eventsSnapshot,
+        with: .result(
+          try JSONValue(
+            encoding: EventsSnapshot.Result(
+              epoch: "scripted-epoch", sequence: 0, connections: [], threads: [old])))))
+    #expect(
+      transport.release(
+        .threadRead,
+        with: .result(
+          try JSONValue(encoding: ThreadRead.Result(thread: old, turns: [], items: [], requests: [])))))
+    await snapshot.value
+    await reopen.value
+    #expect(model.threads.isEmpty)
+    #expect(model.projects.isEmpty)
+    #expect(model.detail == nil)
+    #expect(model.composerText.isEmpty)
+  }
+
   @Test func signingOutForgetsFiltersSendsAndTimers() async throws {
     let transport = ScriptedTransport()
     let model = try await withOpenThread(transport)
@@ -451,27 +486,35 @@ extension Array where Element == ScreenElement {
 
   @Test func aRefusedRegistrationReportsTheNewPasskeyAsUnknown() async throws {
     let transport = ScriptedTransport()
-    let model = try await connected(signedOut, transport: transport)
+    // The relying party comes from the registration's own options (`rp.id`), not the flavour.
+    let model = try await connected(signedOut, transport: transport, configuration: prod)
     let ceremony = FakeCeremony()
     ceremony.assertOutcome = .noCredential
     ceremony.registerOutcome = .credential(["id": "-_8B", "rawId": "-_8B", "type": "public-key"])
+    func register(failingWith code: ErrorCode) async {
+      transport.script(.accountPasskeyBegin, [try! begin()])
+      transport.script(.accountPasskeyFinish, [.failure(WorkspaceError(code, "refused"))])
+      await model.signInWithPasskey(using: ceremony)
+      await model.confirmCreateAccount()
+    }
 
-    // The hub refused the new passkey: the password manager is told, then the line shows.
-    transport.script(.accountPasskeyBegin, [try begin()])
-    transport.script(.accountPasskeyFinish, [.failure(WorkspaceError(.ceremonyExpired, "expired"))])
-    await model.signInWithPasskey(using: ceremony)
-    await model.confirmCreateAccount()
+    // Refusals that prove the hub kept nothing: the password manager is told, then the line shows.
+    await register(failingWith: .credentialRejected)
     #expect(ceremony.reportedUnknown.map(\.relyingParty) == ["test.b4.run"])
     #expect(ceremony.reportedUnknown.map(\.credentialID) == [Data([0xfb, 0xff, 0x01])])
-    #expect(model.signInProgress.failure == SignInCopy.failure(for: WorkspaceError(.ceremonyExpired, "")))
+    #expect(model.signInProgress.failure == SignInCopy.failure(for: WorkspaceError(.credentialRejected, "")))
+    for code in [ErrorCode.ceremonyExpired, .signupClosed, .rateLimited] {
+      await register(failingWith: code)
+    }
+    #expect(ceremony.reportedUnknown.count == 4)
 
-    // A lost answer may have reached the hub, which may have kept the passkey: nothing is reported.
-    transport.script(.accountPasskeyBegin, [try begin()])
-    transport.script(.accountPasskeyFinish, [.failure(WorkspaceError(.endpointUnavailable, "timed out"))])
-    await model.signInWithPasskey(using: ceremony)
-    await model.confirmCreateAccount()
-    #expect(ceremony.reportedUnknown.count == 1)
-    #expect(model.signInProgress.failure != nil)
+    // Anything else may come after the hub stored the passkey (a lost answer, the new account's store
+    // failing to open or migrate, a hub error after it committed): never reported.
+    for code in [ErrorCode.internalError, .incompatibleVersion, .endpointUnavailable, .notFound] {
+      await register(failingWith: code)
+      #expect(model.signInProgress.failure != nil)
+    }
+    #expect(ceremony.reportedUnknown.count == 4)
   }
 
   @Test func failureShowsOneLine() async throws {

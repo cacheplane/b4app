@@ -327,7 +327,7 @@ extension WorkspaceModel {
           AccountPasskeyFinish.Params(ceremonyId: ceremonyId, attestation: attestation),
           options: Self.signInMutation())
       } catch {
-        await reportOrphan(attestation, ceremony: pending.ceremony, after: error)
+        await reportOrphan(attestation, options: registration, ceremony: pending.ceremony, after: error)
         throw error
       }
       signInProgress = SignInProgress()
@@ -337,18 +337,27 @@ extension WorkspaceModel {
     }
   }
 
+  /// The refusals that prove the hub kept nothing of a registration: it refused the passkey, the
+  /// ceremony, or the sign-up before storing anything. Any other failure is ambiguous (a lost answer, a
+  /// hub error after it committed, or the coordinator failing to open the new account's store, keep
+  /// its token, or write its registry row after the hub made the account), so it is never reported.
+  static let orphanProvingCodes: Set<ErrorCode> = [
+    .credentialRejected, .ceremonyExpired, .signupClosed, .rateLimited,
+  ]
+
   /// The OS made a passkey the hub then refused: tell the password manager it is unknown, so the next
   /// tap finds no passkey and asks to create an account again instead of offering one the hub will
-  /// always reject. Not when the answer was lost (`endpoint_unavailable`): the hub may have stored it.
+  /// always reject. Only on a refusal that proves the hub kept nothing: reporting a passkey the hub did
+  /// keep would delete the only way into that account. The relying party is the registration's own.
   private func reportOrphan(
-    _ attestation: JSONValue, ceremony: any PasskeyCeremony, after error: any Error
+    _ attestation: JSONValue, options: JSONValue, ceremony: any PasskeyCeremony, after error: any Error
   ) async {
-    guard WorkspaceError.from(error).code != .endpointUnavailable, !(error is CancellationError),
+    guard let failure = error as? WorkspaceError, Self.orphanProvingCodes.contains(failure.code),
+      let relyingParty = try? WebAuthnJSON.registrationRequest(from: options).relyingParty,
       let id = (attestation["rawId"] ?? attestation["id"])?.stringValue,
       let credentialID = WebAuthnJSON.data(base64URL: id)
     else { return }
-    await ceremony.reportUnknownCredential(
-      relyingParty: signInConfiguration.siteDomain, credentialID: credentialID)
+    await ceremony.reportUnknownCredential(relyingParty: relyingParty, credentialID: credentialID)
   }
 
   /// "Cancel" on the question: back to the two buttons.

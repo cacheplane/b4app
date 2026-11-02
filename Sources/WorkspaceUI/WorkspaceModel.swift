@@ -211,6 +211,9 @@ public final class WorkspaceModel {
   @ObservationIgnored public var sideTransportProvider: TransportProvider?
   /// How long a log-out waits for its side connection's hello before it gives up.
   @ObservationIgnored public var sideReadyTimeout: Duration = .seconds(5)
+  /// Bumped by `forgetWorkspace()` whenever the signed-in account ends or changes. A read sent under
+  /// an older generation belongs to that account: its answer is dropped, not stored.
+  @ObservationIgnored var accountGeneration = 0
   /// The registration offered after "No passkey for …", until Create account or Cancel.
   @ObservationIgnored var pendingRegistration: PendingRegistration?
   /// The phone's mirror has no joined Mac left: a notice sits above the still browsable list.
@@ -447,7 +450,10 @@ public final class WorkspaceModel {
   /// Ask the coordinator which hub user it has joined as. A failure keeps the account as it was.
   public func refreshAccount() async {
     guard accountSource == .coordinator, accountState == .signedIn, let client else { return }
-    guard let status = try? await client.request(HubStatus.self, EmptyParams()) else { return }
+    let generation = accountGeneration
+    guard let status = try? await client.request(HubStatus.self, EmptyParams()),
+      generation == accountGeneration
+    else { return }
     account = WorkspaceAccount(status: status)
     hubJoined = status.joined
     hubLink = status.link
@@ -514,15 +520,20 @@ public final class WorkspaceModel {
 
   public func refreshSnapshot() async throws {
     guard let client else { return }
+    let generation = accountGeneration
     let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
+    guard generation == accountGeneration else { return }
     connections = snapshot.connections
     threads = snapshot.threads
     activeTurns = Dictionary(
       snapshot.activeTurns.map { ($0.threadId, $0) }, uniquingKeysWith: { _, new in new })
     resolvePendingSends(with: snapshot.activeTurns)
     if let presence = snapshot.presence { applyPresence(presence) }
-    servers = (try? await client.request(ServerList.self, EmptyParams()).servers) ?? []
+    let listed = (try? await client.request(ServerList.self, EmptyParams()).servers) ?? []
+    guard generation == accountGeneration else { return }
+    servers = listed
     await refreshProjects()
+    guard generation == accountGeneration else { return }
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
     snapshotPosition = (snapshot.epoch, snapshot.sequence)
     if let id = selectedThreadId, detail != nil { await loadDetail(id: id) }
@@ -721,15 +732,18 @@ public final class WorkspaceModel {
     guard let client else { return }
     detailLoading = true
     defer { detailLoading = false }
+    let generation = accountGeneration
     do {
       let read = try await client.request(
         ThreadRead.self, ThreadRead.Params(threadId: id), options: RequestOptions(timeout: .seconds(60)))
+      guard generation == accountGeneration else { return }
       // The saved draft is restored only when switching threads, and before the detail is published
       // so the composer is live only once it is settled. A refresh of the open thread (snapshot,
       // wake, a connection change) keeps whatever is being typed: restoring from disk there would
       // overwrite it, and the save already scheduled would then persist the overwrite.
       if detail?.thread.id != id {
         let draft = try? await client.request(DraftRead.self, DraftRead.Params(threadId: id)).draft
+        guard generation == accountGeneration else { return }
         restoringDraft = true
         composerText = draft?.text ?? ""
         restoringDraft = false
@@ -746,6 +760,7 @@ public final class WorkspaceModel {
       }
       lastError = nil
     } catch {
+      guard generation == accountGeneration else { return }
       if startedThreadMissing(threadId: id, error: error) { return }
       lastError = Self.describe(error)
     }
@@ -816,7 +831,10 @@ public final class WorkspaceModel {
   // MARK: - Projects
 
   public func refreshProjects() async {
-    guard let client, let list = try? await client.request(ProjectList.self, EmptyParams()) else { return }
+    let generation = accountGeneration
+    guard let client, let list = try? await client.request(ProjectList.self, EmptyParams()),
+      generation == accountGeneration
+    else { return }
     projects = list.projects
   }
 
@@ -959,10 +977,12 @@ public final class WorkspaceModel {
   }
 
   private func refetch(threadId: String) async {
+    let generation = accountGeneration
     guard let client,
       let read = try? await client.request(
         ThreadRead.self, ThreadRead.Params(threadId: threadId), options: RequestOptions(timeout: .seconds(60))
-      )
+      ),
+      generation == accountGeneration
     else { return }
     if var current = detail, current.thread.id == threadId {
       current.turns = read.turns
@@ -1265,6 +1285,7 @@ public final class WorkspaceModel {
   /// Everything of an account that is no longer the signed-in one: no row, filter, pending send (they
   /// hold message text), or timer of it may stay, or write into the next account's store.
   func forgetWorkspace() {
+    accountGeneration += 1
     draftSaveTask?.cancel()
     draftSaveTask = nil
     for task in refetchTasks.values { task.cancel() }
