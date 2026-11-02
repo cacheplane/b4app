@@ -2,7 +2,7 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
-## 2026-11-02: Deleting threads (D-118, D-119)
+## 2026-11-02: Deleting threads (D-119, D-120)
 
 Branch `blove/delete-threads`, stacked on `blove/phone-usage`.
 

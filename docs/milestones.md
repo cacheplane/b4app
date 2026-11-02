@@ -196,7 +196,7 @@ Exit gate status: the fixture gates pass (design exit items 4 to 6, locally: a c
 
 - [x] Connection cards with icon status, plan usage (Codex, Claude) and B4 token totals, checks that retry, the "+" menu, the B4 form with a Keychain-stored key, Edit (name, key), and the B4 projects page (renamed from Local servers) with agent rows and the attach sheet. `implemented` and `fixture-tested` (adapter, storage, coordinator, model, and format tests; Mac snapshots measured); usage reading `live-tested` against the owner's Codex and Claude Code (2026-11-02). Usage reaches the phone through the hub (D-090). Not built: removing a connection or a project (needs a decision on its threads and connections). The review's deferred minors were fixed on 2026-11-02 (see `docs/verification.md`).
 
-## Deleting threads (D-118, D-119)
+## Deleting threads (D-119, D-120)
 
 - [x] Delete a thread on the Mac (context menu, toolbar) or the iPhone (swipe, "…" menu) after a confirmation with no undo; it is hidden on every device and kept, marked `userDeletedAt`, on the Mac and the hub. `implemented` and `fixture-tested` (storage, coordinator, hub, mirror, and model tests).
 - [x] Delete the runtime's copy: Codex `thread/delete`, B4 `DELETE /threads/:id`, Claude Code's transcript files; done, unsupported, or waiting with backoff; Diagnostics counts. `implemented` and `fixture-tested` against `fake-codex.py`, `fake-b4.py`, and a scratch Claude config folder. Not live-tested: no real Codex, Claude, or B4 thread has been deleted through b4app yet.
