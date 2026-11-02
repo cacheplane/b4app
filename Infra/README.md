@@ -199,7 +199,7 @@ Wipe a temp file with `rm -P <file>` on macOS or `shred -u <file>` on Linux; the
 
 ### 2. Bootstrap the database owner
 
-Once per account, after the first `terraform apply` of the root and before the first deploy. It creates the role `b4hub_owner` and the database `b4hub` with the RDS master credential, which this step uses and nothing else does.
+Once per account, after the first `terraform apply` of the root and before the first deploy. It creates the role `b4hub_owner` and the database `b4hub` with the RDS master credential, which this step uses and nothing else does. Before the first deploy the admin task's `hub` container runs the placeholder image `ghcr.io/cacheplane/b4hub:main`, and Fargate stops a task whose image it cannot pull, so the GHCR package must already be public (owner step 4) or this task never reaches `RUNNING`.
 
 1. **Give the two database secrets a throwaway value.** ECS refuses to start a task whose `valueFrom` secret has no value, and the `hub-admin` task references both URLs. Step 5 replaces these with the real URLs before any deploy:
 
