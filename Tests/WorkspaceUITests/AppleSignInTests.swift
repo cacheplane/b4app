@@ -82,16 +82,19 @@ private struct Phone {
   let account: MirrorAccount
   let model: WorkspaceModel
 
-  init(fake: FakeHubAPI = FakeHubAPI(), configuration: SignInConfiguration = beta) async throws {
+  init(
+    fake: FakeHubAPI = FakeHubAPI(), configuration: SignInConfiguration = beta, api: (any HubAPI)? = nil
+  ) async throws {
     let store = try MirrorStore.inMemory()
     self.store = store
     self.fake = fake
+    let hub: any HubAPI = api ?? fake
     account = MirrorAccount(
       store: store, secrets: MemorySecretStore(),
       configuration: MirrorAccount.Configuration(
         hubURL: URL(string: "https://hub.test.b4.run")!, deviceName: "Brian's iPhone",
         syncBackoff: .milliseconds(20)),
-      memory: MirrorDeviceMemory(url: nil), makeAPI: { _, _ in fake })
+      memory: MirrorDeviceMemory(url: nil), makeAPI: { _, _ in hub })
     let model = WorkspaceModel(
       transportProvider: { MirrorTransport(store: store, version: "test") }, accountSource: .host)
     model.signInConfiguration = configuration
@@ -151,6 +154,11 @@ private final class FakeApple: AppleCeremony {
 private final class FakePasskeys: PasskeyCeremony {
   var hasPasskey = true
   private(set) var renamed: [(relyingParty: String, userHandle: Data, name: String)] = []
+  private(set) var reportedUnknown: [(relyingParty: String, credentialID: Data)] = []
+
+  func reportUnknownCredential(relyingParty: String, credentialID: Data) async {
+    reportedUnknown.append((relyingParty, credentialID))
+  }
 
   func assert(_ options: JSONValue) async throws -> JSONValue? {
     hasPasskey ? ["id": "cred", "rawId": "cred", "type": "public-key"] : nil
@@ -162,6 +170,26 @@ private final class FakePasskeys: PasskeyCeremony {
 
   func renamePasskey(relyingParty: String, userHandle: Data, name: String) async {
     renamed.append((relyingParty, userHandle, name))
+  }
+}
+
+/// The fake hub, except that every passkey sign-in is refused, as the hub refuses a deleted
+/// account's passkey.
+private struct RejectingPasskeyHub: HubAPI {
+  let fake: FakeHubAPI
+  func enroll(_ request: EnrollRequest) async throws -> EnrollResponse { try await fake.enroll(request) }
+  func me() async throws -> MeResponse { try await fake.me() }
+  func push(_ changes: [SyncChange]) async throws -> PushResponse { try await fake.push(changes) }
+  func pull(after: Int, limit: Int, wait: Int) async throws -> PullResponse {
+    try await fake.pull(after: after, limit: limit, wait: min(wait, 1))
+  }
+  func snapshot() async throws -> SnapshotResponse { try await fake.snapshot() }
+  func devices() async throws -> [DeviceInfo] { try await fake.devices() }
+  func mintPairingCode() async throws -> PairingCodeResponse { try await fake.mintPairingCode() }
+  func revokeSelf() async throws { try await fake.revokeSelf() }
+  func passkeyBegin() async throws -> PasskeyBeginResponse { try await fake.passkeyBegin() }
+  func passkeyFinish(_ request: PasskeyFinishRequest) async throws -> AuthSession {
+    throw HubError(kind: "request_error", code: "credential_rejected", message: "rejected", status: 401)
   }
 }
 
@@ -357,6 +385,24 @@ private func sha256Hex(_ text: String) -> String {
     #expect(phone.model.rootScreen == .workspace)
     // Only the Mac offers "Add your iPhone".
     #expect(phone.model.showAddPhone == false)
+  }
+
+  /// Final review M11 on the phone: the hub refuses the passkey of a deleted account; the phone reports
+  /// it as unknown, through the same ceremony, so it is not offered again.
+  @Test func aRefusedPasskeySignInOnThePhoneReportsThePasskeyAsUnknown() async throws {
+    let fake = FakeHubAPI()
+    await fake.setPasskeyBegin(
+      PasskeyBeginResponse(
+        ceremonyId: "c1", authentication: assertionOptions, registration: registrationOptions))
+    let phone = try await Phone(fake: fake, api: RejectingPasskeyHub(fake: fake))
+    defer { Task { await phone.close() } }
+    let passkeys = FakePasskeys()
+    await phone.model.signInWithPasskey(using: passkeys)
+    #expect(phone.model.accountState == .signedOut(reason: nil))
+    #expect(phone.model.signInProgress.failure != nil)
+    #expect(passkeys.reportedUnknown.map(\.relyingParty) == ["test.b4.run"])
+    #expect(
+      passkeys.reportedUnknown.map(\.credentialID) == [try #require(WebAuthnJSON.data(base64URL: "cred"))])
   }
 
   @Test func a401MovesThePhoneToSignIn() async throws {

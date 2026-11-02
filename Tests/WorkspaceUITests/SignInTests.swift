@@ -522,6 +522,35 @@ extension Array where Element == ScreenElement {
     #expect(ceremony.reportedUnknown.count == 4)
   }
 
+  /// Final review M11: after the account was deleted the device still offers its passkey, and the hub
+  /// refuses it every time. A refused sign-in reports the asserted credential as unknown, under the
+  /// assertion options' relying party, so the next tap asks to create an account.
+  @Test func aRefusedPasskeySignInReportsThePasskeyAsUnknown() async throws {
+    let transport = ScriptedTransport()
+    let model = try await connected(signedOut, transport: transport, configuration: prod)
+    let ceremony = FakeCeremony()
+    ceremony.assertOutcome = .credential(["id": "-_8B", "rawId": "-_8B", "type": "public-key"])
+    func signIn(failingWith code: ErrorCode) async {
+      transport.script(.accountPasskeyBegin, [try! begin()])
+      transport.script(.accountPasskeyFinish, [.failure(WorkspaceError(code, "refused"))])
+      await model.signInWithPasskey(using: ceremony)
+    }
+
+    await signIn(failingWith: .credentialRejected)
+    #expect(ceremony.reportedUnknown.map(\.relyingParty) == ["test.b4.run"])
+    #expect(ceremony.reportedUnknown.map(\.credentialID) == [Data([0xfb, 0xff, 0x01])])
+    #expect(model.signInProgress.failure == SignInCopy.failure(for: WorkspaceError(.credentialRejected, "")))
+
+    // Nothing else says the passkey is unknown: an expired ceremony, a lost answer, a hub that is down.
+    for code in [
+      ErrorCode.ceremonyExpired, .rateLimited, .internalError, .endpointUnavailable, .authRequired,
+    ] {
+      await signIn(failingWith: code)
+      #expect(model.signInProgress.failure != nil)
+    }
+    #expect(ceremony.reportedUnknown.count == 1)
+  }
+
   @Test func failureShowsOneLine() async throws {
     let transport = ScriptedTransport()
     let model = try await connected(signedOut, transport: transport)

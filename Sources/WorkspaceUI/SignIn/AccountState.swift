@@ -374,8 +374,14 @@ extension WorkspaceModel {
           confirmation: SignInCopy.noPasskey(siteDomain: signInConfiguration.siteDomain))
         return
       }
-      let status = try await calls.passkeyFinish(
-        AccountPasskeyFinish.Params(ceremonyId: begun.ceremonyId, assertion: assertion))
+      let status: AccountStatus.Result
+      do {
+        status = try await calls.passkeyFinish(
+          AccountPasskeyFinish.Params(ceremonyId: begun.ceremonyId, assertion: assertion))
+      } catch {
+        await reportRejected(assertion, options: begun.authentication, ceremony: ceremony, after: error)
+        throw error
+      }
       signInProgress = SignInProgress()
       pendingRename = nil
       applyAccountStatus(status)
@@ -440,6 +446,23 @@ extension WorkspaceModel {
     guard let failure = error as? WorkspaceError, Self.orphanProvingCodes.contains(failure.code),
       let relyingParty = try? WebAuthnJSON.registrationRequest(from: options).relyingParty,
       let id = (attestation["rawId"] ?? attestation["id"])?.stringValue,
+      let credentialID = WebAuthnJSON.data(base64URL: id)
+    else { return }
+    await ceremony.reportUnknownCredential(relyingParty: relyingParty, credentialID: credentialID)
+  }
+
+  /// The hub refused a passkey this device offered (`credential_rejected`): most often its account was
+  /// deleted, here or on another device. Tell the password manager it is unknown, so the next "Continue
+  /// with a passkey" finds none and asks to create an account instead of offering, every time, one the
+  /// hub will always refuse. The relying party is the assertion options' own `rpId`, the credential the
+  /// assertion's id. Any other failure (an expired ceremony, a lost answer, an unreachable hub) says
+  /// nothing about the passkey and is never reported.
+  func reportRejected(
+    _ assertion: JSONValue, options: JSONValue, ceremony: any PasskeyCeremony, after error: any Error
+  ) async {
+    guard let failure = error as? WorkspaceError, failure.code == .credentialRejected,
+      let relyingParty = try? WebAuthnJSON.assertionRequest(from: options).relyingParty,
+      let id = (assertion["rawId"] ?? assertion["id"])?.stringValue,
       let credentialID = WebAuthnJSON.data(base64URL: id)
     else { return }
     await ceremony.reportUnknownCredential(relyingParty: relyingParty, credentialID: credentialID)

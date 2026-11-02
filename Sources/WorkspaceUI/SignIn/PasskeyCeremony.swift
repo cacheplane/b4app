@@ -19,8 +19,8 @@ public protocol PasskeyCeremony {
   /// Make a new passkey. `SignInCanceled` when the person closed the sheet, `PasskeysNotSetUp` when
   /// the device cannot keep one.
   func register(_ options: JSONValue) async throws -> JSONValue
-  /// Tell the password manager that a passkey just made is unknown to the relying party (its
-  /// registration was refused), so it is not offered again.
+  /// Tell the password manager that a passkey is unknown to the relying party (a registration the hub
+  /// refused, or a sign-in it refused, as after the account was deleted), so it is not offered again.
   func reportUnknownCredential(relyingParty: String, credentialID: Data) async
   /// Tell the password manager the new name of the passkey this ceremony made for `userHandle`, once
   /// the account has one (after onboarding), so the Passwords app shows "Brian Love" rather than the
