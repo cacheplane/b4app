@@ -100,6 +100,12 @@ extension MirrorAccount: @retroactive AccountHost {}
     } catch {
       failure = Self.describe(error)
     }
+    // A mirror another flavour's build left in this folder is emptied before anything reads it, and
+    // its token forgotten (it was kept under the same Keychain service).
+    if let opened, let stale = MirrorAccount.discardForeignLink(in: opened, flavor: Self.flavor) {
+      let keychain = KeychainSecretStore(service: Self.flavor.keychainService)
+      Task { _ = try? await keychain.remove(stale) }
+    }
     store = opened
     unreadableReason = unreadable
     storeError = unreadable ?? failure

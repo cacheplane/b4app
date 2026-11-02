@@ -431,6 +431,9 @@ public final class WorkspaceModel {
     linkMessage = nil
     connectTask = Task { [transportProvider] in
       do {
+        // Replaced before it began: the provider is not asked (the phone's host keeps the newest
+        // transport it made, which must be the newer connect's).
+        if Task.isCancelled { return }
         let transport = try await transportProvider()
         // A connect replaced by a newer one (`reconnect()`) leaves the link to it.
         if Task.isCancelled {

@@ -158,11 +158,13 @@ final class AuthorizationRun: NSObject, ASAuthorizationControllerDelegate,
   private var controller: ASAuthorizationController?
   private var window: ASPresentationAnchor?
 
+  /// `sheet` names the sheet in the error when there is no window to show it in.
   func perform(
-    _ request: ASAuthorizationRequest, options: ASAuthorizationController.RequestOptions
+    _ request: ASAuthorizationRequest, options: ASAuthorizationController.RequestOptions,
+    sheet: String = "the passkey sheet"
   ) async throws -> ASAuthorization {
     guard let window = Self.anchor() else {
-      throw WorkspaceError(.internalError, "There is no window to show the passkey sheet in.")
+      throw WorkspaceError(.internalError, "There is no window to show \(sheet) in.")
     }
     self.window = window
     let controller = ASAuthorizationController(authorizationRequests: [request])
@@ -194,7 +196,7 @@ final class AuthorizationRun: NSObject, ASAuthorizationControllerDelegate,
   func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
     // `perform` resolves the window before the request runs and refuses to start without one.
     if let window = window ?? Self.anchor() { return window }
-    preconditionFailure("The passkey sheet asked for a window while the app has none.")
+    preconditionFailure("A sign-in sheet asked for a window while the app has none.")
   }
 
   /// The key window, else the first visible window that can be a main window; never a hidden one.

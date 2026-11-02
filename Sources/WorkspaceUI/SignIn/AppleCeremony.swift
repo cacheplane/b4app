@@ -42,6 +42,9 @@ public struct SystemAppleCeremony: AppleCeremony {
 
   public init(session: WebAuthenticationSession?) { self.session = session }
 
+  /// How the no-window error names Apple's sheet.
+  nonisolated static let sheetName = "Sign in with Apple"
+
   /// What Apple's request is handed for the hub's ceremony nonce: its lowercase hex SHA-256, which the
   /// identity token must carry.
   public nonisolated static func requestNonce(_ nonce: String) -> String {
@@ -54,7 +57,7 @@ public struct SystemAppleCeremony: AppleCeremony {
     request.nonce = Self.requestNonce(nonce)
     let authorization: ASAuthorization
     do {
-      authorization = try await AuthorizationRun().perform(request, options: [])
+      authorization = try await AuthorizationRun().perform(request, options: [], sheet: Self.sheetName)
     } catch let error as ASAuthorizationError where error.code == .canceled {
       return nil
     }

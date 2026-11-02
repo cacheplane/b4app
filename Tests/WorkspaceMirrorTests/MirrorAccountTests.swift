@@ -107,6 +107,46 @@ private struct HangingHub: HubAPI {
   }
 }
 
+/// Forwards to the fake, except that the first `/v1/me` waits for `gate` and then answers `late`.
+private final class HeldProfileHub: HubAPI, @unchecked Sendable {
+  let fake: FakeHubAPI
+  let gate: Gate
+  let late: MeResponse
+  private let state = Mutex((calls: 0, answered: false))
+  init(fake: FakeHubAPI, gate: Gate, late: MeResponse) {
+    self.fake = fake
+    self.gate = gate
+    self.late = late
+  }
+  var heldCalls: Int { state.withLock { min($0.calls, 1) } }
+  var answered: Bool { state.withLock { $0.answered } }
+
+  func me() async throws -> MeResponse {
+    let first = state.withLock { state -> Bool in
+      state.calls += 1
+      return state.calls == 1
+    }
+    guard first else { return try await fake.me() }
+    await gate.wait()
+    defer { state.withLock { $0.answered = true } }
+    return late
+  }
+  func enroll(_ request: EnrollRequest) async throws -> EnrollResponse { try await fake.enroll(request) }
+  func push(_ changes: [SyncChange]) async throws -> PushResponse { try await fake.push(changes) }
+  func pull(after: Int, limit: Int, wait: Int) async throws -> PullResponse {
+    try await fake.pull(after: after, limit: limit, wait: min(wait, 1))
+  }
+  func snapshot() async throws -> SnapshotResponse { try await fake.snapshot() }
+  func devices() async throws -> [DeviceInfo] { try await fake.devices() }
+  func mintPairingCode() async throws -> PairingCodeResponse { try await fake.mintPairingCode() }
+  func revokeSelf() async throws { try await fake.revokeSelf() }
+  func passkeyBegin() async throws -> PasskeyBeginResponse { try await fake.passkeyBegin() }
+  func passkeyFinish(_ request: PasskeyFinishRequest) async throws -> AuthSession {
+    try await fake.passkeyFinish(request)
+  }
+  func endSession() async throws { try await fake.endSession() }
+}
+
 @MainActor
 @Suite struct MirrorAccountTests {
   // MARK: Signing in
@@ -229,6 +269,81 @@ private struct HangingHub: HubAPI {
     await rig.account.stopSync()
   }
 
+  /// Review M2: one phone, two accounts. Each sign-in offers every device the phone has had at this
+  /// hub, so switching back reuses the account's own device instead of stranding it.
+  @Test func aSignInOffersEveryDeviceThisPhoneHasHadAtTheHub() async throws {
+    let rig = try Rig()
+    try await rig.signIn(session(device: "dev-a"))
+    _ = await rig.account.logOut()
+    try await rig.signIn(session(device: "dev-b"))
+    _ = await rig.account.logOut()
+    try await rig.signIn(session(device: "dev-a"))
+    let finishes = await rig.fake.passkeyFinishes.map(\.device)
+    #expect(finishes.map(\.deviceId) == [nil, "dev-a", "dev-b"])
+    #expect(finishes.map(\.candidateDeviceIds) == [nil, nil, ["dev-a"]])
+    // Signing in on dev-a again makes it the most recent.
+    #expect(rig.memory.devices(hubURL: "https://hub.test.b4.run") == ["dev-a", "dev-b"])
+    await rig.account.stopSync()
+  }
+
+  /// Review M1: a `/v1/me` answer asked for under an earlier link never lands on the next one.
+  @Test func aLateProfileAnswerIsDroppedAfterASwitch() async throws {
+    let fake = FakeHubAPI()
+    let gate = Gate()
+    let late = MeResponse(
+      deviceId: "dev-a", deviceName: "Brian's iPhone", platform: "ios",
+      org: OrgInfo(slug: "o-ann", name: "Ann's Org"), user: UserInfo(username: "u-ann", displayName: "Ann"),
+      createdAt: "2026-11-02T09:00:00.000000Z", fullName: nil, onboarded: false, identities: [],
+      userId: "user-ann")
+    let held = HeldProfileHub(fake: fake, gate: gate, late: late)
+    let rig = try Rig(fake: fake, makeAPI: { _, _ in held })
+    try await rig.signIn(session(device: "dev-a", displayName: "Ann"))
+    try await eventually("A's /v1/me held") { held.heldCalls == 1 }
+    _ = await rig.account.logOut()
+    try await rig.signIn(session(device: "dev-b", displayName: "Bob"))
+    try await eventually("B's /v1/me answered") { await fake.meCalls >= 1 }
+    gate.open()
+    try await eventually("A's /v1/me answered") { held.answered }
+    try await Task.sleep(for: .milliseconds(50))
+    let link = try #require(try rig.store.link())
+    #expect(link.deviceId == "dev-b")
+    #expect(link.displayName == "Bob")
+    #expect(link.orgName == "Brian's Org")
+    #expect(link.needsOnboarding == false)
+    #expect(rig.account.accountStatus.state == .signedIn)
+    await rig.account.stopSync()
+  }
+
+  // MARK: Another flavour's mirror (review M4)
+
+  @Test func aMirrorLeftByAnotherFlavourIsEmptied() throws {
+    let store = try MirrorStore.inMemory()
+    let beta = MirrorLink(
+      hubURL: "https://hub.test.b4.run/", deviceId: "dev-beta", deviceName: "iPhone", tokenRef: "secret:beta",
+      orgSlug: "o", username: "u")
+    try store.saveLink(beta)
+    _ = try store.apply(Array(try fixtureAsStored().prefix(4)))
+    #expect(MirrorAccount.discardForeignLink(in: store, flavor: .prod) == SecretRef(rawValue: "secret:beta"))
+    #expect(try store.link() == nil)
+    #expect(try store.thread(id: "thread-1") == nil)
+  }
+
+  @Test func thisFlavoursOwnOrAnOperatorsMirrorIsKept() throws {
+    for (hub, flavor) in [
+      ("https://hub.b4.run", PhoneFlavor.prod), ("https://hub.test.b4.run", .beta),
+      ("https://hub.example.com", .prod), ("http://localhost:8080", .local),
+    ] {
+      let store = try MirrorStore.inMemory()
+      try store.saveLink(
+        MirrorLink(
+          hubURL: hub, deviceId: "d", deviceName: "iPhone", tokenRef: "secret:t", orgSlug: "o", username: "u")
+      )
+      #expect(MirrorAccount.discardForeignLink(in: store, flavor: flavor) == nil, "\(hub)")
+      #expect(try store.link()?.hubURL == hub)
+    }
+    #expect(MirrorAccount.discardForeignLink(in: try MirrorStore.inMemory(), flavor: .prod) == nil)
+  }
+
   @Test func logOutWhenTheHubIsDownStillSignsOut() async throws {
     let rig = try Rig()
     try await rig.signIn()
@@ -335,7 +450,7 @@ private struct HangingHub: HubAPI {
     #expect(await rig.fake.deleteAccountCalls == 1)
     #expect(try rig.store.link() == nil)
     // The device went with the account: the next sign-in offers none.
-    #expect(rig.memory.load() == nil)
+    #expect(rig.memory.devices(hubURL: "https://hub.test.b4.run").isEmpty)
   }
 
   @Test func callsThatNeedTheAccountRefuseWhileSignedOut() async throws {
@@ -418,13 +533,30 @@ private struct HangingHub: HubAPI {
       "device-\(UUID().uuidString).json")
     defer { try? FileManager.default.removeItem(at: url) }
     let memory = MirrorDeviceMemory(url: url)
-    #expect(memory.load() == nil)
-    memory.save(MirrorRememberedDevice(hubURL: "https://hub.b4.run", deviceId: "d1"))
-    #expect(
-      MirrorDeviceMemory(url: url).load()
-        == MirrorRememberedDevice(hubURL: "https://hub.b4.run", deviceId: "d1"))
+    #expect(memory.all().isEmpty)
+    memory.remember(MirrorRememberedDevice(hubURL: "https://hub.b4.run", deviceId: "d1"))
+    memory.remember(MirrorRememberedDevice(hubURL: "https://hub.test.b4.run", deviceId: "t1"))
+    memory.remember(MirrorRememberedDevice(hubURL: "https://hub.b4.run", deviceId: "d2"))
+    #expect(MirrorDeviceMemory(url: url).devices(hubURL: "https://hub.b4.run") == ["d2", "d1"])
+    // Signing in again on a known device brings it to the front, once.
+    memory.remember(MirrorRememberedDevice(hubURL: "https://hub.b4.run", deviceId: "d1"))
+    #expect(memory.devices(hubURL: "https://hub.b4.run") == ["d1", "d2"])
+    memory.forget(hubURL: "https://hub.b4.run", deviceId: "d1")
+    #expect(MirrorDeviceMemory(url: url).devices(hubURL: "https://hub.b4.run") == ["d2"])
     memory.clear()
-    #expect(MirrorDeviceMemory(url: url).load() == nil)
+    #expect(MirrorDeviceMemory(url: url).all().isEmpty)
+  }
+
+  @Test func atMostEightDevicesAreRememberedForEachHub() {
+    let memory = MirrorDeviceMemory(url: nil)
+    memory.remember(MirrorRememberedDevice(hubURL: "https://other.example.com", deviceId: "o1"))
+    for n in 1...12 {
+      memory.remember(MirrorRememberedDevice(hubURL: "https://hub.b4.run", deviceId: "d\(n)"))
+    }
+    #expect(MirrorDeviceMemory.limit == 8)
+    #expect(memory.devices(hubURL: "https://hub.b4.run") == (5...12).reversed().map { "d\($0)" })
+    // Another hub's devices are not crowded out.
+    #expect(memory.devices(hubURL: "https://other.example.com") == ["o1"])
   }
 
   /// Task 13's carry: a `b4app*://auth?handoff=` (or `?error=`) opened on the phone is no pairing link,

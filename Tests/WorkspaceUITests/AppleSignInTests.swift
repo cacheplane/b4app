@@ -130,6 +130,8 @@ private final class FakeApple: AppleCeremony {
   var web: Result<URL?, any Error> = .success(URL(string: "b4app-beta://auth?handoff=H-one-time")!)
   private(set) var nonces: [String] = []
   private(set) var opened: [(url: URL, scheme: String)] = []
+  /// Runs inside the web sheet, before it answers: while the ceremony is in flight.
+  var whileOpen: (() -> Void)?
 
   func nativeSignIn(nonce: String) async throws -> AppleCredential? {
     nonces.append(nonce)
@@ -138,6 +140,7 @@ private final class FakeApple: AppleCeremony {
 
   func webSignIn(url: URL, callbackScheme: String) async throws -> URL? {
     opened.append((url, callbackScheme))
+    whileOpen?()
     return try web.get()
   }
 }
@@ -283,9 +286,26 @@ private func sha256Hex(_ text: String) -> String {
     transport.script(.accountAppleStart, [start("x")])
     transport.script(.accountAppleFinish, [try status(signedIn)])
     let apple = FakeApple()
+    var droppedWhileOpen: Bool?
+    apple.whileOpen = {
+      // Apple's page is up: the sign-in has begun and not finished.
+      #expect(model.signInProgress.inFlight == .apple)
+      #expect(transport.calls(.accountAppleStart).count == 1)
+      #expect(transport.calls(.accountAppleFinish).isEmpty)
+      droppedWhileOpen = model.openURL(URL(string: "b4app-beta://auth?handoff=H-second")!)
+    }
     await model.signInWithApple(using: apple)
-    #expect(model.openURL(URL(string: "b4app-beta://auth?handoff=H-second")!))
+    #expect(droppedWhileOpen == true)
     #expect(transport.calls(.accountAppleFinish) == [["handoff": "H-one-time"]])
+    #expect(model.accountState == .signedIn)
+  }
+
+  /// Apple's sheet names itself when there is no window to show it in (the test process has none).
+  @Test func appleSheetSaysItHasNoWindow() async {
+    let refused = await #expect(throws: WorkspaceError.self) {
+      _ = try await SystemAppleCeremony(session: nil).nativeSignIn(nonce: "n")
+    }
+    #expect(refused?.message == "There is no window to show Sign in with Apple in.")
   }
 
   @Test func aStrayCallbackIsDroppedOnThePhone() async throws {

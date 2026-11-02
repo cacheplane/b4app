@@ -66,7 +66,7 @@ import os
   /// Moves on every sign-in and sign-out, so a late answer or refusal for an old link changes nothing.
   private var generation = 0
 
-  private static let logger = Logger(subsystem: "com.cacheplane.b4app", category: "account")
+  nonisolated private static let logger = Logger(subsystem: "com.cacheplane.b4app", category: "account")
 
   public init(
     store: MirrorStore, secrets: any SecretStore, configuration: Configuration, memory: MirrorDeviceMemory,
@@ -175,8 +175,9 @@ import os
     guard (1...200).contains(name.count) else {
       throw WorkspaceError(.protocolInvalid, "The full name must be 1 to 200 characters.")
     }
+    let seen = generation
     let me = try await authed("save your name") { try await $0.setProfile(ProfileRequest(fullName: name)) }
-    profileArrived(me)
+    profileArrived(me, generation: seen)
     return accountStatus
   }
 
@@ -220,10 +221,10 @@ import os
   }
 
   /// Delete the account at the hub, then sign out and empty the mirror. A refusal changes nothing. The
-  /// device went with the account, so the next sign-in offers none.
+  /// device went with the account, so no later sign-in offers it.
   public func deleteAccount() async throws -> AccountStatus.Result {
     try await authed("delete the account") { try await $0.deleteAccount() }
-    memory.clear()
+    if let link { memory.forget(hubURL: link.hubURL, deviceId: link.deviceId) }
     await endLink(endingSession: false, reason: nil)
     return accountStatus
   }
@@ -231,8 +232,9 @@ import os
   /// Read `/v1/me`: the names and whether onboarding is done. A 401 signs out; other failures keep what
   /// is shown.
   public func refreshProfile() async {
+    let seen = generation
     guard let me = try? await authed("read the account", { try await $0.me() }) else { return }
-    profileArrived(me)
+    profileArrived(me, generation: seen)
   }
 
   // MARK: - Logging out
@@ -272,7 +274,7 @@ import os
       _ = await Bounded.run(within: configuration.endSessionTimeout) { try await orphan.endSession() }
       throw WorkspaceError(.internalError, "Could not keep the sign-in on this iPhone.")
     }
-    memory.save(MirrorRememberedDevice(hubURL: link.hubURL, deviceId: link.deviceId))
+    memory.remember(MirrorRememberedDevice(hubURL: link.hubURL, deviceId: link.deviceId))
     generation += 1
     startSync(link, fromSnapshot: false)
     Self.logger.notice("signed in on device \(link.deviceId, privacy: .public)")
@@ -344,16 +346,21 @@ import os
   /// The flavour's hub with no token: the sign-in calls carry none.
   private func signInAPI() -> any HubAPI { makeAPI(configuration.hubURL, { nil }) }
 
-  /// This phone as a sign-in describes it: the device it last had at this hub, so the hub reuses it.
+  /// This phone as a sign-in describes it: every device it has had at this hub, most recent first, so
+  /// the hub reuses the one that is the signing-in user's (the phone cannot know whose passkey or
+  /// Apple ID is coming). The first goes as `deviceId`, the rest as candidates, left out when none.
   private func deviceSpec() -> DeviceSpec {
-    let hub = Self.canonical(configuration.hubURL)
-    let previous = memory.load().flatMap { $0.hubURL == hub ? $0.deviceId : nil }
-    return DeviceSpec(deviceName: configuration.deviceName, platform: "ios", deviceId: previous)
+    let known = memory.devices(hubURL: Self.canonical(configuration.hubURL))
+    let rest = Array(known.dropFirst())
+    return DeviceSpec(
+      deviceName: configuration.deviceName, platform: "ios", deviceId: known.first,
+      candidateDeviceIds: rest.isEmpty ? nil : rest)
   }
 
-  /// A `/v1/me` answer: the names, the user id, and whether onboarding is done.
-  private func profileArrived(_ me: MeResponse) {
-    guard var link else { return }
+  /// A `/v1/me` answer: the names, the user id, and whether onboarding is done. Dropped when it was
+  /// asked under another link (a log-out and a sign-in since) or names another device.
+  private func profileArrived(_ me: MeResponse, generation seen: Int) {
+    guard seen == generation, var link, me.deviceId == link.deviceId else { return }
     let before = link
     link.displayName = me.user.displayName
     link.orgName = me.org.name
@@ -425,8 +432,28 @@ import os
   }
 }
 
-/// The device this phone last had at a hub. Kept across a log-out, which empties the mirror, so the
-/// next sign-in offers it and the hub reuses it rather than making another. An id, not a secret.
+extension MirrorAccount {
+  /// Empties a mirror another flavour left in this flavour's folder, before anything reads it, and
+  /// answers its token's reference for the caller to forget. Builds before the flavoured folders kept
+  /// every flavour's mirror in `b4app`, prod's folder, and prod and beta share the app's container, so a
+  /// prod install can inherit a beta mirror whose link points at the test hub; it starts clean
+  /// instead. Only another flavour's hub counts: a link to an operator's hub, joined with an enrollment
+  /// code, is this phone's own.
+  public nonisolated static func discardForeignLink(in store: MirrorStore, flavor: PhoneFlavor) -> SecretRef?
+  {
+    guard let link = try? store.link(), let hub = try? HubURL.canonical(link.hubURL) else { return nil }
+    let others = PhoneFlavor.allCases.filter { $0 != flavor }.compactMap {
+      try? HubURL.canonical($0.hubURL.absoluteString)
+    }
+    guard others.contains(hub) else { return nil }
+    try? store.forgetAccount()
+    logger.notice("emptied a mirror another flavour's build left here")
+    return SecretRef(rawValue: link.tokenRef)
+  }
+}
+
+/// A device this phone has had at a hub. Kept across a log-out, which empties the mirror, so a later
+/// sign-in offers it and the hub reuses it rather than making another. An id, not a secret.
 public struct MirrorRememberedDevice: Codable, Sendable, Equatable {
   public var hubURL: String
   public var deviceId: String
@@ -436,30 +463,64 @@ public struct MirrorRememberedDevice: Codable, Sendable, Equatable {
   }
 }
 
-/// Where `MirrorRememberedDevice` is kept: a small JSON file beside the mirror, or memory only.
+/// Where the phone's devices are remembered: a small JSON file beside the mirror, or memory only. At
+/// most `limit` per hub, the most recently signed in first; one phone signs in to several accounts
+/// with one device each.
 public final class MirrorDeviceMemory: Sendable {
-  private let url: URL?
-  private let value: Mutex<MirrorRememberedDevice?>
+  /// How many devices are kept for each hub.
+  public static let limit = 8
 
-  /// `url` nil keeps it in memory (tests).
+  private let url: URL?
+  private let value: Mutex<[MirrorRememberedDevice]>
+
+  /// `url` nil keeps them in memory (tests).
   public init(url: URL?) {
     self.url = url
     let stored = url.flatMap { try? Data(contentsOf: $0) }.flatMap {
-      try? JSONCoding.decoder.decode(MirrorRememberedDevice.self, from: $0)
+      try? JSONCoding.decoder.decode([MirrorRememberedDevice].self, from: $0)
     }
-    value = Mutex(stored)
+    value = Mutex(stored ?? [])
   }
 
-  public func load() -> MirrorRememberedDevice? { value.withLock { $0 } }
+  /// Every device remembered, most recent first.
+  public func all() -> [MirrorRememberedDevice] { value.withLock { $0 } }
 
-  public func save(_ device: MirrorRememberedDevice) {
-    value.withLock { $0 = device }
-    guard let url, let data = try? JSONCoding.encoder.encode(device) else { return }
-    try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+  /// The devices remembered at `hubURL`, most recent first.
+  public func devices(hubURL: String) -> [String] {
+    value.withLock { $0.filter { $0.hubURL == hubURL }.map(\.deviceId) }
   }
 
-  public func clear() {
-    value.withLock { $0 = nil }
-    if let url { try? FileManager.default.removeItem(at: url) }
+  /// `device` is the most recent at its hub; the oldest beyond `limit` there are dropped.
+  public func remember(_ device: MirrorRememberedDevice) {
+    write { devices in
+      devices.removeAll { $0 == device }
+      devices.insert(device, at: 0)
+      var atHub = 0
+      devices.removeAll { remembered in
+        guard remembered.hubURL == device.hubURL else { return false }
+        atHub += 1
+        return atHub > Self.limit
+      }
+    }
+  }
+
+  /// One device is gone (its account was deleted).
+  public func forget(hubURL: String, deviceId: String) {
+    write { $0.removeAll { $0 == MirrorRememberedDevice(hubURL: hubURL, deviceId: deviceId) } }
+  }
+
+  public func clear() { write { $0 = [] } }
+
+  private func write(_ change: (inout [MirrorRememberedDevice]) -> Void) {
+    let devices = value.withLock { devices in
+      change(&devices)
+      return devices
+    }
+    guard let url else { return }
+    if devices.isEmpty {
+      try? FileManager.default.removeItem(at: url)
+    } else if let data = try? JSONCoding.encoder.encode(devices) {
+      try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
   }
 }
