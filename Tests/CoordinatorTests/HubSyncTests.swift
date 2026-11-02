@@ -192,6 +192,25 @@ private struct HubHarness {
   func status() async throws -> HubStatus.Result {
     try await client.request(HubStatus.self, EmptyParams())
   }
+
+  /// Returns once the joined account's sync is quiet: nothing left unsynced in `db`, the pull parked in
+  /// its long poll, and the account's one-off `/v1/me` reads done (the count has stopped moving). A test
+  /// then snapshots the store, or arms a failure that lands on that pull, with no push or profile read
+  /// still in flight to change the store or take the failure first.
+  func untilSyncQuiet(_ db: WorkspaceDatabase) async throws {
+    let deadline = ContinuousClock.now + .seconds(10)
+    while try db.unsyncedChangeCount() > 0, ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    await fake.untilPulling(1)
+    var reads = await fake.meCalls
+    while ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(150))
+      let now = await fake.meCalls
+      if now == reads { break }
+      reads = now
+    }
+  }
 }
 
 @Suite struct SyncFilterTests {
@@ -418,8 +437,11 @@ private struct HubHarness {
     // A 401 is recorded and leaves the rows unsynced; since the per-account split (Task 9) it also signs
     // the account out, so no write-driven push follows.
     let accounts = h.coordinator.accounts
+    // Quiet first, so the 401 lands on the parked pull: otherwise a push still in flight could sync the
+    // row below, or a profile read could take the 401 and sign out without the link recording it.
+    try await h.untilSyncQuiet(db)
     // Unsynced rows written straight to the store (no event, so no push yet); the 401 then arrives on
-    // whichever hub call comes next, the pull's long-poll as a rule.
+    // the pull's long poll, which `setFailNext` wakes.
     _ = try db.insertConnection(
       Connection(id: "c-after", kind: .claude, label: "After", target: "/bin/claude"))
     await h.fake.setFailNext(unauthorized)
@@ -567,6 +589,9 @@ private struct HubHarness {
       DatabaseBackup.self, DatabaseBackup.Params(path: h.workDir + "/archive.jsonl"),
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
     try await h.addThread()
+    // The thread's push (debounced) must have landed before the snapshot, or it marks rows synced and
+    // moves the link afterwards and the comparisons below would see the push, not the refused restore.
+    try await h.untilSyncQuiet(db)
     let counts = try db.tableCounts()
     let changes = try db.changes(after: 0)
     let link = try db.hubLink()
