@@ -229,7 +229,7 @@ All under `/v1`, JSON, B4's error envelope, `deny_unknown_fields`. Every route t
 - **Sign-up policy:** `B4HUB_SIGNUP=open|closed`, default `closed` so an on-prem hub never grows accounts by accident; prod, test, and the local Compose `.env.example` set `open`. With it closed, a new Apple `sub` or a registration answers `signup_closed`.
 - **Account deletion** (App Store guideline 5.1.1(v)): revokes each Apple refresh token at Apple's `/auth/revoke`, deletes the user's tokens, identities, devices, and, for a personal org, every tenant row of that org, then the org and user, in one transaction after the revoke calls. The iPhone offers it in Settings → Account ("Delete account…", with a typed confirmation of the org name); the Mac offers the same and then drops that account's local database and registry row.
 - **Existing users:** the migration sets `onboarded_at = created_at` and `full_name = display_name` for every existing user and leaves existing orgs with `personal = false`, so enrolled users keep working unchanged.
-- **Rate limits** (in memory per process, M8c's mechanism): `begin` routes 20 per IP per minute; `finish`, `native`, `handoff` 10 per IP per minute; answering `rate_limited`.
+- **Rate limits** (in memory per process, M8c's mechanism): `begin` routes 20 per IP per minute; `finish`, `native`, `handoff` 10 per IP per minute; answering `rate_limited`. The client IP is the TCP peer, unless `B4HUB_TRUST_X_FORWARDED_FOR=1`, when it is the right-most `X-Forwarded-For` entry; a hosted hub behind a proxy sets it.
 - **Errors** added to the table and to Swift's `ErrorCode`: `signup_closed`, `merge_refused`, `ceremony_expired`, `credential_rejected` (any failed verification, deliberately vague), `last_identity`, `signed_out` (coordinator only).
 - **Secrets:** none of the request bodies above, the client secret, the refresh tokens, or `B4HUB_SECRET_KEY` appear in a log line; the hub's existing redaction tests extend to them.
 - `b4hub seed` keeps working for the Compose stack; `b4hub enroll` stays as the operator fallback.
@@ -267,7 +267,11 @@ Changes in the b4.run repository, deployed by its existing Vercel project, with 
 Standing up the prod and test hubs (hosting, databases, domains, TLS, deploys, backups, secrets) is the owner's separate thread, not this project. This design depends on it only through these facts, which that project provides:
 
 - `https://hub.b4.run` and `https://hub.test.b4.run` serve this repository's `Hub/` image with its migrations applied, reachable over HTTPS with long-lived connections (M8c's WebSockets, 25 s long-polls, PostgreSQL `LISTEN/NOTIFY`).
-- Each sets `B4HUB_SIGNUP=open`, `B4HUB_WEBAUTHN_RP_ID` (`b4.run` or `test.b4.run`), `B4HUB_PUBLIC_URL`, `B4HUB_SECRET_KEY`, and the `B4HUB_APPLE_*` values from the owner's Sign in with Apple key, and lists `/v1/auth/apple/callback` as reachable for Apple's form post.
+- Each sets `B4HUB_SIGNUP=open`, `B4HUB_WEBAUTHN_RP_ID` (`b4.run` or `test.b4.run`), `B4HUB_PUBLIC_URL`, `B4HUB_SECRET_KEY` (32 bytes, base64), `B4HUB_TRUST_X_FORWARDED_FOR=1` when behind a proxy, and `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, `B4HUB_APPLE_PRIVATE_KEY` (the `.p8` PEM contents, not a path), and `B4HUB_APPLE_AUDIENCES` (`com.cacheplane.b4app.ios,com.cacheplane.b4app.signin`). Every secret is a plain environment variable read at start, so any host's secret manager can inject it. `B4HUB_APPLE_BASE_URL` is for tests only and is never set on a hosted hub.
+- The browser reaches `GET /v1/auth/apple/start`, and Apple's form post (sent by the user's browser) reaches `POST /v1/auth/apple/callback`.
+- The hub can make outbound HTTPS calls to `https://appleid.apple.com` (`/auth/keys`, `/auth/token`, `/auth/revoke`). Nothing else outbound: there is no phone verification.
+- The image gains OpenSSL (runtime `libssl`), which `webauthn-rs` needs.
+- Sign-in ceremonies and handoffs live in PostgreSQL, so they work across replicas; the auth rate limits are in memory per process, like M8c's.
 
 Until those hubs exist, this project is built and verified against the local hub (Compose) with passkeys, and the Apple flows against the hub's test doubles; the prod and beta flavours compile and point at the URLs above.
 
