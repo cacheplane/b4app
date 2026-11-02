@@ -258,12 +258,17 @@ async fn redeem_in(
 ) -> Result<Enrolled> {
     // A single conditional UPDATE is the whole single-use guarantee: of two concurrent
     // redemptions the second waits on the row lock, then finds `used_at` set and matches nothing.
+    // A pairing code (one a Mac minted, `created_by_device_id` set) pairs a phone and nothing else:
+    // redeemed as any other platform it matches nothing and stays usable, so its holder cannot
+    // take over the Mac's own device through `candidateDeviceIds`.
     let claimed: Option<(Uuid, Uuid)> = sqlx::query_as(
         "UPDATE enrollment_codes SET used_at = now() \
          WHERE code_hash = $1 AND used_at IS NULL AND expires_at > now() \
+           AND (created_by_device_id IS NULL OR $2 = 'ios') \
          RETURNING org_id, user_id",
     )
     .bind(&hash_code(code)[..])
+    .bind(device.platform.as_str())
     .fetch_optional(&mut **tx)
     .await?;
     let Some((org_id, user_id)) = claimed else {

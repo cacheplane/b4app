@@ -225,7 +225,9 @@ A joined Mac mints a code that pairs a phone. Bearer auth; no body. Only a `maco
 mint: an `ios` or `cli` caller gets `404 not_found`, as if the route did not exist. The code is an
 ordinary enrollment code (same alphabet, hashing, and case-insensitive match) that expires in
 five minutes instead of ten and is single-use. The phone redeems it at `POST /v1/enroll` with
-`platform: "ios"` and becomes a device of the same user. The hub remembers which Mac minted it.
+`platform: "ios"` and becomes a device of the same user. Redeemed as any other platform it is
+`401 invalid_code` and stays redeemable, so a code's holder can never take over the Mac's own
+device through `candidateDeviceIds`. The hub remembers which Mac minted it.
 
 `200`:
 

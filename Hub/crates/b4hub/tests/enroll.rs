@@ -813,6 +813,37 @@ async fn a_mac_mints_a_pairing_code_the_phone_redeems(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn a_pairing_code_pairs_only_a_phone(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let seeded = seed_blove(&admin).await;
+    let (mac_token, mac_id) = enroll_as(&admin, &state, &seeded, "macos").await;
+    let (_, body) = mint(&state, &mac_token).await;
+    let code = body["code"].as_str().unwrap().to_string();
+
+    // Redeemed as a Mac, naming the minting Mac as its candidate, the code matches nothing.
+    for platform in ["macos", "cli"] {
+        let attempt = json!({"code": code, "deviceName": "not a phone", "platform": platform,
+                             "candidateDeviceIds": [mac_id]})
+        .to_string();
+        let (status, body) = send(&state, "POST", "/v1/enroll", None, Some(&attempt)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{platform}: {body}");
+        assert_eq!(error_code(&body), "invalid_code");
+    }
+    // The Mac still answers for its own token, and the code is still the phone's to redeem.
+    let (status, _) = send(&state, "GET", "/v1/me", Some(&mac_token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, enrolled) = send(
+        &state,
+        "POST",
+        "/v1/enroll",
+        None,
+        Some(&phone_enroll_body(&code)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{enrolled}");
+}
+
+#[sqlx::test(migrations = false)]
 async fn pairing_codes_expire_after_five_minutes(pool: PgPool) {
     let (admin, state) = migrated(&pool).await;
     let seeded = seed_blove(&admin).await;
