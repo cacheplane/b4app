@@ -45,6 +45,10 @@ output "alb_zone_id" {
   value       = aws_lb.this.zone_id
 }
 
+# The first apply blocks on certificate validation until the owner adds these
+# records at the DNS host. So read them first with
+# `terraform apply -target=aws_acm_certificate.hub`, add them, then run the
+# full apply.
 output "acm_validation_records" {
   description = "DNS records to add at the DNS host to validate the certificate."
   value = [

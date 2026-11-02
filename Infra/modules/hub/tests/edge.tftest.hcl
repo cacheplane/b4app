@@ -1,6 +1,12 @@
 # Tests apply against a mocked AWS provider; nothing here needs credentials.
 
 mock_provider "aws" {
+  mock_data "aws_caller_identity" {
+    defaults = {
+      account_id = "111111111111"
+    }
+  }
+
   mock_data "aws_elb_service_account" {
     defaults = {
       arn = "arn:aws:iam::033677994240:root"
@@ -58,6 +64,11 @@ run "waf_has_two_rules_and_no_body_rules" {
   assert {
     condition     = length([for r in aws_wafv2_web_acl.hub.rule : r if length(r.statement[0].rate_based_statement) > 0 && r.statement[0].rate_based_statement[0].limit == 2000 && r.statement[0].rate_based_statement[0].aggregate_key_type == "IP"]) == 1
     error_message = "one rate-based rule, 2000 requests per IP"
+  }
+
+  assert {
+    condition     = length([for r in aws_wafv2_web_acl.hub.rule : r if length(r.statement[0].rate_based_statement) > 0 && r.statement[0].rate_based_statement[0].evaluation_window_sec == 300]) == 1
+    error_message = "the rate rule evaluates over 300 seconds"
   }
 
   assert {
@@ -162,5 +173,19 @@ run "alb_logs_bucket" {
   assert {
     condition     = aws_lb.this.access_logs[0].bucket == aws_s3_bucket.alb_logs.id && aws_lb.this.access_logs[0].enabled == true
     error_message = "the load balancer writes access logs to the bucket"
+  }
+}
+
+run "alb_logs_policy_is_scoped" {
+  command = apply
+
+  assert {
+    condition     = jsondecode(aws_s3_bucket_policy.alb_logs.policy).Statement[0].Resource == "${aws_s3_bucket.alb_logs.arn}/AWSLogs/111111111111/*"
+    error_message = "log delivery is limited to the AWSLogs/<account> prefix"
+  }
+
+  assert {
+    condition     = length(jsondecode(aws_s3_bucket_policy.alb_logs.policy).Statement) == 1 && jsondecode(aws_s3_bucket_policy.alb_logs.policy).Statement[0].Action == "s3:PutObject"
+    error_message = "the only grant is s3:PutObject"
   }
 }

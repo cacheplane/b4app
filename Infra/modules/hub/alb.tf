@@ -1,5 +1,7 @@
 data "aws_elb_service_account" "this" {}
 
+data "aws_caller_identity" "current" {}
+
 # Access logs. ELB log delivery supports SSE-S3 only, not SSE-KMS.
 resource "aws_s3_bucket" "alb_logs" {
   bucket = "${local.name}-alb-logs"
@@ -47,7 +49,7 @@ resource "aws_s3_bucket_policy" "alb_logs" {
       Effect    = "Allow"
       Principal = { AWS = data.aws_elb_service_account.this.arn }
       Action    = "s3:PutObject"
-      Resource  = "${aws_s3_bucket.alb_logs.arn}/*"
+      Resource  = "${aws_s3_bucket.alb_logs.arn}/AWSLogs/${data.aws_caller_identity.current.account_id}/*"
     }]
   })
 
