@@ -44,15 +44,15 @@ Do this one account at a time: finish steps 3 to 5 for `test` before starting `p
 
    ```bash
    export ENV=test                            # prod: ENV=prod
-   export AWS_PROFILE=b4hub-$ENV
-   aws login --profile cacheplane-mgmt   # only when the session has expired
+   aws login --profile cacheplane-mgmt        # only when the session has expired
+   eval "$(aws configure export-credentials --profile b4hub-$ENV --format env)"
    cd Infra/bootstrap
    rm -rf .terraform terraform.tfstate*       # nothing carried over from the other account
    terraform init
    terraform apply -var environment=$ENV
    ```
 
-   The state is local (`terraform.tfstate` in this directory) for this first apply. The S3 bucket name `b4hub-<env>-tfstate` is global; if it is taken, the apply fails and the name needs a suffix (change `local.state_bucket`). Capture the outputs now, while the backend is still local:
+   Terraform's AWS provider cannot read a profile that `aws login` wrote (`login_session`), so the `export-credentials` line puts the assumed role's temporary credentials (one hour) in the environment instead of `AWS_PROFILE`; rerun it if an apply fails with an expired token. The state is local (`terraform.tfstate` in this directory) for this first apply. The S3 bucket name `b4hub-<env>-tfstate` is global; if it is taken, the apply fails and the name needs a suffix (change `local.state_bucket`). Capture the outputs now, while the backend is still local:
 
    ```bash
    STATE_BUCKET=$(terraform output -raw state_bucket)
