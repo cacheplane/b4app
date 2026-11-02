@@ -36,10 +36,11 @@ public struct Glance: Sendable, Equatable {
     self.asOf = asOf
   }
 
-  /// Data with no date (never synced, or not linked) has nothing to be old, so it is not stale.
+  /// Stale from `asOf + staleAfter` on, the moment `entryDates` schedules. Data with no date (never
+  /// synced, or not linked) has nothing to be old, so it is not stale.
   public func isStale(at now: Date) -> Bool {
     guard let asOf else { return false }
-    return now.timeIntervalSince(asOf) > Self.staleAfter
+    return now.timeIntervalSince(asOf) >= Self.staleAfter
   }
 
   /// "as of 3:42 PM" in the viewer's locale when stale, else nil.

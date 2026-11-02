@@ -147,6 +147,19 @@ private func remove(_ path: String) {
     #expect(glance.entryDates(now: now) == [now])
   }
 
+  @Test func dataTurnsStaleExactlyAtTheScheduledEntry() {
+    let asOf = Date(timeIntervalSince1970: 1_800_000_000)
+    let glance = Glance(linked: true, rows: [], asOf: asOf)
+    let staleAt = asOf.addingTimeInterval(Glance.staleAfter)
+    #expect(!glance.isStale(at: staleAt.addingTimeInterval(-1)))
+    #expect(glance.staleLabel(at: staleAt.addingTimeInterval(-1)) == nil)
+    #expect(glance.isStale(at: staleAt))
+    #expect(glance.staleLabel(at: staleAt) == "as of " + asOf.formatted(date: .omitted, time: .shortened))
+    // The entry scheduled for that moment is the one that reads as stale.
+    #expect(glance.entryDates(now: asOf.addingTimeInterval(240)).last == staleAt)
+    #expect(glance.entryDates(now: staleAt) == [staleAt])
+  }
+
   @Test func undatedDataIsNeverStale() {
     let now = Date(timeIntervalSince1970: 1_800_000_000)
     let glance = Glance(linked: false, rows: [], asOf: nil)
