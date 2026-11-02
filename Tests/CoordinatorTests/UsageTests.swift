@@ -31,6 +31,16 @@ extension Harness {
   }
 }
 
+/// A secret store whose delete always fails, as a locked Keychain can.
+actor RefusingRemoveStore: SecretStore {
+  private var values: [SecretRef: String] = [:]
+  func put(_ ref: SecretRef, value: String) async throws { values[ref] = value }
+  func read(_ ref: SecretRef) async throws -> String? { values[ref] }
+  func remove(_ ref: SecretRef) async throws -> Bool {
+    throw WorkspaceError(.internalError, "The Keychain refused the delete.")
+  }
+}
+
 @Suite(.serialized) struct UsageTests {
   @Test func tokenBoundariesAreLocalMidnightAndMonday() throws {
     var calendar = Calendar(identifier: .gregorian)
@@ -251,5 +261,54 @@ extension Harness {
     #expect(attempts.payload["attempts"]?.numberValue == 3)
     #expect(clock.now - started > .seconds(1))
     await h.stop()
+  }
+
+  @Test func aRenameCarriesTheConnection() async throws {
+    let server = try await FakeB4.start()
+    let h = try await Harness.start()
+    let b4 = try await h.addB4(server, label: "Old").connection
+    _ = try await h.update(ConnectionUpdate.Params(connectionId: b4.id, label: "New"))
+    // Every client hears the new name, not only the one that asked.
+    try await h.events.waitFor {
+      $0.kind == .connectionChanged && $0.connectionId == b4.id
+        && $0.payload["connection"]?["label"]?.stringValue == "New"
+    }
+    await h.stop()
+    await server.stop()
+  }
+
+  @Test func credentialRemoveKeepsASecretInUse() async throws {
+    let server = try await FakeB4.start()
+    let secrets = MemorySecretStore()
+    let h = try await Harness.start(secretStore: secrets)
+    let used = try await h.storeCredential("used")
+    let spare = try await h.storeCredential("spare")
+    _ = try await h.addB4(server, authReference: used)
+    func remove(_ reference: String) async throws -> Bool {
+      try await h.client.request(
+        CredentialRemove.self, CredentialRemove.Params(reference: reference),
+        options: RequestOptions(operationId: UUID().uuidString)
+      ).removed
+    }
+    #expect(try await remove(used) == false)
+    #expect(try await secrets.read(try #require(SecretRef(rawValue: used))) == "used")
+    #expect(try await remove(spare))
+    #expect(try await secrets.read(try #require(SecretRef(rawValue: spare))) == nil)
+    await h.stop()
+    await server.stop()
+  }
+
+  /// The edit is saved before the old key is deleted, so a Keychain that refuses the delete does not
+  /// turn a saved edit into an error.
+  @Test func aSavedKeyChangeIsNotReportedFailedWhenTheOldKeyStays() async throws {
+    let server = try await FakeB4.start()
+    let h = try await Harness.start(secretStore: RefusingRemoveStore())
+    let old = try await h.storeCredential("old")
+    let b4 = try await h.addB4(server, authReference: old).connection
+    let replacement = try await h.storeCredential("new")
+    let updated = try await h.update(ConnectionUpdate.Params(connectionId: b4.id, authReference: replacement))
+    #expect(updated.connection.authReference == replacement)
+    await h.stop()
+    await server.stop()
   }
 }

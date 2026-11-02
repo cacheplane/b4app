@@ -36,7 +36,7 @@ private func parse(_ json: String) throws -> ParsedCommand { try parseCommand(Da
       .projectRename, .projectDelete, .threadMarkRead, .threadStart, .settingsUpdate, .connectionUpdate,
       .accountPasskeyFinish, .accountAppleFinish, .accountCompleteProfile, .accountLogout,
       .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice,
-      .accountAppleLinkFinish,
+      .accountAppleLinkFinish, .credentialRemove,
     ]
     for method in WorkspaceProtocol.Method.allCases {
       #expect(method.isMutation == mutations.contains(method), "\(method)")

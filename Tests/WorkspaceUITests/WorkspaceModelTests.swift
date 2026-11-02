@@ -23,7 +23,7 @@ struct ModelHarness {
   let model: WorkspaceModel
   let workDir: String
 
-  static func start() async throws -> ModelHarness {
+  static func start(secretStore: any SecretStore = MemorySecretStore()) async throws -> ModelHarness {
     let base = NSTemporaryDirectory() + "b4ui-\(UUID().uuidString.prefix(8))"
     try FileManager.default.createDirectory(atPath: base + "/work", withIntermediateDirectories: true)
     let paths = try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
@@ -34,7 +34,7 @@ struct ModelHarness {
     guard
       case .running(let coordinator) = try await Coordinator.start(
         options: CoordinatorOptions(
-          paths: paths, environment: env, secretStore: MemorySecretStore(), checkRetryDelays: [.zero, .zero]))
+          paths: paths, environment: env, secretStore: secretStore, checkRetryDelays: [.zero, .zero]))
     else { throw WorkspaceError(.internalError, "expected running") }
     let socketPath = paths.socketPath
     let model = WorkspaceModel(transportProvider: {

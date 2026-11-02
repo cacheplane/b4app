@@ -97,7 +97,31 @@ public enum ConnectionUpdate: WorkspaceCommand {
   public typealias Result = ConnectionAdd.Result
 }
 
+/// Delete a credential no connection uses: the form stores a key before it adds or edits the
+/// connection, and takes the key back when that fails. A key a connection uses is kept.
+public enum CredentialRemove: WorkspaceCommand {
+  public static let method = Method.credentialRemove
+  public struct Params: Codable, Sendable, Equatable {
+    public var reference: String
+    public init(reference: String) { self.reference = reference }
+  }
+  public struct Result: Codable, Sendable, Equatable {
+    public var removed: Bool
+    public init(removed: Bool) { self.removed = removed }
+  }
+}
+
 extension AdapterEvent {
+  /// The event with the whole connection in `payload["connection"]`, so every client sees a rename or a
+  /// new key reference, not only the status.
+  public func carrying(_ connection: Connection) throws -> AdapterEvent {
+    var event = self
+    var payload = event.payload.objectValue ?? [:]
+    payload["connection"] = try JSONValue(encoding: connection)
+    event.payload = .object(payload)
+    return event
+  }
+
   /// A runtime reported its plan allowance (Codex's `account/rateLimits/*`, Claude's `rate_limit_event`).
   public static func usageChanged(
     connectionId: String, reading: UsageReading, adapterGeneration: Int = 0

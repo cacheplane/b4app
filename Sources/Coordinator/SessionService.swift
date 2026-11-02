@@ -309,9 +309,10 @@ public actor SessionService {
         if let scope = inspection.nativeScope, !scope.isEmpty { $0.nativeScope = scope }
       } ?? connection
     await context.eventLog.publish(
-      AdapterEvent.connectionChanged(
+      try AdapterEvent.connectionChanged(
         connectionId: connection.id, status: inspection.status, authStatus: inspection.authStatus,
-        transport: .disconnected, message: inspection.message))
+        transport: .disconnected, message: inspection.message
+      ).carrying(updated))
     if inspection.status == .ready, inspection.authStatus == .authenticated {
       await refreshUsage(connectionId: connection.id, adapter: adapter)
     }
@@ -1023,7 +1024,6 @@ public actor SessionService {
         if let touched = try db.updateThread(id: thread.id, { _ in }) {
           await context.eventLog.publish(try AdapterEvent.threadUpdated(touched))
         }
-        try recordTokens(raw, turn: turn, connectionId: thread.connectionId)
         if outcome == .failed,
           let code = raw.payload["errorCode"]?.stringValue.flatMap(ErrorCode.init(rawValue:)),
           let connection = try db.connection(id: thread.connectionId)
@@ -1032,6 +1032,8 @@ public actor SessionService {
             code: code, message: raw.payload["error"]?["message"]?.stringValue ?? code.rawValue,
             connection: connection)
         }
+        // Last, and never fatal: a failed count must not skip the failure handling above.
+        try? recordTokens(raw, turn: turn, connectionId: thread.connectionId)
       case .turnStateChanged:
         guard let turn, turn.status != .terminal else { break }
         let status = raw.payload["status"]?.stringValue

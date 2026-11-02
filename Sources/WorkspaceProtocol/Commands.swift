@@ -53,6 +53,7 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case threadMarkRead = "thread.markRead"
   case usageRead = "usage.read"
   case connectionUpdate = "connection.update"
+  case credentialRemove = "credential.remove"
   /// Relayed from the hub only (`RelayExecutor`); `Router` refuses both over the local socket. Listed so
   /// `MirrorTransport` can serve `thread.start` through the relay.
   case threadStart = "thread.start"
@@ -87,7 +88,7 @@ public enum Method: String, Codable, Sendable, CaseIterable {
       .projectDelete, .threadMarkRead, .threadStart, .settingsUpdate, .connectionUpdate,
       .accountPasskeyFinish, .accountAppleFinish, .accountCompleteProfile, .accountLogout,
       .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice,
-      .accountAppleLinkFinish:
+      .accountAppleLinkFinish, .credentialRemove:
       return true
     case .systemPing, .diagnosticsRead, .connectionList, .threadList, .draftRead, .eventsSnapshot,
       .eventsReplay, .threadRead, .serverList, .serverStatus, .serverLogs, .workspaceActiveWork,
