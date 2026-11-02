@@ -10,6 +10,9 @@ import WorkspaceStorage
 /// command (`needsAccount`); with nobody signed in it answers `signed_out` before its params are read.
 /// `system.*`, `diagnostics.read`, `events.replay` (the shared event log, which carries
 /// `account.changed`), and the relay-only methods need no account; `hub.join` signs in when nobody is.
+/// `account.*` is routed to the account manager without an account; the commands that act on the
+/// signed-in one answer `signed_out` themselves, and `account.logout` and `account.delete` (like
+/// `hub.leave`) run outside the scope's gate, since closing the scope waits for what is inside it.
 public actor Router {
   public struct Context: Sendable {
     public var eventLog: EventLog
@@ -81,7 +84,10 @@ public actor Router {
   /// purpose: a new method has to be put in one group or the other.
   static func needsAccount(_ method: WorkspaceProtocol.Method) -> Bool {
     switch method {
-    case .systemPing, .diagnosticsRead, .eventsReplay, .hubJoin, .threadStart, .turnLookup:
+    case .systemPing, .diagnosticsRead, .eventsReplay, .hubJoin, .threadStart, .turnLookup, .accountStatus,
+      .accountPasskeyBegin, .accountPasskeyFinish, .accountAppleStart, .accountAppleFinish,
+      .accountCompleteProfile, .accountLogout, .accountIdentities, .accountAddPasskeyBegin,
+      .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete:
       return false
     case .connectionList, .threadList, .draftRead, .draftSave, .eventsSnapshot, .connectionAdd,
       .connectionInspect, .connectionLogin, .threadCreate, .threadRead, .threadUpdate, .threadReconcile,
@@ -133,6 +139,40 @@ public actor Router {
       return try JSONValue(
         encoding: try await context.accounts.join(
           url: params.url, code: params.code, deviceName: params.deviceName ?? HubSync.defaultDeviceName()))
+    case .accountStatus:
+      return try JSONValue(encoding: await context.accounts.status())
+    case .accountPasskeyBegin:
+      return try JSONValue(encoding: try await context.accounts.passkeyBegin())
+    case .accountPasskeyFinish:
+      return try JSONValue(
+        encoding: try await context.accounts.passkeyFinish(try command.params(for: AccountPasskeyFinish.self))
+      )
+    case .accountAppleStart:
+      return try JSONValue(encoding: try await context.accounts.appleStart())
+    case .accountAppleFinish:
+      return try JSONValue(
+        encoding: try await context.accounts.appleFinish(try command.params(for: AccountAppleFinish.self)))
+    case .accountCompleteProfile:
+      return try JSONValue(
+        encoding: try await context.accounts.completeProfile(
+          try command.params(for: AccountCompleteProfile.self)))
+    case .accountLogout:
+      let params = try command.params(for: AccountLogout.self)
+      return try JSONValue(encoding: try await context.accounts.logout(stopWork: params.stopWork))
+    case .accountIdentities:
+      return try JSONValue(encoding: try await context.accounts.identities())
+    case .accountAddPasskeyBegin:
+      return try JSONValue(encoding: try await context.accounts.addPasskeyBegin())
+    case .accountAddPasskeyFinish:
+      return try JSONValue(
+        encoding: try await context.accounts.addPasskeyFinish(
+          try command.params(for: AccountAddPasskeyFinish.self)))
+    case .accountRemoveIdentity:
+      return try JSONValue(
+        encoding: try await context.accounts.removeIdentity(
+          try command.params(for: AccountRemoveIdentity.self)))
+    case .accountDelete:
+      return try JSONValue(encoding: try await context.accounts.deleteAccount())
     default:
       throw WorkspaceError(.internalError, "\(command.method.rawValue) needs an account.")
     }
@@ -145,7 +185,10 @@ public actor Router {
     let sessions = scope.sessions
     let servers = scope.servers
     switch command.method {
-    case .systemPing, .diagnosticsRead, .eventsReplay, .hubJoin, .threadStart, .turnLookup:
+    case .systemPing, .diagnosticsRead, .eventsReplay, .hubJoin, .threadStart, .turnLookup, .accountStatus,
+      .accountPasskeyBegin, .accountPasskeyFinish, .accountAppleStart, .accountAppleFinish,
+      .accountCompleteProfile, .accountLogout, .accountIdentities, .accountAddPasskeyBegin,
+      .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete:
       throw WorkspaceError(.internalError, "\(command.method.rawValue) needs no account.")
     case .connectionList:
       let params = try command.params(for: ConnectionList.self)
@@ -274,7 +317,8 @@ public actor Router {
       guard try db.hubLink() == nil else {
         throw WorkspaceError(
           .protocolInvalid,
-          "This Mac is joined to a hub; run `agent-workspace hub leave` before restoring, then join again.")
+          "This account syncs with a hub, so its store cannot be restored from a backup: the hub would "
+            + "ignore the restored changes. Restore into an account that has not joined a hub.")
       }
       let summary = try db.restore(from: params.path, replace: params.replace)
       return try JSONValue(encoding: DatabaseBackup.Result(path: summary.path, rows: summary.rows))
@@ -283,7 +327,9 @@ public actor Router {
       let summary = try SQLiteImporter.importFile(at: params.path, into: db)
       return try JSONValue(encoding: DatabaseImportSQLite.Result(rows: summary.rows))
     case .hubStatus:
-      return try JSONValue(encoding: try await scope.hub.status())
+      var status = try await scope.hub.status()
+      status.notice = await context.accounts.takeNotice(for: scope)
+      return try JSONValue(encoding: status)
     case .hubLeave:
       throw WorkspaceError(.internalError, "hub.leave runs through the account manager.")
     case .hubPair:

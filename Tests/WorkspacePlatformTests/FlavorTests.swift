@@ -52,6 +52,17 @@ import Testing
       Flavor.resolve(environment: [:], executableURL: URL(fileURLWithPath: "/usr/bin/true")) == .local)
   }
 
+  /// `.build/debug/agent-workspace` run by a relative path: walking up must end (it used to climb
+  /// `..` forever).
+  @Test func aRelativeExecutableOutsideAnAppIsLocal() {
+    #expect(
+      Flavor.resolve(environment: [:], executableURL: URL(string: ".build/debug/agent-workspace")) == .local)
+    #expect(
+      Flavor.resolve(
+        environment: [:], executableURL: URL(fileURLWithPath: "debug/agent-workspace", relativeTo: nil))
+        == .local)
+  }
+
   @Test func resolutionSaysWhereTheFlavourCameFrom() throws {
     let local = try makeApp(flavor: "local")
     let bare = try makeApp(flavor: nil)

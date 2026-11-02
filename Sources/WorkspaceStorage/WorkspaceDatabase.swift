@@ -881,6 +881,15 @@ public final class WorkspaceDatabase: Sendable {
     }
   }
 
+  /// Drop `endpoint`'s database, closing whatever connections it still has (a deleted account's, sign-in
+  /// plan Task 10). Its pool must already be closed. A missing database is not an error.
+  public static func drop(endpoint: PostgresEndpoint, binDir: String) throws {
+    let lib = try LibPQ.load(binDir: binDir)
+    let base = "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) application_name=b4app"
+    let admin = try PostgresConnection(lib: lib, connectionString: base + " dbname=postgres")
+    try admin.execute("DROP DATABASE IF EXISTS \(Rows.quote(endpoint.database)) WITH (FORCE)")
+  }
+
   /// The URL of the hub link in another install's database, read without changing anything: no
   /// migration, no database created, one read-only transaction. Nil when the cluster has no such
   /// database, no `hubLink` table, or no link row. The cluster must be running on `endpoint`. Sign-in

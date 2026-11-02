@@ -578,7 +578,8 @@ private struct HubHarness {
           options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
       }
       #expect(error?.code == .protocolInvalid)
-      #expect(error?.message.contains("hub leave") == true)
+      #expect(error?.message.contains("syncs with a hub") == true)
+      #expect(error?.message.contains("hub leave") == false)
     }
     #expect(try db.tableCounts() == counts)
     #expect(try db.changes(after: 0) == changes)

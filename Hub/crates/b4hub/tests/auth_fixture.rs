@@ -72,6 +72,11 @@ fn passkey_finish_variants_match_the_hub_type() {
     let assertion: PasskeyFinishRequest = round_trips("passkeyFinishAssertion");
     assert!(assertion.assertion.is_some() && assertion.attestation.is_none());
     assert!(assertion.device.device_id.is_some());
+    assert_eq!(
+        assertion.device.candidate_device_ids.as_ref().map(Vec::len),
+        Some(2),
+        "a Mac sends the devices of every account it knows"
+    );
     // The opaque payload is a real WebAuthn response, not just any JSON.
     serde_json::from_value::<PublicKeyCredential>(assertion.assertion.unwrap())
         .expect("the assertion example is a PublicKeyCredential");
@@ -79,6 +84,7 @@ fn passkey_finish_variants_match_the_hub_type() {
     let attestation: PasskeyFinishRequest = round_trips("passkeyFinishAttestation");
     assert!(attestation.attestation.is_some() && attestation.assertion.is_none());
     assert!(attestation.device.device_id.is_none());
+    assert!(attestation.device.candidate_device_ids.is_none());
     serde_json::from_value::<RegisterPublicKeyCredential>(attestation.attestation.unwrap())
         .expect("the attestation example is a RegisterPublicKeyCredential");
 }
@@ -145,6 +151,7 @@ fn apple_types_match_the_hub_types() {
 
     let handoff: HandoffRequest = round_trips("handoffRequest");
     assert!(handoff.device.device_id.is_some());
+    assert!(handoff.device.candidate_device_ids.is_some());
     assert!(!format!("{handoff:?}").contains(&handoff.verifier));
 
     // A link's handoff goes to `POST /v1/me/apple/handoff`, which answers an `identity`.

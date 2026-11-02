@@ -323,13 +323,13 @@ public actor FakeHubAPI: HubAPI {
 
   // MARK: - Helpers
 
-  /// Signs the fake in as the scripted session's account, on `spec`'s device (or the session's, when
-  /// the request names none), and answers the session.
+  /// Signs the fake in as the scripted session's account, on the session's device (the one the hub
+  /// chose: a hub reuses a requested `deviceId` or candidate only when it is the user's) with `spec`'s
+  /// name and platform, and answers the session.
   private func signIn(as spec: DeviceSpec) -> AuthSession {
     let session = sessionAnswer
     device = EnrollResponse(
-      deviceId: spec.deviceId ?? session.deviceId, token: session.token, org: session.org,
-      user: session.user)
+      deviceId: session.deviceId, token: session.token, org: session.org, user: session.user)
     deviceName = spec.deviceName
     platform = spec.platform
     revoked = false

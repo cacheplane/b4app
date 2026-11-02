@@ -508,6 +508,57 @@ async fn issue_session_reuses_own_device(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn issue_session_reuses_the_first_own_candidate(pool: PgPool) {
+    let (_admin, app) = common::migrated(&pool).await;
+    let mine = accounts::create_personal(&app, passkey(b"m1"), device("Mac", Platform::Macos))
+        .await
+        .unwrap();
+    let theirs = accounts::create_personal(&app, passkey(b"t1"), device("Mac", Platform::Macos))
+        .await
+        .unwrap();
+    let principal = Principal {
+        org_id: mine.org_id,
+        user_id: mine.user_id,
+    };
+    let second = accounts::issue_session(&app, principal, device("Mac 2", Platform::Macos), None)
+        .await
+        .unwrap();
+
+    // The foreign and unknown candidates are skipped; the first of mine wins.
+    let session = accounts::issue_session_reusing(
+        &app,
+        principal,
+        device("Mac", Platform::Macos),
+        &[
+            theirs.device_id,
+            Uuid::from_u128(5),
+            second.device_id,
+            mine.device_id,
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(session.device_id, second.device_id);
+    assert_eq!(
+        authed(&app, &theirs.token).await.device_id,
+        theirs.device_id
+    );
+    // The other of mine keeps its session.
+    assert_eq!(authed(&app, &mine.token).await.device_id, mine.device_id);
+
+    // No candidate of mine: a new device.
+    let fresh = accounts::issue_session_reusing(
+        &app,
+        principal,
+        device("Mac", Platform::Macos),
+        &[theirs.device_id],
+    )
+    .await
+    .unwrap();
+    assert!(![mine.device_id, second.device_id, theirs.device_id].contains(&fresh.device_id));
+}
+
+#[sqlx::test(migrations = false)]
 async fn issue_session_ignores_foreign_or_revoked_device(pool: PgPool) {
     let (_admin, app) = common::migrated(&pool).await;
     let mine = accounts::create_personal(&app, passkey(b"m"), device("Mac", Platform::Macos))

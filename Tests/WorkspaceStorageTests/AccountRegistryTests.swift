@@ -115,6 +115,39 @@ import WorkspaceProtocol
     #expect(AccountRegistry.databaseName(id: "00ff00ff00ff00ff") == "workspace_00ff00ff00ff00ff")
   }
 
+  /// A log-out that could not reach the hub leaves its session open there; the row says so until the
+  /// account's next sign-in reports it, once.
+  @Test func aSessionLeftOpenIsRecordedAndTakenOnce() throws {
+    let registry = try makeRegistry()
+    let account = row()
+    try registry.insert(account)
+    #expect(try registry.all().first?.hubSessionLeftOpen == false)
+    try registry.activate(id: account.id, tokenRef: "ref")
+    try registry.signOut(id: account.id, hubSessionLeftOpen: true)
+    #expect(try registry.all().first?.hubSessionLeftOpen == true)
+    #expect(try registry.all().first?.tokenRef == nil)
+    // Signing in again keeps it until it is reported.
+    try registry.activate(id: account.id, tokenRef: "ref-2")
+    #expect(try registry.active()?.hubSessionLeftOpen == true)
+    #expect(try registry.takeHubSessionLeftOpen(id: account.id))
+    #expect(try !registry.takeHubSessionLeftOpen(id: account.id))
+    #expect(try registry.active()?.hubSessionLeftOpen == false)
+    // A sign-out that reached the hub records nothing.
+    try registry.signOut(id: account.id)
+    #expect(try registry.all().first?.hubSessionLeftOpen == false)
+  }
+
+  @Test func theOnboardingStateIsKept() throws {
+    let registry = try makeRegistry()
+    let account = row()
+    try registry.insert(account)
+    #expect(try registry.all().first?.needsOnboarding == false)
+    try registry.setNeedsOnboarding(id: account.id, true)
+    #expect(try registry.all().first?.needsOnboarding == true)
+    try registry.setNeedsOnboarding(id: account.id, false)
+    #expect(try registry.all().first?.needsOnboarding == false)
+  }
+
   @Test func registryMigratesOnItsOwnListAndIsIdempotent() throws {
     let endpoint = try EphemeralPostgres.endpoint()
     let name = "registry_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
@@ -123,7 +156,7 @@ import WorkspaceProtocol
     // Reopening the same database finds it, applies nothing new, and keeps the rows.
     let second = try AccountRegistry(endpoint: endpoint, binDir: endpoint.binDir!, databaseName: name)
     #expect(try second.all().count == 1)
-    #expect(try second.appliedMigrations() == ["0001_registry"])
+    #expect(try second.appliedMigrations() == ["0001_registry", "0002_account_state"])
     // The workspace migration list is untouched by the registry's files.
     #expect(try Migrator.files().allSatisfy { !$0.name.contains("registry") })
   }

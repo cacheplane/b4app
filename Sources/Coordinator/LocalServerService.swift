@@ -223,7 +223,9 @@ public actor LocalServerService {
     let deadline = ContinuousClock.now + Self.readinessTimeout
     var ready = false
     var exit: ExitStatus?
-    while ContinuousClock.now < deadline {
+    // A stop of everything (the account signing out) cancels a start in flight rather than waiting
+    // out the readiness timeout; the process is then terminated like one that never became ready.
+    while ContinuousClock.now < deadline, !Task.isCancelled {
       if let status = process.exitStatus() {
         exit = status
         break
@@ -239,6 +241,9 @@ public actor LocalServerService {
       let reason: String
       if let exit {
         reason = "Server \(server.name) exited with status \(Self.describe(exit)) before it was ready"
+      } else if Task.isCancelled {
+        _ = await ManagedProcess.terminateGroup(pid: process.pid, gracePeriod: .seconds(3), process: process)
+        reason = "Server \(server.name) was stopped before it was ready"
       } else {
         _ = await ManagedProcess.terminateGroup(pid: process.pid, gracePeriod: .seconds(3), process: process)
         reason = "Server \(server.name) did not answer /healthz within \(Self.readinessTimeout)"
@@ -273,14 +278,19 @@ public actor LocalServerService {
   /// Stop a verified owned instance. Refused while a route connection has a running turn unless
   /// forced (D-030); never signals a process whose identity does not match (D-025).
   public func stop(id: String, force: Bool) async throws -> ServerAdd.Result {
+    try await stop(id: id, force: force, gracePeriod: Self.stopGracePeriod)
+  }
+
+  /// `stop` with the time between SIGTERM and SIGKILL.
+  private func stop(id: String, force: Bool, gracePeriod: Duration) async throws -> ServerAdd.Result {
     while let current = inFlight[id] { _ = try? await current.task.value }
-    let task = Task { try await self.performStop(id: id, force: force) }
+    let task = Task { try await self.performStop(id: id, force: force, gracePeriod: gracePeriod) }
     inFlight[id] = (.stop, task)
     defer { inFlight[id] = nil }
     return try await task.value
   }
 
-  private func performStop(id: String, force: Bool) async throws -> ServerAdd.Result {
+  private func performStop(id: String, force: Bool, gracePeriod: Duration) async throws -> ServerAdd.Result {
     var server = try require(id)
     if !force, server.pid != nil {
       let active = try activeThreadIds(serverId: id)
@@ -310,7 +320,7 @@ public actor LocalServerService {
       return ServerAdd.Result(server: server)
     }
     let gone = await ManagedProcess.terminateGroup(
-      pid: pid, gracePeriod: Self.stopGracePeriod, process: instance?.process)
+      pid: pid, gracePeriod: gracePeriod, process: instance?.process)
     guard gone else {
       throw WorkspaceError(
         .ownedProcessConflict, "Server \(server.name) (pid \(pid)) did not exit after SIGKILL.",
@@ -382,18 +392,32 @@ public actor LocalServerService {
   }
 
   /// Stop every server this store remembers a process for, through `stop`'s identity check (a pid that
-  /// is no longer the server it started is left untouched), as an account signs out. Each stop is
-  /// bounded by the grace period before SIGKILL; a failure is logged and the rest still stop. From the
-  /// first line on, `start` refuses: the account is closing.
-  public func stopAll() async {
+  /// is no longer the server it started is left untouched), as an account signs out. From the first line
+  /// on, `start` refuses: the account is closing. A start in flight is cancelled (its process is
+  /// terminated) rather than waited out, and the servers stop side by side, each given SIGKILL early
+  /// enough that the whole stop ends within `budget`; a failure is logged and the rest still stop.
+  /// Returns whether everything stopped within the budget (what has not goes on in the background).
+  @discardableResult
+  public func stopAll(within budget: Duration = .seconds(10)) async -> Bool {
     closing = true
-    for server in (try? db.listLocalServers()) ?? [] where server.pid != nil {
-      do {
-        _ = try await stop(id: server.id, force: true)
-      } catch {
-        let message = WorkspaceError.from(error).message
-        logger.warning(
-          "could not stop \(server.name, privacy: .public): \(message, privacy: .public)")
+    for (_, operation) in inFlight where operation.kind == .start { operation.task.cancel() }
+    let servers = ((try? db.listLocalServers()) ?? []).filter { $0.pid != nil || inFlight[$0.id] != nil }
+    guard !servers.isEmpty else { return true }
+    // Leave time after SIGKILL for the process to go and its row to be written.
+    let grace = max(.milliseconds(500), min(Self.stopGracePeriod, budget - .seconds(2)))
+    return await Bounded.run(within: budget) {
+      await withTaskGroup(of: Void.self) { group in
+        for server in servers {
+          group.addTask {
+            do {
+              _ = try await self.stop(id: server.id, force: true, gracePeriod: grace)
+            } catch {
+              let message = WorkspaceError.from(error).message
+              self.logger.warning(
+                "could not stop \(server.name, privacy: .public): \(message, privacy: .public)")
+            }
+          }
+        }
       }
     }
   }

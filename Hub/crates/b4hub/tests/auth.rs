@@ -595,6 +595,68 @@ async fn device_id_reused_on_second_sign_in(pool: PgPool) {
     assert_ne!(phone.body["deviceId"], device_id);
 }
 
+#[sqlx::test(migrations = false)]
+async fn candidate_device_ids_reuse_the_users_device(pool: PgPool) {
+    let hub = hub(&pool, Signup::Open).await;
+    let mut mine = Authenticator::new(ORIGIN);
+    let signed_up = sign_up(&hub, &mut mine).await;
+    let my_device = signed_up["deviceId"].as_str().unwrap().to_string();
+    let mut theirs = Authenticator::new(ORIGIN);
+    let foreign = sign_up(&hub, &mut theirs).await;
+    let foreign_device = foreign["deviceId"].as_str().unwrap().to_string();
+
+    // A Mac that knows several devices (one per account it has signed in to) sends them all; the
+    // first one that is this user's, on this platform and unrevoked, is reused. Another user's
+    // device and an unknown one are passed over.
+    let mut known = device("Brian's Mac", "macos");
+    known["deviceId"] = json!(foreign_device);
+    known["candidateDeviceIds"] = json!([Uuid::from_u128(7).to_string(), my_device]);
+    let answer = sign_in(&hub, &mut mine, known).await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    assert_eq!(answer.body["deviceId"], my_device.as_str());
+    // The other account's session is untouched.
+    let theirs_me = hub.get("/v1/me", foreign["token"].as_str()).await;
+    assert_eq!(theirs_me.status, StatusCode::OK, "{}", theirs_me.body);
+    assert_eq!(theirs_me.body["deviceId"], foreign_device.as_str());
+
+    // Only foreign candidates: a new device.
+    let mut only_foreign = device("Brian's Mac", "macos");
+    only_foreign["candidateDeviceIds"] = json!([foreign_device]);
+    let fresh = sign_in(&hub, &mut mine, only_foreign).await;
+    assert_eq!(fresh.status, StatusCode::OK, "{}", fresh.body);
+    assert_ne!(fresh.body["deviceId"], my_device.as_str());
+    assert_ne!(fresh.body["deviceId"], foreign_device.as_str());
+}
+
+#[sqlx::test(migrations = false)]
+async fn candidate_device_ids_are_capped_and_validated(pool: PgPool) {
+    let hub = hub(&pool, Signup::Open).await;
+    let mut authenticator = Authenticator::new(ORIGIN);
+    sign_up(&hub, &mut authenticator).await;
+
+    // At most 32.
+    let mut at_cap = device("Mac", "macos");
+    at_cap["candidateDeviceIds"] = json!((0..32)
+        .map(|n| Uuid::from_u128(n + 1).to_string())
+        .collect::<Vec<_>>());
+    let answer = sign_in(&hub, &mut authenticator, at_cap).await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+
+    let mut over = device("Mac", "macos");
+    over["candidateDeviceIds"] = json!((0..33)
+        .map(|n| Uuid::from_u128(n + 1).to_string())
+        .collect::<Vec<_>>());
+    let answer = sign_in(&hub, &mut authenticator, over).await;
+    assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{}", answer.body);
+    assert_eq!(answer.code(), "invalid_request");
+
+    let mut malformed = device("Mac", "macos");
+    malformed["candidateDeviceIds"] = json!(["not-a-uuid"]);
+    let answer = sign_in(&hub, &mut authenticator, malformed).await;
+    assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{}", answer.body);
+    assert_eq!(answer.code(), "invalid_request");
+}
+
 /// Signs in once with `authenticator` after `tamper` changed it, expecting `credential_rejected`,
 /// then checks an honest sign-in still works (so the rejection was the tampering's).
 async fn assert_rejected_then_recovers(

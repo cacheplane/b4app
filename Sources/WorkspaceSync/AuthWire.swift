@@ -42,18 +42,28 @@ public struct AuthConfig: Codable, Sendable, Equatable {
   }
 }
 
-/// The device a sign-in is for. `deviceId`, when it names an unrevoked device of the signing-in user
-/// on the same platform, is reused (and renamed); otherwise the hub makes a new one.
+/// The device a sign-in is for. `deviceId` and then `candidateDeviceIds`, in order, are devices this
+/// client already has: the first that is an unrevoked device of the signing-in user on the same
+/// platform is reused (and renamed); otherwise the hub makes a new one. A Mac that has signed in to
+/// several accounts cannot know whose passkey or Apple ID is coming, so it sends the device it has with
+/// each (at most 32 candidates).
 public struct DeviceSpec: Codable, Sendable, Equatable {
+  public static let maxCandidates = 32
+
   public var deviceName: String
   /// `macos`, `ios`, or `cli`.
   public var platform: String
   public var deviceId: String?
+  /// Left out when nil, so a hub older than the field still accepts the request.
+  public var candidateDeviceIds: [String]?
 
-  public init(deviceName: String, platform: String, deviceId: String? = nil) {
+  public init(
+    deviceName: String, platform: String, deviceId: String? = nil, candidateDeviceIds: [String]? = nil
+  ) {
     self.deviceName = deviceName
     self.platform = platform
     self.deviceId = deviceId
+    self.candidateDeviceIds = candidateDeviceIds
   }
 }
 

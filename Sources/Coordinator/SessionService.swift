@@ -826,6 +826,27 @@ public actor SessionService {
     return result
   }
 
+  /// Log-out's first step (sign-in plan, Task 10): interrupt every running turn, local or not (the
+  /// person chose "Stop and log out"), side by side, and wait until `deadline` for the runtimes to
+  /// confirm. Returns the turns whose end was not confirmed in time; they reconcile at the account's
+  /// next sign-in.
+  func interruptAll(until deadline: ContinuousClock.Instant) async -> [ActiveTurnSummary] {
+    let entries = ((try? db.unresolvedTurns()) ?? []).compactMap { try? summary($0) }
+    await withTaskGroup(of: Void.self) { group in
+      for entry in entries
+      where entry.status == .running || entry.status == .waitingForUser || entry.status == .stopping {
+        group.addTask { _ = try? await self.turnInterrupt(TurnInterrupt.Params(threadId: entry.threadId)) }
+      }
+    }
+    var open = entries
+    while !open.isEmpty, ContinuousClock.now < deadline {
+      open = open.filter { (try? db.turn(id: $0.turnId))?.status != .terminal }
+      if open.isEmpty { break }
+      try? await Task.sleep(for: .milliseconds(50))
+    }
+    return open
+  }
+
   /// Wake, reconnect, or an explicit request: reconcile every unresolved turn and re-check offline
   /// connections. Turns still `submitting` are mid-dispatch and left to their own path.
   public func reconcileAll(reason: String) async -> WorkspaceReconcile.Result {

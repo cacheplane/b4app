@@ -48,7 +48,13 @@ public enum Flavor: String, Sendable, CaseIterable {
 
   /// `B4AppFlavor` from `Contents/Info.plist` of the nearest ancestor of `url` named `*.app`.
   private static func bundleFlavor(enclosing url: URL) -> String? {
-    var directory = url.deletingLastPathComponent()
+    // From an absolute, standardised path: a relative one (a binary run as `.build/debug/x`) would
+    // otherwise climb through `..` without end.
+    let absolute = URL(
+      fileURLWithPath: url.path, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    )
+    .standardizedFileURL
+    var directory = absolute.deletingLastPathComponent()
     while true {
       if directory.pathExtension == "app" {
         let plist = directory.appendingPathComponent("Contents/Info.plist")

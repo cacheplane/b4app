@@ -25,7 +25,11 @@ import WorkspaceSync
 ///   `account.changed`. A 401 from the hub (push, pull, relay link, or `/v1/me`) to the current scope
 ///   signs out with `rejectedByHub`, after which nothing sends another request for that account.
 /// - **`hub join`** (an enrollment code) works only while signed out, and signs in as a sign-in does;
-///   **`hub leave`** revokes this device and signs out.
+///   **`hub leave`** revokes this device and signs out (even when the revoke or the cleanup fails).
+/// - **The `account.*` commands** (`AccountCommands.swift`, Task 10) run the sign-in ceremonies' hub
+///   calls against the flavour's hub, offering the hub every device this Mac has there; onboarding;
+///   the sign-in methods; log-out in four bounded steps; and deletion. The onboarding state is kept in
+///   the registry so a restart restores it before `/v1/me` answers.
 ///
 /// An account's hub user is the hub's `users.id`, which never changes and is never reused.
 ///
@@ -40,35 +44,46 @@ public actor AccountManager {
     public var cluster: StoreCluster
     public var registry: AccountRegistry
     public var scope: AccountScope.Context
+    /// Which hub a sign-in goes to (`Flavor.hubURL`), the Apple callback's scheme, and whether Sign in
+    /// with Apple is offered at all.
+    public var flavor: Flavor
 
-    public init(cluster: StoreCluster, registry: AccountRegistry, scope: AccountScope.Context) {
+    public init(
+      cluster: StoreCluster, registry: AccountRegistry, scope: AccountScope.Context, flavor: Flavor = .current
+    ) {
       self.cluster = cluster
       self.registry = registry
       self.scope = scope
+      self.flavor = flavor
     }
   }
 
   /// The current scope, readable without waiting for the actor (the router, diagnostics, and the sleep
   /// watcher read it on every call).
-  private final class Slot: Sendable {
+  final class Slot: Sendable {
     private let value = Mutex<AccountScope?>(nil)
     func get() -> AccountScope? { value.withLock { $0 } }
     func set(_ scope: AccountScope?) { value.withLock { $0 = scope } }
   }
 
   let registry: AccountRegistry
-  private let cluster: StoreCluster
-  private let scopeContext: AccountScope.Context
-  private let slot = Slot()
-  private let logger = Log.logger("accounts")
+  let cluster: StoreCluster
+  let scopeContext: AccountScope.Context
+  let flavor: Flavor
+  let slot = Slot()
+  let logger = Log.logger("accounts")
 
   /// The active account, set before its scope is open so the status during a restore is that account.
-  private var active: AccountRow?
-  private var needsOnboarding = false
+  var active: AccountRow?
+  var needsOnboarding = false
   /// Why the last sign-out happened without being asked for; cleared by a sign-in.
-  private var reason: SignOutReason?
+  var reason: SignOutReason?
   /// The `/v1/me` refresh of the active account's names.
-  private var refresh: Task<Void, Never>?
+  var refresh: Task<Void, Never>?
+  /// The Sign in with Apple web ceremony in flight, with the verifier only this coordinator knows.
+  var appleCeremony: AppleCeremony?
+  /// Log-out's bounds; tests shorten them.
+  var logoutTimeouts = LogoutTimeouts.standard
   private var busy = false
   private var waiters: [CheckedContinuation<Void, Never>] = []
 
@@ -76,6 +91,7 @@ public actor AccountManager {
     registry = context.registry
     cluster = context.cluster
     scopeContext = context.scope
+    flavor = context.flavor
   }
 
   /// The registry's database on the cluster whose default database is `endpoint.database`: `registry`
@@ -152,6 +168,8 @@ public actor AccountManager {
 
   private func restore(_ row: AccountRow) async {
     active = row
+    // The last word on onboarding until `/v1/me` answers (the refresh below asks).
+    needsOnboarding = row.needsOnboarding
     do {
       let database = try AccountScope.openDatabase(row: row, cluster: cluster, createIfMissing: false)
       await install(row: row, database: database)
@@ -256,6 +274,7 @@ public actor AccountManager {
       try registry.updateProfile(
         id: row.id, hubUserId: hubUserId, deviceId: session.deviceId,
         displayName: session.user.displayName, orgName: session.org.name)
+      try registry.setNeedsOnboarding(id: row.id, session.needsOnboarding)
       try registry.activate(id: row.id, tokenRef: ref.rawValue)
       row = try registry.find(hubURL: base, hubUserId: hubUserId) ?? row
     } catch {
@@ -266,6 +285,7 @@ public actor AccountManager {
         try? registry.updateProfile(
           id: existing.id, hubUserId: existing.hubUserId, deviceId: existing.deviceId,
           displayName: existing.displayName, orgName: existing.orgName)
+        try? registry.setNeedsOnboarding(id: existing.id, existing.needsOnboarding)
       }
       if let link { try? database.saveHubLink(link) } else { try? database.clearHubLink() }
       _ = try? await scopeContext.secretStore.remove(ref)
@@ -279,13 +299,15 @@ public actor AccountManager {
       throw error
     }
 
-    // Committed. The previous account, if it was another, is signed out: its scope closes (servers
-    // included) and its token is forgotten.
+    // Committed. The previous account, if it was another, is signed out: its hub session is ended
+    // (briefly; a hub that does not answer leaves it open, which its next sign-in reports), its scope
+    // closes (servers included), and its token is forgotten.
     if let previous, !reopening {
       refresh?.cancel()
       slot.set(nil)
+      let ended = await Self.endHubSession(of: previous, within: .seconds(3))
       await previous.close(stoppingServers: true)
-      await forgetToken(of: previous.account, deactivate: true)
+      await forgetToken(of: previous.account, deactivate: true, hubSessionLeftOpen: !ended)
     }
     // The secret the link named before (an earlier session's) is no longer anyone's.
     if let old = link?.tokenRef, old != ref.rawValue, let oldRef = SecretRef(rawValue: old) {
@@ -339,8 +361,8 @@ public actor AccountManager {
   /// Sign out of the current account: close its scope, forget its token, and publish `account.changed`
   /// with `reason` (nil when the person asked). Nothing happens while nobody is signed in.
   ///
-  /// Logging out (Task 10) adds its own steps before this one: interrupt the running turns, push once,
-  /// and end the hub session.
+  /// Logging out (`logout(stopWork:)`) adds its own steps before this one: interrupt the running turns
+  /// and stop the servers, push once, and end the hub session.
   public func signOut(reason: SignOutReason?) async {
     await acquire()
     defer { release() }
@@ -353,9 +375,19 @@ public actor AccountManager {
     await acquire()
     defer { release() }
     guard let scope = slot.get() else { throw WorkspaceError(.signedOut, Self.signedOutMessage) }
-    try await scope.hub.leave()
+    // Signed out whatever the leave did: once it has begun, the pull and the link are stopped and the
+    // client may be gone, so staying signed in would leave the account without sync.
+    var failure: (any Error)?
+    do {
+      try await scope.hub.leave()
+    } catch {
+      failure = error
+      logger.warning(
+        "hub leave failed; signing out anyway: \(WorkspaceError.from(error).message, privacy: .public)")
+    }
     let unsynced = (try? scope.database.unsyncedChangeCount()) ?? 0
     await performSignOut(reason: nil)
+    if let failure { throw failure }
     return HubStatus.Result(joined: false, unsyncedChanges: unsynced, keepAwakeHeld: false)
   }
 
@@ -371,21 +403,29 @@ public actor AccountManager {
     await performSignOut(reason: .rejectedByHub(account.orgName.isEmpty ? Self.unnamedOrg : account.orgName))
   }
 
-  private func performSignOut(reason: SignOutReason?) async {
+  /// `hubSessionLeftOpen` records that the hub still holds the token (a log-out that could not reach
+  /// it). `drainTimeout` and `serverBudget` bound the scope's close (log-out has already waited for
+  /// both). `publishing` false leaves the event to the caller (deletion publishes once, after it drops
+  /// the account).
+  func performSignOut(
+    reason: SignOutReason?, hubSessionLeftOpen: Bool = false,
+    drainTimeout: Duration = AccountScope.drainTimeout, serverBudget: Duration = .seconds(10),
+    publishing: Bool = true
+  ) async {
     guard let scope = slot.get() else { return }
     refresh?.cancel()
     refresh = nil
     // Commands see "signed out" from here on, not a closing store; the status says so once the scope
     // is closed and the token forgotten.
     slot.set(nil)
-    await scope.close(stoppingServers: true)
-    await forgetToken(of: scope.account, deactivate: true)
+    await scope.close(stoppingServers: true, drainTimeout: drainTimeout, serverBudget: serverBudget)
+    await forgetToken(of: scope.account, deactivate: true, hubSessionLeftOpen: hubSessionLeftOpen)
     active = nil
     needsOnboarding = false
     self.reason = reason
     await scopeContext.diagnostics.invalidate()
     logger.info("signed out of account \(scope.account.id, privacy: .public)")
-    await publish()
+    if publishing { await publish() }
   }
 
   // MARK: - Helpers
@@ -431,7 +471,7 @@ public actor AccountManager {
     }
   }
 
-  private func profileArrived(_ me: MeResponse, instance: UUID) async {
+  func profileArrived(_ me: MeResponse, instance: UUID) async {
     guard let scope = slot.get(), scope.instance == instance, var row = active, row.id == scope.account.id
     else { return }
     let onboarding = !me.onboarded
@@ -449,6 +489,7 @@ public actor AccountManager {
       try registry.updateProfile(
         id: updated.id, hubUserId: updated.hubUserId, deviceId: updated.deviceId,
         displayName: updated.displayName, orgName: updated.orgName)
+      if needsOnboarding != onboarding { try registry.setNeedsOnboarding(id: updated.id, onboarding) }
       row = updated
     } catch {
       // Another row already names this user (it signed in on its own since): keep the placeholder.
@@ -474,8 +515,8 @@ public actor AccountManager {
   }
 
   /// Remove the account's token from the secret store and its reference from the registry (which also
-  /// deactivates the row when `deactivate`).
-  private func forgetToken(of row: AccountRow, deactivate: Bool) async {
+  /// deactivates the row when `deactivate`, recording `hubSessionLeftOpen`).
+  private func forgetToken(of row: AccountRow, deactivate: Bool, hubSessionLeftOpen: Bool = false) async {
     if let ref = row.tokenRef.flatMap(SecretRef.init(rawValue:)) {
       do {
         _ = try await scopeContext.secretStore.remove(ref)
@@ -485,7 +526,7 @@ public actor AccountManager {
     }
     guard deactivate else { return }
     do {
-      try registry.signOut(id: row.id)
+      try registry.signOut(id: row.id, hubSessionLeftOpen: hubSessionLeftOpen)
     } catch {
       logger.warning(
         "could not record account \(row.id, privacy: .public)'s sign-out: \(WorkspaceError.from(error).message, privacy: .public)"
@@ -493,7 +534,7 @@ public actor AccountManager {
     }
   }
 
-  private func publish() async {
+  func publish() async {
     guard let event = try? AdapterEvent.accountChanged(status()) else { return }
     await scopeContext.eventLog.publish(event)
   }
@@ -503,7 +544,7 @@ public actor AccountManager {
   /// The actor is reentrant across each `await`; transitions (start, sign-in, sign-out, a 401) must not
   /// interleave, so each holds this until it ends. Waiters are resumed in order, the lock passing
   /// straight to the next.
-  private func acquire() async {
+  func acquire() async {
     if busy {
       await withCheckedContinuation { waiters.append($0) }
     } else {
@@ -511,7 +552,7 @@ public actor AccountManager {
     }
   }
 
-  private func release() {
+  func release() {
     if waiters.isEmpty {
       busy = false
     } else {

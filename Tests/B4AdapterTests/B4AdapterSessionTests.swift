@@ -46,6 +46,19 @@ private struct Rig {
 }
 
 @Suite(.serialized) struct B4AdapterSessionTests {
+  /// A dispose is final: no stream opens after it.
+  @Test func aDisposedAdapterOpensNoStream() async throws {
+    let rig = try await Rig.start()
+    let ref = try await rig.adapter.createSession(NewSessionInput(routeKey: "/chat#agent"))
+    await rig.adapter.dispose()
+    let sent = await #expect(throws: WorkspaceError.self) { _ = try await rig.turn(ref, "hello") }
+    #expect(sent?.code == .endpointUnavailable)
+    await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.adapter.createSession(NewSessionInput(routeKey: "/chat#agent"))
+    }
+    await rig.stop()
+  }
+
   @Test func inspectsCreatesAndStreamsATurn() async throws {
     let rig = try await Rig.start()
     let inspection = try await rig.adapter.inspectConnection()

@@ -358,8 +358,13 @@ pub async fn native(
         full_name.as_deref(),
     )
     .await?;
-    let session =
-        accounts::issue_session(&state.db, principal, device, request.device.device_id).await?;
+    let session = accounts::issue_session_reusing(
+        &state.db,
+        principal,
+        device,
+        &request.device.reuse_candidates(),
+    )
+    .await?;
     tracing::info!(
         org_id = %principal.org_id,
         user_id = %principal.user_id,
@@ -741,8 +746,13 @@ pub async fn handoff(
         pending.name.as_deref(),
     )
     .await?;
-    let session =
-        accounts::issue_session(&state.db, principal, device, request.device.device_id).await?;
+    let session = accounts::issue_session_reusing(
+        &state.db,
+        principal,
+        device,
+        &request.device.reuse_candidates(),
+    )
+    .await?;
     tracing::info!(
         org_id = %principal.org_id,
         user_id = %principal.user_id,

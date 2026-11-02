@@ -269,7 +269,7 @@ pub async fn create_personal_with(
     let principal = Principal { org_id, user_id };
     insert_identity(&mut tx, principal, &identity).await?;
     let session = match device {
-        Some(device) => Some(create_session(&mut tx, principal, &device, None).await?),
+        Some(device) => Some(create_session(&mut tx, principal, &device, &[]).await?),
         None => None,
     };
     tx.commit().await?;
@@ -384,8 +384,22 @@ pub async fn issue_session(
     device: DeviceSpec,
     reuse: Option<Uuid>,
 ) -> Result<Session> {
+    let candidates: Vec<Uuid> = reuse.into_iter().collect();
+    issue_session_reusing(db, principal, device, &candidates).await
+}
+
+/// [`issue_session`] with a list of devices the client knows (a Mac that has signed in to
+/// several accounts sends one per account, not knowing which account this sign-in is for): the
+/// first of `candidates` that is an unrevoked device of this user on the same platform is
+/// reused; the others are passed over, and with none a new device is made.
+pub async fn issue_session_reusing(
+    db: &Db,
+    principal: Principal,
+    device: DeviceSpec,
+    candidates: &[Uuid],
+) -> Result<Session> {
     let mut tx = db.tenant_tx(principal.org_id).await?;
-    let session = create_session(&mut tx, principal, &device, reuse).await?;
+    let session = create_session(&mut tx, principal, &device, candidates).await?;
     tx.commit().await?;
     Ok(session)
 }
@@ -806,31 +820,34 @@ async fn insert_identity_row(
     Ok(id)
 }
 
-/// Picks the device (see [`issue_session`]) and inserts its token. `tx` must carry
+/// Picks the device (see [`issue_session_reusing`]) and inserts its token. `tx` must carry
 /// `principal.org_id`'s tenant context.
 async fn create_session(
     tx: &mut Transaction<'_, Postgres>,
     principal: Principal,
     device: &DeviceSpec,
-    reuse: Option<Uuid>,
+    candidates: &[Uuid],
 ) -> Result<Session> {
-    let reused: Option<Uuid> = match reuse {
-        Some(id) => {
-            sqlx::query_scalar(
-                "UPDATE devices SET name = $5 \
-                 WHERE id = $1 AND org_id = $2 AND user_id = $3 AND platform = $4 \
-                   AND revoked_at IS NULL \
-                 RETURNING id",
-            )
-            .bind(id)
-            .bind(principal.org_id)
-            .bind(principal.user_id)
-            .bind(device.platform.as_str())
-            .bind(&device.name)
-            .fetch_optional(&mut **tx)
-            .await?
-        }
-        None => None,
+    // The first candidate, in the client's order, that passes the rule.
+    let reused: Option<Uuid> = if candidates.is_empty() {
+        None
+    } else {
+        sqlx::query_scalar(
+            "UPDATE devices SET name = $5 \
+             WHERE id = ( \
+               SELECT id FROM devices \
+               WHERE id = ANY($1) AND org_id = $2 AND user_id = $3 AND platform = $4 \
+                 AND revoked_at IS NULL \
+               ORDER BY array_position($1, id) LIMIT 1) \
+             RETURNING id",
+        )
+        .bind(candidates)
+        .bind(principal.org_id)
+        .bind(principal.user_id)
+        .bind(device.platform.as_str())
+        .bind(&device.name)
+        .fetch_optional(&mut **tx)
+        .await?
     };
     let device_id = match reused {
         Some(id) => {

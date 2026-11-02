@@ -98,7 +98,7 @@ public final class AccountScope: Sendable {
   }
 
   /// How long `close()` waits for commands already running on the scope before stopping it anyway.
-  static let drainTimeout: Duration = .seconds(10)
+  public static let drainTimeout: Duration = .seconds(10)
 
   private let row: Mutex<AccountRow>
   /// This scope, as opposed to an earlier or later scope of the same account: a late 401 or `/v1/me`
@@ -223,9 +223,14 @@ public final class AccountScope: Sendable {
   /// to adopt again), then the database pool. Nothing here waits on the network. Closing twice does
   /// nothing.
   ///
-  /// Logging out (Task 10) runs its own steps first: interrupt the running turns and wait, flush and
-  /// push once, and end the hub session; then it calls this.
-  public func close(stoppingServers: Bool = true) async {
+  /// Logging out (`AccountManager.logout`) runs its own steps first, with new work already refused
+  /// (`refuseNewWork()`): interrupt the running turns and stop the servers, push once, and end the hub
+  /// session; then it calls this with a `drainTimeout` of zero, its own first step having waited.
+  /// `serverBudget` bounds the server stops, which run side by side.
+  public func close(
+    stoppingServers: Bool = true, drainTimeout: Duration = AccountScope.drainTimeout,
+    serverBudget: Duration = .seconds(10)
+  ) async {
     let first = closed.withLock { closed -> Bool in
       defer { closed = true }
       return !closed
@@ -233,14 +238,21 @@ public final class AccountScope: Sendable {
     guard first else { return }
     gate.close()
     await hub.close()
-    if await !gate.drain(timeout: Self.drainTimeout) {
+    if await !gate.drain(timeout: drainTimeout) {
       Log.logger("accounts").warning(
         "\(self.gate.inside, privacy: .public) commands were still running as account \(self.account.id, privacy: .public) closed"
       )
     }
     await sessions.shutdown()
-    if stoppingServers { await servers.stopAll() }
+    if stoppingServers { await servers.stopAll(within: serverBudget) }
     await servers.shutdown()
     try? database.close()
   }
+
+  /// Refuse new work from here on (`enter()` answers `signed_out`), without closing anything yet: the
+  /// first thing a log-out does, so nothing starts while it stops what is running.
+  func refuseNewWork() { gate.close() }
+
+  /// Wait up to `timeout` for the work already admitted to leave. Returns whether it all did.
+  func drain(timeout: Duration) async -> Bool { await gate.drain(timeout: timeout) }
 }

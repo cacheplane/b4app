@@ -22,13 +22,17 @@ public struct CoordinatorOptions: Sendable {
   /// Overrides the power assertion for "keep the Mac awake" (tests inject a `FakePowerAssertions`); nil
   /// uses IOKit.
   public var powerAssertions: (any PowerAssertions)?
+  /// Which hub a sign-in goes to and whether Sign in with Apple is offered; tests pick one.
+  public var flavor: Flavor
 
   public init(
     paths: PlatformPaths? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
     secretStore: (any SecretStore)? = nil, adapterFactory: SessionService.AdapterFactory? = nil,
     hubAPIFactory: HubSync.APIFactory? = nil, hubLinkConnection: (any HubLinkConnection)? = nil,
-    powerAssertions: (any PowerAssertions)? = nil, legacyAdoption: LegacyAdoption.Plan? = nil
+    powerAssertions: (any PowerAssertions)? = nil, legacyAdoption: LegacyAdoption.Plan? = nil,
+    flavor: Flavor = .current
   ) {
+    self.flavor = flavor
     self.environment = environment
     self.paths = paths ?? PlatformPaths.resolve(environment: environment)
     self.secretStore =
@@ -180,7 +184,8 @@ public enum Coordinator {
           paths: paths, environment: options.environment, secretStore: options.secretStore,
           eventLog: eventLog, diagnostics: diagnostics, adapterFactory: options.adapterFactory,
           hubAPIFactory: options.hubAPIFactory, hubLinkConnection: options.hubLinkConnection,
-          powerAssertions: options.powerAssertions)))
+          powerAssertions: options.powerAssertions),
+        flavor: options.flavor))
     await diagnostics.attachAccounts { [accounts] in accounts.current }
     // Restore the active account (or adopt a joined `workspace`) before the socket opens, so the first
     // client sees it signed in.

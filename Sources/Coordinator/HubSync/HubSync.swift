@@ -166,6 +166,8 @@ public actor HubSync {
   /// ends at its current request.
   public func close() async {
     closed = true
+    // A push the hub never answers is not waited for: its request is cancelled.
+    inFlight?.cancel()
     await stop()
     api = nil
     token = nil
@@ -174,8 +176,29 @@ public actor HubSync {
 
   /// `GET /v1/me` with this Mac's token (the account manager refreshes the account's names with it).
   public func me() async throws -> MeResponse {
-    guard let api, !closed else { throw WorkspaceError(.protocolInvalid, "Join a hub first") }
-    return try await api.me()
+    try await client().me()
+  }
+
+  /// The hub client with this Mac's token, for the account commands (`account.identities` and the
+  /// rest); `protocol_invalid` when this account has joined no hub, `signed_out` once closed.
+  func client() throws -> any HubAPI {
+    guard !closed else { throw WorkspaceError(.signedOut, AccountManager.signedOutMessage) }
+    guard let api else { throw WorkspaceError(.protocolInvalid, "Join a hub first") }
+    return api
+  }
+
+  /// Whether this account has a hub to talk to.
+  var isJoined: Bool { api != nil && !closed }
+
+  /// `DELETE /v1/sessions/self`: log out at the hub (the device stays enrolled). Nothing to end when
+  /// this account has joined no hub. A 401 means the session is already gone.
+  func endSession() async throws {
+    guard let api, !closed else { return }
+    do {
+      try await api.endSession()
+    } catch let error as HubError where error.code == "unauthorized" {
+      return
+    }
   }
 
   // MARK: - Commands

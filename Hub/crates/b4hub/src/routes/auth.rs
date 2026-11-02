@@ -45,8 +45,13 @@ pub const ACCOUNT_LABEL: &str = "Agent Workspace account";
 
 // ---- Wire types ----
 
-/// The device a sign-in is for. `deviceId`, when it names an unrevoked device of the signing-in
-/// user on the same platform, is reused (and renamed); otherwise a new device is made.
+/// The most `candidateDeviceIds` a sign-in may send.
+pub const MAX_CANDIDATE_DEVICE_IDS: usize = 32;
+
+/// The device a sign-in is for. `deviceId` and then `candidateDeviceIds`, in order, are the
+/// devices the client already has (a Mac that has signed in to several accounts sends one per
+/// account): the first that is an unrevoked device of the signing-in user on the same platform
+/// is reused (and renamed); otherwise a new device is made.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DeviceRequest {
@@ -54,10 +59,32 @@ pub struct DeviceRequest {
     pub platform: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_device_ids: Option<Vec<Uuid>>,
 }
 
 impl DeviceRequest {
+    /// The devices to try reusing, in order: `deviceId`, then `candidateDeviceIds`.
+    pub(crate) fn reuse_candidates(&self) -> Vec<Uuid> {
+        let mut candidates: Vec<Uuid> = self.device_id.into_iter().collect();
+        for id in self.candidate_device_ids.iter().flatten() {
+            if !candidates.contains(id) {
+                candidates.push(*id);
+            }
+        }
+        candidates
+    }
+
     pub(crate) fn validate(&self) -> Result<DeviceSpec, ApiError> {
+        if self
+            .candidate_device_ids
+            .as_ref()
+            .is_some_and(|ids| ids.len() > MAX_CANDIDATE_DEVICE_IDS)
+        {
+            return Err(ApiError::invalid_request(
+                "candidateDeviceIds holds at most 32 device ids",
+            ));
+        }
         let name = self.device_name.trim();
         if name.is_empty() || name.chars().count() > MAX_DEVICE_NAME_CHARS {
             return Err(ApiError::invalid_request(
@@ -273,7 +300,7 @@ pub async fn passkey_finish(
                 ceremony,
                 &assertion,
                 device,
-                request.device.device_id,
+                &request.device.reuse_candidates(),
             )
             .await
         }
@@ -327,7 +354,7 @@ async fn sign_in(
     ceremony: PasskeyCeremony,
     assertion: &PublicKeyCredential,
     device: DeviceSpec,
-    reuse: Option<Uuid>,
+    reuse: &[Uuid],
 ) -> Result<AuthSession, ApiError> {
     let (user_handle, credential_id) = state
         .webauthn
@@ -365,7 +392,7 @@ async fn sign_in(
         _ => None,
     };
     accounts::record_passkey_use(&state.db, stored.identity_id, updated.as_ref()).await?;
-    let session = accounts::issue_session(&state.db, principal, device, reuse).await?;
+    let session = accounts::issue_session_reusing(&state.db, principal, device, reuse).await?;
     tracing::info!(
         org_id = %principal.org_id,
         user_id = %principal.user_id,

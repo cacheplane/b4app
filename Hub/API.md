@@ -313,7 +313,8 @@ passkey's account, an `attestation` signs up. Request (exactly one of `assertion
   "ceremonyId": "4f0c...",
   "assertion": { <PublicKeyCredential: id, rawId, response {authenticatorData, clientDataJSON,
                   signature, userHandle}, type> },
-  "device": {"deviceName": "Brian's MacBook Pro", "platform": "macos", "deviceId": "0198..."}
+  "device": {"deviceName": "Brian's MacBook Pro", "platform": "macos", "deviceId": "0198...",
+             "candidateDeviceIds": ["0198..."]}
 }
 ```
 
@@ -321,6 +322,11 @@ passkey's account, an `attestation` signs up. Request (exactly one of `assertion
 - `device.deviceId` (optional): on a sign-in, when it names an unrevoked device of the same user
   on the same platform, that device is reused, renamed, and its earlier tokens are deleted;
   otherwise a new device is made. A sign-up always makes a new device.
+- `device.candidateDeviceIds` (optional): up to 32 more device ids, for a client that cannot know
+  which account a sign-in is for (a Mac that has signed in to several accounts sends the device it
+  has with each). `deviceId` counts as the first candidate; the first candidate that passes the rule
+  above is reused, and the others are passed over. More than 32, or one that is not a UUID, is
+  `400 invalid_request`.
 - An **assertion** is verified against the stored ceremony and the passkey found by its
   credential id; its `userHandle` must be the one the passkey was registered with. Each sign-in
   records `last_used_at` and stores the passkey's new signature counter and backup state; a
@@ -475,8 +481,9 @@ The Mac hands over the redirect's code with its verifier:
 The hub matches the code's hash and the verifier's SHA-256 against a sign-in's handoff, once,
 then exchanges the code (Apple's answer must carry an identity token for the same Apple ID),
 signs the Apple ID's account in or signs it up (`403 signup_closed` while sign-up is closed), and
-answers the session shape for `device`. A wrong verifier is answered exactly like an unknown,
-expired, or spent code, `400 ceremony_expired`, and leaves the handoff redeemable by its rightful
+answers the session shape for `device` (as for the passkey finish, `deviceId` and
+`candidateDeviceIds` included). A wrong verifier is answered exactly like an unknown, expired, or
+spent code, `400 ceremony_expired`, and leaves the handoff redeemable by its rightful
 holder; of two redemptions racing, exactly one succeeds. **A link's handoff is `401
 credential_rejected` here** and is not used up (it belongs at `POST /v1/me/apple/handoff`). A
 refused exchange is `401 credential_rejected` and the handoff is spent. Errors also: `400

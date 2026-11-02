@@ -500,7 +500,9 @@ private let acme = AuthSession(
     let unscoped: Set<WorkspaceProtocol.Method> = [
       .systemPing, .diagnosticsRead, .eventsReplay, .hubJoin, .threadStart, .turnLookup,
     ]
-    for method in WorkspaceProtocol.Method.allCases where !unscoped.contains(method) {
+    // `account.*` is routed without an account (Task 10's `AccountCommandTests` cover it).
+    for method in WorkspaceProtocol.Method.allCases
+    where !unscoped.contains(method) && !method.rawValue.hasPrefix("account.") {
       let operation = UUID().uuidString
       let line =
         #"{"protocolVersion":1,"kind":"command","requestId":"r","operationId":"\#(operation)","method":"\#(method.rawValue)","params":{}}"#
@@ -545,7 +547,6 @@ private let acme = AuthSession(
     await rig.hub.enrollments.addEnrollmentCode(
       "CDFG3456",
       EnrollResponse(deviceId: bob.deviceId, token: bob.token, org: bob.org, user: bob.user))
-    let calls = rig.hub.calls
     let error = await #expect(throws: WorkspaceError.self) {
       _ = try await rig.client.request(
         HubJoin.self, HubJoin.Params(url: hubURL, code: "CDFG3456", deviceName: "Test Mac"),
@@ -555,7 +556,6 @@ private let acme = AuthSession(
     #expect(error?.message.contains("Log out first") == true)
     #expect(error?.message.contains("Acme") == true)
     #expect(await rig.hub.enrollments.enrollCalls == 1)
-    #expect(rig.hub.calls >= calls)
     #expect(try rig.accounts.scope().account.hubUserId == acme.userId)
   }
 

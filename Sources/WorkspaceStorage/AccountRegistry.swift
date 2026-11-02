@@ -16,12 +16,19 @@ public struct AccountRow: Sendable, Equatable {
   public var tokenRef: String?
   public var lastSignedInAt: String?
   public var active: Bool
+  /// The last log-out could not end the session at the hub (its token is forgotten here but still
+  /// valid there); reported once at the account's next sign-in.
+  public var hubSessionLeftOpen: Bool
+  /// The hub said the user has not onboarded yet (no full name); kept so a restart restores it.
+  public var needsOnboarding: Bool
 
   public init(
     id: String, hubURL: String, hubUserId: String, deviceId: String, database: String,
     displayName: String, orgName: String, tokenRef: String? = nil, lastSignedInAt: String? = nil,
-    active: Bool = false
+    active: Bool = false, hubSessionLeftOpen: Bool = false, needsOnboarding: Bool = false
   ) {
+    self.hubSessionLeftOpen = hubSessionLeftOpen
+    self.needsOnboarding = needsOnboarding
     self.id = id
     self.hubURL = hubURL
     self.hubUserId = hubUserId
@@ -108,12 +115,13 @@ public final class AccountRegistry: Sendable {
       try c.execute(
         """
         INSERT INTO "accounts" ("id", "hub_url", "hub_user_id", "device_id", "database", "display_name",
-          "org_name", "token_ref", "last_signed_in_at", "active")
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::boolean)
+          "org_name", "token_ref", "last_signed_in_at", "active", "needs_onboarding")
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::boolean, $11::boolean)
         """,
         [
           row.id, row.hubURL, row.hubUserId, row.deviceId, row.database, row.displayName, row.orgName,
           row.tokenRef, row.lastSignedInAt, row.active ? "true" : "false",
+          row.needsOnboarding ? "true" : "false",
         ])
     }
   }
@@ -139,11 +147,40 @@ public final class AccountRegistry: Sendable {
   }
 
   /// Clear the account's token reference and deactivate it. The row stays registered.
-  public func signOut(id: String) throws {
+  /// `hubSessionLeftOpen` records a log-out whose session the hub never ended; false leaves an earlier
+  /// record alone.
+  public func signOut(id: String, hubSessionLeftOpen: Bool = false) throws {
     try run { c in
       let updated = try c.execute(
-        "UPDATE \"accounts\" SET \"token_ref\" = NULL, \"active\" = false WHERE \"id\" = $1", [id])
+        """
+        UPDATE "accounts" SET "token_ref" = NULL, "active" = false,
+          "hub_session_left_open" = "hub_session_left_open" OR $2::boolean
+        WHERE "id" = $1
+        """, [id, hubSessionLeftOpen ? "true" : "false"])
       guard updated.affected == 1 else { throw WorkspaceError(.notFound, "No account \(id).") }
+    }
+  }
+
+  /// Record whether the user still has to onboard (the hub's `needsOnboarding`, or `/v1/me`'s
+  /// `onboarded`).
+  public func setNeedsOnboarding(id: String, _ value: Bool) throws {
+    try run { c in
+      let updated = try c.execute(
+        "UPDATE \"accounts\" SET \"needs_onboarding\" = $2::boolean WHERE \"id\" = $1",
+        [id, value ? "true" : "false"])
+      guard updated.affected == 1 else { throw WorkspaceError(.notFound, "No account \(id).") }
+    }
+  }
+
+  /// Whether the account's last log-out left its hub session open, clearing the record: true once.
+  public func takeHubSessionLeftOpen(id: String) throws -> Bool {
+    try run { c in
+      try c.execute(
+        """
+        UPDATE "accounts" SET "hub_session_left_open" = false
+        WHERE "id" = $1 AND "hub_session_left_open" RETURNING "id"
+        """, [id]
+      ).rows.isEmpty == false
     }
   }
 
@@ -171,7 +208,7 @@ public final class AccountRegistry: Sendable {
   // MARK: - Plumbing
 
   private static let columns =
-    "\"id\", \"hub_url\", \"hub_user_id\", \"device_id\", \"database\", \"display_name\", \"org_name\", \"token_ref\", \"last_signed_in_at\", \"active\""
+    "\"id\", \"hub_url\", \"hub_user_id\", \"device_id\", \"database\", \"display_name\", \"org_name\", \"token_ref\", \"last_signed_in_at\", \"active\", \"hub_session_left_open\", \"needs_onboarding\""
 
   private static func account(_ row: Row) throws -> AccountRow {
     func required(_ column: String) throws -> String {
@@ -185,7 +222,8 @@ public final class AccountRegistry: Sendable {
       deviceId: try required("device_id"), database: try required("database"),
       displayName: try required("display_name"), orgName: try required("org_name"),
       tokenRef: row.text("token_ref"), lastSignedInAt: row.text("last_signed_in_at"),
-      active: try required("active") == "t")
+      active: try required("active") == "t", hubSessionLeftOpen: row.text("hub_session_left_open") == "t",
+      needsOnboarding: row.text("needs_onboarding") == "t")
   }
 
   /// Run `body` on a pooled connection, reporting a constraint violation as `protocol_invalid` and any

@@ -54,6 +54,8 @@ import WorkspaceProtocol
     let assertion = try roundTrips(PasskeyFinishRequest.self, "passkeyFinishAssertion")
     #expect(assertion.assertion != nil && assertion.attestation == nil)
     #expect(assertion.device.deviceId == "01a19a2b-bbc9-744f-9b64-011001ab330e")
+    // A Mac sends the devices of every account it knows; the hub reuses the first that is the user's.
+    #expect(assertion.device.candidateDeviceIds?.count == 2)
 
     let attestation = try roundTrips(PasskeyFinishRequest.self, "passkeyFinishAttestation")
     #expect(attestation.attestation != nil && attestation.assertion == nil)
@@ -141,6 +143,13 @@ import WorkspaceProtocol
     #expect(!"\(linkHandoff)".contains(linkHandoff.verifier))
     let handoff = try roundTrips(HandoffRequest.self, "handoffRequest")
     #expect(handoff.device.deviceId == "01a19a2b-bbc9-744f-9b64-011001ab330e")
+    #expect(handoff.device.candidateDeviceIds?.count == 2)
+  }
+
+  @Test func deviceSpecLeavesOutAbsentCandidates() throws {
+    let spec = DeviceSpec(deviceName: "Mac", platform: "macos", deviceId: "d")
+    let encoded = try JSONCoding.decoder.decode(JSONValue.self, from: JSONCoding.encoder.encode(spec))
+    #expect(encoded == ["deviceName": "Mac", "platform": "macos", "deviceId": "d"])
   }
 
   // The native flow's begin body is empty, and an absent `fullName` is left out.
