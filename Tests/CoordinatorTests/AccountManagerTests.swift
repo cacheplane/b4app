@@ -138,11 +138,19 @@ private struct AccountRig {
 
   static func start(
     paths: PlatformPaths? = nil, secrets: MemorySecretStore = MemorySecretStore(), hub: AccountsHub? = nil,
-    environment: [String: String]? = nil, adapterFactory: SessionService.AdapterFactory? = nil
+    environment: [String: String]? = nil, adapterFactory: SessionService.AdapterFactory? = nil,
+    legacySecrets: (any SecretStore)? = nil
   ) async throws -> AccountRig {
     let paths = try paths ?? Self.paths()
     let hub = hub ?? AccountsHub()
     let links = FakeHubLinkConnection()
+    // The local flavour's plan as `planIfExplicitLocal` makes it, with fakes: no previous install to
+    // move (its home has no `b4app`), and `legacySecrets` standing in for the prod keychain group.
+    let adoption = legacySecrets.map { store in
+      LegacyAdoption.Plan(
+        home: URL(fileURLWithPath: paths.dataDir).appendingPathComponent("no-home"),
+        readHubURL: { _ in nil }, bootOutLegacy: {}, legacySecretStore: store)
+    }
     let outcome = try await Coordinator.start(
       options: CoordinatorOptions(
         paths: paths,
@@ -151,7 +159,7 @@ private struct AccountRig {
           ExecutableLocator.fallbackOverrideVariable: "",
         ],
         secretStore: secrets, adapterFactory: adapterFactory, hubAPIFactory: { hub.api($0, $1) },
-        hubLinkConnection: links, powerAssertions: FakePowerAssertions()))
+        hubLinkConnection: links, powerAssertions: FakePowerAssertions(), legacyAdoption: adoption))
     guard case .running(let coordinator) = outcome else {
       throw WorkspaceError(.internalError, "expected running")
     }
@@ -211,7 +219,7 @@ private func eventually(_ what: String, _ condition: () async throws -> Bool) as
 /// Writes a joined `workspace` database as a build before sign-in left it: a hub link, a thread, and
 /// the device token in the secret store.
 private func seedJoinedWorkspace(
-  _ paths: PlatformPaths, secrets: MemorySecretStore
+  _ paths: PlatformPaths, secrets: any SecretStore
 ) async throws -> SecretRef {
   let db = try WorkspaceDatabase(endpoint: paths.postgres, binDir: paths.postgres.binDir!)
   defer { try? db.close() }
@@ -761,5 +769,188 @@ private actor HeldAdapter: AgentAdapter {
     guard !disposed else { return }
     disposed = true
     owner.disposed()
+  }
+}
+
+// MARK: - The owner's secrets in the prod keychain group (D-091, Task X2)
+
+/// A secret store that counts what is asked of it, so a test can show the prod group was not read.
+private actor CountingSecretStore: SecretStore {
+  private let inner = MemorySecretStore()
+  private(set) var reads = 0
+  private(set) var writes = 0
+  private(set) var removes = 0
+
+  func put(_ ref: SecretRef, value: String) async throws {
+    writes += 1
+    try await inner.put(ref, value: value)
+  }
+  func read(_ ref: SecretRef) async throws -> String? {
+    reads += 1
+    return try await inner.read(ref)
+  }
+  func remove(_ ref: SecretRef) async throws -> Bool {
+    removes += 1
+    return try await inner.remove(ref)
+  }
+  func resetCounts() {
+    reads = 0
+    writes = 0
+    removes = 0
+  }
+  nonisolated var backend: String { "counting" }
+}
+
+/// A B4 connection in the joined `workspace` whose API key sits in `secrets` under a new reference
+/// (nil `value`: the reference names nothing).
+private func seedConnectionSecret(
+  _ paths: PlatformPaths, id: String, secrets: any SecretStore, value: String?
+) async throws -> SecretRef {
+  let db = try WorkspaceDatabase(endpoint: paths.postgres, binDir: paths.postgres.binDir!)
+  defer { try? db.close() }
+  let ref = SecretRef.make()
+  if let value { try await secrets.put(ref, value: value) }
+  _ = try db.insertConnection(
+    Connection(
+      id: id, kind: .b4, label: "B4 \(id)", target: "https://b4.example", routeKey: "/chat#agent",
+      authReference: ref.rawValue))
+  return ref
+}
+
+@Suite(.serialized, .timeLimit(.minutes(3))) struct LegacySecretCopyTests {
+  @Test func anAdoptedWorkspacesSecretsAreCopiedAndItStaysSignedIn() async throws {
+    let paths = try AccountRig.paths()
+    let prod = CountingSecretStore()
+    let local = MemorySecretStore()
+    let token = try await seedJoinedWorkspace(paths, secrets: prod)
+    let key = try await seedConnectionSecret(paths, id: "b1", secrets: prod, value: "b4-key-secret")
+    let hub = AccountsHub()
+    await hub.add(acme)
+
+    let rig = try await AccountRig.start(paths: paths, secrets: local, hub: hub, legacySecrets: prod)
+    defer { Task { await rig.close() } }
+
+    #expect(try await local.read(token) == "tok-very-secret")
+    #expect(try await local.read(key) == "b4-key-secret")
+    // Copied, not moved: the prod build still finds its items.
+    #expect(try await prod.read(token) == "tok-very-secret")
+    #expect(try await prod.read(key) == "b4-key-secret")
+    #expect(await prod.removes == 0)
+    #expect(await prod.writes == 2)  // the seeds only
+
+    // The hub call that follows carries the copied token: `/v1/me` answers and names the user.
+    let registry = try rig.registry()
+    defer { registry.close() }
+    try await eventually("the user id from /v1/me") { try registry.active()?.hubUserId == acme.userId }
+    #expect(await rig.accounts.status().state == .signedIn)
+    #expect(await rig.accountEvents().allSatisfy { $0.state != .signedOut })
+    #expect(try rig.accounts.scope().database.settings(key: LegacyAdoption.secretsCopiedKey) != nil)
+  }
+
+  @Test func anItemTheLocalGroupHasIsNotOverwritten() async throws {
+    let paths = try AccountRig.paths()
+    let prod = CountingSecretStore()
+    let local = MemorySecretStore()
+    let token = try await seedJoinedWorkspace(paths, secrets: local)
+    try await prod.put(token, value: "tok-stale-prod")
+    let key = try await seedConnectionSecret(paths, id: "b1", secrets: local, value: "local-key")
+    try await prod.put(key, value: "prod-key")
+    let hub = AccountsHub()
+    await hub.add(acme)
+
+    let rig = try await AccountRig.start(paths: paths, secrets: local, hub: hub, legacySecrets: prod)
+    defer { Task { await rig.close() } }
+
+    #expect(try await local.read(token) == "tok-very-secret")
+    #expect(try await local.read(key) == "local-key")
+    #expect(try await prod.read(token) == "tok-stale-prod")
+    let registry = try rig.registry()
+    defer { registry.close() }
+    try await eventually("the user id from /v1/me") { try registry.active()?.hubUserId == acme.userId }
+    #expect(await rig.accounts.status().state == .signedIn)
+  }
+
+  @Test func aSecondStartDoesNotCopyAgain() async throws {
+    let paths = try AccountRig.paths()
+    let prod = CountingSecretStore()
+    let local = MemorySecretStore()
+    _ = try await seedJoinedWorkspace(paths, secrets: prod)
+    let key = try await seedConnectionSecret(paths, id: "b1", secrets: prod, value: "b4-key-secret")
+    let hub = AccountsHub()
+    await hub.add(acme)
+    let first = try await AccountRig.start(paths: paths, secrets: local, hub: hub, legacySecrets: prod)
+    #expect(try await local.read(key) == "b4-key-secret")
+    await first.close()
+
+    // The key is removed here since (say, the connection's key was cleared): a copy would bring it back.
+    _ = try await local.remove(key)
+    await prod.resetCounts()
+    let second = try await AccountRig.start(paths: paths, secrets: local, hub: hub, legacySecrets: prod)
+    defer { Task { await second.close() } }
+    #expect(await second.accounts.status().state == .signedIn)
+    #expect(await prod.reads == 0)
+    #expect(try await local.read(key) == nil)
+  }
+
+  @Test func anAccountRestoredBeforeItsSecretsWereCopiedIsCopiedThen() async throws {
+    let paths = try AccountRig.paths()
+    let prod = CountingSecretStore()
+    let local = MemorySecretStore()
+    let token = try await seedJoinedWorkspace(paths, secrets: local)
+    try await prod.put(token, value: "tok-very-secret")
+    let hub = AccountsHub()
+    await hub.add(acme)
+    // A start without the copy registers the adopted account and leaves it active; the token is then
+    // taken out of the local store, as when a start stopped between the adoption and the copy.
+    hub.setUnreachable(true)
+    let first = try await AccountRig.start(paths: paths, secrets: local, hub: hub)
+    #expect(await first.accounts.status().state == .signedIn)
+    await first.close()
+    _ = try await local.remove(token)
+
+    hub.setUnreachable(false)
+    let second = try await AccountRig.start(paths: paths, secrets: local, hub: hub, legacySecrets: prod)
+    defer { Task { await second.close() } }
+    #expect(try await local.read(token) == "tok-very-secret")
+    let registry = try second.registry()
+    defer { registry.close() }
+    try await eventually("the user id from /v1/me") { try registry.active()?.hubUserId == acme.userId }
+    #expect(await second.accounts.status().state == .signedIn)
+  }
+
+  @Test func nothingIsCopiedWithoutTheLegacyStore() async throws {
+    // Beta, prod, and a dev coordinator get no plan, so no legacy store: the token stays where it is,
+    // and the hub refuses the account whose token this coordinator cannot read.
+    let paths = try AccountRig.paths()
+    let prod = CountingSecretStore()
+    let local = MemorySecretStore()
+    let token = try await seedJoinedWorkspace(paths, secrets: prod)
+    let hub = AccountsHub()
+    await hub.add(acme)
+    await prod.resetCounts()
+
+    let rig = try await AccountRig.start(paths: paths, secrets: local, hub: hub)
+    defer { Task { await rig.close() } }
+    try await eventually("signed out") { await rig.accounts.status().state == .signedOut }
+    #expect(await prod.reads == 0)
+    #expect(try await local.read(token) == nil)
+  }
+
+  @Test func aMissingProdItemIsTolerated() async throws {
+    let paths = try AccountRig.paths()
+    let prod = CountingSecretStore()
+    let local = MemorySecretStore()
+    let token = try await seedJoinedWorkspace(paths, secrets: prod)
+    let gone = try await seedConnectionSecret(paths, id: "b1", secrets: prod, value: nil)
+    let hub = AccountsHub()
+    await hub.add(acme)
+
+    let rig = try await AccountRig.start(paths: paths, secrets: local, hub: hub, legacySecrets: prod)
+    defer { Task { await rig.close() } }
+    #expect(try await local.read(token) == "tok-very-secret")
+    #expect(try await local.read(gone) == nil)
+    #expect(await rig.accounts.status().state == .signedIn)
+    // The copy is done all the same, and is not tried again.
+    #expect(try rig.accounts.scope().database.settings(key: LegacyAdoption.secretsCopiedKey) != nil)
   }
 }

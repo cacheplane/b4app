@@ -7,8 +7,9 @@ import WorkspaceStorage
 /// The local flavour takes over the owner's pre-flavour install (sign-in plan, Task 3): today's
 /// packaged app keeps its data in `~/Library/Application Support/b4app`, runs the LaunchAgent
 /// `com.cacheplane.b4app.coordinator`, and has a hub link to `http://localhost:8080`. A local-flavour
-/// build moves that directory to `b4app-local` so the owner keeps their threads, and (Task 9) moves
-/// the hub token to its own keychain group.
+/// build moves that directory to `b4app-local` so the owner keeps their threads, and copies the
+/// secrets that data references (the hub token, the connections' keys) from the prod keychain group
+/// to its own, once (D-091).
 ///
 /// Nothing here moves a directory unless every check passes and the old install has been stopped:
 /// a failure at any step leaves `b4app` exactly as it was.
@@ -112,23 +113,105 @@ public enum LegacyAdoption {
     return ["localhost", "127.0.0.1", "::1"].contains(host)
   }
 
-  // MARK: - The hub token
+  // MARK: - The owner's secrets
 
-  /// Copy the secret `ref` from the old store to the new one, check the new store returns it, and
-  /// only then remove it from the old store. No item in the old store is a no-op (already moved, or
-  /// never there); a failed copy or check throws and removes nothing. The value is never put in an
+  /// What `copySecret` did with one reference.
+  public enum SecretCopy: Equatable, Sendable {
+    /// Read from the legacy store, written to the new one, and read back.
+    case copied
+    /// The new store already holds it; it was left as it is.
+    case alreadyThere
+    /// Neither store holds it (the secret was removed, or never stored); not an error.
+    case missing
+  }
+
+  /// Copy the secret `ref` from the legacy store (the prod keychain group) to `store` when `store`
+  /// lacks it, and check `store` returns it. The legacy item is never changed or removed, so going back
+  /// to the prod build keeps working. A failed write or check throws. The value is never put in an
   /// error or a log line.
-  public static func moveToken(
-    from legacy: any SecretStore, to store: any SecretStore, ref: SecretRef
-  ) async throws {
-    guard let value = try await legacy.read(ref) else { return }
+  @discardableResult
+  public static func copySecret(
+    _ ref: SecretRef, from legacy: any SecretStore, to store: any SecretStore
+  ) async throws -> SecretCopy {
+    if try await store.read(ref) != nil { return .alreadyThere }
+    guard let value = try await legacy.read(ref) else { return .missing }
     try await store.put(ref, value: value)
     guard try await store.read(ref) == value else {
       throw WorkspaceError(
         .internalError,
-        "The new secret store did not return \(ref) after it was written; the old item was kept.")
+        "The secret store did not return \(ref) after it was written; the prod keychain group's item was kept."
+      )
     }
-    _ = try await legacy.remove(ref)
+    return .copied
+  }
+
+  /// The setting, in the adopted database, that records the copy below has run. Settings are this
+  /// Mac's own and never synced.
+  public static let secretsCopiedKey = "legacySecretsCopiedAt"
+
+  /// Every secret `database` references: its hub link's token and each connection's `secret:`
+  /// `authReference` (disabled connections included), each once, in that order.
+  static func secretRefs(in database: WorkspaceDatabase) throws -> [SecretRef] {
+    var refs: [SecretRef] = []
+    if let ref = try database.hubLink().flatMap({ SecretRef(rawValue: $0.tokenRef) }) { refs.append(ref) }
+    for connection in try database.listConnections(includeDisabled: true) {
+      if let ref = connection.authReference.flatMap(SecretRef.init(rawValue:)), !refs.contains(ref) {
+        refs.append(ref)
+      }
+    }
+    return refs
+  }
+
+  /// The counts of one run of `copySecretsOnce`.
+  public struct SecretCopySummary: Equatable, Sendable {
+    public var copied = 0
+    public var alreadyThere = 0
+    public var missing = 0
+  }
+
+  /// D-063's one read of the owner's secrets: copy every secret the adopted `database` references from
+  /// the legacy store to `store` (`copySecret`), then record it in the database's settings so no later
+  /// start reads the legacy store again. Nil when an earlier start has done it. A throw records
+  /// nothing, so the next start tries again; the references already copied are then `alreadyThere`.
+  static func copySecretsOnce(
+    database: WorkspaceDatabase, from legacy: any SecretStore, to store: any SecretStore
+  ) async throws -> SecretCopySummary? {
+    guard try database.settings(key: secretsCopiedKey) == nil else { return nil }
+    var summary = SecretCopySummary()
+    for ref in try secretRefs(in: database) {
+      switch try await copySecret(ref, from: legacy, to: store) {
+      case .copied: summary.copied += 1
+      case .alreadyThere: summary.alreadyThere += 1
+      case .missing: summary.missing += 1
+      }
+    }
+    try database.setSetting(key: secretsCopiedKey, value: .string(Timestamp.now()))
+    return summary
+  }
+
+  /// The prod flavour's keychain group (`<team>.com.cacheplane.b4app.shared`), when this process's
+  /// signature claims it: the local flavour's profiles authorise `<team>.*`, and `package.sh` claims
+  /// the prod group beside the local one for this read. Nil without it (an ad hoc build, which keeps
+  /// its secrets in the login keychain the prod build's would have used, so there is nothing to copy).
+  public static func legacySecretStore() -> (any SecretStore)? {
+    legacySecretStore(claimedGroups: claimedAccessGroups())
+  }
+
+  /// The same, from the groups a signature claims.
+  static func legacySecretStore(claimedGroups: [String]) -> (any SecretStore)? {
+    guard
+      let group = KeychainSecretStore.selectGroup(
+        from: claimedGroups, flavorSuffix: Flavor.prod.keychainGroupSuffix)
+    else { return nil }
+    return KeychainSecretStore(accessGroup: group)
+  }
+
+  private static func claimedAccessGroups() -> [String] {
+    #if os(macOS)
+      return KeychainSecretStore.claimedAccessGroups()
+    #else
+      return []
+    #endif
   }
 
   // MARK: - Stopping the old install
@@ -175,20 +258,26 @@ public enum LegacyAdoption {
 
   // MARK: - Production wiring
 
-  /// What `Coordinator.start` needs to adopt: where the home is and the two closures
-  /// `moveDataIfNeeded` takes. Tests build one from fakes; `Production.plan` is the real one.
+  /// What `Coordinator.start` needs to adopt: where the home is, the two closures `moveDataIfNeeded`
+  /// takes, and the store the owner's secrets are copied from. Tests build one from fakes;
+  /// `Production.plan` is the real one.
   public struct Plan: Sendable {
     public var home: URL
     public var readHubURL: @Sendable (URL) async throws -> String?
     public var bootOutLegacy: @Sendable () async throws -> Void
+    /// The prod keychain group, read once for the secrets the adopted `workspace` database references
+    /// (`copySecretsOnce`, run by `AccountManager` before the adopted account's first hub call). Nil
+    /// reads nothing.
+    public var legacySecretStore: (any SecretStore)?
 
     public init(
       home: URL, readHubURL: @escaping @Sendable (URL) async throws -> String?,
-      bootOutLegacy: @escaping @Sendable () async throws -> Void
+      bootOutLegacy: @escaping @Sendable () async throws -> Void, legacySecretStore: (any SecretStore)? = nil
     ) {
       self.home = home
       self.readHubURL = readHubURL
       self.bootOutLegacy = bootOutLegacy
+      self.legacySecretStore = legacySecretStore
     }
   }
 
@@ -232,7 +321,9 @@ public enum LegacyAdoption {
     }
 
     var plan: Plan {
-      Plan(home: home, readHubURL: { try await readHubURL($0) }, bootOutLegacy: { try await bootOutLegacy() })
+      Plan(
+        home: home, readHubURL: { try await readHubURL($0) }, bootOutLegacy: { try await bootOutLegacy() },
+        legacySecretStore: LegacyAdoption.legacySecretStore())
     }
 
     private func cluster(legacyDirectory: URL) throws -> PostgresCluster {

@@ -14,7 +14,8 @@ public struct CoordinatorOptions: Sendable {
   public var hubAPIFactory: HubSync.APIFactory?
   /// Adopt the pre-flavour install's data directory once this process holds the lock and before it
   /// creates its own data directory (sign-in plan, Task 3). Nil, the default, adopts nothing; the
-  /// gate that decides is `LegacyAdoption.planIfExplicitLocal`.
+  /// gate that decides is `LegacyAdoption.planIfExplicitLocal`. Its `legacySecretStore` (the prod
+  /// keychain group) is where the adopted account's secrets are copied from, once.
   public var legacyAdoption: LegacyAdoption.Plan?
   /// The waits between tries of a connection check that found its runtime unreachable.
   public var checkRetryDelays: [Duration]
@@ -188,7 +189,7 @@ public enum Coordinator {
           eventLog: eventLog, diagnostics: diagnostics, adapterFactory: options.adapterFactory,
           hubAPIFactory: options.hubAPIFactory, hubLinkConnection: options.hubLinkConnection,
           powerAssertions: options.powerAssertions, checkRetryDelays: options.checkRetryDelays),
-        flavor: options.flavor))
+        flavor: options.flavor, legacySecretStore: options.legacyAdoption?.legacySecretStore))
     await diagnostics.attachAccounts { [accounts] in accounts.current }
     // Restore the active account (or adopt a joined `workspace`) before the socket opens, so the first
     // client sees it signed in.

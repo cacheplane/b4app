@@ -47,14 +47,21 @@ public actor AccountManager {
     /// Which hub a sign-in goes to (`Flavor.hubURL`), the Apple callback's scheme, and whether Sign in
     /// with Apple is offered at all.
     public var flavor: Flavor
+    /// The prod keychain group the local flavour copies the adopted `workspace`'s secrets from, once
+    /// (D-091; `LegacyAdoption.Plan.legacySecretStore`). Nil, the default and every other flavour's,
+    /// reads nothing.
+    public var legacySecretStore: (any SecretStore)?
 
     public init(
-      cluster: StoreCluster, registry: AccountRegistry, scope: AccountScope.Context, flavor: Flavor = .current
+      cluster: StoreCluster, registry: AccountRegistry, scope: AccountScope.Context,
+      flavor: Flavor = .current,
+      legacySecretStore: (any SecretStore)? = nil
     ) {
       self.cluster = cluster
       self.registry = registry
       self.scope = scope
       self.flavor = flavor
+      self.legacySecretStore = legacySecretStore
     }
   }
 
@@ -70,6 +77,7 @@ public actor AccountManager {
   let cluster: StoreCluster
   let scopeContext: AccountScope.Context
   let flavor: Flavor
+  let legacySecretStore: (any SecretStore)?
   let slot = Slot()
   let logger = Log.logger("accounts")
 
@@ -98,6 +106,7 @@ public actor AccountManager {
     scope.flavor = context.flavor
     scopeContext = scope
     flavor = context.flavor
+    legacySecretStore = context.legacySecretStore
   }
 
   /// The registry's database on the cluster whose default database is `endpoint.database`: `registry`
@@ -178,6 +187,7 @@ public actor AccountManager {
     needsOnboarding = row.needsOnboarding
     do {
       let database = try AccountScope.openDatabase(row: row, cluster: cluster, createIfMissing: false)
+      await copyLegacySecrets(row: row, database: database)
       await install(row: row, database: database)
     } catch {
       logger.error(
@@ -215,7 +225,31 @@ public actor AccountManager {
     }
     logger.notice("adopted the joined workspace database as account \(row.id, privacy: .public)")
     active = row
+    await copyLegacySecrets(row: row, database: database)
     await install(row: row, database: database)
+  }
+
+  /// The local flavour's one read of the prod keychain group (D-063, D-091): before the first hub call
+  /// of the account whose database is the adopted `workspace`, copy the secrets it references (its
+  /// hub token, its connections' keys) into this flavour's store where they are missing. Only with a
+  /// legacy store, which only an explicitly local coordinator has; an account database this build made
+  /// (`workspace_<id>`) never held the prod build's secrets. A failure is logged and recorded nowhere,
+  /// so the next start tries again; the account is restored all the same.
+  private func copyLegacySecrets(row: AccountRow, database: WorkspaceDatabase) async {
+    guard let legacySecretStore, row.database == cluster.endpoint.database else { return }
+    do {
+      guard
+        let summary = try await LegacyAdoption.copySecretsOnce(
+          database: database, from: legacySecretStore, to: scopeContext.secretStore)
+      else { return }
+      logger.notice(
+        "copied \(summary.copied, privacy: .public) secrets from the prod keychain group (\(summary.alreadyThere, privacy: .public) already here, \(summary.missing, privacy: .public) missing)"
+      )
+    } catch {
+      logger.error(
+        "could not copy the secrets from the prod keychain group: \(WorkspaceError.from(error).message, privacy: .public)"
+      )
+    }
   }
 
   // MARK: - Signing in and out

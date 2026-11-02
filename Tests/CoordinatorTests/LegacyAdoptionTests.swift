@@ -254,53 +254,59 @@ private struct TemporaryHome {
     #expect(second.calls.bootOuts == 0)
   }
 
-  // MARK: - The hub token
+  // MARK: - The owner's secrets (copied, never moved)
 
   private let ref = SecretRef(rawValue: "secret:hub-token")!
 
-  @Test func movesTokenOnce() async throws {
+  @Test func copiesASecretAndLeavesTheLegacyItem() async throws {
     let legacy = MemorySecretStore()
     let store = MemorySecretStore()
     try await legacy.put(ref, value: "tok-very-secret")
-    try await LegacyAdoption.moveToken(from: legacy, to: store, ref: ref)
+    #expect(try await LegacyAdoption.copySecret(ref, from: legacy, to: store) == .copied)
     #expect(try await store.read(ref) == "tok-very-secret")
-    #expect(try await legacy.read(ref) == nil)
-    // A second run finds nothing to move and leaves the new store alone.
-    try await LegacyAdoption.moveToken(from: legacy, to: store, ref: ref)
-    #expect(try await store.read(ref) == "tok-very-secret")
+    // Going back to the prod build keeps working: its item is still there.
+    #expect(try await legacy.read(ref) == "tok-very-secret")
   }
 
-  @Test func tokenMoveIsANoOpWithoutALegacyItem() async throws {
+  @Test func neverOverwritesAnItemTheStoreHas() async throws {
     let legacy = MemorySecretStore()
     let store = MemorySecretStore()
+    try await legacy.put(ref, value: "tok-old")
     try await store.put(ref, value: "already-here")
-    try await LegacyAdoption.moveToken(from: legacy, to: store, ref: ref)
+    #expect(try await LegacyAdoption.copySecret(ref, from: legacy, to: store) == .alreadyThere)
     #expect(try await store.read(ref) == "already-here")
+    #expect(try await legacy.read(ref) == "tok-old")
   }
 
-  @Test func aFailedCopyKeepsTheLegacyToken() async throws {
+  @Test func aMissingLegacyItemIsNotAnError() async throws {
+    let store = MemorySecretStore()
+    #expect(try await LegacyAdoption.copySecret(ref, from: MemorySecretStore(), to: store) == .missing)
+    #expect(try await store.read(ref) == nil)
+  }
+
+  @Test func aFailedCopyThrowsAndKeepsTheLegacyItem() async throws {
     let legacy = MemorySecretStore()
     try await legacy.put(ref, value: "tok-very-secret")
     await #expect(throws: Failure.self) {
-      try await LegacyAdoption.moveToken(from: legacy, to: RefusingSecretStore(), ref: ref)
+      try await LegacyAdoption.copySecret(ref, from: legacy, to: RefusingSecretStore())
     }
     #expect(try await legacy.read(ref) == "tok-very-secret")
   }
 
-  @Test func aCopyThatDoesNotReadBackKeepsTheLegacyToken() async throws {
+  @Test func aCopyThatDoesNotReadBackThrows() async throws {
     let legacy = MemorySecretStore()
     try await legacy.put(ref, value: "tok-very-secret")
     await #expect(throws: WorkspaceError.self) {
-      try await LegacyAdoption.moveToken(from: legacy, to: ForgetfulSecretStore(), ref: ref)
+      try await LegacyAdoption.copySecret(ref, from: legacy, to: ForgetfulSecretStore())
     }
     #expect(try await legacy.read(ref) == "tok-very-secret")
   }
 
-  @Test func tokenErrorsNeverCarryTheValue() async throws {
+  @Test func copyErrorsNeverCarryTheValue() async throws {
     let legacy = MemorySecretStore()
     try await legacy.put(ref, value: "tok-very-secret")
     do {
-      try await LegacyAdoption.moveToken(from: legacy, to: ForgetfulSecretStore(), ref: ref)
+      try await LegacyAdoption.copySecret(ref, from: legacy, to: ForgetfulSecretStore())
       Issue.record("expected a throw")
     } catch {
       #expect(!"\(error)".contains("tok-very-secret"))
@@ -374,6 +380,29 @@ private struct ForgetfulSecretStore: SecretStore {
     #expect(plan(source: .default) == nil)
     #expect(plan(flavor: .prod, source: .bundle) == nil)
     #expect(plan(flavor: .beta, source: .environment) == nil)
+  }
+
+  @Test func theLegacyStoreIsTheProdGroupWhenTheSignatureClaimsIt() throws {
+    let local = "TEAM.com.cacheplane.b4app.local.shared"
+    let prod = "TEAM.com.cacheplane.b4app.shared"
+    let store = try #require(
+      LegacyAdoption.legacySecretStore(claimedGroups: [local, prod]) as? KeychainSecretStore)
+    #expect(store.accessGroup == prod)
+    #expect(store.service == "b4app")
+    // Without the prod group (an ad hoc build, or a profile without it) there is nothing to read.
+    #expect(LegacyAdoption.legacySecretStore(claimedGroups: [local]) == nil)
+    #expect(LegacyAdoption.legacySecretStore(claimedGroups: []) == nil)
+    #expect(LegacyAdoption.legacySecretStore(claimedGroups: ["TEAM.com.cacheplane.b4app.beta.shared"]) == nil)
+  }
+
+  @Test func onlyTheLocalPlanCarriesALegacyStore() {
+    // Every other flavour, and a coordinator whose flavour is only the fallback (`swift build`), has no
+    // plan at all, so nothing reads the prod group.
+    #expect(plan(flavor: .prod, source: .bundle)?.legacySecretStore == nil)
+    #expect(plan(flavor: .beta, source: .environment)?.legacySecretStore == nil)
+    #expect(plan(source: .default)?.legacySecretStore == nil)
+    // The test binary claims no keychain group, so even the local plan has none here.
+    #expect(plan(source: .environment)?.legacySecretStore == nil)
   }
 
   @Test func anExplicitDataDirectoryOrClusterNeverAdopts() {
