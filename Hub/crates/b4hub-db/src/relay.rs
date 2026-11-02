@@ -103,7 +103,8 @@ fn owner((device_id, user_id, name, platform, revoked, seen): OwnerRow) -> Owner
 }
 
 /// The owner of the user's thread `thread_id` (`threads.owner_device_id`). `None` when the org has
-/// no such thread, when it is another user's, or when its owner is not a device of this org.
+/// no such thread, when it is another user's or deleted, or when its owner is not a device of this
+/// org.
 pub async fn owner_of_thread(
     db: &Db,
     org_id: Uuid,
@@ -114,7 +115,7 @@ pub async fn owner_of_thread(
     let row: Option<OwnerRow> = sqlx::query_as(&format!(
         "SELECT {OWNER_COLUMNS} FROM \"threads\" t \
          JOIN devices d ON d.id = t.owner_device_id AND d.org_id = t.org_id \
-         WHERE t.org_id = $1 AND t.user_id = $2 AND t.\"id\" = $3"
+         WHERE t.org_id = $1 AND t.user_id = $2 AND t.\"id\" = $3 AND t.deleted_at IS NULL"
     ))
     .bind(org_id)
     .bind(user_id)
@@ -126,8 +127,8 @@ pub async fn owner_of_thread(
 }
 
 /// The owner of the thread of the user's runtime request `request_id` (through
-/// `"runtimeRequests"."threadId"`), with the request's state. `None` when either row is missing or
-/// not the user's.
+/// `"runtimeRequests"."threadId"`), with the request's state. `None` when either row is missing,
+/// deleted, or not the user's.
 pub async fn owner_of_request(
     db: &Db,
     org_id: Uuid,
@@ -139,7 +140,8 @@ pub async fn owner_of_request(
         "SELECT {OWNER_COLUMNS}, r.\"state\" FROM \"runtimeRequests\" r \
          JOIN \"threads\" t ON t.org_id = r.org_id AND t.\"id\" = r.\"threadId\" \
          JOIN devices d ON d.id = t.owner_device_id AND d.org_id = t.org_id \
-         WHERE r.org_id = $1 AND r.user_id = $2 AND r.\"id\" = $3 AND t.user_id = $2"
+         WHERE r.org_id = $1 AND r.user_id = $2 AND r.\"id\" = $3 AND t.user_id = $2 \
+               AND r.deleted_at IS NULL AND t.deleted_at IS NULL"
     ))
     .bind(org_id)
     .bind(user_id)
@@ -166,7 +168,7 @@ pub async fn owner_of_project(
     let row: Option<OwnerRow> = sqlx::query_as(&format!(
         "SELECT {OWNER_COLUMNS} FROM \"projects\" p \
          JOIN devices d ON d.id = p.owner_device_id AND d.org_id = p.org_id \
-         WHERE p.org_id = $1 AND p.user_id = $2 AND p.\"id\" = $3"
+         WHERE p.org_id = $1 AND p.user_id = $2 AND p.\"id\" = $3 AND p.deleted_at IS NULL"
     ))
     .bind(org_id)
     .bind(user_id)

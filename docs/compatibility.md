@@ -142,6 +142,13 @@ No new crates and no new features: `uuid`'s `v7` and `tokio`'s `sync`/`time` wer
 | Swift | `ErrorCode.relocated`; `HubLinkConnection.open(url:token:protocolVersion:cookies:)` (defaulted for existing conformers) and `HubLinkSocket.responseCookies` (defaulted) |
 | AWS ALB | application-cookie stickiness on `b4hub-instance`, 3600 s, enabled when `task_count > 1`; `deregistration_delay` 5 s when `task_count > 1` (60 s otherwise) |
 
+### Hub keeps synced rows (D-089)
+
+| Item | Value |
+| --- | --- |
+| Hub migration | `0009_soft_delete.sql` (`deleted_at timestamptz` on `connections`, `projects`, `projectFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`; hub-only, never sent). `0005` and `0007` stay reserved for the sign-in branch |
+| Wire | Unchanged: a `delete` is still in the feed, the snapshot leaves deleted rows out, `Tests/Fixtures/sync/changes.json` is untouched, and no client changes |
+
 ## Provider runtimes
 
 | Runtime | Installed on target Mac | Published | Verified behavior | Limits and gates |
@@ -158,7 +165,7 @@ No new crates and no new features: `uuid`'s `v7` and `tokio`'s `sync`/`time` wer
 
 - Plan usage (settings connections, D-082; checked 2026-11-02): Codex 0.166.0 answers `account/rateLimits/read` (params may be null) with `{ rateLimits: { primary, secondary, planType, rateLimitReachedType, credits }, ordinaryUsageAllowed, … }`, each window `{ usedPercent, windowDurationMins, resetsAt (epoch s) }`, and pushes `account/rateLimits/updated { rateLimits }`; live on the owner's `promax` account it reported only `primary` with a 10080-minute window. Claude Code 2.1.282 emits `{"type":"rate_limit_event","rate_limit_info":{status, rateLimitType, utilization, resetsAt, isUsingOverage, unifiedWindows}}` during a turn (not on demand); `unifiedWindows` is marked `@internal` in its bundled schema and live carried only `seven_day` for the owner's plan login. If a later Claude Code drops `unifiedWindows`, the card falls back to the one window `rateLimitType` names.
 
-- Usage on the phone (D-090): hub migration `0010_connection_usage` adds the synced table `connectionUsage`; Mac migration `0007_connection_usage`; mirror schema version 4. A hub binary without 0010 must not run `migrate` against a database that has it (sqlx `VersionMissing`).
+- Usage on the phone (D-090): hub migration `0010_connection_usage` adds the synced table `connectionUsage` (with the hub-only `deleted_at` of D-089, applied after `0009_soft_delete`); Mac migration `0007_connection_usage`; mirror schema version 4. A hub binary without 0010 must not run `migrate` against a database that has it (sqlx `VersionMissing`).
 
 ## Hosted hub infrastructure (Terraform)
 
