@@ -54,3 +54,40 @@ import WorkspaceProtocol
     #expect(try db.changes(after: 0).last?.deviceId == "local")
   }
 }
+
+@Suite struct LegacyHubURLTests {
+  @Test func readsTheLinkedURLWithoutMigratingOrWriting() throws {
+    let db = try WorkspaceDatabase.temporary()
+    #expect(try WorkspaceDatabase.linkedHubURL(endpoint: db.endpoint, binDir: db.endpoint.binDir!) == nil)
+    try db.saveHubLink(
+      WorkspaceDatabase.HubLink(
+        url: "http://localhost:8080", deviceId: "dev-1", deviceName: "Mac", tokenRef: "secret:t",
+        orgSlug: "acme", username: "brian", joinedAt: "2026-10-31T12:00:00.000Z"))
+    let before = try db.changes(after: 0).count
+    #expect(
+      try WorkspaceDatabase.linkedHubURL(endpoint: db.endpoint, binDir: db.endpoint.binDir!)
+        == "http://localhost:8080")
+    #expect(try db.changes(after: 0).count == before)
+  }
+
+  @Test func aMissingDatabaseOrTableReadsAsNoLink() throws {
+    let db = try WorkspaceDatabase.temporary()
+    var missing = db.endpoint
+    missing.database = "no_such_database_\(UUID().uuidString.prefix(8).lowercased())"
+    #expect(try WorkspaceDatabase.linkedHubURL(endpoint: missing, binDir: db.endpoint.binDir!) == nil)
+  }
+
+  @Test func aDatabaseWithoutTheTableReadsAsNoLinkAndStaysUnmigrated() throws {
+    let endpoint = try EphemeralPostgres.endpoint()  // created, never migrated
+    #expect(try WorkspaceDatabase.linkedHubURL(endpoint: endpoint, binDir: endpoint.binDir!) == nil)
+    let lib = try LibPQ.load(binDir: endpoint.binDir!)
+    let connection = try PostgresConnection(
+      lib: lib,
+      connectionString:
+        "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database)")
+    let tables = try connection.execute(
+      "SELECT count(*) AS n FROM information_schema.tables WHERE table_schema = 'public'"
+    ).rows.first?.int("n")
+    #expect(tables == 0)
+  }
+}

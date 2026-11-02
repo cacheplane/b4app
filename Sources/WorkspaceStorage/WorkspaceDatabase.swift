@@ -865,6 +865,27 @@ public final class WorkspaceDatabase: Sendable {
     }
   }
 
+  /// The URL of the hub link in another install's database, read without changing anything: no
+  /// migration, no database created, one read-only transaction. Nil when the cluster has no such
+  /// database, no `hubLink` table, or no link row. The cluster must be running on `endpoint`. Sign-in
+  /// plan Task 3 uses it to decide whether the pre-flavour install's data belongs to the local flavour.
+  public static func linkedHubURL(endpoint: PostgresEndpoint, binDir: String) throws -> String? {
+    let lib = try LibPQ.load(binDir: binDir)
+    let base = "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) application_name=b4app"
+    let admin = try PostgresConnection(lib: lib, connectionString: base + " dbname=postgres")
+    guard try !admin.execute("SELECT 1 FROM pg_database WHERE datname = $1", [endpoint.database]).rows.isEmpty
+    else { return nil }
+    let connection = try PostgresConnection(
+      lib: lib, connectionString: base + " dbname=\(endpoint.database)")
+    try connection.execute("BEGIN READ ONLY")
+    defer { _ = try? connection.execute("ROLLBACK") }
+    guard
+      try connection.execute("SELECT to_regclass('\"hubLink\"')::text AS name").rows.first?.text("name")
+        != nil
+    else { return nil }
+    return try connection.execute("SELECT \"url\" FROM \"hubLink\" WHERE \"id\" = 1").rows.first?.text("url")
+  }
+
   public func hubLink() throws -> HubLink? {
     try read { try one($0, HubLink.self, "SELECT * FROM \"hubLink\" WHERE \"id\" = 1") }
   }
