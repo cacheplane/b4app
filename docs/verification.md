@@ -2,6 +2,53 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-11-02: M8f attention on the phone (D-110 to D-117)
+
+Branch `blove/m8f-attention`, from main at `3f3cc15`. Plan `docs/superpowers/plans/2026-11-02-m8f-attention.md`.
+
+### Automated
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Swift format | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass |
+| Swift tests | `swift test` | Pass: 894 tests in 129 suites (851 before M8f) |
+| macOS app | `xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'platform=macOS'` | `** BUILD SUCCEEDED **` |
+| iOS app and widget | `xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'` | `** BUILD SUCCEEDED **`; Debug lists `remote-notification` and `fetch`, Release only `remote-notification` |
+| Rust format and lint | `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| Rust tests | `cargo test --workspace --locked` against the throwaway PostgreSQL 17.11 | Pass: 269 tests (`b4hub` 173, `b4hub-core` 26, `b4hub-db` 70) |
+
+What the new tests show, by the design's requirements:
+
+| Requirement | Tests |
+| --- | --- |
+| Which changes notify, the four phrases, the payload | `b4hub-core` `push::tests::fixture_cases` over `Tests/Fixtures/sync/push.json` (every request kind and state, every turn status and outcome, recent and old, titles); Swift `ThreadLinkTests` decodes the same payloads |
+| Once per request or turn, other phones only, history does not notify | `b4hub-db/tests/push.rs`: `pending_request_notifies_each_other_phone`, `history_upload_does_not_notify`, `outcome_in_a_later_batch_notifies_once`, `retry_and_later_update_do_not_renotify`, `revoked_or_tokenless_phones_get_nothing`, `other_users_phones_are_not_told`; `rls.rs` isolates `push_tokens` and `notifications_sent` |
+| The push-token route and the sender | `b4hub/tests/push.rs`: `push_token_requires_an_ios_device`, `push_token_validates_fields`, `push_token_saves`, `a_pending_request_reaches_the_sender_once`, `spool_writes_a_simulator_file`, `apns_refuses`; `cli` unit test for `B4HUB_PUSH_SENDER` |
+| The mirror move and the read-only open | `MirrorLocationTests` (moves all three files, keeps both when the group has one, falls back without a group, undoes a partial move); `MirrorGlanceTests` (read-only open refuses writes and leaves an unmigrated file unchanged, reads beside an open writer) |
+| The widget's timeline provider | `MirrorGlanceTests`: top three in attention order with project names, unlinked and missing-file glances, staleness at exactly five minutes, entry and reload dates |
+| Opening a thread from a tap or a row | `ThreadOpenRequestTests` (cold launch opens after connect, events apply while the open is outstanding, latest request wins, survives an unavailable link) |
+| Pausing before suspension | `MirrorSyncTests` suspension tests (no hub traffic while suspended, a long-poll cancelled promptly, a push in flight finishes first, a queued edit pushed after resume, stop while suspended) |
+
+### Live gate (Simulator)
+
+Setup, isolated from the owner's app, the Compose hub on port 8080, and the sign-in session that last started it: a separate Compose project `b4hub-m8f` from this branch's `Hub/` on `127.0.0.1:8081` with its own image tag and volume and `B4HUB_PUSH_SENDER=spool` into a scratch directory; a scratch debug coordinator (`B4APP_RUNTIME_DIR`, `B4APP_DATA_DIR`) joined to it with a fixture Codex connection (`fake-codex.py`, where a turn saying "approve" asks for a command approval); a new Simulator "M8f iPhone 17 Pro" (iOS 26.5) running the branch's Debug build, paired through a `b4app://pair` link; `Scripts/sim-push.sh` with `B4APP_SIM_DEVICE` set to that Simulator. Times are UTC from the hub's request log and the spool file names; `sim-push.sh` prints whole seconds.
+
+| Exit item | Result |
+| --- | --- |
+| Token registration | Pass. After "Allow", the phone's `POST /v1/devices/self/push-token` answered 204 (17:55:15Z) and `push_tokens` held one `sandbox` row for `com.cacheplane.b4app.ios` (160 hex characters; the token itself was not printed). |
+| App in the background, a fixture approval on the Mac notifies within five seconds | Pass. The Mac's push completed at 17:55:33.223Z, the spool file is stamped 17:55:33.223, and `sim-push.sh` sent it in the same second. Notification Center showed "M8f approval check" / "Waiting for your approval". |
+| A finished turn notifies | Pass. Answering the approval on the Mac (`request respond --accept`) completed the turn: hub 17:57:02.352Z, banner "M8f approval check" / "Replied" in the same second. |
+| Tapping opens the thread | Pass for a banner: tapping the "Replied" banner opened "M8f approval check" at its transcript. Not shown: a tap on the lock screen's notification list did not respond to the Simulator's synthetic touches (the system "Open" swipe action appeared but did not launch). |
+| The widget shows the three most urgent threads | Pass. The medium widget, added from the gallery, listed the three threads with the project "work"; the small one showed the same in the gallery. |
+| The widget updates after the notification | First run failed: SpringBoard refused the background launch ("this app doesn't declare the proper UIBackgroundMode"), because `simctl push` wakes through background fetch (D-117). After adding the `fetch` mode, with the app in the background: a "Replied" push (hub 18:03:00.105Z) and a new approval on another thread (18:03:04.282Z) each woke the phone, which pulled at 18:03:00.835Z and 18:03:04.581Z; the widget moved "M8f quiet thread" to the top with the needs-input dot and showed "M8f reply check" as unread. No launch was refused. |
+
+Screenshots: notification, banner, the thread opened from it, the widget before and after (kept with the session; not committed).
+
+### Not exercised, and blocked
+
+- APNs, a real iPhone, and TestFlight: `blocked` on the deploy slice (Developer Program key, the App Group, push capability, and the widget's App ID on the portal). `B4HUB_PUSH_SENDER=apns` refuses to start.
+- The "as of" label on the widget (fixture-tested only); `0xdead10cc` termination, which the Simulator does not enforce; a tap on a lock-screen notification.
+
 ## 2026-11-02: M8c phone transcript fixes (D-087)
 
 Branch `fix/m8c-transcript`, from main at `3151915`.
