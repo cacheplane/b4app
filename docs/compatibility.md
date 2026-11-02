@@ -104,7 +104,7 @@ No dependency, toolchain, or image changed in M8b. What changed is the contract 
 | `hashicorp/aws` provider | 6.71.0, pinned exactly in `Infra/bootstrap/versions.tf` and `.terraform.lock.hcl` (darwin_arm64, linux_amd64, linux_arm64 hashes) |
 | TFLint | 0.65.0 with the bundled `terraform` ruleset 0.15.0 (`recommended`); the AWS ruleset is not enabled |
 
-`Infra/bootstrap` (9 tests) and `Infra/modules/hub` (48 tests) were verified with `terraform validate` of the roots, `tflint`, and `terraform test` against mocked providers only; nothing has been planned or applied in a real account.
+`Infra/bootstrap` (9 tests) and `Infra/modules/hub` (49 tests) were verified with `terraform validate` of the roots, `tflint`, and `terraform test` against mocked providers only; nothing has been planned or applied in a real account.
 
 ### Hosted hub tooling (pinned in the workflows and scripts)
 
@@ -123,7 +123,7 @@ Read from `.github/workflows/hub-chart.yml`, `ci.yml`, `Infra/`, and `Hub/chart/
 | CloudNativePG operator chart | `cloudnative-pg` 0.29.1 (operator 1.30.1) | `hub-chart.yml` install job via `.github/scripts/chart-kind-test.sh`. CloudNativePG 1.30 lists Kubernetes 1.31 as "tested, but not supported": it works in the install test; move the test cluster to 1.34 or later when the chart's floor allows |
 | PostgreSQL for the hosted hubs | 17 (RDS `engine_version = "17"`, major only; minor upgrades are automatic) | `Infra/modules/hub/rds.tf`; asserted by the mocked `terraform test`, not applied |
 | PostgreSQL in the self-hosting examples | 17 (`postgres:17` in `Hub/deploy/compose/compose.yaml`; `ghcr.io/cloudnative-pg/postgresql:17` in the CNPG example) | Compose first boot ran locally; the CNPG cluster ran in kind on GitHub |
-| bats | 1.14.0 (sha256-checked tarball) | `ci.yml` lint job; `bats Infra/scripts/tests` runs 36 tests against stubs |
+| bats | 1.14.0 (sha256-checked tarball) | `ci.yml` lint job; `bats Infra/scripts/tests` runs 39 tests against stubs |
 | actionlint | 1.7.12 (sha256-checked) | `ci.yml` lint job |
 | `curlimages/curl` | 8.22.0 (digest-pinned) | `hub-chart.yml` install job probe |
 | cargo-chef | 0.1.78 | See the Hub (M8a) table |

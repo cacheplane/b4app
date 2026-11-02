@@ -189,11 +189,14 @@ Once per account, after the first `terraform apply` of the root and before the f
    psql -v ON_ERROR_STOP=1
    ```
 
-   then at the `postgres=>` prompt paste the owner password in place of `<clipboard>`, followed by the two statements exactly as they appear in the file:
+   then at the `postgres=>` prompt paste the owner password in place of `<clipboard>`, followed by the three statements exactly as they appear in the file:
 
    ```sql
    \set owner_password '<clipboard>'
    CREATE ROLE b4hub_owner WITH LOGIN CREATEROLE PASSWORD :'owner_password';
+   -- PostgreSQL 16+ (createrole_self_grant is empty by default) gives the creator
+   -- only ADMIN OPTION on a new role, and CREATE DATABASE ... OWNER needs SET ROLE.
+   GRANT b4hub_owner TO CURRENT_USER;
    CREATE DATABASE b4hub OWNER b4hub_owner;
    \du b4hub_owner
    \l b4hub
@@ -245,7 +248,10 @@ Do this before the sign-in hub merges to `main`, because the deploy then adds th
    ```
 
 3. Do both accounts (`ENV=test`, then `ENV=prod`; set `AWS_PROFILE=b4hub-$ENV` first). The Apple values are the same in both; `secret-key` is not: generate one per account.
-4. In the pull request that merges the sign-in hub, set `INCLUDE_SIGNIN_SECRETS=1` in `Infra/taskdefs/features.env`. Not before: with `0` the deploy renders a task with `DATABASE_URL` only, which is what a hub without sign-in expects.
+4. In the pull request that merges the sign-in hub (its `serve` requires `B4HUB_SECRET_KEY` and `B4HUB_WEBAUTHN_RP_ID`), work through the checklist at the top of `Infra/taskdefs/features.env`. Not before: with `0` the deploy renders a task with `DATABASE_URL` only, which is what a hub without sign-in expects.
+   - Set `INCLUDE_SIGNIN_SECRETS=1` in `Infra/taskdefs/features.env`. The deploy then adds the four secrets to the serving task, and `admin-shell.sh` adds them to the admin task's `hub` container (the gated block in `hub-admin.json.tpl`), so `b4hub seed|enroll` keep working. Both already set `B4HUB_WEBAUTHN_RP_ID`.
+   - Compose: uncomment `B4HUB_SECRET_KEY` in `Hub/deploy/compose/.env.example`, pass it to `hub` in `compose.yaml` (a `secret_key` file with `B4HUB_SECRET_KEY_FILE` once the hub reads `_FILE` forms, M8e), and make `test.sh` generate one. `B4HUB_WEBAUTHN_RP_ID` is already required there.
+   - Helm: uncomment the secret key in `Hub/chart/b4hub/ci/kind-values.yaml` and have the `install` job generate the key file it is set from.
 
 ### 4. First deploy
 
@@ -258,7 +264,7 @@ Do this before the sign-in hub merges to `main`, because the deploy then adds th
    ```
 
    The deploy job's log shows the migration task's last 200 lines; a failed migration stops the deploy before the service is touched.
-3. The service still has `desired_count = 0`, so on this first deploy the migration runs and the new task definition is registered and set on the service, but the final `/readyz` check has nothing to reach and the job fails at that step. That is expected once. Start the task by hand (Terraform ignores `desired_count` drift) and confirm:
+3. The service still has `desired_count = 0`, so on this first deploy the migration runs and the new task definition is registered and set on the service, but there is no task to answer `/readyz`: the deploy skips that check and ends with a warning naming this step. Start the task by hand (Terraform ignores `desired_count` drift) and confirm:
 
    ```bash
    aws ecs update-service --cluster b4hub-test --service b4hub-test-hub --desired-count 1 > /dev/null
@@ -280,11 +286,13 @@ Rolling back is deploying an older digest: the same workflow, the same migration
      --jq '.[] | [.name, (.metadata.container.tags | join(",")), .created_at] | @tsv' | head -20
    ```
 
-   What an environment runs right now, and the revisions it has had (the image is `<ecr>/b4hub@sha256:...`):
+   What an environment runs right now is the service's current revision, not the family's latest: a deploy registers its revision before migrating, so a failed migration or a circuit-breaker rollback leaves a newer revision the service does not run. Read the service's revision, then its image (`<ecr>/b4hub@sha256:...`), and the revisions the family has had:
 
    ```bash
-   aws ecs describe-task-definition --task-definition b4hub-$ENV-hub \
-     --query 'taskDefinition.containerDefinitions[0].image' --output text
+   RUNNING=$(aws ecs describe-services --cluster b4hub-$ENV --services b4hub-$ENV-hub \
+     --query 'services[0].taskDefinition' --output text)
+   aws ecs describe-task-definition --task-definition "$RUNNING" \
+     --query "taskDefinition.containerDefinitions[?name=='hub'] | [0].image" --output text
    aws ecs list-task-definitions --family-prefix b4hub-$ENV-hub --sort DESC --max-items 20 \
      --query "taskDefinitionArns[?contains(@, ':task-definition/b4hub-$ENV-hub:')]" --output text
    aws ecs describe-task-definition --task-definition b4hub-$ENV-hub:<revision> \
@@ -301,9 +309,11 @@ Rolling back is deploying an older digest: the same workflow, the same migration
 3. Approve the production deployment (Actions, the run, Review deployments). The concurrency group is per environment and never cancels a running deploy; while one runs or waits for approval, a newer dispatch queues behind it, and a newer pending deploy **replaces** an older pending one, so only the latest queued digest runs. To roll back while a bad deploy is still waiting for approval, reject that one, then dispatch the old digest.
 4. Confirm `curl -fsS https://hub.b4.run/readyz` (`hub.test.b4.run` for test), and read the deploy log for the migration output.
 
+A push to `main` that changes only a task-definition template or the deploy scripts (`Infra/taskdefs/**`, `deploy.sh`, `render-taskdef.sh`, `run-migrate.sh`, `hub-deploy.yml`) also runs `hub-image.yml`, so it reaches `test` without a hub change: the image is rebuilt from the unchanged hub source at that commit and deployed with the new templates. Production picks the templates up on its next deploy.
+
 ### 6. Enroll a device before sign-in is live
 
-Until the sign-in hub is deployed, a Mac joins a hosted hub with a one-time code from `b4hub enroll`. Run it through the `hub` container of the admin task, which has both database URLs. That container runs `b4hub serve` to stay alive, so it exits on a fresh account until `migrate` has run: do runbook 4 first. It uses the `main` image (`ghcr.io/cacheplane/b4hub:main`, pulled when the task starts), so the package must be public.
+Until the sign-in hub is deployed, a Mac joins a hosted hub with a one-time code from `b4hub enroll`. Run it through the `hub` container of the admin task, which has both database URLs. That container runs `b4hub serve` to stay alive, so it exits on a fresh account until `migrate` has run: do runbook 4 first. `admin-shell.sh` registers a new admin revision pinned to the ECR digest the service runs, so `b4hub` here is the deployed hub. Before the first deploy it falls back to Terraform's placeholder (`ghcr.io/cacheplane/b4hub:main`, which needs the package to be public) and warns.
 
 1. Open the shell:
 
@@ -523,3 +533,5 @@ A new ALB has a new DNS name and, if the certificate was recreated, new validati
 ### 12. Chart release
 
 Each `hub-v*` release also publishes the Helm chart whose version is in `Hub/chart/b4hub/Chart.yaml` (with `appVersion` set to the release's hub version) to GHCR as an OCI chart. The chart version is not derived from the tag: it is whatever `Chart.yaml` says at the release commit, and publishing the same chart version twice fails. So in the release PR, bump `version` in `Hub/chart/b4hub/Chart.yaml` whenever anything under `Hub/chart/` changed since the last release.
+
+A release is atomic: the image built from the release commit must be attested from `main`, then it gets the semver tags, then it deploys to production (with the `production` reviewer's approval), and only then is the chart published. A release cut from a `main` commit with no `sha-<sha>` image (a commit whose push did not touch `Hub/**` or the deploy files) fails in `promote`: dispatch `hub-image.yml` on `main` first (`gh workflow run hub-image.yml --ref main`; it builds `main`'s head, so do it while the release commit is still the head, and produces the `sha-` and `main` tags), then publish the release.
