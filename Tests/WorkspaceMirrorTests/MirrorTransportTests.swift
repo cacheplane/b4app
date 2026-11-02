@@ -694,6 +694,50 @@ private final class WriteCounter: Sendable {
     await client.close()
     await h.relay.stop()
   }
+
+  /// The hub watches a started thread for the phone; a start refused before its turn was made gives
+  /// that watch back, so refusals never use up the link's four. One whose turn exists keeps it.
+  @Test func aRefusedStartLetsGoOfItsAutoWatch() async throws {
+    let (store, h, socket) = try await relayedMirror()
+    let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay))
+    _ = try await client.ready()
+    let refused = ThreadStart.Params(
+      threadId: "thread-refused", projectId: "p1", connectionId: "conn-1", text: "Hi")
+    let first = Task {
+      try await client.request(ThreadStart.self, refused, options: RequestOptions(operationId: "op-r"))
+    }
+    #expect(
+      try await RelayHarness.nextCommand(socket)
+        == .command(id: "op-r", method: .threadStart, params: try JSONValue(encoding: refused)))
+    socket.deliver(
+      .reply(
+        id: "op-r",
+        error: RelayWireError(
+          .protocolInvalid, "locked", details: ["reason": "directory_locked", "blockingTurnId": "turn-9"])))
+    await #expect(throws: WorkspaceError.self) { try await first.value }
+    // Sent before the refusal is answered, so ahead of the watch of the thread read next.
+    _ = try await client.request(ThreadRead.self, .init(threadId: "thread-2"))
+    #expect(try await RelayHarness.nextFrame(socket) == .unwatch(threadId: "thread-refused"))
+    #expect(try await RelayHarness.nextFrame(socket) == .watch(threadId: "thread-2"))
+
+    let failed = ThreadStart.Params(
+      threadId: "thread-failed", projectId: "p1", connectionId: "conn-1", text: "Hi")
+    let second = Task {
+      try await client.request(ThreadStart.self, failed, options: RequestOptions(operationId: "op-f"))
+    }
+    #expect(
+      try await RelayHarness.nextCommand(socket)
+        == .command(id: "op-f", method: .threadStart, params: try JSONValue(encoding: failed)))
+    socket.deliver(
+      .reply(id: "op-f", error: RelayWireError(.internalError, "failed", details: ["turnId": "turn-f"])))
+    await #expect(throws: WorkspaceError.self) { try await second.value }
+    // Nothing more is sent: the next frames are the move from thread-2 to the thread read next.
+    _ = try await client.request(ThreadRead.self, .init(threadId: "thread-1"))
+    #expect(try await RelayHarness.nextFrame(socket) == .unwatch(threadId: "thread-2"))
+    #expect(try await RelayHarness.nextFrame(socket) == .watch(threadId: "thread-1"))
+    await client.close()
+    await h.relay.stop()
+  }
 }
 
 // MARK: - Relay helpers

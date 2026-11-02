@@ -566,7 +566,10 @@ public final class MirrorTransport: WorkspaceTransport {
       }
     }
     let result = await relay.command(id: id, method: method, params: command.params)
-    if let started { settle(started.threadId, result) }
+    if let started, settle(started.threadId, result) {
+      // Before the refusal is answered, so it goes out ahead of any watch the caller asks for next.
+      await relay.releaseAutoWatch(started.threadId)
+    }
     switch result {
     case .success(let value): try answer(.success(requestId, result: value))
     case .failure(let error): try answer(.failure(requestId, error: error))
@@ -581,22 +584,27 @@ public final class MirrorTransport: WorkspaceTransport {
   }
 
   /// After `thread.start`'s reply: an accepted start gives the placeholder its thread and turn; a
-  /// refusal (no turn was made) removes it. A start that is not confirmed, or whose turn exists but
-  /// failed, keeps waiting for its row.
-  private func settle(_ threadId: String, _ result: MirrorRelay.Reply) {
+  /// refusal (no turn was made) removes it and returns true, so the caller gives back the hub's
+  /// auto-watch of the thread. A start that is not confirmed, or whose turn exists but failed, keeps
+  /// waiting for its row.
+  private func settle(_ threadId: String, _ result: MirrorRelay.Reply) -> Bool {
     state.withLock { state in
-      guard state.placeholders[threadId] != nil else { return }
       switch result {
       case .success(let value):
-        guard let started = try? value.decode(ThreadStart.Result.self) else { return }
+        guard state.placeholders[threadId] != nil, let started = try? value.decode(ThreadStart.Result.self)
+        else { return false }
         state.placeholders[threadId]?.thread = started.thread
         state.placeholders[threadId]?.expires = now().advanced(by: Self.placeholderLifetime)
         state.overlays[threadId, default: Overlay()].turns[started.turn.id] = started.turn
         state.overlays[threadId]?.connectionId = started.thread.connectionId
+        return false
       case .failure(let error):
-        if error.code == MirrorRelay.notConfirmedCode || error.details?["turnId"] != nil { return }
-        state.placeholders[threadId] = nil
-        if state.lastReadThreadId != threadId { state.overlays[threadId] = nil }
+        if error.code == MirrorRelay.notConfirmedCode || error.details?["turnId"] != nil { return false }
+        if state.placeholders[threadId] != nil {
+          state.placeholders[threadId] = nil
+          if state.lastReadThreadId != threadId { state.overlays[threadId] = nil }
+        }
+        return true
       }
     }
   }

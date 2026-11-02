@@ -187,6 +187,14 @@ public actor MirrorRelay {
     try? await sendIfConnected(.unwatch(threadId: threadId))
   }
 
+  /// Gives back the watch the hub took for this link when it routed a `thread.start` for `threadId`
+  /// (its auto-watch), after the Mac refused that start: no thread was made, and the watch would keep
+  /// one of the link's four. A thread this relay watches itself is left alone.
+  public func releaseAutoWatch(_ threadId: String) async {
+    guard !watched.contains(threadId) else { return }
+    try? await sendIfConnected(.unwatch(threadId: threadId))
+  }
+
   /// Watches `threadId` and nothing else (the phone shows one thread at a time). Unwatches first, so
   /// the hub's limit of four is never reached on the way.
   public func watchOnly(_ threadId: String?) async {
