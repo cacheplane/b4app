@@ -25,7 +25,7 @@ pub const MAX_PULL_LIMIT: usize = 1000;
 pub const MAX_PAGE_BYTES: usize = 8 * 1024 * 1024;
 
 /// The tables whose rows sync, in dependency order.
-pub const SYNCED_TABLES: [&str; 8] = [
+pub const SYNCED_TABLES: [&str; 9] = [
     "connections",
     "projects",
     "projectFolders",
@@ -34,6 +34,7 @@ pub const SYNCED_TABLES: [&str; 8] = [
     "displayItems",
     "runtimeRequests",
     "drafts",
+    "connectionUsage",
 ];
 
 /// A synced table as the hub mirrors it: the Mac's column names (quoted camelCase), its key, and
@@ -41,7 +42,8 @@ pub const SYNCED_TABLES: [&str; 8] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TableSpec {
     pub name: &'static str,
-    /// The key column; `drafts` is keyed by `threadId`, everything else by `id`.
+    /// The key column; `drafts` is keyed by `threadId`, `connectionUsage` by `connectionId`, everything
+    /// else by `id`.
     pub key: &'static str,
     /// Every Mac column, key included. Only these names ever reach SQL.
     pub columns: &'static [&'static str],
@@ -50,7 +52,7 @@ pub struct TableSpec {
     pub parent: Option<(&'static str, &'static str)>,
 }
 
-const TABLES: [TableSpec; 8] = [
+const TABLES: [TableSpec; 9] = [
     TableSpec {
         name: "connections",
         key: "id",
@@ -104,6 +106,7 @@ const TABLES: [TableSpec; 8] = [
             "updatedAt",
             "projectId",
             "readTurnId",
+            "userDeletedAt",
         ],
         parent: Some(("connectionId", "connections")),
     },
@@ -163,6 +166,14 @@ const TABLES: [TableSpec; 8] = [
         key: "threadId",
         columns: &["threadId", "text", "updatedAt"],
         parent: Some(("threadId", "threads")),
+    },
+    // A connection's latest plan reading and B4 token totals, written only by the Mac, so the phone
+    // shows the same usage (`reading` and `tokens` are JSON documents).
+    TableSpec {
+        name: "connectionUsage",
+        key: "connectionId",
+        columns: &["connectionId", "reading", "tokens", "updatedAt"],
+        parent: Some(("connectionId", "connections")),
     },
 ];
 
@@ -449,10 +460,27 @@ mod tests {
         for name in SYNCED_TABLES {
             let spec = table_spec(name).unwrap();
             assert_eq!(spec.name, name);
-            assert_eq!(spec.key, if name == "drafts" { "threadId" } else { "id" });
+            let key = match name {
+                "drafts" => "threadId",
+                "connectionUsage" => "connectionId",
+                _ => "id",
+            };
+            assert_eq!(spec.key, key);
         }
         assert!(table_spec("localServers").is_none());
         assert!(table_spec("changes").is_none());
+    }
+
+    #[test]
+    fn connection_usage_syncs_under_its_connection() {
+        let spec = table_spec("connectionUsage").unwrap();
+        assert_eq!(spec.key, "connectionId");
+        assert_eq!(spec.parent, Some(("connectionId", "connections")));
+        assert_eq!(
+            spec.columns,
+            &["connectionId", "reading", "tokens", "updatedAt"]
+        );
+        assert_eq!(SYNCED_TABLES.last(), Some(&"connectionUsage"));
     }
 
     #[test]

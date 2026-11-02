@@ -68,6 +68,25 @@ line_of() { grep -n -m1 -- "$1" "$STUB_LOG" | cut -d: -f1; }
   output_has "Runbook 4"
 }
 
+@test "a rollout still in progress after the waiter is given time to complete" {
+  # deploy.sh describes the service once before the update (its network
+  # configuration), so the second call is the first post-update read.
+  export STUB_DESIRED_COUNT=0 STUB_ROLLOUT=IN_PROGRESS STUB_ROLLOUT_CALLS=2 STUB_ROLLOUT_THEN=COMPLETED DEPLOY_SETTLE_SECONDS=0
+  run "$deploy" test "$digest"
+  [ "$status" -eq 0 ]
+  [ "$(sed -n '/update-service/,$p' "$STUB_LOG" | grep -c 'aws ecs describe-services')" -eq 2 ]
+  output_has "desiredCount 0"
+}
+
+@test "a rollout that never completes fails after the settle attempts" {
+  export STUB_ROLLOUT=IN_PROGRESS DEPLOY_SETTLE_ATTEMPTS=3 DEPLOY_SETTLE_SECONDS=0
+  run "$deploy" test "$digest"
+  [ "$status" -ne 0 ]
+  [ "$(sed -n '/update-service/,$p' "$STUB_LOG" | grep -c 'aws ecs describe-services')" -eq 3 ]
+  output_has "settled on"
+  not_logged '^curl'
+}
+
 @test "the image is copied to ECR by digest and the task definitions pin it" {
   run "$deploy" test "$digest"
   [ "$status" -eq 0 ]

@@ -82,6 +82,72 @@ The approval card read "cannot be answered here" because the script's request pa
 
 ## 2026-11-02: Sign-in (fixture gates; live gate, owner's passkey steps pending)
 
+## 2026-11-02: Deleting threads (D-119, D-120)
+
+Branch `blove/delete-threads`, stacked on `blove/phone-usage`.
+
+**Gates**
+- `swift format lint --strict` was clean.
+- `swift test` passed: 902 tests in 134 suites (after the review's fix pass).
+- Hub: `cargo test --workspace --locked` passed 249 tests on two consecutive runs; `cargo fmt --check` and `clippy -D warnings` were clean. After merging the updated `blove/phone-usage` (with the soft-delete work, D-089), 250 passed. The relay suite (`b4hub --test relay`, which this branch does not touch) failed one or two timing tests per run, a different one each time: `presence_is_sent_when_the_queue_has_room_again`, `interrupt_is_held_and_delivered_on_reconnect`, `watching_tells_the_mac_the_full_set`. One earlier run also had a flaky `b4hub-db` `settings` failure that did not recur.
+- Both `xcodebuild` builds (macOS, iOS Simulator) succeeded.
+
+**New tests**
+- Storage: `ThreadDeleteStoreTests`. A deleted thread leaves every list; the mark keeps its first time and is logged; the runtime-delete record and its backoff; the Diagnostics counts. `OrganisationSchemaTests` pins `userDeletedAt` as a clocked column of the change trigger.
+- Adapters: `CodexDeleteTests`, `ClaudeDeleteTests` and `B4DeleteTests`. These cover deleted, already gone and unsupported for each runtime. For Claude, only the one session's `.jsonl` and folder go; `../x`, `a/b`, `.` and `s1.jsonl` are refused and touch nothing.
+- Coordinator: `ThreadDeleteTests`.
+  - A Codex delete hides the thread and reaches `thread/delete`.
+  - A running B4 turn is interrupted before the `DELETE`.
+  - A phone's delete is swept later.
+  - An unreachable B4 is retried after its backoff and then done.
+  - A server without the route is final.
+  - A late event for a deleted thread publishes nothing. Disabling that guard fails the test.
+  - After merging sign-in (#49): `aRetryWaitsFromTheFailedTry`. CI ran a delete against a stopped B4 server that hung for 70 s instead of being refused, and the retry was then due at once; the wait now counts from the failed try. `thread.delete` is gated on a signed-in account (`Router.needsAccount`).
+  - From the review's fix pass: `aPhonesDeleteStopsTheRunningTurn` (a delete pulled from the phone interrupts the running B4 turn before the `DELETE`, and nothing is left in active work), `aReconcilingTurnOfADeletedThreadIsEnded`, and `deletingAnswersBeforeASlowRuntimeDelete` (the command answers in under 3 seconds while the runtime delete takes 5).
+- Hub: `a_phone_marks_a_thread_deleted_and_the_row_stays`. A phone's mark is applied by clock, an older Mac write does not clear it, and the row and its turns stay. Also the `writable.rs` lists and the `0011` migration guards.
+- Mirror: `MirrorDeleteTests`. A phone delete hides the thread, makes it unreadable, and queues one `userDeletedAt` update; a repeat queues nothing; a pulled mark hides it too. The schema version 5 migration guards are covered as well.
+- UI: `ThreadDeleteDiagnosticsTests` (the Diagnostics "Deleted threads" counts by runtime) and `ThreadDeleteModelTests`. Deleting the open thread closes it and discards the unsent text; the confirmation copy covers each runtime, a disabled connection and a running turn; a late turn event keeps the thread gone.
+
+**Checked by hand:** Codex 0.166.0's generated schema has `ThreadDeleteParams { threadId }` and an empty `ThreadDeleteResponse`.
+
+**Not run before merge**
+- **The alert and the iPhone swipe on screen.** SwiftUI alerts don't render in the offscreen snapshot harness.
+- **The Simulator check against the owner's Compose hub.** That hub needs `0011`, so it waits until this merges and the hub is rebuilt from main.
+- **A live delete in real Codex, Claude Code or B4.** The fixtures stand in for all three.
+
+## 2026-11-02: Usage on the phone (D-118)
+
+Branch `blove/phone-usage`.
+
+**Gates**
+- `swift format lint --strict` was clean.
+- `swift test` passed: 868 tests in 125 suites.
+- Hub: `cargo test --workspace --locked` passed 248 tests; `cargo fmt --check` and `clippy -D warnings` were clean. After merging the soft-delete work (#45, D-089), `connectionUsage` has `deleted_at` too, and the hub passed 251 tests with fmt and clippy clean.
+- Both `xcodebuild` builds succeeded.
+
+**New tests**
+- Mac: `syncedUsageIsLoggedWhenItChanges` (the synced row is logged when it moves, and not when it doesn't) and `usageIsWrittenForThePhone` (a Codex check and a B4 turn write the row).
+- Hub: `connection_usage_syncs_under_its_connection` and `connection_usage_is_mirrored_and_pulled`. The migration guards now include `0010` and the table's row-level security.
+- Mirror: `usageReadServesTheMacsUsage`, `publishAnnouncesUsage`, and the schema version 4 migration tests.
+- UI: `tokenTotalsAreNamedByTheirDay` and `aUsageEventWithTheWholeUsageReplacesIt`.
+
+**Not run before merge: the live check in the Simulator against the owner's Compose hub.** Running the hub from this branch would apply `0010` to the owner's hub database, and a hub binary without it would then refuse to start (sqlx `VersionMissing`). So the check runs after the merge, on the hub and apps rebuilt from `main`, and is recorded there.
+
+## 2026-11-02: Claude completions find their streamed items; M8c device checks
+
+Branch `fix/claude-block-ids`.
+
+- **Found live with D-088.** A Claude Code reply showed twice, on the Mac and the phone. Claude Code sends each content block in its own `assistant` frame. `ClaudeTurnTracker` named a completed block by its position in that frame (`msg#0`), not its stream index (`msg#1` after a thinking block at `msg#0`). So the text completed onto the thinking item, which lost its reasoning card, and the streamed text item stayed empty. Before D-088 that empty item was invisible; D-088 then stored its streamed text at the turn's end, so the text showed twice. Each completion now takes the first unfinished streamed block of its type for that message, falling back to the frame position when nothing streamed. `ClaudeTurnTrackerTests.completionsGoToTheItemsTheStreamStarted` covers it and fails without the fix.
+- **Keep the Mac awake: off** (M8c, open until now). Run on the owner's Local app with `settings.update`, as the Settings toggle does. With `keepAwake: false`, the coordinator released its "Agent Workspace keeps this Mac reachable from your phone" assertion, and `hub status` showed `awake      not held`. Turning it back on took the assertion again. Other coordinators on the same Mac hold assertions of their own.
+- **Answer from both** (M8c, "Already answered"). In the iPhone 17 Pro Simulator against the Compose hub, on a real Claude Code tool permission:
+  1. The hub container was paused, and the phone tapped Allow once.
+  2. The Mac answered with `request respond --accept`.
+  3. The hub was unpaused.
+
+  The hub logged `request.respond` → `stale_runtime_request`, and the command ran once. The phone showed no "Already answered": the Mac's "resolved" event reaches the phone before the refused answer on the same ordered link, so the card is gone first. The copy can only show if that event is lost. The user still sees the right outcome: the card disappears and the result arrives.
+
+## 2026-11-02: Sign-in (fixture gates and live gate)
+
 Target: the build MacBook Pro (macOS 26.5, Xcode 26.6), run from the worktree on `blove/sign-in` at code head `e6aaf6d` (Tasks 1 to 17 and X1 of `docs/superpowers/plans/2026-11-01-sign-in.md`, with `origin/main` through PR #40 merged). The documentation commit that records this changes no Swift or Rust, only the iPhone's `PrivacyInfo.xcprivacy` and these documents; the four `xcodebuild` builds ran after that change. Nothing touched the owner's app, its data directory, the Keychain, or the Compose stack. Decisions D-090 to D-112.
 
 Rerun after the final review's fix wave (I1, I2, M1, M2, M5 to M9, M11 to M13; D-113 to D-117), including M11 narrowed to the hub's `unknown_credential` reason (D-117): the format, build, Swift and Rust test rows below are that run's; of the app builds, `B4App-macOS` and `B4App-iOS` were rebuilt (`** BUILD SUCCEEDED **` each, `CODE_SIGNING_ALLOWED=NO`), the Beta schemes were not. The `registryMigrations` NOTICE no longer appears in the test output (M12).
@@ -113,7 +179,7 @@ What the fixtures cannot show, and is left to the live gate or later:
 
 ### Live gate
 
-Run on 2026-11-02 between 17:18Z and 18:00Z on the owner's MacBook Pro, by the build session while the owner was away (steps 2, 6, 7), from `blove/sign-in`: the Mac app and the hub image at `df7a85d` for the first pass, then `aac49ec` (X3) for the rejoin recheck and the second pairing. Steps 3 to 5 need a real passkey at Touch ID and are the owner's; they stay pending.
+Run on 2026-11-02 between 17:18Z and 18:00Z on the owner's MacBook Pro, by the build session while the owner was away (steps 2, 6, 7), from `blove/sign-in`: the Mac app and the hub image at `df7a85d` for the first pass, then `aac49ec` (X3) for the rejoin recheck and the second pairing. Steps 3 to 5 ran later the same day (19:16–19:20Z) with the owner at Touch ID and the build session driving the app, on a rebuild at `e5087d1` (the hub image and the Mac app).
 
 Setup:
 - Backups first, outside both data directories: `agent-workspace db backup` (544 rows), a `pg_dumpall` of the hub, and a copy of `Hub/.env`, in `~/Library/Application Support/b4app-signin-gate-backups/20261102T171856Z/`. Main's hub image was kept as `b4hub:main-before-signin`.
@@ -126,9 +192,9 @@ Setup:
 | --- | --- |
 | 1. Package the local flavour and launch it | Pass (build session) |
 | 2. The owner's existing threads appear without a sign-in (adoption) | Pass (build session). `b4app` became `b4app-local`; the app came up signed in to `blove@cacheplane` with no sign-in screen; `hub status` showed the relay connected and `account status` `signedIn`, so the hub token was copied from the prod keychain group (D-094, D-116); the Codex, Claude Code, and B4 connections were ready. The legacy plist was gone. **Found (minor, not fixed):** the legacy job `com.cacheplane.b4app.coordinator` was still loaded ("spawn scheduled", last exit 78) and needed `launchctl bootout` by hand: adoption's boot-out reads a timed-out `launchctl print` as "not loaded" (Task 3's deferred minor). With the plist gone it would not have come back at the next login |
-| 3. Add a passkey in Settings → Account, log out, sign back in with the passkey: the same threads appear | Pending (owner: needs Touch ID) |
-| 4. Sign up a second account with a new passkey and complete onboarding: "Brian's Org" (or the typed name's) | Pending (owner) |
-| 5. Create a thread, log out, sign in to the first account: its threads appear, the second account's thread does not | Pending (owner) |
+| 3. Add a passkey in Settings → Account, log out, sign back in with the passkey: the same threads appear | Pass (owner at Touch ID, build session driving the app, 19:16–19:19Z on `e5087d1`). Add a passkey: the hub logged `added a passkey`, and Account listed "Passkey · Agent Workspace account · added Nov 2". Log out from the profile menu ("Log out of cacheplane?", no work listed), then Continue with a passkey: `signed in with a passkey` on the same device `01a19d4c`, all 7 threads back. **Found (fixed in the README, not in code):** the first two attempts failed with "That didn't work" (`ASAuthorizationController` 1004; `AuthenticationServicesAgent`: "not associated with domain local.b4.run", then "SWC approval state was unspecified"): LaunchServices held several copies of `com.cacheplane.b4app.local` (Xcode Debug builds without a team or associated domains, the worktree's Release-Local build), and `swcd` had not yet approved the packaged app. Unregistering the others (`lsregister -u`) and re-registering the package made `swcd` fetch `local.b4.run` from Apple's CDN; the next attempt showed the system's passkey sheet. README "Signing in" now says how to clear it |
+| 4. Sign up a second account with a new passkey and complete onboarding: "Brian's Org" (or the typed name's) | Pass (owner). Continue with a passkey, Cancel on the system sheet, "Create account", Touch ID, then "Test Person" on onboarding: the hub logged `signed up with a passkey` (19:19:30Z); `account status` showed org "Test's Org", name "Test Person", and cacheplane among the known accounts; the new passkey was renamed "Test Person" in Passwords. **Found (minor, not fixed):** the sidebar's profile button showed the username `u-not33mk7` instead of "Test Person" after onboarding; a passkey added from Settings → Add a passkey keeps the generic name "Agent Workspace account" (only the sign-up passkey is renamed); a new account starts with no connections, so New thread is disabled until one is added (connections are per account; the runtimes' own logins are shared) |
+| 5. Create a thread, log out, sign in to the first account: its threads appear, the second account's thread does not | Pass (owner at Touch ID). In Test's Org a Codex connection was added and the thread "Test account thread" created (CLI); `account logout --stop-work`; the system sheet listed both passkeys ("Test Person", "Agent Workspace account"); signing in with cacheplane's showed its 7 threads and not "Test account thread", on device `01a19d4c` |
 | 6. `agent-workspace thread list` while signed out: exit 4 with the message | Pass (build session). `account logout` with the `research` server running was refused with `work_running` listing it; `account logout --stop-work` logged out in under a second; `thread list` then printed "error [signed_out]: Nobody is signed in. Sign in from the Agent Workspace app." and exited 4. The Mac signed back in with an operator enrollment code piped into `hub join` (never printed): the same registry row and database, all 7 threads |
 | 7. In the iPhone Simulator (local flavour), open the pair link with `xcrun simctl openurl` and see the threads | Pass (build session). The Mac's `hub.pair` (sent over the coordinator's socket; the link went straight to `simctl openurl`, never printed) answered a `https://local.b4.run/pair#c=…` link. The first link after a fresh install opened Safari (b4.run's `/pair` page), before the Simulator had fetched `local.b4.run`'s association file; the next one opened the app at "Pair this iPhone with the hub at localhost?", and Pair signed the phone in with the account's threads. On the recheck after X3 a clean install paired the same way and showed all 7 threads with the Mac online |
 
@@ -137,6 +203,7 @@ Found at the live gate:
 - **A Mac that rejoined with an enrollment code became a new device (fixed: X3, D-096 amended).** After the step-6 log-out (the session ends, the device is kept, D-105), `hub join` with a code made a second `macos` device, because `POST /v1/enroll` took no device id. Every row the Mac had synced kept the old device as its owner, so the phone showed "Brian's MacBook Pro (2) is offline · last seen 09:26" and relayed turns for those threads would have gone to the dead device. The same gap made a phone that re-paired by code a new device each time (D-108). Fix: `POST /v1/enroll` takes `deviceId` and `candidateDeviceIds` with the sign-in rule (`devices::redeem_reusing`, sharing `accounts::create_session`); `hub join` offers the registry's devices for that hub, and the phone its remembered devices on a typed code, a pairing scan, and the merge-first path. Fixture tests: `enroll.rs` (`enrolling_again_reuses_this_device`, `enrollment_passes_over_foreign_and_revoked_candidates`, `enrollment_candidates_are_capped_and_validated_before_the_code_is_used`), `accounts.rs` (`enroll_merging_reuses_only_a_device_of_the_codes_account`), `AccountCommandTests.hubJoinOffersEveryKnownDeviceOfThisHub`, `PairLinkTests.aPhoneThatPairsAgainOffersItsDevice` and `aMergingPairOffersEveryDeviceThePhoneHasHad`. **Rerun live** with `aac49ec`: log out, then rejoin by code kept device `01a19d4c`, and every thread kept it as owner. Review follow-up `2cc466c`: a pairing code is redeemable only as `ios`, so its holder cannot take over the Mac's device through a candidate (`enroll.rs` `a_pairing_code_pairs_only_a_phone`).
 - **The owner's local hub was repaired by hand** for the first rejoin, before the fix: in one transaction, `owner_device_id` moved from the old device `01a1988c…` to `01a19d4c…` in `connections` (4 rows), `displayItems` (45), `drafts` (2), `projectFolders` (3), `projects` (3), `runtimeRequests` (6), `threads` (7), and `turns` (14), and `01a1988c…` was revoked. The pre-gate dump above is the way back.
 - **Minor, not fixed:** on the local flavour the sign-in screen still says "New here? Either one creates your account." with only one button; and while the pairing confirmation closes after Pair, the "Use an enrollment code" form shows for a moment before the sheet dismisses.
+
 ## 2026-11-02: The hub keeps synced rows (D-089)
 
 Branch `blove/dreamy-hamilton-b5adc9`, from main at `3f3cc15`. Hub only; no Swift, wire, or fixture change.
@@ -385,9 +452,10 @@ Static checks run in CI and locally: `actionlint`, `shellcheck` over the deploy 
 Every pending gate above waits on these (details in `Infra/README.md`). None is recorded as done.
 
 1. Create the `b4hub-test` and `b4hub-prod` accounts inside the `b4run` OU of the existing cacheplane Organization (runbook 1, "Bootstrap runbook"). Done 2026-11-02: `355069727528` and `268895852483`.
-2. Sign the CLI in with `aws login` and configure the `b4hub-test` and `b4hub-prod` profiles (done 2026-11-02: both answer `sts get-caller-identity`), then bootstrap both accounts (runbook 1, "Bootstrap runbook"). Test bootstrapped 2026-11-02 (18 resources; state in `b4hub-test-tfstate`, plan clean after migration; roles `b4hub-test-{plan,infra,deploy}`, state key `d9c975b5-6ea7-4610-99ae-7020f3091262`; re-applied the same day to pin GitHub's immutable OIDC subject `repo:cacheplane@269322961/b4app@1440075505`, without which `Plan test` failed `AssumeRoleWithWebIdentity`). Prod bootstrapped 2026-11-02 the same way (state in `b4hub-prod-tfstate`, state key `496dd803-4674-4422-b959-3e74e44043bd`, plan clean). Repository variables `AWS_ROLE_PLAN_<ENV>` and `TFSTATE_KMS_KEY_ARN_<ENV>` are set for both so PR plans run; `AWS_ROLE_INFRA_<ENV>` and `AWS_ROLE_DEPLOY_<ENV>` are deliberately withheld until `B4HUB_ALARM_EMAIL`, the Vercel CNAMEs, and (for prod) the `production` Environment exist, since a push to main would otherwise apply the test hub root. `B4HUB_ALARM_EMAIL` set 2026-11-02. ACM certificates for `hub.test.b4.run` and `hub.b4.run` were created by targeted applies the same day; their validation CNAMEs were added at Vercel and the apex CAA set gained the four Amazon issuers beside Vercel's three (a CNAME cannot share a name with CAA, so the hub names inherit the apex set); both certificates were issued within minutes. Test hub root applied by CI on the merge of PR #44; `hub.test.b4.run` CNAME to the ALB added the same day.
+2. Sign the CLI in with `aws login` and configure the `b4hub-test` and `b4hub-prod` profiles (done 2026-11-02: both answer `sts get-caller-identity`), then bootstrap both accounts (runbook 1, "Bootstrap runbook"). Test bootstrapped 2026-11-02 (18 resources; state in `b4hub-test-tfstate`, plan clean after migration; roles `b4hub-test-{plan,infra,deploy}`, state key `d9c975b5-6ea7-4610-99ae-7020f3091262`; re-applied the same day to pin GitHub's immutable OIDC subject `repo:cacheplane@269322961/b4app@1440075505`, without which `Plan test` failed `AssumeRoleWithWebIdentity`). Prod bootstrapped 2026-11-02 the same way (state in `b4hub-prod-tfstate`, state key `496dd803-4674-4422-b959-3e74e44043bd`, plan clean). Repository variables `AWS_ROLE_PLAN_<ENV>` and `TFSTATE_KMS_KEY_ARN_<ENV>` are set for both so PR plans run; `AWS_ROLE_INFRA_<ENV>` and `AWS_ROLE_DEPLOY_<ENV>` are deliberately withheld until `B4HUB_ALARM_EMAIL`, the Vercel CNAMEs, and (for prod) the `production` Environment exist, since a push to main would otherwise apply the test hub root. `B4HUB_ALARM_EMAIL` set 2026-11-02. ACM certificates for `hub.test.b4.run` and `hub.b4.run` were created by targeted applies the same day; their validation CNAMEs were added at Vercel and the apex CAA set gained the four Amazon issuers beside Vercel's three (a CNAME cannot share a name with CAA, so the hub names inherit the apex set); both certificates were issued within minutes. Test hub root applied by CI on the merge of PR #44; `hub.test.b4.run` CNAME to the ALB added the same day. Runbook 2 (database owner) done in test 2026-11-02 (the psql session driven through a pty; `b4hub_owner` and database `b4hub` created, real URLs in both secrets); runbook 3 done except the Apple private key. First test deploy (run 41508325663, digest `f0d822d8…`, sign-in included): migrations applied (9), service at revision 4 with the rollout COMPLETED and desired count 0; the job itself reported failure because `deploy.sh` read the rollout state before ECS flipped it, fixed by the bounded settle loop in this change. Apple private key stored and the service scaled to one task by hand (runbook 4) on 2026-11-02: `https://hub.test.b4.run/readyz` answers `{"ok":true,"migrations":"current","relay":"ok","instances":"ok","minClientProtocol":1}` with a valid certificate, the ALB target is healthy, and the hub's JSON request log reaches CloudWatch. The `RunningTaskCount` and `UnHealthyHostCount` alarms were created by a local apply; PR #56 records `desired_count = 1` so main agrees. The GHCR package was made public the same day (the organization's package policy had to allow public packages first).
 3. Add repository variables: `AWS_ROLE_PLAN_*`, `AWS_ROLE_INFRA_*`, `AWS_ROLE_DEPLOY_*`, `TFSTATE_KMS_KEY_ARN_*` (`TEST` and `PROD`), and `B4HUB_ALARM_EMAIL`.
 4. Create the `production` GitHub Environment (required reviewer: the owner; deployment branches and tags: `main` and `hub-v*`). Create none for test. Done 2026-11-02 (the Environment had been auto-created empty by a workflow run; reviewer `blove`, branch `main`, tag `hub-v*`).
+   Runbook 6 done in test on 2026-11-02 after two admin-task fixes (the hub container needed `B4HUB_APPLE_AUDIENCES` with the sign-in secrets, and a writable root filesystem for ECS Exec): `b4hub seed` created org `cacheplane` and user `blove`, `b4hub enroll` minted a code, and `agent-workspace hub join https://hub.test.b4.run` on the owner's Mac reports `account blove@cacheplane`, `relay connected`.
 5. Make the GHCR package `ghcr.io/cacheplane/b4hub` public.
 6. Add the Vercel CNAMEs (`hub.test.b4.run`, `hub.b4.run`) and the ACM validation records the first apply prints.
 7. Set the database owner and sign-in secrets (runbooks 2 and 3).
@@ -577,6 +645,7 @@ To be run only after the owner's go-ahead, because it rebuilds the owner's packa
 | 3. Live convergence | `docker compose stop hub`; rename the same thread and edit the same draft on both devices, the Mac's edit later; `docker compose start hub`; both must show the Mac's values (and, with the phone's edit later, the phone's) | not run |
 
 Also record for the live run: `agent-workspace hub status` shows `unsynced 0`; `agent-workspace coordinator status` shows a pid started after the restart; a screenshot of the Simulator list and the Mac sidebar; and that the owner's app, once restored from `main`, is rebuilt with the same dev loop.
+
 ## 2026-10-31: Developer ID signing and notarization (D-039 gate)
 
 Target: the same MacBook Pro (macOS 26.5, Xcode 26.6, notarytool 1.1.2). The owner created the certificate and the `b4app` notarytool profile; neither password passed through the script or this session. The owner's running app was quit, `~/repos/b4app/dist` was moved aside and replaced from the stapled zip, `agent-workspace coordinator restart` ran, and the app was reopened.

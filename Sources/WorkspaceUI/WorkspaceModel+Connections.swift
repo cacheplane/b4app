@@ -110,6 +110,11 @@ extension WorkspaceModel {
   }
 
   func applyUsage(_ event: AdapterEvent) {
+    // The phone's mirror sends the whole usage (plan reading and token totals) as the Mac wrote it.
+    if let usage = try? event.payload["usage"]?.decode(ConnectionUsage.self) {
+      self.usage[event.connectionId] = usage
+      return
+    }
     guard let reading = try? event.payload["reading"]?.decode(UsageReading.self) else { return }
     var entry = usage[event.connectionId] ?? ConnectionUsage(connectionId: event.connectionId)
     entry.reading = reading

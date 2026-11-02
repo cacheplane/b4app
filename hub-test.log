@@ -1,0 +1,366 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.38s
+     Running unittests src/lib.rs (target/debug/deps/b4hub-67cf47947e5965d1)
+
+running 57 tests
+test cli::tests::config_errors_exit_2_and_everything_else_1 ... ok
+test auth::tests::a_device_is_touched_at_most_once_a_minute ... ok
+test cli::tests::log_format_defaults_by_terminal_and_accepts_text_or_json ... ok
+test cli::tests::maintenance_poll_is_milliseconds_with_a_five_second_default ... ok
+test cli::tests::retention_is_a_whole_number_of_days ... ok
+test cli::tests::heartbeat_is_milliseconds_with_a_five_second_default ... ok
+test cli::tests::seed_arguments_are_validated ... ok
+test cli::tests::trust_proxy_reads_the_shared_flag ... ok
+test auth::tests::bearer_tokens_are_parsed_strictly ... ok
+test error::tests::relay_codes_are_the_swift_wire_strings ... ok
+test cli::tests::database_urls_are_required_validated_and_never_echoed ... ok
+test cli::tests::malformed_settings_name_themselves_and_not_their_value ... ok
+test error::tests::kinds_serialise_in_snake_case ... ok
+test cli::tests::provisioning_url_must_be_b4hub_app_with_a_password ... ok
+test instances::tests::an_instance_turns_stale_a_window_after_its_last_write ... ok
+test cli::tests::defaults ... ok
+test instances::tests::the_cookie_names_the_instance ... ok
+test notify::tests::a_future_taken_before_the_wake_completes_even_if_polled_after ... ok
+test relay::limits::tests::devices_are_counted_separately ... ok
+test relay::limits::tests::a_burst_of_twenty_then_one_a_second_and_sixty_a_minute ... ok
+test cli::tests::url_file_variant_is_read_and_trimmed ... ok
+test relay::limits::tests::the_eleventh_hit_in_a_minute_waits_for_the_first_to_age_out ... ok
+test cli::tests::serve_with_a_bad_retention_is_a_configuration_error ... ok
+test cli::tests::migrate_with_a_bad_app_url_is_a_configuration_error_before_any_connection ... ok
+test relay::registry::tests::close_signals_once_and_keeps_the_link_registered ... ok
+test relay::registry::tests::a_new_link_replaces_and_closes_the_old_one ... ok
+test relay::registry::tests::presence_subscribers_are_the_users_client_links_only ... ok
+test relay::registry::tests::send_queues_in_order_and_reports_a_full_queue_and_an_offline_device ... ok
+test relay::registry::tests::close_user_closes_every_link_of_that_user_only ... ok
+test relay::registry::tests::presence_that_does_not_fit_is_kept_latest_only ... ok
+test relay::registry::tests::a_full_queue_drops_events_and_reports_one_gap_when_there_is_room ... ok
+test error::tests::relocated_names_the_owner ... ok
+test error::tests::serialises_as_the_b4_envelope ... ok
+test relay::registry::tests::the_probe_is_never_registered ... ok
+test error::tests::rate_limited_carries_retry_after_ms_beside_the_code ... ok
+test relay::tests::rendered_times_sort_like_the_times ... ok
+test relay::registry::tests::watches_are_limited_per_link_and_end_with_the_link ... ok
+test relay::tests::an_anchored_clock_follows_the_tokio_clock ... ok
+test relay::tests::the_clock_follows_its_source_not_a_time_captured_at_startup ... ok
+test maintenance::tests::a_refusal_says_when_to_retry ... ok
+test relay::tests::the_system_clock_is_the_default ... ok
+test relay::tests::times_render_as_rfc3339_with_milliseconds ... ok
+test relay::registry::tests::drained_waits_for_every_live_link ... ok
+test relay::registry::tests::send_wait_waits_for_room_and_gives_up_after_its_bound ... ok
+test request_log::tests::callers_ids_are_checked_strictly ... ok
+test routes::changes::tests::a_push_during_the_first_query_is_not_slept_through ... ok
+test routes::changes::tests::defaults_and_clamps ... ok
+test routes::changes::tests::non_numbers_are_invalid_requests ... ok
+test routes::changes::tests::a_page_with_changes_or_no_wait_returns_without_waiting ... ok
+test request_log::tests::a_callers_id_never_replaces_the_hubs ... ok
+test request_log::tests::the_span_names_the_route_pattern_and_not_the_raw_path ... ok
+test request_log::tests::the_id_is_a_fresh_uuid_set_on_the_response ... ok
+test request_log::tests::a_503_is_a_warning_a_5xx_an_error_and_the_raw_path_is_never_logged ... ok
+test request_log::tests::a_well_formed_callers_id_is_recorded_and_a_malformed_one_dropped ... ok
+test notify::tests::wakes_are_per_org_and_not_remembered ... ok
+test routes::changes::tests::an_empty_poll_waits_out_the_timeout_then_queries_once_more ... ok
+test routes::changes::tests::shutdown_ends_the_wait ... ok
+
+test result: ok. 57 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running unittests src/main.rs (target/debug/deps/b4hub-aff4af2046b07e9a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/changes.rs (target/debug/deps/changes-35096dedaad1f34f)
+
+running 14 tests
+test devices_and_snapshot_need_a_token ... ok
+test a_token_is_required_before_the_body_is_read ... ok
+test a_pruned_cursor_resyncs_through_the_snapshot_over_http ... ok
+test devices_lists_this_users_devices_over_http ... ok
+test a_malformed_clock_is_rejected_per_change ... ok
+test pull_pages_and_long_polls ... ok
+test bad_requests_are_refused_in_the_envelope ... ok
+test oversize_value_is_rejected_per_change ... ok
+test pull_over_real_tcp_does_not_miss_a_push_in_the_gap ... ok
+test the_prune_loop_prunes_and_stops_promptly_on_shutdown ... ok
+test push_then_pull_over_http ... ok
+test shutdown_releases_open_long_polls ... ok
+test the_prune_command_prunes_one_org_or_all ... ok
+test an_empty_long_poll_times_out_with_an_empty_page ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.62s
+
+     Running tests/enroll.rs (target/debug/deps/enroll-1bbb2d4477951fdb)
+
+running 17 tests
+test enroll_command_resolves_the_org_and_the_user ... ok
+test a_code_can_be_redeemed_only_once_even_concurrently ... ok
+test enroll_then_me_then_revoke ... ok
+test codes_match_in_any_case_and_unknown_codes_are_invalid ... ok
+test a_revoked_macs_unused_pairing_code_cannot_be_redeemed ... ok
+test expired_code_is_rejected ... ok
+test a_mac_mints_a_pairing_code_the_phone_redeems ... ok
+test invalid_requests_and_credentials_are_all_the_json_envelope ... ok
+test each_device_belongs_to_the_org_and_user_of_its_code ... ok
+test a_revoked_token_or_a_revoked_device_is_refused_on_its_own ... ok
+test last_seen_is_recorded_and_throttled_to_once_a_minute ... ok
+test the_answer_carries_the_public_hub_url_when_one_is_set ... ok
+test only_a_mac_can_mint ... ok
+test only_the_hash_of_the_token_is_stored ... ok
+test the_eleventh_mint_in_an_hour_is_limited ... ok
+test pairing_codes_expire_after_five_minutes ... ok
+test the_limit_is_per_user ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.13s
+
+     Running tests/health.rs (target/debug/deps/health-ad706ebb33005d9c)
+
+running 5 tests
+test unknown_paths_answer_the_error_envelope ... ok
+test readyz_is_503_before_migrate ... ok
+test readyz_reports_current_after_migrate ... ok
+test serve_refuses_a_privileged_database_url ... ok
+test shutdown_fails_readiness_then_exits_within_the_deadline ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.01s
+
+     Running tests/instances.rs (target/debug/deps/instances-b0c5039297b6afaf)
+
+running 8 tests
+test readiness_names_the_instance_in_a_cookie ... ok
+test a_link_on_the_wrong_instance_is_relocated_and_the_retry_completes_a_command ... ok
+test the_probe_passes_on_a_healthy_instance_and_fails_when_the_relay_cannot_serve ... ok
+test a_hold_that_was_forwarded_does_not_delay_the_drain ... ok
+test one_link_per_device_holds_across_instances ... ok
+test a_draining_instance_answers_holds_and_releases_its_claims ... ok
+test readiness_reports_a_stale_heartbeat ... ok
+test a_dead_heartbeat_lets_the_other_instance_claim_and_the_old_owner_lets_go ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.42s
+
+     Running tests/maintenance.rs (target/debug/deps/maintenance-ed4d38a6867ab556)
+
+running 3 tests
+test the_default_message_names_paused_writes ... ok
+test the_maintenance_command_switches_the_database_flag ... ok
+test maintenance_pauses_writes_and_keeps_reads_and_readiness ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.15s
+
+     Running tests/relay.rs (target/debug/deps/relay-354437ff1b8054b6)
+
+running 60 tests
+test a_device_never_reads_offline_before_its_last_seen_is_written ... ok
+test a_bad_token_is_refused_before_the_upgrade ... ok
+test a_ping_keeps_a_link_alive ... ok
+test a_device_that_says_goodbye_goes_offline_too ... ok
+test a_mac_sending_a_command_is_not_found ... ok
+test a_frame_the_hub_cannot_use_gets_an_error_and_the_link_stays ... ok
+test a_message_past_the_wire_cap_ends_only_that_connection ... ok
+test a_mac_whose_queue_stays_full_is_relay_timeout_not_offline ... ok
+test a_duplicate_in_flight_is_forwarded_once ... ok
+test a_fifth_watch_is_refused ... ok
+test a_reply_reaches_the_callers_new_link ... ok
+test a_request_that_is_not_an_upgrade_is_a_json_400 ... ok
+test a_revocation_during_the_upgrade_still_closes_the_link ... ok
+test a_replaced_link_takes_its_watches_with_it ... ok
+test a_refused_thread_start_gives_its_watch_back ... ok
+test a_revoked_macs_thread_cannot_be_watched ... ok
+test a_resend_in_flight_is_not_counted_against_the_limits ... ok
+test a_revoked_owner_is_not_found ... ok
+test a_second_link_replaces_the_first ... ok
+test a_silent_link_is_closed_after_thirty_seconds ... ok
+test a_reply_waits_for_room_in_the_callers_full_queue ... ok
+test a_started_thread_is_routable_before_its_row_arrives ... ok
+test an_owner_that_is_not_the_users_mac_is_not_found ... ok
+test another_users_thread_is_not_found ... ok
+test an_unknown_method_is_not_found ... ok
+test another_orgs_thread_is_not_found ... ok
+test answered_request_is_stale_without_forwarding ... ok
+test a_slow_phone_gets_a_stream_gap ... ok
+test an_unwatched_event_from_the_mac_is_dropped ... ok
+test closing_a_phone_clears_its_watches ... ok
+test client_too_old_is_refused ... ok
+test each_method_reaches_the_owning_mac_with_a_deadline ... ok
+test eleven_upgrades_in_a_minute_are_limited ... ok
+test frames_from_the_wrong_end_are_invalid ... ok
+test events_go_only_to_watchers ... ok
+test hello_names_the_role ... ok
+test last_seen_is_the_last_frame_heard_after_a_dead_link_close ... ok
+test a_resend_after_hub_restart_reaches_the_mac_again ... ok
+test last_seen_is_refreshed_once_a_minute_while_a_link_is_open ... ok
+test interrupt_is_held_and_delivered_on_reconnect ... ok
+test maintenance_refuses_link_writes_and_keeps_reads ... ok
+test ping_gets_pong_with_hub_time ... ok
+test presence_reaches_clients_on_connect_and_drop ... ok
+test presence_never_lists_another_users_mac ... ok
+test revoking_an_offline_mac_updates_the_phones_list ... ok
+test held_answer_expires_after_sixty_seconds ... ok
+test send_is_never_held ... ok
+test revoking_closes_the_link ... ok
+test no_reply_in_thirty_seconds_is_relay_timeout ... ok
+test send_to_an_offline_mac_is_refused_with_last_seen ... ok
+test oversized_frames_are_refused_and_the_link_survives ... ok
+test sixty_one_commands_in_a_minute_are_limited ... ok
+test twenty_one_sends_per_user_are_limited ... ok
+test shutdown_closes_links_with_1001 ... ok
+test the_other_methods_wait_fifteen_seconds ... ok
+test thread_start_auto_watches_the_new_thread ... ok
+test presence_is_sent_when_the_queue_has_room_again ... ok
+test watching_another_users_thread_is_not_found ... ok
+test watching_tells_the_mac_the_full_set ... ok
+test thirty_three_held_commands_overflow_to_device_offline ... ok
+
+test result: ok. 60 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.80s
+
+     Running tests/request_log.rs (target/debug/deps/request_log-d89eeeeb5b255417)
+
+running 1 test
+test an_authenticated_request_logs_the_ids_and_never_the_token ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s
+
+     Running unittests src/lib.rs (target/debug/deps/b4hub_core-16b8dd0f086a3268)
+
+running 25 tests
+test change::tests::connection_usage_syncs_under_its_connection ... ok
+test hlc::tests::a_device_id_may_contain_dashes ... ok
+test hlc::tests::derived_is_the_wall_with_a_zero_counter ... ok
+test change::tests::table_specs_match_the_synced_table_list ... ok
+test change::tests::change_round_trips_camel_case ... ok
+test change::tests::unknown_fields_and_ops_are_refused ... ok
+test change::tests::value_bytes_is_the_serialised_length ... ok
+test change::tests::stored_changes_add_hub_seq_and_device_id ... ok
+test ids::tests::ids_are_version_7_and_unique ... ok
+test hlc::tests::hlc_orders_and_clamps ... ok
+test hlc::tests::rejects_uppercase_wrong_length_and_empty_device ... ok
+test relay::tests::methods_use_their_wire_strings ... ok
+test hlc::tests::text_is_lowercase_hex_and_a_sorted_string ... ok
+test relay::tests::constants_match_the_swift_limits ... ok
+test relay::tests::absent_optionals_are_omitted_not_null ... ok
+test relay::tests::unknown_type_is_an_error ... ok
+test tokens::tests::code_hash_ignores_case ... ok
+test relay::tests::relay_fixture_round_trips ... ok
+test tokens::tests::token_hash_is_the_sha256_of_the_token ... ok
+test tokens::tests::tokens_are_32_random_bytes_in_base64url_without_padding ... ok
+test tokens::tests::codes_use_the_unambiguous_alphabet_and_eight_chars ... ok
+test writable::tests::clocked_is_phone_writable_plus_thread_project ... ok
+test writable::tests::the_phone_may_write_exactly_the_documented_columns ... ok
+test change::tests::every_fixture_row_uses_only_known_columns ... ok
+test change::tests::fixture_decodes ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running unittests src/lib.rs (target/debug/deps/b4hub_db-a57c840d05010a49)
+
+running 3 tests
+test migrate::tests::app_url_checks_name_the_problem_and_not_the_value ... ok
+test migrate::tests::verifiers_use_a_fresh_salt_and_hide_the_password ... ok
+test migrate::tests::verifier_matches_what_postgres_derives ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+     Running tests/changes.rs (target/debug/deps/changes-2be3d23892cdbc85)
+
+running 39 tests
+test an_insert_counts_per_clocked_column_at_its_clock ... ok
+test a_malformed_clock_is_rejected_and_the_rest_lands ... ok
+test a_change_without_a_clock_gets_the_wall_derived_one ... ok
+test a_user_cannot_touch_another_users_rows ... ok
+test a_deleted_row_stays_with_its_user_and_its_org ... ok
+test an_idle_users_cursor_follows_the_org_past_other_users_changes ... ok
+test a_second_user_cannot_move_the_first_users_clock ... ok
+test a_phone_may_insert_a_draft_and_clear_it ... ok
+test a_delete_keeps_the_row_and_its_clocks_and_the_feed_carries_it ... ok
+test migration_backfills_clocks_and_owners ... ok
+test connection_secrets_are_scrubbed_even_if_sent ... ok
+test changes_that_cannot_apply_are_recorded_but_skipped ... ok
+test connection_usage_is_mirrored_and_pulled ... ok
+test connection_project_id_is_materialised ... ok
+test devices_lists_the_users_devices ... ok
+test an_insert_revives_a_deleted_row ... ok
+test another_org_sees_nothing_of_the_feed_or_the_mirror ... ok
+test an_insert_upserts_only_the_columns_it_carries ... ok
+test phone_cannot_write_mac_only_columns ... ok
+test a_page_always_holds_its_first_row_and_stops_at_a_thousand_rows ... ok
+test phone_title_edit_applies_and_later_mac_edit_wins ... ok
+test owner_is_the_latest_inserter ... ok
+test mirrored_columns_are_the_macs_columns ... ok
+test oversized_value_is_rejected_not_413 ... ok
+test push_clamps_a_clock_far_ahead ... ok
+test prune_deletes_only_older_changes_and_never_lowers_the_horizon ... ok
+test prune_waits_for_a_push_holding_the_org_lock ... ok
+test push_materialises_and_is_idempotent ... ok
+test pull_pages_and_is_scoped_to_the_user ... ok
+test row_level_security_is_forced_on_every_sync_table ... ok
+test push_stores_each_values_size ... ok
+test stale_phone_edit_loses ... ok
+test snapshot_is_user_scoped ... ok
+test the_conflict_fixture_converges ... ok
+test stale_cursor_gets_resync_and_snapshot_restores ... ok
+test updates_set_one_column_and_null_clears_it ... ok
+test the_cut_comes_from_stored_sizes_and_not_from_reading_values ... ok
+test two_devices_pushing_at_once_all_land_in_one_order ... ok
+test pages_stop_at_eight_mib ... ok
+
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.36s
+
+     Running tests/instances.rs (target/debug/deps/instances-7ce5c6c122fac105)
+
+running 4 tests
+test a_live_owner_keeps_its_claim_and_a_dead_one_loses_it ... ok
+test release_and_prune_clear_claims ... ok
+test concurrent_claims_agree_on_one_winner ... ok
+test an_unregistered_owner_counts_as_dead ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.22s
+
+     Running tests/migrate.rs (target/debug/deps/migrate-cf14975e5747b16e)
+
+running 8 tests
+test migrate_rejects_an_app_url_that_is_not_b4hub_app_with_a_password ... ok
+test sqlx_applies_a_lower_numbered_migration_added_later ... ok
+test tenant_tables_force_row_level_security ... ok
+test seed_creates_once_and_is_idempotent ... ok
+test seed_works_under_forced_row_level_security ... ok
+test migrate_is_idempotent_and_provisions_the_app_role ... ok
+test serve_refuses_a_role_that_inherits_superuser ... ok
+test migrate_reruns_as_a_non_superuser_owner ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.69s
+
+     Running tests/rls.rs (target/debug/deps/rls-c648e83eaa3a6814)
+
+running 4 tests
+test app_role_sees_only_its_org ... ok
+test owner_role_with_row_security_off_errors_instead_of_filtering ... ok
+test relay_lookups_respect_rls ... ok
+test no_context_sees_nothing_and_cannot_insert ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.97s
+
+     Running tests/settings.rs (target/debug/deps/settings-d25423216968ec82)
+
+running 3 tests
+test since_is_rfc3339_utc ... ok
+test the_app_role_can_only_read_hub_settings ... ok
+test maintenance_is_off_until_set_and_reads_back_what_was_written ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.62s
+
+   Doc-tests b4hub
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests b4hub_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests b4hub_db
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

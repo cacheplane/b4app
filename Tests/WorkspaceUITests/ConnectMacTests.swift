@@ -46,12 +46,12 @@ private func poll(_ what: String, _ condition: @MainActor () -> Bool) async {
 @Suite struct ConnectMacTests {
   @Test func theCopyIsTheSpecs() {
     #expect(ConnectMacCopy.title == "Connect your Mac")
-    #expect(
-      ConnectMacCopy.message
-        == "Your threads run on your Mac. Install Agent Workspace there, sign in, and scan the code it shows."
-    )
+    #expect(ConnectMacCopy.message == "Scan the code Agent Workspace shows on your Mac.")
     #expect(ConnectMacCopy.scan == "Scan the code")
-    #expect(ConnectMacCopy.copyLink == "Copy download link")
+    #expect(ConnectMacCopy.otherWays == "Other ways to sign in")
+    #expect(ConnectMacCopy.passkey == "Sign in with a passkey")
+    #expect(ConnectMacCopy.enroll == "Use an enrollment code")
+    #expect(ConnectMacCopy.getMacApp == "Get the Mac app")
     #expect(ConnectMacCopy.copied == "Copied")
     #expect(ConnectMacCopy.help == "Help")
   }
@@ -111,7 +111,7 @@ private func poll(_ what: String, _ condition: @MainActor () -> Bool) async {
     let state = ConnectMac(
       siteDomain: "test.b4.run", hasCamera: true, copy: { copied.append($0) }, sleep: { await held.sleep($0) }
     )
-    #expect(state.copyLabel == "Copy download link")
+    #expect(state.copyLabel == "Get the Mac app")
     #expect(state.downloadURL.absoluteString == "https://test.b4.run/app/download")
 
     let tap = Task { await state.copyDownloadLink() }
@@ -123,7 +123,7 @@ private func poll(_ what: String, _ condition: @MainActor () -> Bool) async {
     #expect(state.copyLabel == "Copied")
     held.release()
     await tap.value
-    #expect(state.copyLabel == "Copy download link")
+    #expect(state.copyLabel == "Get the Mac app")
   }
 
   @Test func aSecondCopyKeepsCopiedForTwoSecondsFromItself() async {
@@ -140,7 +140,7 @@ private func poll(_ what: String, _ condition: @MainActor () -> Bool) async {
     held.release()
     await first.value
     await second.value
-    #expect(state.copyLabel == "Copy download link")
+    #expect(state.copyLabel == "Get the Mac app")
   }
 
   @Test func helpOpensSafariSheetAtHelpURL() {

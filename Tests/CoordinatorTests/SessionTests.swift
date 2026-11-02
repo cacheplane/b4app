@@ -31,11 +31,11 @@ final class FakeB4: Sendable {
     self.port = port
   }
 
-  static func start(environment extra: [String: String] = [:]) async throws -> FakeB4 {
+  static func start(port: Int = 0, environment extra: [String: String] = [:]) async throws -> FakeB4 {
     var env = ProcessInfo.processInfo.environment
     for (key, value) in extra { env[key] = value }
     let process = try StreamingProcess.start(
-      executable: fakeB4, arguments: ["--port", "0"], environment: env)
+      executable: fakeB4, arguments: ["--port", String(port)], environment: env)
     var buffer = ""
     for await chunk in process.stdout {
       buffer += String(decoding: chunk, as: UTF8.self)
@@ -80,7 +80,7 @@ struct Harness {
   static func start(
     paths: PlatformPaths? = nil, extraEnvironment: [String: String] = [:],
     secretStore: any SecretStore = MemorySecretStore(), checkRetryDelays: [Duration] = [.zero, .zero],
-    adapterFactory: SessionService.AdapterFactory? = nil
+    adapterFactory: SessionService.AdapterFactory? = nil, threadDeleteSweep: Duration = .zero
   ) async throws -> Harness {
     let paths = try paths ?? temporaryPaths()
     // The fixture is a Python script, so the child needs the real PATH; Node lookups stay isolated.
@@ -93,7 +93,7 @@ struct Harness {
     let outcome = try await Coordinator.startSignedIn(
       options: CoordinatorOptions(
         paths: paths, environment: env, secretStore: secretStore, adapterFactory: adapterFactory,
-        checkRetryDelays: checkRetryDelays))
+        checkRetryDelays: checkRetryDelays, threadDeleteSweep: threadDeleteSweep))
     guard case .running(let coordinator) = outcome else {
       throw WorkspaceError(.internalError, "expected running")
     }

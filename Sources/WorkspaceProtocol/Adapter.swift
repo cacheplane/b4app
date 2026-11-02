@@ -170,6 +170,13 @@ public protocol AgentAdapter: Sendable {
   func events() -> AsyncStream<AdapterEvent>
   /// Closes adapter resources. Never an implicit remote cancel.
   func dispose() async
+  /// Delete the runtime's copy of a thread the owner deleted (settings: deleting threads).
+  func deleteSession(_ ref: NativeSessionRef) async throws -> SessionDeletion
+}
+
+extension AgentAdapter {
+  /// An adapter without its own delete leaves the runtime's copy alone.
+  public func deleteSession(_ ref: NativeSessionRef) async throws -> SessionDeletion { .unsupported }
 }
 
 /// Result of starting a runtime's official sign-in. The caller opens `authUrl`; completion arrives as
@@ -181,6 +188,17 @@ public struct LoginStart: Codable, Sendable, Equatable {
     self.authUrl = authUrl
     self.loginId = loginId
   }
+}
+
+/// What became of a runtime's copy of a deleted thread. A thrown error means the runtime could not be
+/// reached, and the delete is tried again later.
+public enum SessionDeletion: String, Codable, Sendable {
+  /// The runtime deleted it.
+  case deleted
+  /// The runtime has no such thread (already deleted, or never kept).
+  case alreadyGone
+  /// The runtime cannot delete a thread (an older Codex, a B4 server without the route).
+  case unsupported
 }
 
 /// Adapters whose runtime answers a plan-usage question on demand (Codex). Nil: nothing reported.

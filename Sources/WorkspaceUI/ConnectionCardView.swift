@@ -48,6 +48,28 @@ enum ConnectionSummary {
     return capped.isEmpty ? resets.min()! > now : resets.contains { $0 > now }
   }
 
+  /// The two token figures' titles. The Mac counts them for its local day and week; read later (on
+  /// the phone, or after midnight) they are named by that day and week rather than "Today".
+  static func tokenTitles(_ totals: TokenTotals, now: Date, calendar: Calendar = .current) -> (String, String)
+  {
+    let current = UsageDay.local(now, calendar: calendar)
+    let day = totals.day.flatMap { $0 == current.day ? nil : date($0, calendar) }
+    let week = totals.weekStart.flatMap { $0 == current.weekStart ? nil : date($0, calendar) }
+    var style = Date.FormatStyle(
+      date: .omitted, time: .omitted, locale: calendar.locale ?? .current, calendar: calendar)
+    style.timeZone = calendar.timeZone
+    return (
+      day.map { $0.formatted(style.weekday(.abbreviated).month(.abbreviated).day()) } ?? "Today",
+      week.map { "Week of " + $0.formatted(style.month(.abbreviated).day()) } ?? "This week"
+    )
+  }
+
+  private static func date(_ day: String, _ calendar: Calendar) -> Date? {
+    let parts = day.split(separator: "-").compactMap { Int($0) }
+    guard parts.count == 3 else { return nil }
+    return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2], hour: 12))
+  }
+
   /// The line in place of usage before a runtime has reported any.
   static func noUsage(_ kind: ConnectionKind) -> String {
     switch kind {
@@ -178,13 +200,12 @@ struct ConnectionCardView: View {
   }
 
   @ViewBuilder private func details(now: Date) -> some View {
-    if !WorkspaceDevice.managesWorkspace {
-      note("Usage shows on your Mac")
-    } else if connection.kind == .b4 {
+    if connection.kind == .b4 {
       if let tokens = usage?.tokens {
+        let titles = ConnectionSummary.tokenTitles(tokens, now: now)
         HStack(alignment: .top, spacing: LLA.Space.l) {
-          figure("Today", tokens.today)
-          figure("This week", tokens.week)
+          figure(titles.0, tokens.today)
+          figure(titles.1, tokens.week)
         }
       } else {
         note(ConnectionSummary.noUsage(.b4))

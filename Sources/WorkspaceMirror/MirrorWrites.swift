@@ -53,6 +53,29 @@ extension MirrorStore {
     }
   }
 
+  /// Delete a thread: mark it deleted at `at`, hidden from every list, for the Mac to delete the
+  /// runtime's copy once it pulls the mark. A thread already deleted keeps its first time and queues
+  /// nothing. Nil when the thread does not exist.
+  public func deleteThread(id: String, at: String) throws -> ConversationThread? {
+    try locked {
+      try transaction {
+        guard
+          let current = try one(
+            ConversationThread.self, "threads", #"SELECT * FROM "threads" WHERE "id" = ?"#, [.text(id)])
+        else { return nil }
+        if current.userDeletedAt == nil {
+          let changes = [
+            LocalChange(
+              table: "threads", rowId: id, op: "update", column: "userDeletedAt", value: .string(at))
+          ]
+          try writeColumns(changes, key: "id")
+          try record(changes)
+        }
+        return try threadLocked(id: id)
+      }
+    }
+  }
+
   /// Mark a thread read up to `turnId`, or unread again with nil, under the Mac's guard
   /// (`WorkspaceDatabase.markRead`): a turn is written only when it is a terminal turn of this thread
   /// created no earlier (by `createdAt`, then `id`) than the turn the marker already names. Anything

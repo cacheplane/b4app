@@ -21,6 +21,7 @@ extension WorkspaceDatabase {
   public static let syncedTables: [(table: String, key: String)] = [
     ("connections", "id"), ("projects", "id"), ("projectFolders", "id"), ("threads", "id"), ("turns", "id"),
     ("displayItems", "id"), ("runtimeRequests", "id"), ("drafts", "threadId"),
+    ("connectionUsage", "connectionId"),
   ]
 
   /// Changes after `seq`, oldest first.

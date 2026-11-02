@@ -348,6 +348,44 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable {
     return nil
   }
 
+  /// Claude Code has no delete command; like the Claude desktop app, remove the session's transcript
+  /// (`<sessionId>.jsonl`) and its subagent folder (`<sessionId>/`) from the one project folder that
+  /// holds it. Nothing else is touched: not the project folder, not other sessions.
+  public func deleteSession(_ ref: NativeSessionRef) async throws -> SessionDeletion {
+    let id = ref.nativeSessionId
+    guard id.wholeMatch(of: /[A-Za-z0-9_-]+/) != nil else {
+      throw WorkspaceError(.protocolInvalid, "Refusing to delete a Claude Code session with an unsafe id.")
+    }
+    if let session = sessions[id] { await session.close() }
+    if projectsDirectory == nil { _ = try? await ensureAccount() }
+    let root = projectsDirectory ?? Self.projectsRoot(environment: environment)
+    guard let file = Self.transcript(sessionId: id, under: root) else { return .alreadyGone }
+    let folder = (file as NSString).deletingLastPathComponent
+    let standardRoot = URL(fileURLWithPath: root).standardizedFileURL.path
+    guard URL(fileURLWithPath: folder).deletingLastPathComponent().standardizedFileURL.path == standardRoot
+    else {
+      throw WorkspaceError(.protocolInvalid, "Refusing to delete a Claude Code transcript outside \(root).")
+    }
+    let fm = FileManager.default
+    try fm.removeItem(atPath: file)
+    let subagents = (folder as NSString).appendingPathComponent(id)
+    var isDirectory: ObjCBool = false
+    if fm.fileExists(atPath: subagents, isDirectory: &isDirectory), isDirectory.boolValue {
+      try fm.removeItem(atPath: subagents)
+    }
+    return .deleted
+  }
+
+  /// Where Claude Code keeps transcripts when its auth status has not said: `$CLAUDE_CONFIG_DIR/projects`,
+  /// else `~/.claude/projects`.
+  static func projectsRoot(environment: [String: String]) -> String {
+    if let config = environment["CLAUDE_CONFIG_DIR"], !config.isEmpty {
+      return (config as NSString).appendingPathComponent("projects")
+    }
+    let home = environment["HOME"] ?? NSHomeDirectory()
+    return (home as NSString).appendingPathComponent(".claude/projects")
+  }
+
   public nonisolated func events() -> AsyncStream<AdapterEvent> { eventStream }
 
   static let disposedError = WorkspaceError(

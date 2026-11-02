@@ -43,8 +43,17 @@ case "${1:-} ${2:-}" in
     ;;
   "ecs describe-services")
     cluster="$(arg --cluster "$@")"
+    # STUB_ROLLOUT answers the first STUB_ROLLOUT_CALLS calls (default 1);
+    # STUB_ROLLOUT_THEN, when set, every later one.
+    rollout="${STUB_ROLLOUT:-COMPLETED}"
+    if [ -n "${STUB_ROLLOUT_THEN:-}" ]; then
+      count_file="$STUB_LOG.describe-services"
+      count=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 ))
+      echo "$count" > "$count_file"
+      [ "$count" -gt "${STUB_ROLLOUT_CALLS:-1}" ] && rollout="$STUB_ROLLOUT_THEN"
+    fi
     printf '{"services":[{"desiredCount":%s,"networkConfiguration":{"awsvpcConfiguration":{"subnets":["subnet-a","subnet-b"],"securityGroups":["sg-task"],"assignPublicIp":"ENABLED"}},"deployments":[{"status":"PRIMARY","taskDefinition":"arn:aws:ecs:%s:%s:task-definition/%s-hub:7","rolloutState":"%s"}]}]}\n' \
-      "${STUB_DESIRED_COUNT:-1}" "$region" "$account" "$cluster" "${STUB_ROLLOUT:-COMPLETED}"
+      "${STUB_DESIRED_COUNT:-1}" "$region" "$account" "$cluster" "$rollout"
     ;;
   "ec2 describe-security-groups")
     printf '{"SecurityGroups":[{"GroupId":"sg-admin"}]}\n'
