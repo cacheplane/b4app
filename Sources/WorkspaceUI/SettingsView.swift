@@ -7,16 +7,34 @@ extension EnvironmentValues {
   @Entry var inSettingsWindow = false
 }
 
+/// Which device the app runs on, for what Settings offers. The Mac runs the runtimes, servers, and
+/// connections it lists; the phone shows the Mac's through the mirror, which refuses managing them
+/// (`MirrorTransport`), and M8c keeps that on the Mac. So the phone's Settings pages are read-only:
+/// no control that would only answer "done on the Mac" (D-060).
+enum WorkspaceDevice {
+  static var managesWorkspace: Bool {
+    #if os(iOS)
+      false
+    #else
+      true
+    #endif
+  }
+
+  /// The sentence a read-only page shows in place of its controls.
+  static let managedOnMac = "Connections, their sign-in, and local servers are managed on your Mac."
+}
+
 /// A Settings page's one action (re-check, refresh): a toolbar button, except in the Mac's Settings
-/// window, where the heading shows it.
+/// window, where the heading shows it, and on a read-only page.
 struct SettingsPageAction: ViewModifier {
   let title: String
   let disabled: Bool
+  var shown = true
   let action: () -> Void
   @Environment(\.inSettingsWindow) private var inSettingsWindow
 
   func body(content: Content) -> some View {
-    if inSettingsWindow {
+    if inSettingsWindow || !shown {
       content
     } else {
       content.toolbar {
