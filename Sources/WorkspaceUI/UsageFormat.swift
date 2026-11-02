@@ -45,15 +45,30 @@ enum UsageFormat {
     return days == 1 ? "As of 1 day ago" : "As of \(days) days ago"
   }
 
-  /// "999", "1.5k", "412k", "2.1M", "12M": one decimal only under ten.
-  static func tokens(_ count: Int) -> String {
-    func compact(_ value: Double, _ unit: String) -> String {
-      value < 10 && value.rounded() != value
-        ? String(format: "%.1f%@", value, unit) : "\(Int(value.rounded()))\(unit)"
+  /// A window named by its length: "5-hour", "Weekly", "Daily", "3-day", "1-hour". Without a length
+  /// the caller's name stands.
+  static func windowTitle(_ minutes: Int?, fallback: String) -> String {
+    guard let minutes, minutes > 0 else { return fallback }
+    switch minutes {
+    case 10080: return "Weekly"
+    case 1440: return "Daily"
+    case let m where m % 1440 == 0: return "\(m / 1440)-day"
+    case let m where m % 60 == 0: return "\(m / 60)-hour"
+    default: return "\(minutes)-minute"
     }
-    if count >= 1_000_000 { return compact((Double(count) / 100_000).rounded() / 10, "M") }
-    if count >= 1_000 { return compact((Double(count) / 100).rounded() / 10, "k") }
-    return String(count)
+  }
+
+  /// "999", "1.5k", "412k", "2.1M", "12M": one decimal only under ten, rounded once in the unit shown,
+  /// and the next unit up once a value would read 1000.
+  static func tokens(_ count: Int) -> String {
+    guard count >= 1000 else { return String(count) }
+    func rounded(_ value: Double) -> Double { value < 10 ? (value * 10).rounded() / 10 : value.rounded() }
+    func text(_ value: Double, _ unit: String) -> String {
+      value.rounded() == value ? "\(Int(value))\(unit)" : String(format: "%.1f%@", value, unit)
+    }
+    let thousands = rounded(Double(count) / 1000)
+    if thousands < 1000 { return text(thousands, "k") }
+    return text(rounded(Double(count) / 1_000_000), "M")
   }
 }
 

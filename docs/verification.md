@@ -10,6 +10,19 @@ Branch `blove/dreamy-hamilton-b5adc9`, from main at `3f3cc15`. Hub only; no Swif
 - **New tests** in `Hub/crates/b4hub-db/tests/changes.rs`. `a_delete_keeps_the_row_and_its_clocks_and_the_feed_carries_it`: a deleted thread and turn keep every column and the title's clock; a pull still yields both deletes; the snapshot leaves them and their clocks out and never carries `deleted_at`; a later update, a child insert, the relay's thread lookup, and a second delete all leave the row as it was. `an_insert_revives_a_deleted_row`: a thread re-inserted under an older clock, a project folder removed and added again, and a draft the Mac cleared and the phone wrote again all come back live with the re-insert's values. `a_deleted_row_stays_with_its_user_and_its_org`: another user of the org can neither revive nor see the deleted row, and another org or no tenant sees nothing of it. All three fail on main's hub code and pass with the change; so do the updated assertions in `push_materialises_and_is_idempotent` (the fixture's deleted draft is kept) and `mirrored_columns_are_the_macs_columns` (the new hub column).
 - **Not exercised live.** No hub was migrated to 0009 here; the Compose and hosted hubs pick it up on their next deploy.
 
+## 2026-11-02: Settings follow-ups (the deferred review minors of D-081 to D-084)
+
+Branch `blove/settings-connections-minors`. Gates: `swift format lint --strict` clean; `swift test` 862 tests in 125 suites passed; both `xcodebuild` builds succeeded. Each fix has a test that failed first:
+
+- **Claude windows.** The top-level figures now fill whichever window `unifiedWindows` lacks, and the per-model weekly buckets are no longer shown as "Weekly" (`fillsTheMissingWindowFromTheTopLevel`, `perModelWeeklyWindowsAreNotTheWeek`).
+- **Codex windows.** Windows are ordered by length and named by it, so a daily window reads "Daily" and two short windows are both kept (`windowsAreOrderedByLengthAndKeepTheirLength`, `windowsAreNamedByTheirLength`, `aDailyWindowIsCalledDaily`).
+- **Token counts** round once in the unit shown, so they never read "1000k" (`tokensNeverReadAThousandK`).
+- **Renames** reach every client: `connection.changed` carries the whole connection (`aRenameCarriesTheConnection`, `aConnectionChangeWithTheConnectionUpdatesTheList`).
+- **Orphaned keys.** The new `credential.remove` deletes a key that no connection uses, and the form takes back a key whose add or edit failed (`credentialRemoveKeepsASecretInUse`, `aFailedAddLeavesNoKeyBehind`).
+- **Saved edits.** Deleting a replaced key is best effort once the edit is saved (`aSavedKeyChangeIsNotReportedFailedWhenTheOldKeyStays`).
+
+Not covered by a test: B4 token counts are now recorded last in `turn.finished`, and a failure there is ignored. Observing that needs a fault injected into the database.
+
 ## 2026-11-02: A stopped reply keeps its streamed text (D-088)
 
 Branch `fix/stopped-reply-text`, from main at `3f3cc15`.

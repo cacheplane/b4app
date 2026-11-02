@@ -1,8 +1,18 @@
 import Foundation
 import Testing
+import WorkspacePlatform
 import WorkspaceProtocol
 
 @testable import WorkspaceUI
+
+/// A memory secret store that says how many values it holds.
+actor CountingSecretStore: SecretStore {
+  private var values: [SecretRef: String] = [:]
+  var count: Int { values.count }
+  func put(_ ref: SecretRef, value: String) async throws { values[ref] = value }
+  func read(_ ref: SecretRef) async throws -> String? { values[ref] }
+  func remove(_ ref: SecretRef) async throws -> Bool { values.removeValue(forKey: ref) != nil }
+}
 
 @Suite(.serialized) @MainActor struct ConnectionsModelTests {
   @Test func usageArrivesAfterACheck() async throws {
@@ -76,5 +86,35 @@ import WorkspaceProtocol
     #expect(model.checks["c"] != nil)
     try await model.refreshSnapshot()
     #expect(model.checks.isEmpty)
+  }
+
+  @Test func aFailedAddLeavesNoKeyBehind() async throws {
+    let secrets = CountingSecretStore()
+    let h = try await ModelHarness.start(secretStore: secrets)
+    defer { Task { await h.stop() } }
+    let model = h.model
+    // "chat" is not a route key, so the add is refused after the key was stored.
+    let added = await model.addB4Connection(
+      label: "Bad", url: "http://127.0.0.1:9", route: "chat", apiKey: "k")
+    #expect(added == nil)
+    #expect(await secrets.count == 0)
+  }
+
+  @Test func aConnectionChangeWithTheConnectionUpdatesTheList() async throws {
+    let h = try await ModelHarness.start()
+    defer { Task { await h.stop() } }
+    let model = h.model
+    let codex = try #require(
+      await model.addConnection(kind: .codex, label: "Codex", executablePath: fakeCodex))
+    var renamed = codex
+    renamed.label = "Renamed elsewhere"
+    var event = AdapterEvent.connectionChanged(
+      connectionId: codex.id, status: .ready, authStatus: .authenticated, transport: .disconnected)
+    event.payload = .object(
+      (event.payload.objectValue ?? [:]).merging(["connection": try JSONValue(encoding: renamed)]) { _, new in
+        new
+      })
+    model.apply(event)
+    #expect(model.connections.first { $0.id == codex.id }?.label == "Renamed elsewhere")
   }
 }

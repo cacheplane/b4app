@@ -160,18 +160,33 @@ extension SessionService {
       } ?? connection
     if newReference != connection.authReference {
       await evictAdapter(connectionId: connection.id)
+      // The edit is saved; deleting the old key is best effort, so a Keychain that refuses it never
+      // turns a saved edit into an error. `credential.remove` can take it later.
       if let old = connection.authReference.flatMap(SecretRef.init(rawValue:)),
         try !db.listConnections(includeDisabled: true).contains(where: { $0.authReference == old.rawValue })
       {
-        _ = try await context.secretStore.remove(old)
+        _ = try? await context.secretStore.remove(old)
       }
       return try await connectionInspect(ConnectionInspect.Params(connectionId: connection.id))
     }
     await context.eventLog.publish(
-      AdapterEvent.connectionChanged(
+      try AdapterEvent.connectionChanged(
         connectionId: updated.id, status: updated.status, authStatus: updated.authStatus,
-        transport: .disconnected))
+        transport: .disconnected
+      ).carrying(updated))
     return ConnectionAdd.Result(connection: updated, inspection: ConnectionInspection(status: updated.status))
+  }
+
+  /// Delete a credential no connection uses (a key the form stored before an add or edit that then
+  /// failed). One a connection uses, even a disabled one, is kept.
+  public func credentialRemove(_ params: CredentialRemove.Params) async throws -> CredentialRemove.Result {
+    guard let ref = SecretRef(rawValue: params.reference) else {
+      throw WorkspaceError(.protocolInvalid, "reference must be a secret: reference.")
+    }
+    if try db.listConnections(includeDisabled: true).contains(where: { $0.authReference == ref.rawValue }) {
+      return CredentialRemove.Result(removed: false)
+    }
+    return CredentialRemove.Result(removed: try await context.secretStore.remove(ref))
   }
 
   /// Close a connection's adapter so the next use builds one from the stored profile.

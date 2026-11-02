@@ -77,4 +77,22 @@ private let unified: JSONValue = [
     #expect(reading.weekly?.usedPercent == 48)
     await rig.adapter.dispose()
   }
+
+  @Test func fillsTheMissingWindowFromTheTopLevel() throws {
+    let info: JSONValue = [
+      "status": "allowed", "rateLimitType": "five_hour", "utilization": 0.3,
+      "resetsAt": .number(fiveHourReset),
+      "unifiedWindows": ["seven_day": ["utilization": 0.48, "resetsAt": .number(weeklyReset)]],
+    ]
+    let reading = try #require(ClaudeUsage.reading(from: info, observedAt: observed))
+    #expect(reading.fiveHour?.usedPercent == 30)
+    #expect(reading.weekly?.usedPercent == 48)
+  }
+
+  @Test func perModelWeeklyWindowsAreNotTheWeek() {
+    for type in ["seven_day_opus", "seven_day_sonnet"] {
+      let info: JSONValue = ["status": "allowed", "rateLimitType": .string(type), "utilization": 0.9]
+      #expect(ClaudeUsage.reading(from: info, observedAt: observed) == nil, "\(type)")
+    }
+  }
 }
