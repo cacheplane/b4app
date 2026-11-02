@@ -17,6 +17,21 @@ public struct WorkspaceAccount: Sendable, Equatable {
     self.init(username: username, displayName: status.displayName)
   }
 
+  /// The account a joined coordinator reports, named by the signed-in account (`account.status`)
+  /// when that has a name: onboarding and Settings keep it current, while the hub link's name is read
+  /// once at join, before a new account has given one.
+  public init?(status: HubStatus.Result, profile: AccountStatus.Account?) {
+    guard var account = WorkspaceAccount(status: status) else { return nil }
+    account.rename(from: profile)
+    self = account
+  }
+
+  /// Takes the signed-in account's display name, unless it has none.
+  mutating func rename(from profile: AccountStatus.Account?) {
+    let name = profile?.displayName.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !name.isEmpty { displayName = name }
+  }
+
   private var trimmedDisplayName: String? {
     let trimmed = displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     return trimmed.isEmpty ? nil : trimmed

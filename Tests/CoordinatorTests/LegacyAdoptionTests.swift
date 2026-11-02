@@ -19,6 +19,49 @@ private final class Calls: @unchecked Sendable {
 
 private struct Failure: Error {}
 
+/// Answers `launchctl print` and `launchctl bootout` as told, and records each call.
+private final class FakeLaunchctl: @unchecked Sendable {
+  private let lock = NSLock()
+  private let print: CommandResult
+  private let bootout: CommandResult
+  private var _calls: [[String]] = []
+  private var _plistAtBootOut: Bool?
+  /// Read at the boot-out, to check the plist was still there.
+  var plistExists: @Sendable () -> Bool = { false }
+
+  init(print: CommandResult, bootout: CommandResult) {
+    self.print = print
+    self.bootout = bootout
+  }
+
+  var calls: [[String]] { lock.withLock { _calls } }
+  var plistAtBootOut: Bool? { lock.withLock { _plistAtBootOut } }
+
+  var run: LegacyAdoption.Launchctl {
+    { [self] arguments, _ in
+      let exists = arguments.first == "bootout" ? plistExists() : nil
+      return lock.withLock {
+        _calls.append(arguments)
+        if let exists { _plistAtBootOut = exists }
+        return arguments.first == "print" ? print : bootout
+      }
+    }
+  }
+}
+
+/// Writes the pre-flavour LaunchAgent's plist under `home`, running `program`.
+@discardableResult
+private func writeLegacyPlist(home: URL, program: String) throws -> URL {
+  let agents = home.appendingPathComponent("Library/LaunchAgents")
+  try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
+  let url = agents.appendingPathComponent("com.cacheplane.b4app.coordinator.plist")
+  let plist: [String: Any] = [
+    "Label": "com.cacheplane.b4app.coordinator", "ProgramArguments": [program], "RunAtLoad": true,
+  ]
+  try (plist as NSDictionary).write(to: url)
+  return url
+}
+
 /// A temporary home holding the pre-flavour data directory; never the real `~/Library`.
 private struct TemporaryHome {
   let home: URL
@@ -357,21 +400,108 @@ private struct TemporaryHome {
     let own = "/Applications/B4 Local.app/Contents/Helpers/b4app-coordinator"
     let old = "/Applications/Agent Workspace.app/Contents/Helpers/b4app-coordinator"
     // Not loaded: nothing to boot out, whatever the plist says.
-    #expect(LegacyAdoption.bootOutDecision(loaded: false, plistProgram: old, ownProgram: own) == .skip)
-    #expect(LegacyAdoption.bootOutDecision(loaded: false, plistProgram: nil, ownProgram: own) == .skip)
+    #expect(LegacyAdoption.bootOutDecision(state: .notLoaded, plistProgram: old, ownProgram: own) == .skip)
+    #expect(LegacyAdoption.bootOutDecision(state: .notLoaded, plistProgram: nil, ownProgram: own) == .skip)
     // Loaded, and its program is a different file: boot it out.
-    #expect(LegacyAdoption.bootOutDecision(loaded: true, plistProgram: old, ownProgram: own) == .bootOut)
+    #expect(LegacyAdoption.bootOutDecision(state: .loaded, plistProgram: old, ownProgram: own) == .bootOut)
     // Loaded and it is this very binary, or its program cannot be established: refuse.
-    guard case .refuse = LegacyAdoption.bootOutDecision(loaded: true, plistProgram: own, ownProgram: own)
+    guard case .refuse = LegacyAdoption.bootOutDecision(state: .loaded, plistProgram: own, ownProgram: own)
     else {
       Issue.record("expected a refusal for this install's own program")
       return
     }
-    guard case .refuse = LegacyAdoption.bootOutDecision(loaded: true, plistProgram: nil, ownProgram: own)
+    guard case .refuse = LegacyAdoption.bootOutDecision(state: .loaded, plistProgram: nil, ownProgram: own)
     else {
       Issue.record("expected a refusal for an unknown program")
       return
     }
+    // Unknown (the live gate's timed-out print): booted out by the same rule, never refused.
+    #expect(LegacyAdoption.bootOutDecision(state: .unknown, plistProgram: old, ownProgram: own) == .bootOut)
+    #expect(LegacyAdoption.bootOutDecision(state: .unknown, plistProgram: own, ownProgram: own) == .skip)
+    #expect(LegacyAdoption.bootOutDecision(state: .unknown, plistProgram: nil, ownProgram: own) == .skip)
+  }
+
+  @Test func jobStateReadsLaunchctlPrint() {
+    #expect(LegacyAdoption.jobState(printed: CommandResult(exitCode: 0)) == .loaded)
+    #expect(LegacyAdoption.jobState(printed: CommandResult(exitCode: 113)) == .notLoaded)
+    #expect(LegacyAdoption.jobState(printed: CommandResult(exitCode: nil, timedOut: true)) == .unknown)
+    #expect(LegacyAdoption.jobState(printed: CommandResult(exitCode: 5)) == .unknown)
+    #expect(LegacyAdoption.jobState(printed: nil) == .unknown)
+  }
+
+  /// Live gate, step 2: `launchctl print` timed out, adoption read that as "not loaded", and the old job
+  /// stayed loaded ("spawn scheduled") until a `launchctl bootout` by hand. Now an unreadable state is
+  /// booted out by the plist's program, and "No such process" then means it was not loaded.
+  @Test func anUnreadableJobIsBootedOutByItsPlist() async throws {
+    let fixture = try TemporaryHome()
+    defer { fixture.remove() }
+    let own = "/Applications/B4 Local.app/Contents/Helpers/b4app-coordinator"
+    try writeLegacyPlist(home: fixture.home, program: "/Applications/Agent Workspace.app/b4app-coordinator")
+    let target = "gui/501/com.cacheplane.b4app.coordinator"
+
+    let timedOut = FakeLaunchctl(
+      print: CommandResult(exitCode: nil, timedOut: true), bootout: CommandResult(exitCode: 0))
+    #expect(
+      try await LegacyAdoption.bootOutLegacyJob(
+        home: fixture.home, ownProgram: own, domainTarget: target, launchctl: timedOut.run))
+    #expect(timedOut.calls == [["print", target], ["bootout", target]])
+
+    let gone = FakeLaunchctl(
+      print: CommandResult(exitCode: nil, timedOut: true), bootout: CommandResult(exitCode: 3))
+    #expect(
+      try await !LegacyAdoption.bootOutLegacyJob(
+        home: fixture.home, ownProgram: own, domainTarget: target, launchctl: gone.run))
+
+    // Not loaded: no boot-out at all.
+    let notLoaded = FakeLaunchctl(print: CommandResult(exitCode: 113), bootout: CommandResult(exitCode: 0))
+    #expect(
+      try await !LegacyAdoption.bootOutLegacyJob(
+        home: fixture.home, ownProgram: own, domainTarget: target, launchctl: notLoaded.run))
+    #expect(notLoaded.calls == [["print", target]])
+
+    // Loaded, and the boot-out fails (or "No such process" for a job print said was loaded): thrown.
+    for code: Int32 in [5, 3] {
+      let failing = FakeLaunchctl(print: CommandResult(exitCode: 0), bootout: CommandResult(exitCode: code))
+      await #expect(throws: WorkspaceError.self) {
+        try await LegacyAdoption.bootOutLegacyJob(
+          home: fixture.home, ownProgram: own, domainTarget: target, launchctl: failing.run)
+      }
+    }
+
+    // A plist that runs this binary: never booted out, and refused only when known to be loaded.
+    try writeLegacyPlist(home: fixture.home, program: own)
+    let mine = FakeLaunchctl(
+      print: CommandResult(exitCode: nil, timedOut: true), bootout: CommandResult(exitCode: 0))
+    #expect(
+      try await !LegacyAdoption.bootOutLegacyJob(
+        home: fixture.home, ownProgram: own, domainTarget: target, launchctl: mine.run))
+    #expect(mine.calls == [["print", target]])
+  }
+
+  /// After the move, adoption boots the old job out as well as removing its plist, in that order.
+  @Test func retiringTheOldAgentBootsItOutThenRemovesItsPlist() async throws {
+    let fixture = try TemporaryHome()
+    defer { fixture.remove() }
+    let plist = try writeLegacyPlist(
+      home: fixture.home, program: "/Applications/Agent Workspace.app/b4app-coordinator")
+    let launchctl = FakeLaunchctl(print: CommandResult(exitCode: 0), bootout: CommandResult(exitCode: 0))
+    launchctl.plistExists = { fixture.exists(plist) }
+    let production = LegacyAdoption.Production(
+      home: fixture.home, environment: [:], ownProgram: "/Applications/B4 Local.app/b4app-coordinator",
+      launchctl: launchctl.run)
+    await production.plan.retireLegacyAgent()
+    #expect(launchctl.calls.map(\.first) == ["print", "bootout"])
+    #expect(launchctl.plistAtBootOut == true)
+    #expect(!fixture.exists(plist))
+
+    // A boot-out that fails still retires the plist.
+    try writeLegacyPlist(home: fixture.home, program: "/Applications/Agent Workspace.app/b4app-coordinator")
+    let failing = FakeLaunchctl(print: CommandResult(exitCode: 0), bootout: CommandResult(exitCode: 5))
+    await LegacyAdoption.Production(
+      home: fixture.home, environment: [:], ownProgram: "/Applications/B4 Local.app/b4app-coordinator",
+      launchctl: failing.run
+    ).plan.retireLegacyAgent()
+    #expect(!fixture.exists(plist))
   }
 
   /// Final review M6: once adopted, the old agent's plist goes, so the next login does not start the

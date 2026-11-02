@@ -10,6 +10,16 @@ public struct CommandResult: Sendable, Equatable {
   public var signal: Int32?
   public var timedOut: Bool
   public var succeeded: Bool { exitCode == 0 && !timedOut }
+
+  public init(
+    stdout: String = "", stderr: String = "", exitCode: Int32?, signal: Int32? = nil, timedOut: Bool = false
+  ) {
+    self.stdout = stdout
+    self.stderr = stderr
+    self.exitCode = exitCode
+    self.signal = signal
+    self.timedOut = timedOut
+  }
 }
 
 public struct CommandOptions: Sendable {
