@@ -237,6 +237,33 @@ private let withAMac = [
     }
   }
 
+  /// The local flavour gave up `b4app` for `b4app-local` (D-066), so on a device that also has the
+  /// prod app, a `b4app://pair` link opens prod. The old form under the local flavour's own scheme
+  /// reaches the local app whether or not its universal link is set up (a Simulator whose association
+  /// fetch failed).
+  @Test func theLocalFlavourReadsTheOldLinkUnderItsOwnScheme() throws {
+    var parts = try #require(
+      URLComponents(
+        url: PairLink.makeLegacy(url: "http://localhost:8080", code: code), resolvingAgainstBaseURL: false))
+    parts.scheme = PhoneFlavor.local.urlScheme
+    let own = try #require(parts.url)
+    #expect(own.absoluteString == "b4app-local://pair?hub=http%3A%2F%2Flocalhost%3A8080&code=K7M2Q9XP")
+    #expect(PairLink.isPairLink(own, legacySchemes: PhoneFlavor.local.legacyPairSchemes))
+    #expect(
+      PhoneFlavor.local.pairLinkDecision(own)
+        == .confirm(PairLink(hub: try HubURL.validate("http://localhost:8080"), code: code)))
+    // Still a hub on this machine only.
+    parts.queryItems = [
+      URLQueryItem(name: "hub", value: "https://hub.example.com"), URLQueryItem(name: "code", value: code),
+    ]
+    #expect(PhoneFlavor.local.pairLinkDecision(try #require(parts.url)) == .invalid)
+    // Prod and beta read no old link, under any scheme.
+    for flavor in [PhoneFlavor.prod, .beta] {
+      #expect(flavor.parsePairLink(own) == nil)
+      #expect(flavor.pairLinkDecision(own) == .ignored)
+    }
+  }
+
   @Test func onlyPairingLinksAreDecided() {
     // Not pairing links at all: another app link, a sign-in callback (dropped elsewhere), any page.
     for text in [

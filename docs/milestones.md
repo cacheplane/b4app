@@ -199,8 +199,8 @@ Exit gate status: the fixture gates pass (design exit items 4 to 6, locally: a c
 ## Deleting threads (D-119, D-120)
 
 - [x] Delete a thread on the Mac (context menu, toolbar) or the iPhone (swipe, "…" menu) after a confirmation with no undo; it is hidden on every device and kept, marked `userDeletedAt`, on the Mac and the hub. `implemented` and `fixture-tested` (storage, coordinator, hub, mirror, and model tests).
-- [x] Delete the runtime's copy: Codex `thread/delete`, B4 `DELETE /threads/:id`, Claude Code's transcript files; done, unsupported, or waiting with backoff; Diagnostics counts. `implemented` and `fixture-tested` against `fake-codex.py`, `fake-b4.py`, and a scratch Claude config folder. Not live-tested: no real Codex, Claude, or B4 thread has been deleted through b4app yet.
-- [ ] On screen: the Mac alert and the iPhone swipe in the Simulator, after this merges and the hub is rebuilt with `0011` (see `docs/verification.md`).
+- [x] Delete the runtime's copy: Codex `thread/delete`, B4 `DELETE /threads/:id`, Claude Code's transcript files; done, unsupported, or waiting with backoff; Diagnostics counts. `implemented` and `fixture-tested` against `fake-codex.py`, `fake-b4.py`, and a scratch Claude config folder. `live-tested` on 2026-11-02 against real Codex 0.166.0 and Claude Code 2.1.282 threads with a turn each, and a B4 0.15.8 server: each runtime's copy was gone afterwards (`docs/verification.md`).
+- [x] On screen: the Mac's toolbar Delete… and alert, and the iPhone's swipe and alert in the Simulator, on the owner's rebuilt hub (`docs/verification.md`). The Mac's right-click menu was not opened on screen.
 
 ## M8c: relay (D-054 to D-059, D-075 to D-080)
 
