@@ -12,6 +12,8 @@ public struct CoordinatorOptions: Sendable {
   public var adapterFactory: SessionService.AdapterFactory?
   /// Overrides the hub client construction (tests inject a `FakeHubAPI`); nil builds `HTTPHubAPI`.
   public var hubAPIFactory: HubSync.APIFactory?
+  /// The waits between tries of a connection check that found its runtime unreachable.
+  public var checkRetryDelays: [Duration]
   /// Overrides the relay link's WebSocket (tests inject a `FakeHubLinkConnection`); nil uses
   /// `URLSessionHubLinkConnection`.
   public var hubLinkConnection: (any HubLinkConnection)?
@@ -23,13 +25,14 @@ public struct CoordinatorOptions: Sendable {
     paths: PlatformPaths? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
     secretStore: (any SecretStore)? = nil, adapterFactory: SessionService.AdapterFactory? = nil,
     hubAPIFactory: HubSync.APIFactory? = nil, hubLinkConnection: (any HubLinkConnection)? = nil,
-    powerAssertions: (any PowerAssertions)? = nil
+    powerAssertions: (any PowerAssertions)? = nil, checkRetryDelays: [Duration] = [.seconds(1), .seconds(3)]
   ) {
     self.environment = environment
     self.paths = paths ?? PlatformPaths.resolve(environment: environment)
     self.secretStore = secretStore ?? KeychainSecretStore.forCurrentProcess()
     self.adapterFactory = adapterFactory
     self.hubAPIFactory = hubAPIFactory
+    self.checkRetryDelays = checkRetryDelays
     self.hubLinkConnection = hubLinkConnection
     self.powerAssertions = powerAssertions
   }
@@ -166,7 +169,8 @@ public enum Coordinator {
       context: SessionService.Context(
         database: database, eventLog: eventLog, diagnostics: diagnostics, environment: options.environment,
         clientVersion: CoordinatorVersion.current, secretStore: options.secretStore,
-        projects: projects, adapterFactory: options.adapterFactory, servers: servers))
+        projects: projects, adapterFactory: options.adapterFactory, servers: servers,
+        checkRetryDelays: options.checkRetryDelays))
     await sessions.start()
     await servers.startAll()
     let relay = RelayExecutor(

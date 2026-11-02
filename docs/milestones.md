@@ -192,6 +192,10 @@ Known limitations (the full reasoning is under D-048 to D-050):
 
 Exit gate status: the fixture gates pass (design exit items 4 to 6, locally: a cursor below the horizon resyncs without losing an outbox row; a phone change to a Mac-only column is refused and connection secrets are scrubbed on every apply; `cargo test`, `swift test`, and both app builds pass). Items 1 to 3 pass live (2026-11-01). M8b is complete once the PR's CI passes.
 
+## Settings: connections, usage, B4 projects (D-081 to D-084)
+
+- [x] Connection cards with icon status, plan usage (Codex, Claude) and B4 token totals, checks that retry, the "+" menu, the B4 form with a Keychain-stored key, Edit (name, key), and the B4 projects page (renamed from Local servers) with agent rows and the attach sheet. `implemented` and `fixture-tested` (adapter, storage, coordinator, model, and format tests; Mac snapshots measured); usage reading `live-tested` against the owner's Codex and Claude Code (2026-11-02). Usage stays on the Mac; the phone shows state only. Not built: removing a connection or a project (needs a decision on its threads and connections).
+
 ## M8c: relay (D-054 to D-059, D-075 to D-080)
 
 Design: `docs/superpowers/specs/2026-11-01-m8c-relay-design.md`. Plan: `docs/superpowers/plans/2026-11-01-m8c-relay.md`. Roadmap block: M8 in `docs/roadmaps/Personal_Agent_Workspace_Technical_Spec_and_Roadmap.md`. Every item below is `implemented` and `fixture-tested` (the test names are mapped to the live-gate items in `docs/verification.md`, "M8c relay"). They are also `live-tested`: the live gate (Simulator, Compose hub, packaged Mac app) ran on 2026-11-02, items 1 to 7, recorded in `docs/verification.md`.

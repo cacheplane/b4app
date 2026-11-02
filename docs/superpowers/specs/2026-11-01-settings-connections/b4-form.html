@@ -1,0 +1,107 @@
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  .lla { --ink:#0d0d0d; --bg:#fff; --surface:#f7f7f8; --raised:#ececee; --rule:#e8e8e8; --muted:#5d5d5d; --accent:#002fa7; --danger:#962e1f; --ghost:#b8b8bc;
+    font-family:'Hanken Grotesk',system-ui,sans-serif; color:var(--ink); }
+  .stage { background:#e9e9ec; border-radius:12px; padding:40px 24px; display:flex; justify-content:center; }
+  /* Mac sheet: 8 pt grid; 13 pt rows, 30 pt controls, 24 pt margins */
+  .sheet { width:480px; background:var(--bg); border-radius:16px; box-shadow:0 24px 64px rgba(0,0,0,.18), 0 0 0 .5px rgba(0,0,0,.12); padding:24px; box-sizing:border-box; font-size:13px; line-height:16px; }
+  .sheet h4 { margin:0; font-size:15px; line-height:20px; font-weight:600; }
+  .sheet .lede { margin:4px 0 0; color:var(--muted); font-size:13px; line-height:16px; }
+  .group { margin-top:16px; background:var(--surface); border:1px solid var(--rule); border-radius:12px; }
+  .row { display:grid; grid-template-columns:96px 1fr; align-items:center; gap:12px; min-height:48px; padding:0 12px; box-sizing:border-box; border-top:1px solid var(--rule); }
+  .row:first-child { border-top:none; }
+  .row label { color:var(--ink); display:flex; align-items:center; gap:4px; }
+  .field { height:30px; border:1px solid var(--rule); border-radius:8px; background:var(--bg); display:flex; align-items:center; padding:0 8px; box-sizing:border-box; color:var(--ink); }
+  .field.ph { color:var(--ghost); }
+  .field.mono { font-family:'JetBrains Mono',ui-monospace,monospace; font-size:12px; }
+  .field.focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(0,47,167,.15); }
+  .foot { font-size:12px; line-height:16px; color:var(--muted); padding:8px 12px 0; }
+  .foot a, .link { color:var(--accent); text-decoration:none; }
+  .info { width:14px; height:14px; border-radius:50%; border:1px solid var(--ghost); color:var(--muted); font-size:9px; font-weight:600; display:inline-flex; align-items:center; justify-content:center; }
+  .bar { display:flex; align-items:center; gap:8px; margin-top:24px; }
+  .bar .sp { flex:1; }
+  .help { width:22px; height:22px; border-radius:50%; border:1px solid var(--rule); background:var(--bg); color:var(--muted); font-size:12px; font-weight:600; display:flex; align-items:center; justify-content:center; }
+  .btn { height:30px; padding:0 16px; border-radius:8px; display:flex; align-items:center; font-weight:600; font-size:13px; box-sizing:border-box; }
+  .btn.sec { border:1px solid var(--rule); background:var(--bg); color:var(--ink); font-weight:500; }
+  .btn.pri { background:var(--ink); color:var(--bg); }
+  .pop { position:relative; }
+  .popover { position:absolute; left:-8px; top:24px; width:240px; background:var(--bg); border:1px solid var(--rule); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.12); padding:12px; font-size:12px; line-height:16px; color:var(--ink); z-index:2; }
+  .popover p { margin:0 0 8px; color:var(--muted); }
+  /* Phone sheet: 17 pt rows, 44 pt min height, 16 pt margins */
+  .phone { width:390px; height:640px; background:var(--bg); border-radius:40px; box-shadow:0 0 0 10px #1b1b1d, 0 24px 64px rgba(0,0,0,.25); overflow:hidden; font-size:17px; line-height:22px; position:relative; }
+  .p-nav { height:56px; display:grid; grid-template-columns:1fr auto 1fr; align-items:center; padding:0 16px; margin-top:12px; }
+  .p-nav .t { font-weight:600; font-size:17px; }
+  .p-nav .l { color:var(--ink); } .p-nav .r { justify-self:end; font-weight:600; color:var(--ghost); }
+  .p-body { padding:8px 16px 0; }
+  .p-group { background:var(--surface); border:1px solid var(--rule); border-radius:12px; }
+  .p-row { min-height:44px; display:flex; flex-direction:column; justify-content:center; padding:8px 16px; box-sizing:border-box; border-top:1px solid var(--rule); }
+  .p-row:first-child { border-top:none; }
+  .p-row .k { font-size:13px; line-height:16px; color:var(--muted); }
+  .p-row .v { font-size:17px; line-height:22px; }
+  .p-row .v.ph { color:var(--ghost); }
+  .p-row .v.mono { font-family:'JetBrains Mono',ui-monospace,monospace; font-size:15px; }
+  .p-foot { font-size:13px; line-height:18px; color:var(--muted); padding:8px 16px 24px; }
+  .note { font-size:12px; color:var(--muted); margin-top:8px; text-align:center; }
+</style>
+
+<h2>Add a B4 connection: which help style?</h2>
+<p class="subtitle">Same four fields in both: Name, Server, Agent (the route), API key. The key goes in a secure field and straight to the Keychain. The only difference is where help lives. Mac sheets shown; the phone is the same for either.</p>
+
+<div class="cards lla" style="grid-template-columns:1fr">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="aspect-ratio:auto;padding:0">
+      <div class="stage" style="width:100%">
+        <div class="sheet">
+          <h4>Add a B4 connection</h4>
+          <p class="lede">Connect to a B4 agent server.</p>
+          <div class="group">
+            <div class="row"><label>Name</label><div class="field ph">Optional</div></div>
+            <div class="row"><label>Server</label><div class="field mono focus">https://agents.example.com</div></div>
+            <div class="row"><label>Agent</label><div class="field mono">/chat#agent</div></div>
+            <div class="row"><label>API key</label><div class="field ph">Optional</div></div>
+          </div>
+          <div class="foot">Remote servers need HTTPS. The key is kept in your Keychain. <a href="#">Learn more</a></div>
+          <div class="bar"><div class="help">?</div><div class="sp"></div><div class="btn sec">Cancel</div><div class="btn pri">Add</div></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body"><h3>A · One footnote and a help button</h3><p>A single short line under the group covers HTTPS and the Keychain, with "Learn more". The "?" in the corner opens the help page, as in macOS dialogs. Fewest marks on the form.</p></div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="aspect-ratio:auto;padding:0">
+      <div class="stage" style="width:100%;padding-bottom:96px">
+        <div class="sheet">
+          <h4>Add a B4 connection</h4>
+          <p class="lede">Connect to a B4 agent server.</p>
+          <div class="group">
+            <div class="row"><label>Name</label><div class="field ph">Optional</div></div>
+            <div class="row"><label>Server</label><div class="field mono">https://agents.example.com</div></div>
+            <div class="row"><label class="pop">Agent <span class="info">i</span>
+              <div class="popover"><p>The route your B4 server exposes for the agent, as in <span style="font-family:'JetBrains Mono';color:#0d0d0d">/chat#agent</span>.</p><a class="link" href="#">Learn more</a></div></label><div class="field mono focus">/chat#agent</div></div>
+            <div class="row"><label>API key <span class="info">i</span></label><div class="field ph">Optional</div></div>
+          </div>
+          <div class="bar"><div class="sp"></div><div class="btn sec">Cancel</div><div class="btn pri">Add</div></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body"><h3>B · Info buttons beside the labels</h3><p>A small ⓘ beside any label that needs explaining opens a two-line popover with "Learn more" (shown open on Agent). No footnote at all; help sits right where the question comes up.</p></div>
+  </div>
+</div>
+
+<h3 style="margin-top:32px">On the phone</h3>
+<div class="lla stage" style="padding:48px 24px">
+  <div class="phone">
+    <div class="p-nav"><span class="l">Cancel</span><span class="t">Add B4 connection</span><span class="r">Add</span></div>
+    <div class="p-body">
+      <div class="p-group">
+        <div class="p-row"><span class="k">Name</span><span class="v ph">Optional</span></div>
+        <div class="p-row"><span class="k">Server</span><span class="v mono">https://agents.example.com</span></div>
+        <div class="p-row"><span class="k">Agent</span><span class="v mono">/chat#agent</span></div>
+        <div class="p-row"><span class="k">API key</span><span class="v ph">Optional</span></div>
+      </div>
+      <div class="p-foot">Remote servers need HTTPS. The key is kept in your Keychain. <span class="link">Learn more</span></div>
+    </div>
+  </div>
+</div>
+<p class="note lla">Shown for the layout only: today the phone's Settings is read-only, so this sheet would ship once the phone can manage connections (M8c or later).</p>

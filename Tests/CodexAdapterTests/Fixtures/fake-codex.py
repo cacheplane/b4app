@@ -7,6 +7,7 @@ Never run in place of the real server for anything the docs call live-tested."""
 import json
 import os
 import sys
+import time
 
 if len(sys.argv) > 1 and sys.argv[1] == "--version":
     print("codex-cli 0.166.0")
@@ -41,11 +42,27 @@ def read():
     return msg
 
 
-def wait_response(req_id):
+def wait_response(req_id, waiting_thread=None):
     while True:
         msg = read()
         if msg.get("id") == req_id and "method" not in msg:
             return msg
+        # The real app-server keeps answering reads while a request of its own is open: the adapter
+        # refetches rate limits after a turn, and the coordinator reads threads to refresh the list.
+        method = msg.get("method")
+        if method == "account/rateLimits/read":
+            allowed = os.environ.get("FAKE_CODEX_BLOCKED") != "1"
+            send({"id": msg["id"], "result": {"rateLimits": rate_limits(), "ordinaryUsageAllowed": allowed}})
+            continue
+        if method == "thread/read":
+            thread_id = msg["params"]["threadId"]
+            record = thread_record(thread_id, loaded.get(thread_id, "/tmp"))
+            if thread_id == waiting_thread:
+                record["status"] = {"type": "active", "activeFlags": ["waitingOnApproval"]}
+            elif hanging and hanging[0] == thread_id:
+                record["status"] = {"type": "active", "activeFlags": []}
+            send({"id": msg["id"], "result": {"thread": record}})
+            continue
         log("ignoring message while waiting for response %s" % req_id)
 
 
@@ -77,11 +94,21 @@ def stream_message(thread_id, turn_id, text):
 finished = {}
 
 
+def rate_limits():
+    # The plan windows the tests pin: 62% of the 5-hour window, 31% of the week.
+    now = int(time.time())
+    return {"limitId": "codex", "planType": "pro", "rateLimitReachedType": None, "credits": None,
+            "primary": {"usedPercent": 62, "windowDurationMins": 300, "resetsAt": now + 8040},
+            "secondary": {"usedPercent": 31, "windowDurationMins": 10080, "resetsAt": now + 300000}}
+
+
 def finish_turn(thread_id, turn_id, status, error=None):
     finished.setdefault(thread_id, []).append((turn_id, status))
     notify("turn/completed", {"threadId": thread_id,
                               "turn": {"id": turn_id, "status": status, "items": [], "error": error}})
     notify("thread/status/changed", {"threadId": thread_id, "status": {"type": "idle"}})
+    # Sparse, as the real one is: one window, no plan, no ordinaryUsageAllowed.
+    notify("account/rateLimits/updated", {"rateLimits": {"limitId": "codex", "primary": rate_limits()["primary"]}})
 
 
 turn_counter = 0
@@ -107,6 +134,9 @@ while True:
         send({"id": req_id, "result": {"account": {"type": "chatgpt", "email": os.environ.get("FAKE_CODEX_EMAIL", "owner@example.com"),
                                                    "planType": "plus", "workspaceName": None},
                                        "requiresOpenaiAuth": True}})
+    elif method == "account/rateLimits/read":
+        allowed = os.environ.get("FAKE_CODEX_BLOCKED") != "1"
+        send({"id": req_id, "result": {"rateLimits": rate_limits(), "ordinaryUsageAllowed": allowed}})
     elif method == "account/login/start":
         send({"id": req_id, "result": {"type": "chatgpt", "authUrl": "https://auth.example/login?state=1",
                                        "loginId": "login_1"}})
@@ -174,7 +204,7 @@ while True:
             send({"id": 7, "method": "item/commandExecution/requestApproval",
                   "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "item_cmd", "command": "ls -la",
                              "cwd": "/tmp", "reason": None, "environmentId": "env_1", "startedAtMs": 1}})
-            response = wait_response(7)
+            response = wait_response(7, thread_id)
             decision = (response.get("result") or {}).get("decision")
             notify("serverRequest/resolved", {"threadId": thread_id, "requestId": 7})
             status = "completed" if decision in ("accept", "acceptForSession") else "declined"
@@ -188,7 +218,7 @@ while True:
             send({"id": 8, "method": "item/permissions/requestApproval",
                   "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "item_perm", "cwd": "/tmp",
                              "permissions": {"network": {"enabled": True}}, "reason": "needs network", "startedAtMs": 1}})
-            response = wait_response(8)
+            response = wait_response(8, thread_id)
             notify("serverRequest/resolved", {"threadId": thread_id, "requestId": 8})
             reply = "Permissions answered with %s." % json.dumps(response.get("result") or response.get("error"), sort_keys=True)
         if "question" in text:
@@ -196,7 +226,7 @@ while True:
                   "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "item_q", "isBlocking": True,
                              "questions": [{"id": "color", "header": "Color", "question": "Which color?",
                                             "options": [{"label": "red", "description": "warm"}, {"label": "blue", "description": "cool"}]}]}})
-            response = wait_response(9)
+            response = wait_response(9, thread_id)
             notify("serverRequest/resolved", {"threadId": thread_id, "requestId": 9})
             answers = ((response.get("result") or {}).get("answers") or {}).get("color", {}).get("answers", [])
             reply = "You chose %s." % (answers[0] if answers else "nothing")

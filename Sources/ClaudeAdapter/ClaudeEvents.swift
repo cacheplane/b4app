@@ -123,6 +123,12 @@ public struct ClaudeTurnTracker: Sendable {
       return [requestOpened(request)]
     case .controlCancel(let requestId):
       return [event(.runtimeRequestResolved, ["source": "server"], requestId: requestId)]
+    case .rateLimit(let info):
+      guard let reading = ClaudeUsage.reading(from: info, observedAt: Timestamp.now()),
+        let event = try? AdapterEvent.usageChanged(
+          connectionId: connectionId, reading: reading, adapterGeneration: generation)
+      else { return [] }
+      return [event]
     case .controlResponse, .keepAlive, .unknown:
       return []
     }

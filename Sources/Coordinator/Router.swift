@@ -244,6 +244,11 @@ public actor Router {
     case .hubLeave:
       try await context.hub.leave()
       return try JSONValue(encoding: try await context.hub.status())
+    case .usageRead:
+      return try JSONValue(encoding: try await sessions.usageRead())
+    case .connectionUpdate:
+      return try JSONValue(
+        encoding: try await sessions.connectionUpdate(try command.params(for: ConnectionUpdate.self)))
     case .hubPair:
       return try JSONValue(encoding: try await context.hub.pair())
     case .hubPairStatus:
