@@ -18,9 +18,14 @@
 #      cacheplane/b4app, with the versioned zip. Prod also attaches the same file as
 #      Agent-Workspace.zip, so releases/latest/download/Agent-Workspace.zip works (the b4.run
 #      download page links that name).
-#   4. Prod only: clone cacheplane/homebrew-tap, set version and sha256 in Casks/agent-workspace.rb
+#   4. Prod only: in the tap cloned during the preflight, set version and sha256 in Casks/agent-workspace.rb
 #      (starting from Packaging/homebrew/agent-workspace.rb when the tap has no cask yet), push a
 #      branch, and open a pull request. The owner merges it.
+#
+# Before step 1 a real run checks everything that could fail later: a clean tree, HEAD on the remote
+# (fetched), the signing and notary settings, gh signed in, no such release yet, and for prod that
+# the tap exists, you can push to it, and its branch agent-workspace-<version> is free (it clones the
+# tap and cuts the branch then, so nothing goes public unless the cask pull request can follow).
 #
 # A dry run builds nothing, signs nothing, and never runs gh or git push. It hashes the zip already
 # under dist/ if there is one and otherwise prints a placeholder. It tolerates a dirty tree.
@@ -101,31 +106,10 @@ if [ -n "$DIRTY" ]; then
   fi
 fi
 HEAD_SHA=$(git rev-parse HEAD)
-PUSHED=$(git branch -r --contains "$HEAD_SHA" 2>/dev/null | head -1 || true)
-if [ -z "$PUSHED" ]; then
-  if [ "$DRY_RUN" = 1 ]; then
-    echo "Note: $HEAD_SHA is on no remote branch; a real run would refuse, since the tag is created on it."
-  else
-    fail "$HEAD_SHA is on no remote branch; push it first, since gh creates the tag $TAG on it."
-  fi
-fi
-
-if [ "$DRY_RUN" = 0 ]; then
-  if [ -z "${B4APP_SIGN_IDENTITY:-}" ]; then
-    fail "B4APP_SIGN_IDENTITY must name a Developer ID Application identity; a release is always signed and notarized."
-  fi
-  if [ "${B4APP_SKIP_NOTARIZE:-0}" = 1 ]; then
-    fail "B4APP_SKIP_NOTARIZE=1 is set; a release is always notarized."
-  fi
-  command -v gh >/dev/null || fail "gh is not installed (brew install gh)."
-  gh auth status >/dev/null 2>&1 || fail "gh is not signed in; run gh auth login."
-  if gh release view "$TAG" --repo "$SOURCE_REPO" >/dev/null 2>&1; then
-    fail "The release $TAG already exists on $SOURCE_REPO."
-  fi
-fi
-
+BRANCH="agent-workspace-$VERSION"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/b4app-release.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
+TAP="$WORK/homebrew-tap"
 
 # step <command…>: print the command, then run it unless this is a dry run.
 step() {
@@ -134,6 +118,60 @@ step() {
   printf '\n'
   if [ "$DRY_RUN" = 0 ]; then "$@"; fi
 }
+
+echo "==> 0. Preflight$([ "$DRY_RUN" = 1 ] && echo " (a dry run prints the network checks and runs none of them)")"
+if [ "$DRY_RUN" = 1 ]; then
+  PUSHED=$(git branch -r --contains "$HEAD_SHA" 2>/dev/null | head -1 || true)
+  if [ -z "$PUSHED" ]; then
+    echo "Note: $HEAD_SHA is on no remote branch; a real run would refuse, since the tag is created on it."
+  fi
+  echo "+ git fetch --quiet origin   # then HEAD must be on a remote branch"
+  echo "+ gh auth status"
+  echo "+ gh release view $TAG --repo $SOURCE_REPO   # must not exist"
+  if [ "$FLAVOR" = prod ]; then
+    echo "+ gh repo view $TAP_REPO --json viewerPermission   # must be WRITE, MAINTAIN, or ADMIN"
+    echo "+ gh repo clone $TAP_REPO <tmp>/homebrew-tap"
+    echo "+ git -C <tmp>/homebrew-tap ls-remote --exit-code --heads origin $BRANCH   # must not exist"
+    echo "+ git -C <tmp>/homebrew-tap switch -c $BRANCH"
+  fi
+else
+  if [ -z "${B4APP_SIGN_IDENTITY:-}" ]; then
+    fail "B4APP_SIGN_IDENTITY must name a Developer ID Application identity; a release is always signed and notarized."
+  fi
+  if [ "${B4APP_SKIP_NOTARIZE:-0}" = 1 ]; then
+    fail "B4APP_SKIP_NOTARIZE=1 is set; a release is always notarized."
+  fi
+  # Fetch first, so a stale remote-tracking ref cannot vouch for a commit the remote lacks.
+  step git fetch --quiet origin
+  if [ -z "$(git branch -r --contains "$HEAD_SHA" 2>/dev/null | head -1 || true)" ]; then
+    fail "$HEAD_SHA is on no remote branch; push it first, since gh creates the tag $TAG on it."
+  fi
+  command -v gh >/dev/null || fail "gh is not installed (brew install gh)."
+  gh auth status >/dev/null 2>&1 || fail "gh is not signed in; run gh auth login."
+  if gh release view "$TAG" --repo "$SOURCE_REPO" >/dev/null 2>&1; then
+    fail "The release $TAG already exists on $SOURCE_REPO."
+  fi
+  if [ "$FLAVOR" = prod ]; then
+    # The tap must exist and be writable before anything goes public: a release with no cask pull
+    # request is half a release. Clone it and cut the branch now, so step 4 only edits and pushes.
+    PERMISSION=$(gh repo view "$TAP_REPO" --json viewerPermission --jq .viewerPermission 2>/dev/null || true)
+    case "$PERMISSION" in
+      ADMIN|MAINTAIN|WRITE) ;;
+      "") fail "Cannot see $TAP_REPO (gh repo view failed); create the tap first (docs/release.md) and check gh auth." ;;
+      *) fail "You have $PERMISSION access to $TAP_REPO; pushing the branch needs WRITE." ;;
+    esac
+    step gh repo clone "$TAP_REPO" "$TAP"
+    # ls-remote exits 0 when the branch exists, 2 when it does not, and something else on an error.
+    status=0
+    git -C "$TAP" ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1 || status=$?
+    case "$status" in
+      2) ;;
+      0) fail "The branch $BRANCH already exists on $TAP_REPO; merge or delete it first." ;;
+      *) fail "Cannot list the branches of $TAP_REPO (git ls-remote exited $status)." ;;
+    esac
+    step git -C "$TAP" switch -c "$BRANCH"
+  fi
+fi
 
 # render_cask <from> <to>: copy the cask with this release's version and hash, and check that each
 # line was set exactly once.
@@ -181,10 +219,7 @@ fi
 
 if [ "$FLAVOR" = prod ]; then
   echo "==> 4. Pull request on $TAP_REPO"
-  TAP="$WORK/homebrew-tap"
-  BRANCH="agent-workspace-$VERSION"
-  step gh repo clone "$TAP_REPO" "$TAP"
-  step git -C "$TAP" switch -c "$BRANCH"
+  # The preflight cloned the tap and cut the branch ($TAP, $BRANCH).
   if [ "$DRY_RUN" = 1 ]; then
     # Show the edit on the template, in a scratch directory.
     render_cask "$CASK_TEMPLATE" "$WORK/agent-workspace.rb"

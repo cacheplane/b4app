@@ -22,6 +22,10 @@ cask "agent-workspace" do
   app "Agent Workspace.app"
   binary "#{appdir}/Agent Workspace.app/Contents/Helpers/agent-workspace"
 
+  uninstall launchctl: "com.cacheplane.b4app.coordinator",
+            quit:      "com.cacheplane.b4app",
+            delete:    "~/Library/LaunchAgents/com.cacheplane.b4app.coordinator.plist"
+
   zap trash: [
     "~/Library/Application Support/b4app",
     "~/Library/LaunchAgents/com.cacheplane.b4app.coordinator.plist",
