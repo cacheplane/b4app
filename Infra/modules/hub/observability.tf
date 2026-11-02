@@ -21,11 +21,22 @@ resource "aws_sns_topic_policy" "alerts" {
     Version = "2012-10-17"
     Statement = [
       {
+        # The SNS API refuses a wildcard action in a topic policy ("Policy
+        # statement action out of service scope"), so the actions are listed.
         Sid       = "OwnerManages"
         Effect    = "Allow"
         Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
-        Action    = "sns:*"
-        Resource  = aws_sns_topic.alerts.arn
+        Action = [
+          "sns:GetTopicAttributes",
+          "sns:SetTopicAttributes",
+          "sns:AddPermission",
+          "sns:RemovePermission",
+          "sns:DeleteTopic",
+          "sns:Subscribe",
+          "sns:ListSubscriptionsByTopic",
+          "sns:Publish",
+        ]
+        Resource = aws_sns_topic.alerts.arn
       },
       {
         Sid       = "CloudWatchAlarmsPublish"
