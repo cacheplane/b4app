@@ -34,7 +34,9 @@ extension WorkspaceModel {
       reference = await storeKey(apiKey, label: name ?? URL(string: url)?.host ?? "B4 endpoint")
       guard reference != nil else { return nil }
     }
-    return await addConnection(kind: .b4, label: name, url: url, route: route, authReference: reference)
+    let added = await addConnection(kind: .b4, label: name, url: url, route: route, authReference: reference)
+    if added == nil, let reference { await takeBackKey(reference) }
+    return added
   }
 
   /// Rename a connection and, for B4, replace or remove its key. Returns whether the change was made.
@@ -54,7 +56,10 @@ extension WorkspaceModel {
         options: Self.mutation(timeout: .seconds(60))
       ).connection
     }
-    guard let updated else { return false }
+    guard let updated else {
+      if let reference { await takeBackKey(reference) }
+      return false
+    }
     merge(updated)
     return true
   }
@@ -77,6 +82,13 @@ extension WorkspaceModel {
   public func checkConnection(id: String) async {
     await inspectConnection(id: id)
     await refreshUsage()
+  }
+
+  /// Delete a key stored for an add or edit that then failed, so no Keychain item is left with no
+  /// connection. Quiet: the failure the person sees is the add's or the edit's.
+  private func takeBackKey(_ reference: String) async {
+    _ = try? await client?.request(
+      CredentialRemove.self, CredentialRemove.Params(reference: reference), options: Self.mutation())
   }
 
   private func storeKey(_ value: String, label: String) async -> String? {

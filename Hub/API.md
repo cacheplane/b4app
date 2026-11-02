@@ -361,12 +361,17 @@ a timeout, or after a crash between the response and the client's bookkeeping) i
 
 **Recording and applying.** The batch runs in one transaction. Each new change is recorded in the
 org's feed and applied to the mirrored tables with the same semantics as the Mac's replay: an
-`insert` upserts the columns it carries, an `update` sets one column, a `delete` deletes. A change
-that cannot apply (an unknown table, a missing parent row, a malformed shape, a value the column
-type refuses) is still recorded, so every device's feed stays complete, but it is skipped and
-counted in the hub's log; the push still succeeds and `acceptedThrough` still covers it. Mirrored
-rows are keyed to the pushing user as well as the org, so another user of the org pushing the same
-row id cannot overwrite, update, delete, or adopt as a parent the first user's row.
+`insert` upserts the columns it carries, an `update` sets one column, a `delete` marks the row
+deleted. The hub never removes a synced row (D-089): a deleted row keeps its columns and its column
+clocks, every read leaves it out (the snapshot, the relay's routing, the parent check), an update of
+it is skipped, and an `insert` of the same id revives it, taking every column it carries whatever
+the kept clocks say. The `delete` itself is in the feed like any change, so readers still pull it
+and drop the row. A change that cannot apply (an unknown table, a missing parent row, a malformed
+shape, a value the column type refuses) is still recorded, so every device's feed stays complete,
+but it is skipped and counted in the hub's log; the push still succeeds and `acceptedThrough` still
+covers it. Mirrored rows are keyed to the pushing user as well as the org, so another user of the
+org pushing the same row id cannot overwrite, update, delete, or adopt as a parent the first user's
+row.
 
 **Refusals**, before anything is stored: `401 unauthorized`; `400 invalid_request` for a body that
 is not `{"changes": [...]}` or has more than 1000 changes; `413 payload_too_large` for a body over
@@ -448,20 +453,20 @@ exits 2). `serve` prunes every org's feed when it starts and every 24 hours afte
 `b4hub prune --older-than-days N [--org <slug>]` does it once (with `DATABASE_ADMIN_URL`; every
 org when `--org` is omitted). Pruning deletes the changes received more than that long ago and
 every change before them, and records the org's *horizon*: the highest `hubSeq` it deleted. It
-never moves down, and the mirrored tables are not touched. A pull whose `after` is below the
-horizon (including `after=0` once anything has been pruned, and any negative `after`) can no
-longer be served and gets `410 resync_required`. The client then restores from `GET
-/v1/snapshot` and continues pulling from the snapshot's `next`. The check and the page are read in
-one database snapshot, so a prune that commits during a pull cannot leave the reader missing rows.
-Pruning takes the same per-org lock a push holds, for one org's prune at a time, so it never
-deletes a row a push is committing.
+never moves down, and the mirrored tables are not touched, so pruning never loses a row. A pull
+whose `after` is below the horizon (including `after=0` once anything has been pruned, and any
+negative `after`) can no longer be served and gets `410 resync_required`. The client then restores
+from `GET /v1/snapshot` and continues pulling from the snapshot's `next`. The check and the page
+are read in one database snapshot, so a prune that commits during a pull cannot leave the reader
+missing rows. Pruning takes the same per-org lock a push holds, for one org's prune at a time, so
+it never deletes a row a push is committing.
 
 ### `GET /v1/snapshot`
 
 The authenticated user's state, for a reader that got `410 resync_required` (or has nothing yet
 and the feed no longer reaches back to `hubSeq` 1). Read in one `REPEATABLE READ` transaction, so
 the rows, the clocks, and `next` are one instant while pushes keep landing. Only this user's rows
-appear. `200`:
+appear, and no deleted row or its clocks. `200`:
 
 ```json
 {
@@ -475,10 +480,11 @@ appear. `200`:
   `projects`, `projectFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`),
   rows within a table by id. Each has `hubSeq` 0, `deviceSeq` 0, `wall` 0, `column` `null`,
   `deviceId` the row's owner (the device of its latest insert), and `value` the row's Mac columns
-  (no `org_id`, `user_id`, `device_id`, or `owner_device_id`; `connections.authReference`,
-  `localServerId`, and `target` are `null`, as the hub keeps them). `hlc` is the greatest clock of
-  any of the row's clocked columns, or `000000000000-0000-<owner device id>` when none was ever
-  set, so any later change of the row wins over it.
+  (no `org_id`, `user_id`, `device_id`, `owner_device_id`, or `deleted_at`;
+  `connections.authReference`, `localServerId`, and `target` are `null`, as the hub keeps them).
+  `hlc` is the greatest clock of any of the row's clocked columns, or
+  `000000000000-0000-<owner device id>` when none was ever set, so any later change of the row
+  wins over it.
 - `clocks` lists every per-column clock of those rows (`table`, `rowId`, `column`, `hlc`), so the
   client can keep merging by clock after restoring.
 - `next` is the cursor to pull from afterwards: the highest `hubSeq` the org's feed had at that

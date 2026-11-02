@@ -84,4 +84,20 @@ private var utc: Calendar {
     #expect(LLAStatus(health: .unhealthy) == .attention)
     #expect(LLAStatus(health: .stopped) == .idle)
   }
+
+  @Test func tokensNeverReadAThousandK() {
+    #expect(UsageFormat.tokens(999_499) == "999k")
+    #expect(UsageFormat.tokens(999_950) == "1M")
+    #expect(UsageFormat.tokens(999_999) == "1M")
+    #expect(UsageFormat.tokens(9_960_000) == "10M")
+  }
+
+  @Test func windowsAreNamedByTheirLength() {
+    #expect(UsageFormat.windowTitle(300, fallback: "x") == "5-hour")
+    #expect(UsageFormat.windowTitle(10080, fallback: "x") == "Weekly")
+    #expect(UsageFormat.windowTitle(1440, fallback: "x") == "Daily")
+    #expect(UsageFormat.windowTitle(60, fallback: "x") == "1-hour")
+    #expect(UsageFormat.windowTitle(4320, fallback: "x") == "3-day")
+    #expect(UsageFormat.windowTitle(nil, fallback: "Weekly") == "Weekly")
+  }
 }

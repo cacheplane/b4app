@@ -123,4 +123,12 @@ private func connection(
     #expect(ConnectionSummary.noUsage(.claude) == "Usage appears after the first turn")
     #expect(ConnectionSummary.noUsage(.b4) == "Token use appears after the first turn")
   }
+
+  @Test func aDailyWindowIsCalledDaily() {
+    let reading = UsageReading(
+      fiveHour: UsageWindow(usedPercent: 40, windowMinutes: 1440),
+      weekly: UsageWindow(usedPercent: 31, windowMinutes: 10080),
+      observedAt: "2026-11-02T00:00:00.000Z")
+    #expect(ConnectionSummary.windows(reading).map(\.title) == ["Daily", "Weekly"])
+  }
 }

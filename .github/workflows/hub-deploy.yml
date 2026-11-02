@@ -121,18 +121,37 @@ jobs:
             --signer-workflow cacheplane/b4app/.github/workflows/hub-image.yml \
             --source-ref refs/heads/main \
             --deny-self-hosted-runners
+      - name: Check the AWS repository variables
+        # Until the owner has bootstrapped the test account and recorded its
+        # deploy role as a repository variable (Infra/README.md runbook 1),
+        # there is nowhere to deploy: the job verifies the attestation, then
+        # skips the AWS steps and says so, as infra.yml does. Once the variable
+        # is set, a failing deploy fails the job. Production stays strict.
+        id: aws
+        env:
+          ROLE: ${{ vars.AWS_ROLE_DEPLOY_TEST }}
+        run: |
+          if [ -n "$ROLE" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=No AWS account for test yet::AWS_ROLE_DEPLOY_TEST is not set; skipping the test deploy. Bootstrap the account and add the variables (Infra/README.md, runbook 1)."
+          fi
       - name: Configure AWS credentials
+        if: steps.aws.outputs.configured == 'true'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_ROLE_DEPLOY_TEST }}
           aws-region: us-east-2
           mask-aws-account-id: true
       - name: Log in to ECR
+        if: steps.aws.outputs.configured == 'true'
         run: |
           set -euo pipefail
           registry="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-2.amazonaws.com"
           aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin "$registry"
       - name: Deploy
+        if: steps.aws.outputs.configured == 'true'
         env:
           ENVIRONMENT: ${{ inputs.environment }}
           DIGEST: ${{ inputs.digest }}

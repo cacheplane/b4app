@@ -66,6 +66,9 @@ public actor SessionService {
   /// adapter before it marks the request resolved, so without this a second answer (one from the Mac,
   /// one relayed from the phone) could reach the runtime too.
   private var answering: Set<String> = []
+  /// The text each open message has streamed so far, by thread id and native item id. A runtime that is
+  /// stopped mid-reply (Codex) never completes the item, so without this the reply is stored empty.
+  private var streamed: [String: [String: String]] = [:]
   private let logger = Log.logger("sessions")
   var db: WorkspaceDatabase { context.database }
 
@@ -294,9 +297,10 @@ public actor SessionService {
         if let scope = inspection.nativeScope, !scope.isEmpty { $0.nativeScope = scope }
       } ?? connection
     await context.eventLog.publish(
-      AdapterEvent.connectionChanged(
+      try AdapterEvent.connectionChanged(
         connectionId: connection.id, status: inspection.status, authStatus: inspection.authStatus,
-        transport: .disconnected, message: inspection.message))
+        transport: .disconnected, message: inspection.message
+      ).carrying(updated))
     if inspection.status == .ready, inspection.authStatus == .authenticated {
       await refreshUsage(connectionId: connection.id, adapter: adapter)
     }
@@ -718,6 +722,8 @@ public actor SessionService {
     for request in try db.pendingRuntimeRequests(threadId: thread.id) {
       _ = try db.transitionRuntimeRequest(id: request.id, to: .expired)
     }
+    // The runtime never ended the turn; whatever streamed is of unknown standing and is not stored.
+    streamed[thread.id] = nil
     let note = try db.upsertDisplayItem(
       threadId: thread.id, turnId: active.id, nativeItemId: nil, role: .system, type: "turnAbandoned",
       payload: [
@@ -954,15 +960,25 @@ public actor SessionService {
         }
       case .messageStarted, .messageCompleted, .toolStarted, .toolCompleted:
         guard let thread else { break }
+        var raw = raw
+        if raw.kind == .messageCompleted, let native = raw.nativeIds["itemId"],
+          let text = streamed[thread.id]?.removeValue(forKey: native)
+        {
+          raw.payload = Self.withStreamedText(raw.payload, text)
+        }
         if let item = try projectItem(raw, thread: thread, turn: turn) {
           event.payload = merge(raw.payload, ["displayItem": try JSONValue(encoding: item)])
         } else {
           return
         }
       case .messageDelta:
-        guard thread != nil else { return }
+        guard let thread else { return }
+        if let native = raw.nativeIds["itemId"], let delta = raw.payload["delta"]?.stringValue {
+          streamed[thread.id, default: [:]][native, default: ""] += delta
+        }
       case .turnFinished:
         guard let thread, let turn else { break }
+        try await completeStreamedItems(thread: thread)
         let outcome = raw.payload["outcome"]?.stringValue.flatMap(TurnOutcome.init(rawValue:))
         let updated = try db.updateTurn(id: turn.id) {
           if $0.nativeTurnId == nil { $0.nativeTurnId = raw.nativeIds["turnId"] }
@@ -973,7 +989,6 @@ public actor SessionService {
         if let touched = try db.updateThread(id: thread.id, { _ in }) {
           await context.eventLog.publish(try AdapterEvent.threadUpdated(touched))
         }
-        try recordTokens(raw, turn: turn, connectionId: thread.connectionId)
         if outcome == .failed,
           let code = raw.payload["errorCode"]?.stringValue.flatMap(ErrorCode.init(rawValue:)),
           let connection = try db.connection(id: thread.connectionId)
@@ -982,6 +997,8 @@ public actor SessionService {
             code: code, message: raw.payload["error"]?["message"]?.stringValue ?? code.rawValue,
             connection: connection)
         }
+        // Last, and never fatal: a failed count must not skip the failure handling above.
+        try? recordTokens(raw, turn: turn, connectionId: thread.connectionId)
       case .turnStateChanged:
         guard let turn, turn.status != .terminal else { break }
         let status = raw.payload["status"]?.stringValue
@@ -1036,6 +1053,46 @@ public actor SessionService {
         scope: "projection", code: "internal", message: String(describing: error))
     }
     await context.eventLog.publish(event)
+  }
+
+  /// A completion that carries no text keeps what the item streamed (a runtime may complete a stopped
+  /// reply empty); one with text is the runtime's final word and is kept as it is.
+  private static func withStreamedText(_ payload: JSONValue, _ text: String) -> JSONValue {
+    guard !text.isEmpty, var item = payload["item"]?.objectValue,
+      (item["text"]?.stringValue ?? "").isEmpty
+    else { return payload }
+    item["text"] = .string(text)
+    var body = payload.objectValue ?? [:]
+    body["item"] = .object(item)
+    return .object(body)
+  }
+
+  /// The turn ended with messages the runtime never completed (a stopped reply): store the text each
+  /// streamed and announce the item as completed, before the turn's end, so a client that clears its
+  /// live text when the turn finishes still shows the reply.
+  private func completeStreamedItems(thread: ConversationThread) async throws {
+    guard let open = streamed.removeValue(forKey: thread.id), open.contains(where: { !$0.value.isEmpty })
+    else { return }
+    for item in try db.displayItems(threadId: thread.id) {
+      guard let native = item.nativeItemId, let text = open[native], !text.isEmpty,
+        (item.payload["text"]?.stringValue ?? "").isEmpty
+      else { continue }
+      guard
+        let stored = try db.updateDisplayItem(
+          id: item.id,
+          {
+            var payload = $0.payload.objectValue ?? [:]
+            payload["text"] = .string(text)
+            $0.payload = .object(payload)
+          })
+      else { continue }
+      await context.eventLog.publish(
+        AdapterEvent(
+          kind: .messageCompleted, connectionId: thread.connectionId, threadId: thread.id,
+          turnId: stored.turnId,
+          nativeIds: ["threadId": thread.nativeThreadId, "itemId": native],
+          payload: ["displayItem": try JSONValue(encoding: stored), "role": .string(stored.role.rawValue)]))
+    }
   }
 
   /// Store a started or completed item. Live user messages echoed by the runtime attach their native

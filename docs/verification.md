@@ -49,6 +49,35 @@ Screenshots: notification, banner, the thread opened from it, the widget before 
 - APNs, a real iPhone, and TestFlight: `blocked` on the deploy slice (Developer Program key, the App Group, push capability, and the widget's App ID on the portal). `B4HUB_PUSH_SENDER=apns` refuses to start.
 - The "as of" label on the widget (fixture-tested only); `0xdead10cc` termination, which the Simulator does not enforce; a tap on a lock-screen notification.
 
+## 2026-11-02: The hub keeps synced rows (D-089)
+
+Branch `blove/dreamy-hamilton-b5adc9`, from main at `3f3cc15`. Hub only; no Swift, wire, or fixture change.
+
+- **Automated.** `cargo test --workspace --locked` passes 249 tests against the throwaway PostgreSQL (`scripts/test-db.sh`); `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` are clean. `swift test` and `swift format lint` were not run: nothing under `Sources`, `Tests`, or `Apps` changed.
+- **New tests** in `Hub/crates/b4hub-db/tests/changes.rs`. `a_delete_keeps_the_row_and_its_clocks_and_the_feed_carries_it`: a deleted thread and turn keep every column and the title's clock; a pull still yields both deletes; the snapshot leaves them and their clocks out and never carries `deleted_at`; a later update, a child insert, the relay's thread lookup, and a second delete all leave the row as it was. `an_insert_revives_a_deleted_row`: a thread re-inserted under an older clock, a project folder removed and added again, and a draft the Mac cleared and the phone wrote again all come back live with the re-insert's values. `a_deleted_row_stays_with_its_user_and_its_org`: another user of the org can neither revive nor see the deleted row, and another org or no tenant sees nothing of it. All three fail on main's hub code and pass with the change; so do the updated assertions in `push_materialises_and_is_idempotent` (the fixture's deleted draft is kept) and `mirrored_columns_are_the_macs_columns` (the new hub column).
+- **Not exercised live.** No hub was migrated to 0009 here; the Compose and hosted hubs pick it up on their next deploy.
+
+## 2026-11-02: Settings follow-ups (the deferred review minors of D-081 to D-084)
+
+Branch `blove/settings-connections-minors`. Gates: `swift format lint --strict` clean; `swift test` 862 tests in 125 suites passed; both `xcodebuild` builds succeeded. Each fix has a test that failed first:
+
+- **Claude windows.** The top-level figures now fill whichever window `unifiedWindows` lacks, and the per-model weekly buckets are no longer shown as "Weekly" (`fillsTheMissingWindowFromTheTopLevel`, `perModelWeeklyWindowsAreNotTheWeek`).
+- **Codex windows.** Windows are ordered by length and named by it, so a daily window reads "Daily" and two short windows are both kept (`windowsAreOrderedByLengthAndKeepTheirLength`, `windowsAreNamedByTheirLength`, `aDailyWindowIsCalledDaily`).
+- **Token counts** round once in the unit shown, so they never read "1000k" (`tokensNeverReadAThousandK`).
+- **Renames** reach every client: `connection.changed` carries the whole connection (`aRenameCarriesTheConnection`, `aConnectionChangeWithTheConnectionUpdatesTheList`).
+- **Orphaned keys.** The new `credential.remove` deletes a key that no connection uses, and the form takes back a key whose add or edit failed (`credentialRemoveKeepsASecretInUse`, `aFailedAddLeavesNoKeyBehind`).
+- **Saved edits.** Deleting a replaced key is best effort once the edit is saved (`aSavedKeyChangeIsNotReportedFailedWhenTheOldKeyStays`).
+
+Not covered by a test: B4 token counts are now recorded last in `turn.finished`, and a failure there is ignored. Observing that needs a fault injected into the database.
+
+## 2026-11-02: A stopped reply keeps its streamed text (D-088)
+
+Branch `fix/stopped-reply-text`, from main at `3f3cc15`.
+
+- **Automated.** `swift test` passes 852 tests and `swift format lint --strict` is clean. `SessionServiceTests.aStoppedReplyKeepsItsStreamedText` covers two cases, a reply never completed and one completed empty. It failed before the fix: no assistant completion was published, and the item stayed empty.
+- **Live, real Codex on a scratch coordinator** (`.build/debug`, its own `B4APP_RUNTIME_DIR` and `B4APP_DATA_DIR`; the owner's app untouched). A 60-line reply was stopped after 12 s. The turn ended `cancelled`, and its agent message was stored with the 780 characters that had streamed. Before the fix it was stored empty (seen live in the M8c transcript check).
+- **Not exercised live.** The phone showing the stopped reply. That needs the owner's app on this build; the phone applies the same `message.completed` event as the Mac.
+
 ## 2026-11-02: M8c phone transcript fixes (D-087)
 
 Branch `fix/m8c-transcript`, from main at `3151915`.
@@ -59,7 +88,7 @@ Branch `fix/m8c-transcript`, from main at `3151915`.
   - **Stop.** After a Stop mid-reply, the transcript ended at "Turn stopped." with no blank space past it.
   - **Opening a thread.** A long thread opens at its latest message (before, at its first), and a short thread still starts at the top.
 - **Not exercised live.** A confirmed start whose row is more than 2 minutes late; it needs the Mac's sync held back. It is fixture-tested.
-- **Seen, not fixed (pre-existing, not phone-specific).** A Codex reply stopped mid-stream is stored on the Mac with empty text, so the partial reply disappears on both the Mac and the phone after a Stop.
+- **Seen, then fixed in D-088.** A Codex reply stopped mid-stream was stored on the Mac with empty text, so the partial reply disappeared on both the Mac and the phone after a Stop.
 
 ## 2026-11-02: Settings, connections and B4 projects (D-081 to D-084)
 
@@ -239,10 +268,10 @@ Static checks run in CI and locally: `actionlint`, `shellcheck` over the deploy 
 
 Every pending gate above waits on these (details in `Infra/README.md`). None is recorded as done.
 
-1. Create the AWS Organization and the test and production accounts.
-2. Bootstrap both accounts (runbook 1, "Bootstrap runbook").
+1. Create the `b4hub-test` and `b4hub-prod` accounts inside the `b4run` OU of the existing cacheplane Organization (runbook 1, "Bootstrap runbook"). Done 2026-11-02: `355069727528` and `268895852483`.
+2. Sign the CLI in with `aws login` and configure the `b4hub-test` and `b4hub-prod` profiles (done 2026-11-02: both answer `sts get-caller-identity`), then bootstrap both accounts (runbook 1, "Bootstrap runbook"). Test bootstrapped 2026-11-02 (18 resources; state in `b4hub-test-tfstate`, plan clean after migration; roles `b4hub-test-{plan,infra,deploy}`, state key `d9c975b5-6ea7-4610-99ae-7020f3091262`; re-applied the same day to pin GitHub's immutable OIDC subject `repo:cacheplane@269322961/b4app@1440075505`, without which `Plan test` failed `AssumeRoleWithWebIdentity`). Prod bootstrapped 2026-11-02 the same way (state in `b4hub-prod-tfstate`, state key `496dd803-4674-4422-b959-3e74e44043bd`, plan clean). Repository variables `AWS_ROLE_PLAN_<ENV>` and `TFSTATE_KMS_KEY_ARN_<ENV>` are set for both so PR plans run; `AWS_ROLE_INFRA_<ENV>` and `AWS_ROLE_DEPLOY_<ENV>` are deliberately withheld until `B4HUB_ALARM_EMAIL`, the Vercel CNAMEs, and (for prod) the `production` Environment exist, since a push to main would otherwise apply the test hub root. `B4HUB_ALARM_EMAIL` set 2026-11-02. ACM certificates for `hub.test.b4.run` and `hub.b4.run` were created by targeted applies the same day; their validation CNAMEs and CAA records allowing the Amazon issuers were added at Vercel (the apex CAA set allows only Let's Encrypt, Sectigo, and Google); both certificates were issued within minutes.
 3. Add repository variables: `AWS_ROLE_PLAN_*`, `AWS_ROLE_INFRA_*`, `AWS_ROLE_DEPLOY_*`, `TFSTATE_KMS_KEY_ARN_*` (`TEST` and `PROD`), and `B4HUB_ALARM_EMAIL`.
-4. Create the `production` GitHub Environment (required reviewer: the owner; deployment branches and tags: `main` and `hub-v*`). Create none for test.
+4. Create the `production` GitHub Environment (required reviewer: the owner; deployment branches and tags: `main` and `hub-v*`). Create none for test. Done 2026-11-02 (the Environment had been auto-created empty by a workflow run; reviewer `blove`, branch `main`, tag `hub-v*`).
 5. Make the GHCR package `ghcr.io/cacheplane/b4hub` public.
 6. Add the Vercel CNAMEs (`hub.test.b4.run`, `hub.b4.run`) and the ACM validation records the first apply prints.
 7. Set the database owner and sign-in secrets (runbooks 2 and 3).
