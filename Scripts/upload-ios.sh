@@ -3,6 +3,10 @@
 #
 #   B4APP_ASC_KEY_ID=… B4APP_ASC_ISSUER_ID=… ./Scripts/upload-ios.sh
 #   B4APP_UPLOAD=0 …                 export and validate the .ipa under dist/ios, upload nothing
+#   B4APP_FLAVOR=beta …              the beta flavour (the test hub); prod is the default. The local
+#                                    flavour is a Simulator and Xcode build, never uploaded. Both
+#                                    uploadable flavours share the App ID com.cacheplane.b4app.ios and
+#                                    differ in the hub, the site domain, and the URL scheme.
 #   B4APP_TESTFLIGHT_EXTERNAL=1 …    allow the build to go to external testers (Beta App Review)
 #
 # Signing is automatic and cloud-managed: the export registers the App ID, creates the App Store
@@ -17,6 +21,20 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+FLAVOR="${B4APP_FLAVOR:-prod}"
+case "$FLAVOR" in
+  prod) XCODE_CONFIG=Release; SITE_DOMAIN=b4.run; URL_SCHEME=b4app; OUT=dist/ios ;;
+  beta) XCODE_CONFIG=Release-Beta; SITE_DOMAIN=test.b4.run; URL_SCHEME=b4app-beta; OUT=dist/ios-beta ;;
+  local)
+    echo "The local flavour has a different App ID and talks to localhost; run it from Xcode or the Simulator, not TestFlight." >&2
+    exit 1
+    ;;
+  *)
+    echo "B4APP_FLAVOR must be prod or beta, not '$FLAVOR'." >&2
+    exit 1
+    ;;
+esac
+BUNDLE_ID=com.cacheplane.b4app.ios
 VERSION=$(sed -n 's/.*public static let current = "\(.*\)".*/\1/p' Sources/Coordinator/Version.swift)
 BUILD="${B4APP_BUILD_NUMBER:-$(date -u +%y%m%d%H%M)}"
 KEY_ID="${B4APP_ASC_KEY_ID:-}"
@@ -36,7 +54,6 @@ if [ -z "$TEAM_ID" ]; then
   echo "Set B4APP_TEAM_ID; no Developer ID identity in the keychain to read it from." >&2
   exit 1
 fi
-OUT=dist/ios
 ARCHIVE="$OUT/B4App-iOS.xcarchive"
 AUTH="-allowProvisioningUpdates -authenticationKeyPath $KEY_PATH -authenticationKeyID $KEY_ID -authenticationKeyIssuerID $ISSUER_ID"
 case "$KEY_PATH" in
@@ -46,12 +63,12 @@ esac
 echo "==> Generating the Xcode project"
 ./Scripts/generate-project.sh >/dev/null
 
-echo "==> Archiving B4App-iOS $VERSION ($BUILD) for team $TEAM_ID"
+echo "==> Archiving B4App-iOS $VERSION ($BUILD), $FLAVOR flavour, for team $TEAM_ID"
 rm -rf "$OUT"
 mkdir -p "$OUT"
 # The archive is left unsigned: an automatically signed archive needs a development profile, which
 # needs a registered device, and the export below signs everything for distribution anyway.
-xcodebuild archive -project B4App.xcodeproj -scheme B4App-iOS -configuration Release \
+xcodebuild archive -project B4App.xcodeproj -scheme B4App-iOS -configuration "$XCODE_CONFIG" \
   -destination 'generic/platform=iOS' -archivePath "$ARCHIVE" -derivedDataPath .build/DerivedData-ios \
   DEVELOPMENT_TEAM="$TEAM_ID" MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
   CODE_SIGNING_ALLOWED=NO -quiet
@@ -62,6 +79,16 @@ if plutil -extract NSAppTransportSecurity raw -o - "$INFO" >/dev/null 2>&1; then
   echo "The archive still has NSAppTransportSecurity; the Release post-build script did not run." >&2
   exit 1
 fi
+# ...and must be the flavour asked for, since the hub and the passkey domain follow from it.
+for expected in "B4AppFlavor:$FLAVOR" "CFBundleIdentifier:$BUNDLE_ID" "CFBundleURLTypes:0:CFBundleURLSchemes:0:$URL_SCHEME"; do
+  key=${expected%:*}
+  want=${expected##*:}
+  got=$(/usr/libexec/PlistBuddy -c "Print :$key" "$INFO" 2>/dev/null || true)
+  if [ "$got" != "$want" ]; then
+    echo "The archive's Info.plist has $key '$got', not '$want' ($FLAVOR flavour, site $SITE_DOMAIN)." >&2
+    exit 1
+  fi
+done
 [ -f "$ARCHIVE/Products/Applications/Agent Workspace.app/PrivacyInfo.xcprivacy" ] || {
   echo "The archive has no PrivacyInfo.xcprivacy." >&2
   exit 1

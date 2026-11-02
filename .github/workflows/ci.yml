@@ -66,6 +66,14 @@ jobs:
         run: >
           xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'
           -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO
+      - name: Build macOS app (beta)
+        run: >
+          xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS-Beta -destination 'platform=macOS'
+          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO
+      - name: Build iOS app (beta, simulator)
+        run: >
+          xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS-Beta -destination 'generic/platform=iOS Simulator'
+          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO
 
   hub:
     name: Hub (Rust)

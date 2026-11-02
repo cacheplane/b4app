@@ -3,7 +3,6 @@
 # gitignored (decision D-003). Info.plist keys live under `info.properties` below.
 name: B4App
 options:
-  bundleIdPrefix: com.cacheplane
   deploymentTarget:
     macOS: "26.0"
     iOS: "26.0"
@@ -20,11 +19,25 @@ settings:
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
-# DEVELOPMENT_TEAM comes from Config/Signing.xcconfig and its gitignored local include, never from
-# this file, because a value here would override the xcconfig (D-051).
+# Flavours (sign-in plan): each configuration includes one Config/Flavor-*.xcconfig, which sets
+# B4APP_FLAVOR, the bundle id, the site domain, and the URL scheme. Debug is local and Release is
+# prod, so the plain schemes keep working; the Beta configurations belong to the *-Beta schemes, and
+# Release-Local lets Scripts/package.sh build a local flavour. Each flavour file includes
+# Config/Signing.xcconfig, so DEVELOPMENT_TEAM still comes from there and its gitignored local
+# include, never from this file, because a value here would override the xcconfig (D-051). The same
+# goes for PRODUCT_BUNDLE_IDENTIFIER, which the xcconfig sets per SDK and no target may set.
+configs:
+  Debug: debug
+  Release: release
+  Debug-Beta: debug
+  Release-Beta: release
+  Release-Local: release
 configFiles:
-  Debug: Config/Signing.xcconfig
-  Release: Config/Signing.xcconfig
+  Debug: Config/Flavor-local.xcconfig
+  Release: Config/Flavor-prod.xcconfig
+  Debug-Beta: Config/Flavor-beta.xcconfig
+  Release-Beta: Config/Flavor-beta.xcconfig
+  Release-Local: Config/Flavor-local.xcconfig
 packages:
   b4app:
     path: .
@@ -41,16 +54,23 @@ targets:
         CFBundleDisplayName: Agent Workspace
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        B4AppFlavor: $(B4APP_FLAVOR)
+        CFBundleURLTypes:
+          - CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
+            CFBundleTypeRole: Editor
+            CFBundleURLSchemes:
+              - $(B4APP_URL_SCHEME)
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: Personal tool. Not for distribution.
     entitlements:
       path: Apps/macOS/B4App/B4App.entitlements
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.cacheplane.b4app
         PRODUCT_NAME: Agent Workspace
         # Xcode builds sign ad hoc; Scripts/package.sh re-signs the packaged app with a Developer ID
-        # identity, its provisioning profile, and entitlements generated from the team id (D-051).
+        # identity, its provisioning profile, and entitlements generated from the team id and the
+        # flavour (D-051). This file stays empty: a restricted entitlement without a profile kills an
+        # ad hoc app at launch.
         CODE_SIGN_IDENTITY: "-"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_APP_SANDBOX: NO
@@ -81,6 +101,12 @@ targets:
         CFBundleDisplayName: Agent Workspace
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        B4AppFlavor: $(B4APP_FLAVOR)
+        CFBundleURLTypes:
+          - CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
+            CFBundleTypeRole: Editor
+            CFBundleURLSchemes:
+              - $(B4APP_URL_SCHEME)
         LSRequiresIPhoneOS: true
         # HTTPS through URLSession only: exempt from export documentation (TestFlight asks otherwise).
         ITSAppUsesNonExemptEncryption: false
@@ -104,10 +130,11 @@ targets:
           - UIInterfaceOrientationLandscapeRight
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.cacheplane.b4app.ios
         PRODUCT_NAME: Agent Workspace
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_FILE: Apps/iOS/B4App/Info.plist
+        # B4APP_IOS_ENTITLEMENTS comes from the flavour's xcconfig: no Sign in with Apple for local.
+        CODE_SIGN_ENTITLEMENTS: $(B4APP_IOS_ENTITLEMENTS)
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
         # Simulator builds sign to run locally (the Keychain needs a signature); device builds and
@@ -142,9 +169,45 @@ schemes:
         B4App-macOS: all
     run:
       config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+  B4App-macOS-Beta:
+    build:
+      targets:
+        B4App-macOS: all
+    run:
+      config: Debug-Beta
+    profile:
+      config: Release-Beta
+    analyze:
+      config: Debug-Beta
+    archive:
+      config: Release-Beta
   B4App-iOS:
     build:
       targets:
         B4App-iOS: all
     run:
       config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+  B4App-iOS-Beta:
+    build:
+      targets:
+        B4App-iOS: all
+    run:
+      config: Debug-Beta
+    profile:
+      config: Release-Beta
+    analyze:
+      config: Debug-Beta
+    archive:
+      config: Release-Beta

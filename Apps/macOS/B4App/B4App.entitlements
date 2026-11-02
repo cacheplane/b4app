@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
+<!-- Deliberately empty: this is what Xcode builds and ad hoc packages sign with. A restricted
+     entitlement (keychain-access-groups, associated-domains) without a provisioning profile gets the
+     app killed at launch. Scripts/package.sh generates the real entitlements per flavour for a
+     Developer ID build: the keychain groups, and webcredentials:<site domain> for the app. -->
 <dict/>
 </plist>
