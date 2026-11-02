@@ -6,16 +6,18 @@ Gate results and unresolved checks, newest first. Each entry names what was exer
 
 Target: the build MacBook Pro (macOS 26.5, Xcode 26.6), run from the worktree on `blove/sign-in` at code head `e6aaf6d` (Tasks 1 to 17 and X1 of `docs/superpowers/plans/2026-11-01-sign-in.md`, with `origin/main` through PR #40 merged). The documentation commit that records this changes no Swift or Rust, only the iPhone's `PrivacyInfo.xcprivacy` and these documents; the four `xcodebuild` builds ran after that change. Nothing touched the owner's app, its data directory, the Keychain, or the Compose stack. Decisions D-087 to D-109.
 
+Rerun after the final review's fix wave (I1, I2, M1, M2, M5 to M9, M11 to M13; D-110 to D-113) at code head `2d665b5`: the format, build, Swift and Rust test rows below are that run's; of the app builds, `B4App-macOS` and `B4App-iOS` were rebuilt (`** BUILD SUCCEEDED **` each, `CODE_SIGNING_ALLOWED=NO`), the Beta schemes were not. The `registryMigrations` NOTICE no longer appears in the test output (M12).
+
 ### Sign-in (fixture gates)
 
 | Check | Command | Result |
 | --- | --- | --- |
 | Swift format | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass (exit 0, no findings) |
 | Build | `swift build` | Pass |
-| Swift tests | `swift test` | Pass: 1113 tests in 142 suites in 57.5 s (858 when this branch first merged main, 1022 after the second merge), exit 0. The sign-in suites: `FlavorTests`, `LegacyAdoptionTests`, `LegacyAdoptionGateTests`, `LegacySecretCopyTests` (Task X2), `CoordinatorAdoptionOrderTests`, `AccountRegistryTests`, `AccountManagerTests`, `AccountCommandTests`, `AccountCLITests`, `AuthWireTests`, `HTTPHubAPITests`, `SignInTests`, `AccountSettingsTests`, `AppleSignInTests`, `MirrorAccountTests`, `MirrorLogOutTests`, `PhoneFlavorTests`, `PairLinkTests` (protocol and mirror), `PairingTests`, `RemoteAccessTests`, `ConnectMacTests`. `HubSyncTests.joinPushesTheBacklogAndMarksItSynced`, seen to fail once in a full run during Task 15, passed |
+| Swift tests | `swift test` | Pass: 1138 tests in 143 suites in 72.3 s (1113 in 142 before the final fix wave; 858 when this branch first merged main, 1022 after the second merge), exit 0. The sign-in suites: `FlavorTests`, `LegacyAdoptionTests`, `LegacyAdoptionGateTests`, `LegacySecretCopyTests` (Task X2), `CoordinatorAdoptionOrderTests`, `AccountRegistryTests`, `AccountManagerTests`, `AccountCommandTests`, `AccountCLITests`, `AuthWireTests`, `HTTPHubAPITests`, `SignInTests`, `AccountSettingsTests`, `AppleSignInTests`, `MirrorAccountTests`, `MirrorLogOutTests`, `PhoneFlavorTests`, `PairLinkTests` (protocol and mirror), `PairingTests`, `RemoteAccessTests`, `ConnectMacTests`. `HubSyncTests.joinPushesTheBacklogAndMarksItSynced`, seen to fail once in a full run during Task 15, passed |
 | Rust format | `cd Hub && cargo fmt --all -- --check` | Pass |
 | Rust lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
-| Rust tests | `source <(./scripts/test-db.sh) && cargo test --workspace --locked --no-fail-fast`, then `./scripts/test-db.sh --stop` | Pass: 379 tests against PostgreSQL 17.11 (245 at M8e Part B): `b4hub` 270 (unit 87, `accounts` 14, `apple` 34, `auth` 18, `auth_fixture` 9, `changes` 14, `enroll` 17, `health` 5, `instances` 8, `maintenance` 3, `relay` 60, `request_log` 1), `b4hub-core` 26, `b4hub-db` 83 (unit 3, `accounts` 24, `changes` 35, `instances` 4, `logging` 1, `migrate` 8, `rls` 5, `settings` 3) |
+| Rust tests | `source <(./scripts/test-db.sh) && cargo test --workspace --locked --no-fail-fast`, then `./scripts/test-db.sh --stop` | Pass: 386 tests against PostgreSQL 17.11 (379 before the final fix wave, 245 at M8e Part B): `b4hub` 277 (unit 88, `accounts` 14, `apple` 38, `auth` 18, `auth_fixture` 9, `changes` 14, `enroll` 17, `health` 5, `instances` 8, `maintenance` 3, `relay` 62, `request_log` 1), `b4hub-core` 26, `b4hub-db` 83 (unit 3, `accounts` 24, `changes` 35, `instances` 4, `logging` 1, `migrate` 8, `rls` 5, `settings` 3) |
 | Chart | `cd Hub/chart/b4hub && helm unittest . && helm lint . -f ci/kind-values.yaml` | Pass: 56 tests in 4 suites (helm-unittest 1.2.1); lint 1 chart, 0 failed (one `INFO`: icon is recommended) |
 | Project | `./Scripts/generate-project.sh` | `B4App.xcodeproj` regenerated; schemes `B4App-macOS`, `B4App-macOS-Beta`, `B4App-iOS`, `B4App-iOS-Beta` |
 | Apps | `xcodebuild build -project B4App.xcodeproj -scheme <scheme> -destination <'platform=macOS' or 'generic/platform=iOS Simulator'> CODE_SIGNING_ALLOWED=NO` for the four schemes | Four `** BUILD SUCCEEDED **`. Warnings only in code the Beta builds compiled again: unused results in `WorkspaceStorage` (`WorkspaceDatabase`, `Migrator`, `AccountRegistry`) and `Ports.swift`, the deprecated `posix_spawn_file_actions_addchdir_np` in `ManagedProcess.swift`, and the duplicate case at `Remediation.swift:122`. Both iPhone builds carry the new privacy manifest (`plutil -extract NSPrivacyCollectedDataTypes` on each built app: name, email address, user id) |
@@ -38,7 +40,7 @@ Pending: the owner's passkey (plan Task 18 Step 4). Local flavour, on the owner'
 | Step | Result |
 | --- | --- |
 | 1. Package the local flavour and launch it | pending |
-| 2. The owner's existing threads appear without a sign-in (adoption) | pending |
+| 2. The owner's existing threads appear without a sign-in (adoption); `~/Library/LaunchAgents/com.cacheplane.b4app.coordinator.plist` is gone afterwards (D-113), and `launchctl print gui/$(id -u)/com.cacheplane.b4app.coordinator` finds no job | pending |
 | 3. Add a passkey in Settings → Account, log out, sign back in with the passkey: the same threads appear | pending |
 | 4. Sign up a second account with a new passkey and complete onboarding: "Brian's Org" (or the typed name's) | pending |
 | 5. Create a thread, log out, sign in to the first account: its threads appear, the second account's thread does not | pending |

@@ -143,7 +143,7 @@ agent-workspace db backup
 
 ### Upgrade
 
-From a build before sign-in (the owner's install): upgrade the hub first (`docs/compatibility.md`), then package the local flavour, and open the app before you use the CLI. The local flavour adopts the old `b4app` data directory when its hub link is `localhost`, moving it to `b4app-local`, but only in a coordinator the app starts: one the CLI starts never adopts, and if it runs first it creates `b4app-local` and the old data stays in `b4app`.
+From a build before sign-in (the owner's install): upgrade the hub first (`docs/compatibility.md`), then package the local flavour, and open the app before you use the CLI. The local flavour adopts the old `b4app` data directory when its hub link is `localhost`, moving it to `b4app-local`, but only in a coordinator the app starts: one the CLI starts never adopts, and if it runs first it creates `b4app-local` and the old data stays in `b4app`. The adoption boots the old LaunchAgent out and then deletes its plist, `~/Library/LaunchAgents/com.cacheplane.b4app.coordinator.plist`, when that plist runs another program than the local build's (so the next login does not start the old coordinator, which would make a fresh, empty `b4app`); one it keeps (its program unreadable) you remove by hand. After the first local start, delete the old app; opening it again registers its agent again.
 
 Replace the app in `/Applications`. The running coordinator keeps the old version until it is restarted; the sidebar shows "The running coordinator is X; this app is Y" with a Restart coordinator link, the Coordinator menu has the same, and so does `agent-workspace coordinator restart`.
 
