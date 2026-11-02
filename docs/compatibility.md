@@ -56,6 +56,8 @@ Pinned exactly (`=`) in `Hub/Cargo.toml` `[workspace.dependencies]`, resolved in
 | Hub protocol | `minClientProtocol` 1 (unchanged by M8b: the new fields are additive and the hub ships before the clients); `Hub/API.md` is the wire reference |
 | Builder image | `rust:1.93.1-slim-bookworm@sha256:5b9332190bb3b9ece73b810cd1f1e9f06343b294ce184bcb067f0747d7d333ea` (index digest) |
 | Runtime image | `debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3` (index digest); runs as uid 10001, `STOPSIGNAL SIGTERM`, `HEALTHCHECK` on `/readyz` |
+| Build cache | `cargo-chef` 0.1.78 (`cargo install --locked --version 0.1.78` in the `chef` stage; latest on crates.io on 2026-11-01); a source-only change reuses the dependency `cook` layer (checked on `linux/arm64`) |
+| RDS CA bundle | `https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem`, fetched at image build on 2026-11-01 (114 certificates, 174,560 bytes), installed at `/etc/ssl/certs/rds-global-bundle.pem`; `Hub/scripts/check-image.sh <image>` asserts it, uid 10001, and that `b4hub` links no libssl (`libssl3` is on the image only as a dependency of `curl`) |
 | Compose database | `postgres:17`, not digest-pinned (the index digest seen on 2026-10-31 was `sha256:31ba9c94a03ada9988f2bb493a22a75eef3a185884533e5cdbcd498ea835b08f`); CI's `hub` job uses a `postgres:17` service on Ubuntu |
 | Test database | the zonky PostgreSQL 17.11 from `./Scripts/fetch-postgres.sh`, started by `Hub/scripts/test-db.sh` on 127.0.0.1:54329 |
 | Architectures | `linux/arm64` built and run on the build Mac; `linux/amd64` not built (both base digests are multi-platform indexes, so nothing in the Dockerfile is architecture-specific, but that is reasoning, not a check) |
