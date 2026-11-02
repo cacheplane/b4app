@@ -192,8 +192,8 @@ Static checks run in CI and locally: `actionlint`, `shellcheck` over the deploy 
 
 Every pending gate above waits on these (details in `Infra/README.md`). None is recorded as done.
 
-1. Create the AWS Organization and the test and production accounts.
-2. Bootstrap both accounts (runbook 1, "Bootstrap runbook").
+1. Create the `b4hub-test` and `b4hub-prod` accounts inside the `b4run` OU of the existing cacheplane Organization (runbook 1, "Bootstrap runbook").
+2. Assign your Identity Center user to both accounts, configure the `b4hub-test` and `b4hub-prod` SSO profiles, and bootstrap both accounts (runbook 1, "Bootstrap runbook").
 3. Add repository variables: `AWS_ROLE_PLAN_*`, `AWS_ROLE_INFRA_*`, `AWS_ROLE_DEPLOY_*`, `TFSTATE_KMS_KEY_ARN_*` (`TEST` and `PROD`), and `B4HUB_ALARM_EMAIL`.
 4. Create the `production` GitHub Environment (required reviewer: the owner; deployment branches and tags: `main` and `hub-v*`). Create none for test.
 5. Make the GHCR package `ghcr.io/cacheplane/b4hub` public.

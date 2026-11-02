@@ -14,8 +14,15 @@ Contents: [Bootstrap runbook](#bootstrap-runbook) · [Boundary rules](#boundary-
 
 Do this one account at a time: finish steps 3 to 5 for `test` before starting `prod`. Every account starts from a clean `.terraform` and local state, and gets its own backend values, so nothing is shared between the two applies.
 
-1. **Organization and accounts.** In the management account create an AWS Organization, then two member accounts, `b4hub-test` and `b4hub-prod`. Turn on MFA for the management account root user and do not use root afterwards.
-2. **Identity Center.** Enable IAM Identity Center in the management account, create one user for yourself, one permission set with the `AdministratorAccess` managed policy, and assign it to both member accounts. Require MFA for sign-in. Configure two SSO profiles with `aws configure sso`, named `b4hub-test` and `b4hub-prod`.
+1. **Accounts.** cacheplane already has an AWS Organization (`o-63b985q63d`, all features enabled; management account "cacheplane Management Account", `091823298178`), so do not create a second one: AWS allows one Organization per management account, and an OU is the grouping. The `b4run` OU (`ou-nrev-p1ta3hem`) exists under the root for the hub accounts. In the management account create the two member accounts `b4hub-test` and `b4hub-prod` inside it (Organizations, AWS accounts, Add an AWS account, Create), each with a unique email (for example `aws+b4hub-test@cacheplane.ai`) and the IAM role name left as `OrganizationAccountAccessRole`. Turn on MFA for the management account root user and do not use root afterwards.
+2. **Identity Center.** IAM Identity Center is already enabled as an organization instance named "cacheplane" in `us-east-1` (identity source: AWS Builder ID; delegated administrator: the "cacheplane Identity Delegated Admin" account, `895757147641`). In Identity Center, administered from that account or the management account, create a permission set `AdministratorAccess` with the managed policy of that name (or reuse one) and assign your user to both new accounts. Require MFA for sign-in. Then configure the two SSO profiles on the Mac, running `aws configure sso` once for each:
+
+   ```bash
+   aws configure sso   # profile b4hub-test, then again for b4hub-prod
+   # SSO start URL:  https://ssoins-722355799abd8ada.us-east-1.portal.amazonaws.com
+   # SSO region:     us-east-1
+   # default region: us-east-2
+   ```
 3. **Apply bootstrap** (shown for `test`; do the whole of steps 3 to 5 for `test`, then repeat them for `prod` with `ENV=prod`):
 
    ```bash
