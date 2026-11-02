@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::routing::{delete, get, post};
-use axum::Router;
+use axum::{middleware, Router};
 use b4hub_db::Db;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
@@ -13,8 +13,10 @@ use url::Url;
 
 use crate::auth::LastTouched;
 use crate::error::ApiError;
+use crate::maintenance::MaintenanceState;
 use crate::notify::Notifier;
 use crate::relay::{link, Relay};
+use crate::request_log;
 use crate::routes::{changes, devices, enroll, health, pairing, snapshot};
 
 /// How long the listener stays open, answering `/readyz` 503, after shutdown begins, so a load
@@ -38,6 +40,8 @@ pub struct AppState {
     pub public_url: Option<Url>,
     /// The device links: who is online, and the means to reach them.
     pub relay: Relay,
+    /// The maintenance switch as last polled (`maintenance::poll_loop`); writes check it.
+    pub maintenance: MaintenanceState,
 }
 
 impl AppState {
@@ -49,6 +53,7 @@ impl AppState {
             notifier: Notifier::default(),
             public_url: None,
             relay: Relay::new(),
+            maintenance: MaintenanceState::default(),
         }
     }
 }
@@ -92,6 +97,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/devices/self/link", get(link::upgrade))
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
         .fallback(|| async { ApiError::not_found() })
+        .layer(middleware::from_fn(request_log::trace_request))
         .with_state(state)
 }
 

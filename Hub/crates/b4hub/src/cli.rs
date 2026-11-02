@@ -1,5 +1,5 @@
-//! Command line, environment settings, and the five commands (`serve`, `migrate`, `seed`,
-//! `enroll`, `prune`).
+//! Command line, environment settings, and the commands (`serve`, `migrate`, `seed`, `enroll`,
+//! `prune`, `maintenance`).
 //!
 //! A missing or malformed setting is a [`ConfigError`] that names the setting and never echoes
 //! its value (the database URLs carry passwords); `main` prints it on one line and exits 2.
@@ -15,13 +15,16 @@ use tracing_subscriber::EnvFilter;
 use url::Url;
 
 use b4hub_db::orgs::{self, OrgChoice};
+use b4hub_db::settings::Maintenance;
 use b4hub_db::{devices, Db};
 
+use crate::maintenance;
 use crate::serve::{self, AppState};
 
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_SHUTDOWN_WAIT_MS: u64 = 30_000;
 const DEFAULT_RETENTION_DAYS: u32 = 30;
+const DEFAULT_MAINTENANCE_POLL_MS: u64 = 5000;
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 
 /// How long an enrollment code stays redeemable.
@@ -55,6 +58,26 @@ pub enum Command {
     /// Delete change-log entries older than a number of days, once (connects with
     /// DATABASE_ADMIN_URL). `serve` does this itself every 24 hours.
     Prune(PruneArgs),
+    /// Pause writes on every hub instance while reads continue, or resume them (connects with
+    /// DATABASE_ADMIN_URL). `serve` notices within B4HUB_MAINTENANCE_POLL_MS (5 s).
+    Maintenance {
+        #[command(subcommand)]
+        action: MaintenanceAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MaintenanceAction {
+    /// Refuse writes (503 `maintenance`) until `off`.
+    On {
+        /// Text for clients, shown in the error message.
+        #[arg(long, value_parser = parse_non_empty)]
+        message: Option<String>,
+    },
+    /// Accept writes again.
+    Off,
+    /// Print whether writes are paused.
+    Status,
 }
 
 #[derive(Debug, Args)]
@@ -168,6 +191,13 @@ impl CliError {
     }
 }
 
+/// How `b4hub` writes its log: one line of text, or one JSON object per line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogFormat {
+    Text,
+    Json,
+}
+
 /// A snapshot of the environment, so settings parse the same way in tests as in production.
 #[derive(Debug, Clone, Default)]
 pub struct Settings {
@@ -243,6 +273,25 @@ impl Settings {
         Ok(Duration::from_secs(u64::from(days) * SECONDS_PER_DAY))
     }
 
+    /// `B4HUB_MAINTENANCE_POLL_MS`, default 5000: how often `serve` reads the maintenance
+    /// switch. A whole number of milliseconds, at least 1.
+    pub fn maintenance_poll(&self) -> Result<Duration, ConfigError> {
+        match self.var("B4HUB_MAINTENANCE_POLL_MS") {
+            None => Ok(Duration::from_millis(DEFAULT_MAINTENANCE_POLL_MS)),
+            Some(raw) => raw
+                .parse::<u64>()
+                .ok()
+                .filter(|ms| *ms >= 1)
+                .map(Duration::from_millis)
+                .ok_or_else(|| {
+                    ConfigError::new(
+                        "B4HUB_MAINTENANCE_POLL_MS",
+                        "must be a whole number of milliseconds, at least 1",
+                    )
+                }),
+        }
+    }
+
     /// `B4HUB_PUBLIC_URL`, when set: the URL clients reach the hub at.
     pub fn public_url(&self) -> Result<Option<Url>, ConfigError> {
         match self.var("B4HUB_PUBLIC_URL") {
@@ -263,6 +312,32 @@ impl Settings {
     pub fn log_filter(&self) -> Result<EnvFilter, ConfigError> {
         EnvFilter::try_new(self.var("B4HUB_LOG").unwrap_or("info"))
             .map_err(|_| ConfigError::new("B4HUB_LOG", "is not a valid tracing filter"))
+    }
+
+    /// `B4HUB_LOG_FORMAT`, `text` or `json`; by default `text` when stderr is a terminal and
+    /// `json` otherwise, so a local run stays readable and a container gets one object per line.
+    pub fn log_format(&self, stderr_is_terminal: bool) -> Result<LogFormat, ConfigError> {
+        match self.var("B4HUB_LOG_FORMAT") {
+            None if stderr_is_terminal => Ok(LogFormat::Text),
+            None => Ok(LogFormat::Json),
+            Some("text") => Ok(LogFormat::Text),
+            Some("json") => Ok(LogFormat::Json),
+            Some(_) => Err(ConfigError::new("B4HUB_LOG_FORMAT", "must be text or json")),
+        }
+    }
+
+    /// `B4HUB_TRUST_X_FORWARDED_FOR` (`1` or `true`), default false: the hub is behind a proxy
+    /// that appends the client address to `X-Forwarded-For`. Validated here; the sign-in
+    /// branch's per-client limits read it. The request id never depends on it.
+    pub fn trust_proxy(&self) -> Result<bool, ConfigError> {
+        match self.var("B4HUB_TRUST_X_FORWARDED_FOR") {
+            None | Some("0" | "false") => Ok(false),
+            Some("1" | "true") => Ok(true),
+            Some(_) => Err(ConfigError::new(
+                "B4HUB_TRUST_X_FORWARDED_FOR",
+                "must be 1, true, 0, or false",
+            )),
+        }
     }
 
     /// `DATABASE_URL` (or the contents of the file `DATABASE_URL_FILE` names): the `b4hub_app`
@@ -326,7 +401,43 @@ pub async fn run(cli: Cli, settings: &Settings) -> Result<(), CliError> {
         Command::Seed(args) => seed_command(args, settings).await,
         Command::Enroll(args) => enroll_command(args, settings).await,
         Command::Prune(args) => prune_command(args, settings).await,
+        Command::Maintenance { action } => maintenance_command(action, settings).await,
     }
+}
+
+async fn maintenance_command(
+    action: MaintenanceAction,
+    settings: &Settings,
+) -> Result<(), CliError> {
+    let db = Db::connect(&settings.admin_url()?).await?;
+    match action {
+        MaintenanceAction::On { message } => {
+            let maintenance = Maintenance::read_only(message);
+            b4hub_db::settings::set_maintenance(&db, Some(&maintenance)).await?;
+            println!("maintenance on: {}", describe_maintenance(&maintenance));
+        }
+        MaintenanceAction::Off => {
+            b4hub_db::settings::set_maintenance(&db, None).await?;
+            println!("maintenance off: writes resume as each instance polls");
+        }
+        MaintenanceAction::Status => match b4hub_db::settings::maintenance(&db).await? {
+            Some(maintenance) => println!("maintenance on: {}", describe_maintenance(&maintenance)),
+            None => println!("maintenance off"),
+        },
+    }
+    Ok(())
+}
+
+fn describe_maintenance(maintenance: &Maintenance) -> String {
+    format!(
+        "writes paused since {}{}",
+        maintenance.since,
+        maintenance
+            .message
+            .as_deref()
+            .map(|m| format!(" ({m})"))
+            .unwrap_or_default()
+    )
 }
 
 async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<(), CliError> {
@@ -337,6 +448,8 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
     let wait = settings.shutdown_wait()?;
     let public_url = settings.public_url()?;
     let retention = settings.retention()?;
+    let trust_proxy = settings.trust_proxy()?;
+    let maintenance_poll = settings.maintenance_poll()?;
     let db = Db::connect(&settings.database_url()?).await?;
     refuse_privileged_connection(&db).await?;
     let listener = TcpListener::bind(addr).await?;
@@ -345,21 +458,32 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
         public_url = public_url.as_ref().map(Url::as_str),
         shutdown_wait_ms = wait.as_millis() as u64,
         retention_days = retention.as_secs() / SECONDS_PER_DAY,
+        trust_proxy,
+        maintenance_poll_ms = maintenance_poll.as_millis() as u64,
         "serving"
     );
     let mut state = AppState::new(db.clone());
     state.public_url = public_url;
+    // Know the switch before the first request, not one poll later.
+    maintenance::refresh(&db, &state.maintenance).await;
     let pruning = tokio::spawn(serve::prune_loop(
-        db,
+        db.clone(),
         retention,
         serve::PRUNE_INTERVAL,
         state.shutdown.clone(),
     ));
+    let polling = tokio::spawn(maintenance::poll_loop(
+        db,
+        state.maintenance.clone(),
+        maintenance_poll,
+        state.shutdown.clone(),
+    ));
     let shutdown = state.shutdown.clone();
     let served = serve::run(listener, state, wait, serve::os_signal()).await;
-    // However `run` ended, the prune task stops with it; it ends at once on the flag.
+    // However `run` ended, the background tasks stop with it; they end at once on the flag.
     shutdown.trigger();
     let _ = tokio::time::timeout(Duration::from_secs(2), pruning).await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), polling).await;
     served?;
     tracing::info!("stopped");
     Ok(())
@@ -496,6 +620,70 @@ mod tests {
         assert_eq!(s.public_url().unwrap(), None);
         assert_eq!(s.retention().unwrap(), Duration::from_secs(30 * 86_400));
         assert!(s.log_filter().is_ok());
+    }
+
+    #[test]
+    fn maintenance_poll_is_milliseconds_with_a_five_second_default() {
+        assert_eq!(
+            settings(&[]).maintenance_poll().unwrap(),
+            Duration::from_millis(5000)
+        );
+        assert_eq!(
+            settings(&[("B4HUB_MAINTENANCE_POLL_MS", "250")])
+                .maintenance_poll()
+                .unwrap(),
+            Duration::from_millis(250)
+        );
+        for bad in ["0", "-1", "soon"] {
+            let error = settings(&[("B4HUB_MAINTENANCE_POLL_MS", bad)])
+                .maintenance_poll()
+                .unwrap_err();
+            assert_eq!(error.name, "B4HUB_MAINTENANCE_POLL_MS", "{bad}");
+        }
+    }
+
+    #[test]
+    fn trust_proxy_reads_the_shared_flag() {
+        assert!(!settings(&[]).trust_proxy().unwrap());
+        assert!(!settings(&[("B4HUB_TRUST_X_FORWARDED_FOR", "0")])
+            .trust_proxy()
+            .unwrap());
+        assert!(!settings(&[("B4HUB_TRUST_X_FORWARDED_FOR", "false")])
+            .trust_proxy()
+            .unwrap());
+        assert!(settings(&[("B4HUB_TRUST_X_FORWARDED_FOR", "1")])
+            .trust_proxy()
+            .unwrap());
+        assert!(settings(&[("B4HUB_TRUST_X_FORWARDED_FOR", "true")])
+            .trust_proxy()
+            .unwrap());
+        let error = settings(&[("B4HUB_TRUST_X_FORWARDED_FOR", "yes")])
+            .trust_proxy()
+            .unwrap_err();
+        assert_eq!(error.name, "B4HUB_TRUST_X_FORWARDED_FOR");
+    }
+
+    #[test]
+    fn log_format_defaults_by_terminal_and_accepts_text_or_json() {
+        assert_eq!(settings(&[]).log_format(true).unwrap(), LogFormat::Text);
+        assert_eq!(settings(&[]).log_format(false).unwrap(), LogFormat::Json);
+        assert_eq!(
+            settings(&[("B4HUB_LOG_FORMAT", "text")])
+                .log_format(false)
+                .unwrap(),
+            LogFormat::Text
+        );
+        assert_eq!(
+            settings(&[("B4HUB_LOG_FORMAT", "json")])
+                .log_format(true)
+                .unwrap(),
+            LogFormat::Json
+        );
+        let error = settings(&[("B4HUB_LOG_FORMAT", "yaml")])
+            .log_format(true)
+            .unwrap_err();
+        assert_eq!(error.name, "B4HUB_LOG_FORMAT");
+        assert!(!error.to_string().contains("yaml"));
     }
 
     #[test]

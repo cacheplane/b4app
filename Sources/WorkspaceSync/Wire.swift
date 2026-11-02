@@ -355,9 +355,10 @@ public struct HubErrorBody: Codable, Sendable, Equatable {
 }
 
 /// A failure talking to the hub. `code` is the hub's `details.code` (`invalid_request`, `invalid_code`,
-/// `unauthorized`, `resync_required`, `payload_too_large`, `shutting_down`, ...) or `transport` when
-/// the request never completed or its answer could not be read. `status` is the HTTP status, or 0 when
-/// there was none.
+/// `unauthorized`, `resync_required`, `payload_too_large`, `shutting_down`, `maintenance`, ...) or
+/// `transport` when the request never completed or its answer could not be read. `status` is the HTTP
+/// status, or 0 when there was none. A `maintenance` 503 means the operator paused writes; it is
+/// transient, so the outbox is kept and the push retried.
 public struct HubError: Error, Sendable, Equatable, CustomStringConvertible {
   public var kind: String
   public var code: String

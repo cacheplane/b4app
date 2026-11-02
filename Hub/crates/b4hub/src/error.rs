@@ -171,6 +171,20 @@ impl ApiError {
             "the hub is shutting down",
         )
     }
+
+    /// A write while the operator has paused writes (`b4hub maintenance on`). `message` is the
+    /// operator's text, if any. `maintenance::Refused` is what a handler answers with, so the
+    /// response also carries `Retry-After`.
+    pub fn maintenance(message: Option<&str>) -> ApiError {
+        ApiError::execution(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "maintenance",
+            format!(
+                "the hub is in maintenance: {}",
+                message.unwrap_or("writes are paused")
+            ),
+        )
+    }
 }
 
 impl From<b4hub_db::Error> for ApiError {

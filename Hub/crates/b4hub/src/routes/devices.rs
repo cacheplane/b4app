@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 
 use crate::auth::AuthedDevice;
 use crate::error::ApiError;
+use crate::maintenance::WritesAllowed;
 use crate::relay::Close;
 use crate::serve::AppState;
 
@@ -33,6 +34,7 @@ pub async fn me(
 pub async fn revoke_self(
     State(state): State<AppState>,
     device: AuthedDevice,
+    WritesAllowed: WritesAllowed,
 ) -> Result<StatusCode, ApiError> {
     devices::revoke_self(&state.db, device.org_id, device.device_id).await?;
     // A revoked device's link ends now, not at its next heartbeat.
