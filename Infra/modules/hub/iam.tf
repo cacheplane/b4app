@@ -8,6 +8,10 @@ locals {
       Effect    = "Allow"
       Action    = "sts:AssumeRole"
       Principal = { Service = "ecs-tasks.amazonaws.com" }
+      # Only tasks in this account may assume the role (confused deputy).
+      Condition = {
+        StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
+      }
     }]
   })
 

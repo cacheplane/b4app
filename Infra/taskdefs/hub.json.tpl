@@ -19,14 +19,10 @@
     ],
     "secrets": [
 %{ if include_signin_secrets ~}
-%{ for s in [
-  { name = "B4HUB_SECRET_KEY", valueFrom = secret_key_arn },
-  { name = "B4HUB_APPLE_TEAM_ID", valueFrom = apple_team_id_arn },
-  { name = "B4HUB_APPLE_KEY_ID", valueFrom = apple_key_id_arn },
-  { name = "B4HUB_APPLE_PRIVATE_KEY", valueFrom = apple_private_key_arn },
-] ~}
-      { "name": "${s.name}", "valueFrom": "${s.valueFrom}" },
-%{ endfor ~}
+      { "name": "B4HUB_SECRET_KEY", "valueFrom": "${secret_key_arn}" },
+      { "name": "B4HUB_APPLE_TEAM_ID", "valueFrom": "${apple_team_id_arn}" },
+      { "name": "B4HUB_APPLE_KEY_ID", "valueFrom": "${apple_key_id_arn}" },
+      { "name": "B4HUB_APPLE_PRIVATE_KEY", "valueFrom": "${apple_private_key_arn}" },
 %{ endif ~}
       { "name": "DATABASE_URL", "valueFrom": "${db_url_secret_arn}" }
     ],

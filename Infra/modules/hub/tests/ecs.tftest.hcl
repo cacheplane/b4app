@@ -94,6 +94,29 @@ mock_provider "aws" {
   }
 }
 
+# The shared aws_iam_role mock gives every role one ARN; distinct ARNs here
+# make the task-definition role wiring assertions able to fail.
+override_resource {
+  target = aws_iam_role.task_exec
+  values = {
+    arn = "arn:aws:iam::111111111111:role/b4hub-test-task-exec"
+  }
+}
+
+override_resource {
+  target = aws_iam_role.task
+  values = {
+    arn = "arn:aws:iam::111111111111:role/b4hub-test-task"
+  }
+}
+
+override_resource {
+  target = aws_iam_role.admin_task
+  values = {
+    arn = "arn:aws:iam::111111111111:role/b4hub-test-admin-task"
+  }
+}
+
 variables {
   environment = "test"
   alarm_email = "ops@example.com"
@@ -460,6 +483,16 @@ run "task_roles" {
   assert {
     condition     = alltrue([for r in [aws_iam_role.task_exec, aws_iam_role.task, aws_iam_role.admin_task] : jsondecode(r.assume_role_policy).Statement[0].Principal.Service == "ecs-tasks.amazonaws.com"])
     error_message = "every role trusts ECS tasks"
+  }
+
+  assert {
+    condition     = alltrue([for r in [aws_iam_role.task_exec, aws_iam_role.task, aws_iam_role.admin_task] : jsondecode(r.assume_role_policy).Statement[0].Condition.StringEquals["aws:SourceAccount"] == "111111111111"])
+    error_message = "every trust policy is limited to this account's tasks"
+  }
+
+  assert {
+    condition     = length(toset([aws_iam_role.task_exec.arn, aws_iam_role.task.arn, aws_iam_role.admin_task.arn])) == 3
+    error_message = "the three roles have distinct ARNs in this test, so the wiring assertions are meaningful"
   }
 
   assert {
