@@ -52,7 +52,7 @@ actor EventCollector {
   }
 }
 
-private struct Rig {
+struct Rig {
   let adapter: ClaudeAdapter
   let collector: EventCollector
   let workDir: String
@@ -106,7 +106,9 @@ private struct Rig {
     #expect(finished.payload["outcome"]?.stringValue == "completed")
     #expect(finished.nativeIds["threadId"] == ref.nativeSessionId)
     #expect(finished.nativeIds["turnId"] == receipt.nativeTurnId)
-    let kinds = await rig.collector.events.map(\.kind).filter { $0 != .turnStateChanged }
+    let kinds = await rig.collector.events.map(\.kind).filter {
+      $0 != .turnStateChanged && $0 != .usageChanged
+    }
     #expect(kinds == [.messageStarted, .messageDelta, .messageDelta, .messageCompleted, .turnFinished])
     let completed = await rig.collector.events.first { $0.kind == .messageCompleted }
     #expect(completed?.payload["item"]?["text"]?.stringValue == "Hello from fake Claude.")

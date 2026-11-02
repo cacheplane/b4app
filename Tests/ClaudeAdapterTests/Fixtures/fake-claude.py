@@ -126,7 +126,19 @@ def stream_text(user_uuid, text):
     return message_id
 
 
+def rate_limit():
+    # The plan windows the tests pin: 91% of the 5-hour window, 48% of the week.
+    now = int(time.time())
+    five, week = now + 2280, now + 400000
+    send({"type": "rate_limit_event", "uuid": next_id("uuid"), "session_id": "fake",
+          "rate_limit_info": {"status": "allowed", "rateLimitType": "five_hour", "utilization": 0.91,
+                              "resetsAt": five,
+                              "unifiedWindows": {"five_hour": {"utilization": 0.91, "resetsAt": five},
+                                                 "seven_day": {"utilization": 0.48, "resetsAt": week}}}})
+
+
 def result(user_uuid, is_error=False, text="", terminal_reason=None, subtype="success"):
+    rate_limit()
     send({"type": "result", "subtype": subtype, "is_error": is_error, "duration_ms": 10, "num_turns": 1,
           "total_cost_usd": 0.001, "result": text, "stop_reason": "end_turn", "terminal_reason": terminal_reason,
           "permission_denials": [], "user_message_uuid": user_uuid, "errors": []})
