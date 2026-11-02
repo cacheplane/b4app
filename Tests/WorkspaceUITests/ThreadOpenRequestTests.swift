@@ -70,6 +70,20 @@ import WorkspaceSync
     #expect(model.detailRequest == 2)
   }
 
+  /// A sign-out forgets an open request, so the next sign-in's root view (which acts on a nonzero
+  /// `detailRequest` when it mounts) does not move the iPhone to an empty thread column.
+  @Test func sign_out_clears_the_open_request() async throws {
+    let transport = try mirroredTransport()
+    let model = WorkspaceModel(transportProvider: { transport }, accountSource: .host)
+    model.requestOpenThread("thread-1")
+    #expect(model.detailRequest == 1)
+    #expect(model.pendingThreadOpen == "thread-1")
+
+    model.applyAccountStatus(AccountStatus.Result(state: .signedOut), loadStore: false)
+    #expect(model.detailRequest == 0)
+    #expect(model.pendingThreadOpen == nil)
+  }
+
   @Test func a_later_pending_request_replaces_an_earlier_one() async throws {
     let transport = try mirroredTransport()
     let model = WorkspaceModel(transportProvider: { transport })

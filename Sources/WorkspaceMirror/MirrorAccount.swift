@@ -108,6 +108,12 @@ import os
     startSync(link, fromSnapshot: fromSnapshot)
   }
 
+  /// Mark the sync suspended without awaiting, so a sync started afterwards (`startSync`) begins
+  /// parked. For a launch in the background, before the first `startSync`; `resumeSync()` undoes it.
+  public func prepareSuspended() {
+    syncSuspended = true
+  }
+
   /// Park the sync between turns and return once it is idle (`MirrorSync.suspend`); syncs started
   /// before `resumeSync()` begin parked.
   public func suspendSync() async {

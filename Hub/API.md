@@ -697,7 +697,9 @@ new one revoked too before the delete. Errors also: `401 unauthorized`.
 Log out: deletes the presented token and nothing else. `204` with no body. The token is `401
 unauthorized` from then on, but the device stays enrolled and **unrevoked**: a later sign-in that
 sends its `deviceId` reuses it, and sync continues from where it was. To remove the device from
-the account instead, use `DELETE /v1/devices/self`. Errors: `401 unauthorized`.
+the account instead, use `DELETE /v1/devices/self`. The device's push token is kept, but a device
+with no session is not notified (see *When the hub notifies*) until it signs in again. Errors: `401
+unauthorized`.
 
 ### `DELETE /v1/me`
 
@@ -748,8 +750,8 @@ has an open link (see *Link*), the hub closes it with code 4001. Errors: `401 un
 ### `POST /v1/devices/self/push-token`
 
 A phone registers the APNs token the hub notifies it at. One row per device, replaced on every
-call. The phone sends it each time the system hands it a token while it is linked, and after each
-enrollment.
+call. The phone sends it each time the system hands it a token while it is signed in, and after each
+sign-in.
 
 Request (all three fields required, no other field allowed):
 
@@ -770,7 +772,8 @@ for a field that fails the rules above. The token is never logged.
 #### When the hub notifies
 
 The hub decides inside the `POST /v1/changes` transaction, from the rows the batch applied, and
-notifies the user's `ios` devices that have a token, except the one whose push caused the change:
+notifies the user's `ios` devices that are not revoked, hold a session (an unrevoked device token),
+have a push token, and are not the one whose push caused the change:
 
 - A `runtimeRequests` row whose `state` is `pending` notifies, whatever its age: kinds
   `command_approval`, `file_change_approval`, `tool_permission`, and `unknown` say "Waiting for

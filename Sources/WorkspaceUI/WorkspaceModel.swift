@@ -1424,6 +1424,10 @@ public final class WorkspaceModel {
     activeTurns = [:]
     detail = nil
     selectedThreadId = nil
+    // An open request of the account that left must not move the next sign-in to an empty thread
+    // column (the root view acts on `detailRequest` when it mounts) or open a thread of the old one.
+    detailRequest = 0
+    pendingThreadOpen = nil
     // With no thread open, clearing the composer schedules no draft save.
     composerText = ""
     account = nil

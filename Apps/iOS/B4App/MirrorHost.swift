@@ -157,15 +157,20 @@ extension MirrorAccount: @retroactive AccountHost {}
     }
     account?.onChange = { status in MirrorHost.shared.accountChanged(status) }
     account?.onDevices = { MirrorHost.shared.refreshHostState() }
+    // Launched in the background (a push's wake): no `.background` phase will come to pause the loop,
+    // and a suspend queued after `startSync` would let the first turn run first. Mark the account
+    // suspended before it starts, so the loop begins parked.
+    let launchedInBackground = UIApplication.shared.applicationState == .background
+    if launchedInBackground { account?.prepareSuspended() }
     if let account, let link = account.link {
       makeRelay(link)
       account.startSync(fromSnapshot: fromSnapshot)
     }
     lifecycle = RelayLifecycle(enrolled: relay != nil, hasRelay: relay != nil)
     pushTokenRef = account?.link?.tokenRef
-    // Launched in the background (a push's wake): no `.background` phase will come to pause the loop,
-    // so queue the suspend now, ordered and under a background task as that phase's is.
-    if UIApplication.shared.applicationState == .background { controlSync(.suspend) }
+    // The suspend is also queued, ordered and under a background task as a `.background` phase's is,
+    // so the app is not suspended before the parked loop reports idle.
+    if launchedInBackground { controlSync(.suspend) }
   }
 
   /// The shared shell's model, with the phone's account as its host and the flavour's sign-in screen.
@@ -284,6 +289,11 @@ extension MirrorAccount: @retroactive AccountHost {}
       if link != nil {
         requestNotifications()
         registerPushToken()
+      } else {
+        // A phone whose log-out never reached the hub is still on its push list there; stop APNs
+        // delivering (a title on the lock screen) to a phone nobody is signed in on. The next
+        // sign-in's `requestNotifications()` registers again, after this call.
+        UIApplication.shared.unregisterForRemoteNotifications()
       }
       WidgetCenter.shared.reloadAllTimelines()
     }
