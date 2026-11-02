@@ -23,8 +23,10 @@ import Testing
 
   @Test func dataDirIsUnderApplicationSupportOnMacOS() {
     #if os(macOS)
-      let paths = PlatformPaths.resolve(environment: [:])
+      let paths = PlatformPaths.resolve(environment: ["B4APP_FLAVOR": "prod"])
       #expect(paths.dataDir.hasSuffix("/Library/Application Support/b4app"))
+      let local = PlatformPaths.resolve(environment: ["B4APP_FLAVOR": "local"])
+      #expect(local.dataDir.hasSuffix("/Library/Application Support/b4app-local"))
     #endif
   }
 

@@ -39,7 +39,10 @@ public struct PlatformPaths: Sendable, Equatable, Codable {
   public var logDir: String
   public var postgres: PostgresEndpoint
 
-  public static let appDirectoryName = "b4app"
+  /// The per-user directory name of the running flavour: `b4app`, `b4app-beta`, `b4app-local`.
+  public static var appDirectoryName: String { directoryName(for: Flavor.current) }
+
+  public static func directoryName(for flavor: Flavor) -> String { "b4app" + flavor.dirSuffix }
 
   public init(runtimeDir: String, dataDir: String) {
     self.runtimeDir = runtimeDir
@@ -57,9 +60,10 @@ public struct PlatformPaths: Sendable, Equatable, Codable {
   public static func resolve(
     environment env: [String: String] = ProcessInfo.processInfo.environment
   ) -> PlatformPaths {
+    let flavor = Flavor.resolve(environment: env, executableURL: Bundle.main.executableURL)
     var paths = PlatformPaths(
-      runtimeDir: env["B4APP_RUNTIME_DIR"] ?? defaultRuntimeDir(env),
-      dataDir: env["B4APP_DATA_DIR"] ?? defaultDataDir())
+      runtimeDir: env["B4APP_RUNTIME_DIR"] ?? defaultRuntimeDir(env, flavor: flavor),
+      dataDir: env["B4APP_DATA_DIR"] ?? defaultDataDir(flavor: flavor))
     // An external cluster (B4APP_POSTGRES_SOCKET_DIR, optionally B4APP_POSTGRES_PORT and
     // B4APP_POSTGRES_DATABASE) replaces the managed one.
     if let socketDir = env["B4APP_POSTGRES_SOCKET_DIR"], !socketDir.isEmpty {
@@ -75,19 +79,14 @@ public struct PlatformPaths: Sendable, Equatable, Codable {
 
   /// A short per-user path: Unix socket paths are limited to about 104 bytes, and macOS $TMPDIR is
   /// per-user and short (see the design document).
-  static func defaultRuntimeDir(_ env: [String: String]) -> String {
+  static func defaultRuntimeDir(_ env: [String: String], flavor: Flavor = .current) -> String {
     let tmp = env["TMPDIR"] ?? NSTemporaryDirectory()
-    return (tmp as NSString).appendingPathComponent(appDirectoryName)
+    return (tmp as NSString).appendingPathComponent(directoryName(for: flavor))
   }
 
-  static func defaultDataDir() -> String {
-    #if os(macOS)
-      let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-      return support.appendingPathComponent(appDirectoryName).path
-    #else
-      let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-      return support.appendingPathComponent(appDirectoryName).path
-    #endif
+  static func defaultDataDir(flavor: Flavor = .current) -> String {
+    let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+    return support.appendingPathComponent(directoryName(for: flavor)).path
   }
 }
 

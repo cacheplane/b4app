@@ -19,7 +19,10 @@ public struct CoordinatorOptions: Sendable {
   ) {
     self.environment = environment
     self.paths = paths ?? PlatformPaths.resolve(environment: environment)
-    self.secretStore = secretStore ?? KeychainSecretStore.forCurrentProcess()
+    self.secretStore =
+      secretStore
+      ?? KeychainSecretStore.forCurrentProcess(
+        flavorSuffix: Flavor.current.keychainGroupSuffix)
     self.adapterFactory = adapterFactory
     self.hubAPIFactory = hubAPIFactory
   }

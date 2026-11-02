@@ -51,8 +51,20 @@ public struct KeychainSecretStore: SecretStore {
   /// The data-protection access group on macOS; nil means the file-based login keychain.
   public let accessGroup: String?
 
-  /// The suffix of the access group the app and the coordinator share, after the team id.
-  public static let sharedGroupSuffix = ".com.cacheplane.b4app.shared"
+  /// The suffix of the production access group the app and the coordinator share, after the team id.
+  public static let sharedGroupSuffix = sharedGroupSuffix(flavorSuffix: "")
+
+  /// The same for a flavour; `flavorSuffix` is `Flavor.keychainGroupSuffix` ("", ".beta", ".local").
+  /// The flavour is passed in because `WorkspacePlatform` re-exports this module.
+  public static func sharedGroupSuffix(flavorSuffix: String) -> String {
+    ".com.cacheplane.b4app\(flavorSuffix).shared"
+  }
+
+  /// The claimed group belonging to a flavour, if the signature claims one.
+  public static func selectGroup(from claimed: [String], flavorSuffix: String = "") -> String? {
+    let suffix = sharedGroupSuffix(flavorSuffix: flavorSuffix)
+    return claimed.first { $0.hasSuffix(suffix) }
+  }
 
   public init(service: String = "b4app", accessGroup: String? = nil) {
     self.service = service
@@ -64,10 +76,13 @@ public struct KeychainSecretStore: SecretStore {
   }
 
   /// The store for this process: the shared data-protection group when the signature claims it,
-  /// the file-based keychain otherwise.
-  public static func forCurrentProcess(service: String = "b4app") -> KeychainSecretStore {
+  /// the file-based keychain otherwise. The group comes from the process's own entitlement; the
+  /// flavour suffix only says which of the claimed groups is this flavour's.
+  public static func forCurrentProcess(
+    service: String = "b4app", flavorSuffix: String = ""
+  ) -> KeychainSecretStore {
     #if os(macOS)
-      let group = claimedAccessGroups().first { $0.hasSuffix(sharedGroupSuffix) }
+      let group = selectGroup(from: claimedAccessGroups(), flavorSuffix: flavorSuffix)
       return KeychainSecretStore(service: service, accessGroup: group)
     #else
       return KeychainSecretStore(service: service)
