@@ -15,11 +15,15 @@ public struct CoordinatorOptions: Sendable {
   /// Overrides the relay link's WebSocket (tests inject a `FakeHubLinkConnection`); nil uses
   /// `URLSessionHubLinkConnection`.
   public var hubLinkConnection: (any HubLinkConnection)?
+  /// Overrides the power assertion for "keep the Mac awake" (tests inject a `FakePowerAssertions`); nil
+  /// uses IOKit.
+  public var powerAssertions: (any PowerAssertions)?
 
   public init(
     paths: PlatformPaths? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
     secretStore: (any SecretStore)? = nil, adapterFactory: SessionService.AdapterFactory? = nil,
-    hubAPIFactory: HubSync.APIFactory? = nil, hubLinkConnection: (any HubLinkConnection)? = nil
+    hubAPIFactory: HubSync.APIFactory? = nil, hubLinkConnection: (any HubLinkConnection)? = nil,
+    powerAssertions: (any PowerAssertions)? = nil
   ) {
     self.environment = environment
     self.paths = paths ?? PlatformPaths.resolve(environment: environment)
@@ -27,6 +31,7 @@ public struct CoordinatorOptions: Sendable {
     self.adapterFactory = adapterFactory
     self.hubAPIFactory = hubAPIFactory
     self.hubLinkConnection = hubLinkConnection
+    self.powerAssertions = powerAssertions
   }
 }
 
@@ -172,14 +177,18 @@ public enum Coordinator {
         url: url, token: token, executor: relay, eventLog: eventLog, connection: linkConnection,
         pathMonitor: NWPathMonitorSignal())
     }
+    let assertions = options.powerAssertions ?? IOKitPowerAssertions()
     let hub =
       options.hubAPIFactory.map {
         HubSync(
           database: database, secretStore: options.secretStore, eventLog: eventLog, makeAPI: $0,
-          makeLink: makeLink)
+          makeLink: makeLink, powerAssertions: assertions)
       }
-      ?? HubSync(database: database, secretStore: options.secretStore, eventLog: eventLog, makeLink: makeLink)
+      ?? HubSync(
+        database: database, secretStore: options.secretStore, eventLog: eventLog, makeLink: makeLink,
+        powerAssertions: assertions)
     await diagnostics.attachRelay { [hub] in await hub.linkStatus() }
+    await diagnostics.attachKeepAwake { [hub] in await hub.keepAwakeHeld() }
     let router = Router(
       context: Router.Context(
         database: database, eventLog: eventLog, diagnostics: diagnostics, sessions: sessions,

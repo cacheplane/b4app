@@ -26,6 +26,7 @@ struct HubCommand: AsyncParsableCommand {
       if let error = link.lastError { line += " (\(error))" }
       lines.append(line)
     }
+    if let held = status.keepAwakeHeld { lines.append("awake      \(held ? "kept awake" : "not held")") }
     return lines.joined(separator: "\n")
   }
 

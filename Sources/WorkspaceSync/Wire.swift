@@ -317,10 +317,32 @@ struct DevicesResponse: Codable, Sendable, Equatable {
   var devices: [DeviceInfo]
 }
 
+/// What `POST /v1/pairing-codes` answers: a single-use enrollment code for a phone, valid five minutes.
+/// `hubURL` is the hub's public URL and is absent when the hub has none. The code is a credential: it
+/// is never printed by `description`, and callers keep it no longer than the answer to their caller.
+public struct PairingCodeResponse: Codable, Sendable, Equatable, CustomStringConvertible,
+  CustomDebugStringConvertible
+{
+  public var code: String
+  public var expiresAt: String
+  public var hubURL: String?
+
+  public init(code: String, expiresAt: String, hubURL: String? = nil) {
+    self.code = code
+    self.expiresAt = expiresAt
+    self.hubURL = hubURL
+  }
+
+  public var description: String { "PairingCodeResponse(expiresAt: \(expiresAt))" }
+  public var debugDescription: String { description }
+}
+
 /// B4's error envelope as the hub sends it: `{"error":{"kind","message","details":{"code"}}}`.
 public struct HubErrorBody: Codable, Sendable, Equatable {
   public struct Details: Codable, Sendable, Equatable {
     public var code: String?
+    /// A `rate_limited` answer's wait, in milliseconds.
+    public var retryAfterMs: Int?
   }
 
   public struct Body: Codable, Sendable, Equatable {
@@ -341,12 +363,15 @@ public struct HubError: Error, Sendable, Equatable, CustomStringConvertible {
   public var code: String
   public var message: String
   public var status: Int
+  /// How long the hub asks the caller to wait, on a `rate_limited` answer.
+  public var retryAfterMs: Int?
 
-  public init(kind: String, code: String, message: String, status: Int) {
+  public init(kind: String, code: String, message: String, status: Int, retryAfterMs: Int? = nil) {
     self.kind = kind
     self.code = code
     self.message = message
     self.status = status
+    self.retryAfterMs = retryAfterMs
   }
 
   public var description: String { "Hub error \(status) \(code): \(message)" }

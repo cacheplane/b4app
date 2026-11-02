@@ -23,8 +23,12 @@ import WorkspaceSync
 /// and it stops on `leave()`, `stop()`, and a 401 from a push or the pull. It uses the same `HubToken`,
 /// so the Keychain is still asked once per run. `reconnectLink()` (the wake signal) reopens it at once.
 ///
-/// The enrollment code, the token, and the token's `SecretRef` never appear in a log line, a result,
-/// or an error message.
+/// Pairing a phone (`pair`, `pairStatus`) is `Pairing`'s; the "keep the Mac awake" preference and its
+/// power assertion (`settings`, `updateSettings`) are `KeepAwake`'s. The assertion is held exactly while
+/// the preference is on and this Mac is joined: it follows `start`, `join`, `leave`, and `stop`.
+///
+/// The enrollment code, the pairing code (it appears only in `pair`'s result), the token, and the token's
+/// `SecretRef` never appear in a log line, a status, or an error message.
 public actor HubSync {
   public typealias APIFactory = @Sendable (URL, @escaping @Sendable () async throws -> String?) -> any HubAPI
   /// Builds the relay link for a hub URL and the device token's reader.
@@ -63,16 +67,25 @@ public actor HubSync {
   /// memory only, so the link table needs no migration.
   private var displayName: String?
   private var fetchingName = false
+  private let pairing: Pairing
+  private let keepAwake: KeepAwake
 
-  public init(
+  /// The local setting that holds the "keep the Mac awake" preference.
+  static let keepAwakeKey = "keepAwake"
+
+  /// `pairing` and `powerAssertions` are for tests: a manual poll clock and a fake power assertion.
+  init(
     database: WorkspaceDatabase, secretStore: any SecretStore, eventLog: EventLog,
-    makeAPI: @escaping APIFactory = { HTTPHubAPI(baseURL: $0, token: $1) }, makeLink: LinkFactory? = nil
+    makeAPI: @escaping APIFactory = { HTTPHubAPI(baseURL: $0, token: $1) }, makeLink: LinkFactory? = nil,
+    pairing: Pairing = Pairing(), powerAssertions: any PowerAssertions = IOKitPowerAssertions()
   ) {
     self.database = database
     self.secretStore = secretStore
     self.eventLog = eventLog
     self.makeAPI = makeAPI
     self.makeLink = makeLink
+    self.pairing = pairing
+    self.keepAwake = KeepAwake(assertions: powerAssertions)
   }
 
   // MARK: - Lifecycle
@@ -97,6 +110,7 @@ public actor HubSync {
     }
     guard nudgeTask == nil else { return }
     started = true
+    refreshKeepAwake()
     if let link = try? database.hubLink(), api != nil {
       startPull(deviceId: link.deviceId)
       await startLink()
@@ -129,6 +143,8 @@ public actor HubSync {
     pendingNudge = nil
     await stopPull()
     await link?.stop()
+    await pairing.reset()
+    keepAwake.release()
   }
 
   // MARK: - Commands
@@ -173,6 +189,7 @@ public actor HubSync {
     baseURL = base
     displayName = enrolled.user.displayName
     suspended = false
+    refreshKeepAwake()
     logger.info(
       "joined \(base.host ?? "hub", privacy: .public) as device \(enrolled.deviceId, privacy: .public)")
     do {
@@ -188,7 +205,7 @@ public actor HubSync {
   public func status() async throws -> HubStatus.Result {
     let unsynced = try database.unsyncedChangeCount()
     guard let link = try database.hubLink() else {
-      return HubStatus.Result(joined: false, unsyncedChanges: unsynced)
+      return HubStatus.Result(joined: false, unsyncedChanges: unsynced, keepAwakeHeld: keepAwake.isHeld)
     }
     var lastError = link.lastError
     if let since = token?.waitingSince {
@@ -198,7 +215,53 @@ public actor HubSync {
     return HubStatus.Result(
       joined: true, url: link.url, deviceId: link.deviceId, deviceName: link.deviceName,
       orgSlug: link.orgSlug, username: link.username, displayName: displayName, unsyncedChanges: unsynced,
-      lastPushAt: link.lastPushAt, lastError: lastError, link: await self.link?.status())
+      lastPushAt: link.lastPushAt, lastError: lastError, link: await self.link?.status(),
+      keepAwakeHeld: keepAwake.isHeld)
+  }
+
+  // MARK: - Pairing and settings
+
+  /// Mint a code that pairs a phone and start watching for it to be used. The code is in the result and
+  /// nowhere else.
+  public func pair() async throws -> HubPair.Result {
+    guard let api, let baseURL, try database.hubLink() != nil else {
+      throw WorkspaceError(.protocolInvalid, "Join a hub first")
+    }
+    do {
+      return try await pairing.mint(api: api, fallbackURL: baseURL)
+    } catch let error as HubError {
+      throw Self.workspaceError(error, doing: "pair a phone")
+    }
+  }
+
+  public func pairStatus() async -> HubPairStatus.Result {
+    await pairing.status()
+  }
+
+  /// This Mac's preferences; "keep the Mac awake" is on until set off.
+  public func settings() throws -> SettingsRead.Result {
+    SettingsRead.Result(keepAwake: try keepAwakeEnabled())
+  }
+
+  public func updateSettings(_ params: SettingsUpdate.Params) throws -> SettingsRead.Result {
+    if let keepAwake = params.keepAwake {
+      try database.setSetting(key: Self.keepAwakeKey, value: .bool(keepAwake))
+      refreshKeepAwake()
+    }
+    return try settings()
+  }
+
+  /// Whether the "keep the Mac awake" power assertion is held right now.
+  public func keepAwakeHeld() -> Bool { keepAwake.isHeld }
+
+  private func keepAwakeEnabled() throws -> Bool {
+    try database.settings(key: Self.keepAwakeKey)?.boolValue ?? true
+  }
+
+  /// Holds the assertion exactly while the preference is on and this Mac is joined. A preference that
+  /// cannot be read counts as the default, on.
+  private func refreshKeepAwake() {
+    keepAwake.apply(enabled: (try? keepAwakeEnabled()) ?? true, joined: api != nil)
   }
 
   /// Ask `/v1/me` while the name is unknown: at start, and again after each successful push or pull,
@@ -234,6 +297,8 @@ public actor HubSync {
     displayName = nil
     token = nil
     suspended = false
+    refreshKeepAwake()
+    await pairing.reset()
     await waitForPush()
     if let api {
       do {
@@ -461,10 +526,12 @@ public actor HubSync {
     let code: ErrorCode =
       switch error.status {
       case 401, 403: .authRequired
+      case 429: .rateLimited
       case 0, 500...: .endpointUnavailable
       default: .protocolInvalid
       }
-    return WorkspaceError(
-      code, "Could not \(action): \(error.description)", details: ["hubCode": .string(error.code)])
+    var details: [String: JSONValue] = ["hubCode": .string(error.code)]
+    if let wait = error.retryAfterMs { details["retryAfterMs"] = .number(Double(wait)) }
+    return WorkspaceError(code, "Could not \(action): \(error.description)", details: .object(details))
   }
 }

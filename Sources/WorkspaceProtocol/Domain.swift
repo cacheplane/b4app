@@ -529,10 +529,13 @@ public struct DiagnosticsReport: Codable, Sendable, Equatable {
   /// The Mac's relay link to the hub (M8c), while joined; nil otherwise, from the phone, and absent in
   /// older reports.
   public var relay: HubLinkStatus?
+  /// Whether the "keep the Mac awake" power assertion is held (M8c); nil from the phone and absent in
+  /// older reports.
+  public var keepAwakeHeld: Bool?
 
   public init(
     coordinator: CoordinatorInfo, host: HostInfo, runtimes: [RuntimeDiagnostic], recentErrors: [RecentError],
-    sync: SyncDiagnostic? = nil, relay: HubLinkStatus? = nil
+    sync: SyncDiagnostic? = nil, relay: HubLinkStatus? = nil, keepAwakeHeld: Bool? = nil
   ) {
     self.coordinator = coordinator
     self.host = host
@@ -540,6 +543,7 @@ public struct DiagnosticsReport: Codable, Sendable, Equatable {
     self.recentErrors = recentErrors
     self.sync = sync
     self.relay = relay
+    self.keepAwakeHeld = keepAwakeHeld
   }
 }
 

@@ -104,6 +104,10 @@ private struct TokenReadingAPI: HubAPI {
     try await authenticate()
     return try await fake.devices()
   }
+  func mintPairingCode() async throws -> PairingCodeResponse {
+    try await authenticate()
+    return try await fake.mintPairingCode()
+  }
   func revokeSelf() async throws {
     try await authenticate()
     try await fake.revokeSelf()

@@ -41,6 +41,10 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case hubJoin = "hub.join"
   case hubStatus = "hub.status"
   case hubLeave = "hub.leave"
+  case hubPair = "hub.pair"
+  case hubPairStatus = "hub.pairStatus"
+  case settingsRead = "settings.read"
+  case settingsUpdate = "settings.update"
   case projectList = "project.list"
   case projectCreate = "project.create"
   case projectUpdate = "project.update"
@@ -61,11 +65,11 @@ public enum Method: String, Codable, Sendable, CaseIterable {
       .serverStop, .serverInspect, .workspaceStopLocalWork, .workspaceReconcile, .databaseBackup,
       .databaseRestore,
       .databaseImportSQLite, .hubJoin, .hubLeave, .projectCreate, .projectUpdate, .projectRename,
-      .projectDelete, .threadMarkRead, .threadStart:
+      .projectDelete, .threadMarkRead, .threadStart, .settingsUpdate:
       return true
     case .systemPing, .diagnosticsRead, .connectionList, .threadList, .draftRead, .eventsSnapshot,
       .eventsReplay, .threadRead, .serverList, .serverStatus, .serverLogs, .workspaceActiveWork,
-      .databaseStatus, .hubStatus, .projectList, .turnLookup:
+      .databaseStatus, .hubStatus, .projectList, .turnLookup, .hubPair, .hubPairStatus, .settingsRead:
       return false
     }
   }
@@ -765,10 +769,14 @@ public enum HubStatus: WorkspaceCommand {
     public var lastError: String?
     /// The relay link to the hub (M8c), while joined; absent from an older coordinator.
     public var link: HubLinkStatus?
+    /// Whether the "keep the Mac awake" power assertion is held right now (M8c); absent from an older
+    /// coordinator.
+    public var keepAwakeHeld: Bool?
     public init(
       joined: Bool, url: String? = nil, deviceId: String? = nil, deviceName: String? = nil,
       orgSlug: String? = nil, username: String? = nil, displayName: String? = nil, unsyncedChanges: Int,
-      lastPushAt: String? = nil, lastError: String? = nil, link: HubLinkStatus? = nil
+      lastPushAt: String? = nil, lastError: String? = nil, link: HubLinkStatus? = nil,
+      keepAwakeHeld: Bool? = nil
     ) {
       self.joined = joined
       self.url = url
@@ -781,6 +789,7 @@ public enum HubStatus: WorkspaceCommand {
       self.lastPushAt = lastPushAt
       self.lastError = lastError
       self.link = link
+      self.keepAwakeHeld = keepAwakeHeld
     }
   }
   public static let method = Method.hubStatus

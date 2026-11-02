@@ -51,6 +51,10 @@ public final class HTTPHubAPI: HubAPI {
     return response.devices
   }
 
+  public func mintPairingCode() async throws -> PairingCodeResponse {
+    try await send(.post, "v1/pairing-codes", body: EmptyBody())
+  }
+
   public func revokeSelf() async throws {
     _ = try await perform(.delete, "v1/devices/self")
   }
@@ -60,6 +64,8 @@ public final class HTTPHubAPI: HubAPI {
   private struct PushBody: Encodable {
     var changes: [SyncChange]
   }
+
+  private struct EmptyBody: Encodable {}
 
   private enum Method: String {
     case get = "GET"
@@ -158,7 +164,7 @@ public final class HTTPHubAPI: HubAPI {
     if let envelope = try? JSONCoding.decoder.decode(HubErrorBody.self, from: data) {
       return HubError(
         kind: envelope.error.kind, code: envelope.error.details?.code ?? "http_\(status)",
-        message: envelope.error.message, status: status)
+        message: envelope.error.message, status: status, retryAfterMs: envelope.error.details?.retryAfterMs)
     }
     return HubError(
       kind: status >= 500 ? "execution_error" : "request_error", code: "http_\(status)",
