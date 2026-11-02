@@ -2,6 +2,14 @@
 
 Material implementation decisions, newest first. The spec (`docs/roadmaps/Personal_Agent_Workspace_Technical_Spec_and_Roadmap.md`) is the requirement source; this log records deviations and choices the spec left open.
 
+## 2026-11-02 (usage on the phone)
+
+- **D-100 Usage reaches the phone through the hub (revises D-082's "usage stays on the Mac").** The owner: "Usage should reach the phone."
+  - **The table.** Each connection's current usage is copied into a synced table, `connectionUsage`, keyed by `connectionId`. It holds the plan reading (`reading`, a `UsageReading`) and the B4 token totals (`tokens`, a `TokenTotals`), both as JSON. Its migrations are Mac `0007_connection_usage`, hub `0010_connection_usage` (0009 is left for the soft-delete work; sqlx applies a lower number that lands later), and mirror schema version 4.
+  - **Writes.** The coordinator writes the row whenever usage moves: a stored reading, a refreshed Codex read, or a B4 turn's tokens. Only the Mac writes it; it is not phone-writable. The per-turn token rows (`tokenUsage`) and the local readings table stay on the Mac.
+  - **Token totals.** These carry the Mac's local day and week (`day`, `weekStart`, `yyyy-MM-dd`). The phone names figures from an earlier day by their date ("Sun, Nov 1", "Week of Oct 26") rather than calling them "Today".
+  - **Reads on the phone.** `MirrorTransport` serves `usage.read` from the mirror. When a usage row syncs in, it announces `usage.changed` with the whole `ConnectionUsage`, so an open Connections page updates. The phone's cards drop "Usage shows on your Mac" and draw the same meters and figures as the Mac.
+
 ## 2026-11-02 (M8c follow-ups)
 
 Fixes for three phone transcript limitations found in the M8c live gate and build review, on `fix/m8c-transcript`.
