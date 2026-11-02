@@ -4,6 +4,8 @@ Date: 2026-11-02. Owner: Brian Love. Status: approved by the owner 2026-11-02 (D
 
 This document is the architecture for running the b4 hub (`Hub/`) as a hosted service at `hub.b4.run` and `hub.test.b4.run`, and for shipping the same image to customers who run it themselves with Docker Compose or Helm. It replaces the generalized reference-platform notes that first occupied this file (summarised in the appendix). It builds on `docs/superpowers/specs/2026-10-31-m8-hub-design.md` (the hub, tenancy, one image for cloud and on-prem), `2026-11-01-m8c-relay-design.md` (D-054 to D-059, the relay and its one-replica constraint), and the sign-in design (`2026-11-01-sign-in-design.md`, D-061 to D-067, whose section "The hosted hubs (a separate project)" is the contract between that project and this one). Research: `docs/research/reports/Managed hosting for the b4 hub.md`, cited below as "the research"; every price and vendor limit in this document comes from it and carries its date (2026-11-01).
 
+Status (2026-11-02): implementation is on the branch `blove/cloud-hub-deployment-arch-4b6348`; nothing has been applied to AWS, because the owner has not yet created the Organization and accounts. The gates are recorded in `docs/verification.md` ("Hosted hubs").
+
 Like the document it replaces, this one separates what is **designed** from what has been **verified live**. Nothing below is deployed yet. `docs/verification.md` records each gate as it is passed.
 
 ## Intent
@@ -293,7 +295,7 @@ The test environment could drop WAF and use a smaller log retention to shave abo
 
 ## Verification gates
 
-Recorded in `docs/verification.md` as each is passed:
+Recorded in `docs/verification.md` (section "Hosted hubs (D-068 to D-072)") as each is passed:
 
 1. Both accounts bootstrapped; `terraform plan` from a PR is clean and read-only; `apply` from `main` reaches test with no human step.
 2. A merge to `main` produces a multi-arch image on GHCR with attestations, and the test hub serves that digest within 15 minutes; the migration task's log shows the migration list.
@@ -316,11 +318,17 @@ Recorded in `docs/decisions.md` under the 2026-11-02 heading as D-068 to D-072 (
 
 ## Left to the builder
 
-- Terraform module internals: resource names, tags, the exact IAM policies, alarm thresholds that turn out noisy.
-- The task definition JSON templates and the rendering step.
-- The cargo-chef layering in `Hub/Dockerfile` and the arm64 runner matrix.
-- Exact ALB security policy name and ACM certificate handling in Terraform (DNS validation records are printed for the owner to add at Vercel).
-- Helm chart internals beyond the contracts above; CloudNativePG example contents; the Compose `tls` profile's Caddyfile.
+Decided during the build (2026-11-02), with where to read the answer:
+
+- ~~Terraform module internals: resource names, tags, the exact IAM policies~~ Decided: `Infra/modules/hub/` (one file per concern) and `Infra/bootstrap/`.
+- ~~The task definition JSON templates and the rendering step.~~ Decided: `Infra/taskdefs/*.json.tpl` and `Infra/scripts/render-taskdef.sh`.
+- ~~The cargo-chef layering in `Hub/Dockerfile` and the arm64 runner matrix.~~ Decided: `Hub/Dockerfile` and `.github/workflows/hub-image.yml` (arm64 on `ubuntu-24.04-arm`).
+- ~~Exact ALB security policy name and ACM certificate handling in Terraform.~~ Decided: `Infra/modules/hub/alb.tf` (`alb_ssl_policy`) and `acm.tf`; the validation records are printed for the owner to add at Vercel (`Infra/README.md`, "First apply and DNS").
+- ~~Helm chart internals; CloudNativePG example contents; the Compose `tls` profile's Caddyfile.~~ Decided: `Hub/chart/b4hub/`, `Hub/chart/b4hub/examples/cnpg-cluster.yaml`, and `Hub/deploy/compose/Caddyfile`.
+
+Still open:
+
+- Alarm thresholds that turn out noisy once real traffic exists (they are module variables in `Infra/modules/hub`).
 - Which of the hub-side asks land in the sign-in project versus M8e, and their order.
 
 ## Appendix: what was kept from the reference platform notes

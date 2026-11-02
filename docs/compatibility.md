@@ -1,6 +1,6 @@
 # Compatibility manifest
 
-Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M8a on 2026-10-31, M8b on 2026-11-01). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
+Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M8a on 2026-10-31, M8b on 2026-11-01, hosted-hub tooling on 2026-11-02). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
 
 ## Target machine
 
@@ -104,7 +104,29 @@ No dependency, toolchain, or image changed in M8b. What changed is the contract 
 | `hashicorp/aws` provider | 6.71.0, pinned exactly in `Infra/bootstrap/versions.tf` and `.terraform.lock.hcl` (darwin_arm64, linux_amd64, linux_arm64 hashes) |
 | TFLint | 0.65.0 with the bundled `terraform` ruleset 0.15.0 (`recommended`); the AWS ruleset is not enabled |
 
-`Infra/bootstrap` was verified with `terraform validate`, `tflint`, and `terraform test` against a mocked provider only; it has not been applied to a real account.
+`Infra/bootstrap` (9 tests) and `Infra/modules/hub` (48 tests) were verified with `terraform validate` of the roots, `tflint`, and `terraform test` against mocked providers only; nothing has been planned or applied in a real account.
+
+### Hosted hub tooling (pinned in the workflows and scripts)
+
+Read from `.github/workflows/hub-chart.yml`, `ci.yml`, `Infra/`, and `Hub/chart/b4hub/examples`. Only the pins marked in the last column ran on GitHub; the rest ran locally or against mocks.
+
+| Item | Pin | Where, and what ran |
+| --- | --- | --- |
+| Helm | 4.2.2 (`HELM_VERSION: v4.2.2`) | `hub-chart.yml`; lint and install ran on GitHub (run 41389901877) |
+| helm-unittest | 1.2.1 (tarball sha256-checked) | `hub-chart.yml`; 47 tests passed on GitHub |
+| helm-docs | 1.14.2 (sha256-checked) | `hub-chart.yml` README freshness check; ran on GitHub |
+| chart-testing (`ct`) | 3.15.0, with yamllint 1.37.1 and yamale 6.0.0 | `hub-chart.yml`; ran on GitHub |
+| kubeconform | 0.8.0 (sha256-checked), schemas for Kubernetes 1.31.0 | `hub-chart.yml`; ran on GitHub |
+| CRD schema catalog | `datreeio/CRDs-catalog` commit `27233a506de0085e71c7f9702597806a7f95eb24` (HTTPRoute, ServiceMonitor) | `hub-chart.yml` `CRD_SCHEMAS` |
+| kind | 0.31.0 in CI (the newest release with a Kubernetes 1.31 node image); 0.32.0 locally | `helm/kind-action` v1.15.1 in `hub-chart.yml` |
+| kind node image | `kindest/node:v1.31.14@sha256:6f86cf509dbb42767b6e79debc3f2c32e4ee01386f0489b3b2be24b0a55aac2b`, kubectl v1.31.14 | `hub-chart.yml` install job |
+| CloudNativePG operator chart | `cloudnative-pg` 0.29.1 (operator 1.30.1) | `hub-chart.yml` install job via `.github/scripts/chart-kind-test.sh`. CloudNativePG 1.30 lists Kubernetes 1.31 as "tested, but not supported": it works in the install test; move the test cluster to 1.34 or later when the chart's floor allows |
+| PostgreSQL for the hosted hubs | 17 (RDS `engine_version = "17"`, major only; minor upgrades are automatic) | `Infra/modules/hub/rds.tf`; asserted by the mocked `terraform test`, not applied |
+| PostgreSQL in the self-hosting examples | 17 (`postgres:17` in `Hub/deploy/compose/compose.yaml`; `ghcr.io/cloudnative-pg/postgresql:17` in the CNPG example) | Compose first boot ran locally; the CNPG cluster ran in kind on GitHub |
+| bats | 1.14.0 (sha256-checked tarball) | `ci.yml` lint job; `bats Infra/scripts/tests` runs 36 tests against stubs |
+| actionlint | 1.7.12 (sha256-checked) | `ci.yml` lint job |
+| `curlimages/curl` | 8.22.0 (digest-pinned) | `hub-chart.yml` install job probe |
+| cargo-chef | 0.1.78 | See the Hub (M8a) table |
 
 ## Known limits of the shell
 

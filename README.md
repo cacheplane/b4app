@@ -214,6 +214,8 @@ The hub image is published to GHCR as `ghcr.io/cacheplane/b4hub` (linux/amd64 an
 
 To self-host a hub for real use (PostgreSQL, migrations, file secrets, optional Caddy TLS), see `Hub/deploy/compose/README.md`.
 
+The hosted hubs (`hub.b4.run` and `hub.test.b4.run`) are designed in `docs/deployment-architecture.md`. To run a hub yourself, `Hub/deploy/compose/README.md` covers Docker Compose and `Hub/chart/b4hub/README.md` covers Helm. The provisioning and operations runbooks for the hosted hubs live in `Infra/README.md`.
+
 Start a local hub (needs Docker). Compose publishes the hub as `127.0.0.1:8080:8080`: plain HTTP on the Mac's loopback interface only, which the Mac and the Simulator reach as `localhost` (any other device needs a hub behind TLS, since the clients refuse plain HTTP for any host but `localhost`); the database is not published:
 
 ```bash
