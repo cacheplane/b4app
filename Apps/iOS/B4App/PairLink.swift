@@ -2,8 +2,9 @@ import SwiftUI
 import WorkspaceMirror
 import WorkspaceProtocol
 
-/// A pairing link that reached the Connect screen, from a scan or from `.onOpenURL`. It holds the
-/// code, so it lives in view state only and is dropped once the enrollment request returns.
+/// A pairing link that reached the app, from the system Camera or a universal link, `.onOpenURL`, or
+/// the in-app scanner. It holds the code, so it lives in view state only and is dropped once the
+/// enrollment request returns.
 enum PairArrival: Equatable {
   /// A link this phone may pair with, once Brian confirms.
   case offer(PairLink)
@@ -15,8 +16,8 @@ enum PairArrival: Equatable {
   static let ignoredWhileOffering =
     "Another pairing link arrived and was ignored. Cancel, then open it again to use it."
 
-  /// What a scanned QR code offers. Only reached while not enrolled.
-  init(scanned text: String, decide: (URL) -> RelayLifecycle.PairLinkDecision) {
+  /// What a scanned QR code offers.
+  init(scanned text: String, decide: (URL) -> PairLinkDecision) {
     guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)) else {
       self = .invalid(Self.notAPairingCode)
       return
@@ -24,7 +25,7 @@ enum PairArrival: Equatable {
     switch decide(url) {
     case .confirm(let link): self = .offer(link)
     case .invalid: self = .invalid(Self.invalidLink)
-    case .ignored, .alreadyPaired: self = .invalid(Self.notAPairingCode)
+    case .ignored: self = .invalid(Self.notAPairingCode)
     }
   }
 }
@@ -32,9 +33,6 @@ enum PairArrival: Equatable {
 extension PairLink {
   /// The one confirmation every pairing asks for.
   var prompt: String { "Pair this iPhone with the hub at \(host)?" }
-
-  /// Shown, and nothing else done, when a pairing link opens on an enrolled phone.
-  static let alreadyPaired = "This iPhone is already paired"
 }
 
 extension RelayLifecycle.Phase {

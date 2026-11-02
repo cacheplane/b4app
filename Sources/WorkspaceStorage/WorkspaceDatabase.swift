@@ -44,10 +44,12 @@ public final class WorkspaceDatabase: Sendable {
     }
   }
 
-  /// Connect to a running cluster, create the database when it is missing, and migrate. `wall` is the
-  /// clock's time source (tests pin it to replay recorded clocks).
+  /// Connect to a running cluster, create the database when it is missing (unless `createIfMissing` is
+  /// false, when a missing one is `not_found`), and migrate. A failed migration closes the pool and
+  /// throws. `wall` is the clock's time source (tests pin it to replay recorded clocks).
   public init(
-    endpoint: PostgresEndpoint, binDir: String, wall: @escaping @Sendable () -> UInt64 = epochMillis
+    endpoint: PostgresEndpoint, binDir: String, createIfMissing: Bool = true,
+    wall: @escaping @Sendable () -> UInt64 = epochMillis
   ) throws {
     self.endpoint = endpoint
     clock = HybridClock(deviceId: "local", wall: wall)
@@ -56,9 +58,19 @@ public final class WorkspaceDatabase: Sendable {
     adminConnectionString = base + " dbname=postgres"
     let admin = try PostgresConnection(lib: lib, connectionString: adminConnectionString)
     let exists = try admin.execute("SELECT 1 FROM pg_database WHERE datname = $1", [endpoint.database]).rows
-    if exists.isEmpty { try admin.execute("CREATE DATABASE \(Rows.quote(endpoint.database))") }
+    if exists.isEmpty {
+      guard createIfMissing else {
+        throw WorkspaceError(.notFound, "The database \(endpoint.database) does not exist.")
+      }
+      try admin.execute("CREATE DATABASE \(Rows.quote(endpoint.database))")
+    }
     pool = try ConnectionPool(lib: lib, connectionString: base + " dbname=\(endpoint.database)", size: 4)
-    try pool.withConnection { try Migrator.migrate($0) }
+    do {
+      try pool.withConnection { try Migrator.migrate($0) }
+    } catch {
+      pool.close()
+      throw error
+    }
   }
 
   /// A fresh database on the shared ephemeral test cluster.
@@ -868,6 +880,36 @@ public final class WorkspaceDatabase: Sendable {
       self.lastError = lastError
       self.joinedAt = joinedAt
     }
+  }
+
+  /// Drop `endpoint`'s database, closing whatever connections it still has (a deleted account's, sign-in
+  /// plan Task 10). Its pool must already be closed. A missing database is not an error.
+  public static func drop(endpoint: PostgresEndpoint, binDir: String) throws {
+    let lib = try LibPQ.load(binDir: binDir)
+    let base = "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) application_name=b4app"
+    let admin = try PostgresConnection(lib: lib, connectionString: base + " dbname=postgres")
+    try admin.execute("DROP DATABASE IF EXISTS \(Rows.quote(endpoint.database)) WITH (FORCE)")
+  }
+
+  /// The URL of the hub link in another install's database, read without changing anything: no
+  /// migration, no database created, one read-only transaction. Nil when the cluster has no such
+  /// database, no `hubLink` table, or no link row. The cluster must be running on `endpoint`. Sign-in
+  /// plan Task 3 uses it to decide whether the pre-flavour install's data belongs to the local flavour.
+  public static func linkedHubURL(endpoint: PostgresEndpoint, binDir: String) throws -> String? {
+    let lib = try LibPQ.load(binDir: binDir)
+    let base = "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) application_name=b4app"
+    let admin = try PostgresConnection(lib: lib, connectionString: base + " dbname=postgres")
+    guard try !admin.execute("SELECT 1 FROM pg_database WHERE datname = $1", [endpoint.database]).rows.isEmpty
+    else { return nil }
+    let connection = try PostgresConnection(
+      lib: lib, connectionString: base + " dbname=\(endpoint.database)")
+    try connection.execute("BEGIN READ ONLY")
+    defer { _ = try? connection.execute("ROLLBACK") }
+    guard
+      try connection.execute("SELECT to_regclass('\"hubLink\"')::text AS name").rows.first?.text("name")
+        != nil
+    else { return nil }
+    return try connection.execute("SELECT \"url\" FROM \"hubLink\" WHERE \"id\" = 1").rows.first?.text("url")
   }
 
   public func hubLink() throws -> HubLink? {

@@ -113,7 +113,10 @@ public struct Remediation: Equatable, Sendable {
         actionTitle: "Open B4 projects")
     case .unsupportedCapability, .notImplemented:
       return Remediation(message: error.message, action: .none)
-    case .protocolInvalid, .methodUnknown, .snapshotRequired, .notFound, .internalError:
+    case .protocolInvalid, .methodUnknown, .snapshotRequired, .notFound, .internalError,
+      .signupClosed, .ceremonyExpired, .credentialRejected, .lastIdentity, .mergeRefused, .appleLinked,
+      .sharedOrg,
+      .rateLimited, .signedOut, .workRunning:
       return Remediation(message: error.message, action: .none)
     // The relay's codes reach the user as their own message; the phone's views word them (M8c).
     case .deviceOffline, .commandExpired, .relayTimeout, .rateLimited, .linkReplaced, .clientTooOld,

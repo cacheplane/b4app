@@ -23,10 +23,18 @@ public protocol SecretStore: Sendable {
   func remove(_ ref: SecretRef) async throws -> Bool
   /// Where values live, for diagnostics; never a value.
   var backend: String { get }
+  /// The value this store itself holds for `ref`, with no fallback to another keychain and nothing
+  /// moved: what a copy between two stores checks (D-094). `read` for a store with no fallback.
+  func readHere(_ ref: SecretRef) async throws -> String?
+  /// Stores `value` here and touches no other keychain (`put` on a data-protection store also
+  /// deletes a login-keychain copy). `put` for a store with no fallback.
+  func putHere(_ ref: SecretRef, value: String) async throws
 }
 
 extension SecretStore {
   public var backend: String { String(describing: Self.self) }
+  public func readHere(_ ref: SecretRef) async throws -> String? { try await read(ref) }
+  public func putHere(_ ref: SecretRef, value: String) async throws { try await put(ref, value: value) }
 }
 
 /// Generic-password items under one service name.
@@ -51,8 +59,20 @@ public struct KeychainSecretStore: SecretStore {
   /// The data-protection access group on macOS; nil means the file-based login keychain.
   public let accessGroup: String?
 
-  /// The suffix of the access group the app and the coordinator share, after the team id.
-  public static let sharedGroupSuffix = ".com.cacheplane.b4app.shared"
+  /// The suffix of the production access group the app and the coordinator share, after the team id.
+  public static let sharedGroupSuffix = sharedGroupSuffix(flavorSuffix: "")
+
+  /// The same for a flavour; `flavorSuffix` is `Flavor.keychainGroupSuffix` ("", ".beta", ".local").
+  /// The flavour is passed in because `WorkspacePlatform` re-exports this module.
+  public static func sharedGroupSuffix(flavorSuffix: String) -> String {
+    ".com.cacheplane.b4app\(flavorSuffix).shared"
+  }
+
+  /// The claimed group belonging to a flavour, if the signature claims one.
+  public static func selectGroup(from claimed: [String], flavorSuffix: String = "") -> String? {
+    let suffix = sharedGroupSuffix(flavorSuffix: flavorSuffix)
+    return claimed.first { $0.hasSuffix(suffix) }
+  }
 
   public init(service: String = "b4app", accessGroup: String? = nil) {
     self.service = service
@@ -64,10 +84,13 @@ public struct KeychainSecretStore: SecretStore {
   }
 
   /// The store for this process: the shared data-protection group when the signature claims it,
-  /// the file-based keychain otherwise.
-  public static func forCurrentProcess(service: String = "b4app") -> KeychainSecretStore {
+  /// the file-based keychain otherwise. The group comes from the process's own entitlement; the
+  /// flavour suffix only says which of the claimed groups is this flavour's.
+  public static func forCurrentProcess(
+    service: String = "b4app", flavorSuffix: String = ""
+  ) -> KeychainSecretStore {
     #if os(macOS)
-      let group = claimedAccessGroups().first { $0.hasSuffix(sharedGroupSuffix) }
+      let group = selectGroup(from: claimedAccessGroups(), flavorSuffix: flavorSuffix)
       return KeychainSecretStore(service: service, accessGroup: group)
     #else
       return KeychainSecretStore(service: service)
@@ -131,6 +154,17 @@ public struct KeychainSecretStore: SecretStore {
       _ = try? delete(ref, dataProtection: false)
       return legacy
     }
+  }
+
+  /// This store's own copy only: on a data-protection store the login keychain is not looked at, so
+  /// an item there is neither found nor moved.
+  public func readHere(_ ref: SecretRef) async throws -> String? {
+    try await KeychainCall.run { [self] in try copy(ref, dataProtection: usesDataProtection) }
+  }
+
+  /// Writes this store's own copy and leaves any login-keychain copy where it is.
+  public func putHere(_ ref: SecretRef, value: String) async throws {
+    try await KeychainCall.run { [self] in try write(ref, value: value, dataProtection: usesDataProtection) }
   }
 
   public func remove(_ ref: SecretRef) async throws -> Bool {

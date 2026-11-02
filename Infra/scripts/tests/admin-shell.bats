@@ -125,7 +125,8 @@ deployed=123456789012.dkr.ecr.us-east-2.amazonaws.com/b4hub@sha256:0123456789abc
   [ "$(jq -r .taskRoleArn "$doc")" = arn:aws:iam::123456789012:role/b4hub-test-admin-task ]
   [ "$(jq -r '.containerDefinitions[] | select(.name == "psql") | .environment[] | select(.name == "PGHOST") | .value' "$doc")" = b4hub-test.abc.us-east-2.rds.amazonaws.com ]
   [ "$(jq -r '.containerDefinitions[] | select(.name == "psql") | .secrets[0].valueFrom' "$doc")" = 'arn:aws:secretsmanager:us-east-2:123456789012:secret:rds!db-1234-AbC123:password::' ]
-  [ "$(jq -r '[.containerDefinitions[] | select(.name == "hub") | .secrets[].name] | join(",")' "$doc")" = DATABASE_ADMIN_URL,DATABASE_URL ]
+  # INCLUDE_SIGNIN_SECRETS=1 (Infra/taskdefs/features.env): the sign-in secrets come first.
+  [ "$(jq -r '[.containerDefinitions[] | select(.name == "hub") | .secrets[].name] | join(",")' "$doc")" = B4HUB_SECRET_KEY,B4HUB_APPLE_TEAM_ID,B4HUB_APPLE_KEY_ID,B4HUB_APPLE_PRIVATE_KEY,DATABASE_ADMIN_URL,DATABASE_URL ]
   [ "$(jq -r '.containerDefinitions[] | select(.name == "hub") | .environment[] | select(.name == "B4HUB_WEBAUTHN_RP_ID") | .value' "$doc")" = test.b4.run ]
   [ "$(jq -r '.containerDefinitions[0].logConfiguration.options."awslogs-group"' "$doc")" = /b4hub/test/admin ]
 }

@@ -1,0 +1,535 @@
+import Foundation
+import Synchronization
+import Testing
+import WorkspacePlatform
+import WorkspaceProtocol
+
+@testable import Coordinator
+
+/// Counts calls from closures that run on any thread.
+private final class Calls: @unchecked Sendable {
+  private let lock = NSLock()
+  private var _read: [URL] = []
+  private var _bootOuts = 0
+  var reads: [URL] { lock.withLock { _read } }
+  var bootOuts: Int { lock.withLock { _bootOuts } }
+  func read(_ url: URL) { lock.withLock { _read.append(url) } }
+  func bootOut() { lock.withLock { _bootOuts += 1 } }
+}
+
+private struct Failure: Error {}
+
+/// A temporary home holding the pre-flavour data directory; never the real `~/Library`.
+private struct TemporaryHome {
+  let home: URL
+  var support: URL { home.appendingPathComponent("Library/Application Support") }
+  var legacy: URL { support.appendingPathComponent("b4app") }
+  var local: URL { support.appendingPathComponent("b4app-local") }
+
+  init(legacy: Bool = true, local: Bool = false) throws {
+    home = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(
+      "b4app-adopt-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+    if legacy {
+      try FileManager.default.createDirectory(
+        at: self.legacy.appendingPathComponent("pg"), withIntermediateDirectories: true)
+      try Data("marker".utf8).write(to: self.legacy.appendingPathComponent("pg/PG_VERSION"))
+    }
+    if local { try FileManager.default.createDirectory(at: self.local, withIntermediateDirectories: true) }
+  }
+
+  func remove() { try? FileManager.default.removeItem(at: home) }
+  func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
+  func putCluster(in directory: URL) throws {
+    try FileManager.default.createDirectory(
+      at: directory.appendingPathComponent("pg"), withIntermediateDirectories: true)
+    try Data("17".utf8).write(to: directory.appendingPathComponent("pg/PG_VERSION"))
+  }
+  /// Directories set aside next to `b4app-local` by an adoption.
+  var asides: [URL] {
+    let names = (try? FileManager.default.contentsOfDirectory(atPath: support.path)) ?? []
+    return names.filter { $0.hasPrefix("b4app-local.") }.map { support.appendingPathComponent($0) }
+  }
+}
+
+@Suite struct LegacyAdoptionTests {
+  private func run(
+    _ fixture: TemporaryHome, flavor: Flavor = .local, link: String? = "http://localhost:8080",
+    readFails: Bool = false, bootOutFails: Bool = false, calls: Calls = Calls()
+  ) async throws -> (moved: Bool, calls: Calls) {
+    let moved = try await LegacyAdoption.moveDataIfNeeded(
+      flavor: flavor, home: fixture.home,
+      readHubURL: { directory in
+        calls.read(directory)
+        if readFails { throw Failure() }
+        return link
+      },
+      bootOutLegacy: {
+        calls.bootOut()
+        if bootOutFails { throw Failure() }
+      })
+    return (moved, calls)
+  }
+
+  @Test func movesLocalhostLinkedDataForLocal() async throws {
+    let fixture = try TemporaryHome()
+    defer { fixture.remove() }
+    let result = try await run(fixture)
+    #expect(result.moved)
+    #expect(fixture.exists(fixture.local))
+    #expect(!fixture.exists(fixture.legacy))
+    #expect(fixture.exists(fixture.local.appendingPathComponent("pg/PG_VERSION")))
+    #expect(result.calls.bootOuts == 1)
+    #expect(result.calls.reads.map(\.lastPathComponent) == ["b4app"])
+  }
+
+  @Test(arguments: ["http://127.0.0.1:8080", "http://[::1]:8080/", "http://LOCALHOST:9000"])
+  func movesAnyLoopbackLink(url: String) async throws {
+    let fixture = try TemporaryHome()
+    defer { fixture.remove() }
+    let result = try await run(fixture, link: url)
+    #expect(result.moved)
+    #expect(fixture.exists(fixture.local))
+  }
+
+  @Test(arguments: [Flavor.prod, .beta])
+  func leavesDataForOtherFlavours(flavor: Flavor) async throws {
+    let fixture = try TemporaryHome()
+    defer { fixture.remove() }
+    let result = try await run(fixture, flavor: flavor)
+    #expect(!result.moved)
+    #expect(fixture.exists(fixture.legacy))
+    #expect(!fixture.exists(fixture.local))
+    #expect(result.calls.bootOuts == 0)
+    #expect(result.calls.reads.isEmpty)
+  }
+
+  @Test func leavesDataWhenTargetHoldsACluster() async throws {
+    let fixture = try TemporaryHome(local: true)
+    defer { fixture.remove() }
+    try fixture.putCluster(in: fixture.local)
+    let result = try await run(fixture)
+    #expect(!result.moved)
+    #expect(fixture.exists(fixture.legacy))
+    #expect(result.calls.bootOuts == 0)
+    #expect(result.calls.reads.isEmpty)
+  }
+
+  @Test func anEmptyTargetDoesNotBlockTheMove() async throws {
+    let fixture = try TemporaryHome(local: true)
+    defer { fixture.remove() }
+    let result = try await run(fixture)
+    #expect(result.moved)
+    #expect(!fixture.exists(fixture.legacy))
+    #expect(fixture.exists(fixture.local.appendingPathComponent("pg/PG_VERSION")))
+    #expect(fixture.asides.isEmpty)
+  }
+
+  @Test func aTargetWithOnlyEmptyLogsDoesNotBlockTheMoveAndLeavesNothingBehind() async throws {
+    // What the CLI launcher or an early Coordinator.start leaves: logs/ and a zero-byte log file.
+    let fixture = try TemporaryHome(local: true)
+    defer { fixture.remove() }
+    let logs = fixture.local.appendingPathComponent("logs")
+    try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+    FileManager.default.createFile(
+      atPath: logs.appendingPathComponent("coordinator.stdout.log").path, contents: nil)
+    let result = try await run(fixture)
+    #expect(result.moved)
+    #expect(!fixture.exists(fixture.legacy))
+    #expect(fixture.exists(fixture.local.appendingPathComponent("pg/PG_VERSION")))
+    #expect(!fixture.exists(fixture.local.appendingPathComponent("logs/coordinator.stdout.log")))
+    #expect(fixture.asides.isEmpty)
+  }
+
+  @Test func aTargetHoldingDataIsSetAsideNotDeleted() async throws {
+    let fixture = try TemporaryHome(local: true)
+    defer { fixture.remove() }
+    let logs = fixture.local.appendingPathComponent("logs")
+    try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+    try Data("a line of output".utf8).write(to: logs.appendingPathComponent("coordinator.stdout.log"))
+    let result = try await run(fixture)
+    #expect(result.moved)
+    #expect(fixture.exists(fixture.local.appendingPathComponent("pg/PG_VERSION")))
+    let aside = try #require(fixture.asides.first)
+    #expect(fixture.asides.count == 1)
+    #expect(
+      try String(contentsOf: aside.appendingPathComponent("logs/coordinator.stdout.log"), encoding: .utf8)
+        == "a line of output")
+  }
+
+  @Test func aFailedMoveRestoresTheSetAsideTarget() async throws {
+    let fixture = try TemporaryHome(local: true)
+    defer { fixture.remove() }
+    try Data("keep me".utf8).write(to: fixture.local.appendingPathComponent("notes.txt"))
+    // The boot-out succeeds and then the legacy directory is gone, so the rename fails.
+    await #expect(throws: (any Error).self) {
+      _ = try await LegacyAdoption.moveDataIfNeeded(
+        flavor: .local, home: fixture.home, readHubURL: { _ in "http://localhost:8080" },
+        bootOutLegacy: { try FileManager.default.removeItem(at: fixture.legacy) })
+    }
+    #expect(
+      try String(contentsOf: fixture.local.appendingPathComponent("notes.txt"), encoding: .utf8) == "keep me")
+    #expect(fixture.asides.isEmpty)
+  }
+
+  @Test func aTargetThatIsAFileIsNeverReplaced() async throws {
+    let fixture = try TemporaryHome()
+    defer { fixture.remove() }
+    try Data("x".utf8).write(to: fixture.local)
+    let result = try await run(fixture)
+    #expect(!result.moved)
+    #expect(fixture.exists(fixture.legacy))
+    #expect(result.calls.bootOuts == 0)
+  }
+
+  @Test func leavesDataWhenTargetIsADanglingSymlink() async throws {
+    let fixture = try TemporaryHome()
+    defer { fixture.remove() }
+    try FileManager.default.createSymbolicLink(
+      at: fixture.local, withDestinationURL: fixture.home.appendingPathComponent("nowhere"))
+    let result = try await run(fixture)
+    #expect(!result.moved)
+    #expect(fixture.exists(fixture.legacy))
+    #expect(result.calls.bootOuts == 0)
+  }
+
+  @Test func leavesNonLocalhostLink() async throws {
+    let fixture = try TemporaryHome()
+    defer { fixture.remove() }
+    for link in ["https://hub.b4.run", "http://localhost.evil.example:8080", "not a url", ""] {
+      let result = try await run(fixture, link: link)
+      #expect(!result.moved)
+      #expect(fixture.exists(fixture.legacy))
+      #expect(!fixture.exists(fixture.local))
+      #expect(result.calls.bootOuts == 0)
+    }
+  }
+
+  @Test func leavesDataWithoutALink() async throws {
+    let fixture = try TemporaryHome()
+    defer { fixture.remove() }
+    let result = try await run(fixture, link: nil)
+    #expect(!result.moved)
+    #expect(fixture.exists(fixture.legacy))
+    #expect(result.calls.bootOuts == 0)
+  }
+
+  @Test func leavesDataWithoutALegacyDirectory() async throws {
+    let fixture = try TemporaryHome(legacy: false)
+    defer { fixture.remove() }
+    let result = try await run(fixture)
+    #expect(!result.moved)
+    #expect(!fixture.exists(fixture.local))
+    #expect(result.calls.reads.isEmpty)
+    #expect(result.calls.bootOuts == 0)
+  }
+
+  @Test func aFailedReadMovesNothingAndPropagates() async throws {
+    let fixture = try TemporaryHome()
+    defer { fixture.remove() }
+    let calls = Calls()
+    await #expect(throws: Failure.self) { _ = try await run(fixture, readFails: true, calls: calls) }
+    #expect(fixture.exists(fixture.legacy))
+    #expect(!fixture.exists(fixture.local))
+    #expect(calls.bootOuts == 0)
+  }
+
+  @Test func aFailedBootOutMovesNothingAndPropagates() async throws {
+    let fixture = try TemporaryHome()
+    defer { fixture.remove() }
+    let calls = Calls()
+    await #expect(throws: Failure.self) { _ = try await run(fixture, bootOutFails: true, calls: calls) }
+    #expect(fixture.exists(fixture.legacy))
+    #expect(fixture.exists(fixture.legacy.appendingPathComponent("pg/PG_VERSION")))
+    #expect(!fixture.exists(fixture.local))
+    #expect(calls.bootOuts == 1)
+  }
+
+  @Test func movingTwiceMovesOnce() async throws {
+    let fixture = try TemporaryHome()
+    defer { fixture.remove() }
+    let first = try await run(fixture)
+    let second = try await run(fixture)
+    #expect(first.moved)
+    #expect(!second.moved)
+    #expect(second.calls.bootOuts == 0)
+  }
+
+  // MARK: - The owner's secrets (copied, never moved)
+
+  private let ref = SecretRef(rawValue: "secret:hub-token")!
+
+  @Test func copiesASecretAndLeavesTheLegacyItem() async throws {
+    let legacy = MemorySecretStore()
+    let store = MemorySecretStore()
+    try await legacy.put(ref, value: "tok-very-secret")
+    #expect(try await LegacyAdoption.copySecret(ref, from: legacy, to: store) == .copied)
+    #expect(try await store.read(ref) == "tok-very-secret")
+    // Going back to the prod build keeps working: its item is still there.
+    #expect(try await legacy.read(ref) == "tok-very-secret")
+  }
+
+  @Test func neverOverwritesAnItemTheStoreHas() async throws {
+    let legacy = MemorySecretStore()
+    let store = MemorySecretStore()
+    try await legacy.put(ref, value: "tok-old")
+    try await store.put(ref, value: "already-here")
+    #expect(try await LegacyAdoption.copySecret(ref, from: legacy, to: store) == .alreadyThere)
+    #expect(try await store.read(ref) == "already-here")
+    #expect(try await legacy.read(ref) == "tok-old")
+  }
+
+  @Test func aMissingLegacyItemIsNotAnError() async throws {
+    let store = MemorySecretStore()
+    #expect(try await LegacyAdoption.copySecret(ref, from: MemorySecretStore(), to: store) == .missing)
+    #expect(try await store.read(ref) == nil)
+  }
+
+  @Test func aFailedCopyThrowsAndKeepsTheLegacyItem() async throws {
+    let legacy = MemorySecretStore()
+    try await legacy.put(ref, value: "tok-very-secret")
+    await #expect(throws: Failure.self) {
+      try await LegacyAdoption.copySecret(ref, from: legacy, to: RefusingSecretStore())
+    }
+    #expect(try await legacy.read(ref) == "tok-very-secret")
+  }
+
+  @Test func aCopyThatDoesNotReadBackThrows() async throws {
+    let legacy = MemorySecretStore()
+    try await legacy.put(ref, value: "tok-very-secret")
+    await #expect(throws: WorkspaceError.self) {
+      try await LegacyAdoption.copySecret(ref, from: legacy, to: ForgetfulSecretStore())
+    }
+    #expect(try await legacy.read(ref) == "tok-very-secret")
+  }
+
+  /// Final review M5: a secret the prod build has not read since D-051 is still in the login keychain.
+  /// The local store's own read would move it into the local group (out of the prod build's reach);
+  /// the copy only ever copies it, and leaves the login item where it is.
+  @Test func aSecretStillInTheLoginKeychainIsCopiedNotMoved() async throws {
+    let login = LoginKeychain()
+    login.put(ref, "tok-login-only")
+    let prodGroup = GroupKeychain(login: login)
+    let localGroup = GroupKeychain(login: login)
+    let legacy = LegacyAdoption.LegacySecrets(stores: [prodGroup, login.store])
+    #expect(try await LegacyAdoption.copySecret(ref, from: legacy, to: localGroup) == .copied)
+    #expect(await localGroup.own(ref) == "tok-login-only")
+    // The login item is where it was, so the prod build (which falls back to it) still reads it.
+    #expect(login.value(ref) == "tok-login-only")
+    #expect(await prodGroup.own(ref) == nil)
+    #expect(try await prodGroup.read(ref) == "tok-login-only")
+  }
+
+  @Test func theProdGroupWinsAndAStaleLoginCopyIsLeftAlone() async throws {
+    let login = LoginKeychain()
+    login.put(ref, "tok-stale-login")
+    let prodGroup = GroupKeychain(login: login)
+    await prodGroup.seed(ref, "tok-prod-group")
+    let localGroup = GroupKeychain(login: login)
+    let legacy = LegacyAdoption.LegacySecrets(stores: [prodGroup, login.store])
+    #expect(try await LegacyAdoption.copySecret(ref, from: legacy, to: localGroup) == .copied)
+    #expect(await localGroup.own(ref) == "tok-prod-group")
+    #expect(login.value(ref) == "tok-stale-login")
+    #expect(await prodGroup.own(ref) == "tok-prod-group")
+  }
+
+  @Test func theLegacySourceIsReadOnly() async throws {
+    let legacy = LegacyAdoption.LegacySecrets(stores: [MemorySecretStore()])
+    await #expect(throws: WorkspaceError.self) { try await legacy.put(ref, value: "x") }
+    await #expect(throws: WorkspaceError.self) { try await legacy.putHere(ref, value: "x") }
+    await #expect(throws: WorkspaceError.self) { _ = try await legacy.remove(ref) }
+  }
+
+  @Test func copyErrorsNeverCarryTheValue() async throws {
+    let legacy = MemorySecretStore()
+    try await legacy.put(ref, value: "tok-very-secret")
+    do {
+      try await LegacyAdoption.copySecret(ref, from: legacy, to: ForgetfulSecretStore())
+      Issue.record("expected a throw")
+    } catch {
+      #expect(!"\(error)".contains("tok-very-secret"))
+    }
+  }
+
+  // MARK: - The boot-out decision (D-052's identity rule)
+
+  @Test func bootOutDecisionFollowsTheProgramPath() {
+    let own = "/Applications/B4 Local.app/Contents/Helpers/b4app-coordinator"
+    let old = "/Applications/Agent Workspace.app/Contents/Helpers/b4app-coordinator"
+    // Not loaded: nothing to boot out, whatever the plist says.
+    #expect(LegacyAdoption.bootOutDecision(loaded: false, plistProgram: old, ownProgram: own) == .skip)
+    #expect(LegacyAdoption.bootOutDecision(loaded: false, plistProgram: nil, ownProgram: own) == .skip)
+    // Loaded, and its program is a different file: boot it out.
+    #expect(LegacyAdoption.bootOutDecision(loaded: true, plistProgram: old, ownProgram: own) == .bootOut)
+    // Loaded and it is this very binary, or its program cannot be established: refuse.
+    guard case .refuse = LegacyAdoption.bootOutDecision(loaded: true, plistProgram: own, ownProgram: own)
+    else {
+      Issue.record("expected a refusal for this install's own program")
+      return
+    }
+    guard case .refuse = LegacyAdoption.bootOutDecision(loaded: true, plistProgram: nil, ownProgram: own)
+    else {
+      Issue.record("expected a refusal for an unknown program")
+      return
+    }
+  }
+
+  /// Final review M6: once adopted, the old agent's plist goes, so the next login does not start the
+  /// old coordinator again; but only when it runs another program (a temporary home, never ~/Library).
+  @Test func theOldAgentsPlistIsRemovedOnlyWhenItRunsAnotherProgram() throws {
+    let fixture = try TemporaryHome()
+    defer { fixture.remove() }
+    let agents = fixture.home.appendingPathComponent("Library/LaunchAgents")
+    try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
+    let plistURL = agents.appendingPathComponent("com.cacheplane.b4app.coordinator.plist")
+    let other = agents.appendingPathComponent("com.cacheplane.b4app.local.coordinator.plist")
+    let own = "/Applications/B4 Local.app/Contents/Helpers/b4app-coordinator"
+    func write(program: String?) throws {
+      var plist: [String: Any] = ["Label": "com.cacheplane.b4app.coordinator", "RunAtLoad": true]
+      if let program { plist["ProgramArguments"] = [program] }
+      try (plist as NSDictionary).write(to: plistURL)
+    }
+    try (["Label": "com.cacheplane.b4app.local.coordinator"] as NSDictionary).write(to: other)
+
+    // This process's own program: kept.
+    try write(program: own)
+    #expect(!LegacyAdoption.removeLegacyPlist(home: fixture.home, ownProgram: own))
+    #expect(fixture.exists(plistURL))
+    // A program that cannot be read: kept.
+    try write(program: nil)
+    #expect(!LegacyAdoption.removeLegacyPlist(home: fixture.home, ownProgram: own))
+    #expect(fixture.exists(plistURL))
+    // The pre-flavour build's program: removed, and nothing else in the folder is touched.
+    try write(program: "/Applications/Agent Workspace.app/Contents/Helpers/b4app-coordinator")
+    #expect(LegacyAdoption.removeLegacyPlist(home: fixture.home, ownProgram: own))
+    #expect(!fixture.exists(plistURL))
+    #expect(fixture.exists(other))
+    // No plist: nothing to do.
+    #expect(!LegacyAdoption.removeLegacyPlist(home: fixture.home, ownProgram: own))
+  }
+
+  @Test func theLegacyPlistIsReadFromTheLegacyLabel() throws {
+    let fixture = try TemporaryHome()
+    defer { fixture.remove() }
+    let agents = fixture.home.appendingPathComponent("Library/LaunchAgents")
+    try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
+    let plist: [String: Any] = [
+      "Label": "com.cacheplane.b4app.coordinator", "ProgramArguments": ["/old/b4app-coordinator"],
+    ]
+    try (plist as NSDictionary).write(
+      to: agents.appendingPathComponent("com.cacheplane.b4app.coordinator.plist"))
+    #expect(LegacyAdoption.legacyProgramPath(home: fixture.home) == "/old/b4app-coordinator")
+    #expect(LegacyAdoption.legacyLabel == "com.cacheplane.b4app.coordinator")
+    #expect(LegacyAdoption.legacyProgramPath(home: fixture.home.appendingPathComponent("elsewhere")) == nil)
+  }
+}
+
+/// The file-based login keychain, which every data-protection group falls back to.
+private final class LoginKeychain: Sendable {
+  private let values = Mutex<[SecretRef: String]>([:])
+  func put(_ ref: SecretRef, _ value: String) { values.withLock { $0[ref] = value } }
+  func value(_ ref: SecretRef) -> String? { values.withLock { $0[ref] } }
+  @discardableResult func remove(_ ref: SecretRef) -> Bool {
+    values.withLock { $0.removeValue(forKey: ref) != nil }
+  }
+  /// The login keychain as a store of its own (`KeychainSecretStore(accessGroup: nil)`: no fallback).
+  var store: LoginStore { LoginStore(login: self) }
+}
+
+private struct LoginStore: SecretStore {
+  let login: LoginKeychain
+  func put(_ ref: SecretRef, value: String) async throws { login.put(ref, value) }
+  func read(_ ref: SecretRef) async throws -> String? { login.value(ref) }
+  func remove(_ ref: SecretRef) async throws -> Bool { login.remove(ref) }
+}
+
+/// A data-protection group as `KeychainSecretStore` treats one: `read` moves an item it lacks out of
+/// the login keychain (read, add here, delete there), `put` deletes the login copy, and `readHere` and
+/// `putHere` touch the group only.
+private actor GroupKeychain: SecretStore {
+  let login: LoginKeychain
+  private var values: [SecretRef: String] = [:]
+  init(login: LoginKeychain) { self.login = login }
+  func seed(_ ref: SecretRef, _ value: String) { values[ref] = value }
+  func own(_ ref: SecretRef) -> String? { values[ref] }
+
+  func put(_ ref: SecretRef, value: String) async throws {
+    values[ref] = value
+    login.remove(ref)
+  }
+  func read(_ ref: SecretRef) async throws -> String? {
+    if let value = values[ref] { return value }
+    guard let moved = login.value(ref) else { return nil }
+    values[ref] = moved
+    login.remove(ref)
+    return moved
+  }
+  func remove(_ ref: SecretRef) async throws -> Bool {
+    let here = values.removeValue(forKey: ref) != nil
+    return login.remove(ref) || here
+  }
+  func readHere(_ ref: SecretRef) async throws -> String? { values[ref] }
+  func putHere(_ ref: SecretRef, value: String) async throws { values[ref] = value }
+}
+
+private struct RefusingSecretStore: SecretStore {
+  func put(_ ref: SecretRef, value: String) async throws { throw Failure() }
+  func read(_ ref: SecretRef) async throws -> String? { nil }
+  func remove(_ ref: SecretRef) async throws -> Bool { false }
+}
+
+/// Accepts a write and then reads back nothing, as a store that silently dropped it would.
+private struct ForgetfulSecretStore: SecretStore {
+  func put(_ ref: SecretRef, value: String) async throws {}
+  func read(_ ref: SecretRef) async throws -> String? { nil }
+  func remove(_ ref: SecretRef) async throws -> Bool { false }
+}
+
+@Suite struct LegacyAdoptionGateTests {
+  private func plan(
+    flavor: Flavor = .local, source: Flavor.Source = .environment, environment: [String: String] = [:]
+  ) -> LegacyAdoption.Plan? {
+    LegacyAdoption.planIfExplicitLocal(
+      environment: environment, resolution: Flavor.Resolution(flavor: flavor, source: source))
+  }
+
+  @Test func onlyAnExplicitLocalFlavourAdopts() {
+    #expect(plan(source: .environment) != nil)
+    #expect(plan(source: .bundle) != nil)
+    // The fallback default is what any binary outside an app bundle resolves to.
+    #expect(plan(source: .default) == nil)
+    #expect(plan(flavor: .prod, source: .bundle) == nil)
+    #expect(plan(flavor: .beta, source: .environment) == nil)
+  }
+
+  @Test func theLegacyStoreIsTheProdGroupWhenTheSignatureClaimsIt() throws {
+    let local = "TEAM.com.cacheplane.b4app.local.shared"
+    let prod = "TEAM.com.cacheplane.b4app.shared"
+    let source = try #require(
+      LegacyAdoption.legacySecretStore(claimedGroups: [local, prod]) as? LegacyAdoption.LegacySecrets)
+    // The prod group first, then the login keychain, both under the prod build's service.
+    let stores = source.stores.compactMap { $0 as? KeychainSecretStore }
+    #expect(stores.count == 2)
+    #expect(stores.map(\.accessGroup) == [prod, nil])
+    #expect(stores.allSatisfy { $0.service == "b4app" })
+    // Without the prod group (an ad hoc build, or a profile without it) there is nothing to read.
+    #expect(LegacyAdoption.legacySecretStore(claimedGroups: [local]) == nil)
+    #expect(LegacyAdoption.legacySecretStore(claimedGroups: []) == nil)
+    #expect(LegacyAdoption.legacySecretStore(claimedGroups: ["TEAM.com.cacheplane.b4app.beta.shared"]) == nil)
+  }
+
+  @Test func onlyTheLocalPlanCarriesALegacyStore() {
+    // Every other flavour, and a coordinator whose flavour is only the fallback (`swift build`), has no
+    // plan at all, so nothing reads the prod group.
+    #expect(plan(flavor: .prod, source: .bundle)?.legacySecretStore == nil)
+    #expect(plan(flavor: .beta, source: .environment)?.legacySecretStore == nil)
+    #expect(plan(source: .default)?.legacySecretStore == nil)
+    // The test binary claims no keychain group, so even the local plan has none here.
+    #expect(plan(source: .environment)?.legacySecretStore == nil)
+  }
+
+  @Test func anExplicitDataDirectoryOrClusterNeverAdopts() {
+    #expect(plan(environment: ["B4APP_DATA_DIR": "/tmp/x"]) == nil)
+    #expect(plan(environment: ["B4APP_POSTGRES_SOCKET_DIR": "/tmp/x"]) == nil)
+  }
+}

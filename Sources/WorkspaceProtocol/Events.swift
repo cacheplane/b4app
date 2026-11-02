@@ -26,6 +26,9 @@ public enum EventKind: String, Codable, Sendable, CaseIterable {
   /// The phone's view of its hub link and of one Mac's presence (M8c). Only the phone's
   /// `MirrorTransport` emits it; the Mac never does. The payload is described on `HostPresence`.
   case hostPresence = "host.presence"
+  /// The Mac's signed-in account changed (sign-in plan, Task 9). The payload is the new
+  /// `AccountStatus.Result`; only the coordinator emits it.
+  case accountChanged = "account.changed"
 }
 
 /// One normalized adapter event. Identity fields are always present; the payload shape depends on `kind`.

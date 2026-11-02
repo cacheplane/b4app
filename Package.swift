@@ -128,7 +128,7 @@ let package = Package(
       swiftSettings: concurrency),
     // Reads `Tests/Fixtures/sync/changes.json` in place (see `WireTests`), so it declares no resource.
     .testTarget(
-      name: "WorkspaceMirrorTests", dependencies: ["WorkspaceMirror", "WorkspaceSync"],
+      name: "WorkspaceMirrorTests", dependencies: ["WorkspaceMirror", "WorkspaceSync", "WorkspaceSecrets"],
       swiftSettings: concurrency),
     .testTarget(
       name: "WorkspacePlatformTests", dependencies: ["WorkspacePlatform"], swiftSettings: concurrency),
@@ -147,7 +147,10 @@ let package = Package(
     // Model-level tests of the shared UI against a real in-process coordinator (macOS only).
     .testTarget(
       name: "WorkspaceUITests",
-      dependencies: ["WorkspaceUI", "Coordinator", "NIOTransport", "WorkspaceMirror"],
+      dependencies: [
+        "WorkspaceUI", "Coordinator", "NIOTransport", "WorkspaceMirror", "WorkspaceSync", "WorkspaceSecrets",
+        "WorkspacePlatform",
+      ],
       swiftSettings: mainActorDefault),
   ],
   swiftLanguageModes: [.v6]

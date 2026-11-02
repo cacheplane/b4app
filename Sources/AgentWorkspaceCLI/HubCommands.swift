@@ -11,8 +11,9 @@ struct HubCommand: AsyncParsableCommand {
     subcommands: [Join.self, Status.self, Leave.self])
 
   static func describe(_ status: HubStatus.Result) -> String {
+    let notice = status.notice.map { "\n\($0)" } ?? ""
     guard status.joined else {
-      return "not joined (\(status.unsyncedChanges) change(s) recorded locally)"
+      return "not joined (\(status.unsyncedChanges) change(s) recorded locally)" + notice
     }
     var lines = ["hub        \(status.url ?? "")"]
     lines.append("device     \(status.deviceName ?? "") (\(status.deviceId ?? ""))")
@@ -27,6 +28,7 @@ struct HubCommand: AsyncParsableCommand {
       lines.append(line)
     }
     if let held = status.keepAwakeHeld { lines.append("awake      \(held ? "kept awake" : "not held")") }
+    if let notice = status.notice { lines.append(notice) }
     return lines.joined(separator: "\n")
   }
 
@@ -60,6 +62,10 @@ struct HubCommand: AsyncParsableCommand {
       do {
         let client = try await Link.open()
         let status = try await client.request(HubStatus.self, EmptyParams())
+        // A notice is shown once here, then dismissed: the person has now been told.
+        if status.notice != nil {
+          _ = try? await client.request(AccountDismissNotice.self, EmptyParams(), options: Link.mutation())
+        }
         await client.close()
         print(global.json ? try Format.jsonOk(status) : HubCommand.describe(status))
       } catch {
@@ -70,7 +76,9 @@ struct HubCommand: AsyncParsableCommand {
 
   struct Leave: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-      abstract: "Revoke this device at the hub and stop pushing; uploaded history stays on the hub.")
+      abstract:
+        "Revoke this device at the hub and sign out; uploaded history stays on the hub. To keep the device, use `account logout`."
+    )
     @OptionGroup var global: GlobalOptions
     func run() async throws {
       do {

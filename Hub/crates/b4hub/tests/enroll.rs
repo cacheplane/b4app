@@ -1,6 +1,8 @@
 //! Device enrollment, bearer authentication, and the `enroll` command against a real PostgreSQL.
 //! Run with `source <(../scripts/test-db.sh)` first; `#[sqlx::test]` creates one database per test.
 
+mod common;
+
 use std::time::Duration;
 
 use axum::body::{to_bytes, Body};
@@ -49,7 +51,7 @@ async fn migrated(pool: &PgPool) -> (Db, AppState) {
         .unwrap();
     let admin = Db::connect(&admin_url(pool)).await.unwrap();
     let app = Db::connect(&app_url(pool)).await.unwrap();
-    (admin, AppState::new(app))
+    (admin, common::state(app))
 }
 
 async fn seed_blove(admin: &Db) -> orgs::SeedOutcome {
@@ -158,10 +160,12 @@ async fn enroll_then_me_then_revoke(pool: PgPool) {
         me["org"],
         json!({"slug": "cacheplane", "name": "Cacheplane"})
     );
+    // `fullName` was added with sign-in; the enrollment-era fields are unchanged.
     assert_eq!(
         me["user"],
-        json!({"username": "blove", "displayName": "Brian Love"})
+        json!({"username": "blove", "displayName": "Brian Love", "fullName": "Brian Love"})
     );
+    assert_eq!(me["onboarded"], true);
     assert!(
         me["createdAt"].as_str().is_some_and(|s| s.ends_with('Z')),
         "{me}"
@@ -809,6 +813,37 @@ async fn a_mac_mints_a_pairing_code_the_phone_redeems(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn a_pairing_code_pairs_only_a_phone(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let seeded = seed_blove(&admin).await;
+    let (mac_token, mac_id) = enroll_as(&admin, &state, &seeded, "macos").await;
+    let (_, body) = mint(&state, &mac_token).await;
+    let code = body["code"].as_str().unwrap().to_string();
+
+    // Redeemed as a Mac, naming the minting Mac as its candidate, the code matches nothing.
+    for platform in ["macos", "cli"] {
+        let attempt = json!({"code": code, "deviceName": "not a phone", "platform": platform,
+                             "candidateDeviceIds": [mac_id]})
+        .to_string();
+        let (status, body) = send(&state, "POST", "/v1/enroll", None, Some(&attempt)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{platform}: {body}");
+        assert_eq!(error_code(&body), "invalid_code");
+    }
+    // The Mac still answers for its own token, and the code is still the phone's to redeem.
+    let (status, _) = send(&state, "GET", "/v1/me", Some(&mac_token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, enrolled) = send(
+        &state,
+        "POST",
+        "/v1/enroll",
+        None,
+        Some(&phone_enroll_body(&code)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{enrolled}");
+}
+
+#[sqlx::test(migrations = false)]
 async fn pairing_codes_expire_after_five_minutes(pool: PgPool) {
     let (admin, state) = migrated(&pool).await;
     let seeded = seed_blove(&admin).await;
@@ -954,5 +989,167 @@ async fn a_revoked_macs_unused_pairing_code_cannot_be_redeemed(pool: PgPool) {
         Some(&phone_enroll_body(&kept)),
     )
     .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+// ---- Reusing this device (D-096, X3) ----
+
+/// An enrollment body for `platform` that offers `device_id` and `candidates` to reuse.
+fn reusing_body(
+    code: &str,
+    name: &str,
+    platform: &str,
+    device_id: Option<Uuid>,
+    candidates: Option<Vec<Uuid>>,
+) -> String {
+    let mut body = json!({"code": code, "deviceName": name, "platform": platform});
+    if let Some(id) = device_id {
+        body["deviceId"] = json!(id);
+    }
+    if let Some(ids) = candidates {
+        body["candidateDeviceIds"] = json!(ids);
+    }
+    body.to_string()
+}
+
+async fn fresh_code(admin: &Db, seeded: &orgs::SeedOutcome) -> String {
+    devices::create_enrollment_code(admin, seeded.org_id, seeded.user_id, TEN_MINUTES)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn enrolling_again_reuses_this_device(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let seeded = seed_blove(&admin).await;
+    let (first_token, mac_id) = enroll_device(&admin, &state, &seeded).await;
+    // The Mac logs out: the session ends, the device is kept.
+    let (status, _) = send(
+        &state,
+        "DELETE",
+        "/v1/sessions/self",
+        Some(&first_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // It rejoins with a code, naming its device: the same device, renamed, with a new token.
+    let code = fresh_code(&admin, &seeded).await;
+    let body = reusing_body(&code, "Brian's MacBook Pro", "macos", Some(mac_id), None);
+    let (status, rejoined) = send(&state, "POST", "/v1/enroll", None, Some(&body)).await;
+    assert_eq!(status, StatusCode::OK, "{rejoined}");
+    assert_eq!(rejoined["deviceId"], mac_id.to_string());
+    let token = rejoined["token"].as_str().unwrap().to_string();
+    let (status, me) = send(&state, "GET", "/v1/me", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{me}");
+    assert_eq!(me["deviceName"], "Brian's MacBook Pro");
+    let (_, listed) = send(&state, "GET", "/v1/devices", Some(&token), None).await;
+    assert_eq!(listed["devices"].as_array().unwrap().len(), 1, "{listed}");
+
+    // A session a failed log-out left open ends: reusing a device replaces its earlier tokens.
+    let code = fresh_code(&admin, &seeded).await;
+    let body = reusing_body(
+        &code,
+        "Brian's MacBook Pro",
+        "macos",
+        None,
+        Some(vec![Uuid::from_u128(7), mac_id]),
+    );
+    let (status, again) = send(&state, "POST", "/v1/enroll", None, Some(&body)).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["deviceId"], mac_id.to_string());
+    let (status, _) = send(&state, "GET", "/v1/me", Some(&token), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Another platform is not reused.
+    let code = fresh_code(&admin, &seeded).await;
+    let body = reusing_body(&code, "Brian's iPhone", "ios", Some(mac_id), None);
+    let (status, phone) = send(&state, "POST", "/v1/enroll", None, Some(&body)).await;
+    assert_eq!(status, StatusCode::OK, "{phone}");
+    assert_ne!(phone["deviceId"], mac_id.to_string());
+}
+
+#[sqlx::test(migrations = false)]
+async fn enrollment_passes_over_foreign_and_revoked_candidates(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let blove = seed_blove(&admin).await;
+    let eve = orgs::seed(&admin, "other", "Other Org", "eve", "Eve", "e@example.test")
+        .await
+        .unwrap();
+    let (eve_token, eve_mac) = enroll_device(&admin, &state, &eve).await;
+    let (revoked_token, revoked_mac) = enroll_device(&admin, &state, &blove).await;
+    let (status, _) = send(
+        &state,
+        "DELETE",
+        "/v1/devices/self",
+        Some(&revoked_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Another user's device and a revoked device of this user are passed over: a new device.
+    let code = fresh_code(&admin, &blove).await;
+    let body = reusing_body(
+        &code,
+        "Brian's new Mac",
+        "macos",
+        Some(eve_mac),
+        Some(vec![revoked_mac]),
+    );
+    let (status, enrolled) = send(&state, "POST", "/v1/enroll", None, Some(&body)).await;
+    assert_eq!(status, StatusCode::OK, "{enrolled}");
+    let new_id = enrolled["deviceId"].as_str().unwrap();
+    assert_ne!(new_id, eve_mac.to_string());
+    assert_ne!(new_id, revoked_mac.to_string());
+    assert_eq!(enrolled["user"]["username"], "blove");
+
+    // Eve's session and device are untouched (not renamed), and the revoked device stays revoked.
+    let (status, me) = send(&state, "GET", "/v1/me", Some(&eve_token), None).await;
+    assert_eq!(status, StatusCode::OK, "{me}");
+    assert_eq!(me["deviceId"], eve_mac.to_string());
+    assert_eq!(me["deviceName"], "Brian's Mac");
+    let revoked_at: Option<String> =
+        sqlx::query_scalar("SELECT revoked_at::text FROM devices WHERE id = $1")
+            .bind(revoked_mac)
+            .fetch_one(&admin.pool)
+            .await
+            .unwrap();
+    assert!(revoked_at.is_some());
+}
+
+#[sqlx::test(migrations = false)]
+async fn enrollment_candidates_are_capped_and_validated_before_the_code_is_used(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let seeded = seed_blove(&admin).await;
+    let code = fresh_code(&admin, &seeded).await;
+
+    let ids = |n: u128| (1..=n).map(Uuid::from_u128).collect::<Vec<_>>();
+    let over = reusing_body(&code, "Mac", "macos", None, Some(ids(33)));
+    let malformed_candidate = json!({
+        "code": code, "deviceName": "Mac", "platform": "macos",
+        "candidateDeviceIds": ["not-a-uuid"],
+    })
+    .to_string();
+    let malformed_id = json!({
+        "code": code, "deviceName": "Mac", "platform": "macos", "deviceId": "not-a-uuid",
+    })
+    .to_string();
+    for body in [over, malformed_candidate, malformed_id] {
+        let (status, response) = send(&state, "POST", "/v1/enroll", None, Some(&body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(error_code(&response), "invalid_request", "{body}");
+    }
+
+    // None of them used the code up; 32 candidates (and a `deviceId` beside them) is the cap.
+    let at_cap = reusing_body(
+        &code,
+        "Mac",
+        "macos",
+        Some(Uuid::from_u128(99)),
+        Some(ids(32)),
+    );
+    let (status, body) = send(&state, "POST", "/v1/enroll", None, Some(&at_cap)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }

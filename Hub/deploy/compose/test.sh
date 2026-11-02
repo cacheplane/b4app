@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smoke-tests the production Compose profile against one image: brings the stack up with random
-# secrets in a scratch copy, checks /readyz, the migrate exit code, and that `hub` never sees the
-# admin URL, then tears everything down. Usage: test.sh <image-ref>
+# secrets in a scratch copy, checks /readyz, the migrate exit code, that `hub` never sees the
+# admin URL, and that it reads the secret key from a file, then tears everything down. Usage: test.sh <image-ref>
 # Needs docker with Compose v2, curl, openssl. Uses 127.0.0.1:${B4HUB_LOCAL_PORT:-18080}.
 set -euo pipefail
 
@@ -36,6 +36,7 @@ app="$(openssl rand -hex 24)"
 printf '%s' "$pg" > "$work/secrets/postgres_password"
 printf 'postgres://postgres:%s@db:5432/b4hub' "$pg" > "$work/secrets/database_admin_url"
 printf 'postgres://b4hub_app:%s@db:5432/b4hub' "$app" > "$work/secrets/database_url"
+openssl rand -base64 32 | tr -d '\n' > "$work/secrets/secret_key"
 chmod 0644 "$work"/secrets/*   # containers run as other uids; the files live in a throwaway dir
 cat > "$work/.env" <<ENV
 B4HUB_IMAGE=$image
@@ -64,6 +65,16 @@ if grep -q '^DATABASE_ADMIN_URL' <<<"$hub_env"; then
   exit 1
 fi
 grep -q '^DATABASE_URL_FILE=' <<<"$hub_env" || { echo "hub lacks DATABASE_URL_FILE" >&2; exit 1; }
+grep -q '^B4HUB_SECRET_KEY_FILE=' <<<"$hub_env" || { echo "hub lacks B4HUB_SECRET_KEY_FILE" >&2; exit 1; }
+if grep -q '^B4HUB_SECRET_KEY=' <<<"$hub_env"; then
+  echo "hub container has the secret key in its environment" >&2
+  exit 1
+fi
+migrate_id="$(compose ps -a -q migrate)"
+if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$migrate_id" | grep -q '^B4HUB_SECRET_KEY'; then
+  echo "migrate container has B4HUB_SECRET_KEY*" >&2
+  exit 1
+fi
 # Each binding's HostIp is bracketed so a blank one (Docker's "all interfaces") shows up as []
 # and fails, instead of vanishing as whitespace.
 hosts="$(docker inspect --format '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}[{{.HostIp}}] {{end}}{{end}}' "$hub_id")"

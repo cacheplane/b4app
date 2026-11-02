@@ -59,6 +59,23 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   /// `MirrorTransport` can serve `thread.start` through the relay.
   case threadStart = "thread.start"
   case turnLookup = "turn.lookup"
+  // The account this Mac is signed in as (sign-in plan, Task 10). They need no account to be routed;
+  // those that act on the signed-in one answer `signed_out` without it.
+  case accountStatus = "account.status"
+  case accountPasskeyBegin = "account.passkeyBegin"
+  case accountPasskeyFinish = "account.passkeyFinish"
+  case accountAppleStart = "account.appleStart"
+  case accountAppleFinish = "account.appleFinish"
+  case accountCompleteProfile = "account.completeProfile"
+  case accountLogout = "account.logout"
+  case accountIdentities = "account.identities"
+  case accountAddPasskeyBegin = "account.addPasskeyBegin"
+  case accountAddPasskeyFinish = "account.addPasskeyFinish"
+  case accountRemoveIdentity = "account.removeIdentity"
+  case accountDelete = "account.delete"
+  case accountDismissNotice = "account.dismissNotice"
+  case accountAppleLinkStart = "account.appleLinkStart"
+  case accountAppleLinkFinish = "account.appleLinkFinish"
 
   public var isMutation: Bool {
     switch self {
@@ -70,12 +87,15 @@ public enum Method: String, Codable, Sendable, CaseIterable {
       .databaseRestore,
       .databaseImportSQLite, .hubJoin, .hubLeave, .projectCreate, .projectUpdate, .projectRename,
       .projectDelete, .threadMarkRead, .threadStart, .settingsUpdate, .connectionUpdate,
-      .credentialRemove, .threadDelete:
+      .accountPasskeyFinish, .accountAppleFinish, .accountCompleteProfile, .accountLogout,
+      .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice,
+      .accountAppleLinkFinish, .credentialRemove, .threadDelete:
       return true
     case .systemPing, .diagnosticsRead, .connectionList, .threadList, .draftRead, .eventsSnapshot,
       .eventsReplay, .threadRead, .serverList, .serverStatus, .serverLogs, .workspaceActiveWork,
       .databaseStatus, .hubStatus, .projectList, .turnLookup, .hubPair, .hubPairStatus, .settingsRead,
-      .usageRead:
+      .usageRead, .accountStatus, .accountPasskeyBegin, .accountAppleStart, .accountIdentities,
+      .accountAddPasskeyBegin, .accountAppleLinkStart:
       return false
     }
   }
@@ -791,12 +811,17 @@ public enum HubStatus: WorkspaceCommand {
     /// Whether the "keep the Mac awake" power assertion is held right now (M8c); absent from an older
     /// coordinator.
     public var keepAwakeHeld: Bool?
+    /// Something to tell the person, such as "The last sign-out could not reach the hub; that session
+    /// was left open there." after a log-out the hub never heard (sign-in plan, Task 10). It stays until
+    /// `account.dismissNotice`; reading the status never clears it.
+    public var notice: String?
     public init(
       joined: Bool, url: String? = nil, deviceId: String? = nil, deviceName: String? = nil,
       orgSlug: String? = nil, username: String? = nil, displayName: String? = nil, unsyncedChanges: Int,
       lastPushAt: String? = nil, lastError: String? = nil, link: HubLinkStatus? = nil,
-      keepAwakeHeld: Bool? = nil
+      keepAwakeHeld: Bool? = nil, notice: String? = nil
     ) {
+      self.notice = notice
       self.joined = joined
       self.url = url
       self.deviceId = deviceId

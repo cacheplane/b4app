@@ -83,7 +83,9 @@ public final class NWPathMonitorSignal: NetworkPathMonitoring, Sendable {
 /// - A new link starts with nothing watched: the hub's `watching` after `hello` catches every watched
 ///   thread up again, and events queued for an earlier link are not sent on the new one.
 /// - **Reconnects** at once on `reconnectNow()` (the wake signal) and on a network path change.
-///   A 401 stops the link until the next join, as `HubSync` suspends its pushes.
+///   A 401 stops the link until the next join, as `HubSync` suspends its pushes, and also calls
+///   `onUnauthorized`, unawaited, so the account manager can sign the account out (which stops this
+///   link). A revocation (close 4001) does not: the pull's next request answers 401 and does.
 ///
 /// Never logs a token, params, results, or event content.
 public actor HubLink {
@@ -112,6 +114,7 @@ public actor HubLink {
   private let clock: any Clock<Duration>
   private let jitter: @Sendable () -> Double
   private let pathMonitor: (any NetworkPathMonitoring)?
+  private let onUnauthorized: (@Sendable () async -> Void)?
   private let logger = Log.logger("hub-link")
 
   private var relay: RelayLink?
@@ -136,11 +139,12 @@ public actor HubLink {
   ///     attempt, never read here from the Keychain.
   ///   - jitter: scales each backoff delay (0...1); tests fix it.
   ///   - pathMonitor: path changes that reconnect at once; nil for none.
+  ///   - onUnauthorized: called, in a task of its own, when the hub refuses the token (a 401).
   public init(
     url: URL, token: @escaping @Sendable () async throws -> String?, executor: RelayExecutor,
     eventLog: EventLog, connection: any HubLinkConnection, clock: any Clock<Duration> = ContinuousClock(),
     jitter: @escaping @Sendable () -> Double = { Double.random(in: 0...1) },
-    pathMonitor: (any NetworkPathMonitoring)? = nil
+    pathMonitor: (any NetworkPathMonitoring)? = nil, onUnauthorized: (@Sendable () async -> Void)? = nil
   ) {
     self.url = url
     self.token = token
@@ -150,6 +154,7 @@ public actor HubLink {
     self.clock = clock
     self.jitter = jitter
     self.pathMonitor = pathMonitor
+    self.onUnauthorized = onUnauthorized
   }
 
   // MARK: - Control
@@ -287,6 +292,9 @@ public actor HubLink {
       watchedThreads = []
       current = HubLinkStatus(state: .offline, since: now, lastError: Self.describe(stopped: reason))
       if reason != "stopped" { logger.warning("the hub link stopped: \(reason, privacy: .public)") }
+      if reason == "unauthorized", let onUnauthorized {
+        Task { await onUnauthorized() }
+      }
     }
   }
 

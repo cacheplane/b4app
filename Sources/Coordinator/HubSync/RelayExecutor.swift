@@ -32,20 +32,24 @@ public actor RelayExecutor {
   private let projects: ProjectService
   private let db: WorkspaceDatabase
   private let diagnostics: DiagnosticsService
+  private let gate: ScopeGate?
   private let logger = Log.logger("relay")
   /// By command id (the turn's operationId).
   private var inFlight: [String: Running] = [:]
   /// The latest `thread.start` per thread id it names; the next one for that id waits for it.
   private var threadStarts: [String: Task<RelayMessage, Never>] = [:]
 
+  /// `gate` is the account scope's: a command runs only while the scope is open, and the scope's
+  /// close waits (bounded) for the ones running.
   public init(
     sessions: SessionService, projects: ProjectService, database: WorkspaceDatabase,
-    diagnostics: DiagnosticsService
+    diagnostics: DiagnosticsService, gate: ScopeGate? = nil
   ) {
     self.sessions = sessions
     self.projects = projects
     self.db = database
     self.diagnostics = diagnostics
+    self.gate = gate
   }
 
   /// Run one relayed command. `deadline` is the hub's stamp and `hubNow` the hub's clock as this Mac
@@ -89,6 +93,8 @@ public actor RelayExecutor {
 
   private func reply(id: String, method: RelayMethod, params: JSONValue) async -> RelayMessage {
     do {
+      try gate?.enter()
+      defer { gate?.leave() }
       return .reply(id: id, result: try await run(id: id, method: method, params: params))
     } catch {
       let failure = WorkspaceError.from(error)

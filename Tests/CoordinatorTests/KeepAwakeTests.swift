@@ -126,11 +126,16 @@ import WorkspaceSync
   @Test func settingsAreServedOverTheSocketAndDiagnosticsShowTheAssertion() async throws {
     let rig = try await SocketRig.start()
     defer { Task { await rig.close() } }
-    #expect(try await rig.client.request(SettingsRead.self, EmptyParams()).keepAwake)
+    // Signed out: the preference is an account's, and no assertion is held.
+    await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.client.request(SettingsRead.self, EmptyParams())
+    }
     var report = try await rig.client.request(DiagnosticsRead.self, EmptyParams())
-    #expect(report.keepAwakeHeld == false)
+    #expect(report.keepAwakeHeld == nil)
+    #expect(!rig.assertions.isHeld)
 
     _ = try await rig.join()
+    #expect(try await rig.client.request(SettingsRead.self, EmptyParams()).keepAwake)
     #expect(rig.assertions.isHeld)
     report = try await rig.client.request(DiagnosticsRead.self, EmptyParams())
     #expect(report.keepAwakeHeld == true)

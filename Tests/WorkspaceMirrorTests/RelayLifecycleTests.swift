@@ -55,9 +55,6 @@ import WorkspaceProtocol
       #expect(lifecycle.enter(.background) == nil)
       #expect(lifecycle.enter(.active) == nil)
       #expect(!lifecycle.running)
-      // Still enrolled, so a pairing link is still "already paired".
-      #expect(
-        lifecycle.pairLink(PairLink.make(url: "https://hub.example.com", code: "BCDFGHJK")) == .alreadyPaired)
       // Log out, then pair again: the link opens.
       #expect(lifecycle.setEnrolled(false) == nil)
       #expect(!lifecycle.refused)
@@ -79,30 +76,12 @@ import WorkspaceProtocol
   }
 
   @Test func withoutARelayNothingRuns() throws {
-    // An unreadable mirror: linked (so a pairing link is "already paired"), but no relay was built.
+    // An unreadable mirror: linked, but no relay was built.
     var lifecycle = RelayLifecycle(enrolled: true, hasRelay: false)
     #expect(lifecycle.enter(.active) == nil)
     #expect(!lifecycle.running)
-    #expect(
-      lifecycle.pairLink(PairLink.make(url: "https://hub.example.com", code: "BCDFGHJK")) == .alreadyPaired)
     // Pairing again builds one.
     #expect(lifecycle.setEnrolled(false, hasRelay: false) == nil)
     #expect(lifecycle.setEnrolled(true, hasRelay: true) == .start)
-  }
-
-  @Test func alreadyEnrolledIgnoresPairLink() throws {
-    let url = PairLink.make(url: "https://hub.example.com", code: "BCDFGHJK")
-    // Enrolled: whatever the link holds, nothing is offered.
-    #expect(RelayLifecycle(enrolled: true).pairLink(url) == .alreadyPaired)
-    let hostile = try #require(URL(string: "b4app://pair?hub=http%3A%2F%2Fevil.test&code=BCDFGHJK"))
-    #expect(RelayLifecycle(enrolled: true).pairLink(hostile) == .alreadyPaired)
-    // Not enrolled: a valid link is offered for confirmation, never enrolled here.
-    let offered = try #require(PairLink.parse(url))
-    #expect(RelayLifecycle(enrolled: false).pairLink(url) == .confirm(offered))
-    #expect(RelayLifecycle(enrolled: false).pairLink(hostile) == .invalid)
-    // Not a pairing link at all (a later `b4app://thread/<id>`): not this decision's.
-    let thread = try #require(URL(string: "b4app://thread/abc"))
-    #expect(RelayLifecycle(enrolled: false).pairLink(thread) == .ignored)
-    #expect(RelayLifecycle(enrolled: true).pairLink(thread) == .ignored)
   }
 }

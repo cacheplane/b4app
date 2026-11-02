@@ -90,7 +90,7 @@ struct Harness {
     env["ANTHROPIC_API_KEY"] = nil
     for (key, value) in extraEnvironment { env[key] = value }
     // A check retries without waiting here, so a failing check costs nothing in other tests.
-    let outcome = try await Coordinator.start(
+    let outcome = try await Coordinator.startSignedIn(
       options: CoordinatorOptions(
         paths: paths, environment: env, secretStore: secretStore, adapterFactory: adapterFactory,
         checkRetryDelays: checkRetryDelays, threadDeleteSweep: threadDeleteSweep))
@@ -488,7 +488,7 @@ actor EventCollector {
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = "/nonexistent/node"
     guard
-      case .running(let restarted) = try await Coordinator.start(
+      case .running(let restarted) = try await Coordinator.startSignedIn(
         options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
     else { throw WorkspaceError(.internalError, "expected running") }
     let client = try await UnixSocketTransport.client(path: paths.socketPath)
@@ -760,7 +760,7 @@ actor EventCollector {
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = "/nonexistent/node"
     guard
-      case .running(let restarted) = try await Coordinator.start(
+      case .running(let restarted) = try await Coordinator.startSignedIn(
         options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
     else { throw WorkspaceError(.internalError, "expected running") }
     let client = try await UnixSocketTransport.client(path: paths.socketPath)
@@ -815,7 +815,7 @@ actor EventCollector {
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = "/nonexistent/node"
     guard
-      case .running(let restarted) = try await Coordinator.start(
+      case .running(let restarted) = try await Coordinator.startSignedIn(
         options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
     else { throw WorkspaceError(.internalError, "expected running") }
     let client = try await UnixSocketTransport.client(path: paths.socketPath)

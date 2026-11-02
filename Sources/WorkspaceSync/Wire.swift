@@ -146,15 +146,33 @@ extension KeyedDecodingContainer {
   }
 }
 
+/// `POST /v1/enroll`'s body. `deviceId` and then `candidateDeviceIds` are the devices this client
+/// already has at the hub, as in a sign-in's `DeviceSpec`: the first that is an unrevoked device of the
+/// code's user on the same platform is reused, so a Mac or phone that rejoins with a code keeps its
+/// device (and the rows it synced keep their owner). Both are left out when nil.
 public struct EnrollRequest: Codable, Sendable, Equatable {
   public var code: String
   public var deviceName: String
   public var platform: String
+  public var deviceId: String?
+  public var candidateDeviceIds: [String]?
 
-  public init(code: String, deviceName: String, platform: String) {
+  public init(
+    code: String, deviceName: String, platform: String, deviceId: String? = nil,
+    candidateDeviceIds: [String]? = nil
+  ) {
     self.code = code
     self.deviceName = deviceName
     self.platform = platform
+    self.deviceId = deviceId
+    self.candidateDeviceIds = candidateDeviceIds
+  }
+
+  /// Enroll with `code` as `device` describes this client, its known devices included.
+  public init(code: String, device: DeviceSpec) {
+    self.init(
+      code: code, deviceName: device.deviceName, platform: device.platform, deviceId: device.deviceId,
+      candidateDeviceIds: device.candidateDeviceIds)
   }
 }
 
@@ -178,8 +196,11 @@ public struct UserInfo: Codable, Sendable, Equatable {
   }
 }
 
-/// The only response that carries the device token; the caller stores it in a `SecretStore`.
-public struct EnrollResponse: Codable, Sendable, Equatable {
+/// A response that carries the device token; the caller stores it in a `SecretStore`. Its description
+/// leaves the token out.
+public struct EnrollResponse: Codable, Sendable, Equatable, CustomStringConvertible,
+  CustomDebugStringConvertible
+{
   public var deviceId: String
   public var token: String
   public var org: OrgInfo
@@ -191,26 +212,88 @@ public struct EnrollResponse: Codable, Sendable, Equatable {
     self.org = org
     self.user = user
   }
+
+  public var description: String {
+    "EnrollResponse(deviceId: \(deviceId), token: <redacted>, org: \(org.slug), user: \(user.username))"
+  }
+  public var debugDescription: String { description }
 }
 
+/// `GET /v1/me`: the device, its org and user, and the account's sign-in methods. The fields before
+/// `onboarded` are the enrollment-era ones; `user.fullName`, `onboarded`, and `identities` came with
+/// sign-in, and a hub without them answers a user who counts as onboarded and has no identities.
 public struct MeResponse: Codable, Sendable, Equatable {
   public var deviceId: String
+  /// The user's id (`users.id`), which never changes and is never reused; nil from a hub older than
+  /// sign-in.
+  public var userId: String?
   public var deviceName: String
   public var platform: String
   public var org: OrgInfo
   public var user: UserInfo
+  /// `user.fullName` on the wire: the name given at onboarding, `nil` until then.
+  public var fullName: String?
   /// RFC 3339 in UTC with microseconds, exactly as the hub sent it.
   public var createdAt: String
+  /// False until `PUT /v1/me/profile` has been called once.
+  public var onboarded: Bool
+  /// Every sign-in method of the user, oldest first.
+  public var identities: [Identity]
 
   public init(
-    deviceId: String, deviceName: String, platform: String, org: OrgInfo, user: UserInfo, createdAt: String
+    deviceId: String, deviceName: String, platform: String, org: OrgInfo, user: UserInfo, createdAt: String,
+    fullName: String? = nil, onboarded: Bool = true, identities: [Identity] = [], userId: String? = nil
   ) {
     self.deviceId = deviceId
+    self.userId = userId
     self.deviceName = deviceName
     self.platform = platform
     self.org = org
     self.user = user
+    self.fullName = fullName
     self.createdAt = createdAt
+    self.onboarded = onboarded
+    self.identities = identities
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case deviceId, userId, deviceName, platform, org, user, createdAt, onboarded, identities
+  }
+
+  private enum UserKeys: String, CodingKey { case username, displayName, fullName }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    deviceId = try container.decode(String.self, forKey: .deviceId)
+    userId = try container.decodeIfPresent(String.self, forKey: .userId)
+    deviceName = try container.decode(String.self, forKey: .deviceName)
+    platform = try container.decode(String.self, forKey: .platform)
+    org = try container.decode(OrgInfo.self, forKey: .org)
+    let userContainer = try container.nestedContainer(keyedBy: UserKeys.self, forKey: .user)
+    user = UserInfo(
+      username: try userContainer.decode(String.self, forKey: .username),
+      displayName: try userContainer.decode(String.self, forKey: .displayName))
+    fullName = try userContainer.decodeIfPresent(String.self, forKey: .fullName)
+    createdAt = try container.decode(String.self, forKey: .createdAt)
+    onboarded = try container.decodeIfPresent(Bool.self, forKey: .onboarded) ?? true
+    identities = try container.decodeIfPresent([Identity].self, forKey: .identities) ?? []
+  }
+
+  /// Writes `fullName` as `null` when unset, as the hub does.
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(deviceId, forKey: .deviceId)
+    try container.encodeIfPresent(userId, forKey: .userId)
+    try container.encode(deviceName, forKey: .deviceName)
+    try container.encode(platform, forKey: .platform)
+    try container.encode(org, forKey: .org)
+    var userContainer = container.nestedContainer(keyedBy: UserKeys.self, forKey: .user)
+    try userContainer.encode(user.username, forKey: .username)
+    try userContainer.encode(user.displayName, forKey: .displayName)
+    try userContainer.encode(fullName, forKey: .fullName)
+    try container.encode(createdAt, forKey: .createdAt)
+    try container.encode(onboarded, forKey: .onboarded)
+    try container.encode(identities, forKey: .identities)
   }
 }
 
@@ -343,6 +426,10 @@ public struct HubErrorBody: Codable, Sendable, Equatable {
     public var code: String?
     /// A `rate_limited` answer's wait, in milliseconds.
     public var retryAfterMs: Int?
+    /// Why: on `merge_refused`, `same_account`, `has_mac`, or `shared_org`; on a passkey sign-in's
+    /// `credential_rejected`, `unknown_credential` when no account holds the passkey. Absent from an
+    /// older hub, when the hub does not know, and on every other refusal.
+    public var reason: String?
   }
 
   public struct Body: Codable, Sendable, Equatable {
@@ -366,13 +453,22 @@ public struct HubError: Error, Sendable, Equatable, CustomStringConvertible {
   public var status: Int
   /// How long the hub asks the caller to wait, on a `rate_limited` answer.
   public var retryAfterMs: Int?
+  /// `details.reason`: on a `merge_refused` answer `same_account`, `has_mac`, or `shared_org`; on a
+  /// passkey sign-in's `credential_rejected`, `unknownCredential` or nothing.
+  public var reason: String?
 
-  public init(kind: String, code: String, message: String, status: Int, retryAfterMs: Int? = nil) {
+  /// The `credential_rejected` reason that says no account holds the asserted passkey.
+  public static let unknownCredential = "unknown_credential"
+
+  public init(
+    kind: String, code: String, message: String, status: Int, retryAfterMs: Int? = nil, reason: String? = nil
+  ) {
     self.kind = kind
     self.code = code
     self.message = message
     self.status = status
     self.retryAfterMs = retryAfterMs
+    self.reason = reason
   }
 
   public var description: String { "Hub error \(status) \(code): \(message)" }

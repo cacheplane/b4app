@@ -10,11 +10,16 @@ locals {
   state_bucket = "${local.prefix}-tfstate"
   oidc_host    = "token.actions.githubusercontent.com"
 
+  # The repository's immutable OIDC subject prefix (see variables.tf).
+  repo_owner   = split("/", var.github_repository)[0]
+  repo_name    = split("/", var.github_repository)[1]
+  repo_subject = "repo:${local.repo_owner}@${var.github_owner_id}/${local.repo_name}@${var.github_repository_id}"
+
   # Test deploys from pushes to main; prod only from jobs that target the
   # `production` GitHub environment, so a push to main cannot assume it.
   protected_subject = {
-    test = "repo:${var.github_repository}:ref:refs/heads/main"
-    prod = "repo:${var.github_repository}:environment:production"
+    test = "${local.repo_subject}:ref:refs/heads/main"
+    prod = "${local.repo_subject}:environment:production"
   }[var.environment]
 
   # Names are built here, not read from the resources, so the boundary can

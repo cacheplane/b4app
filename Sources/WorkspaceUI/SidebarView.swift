@@ -6,9 +6,11 @@ import WorkspaceProtocol
 /// Settings, reached from the profile menu.
 struct SidebarView: View {
   @Bindable var model: WorkspaceModel
+  /// The phone's "Connect your Mac", which takes the list's place while the account has no Mac.
+  @Environment(\.connectMacContent) private var connectMacContent
 
   var body: some View {
-    content
+    shown
       .background(LLA.Color.surface)
       .overlay {
         // A click anywhere else in the sidebar closes the profile menu.
@@ -19,6 +21,15 @@ struct SidebarView: View {
         }
       }
       .safeAreaInset(edge: .bottom, spacing: 0) { SidebarFooter(model: model) }
+  }
+
+  /// The list, or the phone's "Connect your Mac" in its place while the account has no Mac.
+  @ViewBuilder private var shown: some View {
+    if model.showsConnectMac, let connectMacContent {
+      connectMacContent()
+    } else {
+      content
+    }
   }
 
   /// New thread, Search, More. New thread is off while no project's Mac can take a thread: all offline,
@@ -55,6 +66,9 @@ struct SidebarView: View {
   /// The Mac left the hub, or the primary Mac is offline: a persistent notice above the list, which
   /// stays browsable (M8c; this replaced M8b's empty state).
   @ViewBuilder private var listNotice: some View {
+    if let notice = model.accountNotice {
+      AccountNoticeBanner(text: notice) { Task { await model.dismissAccountNotice() } }
+    }
     if let notice = model.listNotice {
       HostNotice(message: notice)
         .accessibilityIdentifier(notice.kind == .leftHub ? "host-disconnected" : "host-notice")

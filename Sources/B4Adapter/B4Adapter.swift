@@ -41,6 +41,8 @@ public actor B4Adapter: AgentAdapter {
   private let authConfigured: Bool
   private let clientVersion: String
   private var runs: [String: Run] = [:]
+  /// Set by `dispose()`, for good: no stream is opened after it.
+  private var disposed = false
   private var pending: [String: PendingInterrupt] = [:]
   private var generation = 1
   private let eventStream: AsyncStream<AdapterEvent>
@@ -100,6 +102,10 @@ public actor B4Adapter: AgentAdapter {
   // MARK: - Guards
 
   private func requireClient() throws -> B4HTTPClient {
+    if disposed {
+      throw WorkspaceError(
+        .endpointUnavailable, "This B4 connection was shut down; it opens no more streams.")
+    }
     guard let client else {
       throw clientError ?? WorkspaceError(.protocolInvalid, "Invalid B4 base URL: \(baseURL)")
     }
@@ -359,7 +365,9 @@ public actor B4Adapter: AgentAdapter {
   public nonisolated func events() -> AsyncStream<AdapterEvent> { eventStream }
 
   /// Drops local streams only. Runs keep going on the server (spec section 6: never an implicit cancel).
+  /// Final: every later call refuses, and a stream that opens after it is closed at once.
   public func dispose() async {
+    disposed = true
     for (id, run) in runs {
       run.task?.cancel()
       run.cancel?()
@@ -370,6 +378,10 @@ public actor B4Adapter: AgentAdapter {
   // MARK: - Streams
 
   private func start(threadId: String, translator: B4TurnTranslator, handle: B4HTTPClient.StreamHandle) {
+    if disposed {
+      handle.cancel()
+      return
+    }
     runs[threadId] = Run(translator: translator, task: nil, cancel: handle.cancel)
     runs[threadId]?.task = Task { [weak self] in
       await self?.consume(threadId: threadId, handle: handle)

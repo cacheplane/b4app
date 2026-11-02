@@ -28,6 +28,8 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
   private let environment: [String: String]
   private let clientVersion: String
   private var server: CodexAppServer?
+  /// Set by `dispose()`, for good: no call starts an app server after it.
+  private var disposed = false
   private var pumpTask: Task<Void, Never>?
   private let eventStream: AsyncStream<AdapterEvent>
   private let eventContinuation: AsyncStream<AdapterEvent>.Continuation
@@ -58,6 +60,7 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
   // MARK: - Lifecycle
 
   private func ensureStarted() async throws -> CodexAppServer {
+    if disposed { throw Self.disposedError }
     if let server {
       try await server.ensureStarted()
       return server
@@ -84,8 +87,16 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
       await self?.finishEvents()
     }
     try await server.ensureStarted()
+    // A dispose while this one was starting owns the adapter now: the new process does not outlive it.
+    if disposed {
+      await server.close()
+      throw Self.disposedError
+    }
     return server
   }
+
+  static let disposedError = WorkspaceError(
+    .endpointUnavailable, "This Codex connection was shut down; its app server is not started again.")
 
   private func finishEvents() { eventContinuation.finish() }
 
@@ -397,7 +408,9 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
 
   public nonisolated func events() -> AsyncStream<AdapterEvent> { eventStream }
 
+  /// Final: the app server stops, and every later call refuses instead of starting another.
   public func dispose() async {
+    disposed = true
     await server?.close()
     server = nil
   }

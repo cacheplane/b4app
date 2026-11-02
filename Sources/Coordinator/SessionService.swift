@@ -65,6 +65,8 @@ public actor SessionService {
   var pumps: [String: Task<Void, Never>] = [:]
   /// Connections with a background check in progress (`inspectInBackground`).
   var runningChecks: Set<String> = []
+  /// Set by `shutdown`; no adapter is made after it.
+  var closing = false
   /// Runtime requests whose answer is with the adapter right now. `requestRespond` suspends on the
   /// adapter before it marks the request resolved, so without this a second answer (one from the Mac,
   /// one relayed from the phone) could reach the runtime too.
@@ -106,15 +108,25 @@ public actor SessionService {
     startThreadDeleteSweep()
   }
 
+  /// Dispose every adapter. `closing` is set before the first suspension, so no adapter (and no
+  /// runtime) can be made once a shutdown has begun.
+  ///
+  /// The adapters are disposed side by side (each runtime may take a moment to exit), and forgotten
+  /// before the first suspension, so a second call does nothing.
   public func shutdown() async {
+    closing = true
     for (id, pump) in pumps { pump.cancel(); pumps[id] = nil }
-    for adapter in adapters.values { await adapter.dispose() }
+    let disposing = Array(adapters.values)
     adapters = [:]
+    await withTaskGroup(of: Void.self) { group in
+      for adapter in disposing { group.addTask { await adapter.dispose() } }
+    }
   }
 
   // MARK: - Adapters
 
   func adapter(for connection: Connection) throws -> any AgentAdapter {
+    if closing { throw WorkspaceError(.signedOut, AccountManager.signedOutMessage) }
     if let existing = adapters[connection.id] { return existing }
     let adapter = try context.adapterFactory(
       connection, context.environment, context.clientVersion, context.secretStore)
@@ -843,6 +855,29 @@ public actor SessionService {
       }
     }
     return result
+  }
+
+  /// Log-out's first step (sign-in plan, Task 10): interrupt every running turn of a local runtime
+  /// (Codex, Claude, a managed B4 server) side by side, and wait until `deadline` for those runtimes to
+  /// confirm. Remote and attached B4 runs are left running on their server: the log-out detaches from
+  /// them, as a quit does, and never cancels them implicitly. Returns the interrupted turns whose end was
+  /// not confirmed in time; they reconcile at the account's next sign-in.
+  func interruptLocalTurns(until deadline: ContinuousClock.Instant) async -> [ActiveTurnSummary] {
+    let entries = ((try? db.unresolvedTurns()) ?? []).compactMap { try? summary($0) }.filter {
+      $0.local && ($0.status == .running || $0.status == .waitingForUser || $0.status == .stopping)
+    }
+    await withTaskGroup(of: Void.self) { group in
+      for entry in entries {
+        group.addTask { _ = try? await self.turnInterrupt(TurnInterrupt.Params(threadId: entry.threadId)) }
+      }
+    }
+    var open = entries
+    while !open.isEmpty, ContinuousClock.now < deadline {
+      open = open.filter { (try? db.turn(id: $0.turnId))?.status != .terminal }
+      if open.isEmpty { break }
+      try? await Task.sleep(for: .milliseconds(50))
+    }
+    return open
   }
 
   /// Wake, reconnect, or an explicit request: reconcile every unresolved turn and re-check offline
