@@ -5,7 +5,7 @@ import WorkspaceProtocol
 /// Codex adapter over `codex app-server` (spec section 7). Owns one app-server process, keeps the
 /// set of threads resumed in the current process generation, and tracks pending server requests so
 /// every one of them gets an explicit answer.
-public actor CodexAdapter: AgentAdapter, LoginCapable {
+public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
   public nonisolated let kind = ConnectionKind.codex
   public nonisolated let connectionId: String
   /// Answer requests the app cannot present (permissions, elicitation, dynamic tools) with an explicit
@@ -161,6 +161,13 @@ public actor CodexAdapter: AgentAdapter, LoginCapable {
     let result = try await server.request("account/read", CodexProtocol.accountReadParams())
     account = CodexAccount(accountReadResult: result)
     return account
+  }
+
+  /// The plan's 5-hour and weekly windows through `account/rateLimits/read`.
+  public func readUsage() async throws -> UsageReading? {
+    let server = try await ensureStarted()
+    let result = try await server.request("account/rateLimits/read", .null)
+    return CodexUsage.reading(from: result, observedAt: Timestamp.now())
   }
 
   /// Start the official ChatGPT sign-in. The caller opens `authUrl` in the system browser; completion

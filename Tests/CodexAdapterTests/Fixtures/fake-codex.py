@@ -7,6 +7,7 @@ Never run in place of the real server for anything the docs call live-tested."""
 import json
 import os
 import sys
+import time
 
 if len(sys.argv) > 1 and sys.argv[1] == "--version":
     print("codex-cli 0.166.0")
@@ -77,11 +78,20 @@ def stream_message(thread_id, turn_id, text):
 finished = {}
 
 
+def rate_limits():
+    # The plan windows the tests pin: 62% of the 5-hour window, 31% of the week.
+    now = int(time.time())
+    return {"limitId": "codex", "planType": "pro", "rateLimitReachedType": None, "credits": None,
+            "primary": {"usedPercent": 62, "windowDurationMins": 300, "resetsAt": now + 8040},
+            "secondary": {"usedPercent": 31, "windowDurationMins": 10080, "resetsAt": now + 300000}}
+
+
 def finish_turn(thread_id, turn_id, status, error=None):
     finished.setdefault(thread_id, []).append((turn_id, status))
     notify("turn/completed", {"threadId": thread_id,
                               "turn": {"id": turn_id, "status": status, "items": [], "error": error}})
     notify("thread/status/changed", {"threadId": thread_id, "status": {"type": "idle"}})
+    notify("account/rateLimits/updated", {"rateLimits": rate_limits()})
 
 
 turn_counter = 0
@@ -107,6 +117,8 @@ while True:
         send({"id": req_id, "result": {"account": {"type": "chatgpt", "email": os.environ.get("FAKE_CODEX_EMAIL", "owner@example.com"),
                                                    "planType": "plus", "workspaceName": None},
                                        "requiresOpenaiAuth": True}})
+    elif method == "account/rateLimits/read":
+        send({"id": req_id, "result": {"rateLimits": rate_limits(), "ordinaryUsageAllowed": True}})
     elif method == "account/login/start":
         send({"id": req_id, "result": {"type": "chatgpt", "authUrl": "https://auth.example/login?state=1",
                                        "loginId": "login_1"}})
