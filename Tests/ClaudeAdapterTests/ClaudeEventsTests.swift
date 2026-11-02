@@ -51,6 +51,32 @@ private let streamedTurn = """
     #expect(t.model == "claude-x")
   }
 
+  /// Claude Code sends each content block in its own `assistant` frame, so a frame's position is not
+  /// the block's stream index. Each completion goes to the item the stream started: thinking then text
+  /// stay two items, and the text is stored once, never onto the thinking item.
+  @Test func completionsGoToTheItemsTheStreamStarted() {
+    var t = tracker()
+    let events = run(
+      &t,
+      """
+      {"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_2","role":"assistant","content":[]}},"session_id":"s1","user_message_uuid":"turn-1"}
+      {"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}},"session_id":"s1"}
+      {"type":"assistant","message":{"id":"msg_2","role":"assistant","model":"claude-x","content":[{"type":"thinking","thinking":"Plan."}]},"session_id":"s1","uuid":"a1","user_message_uuid":"turn-1"}
+      {"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}},"session_id":"s1"}
+      {"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Done."}},"session_id":"s1"}
+      {"type":"assistant","message":{"id":"msg_2","role":"assistant","model":"claude-x","content":[{"type":"text","text":"Done."}]},"session_id":"s1","uuid":"a2","user_message_uuid":"turn-1"}
+      {"type":"stream_event","event":{"type":"message_stop"},"session_id":"s1"}
+      {"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"Done.","session_id":"s1","user_message_uuid":"turn-1"}
+      """)
+    let started = events.filter { $0.kind == .messageStarted || $0.kind == .toolStarted }
+    let completed = events.filter { $0.kind == .messageCompleted || $0.kind == .toolCompleted }
+    #expect(started.map { $0.nativeIds["itemId"] } == ["msg_2#0", "msg_2#1"])
+    #expect(completed.map { $0.nativeIds["itemId"] } == ["msg_2#0", "msg_2#1"])
+    #expect(completed.map { $0.payload["type"]?.stringValue } == ["thinking", "agentMessage"])
+    #expect(completed[1].payload["item"]?["text"]?.stringValue == "Done.")
+    #expect(events.filter { $0.kind == .messageDelta }.map { $0.nativeIds["itemId"] } == ["msg_2#1"])
+  }
+
   @Test func successSubtypeWithErrorFlagIsAFailedTurn() {
     var t = tracker()
     let events = run(
