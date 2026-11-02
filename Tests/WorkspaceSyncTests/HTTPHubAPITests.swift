@@ -495,11 +495,11 @@ final class TokenSequence: @unchecked Sendable {
     }
   }
 
-  @Test func appendFeedsAReaderAndALongPollWakesForIt() async throws {
+  @Test(.timeLimit(.minutes(1))) func appendFeedsAReaderAndALongPollWakesForIt() async throws {
     let fake = FakeHubAPI()
-    async let page = fake.pull(after: 0, limit: 10, wait: 5)
-    // Timed on purpose: lets the pull park in its long poll first; the fake reports no "parked" event.
-    try await Task.sleep(for: .milliseconds(50))
+    async let page = fake.pull(after: 0, limit: 10, wait: 30)
+    // The append comes once the pull is parked in its long poll, so it is the append that wakes it.
+    await fake.untilPulling()
     await fake.append([
       StoredChange(
         hubSeq: 1, deviceId: "other", deviceSeq: 1, wall: 1, table: "threads", rowId: "t", op: "delete")
