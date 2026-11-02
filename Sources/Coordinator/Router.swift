@@ -246,6 +246,9 @@ public actor Router {
       return try JSONValue(encoding: try await context.hub.status())
     case .usageRead:
       return try JSONValue(encoding: try await sessions.usageRead())
+    case .credentialRemove:
+      return try JSONValue(
+        encoding: try await sessions.credentialRemove(try command.params(for: CredentialRemove.self)))
     case .connectionUpdate:
       return try JSONValue(
         encoding: try await sessions.connectionUpdate(try command.params(for: ConnectionUpdate.self)))

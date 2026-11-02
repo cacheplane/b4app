@@ -93,4 +93,19 @@ private func snapshot(
     #expect(reading.weekly?.usedPercent == 31)
     await adapter.dispose()
   }
+
+  @Test func windowsAreOrderedByLengthAndKeepTheirLength() throws {
+    let daily = snapshot(
+      primary: ["usedPercent": 40, "windowDurationMins": 1440],
+      secondary: ["usedPercent": 31, "windowDurationMins": 10080])
+    let reading = try #require(CodexUsage.reading(from: daily, observedAt: observed))
+    #expect(reading.fiveHour?.windowMinutes == 1440)
+    #expect(reading.weekly?.windowMinutes == 10080)
+    let twoShort = snapshot(
+      primary: ["usedPercent": 70, "windowDurationMins": 300],
+      secondary: ["usedPercent": 10, "windowDurationMins": 60])
+    let both = try #require(CodexUsage.reading(from: twoShort, observedAt: observed))
+    #expect(both.fiveHour?.windowMinutes == 60)
+    #expect(both.weekly?.windowMinutes == 300)
+  }
 }
