@@ -393,7 +393,8 @@ appear. `200`:
 ```
 
 - `changes` are synthetic `insert`s, one per row, tables in dependency order (`connections`,
-  `projects`, `projectFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`),
+  `projects`, `projectFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`,
+  `connectionUsage`),
   rows within a table by id. Each has `hubSeq` 0, `deviceSeq` 0, `wall` 0, `column` `null`,
   `deviceId` the row's owner (the device of its latest insert), and `value` the row's Mac columns
   (no `org_id`, `user_id`, `device_id`, or `owner_device_id`; `connections.authReference`,
@@ -444,8 +445,8 @@ other eleven applied; do not paste it whole.
 | --- | --- | --- |
 | `deviceSeq` | integer | The change's sequence on the device that wrote it: unique per device, increasing. The idempotency key together with the authenticated device. |
 | `wall` | integer | Milliseconds since the epoch on the origin device. |
-| `table` | string | One of `connections`, `projects`, `projectFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`. Any other name (including `localServers`, which never syncs) is recorded and skipped. |
-| `rowId` | string | The row's key: its `id`, or `threadId` for `drafts`. Client-chosen text; unique per org within a table. |
+| `table` | string | One of `connections`, `projects`, `projectFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`, `connectionUsage`. Any other name (including `localServers`, which never syncs) is recorded and skipped. `connectionUsage` (migration 0010) holds a connection's latest plan reading and B4 token totals as JSON documents (`reading`, `tokens`); only a Mac writes it. |
+| `rowId` | string | The row's key: its `id`, `threadId` for `drafts`, or `connectionId` for `connectionUsage`. Client-chosen text; unique per org within a table. |
 | `op` | `"insert"`, `"update"`, or `"delete"` | |
 | `column` | string or `null` | For `update`, the column being set; otherwise absent or `null`. |
 | `hlc` | string, optional | The hybrid logical clock the device stamped on the change (see *Clocks and the write rule*). Omit it and the hub derives one from `wall`. A value not in the clock form gets that change rejected with `invalid_clock`. |

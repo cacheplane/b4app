@@ -493,8 +493,9 @@ async fn another_org_sees_nothing_of_the_feed_or_the_mirror(pool: PgPool) {
     assert!(page.changes.is_empty());
     for table in std::iter::once("changes").chain(SYNCED_TABLES) {
         assert_eq!(count(&app, &outsider, table).await, 0, "{table}");
-        // The fixture's draft is inserted and then deleted, and it has no projects.
-        if !["drafts", "projects", "projectFolders"].contains(&table) {
+        // The fixture's draft is inserted and then deleted, and it has no projects or usage
+        // (`connection_usage_is_mirrored_and_pulled` covers that table).
+        if !["drafts", "projects", "projectFolders", "connectionUsage"].contains(&table) {
             assert!(count(&app, &device, table).await > 0, "{table}");
         }
     }
@@ -516,6 +517,56 @@ async fn another_org_sees_nothing_of_the_feed_or_the_mirror(pool: PgPool) {
     assert_eq!(accepted, 12);
     assert_eq!(count(&app, &outsider, "threads").await, 1);
     assert_eq!(count(&app, &device, "changes").await, 12);
+}
+
+/// A connection's usage (plan windows, B4 token totals) is mirrored like any synced row, so a phone
+/// pulls it; its JSON documents arrive whole.
+#[sqlx::test(migrations = false)]
+async fn connection_usage_is_mirrored_and_pulled(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let mac = common::enrolled(&admin, &app, "blove").await;
+    thread_fixture(&app, &mac, 1).await;
+    let reading = json!({"weekly": {"usedPercent": 87, "windowMinutes": 10080}, "blocked": false,
+                         "planType": "promax", "observedAt": "2026-11-02T10:00:00.000Z"});
+    push_through(
+        &app,
+        &mac,
+        &[insert(
+            3,
+            "connectionUsage",
+            "conn-1",
+            json!({"connectionId": "conn-1", "reading": reading, "updatedAt": "2026-11-02T10:00:01.000Z"}),
+        )],
+    )
+    .await
+    .unwrap();
+    let stored = row(&app, &mac, "connectionUsage", "connectionId", "conn-1")
+        .await
+        .unwrap();
+    assert_eq!(stored["reading"]["planType"], "promax");
+    let tokens = json!({"today": 7, "week": 22, "day": "2026-11-02", "weekStart": "2026-10-26"});
+    push_through(
+        &app,
+        &mac,
+        &[update(
+            4,
+            "connectionUsage",
+            "conn-1",
+            "tokens",
+            Some(tokens.clone()),
+        )],
+    )
+    .await
+    .unwrap();
+    let stored = row(&app, &mac, "connectionUsage", "connectionId", "conn-1")
+        .await
+        .unwrap();
+    assert_eq!(stored["tokens"], tokens);
+    let page = changes::pull(&app, &mac, 0, 100).await.unwrap();
+    assert!(page
+        .changes
+        .iter()
+        .any(|change| change.table == "connectionUsage" && change.row_id == "conn-1"));
 }
 
 #[sqlx::test(migrations = false)]
