@@ -47,6 +47,7 @@ struct SettingsPageAction: ViewModifier {
 extension SettingsPage {
   @MainActor @ViewBuilder func view(model: WorkspaceModel) -> some View {
     switch self {
+    case .account: AccountSettingsView(model: model)
     case .connections: ConnectionsView(model: model)
     case .servers: LocalServersView(model: model)
     case .remoteAccess:
@@ -72,6 +73,28 @@ public struct WorkspaceSettingsView: View {
   }
 
   public var body: some View {
+    Group {
+      if model.settingsAvailable {
+        pages
+      } else {
+        // Signed out while the window was open: it closes (below); until then nothing of the account
+        // shows.
+        LLAEmptyState(SettingsCopy.signedOutTitle, text: SettingsCopy.signedOutText)
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+          .background(LLA.Color.bg)
+          .accessibilityIdentifier("settings-signed-out")
+      }
+    }
+    .tint(LLA.Color.accent)
+    .frame(minWidth: 760, minHeight: 500)
+    .onAppear { model.settingsVisible = true }
+    .onDisappear { model.settingsVisible = false }
+    #if os(macOS)
+      .background(WindowCloser(request: model.settingsCloseRequest))
+    #endif
+  }
+
+  private var pages: some View {
     HStack(spacing: 0) {
       ScrollView {
         VStack(alignment: .leading, spacing: 2) {
@@ -99,10 +122,6 @@ public struct WorkspaceSettingsView: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       .background(LLA.Color.bg)
     }
-    .tint(LLA.Color.accent)
-    .frame(minWidth: 760, minHeight: 500)
-    .onAppear { model.settingsVisible = true }
-    .onDisappear { model.settingsVisible = false }
   }
 
   private var heading: some View {
@@ -118,7 +137,7 @@ public struct WorkspaceSettingsView: View {
         Button("Refresh") { Task { await model.refreshDiagnostics() } }
           .buttonStyle(.llaSecondary)
           .disabled(model.link != .ready || model.diagnosticsLoading)
-      case .servers, .remoteAccess:
+      case .account, .servers, .remoteAccess:
         EmptyView()
       }
     }
@@ -126,6 +145,34 @@ public struct WorkspaceSettingsView: View {
     .padding(.top, LLA.Space.xl)
   }
 }
+
+/// What Settings says while nobody is signed in.
+enum SettingsCopy {
+  static let signedOutTitle = "Nobody is signed in"
+  static let signedOutText = "Sign in from the Agent Workspace window to see Settings."
+}
+
+#if os(macOS)
+  /// Closes the window it sits in whenever `request` changes after it first appears (the Settings
+  /// window, when the account signs out).
+  struct WindowCloser: NSViewRepresentable {
+    let request: Int
+
+    final class Coordinator {
+      var seen: Int
+      init(_ seen: Int) { self.seen = seen }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(request) }
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context: Context) {
+      guard context.coordinator.seen != request else { return }
+      context.coordinator.seen = request
+      DispatchQueue.main.async { view.window?.close() }
+    }
+  }
+#endif
 
 #if os(iOS)
   /// The iPhone's Settings: a sheet with the pages in a list, each pushing its view.

@@ -229,6 +229,12 @@ extension WorkspaceModel {
     }
     if status.state != .signedIn {
       if wasSignedIn || status.state == .signedOut { forgetWorkspace() }
+      if wasSignedIn {
+        // Whatever needs an account closes: the Settings window, the phone's sheet (forgetWorkspace
+        // already closed the sheets and menus of the workspace).
+        showSettingsSheet = false
+        settingsCloseRequest += 1
+      }
       return
     }
     // Another account, with no sign-out between (a switch publishes only the new account): nothing of
@@ -243,13 +249,13 @@ extension WorkspaceModel {
     }
   }
 
-  private func signInClient() throws -> WorkspaceClient {
+  func signInClient() throws -> WorkspaceClient {
     guard let client else { throw WorkspaceError(.endpointUnavailable, "Coordinator is not connected.") }
     return client
   }
 
   /// The hub's answer can take a while (the coordinator signs in and opens the account's store).
-  private static let signInCall = RequestOptions(timeout: .seconds(60))
+  static let signInCall = RequestOptions(timeout: .seconds(60))
 
   private static func signInMutation() -> RequestOptions {
     RequestOptions(operationId: UUID().uuidString.lowercased(), timeout: .seconds(60))
@@ -349,7 +355,7 @@ extension WorkspaceModel {
   /// tap finds no passkey and asks to create an account again instead of offering one the hub will
   /// always reject. Only on a refusal that proves the hub kept nothing: reporting a passkey the hub did
   /// keep would delete the only way into that account. The relying party is the registration's own.
-  private func reportOrphan(
+  func reportOrphan(
     _ attestation: JSONValue, options: JSONValue, ceremony: any PasskeyCeremony, after error: any Error
   ) async {
     guard let failure = error as? WorkspaceError, Self.orphanProvingCodes.contains(failure.code),
@@ -408,11 +414,15 @@ extension WorkspaceModel {
     onboardingBusy = true
     defer { onboardingBusy = false }
     onboardingFailure = nil
+    let onboarding: Bool
+    if case .needsOnboarding = accountState { onboarding = true } else { onboarding = false }
     do {
       let status = try await signInClient().request(
         AccountCompleteProfile.self, AccountCompleteProfile.Params(fullName: FullName.trimmed(fullName)),
         options: Self.signInMutation())
       applyAccountStatus(status)
+      // A new account on the Mac is offered "Add your iPhone" once, right after naming itself.
+      if onboarding, accountState == .signedIn, WorkspaceDevice.managesWorkspace { showAddPhone = true }
     } catch {
       onboardingFailure = SignInCopy.accountFailure(for: WorkspaceError.from(error))
     }

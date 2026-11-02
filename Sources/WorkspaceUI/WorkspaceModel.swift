@@ -26,13 +26,14 @@ public enum ThreadRowState: String, Sendable, Equatable, CaseIterable {
 
 /// A page of the Settings window (the Mac) or sheet (the iPhone).
 public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
-  case connections, servers, remoteAccess, diagnostics
+  case account, connections, servers, remoteAccess, diagnostics
 
-  /// The pages this platform shows. "Remote access" is the Mac's: it mints the pairing code and holds
-  /// the Mac awake, neither of which the phone does.
+  /// The pages this platform shows. "Account" comes first (sign-in plan, Task 12). "Remote access" is
+  /// the Mac's: it mints the pairing code and holds the Mac awake, neither of which the phone does. The
+  /// phone shows "Account" once its mirror reads the account from the hub (Task 14).
   nonisolated public static var allCases: [SettingsPage] {
     #if os(macOS)
-      [.connections, .servers, .remoteAccess, .diagnostics]
+      [.account, .connections, .servers, .remoteAccess, .diagnostics]
     #else
       [.connections, .servers, .diagnostics]
     #endif
@@ -42,6 +43,7 @@ public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
 
   public var title: String {
     switch self {
+    case .account: return "Account"
     case .connections: return "Connections"
     case .servers: return "Local servers"
     case .remoteAccess: return "Remote access"
@@ -51,6 +53,7 @@ public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
 
   public var systemImage: String {
     switch self {
+    case .account: return "person.crop.circle"
     case .connections: return "link"
     case .servers: return "server.rack"
     case .remoteAccess: return "iphone"
@@ -140,7 +143,7 @@ public final class WorkspaceModel {
   public var projectFilter: ProjectFilter = .all
   /// The Settings page to show, and a counter the root view watches to open Settings (a window on the
   /// Mac, a sheet on the iPhone); a counter so asking twice opens it twice.
-  public var settingsPage: SettingsPage = .connections
+  public var settingsPage: SettingsPage = SettingsPage.allCases[0]
   public var settingsRequest = 0
   /// The iPhone's Settings sheet.
   public var showSettingsSheet = false
@@ -216,6 +219,27 @@ public final class WorkspaceModel {
   @ObservationIgnored var accountGeneration = 0
   /// The registration offered after "No passkey for …", until Create account or Cancel.
   @ObservationIgnored var pendingRegistration: PendingRegistration?
+  // MARK: Account settings and log out (sign-in plan, Task 12; SignIn/AccountSettingsView.swift)
+
+  /// The profile menu's "Log out of <org name>?", while it is asked.
+  public internal(set) var logOutConfirmation: LogOutConfirmation?
+  /// A log-out is out; the menu's Log out does nothing until it answers.
+  public internal(set) var logOutInFlight = false
+  /// The one line a refused log-out shows, until dismissed.
+  public internal(set) var logOutFailure: String?
+  /// The signed-in account's sign-in methods, from `account.identities`; nil until read.
+  public internal(set) var identities: [AccountIdentity]?
+  /// An Account page call is out (save the name, add or remove a method).
+  public internal(set) var accountSettingsBusy = false
+  /// The Account page's one failure line.
+  public internal(set) var accountSettingsFailure: String?
+  /// "Delete account…": the call is out, and the one line a refusal shows.
+  public internal(set) var deleteInFlight = false
+  public internal(set) var deleteFailure: String?
+  /// "Add your iPhone": set once after a new account finishes onboarding on the Mac, and by the views.
+  public var showAddPhone = false
+  /// Bumped when the account leaves `.signedIn`, so an open Settings window closes.
+  public internal(set) var settingsCloseRequest = 0
   /// The phone's mirror has no joined Mac left: a notice sits above the still browsable list.
   public var hostDisconnected = false
 
@@ -503,13 +527,19 @@ public final class WorkspaceModel {
     return try? await client.request(HubPairStatus.self, EmptyParams())
   }
 
-  /// Leave the hub (the Mac) or unlink (the phone, through `hostLogOut`). A failure keeps the account
-  /// and sets `lastError`.
+  /// Unlink the phone (through `hostLogOut`), or on the Mac remove this Mac from the account
+  /// (`removeThisMac`). The Mac's profile menu logs out with `requestLogOut` instead.
   public func logOut() async {
     if accountSource == .host {
       await hostLogOut?()
       return
     }
+    await removeThisMac()
+  }
+
+  /// "Remove this Mac from your account" (Remote access): `hub.leave` revokes this Mac's device at the
+  /// hub and signs it out. A failure keeps the account and sets `lastError`.
+  public func removeThisMac() async {
     guard
       await perform({ client in
         try await client.request(HubLeave.self, EmptyParams(), options: Self.mutation())
@@ -517,6 +547,10 @@ public final class WorkspaceModel {
     else { return }
     await refreshAccount()
   }
+
+  /// Whether the Settings pages can show: someone is signed in (or the host owns the account). When
+  /// it turns false an open Settings window closes (`settingsCloseRequest`) and shows a placeholder.
+  public var settingsAvailable: Bool { accountSource == .host || accountState == .signedIn }
 
   public func refreshSnapshot() async throws {
     guard let client else { return }
@@ -1052,10 +1086,10 @@ public final class WorkspaceModel {
   // MARK: - Lifecycle (spec 10.3)
 
   /// What the coordinator is running now, for the Quit choice. Nil when the coordinator is unreachable.
-  public func activeWork() async -> WorkspaceActiveWork.Result? {
+  public func activeWork(timeout: Duration = .seconds(10)) async -> WorkspaceActiveWork.Result? {
     guard let client else { return nil }
     return try? await client.request(
-      WorkspaceActiveWork.self, EmptyParams(), options: RequestOptions(timeout: .seconds(10)))
+      WorkspaceActiveWork.self, EmptyParams(), options: RequestOptions(timeout: timeout))
   }
 
   /// Stop owned local work (local turns, owned servers); remote runs are detached, not cancelled.
@@ -1317,6 +1351,11 @@ public final class WorkspaceModel {
     showSearch = false
     showProfileMenu = false
     lastError = nil
+    showAddPhone = false
+    logOutConfirmation = nil
+    identities = nil
+    accountSettingsFailure = nil
+    deleteFailure = nil
   }
 
   static func describe(_ error: any Error) -> String {

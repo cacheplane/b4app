@@ -97,6 +97,8 @@ struct WorkspaceShell: View {
       }
     }
     #if os(macOS)
+      // "Add your iPhone", once after a new account's onboarding (sign-in plan, Task 12).
+      .sheet(isPresented: $model.showAddPhone) { AddPhoneView(model: model) }
       .overlay { if model.showSearch { SearchPalette(model: model) } }
     #else
       .sheet(isPresented: $model.showSearch) {
