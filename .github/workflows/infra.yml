@@ -89,6 +89,8 @@ jobs:
           terraform_version: 1.17.1
           terraform_wrapper: false
       - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: v0.65.0
       - name: Format check
         run: terraform fmt -check -recursive ../..
       - name: Configure AWS credentials
@@ -96,6 +98,7 @@ jobs:
         with:
           role-to-assume: ${{ matrix.role }}
           aws-region: us-east-2
+          mask-aws-account-id: true
       - name: Initialize
         env:
           ENV_NAME: ${{ matrix.environment }}
@@ -184,6 +187,7 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_ROLE_INFRA_TEST }}
           aws-region: us-east-2
+          mask-aws-account-id: true
       - name: Initialize
         env:
           KMS_KEY: ${{ vars.TFSTATE_KMS_KEY_ARN_TEST }}
@@ -228,6 +232,7 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_ROLE_INFRA_PROD }}
           aws-region: us-east-2
+          mask-aws-account-id: true
       - name: Initialize
         env:
           KMS_KEY: ${{ vars.TFSTATE_KMS_KEY_ARN_PROD }}

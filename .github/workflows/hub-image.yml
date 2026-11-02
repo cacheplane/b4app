@@ -11,6 +11,14 @@ on:
     paths:
       - "Hub/**"
       - ".github/workflows/hub-image.yml"
+      # Template and deploy-script changes reach test too (with a rebuild of the
+      # unchanged hub source), so they never wait for the next hub change.
+      - "Infra/taskdefs/**"
+      - "Infra/scripts/deploy.sh"
+      - "Infra/scripts/render-taskdef.sh"
+      - "Infra/scripts/run-migrate.sh"
+      - "Infra/scripts/taskdef-lib.sh"
+      - ".github/workflows/hub-deploy.yml"
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:

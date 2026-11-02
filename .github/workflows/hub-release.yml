@@ -3,6 +3,12 @@ name: Hub release
 # A published `hub-v<semver>` release promotes the image already built from the
 # release commit: it never rebuilds. Mac app releases (`mac-v*`) fire the same
 # `release: published` event, so every job is guarded on the tag prefix.
+#
+# The release is atomic by design, each step gated on the one before: the image
+# built from the release commit is verified as attested from main, then gets the
+# semver tags (promote), then deploys to production behind the `production`
+# Environment's approval (deploy), and only then is the chart published (chart).
+# A rejected or failed deploy leaves no chart pointing at an unshipped version.
 
 on:
   release:
@@ -27,6 +33,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      attestations: read
     outputs:
       digest: ${{ steps.resolve.outputs.digest }}
       chart_version: ${{ steps.chart.outputs.version }}
@@ -96,6 +103,19 @@ jobs:
           esac
           echo "$IMAGE:sha-$SHA is $digest"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      # Fails closed: no tag is added to a digest that hub-image.yml did not
+      # build and attest from main on a GitHub-hosted runner (the same check
+      # hub-deploy.yml makes before it deploys).
+      - name: Verify the digest's provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.resolve.outputs.digest }}
+        run: |
+          gh attestation verify "oci://$IMAGE@$DIGEST" \
+            --repo cacheplane/b4app \
+            --signer-workflow cacheplane/b4app/.github/workflows/hub-image.yml \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners
       - name: Add the semver tags to that digest
         env:
           TAGS: ${{ steps.version.outputs.tags }}
@@ -127,10 +147,11 @@ jobs:
       digest: ${{ needs.promote.outputs.digest }}
 
   # Publishes the chart version from Chart.yaml with appVersion set to this release's hub
-  # version. The image tags it defaults to were added by promote.
+  # version. The image tags it defaults to were added by promote. It waits for deploy, so
+  # the chart is published only after production runs this image (see the top comment).
   chart:
     name: Publish the Helm chart
-    needs: promote
+    needs: [promote, deploy]
     if: startsWith(github.event.release.tag_name, 'hub-v')
     permissions:
       contents: read
