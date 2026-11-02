@@ -63,6 +63,9 @@ import os
   /// The sync loop's suspend and resume calls, chained (as the relay's are) so they reach it in the
   /// order the scene phases and background wakes decided them.
   @ObservationIgnored private var syncControl: Task<Void, Never>?
+  /// The scene phase `enter` was last given; nil before the first. A loop started while it is
+  /// background is suspended at once.
+  @ObservationIgnored private var scenePhase: RelayLifecycle.Phase?
   /// The copy for a refused link.
   static let relayRefusedMessage = "The hub no longer accepts this iPhone. Log out, then pair it again."
   /// The shell's model, once `wire` has run: the phone, not a coordinator, supplies its account, its
@@ -146,7 +149,8 @@ import os
         logger.notice("kept the App Group's mirror; the older copy stays in Application Support")
       }
     } catch {
-      // The main file moves last, so while it is still in the old directory that copy is the whole one.
+      // The main file moves last, and a failed move puts the side files it moved back, so while the main
+      // file is still in the old directory that copy is the whole one.
       logger.error("the mirror could not move into the App Group: \(describe(error), privacy: .public)")
       let moved = group.appendingPathComponent(MirrorLocation.fileName).path
       let stayed = old.appendingPathComponent(MirrorLocation.fileName).path
@@ -331,6 +335,7 @@ import os
   /// Background also pauses the pull loop at an idle point (under a background task, so the app is not
   /// suspended before it gets there), and active lets it go again.
   func enter(_ phase: RelayLifecycle.Phase) {
+    scenePhase = phase
     control(lifecycle.enter(phase))
     switch phase {
     case .background: controlSync(.suspend)
@@ -500,6 +505,13 @@ import os
     self.sync = sync
     syncStatus = MirrorSyncStatus()
     Task { await sync.run() }
+    // Started in the background (a `connect()` that finished after the owner left the app, a launch
+    // for a background wake): no `.background` phase will come to pause this loop, so queue the
+    // suspend now, ordered and under a background task as that phase's is. A suspend that reaches the
+    // loop before it runs parks it at its first turn, before any store work.
+    if scenePhase == .background || UIApplication.shared.applicationState == .background {
+      controlSync(.suspend)
+    }
     Task { await fetchDisplayName(api) }
   }
 

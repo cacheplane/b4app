@@ -95,7 +95,7 @@ struct AttentionWidgetView: View {
 
   @ViewBuilder private var content: some View {
     if !entry.glance.linked {
-      message("Open Agent Workspace to pair with your Mac")
+      message("Open Agent Workspace to see your threads.")
     } else if entry.glance.rows.isEmpty {
       message("No threads yet")
     } else {

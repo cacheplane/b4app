@@ -45,12 +45,21 @@ public enum MirrorLocation {
   }
 
   /// Moves `mirror.sqlite` and its `-wal` and `-shm` (each only if it exists) from `old` to `new`,
-  /// creating `new` when missing. Never deletes: an old file stays when the new directory already has a
-  /// `mirror.sqlite` (`.keptGroupCopy`, nothing touched), and side files without a main file are left
-  /// alone (`.nothingToMove`). Each file moves by rename (the app container and the group container share a
-  /// volume), one after another; call it before the store is opened. A crash between two renames can strand
-  /// a `-wal` apart from its main file, which loses only what that log held, so run it once per launch.
+  /// creating `new` when missing. Nothing is touched when the new directory already has a
+  /// `mirror.sqlite` (`.keptGroupCopy`, the old files stay) or the old directory has none
+  /// (`.nothingToMove`, side files without a main file are left alone). The only thing it deletes is a
+  /// stray `-wal` or `-shm` already in `new` beside no main file, which would block the rename. Each file
+  /// moves by rename (the app container and the group container share a volume), side files first and
+  /// the main file last; call it before the store is opened. When a rename fails, the side files already
+  /// moved are moved back to `old` (as far as they can be) before the error is rethrown, so the old
+  /// directory again holds the whole copy. A crash between two renames can still strand a `-wal` apart
+  /// from its main file, which loses only what that log held, so run it once per launch.
   public static func move(from old: URL, to new: URL) throws -> Move {
+    try move(from: old, to: new, moveItem: { try FileManager.default.moveItem(at: $0, to: $1) })
+  }
+
+  /// `move(from:to:)` with the rename injected, so a test can make one fail.
+  static func move(from old: URL, to new: URL, moveItem: (URL, URL) throws -> Void) throws -> Move {
     let manager = FileManager.default
     let oldMain = old.appendingPathComponent(fileName)
     guard manager.fileExists(atPath: oldMain.path) else { return .nothingToMove }
@@ -58,13 +67,21 @@ public enum MirrorLocation {
       return .keptGroupCopy
     }
     try manager.createDirectory(at: new, withIntermediateDirectories: true)
-    for suffix in ["-wal", "-shm", ""] {
-      let source = old.appendingPathComponent(fileName + suffix)
-      guard manager.fileExists(atPath: source.path) else { continue }
-      let target = new.appendingPathComponent(fileName + suffix)
-      // A stray side file at the destination (no main file there) would block the move.
-      if manager.fileExists(atPath: target.path) { try manager.removeItem(at: target) }
-      try manager.moveItem(at: source, to: target)
+    var moved: [(source: URL, target: URL)] = []
+    do {
+      for suffix in ["-wal", "-shm", ""] {
+        let source = old.appendingPathComponent(fileName + suffix)
+        guard manager.fileExists(atPath: source.path) else { continue }
+        let target = new.appendingPathComponent(fileName + suffix)
+        // A stray side file at the destination (no main file there) would block the move.
+        if manager.fileExists(atPath: target.path) { try manager.removeItem(at: target) }
+        try moveItem(source, target)
+        moved.append((source, target))
+      }
+    } catch {
+      // Undo in reverse; a rename back that fails too leaves that file where it is.
+      for file in moved.reversed() { try? moveItem(file.target, file.source) }
+      throw error
     }
     return .moved
   }

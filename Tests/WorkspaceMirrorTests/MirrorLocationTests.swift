@@ -48,6 +48,34 @@ private func read(_ url: URL) throws -> String {
     #expect(!FileManager.default.fileExists(atPath: new.appendingPathComponent("mirror.sqlite-wal").path))
   }
 
+  @Test func failedMainMovePutsTheSideFilesBack() throws {
+    let root = try scratchDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let old = root.appendingPathComponent("old", isDirectory: true)
+    let new = root.appendingPathComponent("group/b4app", isDirectory: true)
+    try FileManager.default.createDirectory(at: old, withIntermediateDirectories: true)
+    for suffix in ["", "-wal", "-shm"] {
+      try write("old\(suffix)", to: old.appendingPathComponent(MirrorLocation.fileName + suffix))
+    }
+    struct RenameFailed: Error {}
+    // Every rename works except the main file's into the new directory.
+    #expect(throws: RenameFailed.self) {
+      try MirrorLocation.move(
+        from: old, to: new,
+        moveItem: { source, target in
+          if source.lastPathComponent == MirrorLocation.fileName, target.path.hasPrefix(new.path) {
+            throw RenameFailed()
+          }
+          try FileManager.default.moveItem(at: source, to: target)
+        })
+    }
+    for suffix in ["", "-wal", "-shm"] {
+      let name = MirrorLocation.fileName + suffix
+      #expect(try read(old.appendingPathComponent(name)) == "old\(suffix)")
+      #expect(!FileManager.default.fileExists(atPath: new.appendingPathComponent(name).path))
+    }
+  }
+
   @Test func nothingToMove() throws {
     let root = try scratchDirectory()
     defer { try? FileManager.default.removeItem(at: root) }
