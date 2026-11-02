@@ -150,7 +150,9 @@ struct LLAFormField: View {
     .textFieldStyle(.plain)
     .focused($focused)
     .font(mono ? LLAFont.code : LLAFont.small)
-    .foregroundStyle(LLA.Color.ink)
+    // The Mac draws the prompt in the field's own style, so an empty field is muted (as the composer's
+    // prompt is) and typing turns it ink.
+    .foregroundStyle(text.isEmpty ? LLA.Color.muted : LLA.Color.ink)
     .autocorrectionDisabled()
     #if os(iOS)
       .textInputAutocapitalization(.never)
@@ -167,5 +169,5 @@ struct LLAFormField: View {
     .focusEffectDisabled()
   }
 
-  private var prompt: Text { Text(placeholder).foregroundStyle(LLA.Color.ghost) }
+  private var prompt: Text { Text(placeholder).foregroundStyle(LLA.Color.muted) }
 }

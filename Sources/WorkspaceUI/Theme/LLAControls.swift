@@ -2,10 +2,11 @@ import SwiftUI
 
 // Shared controls. Every view composes these instead of styling its own pills, cards, and labels.
 
-/// Pill buttons: ink (primary), surface (secondary), danger text on surface, or a plain accent link.
+/// Pill buttons: ink (primary), surface (secondary), danger text on surface, a background pill with a
+/// hairline for controls that sit on the surface (outline), or a plain accent link.
 /// Icons in labels are dropped; the LLA rules keep decoration out and the title carries the meaning.
 public struct LLAButtonStyle: ButtonStyle {
-  public enum Kind: Sendable { case primary, secondary, danger, link }
+  public enum Kind: Sendable { case primary, secondary, outline, danger, link }
 
   public var kind: Kind
 
@@ -33,6 +34,9 @@ public struct LLAButtonStyle: ButtonStyle {
         .background {
           if kind != .link { Capsule().fill(fill) }
         }
+        .overlay {
+          if kind == .outline { Capsule().strokeBorder(LLA.Color.rule) }
+        }
         .contentShape(Capsule())
         .opacity(configuration.isPressed ? 0.8 : 1)
         .opacity(isEnabled ? 1 : 0.45)
@@ -43,6 +47,7 @@ public struct LLAButtonStyle: ButtonStyle {
       switch kind {
       case .primary: return LLA.Color.ink
       case .secondary, .danger: return hovering ? LLA.Color.surfaceRaised : LLA.Color.surface
+      case .outline: return hovering ? LLA.Color.surfaceRaised : LLA.Color.bg
       case .link: return .clear
       }
     }
@@ -50,7 +55,7 @@ public struct LLAButtonStyle: ButtonStyle {
     private var foreground: Color {
       switch kind {
       case .primary: return LLA.Color.bg
-      case .secondary: return LLA.Color.ink
+      case .secondary, .outline: return LLA.Color.ink
       case .danger: return LLA.Color.danger
       case .link: return hovering ? LLA.Color.accentHover : LLA.Color.accent
       }
@@ -61,6 +66,7 @@ public struct LLAButtonStyle: ButtonStyle {
 extension ButtonStyle where Self == LLAButtonStyle {
   public static var llaPrimary: LLAButtonStyle { LLAButtonStyle(kind: .primary) }
   public static var llaSecondary: LLAButtonStyle { LLAButtonStyle(kind: .secondary) }
+  public static var llaOutline: LLAButtonStyle { LLAButtonStyle(kind: .outline) }
   public static var llaDanger: LLAButtonStyle { LLAButtonStyle(kind: .danger) }
   public static var llaLink: LLAButtonStyle { LLAButtonStyle(kind: .link) }
 }

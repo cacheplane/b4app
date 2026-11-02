@@ -227,7 +227,7 @@ struct B4ProjectCard: View {
                 .font(LLAFont.small).foregroundStyle(LLA.Color.muted)
             } else if WorkspaceDevice.managesWorkspace {
               Button("Connect") { Task { await model.connectRoute(serverId: server.id, route: route.key) } }
-                .buttonStyle(.llaSecondary)
+                .buttonStyle(.llaOutline)
                 .disabled(model.busy)
                 .accessibilityIdentifier("connect-\(server.name)-\(route.id)")
             }
@@ -302,7 +302,7 @@ struct AttachB4ProjectSheet: View {
         ) {
           HStack(spacing: LLA.Space.s) {
             LLAFormField(placeholder: "~/repos/my-agent", text: $folder, mono: true)
-            Button("Choose…") { choosing = true }.buttonStyle(.llaSecondary)
+            Button("Choose…") { choosing = true }.buttonStyle(.llaOutline)
           }
         }
         LLAFormRow(label: "Name") { LLAFormField(placeholder: "Optional", text: $name) }
