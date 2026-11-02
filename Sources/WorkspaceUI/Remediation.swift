@@ -113,7 +113,9 @@ public struct Remediation: Equatable, Sendable {
         actionTitle: "Open Local servers")
     case .unsupportedCapability, .notImplemented:
       return Remediation(message: error.message, action: .none)
-    case .protocolInvalid, .methodUnknown, .snapshotRequired, .notFound, .internalError:
+    case .protocolInvalid, .methodUnknown, .snapshotRequired, .notFound, .internalError,
+      .signupClosed, .ceremonyExpired, .credentialRejected, .lastIdentity, .mergeRefused, .sharedOrg,
+      .rateLimited, .signedOut, .workRunning:
       return Remediation(message: error.message, action: .none)
     }
   }

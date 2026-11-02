@@ -178,8 +178,11 @@ public struct UserInfo: Codable, Sendable, Equatable {
   }
 }
 
-/// The only response that carries the device token; the caller stores it in a `SecretStore`.
-public struct EnrollResponse: Codable, Sendable, Equatable {
+/// A response that carries the device token; the caller stores it in a `SecretStore`. Its description
+/// leaves the token out.
+public struct EnrollResponse: Codable, Sendable, Equatable, CustomStringConvertible,
+  CustomDebugStringConvertible
+{
   public var deviceId: String
   public var token: String
   public var org: OrgInfo
@@ -191,26 +194,82 @@ public struct EnrollResponse: Codable, Sendable, Equatable {
     self.org = org
     self.user = user
   }
+
+  public var description: String {
+    "EnrollResponse(deviceId: \(deviceId), token: <redacted>, org: \(org.slug), user: \(user.username))"
+  }
+  public var debugDescription: String { description }
 }
 
+/// `GET /v1/me`: the device, its org and user, and the account's sign-in methods. The fields before
+/// `onboarded` are the enrollment-era ones; `user.fullName`, `onboarded`, and `identities` came with
+/// sign-in, and a hub without them answers a user who counts as onboarded and has no identities.
 public struct MeResponse: Codable, Sendable, Equatable {
   public var deviceId: String
   public var deviceName: String
   public var platform: String
   public var org: OrgInfo
   public var user: UserInfo
+  /// `user.fullName` on the wire: the name given at onboarding, `nil` until then.
+  public var fullName: String?
   /// RFC 3339 in UTC with microseconds, exactly as the hub sent it.
   public var createdAt: String
+  /// False until `PUT /v1/me/profile` has been called once.
+  public var onboarded: Bool
+  /// Every sign-in method of the user, oldest first.
+  public var identities: [Identity]
 
   public init(
-    deviceId: String, deviceName: String, platform: String, org: OrgInfo, user: UserInfo, createdAt: String
+    deviceId: String, deviceName: String, platform: String, org: OrgInfo, user: UserInfo, createdAt: String,
+    fullName: String? = nil, onboarded: Bool = true, identities: [Identity] = []
   ) {
     self.deviceId = deviceId
     self.deviceName = deviceName
     self.platform = platform
     self.org = org
     self.user = user
+    self.fullName = fullName
     self.createdAt = createdAt
+    self.onboarded = onboarded
+    self.identities = identities
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case deviceId, deviceName, platform, org, user, createdAt, onboarded, identities
+  }
+
+  private enum UserKeys: String, CodingKey { case username, displayName, fullName }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    deviceId = try container.decode(String.self, forKey: .deviceId)
+    deviceName = try container.decode(String.self, forKey: .deviceName)
+    platform = try container.decode(String.self, forKey: .platform)
+    org = try container.decode(OrgInfo.self, forKey: .org)
+    let userContainer = try container.nestedContainer(keyedBy: UserKeys.self, forKey: .user)
+    user = UserInfo(
+      username: try userContainer.decode(String.self, forKey: .username),
+      displayName: try userContainer.decode(String.self, forKey: .displayName))
+    fullName = try userContainer.decodeIfPresent(String.self, forKey: .fullName)
+    createdAt = try container.decode(String.self, forKey: .createdAt)
+    onboarded = try container.decodeIfPresent(Bool.self, forKey: .onboarded) ?? true
+    identities = try container.decodeIfPresent([Identity].self, forKey: .identities) ?? []
+  }
+
+  /// Writes `fullName` as `null` when unset, as the hub does.
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(deviceId, forKey: .deviceId)
+    try container.encode(deviceName, forKey: .deviceName)
+    try container.encode(platform, forKey: .platform)
+    try container.encode(org, forKey: .org)
+    var userContainer = container.nestedContainer(keyedBy: UserKeys.self, forKey: .user)
+    try userContainer.encode(user.username, forKey: .username)
+    try userContainer.encode(user.displayName, forKey: .displayName)
+    try userContainer.encode(fullName, forKey: .fullName)
+    try container.encode(createdAt, forKey: .createdAt)
+    try container.encode(onboarded, forKey: .onboarded)
+    try container.encode(identities, forKey: .identities)
   }
 }
 

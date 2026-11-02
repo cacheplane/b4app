@@ -22,6 +22,25 @@ public enum ErrorCode: String, Codable, Sendable, CaseIterable {
   case notImplemented = "not_implemented"
   case notFound = "not_found"
   case internalError = "internal"
+  // Signing in and the account (the hub's refusals, and two the app raises itself).
+  /// The hub is not taking new accounts.
+  case signupClosed = "signup_closed"
+  /// A sign-in ceremony is unknown, expired, or already finished.
+  case ceremonyExpired = "ceremony_expired"
+  /// The hub could not verify the passkey or Apple credential.
+  case credentialRejected = "credential_rejected"
+  /// Unlinking this sign-in method would leave the account unable to sign in.
+  case lastIdentity = "last_identity"
+  /// The phone's account cannot be merged into the one the pairing code belongs to.
+  case mergeRefused = "merge_refused"
+  /// The account belongs to a shared org, which cannot be deleted from here.
+  case sharedOrg = "shared_org"
+  /// Too many sign-in requests from this client this minute.
+  case rateLimited = "rate_limited"
+  /// The device's session ended, so it has to sign in again.
+  case signedOut = "signed_out"
+  /// Signing out would interrupt work that is still running.
+  case workRunning = "work_running"
 }
 
 public struct WorkspaceError: Error, Codable, Sendable, Equatable, CustomStringConvertible {

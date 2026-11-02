@@ -3,8 +3,10 @@ import WorkspaceProtocol
 
 /// `HubAPI` over `URLSession`. The token closure runs for every request, so the secret stays in the
 /// caller's `SecretStore` and is never held here; a `nil` token sends no `Authorization` header, and
-/// the hub answers 401, which is the right outcome for a device that is not enrolled. `enroll`
-/// authenticates with its code and never asks for the token.
+/// the hub answers 401, which is the right outcome for a device that is not enrolled. `enroll` and the
+/// sign-in calls authenticate with a code or a credential and never ask for the token; `enroll` sends a
+/// bearer only when handed one to merge. Nothing here logs a request or an answer, so no token or
+/// WebAuthn payload can reach a log.
 public final class HTTPHubAPI: HubAPI {
   private let baseURL: URL
   private let token: @Sendable () async throws -> String?
@@ -19,7 +21,11 @@ public final class HTTPHubAPI: HubAPI {
   }
 
   public func enroll(_ request: EnrollRequest) async throws -> EnrollResponse {
-    try await send(.post, "v1/enroll", body: request, authenticated: false)
+    try await enroll(request, replacingToken: nil)
+  }
+
+  public func enroll(_ request: EnrollRequest, replacingToken token: String?) async throws -> EnrollResponse {
+    try await send(.post, "v1/enroll", body: request, authenticated: false, bearer: token)
   }
 
   public func me() async throws -> MeResponse {
@@ -55,6 +61,69 @@ public final class HTTPHubAPI: HubAPI {
     _ = try await perform(.delete, "v1/devices/self")
   }
 
+  // MARK: - Signing in
+
+  public func authConfig() async throws -> AuthConfig {
+    try await send(.get, "v1/auth/config", authenticated: false)
+  }
+
+  public func passkeyBegin() async throws -> PasskeyBeginResponse {
+    try await send(.post, "v1/auth/passkey/begin", authenticated: false)
+  }
+
+  public func passkeyFinish(_ request: PasskeyFinishRequest) async throws -> AuthSession {
+    try await send(.post, "v1/auth/passkey/finish", body: request, authenticated: false)
+  }
+
+  public func appleBegin() async throws -> AppleBeginResponse {
+    try await send(.post, "v1/auth/apple/begin", authenticated: false)
+  }
+
+  public func appleNative(_ request: AppleNativeRequest) async throws -> AuthSession {
+    try await send(.post, "v1/auth/apple/native", body: request, authenticated: false)
+  }
+
+  public func handoff(_ request: HandoffRequest) async throws -> AuthSession {
+    try await send(.post, "v1/auth/handoff", body: request, authenticated: false)
+  }
+
+  // MARK: - The signed-in account
+
+  public func setProfile(_ request: ProfileRequest) async throws -> MeResponse {
+    try await send(.put, "v1/me/profile", body: request)
+  }
+
+  public func identities() async throws -> [Identity] {
+    try await me().identities
+  }
+
+  public func addPasskeyBegin() async throws -> AddPasskeyBeginResponse {
+    try await send(.post, "v1/me/passkeys/begin")
+  }
+
+  public func addPasskeyFinish(_ request: AddPasskeyFinishRequest) async throws -> Identity {
+    try await send(.post, "v1/me/passkeys/finish", body: request)
+  }
+
+  public func removeIdentity(_ id: String) async throws {
+    // An identity id is a UUID; anything that could change which route is called is refused here.
+    let allowed = CharacterSet(
+      charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+    guard !id.isEmpty, id.unicodeScalars.allSatisfy(allowed.contains) else {
+      throw HubError(
+        kind: "request_error", code: "invalid_request", message: "That is not an identity id.", status: 0)
+    }
+    _ = try await perform(.delete, "v1/me/identities/\(id)")
+  }
+
+  public func endSession() async throws {
+    _ = try await perform(.delete, "v1/sessions/self")
+  }
+
+  public func deleteAccount() async throws {
+    _ = try await perform(.delete, "v1/me")
+  }
+
   // MARK: - Plumbing
 
   private struct PushBody: Encodable {
@@ -64,20 +133,21 @@ public final class HTTPHubAPI: HubAPI {
   private enum Method: String {
     case get = "GET"
     case post = "POST"
+    case put = "PUT"
     case delete = "DELETE"
   }
 
   private func send<Response: Decodable>(
     _ method: Method, _ path: String, query: [URLQueryItem] = [], timeout: TimeInterval = 30,
-    authenticated: Bool = true
+    authenticated: Bool = true, bearer: String? = nil
   ) async throws -> Response {
     let (data, status) = try await perform(
-      method, path, query: query, timeout: timeout, authenticated: authenticated)
+      method, path, query: query, timeout: timeout, authenticated: authenticated, bearer: bearer)
     return try decode(data, status: status)
   }
 
   private func send<Response: Decodable, Body: Encodable>(
-    _ method: Method, _ path: String, body: Body, authenticated: Bool = true
+    _ method: Method, _ path: String, body: Body, authenticated: Bool = true, bearer: String? = nil
   ) async throws -> Response {
     let encoded: Data
     do {
@@ -86,7 +156,8 @@ public final class HTTPHubAPI: HubAPI {
       throw HubError(
         kind: "execution_error", code: "transport", message: "The request could not be encoded.", status: 0)
     }
-    let (data, status) = try await perform(method, path, body: encoded, authenticated: authenticated)
+    let (data, status) = try await perform(
+      method, path, body: encoded, authenticated: authenticated, bearer: bearer)
     return try decode(data, status: status)
   }
 
@@ -119,7 +190,7 @@ public final class HTTPHubAPI: HubAPI {
   /// Sends one request and returns the body and status of a 2xx answer; any other answer throws.
   private func perform(
     _ method: Method, _ path: String, query: [URLQueryItem] = [], body: Data? = nil,
-    timeout: TimeInterval = 30, authenticated: Bool = true
+    timeout: TimeInterval = 30, authenticated: Bool = true, bearer: String? = nil
   ) async throws -> (Data, Int) {
     var request = URLRequest(url: try url(path, query: query), timeoutInterval: timeout)
     request.httpMethod = method.rawValue
@@ -128,7 +199,11 @@ public final class HTTPHubAPI: HubAPI {
       request.httpBody = body
       request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     }
-    if authenticated, let token = try await token() {
+    // `bearer` is a token the caller holds and wants sent (a merge on enroll); otherwise an
+    // authenticated call reads the stored one. An unauthenticated call with no `bearer` sends none.
+    if let bearer {
+      request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+    } else if authenticated, let token = try await token() {
       request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     }
 

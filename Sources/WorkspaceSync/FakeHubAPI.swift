@@ -14,12 +14,40 @@ public actor FakeHubAPI: HubAPI {
   public private(set) var pushed: [[SyncChange]] = []
   /// Fails the next call of any method once, then clears itself.
   public private(set) var failNext: HubError?
-  /// Set by `revokeSelf`; every later call except `enroll` answers 401 `unauthorized`.
+  /// Set by `revokeSelf`, `endSession`, and `deleteAccount`; every later call except `enroll` and the
+  /// sign-in calls answers 401 `unauthorized`, until a sign-in or an enrollment clears it.
   public private(set) var revoked = false
   /// How many times `enroll` was called, redeemed or not.
   public private(set) var enrollCalls = 0
   public private(set) var meCalls = 0
   private var failMe: HubError?
+
+  // What the sign-in calls were sent, oldest first. Nothing else about a request is kept.
+  public private(set) var passkeyFinishes: [PasskeyFinishRequest] = []
+  public private(set) var appleNatives: [AppleNativeRequest] = []
+  public private(set) var handoffs: [HandoffRequest] = []
+  public private(set) var profiles: [ProfileRequest] = []
+  public private(set) var removedIdentities: [String] = []
+  /// The token each `enroll` call was asked to merge from (`nil` for none), oldest first.
+  public private(set) var enrollTokens: [String?] = []
+  public private(set) var endSessionCalls = 0
+  public private(set) var deleteAccountCalls = 0
+
+  private var authConfigAnswer = AuthConfig(
+    passkeys: .init(rpId: "fake.test"), apple: .init(native: false, web: false), signup: .open)
+  private var passkeyBeginAnswer = PasskeyBeginResponse(
+    ceremonyId: "fake-ceremony", authentication: ["publicKey": ["challenge": "fake"]],
+    registration: ["publicKey": ["challenge": "fake"]])
+  private var appleBeginAnswer = AppleBeginResponse(ceremonyId: "fake-apple-ceremony", nonce: "fake-nonce")
+  private var addPasskeyBeginAnswer = AddPasskeyBeginResponse(
+    ceremonyId: "fake-add-ceremony", registration: ["publicKey": ["challenge": "fake"]])
+  private var sessionAnswer = AuthSession(
+    deviceId: "fake-device", token: "fake-token", org: OrgInfo(slug: "fake", name: "Fake"),
+    user: UserInfo(username: "fake", displayName: "Fake"), needsOnboarding: false)
+  private var identityList: [Identity] = []
+  private var fullName: String?
+  private var onboarded = true
+  private var addedIdentities = 0
 
   private var device: EnrollResponse?
   private var deviceName = "Fake device"
@@ -57,10 +85,33 @@ public actor FakeHubAPI: HubAPI {
     enrollmentCodes[code] = response
   }
 
+  /// What `authConfig()` answers.
+  public func setAuthConfig(_ config: AuthConfig) { authConfigAnswer = config }
+  /// What `passkeyBegin()` answers.
+  public func setPasskeyBegin(_ response: PasskeyBeginResponse) { passkeyBeginAnswer = response }
+  /// What `appleBegin()` answers.
+  public func setAppleBegin(_ response: AppleBeginResponse) { appleBeginAnswer = response }
+  /// What `addPasskeyBegin()` answers.
+  public func setAddPasskeyBegin(_ response: AddPasskeyBeginResponse) { addPasskeyBeginAnswer = response }
+  /// What `passkeyFinish`, `appleNative`, and `handoff` answer. The fake is then signed in as that
+  /// session's account, on the device the request named.
+  public func setSession(_ session: AuthSession) {
+    sessionAnswer = session
+    onboarded = !session.needsOnboarding
+  }
+  /// The account's sign-in methods, which `me()` and `identities()` list.
+  public func setIdentities(_ identities: [Identity]) { identityList = identities }
+
   /// Adds changes to the feed as if another device had pushed them.
   public func append(_ changes: [StoredChange]) { stored.append(contentsOf: changes) }
 
   public func enroll(_ request: EnrollRequest) async throws -> EnrollResponse {
+    try await enroll(request, replacingToken: nil)
+  }
+
+  /// Redeems the code as `enroll(_:)` does and records `token`; the fake merges no accounts.
+  public func enroll(_ request: EnrollRequest, replacingToken token: String?) async throws -> EnrollResponse {
+    enrollTokens.append(token)
     enrollCalls += 1
     try consumeFailure()
     guard let response = enrollmentCodes.removeValue(forKey: request.code) else {
@@ -87,7 +138,8 @@ public actor FakeHubAPI: HubAPI {
         user: UserInfo(username: "fake", displayName: "Fake"))
     return MeResponse(
       deviceId: device.deviceId, deviceName: deviceName, platform: platform, org: device.org,
-      user: device.user, createdAt: "2026-10-31T12:00:00.000000Z")
+      user: device.user, createdAt: "2026-10-31T12:00:00.000000Z", fullName: fullName,
+      onboarded: onboarded, identities: identityList)
   }
 
   public func push(_ changes: [SyncChange]) async throws -> PushResponse {
@@ -146,7 +198,114 @@ public actor FakeHubAPI: HubAPI {
     revoked = true
   }
 
+  // MARK: - Signing in
+
+  public func authConfig() async throws -> AuthConfig {
+    try consumeFailure()
+    return authConfigAnswer
+  }
+
+  public func passkeyBegin() async throws -> PasskeyBeginResponse {
+    try consumeFailure()
+    return passkeyBeginAnswer
+  }
+
+  public func passkeyFinish(_ request: PasskeyFinishRequest) async throws -> AuthSession {
+    try consumeFailure()
+    passkeyFinishes.append(request)
+    return signIn(as: request.device)
+  }
+
+  public func appleBegin() async throws -> AppleBeginResponse {
+    try consumeFailure()
+    return appleBeginAnswer
+  }
+
+  public func appleNative(_ request: AppleNativeRequest) async throws -> AuthSession {
+    try consumeFailure()
+    appleNatives.append(request)
+    return signIn(as: request.device)
+  }
+
+  public func handoff(_ request: HandoffRequest) async throws -> AuthSession {
+    try consumeFailure()
+    handoffs.append(request)
+    return signIn(as: request.device)
+  }
+
+  // MARK: - The signed-in account
+
+  public func setProfile(_ request: ProfileRequest) async throws -> MeResponse {
+    try authorize()
+    profiles.append(request)
+    fullName = request.fullName
+    onboarded = true
+    if let current = device {
+      device = EnrollResponse(
+        deviceId: current.deviceId, token: current.token, org: current.org,
+        user: UserInfo(username: current.user.username, displayName: request.fullName))
+    }
+    return try await me()
+  }
+
+  public func identities() async throws -> [Identity] {
+    try authorize()
+    return identityList
+  }
+
+  public func addPasskeyBegin() async throws -> AddPasskeyBeginResponse {
+    try authorize()
+    return addPasskeyBeginAnswer
+  }
+
+  public func addPasskeyFinish(_ request: AddPasskeyFinishRequest) async throws -> Identity {
+    try authorize()
+    addedIdentities += 1
+    let identity = Identity(
+      id: "fake-passkey-\(addedIdentities)", kind: "passkey", name: "Agent Workspace account",
+      createdAt: "2026-11-01T12:00:00.000000Z")
+    identityList.append(identity)
+    return identity
+  }
+
+  public func removeIdentity(_ id: String) async throws {
+    try authorize()
+    removedIdentities.append(id)
+    guard let index = identityList.firstIndex(where: { $0.id == id }) else {
+      throw Self.error("not_found", "not found", status: 404)
+    }
+    guard identityList.count > 1 else {
+      throw Self.error("last_identity", "That is the only way to sign in.", status: 409)
+    }
+    identityList.remove(at: index)
+  }
+
+  public func endSession() async throws {
+    try authorize()
+    endSessionCalls += 1
+    revoked = true
+  }
+
+  public func deleteAccount() async throws {
+    try authorize()
+    deleteAccountCalls += 1
+    revoked = true
+  }
+
   // MARK: - Helpers
+
+  /// Signs the fake in as the scripted session's account, on `spec`'s device (or the session's, when
+  /// the request names none), and answers the session.
+  private func signIn(as spec: DeviceSpec) -> AuthSession {
+    let session = sessionAnswer
+    device = EnrollResponse(
+      deviceId: spec.deviceId ?? session.deviceId, token: session.token, org: session.org,
+      user: session.user)
+    deviceName = spec.deviceName
+    platform = spec.platform
+    revoked = false
+    return session
+  }
 
   /// The hub's per-change refusal, or `nil` when the change is accepted. A `macos` device may write
   /// anything; any other platform may only update phone-writable columns or insert a draft.

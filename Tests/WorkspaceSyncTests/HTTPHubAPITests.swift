@@ -344,6 +344,221 @@ final class TokenSequence: @unchecked Sendable {
     _ = try await api.pull(after: 0, limit: 1, wait: 0)
     #expect(recorder.all.first?.request.url?.path == "/hub/v1/changes")
   }
+
+  // MARK: - Sign-in and the account
+
+  private static let session = #"""
+    {"deviceId":"d1","token":"issued","org":{"slug":"o","name":"O"},
+     "user":{"username":"u","displayName":""},"needsOnboarding":true}
+    """#
+  private static let meJSON = #"""
+    {"deviceId":"d1","deviceName":"Mac","platform":"macos","org":{"slug":"o","name":"O"},
+     "user":{"username":"u","displayName":"Brian Love","fullName":"Brian Love"},
+     "createdAt":"2026-11-01T09:00:00.000000Z","onboarded":true,
+     "identities":[{"id":"i1","kind":"passkey","name":"Agent Workspace account",
+                    "createdAt":"2026-11-01T09:00:00.000000Z","lastUsedAt":null}]}
+    """#
+  private static let identityJSON = #"""
+    {"id":"i2","kind":"passkey","name":"Agent Workspace account",
+     "createdAt":"2026-11-01T12:00:00.000000Z","lastUsedAt":null}
+    """#
+
+  /// Answers each account route with a body of the right shape, keyed by method and path.
+  private static func accountReply(_ captured: StubProtocol.Captured) -> StubProtocol.Reply {
+    let key = "\(captured.request.httpMethod ?? "") \(captured.request.url?.path ?? "")"
+    switch key {
+    case "GET /v1/auth/config":
+      return .json(
+        200, #"{"passkeys":{"rpId":"b4.run"},"apple":{"native":true,"web":true},"signup":"closed"}"#)
+    case "POST /v1/auth/passkey/begin":
+      return .json(200, #"{"ceremonyId":"c1","authentication":{"publicKey":{"challenge":"x"}}}"#)
+    case "POST /v1/auth/passkey/finish", "POST /v1/auth/apple/native", "POST /v1/auth/handoff":
+      return .json(200, session)
+    case "POST /v1/auth/apple/begin": return .json(200, #"{"ceremonyId":"c2","nonce":"n"}"#)
+    case "POST /v1/enroll":
+      return .json(
+        200,
+        #"{"deviceId":"d1","token":"issued","org":{"slug":"o","name":"O"},"user":{"username":"u","displayName":"U"}}"#
+      )
+    case "GET /v1/me", "PUT /v1/me/profile": return .json(200, meJSON)
+    case "POST /v1/me/passkeys/begin":
+      return .json(200, #"{"ceremonyId":"c3","registration":{"publicKey":{"challenge":"y"}}}"#)
+    case "POST /v1/me/passkeys/finish": return .json(200, identityJSON)
+    case "DELETE /v1/me/identities/i2", "DELETE /v1/sessions/self", "DELETE /v1/me":
+      return StubProtocol.Reply(status: 204, body: Data())
+    default:
+      return .json(
+        404, #"{"error":{"kind":"request_error","message":"not found","details":{"code":"not_found"}}}"#)
+    }
+  }
+
+  private let device = DeviceSpec(deviceName: "Mac", platform: "macos")
+
+  @Test func unauthenticatedCallsSendNoBearer() async throws {
+    let recorder = Recorder()
+    let tokenReads = Counter()
+    let api = make(
+      host: "no-bearer.test",
+      token: {
+        tokenReads.increment()
+        return "t0k"
+      }
+    ) { captured in
+      recorder.add(captured)
+      return Self.accountReply(captured)
+    }
+
+    _ = try await api.authConfig()
+    _ = try await api.passkeyBegin()
+    _ = try await api.passkeyFinish(
+      PasskeyFinishRequest(ceremonyId: "c1", assertion: ["id": "a"], attestation: nil, device: device))
+    _ = try await api.appleBegin()
+    _ = try await api.appleNative(
+      AppleNativeRequest(
+        ceremonyId: "c2", identityToken: "jwt", authorizationCode: "code", fullName: nil, device: device))
+    _ = try await api.handoff(HandoffRequest(handoff: "h", verifier: "v", device: device))
+    _ = try await api.enroll(EnrollRequest(code: "ABCD2345", deviceName: "Mac", platform: "macos"))
+
+    let seen = recorder.all.map { "\($0.request.httpMethod ?? "") \($0.request.url?.path ?? "")" }
+    #expect(
+      seen == [
+        "GET /v1/auth/config", "POST /v1/auth/passkey/begin", "POST /v1/auth/passkey/finish",
+        "POST /v1/auth/apple/begin", "POST /v1/auth/apple/native", "POST /v1/auth/handoff",
+        "POST /v1/enroll",
+      ])
+    for captured in recorder.all {
+      #expect(captured.request.value(forHTTPHeaderField: "Authorization") == nil)
+    }
+    #expect(tokenReads.value == 0, "an unauthenticated call never asks for the stored token")
+  }
+
+  @Test func signInCallsSendTheirBodiesAndDecodeTheirAnswers() async throws {
+    let recorder = Recorder()
+    let api = make(host: "sign-in.test") { captured in
+      recorder.add(captured)
+      return Self.accountReply(captured)
+    }
+
+    let config = try await api.authConfig()
+    #expect(config.passkeys.rpId == "b4.run" && config.apple.native && config.signup == .closed)
+    let begun = try await api.passkeyBegin()
+    #expect(begun.ceremonyId == "c1" && begun.registration == nil)
+    let session = try await api.passkeyFinish(
+      PasskeyFinishRequest(
+        ceremonyId: "c1", assertion: ["id": "a"], attestation: nil,
+        device: DeviceSpec(deviceName: "Mac", platform: "macos", deviceId: "d1")))
+    #expect(session.token == "issued" && session.needsOnboarding)
+
+    let finish = try #require(recorder.all.last)
+    #expect(finish.request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+    let body = try JSONCoding.decoder.decode(JSONValue.self, from: finish.body)
+    #expect(
+      body == [
+        "ceremonyId": "c1", "assertion": ["id": "a"],
+        "device": ["deviceName": "Mac", "platform": "macos", "deviceId": "d1"],
+      ])
+  }
+
+  @Test func accountCallsSendTheBearer() async throws {
+    let recorder = Recorder()
+    let api = make(host: "account.test") { captured in
+      recorder.add(captured)
+      return Self.accountReply(captured)
+    }
+
+    let profile = try await api.setProfile(ProfileRequest(fullName: "Brian Love"))
+    #expect(profile.fullName == "Brian Love" && profile.onboarded)
+    let identities = try await api.identities()
+    #expect(identities.map(\.id) == ["i1"])
+    let begun = try await api.addPasskeyBegin()
+    #expect(begun.ceremonyId == "c3")
+    let added = try await api.addPasskeyFinish(
+      AddPasskeyFinishRequest(ceremonyId: "c3", attestation: ["id": "a"]))
+    #expect(added.id == "i2")
+    try await api.removeIdentity("i2")
+    try await api.endSession()
+    try await api.deleteAccount()
+
+    let seen = recorder.all.map { "\($0.request.httpMethod ?? "") \($0.request.url?.path ?? "")" }
+    #expect(
+      seen == [
+        "PUT /v1/me/profile", "GET /v1/me", "POST /v1/me/passkeys/begin", "POST /v1/me/passkeys/finish",
+        "DELETE /v1/me/identities/i2", "DELETE /v1/sessions/self", "DELETE /v1/me",
+      ])
+    for captured in recorder.all {
+      #expect(captured.request.value(forHTTPHeaderField: "Authorization") == "Bearer t0k")
+    }
+    let profileBody = try JSONCoding.decoder.decode(
+      JSONValue.self, from: try #require(recorder.all.first).body)
+    #expect(profileBody == ["fullName": "Brian Love"])
+  }
+
+  @Test func enrollSendsABearerOnlyWhenGivenAToken() async throws {
+    let recorder = Recorder()
+    let tokenReads = Counter()
+    let api = make(
+      host: "enroll-merge.test",
+      token: {
+        tokenReads.increment()
+        return "stored"
+      }
+    ) { captured in
+      recorder.add(captured)
+      return Self.accountReply(captured)
+    }
+    let request = EnrollRequest(code: "ABCD2345", deviceName: "Phone", platform: "ios")
+
+    _ = try await api.enroll(request, replacingToken: "phone-token")
+    _ = try await api.enroll(request, replacingToken: nil)
+    _ = try await api.enroll(request)
+
+    let headers = recorder.all.map { $0.request.value(forHTTPHeaderField: "Authorization") }
+    #expect(headers == ["Bearer phone-token", nil, nil])
+    #expect(tokenReads.value == 0, "pairing never sends the device's own stored token by itself")
+    #expect(recorder.all.allSatisfy { $0.request.url?.path == "/v1/enroll" })
+  }
+
+  @Test func signInRefusalsKeepTheirHubCodes() async {
+    let codes: [(status: Int, code: String)] = [
+      (403, "signup_closed"), (400, "ceremony_expired"), (401, "credential_rejected"),
+      (409, "last_identity"), (409, "merge_refused"), (409, "shared_org"), (429, "rate_limited"),
+    ]
+    for (index, expected) in codes.enumerated() {
+      let api = make(host: "refusal-\(index).test") { _ in
+        .json(
+          expected.status,
+          #"{"error":{"kind":"request_error","message":"no","details":{"code":"\#(expected.code)"}}}"#)
+      }
+      do {
+        _ = try await api.passkeyBegin()
+        Issue.record("expected \(expected.code)")
+      } catch let error as HubError {
+        #expect(error.code == expected.code && error.status == expected.status)
+        #expect(ErrorCode(rawValue: error.code) != nil, "\(error.code) is an ErrorCode")
+      } catch {
+        Issue.record("unexpected \(error)")
+      }
+    }
+  }
+
+  @Test func removeIdentityRefusesAnIdThatIsNotAPathSegment() async {
+    let recorder = Recorder()
+    let api = make(host: "bad-id.test") { captured in
+      recorder.add(captured)
+      return Self.accountReply(captured)
+    }
+    for id in ["", "a/b", "../me", "a b", "i1?x=1"] {
+      do {
+        try await api.removeIdentity(id)
+        Issue.record("\"\(id)\" should be refused")
+      } catch let error as HubError {
+        #expect(error.code == "invalid_request" && error.status == 0)
+      } catch {
+        Issue.record("unexpected \(error)")
+      }
+    }
+    #expect(recorder.all.isEmpty, "nothing was sent")
+  }
 }
 
 @Suite struct FakeHubAPITests {
@@ -428,5 +643,128 @@ final class TokenSequence: @unchecked Sendable {
     ])
     let result = try await page
     #expect(result.changes.count == 1 && result.next == 1)
+  }
+
+  // MARK: - Sign-in and the account
+
+  private func signedIn() -> AuthSession {
+    AuthSession(
+      deviceId: "dev-9", token: "tok-9", org: OrgInfo(slug: "o-9", name: "My Org"),
+      user: UserInfo(username: "u-9", displayName: ""), needsOnboarding: true)
+  }
+
+  private let mac = DeviceSpec(deviceName: "Brian's Mac", platform: "macos")
+
+  @Test func scriptedSignInAnswersAndRecordsWhatItWasSent() async throws {
+    let fake = FakeHubAPI()
+    await fake.setAuthConfig(
+      AuthConfig(passkeys: .init(rpId: "b4.run"), apple: .init(native: true, web: false), signup: .closed))
+    await fake.setSession(signedIn())
+    #expect(try await fake.authConfig().signup == .closed)
+    #expect(try await fake.passkeyBegin().ceremonyId.isEmpty == false)
+
+    let request = PasskeyFinishRequest(
+      ceremonyId: "c", assertion: ["id": "a"], attestation: nil, device: mac)
+    let session = try await fake.passkeyFinish(request)
+    #expect(session == signedIn())
+    #expect(await fake.passkeyFinishes == [request])
+
+    // Signed in, the fake answers `me` as the session's account and the finish's device.
+    let me = try await fake.me()
+    #expect(me.deviceId == "dev-9" && me.deviceName == "Brian's Mac" && me.platform == "macos")
+    #expect(me.user.username == "u-9" && !me.onboarded)
+
+    let native = AppleNativeRequest(
+      ceremonyId: "c2", identityToken: "jwt", authorizationCode: "code", fullName: nil, device: mac)
+    _ = try await fake.appleNative(native)
+    let handoff = HandoffRequest(handoff: "h", verifier: "v", device: mac)
+    _ = try await fake.handoff(handoff)
+    #expect(try await fake.appleBegin().nonce.isEmpty == false)
+    #expect(await fake.appleNatives == [native])
+    #expect(await fake.handoffs == [handoff])
+  }
+
+  @Test func profileOnboardsAndIdentitiesFollowTheLastIdentityRule() async throws {
+    let fake = FakeHubAPI()
+    await fake.setSession(signedIn())
+    _ = try await fake.passkeyFinish(
+      PasskeyFinishRequest(ceremonyId: "c", assertion: ["id": "a"], attestation: nil, device: mac))
+
+    let me = try await fake.setProfile(ProfileRequest(fullName: "Brian Love"))
+    #expect(me.fullName == "Brian Love" && me.onboarded && me.user.displayName == "Brian Love")
+    #expect(await fake.profiles == [ProfileRequest(fullName: "Brian Love")])
+
+    let first = Identity(id: "i1", kind: "passkey", name: "Agent Workspace account", createdAt: "t")
+    await fake.setIdentities([first])
+    _ = try await fake.addPasskeyBegin()
+    let added = try await fake.addPasskeyFinish(
+      AddPasskeyFinishRequest(ceremonyId: "c", attestation: ["id": "b"]))
+    #expect(added.kind == "passkey")
+    #expect(try await fake.identities().count == 2)
+
+    try await fake.removeIdentity(added.id)
+    do {
+      try await fake.removeIdentity("i1")
+      Issue.record("the last identity cannot be removed")
+    } catch let error as HubError {
+      #expect(error.code == "last_identity" && error.status == 409)
+    }
+    do {
+      try await fake.removeIdentity("nope")
+      Issue.record("an unknown identity is not found")
+    } catch let error as HubError {
+      #expect(error.code == "not_found" && error.status == 404)
+    }
+    #expect(await fake.removedIdentities == [added.id, "i1", "nope"])
+  }
+
+  @Test func endingASessionSignsOutUntilTheNextSignIn() async throws {
+    let fake = FakeHubAPI()
+    await fake.setSession(signedIn())
+    _ = try await fake.passkeyFinish(
+      PasskeyFinishRequest(ceremonyId: "c", assertion: ["id": "a"], attestation: nil, device: mac))
+    try await fake.endSession()
+    #expect(await fake.endSessionCalls == 1)
+    do {
+      _ = try await fake.me()
+      Issue.record("a signed-out session is unauthorized")
+    } catch let error as HubError {
+      #expect(error.code == "unauthorized" && error.status == 401)
+    }
+    _ = try await fake.passkeyFinish(
+      PasskeyFinishRequest(ceremonyId: "c", assertion: ["id": "a"], attestation: nil, device: mac))
+    #expect(try await fake.me().deviceId == "dev-9")
+
+    try await fake.deleteAccount()
+    #expect(await fake.deleteAccountCalls == 1)
+    do {
+      _ = try await fake.identities()
+      Issue.record("a deleted account is unauthorized")
+    } catch let error as HubError {
+      #expect(error.status == 401)
+    }
+  }
+
+  @Test func enrollRecordsTheTokenItReplaces() async throws {
+    let fake = FakeHubAPI(enrollmentCodes: ["ABCD2345": enrolled()])
+    let request = EnrollRequest(code: "ABCD2345", deviceName: "Phone", platform: "ios")
+    _ = try await fake.enroll(request, replacingToken: "phone-token")
+    #expect(await fake.enrollTokens == ["phone-token"])
+    await fake.addEnrollmentCode("ABCD2345", enrolled())
+    _ = try await fake.enroll(request)
+    #expect(await fake.enrollTokens == ["phone-token", nil])
+  }
+
+  @Test func failNextAppliesToTheAccountCalls() async throws {
+    let fake = FakeHubAPI()
+    let failure = HubError(kind: "request_error", code: "rate_limited", message: "slow down", status: 429)
+    await fake.setFailNext(failure)
+    do {
+      _ = try await fake.passkeyBegin()
+      Issue.record("expected the injected failure")
+    } catch let error as HubError {
+      #expect(error == failure)
+    }
+    #expect(try await fake.passkeyBegin().ceremonyId.isEmpty == false)
   }
 }
