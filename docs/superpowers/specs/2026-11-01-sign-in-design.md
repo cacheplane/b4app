@@ -59,7 +59,7 @@ The research (`Mac App Store sandbox for agents.md`) settles that a sandboxed Ma
 
 ## Build flavours and hubs
 
-A flavour is a compile-time setting (an `.xcconfig` per flavour, plus a `B4APP_FLAVOR` Swift compilation condition for the Swift package targets). It fixes the hub URL, the website domain, the passkey relying-party id, whether Apple sign-in is offered, and every identifier that lets two flavours live side by side on one Mac.
+A flavour is a build setting (an `.xcconfig` per flavour) that the build writes into the app's and the coordinator's `Info.plist` as `B4AppFlavor`; the Swift package reads it at run time (`Flavor.current`), because Xcode does not pass an app's compilation conditions to package targets. A process with no such key (`swift build`, tests, the CLI outside a bundle) is `local` unless `B4APP_FLAVOR` says otherwise. It fixes the hub URL, the website domain, the passkey relying-party id, whether Apple sign-in is offered, and every identifier that lets two flavours live side by side on one Mac.
 
 | | prod | beta | local |
 | --- | --- | --- | --- |
@@ -78,7 +78,7 @@ A flavour is a compile-time setting (an `.xcconfig` per flavour, plus a `B4APP_F
 
 **Why the local flavour still needs a real domain.** A passkey belongs to a domain, and the OS lets an app use it only when `https://<domain>/.well-known/apple-app-site-association` lists the app, fetched through Apple's CDN (Developer ID builds cannot use the associated-domains developer mode, which needs a development-signed app). The hub that verifies the passkey can run anywhere, including `localhost`, because WebAuthn checks the origin (`https://local.b4.run`) and the relying-party hash inside the signed data, not the server's address. So `local.b4.run` serves only that file; nothing else runs there.
 
-**The CLI.** `agent-workspace` is built per flavour like the app and reads the same flavour's paths. The Homebrew cask links the prod one. `B4APP_RUNTIME_DIR` and `B4APP_DATA_DIR` still override for tests.
+**The CLI.** `agent-workspace` takes the flavour of the app bundle it sits in and reads the same flavour's paths. The Homebrew cask links the prod one. `B4APP_RUNTIME_DIR` and `B4APP_DATA_DIR` still override for tests.
 
 **The owner's current install.** Today's packaged app is `com.cacheplane.b4app`, with data in `b4app`, a link to the localhost hub, and its hub token in D-051's keychain group `<team>.com.cacheplane.b4app.shared`. It becomes the **local** flavour, seamlessly (*my call*; it keeps the owner's threads with the hub they synced to and needs no new enrollment code):
 
@@ -299,7 +299,7 @@ LLA throughout (`2026-10-31-lla-visual-system-design.md`): Hanken Grotesk, ink a
 
 ## Decisions to record
 
-Numbers are assigned at commit from `main`'s highest (D-059 merged, D-060 in an open PR, so these start at D-061 and are re-checked before merging):
+Recorded as D-062 to D-067 (D-059 is `main`'s highest; open PR #30 holds D-060 and D-061; re-check before merging):
 
 - Mac distribution is Developer ID download and Homebrew only; no Mac App Store or TestFlight for Mac (amends D-051), with the sandbox research.
 - Build flavours prod, beta, local with their hubs, domains, and identifiers.
