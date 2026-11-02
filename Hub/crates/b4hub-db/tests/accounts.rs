@@ -765,10 +765,11 @@ async fn remove_last_identity_refused(pool: PgPool) {
 
 /// Every table with an `org_id` column. A new one fails `delete_user_removes_every_tenant_row`
 /// until it is listed here and `delete_user` clears it.
-const ORG_TABLES: [&str; 18] = [
+const ORG_TABLES: [&str; 19] = [
     "auth_handoffs",
     "changes",
     "column_clocks",
+    "connectionUsage",
     "connections",
     "device_tokens",
     "devices",
@@ -816,7 +817,7 @@ fn insert(seq: i64, table: &str, row: &str, value: serde_json::Value) -> Change 
 }
 
 /// Fills every org table for `who`'s org: the fixture (feed, mirror, clocks), a project and its
-/// folder, a draft, an enrollment code, a pairing code (and its mint), a handoff, and a horizon.
+/// folder, a draft, a connection's usage, an enrollment code, a pairing code (and its mint), a handoff, and a horizon.
 async fn fill_org(admin: &Db, app: &Db, pool: &PgPool, created: &accounts::Created) {
     let who = authed(app, &created.token).await;
     let mut batch = common::filtered_fixture();
@@ -839,9 +840,15 @@ async fn fill_org(admin: &Db, app: &Db, pool: &PgPool, created: &accounts::Creat
             "thread-1",
             json!({"threadId": "thread-1", "text": "hello"}),
         ),
+        insert(
+            16,
+            "connectionUsage",
+            "conn-1",
+            json!({"connectionId": "conn-1", "reading": null, "tokens": {"today": 5}}),
+        ),
     ]);
     let outcome = changes::push(app, &who, &batch).await.unwrap();
-    assert_eq!(outcome.accepted_through, 15);
+    assert_eq!(outcome.accepted_through, 16);
     devices::create_enrollment_code(
         admin,
         created.org_id,
