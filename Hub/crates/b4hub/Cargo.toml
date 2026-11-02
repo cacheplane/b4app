@@ -14,11 +14,13 @@ name = "b4hub"
 path = "src/main.rs"
 
 [dependencies]
+aes-gcm.workspace = true
 axum.workspace = true
 base64.workspace = true
 b4hub-core.workspace = true
 b4hub-db.workspace = true
 clap.workspace = true
+getrandom.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -31,7 +33,6 @@ webauthn-rs.workspace = true
 webauthn-rs-proto.workspace = true
 
 [dev-dependencies]
-getrandom.workspace = true
 p256.workspace = true
 sha2.workspace = true
 http-body-util.workspace = true

@@ -160,10 +160,12 @@ async fn enroll_then_me_then_revoke(pool: PgPool) {
         me["org"],
         json!({"slug": "cacheplane", "name": "Cacheplane"})
     );
+    // `fullName` was added with sign-in; the enrollment-era fields are unchanged.
     assert_eq!(
         me["user"],
-        json!({"username": "blove", "displayName": "Brian Love"})
+        json!({"username": "blove", "displayName": "Brian Love", "fullName": "Brian Love"})
     );
+    assert_eq!(me["onboarded"], true);
     assert!(
         me["createdAt"].as_str().is_some_and(|s| s.ends_with('Z')),
         "{me}"

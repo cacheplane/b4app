@@ -5,20 +5,21 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::Router;
 use b4hub_db::Db;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
 use webauthn_rs::prelude::Webauthn;
 
+use crate::apple::{AppleRevoker, ErasedAppleRevoker, NoopRevoker};
 use crate::auth::LastTouched;
 use crate::auth_limits::AuthLimits;
 use crate::cli::ConfigError;
 use crate::config::Config;
 use crate::error::ApiError;
 use crate::notify::Notifier;
-use crate::routes::{auth, changes, devices, enroll, health, snapshot};
+use crate::routes::{auth, changes, devices, enroll, health, me, snapshot};
 
 /// How long the listener stays open, answering `/readyz` 503, after shutdown begins, so a load
 /// balancer polling readiness stops routing here before connections are refused. Capped at a
@@ -43,6 +44,9 @@ pub struct AppState {
     pub webauthn: Arc<Webauthn>,
     /// The sign-in routes' per-IP limits (in memory, per process).
     pub limits: AuthLimits,
+    /// Revokes Apple refresh tokens when an account is deleted ([`NoopRevoker`] until Sign in
+    /// with Apple is built).
+    pub apple_revoker: Arc<dyn ErasedAppleRevoker>,
 }
 
 impl AppState {
@@ -58,7 +62,14 @@ impl AppState {
             config: Arc::new(config),
             webauthn: Arc::new(webauthn),
             limits: AuthLimits::default(),
+            apple_revoker: Arc::new(NoopRevoker),
         })
+    }
+
+    /// This state with `revoker` revoking Apple refresh tokens.
+    pub fn with_apple_revoker(mut self, revoker: impl AppleRevoker) -> AppState {
+        self.apple_revoker = Arc::new(revoker);
+        self
     }
 }
 
@@ -93,7 +104,12 @@ pub fn router(state: AppState) -> Router {
         .route("/readyz", get(health::readyz))
         .route("/v1/enroll", post(enroll::enroll))
         .route("/v1/changes", changes::route())
-        .route("/v1/me", get(devices::me))
+        .route("/v1/me", get(me::me).delete(me::delete_me))
+        .route("/v1/me/profile", put(me::profile))
+        .route("/v1/me/passkeys/begin", post(me::passkey_begin))
+        .route("/v1/me/passkeys/finish", post(me::passkey_finish))
+        .route("/v1/me/identities/{id}", delete(me::remove_identity))
+        .route("/v1/sessions/self", delete(me::end_session))
         .route("/v1/devices", get(devices::list))
         .route("/v1/snapshot", get(snapshot::get))
         .route("/v1/devices/self", delete(devices::revoke_self))

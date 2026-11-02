@@ -245,6 +245,7 @@ dependencies = [
 name = "b4hub"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "axum",
  "b4hub-core",
  "b4hub-db",

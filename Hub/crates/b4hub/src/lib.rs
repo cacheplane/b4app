@@ -1,6 +1,7 @@
 //! The hub service: configuration and commands (`cli`), the HTTP server (`serve`), the error
 //! envelope (`error`), the long-poll wake-up (`notify`), and the routes (`routes`).
 
+pub mod apple;
 pub mod auth;
 pub mod auth_limits;
 pub mod cli;

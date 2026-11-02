@@ -100,7 +100,11 @@ impl Answer {
 
 impl Hub {
     pub async fn start(db: Db, config: Config) -> Hub {
-        let state = AppState::new(db, config).expect("the test configuration is valid");
+        Hub::start_state(AppState::new(db, config).expect("the test configuration is valid")).await
+    }
+
+    /// A hub serving `state` as given (a test's own Apple revoker, say).
+    pub async fn start_state(state: AppState) -> Hub {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr: SocketAddr = listener.local_addr().unwrap();
         let served = state.clone();

@@ -145,21 +145,40 @@ impl fmt::Debug for Session {
     }
 }
 
-/// What deleting an account leaves for the caller to finish: the encrypted Apple refresh tokens
-/// of its identities, to revoke at Apple.
-#[derive(Clone, PartialEq, Eq)]
-pub struct DeletedAccount {
-    pub apple_refresh_tokens_enc: Vec<Vec<u8>>,
+/// The encrypted Apple refresh tokens of an account's identities, as stored (sealed with
+/// `B4HUB_SECRET_KEY`). `Debug` shows only how many there are.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct SealedAppleTokens(pub Vec<Vec<u8>>);
+
+impl fmt::Debug for SealedAppleTokens {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("SealedAppleTokens")
+            .field(&self.0.len())
+            .finish()
+    }
 }
 
-impl fmt::Debug for DeletedAccount {
+/// What [`delete_user`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Deletion {
+    /// The account is gone (or was already).
+    Deleted,
+    /// The account holds Apple refresh tokens the caller did not say it revoked (an Apple ID was
+    /// linked meanwhile); nothing was deleted. Revoke these too, then delete again.
+    Unrevoked(SealedAppleTokens),
+}
+
+/// A passkey of a user, as adding another one needs it: the credential id to exclude, and the
+/// user handle it was registered with.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PasskeyCredential {
+    pub credential_id: Vec<u8>,
+    pub user_handle: Vec<u8>,
+}
+
+impl fmt::Debug for PasskeyCredential {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DeletedAccount")
-            .field(
-                "apple_refresh_tokens_enc",
-                &self.apple_refresh_tokens_enc.len(),
-            )
-            .finish()
+        f.debug_struct("PasskeyCredential").finish_non_exhaustive()
     }
 }
 
@@ -335,6 +354,14 @@ pub async fn set_profile(
     Ok(())
 }
 
+/// [`set_profile`] for `principal` in a transaction of its own.
+pub async fn update_profile(db: &Db, principal: Principal, full_name: &str) -> Result<()> {
+    let mut tx = db.tenant_tx(principal.org_id).await?;
+    set_profile(&mut tx, principal.user_id, full_name).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Adds `identity` to `principal`'s account and returns its id. An identity that already
 /// belongs to any account fails the insert.
 pub async fn add_identity(db: &Db, principal: Principal, identity: Identity) -> Result<Uuid> {
@@ -388,29 +415,50 @@ pub async fn list_identities(db: &Db, principal: Principal) -> Result<Vec<Identi
     Ok(identities)
 }
 
-/// Deletes `principal`'s account: every row of their personal org in every tenant table, then the
-/// user and the org, in one transaction. Returns the encrypted Apple refresh tokens the account
-/// held, for the caller to revoke at Apple. An account in a shared org is [`Error::SharedOrg`]
-/// and nothing is deleted.
-pub async fn delete_user(db: &Db, principal: Principal) -> Result<DeletedAccount> {
+/// The first half of deleting `principal`'s account: the encrypted Apple refresh tokens it
+/// holds, for the caller to revoke at Apple before [`delete_user`]. An account in a shared org is
+/// [`Error::SharedOrg`], refused here so that nothing is revoked for an account that cannot be
+/// deleted.
+pub async fn apple_tokens_to_revoke(db: &Db, principal: Principal) -> Result<SealedAppleTokens> {
     let mut tx = db.tenant_tx(principal.org_id).await?;
     if !owns_personal_org(&mut tx, principal).await? {
         return Err(Error::SharedOrg);
     }
-    let apple_refresh_tokens_enc: Vec<Vec<u8>> = sqlx::query_scalar(
-        "SELECT apple_refresh_token_enc FROM user_identities \
-         WHERE org_id = $1 AND user_id = $2 AND apple_refresh_token_enc IS NOT NULL \
-         ORDER BY created_at, id",
-    )
-    .bind(principal.org_id)
-    .bind(principal.user_id)
-    .fetch_all(&mut *tx)
-    .await?;
+    let tokens = sealed_apple_tokens(&mut tx, principal).await?;
+    tx.commit().await?;
+    Ok(tokens)
+}
+
+/// Deletes `principal`'s account once its Apple refresh tokens are revoked: every row of their
+/// personal org in every tenant table, then the user and the org, in one transaction that first
+/// locks the user row (so no identity or device can be added for it meanwhile). `revoked` is
+/// what the caller revoked; a token the account holds beyond those is
+/// [`Deletion::Unrevoked`] and nothing is deleted. An account in a shared org is
+/// [`Error::SharedOrg`]; one already gone is [`Deletion::Deleted`].
+pub async fn delete_user(
+    db: &Db,
+    principal: Principal,
+    revoked: &SealedAppleTokens,
+) -> Result<Deletion> {
+    let mut tx = db.tenant_tx(principal.org_id).await?;
+    if !lock_user(&mut tx, principal.user_id).await? {
+        return Ok(Deletion::Deleted);
+    }
+    if !owns_personal_org(&mut tx, principal).await? {
+        return Err(Error::SharedOrg);
+    }
+    let held = sealed_apple_tokens(&mut tx, principal).await?;
+    let unrevoked: Vec<Vec<u8>> = held
+        .0
+        .into_iter()
+        .filter(|token| !revoked.0.contains(token))
+        .collect();
+    if !unrevoked.is_empty() {
+        return Ok(Deletion::Unrevoked(SealedAppleTokens(unrevoked)));
+    }
     delete_org(&mut tx, principal.org_id).await?;
     tx.commit().await?;
-    Ok(DeletedAccount {
-        apple_refresh_tokens_enc,
-    })
+    Ok(Deletion::Deleted)
 }
 
 /// Merges the phone-only account `from` into `into`, as pairing a phone with a Mac's account
@@ -419,24 +467,33 @@ pub async fn delete_user(db: &Db, principal: Principal) -> Result<DeletedAccount
 /// `macos` device (revoked or not), is not the owner of a personal org, or is `into`; nothing
 /// changes then.
 pub async fn merge_phone_only(db: &Db, from: Principal, into: Principal) -> Result<()> {
+    let mut tx = db.untenanted_tx().await?;
+    merge_in(&mut tx, from, into).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// [`merge_phone_only`] inside `tx`, which it leaves with `from.org_id`'s tenant context. On an
+/// error the caller must roll `tx` back.
+pub(crate) async fn merge_in(
+    tx: &mut Transaction<'_, Postgres>,
+    from: Principal,
+    into: Principal,
+) -> Result<()> {
     if from == into || from.org_id == into.org_id {
         return Err(Error::MergeRefused);
     }
-    let mut tx = db.tenant_tx(from.org_id).await?;
+    set_tenant(tx, from.org_id).await?;
     // Locking the user row first holds off a device enrolling for it meanwhile (its foreign key
     // needs a share lock on the row), so the check below stays true until commit.
-    let locked: Option<Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE id = $1 FOR UPDATE")
-        .bind(from.user_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-    if locked.is_none() || !owns_personal_org(&mut tx, from).await? {
+    if !lock_user(tx, from.user_id).await? || !owns_personal_org(tx, from).await? {
         return Err(Error::MergeRefused);
     }
     let has_mac: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM devices WHERE user_id = $1 AND platform = 'macos')",
     )
     .bind(from.user_id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await?;
     if has_mac {
         return Err(Error::MergeRefused);
@@ -449,11 +506,55 @@ pub async fn merge_phone_only(db: &Db, from: Principal, into: Principal) -> Resu
     .bind(from.user_id)
     .bind(into.org_id)
     .bind(into.user_id)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
-    delete_org(&mut tx, from.org_id).await?;
-    tx.commit().await?;
+    delete_org(tx, from.org_id).await?;
     Ok(())
+}
+
+/// `principal`'s passkeys, oldest first.
+pub async fn passkey_credentials(db: &Db, principal: Principal) -> Result<Vec<PasskeyCredential>> {
+    let rows: Vec<(Vec<u8>, Vec<u8>)> = sqlx::query_as(
+        "SELECT credential_id, user_handle FROM user_identities \
+         WHERE org_id = $1 AND user_id = $2 AND kind = 'passkey' ORDER BY created_at, id",
+    )
+    .bind(principal.org_id)
+    .bind(principal.user_id)
+    .fetch_all(&db.pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(credential_id, user_handle)| PasskeyCredential {
+            credential_id,
+            user_handle,
+        })
+        .collect())
+}
+
+/// Locks the user row `FOR UPDATE`; `false` when there is no such user. `tx` must carry the
+/// user's tenant context.
+async fn lock_user(tx: &mut Transaction<'_, Postgres>, user_id: Uuid) -> Result<bool> {
+    let locked: Option<Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE id = $1 FOR UPDATE")
+        .bind(user_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(locked.is_some())
+}
+
+async fn sealed_apple_tokens(
+    tx: &mut Transaction<'_, Postgres>,
+    principal: Principal,
+) -> Result<SealedAppleTokens> {
+    let tokens = sqlx::query_scalar(
+        "SELECT apple_refresh_token_enc FROM user_identities \
+         WHERE org_id = $1 AND user_id = $2 AND apple_refresh_token_enc IS NOT NULL \
+         ORDER BY created_at, id",
+    )
+    .bind(principal.org_id)
+    .bind(principal.user_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(SealedAppleTokens(tokens))
 }
 
 /// Whether `principal` is the owner of a personal org that is `principal.org_id`.

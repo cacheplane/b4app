@@ -14,6 +14,7 @@ use b4hub_core::tokens::{hash_code, hash_token, new_code, new_token};
 use sqlx::types::Uuid;
 use sqlx::{Postgres, Transaction};
 
+use crate::accounts::{self, Principal};
 use crate::tenant::set_tenant;
 use crate::{Db, Error, Result};
 
@@ -93,6 +94,9 @@ pub struct DeviceInfo {
     pub org_name: String,
     pub username: String,
     pub display_name: String,
+    /// The full name the user gave at onboarding; `None` until then.
+    pub full_name: Option<String>,
+    pub onboarded: bool,
 }
 
 /// One of a user's devices as `GET /v1/devices` lists it. Timestamps are RFC 3339 in UTC with
@@ -145,7 +149,37 @@ pub async fn create_enrollment_code(
 /// `platform` must be one the `devices` table accepts.
 pub async fn redeem(db: &Db, code: &str, name: &str, platform: &str) -> Result<Enrolled> {
     let mut tx = db.untenanted_tx().await?;
+    let enrolled = redeem_in(&mut tx, code, name, platform, None).await?;
+    tx.commit().await?;
+    Ok(enrolled)
+}
 
+/// Redeems `code` for a phone signed in to the phone-only account `from`: in one transaction the
+/// code is claimed, `from` is merged into the code's account
+/// ([`accounts::merge_phone_only`]: its identities move, its devices, tokens, user, and org are
+/// deleted), and the new device is enrolled. Any failure rolls all of it back:
+/// [`Error::InvalidCode`] for the code, [`Error::MergeRefused`] for an account that cannot be
+/// merged (one that has had a Mac, a shared org's member, or the code's own account).
+pub async fn redeem_merging(
+    db: &Db,
+    code: &str,
+    name: &str,
+    platform: &str,
+    from: Principal,
+) -> Result<Enrolled> {
+    let mut tx = db.untenanted_tx().await?;
+    let enrolled = redeem_in(&mut tx, code, name, platform, Some(from)).await?;
+    tx.commit().await?;
+    Ok(enrolled)
+}
+
+async fn redeem_in(
+    tx: &mut Transaction<'_, Postgres>,
+    code: &str,
+    name: &str,
+    platform: &str,
+    merge_from: Option<Principal>,
+) -> Result<Enrolled> {
     // A single conditional UPDATE is the whole single-use guarantee: of two concurrent
     // redemptions the second waits on the row lock, then finds `used_at` set and matches nothing.
     let claimed: Option<(Uuid, Uuid)> = sqlx::query_as(
@@ -154,13 +188,16 @@ pub async fn redeem(db: &Db, code: &str, name: &str, platform: &str) -> Result<E
          RETURNING org_id, user_id",
     )
     .bind(&hash_code(code)[..])
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?;
     let Some((org_id, user_id)) = claimed else {
         return Err(Error::InvalidCode);
     };
+    if let Some(from) = merge_from {
+        accounts::merge_in(tx, from, Principal { org_id, user_id }).await?;
+    }
 
-    set_tenant(&mut tx, org_id).await?;
+    set_tenant(tx, org_id).await?;
     let device_id = new_uuid();
     sqlx::query(
         "INSERT INTO devices (id, org_id, user_id, name, platform) VALUES ($1, $2, $3, $4, $5)",
@@ -170,7 +207,7 @@ pub async fn redeem(db: &Db, code: &str, name: &str, platform: &str) -> Result<E
     .bind(user_id)
     .bind(name)
     .bind(platform)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
     let token = new_token();
     sqlx::query(
@@ -180,12 +217,9 @@ pub async fn redeem(db: &Db, code: &str, name: &str, platform: &str) -> Result<E
     .bind(org_id)
     .bind(device_id)
     .bind(&hash_token(&token)[..])
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
-    let info = describe(&mut tx, device_id)
-        .await?
-        .ok_or(Error::InvalidCode)?;
-    tx.commit().await?;
+    let info = describe(tx, device_id).await?.ok_or(Error::InvalidCode)?;
 
     Ok(Enrolled {
         org_id,
@@ -278,6 +312,16 @@ pub async fn revoke_self(db: &Db, org_id: Uuid, device_id: Uuid) -> Result<()> {
     Ok(())
 }
 
+/// Ends the session `token` is: deletes that one token row and nothing else, so the device stays
+/// enrolled and unrevoked and a later sign-in can reuse it. Idempotent.
+pub async fn end_session(db: &Db, token: &str) -> Result<()> {
+    sqlx::query("DELETE FROM device_tokens WHERE token_hash = $1")
+        .bind(&hash_token(token)[..])
+        .execute(&db.pool)
+        .await?;
+    Ok(())
+}
+
 /// Records that the device was just seen. Callers throttle this (the service writes it at most
 /// once a minute per device); this function always writes.
 pub async fn touch_last_seen(db: &Db, org_id: Uuid, device_id: Uuid) -> Result<()> {
@@ -300,7 +344,8 @@ async fn describe(
         "SELECT d.id AS device_id, d.name AS device_name, d.platform, \
                 to_char(d.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') \
                     AS created_at, \
-                o.slug AS org_slug, o.name AS org_name, u.username, u.display_name \
+                o.slug AS org_slug, o.name AS org_name, u.username, u.display_name, \
+                u.full_name, u.onboarded_at IS NOT NULL AS onboarded \
          FROM devices d \
          JOIN users u ON u.id = d.user_id \
          JOIN orgs o ON o.id = d.org_id \

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use b4hub_core::change::{Change, ChangeOp};
 use b4hub_core::tokens::hash_token;
-use b4hub_db::accounts::{self, DeviceSpec, Identity, Principal};
+use b4hub_db::accounts::{self, Deletion, DeviceSpec, Identity, Principal, SealedAppleTokens};
 use b4hub_db::devices::{self, AuthedDevice, Platform};
 use b4hub_db::{ceremonies, changes, orgs, Db, Error};
 use serde_json::json;
@@ -824,20 +824,27 @@ async fn delete_user_removes_every_tenant_row(pool: PgPool) {
     }
     let kept_before = org_counts(&pool, kept.org_id).await;
 
-    let deleted = accounts::delete_user(
-        &app,
-        Principal {
-            org_id: doomed.org_id,
-            user_id: doomed.user_id,
-        },
-    )
-    .await
-    .unwrap();
-    let mut tokens = deleted.apple_refresh_tokens_enc.clone();
+    let doomed_principal = Principal {
+        org_id: doomed.org_id,
+        user_id: doomed.user_id,
+    };
+    let to_revoke = accounts::apple_tokens_to_revoke(&app, doomed_principal)
+        .await
+        .unwrap();
+    let mut tokens = to_revoke.0.clone();
     tokens.sort();
     assert_eq!(
         tokens,
         vec![b"enc-001.gone".to_vec(), b"enc-001.gone2".to_vec()]
+    );
+    // Reading them deletes nothing.
+    assert_eq!(org_counts(&pool, doomed.org_id).await, before);
+
+    assert_eq!(
+        accounts::delete_user(&app, doomed_principal, &to_revoke)
+            .await
+            .unwrap(),
+        Deletion::Deleted
     );
 
     for (table, n) in org_counts(&pool, doomed.org_id).await {
@@ -867,15 +874,68 @@ async fn delete_user_removes_every_tenant_row(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn delete_user_refuses_a_shared_org(pool: PgPool) {
     let (admin, app) = common::migrated(&pool).await;
-    let member = common::enrolled(&admin, &app, "blove").await;
+    let enrolled = common::enrolled(&admin, &app, "blove").await;
+    let member = Principal::from(enrolled);
+    accounts::add_identity(&app, member, apple("001.member"))
+        .await
+        .unwrap();
+    // Refused before any token is handed out to revoke, and again at the delete.
     assert!(matches!(
-        accounts::delete_user(&app, Principal::from(member)).await,
+        accounts::apple_tokens_to_revoke(&app, member).await,
         Err(Error::SharedOrg)
     ));
-    assert!(devices::me(&app, member.org_id, member.device_id)
+    assert!(matches!(
+        accounts::delete_user(&app, member, &SealedAppleTokens::default()).await,
+        Err(Error::SharedOrg)
+    ));
+    assert!(devices::me(&app, enrolled.org_id, enrolled.device_id)
         .await
         .unwrap()
         .is_some());
+}
+
+#[sqlx::test(migrations = false)]
+async fn delete_user_refuses_while_a_token_is_unrevoked(pool: PgPool) {
+    let (_admin, app) = common::migrated(&pool).await;
+    let created = accounts::create_personal(&app, apple("001.one"), device("Mac", Platform::Macos))
+        .await
+        .unwrap();
+    let principal = Principal {
+        org_id: created.org_id,
+        user_id: created.user_id,
+    };
+    let revoked = accounts::apple_tokens_to_revoke(&app, principal)
+        .await
+        .unwrap();
+    // An Apple ID is linked between the revoke and the delete.
+    accounts::add_identity(&app, principal, apple("001.two"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        accounts::delete_user(&app, principal, &revoked)
+            .await
+            .unwrap(),
+        Deletion::Unrevoked(SealedAppleTokens(vec![b"enc-001.two".to_vec()]))
+    );
+    assert_eq!(authed(&app, &created.token).await.user_id, created.user_id);
+
+    let all = accounts::apple_tokens_to_revoke(&app, principal)
+        .await
+        .unwrap();
+    assert_eq!(
+        accounts::delete_user(&app, principal, &all).await.unwrap(),
+        Deletion::Deleted
+    );
+    assert!(devices::authenticate(&app, &created.token)
+        .await
+        .unwrap()
+        .is_none());
+    // Deleting an account that is already gone is not an error.
+    assert_eq!(
+        accounts::delete_user(&app, principal, &all).await.unwrap(),
+        Deletion::Deleted
+    );
 }
 
 #[sqlx::test(migrations = false)]

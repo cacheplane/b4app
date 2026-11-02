@@ -56,7 +56,7 @@ impl FromRequestParts<AppState> for AuthedDevice {
 
 /// The token in `Authorization: Bearer <token>`; `None` for a missing header, another scheme, an
 /// empty token, or a token with whitespace in it. The scheme is matched case-insensitively.
-fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     let value = headers.get(AUTHORIZATION)?.to_str().ok()?;
     let (scheme, token) = value.split_once(' ')?;
     (scheme.eq_ignore_ascii_case("bearer")

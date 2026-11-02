@@ -1,5 +1,5 @@
-//! The authenticated device's own record (`GET /v1/me`, `DELETE /v1/devices/self`) and the
-//! user's devices (`GET /v1/devices`).
+//! Revoking the authenticated device (`DELETE /v1/devices/self`) and the user's devices
+//! (`GET /v1/devices`). `GET /v1/me` is in [`crate::routes::me`].
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -10,24 +10,6 @@ use serde_json::{json, Value};
 use crate::auth::AuthedDevice;
 use crate::error::ApiError;
 use crate::serve::AppState;
-
-pub async fn me(
-    State(state): State<AppState>,
-    device: AuthedDevice,
-) -> Result<Json<Value>, ApiError> {
-    // The device was valid a moment ago; if it is gone now it was revoked in between.
-    let info = devices::me(&state.db, device.org_id, device.device_id)
-        .await?
-        .ok_or_else(ApiError::unauthorized)?;
-    Ok(Json(json!({
-        "deviceId": info.device_id.to_string(),
-        "deviceName": info.device_name,
-        "platform": info.platform,
-        "org": { "slug": info.org_slug, "name": info.org_name },
-        "user": { "username": info.username, "displayName": info.display_name },
-        "createdAt": info.created_at,
-    })))
-}
 
 pub async fn revoke_self(
     State(state): State<AppState>,

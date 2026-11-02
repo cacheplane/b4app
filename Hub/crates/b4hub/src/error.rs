@@ -125,6 +125,34 @@ impl ApiError {
         )
     }
 
+    /// Removing the identity would leave the account with no way to sign in.
+    pub fn last_identity() -> ApiError {
+        ApiError::request(
+            StatusCode::CONFLICT,
+            "last_identity",
+            "the last sign-in method of an account cannot be removed",
+        )
+    }
+
+    /// The signed-in account cannot be merged into the code's account: it has (or had) a Mac,
+    /// is a member of a shared org, or is the code's account itself.
+    pub fn merge_refused() -> ApiError {
+        ApiError::request(
+            StatusCode::CONFLICT,
+            "merge_refused",
+            "this account cannot be merged into another",
+        )
+    }
+
+    /// Deleting an account is only possible for the owner of a personal org.
+    pub fn shared_org() -> ApiError {
+        ApiError::request(
+            StatusCode::CONFLICT,
+            "shared_org",
+            "an account in a shared org cannot be deleted here",
+        )
+    }
+
     /// Too many sign-in requests from this client; it may try again after `retry_after`.
     pub fn rate_limited(retry_after: Duration) -> ApiError {
         ApiError {
@@ -178,6 +206,9 @@ impl From<b4hub_db::Error> for ApiError {
             b4hub_db::Error::ResyncRequired => ApiError::resync_required(),
             b4hub_db::Error::CeremonyExpired => ApiError::ceremony_expired(),
             b4hub_db::Error::IdentityTaken => ApiError::credential_rejected(),
+            b4hub_db::Error::LastIdentity => ApiError::last_identity(),
+            b4hub_db::Error::MergeRefused => ApiError::merge_refused(),
+            b4hub_db::Error::SharedOrg => ApiError::shared_org(),
             other => {
                 tracing::error!(error = %other, "request failed in the database layer");
                 ApiError::internal()

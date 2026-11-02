@@ -10,8 +10,8 @@ Clients refuse any non-HTTPS URL whose host is not `localhost`, `127.0.0.1`, or 
 
 ### Authentication
 
-Every route except `/healthz`, `/readyz`, `POST /v1/enroll`, and the sign-in routes under
-`/v1/auth/` requires
+Every route except `/healthz`, `/readyz`, `POST /v1/enroll` (where the header is optional and
+asks for a merge; see that route), and the sign-in routes under `/v1/auth/` requires
 
 ```
 Authorization: Bearer <device token>
@@ -47,13 +47,16 @@ in whole seconds.
 | HTTP | `details.code` | `kind` | When |
 | --- | --- | --- | --- |
 | 400 | `ceremony_expired` | request | A sign-in ceremony that is unknown, expired (5 minutes), already finished, or (for a sign-up) was begun while sign-up was closed; the cases are indistinguishable. Begin again. |
-| 400 | `invalid_request` | request | The body is not valid JSON for the endpoint (malformed JSON, an unknown or missing field, a wrong value type, a missing or wrong `Content-Type`); a `deviceName` or `platform` that fails validation; a push with more than 1000 changes; a non-numeric `after`, `limit`, or `wait`. |
+| 400 | `invalid_request` | request | The body is not valid JSON for the endpoint (malformed JSON, an unknown or missing field, a wrong value type, a missing or wrong `Content-Type`); a `deviceName`, `platform`, or `fullName` that fails validation; a push with more than 1000 changes; a non-numeric `after`, `limit`, or `wait`. |
 | 401 | `unauthorized` | request | The bearer token is missing, malformed, unknown, or belongs to a revoked device. |
 | 401 | `invalid_code` | request | The enrollment code is wrong, expired, or already used (the three are indistinguishable). |
 | 401 | `credential_rejected` | request | A sign-in credential failed verification: a malformed WebAuthn response, a wrong origin or relying party, a bad signature, a passkey no account has, a user handle that is not the passkey's, a counter that went backwards, or a new passkey that already belongs to an account. Deliberately vague. |
 | 403 | `signup_closed` | request | A sign-up (a passkey `attestation`) while the hub's sign-up policy is `closed`. |
-| 404 | `not_found` | request | No such route, or a resource that does not exist or is not yours. |
+| 404 | `not_found` | request | No such route, or a resource that does not exist or is not yours (including another account's identity id). |
 | 405 | `method_not_allowed` | request | The route exists but not for that method. |
+| 409 | `last_identity` | request | `DELETE /v1/me/identities/{id}` of the account's only sign-in method, which would leave it unable to sign in. Add another first. |
+| 409 | `merge_refused` | request | `POST /v1/enroll` with a token whose account cannot be merged into the code's: it has (or ever had) a `macos` device, it is a member of a shared org rather than the owner of a personal one, or it is the code's own account. Nothing changes, and the code stays redeemable. |
+| 409 | `shared_org` | request | `DELETE /v1/me` by a member of a shared (non-personal) org, such as an operator-seeded user; only the owner of a personal org can delete their account here. Nothing is revoked or deleted. |
 | 410 | `resync_required` | request | The pull cursor is older than the retention horizon: the hub has pruned the changes after it. Restore from `GET /v1/snapshot` (see *Horizon*). |
 | 413 | `payload_too_large` | request | A push body over 32 MiB. (A change whose `value` is over 2 MiB is rejected per change instead; see `POST /v1/changes`.) |
 | 429 | `rate_limited` | request | Too many sign-in requests from this client this minute (see *Limits*); `details.retryAfterMs` says how long to wait. |
@@ -71,9 +74,10 @@ in whole seconds.
 | Pull page | 1000 changes (`limit` is clamped to 1 to 1000; default 1000), and 8 MiB (8,388,608 bytes) of `value` summed over the page (each sized when pushed, as PostgreSQL's `jsonb` text, a few bytes more than compact JSON); whichever comes first, and always at least one change | `GET /v1/changes` |
 | Retention | `B4HUB_RETENTION_DAYS`, default 30 | how long the hub keeps the change log (see *Horizon*) |
 | Long-poll `wait` | 25 seconds | `GET /v1/changes`; a larger `wait` is clamped to 25 |
-| Other request bodies | 2 MiB (axum's default) | `POST /v1/enroll`, `POST /v1/auth/passkey/finish` |
-| Sign-in begins | 20 per client IP per minute | `POST /v1/auth/passkey/begin`; over it, `429 rate_limited` |
-| Sign-in finishes | 10 per client IP per minute | `POST /v1/auth/passkey/finish`, counted before the body is read; over it, `429 rate_limited` |
+| Other request bodies | 2 MiB (axum's default) | `POST /v1/enroll`, `POST /v1/auth/passkey/finish`, `PUT /v1/me/profile`, `POST /v1/me/passkeys/finish` |
+| Sign-in begins | 20 per client IP per minute | `POST /v1/auth/passkey/begin` and `POST /v1/me/passkeys/begin`, together; over it, `429 rate_limited` |
+| Sign-in finishes | 10 per client IP per minute | `POST /v1/auth/passkey/finish` and `POST /v1/me/passkeys/finish`, together, counted before the token is checked or the body read; over it, `429 rate_limited` |
+| Full name | 1 to 200 characters after trimming | `PUT /v1/me/profile` |
 | Ceremony lifetime | 5 minutes, single use | a `ceremonyId` from a begin |
 
 The Mac client sends batches of 500 and replaces a `displayItems.payload` over 1 MiB with
@@ -111,8 +115,8 @@ once SIGTERM has been received (see "Shutdown").
 
 ### `POST /v1/enroll`
 
-Exchange a one-time enrollment code for a device token. No `Authorization` header: the code is
-the credential. The operator mints a code with `b4hub enroll --user <username>`; it is eight
+Exchange a one-time enrollment code for a device token. The code is the credential; the
+`Authorization` header is optional (see *Merging a phone-only account* below). The operator mints a code with `b4hub enroll --user <username>`; it is eight
 characters from `BCDFGHJKLMNPQRSTVWXZ23456789`, valid for ten minutes, single-use, and matched
 case-insensitively.
 
@@ -140,6 +144,22 @@ Both are validated before the code is redeemed, so a malformed request does not 
 
 `token` appears in this response and nowhere else; keep it in the Keychain. Errors: `400
 invalid_request`, `401 invalid_code`.
+
+**Merging a phone-only account.** A phone already signed in to an account of its own (one it
+signed up with, which has never had a Mac) sends that account's token,
+`Authorization: Bearer <phone token>`, so pairing does not leave the person with two accounts. In
+one transaction the hub claims the code, moves every identity (passkeys, Apple IDs) of the
+token's account to the code's user, deletes that account's devices (so the phone's old token
+stops working at once), tokens, user, and personal org (which holds no synced rows: only a Mac
+writes them), and enrolls the new device under the code's account. The answer is the same `200`
+as above, for the code's account. If any step fails nothing has changed: a wrong, expired, or used
+code is `401 invalid_code` and the phone's account and token are untouched.
+
+- A header that is present but not a valid token (another scheme, malformed, unknown, revoked) is
+  `401 unauthorized`, before the code is looked at.
+- A token whose account has (or had) a `macos` device, belongs to a shared org, or is the code's
+  own account is `409 merge_refused`, and the code stays redeemable.
+- Without the header, enrollment is exactly as before.
 
 ### Sign-in
 
@@ -261,7 +281,8 @@ taken), `400 ceremony_expired`, `401 credential_rejected`, `429 rate_limited`.
 
 ### `GET /v1/me`
 
-The authenticated device and the org and user it belongs to. `200`:
+The authenticated device, the org and user it belongs to, and the account's sign-in methods.
+`200`:
 
 ```json
 {
@@ -269,12 +290,121 @@ The authenticated device and the org and user it belongs to. `200`:
   "deviceName": "Brian's MacBook Pro",
   "platform": "macos",
   "org": {"slug": "cacheplane", "name": "cacheplane"},
-  "user": {"username": "blove", "displayName": "Brian Love"},
-  "createdAt": "2026-10-31T12:00:00.000000Z"
+  "user": {"username": "blove", "displayName": "Brian Love", "fullName": "Brian Love"},
+  "createdAt": "2026-10-31T12:00:00.000000Z",
+  "onboarded": true,
+  "identities": [
+    {"id": "0199...", "kind": "passkey", "name": "Agent Workspace account",
+     "createdAt": "2026-11-01T09:00:00.000000Z", "lastUsedAt": "2026-11-01T10:00:00.000000Z"},
+    {"id": "019a...", "kind": "apple", "name": "x7k2@privaterelay.appleid.com",
+     "createdAt": "2026-11-01T11:00:00.000000Z", "lastUsedAt": null}
+  ]
 }
 ```
 
-`createdAt` is RFC 3339 in UTC with microseconds. Errors: `401 unauthorized`.
+- The fields before `onboarded` are unchanged from enrollment, so an older client still decodes
+  the answer; `user.fullName`, `onboarded`, and `identities` were added with sign-in.
+- `user.fullName` is the name given at onboarding, `null` until then. `onboarded` is false until
+  `PUT /v1/me/profile` has been called once (an operator-seeded user counts as onboarded).
+- `identities` is every sign-in method of the user, oldest first: `kind` is `passkey` or `apple`;
+  `name` is a passkey's name or an Apple ID's (often relay) email, or `null`; `lastUsedAt` is
+  `null` for one never used to sign in. An operator-enrolled user may have none. No credential
+  id, stored passkey, Apple `sub`, or refresh token is ever included.
+
+Timestamps are RFC 3339 in UTC with microseconds. Errors: `401 unauthorized`.
+
+### `PUT /v1/me/profile`
+
+Onboarding: records the user's full name. Request (no other fields):
+
+```json
+{"fullName": "Brian Love"}
+```
+
+`fullName` is trimmed and must then be 1 to 200 characters (`400 invalid_request` otherwise,
+with nothing changed). The hub stores it as the user's full and display name, marks the user
+onboarded (the first time), and renames the user's **personal** org to "<first word>'s Org"
+("Brian's Org"); a shared org, such as an operator-seeded one, keeps its name. It may be called
+again to change the name, which renames a personal org again. `200` with the `GET /v1/me` answer.
+Errors: `400 invalid_request`, `401 unauthorized`.
+
+### `POST /v1/me/passkeys/begin`
+
+Begins adding a passkey to the signed-in user (Settings → Account → Add a passkey; also how an
+operator-enrolled user gets their first one). No body. `200`:
+
+```json
+{
+  "ceremonyId": "4f0c...",
+  "registration": {"publicKey": {"rp": {...}, "user": {"id": "...",
+                                 "name": "Agent Workspace account",
+                                 "displayName": "Agent Workspace account"},
+                                 "challenge": "...", "excludeCredentials": [{"type": "public-key",
+                                 "id": "..."}], "authenticatorSelection": {"residentKey":
+                                 "required", "requireResidentKey": true,
+                                 "userVerification": "required"}, "attestation": "none", ...}}
+}
+```
+
+The options are the sign-up's (see `POST /v1/auth/passkey/begin`), for the user handle of the
+user's existing passkeys (a fresh one when they have none), with `excludeCredentials` listing
+every passkey the user already has (absent when none), so an authenticator holding one of them
+refuses instead of making a duplicate. The ceremony is bound to the calling user, is valid for 5
+minutes, and is finished once. Errors: `401 unauthorized`, `429 rate_limited` (counted with the
+sign-in begins).
+
+### `POST /v1/me/passkeys/finish`
+
+Request (no other fields):
+
+```json
+{"ceremonyId": "4f0c...", "attestation": { <RegisterPublicKeyCredential> }}
+```
+
+Verifies the attestation against the ceremony and adds the passkey to the caller's account; from
+then on either passkey signs in to it. `200` with the new identity, in `GET /v1/me`'s
+`identities` shape:
+
+```json
+{"id": "019b...", "kind": "passkey", "name": "Agent Workspace account",
+ "createdAt": "2026-11-01T12:00:00.000000Z", "lastUsedAt": null}
+```
+
+A ceremony that another user began, that a sign-in began (`POST /v1/auth/passkey/begin`), or that
+is unknown, expired, or used is `400 ceremony_expired`. A malformed or unverifiable attestation,
+or a passkey that already belongs to an account, is `401 credential_rejected`. Errors also: `400
+invalid_request`, `401 unauthorized`, `429 rate_limited` (counted with the sign-in finishes).
+
+### `DELETE /v1/me/identities/{id}`
+
+Unlinks one of the caller's sign-in methods, by its `id` from `GET /v1/me`. `204` with no body.
+An id that is not one of the caller's identities (another account's, an unknown one, or not a
+UUID) is `404 not_found`. The account's only remaining identity is `409 last_identity`; of two
+removals racing, at most one succeeds when they would together remove the last. Errors also:
+`401 unauthorized`.
+
+### `DELETE /v1/sessions/self`
+
+Log out: deletes the presented token and nothing else. `204` with no body. The token is `401
+unauthorized` from then on, but the device stays enrolled and **unrevoked**: a later sign-in that
+sends its `deviceId` reuses it, and sync continues from where it was. To remove the device from
+the account instead, use `DELETE /v1/devices/self`. Errors: `401 unauthorized`.
+
+### `DELETE /v1/me`
+
+Deletes the account (App Store guideline 5.1.1(v)). `204` with no body. In order:
+
+1. An account in a shared org is refused, `409 shared_org`, before anything else.
+2. Each Apple refresh token the account stores is decrypted and revoked at Apple. If any revoke
+   fails, the request fails with `500 internal_error` and **nothing is deleted**; retry it.
+3. In one transaction that first locks the user, the hub deletes the user's tokens, identities,
+   and devices, every row of their personal org in every tenant table (threads, turns, the change
+   log, and the rest), then the org and the user. An Apple ID linked between steps 2 and 3 is
+   revoked too before the delete goes ahead.
+
+Every token of the account is `401 unauthorized` afterwards, and its passkeys and Apple IDs can
+sign up afresh. (Sign in with Apple is not built yet, so no account stores an Apple refresh token
+today.) Errors also: `401 unauthorized`.
 
 ### `GET /v1/devices`
 
@@ -295,7 +425,8 @@ revoked). `lastSeenAt` is written at most once a minute per device. Errors: `401
 
 ### `DELETE /v1/devices/self`
 
-Revoke the calling device: its token rows are deleted and `devices.revoked_at` is set. Changes the
+Revoke the calling device (remove it from the account): its token rows are deleted and
+`devices.revoked_at` is set. To log out and keep the device, use `DELETE /v1/sessions/self`. Changes the
 device already uploaded stay in the feed. `204` with no body. The token stops working
 immediately; the next request with it is `401 unauthorized`. Errors: `401 unauthorized`.
 

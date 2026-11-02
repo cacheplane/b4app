@@ -211,17 +211,7 @@ pub async fn passkey_begin(
         Signup::Closed => (None, None),
         Signup::Open => {
             let handle = Uuid::new_v4();
-            let (mut options, reg_state) = state
-                .webauthn
-                .start_passkey_registration(handle, ACCOUNT_LABEL, ACCOUNT_LABEL, None)
-                .map_err(|error| internal("starting a passkey registration", &error))?;
-            // A sign-in finds the account from the credential alone, so it must be discoverable.
-            options.public_key.authenticator_selection = Some(AuthenticatorSelectionCriteria {
-                authenticator_attachment: None,
-                resident_key: Some(ResidentKeyRequirement::Required),
-                require_resident_key: true,
-                user_verification: UserVerificationPolicy::Required,
-            });
+            let (options, reg_state) = start_registration(&state, handle, Vec::new())?;
             (Some(options), Some((reg_state, handle)))
         }
     };
@@ -287,13 +277,37 @@ pub async fn passkey_finish(
     .map(Json)
 }
 
+/// Starts registering a passkey for the user handle `handle` with the sign-up policy's options
+/// (named [`ACCOUNT_LABEL`], resident key and user verification required, no attestation),
+/// excluding the credentials in `exclude` so an authenticator that already holds one of them
+/// refuses.
+pub(crate) fn start_registration(
+    state: &AppState,
+    handle: Uuid,
+    exclude: Vec<Vec<u8>>,
+) -> Result<(CreationChallengeResponse, PasskeyRegistration), ApiError> {
+    let exclude = (!exclude.is_empty()).then_some(exclude);
+    let (mut options, reg_state) = state
+        .webauthn
+        .start_passkey_registration(handle, ACCOUNT_LABEL, ACCOUNT_LABEL, exclude)
+        .map_err(|error| internal("starting a passkey registration", &error))?;
+    // A sign-in finds the account from the credential alone, so it must be discoverable.
+    options.public_key.authenticator_selection = Some(AuthenticatorSelectionCriteria {
+        authenticator_attachment: None,
+        resident_key: Some(ResidentKeyRequirement::Required),
+        require_resident_key: true,
+        user_verification: UserVerificationPolicy::Required,
+    });
+    Ok((options, reg_state))
+}
+
 enum Response {
     Assertion(PublicKeyCredential),
     Attestation(RegisterPublicKeyCredential),
 }
 
 /// Reads an authenticator response; one that is not even well formed fails verification.
-fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, ApiError> {
+pub(crate) fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, ApiError> {
     serde_json::from_value(value).map_err(|_| {
         tracing::info!(
             reason = "the response is not a WebAuthn credential",
@@ -430,12 +444,12 @@ async fn answer(
 
 /// A failed verification: logged with webauthn-rs's reason (fixed text, never request data),
 /// answered with the deliberately vague `credential_rejected`.
-fn rejected(error: &webauthn_rs::prelude::WebauthnError) -> ApiError {
+pub(crate) fn rejected(error: &webauthn_rs::prelude::WebauthnError) -> ApiError {
     tracing::info!(reason = %error, "passkey verification failed");
     ApiError::credential_rejected()
 }
 
-fn internal(what: &str, error: &webauthn_rs::prelude::WebauthnError) -> ApiError {
+pub(crate) fn internal(what: &str, error: &webauthn_rs::prelude::WebauthnError) -> ApiError {
     tracing::error!(reason = %error, "{what} failed");
     ApiError::internal()
 }
