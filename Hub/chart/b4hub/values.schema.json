@@ -351,10 +351,6 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": [
-              "secretName",
-              "hosts"
-            ],
             "properties": {
               "secretName": {
                 "type": "string"
@@ -366,7 +362,19 @@
                   "minLength": 1
                 }
               }
-            }
+            },
+            "anyOf": [
+              {
+                "required": [
+                  "secretName"
+                ]
+              },
+              {
+                "required": [
+                  "hosts"
+                ]
+              }
+            ]
           }
         }
       }

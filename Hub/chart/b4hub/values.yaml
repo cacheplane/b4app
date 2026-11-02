@@ -40,7 +40,7 @@ database:
   secretKeys:
     # -- Key in the Secret holding the `b4hub_app` connection URL. The only key the hub Deployment mounts.
     url: DATABASE_URL
-    # -- Key in the Secret holding the owner (admin) connection URL. Only the migration Job mounts it.
+    # -- Key in the Secret holding the admin connection URL (a role with `CREATEROLE`, or a superuser). Only the migration Job mounts it.
     adminUrl: DATABASE_ADMIN_URL
   urls:
     # -- For evaluation only; use `existingSecret` in production. With `adminUrl`, the chart creates `<release>-b4hub-db`.
@@ -66,7 +66,7 @@ hub:
     audiences: []
     # -- Apple Services ID for web sign-in (`B4HUB_APPLE_SERVICES_ID`); rendered only when set.
     servicesId: ""
-  # -- Extra `EnvVar` entries appended verbatim to the hub container (for example `OTEL_EXPORTER_OTLP_*`).
+  # -- Extra `EnvVar` entries appended verbatim to the hub container. For OTLP use `otel.endpoint`, `otel.protocol`, and `otel.extraEnv` instead.
   extraEnv: []
 
 secrets:
@@ -178,5 +178,5 @@ resources:
 nodeSelector: {}
 # -- Tolerations for the hub and migration pods.
 tolerations: []
-# -- Affinity for the hub pods.
+# -- Affinity for the hub and migration pods.
 affinity: {}

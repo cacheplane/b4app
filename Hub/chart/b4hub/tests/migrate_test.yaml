@@ -143,4 +143,13 @@ tests:
       replicaCount: 2
     asserts:
       - matchRegexRaw:
-          pattern: "(?s)WARNING: replicaCount is 2 with strategy Recreate.*D-057"
+          pattern: "(?s)WARNING: replicaCount is 2 \\(strategy Recreate\\).*D-057"
+
+  - it: warns about D-057 for more than one replica under RollingUpdate too
+    template: templates/NOTES.txt
+    set:
+      replicaCount: 3
+      strategy.type: RollingUpdate
+    asserts:
+      - matchRegexRaw:
+          pattern: "(?s)WARNING: replicaCount is 3 \\(strategy RollingUpdate\\).*D-057"

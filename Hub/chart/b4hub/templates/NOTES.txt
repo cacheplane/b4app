@@ -18,9 +18,9 @@ If the release failed at the hook, read its output:
 NOTE: the database Secret was created from database.urls, which is for evaluation only.
 Use database.existingSecret in production.
 {{- end }}
-{{- if and (gt (int .Values.replicaCount) 1) (eq .Values.strategy.type "Recreate") }}
+{{- if gt (int .Values.replicaCount) 1 }}
 
-WARNING: replicaCount is {{ .Values.replicaCount }} with strategy Recreate. The relay routes per process
+WARNING: replicaCount is {{ .Values.replicaCount }} (strategy {{ .Values.strategy.type }}). The relay routes per process
 until M8e (D-057), so devices on different replicas cannot reach each other. Run one replica.
 {{- end }}
 {{- if .Values.ingress.enabled }}
