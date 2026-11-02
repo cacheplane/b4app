@@ -108,6 +108,38 @@ render_hub() { # $1 = include_signin_secrets, extra args follow
   [ "$(jq -r '.containerDefinitions[0].logConfiguration.options."awslogs-group"' "$out")" = /b4hub/test/migrate ]
 }
 
+render_admin() { # $1 = include_signin_secrets
+  local signin="$1"
+  local extra=()
+  if [ "$signin" = 1 ]; then
+    extra=(--var "secret_key_arn=$(arn secret-key)" --var "apple_team_id_arn=$(arn apple-team-id)" \
+      --var "apple_key_id_arn=$(arn apple-key-id)" --var "apple_private_key_arn=$(arn apple-private-key)")
+  fi
+  "$render" "$taskdefs/hub-admin.json.tpl" "$out" --family b4hub-test-hub-admin \
+    --image img --region us-east-2 --log-group /b4hub/test/admin --rp-id test.b4.run \
+    --exec-role x --task-role t --include-signin-secrets "$signin" \
+    --var psql_image=postgres:17 --var db_host=db.example --var "db_master_secret_arn=$(arn master)" \
+    --var "db_url_secret_arn=$(arn database-url)" --var "db_admin_url_secret_arn=$(arn database-admin-url)" \
+    ${extra[@]+"${extra[@]}"}
+}
+
+@test "the admin template's hub container gets the Apple audiences with the sign-in secrets" {
+  # `b4hub serve` refuses to start with the Apple secrets but no B4HUB_APPLE_AUDIENCES,
+  # and the admin task's hub container runs serve to stay alive.
+  run render_admin 1
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '[.containerDefinitions[0].secrets[].name] | join(",")' "$out")" = B4HUB_SECRET_KEY,B4HUB_APPLE_TEAM_ID,B4HUB_APPLE_KEY_ID,B4HUB_APPLE_PRIVATE_KEY,DATABASE_ADMIN_URL,DATABASE_URL ]
+  [ "$(jq -r '.containerDefinitions[0].environment[] | select(.name == "B4HUB_APPLE_AUDIENCES") | .value' "$out")" = com.cacheplane.b4app.ios,com.cacheplane.b4app.signin ]
+  [ "$(jq -r '.containerDefinitions[0].environment[] | select(.name == "B4HUB_WEBAUTHN_RP_ID") | .value' "$out")" = test.b4.run ]
+}
+
+@test "the admin template without the sign-in secrets sets no Apple audiences" {
+  run render_admin 0
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '[.containerDefinitions[0].secrets[].name] | join(",")' "$out")" = DATABASE_ADMIN_URL,DATABASE_URL ]
+  [ "$(jq -r '[.containerDefinitions[0].environment[] | select(.name == "B4HUB_APPLE_AUDIENCES")] | length' "$out")" = 0 ]
+}
+
 @test "the rendered document is never printed" {
   run render_hub 0
   [ "$status" -eq 0 ]
