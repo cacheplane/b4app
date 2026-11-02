@@ -33,6 +33,7 @@ Xcode 27 (Swift 6.4) requires macOS 26.6; the package uses `swift-tools-version:
 
 Exact resolved versions are in `Package.resolved`. The iOS mirror links the system `sqlite3`; no package provides it.
 
+
 ## Hub (M8a)
 
 Pinned exactly (`=`) in `Hub/Cargo.toml` `[workspace.dependencies]`, resolved in the committed `Hub/Cargo.lock`; builds and tests run `--locked`.
@@ -129,6 +130,18 @@ Feature flags on two already-pinned crates, one crate already in the lock used f
 | New environment | `B4HUB_LOG_FORMAT` (`text`, `json`; default by terminal), `B4HUB_TRUST_X_FORWARDED_FOR` (`1` on, `0` or unset off; `true`/`false` are also read here, but the sign-in branch's reader of the same name accepts only `1`/`0`, so set `1`), `B4HUB_MAINTENANCE_POLL_MS` (default 5000) |
 | New wire | `X-Request-Id` on every response; `503 maintenance` with `Retry-After: 30`; `"maintenance": "read_only"` on `/readyz`; all additive, `minClientProtocol` stays 1 |
 | Test database | Unchanged. Rust suite: 135 tests |
+
+### Hub instances (M8e Part B)
+
+No new crates and no new features: `uuid`'s `v7` and `tokio`'s `sync`/`time` were already enabled.
+
+| Item | Value |
+| --- | --- |
+| Hub migration | `0008_instances.sql` (`hub_instances`: `instance_id`, `started_at`, `heartbeat_at`, `public_url`; `user_links`: `user_id`, `instance_id`, `claimed_at`; hub-internal, no RLS, `b4hub_app` reads and writes). `0005` and `0007` are reserved for the sign-in branch |
+| New environment | `B4HUB_HEARTBEAT_MS` (default 5000; the liveness window is four heartbeats; every instance of one hub must agree) |
+| New wire | `409 relocated` (`details.instanceId`) at `GET /v1/devices/self/link`; `Set-Cookie: b4hub-instance=<id>` on accepted upgrades and `/readyz`; `"relay"` and `"instances"` on `/readyz`; a `maintenance` reply error over the link; all additive, `minClientProtocol` stays 1 |
+| Swift | `ErrorCode.relocated`; `HubLinkConnection.open(url:token:protocolVersion:cookies:)` (defaulted for existing conformers) and `HubLinkSocket.responseCookies` (defaulted) |
+| AWS ALB | application-cookie stickiness on `b4hub-instance`, 3600 s, enabled when `task_count > 1` |
 
 ## Provider runtimes
 
