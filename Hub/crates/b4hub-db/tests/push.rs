@@ -126,6 +126,14 @@ fn turn(seq: i64, id: &str, status: &str, outcome: Option<&str>, updated_at: &st
     )
 }
 
+fn delete(seq: i64, table: &str, row: &str) -> Change {
+    Change {
+        op: ChangeOp::Delete,
+        value: None,
+        ..insert(seq, table, row, Value::Null)
+    }
+}
+
 /// What matters about a set of notifications, ordered by device.
 fn summary(notifications: &[Notification]) -> Vec<(Uuid, String, Reason, String)> {
     let mut found: Vec<_> = notifications
@@ -480,4 +488,55 @@ async fn pruning_drops_old_ledger_rows(pool: PgPool) {
     let rows = ledger(&w).await;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].1, "request-2");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_request_deleted_in_the_same_push_does_not_notify(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Plan").await;
+    let outcome = push_batch(
+        &w,
+        &[
+            request(3, "request-1", "command_approval", "pending"),
+            delete(4, "runtimeRequests", "request-1"),
+        ],
+    )
+    .await;
+    assert!(outcome.notifications.is_empty());
+    assert!(ledger(&w).await.is_empty());
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_turn_in_a_deleted_thread_does_not_notify(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Gone").await;
+    push_batch(&w, &[delete(3, "threads", "thread-1")]).await;
+    let now = stamp(&w.app, &w.mac, "0 seconds").await;
+    let outcome = push_batch(
+        &w,
+        &[
+            turn(4, "turn-1", "terminal", Some("completed"), &now),
+            request(5, "request-1", "command_approval", "pending"),
+        ],
+    )
+    .await;
+    assert!(outcome.notifications.is_empty());
+    assert!(ledger(&w).await.is_empty());
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_deleted_turn_does_not_notify(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Ship it").await;
+    let now = stamp(&w.app, &w.mac, "0 seconds").await;
+    let outcome = push_batch(
+        &w,
+        &[
+            turn(3, "turn-1", "terminal", Some("completed"), &now),
+            delete(4, "turns", "turn-1"),
+        ],
+    )
+    .await;
+    assert!(outcome.notifications.is_empty());
+    assert!(ledger(&w).await.is_empty());
 }

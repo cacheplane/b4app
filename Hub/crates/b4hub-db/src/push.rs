@@ -174,7 +174,9 @@ pub(crate) async fn detect(
 }
 
 /// Reads the row (scoped to the org and the pushing user) with its thread's title and applies
-/// the rules. `None` when the row is gone, has no thread to open, or the rules say no.
+/// the rules. `None` when the row is gone or deleted (D-089: `deleted_at` set), has no thread to
+/// open, or the rules say no. A row whose thread is deleted never notifies either: a deleted
+/// thread cannot be opened, so the alert would lead nowhere.
 async fn subject(
     conn: &mut sqlx::postgres::PgConnection,
     auth: &AuthedDevice,
@@ -185,11 +187,13 @@ async fn subject(
         Kind::Request => {
             let row: Option<RequestRow> = sqlx::query_as(
                 "SELECT r.\"kind\" AS request_kind, r.\"state\" AS state, \
-                        r.\"threadId\" AS thread_id, t.\"title\" AS title \
+                        r.\"threadId\" AS thread_id, t.\"title\" AS title, \
+                        COALESCE(t.deleted_at IS NOT NULL, false) AS thread_deleted \
                  FROM \"runtimeRequests\" r \
                  LEFT JOIN \"threads\" t ON t.org_id = r.org_id AND t.user_id = r.user_id \
                                         AND t.\"id\" = r.\"threadId\" \
-                 WHERE r.org_id = $1 AND r.user_id = $2 AND r.\"id\" = $3",
+                 WHERE r.org_id = $1 AND r.user_id = $2 AND r.\"id\" = $3 \
+                   AND r.deleted_at IS NULL",
             )
             .bind(auth.org_id)
             .bind(auth.user_id)
@@ -201,6 +205,7 @@ async fn subject(
                 state,
                 thread_id: Some(thread_id),
                 title,
+                thread_deleted: false,
             }) = row
             else {
                 return Ok(None);
@@ -219,13 +224,15 @@ async fn subject(
             let row: Option<TurnRow> = sqlx::query_as(
                 "SELECT u.\"status\" AS status, u.\"outcome\" AS outcome, \
                         u.\"threadId\" AS thread_id, t.\"title\" AS title, \
+                        COALESCE(t.deleted_at IS NOT NULL, false) AS thread_deleted, \
                         CASE WHEN u.\"updatedAt\" ~ '^\\d{4}-\\d{2}-\\d{2}T' \
                              THEN u.\"updatedAt\"::timestamptz > now() - make_interval(secs => $4) \
                              ELSE false END AS recent \
                  FROM \"turns\" u \
                  LEFT JOIN \"threads\" t ON t.org_id = u.org_id AND t.user_id = u.user_id \
                                         AND t.\"id\" = u.\"threadId\" \
-                 WHERE u.org_id = $1 AND u.user_id = $2 AND u.\"id\" = $3",
+                 WHERE u.org_id = $1 AND u.user_id = $2 AND u.\"id\" = $3 \
+                   AND u.deleted_at IS NULL",
             )
             .bind(auth.org_id)
             .bind(auth.user_id)
@@ -238,6 +245,7 @@ async fn subject(
                 outcome,
                 thread_id: Some(thread_id),
                 title,
+                thread_deleted: false,
                 recent,
             }) = row
             else {
@@ -262,6 +270,7 @@ struct RequestRow {
     state: Option<String>,
     thread_id: Option<String>,
     title: Option<String>,
+    thread_deleted: bool,
 }
 
 #[derive(FromRow)]
@@ -270,5 +279,6 @@ struct TurnRow {
     outcome: Option<String>,
     thread_id: Option<String>,
     title: Option<String>,
+    thread_deleted: bool,
     recent: bool,
 }
