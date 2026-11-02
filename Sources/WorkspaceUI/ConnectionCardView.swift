@@ -78,8 +78,8 @@ enum ConnectionSummary {
   /// The windows a reading has, in order (5-hour, then weekly), so a plan with one window shows it
   /// at the leading edge.
   static func windows(_ reading: UsageReading) -> [(title: String, window: UsageWindow)] {
-    [("5-hour", reading.fiveHour), ("Weekly", reading.weekly)].compactMap { title, window in
-      window.map { (title, $0) }
+    [("5-hour", reading.fiveHour), ("Weekly", reading.weekly)].compactMap { fallback, window in
+      window.map { (UsageFormat.windowTitle($0.windowMinutes, fallback: fallback), $0) }
     }
   }
 }

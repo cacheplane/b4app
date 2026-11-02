@@ -6,8 +6,8 @@ import WorkspaceProtocol
 /// Claude Code 2.1.282's bundled schema.
 ///
 /// `unifiedWindows` (5-hour and weekly, each `utilization` as a fraction and `resetsAt` in epoch
-/// seconds) is marked `@internal` there, so when it is missing the top-level `utilization` and
-/// `resetsAt` fill the one window `rateLimitType` names, and the other stays unknown.
+/// seconds) is marked `@internal` there, so the top-level `utilization` and `resetsAt` fill the window
+/// `rateLimitType` names when `unifiedWindows` lacks it, and any other stays unknown.
 public enum ClaudeUsage {
   public static func reading(from info: JSONValue, observedAt: String) -> UsageReading? {
     var fiveHour: UsageWindow?
@@ -16,12 +16,13 @@ public enum ClaudeUsage {
       fiveHour = windows["five_hour"].flatMap { window($0, minutes: 300) }
       weekly = windows["seven_day"].flatMap { window($0, minutes: 10080) }
     }
-    if fiveHour == nil, weekly == nil, let type = info["rateLimitType"]?.stringValue {
-      if type == "five_hour" {
-        fiveHour = window(info, minutes: 300)
-      } else if type.hasPrefix("seven_day") {
-        weekly = window(info, minutes: 10080)
-      }
+    // The top-level figures describe the window closest to its limit; they fill that window when
+    // `unifiedWindows` lacks it. Per-model weekly buckets (`seven_day_opus`, `seven_day_sonnet`) and the
+    // overage-included one are not the plan's week, so they are not shown as "Weekly".
+    switch info["rateLimitType"]?.stringValue {
+    case "five_hour" where fiveHour == nil: fiveHour = window(info, minutes: 300)
+    case "seven_day" where weekly == nil: weekly = window(info, minutes: 10080)
+    default: break
     }
     guard fiveHour != nil || weekly != nil else { return nil }
     return UsageReading(
