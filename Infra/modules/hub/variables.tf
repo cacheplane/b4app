@@ -32,7 +32,7 @@ variable "private_tasks" {
 }
 
 variable "task_count" {
-  description = "Number of Fargate tasks the service is sized for." # used by ecs.tf
+  description = "Number of Fargate tasks the service is sized for." # used by ecs.tf and alb.tf (stickiness)
   type        = number
   default     = 1
 }

@@ -88,6 +88,17 @@ resource "aws_lb_target_group" "hub" {
     unhealthy_threshold = 3
     matcher             = "200"
   }
+
+  # The relay serves each user's links on one hub instance (D-085). With more than one task, the
+  # hub sets the `b4hub-instance` cookie on /readyz and on accepted link upgrades, and the ALB adds
+  # its AWSALBAPP-* cookie naming that target, so a device's reconnect lands where its user is
+  # served. One task needs no stickiness.
+  stickiness {
+    type            = "app_cookie"
+    cookie_name     = "b4hub-instance"
+    cookie_duration = 3600
+    enabled         = var.task_count > 1
+  }
 }
 
 resource "aws_lb_listener" "https" {
