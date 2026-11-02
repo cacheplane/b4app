@@ -33,7 +33,7 @@ public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
   public var title: String {
     switch self {
     case .connections: return "Connections"
-    case .servers: return "Local servers"
+    case .servers: return "B4 projects"
     case .diagnostics: return "Diagnostics"
     }
   }
@@ -91,6 +91,11 @@ public final class WorkspaceModel {
   public private(set) var diagnosticsError: String?
   public private(set) var diagnosticsLoading = false
   public private(set) var servers: [LocalServer] = []
+  /// Plan readings (Codex, Claude) and token totals (B4) per connection id, from `usage.read` and
+  /// `usage.changed`. Empty on the phone: usage stays on the Mac.
+  public internal(set) var usage: [String: ConnectionUsage] = [:]
+  /// Checks in progress that have said which try they are on, per connection id.
+  public internal(set) var checks: [String: ConnectionCheck] = [:]
   /// Latest redacted log tail per server id, replaced on each poll.
   public private(set) var serverLogs: [String: ServerLogs.Result] = [:]
   /// A stop or restart the coordinator refused because a turn is running; the view confirms force.
@@ -188,7 +193,7 @@ public final class WorkspaceModel {
   }
 
   private let transportProvider: TransportProvider
-  private var client: WorkspaceClient?
+  var client: WorkspaceClient?
   private var connectTask: Task<Void, Never>?
   /// Callers of `settledLink()` waiting for the link to leave `.connecting`.
   @ObservationIgnored private var linkWaiters: [CheckedContinuation<LinkState, Never>] = []
@@ -399,6 +404,7 @@ public final class WorkspaceModel {
       snapshot.activeTurns.map { ($0.threadId, $0) }, uniquingKeysWith: { _, new in new })
     servers = (try? await client.request(ServerList.self, EmptyParams()).servers) ?? []
     await refreshProjects()
+    await refreshUsage()
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
     if let id = selectedThreadId, detail != nil { await loadDetail(id: id) }
   }
@@ -964,11 +970,11 @@ public final class WorkspaceModel {
 
   // MARK: - Internals
 
-  private static func mutation(timeout: Duration = .seconds(30)) -> RequestOptions {
+  static func mutation(timeout: Duration = .seconds(30)) -> RequestOptions {
     RequestOptions(operationId: UUID().uuidString.lowercased(), timeout: timeout)
   }
 
-  private func perform<T: Sendable>(_ body: (WorkspaceClient) async throws -> T) async -> T? {
+  func perform<T: Sendable>(_ body: (WorkspaceClient) async throws -> T) async -> T? {
     guard let client else {
       lastError = "Coordinator is not connected."
       return nil
@@ -986,7 +992,7 @@ public final class WorkspaceModel {
     }
   }
 
-  private func merge(_ connection: Connection) {
+  func merge(_ connection: Connection) {
     if let index = connections.firstIndex(where: { $0.id == connection.id }) {
       connections[index] = connection
     } else {
@@ -1008,7 +1014,7 @@ public final class WorkspaceModel {
     }
   }
 
-  private func apply(_ event: AdapterEvent) {
+  func apply(_ event: AdapterEvent) {
     switch event.kind {
     case .threadUpdated:
       if let thread = try? event.payload["thread"]?.decode(ConversationThread.self) {
@@ -1020,7 +1026,10 @@ public final class WorkspaceModel {
       Task { await refreshProjects() }
     case .serverChanged:
       if let server = try? event.payload["server"]?.decode(LocalServer.self) { merge(server) }
+    case .usageChanged:
+      applyUsage(event)
     case .connectionChanged:
+      noteCheck(event)
       // A connection this client has not seen (added by the CLI or another window): refetch.
       if !connections.contains(where: { $0.id == event.connectionId }) {
         Task { try? await refreshSnapshot() }
@@ -1040,6 +1049,10 @@ public final class WorkspaceModel {
       applyToDetail(event)
       if let threadId = event.threadId {
         scheduleRefetch(threadId: threadId)
+        if event.kind == .turnFinished, connections.first(where: { $0.id == event.connectionId })?.kind == .b4
+        {
+          Task { await refreshUsage() }
+        }
         if event.kind == .turnFinished, detail?.thread.id == threadId {
           unreadHold.remove(threadId)
           Task { await markReadIfNeeded(threadId: threadId) }
