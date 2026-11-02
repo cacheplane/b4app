@@ -69,6 +69,7 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case accountAddPasskeyFinish = "account.addPasskeyFinish"
   case accountRemoveIdentity = "account.removeIdentity"
   case accountDelete = "account.delete"
+  case accountDismissNotice = "account.dismissNotice"
 
   public var isMutation: Bool {
     switch self {
@@ -81,7 +82,7 @@ public enum Method: String, Codable, Sendable, CaseIterable {
       .databaseImportSQLite, .hubJoin, .hubLeave, .projectCreate, .projectUpdate, .projectRename,
       .projectDelete, .threadMarkRead, .threadStart, .settingsUpdate, .accountPasskeyFinish,
       .accountAppleFinish, .accountCompleteProfile, .accountLogout, .accountAddPasskeyFinish,
-      .accountRemoveIdentity, .accountDelete:
+      .accountRemoveIdentity, .accountDelete, .accountDismissNotice:
       return true
     case .systemPing, .diagnosticsRead, .connectionList, .threadList, .draftRead, .eventsSnapshot,
       .eventsReplay, .threadRead, .serverList, .serverStatus, .serverLogs, .workspaceActiveWork,
@@ -796,9 +797,9 @@ public enum HubStatus: WorkspaceCommand {
     /// Whether the "keep the Mac awake" power assertion is held right now (M8c); absent from an older
     /// coordinator.
     public var keepAwakeHeld: Bool?
-    /// Something to tell the person once, such as "The last sign-out could not reach the hub; that
-    /// session was left open there." after a log-out the hub never heard (sign-in plan, Task 10).
-    /// Answered by the first `hub.status` that has it, then gone.
+    /// Something to tell the person, such as "The last sign-out could not reach the hub; that session
+    /// was left open there." after a log-out the hub never heard (sign-in plan, Task 10). It stays until
+    /// `account.dismissNotice`; reading the status never clears it.
     public var notice: String?
     public init(
       joined: Bool, url: String? = nil, deviceId: String? = nil, deviceName: String? = nil,

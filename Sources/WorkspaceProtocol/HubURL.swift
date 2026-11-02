@@ -26,4 +26,12 @@ public enum HubURL {
     guard let url = components.url else { throw invalid }
     return url
   }
+
+  /// `validate`'s URL as a string with no trailing `/`, so two spellings of one hub compare equal
+  /// (`http://localhost:8080/` and `http://localhost:8080`).
+  public static func canonical(_ string: String) throws -> String {
+    var text = try validate(string).absoluteString
+    while text.hasSuffix("/") { text.removeLast() }
+    return text
+  }
 }

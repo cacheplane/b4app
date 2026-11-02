@@ -116,8 +116,8 @@ import WorkspaceProtocol
   }
 
   /// A log-out that could not reach the hub leaves its session open there; the row says so until the
-  /// account's next sign-in reports it, once.
-  @Test func aSessionLeftOpenIsRecordedAndTakenOnce() throws {
+  /// person dismisses the notice.
+  @Test func aSessionLeftOpenIsRecordedUntilCleared() throws {
     let registry = try makeRegistry()
     let account = row()
     try registry.insert(account)
@@ -126,11 +126,10 @@ import WorkspaceProtocol
     try registry.signOut(id: account.id, hubSessionLeftOpen: true)
     #expect(try registry.all().first?.hubSessionLeftOpen == true)
     #expect(try registry.all().first?.tokenRef == nil)
-    // Signing in again keeps it until it is reported.
+    // Signing in again keeps it until it is dismissed.
     try registry.activate(id: account.id, tokenRef: "ref-2")
     #expect(try registry.active()?.hubSessionLeftOpen == true)
-    #expect(try registry.takeHubSessionLeftOpen(id: account.id))
-    #expect(try !registry.takeHubSessionLeftOpen(id: account.id))
+    try registry.clearHubSessionLeftOpen(id: account.id)
     #expect(try registry.active()?.hubSessionLeftOpen == false)
     // A sign-out that reached the hub records nothing.
     try registry.signOut(id: account.id)

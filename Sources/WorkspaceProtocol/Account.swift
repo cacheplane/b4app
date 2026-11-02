@@ -50,12 +50,19 @@ public enum AccountStatus: WorkspaceCommand {
     public var known: [Known]
     /// Why this Mac was signed out without asking, while it stays signed out.
     public var reason: SignOutReason?
+    /// Something to tell the signed-in person until they dismiss it (`account.dismissNotice`): "The last
+    /// sign-out could not reach the hub; that session was left open there." `hub.status` carries it too.
+    public var notice: String?
 
-    public init(state: State, account: Account? = nil, known: [Known] = [], reason: SignOutReason? = nil) {
+    public init(
+      state: State, account: Account? = nil, known: [Known] = [], reason: SignOutReason? = nil,
+      notice: String? = nil
+    ) {
       self.state = state
       self.account = account
       self.known = known
       self.reason = reason
+      self.notice = notice
     }
   }
 }
@@ -271,6 +278,14 @@ public enum AccountRemoveIdentity: WorkspaceCommand {
   }
   public typealias Result = AccountIdentities.Result
   public static let method = Method.accountRemoveIdentity
+}
+
+/// Dismiss the signed-in account's notice (`AccountStatus.Result.notice`, `HubStatus.Result.notice`)
+/// once the person has seen it. Reading a status never clears it.
+public enum AccountDismissNotice: WorkspaceCommand {
+  public typealias Params = EmptyParams
+  public typealias Result = AccountStatus.Result
+  public static let method = Method.accountDismissNotice
 }
 
 /// Delete the signed-in account at the hub, then sign out and drop its database and registry row on

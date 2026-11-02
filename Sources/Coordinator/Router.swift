@@ -87,7 +87,7 @@ public actor Router {
     case .systemPing, .diagnosticsRead, .eventsReplay, .hubJoin, .threadStart, .turnLookup, .accountStatus,
       .accountPasskeyBegin, .accountPasskeyFinish, .accountAppleStart, .accountAppleFinish,
       .accountCompleteProfile, .accountLogout, .accountIdentities, .accountAddPasskeyBegin,
-      .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete:
+      .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice:
       return false
     case .connectionList, .threadList, .draftRead, .draftSave, .eventsSnapshot, .connectionAdd,
       .connectionInspect, .connectionLogin, .threadCreate, .threadRead, .threadUpdate, .threadReconcile,
@@ -173,6 +173,8 @@ public actor Router {
           try command.params(for: AccountRemoveIdentity.self)))
     case .accountDelete:
       return try JSONValue(encoding: try await context.accounts.deleteAccount())
+    case .accountDismissNotice:
+      return try JSONValue(encoding: try await context.accounts.dismissNotice())
     default:
       throw WorkspaceError(.internalError, "\(command.method.rawValue) needs an account.")
     }
@@ -188,7 +190,7 @@ public actor Router {
     case .systemPing, .diagnosticsRead, .eventsReplay, .hubJoin, .threadStart, .turnLookup, .accountStatus,
       .accountPasskeyBegin, .accountPasskeyFinish, .accountAppleStart, .accountAppleFinish,
       .accountCompleteProfile, .accountLogout, .accountIdentities, .accountAddPasskeyBegin,
-      .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete:
+      .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice:
       throw WorkspaceError(.internalError, "\(command.method.rawValue) needs no account.")
     case .connectionList:
       let params = try command.params(for: ConnectionList.self)
@@ -328,7 +330,7 @@ public actor Router {
       return try JSONValue(encoding: DatabaseImportSQLite.Result(rows: summary.rows))
     case .hubStatus:
       var status = try await scope.hub.status()
-      status.notice = await context.accounts.takeNotice(for: scope)
+      status.notice = await context.accounts.notice(for: scope)
       return try JSONValue(encoding: status)
     case .hubLeave:
       throw WorkspaceError(.internalError, "hub.leave runs through the account manager.")

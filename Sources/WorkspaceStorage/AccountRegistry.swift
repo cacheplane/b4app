@@ -172,15 +172,13 @@ public final class AccountRegistry: Sendable {
     }
   }
 
-  /// Whether the account's last log-out left its hub session open, clearing the record: true once.
-  public func takeHubSessionLeftOpen(id: String) throws -> Bool {
+  /// Forget that the account's last log-out left its hub session open, once the person has been told
+  /// (`account.dismissNotice`).
+  public func clearHubSessionLeftOpen(id: String) throws {
     try run { c in
-      try c.execute(
-        """
-        UPDATE "accounts" SET "hub_session_left_open" = false
-        WHERE "id" = $1 AND "hub_session_left_open" RETURNING "id"
-        """, [id]
-      ).rows.isEmpty == false
+      let updated = try c.execute(
+        "UPDATE \"accounts\" SET \"hub_session_left_open\" = false WHERE \"id\" = $1", [id])
+      guard updated.affected == 1 else { throw WorkspaceError(.notFound, "No account \(id).") }
     }
   }
 

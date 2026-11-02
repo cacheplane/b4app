@@ -26,6 +26,7 @@ struct AccountCommand: AsyncParsableCommand {
       lines.append("hub        \(account?.hubURL ?? "")")
       lines.append("account    \(account?.id ?? "")")
     }
+    if let notice = status.notice { lines.append(notice) }
     let others = status.known.filter { $0.id != status.account?.id }
     if !others.isEmpty {
       lines.append(

@@ -62,6 +62,10 @@ struct HubCommand: AsyncParsableCommand {
       do {
         let client = try await Link.open()
         let status = try await client.request(HubStatus.self, EmptyParams())
+        // A notice is shown once here, then dismissed: the person has now been told.
+        if status.notice != nil {
+          _ = try? await client.request(AccountDismissNotice.self, EmptyParams(), options: Link.mutation())
+        }
         await client.close()
         print(global.json ? try Format.jsonOk(status) : HubCommand.describe(status))
       } catch {

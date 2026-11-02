@@ -46,13 +46,20 @@ private func hubError(_ code: String, status: Int) -> HubError {
   HubError(kind: "request_error", code: code, message: "Refused: \(code).", status: status)
 }
 
-/// The hub for these tests: one `FakeHubAPI` behind every client the coordinator builds. While
-/// `hanging`, every call waits (until its task is cancelled) instead of answering; a call can be
-/// refused once by name; the order of the account calls is recorded.
+/// The hub for these tests: one `FakeHubAPI` behind every client the coordinator builds.
+/// - While `hanging`, every call waits (until its task is cancelled) instead of answering.
+/// - While `stuck`, every call waits and ignores its cancellation, as a request in a client that does
+///   not honour it; `unstick()` lets them go on.
+/// - A call can be refused, or delayed, once by name; the order of the calls is recorded.
 final class CommandHub: Sendable {
   private struct State {
     var hanging = false
+    var stuck = false
+    var held: [CheckedContinuation<Void, Never>] = []
     var failures: [String: HubError] = [:]
+    var delays: [String: Duration] = [:]
+    var numberAppleCeremonies = false
+    var appleBegins = 0
     var calls: [String] = []
     var onEndSession: (@Sendable () -> Void)?
   }
@@ -62,23 +69,53 @@ final class CommandHub: Sendable {
 
   var calls: [String] { state.withLock { $0.calls } }
   func setHanging(_ value: Bool) { state.withLock { $0.hanging = value } }
+  func stick() { state.withLock { $0.stuck = true } }
+  func unstick() {
+    let held = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+      state.stuck = false
+      defer { state.held = [] }
+      return state.held
+    }
+    for call in held { call.resume() }
+  }
   func fail(_ call: String, with error: HubError) { state.withLock { $0.failures[call] = error } }
+  func delay(_ call: String, by duration: Duration) { state.withLock { $0.delays[call] = duration } }
+  /// Each `appleBegin` answers a ceremony id of its own (`<scripted id>-<n>`).
+  func numberAppleCeremonies() { state.withLock { $0.numberAppleCeremonies = true } }
   func onEndSession(_ body: @escaping @Sendable () -> Void) { state.withLock { $0.onEndSession = body } }
 
   func api(_ url: URL, _ token: @escaping @Sendable () async throws -> String?) -> any HubAPI {
     ForwardingAPI(hub: self)
   }
 
+  fileprivate func numberedAppleBegin(_ answer: AppleBeginResponse) -> AppleBeginResponse {
+    state.withLock { state in
+      state.appleBegins += 1
+      guard state.numberAppleCeremonies else { return answer }
+      return AppleBeginResponse(ceremonyId: "\(answer.ceremonyId)-\(state.appleBegins)", nonce: answer.nonce)
+    }
+  }
+
   fileprivate func enter(_ call: String) async throws {
-    let (hanging, failure, hook) = state.withLock {
-      state -> (Bool, HubError?, (@Sendable () -> Void)?) in
+    let (hanging, stuck, failure, delay, hook) = state.withLock {
+      state -> (Bool, Bool, HubError?, Duration?, (@Sendable () -> Void)?) in
       state.calls.append(call)
       return (
-        state.hanging, state.failures.removeValue(forKey: call),
-        call == "endSession" ? state.onEndSession : nil
+        state.hanging, state.stuck, state.failures.removeValue(forKey: call),
+        state.delays.removeValue(forKey: call), call == "endSession" ? state.onEndSession : nil
       )
     }
+    if stuck {
+      await withCheckedContinuation { continuation in
+        let still = state.withLock { state -> Bool in
+          if state.stuck { state.held.append(continuation) }
+          return state.stuck
+        }
+        if !still { continuation.resume() }
+      }
+    }
     if hanging { try await Task.sleep(for: .seconds(3600)) }
+    if let delay { try await Task.sleep(for: delay) }
     if let failure { throw failure }
     hook?()
   }
@@ -130,7 +167,7 @@ private struct ForwardingAPI: HubAPI {
   }
   func appleBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse {
     try await hub.enter("appleBegin")
-    return try await fake.appleBegin(request)
+    return hub.numberedAppleBegin(try await fake.appleBegin(request))
   }
   func handoff(_ request: HandoffRequest) async throws -> AuthSession {
     try await hub.enter("handoff")
@@ -270,6 +307,17 @@ struct CommandRig {
       .map { String(decoding: (try? JSONCoding.encoder.encode($0)) ?? Data(), as: UTF8.self) }
   }
 
+  /// Run one statement on `database` of the rig's cluster.
+  func execute(_ sql: String, _ arguments: [String?], database: String) throws {
+    let lib = try LibPQ.load(binDir: paths.postgres.binDir!)
+    let connection = try PostgresConnection(
+      lib: lib,
+      connectionString:
+        "host=\(paths.postgres.socketDir) port=\(paths.postgres.port) user=\(NSUserName()) dbname=\(database)"
+    )
+    _ = try connection.execute(sql, arguments)
+  }
+
   func databaseExists(_ name: String) throws -> Bool {
     let lib = try LibPQ.load(binDir: paths.postgres.binDir!)
     let admin = try PostgresConnection(
@@ -378,8 +426,8 @@ private func sha256Hex(_ text: String) -> String {
     #expect(try await again.client.request(AccountStatus.self, EmptyParams()).state == .signedIn)
   }
 
-  /// Ruling 5: a restart mid-onboarding comes back in onboarding at once, even with the hub hanging,
-  /// and never says "signed out" or "signed in" on the way.
+  /// Ruling 5: a restart mid-onboarding comes back in onboarding at once, while `/v1/me` has not
+  /// answered, and never says "signed out" or "signed in" on the way; `/v1/me` then corrects it.
   @Test func aRestartMidOnboardingStaysInOnboarding() async throws {
     let paths = try CommandRig.paths()
     let hub = CommandHub()
@@ -388,13 +436,21 @@ private func sha256Hex(_ text: String) -> String {
     try await first.signIn(newcomer)
     await first.close()
 
-    hub.setHanging(true)
+    // `/v1/me` is asked at the restore and gets no answer.
+    hub.stick()
     let second = try await CommandRig.start(paths: paths, secrets: secrets, hub: hub)
     defer { Task { await second.close() } }
-    #expect(await second.accounts.status().state == .needsOnboarding)
-    for event in await second.accountEvents() {
-      #expect(event.contains("needsOnboarding"))
-    }
+    #expect(try await second.client.request(AccountStatus.self, EmptyParams()).state == .needsOnboarding)
+    // Nothing was published on the way: no "signed out", no "signed in".
+    #expect(await second.accountEvents().isEmpty)
+
+    // The person finished onboarding on another device; the answer, when it comes, says so.
+    _ = try await hub.fake.setProfile(ProfileRequest(fullName: "New Person"))
+    hub.unstick()
+    try await eventually("the /v1/me answer") { await second.accounts.status().state == .signedIn }
+    let events = await second.accountEvents()
+    #expect(events.count == 1)
+    #expect(events.allSatisfy { $0.contains("signedIn") && !$0.contains("signedOut") })
   }
 
   @Test func logoutRefusedWithWorkRunning() async throws {
@@ -500,46 +556,230 @@ private func sha256Hex(_ text: String) -> String {
   }
 
   @Test func logoutBoundedWhenHubDown() async throws {
-    // The standard bounds keep a log-out within 21 s whatever the hub does.
+    // The standard bounds keep a log-out, close included, within 21 s whatever the hub does.
     let standard = AccountManager.LogoutTimeouts.standard
-    #expect(standard.work == .seconds(10) && standard.push == .seconds(10))
-    #expect(standard.work + standard.push + standard.endSessionFloor <= .seconds(21))
+    #expect(standard.total <= .seconds(21))
+    #expect(standard.work >= .milliseconds(9500) && standard.push >= .milliseconds(9500))
 
-    let rig = try await CommandRig.start()
-    defer { Task { await rig.close() } }
+    let paths = try CommandRig.paths()
+    let hub = CommandHub()
+    let secrets = MemorySecretStore()
+    let rig = try await CommandRig.start(paths: paths, secrets: secrets, hub: hub)
     try await rig.signIn(ann)
     let row = try rig.accounts.scope().account
     let ref = try #require(row.tokenRef.flatMap(SecretRef.init(rawValue:)))
     try rig.addThread("stuck")
-    // Shortened bounds, so the suite does not wait out the standard 20 s.
-    await rig.accounts.setLogoutTimeouts(
-      AccountManager.LogoutTimeouts(work: .seconds(2), push: .seconds(2), endSessionFloor: .milliseconds(300))
-    )
-    rig.hub.setHanging(true)
+    // Shortened bounds, so the suite does not wait out the standard 21 s.
+    let short = AccountManager.LogoutTimeouts(
+      work: .seconds(2), push: .seconds(2), endSessionFloor: .milliseconds(300), close: .seconds(1))
+    await rig.accounts.setLogoutTimeouts(short)
+    hub.setHanging(true)
 
     let clock = ContinuousClock()
     var status: AccountStatus.Result?
     let elapsed = try await clock.measure { status = try await rig.logout() }
     #expect(elapsed < .seconds(21))
-    #expect(elapsed < .seconds(8), "the shortened bounds were not honoured: \(elapsed)")
+    #expect(elapsed < short.total + .seconds(1), "the shortened bounds were not honoured: \(elapsed)")
     #expect(status?.state == .signedOut)
-    #expect(try await rig.secrets.read(ref) == nil)
+    #expect(try await secrets.read(ref) == nil)
     #expect(rig.accounts.current == nil)
     let registry = try rig.registry()
     defer { registry.close() }
     let stored = try #require(try registry.all().first { $0.id == row.id })
     #expect(stored.tokenRef == nil && stored.hubSessionLeftOpen)
-    #expect(await rig.hub.fake.endSessionCalls == 0)
+    #expect(await hub.fake.endSessionCalls == 0)
 
-    // The next sign-in of that account reports it once, through `hub status`.
-    rig.hub.setHanging(false)
+    // A restart between the failed log-out and the next sign-in keeps the record.
+    await rig.close()
+    hub.setHanging(false)
+    let again = try await CommandRig.start(paths: paths, secrets: secrets, hub: hub)
+    defer { Task { await again.close() } }
+    #expect(try await again.client.request(AccountStatus.self, EmptyParams()).notice == nil)
+    try await again.signIn(ann)
+    #expect(try again.accounts.scope().account.id == row.id)
+    #expect(try await again.client.request(HubStatus.self, EmptyParams()).notice == leftOpenNotice)
+  }
+
+  /// Ruling for I2: the notice stays, in `account.status` and `hub.status`, across reads and restarts,
+  /// until `account.dismissNotice`.
+  @Test func aLeftOpenNoticeLastsUntilDismissed() async throws {
+    let paths = try CommandRig.paths()
+    let hub = CommandHub()
+    let secrets = MemorySecretStore()
+    let rig = try await CommandRig.start(paths: paths, secrets: secrets, hub: hub)
     try await rig.signIn(ann)
+    await rig.accounts.setLogoutTimeouts(
+      AccountManager.LogoutTimeouts(
+        work: .seconds(1), push: .milliseconds(500), endSessionFloor: .milliseconds(200), close: .seconds(1)))
+    hub.setHanging(true)
+    _ = try await rig.logout()
+    hub.setHanging(false)
+    try await rig.signIn(ann)
+
+    for _ in 0..<3 {
+      #expect(try await rig.client.request(HubStatus.self, EmptyParams()).notice == leftOpenNotice)
+      #expect(try await rig.client.request(AccountStatus.self, EmptyParams()).notice == leftOpenNotice)
+    }
+    await rig.close()
+
+    let again = try await CommandRig.start(paths: paths, secrets: secrets, hub: hub)
+    #expect(try await again.client.request(AccountStatus.self, EmptyParams()).notice == leftOpenNotice)
+    #expect(try await again.client.request(HubStatus.self, EmptyParams()).notice == leftOpenNotice)
+    let dismissed = try await again.client.request(
+      AccountDismissNotice.self, EmptyParams(), options: CommandRig.mutation())
+    #expect(dismissed.notice == nil && dismissed.state == .signedIn)
+    #expect(try await again.client.request(HubStatus.self, EmptyParams()).notice == nil)
+    #expect(await again.accountEvents().last?.contains("notice") == false)
+    await again.close()
+
+    let third = try await CommandRig.start(paths: paths, secrets: secrets, hub: hub)
+    defer { Task { await third.close() } }
+    #expect(try await third.client.request(AccountStatus.self, EmptyParams()).notice == nil)
+    #expect(try await third.client.request(HubStatus.self, EmptyParams()).notice == nil)
+  }
+
+  /// I1: the whole log-out, close included, stays inside its bounds when a runtime ignores its interrupt
+  /// and its dispose, and the hub never answers and ignores cancellation (the pull loop too).
+  @Test func logoutIsBoundedWhenTheRuntimeAndTheHubIgnoreCancellation() async throws {
+    let adapters = StubbornAdapters()
+    let rig = try await CommandRig.start(adapterFactory: { _, _, _, _ in adapters.make() })
+    try await rig.signIn(ann)
+    try rig.addThread("busy")
+    _ = try await rig.client.request(
+      TurnSend.self, TurnSend.Params(threadId: "busy", text: "go"), options: CommandRig.mutation())
+    let row = try rig.accounts.scope().account
+    let ref = try #require(row.tokenRef.flatMap(SecretRef.init(rawValue:)))
+    let short = AccountManager.LogoutTimeouts(
+      work: .seconds(2), push: .seconds(1), endSessionFloor: .milliseconds(300), close: .seconds(1))
+    await rig.accounts.setLogoutTimeouts(short)
+    rig.hub.stick()
+
+    let clock = ContinuousClock()
+    var status: AccountStatus.Result?
+    let elapsed = try await clock.measure { status = try await rig.logout(stopWork: true) }
+    #expect(elapsed < short.total + .seconds(1), "the log-out took \(elapsed)")
+    #expect(status?.state == .signedOut)
+    #expect(adapters.interrupts == 1)
+    #expect(adapters.disposes == 1)
+    // Signed out and recorded, although the close never finished.
+    #expect(try await rig.secrets.read(ref) == nil)
+    let registry = try rig.registry()
+    defer { registry.close() }
+    let stored = try #require(try registry.all().first { $0.id == row.id })
+    #expect(stored.tokenRef == nil && !stored.active && stored.hubSessionLeftOpen)
+
+    rig.hub.unstick()
+    adapters.release()
+    await rig.close()
+  }
+
+  /// M8: remote B4 runs are detached, never cancelled; they still count as work to confirm, marked as
+  /// running elsewhere.
+  @Test func logoutDetachesRemoteRunsAndInterruptsLocalOnes() async throws {
+    let adapters = RunningAdapters()
+    let rig = try await CommandRig.start(adapterFactory: { _, _, _, _ in adapters.make() })
+    defer { Task { await rig.close() } }
+    try await rig.signIn(ann)
+    let db = try rig.accounts.scope().database
+    _ = try db.insertConnection(
+      Connection(id: "local", kind: .claude, label: "Claude", target: "/bin/claude"))
+    _ = try db.insertConnection(
+      Connection(
+        id: "remote", kind: .b4, label: "Remote B4", target: "https://b4.example.com",
+        routeKey: "/chat#agent",
+        b4Mode: .remote))
+    for (thread, connection) in [("mine", "local"), ("theirs", "remote")] {
+      _ = try db.insertThread(
+        ConversationThread(
+          id: thread, connectionId: connection, nativeThreadId: "n-\(thread)", nativeScope: "me",
+          title: thread))
+      _ = try await rig.client.request(
+        TurnSend.self, TurnSend.Params(threadId: thread, text: "go"), options: CommandRig.mutation())
+    }
+    let remoteTurn = try #require(try db.activeTurn(threadId: "theirs"))
+    let database = try rig.accounts.scope().account.database
+
+    let refused = await #expect(throws: WorkspaceError.self) { _ = try await rig.logout(stopWork: false) }
+    let work = try #require(try refused?.details?["work"]?.decode(WorkspaceActiveWork.Result.self))
+    #expect(work.localTurns.map(\.threadId) == ["mine"])
+    #expect(work.remoteTurns.map(\.threadId) == ["theirs"])
+    #expect(refused?.message.contains("continues there") == true)
+    // A refused log-out admits work again.
+    _ = try await rig.client.request(
+      DraftSave.self, DraftSave.Params(threadId: "mine", text: "still here"), options: CommandRig.mutation())
+
+    _ = try await rig.logout(stopWork: true)
+    #expect(adapters.interrupts == 1, "only the local runtime is interrupted")
+    var endpoint = rig.paths.postgres
+    endpoint.database = database
+    let reopened = try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
+    defer { try? reopened.close() }
+    #expect(try reopened.turn(id: remoteTurn.id)?.status != .terminal)
+  }
+
+  /// M6: a server whose start is still in flight is stopped by a log-out, within its bounds.
+  @Test func logoutStopsAServerStartInFlight() async throws {
+    let base = NSTemporaryDirectory() + "b4af-\(UUID().uuidString.prefix(8))"
+    let paths = try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
+    var environment = ProcessInfo.processInfo.environment
+    environment["B4APP_NODE_PATH"] = fakeNodePath()
+    let rig = try await CommandRig.start(paths: paths, environment: environment)
+    defer { Task { await rig.close() } }
+    try await rig.signIn(ann)
+    let project = try FakeB4Project.make(root: base + "/proj")
+    try "FAKE_B4_READY_DELAY=60\n".write(toFile: project + "/.env", atomically: true, encoding: .utf8)
+    let server = try await rig.client.request(
+      ServerAdd.self, ServerAdd.Params(projectPath: project), options: CommandRig.mutation()
+    ).server
+    let scope = try rig.accounts.scope()
+    let start = Task {
+      try await rig.client.request(
+        ServerStart.self, ServerRef(serverId: server.id), options: CommandRig.mutation(.seconds(150)))
+    }
+    try await eventually("the server's process") {
+      (try? scope.database.localServer(id: server.id))??.pid != nil
+    }
+    let pid = try #require(try scope.database.localServer(id: server.id)?.pid)
+    await rig.accounts.setLogoutTimeouts(
+      AccountManager.LogoutTimeouts(
+        work: .seconds(6), push: .seconds(1), endSessionFloor: .milliseconds(300), close: .seconds(1)))
+
+    // Another connection: the socket answers one connection's commands in order, so the log-out would
+    // otherwise queue behind the start.
+    let other = try await UnixSocketTransport.client(path: rig.paths.socketPath)
+    defer { Task { await other.close() } }
+    let clock = ContinuousClock()
+    let elapsed = try await clock.measure {
+      _ = try await other.request(
+        AccountLogout.self, AccountLogout.Params(stopWork: true), options: CommandRig.mutation())
+    }
+    #expect(elapsed < .seconds(10), "the log-out took \(elapsed)")
+    // The start answers (refused), rather than waiting out its readiness.
+    let waited = await clock.measure { _ = await start.result }
+    #expect(waited < .seconds(10), "the start answered after \(waited)")
+    let started = await start.result
+    #expect(throws: (any Error).self) { try started.get() }
+    try await eventually("the starting server to be gone") { !ProcessInspector.isAlive(pid: pid) }
+  }
+
+  /// M7: a row made with another spelling of the same hub is the same account and offers its device.
+  @Test func aHubSpelledWithASlashIsTheSameHub() async throws {
+    let rig = try await CommandRig.start()
+    defer { Task { await rig.close() } }
+    try await rig.signIn(ann)
+    let row = try rig.accounts.scope().account
+    _ = try await rig.logout()
+    // As `hub join http://localhost:8080/` would have stored it.
+    try rig.execute(
+      "UPDATE \"accounts\" SET \"hub_url\" = $1 WHERE \"id\" = $2", [localHub + "/", row.id],
+      database: AccountManager.registryDatabaseName(for: rig.paths.postgres))
+
+    try await rig.signIn(ann)
+    #expect(await rig.hub.fake.passkeyFinishes.last?.device.deviceId == devAnn)
     #expect(try rig.accounts.scope().account.id == row.id)
-    let first = try await rig.client.request(HubStatus.self, EmptyParams())
-    #expect(first.notice == leftOpenNotice)
-    let second = try await rig.client.request(HubStatus.self, EmptyParams())
-    #expect(second.notice == nil)
-    #expect(try registry.active()?.hubSessionLeftOpen == false)
+    let registry = try rig.registry()
+    defer { registry.close() }
+    #expect(try registry.all().count == 1)
   }
 
   @Test func deleteDropsDatabaseAndRow() async throws {
@@ -863,6 +1103,28 @@ private func runCLI(
     #expect(plain.stdout.contains("Ann's Org"))
   }
 
+  /// The CLI shows the left-open notice once, then dismisses it.
+  @Test func hubStatusShowsTheNoticeThenDismissesIt() async throws {
+    let rig = try await CommandRig.start()
+    defer { Task { await rig.close() } }
+    try await rig.signIn(ann)
+    await rig.accounts.setLogoutTimeouts(
+      AccountManager.LogoutTimeouts(
+        work: .seconds(1), push: .milliseconds(500), endSessionFloor: .milliseconds(200), close: .seconds(1)))
+    rig.hub.setHanging(true)
+    _ = try await rig.logout()
+    rig.hub.setHanging(false)
+    try await rig.signIn(ann)
+    #expect(try await rig.client.request(AccountStatus.self, EmptyParams()).notice == leftOpenNotice)
+
+    let shown = try await runCLI(["hub", "status"], paths: rig.paths)
+    #expect(shown.status == 0, "\(shown.stderr)")
+    #expect(shown.stdout.contains(leftOpenNotice))
+    #expect(try await rig.client.request(AccountStatus.self, EmptyParams()).notice == nil)
+    let again = try await runCLI(["hub", "status"], paths: rig.paths)
+    #expect(!again.stdout.contains(leftOpenNotice))
+  }
+
   @Test func threadListSignedOutExitsFour() async throws {
     let rig = try await CommandRig.start()
     defer { Task { await rig.close() } }
@@ -940,4 +1202,81 @@ private actor RunningAdapter: AgentAdapter {
   }
   nonisolated func events() -> AsyncStream<AdapterEvent> { stream }
   func dispose() async {}
+}
+
+// MARK: - A runtime that ignores its interrupt and its dispose
+
+/// Counts the interrupts and disposes of its adapters, none of which ever returns (nor honours
+/// cancellation) until `release()`.
+final class StubbornAdapters: Sendable {
+  private struct State {
+    var interrupts = 0
+    var disposes = 0
+    var released = false
+    var held: [CheckedContinuation<Void, Never>] = []
+  }
+
+  private let state = Mutex(State())
+  var interrupts: Int { state.withLock { $0.interrupts } }
+  var disposes: Int { state.withLock { $0.disposes } }
+  func make() -> any AgentAdapter { StubbornAdapter(owner: self) }
+
+  func interrupted() { state.withLock { $0.interrupts += 1 } }
+  func disposed() { state.withLock { $0.disposes += 1 } }
+
+  /// Wait, ignoring cancellation, until `release()`.
+  func hold() async {
+    await withCheckedContinuation { continuation in
+      let now = state.withLock { state -> Bool in
+        if !state.released { state.held.append(continuation) }
+        return state.released
+      }
+      if now { continuation.resume() }
+    }
+  }
+
+  func release() {
+    let held = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+      state.released = true
+      defer { state.held = [] }
+      return state.held
+    }
+    for waiter in held { waiter.resume() }
+  }
+}
+
+private actor StubbornAdapter: AgentAdapter {
+  nonisolated let kind: ConnectionKind = .claude
+  private let owner: StubbornAdapters
+  private nonisolated let stream: AsyncStream<AdapterEvent>
+
+  init(owner: StubbornAdapters) {
+    self.owner = owner
+    stream = AsyncStream { _ in }
+  }
+
+  private func unsupported() -> WorkspaceError {
+    WorkspaceError(.unsupportedCapability, "Not used by this test.")
+  }
+
+  func inspectConnection() async throws -> ConnectionInspection { throw unsupported() }
+  func createSession(_ input: NewSessionInput) async throws -> NativeSessionRef { throw unsupported() }
+  func loadSession(_ ref: NativeSessionRef) async throws -> SessionSnapshot { throw unsupported() }
+  func sendTurn(_ ref: NativeSessionRef, input: TurnInput) async throws -> SubmissionReceipt {
+    SubmissionReceipt(nativeTurnId: "native-stubborn", acknowledged: true)
+  }
+  func interrupt(_ ref: NativeSessionRef, turn: ActiveTurnRef) async throws -> StopReceipt {
+    owner.interrupted()
+    await owner.hold()
+    return StopReceipt(confirmed: false, outcome: nil)
+  }
+  func respond(_ ref: RuntimeRequestRef, response: RuntimeResponse) async throws { throw unsupported() }
+  func reconcile(_ ref: NativeSessionRef, turn: ActiveTurnRef?) async throws -> ReconcileResult {
+    throw unsupported()
+  }
+  nonisolated func events() -> AsyncStream<AdapterEvent> { stream }
+  func dispose() async {
+    owner.disposed()
+    await owner.hold()
+  }
 }

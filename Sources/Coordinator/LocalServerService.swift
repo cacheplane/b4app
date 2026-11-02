@@ -156,7 +156,7 @@ public actor LocalServerService {
     if closing { throw WorkspaceError(.signedOut, AccountManager.signedOutMessage) }
     while let current = inFlight[id] {
       if current.kind == .start { return try await current.task.value }
-      _ = try? await current.task.value
+      await settle(id, current.task)
     }
     let server = try require(id)
     if server.health == .ready, running[id] != nil { return ServerAdd.Result(server: server) }
@@ -164,8 +164,16 @@ public actor LocalServerService {
     if closing { throw WorkspaceError(.signedOut, AccountManager.signedOutMessage) }
     let task = Task { try await self.launch(server) }
     inFlight[id] = (.start, task)
-    defer { inFlight[id] = nil }
+    defer { if inFlight[id]?.task == task { inFlight[id] = nil } }
     return try await task.value
+  }
+
+  /// Wait for an operation in flight to end, then clear it if its owner has not yet: an ended task's
+  /// value is ready at once, so waiting on it again would spin on this actor and never let the owner
+  /// run its own clean-up (a log-out that cancelled a start livelocked here).
+  private func settle(_ id: String, _ task: Task<ServerAdd.Result, any Error>) async {
+    _ = try? await task.value
+    if inFlight[id]?.task == task { inFlight[id] = nil }
   }
 
   private func launch(_ server: LocalServer) async throws -> ServerAdd.Result {
@@ -283,10 +291,10 @@ public actor LocalServerService {
 
   /// `stop` with the time between SIGTERM and SIGKILL.
   private func stop(id: String, force: Bool, gracePeriod: Duration) async throws -> ServerAdd.Result {
-    while let current = inFlight[id] { _ = try? await current.task.value }
+    while let current = inFlight[id] { await settle(id, current.task) }
     let task = Task { try await self.performStop(id: id, force: force, gracePeriod: gracePeriod) }
     inFlight[id] = (.stop, task)
-    defer { inFlight[id] = nil }
+    defer { if inFlight[id]?.task == task { inFlight[id] = nil } }
     return try await task.value
   }
 

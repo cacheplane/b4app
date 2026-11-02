@@ -482,6 +482,17 @@ async fn begin_native(hub: &Hub) -> (Value, String) {
 
 /// The native flow end to end for `sub` on an iPhone, with the identity token signed by `kid`.
 async fn native(setup: &Setup, sub: &str, kid: &str, full_name: Option<&str>) -> Answer {
+    native_on(setup, sub, kid, full_name, device("Brian's iPhone", "ios")).await
+}
+
+/// `native` with the request's `device` given.
+async fn native_on(
+    setup: &Setup,
+    sub: &str,
+    kid: &str,
+    full_name: Option<&str>,
+    device: Value,
+) -> Answer {
     let (ceremony, nonce) = begin_native(&setup.hub).await;
     let token = setup.fake.token_with(
         kid,
@@ -490,7 +501,7 @@ async fn native(setup: &Setup, sub: &str, kid: &str, full_name: Option<&str>) ->
     let code = setup.fake.code(sub, BUNDLE_ID, None);
     let mut body = json!({
         "ceremonyId": ceremony, "identityToken": token, "authorizationCode": code,
-        "device": device("Brian's iPhone", "ios"),
+        "device": device,
     });
     if let Some(name) = full_name {
         body["fullName"] = json!(name);
@@ -579,12 +590,35 @@ fn handoff_in(location: &str, scheme: &str) -> String {
 }
 
 async fn redeem(hub: &Hub, handoff: &str, verifier: &str) -> Answer {
-    hub.post(
-        HANDOFF,
-        Some(&json!({"handoff": handoff, "verifier": verifier,
-                     "device": device("Brian's MacBook Pro", "macos")})),
+    redeem_on(
+        hub,
+        handoff,
+        verifier,
+        device("Brian's MacBook Pro", "macos"),
     )
     .await
+}
+
+/// `redeem` with the request's `device` given.
+async fn redeem_on(hub: &Hub, handoff: &str, verifier: &str, device: Value) -> Answer {
+    hub.post(
+        HANDOFF,
+        Some(&json!({"handoff": handoff, "verifier": verifier, "device": device})),
+    )
+    .await
+}
+
+/// `device(name, platform)` offering `candidates` to reuse.
+fn device_with_candidates(name: &str, platform: &str, candidates: Vec<String>) -> Value {
+    let mut device = device(name, platform);
+    device["candidateDeviceIds"] = json!(candidates);
+    device
+}
+
+fn many_candidates(count: u128) -> Vec<String> {
+    (0..count)
+        .map(|n| Uuid::from_u128(n + 1).to_string())
+        .collect()
 }
 
 async fn count(pool: &PgPool, sql: &str) -> i64 {
@@ -630,6 +664,72 @@ async fn native_sign_up_then_sign_in_same_sub(pool: PgPool) {
     assert_eq!(identities[0]["name"], "001.alice@privaterelay.appleid.com");
     assert!(identities[0]["lastUsedAt"].is_string());
     assert_eq!(count(&pool, "SELECT count(*) FROM users").await, 1);
+}
+
+#[sqlx::test(migrations = false)]
+async fn native_reuses_a_candidate_device_and_caps_them(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let up = native(&setup, "001.cand", EC_KID, None).await;
+    assert_eq!(up.status, StatusCode::OK, "{}", up.body);
+    let phone = up.body["deviceId"].as_str().unwrap().to_string();
+
+    let unknown = Uuid::from_u128(77).to_string();
+    let again = native_on(
+        &setup,
+        "001.cand",
+        EC_KID,
+        None,
+        device_with_candidates("Brian's iPhone", "ios", vec![unknown, phone.clone()]),
+    )
+    .await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+    assert_eq!(again.body["deviceId"], phone.as_str());
+
+    let over = native_on(
+        &setup,
+        "001.cand",
+        EC_KID,
+        None,
+        device_with_candidates("Brian's iPhone", "ios", many_candidates(33)),
+    )
+    .await;
+    assert_eq!(over.status, StatusCode::BAD_REQUEST, "{}", over.body);
+    assert_eq!(over.code(), "invalid_request");
+}
+
+#[sqlx::test(migrations = false)]
+async fn handoff_reuses_a_candidate_device_and_caps_them(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let (handoff, verifier) = web_handoff(&setup, "001.webcand").await;
+    let first = redeem(&setup.hub, &handoff, &verifier).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let mac = first.body["deviceId"].as_str().unwrap().to_string();
+
+    // Too many candidates is refused before the handoff is used up, so it still redeems.
+    let (handoff, verifier) = web_handoff(&setup, "001.webcand").await;
+    let over = redeem_on(
+        &setup.hub,
+        &handoff,
+        &verifier,
+        device_with_candidates("Mac", "macos", many_candidates(33)),
+    )
+    .await;
+    assert_eq!(over.status, StatusCode::BAD_REQUEST, "{}", over.body);
+    assert_eq!(over.code(), "invalid_request");
+
+    let again = redeem_on(
+        &setup.hub,
+        &handoff,
+        &verifier,
+        device_with_candidates(
+            "Mac",
+            "macos",
+            vec![Uuid::from_u128(78).to_string(), mac.clone()],
+        ),
+    )
+    .await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+    assert_eq!(again.body["deviceId"], mac.as_str());
 }
 
 #[sqlx::test(migrations = false)]

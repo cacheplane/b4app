@@ -5,10 +5,10 @@
 -- (or the sign-in screen) for an account that still has to onboard; `/v1/me` corrects it.
 --
 -- "hub_session_left_open": a log-out whose `DELETE /v1/sessions/self` never reached the hub (review
--- focus 3). The token is forgotten on this Mac, but the hub still holds it. The account's next
--- sign-in reports it once ("The last sign-out could not reach the hub; that session was left open
--- there.") and clears it. The sign-in itself ends that session: the hub replaces a reused device's
--- earlier tokens.
+-- focus 3). The token is forgotten on this Mac, but the hub still holds it. Once the account signs in
+-- again, `account.status` and `hub.status` carry the notice ("The last sign-out could not reach the
+-- hub; that session was left open there.") until `account.dismissNotice` clears it. The sign-in itself
+-- ends that session: the hub replaces a reused device's earlier tokens.
 
 ALTER TABLE "accounts" ADD COLUMN "needs_onboarding" boolean NOT NULL DEFAULT false;
 ALTER TABLE "accounts" ADD COLUMN "hub_session_left_open" boolean NOT NULL DEFAULT false;

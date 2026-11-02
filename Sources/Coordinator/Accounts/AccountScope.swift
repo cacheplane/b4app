@@ -42,6 +42,11 @@ public final class ScopeGate: Sendable {
     state.withLock { $0.closing = true }
   }
 
+  /// Admit work again after `close()`: a log-out that found work running and was told not to stop it.
+  func reopen() {
+    state.withLock { $0.closing = false }
+  }
+
   /// Wait until nobody is inside, or `timeout` has passed. Returns whether everyone left.
   func drain(timeout: Duration) async -> Bool {
     let deadline = ContinuousClock.now + timeout
@@ -250,8 +255,14 @@ public final class AccountScope: Sendable {
   }
 
   /// Refuse new work from here on (`enter()` answers `signed_out`), without closing anything yet: the
-  /// first thing a log-out does, so nothing starts while it stops what is running.
+  /// first thing a log-out does, so nothing starts while it decides and stops what is running.
   func refuseNewWork() { gate.close() }
+
+  /// Undo `refuseNewWork()` (a refused log-out). Nothing once `close()` has begun.
+  func admitWorkAgain() {
+    guard !closed.withLock({ $0 }) else { return }
+    gate.reopen()
+  }
 
   /// Wait up to `timeout` for the work already admitted to leave. Returns whether it all did.
   func drain(timeout: Duration) async -> Bool { await gate.drain(timeout: timeout) }

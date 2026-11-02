@@ -84,8 +84,10 @@ public actor AccountManager {
   var appleCeremony: AppleCeremony?
   /// Log-out's bounds; tests shorten them.
   var logoutTimeouts = LogoutTimeouts.standard
-  private var busy = false
-  private var waiters: [CheckedContinuation<Void, Never>] = []
+  /// One transition at a time (`acquire`/`release`).
+  private let transitions = AsyncLock()
+  /// One `account.appleStart` at a time, so the verifier kept is always the last answer's.
+  let appleStarts = AsyncLock()
 
   public init(context: Context) {
     registry = context.registry
@@ -130,7 +132,7 @@ public actor AccountManager {
       state: needsOnboarding ? .needsOnboarding : .signedIn,
       account: AccountStatus.Account(
         id: active.id, displayName: active.displayName, orgName: active.orgName, hubURL: active.hubURL),
-      known: known)
+      known: known, notice: active.hubSessionLeftOpen ? Self.sessionLeftOpenNotice : nil)
   }
 
   // MARK: - Lifecycle
@@ -221,14 +223,14 @@ public actor AccountManager {
   ) async throws -> AccountStatus.Result {
     await acquire()
     defer { release() }
-    let base = try HubURL.validate(hubURL).absoluteString
+    let base = try HubURL.canonical(hubURL)
     let placeholder = Self.placeholderUserId(deviceId: session.deviceId)
     let hubUserId = session.userId ?? placeholder
     // A row registered before its user id was known is this account's when the hub answered with its
     // device: claim it.
     let existing =
-      try registry.find(hubURL: base, hubUserId: hubUserId)
-      ?? (hubUserId == placeholder ? nil : try registry.find(hubURL: base, hubUserId: placeholder))
+      try findRow(hubURL: base, hubUserId: hubUserId)
+      ?? (hubUserId == placeholder ? nil : try findRow(hubURL: base, hubUserId: placeholder))
     var row: AccountRow
     if let existing {
       row = existing
@@ -276,7 +278,7 @@ public actor AccountManager {
         displayName: session.user.displayName, orgName: session.org.name)
       try registry.setNeedsOnboarding(id: row.id, session.needsOnboarding)
       try registry.activate(id: row.id, tokenRef: ref.rawValue)
-      row = try registry.find(hubURL: base, hubUserId: hubUserId) ?? row
+      row = try findRow(hubURL: base, hubUserId: hubUserId) ?? row
     } catch {
       // Put back what this sign-in wrote; the previous account (when it was another) is still open.
       if inserted {
@@ -306,8 +308,8 @@ public actor AccountManager {
       refresh?.cancel()
       slot.set(nil)
       let ended = await Self.endHubSession(of: previous, within: .seconds(3))
-      await previous.close(stoppingServers: true)
       await forgetToken(of: previous.account, deactivate: true, hubSessionLeftOpen: !ended)
+      await Self.close(previous, within: Self.switchCloseBudget)
     }
     // The secret the link named before (an earlier session's) is no longer anyone's.
     if let old = link?.tokenRef, old != ref.rawValue, let oldRef = SecretRef(rawValue: old) {
@@ -404,13 +406,17 @@ public actor AccountManager {
   }
 
   /// `hubSessionLeftOpen` records that the hub still holds the token (a log-out that could not reach
-  /// it). `drainTimeout` and `serverBudget` bound the scope's close (log-out has already waited for
-  /// both). `publishing` false leaves the event to the caller (deletion publishes once, after it drops
-  /// the account).
+  /// it). `drainTimeout` and `serverBudget` bound parts of the scope's close (log-out has already waited
+  /// for both), and `closeBudget` the whole of it: what has not finished by then goes on in the
+  /// background. `publishing` false leaves the event to the caller (deletion publishes once, after it
+  /// drops the account).
+  ///
+  /// The token is forgotten and the registry row written first, so a close that never ends still
+  /// leaves the account signed out.
   func performSignOut(
     reason: SignOutReason?, hubSessionLeftOpen: Bool = false,
     drainTimeout: Duration = AccountScope.drainTimeout, serverBudget: Duration = .seconds(10),
-    publishing: Bool = true
+    stoppingServers: Bool = true, closeBudget: Duration? = nil, publishing: Bool = true
   ) async {
     guard let scope = slot.get() else { return }
     refresh?.cancel()
@@ -418,8 +424,10 @@ public actor AccountManager {
     // Commands see "signed out" from here on, not a closing store; the status says so once the scope
     // is closed and the token forgotten.
     slot.set(nil)
-    await scope.close(stoppingServers: true, drainTimeout: drainTimeout, serverBudget: serverBudget)
     await forgetToken(of: scope.account, deactivate: true, hubSessionLeftOpen: hubSessionLeftOpen)
+    await Self.close(
+      scope, stoppingServers: stoppingServers, drainTimeout: drainTimeout, serverBudget: serverBudget,
+      within: closeBudget)
     active = nil
     needsOnboarding = false
     self.reason = reason
@@ -429,6 +437,37 @@ public actor AccountManager {
   }
 
   // MARK: - Helpers
+
+  /// The row of `hubUserId` on the hub `hubURL` (canonical), however the row spells that hub: one made
+  /// by `hub join http://localhost:8080/` is the same hub as the local flavour's.
+  func findRow(hubURL: String, hubUserId: String) throws -> AccountRow? {
+    try registry.all().first { $0.hubUserId == hubUserId && Self.sameHub($0.hubURL, hubURL) }
+  }
+
+  /// Whether two hub URLs name the same hub once canonical.
+  static func sameHub(_ a: String, _ b: String) -> Bool {
+    (try? HubURL.canonical(a)) == (try? HubURL.canonical(b)) && (try? HubURL.canonical(a)) != nil
+  }
+
+  /// How long an account switch waits for the previous account's scope to close.
+  static let switchCloseBudget: Duration = .seconds(12)
+
+  /// Close `scope`, waiting at most `budget` (nil: as long as it takes); the rest of the close goes on
+  /// in the background.
+  static func close(
+    _ scope: AccountScope, stoppingServers: Bool = true, drainTimeout: Duration = AccountScope.drainTimeout,
+    serverBudget: Duration = .seconds(10), within budget: Duration?
+  ) async {
+    let close: @Sendable () async -> Void = {
+      await scope.close(
+        stoppingServers: stoppingServers, drainTimeout: drainTimeout, serverBudget: serverBudget)
+    }
+    guard let budget else { return await close() }
+    if await !Bounded.run(within: budget, close) {
+      Log.logger("accounts").warning(
+        "account \(scope.account.id, privacy: .public)'s scope was still closing when its time ran out")
+    }
+  }
 
   /// Start `row`'s scope on its opened database and make it current.
   @discardableResult
@@ -544,19 +583,16 @@ public actor AccountManager {
   /// The actor is reentrant across each `await`; transitions (start, sign-in, sign-out, a 401) must not
   /// interleave, so each holds this until it ends. Waiters are resumed in order, the lock passing
   /// straight to the next.
-  func acquire() async {
-    if busy {
-      await withCheckedContinuation { waiters.append($0) }
-    } else {
-      busy = true
+  func acquire() async { await transitions.lock() }
+
+  /// `acquire()`, waiting at most `timeout`: a log-out or a deletion that finds another transition
+  /// running (an account switch, a sign-in) answers instead of waiting it out.
+  func acquire(within timeout: Duration) async throws {
+    guard await transitions.lock(within: timeout) else {
+      throw WorkspaceError(
+        .endpointUnavailable, "This Mac is still signing in or out of an account. Try again in a moment.")
     }
   }
 
-  func release() {
-    if waiters.isEmpty {
-      busy = false
-    } else {
-      waiters.removeFirst().resume()
-    }
-  }
+  func release() { transitions.unlock() }
 }

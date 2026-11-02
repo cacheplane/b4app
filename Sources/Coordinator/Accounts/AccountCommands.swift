@@ -12,25 +12,47 @@ import WorkspaceSync
 /// to the hub; the Apple flow's verifier is made and kept here. None of them is logged, stored, or put
 /// in an error.
 extension AccountManager {
-  /// Log-out's bounds (the spec's two 10 s steps, then a short last word for the hub session).
+  /// Log-out's bounds: the spec's two steps of about 10 s, a short last word for the hub session, and
+  /// the close, all inside 21 s.
   public struct LogoutTimeouts: Sendable, Equatable {
-    /// Step 1: interrupt the running turns, stop the servers, and let admitted commands finish.
+    /// Step 1, from the moment the log-out arrives (a wait for another transition comes out of it):
+    /// interrupt the local turns, stop the servers and the runtimes, and let admitted commands finish.
     public var work: Duration
     /// Step 2: push the change log once. Step 3 (ending the hub session) gets what is left of it.
     public var push: Duration
     /// Step 3's least time, when the push used all of its own.
     public var endSessionFloor: Duration
+    /// Step 4: close the scope, after the token is forgotten; what is left goes on in the background.
+    public var close: Duration
+    /// The longest a log-out waits for another sign-in or sign-out to finish before answering
+    /// `endpoint_unavailable` (inside `work`).
+    public var lockWait: Duration
 
-    public init(work: Duration, push: Duration, endSessionFloor: Duration) {
+    public init(
+      work: Duration, push: Duration, endSessionFloor: Duration, close: Duration,
+      lockWait: Duration = .seconds(3)
+    ) {
       self.work = work
       self.push = push
       self.endSessionFloor = endSessionFloor
+      self.close = close
+      self.lockWait = lockWait
     }
 
-    /// At most 10 + 10 + 0.5 s: a log-out returns within 21 s whatever the hub and the runtimes do.
+    /// The most a log-out can take.
+    public var total: Duration { work + push + endSessionFloor + close }
+
+    /// 9.5 + 9.5 + 0.5 + 1.5 s: a log-out returns within 21 s whatever the hub and the runtimes do.
     public static let standard = LogoutTimeouts(
-      work: .seconds(10), push: .seconds(10), endSessionFloor: .milliseconds(500))
+      work: .milliseconds(9500), push: .milliseconds(9500), endSessionFloor: .milliseconds(500),
+      close: .milliseconds(1500))
   }
+
+  /// What step 1 keeps for stopping the servers and the runtimes when the turns take their longest:
+  /// 3 s (enough for `stopAll`'s SIGTERM-then-SIGKILL), or a third of a shorter step.
+  static func stopReserve(_ work: Duration) -> Duration { min(.seconds(3), work / 3) }
+  /// How long a deletion waits for the hub's answer; without one nothing changes here.
+  static let deleteWait: Duration = .seconds(15)
 
   /// A Sign in with Apple web ceremony: the hub's id and the verifier whose SHA-256 the hub holds.
   struct AppleCeremony: Sendable {
@@ -38,7 +60,8 @@ extension AccountManager {
     var verifier: String
   }
 
-  /// What `hub.status` says once after a log-out that could not reach the hub.
+  /// What `account.status` and `hub.status` say, until dismissed, after a log-out that could not reach
+  /// the hub.
   public static let sessionLeftOpenNotice =
     "The last sign-out could not reach the hub; that session was left open there."
 
@@ -70,19 +93,24 @@ extension AccountManager {
 
   /// Make a verifier, begin a web ceremony with its hash and this flavour's scheme, and keep both. A
   /// start replaces a ceremony already in flight.
+  ///
+  /// Starts run one at a time, so the ceremony kept is always the one in the last answer given (two
+  /// racing starts would otherwise keep whichever hub answer came back last).
   public func appleStart() async throws -> AccountAppleStart.Result {
     try requireAppleSignIn()
+    await appleStarts.lock()
+    defer { appleStarts.unlock() }
     let verifier = Self.newVerifier()
     let api = signInAPI()
     let request = AppleBeginRequest(verifierHash: Self.sha256Hex(verifier), scheme: flavor.urlScheme)
     let begun = try await Self.hubCall("begin Sign in with Apple") { try await api.appleBegin(request) }
-    appleCeremony = AppleCeremony(id: begun.ceremonyId, verifier: verifier)
     var components = URLComponents(
       url: flavor.hubURL.appendingPathComponent("v1/auth/apple/start"), resolvingAgainstBaseURL: false)
     components?.queryItems = [URLQueryItem(name: "ceremony", value: begun.ceremonyId)]
     guard let url = components?.url else {
       throw WorkspaceError(.internalError, "Could not build the Sign in with Apple address.")
     }
+    appleCeremony = AppleCeremony(id: begun.ceremonyId, verifier: verifier)
     return AccountAppleStart.Result(url: url.absoluteString, callbackScheme: flavor.urlScheme)
   }
 
@@ -174,41 +202,61 @@ extension AccountManager {
 
   // MARK: - Logging out
 
-  /// Log out, in the spec's four steps, within `logoutTimeouts` (21 s at most by default):
-  /// 1. refuse new work, interrupt every running turn and wait for the runtimes, stop the account's
-  ///    servers, and let admitted commands finish (`work`);
+  /// Log out, in the spec's four steps, within `logoutTimeouts` (21 s at most by default, counted from
+  /// the moment the request arrives):
+  /// 1. refuse new work, then decide; interrupt every running turn of a local runtime and wait for the
+  ///    runtimes to confirm, then stop the account's servers and dispose its runtimes side by side, and
+  ///    let admitted commands finish (`work`). Remote and attached B4 runs are detached, never cancelled;
   /// 2. push the change log once (`push`; drafts are already in it, since `draft.save` writes them);
   /// 3. end the session at the hub, keeping the device (what is left of `push`, at least
   ///    `endSessionFloor`); a hub that cannot be reached leaves it open, which the registry records;
-  /// 4. forget the token, close the scope, and publish `account.changed`.
+  /// 4. forget the token and write the registry row, then close the scope (`close`; the rest of the
+  ///    close goes on in the background), and publish `account.changed`.
   ///
-  /// With work running and `stopWork` false it throws `work_running` (`details.work`, the shape of
-  /// `workspace.activeWork`) and changes nothing.
+  /// With work running (remote runs included, as `local: false`) and `stopWork` false it throws
+  /// `work_running` (`details.work`, the shape of `workspace.activeWork`) and changes nothing.
   public func logout(stopWork: Bool) async throws -> AccountStatus.Result {
-    await acquire()
+    let timeouts = logoutTimeouts
+    let started = ContinuousClock.now
+    try await acquire(within: timeouts.lockWait)
     defer { release() }
     guard let scope = slot.get() else { throw WorkspaceError(.signedOut, Self.signedOutMessage) }
-    let work = try await scope.sessions.activeWork()
+    let id = scope.account.id
+
+    // Nothing new starts while this decides, so a turn cannot slip in between the check and the stop.
+    scope.refuseNewWork()
+    let work: WorkspaceActiveWork.Result
+    do {
+      work = try await scope.sessions.activeWork()
+    } catch {
+      scope.admitWorkAgain()
+      throw error
+    }
     if !stopWork, !work.turns.isEmpty || !work.servers.isEmpty {
+      scope.admitWorkAgain()
       throw WorkspaceError(
         .workRunning, Self.workRunningMessage(work), details: ["work": try JSONValue(encoding: work)])
     }
-    let timeouts = logoutTimeouts
-    let id = scope.account.id
 
-    // 1. Nothing new starts; what runs is stopped.
-    scope.refuseNewWork()
-    let workDeadline = ContinuousClock.now + timeouts.work
-    // The turns get up to half of the step, so the servers always have the rest.
-    let turnDeadline = ContinuousClock.now + timeouts.work / 2
-    let unconfirmed = await Bounded.run(within: timeouts.work / 2) {
-      await scope.sessions.interruptAll(until: turnDeadline)
+    // 1. Stop what runs. The turns may take the whole step but for a reserve for stopping the servers
+    // and the runtimes.
+    let workDeadline = started + timeouts.work
+    let turnDeadline = workDeadline - Self.stopReserve(timeouts.work)
+    let unconfirmed = await Bounded.run(within: Bounded.remaining(until: turnDeadline)) {
+      await scope.sessions.interruptLocalTurns(until: turnDeadline)
     }
     if (try? unconfirmed?.get())?.isEmpty != true {
       logger.warning("log-out of \(id, privacy: .public): some turns did not confirm they stopped")
     }
-    if await !scope.servers.stopAll(within: Bounded.remaining(until: workDeadline)) {
-      logger.warning("log-out of \(id, privacy: .public): some servers were still stopping")
+    let stopped = await Bounded.run(within: Bounded.remaining(until: workDeadline)) {
+      async let servers = scope.servers.stopAll(within: Bounded.remaining(until: workDeadline))
+      async let runtimes: Void = scope.sessions.shutdown()
+      let (serversStopped, _) = await (servers, runtimes)
+      return serversStopped
+    }
+    let serversStopped = (try? stopped?.get()) == true
+    if !serversStopped {
+      logger.warning("log-out of \(id, privacy: .public): servers or runtimes were still stopping")
     }
     _ = await scope.drain(timeout: Bounded.remaining(until: workDeadline))
 
@@ -228,9 +276,10 @@ extension AccountManager {
     let budget = max(Bounded.remaining(until: pushDeadline), timeouts.endSessionFloor)
     let ended = await Self.endHubSession(of: scope, within: budget)
 
-    // 4. Forget the token and close the account.
+    // 4. Forget the token and close the account, the close bounded.
     await performSignOut(
-      reason: nil, hubSessionLeftOpen: !ended, drainTimeout: .zero, serverBudget: .seconds(1))
+      reason: nil, hubSessionLeftOpen: !ended, drainTimeout: .zero, serverBudget: .seconds(1),
+      stoppingServers: !serversStopped, closeBudget: timeouts.close)
     return status()
   }
 
@@ -258,40 +307,78 @@ extension AccountManager {
     if !work.servers.isEmpty {
       parts.append(work.servers.count == 1 ? "1 local server" : "\(work.servers.count) local servers")
     }
-    return "Still running: \(parts.joined(separator: " and ")). Stop them to log out."
+    var message = "Still running: \(parts.joined(separator: " and ")). Stop them to log out."
+    let elsewhere = work.remoteTurns.count
+    if elsewhere > 0 {
+      message +=
+        elsewhere == 1
+        ? " 1 turn runs on another server and continues there."
+        : " \(elsewhere) turns run on other servers and continue there."
+    }
+    return message
   }
 
-  /// `hub.status`'s one-time notice for `scope`'s account, cleared as it is read.
-  /// The scope's row is the registry's as the account signed in, so only an account that has the record
-  /// asks the registry; taking it clears the row's copy too.
-  func takeNotice(for scope: AccountScope) -> String? {
-    var row = scope.account
-    guard row.hubSessionLeftOpen, slot.get()?.instance == scope.instance else { return nil }
-    guard (try? registry.takeHubSessionLeftOpen(id: row.id)) == true else { return nil }
-    row.hubSessionLeftOpen = false
-    scope.update(account: row)
-    if active?.id == row.id { active = row }
+  // MARK: - The notice
+
+  /// The signed-in account's notice for `hub.status` (the same as `account.status`'s). Reading it never
+  /// clears it.
+  func notice(for scope: AccountScope) -> String? {
+    guard slot.get()?.instance == scope.instance, active?.hubSessionLeftOpen == true else { return nil }
     return Self.sessionLeftOpenNotice
+  }
+
+  /// `account.dismissNotice`: the person has seen the notice; clear it here and in the registry.
+  public func dismissNotice() async throws -> AccountStatus.Result {
+    let scope = try self.scope()
+    guard var row = active, row.id == scope.account.id else {
+      throw WorkspaceError(.signedOut, Self.signedOutMessage)
+    }
+    guard row.hubSessionLeftOpen else { return status() }
+    try registry.clearHubSessionLeftOpen(id: row.id)
+    row.hubSessionLeftOpen = false
+    active = row
+    var scoped = scope.account
+    scoped.hubSessionLeftOpen = false
+    scope.update(account: scoped)
+    await publish()
+    return status()
   }
 
   // MARK: - Deleting the account
 
-  /// `DELETE /v1/me`, then sign out and drop the account's database and registry row. A refusal from
-  /// the hub changes nothing here.
+  /// `DELETE /v1/me` (waiting at most `deleteWait`), then sign out and drop the account's database, and
+  /// only once it is gone the registry row. A refusal from the hub, or no answer, changes nothing here.
+  /// A drop that fails keeps the (signed-out) row, so the database is not lost track of, and reports it.
   public func deleteAccount() async throws -> AccountStatus.Result {
-    await acquire()
+    try await acquire(within: logoutTimeouts.lockWait)
     defer { release() }
     guard let scope = slot.get() else { throw WorkspaceError(.signedOut, Self.signedOutMessage) }
-    try await Self.hubCall("delete the account") { try await scope.hub.client().deleteAccount() }
+    let answer = await Bounded.run(within: Self.deleteWait) {
+      try await Self.hubCall("delete the account") { try await scope.hub.client().deleteAccount() }
+    }
+    switch answer {
+    case .none:
+      throw WorkspaceError(
+        .endpointUnavailable,
+        "The hub did not answer the deletion in time. Nothing was removed from this Mac; try again.")
+    case .failure(let error): throw error
+    case .success: break
+    }
     let row = scope.account
     // The hub has already ended every session of the account.
-    await performSignOut(reason: nil, publishing: false)
+    await performSignOut(reason: nil, closeBudget: Self.switchCloseBudget, publishing: false)
     do {
       try WorkspaceDatabase.drop(endpoint: cluster.endpoint(database: row.database), binDir: cluster.binDir)
     } catch {
+      let message = WorkspaceError.from(error).message
       logger.error(
-        "could not drop deleted account \(row.id, privacy: .public)'s database: \(WorkspaceError.from(error).message, privacy: .public)"
+        "could not drop deleted account \(row.id, privacy: .public)'s database: \(message, privacy: .public)"
       )
+      await publish()
+      throw WorkspaceError(
+        .internalError,
+        "The account was deleted at the hub, but its data on this Mac could not be removed: \(message)",
+        details: ["database": .string(row.database)])
     }
     do {
       try registry.remove(id: row.id)
@@ -317,7 +404,7 @@ extension AccountManager {
   private func deviceSpec() throws -> DeviceSpec {
     let base = flavor.hubURL.absoluteString
     var known: [String] = []
-    for row in try registry.all().filter({ $0.hubURL == base })
+    for row in try registry.all().filter({ Self.sameHub($0.hubURL, base) })
       .sorted(by: { ($0.lastSignedInAt ?? "") > ($1.lastSignedInAt ?? "") })
     where UUID(uuidString: row.deviceId) != nil && !known.contains(row.deviceId) {
       known.append(row.deviceId)
