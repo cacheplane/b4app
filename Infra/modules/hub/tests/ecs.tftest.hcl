@@ -511,8 +511,16 @@ run "task_definition_shape" {
   }
 
   assert {
-    condition     = alltrue([for c in concat(jsondecode(aws_ecs_task_definition.hub.container_definitions), jsondecode(aws_ecs_task_definition.migrate.container_definitions), [for c in jsondecode(aws_ecs_task_definition.admin.container_definitions) : c if c.name == "hub"]) : c.readonlyRootFilesystem == true && c.mountPoints == [{ sourceVolume = "tmp", containerPath = "/tmp", readOnly = false }]])
-    error_message = "hub containers have a read-only root and a writable /tmp"
+    condition     = alltrue([for c in concat(jsondecode(aws_ecs_task_definition.hub.container_definitions), jsondecode(aws_ecs_task_definition.migrate.container_definitions)) : c.readonlyRootFilesystem == true && c.mountPoints == [{ sourceVolume = "tmp", containerPath = "/tmp", readOnly = false }]])
+    error_message = "the serving and migrate containers have a read-only root and a writable /tmp"
+  }
+
+  # ECS Exec's agent writes under the container root (AWS documents a
+  # read-only root as unsupported), and the admin task's hub container is the
+  # exec target for b4hub seed and enroll, so it alone keeps a writable root.
+  assert {
+    condition     = alltrue([for c in jsondecode(aws_ecs_task_definition.admin.container_definitions) : c.readonlyRootFilesystem == false && c.mountPoints == [{ sourceVolume = "tmp", containerPath = "/tmp", readOnly = false }] if c.name == "hub"])
+    error_message = "the admin task's hub container has a writable root (ECS Exec) and the tmp mount"
   }
 
   assert {
