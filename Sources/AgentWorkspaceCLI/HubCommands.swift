@@ -20,6 +20,12 @@ struct HubCommand: AsyncParsableCommand {
     lines.append("unsynced   \(status.unsyncedChanges) change(s)")
     lines.append("last push  \(status.lastPushAt ?? "never")")
     if let error = status.lastError { lines.append("last error \(error)") }
+    if let link = status.link {
+      var line = "relay      \(link.state.rawValue)"
+      if let since = link.since { line += " since \(since)" }
+      if let error = link.lastError { line += " (\(error))" }
+      lines.append(line)
+    }
     return lines.joined(separator: "\n")
   }
 

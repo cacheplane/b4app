@@ -19,10 +19,16 @@ import WorkspaceSync
 /// The pull starts with `start()` (when joined) or with a `join` after it, and stops with `leave()`,
 /// `stop()`, or its own 401 (which also suspends background pushes until the next `join`).
 ///
+/// The relay link (`HubLink`, M8c) starts and stops with the pull: on `start()` when joined, on `join`,
+/// and it stops on `leave()`, `stop()`, and a 401 from a push or the pull. It uses the same `HubToken`,
+/// so the Keychain is still asked once per run. `reconnectLink()` (the wake signal) reopens it at once.
+///
 /// The enrollment code, the token, and the token's `SecretRef` never appear in a log line, a result,
 /// or an error message.
 public actor HubSync {
   public typealias APIFactory = @Sendable (URL, @escaping @Sendable () async throws -> String?) -> any HubAPI
+  /// Builds the relay link for a hub URL and the device token's reader.
+  public typealias LinkFactory = @Sendable (URL, @escaping @Sendable () async throws -> String?) -> HubLink
 
   static let batchRows = 500
   static let batchBytes = 8 * 1024 * 1024
@@ -31,9 +37,15 @@ public actor HubSync {
   private let secretStore: any SecretStore
   private let eventLog: EventLog
   private let makeAPI: APIFactory
+  private let makeLink: LinkFactory?
   private let logger = Log.logger("hub")
 
   private var api: (any HubAPI)?
+  /// The joined hub's base URL, for the relay link.
+  private var baseURL: URL?
+  /// The relay link while joined (kept after a 401 stops it, so `status` says why); nil when not joined
+  /// or when no `makeLink` was given.
+  private var link: HubLink?
   /// The link's token, kept in memory once read (`HubToken`); nil when not joined.
   private var token: HubToken?
   /// Set by a 401; cleared by `join`. Background pushes skip while it is set.
@@ -54,12 +66,13 @@ public actor HubSync {
 
   public init(
     database: WorkspaceDatabase, secretStore: any SecretStore, eventLog: EventLog,
-    makeAPI: @escaping APIFactory = { HTTPHubAPI(baseURL: $0, token: $1) }
+    makeAPI: @escaping APIFactory = { HTTPHubAPI(baseURL: $0, token: $1) }, makeLink: LinkFactory? = nil
   ) {
     self.database = database
     self.secretStore = secretStore
     self.eventLog = eventLog
     self.makeAPI = makeAPI
+    self.makeLink = makeLink
   }
 
   // MARK: - Lifecycle
@@ -73,6 +86,7 @@ public actor HubSync {
           database.deviceId = link.deviceId
           let token = HubToken(store: secretStore, ref: ref)
           self.token = token
+          baseURL = url
           api = makeAPI(url, { try await token.value() })
         } else {
           logger.error("the stored hub link is unreadable; not pushing")
@@ -83,8 +97,9 @@ public actor HubSync {
     }
     guard nudgeTask == nil else { return }
     started = true
-    if let link = try? database.hubLink(), let api {
+    if let link = try? database.hubLink(), api != nil {
       startPull(deviceId: link.deviceId)
+      await startLink()
       fetchDisplayNameIfMissing()
     }
     let events = await eventLog.subscribe()
@@ -113,6 +128,7 @@ public actor HubSync {
     timerTask = nil
     pendingNudge = nil
     await stopPull()
+    await link?.stop()
   }
 
   // MARK: - Commands
@@ -154,6 +170,7 @@ public actor HubSync {
     token.remember(enrolled.token)
     self.token = token
     self.api = api
+    baseURL = base
     displayName = enrolled.user.displayName
     suspended = false
     logger.info(
@@ -164,10 +181,11 @@ public actor HubSync {
       // Recorded as lastError; the join itself succeeded.
     }
     startPull(deviceId: enrolled.deviceId)
-    return try status()
+    await startLink()
+    return try await status()
   }
 
-  public func status() throws -> HubStatus.Result {
+  public func status() async throws -> HubStatus.Result {
     let unsynced = try database.unsyncedChangeCount()
     guard let link = try database.hubLink() else {
       return HubStatus.Result(joined: false, unsyncedChanges: unsynced)
@@ -180,7 +198,7 @@ public actor HubSync {
     return HubStatus.Result(
       joined: true, url: link.url, deviceId: link.deviceId, deviceName: link.deviceName,
       orgSlug: link.orgSlug, username: link.username, displayName: displayName, unsyncedChanges: unsynced,
-      lastPushAt: link.lastPushAt, lastError: lastError)
+      lastPushAt: link.lastPushAt, lastError: lastError, link: await self.link?.status())
   }
 
   /// Ask `/v1/me` while the name is unknown: at start, and again after each successful push or pull,
@@ -208,6 +226,9 @@ public actor HubSync {
   public func leave() async throws {
     guard let link = try database.hubLink() else { return }
     await stopPull()
+    await self.link?.stop()
+    self.link = nil
+    baseURL = nil
     let api = self.api
     self.api = nil
     displayName = nil
@@ -309,7 +330,10 @@ public actor HubSync {
       }
       return accepted
     } catch {
-      if (error as? HubError)?.code == "unauthorized" { suspended = true }
+      if (error as? HubError)?.code == "unauthorized" {
+        suspended = true
+        await link?.stop()
+      }
       try? record(error: Self.describe(error), pushed: false)
       throw error
     }
@@ -383,11 +407,29 @@ public actor HubSync {
   }
 
   /// The pull loop has ended on a 401; it must not be awaited here (it is waiting for this call).
-  private func pullUnauthorized(_ message: String, generation: UUID) {
+  private func pullUnauthorized(_ message: String, generation: UUID) async {
     guard generation == pullGeneration, pull != nil else { return }
     recordPull(error: message, generation: generation)
     pull = nil
     suspended = true
+    await link?.stop()
+  }
+
+  // MARK: - Relay link
+
+  /// Start the relay link for the joined hub, when `start()` has run, a link factory was given, and no
+  /// 401 has suspended this Mac. A join replaces an earlier link (it carries the old token).
+  private func startLink() async {
+    guard started, !suspended, let makeLink, let baseURL, let token else { return }
+    if let link { await link.stop() }
+    let link = makeLink(baseURL, { try await token.value() })
+    self.link = link
+    await link.start()
+  }
+
+  /// Reopen the relay link at once (the Mac woke up), skipping its backoff.
+  public func reconnectLink() async {
+    await link?.reconnectNow()
   }
 
   private func record(error: String?, pushed: Bool) throws {

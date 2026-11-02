@@ -763,10 +763,12 @@ public enum HubStatus: WorkspaceCommand {
     public var unsyncedChanges: Int
     public var lastPushAt: String?
     public var lastError: String?
+    /// The relay link to the hub (M8c), while joined; absent from an older coordinator.
+    public var link: HubLinkStatus?
     public init(
       joined: Bool, url: String? = nil, deviceId: String? = nil, deviceName: String? = nil,
       orgSlug: String? = nil, username: String? = nil, displayName: String? = nil, unsyncedChanges: Int,
-      lastPushAt: String? = nil, lastError: String? = nil
+      lastPushAt: String? = nil, lastError: String? = nil, link: HubLinkStatus? = nil
     ) {
       self.joined = joined
       self.url = url
@@ -778,9 +780,33 @@ public enum HubStatus: WorkspaceCommand {
       self.unsyncedChanges = unsyncedChanges
       self.lastPushAt = lastPushAt
       self.lastError = lastError
+      self.link = link
     }
   }
   public static let method = Method.hubStatus
+}
+
+/// Where this Mac's relay link to the hub is (M8c). `since` is when it entered `state` (`Timestamp`
+/// form); `lastError` says why it is not connected, and never carries a token.
+public struct HubLinkStatus: Codable, Sendable, Equatable {
+  public enum State: String, Codable, Sendable {
+    case connected, connecting, offline
+
+    /// A state this build does not know (a newer coordinator's) reads as `offline`.
+    public init(from decoder: Decoder) throws {
+      self = State(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .offline
+    }
+  }
+
+  public var state: State
+  public var since: String?
+  public var lastError: String?
+
+  public init(state: State, since: String? = nil, lastError: String? = nil) {
+    self.state = state
+    self.since = since
+    self.lastError = lastError
+  }
 }
 
 /// Revoke this device at the hub (best effort), forget its token, and stop pushing. What was already
