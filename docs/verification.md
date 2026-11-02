@@ -2,6 +2,37 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-11-02: Deleting threads (D-118, D-119)
+
+Branch `blove/delete-threads`, stacked on `blove/phone-usage`.
+
+**Gates**
+- `swift format lint --strict` was clean.
+- `swift test` passed: 898 tests in 133 suites.
+- Hub: `cargo test --workspace --locked` passed 249 tests on two consecutive runs; `cargo fmt --check` and `clippy -D warnings` were clean. One earlier run had a flaky failure that did not recur, once in `b4hub-db`'s `settings` tests and once in the relay's `presence_is_sent_when_the_queue_has_room_again`.
+- Both `xcodebuild` builds (macOS, iOS Simulator) succeeded.
+
+**New tests**
+- Storage: `ThreadDeleteStoreTests`. A deleted thread leaves every list; the mark keeps its first time and is logged; the runtime-delete record and its backoff; the Diagnostics counts. `OrganisationSchemaTests` pins `userDeletedAt` as a clocked column of the change trigger.
+- Adapters: `CodexDeleteTests`, `ClaudeDeleteTests` and `B4DeleteTests`. These cover deleted, already gone and unsupported for each runtime. For Claude, only the one session's `.jsonl` and folder go; `../x`, `a/b`, `.` and `s1.jsonl` are refused and touch nothing.
+- Coordinator: `ThreadDeleteTests`.
+  - A Codex delete hides the thread and reaches `thread/delete`.
+  - A running B4 turn is interrupted before the `DELETE`.
+  - A phone's delete is swept later.
+  - An unreachable B4 is retried after its backoff and then done.
+  - A server without the route is final.
+  - A late event for a deleted thread publishes nothing. Disabling that guard fails the test.
+- Hub: `a_phone_marks_a_thread_deleted_and_the_row_stays`. A phone's mark is applied by clock, an older Mac write does not clear it, and the row and its turns stay. Also the `writable.rs` lists and the `0011` migration guards.
+- Mirror: `MirrorDeleteTests`. A phone delete hides the thread, makes it unreadable, and queues one `userDeletedAt` update; a repeat queues nothing; a pulled mark hides it too. The schema version 5 migration guards are covered as well.
+- UI: `ThreadDeleteModelTests`. Deleting the open thread closes it and discards the unsent text; the confirmation copy covers each runtime, a disabled connection and a running turn; a late turn event keeps the thread gone.
+
+**Checked by hand:** Codex 0.166.0's generated schema has `ThreadDeleteParams { threadId }` and an empty `ThreadDeleteResponse`.
+
+**Not run before merge**
+- **The alert and the iPhone swipe on screen.** SwiftUI alerts don't render in the offscreen snapshot harness.
+- **The Simulator check against the owner's Compose hub.** That hub needs `0011`, so it waits until this merges and the hub is rebuilt from main.
+- **A live delete in real Codex, Claude Code or B4.** The fixtures stand in for all three.
+
 ## 2026-11-02: Usage on the phone (D-090)
 
 Branch `blove/phone-usage`.
