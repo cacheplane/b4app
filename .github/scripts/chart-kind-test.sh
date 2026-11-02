@@ -177,9 +177,21 @@ run() {
 
   group "helm uninstall"
   helm uninstall "$RELEASE" -n "$NS" --wait --timeout 2m
-  if kubectl -n "$NS" get deployment -l app.kubernetes.io/instance="$RELEASE" -o name | grep -q .; then
-    fail "a b4hub Deployment remains after helm uninstall"
+  # The evaluation database Secret is documented to remain; nothing else of the release may.
+  local kinds=deployments,services,ingresses,jobs left
+  if kubectl api-resources --api-group=gateway.networking.k8s.io -o name | grep -qx httproutes.gateway.networking.k8s.io; then
+    kinds="$kinds,httproutes"
   fi
+  left="$(kubectl -n "$NS" get "$kinds" -l app.kubernetes.io/instance="$RELEASE" -o name)"
+  for kind in deployment service ingress job; do
+    for name in "$FULLNAME" "$FULLNAME-migrate-1" "$FULLNAME-migrate-2"; do
+      if kubectl -n "$NS" get "$kind" "$name" -o name >/dev/null 2>&1; then
+        left="$left $kind/$name"
+      fi
+    done
+  done
+  [ -z "${left// /}" ] || fail "release resources remain after helm uninstall: $left"
+  echo "no Deployment, Service, Ingress, HTTPRoute, or Job of the release remains"
   endgroup
   echo "chart install test passed"
 }
