@@ -49,7 +49,11 @@ public struct WorkspaceRootView: View {
     .tint(LLA.Color.accent)
     .onChange(of: detailOnScreen, initial: true) { _, onScreen in model.isDetailOnScreen = onScreen }
     .task { model.connect() }
-    .onChange(of: model.detailRequest) { compactColumn = .detail }
+    // `initial` so a request made before this view mounted (a cold launch from a notification tap)
+    // still moves the iPhone to the thread column.
+    .onChange(of: model.detailRequest, initial: true) { _, count in
+      if count > 0 { compactColumn = .detail }
+    }
     .sheet(isPresented: $model.showNewThread) {
       // The phone starts a thread on the Mac that owns a project, through the hub; the Mac asks its
       // own coordinator for a connection and a folder.

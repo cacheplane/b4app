@@ -393,7 +393,8 @@ public final class WorkspaceModel {
         let requested = pendingThreadOpen
         pendingThreadOpen = nil
         settleLink()
-        if let requested { await openThread(id: requested) }
+        // Not awaited: a slow `thread.read` must not hold up `observe` (events, desync handling).
+        if let requested { Task { await openThread(id: requested) } }
         await observe(client, events: events, covered: covered)
       } catch {
         link = .unavailable
