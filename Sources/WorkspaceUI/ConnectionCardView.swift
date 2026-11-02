@@ -87,24 +87,42 @@ struct ConnectionCardView: View {
     .accessibilityIdentifier("connection-\(connection.id)")
   }
 
-  private func header(_ status: LLAStatus) -> some View {
+  /// One row: the mark, the name over its detail, the status icon and menu. At accessibility sizes the
+  /// name and detail take a row of their own under the mark and icon, so they wrap at words.
+  @ViewBuilder private func header(_ status: LLAStatus) -> some View {
     let subtitle = ConnectionSummary.subtitle(connection, reading: usage?.reading, check: check)
-    return HStack(spacing: LLA.Space.s) {
-      RuntimeMark(kind: connection.kind, height: 16).frame(width: markSlot, height: markSlot)
-      VStack(alignment: .leading, spacing: 2) {
-        Text(connection.label).font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
-          .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
-        Text(subtitle)
-          .font(connection.kind == .b4 && status == .ok ? LLAFont.codeSmall : LLAFont.small)
-          .foregroundStyle(LLA.Color.muted)
-          .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
-          .truncationMode(.middle)
-      }
-      Spacer(minLength: LLA.Space.s)
+    let names = VStack(alignment: .leading, spacing: 2) {
+      Text(connection.label).font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
+        .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
+      Text(subtitle)
+        .font(connection.kind == .b4 && status == .ok ? LLAFont.codeSmall : LLAFont.small)
+        .foregroundStyle(LLA.Color.muted)
+        .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
+        .truncationMode(.middle)
+    }
+    let icons = HStack(spacing: LLA.Space.s) {
       LLAStatusIcon(
         status: status,
         detail: ConnectionSummary.reason(connection, blocked: usage?.reading?.blocked ?? false))
       if WorkspaceDevice.managesWorkspace { menu }
+    }
+    let mark = RuntimeMark(kind: connection.kind, height: 16).frame(width: markSlot, height: markSlot)
+    if typeSize.isAccessibilitySize {
+      VStack(alignment: .leading, spacing: LLA.Space.s) {
+        HStack(spacing: LLA.Space.s) {
+          mark
+          Spacer(minLength: LLA.Space.s)
+          icons
+        }
+        names
+      }
+    } else {
+      HStack(spacing: LLA.Space.s) {
+        mark
+        names
+        Spacer(minLength: LLA.Space.s)
+        icons
+      }
     }
   }
 

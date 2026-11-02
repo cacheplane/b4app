@@ -124,16 +124,33 @@ struct B4ProjectCard: View {
     .accessibilityElement(children: .contain)
   }
 
-  private func header(_ status: LLAStatus) -> some View {
-    HStack(spacing: LLA.Space.s) {
-      RuntimeMark(kind: .b4, height: 16).frame(width: markSlot, height: markSlot)
-      Text(server.name).font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
-        .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
-      Spacer(minLength: LLA.Space.s)
+  /// As a connection card's: one row, or at accessibility sizes the name under the mark and controls.
+  @ViewBuilder private func header(_ status: LLAStatus) -> some View {
+    let name = Text(server.name).font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
+      .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
+    let controls = HStack(spacing: LLA.Space.s) {
       LLAStatusIcon(status: status, detail: server.statusMessage)
       if WorkspaceDevice.managesWorkspace {
         startStop
         menu
+      }
+    }
+    let mark = RuntimeMark(kind: .b4, height: 16).frame(width: markSlot, height: markSlot)
+    if typeSize.isAccessibilitySize {
+      VStack(alignment: .leading, spacing: LLA.Space.s) {
+        HStack(spacing: LLA.Space.s) {
+          mark
+          Spacer(minLength: LLA.Space.s)
+          controls
+        }
+        name
+      }
+    } else {
+      HStack(spacing: LLA.Space.s) {
+        mark
+        name
+        Spacer(minLength: LLA.Space.s)
+        controls
       }
     }
   }
@@ -156,7 +173,7 @@ struct B4ProjectCard: View {
         }
       }
     }
-    .padding(.leading, markSlot + LLA.Space.s)
+    .padding(.leading, typeSize.isAccessibilitySize ? 0 : markSlot + LLA.Space.s)
   }
 
   private func pill(_ text: String, mono: Bool = false) -> some View {

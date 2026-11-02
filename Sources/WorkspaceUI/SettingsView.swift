@@ -126,6 +126,19 @@ public struct WorkspaceSettingsView: View {
 }
 
 #if os(iOS)
+  /// A page row's label: the symbol and the title, or the title alone at accessibility sizes.
+  struct SettingsRowLabelStyle: LabelStyle {
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    func makeBody(configuration: Configuration) -> some View {
+      if typeSize.isAccessibilitySize {
+        configuration.title
+      } else {
+        Label(configuration)
+      }
+    }
+  }
+
   /// The iPhone's Settings: a sheet with the pages in a list, each pushing its view.
   struct SettingsSheet: View {
     @Bindable var model: WorkspaceModel
@@ -138,6 +151,8 @@ public struct WorkspaceSettingsView: View {
             Label(page.title, systemImage: page.systemImage)
               .font(LLAFont.body)
               .foregroundStyle(LLA.Color.ink)
+              // At accessibility sizes the symbol column left "Connections" a letter-by-letter wrap.
+              .labelStyle(SettingsRowLabelStyle())
           }
           .listRowBackground(LLA.Color.surface)
         }
