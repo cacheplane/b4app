@@ -23,7 +23,7 @@ data "aws_iam_policy_document" "plan_trust" {
     condition {
       test     = "StringLike"
       variable = local.oidc_sub
-      values   = ["repo:${var.github_repository}:*"]
+      values   = ["${local.repo_subject}:*"]
     }
   }
 }
