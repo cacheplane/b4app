@@ -96,6 +96,8 @@ public enum ControlState: Sendable, Equatable {
 public enum RelayCopy {
   public static let sending = "Sending…"
   public static let starting = "Starting…"
+  public static let startPending = "Waiting to hear whether your last new thread started."
+  public static let startRefused = "Couldn't start this thread. Try again."
   public static let notConfirmed = "Not confirmed: your Mac may not have received this."
   public static let didNotReach = "Didn't reach your Mac"
   public static let offlineTurn = "Not confirmed while your Mac is offline"
@@ -283,7 +285,7 @@ extension WorkspaceModel {
     -> PendingSend?
   {
     let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !text.isEmpty, client != nil, !isStartingThread,
+    guard !text.isEmpty, client != nil, !isStartingThread, unsettledStartReason == nil,
       let project = projects.first(where: { $0.id == projectId }), startBlockedReason(for: project) == nil,
       let connection = startConnections(for: project).first(where: { $0.id == connectionId })
     else { return nil }
@@ -381,6 +383,14 @@ extension WorkspaceModel {
     {
       composerText = ""
     }
+  }
+
+  /// Set while any thread start is open (sending, or not confirmed: the Mac may still run it). A new
+  /// start would mint a second thread from the same intent, whichever sheet it comes from. Only the
+  /// Mac's answer settles it: `turn.lookup` finds the turn (`found`) or says it never ran (`none`), or
+  /// the thread's turn syncs. While the project's Mac stays offline it stays open, which is the truth.
+  var unsettledStartReason: String? {
+    pendingSends.values.contains { $0.start != nil && $0.state.isUnsettled } ? RelayCopy.startPending : nil
   }
 
   /// A synced or relayed turn carrying a pending send's id settles it as accepted.

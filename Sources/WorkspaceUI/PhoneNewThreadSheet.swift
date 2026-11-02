@@ -102,6 +102,8 @@ final class PhoneNewThreadDraft {
   /// The Mac accepted the start. Kept apart from the send, which the model drops once the thread's own
   /// message shows.
   private var accepted = false
+  /// Why the last Start did nothing, when the model refused it before sending.
+  private(set) var refusal: String?
 
   init(model: WorkspaceModel) {
     self.model = model
@@ -154,6 +156,7 @@ final class PhoneNewThreadDraft {
   var blockedReason: String? {
     guard let project else { return nil }
     if let reason = model.startBlockedReason(for: project) { return reason }
+    if !unsettled, let reason = model.unsettledStartReason { return reason }
     if connections.isEmpty { return "No ready connection on your Mac can start a thread in this project." }
     if let connection, connection.kind != .b4, folders.isEmpty {
       return "This project has no folder yet. Add one on your Mac."
@@ -175,7 +178,7 @@ final class PhoneNewThreadDraft {
   /// when nothing was started, and once it was accepted.
   var status: String? {
     if submitting { return RelayCopy.starting }
-    guard let id = startedThreadId, let send = model.pendingSends[id] else { return nil }
+    guard let id = startedThreadId, let send = model.pendingSends[id] else { return refusal }
     switch send.state {
     case .sending: return RelayCopy.starting
     case .notConfirmed: return RelayCopy.notConfirmed
@@ -187,8 +190,9 @@ final class PhoneNewThreadDraft {
 
   /// Whether the status is a failure (shown in the danger color).
   var statusIsFailure: Bool {
-    guard !submitting, let id = startedThreadId, let state = model.pendingSends[id]?.state else {
-      return false
+    guard !submitting else { return false }
+    guard let id = startedThreadId, let state = model.pendingSends[id]?.state else {
+      return refusal != nil
     }
     switch state {
     case .refused, .didNotReach, .notConfirmed: return true
@@ -202,13 +206,18 @@ final class PhoneNewThreadDraft {
   }
 
   func submit() async {
-    guard canSend, let project, let connection else { return }
+    guard canSend, let project, let connection else {
+      refusal = blockedReason ?? RelayCopy.startRefused
+      return
+    }
+    refusal = nil
     submitting = true
     defer { submitting = false }
     let send = await model.startThread(
       projectId: project.id, connectionId: connection.id, folder: folder.isEmpty ? nil : folder,
       text: text)
     startedThreadId = send?.threadId
+    if send == nil { refusal = blockedReason ?? RelayCopy.startRefused }
     if send?.state.turnId != nil { accepted = true }
   }
 

@@ -300,6 +300,140 @@ private enum Phone {
     await model.disconnect()
   }
 
+  private static let unconfirmed = ScriptedTransport.Reply.failure(
+    WorkspaceError(
+      .relayTimeout, "Not confirmed: your Mac may not have received this.",
+      details: ["reason": "timeout"]))
+
+  @Test func anUnsettledStartBlocksAnotherFromAFreshSheet() async throws {
+    let clock = TestClock()
+    let transport = ScriptedTransport()
+    let model = try await Phone.model(transport, clock: clock)
+    let first = PhoneNewThreadDraft(model: model)
+    first.text = "Once only"
+    transport.script(.threadStart, [Self.unconfirmed])
+    await first.submit()
+    #expect(first.status == RelayCopy.notConfirmed)
+
+    // Cancel, reopen: a fresh draft cannot start the same thing again while the first may land.
+    let second = PhoneNewThreadDraft(model: model)
+    second.text = "Once only"
+    #expect(second.blockedReason == "Waiting to hear whether your last new thread started.")
+    #expect(!second.canSend)
+    await second.submit()
+    #expect(second.status == "Waiting to hear whether your last new thread started.")
+    #expect(
+      await model.startThread(projectId: "p1", connectionId: "codex-1", folder: "/work/atlas", text: "Again")
+        == nil)
+    #expect(transport.recorded(.threadStart).count == 1)
+    #expect(model.pendingSends.count == 1)
+
+    // The Mac says it never ran it: settled, and a new start goes out as a new thread.
+    transport.script(.turnLookup, [.result(try JSONValue(encoding: TurnLookup.Result(state: .none)))])
+    clock.advance(by: .seconds(31))
+    try await waitUntil("settled") { first.status == RelayCopy.didNotReach }
+    #expect(second.blockedReason == nil)
+    #expect(second.canSend)
+    transport.script(.threadStart, [.hold])
+    let task = Task { await second.submit() }
+    try await waitUntil("second start") { transport.heldCount(.threadStart) == 1 }
+    #expect(Set(transport.recorded(.threadStart).map { $0.params["threadId"]?.stringValue ?? "" }).count == 2)
+    let pending = try #require(model.pendingSends.values.first)
+    let thread = PhoneFixture.thread(pending.threadId)
+    transport.setRead(ThreadRead.Result(thread: thread, turns: [], items: [], requests: []))
+    transport.release(.threadStart, with: Phone.started(thread, pending.id))
+    await task.value
+    #expect(second.finished)
+    await model.disconnect()
+  }
+
+  @Test func anUnsettledStartIsFoundByLookupWhenTheMacIsBack() async throws {
+    let clock = TestClock()
+    let transport = ScriptedTransport()
+    let model = try await Phone.model(transport, clock: clock)
+    let draft = PhoneNewThreadDraft(model: model)
+    draft.text = "Landed"
+    transport.script(.threadStart, [Self.unconfirmed])
+    await draft.submit()
+    let pending = try #require(model.pendingSends.values.first)
+    // The owner goes quiet: no lookup is made, and the start stays open (the honest state).
+    transport.emit(PhoneFixture.presence("mac-1", online: false, lastSeen: -5))
+    try await waitUntil("offline") { model.hostPresence["mac-1"]?.online == false }
+    clock.advance(by: .seconds(40))
+    #expect(transport.recorded(.turnLookup).isEmpty)
+    #expect(model.unsettledStartReason != nil)
+    // Back online: the lookup finds the turn and settles it.
+    transport.script(
+      .turnLookup,
+      [
+        .result(
+          try JSONValue(
+            encoding: TurnLookup.Result(
+              state: .found, turn: PhoneFixture.turn("turn-1", in: pending.threadId, operationId: pending.id))
+          ))
+      ])
+    transport.emit(PhoneFixture.presence("mac-1", online: true))
+    try await waitUntil("found") { draft.finished }
+    #expect(model.unsettledStartReason == nil)
+    await model.disconnect()
+  }
+
+  @Test func presenceRulesForStartingAreTheControllersRuling() async throws {
+    let transport = ScriptedTransport()
+    let model = try await Phone.model(transport, clock: TestClock())
+    // Reconnecting (offline 30 s): the quiet line, Start stays enabled.
+    transport.emit(PhoneFixture.presence("mac-1", online: false, lastSeen: -30))
+    try await waitUntil("reconnecting") { model.hostPresence["mac-1"]?.online == false }
+    #expect(model.startNotice(for: Phone.p1)?.kind == .reconnecting)
+    #expect(model.startBlockedReason(for: Phone.p1) == nil)
+    let draft = PhoneNewThreadDraft(model: model)
+    draft.text = "Soon"
+    #expect(draft.canSend)
+
+    // Unknown presence (a Mac the hub has not reported): Start stays enabled.
+    let stranger = Project(
+      id: "px", name: "Stranger", folders: [Phone.folder("fx", "px", "/x")], ownerDeviceId: "mac-9")
+    #expect(model.hostPhase(deviceId: "mac-9") == .unknown)
+    #expect(model.startBlockedReason(for: stranger) == nil)
+
+    // The Mac left the hub: blocked, with the notice.
+    model.hostDisconnected = true
+    #expect(model.startBlockedReason(for: Phone.p1) == RelayCopy.leftHub)
+    #expect(model.startBlockedReason(for: Phone.p3) == RelayCopy.leftHub)
+    model.hostDisconnected = false
+    #expect(model.startBlockedReason(for: Phone.p1) == nil)
+
+    // The phone's own link is down: blocked, and presence is forgotten.
+    transport.emit(PhoneFixture.link(.connecting))
+    try await waitUntil("link down") { model.hubLinkPhase == .connecting }
+    #expect(model.startBlockedReason(for: Phone.p1) == RelayCopy.connecting)
+    #expect(model.startBlockedReason(for: Phone.p3) == RelayCopy.connecting)
+    await model.disconnect()
+  }
+
+  @Test func submitSaysWhyWhenNothingWasSent() async throws {
+    let transport = ScriptedTransport()
+    let model = try await Phone.model(transport, clock: TestClock())
+    let draft = PhoneNewThreadDraft(model: model)
+    draft.text = "Hello"
+    // Another start is out, from elsewhere: the tap says so instead of doing nothing.
+    transport.script(.threadStart, [.hold])
+    let other = Task {
+      await model.startThread(projectId: "p2", connectionId: "codex-1", folder: nil, text: "Other")
+    }
+    try await waitUntil("other out") { transport.heldCount(.threadStart) == 1 }
+    await draft.submit()
+    #expect(draft.status == RelayCopy.startPending)
+    #expect(draft.statusIsFailure)
+    #expect(transport.recorded(.threadStart).count == 1)
+    let pending = try #require(model.pendingSends.values.first)
+    let thread = PhoneFixture.thread(pending.threadId)
+    transport.setRead(ThreadRead.Result(thread: thread, turns: [], items: [], requests: []))
+    transport.release(.threadStart, with: Phone.started(thread, pending.id))
+    _ = await other.value
+    await model.disconnect()
+  }
+
   @Test func disabledWhenTheMacIsOffline() async throws {
     let transport = ScriptedTransport()
     let model = try await Phone.model(transport, clock: TestClock())
