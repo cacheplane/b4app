@@ -12,7 +12,7 @@ on:
       - ".github/workflows/hub-chart.yml"
       - ".github/scripts/chart-kind-test.sh"
   push:
-    branches: [main]
+    branches: [main, blove/cloud-hub-deployment-arch-4b6348]
     paths:
       - "Hub/chart/**"
       - ".github/workflows/hub-chart.yml"
@@ -206,7 +206,7 @@ jobs:
           INPUT_TAG: ${{ inputs.image_tag }}
         run: |
           set -euo pipefail
-          tag="${INPUT_TAG:-main}"
+          tag="${INPUT_TAG:-blove-cloud-hub-deployment-arch-4b6348}"
           case "$tag" in
             *[!A-Za-z0-9_.-]*|'') echo "::error::invalid image tag: $tag"; exit 1 ;;
           esac
