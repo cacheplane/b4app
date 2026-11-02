@@ -385,6 +385,32 @@ extension WorkspaceModel {
     }
   }
 
+  /// A thread this phone started whose row has not reached the mirror and whose placeholder has expired
+  /// (2 minutes): its read answers `not_found`. Per the spec the thread then shows "Not confirmed", so
+  /// the send goes back to not confirmed (settled by `turn.lookup` or the synced turn) and that is the
+  /// error shown, never the raw not-found text. A start already settled as not made shows why instead.
+  /// True when `error` was this; false (nothing changed) otherwise, and always on the Mac.
+  func startedThreadMissing(threadId: String, error: any Error) -> Bool {
+    guard relaysThroughHub, WorkspaceError.from(error).code == .notFound,
+      var send = pendingSends[threadId], send.start != nil
+    else { return false }
+    switch send.state {
+    case .refused, .didNotReach:
+      lastError = sendStatus(for: threadId)
+      return true
+    case .sending, .accepted, .acceptedWithError, .notConfirmed:
+      break
+    }
+    if !send.inFlight, send.state != .notConfirmed {
+      send.state = .notConfirmed
+      send.retryable = false
+      pendingSends[threadId] = send
+      advancePendingSends()
+    }
+    lastError = RelayCopy.notConfirmed
+    return true
+  }
+
   /// Set while any thread start is open (sending, or not confirmed: the Mac may still run it). A new
   /// start would mint a second thread from the same intent, whichever sheet it comes from. Only the
   /// Mac's answer settles it: `turn.lookup` finds the turn (`found`) or says it never ran (`none`), or

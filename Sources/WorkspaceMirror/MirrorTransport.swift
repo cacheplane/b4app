@@ -39,7 +39,8 @@ import WorkspaceSync
 /// A started thread whose row has not reached the mirror is answered by a placeholder held in memory:
 /// the thread from the Mac's reply, with what its relayed events said. Until the first read, its events
 /// are held (up to 256), and its streamed text is handed over with the next delta. The synced row
-/// replaces it; with no row after 2 minutes it is dropped and the read answers `not_found`.
+/// replaces it; with no row after 2 minutes it is dropped and the read answers `not_found` (which the
+/// model, knowing it started that thread, shows as "Not confirmed").
 ///
 /// Presence and the phone's own link reach the model as `host.presence` events (see
 /// `AdapterEvent.hostPresence`): one carrying the whole set of Macs on every presence frame (a Mac

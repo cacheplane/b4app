@@ -716,6 +716,7 @@ public final class WorkspaceModel {
       }
       lastError = nil
     } catch {
+      if startedThreadMissing(threadId: id, error: error) { return }
       lastError = Self.describe(error)
     }
   }

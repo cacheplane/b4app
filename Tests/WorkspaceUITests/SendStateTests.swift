@@ -630,6 +630,35 @@ enum PhoneFixture {
     await model.disconnect()
   }
 
+  /// The spec: a started thread whose row never arrives loses its placeholder after 2 minutes "and the
+  /// thread shows 'Not confirmed'" — never the transport's raw not-found text.
+  @Test func aStartedThreadWhosePlaceholderExpiredShowsNotConfirmed() async throws {
+    let clock = TestClock()
+    let transport = PhoneFixture.transport()
+    transport.set(projects: [PhoneFixture.project])
+    let model = try await PhoneFixture.model(transport, clock: clock, open: nil)
+    transport.script(.threadStart, [.hold])
+    let task = Task {
+      await model.startThread(projectId: "p1", connectionId: "c1", folder: "/work", text: "Start here")
+    }
+    try await waitUntil("starting") { transport.heldCount(.threadStart) == 1 }
+    let send = try #require(model.pendingSends.values.first { $0.text == "Start here" })
+    let thread = PhoneFixture.thread(send.threadId)
+    transport.setRead(ThreadRead.Result(thread: thread, turns: [], items: [], requests: []))
+    try #require(transport.release(.threadStart, with: startedReply(thread, send)))
+    #expect(await task.value?.state == .accepted(turnId: "turn-1"))
+
+    // Two minutes on, the placeholder is gone and the mirror has no row.
+    transport.script(
+      .threadRead, [.failure(WorkspaceError(.notFound, "Thread \(send.threadId) does not exist."))])
+    await model.openThread(id: send.threadId)
+    #expect(model.lastError == RelayCopy.notConfirmed)
+    #expect(model.pendingSends[send.threadId]?.state == .notConfirmed)
+    #expect(model.sendStatus(for: send.threadId) == RelayCopy.notConfirmed)
+    #expect(model.threads.contains { $0.id == send.threadId })
+    await model.disconnect()
+  }
+
   @Test func threadStartIsTrackedOnItsNewThread() async throws {
     let clock = TestClock()
     let transport = PhoneFixture.transport()
