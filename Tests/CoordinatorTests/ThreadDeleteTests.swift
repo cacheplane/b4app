@@ -174,12 +174,14 @@ extension Harness {
     try await eventually("tried once") {
       try h.coordinator.database.threadDeleteAttempts(threadId: thread.id) == 1
     }
+    // The try has failed by now; the retry waits 30 seconds from then. The sweeps below are timed
+    // from this moment, not the wall clock, so a slow restart of the fixture can't make it due.
+    let failed = Date()
     #expect(try await h.deleteSummary() == [ThreadDeleteSummary(kind: .b4, waiting: 1, unsupported: 0)])
     let restarted = try await FakeB4.start(port: server.port)
-    // Not yet: the first retry waits 30 seconds.
-    await h.coordinator.sessions.sweepThreadDeletes(now: Date())
+    await h.coordinator.sessions.sweepThreadDeletes(now: failed)
     #expect(await calls.deletes.count == 1)
-    await h.coordinator.sessions.sweepThreadDeletes(now: Date().addingTimeInterval(31))
+    await h.coordinator.sessions.sweepThreadDeletes(now: failed.addingTimeInterval(31))
     #expect(await calls.deletes.count == 2)
     #expect(try await h.deleteSummary().isEmpty)
     await h.stop()
