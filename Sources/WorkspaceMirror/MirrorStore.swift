@@ -167,6 +167,14 @@ public final class MirrorStore: @unchecked Sendable {
 
   // MARK: - Reads
 
+  /// Each connection's usage as the Mac last wrote it.
+  public func connectionUsage() throws -> [ConnectionUsage] {
+    try locked {
+      try all(
+        ConnectionUsage.self, "connectionUsage", #"SELECT * FROM "connectionUsage" ORDER BY "connectionId""#)
+    }
+  }
+
   public func connections() throws -> [Connection] {
     try locked {
       try all(Connection.self, "connections", #"SELECT * FROM "connections" ORDER BY "createdAt""#)
@@ -493,6 +501,7 @@ public final class MirrorStore: @unchecked Sendable {
     case "displayItems": return decode(DisplayItem.self, table: table, row) != nil
     case "runtimeRequests": return decode(RuntimeRequest.self, table: table, row) != nil
     case "drafts": return decode(Draft.self, table: table, row) != nil
+    case "connectionUsage": return decode(ConnectionUsage.self, table: table, row) != nil
     default: return true
     }
   }

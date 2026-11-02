@@ -34,6 +34,7 @@ enum MirrorSchema {
   static let syncedTables: [(table: String, key: String)] = [
     ("connections", "id"), ("projects", "id"), ("projectFolders", "id"), ("threads", "id"), ("turns", "id"),
     ("displayItems", "id"), ("runtimeRequests", "id"), ("drafts", "threadId"),
+    ("connectionUsage", "connectionId"),
   ]
 
   /// Tables whose rows record the device that inserted them in `ownerDeviceId`.
@@ -50,6 +51,7 @@ enum MirrorSchema {
   /// Columns whose `TEXT` holds a JSON document; they read back inline.
   static let jsonColumns: [String: Set<String>] = [
     "connections": ["capabilities"], "displayItems": ["payload"], "runtimeRequests": ["payload"],
+    "connectionUsage": ["reading", "tokens"],
   ]
 
   /// Computed read columns holding JSON (`threads.activity`); never stored.
@@ -58,7 +60,7 @@ enum MirrorSchema {
   /// Ordered migrations keyed by the `user_version` each leaves behind. A file at version `n` runs
   /// every migration after `n`, all in one transaction.
   static let migrations: [(version: Int, statements: [String])] = [
-    (1, version1), (2, version2), (3, version3),
+    (1, version1), (2, version2), (3, version3), (4, version4),
   ]
 
   /// M8a's schema.
@@ -235,5 +237,18 @@ enum MirrorSchema {
   static let version3 = [
     #"ALTER TABLE "connections" ADD COLUMN "projectId" TEXT"#,
     #"CREATE INDEX IF NOT EXISTS "displayItemsByNativeId" ON "displayItems" ("threadId", "nativeItemId")"#,
+  ]
+
+  /// Usage on the phone: each connection's latest plan reading and B4 token totals, as the Mac writes
+  /// them (`reading` and `tokens` hold JSON documents).
+  static let version4 = [
+    """
+    CREATE TABLE "connectionUsage" (
+      "connectionId" TEXT PRIMARY KEY REFERENCES "connections" ("id") ON DELETE CASCADE,
+      "reading" TEXT,
+      "tokens" TEXT,
+      "updatedAt" TEXT
+    ) STRICT
+    """
   ]
 }

@@ -126,7 +126,7 @@ public final class MirrorTransport: WorkspaceTransport {
   static let served: Set<WorkspaceProtocol.Method> = [
     .systemPing, .eventsSnapshot, .eventsReplay, .connectionList, .threadList, .threadRead, .draftRead,
     .serverList, .workspaceActiveWork, .diagnosticsRead, .projectList, .projectRename, .threadUpdate,
-    .threadMarkRead, .draftSave,
+    .threadMarkRead, .draftSave, .usageRead,
   ]
 
   /// The methods the phone leaves to the Mac, whose projects it only reads and renames.
@@ -400,6 +400,8 @@ public final class MirrorTransport: WorkspaceTransport {
           details: ["epoch": .string(epoch), "sequence": .number(Double(state.sequence))])
       }
       return try JSONValue(encoding: EventsReplay.Result(events: []))
+    case .usageRead:
+      return try JSONValue(encoding: UsageRead.Result(usage: try store.connectionUsage()))
     case .connectionList:
       let params = try command.params(for: ConnectionList.self)
       let all = try store.connections()
