@@ -103,7 +103,8 @@ fn owner((device_id, user_id, name, platform, revoked, seen): OwnerRow) -> Owner
 }
 
 /// The owner of the user's thread `thread_id` (`threads.owner_device_id`). `None` when the org has
-/// no such thread, when it is another user's or deleted, or when its owner is not a device of this org.
+/// no such thread, when it is another user's or deleted, or when its owner is not a device of this
+/// org.
 pub async fn owner_of_thread(
     db: &Db,
     org_id: Uuid,

@@ -25,9 +25,9 @@ const HUB_COLUMNS: &str = "{org_id,user_id,device_id,owner_device_id,deleted_at}
 /// Reads `auth`'s user's state. `changes` lists every row of every synced table that is not
 /// deleted, in dependency order, as an `insert` with `hubSeq` 0, `deviceSeq` 0, `deviceId` the
 /// row's owner, `value` the Mac columns only, and `hlc` the greatest clock of the row's columns
-/// (the zero clock of its owner if none). `clocks` lists every column clock of those rows. `next` is the highest
-/// `hubSeq` the org's feed had at that instant, or its horizon if pruning has emptied the feed,
-/// so a pull from `next` is neither stale nor missing a change.
+/// (the zero clock of its owner if none). `clocks` lists every column clock of those rows. `next`
+/// is the highest `hubSeq` the org's feed had at that instant, or its horizon if pruning has
+/// emptied the feed, so a pull from `next` is neither stale nor missing a change.
 pub async fn take(db: &Db, auth: &AuthedDevice) -> Result<Snapshot> {
     let mut tx = db.read_tx(auth.org_id).await?;
     let mut changes = Vec::new();
