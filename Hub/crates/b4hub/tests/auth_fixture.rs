@@ -87,6 +87,11 @@ fn passkey_finish_variants_match_the_hub_type() {
 fn auth_session_matches_the_hub_type() {
     let session: AuthSession = round_trips("authSession");
     assert!(session.needs_onboarding);
+    assert_eq!(
+        session.user_id.to_string(),
+        example("me")["userId"].as_str().unwrap(),
+        "the session and `me` name the same user"
+    );
 }
 
 #[test]
@@ -225,8 +230,10 @@ async fn routes_answer_the_shapes_the_fixture_holds(pool: PgPool) {
     let signed_in = hub.post("/v1/auth/passkey/finish", Some(&finish)).await;
     assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.body);
     same_shape("authSession", &signed_in.body, &example("authSession"));
-    // The device is reused, not made again, and its earlier token is gone: use the new one.
+    // The device is reused, not made again, and its earlier token is gone: use the new one. The
+    // user is the one the sign-up made.
     assert_eq!(signed_in.body["deviceId"], session.body["deviceId"]);
+    assert_eq!(signed_in.body["userId"], session.body["userId"]);
     let token = signed_in.body["token"].as_str().unwrap().to_string();
     let auth = bearer(&token);
     let headers = [("authorization", auth.as_str())];
@@ -258,6 +265,7 @@ async fn routes_answer_the_shapes_the_fixture_holds(pool: PgPool) {
     same_shape("me", &me.body, &example("me"));
     let me = hub.get("/v1/me", Some(&token)).await;
     same_shape("me", &me.body, &example("me"));
+    assert_eq!(me.body["userId"], session.body["userId"]);
     assert_eq!(me.body["identities"].as_array().unwrap().len(), 2);
 
     // Adding a passkey: the begin answer and the identity it ends in.

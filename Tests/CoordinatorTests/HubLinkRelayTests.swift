@@ -268,7 +268,8 @@ private struct LinkHarness {
 }
 
 /// A coordinator with a fake hub API and a fake link connection, for the `HubSync` wiring: join starts
-/// the link, leave and a 401 stop it, and the wake signal reconnects it.
+/// the link, leave and a 401 stop it, and the wake signal reconnects it. It starts signed out, and
+/// `join()` signs in through the account path (`hub join` while signed out).
 private struct JoinedHarness {
   let coordinator: RunningCoordinator
   let fake: FakeHubAPI
@@ -282,7 +283,7 @@ private struct JoinedHarness {
     let fake = FakeHubAPI()
     await fake.addEnrollmentCode(enrollCode, enrolled)
     let connection = FakeHubLinkConnection()
-    let outcome = try await Coordinator.startSignedIn(
+    let outcome = try await Coordinator.start(
       options: CoordinatorOptions(
         paths: paths, environment: env, secretStore: MemorySecretStore(), hubAPIFactory: { _, _ in fake },
         hubLinkConnection: connection))
@@ -294,7 +295,8 @@ private struct JoinedHarness {
 
   /// Joins and answers the link's first open with `hello`.
   func join() async throws -> FakeHubLinkSocket {
-    _ = try await coordinator.hub.join(url: "http://localhost:8080", code: enrollCode, deviceName: "Test Mac")
+    _ = try await coordinator.accounts.join(
+      url: "http://localhost:8080", code: enrollCode, deviceName: "Test Mac")
     let socket = await connection.nextSocket()
     socket.deliver(hello())
     await waitUntil("connected") { (try? await coordinator.hub.status().link?.state) == .connected }

@@ -133,12 +133,15 @@ pub struct PasskeyBeginResponse {
     pub registration: Option<CreationChallengeResponse>,
 }
 
-/// What every route that signs a device in answers: the enrollment shape plus whether the user
-/// still has to onboard. `token` is in this response and nowhere else; `Debug` leaves it out.
+/// What every route that signs a device in answers: the enrollment shape plus the user's id and
+/// whether the user still has to onboard. `userId` is `users.id`, stable for the account's
+/// lifetime and never reused, so a client can key its local accounts on it. `token` is in this
+/// response and nowhere else; `Debug` leaves it out.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AuthSession {
     pub device_id: Uuid,
+    pub user_id: Uuid,
     pub token: String,
     pub org: OrgRef,
     pub user: UserRef,
@@ -149,6 +152,7 @@ impl fmt::Debug for AuthSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AuthSession")
             .field("device_id", &self.device_id)
+            .field("user_id", &self.user_id)
             .field("token", &"<redacted>")
             .field("org", &self.org)
             .field("user", &self.user)
@@ -430,6 +434,7 @@ pub(crate) async fn answer(
     };
     Ok(AuthSession {
         device_id,
+        user_id: principal.user_id,
         token,
         org: OrgRef {
             slug: summary.org_slug,

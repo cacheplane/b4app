@@ -65,6 +65,8 @@ import WorkspaceProtocol
     #expect(session.needsOnboarding)
     #expect(session.org == OrgInfo(slug: "o-tv5nbqu3", name: "My Org"))
     #expect(session.user == UserInfo(username: "u-afbtapky", displayName: ""))
+    #expect(session.userId == "01a19a2b-bbb0-7c2e-8d1f-3a4b5c6d7e8f")
+    #expect(!session.description.contains(session.token))
   }
 
   @Test func profileRequestRoundTrips() throws {
@@ -75,6 +77,7 @@ import WorkspaceProtocol
     let me = try roundTrips(MeResponse.self, "me")
     #expect(me.user.displayName == "Brian Love" && me.fullName == "Brian Love")
     #expect(me.onboarded)
+    #expect(me.userId == "01a19a2b-bbb0-7c2e-8d1f-3a4b5c6d7e8f")
     #expect(me.identities.map(\.kind) == ["passkey", "apple"])
     #expect(me.identities[0].lastUsedAt == "2026-11-01T10:00:00.000000Z")
     #expect(me.identities[1].lastUsedAt == nil && me.identities[1].name == "x7k2@privaterelay.appleid.com")

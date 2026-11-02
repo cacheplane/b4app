@@ -56,6 +56,8 @@ public actor SessionService {
   private let context: Context
   private var adapters: [String: any AgentAdapter] = [:]
   private var pumps: [String: Task<Void, Never>] = [:]
+  /// Set by `shutdown`; no adapter is made after it.
+  private var closing = false
   /// Runtime requests whose answer is with the adapter right now. `requestRespond` suspends on the
   /// adapter before it marks the request resolved, so without this a second answer (one from the Mac,
   /// one relayed from the phone) could reach the runtime too.
@@ -91,7 +93,10 @@ public actor SessionService {
     }
   }
 
+  /// Dispose every adapter. `closing` is set before the first suspension, so no adapter (and no
+  /// runtime) can be made once a shutdown has begun.
   public func shutdown() async {
+    closing = true
     for (id, pump) in pumps { pump.cancel(); pumps[id] = nil }
     for adapter in adapters.values { await adapter.dispose() }
     adapters = [:]
@@ -100,6 +105,7 @@ public actor SessionService {
   // MARK: - Adapters
 
   private func adapter(for connection: Connection) throws -> any AgentAdapter {
+    if closing { throw WorkspaceError(.signedOut, AccountManager.signedOutMessage) }
     if let existing = adapters[connection.id] { return existing }
     let adapter = try context.adapterFactory(
       connection, context.environment, context.clientVersion, context.secretStore)

@@ -312,9 +312,11 @@ async fn describe(state: &AppState, device: &AuthedDevice) -> Result<Value, ApiE
     let info = devices::me(&state.db, device.org_id, device.device_id)
         .await?
         .ok_or_else(ApiError::unauthorized)?;
-    let identities = accounts::list_identities(&state.db, Principal::from(**device)).await?;
+    let principal = Principal::from(**device);
+    let identities = accounts::list_identities(&state.db, principal).await?;
     Ok(json!({
         "deviceId": info.device_id.to_string(),
+        "userId": principal.user_id.to_string(),
         "deviceName": info.device_name,
         "platform": info.platform,
         "org": { "slug": info.org_slug, "name": info.org_name },

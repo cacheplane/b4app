@@ -201,7 +201,8 @@ public enum Coordinator {
     // link is reopened first, so the phone sees the Mac again without waiting out a backoff (M8c). It acts
     // on whichever account is signed in when the Mac wakes, if any.
     let sleepWatcher = SleepWatcher { [accounts] _ in
-      guard let scope = accounts.current else { return }
+      guard let scope = accounts.current, (try? scope.enter()) != nil else { return }
+      defer { scope.leave() }
       await scope.hub.reconnectLink()
       _ = await scope.sessions.reconcileAll(reason: "wake")
       _ = try? await scope.hub.pushNow()

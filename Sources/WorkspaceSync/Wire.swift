@@ -206,6 +206,9 @@ public struct EnrollResponse: Codable, Sendable, Equatable, CustomStringConverti
 /// sign-in, and a hub without them answers a user who counts as onboarded and has no identities.
 public struct MeResponse: Codable, Sendable, Equatable {
   public var deviceId: String
+  /// The user's id (`users.id`), which never changes and is never reused; nil from a hub older than
+  /// sign-in.
+  public var userId: String?
   public var deviceName: String
   public var platform: String
   public var org: OrgInfo
@@ -221,9 +224,10 @@ public struct MeResponse: Codable, Sendable, Equatable {
 
   public init(
     deviceId: String, deviceName: String, platform: String, org: OrgInfo, user: UserInfo, createdAt: String,
-    fullName: String? = nil, onboarded: Bool = true, identities: [Identity] = []
+    fullName: String? = nil, onboarded: Bool = true, identities: [Identity] = [], userId: String? = nil
   ) {
     self.deviceId = deviceId
+    self.userId = userId
     self.deviceName = deviceName
     self.platform = platform
     self.org = org
@@ -235,7 +239,7 @@ public struct MeResponse: Codable, Sendable, Equatable {
   }
 
   private enum CodingKeys: String, CodingKey {
-    case deviceId, deviceName, platform, org, user, createdAt, onboarded, identities
+    case deviceId, userId, deviceName, platform, org, user, createdAt, onboarded, identities
   }
 
   private enum UserKeys: String, CodingKey { case username, displayName, fullName }
@@ -243,6 +247,7 @@ public struct MeResponse: Codable, Sendable, Equatable {
   public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     deviceId = try container.decode(String.self, forKey: .deviceId)
+    userId = try container.decodeIfPresent(String.self, forKey: .userId)
     deviceName = try container.decode(String.self, forKey: .deviceName)
     platform = try container.decode(String.self, forKey: .platform)
     org = try container.decode(OrgInfo.self, forKey: .org)
@@ -260,6 +265,7 @@ public struct MeResponse: Codable, Sendable, Equatable {
   public func encode(to encoder: Encoder) throws {
     var container = encoder.container(keyedBy: CodingKeys.self)
     try container.encode(deviceId, forKey: .deviceId)
+    try container.encodeIfPresent(userId, forKey: .userId)
     try container.encode(deviceName, forKey: .deviceName)
     try container.encode(platform, forKey: .platform)
     try container.encode(org, forKey: .org)

@@ -26,6 +26,8 @@ public actor LocalServerService {
 
   private let context: Context
   private let logger = Log.logger("servers")
+  /// Set by `stopAll` and `shutdown`: the account's scope is closing, and no server may start.
+  private var closing = false
   private var db: WorkspaceDatabase { context.database }
 
   public init(context: Context) {
@@ -151,12 +153,15 @@ public actor LocalServerService {
   /// Idempotent: a ready server returns its row; a start in flight is joined; a stop in flight is
   /// waited for first.
   public func start(id: String) async throws -> ServerAdd.Result {
+    if closing { throw WorkspaceError(.signedOut, AccountManager.signedOutMessage) }
     while let current = inFlight[id] {
       if current.kind == .start { return try await current.task.value }
       _ = try? await current.task.value
     }
     let server = try require(id)
     if server.health == .ready, running[id] != nil { return ServerAdd.Result(server: server) }
+    // A stop of everything may have begun while this waited for an earlier operation.
+    if closing { throw WorkspaceError(.signedOut, AccountManager.signedOutMessage) }
     let task = Task { try await self.launch(server) }
     inFlight[id] = (.start, task)
     defer { inFlight[id] = nil }
@@ -376,11 +381,12 @@ public actor LocalServerService {
     }
   }
 
-  /// Monitors stop; servers keep running across a coordinator exit.
   /// Stop every server this store remembers a process for, through `stop`'s identity check (a pid that
   /// is no longer the server it started is left untouched), as an account signs out. Each stop is
-  /// bounded by the grace period before SIGKILL; a failure is logged and the rest still stop.
+  /// bounded by the grace period before SIGKILL; a failure is logged and the rest still stop. From the
+  /// first line on, `start` refuses: the account is closing.
   public func stopAll() async {
+    closing = true
     for server in (try? db.listLocalServers()) ?? [] where server.pid != nil {
       do {
         _ = try await stop(id: server.id, force: true)
@@ -392,7 +398,9 @@ public actor LocalServerService {
     }
   }
 
+  /// Monitors stop; servers keep running across a coordinator exit. `start` refuses from here on.
   public func shutdown() async {
+    closing = true
     for (id, instance) in running {
       instance.monitor?.cancel()
       running[id]?.monitor = nil

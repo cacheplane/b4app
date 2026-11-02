@@ -97,7 +97,14 @@ public actor Router {
 
   private func handle(_ command: ParsedCommand) async throws -> JSONValue {
     if Self.needsAccount(command.method) {
-      return try await handle(command, in: try context.accounts.scope())
+      // `hub leave` signs out, which closes the scope and waits for the commands inside it: it runs
+      // through the account manager, outside the scope's gate.
+      if command.method == .hubLeave { return try JSONValue(encoding: try await context.accounts.leave()) }
+      let scope = try context.accounts.scope()
+      // Admitted, or `signed_out` once the scope has begun closing; the close waits for what is inside.
+      try scope.enter()
+      defer { scope.leave() }
+      return try await handle(command, in: scope)
     }
     let events = context.eventLog
     switch command.method {
@@ -278,8 +285,7 @@ public actor Router {
     case .hubStatus:
       return try JSONValue(encoding: try await scope.hub.status())
     case .hubLeave:
-      try await scope.hub.leave()
-      return try JSONValue(encoding: try await scope.hub.status())
+      throw WorkspaceError(.internalError, "hub.leave runs through the account manager.")
     case .hubPair:
       return try JSONValue(encoding: try await scope.hub.pair())
     case .hubPairStatus:

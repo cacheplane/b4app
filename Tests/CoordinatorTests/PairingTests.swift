@@ -374,7 +374,8 @@ struct SocketRig {
     let fake = FakeHubAPI()
     await fake.addEnrollmentCode(pairingEnrollCode, pairingMacEnrollment)
     let assertions = FakePowerAssertions()
-    let outcome = try await Coordinator.startSignedIn(
+    // Signed out until `join()` signs in through the account path (`hub join` while signed out).
+    let outcome = try await Coordinator.start(
       options: CoordinatorOptions(
         paths: paths, environment: env, secretStore: MemorySecretStore(), hubAPIFactory: { _, _ in fake },
         hubLinkConnection: FakeHubLinkConnection(), powerAssertions: assertions))
@@ -402,15 +403,20 @@ struct SocketRig {
   @Test func pairIsRoutedAndNeverReplayedFromTheOperationCache() async throws {
     let rig = try await SocketRig.start()
     defer { Task { await rig.close() } }
+    // Before joining nobody is signed in, so there is nothing to pair.
     do {
       _ = try await rig.client.request(HubPair.self, EmptyParams())
       Issue.record("expected a refusal before joining")
     } catch let error as WorkspaceError {
-      #expect(error.message == "Join a hub first")
+      #expect(error.code == .signedOut)
     }
-    #expect(try await rig.client.request(HubPairStatus.self, EmptyParams()).state == .none)
+    await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.client.request(HubPairStatus.self, EmptyParams())
+    }
 
     _ = try await rig.join()
+    #expect(try await rig.client.request(HubPairStatus.self, EmptyParams()).state == .none)
+
     await rig.fake.setPairingCode(
       PairingCodeResponse(code: "AAAA1111", expiresAt: "2026-11-01T12:05:00.000000Z"))
     // Even with an operationId, a code is never kept to be answered again.

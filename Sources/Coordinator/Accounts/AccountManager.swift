@@ -10,25 +10,31 @@ import WorkspaceSync
 ///
 /// - **Start** restores the registry's active account: its database is opened and its `HubSync`
 ///   started. With an empty registry, a `workspace` database that has joined a hub is adopted as an
-///   account from its link (device, token reference, org slug, and username), with no network call, so a
-///   joined Mac never shows the sign-in screen because the hub is down; `/v1/me` then refreshes the
-///   names. While starting, the status is the account being restored (or, with none, signed out), so
-///   nothing ever says "signed out" for an account that comes back.
-/// - **Sign-in** finds or creates the registry row by `(hub URL, hub user)`, opens and migrates its
+///   account from its link (device and token reference), with no network call, so a joined Mac never
+///   shows the sign-in screen because the hub is down; until the first successful `/v1/me` names the
+///   user, the row's hub user is the placeholder `device:<deviceId>` and its names are empty. While
+///   starting, the status is the account being restored (or, with none, signed out), so nothing ever
+///   says "signed out" for an account that comes back.
+/// - **Sign-in** finds or creates the registry row by `(hub URL, hub user id)`, claiming a placeholder
+///   row whose device is the one the hub answered with, opens and migrates its
 ///   database before anything else changes (a database that cannot be opened refuses the sign-in and
 ///   leaves the previous account active and open), stores the token, writes the database's hub link,
 ///   activates the row, then closes the previous account and starts the new one. The first account
 ///   gets `workspace` unless it has joined a hub of its own; later ones get `workspace_<id>`.
 /// - **Sign-out** closes the scope, forgets the token (secret store and registry), and publishes
-///   `account.changed`. A 401 from the hub (push, pull, relay link, or `/v1/me`) signs out with
-///   `rejectedByHub`, after which nothing sends another request for that account.
+///   `account.changed`. A 401 from the hub (push, pull, relay link, or `/v1/me`) to the current scope
+///   signs out with `rejectedByHub`, after which nothing sends another request for that account.
+/// - **`hub join`** (an enrollment code) works only while signed out, and signs in as a sign-in does;
+///   **`hub leave`** revokes this device and signs out.
 ///
-/// The hub exposes no user id, so an account's hub user is `<org slug>/<username>`: both are generated
-/// once by the hub and never change, and the username is unique within its org.
+/// An account's hub user is the hub's `users.id`, which never changes and is never reused.
 ///
 /// Transitions run one at a time. A token never appears in a log line, an error, an event, or a status.
 public actor AccountManager {
   public static let signedOutMessage = "Nobody is signed in. Sign in from the Agent Workspace app."
+  /// What a sign-out reason names when the account's org name was never learned (an adopted account
+  /// whose first hub call was refused): never the org slug, which is not for showing.
+  public static let unnamedOrg = "your account"
 
   public struct Context: Sendable {
     public var cluster: StoreCluster
@@ -78,7 +84,12 @@ public actor AccountManager {
     endpoint.database == "workspace" ? "registry" : endpoint.database + "_registry"
   }
 
-  static func hubUserId(orgSlug: String, username: String) -> String { "\(orgSlug)/\(username)" }
+  /// The hub user of a row whose user id is not known yet: an adopted `workspace`, or a hub too old to
+  /// say. The first `/v1/me` that names the user replaces it, and a sign-in that the hub answers with
+  /// the same device claims the row.
+  static func placeholderUserId(deviceId: String) -> String { "device:" + deviceId }
+
+  static func isPlaceholder(_ hubUserId: String) -> Bool { hubUserId.hasPrefix("device:") }
 
   // MARK: - Reading
 
@@ -165,10 +176,12 @@ public actor AccountManager {
         try? database.close()
         return
       }
+      // The names stay empty until `/v1/me` answers: the link holds only the org slug and the username,
+      // which are not for showing.
       let adopted = AccountRow(
         id: AccountRegistry.newId(), hubURL: link.url,
-        hubUserId: Self.hubUserId(orgSlug: link.orgSlug, username: link.username), deviceId: link.deviceId,
-        database: cluster.endpoint.database, displayName: link.username, orgName: link.orgSlug)
+        hubUserId: Self.placeholderUserId(deviceId: link.deviceId), deviceId: link.deviceId,
+        database: cluster.endpoint.database, displayName: "", orgName: "")
       try registry.insert(adopted)
       try registry.activate(id: adopted.id, tokenRef: link.tokenRef)
       row = try registry.active() ?? adopted
@@ -191,11 +204,17 @@ public actor AccountManager {
     await acquire()
     defer { release() }
     let base = try HubURL.validate(hubURL).absoluteString
-    let hubUserId = Self.hubUserId(orgSlug: session.org.slug, username: session.user.username)
-    let existing = try registry.find(hubURL: base, hubUserId: hubUserId)
+    let placeholder = Self.placeholderUserId(deviceId: session.deviceId)
+    let hubUserId = session.userId ?? placeholder
+    // A row registered before its user id was known is this account's when the hub answered with its
+    // device: claim it.
+    let existing =
+      try registry.find(hubURL: base, hubUserId: hubUserId)
+      ?? (hubUserId == placeholder ? nil : try registry.find(hubURL: base, hubUserId: placeholder))
     var row: AccountRow
     if let existing {
       row = existing
+      row.hubUserId = hubUserId
     } else {
       let id = AccountRegistry.newId()
       row = AccountRow(
@@ -235,8 +254,8 @@ public actor AccountManager {
         inserted = true
       }
       try registry.updateProfile(
-        id: row.id, deviceId: session.deviceId, displayName: session.user.displayName,
-        orgName: session.org.name)
+        id: row.id, hubUserId: hubUserId, deviceId: session.deviceId,
+        displayName: session.user.displayName, orgName: session.org.name)
       try registry.activate(id: row.id, tokenRef: ref.rawValue)
       row = try registry.find(hubURL: base, hubUserId: hubUserId) ?? row
     } catch {
@@ -245,8 +264,8 @@ public actor AccountManager {
         try? registry.remove(id: row.id)
       } else if let existing {
         try? registry.updateProfile(
-          id: existing.id, deviceId: existing.deviceId, displayName: existing.displayName,
-          orgName: existing.orgName)
+          id: existing.id, hubUserId: existing.hubUserId, deviceId: existing.deviceId,
+          displayName: existing.displayName, orgName: existing.orgName)
       }
       if let link { try? database.saveHubLink(link) } else { try? database.clearHubLink() }
       _ = try? await scopeContext.secretStore.remove(ref)
@@ -275,7 +294,8 @@ public actor AccountManager {
     active = row
     needsOnboarding = session.needsOnboarding
     reason = nil
-    let scope = await install(row: row, database: database, refreshNames: false)
+    // A hub that did not say who the user is gets asked, so the placeholder is replaced.
+    let scope = await install(row: row, database: database, refreshNames: Self.isPlaceholder(hubUserId))
     logger.info("signed in as account \(row.id, privacy: .public)")
     // Upload whatever the database holds now (a backlog from before sign-in, or from the last session).
     Task { await scope.hub.backgroundPush(reason: "sign-in") }
@@ -283,12 +303,16 @@ public actor AccountManager {
     return status()
   }
 
-  /// `hub join` with an enrollment code, the operator path for a hub with sign-up closed: while signed
-  /// out it enrolls and signs in as that account, exactly as a sign-in would. While signed in it joins
-  /// from the current account, which refuses when that account has already joined.
+  /// `hub join` with an enrollment code, the operator path for a hub with sign-up closed: it enrolls
+  /// and signs in as that account, exactly as a sign-in would, asking `/v1/me` for the user's id (a
+  /// `/v1/me` that fails leaves the placeholder, which the next one replaces). Refused while signed in:
+  /// joining would bind the signed-in account's threads to another hub user.
   public func join(url: String, code: String, deviceName: String) async throws -> HubStatus.Result {
     if let scope = slot.get() {
-      return try await scope.hub.join(url: url, code: code, deviceName: deviceName)
+      let org = scope.account.orgName.isEmpty ? "an account" : scope.account.orgName
+      throw WorkspaceError(
+        .protocolInvalid,
+        "This Mac is signed in to \(org). Log out first, then join a hub with an enrollment code.")
     }
     let base = try HubURL.validate(url)
     let name = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -300,10 +324,12 @@ public actor AccountManager {
     } catch let error as HubError {
       throw HubSync.workspaceError(error, doing: "join the hub")
     }
+    let token = enrolled.token
+    let me = try? await scopeContext.makeAPI(base, { token }).me()
     _ = try await signIn(
       session: AuthSession(
         deviceId: enrolled.deviceId, token: enrolled.token, org: enrolled.org, user: enrolled.user,
-        needsOnboarding: false),
+        needsOnboarding: !(me?.onboarded ?? true), userId: me?.userId),
       hubURL: base.absoluteString, deviceName: name)
     let joined = try self.scope()
     _ = try? await joined.hub.pushNow()
@@ -321,14 +347,28 @@ public actor AccountManager {
     await performSignOut(reason: reason)
   }
 
-  /// The hub refused `accountId`'s token. Ignored unless that account is still the signed-in one (a
-  /// late report from a scope that has since closed).
-  func hubRejected(accountId: String) async {
+  /// `hub leave`: revoke this device at the hub (best effort), forget its token and the database's
+  /// link, and sign out.
+  public func leave() async throws -> HubStatus.Result {
     await acquire()
     defer { release() }
-    guard let scope = slot.get(), scope.account.id == accountId else { return }
-    logger.warning("the hub refused account \(accountId, privacy: .public)'s token; signing out")
-    await performSignOut(reason: .rejectedByHub(scope.account.orgName))
+    guard let scope = slot.get() else { throw WorkspaceError(.signedOut, Self.signedOutMessage) }
+    try await scope.hub.leave()
+    let unsynced = (try? scope.database.unsyncedChangeCount()) ?? 0
+    await performSignOut(reason: nil)
+    return HubStatus.Result(joined: false, unsyncedChanges: unsynced, keepAwakeHeld: false)
+  }
+
+  /// The hub refused the token of the scope `instance`. Ignored unless that scope is still the current
+  /// one: a late report from a scope that has since closed must not sign out a newer session, even of
+  /// the same account.
+  func hubRejected(instance: UUID) async {
+    await acquire()
+    defer { release() }
+    guard let scope = slot.get(), scope.instance == instance else { return }
+    let account = scope.account
+    logger.warning("the hub refused account \(account.id, privacy: .public)'s token; signing out")
+    await performSignOut(reason: .rejectedByHub(account.orgName.isEmpty ? Self.unnamedOrg : account.orgName))
   }
 
   private func performSignOut(reason: SignOutReason?) async {
@@ -355,31 +395,31 @@ public actor AccountManager {
   private func install(
     row: AccountRow, database: WorkspaceDatabase, refreshNames: Bool = true
   ) async -> AccountScope {
-    let id = row.id
+    let instance = UUID()
     let scope = await AccountScope.open(
-      row: row, database: database, context: scopeContext,
-      onUnauthorized: { [weak self] in await self?.hubRejected(accountId: id) })
+      row: row, database: database, context: scopeContext, instance: instance,
+      onUnauthorized: { [weak self] in await self?.hubRejected(instance: instance) })
     slot.set(scope)
     await scopeContext.diagnostics.invalidate()
     if refreshNames { refreshProfile(scope) }
     return scope
   }
 
-  /// Ask `/v1/me` for the account's current names (and whether it has onboarded), retrying with a
-  /// backoff while the hub is unreachable. A 401 signs out. An account that has not joined a hub has
-  /// nobody to ask.
+  /// Ask `/v1/me` for the account's user id (replacing a placeholder), current names, and whether it
+  /// has onboarded, retrying with a backoff while the hub is unreachable. A 401 signs out. An account
+  /// that has not joined a hub has nobody to ask.
   private func refreshProfile(_ scope: AccountScope) {
     refresh?.cancel()
-    let id = scope.account.id
+    let id = scope.instance
     refresh = Task { [weak self] in
       var backoff: Duration = .seconds(2)
       while !Task.isCancelled {
         do {
           let me = try await scope.hub.me()
-          await self?.profileArrived(me, accountId: id)
+          await self?.profileArrived(me, instance: id)
           return
         } catch let error as HubError where error.code == "unauthorized" {
-          await self?.hubRejected(accountId: id)
+          await self?.hubRejected(instance: id)
           return
         } catch is HubError {
           try? await Task.sleep(for: backoff)
@@ -391,24 +431,30 @@ public actor AccountManager {
     }
   }
 
-  private func profileArrived(_ me: MeResponse, accountId: String) async {
-    guard let scope = slot.get(), scope.account.id == accountId, var row = active, row.id == accountId else {
-      return
-    }
+  private func profileArrived(_ me: MeResponse, instance: UUID) async {
+    guard let scope = slot.get(), scope.instance == instance, var row = active, row.id == scope.account.id
+    else { return }
     let onboarding = !me.onboarded
+    let hubUserId = Self.isPlaceholder(row.hubUserId) ? (me.userId ?? row.hubUserId) : row.hubUserId
     guard
       row.displayName != me.user.displayName || row.orgName != me.org.name || row.deviceId != me.deviceId
-        || needsOnboarding != onboarding
+        || row.hubUserId != hubUserId || needsOnboarding != onboarding
     else { return }
-    row.displayName = me.user.displayName
-    row.orgName = me.org.name
-    row.deviceId = me.deviceId
+    var updated = row
+    updated.displayName = me.user.displayName
+    updated.orgName = me.org.name
+    updated.deviceId = me.deviceId
+    updated.hubUserId = hubUserId
     do {
       try registry.updateProfile(
-        id: row.id, deviceId: row.deviceId, displayName: row.displayName, orgName: row.orgName)
+        id: updated.id, hubUserId: updated.hubUserId, deviceId: updated.deviceId,
+        displayName: updated.displayName, orgName: updated.orgName)
+      row = updated
     } catch {
+      // Another row already names this user (it signed in on its own since): keep the placeholder.
       logger.warning(
         "could not record the account's names: \(WorkspaceError.from(error).message, privacy: .public)")
+      return
     }
     active = row
     needsOnboarding = onboarding

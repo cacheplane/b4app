@@ -202,6 +202,8 @@ public actor HubSync {
     } catch let error as HubError {
       throw Self.workspaceError(error, doing: "join the hub")
     }
+    // A close while the enroll was out owns this actor now: store nothing, hold no assertion, push nothing.
+    guard !closed else { throw WorkspaceError(.signedOut, AccountManager.signedOutMessage) }
     try await secretStore.put(ref, value: enrolled.token)
     do {
       try database.saveHubLink(
@@ -212,6 +214,10 @@ public actor HubSync {
     } catch {
       _ = try? await secretStore.remove(ref)
       throw error
+    }
+    guard !closed else {
+      _ = try? await secretStore.remove(ref)
+      throw WorkspaceError(.signedOut, AccountManager.signedOutMessage)
     }
     database.deviceId = enrolled.deviceId
     // The token was just stored, so it is known without asking the Keychain.

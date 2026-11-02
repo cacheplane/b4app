@@ -334,6 +334,7 @@ passkey's account, an `attestation` signs up. Request (exactly one of `assertion
 ```json
 {
   "deviceId": "0198...",
+  "userId": "0197...",
   "token": "<43 characters, base64url>",
   "org": {"slug": "o-k2m4q7xz", "name": "My Org"},
   "user": {"username": "u-a3b9c2d7", "displayName": ""},
@@ -341,8 +342,9 @@ passkey's account, an `attestation` signs up. Request (exactly one of `assertion
 }
 ```
 
-`needsOnboarding` is true until the user has given a full name. The token appears here and
-nowhere else.
+`userId` is the user's id (`users.id`), which never changes and is never reused; a client keys its
+local accounts on it. `needsOnboarding` is true until the user has given a full name. The token
+appears here and nowhere else.
 
 Validation happens before the ceremony is taken, so a malformed request does not use it up. Of
 two finishes of one ceremony racing, exactly one succeeds; the other is `ceremony_expired`.
@@ -488,6 +490,7 @@ The authenticated device, the org and user it belongs to, and the account's sign
 ```json
 {
   "deviceId": "0198...",
+  "userId": "0197...",
   "deviceName": "Brian's MacBook Pro",
   "platform": "macos",
   "org": {"slug": "cacheplane", "name": "cacheplane"},
@@ -504,7 +507,8 @@ The authenticated device, the org and user it belongs to, and the account's sign
 ```
 
 - The fields before `onboarded` are unchanged from enrollment, so an older client still decodes
-  the answer; `user.fullName`, `onboarded`, and `identities` were added with sign-in.
+  the answer; `userId` (the same id a sign-in answers), `user.fullName`, `onboarded`, and
+  `identities` were added with sign-in.
 - `user.fullName` is the name given at onboarding, `null` until then. `onboarded` is false until
   `PUT /v1/me/profile` has been called once (an operator-seeded user counts as onboarded).
 - `identities` is every sign-in method of the user, oldest first: `kind` is `passkey` or `apple`;

@@ -147,13 +147,19 @@ public final class AccountRegistry: Sendable {
     }
   }
 
-  /// Record the names the hub reports for the account (a sign-in, or `/v1/me`) and the device it
-  /// gave this Mac.
-  public func updateProfile(id: String, deviceId: String, displayName: String, orgName: String) throws {
+  /// Record who the hub says the account is (a sign-in, or `/v1/me`): its user id (replacing a
+  /// placeholder), the device it gave this Mac, and its names. A user id another row already has is
+  /// refused (`protocol_invalid`).
+  public func updateProfile(
+    id: String, hubUserId: String, deviceId: String, displayName: String, orgName: String
+  ) throws {
     try run { c in
       let updated = try c.execute(
-        "UPDATE \"accounts\" SET \"device_id\" = $2, \"display_name\" = $3, \"org_name\" = $4 WHERE \"id\" = $1",
-        [id, deviceId, displayName, orgName])
+        """
+        UPDATE "accounts" SET "hub_user_id" = $2, "device_id" = $3, "display_name" = $4, "org_name" = $5
+        WHERE "id" = $1
+        """,
+        [id, hubUserId, deviceId, displayName, orgName])
       guard updated.affected == 1 else { throw WorkspaceError(.notFound, "No account \(id).") }
     }
   }

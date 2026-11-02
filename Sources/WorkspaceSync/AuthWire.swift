@@ -95,19 +95,26 @@ public struct PasskeyFinishRequest: Codable, Sendable, Equatable, CustomStringCo
   public var debugDescription: String { description }
 }
 
-/// What every route that signs a device in answers: the enrollment shape plus whether the user still
-/// has to onboard. The token is in this answer and nowhere else.
+/// What every route that signs a device in answers: the enrollment shape plus the user's id and
+/// whether the user still has to onboard. The token is in this answer and nowhere else.
 public struct AuthSession: Codable, Sendable, Equatable, CustomStringConvertible,
   CustomDebugStringConvertible
 {
   public var deviceId: String
+  /// The user's id (`users.id`), which never changes and is never reused: the Mac keys its accounts
+  /// on it. Nil from a hub older than this field.
+  public var userId: String?
   public var token: String
   public var org: OrgInfo
   public var user: UserInfo
   public var needsOnboarding: Bool
 
-  public init(deviceId: String, token: String, org: OrgInfo, user: UserInfo, needsOnboarding: Bool) {
+  public init(
+    deviceId: String, token: String, org: OrgInfo, user: UserInfo, needsOnboarding: Bool,
+    userId: String? = nil
+  ) {
     self.deviceId = deviceId
+    self.userId = userId
     self.token = token
     self.org = org
     self.user = user
@@ -115,8 +122,8 @@ public struct AuthSession: Codable, Sendable, Equatable, CustomStringConvertible
   }
 
   public var description: String {
-    "AuthSession(deviceId: \(deviceId), token: <redacted>, org: \(org.slug), user: \(user.username), "
-      + "needsOnboarding: \(needsOnboarding))"
+    "AuthSession(deviceId: \(deviceId), userId: \(userId ?? "nil"), token: <redacted>, org: \(org.slug), "
+      + "user: \(user.username), needsOnboarding: \(needsOnboarding))"
   }
   public var debugDescription: String { description }
 }

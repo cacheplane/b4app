@@ -114,14 +114,20 @@ private struct TokenReadingAPI: HubAPI {
   }
 }
 
+/// A coordinator with a `FakeHubAPI`, signed out until `join()` signs it in through the account path
+/// (`hub join` while signed out), the way a Mac joins since the per-account split (Task 9). What a test
+/// writes before joining goes straight into the store's default database (`workspace()`), which is
+/// where the threads made before sign-in live and which the first account adopts.
 private struct HubHarness {
   let coordinator: RunningCoordinator
   let client: WorkspaceClient
   let secrets: MemorySecretStore
   let fake: FakeHubAPI
   let workDir: String
+  let paths: PlatformPaths
 
-  static func start() async throws -> HubHarness {
+  /// `signedIn` starts signed in to a local account that has joined no hub instead (`TestAccount`).
+  static func start(signedIn: Bool = false) async throws -> HubHarness {
     let base = NSTemporaryDirectory() + "b4h-\(UUID().uuidString.prefix(8))"
     try FileManager.default.createDirectory(atPath: base + "/work", withIntermediateDirectories: true)
     let paths = try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
@@ -130,17 +136,36 @@ private struct HubHarness {
     let fake = FakeHubAPI()
     await fake.addEnrollmentCode(code, enrolled)
     let secrets = MemorySecretStore()
-    let outcome = try await Coordinator.startSignedIn(
-      options: CoordinatorOptions(
-        paths: paths, environment: env, secretStore: secrets, hubAPIFactory: { _, _ in fake },
-        // Never a real socket: the relay link has its own tests (HubLinkRelayTests).
-        hubLinkConnection: FakeHubLinkConnection()))
+    let options = CoordinatorOptions(
+      paths: paths, environment: env, secretStore: secrets, hubAPIFactory: { _, _ in fake },
+      // Never a real socket: the relay link has its own tests (HubLinkRelayTests).
+      hubLinkConnection: FakeHubLinkConnection())
+    let outcome =
+      signedIn
+      ? try await Coordinator.startSignedIn(options: options) : try await Coordinator.start(options: options)
     guard case .running(let coordinator) = outcome else {
       throw WorkspaceError(.internalError, "expected running")
     }
     let client = try await UnixSocketTransport.client(path: paths.socketPath)
     return HubHarness(
-      coordinator: coordinator, client: client, secrets: secrets, fake: fake, workDir: base + "/work")
+      coordinator: coordinator, client: client, secrets: secrets, fake: fake, workDir: base + "/work",
+      paths: paths)
+  }
+
+  /// The store's default database, opened on its own pool: before a join it is nobody's yet.
+  func workspace() throws -> WorkspaceDatabase {
+    try WorkspaceDatabase(endpoint: paths.postgres, binDir: paths.postgres.binDir!)
+  }
+
+  /// A connection and a thread written into `db` without the coordinator (signed out, it takes none).
+  func seedThread(_ db: WorkspaceDatabase) throws {
+    let id = UUID().uuidString.lowercased()
+    _ = try db.insertConnection(
+      Connection(id: "c-\(id)", kind: .codex, label: "Fake Codex", target: fakeCodex))
+    _ = try db.insertThread(
+      ConversationThread(
+        id: id, connectionId: "c-\(id)", nativeThreadId: "n-\(id)", nativeScope: "me", title: "T",
+        context: workDir))
   }
 
   func close() async {
@@ -318,7 +343,9 @@ private struct HubHarness {
   @Test func connectionProjectIdIsUploaded() async throws {
     let h = try await HubHarness.start()
     defer { Task { await h.close() } }
-    let db = h.coordinator.database
+    let seeded = try h.workspace()
+    defer { try? seeded.close() }
+    var db = seeded
     let project = try db.insertProject(Project(id: "p1"), folders: ["/tmp/b4-project"])
     let server = try db.insertLocalServer(
       LocalServer(
@@ -330,6 +357,7 @@ private struct HubHarness {
         b4Mode: .managedLocal, localServerId: server.id, projectId: project.id))
 
     _ = try await h.join()
+    db = h.coordinator.database
     let pushed = await h.fake.pushed.flatMap { $0 }
     let insert = try #require(pushed.first { $0.table == "connections" && $0.rowId == "c-b4" })
     #expect(insert.value?["projectId"] == .string("p1"))
@@ -349,13 +377,18 @@ private struct HubHarness {
   @Test func joinPushesTheBacklogAndMarksItSynced() async throws {
     let h = try await HubHarness.start()
     defer { Task { await h.close() } }
-    let db = h.coordinator.database
-    try await h.addThread()
-    let backlog = try db.changes(after: 0).compactMap(SyncFilter.outbound)
-    #expect(!backlog.isEmpty)
-    #expect(try db.unsyncedChangeCount() > 0)
+    // Threads from before the first sign-in: the joining account adopts them.
+    let seeded = try h.workspace()
+    try h.seedThread(seeded)
+    #expect(!(try seeded.changes(after: 0).compactMap(SyncFilter.outbound)).isEmpty)
+    #expect(try seeded.unsyncedChangeCount() > 0)
+    try seeded.close()
 
     let joined = try await h.join()
+    let db = h.coordinator.database
+    // Everything the store held when the join pushed: the seeded rows and what the sign-in's project
+    // backfill added for them.
+    let backlog = try db.changes(after: 0).compactMap(SyncFilter.outbound)
     #expect(joined.joined)
     #expect(joined.deviceId == "dev-mac")
     #expect(joined.deviceName == "Test Mac")
@@ -419,14 +452,14 @@ private struct HubHarness {
     }
     #expect(error?.code == .protocolInvalid)
     #expect(await h.fake.enrollCalls == 0)
-    #expect(try await h.status().joined == false)
+    #expect(await h.coordinator.accounts.status().state == .signedOut)
   }
 
   @Test func leaveRevokesAndForgets() async throws {
     let h = try await HubHarness.start()
     defer { Task { await h.close() } }
-    try await h.addThread()
     _ = try await h.join()
+    try await h.addThread()
     let db = h.coordinator.database
     let link = try #require(try db.hubLink())
     let ref = try #require(SecretRef(rawValue: link.tokenRef))
@@ -436,11 +469,17 @@ private struct HubHarness {
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
     #expect(left.joined == false)
     #expect(await h.fake.revoked)
-    #expect(try await h.status().joined == false)
+    // Leaving signs out (Task 9 fix round 1): the hub commands answer signed_out.
+    #expect(await h.coordinator.accounts.status().state == .signedOut)
+    let refused = await #expect(throws: WorkspaceError.self) { _ = try await h.status() }
+    #expect(refused?.code == .signedOut)
     #expect(try await h.secrets.read(ref) == nil)
-    #expect(try db.hubLink() == nil)
     #expect(db.deviceId == "local")
-    #expect(try db.unsyncedChangeCount() == db.changes(after: 0).count)
+    // The account's store, opened again: no link, and every change unsynced again.
+    let reopened = try h.workspace()
+    defer { try? reopened.close() }
+    #expect(try reopened.hubLink() == nil)
+    #expect(try reopened.unsyncedChangeCount() == reopened.changes(after: 0).count)
   }
 
   @Test func joinReportsTheDisplayName() async throws {
@@ -459,7 +498,7 @@ private struct HubHarness {
       HubLeave.self, EmptyParams(),
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
     #expect(left.displayName == nil)
-    #expect(try await h.status().displayName == nil)
+    #expect(await h.coordinator.accounts.status().state == .signedOut)
   }
 
   @Test func restartFetchesTheDisplayName() async throws {
@@ -522,14 +561,12 @@ private struct HubHarness {
   @Test func restoreIsRefusedWhileJoined() async throws {
     let h = try await HubHarness.start()
     defer { Task { await h.close() } }
+    _ = try await h.join()
     let db = h.coordinator.database
-    // An archive of the empty store: restoring an archive whose change log holds scalar jsonb values
-    // fails independently of the hub (see the Task 7 fix report).
     let backup = try await h.client.request(
       DatabaseBackup.self, DatabaseBackup.Params(path: h.workDir + "/archive.jsonl"),
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
     try await h.addThread()
-    _ = try await h.join()
     let counts = try db.tableCounts()
     let changes = try db.changes(after: 0)
     let link = try db.hubLink()
@@ -549,10 +586,20 @@ private struct HubHarness {
     var kept = try db.hubLink()
     kept?.cursor = link?.cursor ?? 0
     #expect(kept == link)
+  }
 
-    _ = try await h.client.request(
-      HubLeave.self, EmptyParams(),
+  /// Restoring works for an account that has joined no hub. Since `hub leave` signs out (Task 9 fix
+  /// round 1) only a local account is in that state.
+  @Test func restoreReplacesTheStoreOfAnAccountThatJoinedNoHub() async throws {
+    let h = try await HubHarness.start(signedIn: true)
+    defer { Task { await h.close() } }
+    let db = h.coordinator.database
+    // An archive of the empty store: restoring an archive whose change log holds scalar jsonb values
+    // fails independently of the hub (see the Task 7 fix report).
+    let backup = try await h.client.request(
+      DatabaseBackup.self, DatabaseBackup.Params(path: h.workDir + "/archive.jsonl"),
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    try await h.addThread()
     let restored = try await h.client.request(
       DatabaseRestore.self, DatabaseRestore.Params(path: backup.path, replace: true),
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))

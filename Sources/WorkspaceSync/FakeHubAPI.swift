@@ -55,6 +55,9 @@ public actor FakeHubAPI: HubAPI {
   private var addedIdentities = 0
 
   private var device: EnrollResponse?
+  /// The signed-in user's id, from the scripted session; `me()` makes one up from the org and the
+  /// username when none was scripted.
+  private var userIdAnswer: String?
   private var deviceName = "Fake device"
   private var platform = "macos"
   private var acceptedSeqs: Set<Int> = []
@@ -111,6 +114,8 @@ public actor FakeHubAPI: HubAPI {
     sessionAnswer = session
     onboarded = !session.needsOnboarding
   }
+  /// The user id `me()` answers (nil: one made up from the org slug and the username).
+  public func setUserId(_ id: String?) { userIdAnswer = id }
   /// The account's sign-in methods, which `me()` and `identities()` list.
   public func setIdentities(_ identities: [Identity]) { identityList = identities }
 
@@ -151,7 +156,8 @@ public actor FakeHubAPI: HubAPI {
     return MeResponse(
       deviceId: device.deviceId, deviceName: deviceName, platform: platform, org: device.org,
       user: device.user, createdAt: "2026-10-31T12:00:00.000000Z", fullName: fullName,
-      onboarded: onboarded, identities: identityList)
+      onboarded: onboarded, identities: identityList,
+      userId: userIdAnswer ?? "user-\(device.org.slug)-\(device.user.username)")
   }
 
   public func push(_ changes: [SyncChange]) async throws -> PushResponse {
@@ -327,6 +333,7 @@ public actor FakeHubAPI: HubAPI {
     deviceName = spec.deviceName
     platform = spec.platform
     revoked = false
+    if let userId = session.userId { userIdAnswer = userId }
     return session
   }
 
