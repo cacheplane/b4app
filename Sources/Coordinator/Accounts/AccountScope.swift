@@ -85,7 +85,8 @@ public final class AccountScope: Sendable {
       paths: PlatformPaths, environment: [String: String], secretStore: any SecretStore, eventLog: EventLog,
       diagnostics: DiagnosticsService, adapterFactory: SessionService.AdapterFactory? = nil,
       hubAPIFactory: HubSync.APIFactory? = nil, hubLinkConnection: (any HubLinkConnection)? = nil,
-      powerAssertions: (any PowerAssertions)? = nil, checkRetryDelays: [Duration] = [.seconds(1), .seconds(3)]
+      powerAssertions: (any PowerAssertions)? = nil,
+      checkRetryDelays: [Duration] = [.seconds(1), .seconds(3)]
     ) {
       self.paths = paths
       self.environment = environment
