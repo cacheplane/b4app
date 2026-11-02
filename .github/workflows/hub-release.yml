@@ -1,0 +1,91 @@
+name: Hub release
+
+# A published `hub-v<semver>` release promotes the image already built from the
+# release commit: it never rebuilds. Mac app releases (`mac-v*`) fire the same
+# `release: published` event, so every job is guarded on the tag prefix.
+
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: hub-release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/cacheplane/b4hub
+
+jobs:
+  promote:
+    name: Add release tags to the built image
+    if: startsWith(github.event.release.tag_name, 'hub-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.resolve.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Confirm this is a hub release
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: .github/scripts/is-hub-release.sh "$TAG"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve the digest built from the release commit
+        id: resolve
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          manifest=""
+          if ! manifest="$(docker buildx imagetools inspect "$IMAGE:sha-$SHA" --format '{{json .Manifest}}' 2>/dev/null)"; then
+            manifest=""
+          fi
+          digest="$(jq -r '.digest // ""' <<< "${manifest:-null}" 2>/dev/null || true)"
+          case "$digest" in
+            sha256:????????????????????????????????????????????????????????????????) ;;
+            *)
+              echo "::error::no built image for $SHA; release from a commit on main whose build finished"
+              exit 1
+              ;;
+          esac
+          echo "$IMAGE:sha-$SHA is $digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Add the semver tags to that digest
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          DIGEST: ${{ steps.resolve.outputs.digest }}
+        run: |
+          set -euo pipefail
+          tag_args=()
+          while IFS= read -r version; do
+            tag_args+=(--tag "$IMAGE:$version")
+          done < <(.github/scripts/hub-release-tags.sh "$TAG")
+          docker buildx imagetools create "${tag_args[@]}" "$IMAGE@$DIGEST"
+          docker buildx imagetools inspect "$IMAGE@$DIGEST"
+
+  # Task 10 uncomments this
+  # deploy:
+  #   name: Deploy to production
+  #   needs: promote
+  #   permissions:
+  #     contents: read
+  #     id-token: write
+  #   uses: ./.github/workflows/hub-deploy.yml
+  #   with:
+  #     environment: production
+  #     digest: ${{ needs.promote.outputs.digest }}
+  #   secrets: inherit
