@@ -300,11 +300,20 @@ run "boundary_denies_iam_users" {
         "arn:aws:iam::123456789012:role/b4hub-test-infra",
         "arn:aws:iam::123456789012:role/b4hub-test-deploy",
         "arn:aws:iam::123456789012:policy/b4hub-test-boundary",
+        "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com",
       ])
       && contains(tolist(one([for s in data.aws_iam_policy_document.boundary.statement : s if s.sid == "DenyTamperingWithBootstrap"]).actions), "iam:UpdateAssumeRolePolicy")
       && contains(tolist(one([for s in data.aws_iam_policy_document.boundary.statement : s if s.sid == "DenyTamperingWithBootstrap"]).actions), "iam:CreatePolicyVersion")
     )
     error_message = "the three CI roles and the boundary must be protected from edits"
+  }
+
+  assert {
+    condition = setintersection(
+      one([for s in data.aws_iam_policy_document.boundary.statement : s if s.sid == "DenyTamperingWithBootstrap"]).actions,
+      ["iam:DeleteOpenIDConnectProvider", "iam:UpdateOpenIDConnectProviderThumbprint", "iam:RemoveClientIDFromOpenIDConnectProvider"]
+    ) == toset(["iam:DeleteOpenIDConnectProvider", "iam:UpdateOpenIDConnectProviderThumbprint", "iam:RemoveClientIDFromOpenIDConnectProvider"])
+    error_message = "the GitHub OIDC provider must be protected from deletion, thumbprint changes, and audience removal"
   }
 }
 
@@ -333,5 +342,23 @@ run "state_bucket_is_private_and_encrypted" {
   assert {
     condition     = one(one(aws_s3_bucket_server_side_encryption_configuration.state.rule).apply_server_side_encryption_by_default).sse_algorithm == "aws:kms"
     error_message = "state bucket must default to SSE-KMS"
+  }
+
+  assert {
+    condition = (
+      one([for s in data.aws_iam_policy_document.state_bucket.statement : s if s.sid == "DenyOtherKmsKeys"]).effect == "Deny"
+      && toset(one([for s in data.aws_iam_policy_document.state_bucket.statement : s if s.sid == "DenyOtherKmsKeys"]).actions) == toset(["s3:PutObject"])
+      && toset(one([for c in one([for s in data.aws_iam_policy_document.state_bucket.statement : s if s.sid == "DenyOtherKmsKeys"]).condition : c if c.test == "StringNotEquals"]).values) == toset(["arn:aws:kms:us-east-2:123456789012:key/00000000-0000-0000-0000-000000000000"])
+      && one([for c in one([for s in data.aws_iam_policy_document.state_bucket.statement : s if s.sid == "DenyOtherKmsKeys"]).condition : c if c.test == "StringNotEquals"]).variable == "s3:x-amz-server-side-encryption-aws-kms-key-id"
+    )
+    error_message = "a PutObject that names a KMS key other than the state key must be denied"
+  }
+
+  assert {
+    condition = (
+      one([for c in one([for s in data.aws_iam_policy_document.state_bucket.statement : s if s.sid == "DenyOtherKmsKeys"]).condition : c if c.test == "Null"]).variable == "s3:x-amz-server-side-encryption-aws-kms-key-id"
+      && toset(one([for c in one([for s in data.aws_iam_policy_document.state_bucket.statement : s if s.sid == "DenyOtherKmsKeys"]).condition : c if c.test == "Null"]).values) == toset(["false"])
+    )
+    error_message = "the KMS key deny must apply only when the key-id header is present"
   }
 }

@@ -139,10 +139,13 @@ data "aws_iam_policy_document" "boundary" {
       "iam:PutRolePolicy",
       "iam:SetDefaultPolicyVersion",
       "iam:UpdateAssumeRolePolicy",
+      "iam:DeleteOpenIDConnectProvider",
+      "iam:UpdateOpenIDConnectProviderThumbprint",
+      "iam:RemoveClientIDFromOpenIDConnectProvider",
     ]
     resources = concat(
       values(local.role_arns),
-      [local.boundary_arn],
+      [local.boundary_arn, aws_iam_openid_connect_provider.github.arn],
     )
   }
 }
