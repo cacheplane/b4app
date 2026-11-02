@@ -154,10 +154,21 @@ aws ecs update-service --cluster "$cluster" --service "$service" --task-definiti
   --force-new-deployment --output json > /dev/null
 aws ecs wait services-stable --cluster "$cluster" --services "$service"
 # The circuit breaker rolls a failed deployment back, and the rolled-back
-# service is "stable" too: check the new revision is the one serving.
-settled="$(aws ecs describe-services --cluster "$cluster" --services "$service" --output json)"
-primary="$(jq -r '.services[0].deployments[] | select(.status == "PRIMARY") | "\(.taskDefinition) \(.rolloutState // "")"' <<< "$settled")"
-desired="$(resolved "service desiredCount" '^[0-9]+$' "$(jq -r '.services[0].desiredCount // ""' <<< "$settled")")"
+# service is "stable" too: check the new revision is the one serving. The
+# waiter can return while the rollout state still reads IN_PROGRESS (seen
+# with desiredCount 0, where there is no task to wait for), so the state gets
+# a bounded moment to settle before it is judged.
+primary=""
+desired=""
+for _ in $(seq 1 "${DEPLOY_SETTLE_ATTEMPTS:-24}"); do
+  settled="$(aws ecs describe-services --cluster "$cluster" --services "$service" --output json)"
+  primary="$(jq -r '.services[0].deployments[] | select(.status == "PRIMARY") | "\(.taskDefinition) \(.rolloutState // "")"' <<< "$settled")"
+  desired="$(resolved "service desiredCount" '^[0-9]+$' "$(jq -r '.services[0].desiredCount // ""' <<< "$settled")")"
+  case "$primary" in
+    *" IN_PROGRESS") sleep "${DEPLOY_SETTLE_SECONDS:-5}" ;;
+    *) break ;;
+  esac
+done
 if [ "$primary" != "$hub_arn COMPLETED" ]; then
   echo "deploy: the service settled on '${primary:-no primary deployment}', not $hub_arn COMPLETED (rolled back?)" >&2
   exit 1

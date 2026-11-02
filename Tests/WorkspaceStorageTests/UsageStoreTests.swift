@@ -49,4 +49,28 @@ private func seed(_ db: WorkspaceDatabase, _ id: String = "c1", kind: Connection
     #expect(!tables.contains("tokenUsage"))
     #expect(tables.contains("connections"))
   }
+
+  /// The phone sees usage through `connectionUsage`, a synced table: a change is logged when it moves,
+  /// and saving the same usage again logs nothing.
+  @Test func syncedUsageIsLoggedWhenItChanges() throws {
+    let db = try WorkspaceDatabase.temporary()
+    try seed(db)
+    let reading = UsageReading(
+      weekly: UsageWindow(usedPercent: 87, windowMinutes: 10080), planType: "promax",
+      observedAt: "2026-11-02T10:00:00.000Z")
+    let usage = ConnectionUsage(connectionId: "c1", reading: reading)
+    let before = try db.changes(after: 0).count
+    try db.saveSyncedUsage(usage)
+    let logged = try db.changes(after: 0).dropFirst(before)
+    #expect(logged.map(\.table) == ["connectionUsage"])
+    #expect(logged.first?.op == "insert")
+    #expect(logged.first?.value?["reading"]?["planType"]?.stringValue == "promax")
+    try db.saveSyncedUsage(usage)
+    #expect(try db.changes(after: 0).count == before + 1)
+    var moved = usage
+    moved.reading?.weekly?.usedPercent = 88
+    try db.saveSyncedUsage(moved)
+    #expect(try db.changes(after: 0).last?.op == "update")
+    #expect(try db.syncedUsage(connectionId: "c1") == moved)
+  }
 }

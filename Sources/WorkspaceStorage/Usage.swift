@@ -64,4 +64,41 @@ extension WorkspaceDatabase {
       return row?.text("total").flatMap(Int.init) ?? 0
     }
   }
+
+  // MARK: - Synced usage (connectionUsage, migration 0007)
+
+  /// Write the usage the phone shows. Nothing is written, and so nothing logged, when it has not
+  /// moved.
+  public func saveSyncedUsage(_ usage: ConnectionUsage) throws {
+    guard try syncedUsage(connectionId: usage.connectionId) != usage else { return }
+    let reading = try usage.reading.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }
+    let tokens = try usage.tokens.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }
+    try write {
+      _ = try $0.execute(
+        """
+        INSERT INTO "connectionUsage" ("connectionId", "reading", "tokens", "updatedAt")
+        VALUES ($1, $2::jsonb, $3::jsonb, $4)
+        ON CONFLICT ("connectionId") DO UPDATE SET "reading" = EXCLUDED."reading",
+          "tokens" = EXCLUDED."tokens", "updatedAt" = EXCLUDED."updatedAt"
+        """,
+        [usage.connectionId, reading, tokens, Timestamp.now()])
+    }
+  }
+
+  /// The usage last written for the phone, nil before any.
+  public func syncedUsage(connectionId: String) throws -> ConnectionUsage? {
+    try read {
+      guard
+        let row = try $0.execute(
+          "SELECT \"reading\"::text AS \"reading\", \"tokens\"::text AS \"tokens\" FROM \"connectionUsage\" WHERE \"connectionId\" = $1",
+          [connectionId]
+        ).rows.first
+      else { return nil }
+      let decoder = JSONDecoder()
+      return ConnectionUsage(
+        connectionId: connectionId,
+        reading: try row.text("reading").map { try decoder.decode(UsageReading.self, from: Data($0.utf8)) },
+        tokens: try row.text("tokens").map { try decoder.decode(TokenTotals.self, from: Data($0.utf8)) })
+    }
+  }
 }

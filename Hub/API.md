@@ -820,8 +820,8 @@ device with a fast clock cannot win every later conflict; exactly 300 000 ms ahe
 clock the hub keeps is the one it serves back in the feed.
 
 These columns merge last-writer-wins: `threads.title`, `threads.pinned`, `threads.archived`,
-`threads.readTurnId`, `threads.projectId`, `projects.name`, `drafts.threadId`, `drafts.text`,
-`drafts.updatedAt`. The hub remembers, per row and column, the clock of the change that last set
+`threads.readTurnId`, `threads.projectId`, `threads.userDeletedAt`, `projects.name`,
+`drafts.threadId`, `drafts.text`, `drafts.updatedAt`. The hub remembers, per row and column, the clock of the change that last set
 it (`column_clocks`); an `update` of such a column applies only when its clock is greater, and
 an `insert` counts as setting every such column it carries, at its clock. A change that loses is
 still recorded in the feed (it is history) but writes nothing. Every other column applies
@@ -829,9 +829,10 @@ whatever its clock, as in M8a.
 
 A `macos` device may write any column. An `ios` or `cli` device may only `update` these
 columns, and `insert` rows of `drafts`: `threads.title`, `threads.pinned`, `threads.archived`,
-`threads.readTurnId`, `projects.name`, `drafts.threadId`, `drafts.text`, `drafts.updatedAt`.
-Anything else (including every `delete`) is rejected with `column_not_writable`. A draft is
-cleared by setting `text` to `""`, never by deleting it.
+`threads.readTurnId`, `threads.userDeletedAt`, `projects.name`, `drafts.threadId`, `drafts.text`,
+`drafts.updatedAt`. Anything else (including every `delete`) is rejected with
+`column_not_writable`. A draft is cleared by setting `text` to `""`, never by deleting it. A thread is
+deleted by setting `userDeletedAt` (never cleared), and its row stays.
 
 **Ownership and scrubbing.** Each mirrored row records `owner_device_id`, the device of its latest
 `insert` (an `update` never changes it; `device_id` remains the last writer). The hub sets
@@ -909,7 +910,8 @@ appear, and no deleted row or its clocks. `200`:
 ```
 
 - `changes` are synthetic `insert`s, one per row, tables in dependency order (`connections`,
-  `projects`, `projectFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`),
+  `projects`, `projectFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`,
+  `connectionUsage`),
   rows within a table by id. Each has `hubSeq` 0, `deviceSeq` 0, `wall` 0, `column` `null`,
   `deviceId` the row's owner (the device of its latest insert), and `value` the row's Mac columns
   (no `org_id`, `user_id`, `device_id`, `owner_device_id`, or `deleted_at`;
@@ -961,8 +963,8 @@ other eleven applied; do not paste it whole.
 | --- | --- | --- |
 | `deviceSeq` | integer | The change's sequence on the device that wrote it: unique per device, increasing. The idempotency key together with the authenticated device. |
 | `wall` | integer | Milliseconds since the epoch on the origin device. |
-| `table` | string | One of `connections`, `projects`, `projectFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`. Any other name (including `localServers`, which never syncs) is recorded and skipped. |
-| `rowId` | string | The row's key: its `id`, or `threadId` for `drafts`. Client-chosen text; unique per org within a table. |
+| `table` | string | One of `connections`, `projects`, `projectFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`, `connectionUsage`. Any other name (including `localServers`, which never syncs) is recorded and skipped. `connectionUsage` (migration 0010) holds a connection's latest plan reading and B4 token totals as JSON documents (`reading`, `tokens`); only a Mac writes it. |
+| `rowId` | string | The row's key: its `id`, `threadId` for `drafts`, or `connectionId` for `connectionUsage`. Client-chosen text; unique per org within a table. |
 | `op` | `"insert"`, `"update"`, or `"delete"` | |
 | `column` | string or `null` | For `update`, the column being set; otherwise absent or `null`. |
 | `hlc` | string, optional | The hybrid logical clock the device stamped on the change (see *Clocks and the write rule*). Omit it and the hub derives one from `wall`. A value not in the clock form gets that change rejected with `invalid_clock`. |

@@ -7,6 +7,9 @@
     "environment": [
       { "name": "B4HUB_PORT", "value": "8081" },
       { "name": "B4HUB_LOG", "value": "info" },
+%{ if include_signin_secrets ~}
+      { "name": "B4HUB_APPLE_AUDIENCES", "value": "com.cacheplane.b4app.ios,com.cacheplane.b4app.signin" },
+%{ endif ~}
       { "name": "B4HUB_WEBAUTHN_RP_ID", "value": "${rp_id}" }
     ],
     "secrets": [
@@ -20,7 +23,7 @@
       { "name": "DATABASE_URL", "valueFrom": "${db_url_secret_arn}" }
     ],
     "linuxParameters": { "initProcessEnabled": true },
-    "readonlyRootFilesystem": true,
+    "readonlyRootFilesystem": false,
     "mountPoints": [
       { "sourceVolume": "tmp", "containerPath": "/tmp", "readOnly": false }
     ],

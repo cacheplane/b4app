@@ -3,31 +3,58 @@ import WorkspacePlatform
 import WorkspaceProtocol
 import WorkspaceStorage
 
-/// Usage, checks that retry, and editing a connection (settings connections design). Plan readings
-/// and B4 token counts stay on this Mac (migration 0006); nothing here reaches the hub.
+/// Usage, checks that retry, and editing a connection (settings connections design). Plan readings and
+/// per-turn token counts are kept on this Mac (migration 0006); each connection's current usage is
+/// copied to the synced `connectionUsage` table (migration 0007), which reaches the phone.
 extension SessionService {
   // MARK: - Usage
 
   public func usageRead() throws -> UsageRead.Result {
     let readings = try db.usageReadings()
-    let (today, week) = Self.tokenBoundaries(now: Date())
-    let usage = try db.listConnections().map { connection -> ConnectionUsage in
-      switch connection.kind {
-      case .codex, .claude:
-        return ConnectionUsage(connectionId: connection.id, reading: readings[connection.id])
-      case .b4:
-        // A server that has never reported tokens has no figure, rather than zero (D-082).
-        guard try db.hasTokenUsage(connectionId: connection.id) else {
-          return ConnectionUsage(connectionId: connection.id)
-        }
-        return ConnectionUsage(
-          connectionId: connection.id,
-          tokens: TokenTotals(
-            today: try db.tokenTotals(connectionId: connection.id, since: today),
-            week: try db.tokenTotals(connectionId: connection.id, since: week)))
+    let now = Date()
+    return UsageRead.Result(
+      usage: try db.listConnections().map { try usageEntry($0, readings: readings, now: now) })
+  }
+
+  /// One connection's usage: its plan reading (Codex, Claude) or its token totals for the local day and
+  /// week (B4).
+  func usageEntry(
+    _ connection: Connection, readings: [String: UsageReading], now: Date
+  ) throws
+    -> ConnectionUsage
+  {
+    switch connection.kind {
+    case .codex, .claude:
+      return ConnectionUsage(connectionId: connection.id, reading: readings[connection.id])
+    case .b4:
+      // A server that has never reported tokens has no figure, rather than zero (D-082).
+      guard try db.hasTokenUsage(connectionId: connection.id) else {
+        return ConnectionUsage(connectionId: connection.id)
       }
+      let (today, week) = Self.tokenBoundaries(now: now)
+      let local = UsageDay.local(now)
+      return ConnectionUsage(
+        connectionId: connection.id,
+        tokens: TokenTotals(
+          today: try db.tokenTotals(connectionId: connection.id, since: today),
+          week: try db.tokenTotals(connectionId: connection.id, since: week), day: local.day,
+          weekStart: local.weekStart))
     }
-    return UsageRead.Result(usage: usage)
+  }
+
+  /// Bring the synced `connectionUsage` row in step with the local tables, so the phone sees the same
+  /// usage through the hub. Written only when it moved.
+  func syncUsage(connectionId: String) {
+    guard let connection = try? db.connection(id: connectionId),
+      let readings = try? db.usageReadings(),
+      let entry = try? usageEntry(connection, readings: readings, now: Date()),
+      entry.reading != nil || entry.tokens != nil
+    else { return }
+    do {
+      try db.saveSyncedUsage(entry)
+    } catch {
+      logger.error("usage for sync failed: \(String(describing: error), privacy: .public)")
+    }
   }
 
   /// Local midnight and the start of the local week (Monday), as UTC timestamps the stored ones sort
@@ -45,6 +72,7 @@ extension SessionService {
   func storeUsage(_ event: AdapterEvent) throws {
     guard let reading = try event.payload["reading"]?.decode(UsageReading.self) else { return }
     try db.saveUsage(connectionId: event.connectionId, reading: reading)
+    syncUsage(connectionId: event.connectionId)
   }
 
   /// A finished B4 turn's summed token count (`turn.finished.usage`), counted once per turn.
@@ -53,6 +81,7 @@ extension SessionService {
       try db.connection(id: connectionId)?.kind == .b4
     else { return }
     try db.recordTokens(turnId: turn.id, connectionId: connectionId, total: Int(total), at: Timestamp.now())
+    syncUsage(connectionId: connectionId)
   }
 
   /// After a check that found the runtime signed in, ask it for its plan windows when it can answer on
@@ -63,6 +92,7 @@ extension SessionService {
       (try? db.saveUsage(connectionId: connectionId, reading: reading)) != nil,
       let event = try? AdapterEvent.usageChanged(connectionId: connectionId, reading: reading)
     else { return }
+    syncUsage(connectionId: connectionId)
     await context.eventLog.publish(event)
   }
 

@@ -131,4 +131,22 @@ private func connection(
       observedAt: "2026-11-02T00:00:00.000Z")
     #expect(ConnectionSummary.windows(reading).map(\.title) == ["Daily", "Weekly"])
   }
+
+  /// Token totals were counted on the Mac for one day and week; read later (on the phone, after
+  /// midnight), they are named by that day rather than called "Today".
+  @Test func tokenTotalsAreNamedByTheirDay() {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "UTC")!
+    calendar.locale = Locale(identifier: "en_US")
+    let sunday = Timestamp.date(from: "2026-11-01T12:00:00.000Z")!
+    let monday = Timestamp.date(from: "2026-11-02T12:00:00.000Z")!
+    let totals = TokenTotals(today: 7, week: 22, day: "2026-11-01", weekStart: "2026-10-26")
+    #expect(ConnectionSummary.tokenTitles(totals, now: sunday, calendar: calendar) == ("Today", "This week"))
+    #expect(
+      ConnectionSummary.tokenTitles(totals, now: monday, calendar: calendar) == (
+        "Sun, Nov 1", "Week of Oct 26"
+      ))
+    let undated = TokenTotals(today: 7, week: 22)
+    #expect(ConnectionSummary.tokenTitles(undated, now: monday, calendar: calendar) == ("Today", "This week"))
+  }
 }

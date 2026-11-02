@@ -97,7 +97,7 @@ public actor Router {
       .workspaceActiveWork, .workspaceStopLocalWork, .workspaceReconcile, .databaseStatus, .databaseBackup,
       .databaseRestore, .databaseImportSQLite, .hubStatus, .hubLeave, .hubPair, .hubPairStatus,
       .settingsRead, .settingsUpdate, .projectList, .projectCreate, .projectUpdate, .projectRename,
-      .projectDelete, .threadMarkRead, .usageRead, .connectionUpdate, .credentialRemove:
+      .projectDelete, .threadMarkRead, .usageRead, .connectionUpdate, .credentialRemove, .threadDelete:
       return true
     }
   }
@@ -344,6 +344,9 @@ public actor Router {
       throw WorkspaceError(.internalError, "hub.leave runs through the account manager.")
     case .usageRead:
       return try JSONValue(encoding: try await sessions.usageRead())
+    case .threadDelete:
+      return try JSONValue(
+        encoding: try await sessions.threadDelete(try command.params(for: ThreadDelete.self)))
     case .credentialRemove:
       return try JSONValue(
         encoding: try await sessions.credentialRemove(try command.params(for: CredentialRemove.self)))

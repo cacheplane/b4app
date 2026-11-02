@@ -164,6 +164,9 @@ public final class WorkspaceModel {
   public var connectionFilter: String?
   public var showArchived = false
   public var showNewThread = false
+  /// The iPhone's "Other ways to sign in" sheet, over the signed-out screen. On the model, like the
+  /// sheets above, so the app holds a pairing link back until it closes.
+  public var showSignInOptions = false
   /// Draft writes are debounced; the pending one is flushed by `persistDraftNow()`.
   public private(set) var draftSaveTask: Task<Void, Never>?
   private var restoringDraft = false
@@ -308,6 +311,8 @@ public final class WorkspaceModel {
   /// Threads the owner marked unread while open; they stay unread until the thread is opened again
   /// or a new reply finishes.
   @ObservationIgnored private var unreadHold: Set<String> = []
+  /// Threads deleted here or elsewhere: nothing about them is shown again, whatever arrives later.
+  @ObservationIgnored private var deletedThreadIds: Set<String> = []
 
   public init(transportProvider: @escaping TransportProvider, accountSource: AccountSource = .coordinator) {
     self.transportProvider = transportProvider
@@ -816,6 +821,8 @@ public final class WorkspaceModel {
       let read = try await client.request(
         ThreadRead.self, ThreadRead.Params(threadId: id), options: RequestOptions(timeout: .seconds(60)))
       guard generation == accountGeneration else { return }
+      // Deleted while this read was out (a refresh can start just before a delete): stay closed.
+      if deletedThreadIds.contains(id) { return }
       // The saved draft is restored only when switching threads, and before the detail is published
       // so the composer is live only once it is settled. A refresh of the open thread (snapshot,
       // wake, a connection change) keeps whatever is being typed: restoring from disk there would
@@ -846,7 +853,7 @@ public final class WorkspaceModel {
       lastError = nil
     } catch {
       guard generation == accountGeneration else { return }
-      if startedThreadMissing(threadId: id, error: error) { return }
+      if startedThreadMissing(threadId: id, error: error) || deletedThreadIds.contains(id) { return }
       lastError = Self.describe(error)
     }
   }
@@ -1035,6 +1042,9 @@ public final class WorkspaceModel {
   /// Put a fresher copy of a thread into the list (and the open detail), keeping the `activity` and
   /// owner name an event payload may lack.
   func store(_ thread: ConversationThread) {
+    if thread.userDeletedAt != nil || deletedThreadIds.contains(thread.id) {
+      return forget(threadId: thread.id)
+    }
     var fresh = thread
     if let index = threads.firstIndex(where: { $0.id == thread.id }) {
       fresh.activity = fresh.activity ?? threads[index].activity
@@ -1045,6 +1055,27 @@ public final class WorkspaceModel {
       threads.append(fresh)
     }
     if detail?.thread.id == thread.id { detail?.thread = fresh }
+  }
+
+  /// Drop a deleted thread everywhere: the list, its running turn and send state, and the open detail,
+  /// whose unsent text is discarded rather than saved or sent.
+  func forget(threadId: String) {
+    deletedThreadIds.insert(threadId)
+    threads.removeAll { $0.id == threadId }
+    activeTurns[threadId] = nil
+    stopStates[threadId] = nil
+    pendingSends[threadId] = nil
+    refetchTasks.removeValue(forKey: threadId)?.cancel()
+    unreadHold.remove(threadId)
+    if detail?.thread.id == threadId {
+      draftSaveTask?.cancel()
+      draftSaveTask = nil
+      detail = nil
+      restoringDraft = true
+      composerText = ""
+      restoringDraft = false
+    }
+    if selectedThreadId == threadId { selectedThreadId = nil }
   }
 
   // MARK: - Keeping rows current
@@ -1276,6 +1307,7 @@ public final class WorkspaceModel {
   }
 
   func apply(_ event: AdapterEvent) {
+    if let threadId = event.threadId, deletedThreadIds.contains(threadId) { return }
     switch event.kind {
     case .threadUpdated:
       if let thread = try? event.payload["thread"]?.decode(ConversationThread.self) {

@@ -128,7 +128,7 @@ public final class HybridClock: Sendable {
 /// needs it and does not import `WorkspaceSync`.
 public enum SyncColumns {
   public static let phoneWritable: [String: Set<String>] = [
-    "threads": ["title", "pinned", "archived", "readTurnId"],
+    "threads": ["title", "pinned", "archived", "readTurnId", "userDeletedAt"],
     "projects": ["name"],
     "drafts": ["threadId", "text", "updatedAt"],
   ]

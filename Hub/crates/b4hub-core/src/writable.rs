@@ -8,6 +8,7 @@ pub const PHONE_WRITABLE: &[(&str, &str)] = &[
     ("threads", "pinned"),
     ("threads", "archived"),
     ("threads", "readTurnId"),
+    ("threads", "userDeletedAt"),
     ("projects", "name"),
     ("drafts", "threadId"),
     ("drafts", "text"),
@@ -22,6 +23,7 @@ pub const CLOCKED: &[(&str, &str)] = &[
     ("threads", "archived"),
     ("threads", "readTurnId"),
     ("threads", "projectId"),
+    ("threads", "userDeletedAt"),
     ("projects", "name"),
     ("drafts", "threadId"),
     ("drafts", "text"),
@@ -44,12 +46,13 @@ mod tests {
 
     #[test]
     fn the_phone_may_write_exactly_the_documented_columns() {
-        assert_eq!(PHONE_WRITABLE.len(), 8);
+        assert_eq!(PHONE_WRITABLE.len(), 9);
         for (table, column) in [
             ("threads", "title"),
             ("threads", "pinned"),
             ("threads", "archived"),
             ("threads", "readTurnId"),
+            ("threads", "userDeletedAt"),
             ("projects", "name"),
             ("drafts", "threadId"),
             ("drafts", "text"),

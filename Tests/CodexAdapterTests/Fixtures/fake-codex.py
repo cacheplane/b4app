@@ -119,6 +119,7 @@ thread_counter = 0
 # so tests that restart it pass a prefix.
 ID_PREFIX = os.environ.get("FAKE_CODEX_ID_PREFIX", "")
 loaded = {}
+deleted = set()
 hanging = None
 
 while True:
@@ -162,6 +163,17 @@ while True:
                                            "model": "gpt-fake", "modelProvider": "openai", "cwd": cwd,
                                            "approvalPolicy": "on-request", "approvalsReviewer": "user",
                                            "sandbox": {"type": "workspaceWrite"}}})
+    elif method == "thread/delete":
+        # codex-cli 0.166.0: `{ threadId }` -> `{}`. Older builds have no such method.
+        thread_id = params.get("threadId")
+        if os.environ.get("FAKE_CODEX_NO_DELETE") == "1":
+            send({"id": req_id, "error": {"code": -32601, "message": "unknown method thread/delete"}})
+        elif thread_id == "thr_missing" or thread_id in deleted:
+            send({"id": req_id, "error": {"code": -32602, "message": "thread %s not found" % thread_id}})
+        else:
+            deleted.add(thread_id)
+            loaded.pop(thread_id, None)
+            send({"id": req_id, "result": {}})
     elif method == "thread/read":
         thread_id = params["threadId"]
         status = {"type": "active", "activeFlags": []} if hanging and hanging[0] == thread_id else {"type": "idle"}
