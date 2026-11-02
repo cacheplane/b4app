@@ -427,11 +427,187 @@ struct RelayLinkTests {
     #expect(h.connection.openCount == opens + 1)
   }
 
+  @Test func aTerminalCloseCodeWinsOverALocalReconnect() async throws {
+    let h = LinkHarness()
+    let socket = await h.connect()
+    socket.closeFromHub(code: 4001)
+    await h.link.reconnectNow()
+    await waitUntil("stopped") { await h.recorder.last == .stopped(reason: "revoked") }
+    #expect(h.connection.openCount == 1)
+  }
+
+  @Test func aTerminalCloseCodeWinsOverTheSilenceTimer() async throws {
+    let h = LinkHarness()
+    let socket = await h.connect()
+    await waitUntil("timers") { h.clock.sleeperCount == 3 }
+    socket.closeFromHub(code: 4001)
+    h.clock.advance(by: .seconds(30))
+    await waitUntil("stopped") { await h.recorder.last == .stopped(reason: "revoked") }
+    #expect(h.connection.openCount == 1)
+  }
+
+  @Test func reconnectNowDuringAnInFlightOpenSkipsTheBackoff() async throws {
+    let gate = GatedConnection()
+    let clock = ManualClock()
+    let link = RelayLink(
+      url: URL(string: "https://hub.example.com")!, token: { "tok" }, connection: gate,
+      maxBackoff: .seconds(30),
+      clock: clock, jitter: { 1.0 }, onMessage: { _ in }, onState: { _ in })
+    await link.start()
+    await waitUntil("the first open") { gate.openCount == 1 }
+    await link.reconnectNow()
+    gate.release()  // the first open fails
+    _ = await gate.inner.nextSocket()  // the second open, with no clock.advance
+    #expect(gate.openCount == 2)
+    await link.stop()
+  }
+
+  @Test func reconnectNowWhileTheTokenIsBeingFetchedSkipsTheBackoff() async throws {
+    let connection = FakeHubLinkConnection()
+    let clock = ManualClock()
+    let tokenGate = TokenGate()
+    let link = RelayLink(
+      url: URL(string: "https://hub.example.com")!, token: { try await tokenGate.next() },
+      connection: connection,
+      maxBackoff: .seconds(30), clock: clock, jitter: { 1.0 }, onMessage: { _ in }, onState: { _ in })
+    await link.start()
+    await waitUntil("the first token request") { await tokenGate.requests == 1 }
+    await link.reconnectNow()
+    await tokenGate.release(nil, throwing: true)  // the first fetch fails
+    await waitUntil("the second token request") { await tokenGate.requests == 2 }
+    await tokenGate.release("tok", throwing: false)
+    _ = await connection.nextSocket()
+    #expect(connection.openCount == 1)
+    await link.stop()
+  }
+
+  @Test func aStaleRunsUndecodableFrameDoesNotReplaceTheNewRunsWatchdog() async throws {
+    let connection = FakeHubLinkConnection()
+    let clock = ManualClock()
+    let recorder = LinkRecorder()
+    let handlerGate = MessageGate()
+    let link = RelayLink(
+      url: URL(string: "https://hub.example.com")!, token: { "tok" }, connection: connection,
+      maxBackoff: .seconds(30), clock: clock, jitter: { 1.0 },
+      onMessage: { message in
+        // The old run's loop sits in its handler for the first message (the hello).
+        if await handlerGate.shouldHold() { await handlerGate.waitForRelease() }
+        await recorder.message(message)
+      },
+      onState: { await recorder.state($0) })
+
+    await link.start()
+    let old = await connection.nextSocket()
+    old.deliver(helloMessage())
+    await waitUntil("the old run is in its handler") { await handlerGate.holding }
+    old.deliverUndecodable()  // buffered behind the hello, for the old loop to read later
+    await link.stop()
+    await link.start()
+    let current = await connection.nextSocket()
+    current.deliver(helloMessage())
+    await waitUntil("the new run is connected") {
+      await recorder.states.filter { if case .connected = $0 { true } else { false } }.count == 2
+    }
+
+    await handlerGate.release()  // the old loop reads the undecodable frame now
+    try await Task.sleep(for: .milliseconds(50))
+    await waitUntil("timers") { clock.sleeperCount == 3 }
+    clock.advance(by: .seconds(30))
+    await waitUntil("the new link dropped for silence") { current.deviceClosedCode != nil }
+    await link.stop()
+  }
+
   @Test func anUndecodableFrameDoesNotEndTheLink() async throws {
     let h = LinkHarness()
     let socket = await h.connect()
     socket.deliverUndecodable()
     await h.flush(socket)
     #expect(socket.deviceClosedCode == nil)
+  }
+}
+
+/// A connection whose first open waits for `release()` and then fails; later opens go to a fake.
+final class GatedConnection: HubLinkConnection, @unchecked Sendable {
+  let inner = FakeHubLinkConnection()
+  private let lock = NSLock()
+  private var count = 0
+  private var released = false
+  private var continuation: CheckedContinuation<Void, Never>?
+
+  var openCount: Int { lock.withLock { count } }
+
+  func release() {
+    let waiting = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+      released = true
+      defer { continuation = nil }
+      return continuation
+    }
+    waiting?.resume()
+  }
+
+  func open(url: URL, token: String, protocolVersion: Int) async throws -> any HubLinkSocket {
+    let first = lock.withLock { () -> Bool in
+      count += 1
+      return count == 1
+    }
+    guard first else { return try await inner.open(url: url, token: token, protocolVersion: protocolVersion) }
+    await withCheckedContinuation { (waiting: CheckedContinuation<Void, Never>) in
+      let ready = lock.withLock { () -> Bool in
+        if released { return true }
+        continuation = waiting
+        return false
+      }
+      if ready { waiting.resume() }
+    }
+    throw HubLinkError.failed("down")
+  }
+}
+
+/// A token closure whose calls wait for the test to answer them, one at a time.
+actor TokenGate {
+  private(set) var requests = 0
+  private var waiting: [CheckedContinuation<String?, any Error>] = []
+
+  func next() async throws -> String? {
+    requests += 1
+    return try await withCheckedThrowingContinuation { waiting.append($0) }
+  }
+
+  struct Failure: Error {}
+
+  func release(_ token: String?, throwing: Bool) {
+    guard !waiting.isEmpty else { return }
+    let continuation = waiting.removeFirst()
+    if throwing {
+      continuation.resume(throwing: Failure())
+    } else {
+      continuation.resume(returning: token)
+    }
+  }
+}
+
+/// Holds the first message handler call until released.
+actor MessageGate {
+  private(set) var holding = false
+  private var used = false
+  private var released = false
+  private var continuation: CheckedContinuation<Void, Never>?
+
+  func shouldHold() -> Bool {
+    guard !used else { return false }
+    used = true
+    holding = true
+    return true
+  }
+
+  func waitForRelease() async {
+    if released { return }
+    await withCheckedContinuation { continuation = $0 }
+  }
+
+  func release() {
+    released = true
+    continuation?.resume()
+    continuation = nil
   }
 }

@@ -85,17 +85,36 @@ struct URLSessionLinkTests {
     }
   }
 
+  /// The request timeout must not act as an idle timeout once the socket is open: a quiet hub is
+  /// `RelayLink`'s silence timer's business (30 s), not URLSession's.
+  @Test func aQuietSocketOutlivesTheRequestTimeout() async throws {
+    let server = try await LoopbackHub.start(.echo)
+    defer { server.stop() }
+    let socket = try await URLSessionHubLinkConnection(requestTimeout: 1)
+      .open(url: server.url, token: "t", protocolVersion: 1)
+    defer { socket.close(code: 1000) }
+    _ = try await socket.receive()  // hello
+    try await Task.sleep(for: .seconds(3))
+    try await socket.send(.ping)
+    #expect(try await socket.receive() == .ping)
+  }
+
   @Test func closingLocallyEndsAPendingReceive() async throws {
     let server = try await LoopbackHub.start(.echo)
     defer { server.stop() }
     let socket = try await URLSessionHubLinkConnection().open(url: server.url, token: "t", protocolVersion: 1)
     _ = try await socket.receive()
-    async let pending: Void = {
-      do { _ = try await socket.receive() } catch {}
+    async let pending: HubLinkError? = {
+      do {
+        _ = try await socket.receive()
+        return nil
+      } catch {
+        return error as? HubLinkError
+      }
     }()
     try await Task.sleep(for: .milliseconds(50))
     socket.close(code: 1000)
-    await pending
+    #expect(await pending == .closed(code: 1000))
   }
 }
 

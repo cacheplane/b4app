@@ -21,6 +21,8 @@ public enum RelayLinkState: Sendable, Equatable {
 /// - Heartbeat: `ping` every 10 s; 30 s without any frame ends the link and reconnects.
 /// - Stops, with no retry: a 401 at the upgrade (or no token), `link_replaced`/close 4000, close 4001,
 ///   `client_too_old`/close 4002. A 429 at the upgrade and every other failure retry.
+/// - Call `stop()` when done with the link: the run task retains the actor, so dropping the last
+///   reference does not end it.
 /// - `onMessage` gets every frame except `pong`, one at a time and in order, awaited before the next is
 ///   read: hand slow work to another task.
 public actor RelayLink {
@@ -89,6 +91,7 @@ public actor RelayLink {
   /// Starts connecting. Does nothing while already running; starts again after a stop.
   public func start() {
     guard runTask == nil else { return }
+    skipBackoff = false
     runID += 1
     let id = runID
     runTask = Task { await self.run(id) }
@@ -114,8 +117,12 @@ public actor RelayLink {
     guard runTask != nil else { return }
     if let backoffSleeper {
       backoffSleeper.cancel()
-    } else if let socket {
-      skipBackoff = true
+      return
+    }
+    // Fetching the token, opening, publishing a retry, or connected: the next retry skips its wait, so
+    // a request made in any of those windows is not lost.
+    skipBackoff = true
+    if let socket {
       endReason = "reconnecting"
       socket.close(code: 1000)
     }
@@ -221,7 +228,9 @@ public actor RelayLink {
       do {
         message = try await socket.receive()
       } catch HubLinkError.undecodable {
-        // A frame from a newer hub: it still proves the link is alive.
+        // A frame from a newer hub: it still proves the link is alive. A stale run must not touch
+        // the current run's watchdog.
+        guard runID == id else { return .retry("cancelled") }
         armWatchdog(id)
         continue
       } catch {
@@ -236,6 +245,8 @@ public actor RelayLink {
         if !connected {
           connected = true
           reachedHello = true
+          // A reconnect requested while this link was opening is moot now.
+          skipBackoff = false
           startTimers(id)
           await publish(.connected(since: Date(), role: role), id)
         }
@@ -260,7 +271,8 @@ public actor RelayLink {
 
   /// What a failed `receive` means: a stop for the hub's terminal close codes, a retry for the rest.
   private func ended(by error: any Error) -> Outcome {
-    if let endReason { return .retry(endReason) }
+    // The hub's terminal codes win over a close this end started: a revoked device must not retry
+    // because a wake or the watchdog closed the socket a moment earlier.
     if case HubLinkError.closed(let code) = error {
       switch code {
       case 4000: return .stop("replaced")
@@ -269,6 +281,7 @@ public actor RelayLink {
       default: break
       }
     }
+    if let endReason { return .retry(endReason) }
     return .retry(Self.describe(error))
   }
 

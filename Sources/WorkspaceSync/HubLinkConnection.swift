@@ -37,7 +37,14 @@ public protocol HubLinkConnection: Sendable {
 /// `HubLinkConnection` over `URLSessionWebSocketTask`. It never logs and never holds the token beyond
 /// the request it builds.
 public struct URLSessionHubLinkConnection: HubLinkConnection {
-  public init() {}
+  /// Applied to the upgrade request. Kept above the 30 s dead-link window so that, if URLSession also
+  /// treats it as an idle timeout once the socket is open, `RelayLink`'s own silence timer ends a quiet
+  /// link first.
+  private let requestTimeout: TimeInterval
+
+  public init(requestTimeout: TimeInterval = 35) {
+    self.requestTimeout = requestTimeout
+  }
 
   /// The WebSocket URL of a hub's link endpoint: `http` becomes `ws`, `https` becomes `wss`, and the
   /// path is appended to any the hub URL has.
@@ -56,7 +63,7 @@ public struct URLSessionHubLinkConnection: HubLinkConnection {
 
   public func open(url: URL, token: String, protocolVersion: Int) async throws -> any HubLinkSocket {
     var request = URLRequest(url: Self.linkURL(for: url))
-    request.timeoutInterval = 15
+    request.timeoutInterval = requestTimeout
     request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     request.setValue(String(protocolVersion), forHTTPHeaderField: "B4-Protocol")
     let socket = URLSessionHubLinkSocket(request: request)
@@ -366,8 +373,12 @@ final class FakeChannel<Element: Sendable>: @unchecked Sendable {
     return try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Element, any Error>) in
         let outcome = lock.withLock { () -> Result<Element, any Error>? in
+          // Frames already queued come first, as they would from a socket that had received them.
+          if !buffer.isEmpty {
+            cancelledEarly.remove(id)
+            return .success(buffer.removeFirst())
+          }
           if cancelledEarly.remove(id) != nil { return .failure(CancellationError()) }
-          if !buffer.isEmpty { return .success(buffer.removeFirst()) }
           if let failure { return .failure(failure) }
           waiters.append(Waiter(id: id, continuation: continuation))
           return nil
