@@ -1,4 +1,4 @@
--- The hub never deletes a synced row (D-088). A `delete` change sets the row's `deleted_at`
+-- The hub never deletes a synced row (D-089). A `delete` change sets the row's `deleted_at`
 -- instead of removing it, and keeps its column clocks; the change itself is still recorded in the
 -- feed, so a pull delivers it and a phone's mirror drops the row as before. Every read of the
 -- mirrored tables (the snapshot, the relay's owner lookups, a parent check) leaves out rows with

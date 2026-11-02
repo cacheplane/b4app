@@ -283,7 +283,7 @@ a timeout, or after a crash between the response and the client's bookkeeping) i
 **Recording and applying.** The batch runs in one transaction. Each new change is recorded in the
 org's feed and applied to the mirrored tables with the same semantics as the Mac's replay: an
 `insert` upserts the columns it carries, an `update` sets one column, a `delete` marks the row
-deleted. The hub never removes a synced row (D-088): a deleted row keeps its columns and its column
+deleted. The hub never removes a synced row (D-089): a deleted row keeps its columns and its column
 clocks, every read leaves it out (the snapshot, the relay's routing, the parent check), an update of
 it is skipped, and an `insert` of the same id revives it, taking every column it carries whatever
 the kept clocks say. The `delete` itself is in the feed like any change, so readers still pull it

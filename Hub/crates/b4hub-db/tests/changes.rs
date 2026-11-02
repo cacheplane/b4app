@@ -119,7 +119,7 @@ async fn push_materialises_and_is_idempotent(pool: PgPool) {
     assert_eq!(thread["org_id"], device.org_id.to_string());
     assert_eq!(thread["user_id"], device.user_id.to_string());
     assert_eq!(thread["device_id"], device.device_id.to_string());
-    // The draft was inserted then deleted: the hub keeps the row, marked deleted (D-088).
+    // The draft was inserted then deleted: the hub keeps the row, marked deleted (D-089).
     let draft = row(&app, &device, "drafts", "threadId", "thread-1")
         .await
         .expect("a deleted row is kept");
@@ -2019,7 +2019,7 @@ async fn an_idle_users_cursor_follows_the_org_past_other_users_changes(pool: PgP
     ));
 }
 
-// ---- D-088: the hub never removes a synced row ----
+// ---- D-089: the hub never removes a synced row ----
 
 /// The stored clock of `table.column` of `row_id`, read under `who`'s tenant context.
 async fn clock_of(
@@ -2143,7 +2143,7 @@ async fn an_insert_revives_a_deleted_row(pool: PgPool) {
     let (mac, phone) = mac_and_phone(&admin, &app).await;
 
     // A thread deleted and inserted again, by a clock older than the first insert's (a skewed
-    // Mac): the revived row starts from the re-insert, as a new row did before D-088.
+    // Mac): the revived row starts from the re-insert, as a new row did before D-089.
     let batch = vec![
         at(delete(3, "threads", "thread-1"), 200, MAC_CLOCK),
         at(

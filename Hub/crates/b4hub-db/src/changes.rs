@@ -2,7 +2,7 @@
 //! the org's `changes` feed (idempotently, on the device's own sequence) and, the first time it
 //! sees a change, applies it to the mirrored tables with the same semantics as the Mac's replay:
 //! an insert upserts the columns it carries, an update sets one column, a delete marks the row
-//! deleted. The hub never removes a synced row (D-088): a deleted row keeps its columns and its
+//! deleted. The hub never removes a synced row (D-089): a deleted row keeps its columns and its
 //! column clocks with `deleted_at` set, every read leaves it out, and an insert of the same key
 //! revives it. A change that cannot apply (an unknown table, a missing parent, a malformed shape)
 //! is still recorded, so every device's feed stays complete, but it is skipped and counted.
@@ -618,7 +618,7 @@ async fn update(
     })
 }
 
-/// Marks the row deleted; it is never removed (D-088). The row keeps its columns and its column
+/// Marks the row deleted; it is never removed (D-089). The row keeps its columns and its column
 /// clocks, and the deleting device becomes its last writer. A row already deleted, or absent, or
 /// another user's, is skipped.
 async fn delete(

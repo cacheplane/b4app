@@ -2,7 +2,7 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
-## 2026-11-02: The hub keeps synced rows (D-088)
+## 2026-11-02: The hub keeps synced rows (D-089)
 
 Branch `blove/dreamy-hamilton-b5adc9`, from main at `3f3cc15`. Hub only; no Swift, wire, or fixture change.
 

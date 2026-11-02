@@ -1,5 +1,5 @@
 //! The snapshot a reader restores from when its cursor is behind the pruned feed: the user's rows
-//! as the hub holds them (deleted rows left out, D-088), rewritten as synthetic inserts, with the
+//! as the hub holds them (deleted rows left out, D-089), rewritten as synthetic inserts, with the
 //! column clocks and the cursor to continue from. Everything is read in one `REPEATABLE READ`
 //! transaction, so the rows, the clocks, and `next` are one consistent instant even while pushes
 //! land.
