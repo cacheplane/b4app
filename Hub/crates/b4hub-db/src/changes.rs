@@ -1,9 +1,11 @@
 //! Change ingest and the feed. A device uploads its changes in batches; the hub records each in
 //! the org's `changes` feed (idempotently, on the device's own sequence) and, the first time it
 //! sees a change, applies it to the mirrored tables with the same semantics as the Mac's replay:
-//! an insert upserts the columns it carries, an update sets one column, a delete deletes. A
-//! change that cannot apply (an unknown table, a missing parent, a malformed shape) is still
-//! recorded, so every device's feed stays complete, but it is skipped and counted.
+//! an insert upserts the columns it carries, an update sets one column, a delete marks the row
+//! deleted. The hub never removes a synced row (D-088): a deleted row keeps its columns and its
+//! column clocks with `deleted_at` set, every read leaves it out, and an insert of the same key
+//! revives it. A change that cannot apply (an unknown table, a missing parent, a malformed shape)
+//! is still recorded, so every device's feed stays complete, but it is skipped and counted.
 //!
 //! Concurrent edits converge by clock. Every change carries a hybrid logical clock (clamped if it
 //! is more than five minutes ahead of the hub's wall clock); a column that merges
@@ -441,8 +443,9 @@ async fn apply(
 }
 
 /// Records `hlc` as the clock of `table.column` of the row if it is greater than the stored one
-/// (or there is none), and says whether it was. A losing clock changes nothing. The write is
-/// inside the change's savepoint, so a change that then fails to apply gives the clock back.
+/// (or there is none, or `force`), and says whether it was. A losing clock changes nothing. The
+/// write is inside the change's savepoint, so a change that then fails to apply gives the clock
+/// back.
 async fn claim_clock(
     conn: &mut PgConnection,
     auth: &AuthedDevice,
@@ -450,12 +453,13 @@ async fn claim_clock(
     row_id: &str,
     column: &str,
     hlc: &Hlc,
+    force: bool,
 ) -> Result<bool> {
     let won: Option<i32> = sqlx::query_scalar(
         "INSERT INTO column_clocks (org_id, \"table\", row_id, \"column\", hlc) \
          VALUES ($1, $2, $3, $4, $5) \
          ON CONFLICT (org_id, \"table\", row_id, \"column\") DO UPDATE SET hlc = EXCLUDED.hlc \
-         WHERE column_clocks.hlc COLLATE \"C\" < EXCLUDED.hlc COLLATE \"C\" \
+         WHERE $6 OR column_clocks.hlc COLLATE \"C\" < EXCLUDED.hlc COLLATE \"C\" \
          RETURNING 1",
     )
     .bind(auth.org_id)
@@ -463,6 +467,7 @@ async fn claim_clock(
     .bind(row_id)
     .bind(column)
     .bind(hlc.as_str())
+    .bind(force)
     .fetch_optional(conn)
     .await?;
     Ok(won.is_some())
@@ -481,6 +486,21 @@ async fn insert(
     if !parent_exists(conn, auth, spec, row.get(parent_column(spec))).await? {
         return Ok(Applied::Skipped);
     }
+    let table = quote(spec.name);
+    let key = quote(spec.key);
+    // An insert of a key the user deleted revives the row. It starts over as a new row did when
+    // the hub still removed deleted rows: its clocks are the ones this insert claims, even where
+    // the kept clock of the deleted row is newer.
+    let reviving = sqlx::query_scalar::<_, bool>(&format!(
+        "SELECT deleted_at IS NOT NULL FROM {table} \
+         WHERE org_id = $1 AND user_id = $2 AND {key} = $3"
+    ))
+    .bind(auth.org_id)
+    .bind(auth.user_id)
+    .bind(&change.row_id)
+    .fetch_optional(&mut *conn)
+    .await?
+    .unwrap_or(false);
     // The columns the row carries, minus the key (that is the change's rowId) and anything that
     // is not a Mac column: ownership columns can only come from the token. The scrubbed columns
     // are always written, as NULL. A clocked column is written only if this insert's clock beats
@@ -493,19 +513,20 @@ async fn insert(
         let carried = is_scrubbed(spec.name, column) || row.contains_key(column);
         if carried
             && (!is_clocked(spec.name, column)
-                || claim_clock(conn, auth, spec.name, &change.row_id, column, hlc).await?)
+                || claim_clock(conn, auth, spec.name, &change.row_id, column, hlc, reviving)
+                    .await?)
         {
             provided.push(column);
         }
     }
 
-    let table = quote(spec.name);
-    let key = quote(spec.key);
     // The inserting device is both the last writer and, because this is an insert, the owner.
     let mut columns = format!("org_id, user_id, device_id, owner_device_id, {key}");
     let mut selected = String::from("$1::uuid, $2::uuid, $3::uuid, $3::uuid, $4::text");
-    let mut assignments =
-        String::from("device_id = EXCLUDED.device_id, owner_device_id = EXCLUDED.owner_device_id");
+    let mut assignments = String::from(
+        "device_id = EXCLUDED.device_id, owner_device_id = EXCLUDED.owner_device_id, \
+         deleted_at = NULL",
+    );
     for column in &provided {
         let quoted = quote(column);
         columns.push_str(&format!(", {quoted}"));
@@ -559,7 +580,7 @@ async fn update(
         return Ok(Applied::Skipped);
     }
     if is_clocked(spec.name, column)
-        && !claim_clock(conn, auth, spec.name, &change.row_id, column, hlc).await?
+        && !claim_clock(conn, auth, spec.name, &change.row_id, column, hlc, false).await?
     {
         return Ok(Applied::Lost);
     }
@@ -577,7 +598,8 @@ async fn update(
     let sql = format!(
         "UPDATE {table} SET {column_sql} = r.{column_sql} \
          FROM jsonb_populate_record(NULL::{table}, jsonb_build_object($1::text, $2::jsonb)) AS r \
-         WHERE {table}.org_id = $3 AND {table}.user_id = $4 AND {table}.{key} = $5",
+         WHERE {table}.org_id = $3 AND {table}.user_id = $4 AND {table}.{key} = $5 \
+               AND {table}.deleted_at IS NULL",
         key = quote(spec.key),
     );
     let updated = sqlx::query(&sql)
@@ -596,6 +618,9 @@ async fn update(
     })
 }
 
+/// Marks the row deleted; it is never removed (D-088). The row keeps its columns and its column
+/// clocks, and the deleting device becomes its last writer. A row already deleted, or absent, or
+/// another user's, is skipped.
 async fn delete(
     conn: &mut PgConnection,
     auth: &AuthedDevice,
@@ -603,7 +628,8 @@ async fn delete(
     change: &Change,
 ) -> Result<Applied> {
     let sql = format!(
-        "DELETE FROM {table} WHERE org_id = $1 AND user_id = $2 AND {key} = $3",
+        "UPDATE {table} SET deleted_at = now(), device_id = $4 \
+         WHERE org_id = $1 AND user_id = $2 AND {key} = $3 AND deleted_at IS NULL",
         table = quote(spec.name),
         key = quote(spec.key),
     );
@@ -611,20 +637,15 @@ async fn delete(
         .bind(auth.org_id)
         .bind(auth.user_id)
         .bind(&change.row_id)
-        .execute(&mut *conn)
+        .bind(auth.device_id)
+        .execute(conn)
         .await?
         .rows_affected();
-    if deleted == 0 {
-        return Ok(Applied::Skipped);
-    }
-    // The row's clocks go with it.
-    sqlx::query("DELETE FROM column_clocks WHERE org_id = $1 AND \"table\" = $2 AND row_id = $3")
-        .bind(auth.org_id)
-        .bind(spec.name)
-        .bind(&change.row_id)
-        .execute(conn)
-        .await?;
-    Ok(Applied::Yes)
+    Ok(if deleted == 0 {
+        Applied::Skipped
+    } else {
+        Applied::Yes
+    })
 }
 
 /// The column of `spec` that names its parent; `""` (matching no column) when it has none.
@@ -633,7 +654,7 @@ fn parent_column(spec: &TableSpec) -> &'static str {
 }
 
 /// True when `spec` has no parent, or `reference` is a string naming a row of the parent table
-/// that belongs to this org and this user.
+/// that belongs to this org and this user and is not deleted.
 async fn parent_exists(
     conn: &mut PgConnection,
     auth: &AuthedDevice,
@@ -648,7 +669,8 @@ async fn parent_exists(
     };
     let parent = table_spec(parent_table).expect("a parent is a synced table");
     let sql = format!(
-        "SELECT EXISTS (SELECT 1 FROM {table} WHERE org_id = $1 AND user_id = $2 AND {key} = $3)",
+        "SELECT EXISTS (SELECT 1 FROM {table} \
+         WHERE org_id = $1 AND user_id = $2 AND {key} = $3 AND deleted_at IS NULL)",
         table = quote(parent.name),
         key = quote(parent.key),
     );
