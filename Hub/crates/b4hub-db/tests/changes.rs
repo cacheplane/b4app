@@ -685,7 +685,8 @@ async fn phone_title_edit_applies_and_later_mac_edit_wins(pool: PgPool) {
         outcome,
         PushOutcome {
             accepted_through: 1,
-            rejected: vec![]
+            rejected: vec![],
+            notifications: vec![]
         }
     );
     assert_eq!(title(&app, &mac).await, "Phone title");
@@ -722,7 +723,8 @@ async fn stale_phone_edit_loses(pool: PgPool) {
         outcome,
         PushOutcome {
             accepted_through: 1,
-            rejected: vec![]
+            rejected: vec![],
+            notifications: vec![]
         }
     );
     assert_eq!(title(&app, &mac).await, "Mac title");

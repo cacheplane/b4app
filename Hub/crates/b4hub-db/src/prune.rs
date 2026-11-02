@@ -31,6 +31,17 @@ pub async fn prune(db: &Db, org_id: Uuid, older_than: Duration) -> Result<i64> {
     .bind(older_than.as_secs_f64())
     .fetch_one(&mut *tx)
     .await?;
+    // The notification ledger keeps the same retention, whether or not any change was old
+    // enough. A turn notifies only within ten minutes of its last update, so a ledger row
+    // outlives the chance of a duplicate by days.
+    sqlx::query(
+        "DELETE FROM notifications_sent \
+         WHERE org_id = $1 AND sent_at < now() - make_interval(secs => $2)",
+    )
+    .bind(org_id)
+    .bind(older_than.as_secs_f64())
+    .execute(&mut *tx)
+    .await?;
     let Some(new_horizon) = cutoff.filter(|cut| *cut > current) else {
         tx.commit().await?;
         return Ok(current);
