@@ -2,14 +2,26 @@ name: Hub GHCR cleanup
 
 # Prunes the b4hub package weekly. Semver, latest, main, and nightly stay;
 # the rest keeps the newest 30, dated nightlies keep the newest 14.
+#
+# Safe rollout: manual runs default to a dry run. Scheduled runs are dry runs
+# too until the repository variable HUB_GHCR_CLEANUP_LIVE is set to "true", so
+# the owner can read a dry-run log before the first real sweep.
 
 on:
   schedule:
     - cron: "41 4 * * 1"
   workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Log what would be deleted without deleting
+        type: boolean
+        default: true
 
 permissions:
   contents: read
+
+env:
+  DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry-run) || (github.event_name != 'workflow_dispatch' && vars.HUB_GHCR_CLEANUP_LIVE != 'true') }}
 
 jobs:
   cleanup:
@@ -23,12 +35,21 @@ jobs:
         uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
         with:
           package: b4hub
-          tags: "nightly-*"
+          use-regex: true
+          delete-tags: '^nightly-[0-9]{8}$'
           keep-n-tagged: 14
+          dry-run: ${{ env.DRY_RUN }}
       - name: Prune old tagged and untagged images
         uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
         with:
           package: b4hub
+          use-regex: true
+          # Dated nightlies are managed by the step above, so they do not take
+          # slots from sha-* images; the rest are protected outright.
+          exclude-tags: '^latest$,^main$,^nightly$,^nightly-[0-9]{8}$,^[0-9]+(\.[0-9]+){0,2}$'
           keep-n-tagged: 30
-          exclude-tags: 'latest,main,nightly,^[0-9]+(\.[0-9]+){0,2}$'
           delete-untagged: true
+          # Per-platform manifests are pushed by digest, untagged, until the
+          # merge job references them; give a running build a day.
+          older-than: 1 day
+          dry-run: ${{ env.DRY_RUN }}
