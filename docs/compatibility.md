@@ -33,7 +33,6 @@ Xcode 27 (Swift 6.4) requires macOS 26.6; the package uses `swift-tools-version:
 
 Exact resolved versions are in `Package.resolved`. The iOS mirror links the system `sqlite3`; no package provides it.
 
-
 ## Hub (M8a)
 
 Pinned exactly (`=`) in `Hub/Cargo.toml` `[workspace.dependencies]`, resolved in the committed `Hub/Cargo.lock`; builds and tests run `--locked`.
@@ -141,7 +140,7 @@ No new crates and no new features: `uuid`'s `v7` and `tokio`'s `sync`/`time` wer
 | New environment | `B4HUB_HEARTBEAT_MS` (default 5000; the liveness window is four heartbeats; every instance of one hub must agree) |
 | New wire | `409 relocated` (`details.instanceId`) at `GET /v1/devices/self/link`; `Set-Cookie: b4hub-instance=<id>` on accepted upgrades and `/readyz`; `"relay"` and `"instances"` on `/readyz`; a `maintenance` reply error over the link; all additive, `minClientProtocol` stays 1 |
 | Swift | `ErrorCode.relocated`; `HubLinkConnection.open(url:token:protocolVersion:cookies:)` (defaulted for existing conformers) and `HubLinkSocket.responseCookies` (defaulted) |
-| AWS ALB | application-cookie stickiness on `b4hub-instance`, 3600 s, enabled when `task_count > 1` |
+| AWS ALB | application-cookie stickiness on `b4hub-instance`, 3600 s, enabled when `task_count > 1`; `deregistration_delay` 5 s when `task_count > 1` (60 s otherwise) |
 
 ## Provider runtimes
 

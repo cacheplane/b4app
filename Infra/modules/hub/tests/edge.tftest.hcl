@@ -194,6 +194,11 @@ run "stickiness_off_for_one_task" {
     condition     = aws_lb_target_group.hub.stickiness[0].type == "app_cookie" && aws_lb_target_group.hub.stickiness[0].cookie_name == "b4hub-instance" && aws_lb_target_group.hub.stickiness[0].cookie_duration == 3600
     error_message = "application-cookie stickiness on b4hub-instance for an hour"
   }
+
+  assert {
+    condition     = aws_lb_target_group.hub.deregistration_delay == "60"
+    error_message = "one task: a 60 second deregistration delay"
+  }
 }
 
 run "stickiness_on_for_two_tasks" {
@@ -206,6 +211,11 @@ run "stickiness_on_for_two_tasks" {
   assert {
     condition     = aws_lb_target_group.hub.stickiness[0].enabled == true && aws_lb_target_group.hub.stickiness[0].type == "app_cookie" && aws_lb_target_group.hub.stickiness[0].cookie_name == "b4hub-instance" && aws_lb_target_group.hub.stickiness[0].cookie_duration == 3600
     error_message = "two tasks: application-cookie stickiness on b4hub-instance for an hour"
+  }
+
+  assert {
+    condition     = aws_lb_target_group.hub.deregistration_delay == "5"
+    error_message = "two tasks: a 5 second deregistration delay, so SIGTERM (the hub's own drain) follows at once"
   }
 }
 
