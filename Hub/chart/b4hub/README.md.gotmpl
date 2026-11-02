@@ -72,6 +72,7 @@ Sign-in needs `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, a
 ```
 
 With neither set, the hub runs without sign-in secrets and the chart renders none.
+With `secrets.existingSecret`, all four references are `optional: true`, so Kubernetes no longer refuses to start the pod (`CreateContainerConfigError`) when a key is missing or mistyped; check the key names yourself, because the hub's own startup check is then the only guard (the current hub does not read these keys yet; the sign-in hub does).
 `secrets.useFileVars: false` (default) exposes them as environment variables from `secretKeyRef`. `true` mounts them at `/etc/b4hub/secrets/<KEY>` and sets `B4HUB_*_FILE` instead; turn it on once the hub reads the `_FILE` forms (M8e).
 
 ## Ingress or Gateway

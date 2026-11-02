@@ -153,3 +153,17 @@ tests:
     asserts:
       - matchRegexRaw:
           pattern: "(?s)WARNING: replicaCount is 3 \\(strategy RollingUpdate\\).*D-057"
+
+  - it: warns that existing sign-in secret keys are optional references
+    template: templates/NOTES.txt
+    set:
+      secrets.existingSecret: hub-secrets
+    asserts:
+      - matchRegexRaw:
+          pattern: "(?s)Secret hub-secrets.*optional references.*startup check is the only guard"
+
+  - it: says nothing about sign-in secrets without an existing Secret
+    template: templates/NOTES.txt
+    asserts:
+      - notMatchRegexRaw:
+          pattern: optional references

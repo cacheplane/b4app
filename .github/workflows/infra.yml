@@ -255,10 +255,10 @@ jobs:
             -backend-config="encrypt=true"
       - name: Plan
         if: steps.aws.outputs.configured == 'true'
-        run: terraform plan -no-color -input=false -out plan.bin
+        run: terraform plan -no-color -input=false -lock-timeout=10m -out plan.bin
       - name: Apply
         if: steps.aws.outputs.configured == 'true'
-        run: terraform apply -no-color -input=false plan.bin
+        run: terraform apply -no-color -input=false -lock-timeout=10m plan.bin
 
   apply-prod:
     name: Apply prod
@@ -318,7 +318,7 @@ jobs:
             -backend-config="encrypt=true"
       - name: Plan
         if: steps.aws.outputs.configured == 'true'
-        run: terraform plan -no-color -input=false -out plan.bin
+        run: terraform plan -no-color -input=false -lock-timeout=10m -out plan.bin
       - name: Apply
         if: steps.aws.outputs.configured == 'true'
-        run: terraform apply -no-color -input=false plan.bin
+        run: terraform apply -no-color -input=false -lock-timeout=10m plan.bin

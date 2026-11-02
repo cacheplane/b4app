@@ -18,6 +18,12 @@ If the release failed at the hook, read its output:
 NOTE: the database Secret was created from database.urls, which is for evaluation only.
 Use database.existingSecret in production.
 {{- end }}
+{{- if .Values.secrets.existingSecret }}
+
+Sign-in secrets come from Secret {{ .Values.secrets.existingSecret }}. Its keys are optional references, so Kubernetes does not
+report a missing or mistyped key; check that it holds B4HUB_SECRET_KEY, B4HUB_APPLE_TEAM_ID, B4HUB_APPLE_KEY_ID, and
+B4HUB_APPLE_PRIVATE_KEY. The hub's startup check is the only guard.
+{{- end }}
 {{- if gt (int .Values.replicaCount) 1 }}
 
 WARNING: replicaCount is {{ .Values.replicaCount }} (strategy {{ .Values.strategy.type }}). The relay routes per process

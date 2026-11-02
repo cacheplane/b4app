@@ -70,7 +70,7 @@ hub:
   extraEnv: []
 
 secrets:
-  # -- Existing Secret with keys `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, `B4HUB_APPLE_PRIVATE_KEY`.
+  # -- Existing Secret with keys `B4HUB_SECRET_KEY`, `B4HUB_APPLE_TEAM_ID`, `B4HUB_APPLE_KEY_ID`, `B4HUB_APPLE_PRIVATE_KEY`. Each reference is `optional: true`, so Kubernetes does not catch a missing or mistyped key (no `CreateContainerConfigError`); the hub's startup check is the only guard.
   existingSecret: ""
   # -- `false`: env from `secretKeyRef`. `true`: mount at `/etc/b4hub/secrets/` and set `B4HUB_*_FILE` (needs a hub with the `_FILE` forms, M8e).
   useFileVars: false
