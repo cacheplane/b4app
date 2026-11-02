@@ -18,10 +18,22 @@ public enum Migrator {
     }
   }
 
-  static func applied(_ connection: PostgresConnection) throws -> [String] {
+  /// Create the ledger `table` when it is missing; true when this call created it. The table is
+  /// looked up first (`to_regclass`) rather than created `IF NOT EXISTS`, which makes the server send
+  /// a NOTICE that libpq prints to standard error on every open.
+  @discardableResult
+  static func ensureLedger(_ connection: PostgresConnection, table: String) throws -> Bool {
+    let quoted = Rows.quote(table)
+    let found = try connection.execute("SELECT to_regclass($1)::text AS name", [quoted]).rows.first?.text(
+      "name")
+    guard found == nil else { return false }
     try connection.execute(
-      "CREATE TABLE IF NOT EXISTS \(Rows.quote(table)) (\"name\" text PRIMARY KEY, \"appliedAt\" text NOT NULL)"
-    )
+      "CREATE TABLE IF NOT EXISTS \(quoted) (\"name\" text PRIMARY KEY, \"appliedAt\" text NOT NULL)")
+    return true
+  }
+
+  static func applied(_ connection: PostgresConnection) throws -> [String] {
+    try ensureLedger(connection, table: table)
     return try connection.execute("SELECT \"name\" FROM \(Rows.quote(table)) ORDER BY \"name\"").rows
       .compactMap {
         $0.text("name")

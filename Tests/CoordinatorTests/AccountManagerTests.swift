@@ -918,6 +918,34 @@ private func seedConnectionSecret(
     #expect(await second.accounts.status().state == .signedIn)
   }
 
+  /// Final review M5: a copy that has not run when the adopted row is signed out (here, a start without
+  /// the legacy store, whose hub refused the token it could not read) runs at the sign-in that claims
+  /// the row again, before its first hub call.
+  @Test func aSignInThatClaimsTheAdoptedRowCopiesTheSecrets() async throws {
+    let paths = try AccountRig.paths()
+    let prod = CountingSecretStore()
+    let local = MemorySecretStore()
+    _ = try await seedJoinedWorkspace(paths, secrets: prod)
+    let key = try await seedConnectionSecret(paths, id: "b1", secrets: prod, value: "b4-key-secret")
+    let hub = AccountsHub()
+    await hub.add(acme)
+    let first = try await AccountRig.start(paths: paths, secrets: local, hub: hub)
+    try await eventually("signed out") { await first.accounts.status().state == .signedOut }
+    await first.close()
+
+    let second = try await AccountRig.start(paths: paths, secrets: local, hub: hub, legacySecrets: prod)
+    defer { Task { await second.close() } }
+    // Signed out, so the start restored nothing and copied nothing.
+    #expect(await second.accounts.status().state == .signedOut)
+    #expect(try await local.read(key) == nil)
+    _ = try await second.accounts.signIn(session: acme, hubURL: hubURL)
+    #expect(await second.accounts.status().state == .signedIn)
+    #expect(try second.accounts.scope().account.database == paths.postgres.database)
+    #expect(try await local.read(key) == "b4-key-secret")
+    #expect(try second.accounts.scope().database.settings(key: LegacyAdoption.secretsCopiedKey) != nil)
+    #expect(await prod.removes == 0)
+  }
+
   @Test func nothingIsCopiedWithoutTheLegacyStore() async throws {
     // Beta, prod, and a dev coordinator get no plan, so no legacy store: the token stays where it is,
     // and the hub refuses the account whose token this coordinator cannot read.

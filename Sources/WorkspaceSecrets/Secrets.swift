@@ -23,10 +23,18 @@ public protocol SecretStore: Sendable {
   func remove(_ ref: SecretRef) async throws -> Bool
   /// Where values live, for diagnostics; never a value.
   var backend: String { get }
+  /// The value this store itself holds for `ref`, with no fallback to another keychain and nothing
+  /// moved: what a copy between two stores checks (D-091). `read` for a store with no fallback.
+  func readHere(_ ref: SecretRef) async throws -> String?
+  /// Stores `value` here and touches no other keychain (`put` on a data-protection store also
+  /// deletes a login-keychain copy). `put` for a store with no fallback.
+  func putHere(_ ref: SecretRef, value: String) async throws
 }
 
 extension SecretStore {
   public var backend: String { String(describing: Self.self) }
+  public func readHere(_ ref: SecretRef) async throws -> String? { try await read(ref) }
+  public func putHere(_ ref: SecretRef, value: String) async throws { try await put(ref, value: value) }
 }
 
 /// Generic-password items under one service name.
@@ -146,6 +154,17 @@ public struct KeychainSecretStore: SecretStore {
       _ = try? delete(ref, dataProtection: false)
       return legacy
     }
+  }
+
+  /// This store's own copy only: on a data-protection store the login keychain is not looked at, so
+  /// an item there is neither found nor moved.
+  public func readHere(_ ref: SecretRef) async throws -> String? {
+    try await KeychainCall.run { [self] in try copy(ref, dataProtection: usesDataProtection) }
+  }
+
+  /// Writes this store's own copy and leaves any login-keychain copy where it is.
+  public func putHere(_ ref: SecretRef, value: String) async throws {
+    try await KeychainCall.run { [self] in try write(ref, value: value, dataProtection: usesDataProtection) }
   }
 
   public func remove(_ ref: SecretRef) async throws -> Bool {

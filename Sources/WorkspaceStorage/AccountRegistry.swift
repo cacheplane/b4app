@@ -248,9 +248,7 @@ public final class AccountRegistry: Sendable {
   }
 
   private static func applied(_ connection: PostgresConnection) throws -> [String] {
-    try connection.execute(
-      "CREATE TABLE IF NOT EXISTS \(Rows.quote(table)) (\"name\" text PRIMARY KEY, \"appliedAt\" text NOT NULL)"
-    )
+    try Migrator.ensureLedger(connection, table: table)
     return try connection.execute("SELECT \"name\" FROM \(Rows.quote(table)) ORDER BY \"name\"").rows
       .compactMap { $0.text("name") }
   }

@@ -125,18 +125,21 @@ public enum LegacyAdoption {
     case missing
   }
 
-  /// Copy the secret `ref` from the legacy store (the prod keychain group) to `store` when `store`
-  /// lacks it, and check `store` returns it. The legacy item is never changed or removed, so going back
-  /// to the prod build keeps working. A failed write or check throws. The value is never put in an
-  /// error or a log line.
+  /// Copy the secret `ref` from the legacy store (the prod keychain group, then the login keychain)
+  /// to `store` when `store` lacks it, and check `store` returns it. Every read and write is the
+  /// store's own (`readHere`, `putHere`): `store`'s ordinary read would find an item still in the login
+  /// keychain and move it into this flavour's group, out of the prod build's reach, and its ordinary
+  /// write would delete the login copy. So the legacy item, wherever it is, is never changed or
+  /// removed, and going back to the prod build keeps working. A failed write or check throws. The
+  /// value is never put in an error or a log line.
   @discardableResult
   public static func copySecret(
     _ ref: SecretRef, from legacy: any SecretStore, to store: any SecretStore
   ) async throws -> SecretCopy {
-    if try await store.read(ref) != nil { return .alreadyThere }
-    guard let value = try await legacy.read(ref) else { return .missing }
-    try await store.put(ref, value: value)
-    guard try await store.read(ref) == value else {
+    if try await store.readHere(ref) != nil { return .alreadyThere }
+    guard let value = try await legacy.readHere(ref) else { return .missing }
+    try await store.putHere(ref, value: value)
+    guard try await store.readHere(ref) == value else {
       throw WorkspaceError(
         .internalError,
         "The secret store did not return \(ref) after it was written; the prod keychain group's item was kept."
@@ -197,13 +200,36 @@ public enum LegacyAdoption {
     legacySecretStore(claimedGroups: claimedAccessGroups())
   }
 
-  /// The same, from the groups a signature claims.
+  /// The same, from the groups a signature claims: the prod group, then the login keychain (where a
+  /// secret the prod build has not read since D-051 still is), each read as it is.
   static func legacySecretStore(claimedGroups: [String]) -> (any SecretStore)? {
     guard
       let group = KeychainSecretStore.selectGroup(
         from: claimedGroups, flavorSuffix: Flavor.prod.keychainGroupSuffix)
     else { return nil }
-    return KeychainSecretStore(accessGroup: group)
+    return LegacySecrets(
+      stores: [KeychainSecretStore(accessGroup: group), KeychainSecretStore(accessGroup: nil)])
+  }
+
+  /// The prod build's secrets as the copy reads them: each store's own copy (`readHere`), first found
+  /// wins, nothing moved. Read-only: writing or removing throws.
+  struct LegacySecrets: SecretStore {
+    let stores: [any SecretStore]
+
+    func read(_ ref: SecretRef) async throws -> String? { try await readHere(ref) }
+    func readHere(_ ref: SecretRef) async throws -> String? {
+      for store in stores {
+        if let value = try await store.readHere(ref) { return value }
+      }
+      return nil
+    }
+    func put(_ ref: SecretRef, value: String) async throws { throw Self.readOnly }
+    func putHere(_ ref: SecretRef, value: String) async throws { throw Self.readOnly }
+    func remove(_ ref: SecretRef) async throws -> Bool { throw Self.readOnly }
+    var backend: String { stores.map(\.backend).joined(separator: ", then ") }
+
+    private static let readOnly = WorkspaceError(
+      .internalError, "The prod build's secrets are only read here, never changed.")
   }
 
   private static func claimedAccessGroups() -> [String] {
@@ -241,9 +267,29 @@ public enum LegacyAdoption {
     return .bootOut
   }
 
+  /// The pre-flavour LaunchAgent's plist under `home`.
+  static func legacyPlist(home: URL) -> URL {
+    home.appendingPathComponent("Library/LaunchAgents/\(legacyLabel).plist")
+  }
+
+  /// After a successful adoption, delete the pre-flavour LaunchAgent's plist, which the boot-out
+  /// leaves: it has `RunAtLoad`, so at the next login launchd would start the old coordinator again,
+  /// which would make a fresh, empty `b4app` (or respawn in a loop once the old app is gone). Only
+  /// when the plist names a program that is not `ownProgram`, by D-052's identity rule
+  /// (`bootOutDecision`); a plist whose program cannot be read, or that runs this binary, is kept.
+  /// Answers whether it deleted the plist. A prod app opened later registers its agent again.
+  @discardableResult
+  static func removeLegacyPlist(home: URL, ownProgram: String) -> Bool {
+    guard
+      bootOutDecision(loaded: true, plistProgram: legacyProgramPath(home: home), ownProgram: ownProgram)
+        == .bootOut
+    else { return false }
+    return (try? FileManager.default.removeItem(at: legacyPlist(home: home))) != nil
+  }
+
   /// The program the pre-flavour LaunchAgent's plist names, if the plist exists.
   static func legacyProgramPath(home: URL) -> String? {
-    let plist = home.appendingPathComponent("Library/LaunchAgents/\(legacyLabel).plist")
+    let plist = legacyPlist(home: home)
     guard let data = try? Data(contentsOf: plist),
       let object = try? PropertyListSerialization.propertyList(from: data, format: nil),
       let arguments = (object as? [String: Any])?["ProgramArguments"] as? [String]
@@ -269,15 +315,20 @@ public enum LegacyAdoption {
     /// (`copySecretsOnce`, run by `AccountManager` before the adopted account's first hub call). Nil
     /// reads nothing.
     public var legacySecretStore: (any SecretStore)?
+    /// Runs once the data directory has moved: retires the old LaunchAgent's plist
+    /// (`removeLegacyPlist`), so the next login does not start the old coordinator again.
+    public var retireLegacyAgent: @Sendable () async -> Void
 
     public init(
       home: URL, readHubURL: @escaping @Sendable (URL) async throws -> String?,
-      bootOutLegacy: @escaping @Sendable () async throws -> Void, legacySecretStore: (any SecretStore)? = nil
+      bootOutLegacy: @escaping @Sendable () async throws -> Void, legacySecretStore: (any SecretStore)? = nil,
+      retireLegacyAgent: @escaping @Sendable () async -> Void = {}
     ) {
       self.home = home
       self.readHubURL = readHubURL
       self.bootOutLegacy = bootOutLegacy
       self.legacySecretStore = legacySecretStore
+      self.retireLegacyAgent = retireLegacyAgent
     }
   }
 
@@ -321,9 +372,16 @@ public enum LegacyAdoption {
     }
 
     var plan: Plan {
-      Plan(
+      let home = home
+      let ownProgram = ownProgram
+      return Plan(
         home: home, readHubURL: { try await readHubURL($0) }, bootOutLegacy: { try await bootOutLegacy() },
-        legacySecretStore: LegacyAdoption.legacySecretStore())
+        legacySecretStore: LegacyAdoption.legacySecretStore(),
+        retireLegacyAgent: {
+          if LegacyAdoption.removeLegacyPlist(home: home, ownProgram: ownProgram) {
+            Log.logger("coordinator").notice("removed the previous install's LaunchAgent plist")
+          }
+        })
     }
 
     private func cluster(legacyDirectory: URL) throws -> PostgresCluster {

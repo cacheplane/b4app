@@ -147,6 +147,26 @@ import WorkspaceProtocol
     #expect(try registry.all().first?.needsOnboarding == false)
   }
 
+  /// Final review M12: a ledger that exists is found, not created again `IF NOT EXISTS`, which made
+  /// the server send a NOTICE libpq printed on every open.
+  @Test func aLedgerIsCreatedOnlyWhenMissing() throws {
+    let endpoint = try EphemeralPostgres.endpoint()
+    let lib = try LibPQ.load(binDir: endpoint.binDir!)
+    let connection = try PostgresConnection(
+      lib: lib,
+      connectionString:
+        "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database)")
+    #expect(try Migrator.ensureLedger(connection, table: AccountRegistry.table))
+    #expect(try !Migrator.ensureLedger(connection, table: AccountRegistry.table))
+    #expect(try Migrator.ensureLedger(connection, table: Migrator.table))
+    #expect(try !Migrator.ensureLedger(connection, table: Migrator.table))
+    // Mixed case survives: both names are quoted identifiers.
+    let names = try connection.execute(
+      "SELECT relname::text AS name FROM pg_class WHERE relkind = 'r' AND relname LIKE '%Migrations' ORDER BY 1"
+    ).rows.compactMap { $0.text("name") }
+    #expect(names == ["registryMigrations", "schemaMigrations"])
+  }
+
   @Test func registryMigratesOnItsOwnListAndIsIdempotent() throws {
     let endpoint = try EphemeralPostgres.endpoint()
     let name = "registry_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 import WorkspacePlatform
 import WorkspaceProtocol
@@ -302,6 +303,43 @@ private struct TemporaryHome {
     #expect(try await legacy.read(ref) == "tok-very-secret")
   }
 
+  /// Final review M5: a secret the prod build has not read since D-051 is still in the login keychain.
+  /// The local store's own read would move it into the local group (out of the prod build's reach);
+  /// the copy only ever copies it, and leaves the login item where it is.
+  @Test func aSecretStillInTheLoginKeychainIsCopiedNotMoved() async throws {
+    let login = LoginKeychain()
+    login.put(ref, "tok-login-only")
+    let prodGroup = GroupKeychain(login: login)
+    let localGroup = GroupKeychain(login: login)
+    let legacy = LegacyAdoption.LegacySecrets(stores: [prodGroup, login.store])
+    #expect(try await LegacyAdoption.copySecret(ref, from: legacy, to: localGroup) == .copied)
+    #expect(await localGroup.own(ref) == "tok-login-only")
+    // The login item is where it was, so the prod build (which falls back to it) still reads it.
+    #expect(login.value(ref) == "tok-login-only")
+    #expect(await prodGroup.own(ref) == nil)
+    #expect(try await prodGroup.read(ref) == "tok-login-only")
+  }
+
+  @Test func theProdGroupWinsAndAStaleLoginCopyIsLeftAlone() async throws {
+    let login = LoginKeychain()
+    login.put(ref, "tok-stale-login")
+    let prodGroup = GroupKeychain(login: login)
+    await prodGroup.seed(ref, "tok-prod-group")
+    let localGroup = GroupKeychain(login: login)
+    let legacy = LegacyAdoption.LegacySecrets(stores: [prodGroup, login.store])
+    #expect(try await LegacyAdoption.copySecret(ref, from: legacy, to: localGroup) == .copied)
+    #expect(await localGroup.own(ref) == "tok-prod-group")
+    #expect(login.value(ref) == "tok-stale-login")
+    #expect(await prodGroup.own(ref) == "tok-prod-group")
+  }
+
+  @Test func theLegacySourceIsReadOnly() async throws {
+    let legacy = LegacyAdoption.LegacySecrets(stores: [MemorySecretStore()])
+    await #expect(throws: WorkspaceError.self) { try await legacy.put(ref, value: "x") }
+    await #expect(throws: WorkspaceError.self) { try await legacy.putHere(ref, value: "x") }
+    await #expect(throws: WorkspaceError.self) { _ = try await legacy.remove(ref) }
+  }
+
   @Test func copyErrorsNeverCarryTheValue() async throws {
     let legacy = MemorySecretStore()
     try await legacy.put(ref, value: "tok-very-secret")
@@ -336,6 +374,40 @@ private struct TemporaryHome {
     }
   }
 
+  /// Final review M6: once adopted, the old agent's plist goes, so the next login does not start the
+  /// old coordinator again; but only when it runs another program (a temporary home, never ~/Library).
+  @Test func theOldAgentsPlistIsRemovedOnlyWhenItRunsAnotherProgram() throws {
+    let fixture = try TemporaryHome()
+    defer { fixture.remove() }
+    let agents = fixture.home.appendingPathComponent("Library/LaunchAgents")
+    try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
+    let plistURL = agents.appendingPathComponent("com.cacheplane.b4app.coordinator.plist")
+    let other = agents.appendingPathComponent("com.cacheplane.b4app.local.coordinator.plist")
+    let own = "/Applications/B4 Local.app/Contents/Helpers/b4app-coordinator"
+    func write(program: String?) throws {
+      var plist: [String: Any] = ["Label": "com.cacheplane.b4app.coordinator", "RunAtLoad": true]
+      if let program { plist["ProgramArguments"] = [program] }
+      try (plist as NSDictionary).write(to: plistURL)
+    }
+    try (["Label": "com.cacheplane.b4app.local.coordinator"] as NSDictionary).write(to: other)
+
+    // This process's own program: kept.
+    try write(program: own)
+    #expect(!LegacyAdoption.removeLegacyPlist(home: fixture.home, ownProgram: own))
+    #expect(fixture.exists(plistURL))
+    // A program that cannot be read: kept.
+    try write(program: nil)
+    #expect(!LegacyAdoption.removeLegacyPlist(home: fixture.home, ownProgram: own))
+    #expect(fixture.exists(plistURL))
+    // The pre-flavour build's program: removed, and nothing else in the folder is touched.
+    try write(program: "/Applications/Agent Workspace.app/Contents/Helpers/b4app-coordinator")
+    #expect(LegacyAdoption.removeLegacyPlist(home: fixture.home, ownProgram: own))
+    #expect(!fixture.exists(plistURL))
+    #expect(fixture.exists(other))
+    // No plist: nothing to do.
+    #expect(!LegacyAdoption.removeLegacyPlist(home: fixture.home, ownProgram: own))
+  }
+
   @Test func theLegacyPlistIsReadFromTheLegacyLabel() throws {
     let fixture = try TemporaryHome()
     defer { fixture.remove() }
@@ -350,6 +422,54 @@ private struct TemporaryHome {
     #expect(LegacyAdoption.legacyLabel == "com.cacheplane.b4app.coordinator")
     #expect(LegacyAdoption.legacyProgramPath(home: fixture.home.appendingPathComponent("elsewhere")) == nil)
   }
+}
+
+/// The file-based login keychain, which every data-protection group falls back to.
+private final class LoginKeychain: Sendable {
+  private let values = Mutex<[SecretRef: String]>([:])
+  func put(_ ref: SecretRef, _ value: String) { values.withLock { $0[ref] = value } }
+  func value(_ ref: SecretRef) -> String? { values.withLock { $0[ref] } }
+  @discardableResult func remove(_ ref: SecretRef) -> Bool {
+    values.withLock { $0.removeValue(forKey: ref) != nil }
+  }
+  /// The login keychain as a store of its own (`KeychainSecretStore(accessGroup: nil)`: no fallback).
+  var store: LoginStore { LoginStore(login: self) }
+}
+
+private struct LoginStore: SecretStore {
+  let login: LoginKeychain
+  func put(_ ref: SecretRef, value: String) async throws { login.put(ref, value) }
+  func read(_ ref: SecretRef) async throws -> String? { login.value(ref) }
+  func remove(_ ref: SecretRef) async throws -> Bool { login.remove(ref) }
+}
+
+/// A data-protection group as `KeychainSecretStore` treats one: `read` moves an item it lacks out of
+/// the login keychain (read, add here, delete there), `put` deletes the login copy, and `readHere` and
+/// `putHere` touch the group only.
+private actor GroupKeychain: SecretStore {
+  let login: LoginKeychain
+  private var values: [SecretRef: String] = [:]
+  init(login: LoginKeychain) { self.login = login }
+  func seed(_ ref: SecretRef, _ value: String) { values[ref] = value }
+  func own(_ ref: SecretRef) -> String? { values[ref] }
+
+  func put(_ ref: SecretRef, value: String) async throws {
+    values[ref] = value
+    login.remove(ref)
+  }
+  func read(_ ref: SecretRef) async throws -> String? {
+    if let value = values[ref] { return value }
+    guard let moved = login.value(ref) else { return nil }
+    values[ref] = moved
+    login.remove(ref)
+    return moved
+  }
+  func remove(_ ref: SecretRef) async throws -> Bool {
+    let here = values.removeValue(forKey: ref) != nil
+    return login.remove(ref) || here
+  }
+  func readHere(_ ref: SecretRef) async throws -> String? { values[ref] }
+  func putHere(_ ref: SecretRef, value: String) async throws { values[ref] = value }
 }
 
 private struct RefusingSecretStore: SecretStore {
@@ -385,10 +505,13 @@ private struct ForgetfulSecretStore: SecretStore {
   @Test func theLegacyStoreIsTheProdGroupWhenTheSignatureClaimsIt() throws {
     let local = "TEAM.com.cacheplane.b4app.local.shared"
     let prod = "TEAM.com.cacheplane.b4app.shared"
-    let store = try #require(
-      LegacyAdoption.legacySecretStore(claimedGroups: [local, prod]) as? KeychainSecretStore)
-    #expect(store.accessGroup == prod)
-    #expect(store.service == "b4app")
+    let source = try #require(
+      LegacyAdoption.legacySecretStore(claimedGroups: [local, prod]) as? LegacyAdoption.LegacySecrets)
+    // The prod group first, then the login keychain, both under the prod build's service.
+    let stores = source.stores.compactMap { $0 as? KeychainSecretStore }
+    #expect(stores.count == 2)
+    #expect(stores.map(\.accessGroup) == [prod, nil])
+    #expect(stores.allSatisfy { $0.service == "b4app" })
     // Without the prod group (an ad hoc build, or a profile without it) there is nothing to read.
     #expect(LegacyAdoption.legacySecretStore(claimedGroups: [local]) == nil)
     #expect(LegacyAdoption.legacySecretStore(claimedGroups: []) == nil)

@@ -147,6 +147,7 @@ public enum Coordinator {
           bootOutLegacy: adoption.bootOutLegacy)
         {
           logger.notice("adopted the previous install's data directory b4app as b4app-local")
+          await adoption.retireLegacyAgent()
         }
       }
       try PrivateFiles.ensurePrivateDirectory(paths.dataDir)

@@ -230,7 +230,8 @@ public actor AccountManager {
   }
 
   /// The local flavour's one read of the prod keychain group (D-063, D-091): before the first hub call
-  /// of the account whose database is the adopted `workspace`, copy the secrets it references (its
+  /// of the account whose database is the adopted `workspace` (at a start, or at a sign-in that claims
+  /// that row), copy the secrets it references (its
   /// hub token, its connections' keys) into this flavour's store where they are missing. Only with a
   /// legacy store, which only an explicitly local coordinator has; an account database this build made
   /// (`workspace_<id>`) never held the prod build's secrets. A failure is logged and recorded nowhere,
@@ -356,6 +357,9 @@ public actor AccountManager {
     active = row
     needsOnboarding = session.needsOnboarding
     reason = nil
+    // Signing in to the adopted `workspace` row (after a 401 signed it out, say) copies the prod
+    // build's secrets its connections name, if no start has done it yet.
+    await copyLegacySecrets(row: row, database: database)
     // A hub that did not say who the user is gets asked, so the placeholder is replaced.
     let scope = await install(row: row, database: database, refreshNames: Self.isPlaceholder(hubUserId))
     logger.info("signed in as account \(row.id, privacy: .public)")
