@@ -1,6 +1,36 @@
 # Tests apply against a mocked AWS provider; nothing here needs credentials.
 
-mock_provider "aws" {}
+mock_provider "aws" {
+  mock_data "aws_elb_service_account" {
+    defaults = {
+      arn = "arn:aws:iam::033677994240:root"
+    }
+  }
+
+  mock_resource "aws_lb" {
+    defaults = {
+      arn = "arn:aws:elasticloadbalancing:us-east-2:111111111111:loadbalancer/app/b4hub-test/0123456789abcdef"
+    }
+  }
+
+  mock_resource "aws_lb_target_group" {
+    defaults = {
+      arn = "arn:aws:elasticloadbalancing:us-east-2:111111111111:targetgroup/b4hub-test-hub/0123456789abcdef"
+    }
+  }
+
+  mock_resource "aws_acm_certificate" {
+    defaults = {
+      arn = "arn:aws:acm:us-east-2:111111111111:certificate/00000000-0000-0000-0000-000000000000"
+    }
+  }
+
+  mock_resource "aws_wafv2_web_acl" {
+    defaults = {
+      arn = "arn:aws:wafv2:us-east-2:111111111111:regional/webacl/b4hub-test-web-acl/00000000-0000-0000-0000-000000000000"
+    }
+  }
+}
 
 variables {
   environment = "test"

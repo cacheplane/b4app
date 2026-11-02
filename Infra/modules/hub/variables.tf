@@ -77,3 +77,9 @@ variable "alarm_email" {
   description = "Email address subscribed to the alarm topic." # used by observability.tf
   type        = string
 }
+
+variable "alb_ssl_policy" {
+  description = "TLS policy of the HTTPS listener." # used by alb.tf
+  type        = string
+  default     = "ELBSecurityPolicy-TLS13-1-2-Res-2021-06"
+}
