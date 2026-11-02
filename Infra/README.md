@@ -28,15 +28,19 @@ Do this one account at a time: finish steps 3 to 5 for `test` before starting `p
    login_session = <written by aws login>
    region = us-east-1
 
-   [profile b4hub-test]
+   # Terraform and the other SDKs cannot follow a login_session source profile,
+   # so the profile they use delegates to the CLI through credential_process.
+   [profile b4hub-test-role]
    role_arn = arn:aws:iam::355069727528:role/OrganizationAccountAccessRole
    source_profile = cacheplane-mgmt
+   role_session_name = b4hub-test
    region = us-east-1
 
-   [profile b4hub-prod]
-   role_arn = arn:aws:iam::268895852483:role/OrganizationAccountAccessRole
-   source_profile = cacheplane-mgmt
+   [profile b4hub-test]
+   credential_process = /opt/homebrew/bin/aws configure export-credentials --profile b4hub-test-role --format process
    region = us-east-1
+
+   # b4hub-prod-role and b4hub-prod: the same with 268895852483
    ```
 
    `aws sts get-caller-identity --profile b4hub-test` (and `b4hub-prod`) must answer with that account's id. When a command fails with an expired token, run the `aws login` line again; `aws login --remote` prints the URL and asks for the code instead of opening a browser. Turn on MFA for the Builder ID.
@@ -44,15 +48,15 @@ Do this one account at a time: finish steps 3 to 5 for `test` before starting `p
 
    ```bash
    export ENV=test                            # prod: ENV=prod
+   export AWS_PROFILE=b4hub-$ENV
    aws login --profile cacheplane-mgmt        # only when the session has expired
-   eval "$(aws configure export-credentials --profile b4hub-$ENV --format env)"
    cd Infra/bootstrap
    rm -rf .terraform terraform.tfstate*       # nothing carried over from the other account
    terraform init
    terraform apply -var environment=$ENV
    ```
 
-   Terraform's AWS provider cannot read a profile that `aws login` wrote (`login_session`), so the `export-credentials` line puts the assumed role's temporary credentials (one hour) in the environment instead of `AWS_PROFILE`; rerun it if an apply fails with an expired token. The state is local (`terraform.tfstate` in this directory) for this first apply. The S3 bucket name `b4hub-<env>-tfstate` is global; if it is taken, the apply fails and the name needs a suffix (change `local.state_bucket`). Capture the outputs now, while the backend is still local:
+   The state is local (`terraform.tfstate` in this directory) for this first apply. The S3 bucket name `b4hub-<env>-tfstate` is global; if it is taken, the apply fails and the name needs a suffix (change `local.state_bucket`). Capture the outputs now, while the backend is still local:
 
    ```bash
    STATE_BUCKET=$(terraform output -raw state_bucket)
@@ -172,7 +176,7 @@ done
 vercel dns add b4.run _<hash>.hub.test CNAME _<hash>.<id>.acm-validations.aws. --scope cacheplane
 ```
 
-By hand, the targeted certificate apply runs in the root with the exported credentials of step 3 (`eval "$(aws configure export-credentials --profile b4hub-$ENV --format env)"`) and `TF_VAR_alarm_email` set; it leaves the certificate in the state, which the full apply then validates.
+By hand, the targeted certificate apply runs in the root with `AWS_PROFILE=b4hub-$ENV` and `TF_VAR_alarm_email` set; it leaves the certificate in the state, which the full apply then validates.
 ### First deploy: flip `desired_count`
 
 Both roots are created with `desired_count = 0`, since no image has been deployed. After the first deploy (the deploy workflow, Task 10) rolls the service out and `/readyz` is healthy, edit `desired_count = 0` to `1` in `envs/<env>/main.tf` and merge. That apply also creates the `RunningTaskCount` alarm, which only exists while `desired_count > 0`.
