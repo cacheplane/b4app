@@ -27,12 +27,14 @@ public actor SessionService {
     public var projects: ProjectService
     /// The waits between tries of a check that found its runtime unreachable (settings connections).
     public var checkRetryDelays: [Duration]
+    /// How often deleted threads' runtime copies are retried (deleting threads); zero runs no sweep loop.
+    public var threadDeleteSweep: Duration
 
     public init(
       database: WorkspaceDatabase, eventLog: EventLog, diagnostics: DiagnosticsService,
       environment: [String: String], clientVersion: String, secretStore: any SecretStore,
       projects: ProjectService, adapterFactory: AdapterFactory? = nil, servers: LocalServerService? = nil,
-      checkRetryDelays: [Duration] = [.seconds(1), .seconds(3)]
+      checkRetryDelays: [Duration] = [.seconds(1), .seconds(3)], threadDeleteSweep: Duration = .zero
     ) {
       self.database = database
       self.eventLog = eventLog
@@ -44,6 +46,7 @@ public actor SessionService {
       self.servers = servers
       self.projects = projects
       self.checkRetryDelays = checkRetryDelays
+      self.threadDeleteSweep = threadDeleteSweep
     }
   }
 
@@ -69,6 +72,8 @@ public actor SessionService {
   /// The text each open message has streamed so far, by thread id and native item id. A runtime that is
   /// stopped mid-reply (Codex) never completes the item, so without this the reply is stored empty.
   private var streamed: [String: [String: String]] = [:]
+  /// Deleted threads whose runtime copy is being deleted right now, so two sweeps never both try one.
+  var deletingThreads: Set<String> = []
   let logger = Log.logger("sessions")
   var db: WorkspaceDatabase { context.database }
 
@@ -98,6 +103,7 @@ public actor SessionService {
     } catch {
       logger.error("startup reconciliation failed: \(String(describing: error), privacy: .public)")
     }
+    startThreadDeleteSweep()
   }
 
   public func shutdown() async {
@@ -108,7 +114,7 @@ public actor SessionService {
 
   // MARK: - Adapters
 
-  private func adapter(for connection: Connection) throws -> any AgentAdapter {
+  func adapter(for connection: Connection) throws -> any AgentAdapter {
     if let existing = adapters[connection.id] { return existing }
     let adapter = try context.adapterFactory(
       connection, context.environment, context.clientVersion, context.secretStore)
@@ -131,7 +137,7 @@ public actor SessionService {
   }
 
   private func threadContext(id: String) throws -> (ConversationThread, Connection, any AgentAdapter) {
-    guard let thread = try db.thread(id: id) else {
+    guard let thread = try db.thread(id: id), thread.userDeletedAt == nil else {
       throw WorkspaceError(.notFound, "Thread \(id) does not exist.")
     }
     let (connection, adapter) = try connectionAndAdapter(id: thread.connectionId)
@@ -384,7 +390,7 @@ public actor SessionService {
   /// A plain read is cheap and offline-safe: it reconciles an unresolved turn and, when the cache
   /// is empty although turns were recorded (the cache was lost), loads native history once.
   public func threadRead(_ params: ThreadRead.Params) async throws -> ThreadRead.Result {
-    guard var thread = try db.thread(id: params.threadId) else {
+    guard var thread = try db.thread(id: params.threadId), thread.userDeletedAt == nil else {
       throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.")
     }
     if let reconciling = try db.activeTurn(threadId: thread.id), reconciling.status == .reconciling {
@@ -399,7 +405,7 @@ public actor SessionService {
   /// Deliberate reconciliation (spec 10.1.4, 10.3): identity check, unresolved turn, native history
   /// merged without duplicates (D-031), continuity recorded. Nothing is re-sent.
   public func threadReconcile(_ params: ThreadReconcile.Params) async throws -> ThreadRead.Result {
-    guard var thread = try db.thread(id: params.threadId) else {
+    guard var thread = try db.thread(id: params.threadId), thread.userDeletedAt == nil else {
       throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.")
     }
     guard let connection = try db.connection(id: thread.connectionId) else {
@@ -513,6 +519,9 @@ public actor SessionService {
   }
 
   public func threadUpdate(_ params: ThreadUpdate.Params) async throws -> ThreadCreate.Result {
+    guard try db.thread(id: params.threadId)?.userDeletedAt == nil else {
+      throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.")
+    }
     guard
       let thread = try db.updateThread(
         id: params.threadId,
@@ -986,7 +995,7 @@ public actor SessionService {
           $0.outcome = outcome
         }
         if let updated { event.payload = merge(raw.payload, ["turn": try JSONValue(encoding: updated)]) }
-        if let touched = try db.updateThread(id: thread.id, { _ in }) {
+        if let touched = try db.updateThread(id: thread.id, { _ in }), touched.userDeletedAt == nil {
           await context.eventLog.publish(try AdapterEvent.threadUpdated(touched))
         }
         if outcome == .failed,
@@ -1052,6 +1061,8 @@ public actor SessionService {
       await context.diagnostics.recordError(
         scope: "projection", code: "internal", message: String(describing: error))
     }
+    // A deleted thread's rows still follow its runtime, but nothing about it reaches a client.
+    if thread?.userDeletedAt != nil { return }
     await context.eventLog.publish(event)
   }
 

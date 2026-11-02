@@ -20,12 +20,15 @@ public struct CoordinatorOptions: Sendable {
   /// Overrides the power assertion for "keep the Mac awake" (tests inject a `FakePowerAssertions`); nil
   /// uses IOKit.
   public var powerAssertions: (any PowerAssertions)?
+  /// How often deleted threads' runtime copies are retried; zero runs no background sweep (tests).
+  public var threadDeleteSweep: Duration
 
   public init(
     paths: PlatformPaths? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
     secretStore: (any SecretStore)? = nil, adapterFactory: SessionService.AdapterFactory? = nil,
     hubAPIFactory: HubSync.APIFactory? = nil, hubLinkConnection: (any HubLinkConnection)? = nil,
-    powerAssertions: (any PowerAssertions)? = nil, checkRetryDelays: [Duration] = [.seconds(1), .seconds(3)]
+    powerAssertions: (any PowerAssertions)? = nil, checkRetryDelays: [Duration] = [.seconds(1), .seconds(3)],
+    threadDeleteSweep: Duration = .seconds(60)
   ) {
     self.environment = environment
     self.paths = paths ?? PlatformPaths.resolve(environment: environment)
@@ -35,6 +38,7 @@ public struct CoordinatorOptions: Sendable {
     self.checkRetryDelays = checkRetryDelays
     self.hubLinkConnection = hubLinkConnection
     self.powerAssertions = powerAssertions
+    self.threadDeleteSweep = threadDeleteSweep
   }
 }
 
@@ -170,7 +174,7 @@ public enum Coordinator {
         database: database, eventLog: eventLog, diagnostics: diagnostics, environment: options.environment,
         clientVersion: CoordinatorVersion.current, secretStore: options.secretStore,
         projects: projects, adapterFactory: options.adapterFactory, servers: servers,
-        checkRetryDelays: options.checkRetryDelays))
+        checkRetryDelays: options.checkRetryDelays, threadDeleteSweep: options.threadDeleteSweep))
     await sessions.start()
     await servers.startAll()
     let relay = RelayExecutor(

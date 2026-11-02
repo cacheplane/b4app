@@ -247,7 +247,8 @@ public actor Router {
     case .usageRead:
       return try JSONValue(encoding: try await sessions.usageRead())
     case .threadDelete:
-      throw WorkspaceError.unsupported("thread.delete", plannedFor: "deleting threads")
+      return try JSONValue(
+        encoding: try await sessions.threadDelete(try command.params(for: ThreadDelete.self)))
     case .credentialRemove:
       return try JSONValue(
         encoding: try await sessions.credentialRemove(try command.params(for: CredentialRemove.self)))

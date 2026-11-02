@@ -65,7 +65,8 @@ public actor DiagnosticsService {
         platform: "darwin", arch: Self.architecture,
         release: ProcessInfo.processInfo.operatingSystemVersionString),
       runtimes: cached?.runtimes ?? [], recentErrors: Array(recentErrors.suffix(20)),
-      relay: await relayStatus?(), keepAwakeHeld: await keepAwakeHeld?())
+      relay: await relayStatus?(), keepAwakeHeld: await keepAwakeHeld?(),
+      threadDeletes: try? context.database.threadDeleteSummary())
   }
 
   private static var architecture: String {
