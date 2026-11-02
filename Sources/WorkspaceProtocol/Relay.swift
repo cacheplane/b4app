@@ -284,16 +284,17 @@ public struct PairLink: Sendable, Equatable, CustomStringConvertible, CustomDebu
   }
 
   /// A link shaped like a pairing link, whatever it carries and whichever site it names: an https URL
-  /// whose path is `/pair`, or `b4app://pair`. `parse` is the judge of which this phone may act on;
-  /// other links (a `<scheme>://thread/<id>`, which is `ThreadLink`'s, a sign-in callback, any other
-  /// page) are not these.
-  public static func isPairLink(_ url: URL) -> Bool {
-    isLegacyPairLink(url) || isSiteShaped(url)
+  /// whose path is `/pair`, or `<scheme>://pair` for one of `legacySchemes` (`b4app` unless a flavour
+  /// adds its own). `parse` is the judge of which this phone may act on; other links (a
+  /// `<scheme>://thread/<id>`, which is `ThreadLink`'s, a sign-in callback, any other page) are not these.
+  public static func isPairLink(_ url: URL, legacySchemes: Set<String> = [linkScheme]) -> Bool {
+    isLegacyPairLink(url, schemes: legacySchemes) || isSiteShaped(url)
   }
 
-  /// `b4app://pair`, whatever it carries.
-  public static func isLegacyPairLink(_ url: URL) -> Bool {
-    url.scheme?.lowercased() == linkScheme && url.host(percentEncoded: false)?.lowercased() == linkHost
+  /// `<scheme>://pair` for one of `schemes`, whatever it carries.
+  public static func isLegacyPairLink(_ url: URL, schemes: Set<String> = [linkScheme]) -> Bool {
+    guard let scheme = url.scheme?.lowercased() else { return false }
+    return schemes.contains(scheme) && url.host(percentEncoded: false)?.lowercased() == linkHost
   }
 
   private static func isSiteShaped(_ url: URL) -> Bool {
@@ -309,17 +310,20 @@ public struct PairLink: Sendable, Equatable, CustomStringConvertible, CustomDebu
   /// - A site link must be `https://<siteDomain>/pair` (or `/pair/`) exactly: no other host (another
   ///   flavour's site included), user, port, or query, and a fragment of one `c=<code>`. Its hub is
   ///   `hubURL`.
-  /// - M8c's `b4app://pair?hub=&code=` is read only when `legacyLoopback` is set (the local flavour)
-  ///   and its hub is `localhost`, `127.0.0.1`, or `::1`.
+  /// - M8c's `b4app://pair?hub=&code=` (or the same under another of `legacySchemes`) is read only
+  ///   when `legacyLoopback` is set (the local flavour) and its hub is `localhost`, `127.0.0.1`, or
+  ///   `::1`.
   ///
   /// Nothing here makes a request.
   public static func parse(
-    _ url: URL, siteDomain: String, hubURL: URL, legacyLoopback: Bool = false
+    _ url: URL, siteDomain: String, hubURL: URL, legacyLoopback: Bool = false,
+    legacySchemes: Set<String> = [linkScheme]
   )
     -> PairLink?
   {
-    if isLegacyPairLink(url) {
-      guard legacyLoopback, let link = parseLegacy(url), HubURL.isLoopback(link.hub) else { return nil }
+    if isLegacyPairLink(url, schemes: legacySchemes) {
+      guard legacyLoopback, let link = parseLegacy(url, schemes: legacySchemes), HubURL.isLoopback(link.hub)
+      else { return nil }
       return link
     }
     return code(fromSiteLink: url, siteDomain: siteDomain).map { PairLink(hub: hubURL, code: $0) }
@@ -347,8 +351,9 @@ public struct PairLink: Sendable, Equatable, CustomStringConvertible, CustomDebu
   /// or path on the link; a missing, repeated, or malformed hub or code; a hub that `HubURL.validate`
   /// refuses (https only, http for localhost, `127.0.0.1`, and `::1`) or that carries credentials.
   /// `parse` decides whether a phone may use it at all.
-  public static func parseLegacy(_ url: URL) -> PairLink? {
-    guard isLegacyPairLink(url), let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+  public static func parseLegacy(_ url: URL, schemes: Set<String> = [linkScheme]) -> PairLink? {
+    guard isLegacyPairLink(url, schemes: schemes),
+      let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
       parts.user == nil, parts.password == nil, parts.port == nil, parts.path.isEmpty || parts.path == "/",
       parts.fragment == nil
     else { return nil }

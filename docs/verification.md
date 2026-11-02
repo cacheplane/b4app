@@ -2,6 +2,31 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-11-02: The iPhone's thread list toolbar (D-131)
+
+Run in the iPhone 17 Pro Simulator (local flavour, Debug, this branch) against the owner's Local app and Compose hub.
+
+- **The layout:** the list opens under a large "Threads" title, with the filter and compose buttons at the top right and the search field at the bottom (iOS 26's placement). The first thread is where the New thread row used to be.
+- **Search:** "b4run" narrowed the list to the three b4run threads, matching regardless of case. Clearing it brought back all seven. The field no longer capitalises what is typed.
+- **The filter button:** it opened the project and connection filters. Choosing "B4 Run (Mac)" retitled the list to that project, filled the filter icon, and showed its four threads. "All projects" restored "Threads".
+- **Compose:** it opened New thread.
+- **Gates:**
+  - `swift format lint --strict` is clean.
+  - `swift test --filter WorkspaceUITests` passed 273 tests, including `ListSearchTests.theListSearchMatchesShownTitles`, which failed first.
+  - Both `xcodebuild` builds (iOS Simulator, macOS) succeeded.
+
+## 2026-11-02: Live deletes in each runtime, the Mac's Delete menu, and pairing the Simulator by link
+
+Run on the owner's MacBook Pro against the Local app and Compose hub built from main `ddc8db8`, with the iPhone 17 Pro Simulator. These close three items the previous entry left open. Each thread below was a throwaway, made for the check.
+
+| Check | Result |
+|---|---|
+| Codex, live | Pass. A thread with one real turn ("Reply with just the word OK") had a rollout file in `~/.codex/sessions`, and `thread/resume` reported it held by the coordinator's Codex. After `thread.delete`, the runtime delete settled in 17 s, the rollout file was gone, and `thread/resume` answered "no rollout found". |
+| Claude Code, live | Pass. A thread with one real turn had `<sessionId>.jsonl` in its project folder beside Claude's own `memory` folder. After the delete only the transcript was gone; `memory` and the project folder stayed. It settled in about a second. |
+| B4, live | Pass. With the managed `research` server (`@b4run/cli` 0.15.8) started, the server answered `GET /threads/<id>` 200 for a new thread and 404 after the delete, which settled at once. No turn was needed. The server was stopped again. |
+| The Mac's Delete… on screen | Pass, through background accessibility control of the Local app. The thread's toolbar Delete… opened `Delete "Mac menu delete"?` with "It's removed from this app and from Codex. You can't undo this.", Cancel and a red Delete. Delete closed the open thread to the empty "Threads" view and removed the row, and its project group with it, since it was empty. The hub row has `userDeletedAt`, and Diagnostics settled to `[]`. The sidebar's right-click menu was not opened: background control cannot open context menus. |
+| Pairing the Simulator by link (fix) | The Mac's `https://local.b4.run/pair#c=…` links had opened Safari's pairing page. `swcd`'s log showed why: its fetch of `local.b4.run`'s association file, started when the app was installed, timed out (`NSURLErrorDomain -1001`) after about 80 s and had not been retried 25 minutes later; the file itself is correct. The local flavour's old-form link fell back on `b4app://`, which on this Simulator belongs to the prod app (D-066 gave the local flavour `b4app-local`). With the fix, `xcrun simctl openurl … b4app-local://pair?hub=…&code=…` opened the local app at "Pair this iPhone with the hub at localhost?", and Pair answered "This iPhone is already paired", since it was signed in to that account already. `theLocalFlavourReadsTheOldLinkUnderItsOwnScheme` failed first, then passed. |
+
 ## 2026-11-02: Usage on the phone and deleting threads, on screen (D-118, D-119, D-120)
 
 Run on the owner's MacBook Pro from main `ddc8db8`, after #46 and #51 merged.
