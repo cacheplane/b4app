@@ -45,6 +45,13 @@ services:
     command: ["serve"]
     environment:
       DATABASE_URL: postgres://b4hub_app:${B4HUB_APP_PASSWORD:?set B4HUB_APP_PASSWORD in Hub/.env (see .env.example)}@db:5432/b4hub
+      # Notifications for a phone in the Simulator: the hub writes `.apns` files into /spool, and
+      # B4HUB_PUSH_SPOOL_HOST_DIR (default ./push-spool) is where they appear on this machine.
+      # Each file is what `xcrun simctl push booted - < file` reads.
+      B4HUB_PUSH_SENDER: spool
+      B4HUB_PUSH_SPOOL_DIR: /spool
+    volumes:
+      - ${B4HUB_PUSH_SPOOL_HOST_DIR:-./push-spool}:/spool
     ports:
       - "127.0.0.1:8080:8080"
     # The hub drains open long-polls for up to B4HUB_SHUTDOWN_WAIT_MS (30 s); Compose's default

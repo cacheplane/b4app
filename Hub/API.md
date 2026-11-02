@@ -53,9 +53,10 @@ answer the same generic `404 not_found`.
 
 | HTTP | `details.code` | `kind` | When |
 | --- | --- | --- | --- |
-| 400 | `invalid_request` | request | The body is not valid JSON for the endpoint (malformed JSON, an unknown or missing field, a wrong value type, a missing or wrong `Content-Type`); a `deviceName` or `platform` that fails validation; a push with more than 1000 changes; a non-numeric `after`, `limit`, or `wait`; a link request that is not a WebSocket upgrade or whose `B4-Protocol` is not a whole number. |
+| 400 | `invalid_request` | request | The body is not valid JSON for the endpoint (malformed JSON, an unknown or missing field, a wrong value type, a missing or wrong `Content-Type`); a `deviceName` or `platform` that fails validation; a push token, environment, or bundle id that fails validation; a push with more than 1000 changes; a non-numeric `after`, `limit`, or `wait`; a link request that is not a WebSocket upgrade or whose `B4-Protocol` is not a whole number. |
 | 401 | `unauthorized` | request | The bearer token is missing, malformed, unknown, or belongs to a revoked device. |
 | 401 | `invalid_code` | request | The enrollment code is wrong, expired, or already used (the three are indistinguishable). |
+| 403 | `forbidden` | request | The device is authenticated but may not do this: `POST /v1/devices/self/push-token` from a device that is not `ios`. |
 | 404 | `not_found` | request | No such route, or a resource that does not exist or is not yours. |
 | 405 | `method_not_allowed` | request | The route exists but not for that method. |
 | 409 | `relocated` | request | `GET /v1/devices/self/link` reached an instance other than the one serving this user's links; `details.instanceId` names that instance. No socket is opened. Retry at once, at most 3 times, then with the normal backoff (see *Link*, *More than one instance*). |
@@ -65,7 +66,7 @@ answer the same generic `404 not_found`.
 | 500 | `internal_error` | execution | Any unexpected failure; the cause is logged on the hub, never sent. |
 | 503 | `not_ready` | execution | `/readyz`: the database is unreachable, migrations are pending, the relay probe failed (`details.relay: "failed"`), or this instance's heartbeat is stale (`details.instances: "stale"`). |
 | 503 | `shutting_down` | execution | `/readyz` after SIGTERM. |
-| 503 | `maintenance` | execution | A write (`POST /v1/enroll`, `POST /v1/pairing-codes`, `POST /v1/changes`, `DELETE /v1/devices/self`) while the operator has paused writes; carries `Retry-After: 30`. See "Maintenance mode". |
+| 503 | `maintenance` | execution | A write (`POST /v1/enroll`, `POST /v1/pairing-codes`, `POST /v1/changes`, `POST /v1/devices/self/push-token`, `DELETE /v1/devices/self`) while the operator has paused writes; carries `Retry-After: 30`. See "Maintenance mode". |
 
 Six more codes exist only on the relay link, never as an HTTP status. They arrive in an `error`
 frame (a problem with the link or a frame) or in a `reply`'s `error` (a problem with one command):
@@ -232,6 +233,83 @@ device already uploaded stay in the feed. `204` with no body. The token stops wo
 immediately; the next request with it is `401 unauthorized`. A pairing code the device minted
 that is still unused is withdrawn with it (redeeming it is then `401 invalid_code`). If the device
 has an open link (see *Link*), the hub closes it with code 4001. Errors: `401 unauthorized`.
+
+### `POST /v1/devices/self/push-token`
+
+A phone registers the APNs token the hub notifies it at. One row per device, replaced on every
+call. The phone sends it each time the system hands it a token while it is linked, and after each
+enrollment.
+
+Request (all three fields required, no other field allowed):
+
+```json
+{"token": "ab12...", "environment": "sandbox", "bundleId": "com.cacheplane.b4app"}
+```
+
+- `token`: 32 to 512 hexadecimal characters.
+- `environment`: `sandbox` (a Debug build) or `production`.
+- `bundleId`: the app's bundle identifier, `^[A-Za-z0-9][A-Za-z0-9.-]{0,154}$`. It comes from the
+  phone, so the hub needs no per-flavour configuration.
+
+`204` with no body. Errors: `401 unauthorized`; `403 forbidden` when the device is not an `ios`
+device (checked first); `400 invalid_request` for a malformed body, an unknown field, or a field
+that fails the rules above; `503 maintenance` while writes are paused. The token is never logged.
+
+#### When the hub notifies
+
+The hub decides inside the `POST /v1/changes` transaction, from the rows the batch applied, and
+notifies the user's `ios` devices that have a token, except the one whose push caused the change:
+
+- A `runtimeRequests` row whose `state` is `pending` notifies, whatever its age: kinds
+  `command_approval`, `file_change_approval`, `tool_permission`, and `unknown` say "Waiting for
+  your approval"; `user_question` and `elicitation` say "Has a question for you".
+- A `turns` row whose `status` is `terminal` notifies when its `outcome` is `completed`
+  ("Replied") or `failed` ("Turn failed"). `cancelled` never notifies, and a terminal turn with no
+  outcome yet waits for the batch that sets it. A turn notifies only when its `updatedAt` is
+  within 10 minutes of the hub's clock, so a Mac's first join does not flood the phone with
+  history.
+- Once per request id or turn id: the decision is written to a ledger (`notifications_sent`) in the
+  same transaction, whether or not a sender is configured or the phone has a token, so a retried
+  batch or a later update to the same row notifies nobody twice, and delivery is at most once.
+
+The notification is sent after the commit, on a task of its own: the push response never waits on
+delivery, and a failed delivery is logged (device id and reason, never the token or the title) and
+not retried.
+
+#### Push payload
+
+```json
+{
+  "aps": {
+    "alert": {"title": "Fix the build", "body": "Waiting for your approval"},
+    "sound": "default",
+    "content-available": 1,
+    "thread-id": "thread-1"
+  },
+  "threadId": "thread-1",
+  "reason": "approval"
+}
+```
+
+`title` is the thread's title (`Untitled thread` when it has none), cut to 100 characters.
+`body` is exactly one of `Waiting for your approval`, `Has a question for you`, `Replied`, or
+`Turn failed`; it never carries transcript, command text, or paths. `reason` is `approval`,
+`question`, `replied`, or `failed`. The payload carries no URL: the app builds
+`<its scheme>://thread/<threadId>` itself.
+
+#### Senders
+
+`B4HUB_PUSH_SENDER` chooses how `serve` delivers:
+
+- `none` (the default, also when unset): nothing is sent.
+- `spool`: each notification is written to `B4HUB_PUSH_SPOOL_DIR` (required; created if missing)
+  as `<unix ms>-<uuid>.apns`, the payload above plus the `Simulator Target Bundle` key set to the
+  phone's `bundleId`, which is what `xcrun simctl push booted - < file` reads. The file is written
+  under a hidden `.tmp` name and renamed when complete, so a watcher never reads half a file.
+  The Compose file sets this up and mounts the directory at `B4HUB_PUSH_SPOOL_HOST_DIR` (default
+  `Hub/push-spool/`).
+- `apns`: not built yet. `serve` refuses to start with "APNs delivery is not built yet (the
+  deploy slice)" rather than pretend to send.
 
 ### `GET /v1/devices/self/link`
 
@@ -806,8 +884,8 @@ serving role can only read; no environment variable changes and no instance rest
 and logs a warning on every poll until a read succeeds; an instance whose very first read fails
 therefore starts with maintenance off (fail-open) until the database answers.
 
-While on, `POST /v1/enroll`, `POST /v1/pairing-codes`, `POST /v1/changes`, and
-`DELETE /v1/devices/self` answer `503` with
+While on, `POST /v1/enroll`, `POST /v1/pairing-codes`, `POST /v1/changes`,
+`POST /v1/devices/self/push-token`, and `DELETE /v1/devices/self` answer `503` with
 `Retry-After: 30` and
 
 ```json

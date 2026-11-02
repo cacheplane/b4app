@@ -5,4 +5,5 @@ pub mod devices;
 pub mod enroll;
 pub mod health;
 pub mod pairing;
+pub mod push_token;
 pub mod snapshot;

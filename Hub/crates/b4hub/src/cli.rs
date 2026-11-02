@@ -7,6 +7,8 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
@@ -20,6 +22,7 @@ use b4hub_db::{devices, Db};
 
 use crate::instances::InstancesState;
 use crate::maintenance;
+use crate::push::{ApnsSender, PushError, PushSender, SpoolSender};
 use crate::serve::{self, AppState};
 
 const DEFAULT_PORT: u16 = 8080;
@@ -182,13 +185,16 @@ pub enum CliError {
     /// Exit status 1.
     #[error("{0}")]
     Io(#[from] std::io::Error),
+    /// Exit status 1: the push sender cannot start.
+    #[error("{0}")]
+    Push(#[from] PushError),
 }
 
 impl CliError {
     pub fn exit_code(&self) -> u8 {
         match self {
             CliError::Config(_) => 2,
-            CliError::Db(_) | CliError::Io(_) => 1,
+            CliError::Db(_) | CliError::Io(_) | CliError::Push(_) => 1,
         }
     }
 }
@@ -198,6 +204,14 @@ impl CliError {
 pub enum LogFormat {
     Text,
     Json,
+}
+
+/// Which push sender `B4HUB_PUSH_SENDER` chose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PushChoice {
+    None,
+    Spool(PathBuf),
+    Apns,
 }
 
 /// A snapshot of the environment, so settings parse the same way in tests as in production.
@@ -328,6 +342,26 @@ impl Settings {
                     "must be an http or https URL",
                 )),
             },
+        }
+    }
+
+    /// `B4HUB_PUSH_SENDER`: `none` (the default), `spool` (writes `.apns` files into
+    /// `B4HUB_PUSH_SPOOL_DIR`), or `apns`.
+    pub fn push_sender(&self) -> Result<PushChoice, ConfigError> {
+        match self.var("B4HUB_PUSH_SENDER") {
+            None | Some("none") => Ok(PushChoice::None),
+            Some("spool") => match self.var("B4HUB_PUSH_SPOOL_DIR") {
+                Some(dir) => Ok(PushChoice::Spool(PathBuf::from(dir))),
+                None => Err(ConfigError::new(
+                    "B4HUB_PUSH_SPOOL_DIR",
+                    "is required when B4HUB_PUSH_SENDER is spool",
+                )),
+            },
+            Some("apns") => Ok(PushChoice::Apns),
+            Some(_) => Err(ConfigError::new(
+                "B4HUB_PUSH_SENDER",
+                "must be none, spool, or apns",
+            )),
         }
     }
 
@@ -474,6 +508,16 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
     let trust_proxy = settings.trust_proxy()?;
     let maintenance_poll = settings.maintenance_poll()?;
     let heartbeat = settings.heartbeat()?;
+    // Before the database: a sender that cannot start stops `serve` before anything else does.
+    let push: Option<Arc<dyn PushSender>> = match settings.push_sender()? {
+        PushChoice::None => None,
+        PushChoice::Spool(dir) => Some(Arc::new(SpoolSender::new(dir)?)),
+        PushChoice::Apns => Some(Arc::new(ApnsSender::new()?)),
+    };
+    tracing::info!(
+        sender = push.as_ref().map_or("none", |p| p.name()),
+        "push sender"
+    );
     let db = Db::connect(&settings.database_url()?).await?;
     refuse_privileged_connection(&db).await?;
     let listener = TcpListener::bind(addr).await?;
@@ -489,6 +533,7 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
     );
     let mut state = AppState::new(db.clone());
     state.public_url = public_url;
+    state.push = push;
     state.instances = InstancesState::new(heartbeat);
     // Know the switch before the first request, not one poll later.
     maintenance::refresh(&db, &state.maintenance).await;
@@ -647,6 +692,53 @@ mod tests {
         assert_eq!(s.public_url().unwrap(), None);
         assert_eq!(s.retention().unwrap(), Duration::from_secs(30 * 86_400));
         assert!(s.log_filter().is_ok());
+    }
+
+    #[test]
+    fn push_sender_choices() {
+        assert_eq!(settings(&[]).push_sender().unwrap(), PushChoice::None);
+        assert_eq!(
+            settings(&[("B4HUB_PUSH_SENDER", "none")])
+                .push_sender()
+                .unwrap(),
+            PushChoice::None
+        );
+        assert_eq!(
+            settings(&[
+                ("B4HUB_PUSH_SENDER", "spool"),
+                ("B4HUB_PUSH_SPOOL_DIR", "/spool")
+            ])
+            .push_sender()
+            .unwrap(),
+            PushChoice::Spool(PathBuf::from("/spool"))
+        );
+        assert_eq!(
+            settings(&[("B4HUB_PUSH_SENDER", "spool")])
+                .push_sender()
+                .unwrap_err()
+                .name,
+            "B4HUB_PUSH_SPOOL_DIR"
+        );
+        assert_eq!(
+            settings(&[("B4HUB_PUSH_SENDER", "spool"), ("B4HUB_PUSH_SPOOL_DIR", "")])
+                .push_sender()
+                .unwrap_err()
+                .name,
+            "B4HUB_PUSH_SPOOL_DIR"
+        );
+        assert_eq!(
+            settings(&[("B4HUB_PUSH_SENDER", "apns")])
+                .push_sender()
+                .unwrap(),
+            PushChoice::Apns
+        );
+        assert_eq!(
+            settings(&[("B4HUB_PUSH_SENDER", "fcm")])
+                .push_sender()
+                .unwrap_err()
+                .name,
+            "B4HUB_PUSH_SENDER"
+        );
     }
 
     #[test]

@@ -16,9 +16,10 @@ use crate::error::ApiError;
 use crate::instances::{self, InstancesState};
 use crate::maintenance::MaintenanceState;
 use crate::notify::Notifier;
+use crate::push::PushSender;
 use crate::relay::{link, Relay};
 use crate::request_log;
-use crate::routes::{changes, devices, enroll, health, pairing, snapshot};
+use crate::routes::{changes, devices, enroll, health, pairing, push_token, snapshot};
 
 /// How long the listener stays open, answering `/readyz` 503, after shutdown begins, so a load
 /// balancer polling readiness stops routing here before connections are refused. Capped at a
@@ -53,6 +54,9 @@ pub struct AppState {
     pub maintenance: MaintenanceState,
     /// This instance's id and heartbeat health; the link upgrade claims users for it.
     pub instances: InstancesState,
+    /// Delivers the notifications a push decides on; `None` sends nothing (the ledger still
+    /// records them, so delivery stays at most once).
+    pub push: Option<Arc<dyn PushSender>>,
 }
 
 impl AppState {
@@ -66,6 +70,7 @@ impl AppState {
             relay: Relay::new(),
             maintenance: MaintenanceState::default(),
             instances: InstancesState::default(),
+            push: None,
         }
     }
 }
@@ -107,6 +112,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/snapshot", get(snapshot::get))
         .route("/v1/devices/self", delete(devices::revoke_self))
         .route("/v1/devices/self/link", get(link::upgrade))
+        .route("/v1/devices/self/push-token", post(push_token::save))
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
         .fallback(|| async { ApiError::not_found() })
         .layer(middleware::from_fn(request_log::trace_request))
