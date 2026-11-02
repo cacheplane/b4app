@@ -131,6 +131,10 @@ render_admin() { # $1 = include_signin_secrets
   [ "$(jq -r '[.containerDefinitions[0].secrets[].name] | join(",")' "$out")" = B4HUB_SECRET_KEY,B4HUB_APPLE_TEAM_ID,B4HUB_APPLE_KEY_ID,B4HUB_APPLE_PRIVATE_KEY,DATABASE_ADMIN_URL,DATABASE_URL ]
   [ "$(jq -r '.containerDefinitions[0].environment[] | select(.name == "B4HUB_APPLE_AUDIENCES") | .value' "$out")" = com.cacheplane.b4app.ios,com.cacheplane.b4app.signin ]
   [ "$(jq -r '.containerDefinitions[0].environment[] | select(.name == "B4HUB_WEBAUTHN_RP_ID") | .value' "$out")" = test.b4.run ]
+  # ECS Exec's agent must write under the container's root; AWS documents a
+  # read-only root filesystem as unsupported, so the admin hub container
+  # (operator-only, short-lived) leaves it writable. The serving task keeps it.
+  [ "$(jq -r '.containerDefinitions[0].readonlyRootFilesystem' "$out")" = false ]
 }
 
 @test "the admin template without the sign-in secrets sets no Apple audiences" {

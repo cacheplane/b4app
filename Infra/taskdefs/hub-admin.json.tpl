@@ -23,7 +23,7 @@
       { "name": "DATABASE_URL", "valueFrom": "${db_url_secret_arn}" }
     ],
     "linuxParameters": { "initProcessEnabled": true },
-    "readonlyRootFilesystem": true,
+    "readonlyRootFilesystem": false,
     "mountPoints": [
       { "sourceVolume": "tmp", "containerPath": "/tmp", "readOnly": false }
     ],
