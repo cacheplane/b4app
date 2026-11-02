@@ -2,6 +2,7 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+<<<<<<< HEAD
 ## 2026-11-02: Deleting threads (D-119, D-120)
 
 Branch `blove/delete-threads`, stacked on `blove/phone-usage`.
@@ -35,6 +36,8 @@ Branch `blove/delete-threads`, stacked on `blove/phone-usage`.
 - **The Simulator check against the owner's Compose hub.** That hub needs `0011`, so it waits until this merges and the hub is rebuilt from main.
 - **A live delete in real Codex, Claude Code or B4.** The fixtures stand in for all three.
 
+=======
+>>>>>>> 6d01904
 ## 2026-11-02: Usage on the phone (D-118)
 
 Branch `blove/phone-usage`.
