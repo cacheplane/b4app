@@ -15,20 +15,37 @@ Contents: [Bootstrap runbook](#bootstrap-runbook) · [Boundary rules](#boundary-
 Do this one account at a time: finish steps 3 to 5 for `test` before starting `prod`. Every account starts from a clean `.terraform` and local state, and gets its own backend values, so nothing is shared between the two applies.
 
 1. **Accounts.** cacheplane already has an AWS Organization (`o-63b985q63d`, all features enabled; management account "cacheplane Management Account", `091823298178`), so do not create a second one: AWS allows one Organization per management account, and an OU is the grouping. The `b4run` OU (`ou-nrev-p1ta3hem`) exists under the root for the hub accounts. In the management account create the two member accounts `b4hub-test` and `b4hub-prod` inside it (Organizations, AWS accounts, Add an AWS account, Create), each with a unique email (for example `aws+b4hub-test@cacheplane.ai`) and the IAM role name left as `OrganizationAccountAccessRole`. Turn on MFA for the management account root user and do not use root afterwards.
-2. **Identity Center.** IAM Identity Center is already enabled as an organization instance named "cacheplane" in `us-east-1` (identity source: AWS Builder ID; delegated administrator: the "cacheplane Identity Delegated Admin" account, `895757147641`). In Identity Center, administered from that account or the management account, create a permission set `AdministratorAccess` with the managed policy of that name (or reuse one) and assign your user to both new accounts. Require MFA for sign-in. Then configure the two SSO profiles on the Mac, running `aws configure sso` once for each:
+2. **CLI access.** IAM Identity Center is already enabled as an organization instance in `us-east-1` (identity source: AWS Builder ID; delegated administrator: the "cacheplane Identity Delegated Admin" account, `895757147641`). It has no permission sets: the owner reaches the management account through IAM's account access manager, which assigns the existing `AccountFullAccessRole` (`AdministratorAccess`) to the Identity Center user. The two member accounts need no assignment of their own: each was created by Organizations with `OrganizationAccountAccessRole`, which trusts the management account, so the CLI reaches them by assuming that role from a management-account session. The AWS CLI must be 2.32 or newer for `aws login` (the Intel `.pkg` install from 2022 is not; `brew install awscli` puts a current arm64 build first on `PATH`). Sign the CLI in once, then add the two profiles (nothing long-lived is stored: `aws login` keeps a refresh token for the console session, at most 12 hours, and renews the temporary credentials itself):
 
    ```bash
-   aws configure sso   # profile b4hub-test, then again for b4hub-prod
-   # SSO start URL:  https://ssoins-722355799abd8ada.us-east-1.portal.amazonaws.com
-   # SSO region:     us-east-1
-   # default region: us-east-2
+   aws login --profile cacheplane-mgmt      # opens the browser; pick the management account session
+   aws sts get-caller-identity --profile cacheplane-mgmt
    ```
+
+   ```ini
+   # ~/.aws/config
+   [profile cacheplane-mgmt]
+   login_session = <written by aws login>
+   region = us-east-1
+
+   [profile b4hub-test]
+   role_arn = arn:aws:iam::355069727528:role/OrganizationAccountAccessRole
+   source_profile = cacheplane-mgmt
+   region = us-east-1
+
+   [profile b4hub-prod]
+   role_arn = arn:aws:iam::268895852483:role/OrganizationAccountAccessRole
+   source_profile = cacheplane-mgmt
+   region = us-east-1
+   ```
+
+   `aws sts get-caller-identity --profile b4hub-test` (and `b4hub-prod`) must answer with that account's id. When a command fails with an expired token, run the `aws login` line again; `aws login --remote` prints the URL and asks for the code instead of opening a browser. Turn on MFA for the Builder ID.
 3. **Apply bootstrap** (shown for `test`; do the whole of steps 3 to 5 for `test`, then repeat them for `prod` with `ENV=prod`):
 
    ```bash
    export ENV=test                            # prod: ENV=prod
    export AWS_PROFILE=b4hub-$ENV
-   aws sso login
+   aws login --profile cacheplane-mgmt   # only when the session has expired
    cd Infra/bootstrap
    rm -rf .terraform terraform.tfstate*       # nothing carried over from the other account
    terraform init
@@ -69,7 +86,7 @@ Do this one account at a time: finish steps 3 to 5 for `test` before starting `p
 ```bash
 export ENV=test                            # prod: ENV=prod
 export AWS_PROFILE=b4hub-$ENV
-aws sso login
+aws login --profile cacheplane-mgmt     # only when the session has expired
 cd Infra/bootstrap
 rm -rf .terraform
 # uncomment the backend "s3" block in versions.tf, as in step 5, then:
@@ -156,7 +173,7 @@ Seven CloudWatch alarms (5xx, unhealthy hosts, p99 latency, running tasks, datab
 
 ## Operator runbooks
 
-Each is a numbered sequence you can repeat. Runbook 1 is the [bootstrap runbook](#bootstrap-runbook) above. Commands use `ENV` (`test` or `prod`) and the owner's Identity Center profile; nothing here runs from CI except the deploy workflow. **No step puts a secret on a command line or in a committed file:** values go through shell variables (builtins are not visible in `ps`), mode-0600 temp files that are wiped afterwards, or the terminal's own prompt.
+Each is a numbered sequence you can repeat. Runbook 1 is the [bootstrap runbook](#bootstrap-runbook) above. Commands use `ENV` (`test` or `prod`) and the owner's `b4hub-<env>` profile (runbook step 2); nothing here runs from CI except the deploy workflow. **No step puts a secret on a command line or in a committed file:** values go through shell variables (builtins are not visible in `ps`), mode-0600 temp files that are wiped afterwards, or the terminal's own prompt.
 
 Wipe a temp file with `rm -P <file>` on macOS or `shred -u <file>` on Linux; the examples name each file rather than a glob.
 
@@ -169,7 +186,7 @@ Once per account, after the first `terraform apply` of the root and before the f
    ```bash
    export ENV=test                            # prod: ENV=prod
    export AWS_PROFILE=b4hub-$ENV AWS_REGION=us-east-2
-   aws sso login
+   aws login --profile cacheplane-mgmt   # only when the session has expired
    for s in database-admin-url database-url; do
      aws secretsmanager put-secret-value --secret-id b4hub/$s --secret-string placeholder > /dev/null
    done
