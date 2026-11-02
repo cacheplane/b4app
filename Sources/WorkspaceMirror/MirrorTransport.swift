@@ -272,11 +272,19 @@ public final class MirrorTransport: WorkspaceTransport {
       }
       var open: [AdapterEvent] = []
       for item in batch.touchedItems where item.threadId == state.lastReadThreadId {
-        guard let payload = try? JSONValue(encoding: item) else { continue }
+        let final =
+          item.nativeItemId.flatMap { try? store.item(threadId: item.threadId, nativeItemId: $0) }?.final
+          ?? (item.turnId == nil)
+        var shown = item
+        // A row uploaded before the relayed completion must not take the finished text back.
+        if !final, let relayed = state.overlays[item.threadId]?.items[item.id], relayed.completed {
+          shown = relayed.item
+        }
+        guard let payload = try? JSONValue(encoding: shown) else { continue }
         var kind = EventKind.messageCompleted
         if let native = item.nativeItemId, state.overlays[item.threadId]?.open.contains(native) == true {
           // Still streaming: announcing it complete would end its live text early.
-          if (try? store.item(threadId: item.threadId, nativeItemId: native))?.final == true {
+          if final {
             state.overlays[item.threadId]?.open.remove(native)
           } else {
             kind = .messageStarted

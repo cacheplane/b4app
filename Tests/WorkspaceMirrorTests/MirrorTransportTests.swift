@@ -518,6 +518,11 @@ private final class WriteCounter: Sendable {
     let done = agent("item-9", native: "native-item-9", text: "Hello", sequence: 9)
     socket.deliver(.event(try itemEvent(.messageCompleted, done)))
     _ = try await collect(&events, until: .messageCompleted)
+    // A started row synced after the relayed completion does not take the finished text back.
+    transport.publish(
+      try store.apply([change("displayItems", "item-9", "update", column: "role", value: "assistant")]))
+    let late = try await collect(&events, until: .messageCompleted)
+    #expect(try late.last?.payload["displayItem"]?.decode(DisplayItem.self) == done)
     // Until the synced row catches up, the relayed completed item is what a read shows.
     #expect(try await client.request(ThreadRead.self, .init(threadId: "thread-1")).items.last == done)
 
