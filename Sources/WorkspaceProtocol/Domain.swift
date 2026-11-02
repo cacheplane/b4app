@@ -238,6 +238,9 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
   /// The device id of the Mac that owns the thread, from the phone's mirror; nil on the Mac. The phone
   /// matches it against `host.presence` (M8c), so a thread's controls follow its own Mac.
   public var ownerDeviceId: String?
+  /// When the owner deleted the thread (settings: deleting threads). A deleted thread is kept, never
+  /// shown, and never used for personal memory; nil while it is not deleted.
+  public var userDeletedAt: String?
 
   public init(
     id: String, connectionId: String, nativeThreadId: String, nativeScope: String = "", title: String = "",
@@ -245,11 +248,12 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
     continuity: ThreadContinuity = .available,
     createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now(),
     projectId: String? = nil, readTurnId: String? = nil, activity: ThreadActivity? = nil,
-    ownerDeviceName: String? = nil, ownerDeviceId: String? = nil
+    ownerDeviceName: String? = nil, ownerDeviceId: String? = nil, userDeletedAt: String? = nil
   ) {
     self.id = id
     self.connectionId = connectionId
     self.nativeThreadId = nativeThreadId
+    self.userDeletedAt = userDeletedAt
     self.nativeScope = nativeScope
     self.title = title
     self.context = context
@@ -540,10 +544,14 @@ public struct DiagnosticsReport: Codable, Sendable, Equatable {
   /// Whether the "keep the Mac awake" power assertion is held (M8c); nil from the phone and absent in
   /// older reports.
   public var keepAwakeHeld: Bool?
+  /// Runtime deletes of deleted threads still waiting or not supported, by runtime; nil from the phone
+  /// and absent in older reports.
+  public var threadDeletes: [ThreadDeleteSummary]?
 
   public init(
     coordinator: CoordinatorInfo, host: HostInfo, runtimes: [RuntimeDiagnostic], recentErrors: [RecentError],
-    sync: SyncDiagnostic? = nil, relay: HubLinkStatus? = nil, keepAwakeHeld: Bool? = nil
+    sync: SyncDiagnostic? = nil, relay: HubLinkStatus? = nil, keepAwakeHeld: Bool? = nil,
+    threadDeletes: [ThreadDeleteSummary]? = nil
   ) {
     self.coordinator = coordinator
     self.host = host
@@ -552,6 +560,7 @@ public struct DiagnosticsReport: Codable, Sendable, Equatable {
     self.sync = sync
     self.relay = relay
     self.keepAwakeHeld = keepAwakeHeld
+    self.threadDeletes = threadDeletes
   }
 }
 

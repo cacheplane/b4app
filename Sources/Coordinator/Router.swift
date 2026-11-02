@@ -246,6 +246,8 @@ public actor Router {
       return try JSONValue(encoding: try await context.hub.status())
     case .usageRead:
       return try JSONValue(encoding: try await sessions.usageRead())
+    case .threadDelete:
+      throw WorkspaceError.unsupported("thread.delete", plannedFor: "deleting threads")
     case .credentialRemove:
       return try JSONValue(
         encoding: try await sessions.credentialRemove(try command.params(for: CredentialRemove.self)))
