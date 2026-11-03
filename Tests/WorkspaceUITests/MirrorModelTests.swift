@@ -138,6 +138,54 @@ private func fixtureAsStored(file: StaticString = #filePath) throws -> [StoredCh
     await model.disconnect()
   }
 
+  // MARK: - Answering a request the Mac answered first
+
+  /// The Mac answers while the phone's answer is out: its "resolved" event comes first on the ordered
+  /// link and takes the card away, then the hub refuses the phone's answer. Nothing is said (D-154):
+  /// no state, no error, and the request stays gone, as it did live on 2026-11-03.
+  @Test func theMacAnsweringFirstTakesTheCardAwayQuietly() async throws {
+    let (model, store, transport, socket) = try await relayedModel()
+    model.accountSource = .host
+    socket.deliver(.presence(hosts: [RelayHostPresence(deviceId: "mac-1", name: "Mac", online: true)]))
+    try await waitUntil("card") { model.detail?.requests.map(\.id) == ["request-1"] }
+    let pending = try #require(model.detail?.requests.first)
+    try await waitUntil("answerable", timeout: .seconds(10)) { model.canAnswer(pending) }
+
+    let answer = Task { await model.respond(requestId: "request-1", decision: .allowOnce) }
+    var commandId: String?
+    while commandId == nil {
+      if case .command(let id, .requestRespond, _, _, _) = try await socket.nextSent() { commandId = id }
+    }
+    #expect(model.answerStates["request-1"] == .waiting)
+
+    var resolved = pending
+    resolved.state = .resolved
+    socket.deliver(
+      .event(
+        AdapterEvent(
+          kind: .runtimeRequestResolved, connectionId: "conn-1", threadId: "thread-1", turnId: "turn-2",
+          nativeIds: ["requestId": "native-request-1"],
+          payload: ["runtimeRequest": try JSONValue(encoding: resolved)])))
+    try await waitUntil("card gone") { model.detail?.requests.isEmpty == true }
+    #expect(model.answerStates["request-1"] == .waiting)
+
+    socket.deliver(
+      .reply(
+        id: try #require(commandId),
+        error: RelayWireError(.staleRuntimeRequest, "Runtime request request-1 is already resolved.")))
+    await answer.value
+    #expect(model.answerStates.isEmpty)
+    #expect(model.lastError == nil)
+
+    // The answered row syncs: still no card.
+    transport.publish(
+      try store.apply([change("runtimeRequests", "request-1", "update", column: "state", value: "resolved")]))
+    await model.openThread(id: "thread-1")
+    #expect(model.detail?.requests.isEmpty == true)
+    #expect(model.answerStates.isEmpty)
+    await model.disconnect()
+  }
+
   private func agent(_ text: String) -> DisplayItem {
     DisplayItem(
       id: "item-9", threadId: "thread-1", turnId: "turn-2", nativeItemId: "native-9", role: .assistant,
