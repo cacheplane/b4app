@@ -21,6 +21,15 @@ Built on `blove/xenodochial-morse-e3bed8`.
 6. With Apple enabled (beta, after D-114): an Apple-only account's **Add a passkey** opens Apple's page first (web on the Mac, the native sheet on the phone), then the registration sheet; **Connect Apple ID** on a passkey account asks for the passkey first.
 7. `curl -X DELETE -H "Authorization: Bearer <a device token>" <hub>/v1/me` answers `403 step_up_required` with `details.methods`; the hub's log has "a change was refused: it needs a step-up" and no token or grant.
 
+## 2026-11-02: The hub's changes-pull TCP test bounds by the wait, not a second
+
+Branch `blove/flaky-changes-pull`.
+
+- **`pull_over_real_tcp_does_not_miss_a_push_in_the_gap`** (`b4hub` `tests/changes.rs`) failed once in a full workspace run, at its `elapsed < 1 s` assertion. Each of its 121 rounds starts a long poll with `wait=5` and a push, and required the round to take under a second. A pull that misses its wake-up still returns the change, by querying again after the wait. So the only sign of a missed wake-up is that the round takes the whole wait. A loaded runner can take over a second on an ordinary round. The pull now asks for the longest wait (`MAX_WAIT_SECS`, 25 s), and the round must end before that wait runs out. A missed wake-up therefore still fails the test, and a slow round no longer does. With the bug put back in (`notified` taken after the first query in `long_poll`), the test failed 4 runs in 6, each round at 25.0 s with the new message. That is the same "some of the time" detection as before; the `long_poll` unit test stays the deterministic check.
+- `profile_sets_onboarded_and_renames_org` failed in the same report inside sqlx's per-test database setup (`testing/mod.rs:226`), before the test ran. That is the shared test cluster on 127.0.0.1:54329, not the test. During this work, another worktree restarted that cluster mid-run ("terminating connection due to administrator command", then `PoolTimedOut`). These runs therefore used a private cluster on another port.
+
+The `changes` suite (14 tests) passed 5 runs in a row under CPU load (20 `yes` processes on 10 cores) and once more alongside `cargo test --workspace --no-fail-fast`, which passed in full. The original failure did not reproduce locally, in 8 loaded runs of the test alone and 3 loaded workspace runs. `cargo fmt --check` and `cargo clippy --workspace --all-targets -D warnings` are clean.
+
 ## 2026-11-02: The Apple callback scheme pinned per hub (D-114, D-140)
 
 Fixture gates only, run on the build MacBook Pro from the worktree branch. Nothing was deployed: the hosted hubs pick this up with the next deploy (test on merge, prod with a `hub-v*` release).
@@ -49,6 +58,7 @@ Branch `blove/sign-in-polish`, from main at `b5c0f5b`. Fixes the five minor find
 | iPhone app | `xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO` | `** BUILD SUCCEEDED **` (`EnrollView` is compiled only here) |
 
 Not run live: the passkey rename in Passwords, the enrollment sheet's dismissal on a device or Simulator, and the boot-out on a fresh adoption (the owner's install is already adopted). A new account starting with no connections is expected (connections are per account, D-065); recorded in `docs/milestones.md`.
+
 ## 2026-11-02: Deleting threads, the review's minors (D-138)
 
 Branch `blove/delete-threads-minors`. Each fix was test-first: the test failed, then passed with the fix.
