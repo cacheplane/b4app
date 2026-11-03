@@ -93,4 +93,4 @@ Everything in M8f's constraints, plus: the key, tokens, and JWTs never appear in
 - The HTTP/2 client's setup (timeouts, connection reuse, ALPN), the JWT cache's shape, and the retry waits, within the rules above.
 - `apns-expiration` values (an alert stays useful for hours, a withdrawal for minutes).
 - How the hub's attention rules are expressed (SQL or Rust), provided the shared fixture passes.
-- Decision numbers: the next free after main and the open pull requests when the plan is written (D-131 or later: M8f holds D-121 to D-129 and the app icon D-130).
+- Decision numbers: the next free after main and the open pull requests when the plan is written (D-141 or later: main and open pull requests hold up to D-140 on 2026-11-02).
