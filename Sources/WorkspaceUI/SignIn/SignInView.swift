@@ -26,7 +26,8 @@ struct SignInContent: Equatable {
   var createAccount: ScreenElement?
   var cancelCreate: ScreenElement?
   var failure: ScreenElement?
-  var newHere = ScreenElement(id: "signIn.newHere", text: SignInCopy.newHere)
+  /// "New here?", naming as many ways to make an account as the screen offers.
+  var newHere: ScreenElement
   /// The Mac's "By continuing you agree to the terms and privacy policy."
   var terms: ScreenElement?
   var badge: ScreenElement?
@@ -34,6 +35,8 @@ struct SignInContent: Equatable {
   init(model: WorkspaceModel) {
     let progress = model.signInProgress
     let configuration = model.signInConfiguration
+    newHere = ScreenElement(
+      id: "signIn.newHere", text: SignInCopy.newHere(appleSignIn: configuration.appleSignIn))
     if case .signedOut(let line?) = model.accountState {
       reason = ScreenElement(id: "signIn.reason", text: line)
     }

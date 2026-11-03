@@ -253,6 +253,7 @@ run "serve_environment" {
       B4HUB_WEBAUTHN_RP_ID        = "test.b4.run"
       B4HUB_APPLE_AUDIENCES       = "com.cacheplane.b4app.ios,com.cacheplane.b4app.signin"
       B4HUB_APPLE_SERVICES_ID     = "com.cacheplane.b4app.signin"
+      B4HUB_APPLE_CALLBACK_SCHEME = "b4app-beta"
       B4HUB_TRUST_X_FORWARDED_FOR = "1"
       B4HUB_RETENTION_DAYS        = "30"
       B4HUB_LOG                   = "info"
@@ -282,6 +283,11 @@ run "prod_rp_id" {
     condition     = one([for e in jsondecode(aws_ecs_task_definition.hub.container_definitions)[0].environment : e.value if e.name == "B4HUB_WEBAUTHN_RP_ID"]) == "b4.run"
     error_message = "hub.b4.run uses the b4.run relying party"
   }
+
+  assert {
+    condition     = one([for e in jsondecode(aws_ecs_task_definition.hub.container_definitions)[0].environment : e.value if e.name == "B4HUB_APPLE_CALLBACK_SCHEME"]) == "b4app"
+    error_message = "the prod hub hands Apple's web flow back to the prod app only"
+  }
 }
 
 run "signin_secrets_render" {
@@ -295,6 +301,7 @@ run "signin_secrets_render" {
       environment_name       = "test"
       public_url             = "https://hub.test.b4.run"
       rp_id                  = "test.b4.run"
+      apple_callback_scheme  = "b4app-beta"
       db_url_secret_arn      = "arn:db-url"
       secret_key_arn         = "arn:secret-key"
       apple_team_id_arn      = "arn:team"

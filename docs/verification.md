@@ -54,6 +54,101 @@ Screenshots (kept with the session; not committed): the approval with badge 1, t
 - The >1000-change catch-up case (D-146) and an overtaken suspend's owed reconcile (D-147), both parked and unreproduced.
 - The hosted hubs: nothing applied to either AWS account.
 
+## 2026-11-02: The Apple callback scheme pinned per hub (D-114, D-140)
+
+Fixture gates only, run on the build MacBook Pro from the worktree branch. Nothing was deployed: the hosted hubs pick this up with the next deploy (test on merge, prod with a `hub-v*` release).
+
+| Gate | Result |
+| --- | --- |
+| `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo test --workspace --locked` (throwaway PostgreSQL) | Pass apart from one relay timing flake. New: `config.rs` `the_web_flow_names_its_one_callback_scheme`; `apple.rs` `web_begin_refuses_another_flavours_scheme`, `the_callback_redirects_to_the_configured_scheme`. Run on a private cluster (port 54341), because another worktree's run on the shared 54329 cluster raced sqlx's setup database (`duplicate key … _sqlx_test_…`). `relay.rs` `presence_is_sent_when_the_queue_has_room_again` failed once, then passed 2 of 3 reruns alone: it waits with sleeps and touches no Apple code. |
+| `swift build`, `swift format lint --strict` | Pass |
+| `swift test` | 1208 tests: 7 failed in the full run, all timeouts or wall-clock checks (`MirrorSyncTests` ×4, `MirrorRelayTests.presenceBecomesHostPresenceEvents`, `PairLinkTests.aScanDuringASlowLogOutKeepsTheNewAccount`, `PairingTests.pairIsRoutedAndNeverReplayedFromTheOperationCache`, `SessionTests.reconcileSettles…`), while other sessions' builds loaded the Mac (single tests took over 117 s). Rerun alone with `AccountCommandTests`: 58 tests in 8 suites pass, including the new `appleStartsShowTheHubsSchemeRefusal`. No Swift source changed. |
+| `bats Infra/scripts/tests/` | 52 pass (`render.bats` and `deploy.bats` check `B4HUB_APPLE_CALLBACK_SCHEME`: `b4app-beta` for test, `b4app` for prod) |
+| `terraform test` on `Infra/modules/hub/tests/ecs.tftest.hcl` (mocked provider) | 20 pass |
+| `helm unittest Hub/chart/b4hub`, `helm lint` with the CI values | 56 pass; lint clean; the schema refuses a `callbackScheme` off the list |
+
+Open: confirming on `hub.test.b4.run` after the merge's deploy that a web begin with `scheme: "b4app"` is refused and `b4app-beta` is accepted; then the same on `hub.b4.run` after the release, with the schemes swapped.
+
+## 2026-11-02: Sign-in polish from the live gate (D-132, D-133)
+
+Branch `blove/sign-in-polish`, from main at `b5c0f5b`. Fixes the five minor findings of the sign-in live gate (below): the profile button's name, the added passkey's name, the local flavour's "New here?" line, the enrollment sheet's flash after Pair, and the old LaunchAgent left loaded by adoption. No hub, wire, or fixture change.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Swift format | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass (exit 0) |
+| Build | `swift build` | Pass |
+| Swift tests | `swift test` (PostgreSQL from the main checkout's `.build/postgres`) | 1212 tests in 154 suites; the new and changed tests pass: `SignInTests.theProfileButtonShowsTheNameOnboardingGave` and `signInViewCopy`, `AccountSettingsTests.addAPasskey`, `ConnectMacTests.theEnrollmentSheetKeepsItsConfirmationWhileClosing`, `LegacyAdoptionTests.jobStateReadsLaunchctlPrint`, `anUnreadableJobIsBootedOutByItsPlist`, `retiringTheOldAgentBootsItOutThenRemovesItsPlist`, `bootOutDecisionFollowsTheProgramPath`. The last full run had 3 issues in two timing tests this change does not touch, `B4AdapterSessionTests.aDroppedStreamReattachesWithoutResubmitting` and `SessionTests.reconcileSettlesATurnThatFinishedWhileTheCoordinatorWasDown` (the second also in an earlier run, with `MirrorSyncTests` long-poll timeouts and a `MirrorRelayTests` presence check off by 0.23 s); each passed three times run alone, and `PostgresServerTests`, `MirrorSyncTests`, `MirrorRelayTests`, and `SessionTests` passed together (82 tests) |
+| iPhone app | `xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO` | `** BUILD SUCCEEDED **` (`EnrollView` is compiled only here) |
+
+Not run live: the passkey rename in Passwords, the enrollment sheet's dismissal on a device or Simulator, and the boot-out on a fresh adoption (the owner's install is already adopted). A new account starting with no connections is expected (connections are per account, D-065); recorded in `docs/milestones.md`.
+## 2026-11-02: Deleting threads, the review's minors (D-138)
+
+Branch `blove/delete-threads-minors`. Each fix was test-first: the test failed, then passed with the fix.
+
+**Gates**
+- `swift format lint --strict` was clean; `swift test` passed 1217 tests in 154 suites.
+- Hub: `cargo fmt --check` and `clippy -D warnings` were clean. `cargo test --workspace --locked --no-fail-fast` passed every `b4hub-db` and `b4hub-core` test, the new one included. Across two full runs, four timing tests failed once each and passed when re-run alone: `profile_sets_onboarded_and_renames_org` (at sqlx's test-database setup), `pull_over_real_tcp_does_not_miss_a_push_in_the_gap`, `held_answer_expires_after_sixty_seconds`, and the relay's `presence_is_sent_when_the_queue_has_room_again`. The last one also failed alone, but it fails on a clean `origin/main` checkout too (3 of 4 runs there, every run here), on a Mac busy with other worktrees' builds. It was already listed as flaky above.
+
+**New tests**
+- Adapters: `invalidParamsWithoutNotFoundAreNotAlreadyGone` (Codex, `FAKE_CODEX_DELETE_INVALID`), `aRoutelessNotFoundIsUnsupportedWhenTheThreadStillExists` (B4, `FAKE_B4_DELETE_404`), and for Claude `removesTheSessionFromEveryProjectFolder`, `anUnreadableRootIsNotAlreadyGone` (mode 000) and `aMissingRootIsNotAlreadyGone`.
+- Hub: `clearing_the_delete_mark_is_refused`: a null `userDeletedAt` from the phone or the Mac is rejected `cannot_clear` however new its clock, and a newer insert carrying null leaves the mark.
+- Mac: `aPulledNullNeverClearsTheDeleteMark` (`RemoteApplyTests`).
+- UI: `confirmationCopyLeavesOutARuntimeSignedInAsSomeoneElse`.
+- Coordinator: `aSweepSkipsAThreadAnotherSweepFinished` (a slow sweep's stale due list no longer deletes the second thread twice), `theBackoffDoublesFromThirtySecondsAndCapsAtAnHour`, and `aPulledPhoneDeleteIsSweptToTheRuntime` (a phone's mark pulled through `HubSync` from `FakeHubAPI`, then the sweep, then Codex's `thread/delete`). The last two cover behaviour that was already right, so they passed at once.
+- The `COLLATE "C"` on `nextAttemptAt` has no failing test: the timestamps are fixed-width ISO strings, which sort the same under any collation.
+
+## 2026-11-02: The iPhone's thread list toolbar (D-131)
+
+Run in the iPhone 17 Pro Simulator (local flavour, Debug, this branch) against the owner's Local app and Compose hub.
+
+- **The layout:** the list opens under a large "Threads" title, with the filter and compose buttons at the top right and the search field at the bottom (iOS 26's placement). The first thread is where the New thread row used to be.
+- **Search:** "b4run" narrowed the list to the three b4run threads, matching regardless of case. Clearing it brought back all seven. The field no longer capitalises what is typed.
+- **The filter button:** it opened the project and connection filters. Choosing "B4 Run (Mac)" retitled the list to that project, filled the filter icon, and showed its four threads. "All projects" restored "Threads".
+- **Compose:** it opened New thread.
+- **Gates:**
+  - `swift format lint --strict` is clean.
+  - `swift test --filter WorkspaceUITests` passed 273 tests, including `ListSearchTests.theListSearchMatchesShownTitles`, which failed first.
+  - Both `xcodebuild` builds (iOS Simulator, macOS) succeeded.
+
+## 2026-11-02: Live deletes in each runtime, the Mac's Delete menu, and pairing the Simulator by link
+
+Run on the owner's MacBook Pro against the Local app and Compose hub built from main `ddc8db8`, with the iPhone 17 Pro Simulator. These close three items the previous entry left open. Each thread below was a throwaway, made for the check.
+
+| Check | Result |
+|---|---|
+| Codex, live | Pass. A thread with one real turn ("Reply with just the word OK") had a rollout file in `~/.codex/sessions`, and `thread/resume` reported it held by the coordinator's Codex. After `thread.delete`, the runtime delete settled in 17 s, the rollout file was gone, and `thread/resume` answered "no rollout found". |
+| Claude Code, live | Pass. A thread with one real turn had `<sessionId>.jsonl` in its project folder beside Claude's own `memory` folder. After the delete only the transcript was gone; `memory` and the project folder stayed. It settled in about a second. |
+| B4, live | Pass. With the managed `research` server (`@b4run/cli` 0.15.8) started, the server answered `GET /threads/<id>` 200 for a new thread and 404 after the delete, which settled at once. No turn was needed. The server was stopped again. |
+| The Mac's Delete… on screen | Pass, through background accessibility control of the Local app. The thread's toolbar Delete… opened `Delete "Mac menu delete"?` with "It's removed from this app and from Codex. You can't undo this.", Cancel and a red Delete. Delete closed the open thread to the empty "Threads" view and removed the row, and its project group with it, since it was empty. The hub row has `userDeletedAt`, and Diagnostics settled to `[]`. The sidebar's right-click menu was not opened: background control cannot open context menus. |
+| Pairing the Simulator by link (fix) | The Mac's `https://local.b4.run/pair#c=…` links had opened Safari's pairing page. `swcd`'s log showed why: its fetch of `local.b4.run`'s association file, started when the app was installed, timed out (`NSURLErrorDomain -1001`) after about 80 s and had not been retried 25 minutes later; the file itself is correct. The local flavour's old-form link fell back on `b4app://`, which on this Simulator belongs to the prod app (D-066 gave the local flavour `b4app-local`). With the fix, `xcrun simctl openurl … b4app-local://pair?hub=…&code=…` opened the local app at "Pair this iPhone with the hub at localhost?", and Pair answered "This iPhone is already paired", since it was signed in to that account already. `theLocalFlavourReadsTheOldLinkUnderItsOwnScheme` failed first, then passed. |
+
+## 2026-11-02: Usage on the phone and deleting threads, on screen (D-118, D-119, D-120)
+
+Run on the owner's MacBook Pro from main `ddc8db8`, after #46 and #51 merged.
+
+**What was rebuilt**
+- **The Compose hub.** `b4hub:local` was built from `Hub/Dockerfile` with the cached `rust:1.93.1` tag in place of the pinned digest, the same workaround the sign-in gate used. It was restarted with `docker compose up -d --no-build hub`. The hub's ledger shows migrations 1 to 11.
+- **The Local app.** `B4APP_FLAVOR=local B4APP_SKIP_NOTARIZE=1 B4APP_SIGN_IDENTITY="Developer ID Application: …" ./Scripts/package.sh` ran in a scratch checkout of `ddc8db8`, because `package.sh` clears `dist/`, which also held the prod app with a running coordinator.
+  - Only `Agent Workspace (Local).app` was swapped into `~/repos/b4app/dist`, after the app was quit and its coordinator stopped.
+  - The coordinator came up signed in to `blove@cacheplane`, with the relay connected and the store migrated (0007, 0008).
+- **The phone.** The local-flavour iOS app (Debug) was installed over the existing app on the iPhone 17 Pro Simulator.
+  - It came up at "Connect your Mac". The Mac's `hub.pair` links opened Safari's `/pair` page three times: this Debug build does not open the `local.b4.run` universal link.
+  - So the phone paired through "Use an enrollment code" with the code `hub.pair` minted, pasted from the Simulator's pasteboard. It showed the Mac's 7 threads.
+
+**Checks**
+
+| Check | Result |
+|---|---|
+| Usage on the phone (D-118) | Pass. After `connection inspect` on Codex, the hub's `connectionUsage` row carried the weekly window (90%). The phone's Connections page drew the Codex card's Weekly meter at 90% with "Resets Tue 22:36", and no longer says "Usage shows on your Mac". Claude Code and the B4 cards read "Usage appears after the first turn" and "Token use appears after the first turn", as designed. |
+| Delete on the Mac | Pass, through the coordinator's `thread.delete` (the command the Mac's menu and alert send) on a throwaway Codex thread. The Mac's list dropped it. The hub kept the row with `userDeletedAt` set and `deleted_at` null. The phone's list never showed it. Diagnostics' `threadDeletes` was `[]`: the Codex delete was answered. |
+| Delete on the iPhone | Pass, on a second throwaway Codex thread. Swiping left showed Pin, Archive and a red Delete. Delete opened `Delete "Delete check (phone)"?` with "It's removed from this app and from Codex. You can't undo this.", Cancel and a red Delete, and the row stayed until Delete was tapped. Then the row left the phone at once. The hub row gained `userDeletedAt`, and the Mac's list dropped it. Diagnostics showed one Codex delete waiting, then `[]` within one sweep: the Mac deleted the runtime's copy after pulling the phone's mark. |
+
+**Not checked**
+- **The Mac's own Delete… menu and alert, clicked on screen.** That needs screen control of the owner's Mac. The alert is the same SwiftUI modifier the phone showed.
+- **That Codex no longer holds the deleted threads.** Both throwaway threads had no turns, and Codex writes a thread to disk only after its first turn, so `thread/resume` answered "no rollout found" for either. A turn was not spent to prove it, because the owner's Codex weekly window was at 90%. Codex accepted `thread/delete`, and the coordinator recorded it as done.
+- **Claude Code's transcript removal and B4's `DELETE`, live.** Both are fixture-tested only.
+
 ## 2026-11-02: M8f attention on the phone (D-121 to D-128)
 
 Branch `blove/m8f-attention`, from main at `3f3cc15`. Plan `docs/superpowers/plans/2026-11-02-m8f-attention.md`.
@@ -508,10 +603,11 @@ Every pending gate above waits on these (details in `Infra/README.md`). None is 
 3. Add repository variables: `AWS_ROLE_PLAN_*`, `AWS_ROLE_INFRA_*`, `AWS_ROLE_DEPLOY_*`, `TFSTATE_KMS_KEY_ARN_*` (`TEST` and `PROD`), and `B4HUB_ALARM_EMAIL`.
 4. Create the `production` GitHub Environment (required reviewer: the owner; deployment branches and tags: `main` and `hub-v*`). Create none for test. Done 2026-11-02 (the Environment had been auto-created empty by a workflow run; reviewer `blove`, branch `main`, tag `hub-v*`).
    Runbook 6 done in test on 2026-11-02 after two admin-task fixes (the hub container needed `B4HUB_APPLE_AUDIENCES` with the sign-in secrets, and a writable root filesystem for ECS Exec): `b4hub seed` created org `cacheplane` and user `blove`, `b4hub enroll` minted a code, and `agent-workspace hub join https://hub.test.b4.run` on the owner's Mac reports `account blove@cacheplane`, `relay connected`.
-5. Make the GHCR package `ghcr.io/cacheplane/b4hub` public.
-6. Add the Vercel CNAMEs (`hub.test.b4.run`, `hub.b4.run`) and the ACM validation records the first apply prints.
-7. Set the database owner and sign-in secrets (runbooks 2 and 3).
-8. Flip `desired_count` from 0 to 1 in each env root after the first deploy (runbook 4).
+5. Make the GHCR package `ghcr.io/cacheplane/b4hub` public. Done 2026-11-02 (the organization's package policy had to allow public packages first).
+6. Add the Vercel CNAMEs (`hub.test.b4.run`, `hub.b4.run`) and the ACM validation records the first apply prints. Done 2026-11-02 for both hostnames.
+7. Set the database owner and sign-in secrets (runbooks 2 and 3). Done 2026-11-02 in both accounts, except the production Apple private key.
+8. Flip `desired_count` from 0 to 1 in each env root after the first deploy (runbook 4). Done for test 2026-11-02 by `update-service` (Terraform ignores `desired_count` drift by design, so the edit only adds the task-gated alarms).
+   Production hub root: applied by hand on 2026-11-02 after allowing AWS Backup and KMS in `us-west-2` in the Organization's region SCP (it had denied them, which would have stopped the apply at the copy vault); `AWS_ROLE_INFRA_PROD` and `AWS_ROLE_DEPLOY_PROD` set the same day, so later applies go through CI with the `production` reviewer. The exception also needed `backup-storage:*`. Prod runbook 2 done the same day (`b4hub_owner`, database `b4hub`, real URLs in both secrets) and runbook 3 except the Apple private key; `hub.b4.run` CNAME points at the prod ALB. Not yet done for prod: the Apple private key, the first deploy (a `hub-v*` release with the `production` reviewer's approval), `desired_count`, and enrollment.
 9. Create the Better Stack monitors on both `/readyz` URLs with phone escalation and the status page at `status.b4.run` (a Vercel CNAME); confirm the SNS subscription email; subscribe to the AWS Health Dashboard, GitHub status, and Apple status.
 10. Set the repository variable `HUB_GHCR_CLEANUP_LIVE=true` after one dry run of `hub-ghcr-cleanup.yml`.
 
