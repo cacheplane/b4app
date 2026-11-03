@@ -137,8 +137,10 @@ import WorkspaceProtocol
   @Test func appleRoundTrips() throws {
     let begin = try roundTrips(AppleBeginRequest.self, "appleBeginRequest")
     #expect(begin.scheme == "b4app-local" && begin.verifierHash?.count == 64)
+    #expect(begin.httpsCallback == true)
     let begun = try roundTrips(AppleBeginResponse.self, "appleBeginResponse")
     #expect(begun.ceremonyId == "5b0f1f3e-2d0c-4f6a-9a51-6c2d8e7f4b10")
+    #expect(begun.callback == "https://local.b4.run/app/auth/apple")
     let native = try roundTrips(AppleNativeRequest.self, "appleNativeRequest")
     #expect(native.fullName == "Brian Love" && native.device.platform == "ios")
     let link = try roundTrips(AppleLinkNativeRequest.self, "appleLinkNativeRequest")

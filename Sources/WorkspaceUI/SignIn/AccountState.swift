@@ -530,8 +530,7 @@ extension WorkspaceModel {
         status = try await host.signIn(apple: credential, ceremonyId: begun.ceremonyId)
       case .coordinator(let client):
         let start = try await client.request(AccountAppleStart.self, EmptyParams(), options: Self.signInCall)
-        let handoff = try await Self.webHandoff(
-          ceremony, url: start.url, callbackScheme: start.callbackScheme)
+        let handoff = try await Self.webHandoff(ceremony, url: start.url, callback: start.callback)
         status = try await client.request(
           AccountAppleFinish.self, AccountAppleFinish.Params(handoff: handoff), options: Self.signInMutation()
         )
@@ -548,12 +547,12 @@ extension WorkspaceModel {
   /// of it. A closed session or `?error=cancelled` (Cancel on Apple's page) is `SignInCanceled`; any
   /// other `?error=` is that code.
   static func webHandoff(
-    _ ceremony: any AppleCeremony, url text: String, callbackScheme: String
+    _ ceremony: any AppleCeremony, url text: String, callback back: String
   ) async throws -> String {
-    guard let url = URL(string: text) else {
+    guard let url = URL(string: text), let back = AppleWebCallback(back) else {
       throw WorkspaceError(.protocolInvalid, "The sign-in address is not a URL.")
     }
-    guard let callback = try await ceremony.webSignIn(url: url, callbackScheme: callbackScheme) else {
+    guard let callback = try await ceremony.webSignIn(url: url, callback: back) else {
       throw SignInCanceled()
     }
     let query = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems ?? []

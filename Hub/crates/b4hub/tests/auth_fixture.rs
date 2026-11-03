@@ -138,6 +138,7 @@ fn apple_types_match_the_hub_types() {
     let begin: AppleBeginRequest = round_trips("appleBeginRequest");
     assert!(SCHEMES.contains(&begin.scheme.as_deref().unwrap()));
     assert_eq!(begin.verifier_hash.unwrap().len(), 64);
+    assert_eq!(begin.https_callback, Some(true));
     // The native flow's begin body is empty, which is the default.
     assert_eq!(
         serde_json::to_value(AppleBeginRequest::default()).unwrap(),
@@ -146,6 +147,10 @@ fn apple_types_match_the_hub_types() {
 
     let begun: AppleBeginResponse = round_trips("appleBeginResponse");
     assert!(!begun.nonce.is_empty());
+    assert_eq!(
+        begun.callback.as_deref(),
+        Some("https://local.b4.run/app/auth/apple")
+    );
 
     let native: AppleNativeRequest = round_trips("appleNativeRequest");
     assert_eq!(native.full_name.as_deref(), Some("Brian Love"));

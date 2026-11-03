@@ -89,12 +89,34 @@ pub struct AppleConfig {
     /// signs in with. Without it (or without `B4HUB_PUBLIC_URL`) the hub offers only the
     /// native flow.
     pub services_id: Option<String>,
-    /// `B4HUB_APPLE_CALLBACK_SCHEME` (with `services_id`, and only with it): the one app URL
-    /// scheme the web flow hands a result back to, the flavour this hub serves (one of
-    /// [`SCHEMES`]). Begin refuses any other (D-140).
-    pub callback_scheme: Option<String>,
+    /// Where the web flow hands a result back to (with `services_id`, and only with it): the
+    /// flavour's app scheme or an https URL on its site. Begin refuses any other (D-140, D-160).
+    pub callback: Option<AppleCallback>,
     /// `B4HUB_APPLE_BASE_URL`, tests only.
     pub base_url: Url,
+}
+
+/// The one place a hub's web flow hands a result back to: `B4HUB_APPLE_CALLBACK_SCHEME` or
+/// `B4HUB_APPLE_CALLBACK_URL`, exactly one with the web flow (D-160).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppleCallback {
+    /// `<scheme>://auth`, one of [`SCHEMES`]: a custom URL scheme, which another app on the Mac
+    /// can also claim.
+    Scheme(String),
+    /// An https URL on the flavour's site domain, which only the app associated with that domain
+    /// (its `webcredentials`) can take back from its web authentication session.
+    Url(Url),
+}
+
+impl AppleCallback {
+    /// The URL a result's `?handoff=` or `?error=` is appended to; the begin routes answer it as
+    /// `callback`.
+    pub fn base(&self) -> String {
+        match self {
+            AppleCallback::Scheme(scheme) => format!("{scheme}://auth"),
+            AppleCallback::Url(url) => url.as_str().to_string(),
+        }
+    }
 }
 
 impl fmt::Debug for AppleConfig {
@@ -105,7 +127,7 @@ impl fmt::Debug for AppleConfig {
             .field("private_key_pem", &"<redacted>")
             .field("audiences", &self.audiences)
             .field("services_id", &self.services_id)
-            .field("callback_scheme", &self.callback_scheme)
+            .field("callback", &self.callback)
             .field("base_url", &self.base_url.as_str())
             .finish()
     }
@@ -225,6 +247,7 @@ fn apple(settings: &Settings) -> Result<Option<AppleConfig>, ConfigError> {
             "B4HUB_APPLE_BASE_URL",
             "B4HUB_APPLE_SERVICES_ID",
             "B4HUB_APPLE_CALLBACK_SCHEME",
+            "B4HUB_APPLE_CALLBACK_URL",
         ] {
             if settings.var(name).is_some() {
                 return Err(ConfigError::new(
@@ -281,7 +304,7 @@ fn apple(settings: &Settings) -> Result<Option<AppleConfig>, ConfigError> {
         }
     };
 
-    let callback_scheme = callback_scheme(settings, services_id.is_some())?;
+    let callback = callback(settings, services_id.is_some())?;
 
     let base_url = match settings.var("B4HUB_APPLE_BASE_URL") {
         None => Url::parse(DEFAULT_APPLE_BASE_URL).expect("the default is a URL"),
@@ -302,7 +325,7 @@ fn apple(settings: &Settings) -> Result<Option<AppleConfig>, ConfigError> {
         private_key_pem,
         audiences,
         services_id,
-        callback_scheme,
+        callback,
         base_url,
     }))
 }
@@ -340,27 +363,72 @@ pub(crate) fn p8_pem(name: &str, value: &str) -> Result<String, ConfigError> {
     }
 }
 
-/// `B4HUB_APPLE_CALLBACK_SCHEME`: required with the web flow's Services ID and refused without
-/// it, so a hub that offers the web flow always names the one scheme it hands back to.
-fn callback_scheme(settings: &Settings, web: bool) -> Result<Option<String>, ConfigError> {
-    const NAME: &str = "B4HUB_APPLE_CALLBACK_SCHEME";
-    match (settings.var(NAME).map(str::trim), web) {
-        (None, false) => Ok(None),
-        (Some(scheme), true) if SCHEMES.contains(&scheme) => Ok(Some(scheme.to_string())),
-        (Some(_), true) => Err(ConfigError::new(
-            NAME,
+const CALLBACK_SCHEME: &str = "B4HUB_APPLE_CALLBACK_SCHEME";
+const CALLBACK_URL: &str = "B4HUB_APPLE_CALLBACK_URL";
+
+/// `B4HUB_APPLE_CALLBACK_SCHEME` or `B4HUB_APPLE_CALLBACK_URL`: exactly one with the web flow's
+/// Services ID and neither without it, so a hub that offers the web flow always names the one
+/// place it hands back to.
+fn callback(settings: &Settings, web: bool) -> Result<Option<AppleCallback>, ConfigError> {
+    let scheme = settings.var(CALLBACK_SCHEME).map(str::trim);
+    let url = settings.var(CALLBACK_URL).map(str::trim);
+    if !web {
+        return match (scheme, url) {
+            (None, None) => Ok(None),
+            (Some(_), _) => Err(ConfigError::new(
+                CALLBACK_SCHEME,
+                "is set without B4HUB_APPLE_SERVICES_ID; only the web flow uses it",
+            )),
+            (None, Some(_)) => Err(ConfigError::new(
+                CALLBACK_URL,
+                "is set without B4HUB_APPLE_SERVICES_ID; only the web flow uses it",
+            )),
+        };
+    }
+    match (scheme, url) {
+        (Some(_), Some(_)) => Err(ConfigError::new(
+            CALLBACK_URL,
+            "is set together with B4HUB_APPLE_CALLBACK_SCHEME; set one",
+        )),
+        (None, None) => Err(ConfigError::new(
+            CALLBACK_SCHEME,
+            "is not set; the web flow (B4HUB_APPLE_SERVICES_ID) needs the one place it hands \
+             back to: B4HUB_APPLE_CALLBACK_SCHEME (b4app, b4app-beta, or b4app-local) or \
+             B4HUB_APPLE_CALLBACK_URL (https://<site>/app/auth/apple)",
+        )),
+        (Some(scheme), None) if SCHEMES.contains(&scheme) => {
+            Ok(Some(AppleCallback::Scheme(scheme.to_string())))
+        }
+        (Some(_), None) => Err(ConfigError::new(
+            CALLBACK_SCHEME,
             "must be one of b4app, b4app-beta, b4app-local: the app flavour this hub serves",
         )),
-        (None, true) => Err(ConfigError::new(
-            NAME,
-            "is not set; the web flow (B4HUB_APPLE_SERVICES_ID) needs the one app URL scheme it \
-             hands back to: b4app, b4app-beta, or b4app-local",
-        )),
-        (Some(_), false) => Err(ConfigError::new(
-            NAME,
-            "is set without B4HUB_APPLE_SERVICES_ID; only the web flow uses it",
-        )),
+        (None, Some(raw)) => callback_url(raw).map(|url| Some(AppleCallback::Url(url))),
     }
+}
+
+/// An https URL with a domain name and a path, and no port, credentials, query, or fragment:
+/// the result's own query is appended to it, and the Mac matches it by host and path.
+fn callback_url(raw: &str) -> Result<Url, ConfigError> {
+    let url = Url::parse(raw).ok().filter(|url| {
+        url.scheme() == "https"
+            && matches!(url.host(), Some(url::Host::Domain(_)))
+            && url.port().is_none()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none()
+            && url.path() != "/"
+            && !raw.contains('?')
+            && !raw.contains('#')
+    });
+    url.ok_or_else(|| {
+        ConfigError::new(
+            CALLBACK_URL,
+            "must be an https URL on the flavour's site with a path and no port, query, or \
+             fragment, for example https://b4.run/app/auth/apple",
+        )
+    })
 }
 
 /// Whether `pem` is one PKCS #8 `PRIVATE KEY` block whose body is base64 DER (a `SEQUENCE`), the
@@ -561,7 +629,11 @@ kZXiwkEnZYzZPc5fQx0VfT+fhjzYhYLgQ+KXi00zbyOb46KPzL6yEFza
         };
         for scheme in SCHEMES {
             let apple = web(Some(scheme)).unwrap().apple.unwrap();
-            assert_eq!(apple.callback_scheme.as_deref(), Some(scheme));
+            assert_eq!(
+                apple.callback,
+                Some(AppleCallback::Scheme(scheme.to_string()))
+            );
+            assert_eq!(apple.callback.unwrap().base(), format!("{scheme}://auth"));
         }
 
         // The web flow without a scheme, or with one no flavour claims, does not start.
@@ -594,8 +666,70 @@ kZXiwkEnZYzZPc5fQx0VfT+fhjzYhYLgQ+KXi00zbyOb46KPzL6yEFza
                 .unwrap()
                 .apple
                 .unwrap()
-                .callback_scheme,
+                .callback,
             None
+        );
+    }
+
+    #[test]
+    fn the_web_flow_can_hand_back_to_an_https_url_instead() {
+        let web = |pairs: &[(&'static str, &'static str)]| {
+            let mut all = apple_pairs();
+            all.push(("B4HUB_APPLE_SERVICES_ID", "com.cacheplane.b4app.signin"));
+            all.extend_from_slice(pairs);
+            Config::from_settings(&settings(&all))
+        };
+        let apple = web(&[(
+            "B4HUB_APPLE_CALLBACK_URL",
+            "https://test.b4.run/app/auth/apple",
+        )])
+        .unwrap()
+        .apple
+        .unwrap();
+        let callback = apple.callback.unwrap();
+        assert_eq!(callback.base(), "https://test.b4.run/app/auth/apple");
+        assert!(matches!(callback, AppleCallback::Url(_)));
+
+        // Not both, and only a plain https URL with a path on a domain.
+        let both = web(&[
+            ("B4HUB_APPLE_CALLBACK_SCHEME", "b4app"),
+            ("B4HUB_APPLE_CALLBACK_URL", "https://b4.run/app/auth/apple"),
+        ])
+        .unwrap_err();
+        assert_eq!(both.name, "B4HUB_APPLE_CALLBACK_URL");
+        for bad in [
+            "b4app://auth",
+            "http://b4.run/app/auth/apple",
+            "https://b4.run",
+            "https://b4.run/",
+            "https://b4.run:8443/app/auth/apple",
+            "https://user@b4.run/app/auth/apple",
+            "https://b4.run/app/auth/apple?x=1",
+            "https://b4.run/app/auth/apple?",
+            "https://b4.run/app/auth/apple#f",
+            "https://127.0.0.1/app/auth/apple",
+            "not a url",
+        ] {
+            let error = web(&[("B4HUB_APPLE_CALLBACK_URL", bad)]).unwrap_err();
+            assert_eq!(error.name, "B4HUB_APPLE_CALLBACK_URL", "{bad:?}");
+            assert!(!error.reason.contains("x=1"), "{}", error.reason);
+        }
+
+        // Only the web flow uses it.
+        let mut native = apple_pairs();
+        native.push(("B4HUB_APPLE_CALLBACK_URL", "https://b4.run/app/auth/apple"));
+        assert_eq!(
+            Config::from_settings(&settings(&native)).unwrap_err().name,
+            "B4HUB_APPLE_CALLBACK_URL"
+        );
+        assert_eq!(
+            Config::from_settings(&settings(&[(
+                "B4HUB_APPLE_CALLBACK_URL",
+                "https://b4.run/app/auth/apple"
+            )]))
+            .unwrap_err()
+            .name,
+            "B4HUB_APPLE_CALLBACK_URL"
         );
     }
 
