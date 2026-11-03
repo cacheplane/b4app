@@ -19,6 +19,12 @@ pub const COMMANDS_PER_WINDOW: usize = 60;
 /// The most commands one client device may send at once, after which they are spaced at the
 /// minute's rate (one a second).
 pub const COMMAND_BURST: usize = 20;
+/// The commands one link may have running at once. Past it a command is refused `rate_limited`
+/// at once, without running: the read loop never waits, so without a bound a device that sends
+/// faster than it reads would grow tasks for as long as it kept sending.
+pub const COMMANDS_IN_FLIGHT: usize = 2 * COMMAND_BURST;
+/// How long a command refused for [`COMMANDS_IN_FLIGHT`] is told to wait.
+pub const IN_FLIGHT_RETRY: Duration = Duration::from_secs(1);
 /// The `turn.send` and `thread.start` commands, together, one user may send in
 /// [`COMMAND_WINDOW`], across all of their devices.
 pub const STARTS_PER_WINDOW: usize = 20;

@@ -103,6 +103,9 @@
   "threadIds": [
    "thread-1",
    "thread-2"
+  ],
+  "refresh": [
+   "thread-2"
   ]
  },
  {
@@ -150,6 +153,14 @@
   "message": "Too many commands.",
   "details": {
    "retryAfterMs": 2500
+  }
+ },
+ {
+  "type": "error",
+  "code": "not_found",
+  "message": "No such thread.",
+  "details": {
+   "threadId": "thread-9"
   }
  }
 ]
