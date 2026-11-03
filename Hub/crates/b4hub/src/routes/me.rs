@@ -35,7 +35,7 @@ use crate::auth_limits::{BeginAllowed, FinishAllowed};
 use crate::error::{ApiError, ApiJson};
 use crate::maintenance::WritesAllowed;
 use crate::relay::Close;
-use crate::routes::auth::{parse, rejected, start_registration, ACCOUNT_LABEL};
+use crate::routes::auth::{parse, passkey_name, rejected, start_registration};
 use crate::routes::step_up::StepUp;
 use crate::serve::AppState;
 use crate::signals;
@@ -198,6 +198,11 @@ pub async fn passkey_finish(
         .webauthn
         .finish_passkey_registration(&attestation, &ceremony.registration)
         .map_err(|error| rejected(&error))?;
+    // Named after the device it was added on (D-169); the device is the caller's, so it exists.
+    let device_name = devices::me(&state.db, principal.org_id, device.device_id)
+        .await?
+        .map(|info| info.device_name)
+        .unwrap_or_default();
     let identity = Identity::Passkey {
         credential_id: passkey.cred_id().to_vec(),
         passkey_json: serde_json::to_value(&passkey).map_err(|error| {
@@ -205,7 +210,7 @@ pub async fn passkey_finish(
             ApiError::internal()
         })?,
         user_handle: ceremony.user_handle.as_bytes().to_vec(),
-        name: ACCOUNT_LABEL.to_string(),
+        name: passkey_name(&device_name),
     };
     let id = match accounts::add_identity(&state.db, principal, identity).await {
         Err(b4hub_db::Error::IdentityTaken) => {
