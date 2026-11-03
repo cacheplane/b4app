@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use axum::Router;
+use b4hub::routes::changes::MAX_WAIT_SECS;
 use b4hub::serve::{self, AppState};
 use b4hub_core::change::Change;
 use b4hub_db::{devices, orgs, Db};
@@ -593,10 +594,13 @@ async fn http(
 /// The lost-wakeup race over a real socket: a push that lands between a pull's emptiness check
 /// and its wait must still wake it. The pull and the push start together, the push delayed by
 /// 0 to 1.95 ms in 50 microsecond steps (three sweeps, to cross the pull's query window), and
-/// every round must come back inside a second even though the pull is willing to wait five. The
-/// window is a few hundred microseconds wide, so this catches taking the wake-up future after
-/// the query only some of the time; the deterministic check of the ordering is the
-/// `long_poll` unit test in `routes/changes.rs`.
+/// every round must come back before the pull's wait runs out. A pull that slept through the
+/// push still returns the change (it queries again after the wait), so its time is the only
+/// sign: it takes the whole wait, measured from after its first query, while a woken pull ends
+/// as soon as the push commits. The wait is the longest a pull may ask for, so a loaded runner's
+/// slow round is not mistaken for a missed wake-up. The window is a few hundred microseconds
+/// wide, so this catches taking the wake-up future after the query only some of the time; the
+/// deterministic check of the ordering is the `long_poll` unit test in `routes/changes.rs`.
 #[sqlx::test(migrations = false)]
 async fn pull_over_real_tcp_does_not_miss_a_push_in_the_gap(pool: PgPool) {
     let (admin, state) = migrated(&pool).await;
@@ -618,7 +622,7 @@ async fn pull_over_real_tcp_does_not_miss_a_push_in_the_gap(pool: PgPool) {
         let seq = round as i64 + 1;
         let row_id = format!("conn-{round}");
         let started = Instant::now();
-        let pull_url = format!("{base}/v1/changes?after={cursor}&wait=5");
+        let pull_url = format!("{base}/v1/changes?after={cursor}&wait={MAX_WAIT_SECS}");
         let pull = http(&client, "GET", &pull_url, &token, None);
         let push = async {
             tokio::time::sleep(delay).await;
@@ -636,8 +640,8 @@ async fn pull_over_real_tcp_does_not_miss_a_push_in_the_gap(pool: PgPool) {
         assert_eq!(push_status, StatusCode::OK, "round {round}");
         assert_eq!(pull_status, StatusCode::OK, "round {round}: {page}");
         assert!(
-            elapsed < Duration::from_secs(1),
-            "round {round} took {elapsed:?}: {page}"
+            elapsed < Duration::from_secs(MAX_WAIT_SECS),
+            "round {round} took {elapsed:?}, the whole wait, so the push did not wake it: {page}"
         );
         let changes = page["changes"].as_array().unwrap();
         assert_eq!(changes.len(), 1, "round {round}: {page}");
