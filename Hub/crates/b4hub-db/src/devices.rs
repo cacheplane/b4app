@@ -321,6 +321,21 @@ pub async fn take_operator_code(db: &Db, code: &str, principal: Principal) -> Re
     Ok(taken == 1)
 }
 
+/// Whose `code` is, without spending it (D-170): the org and user of a code an iPhone could redeem
+/// now ([`redeem`]'s rule for `ios`: unused and unexpired, a pairing code or an operator's), compared
+/// as [`redeem`] compares it. `None` for an unknown, expired, or used code, indistinguishably. A
+/// plain `SELECT`: the code stays exactly as redeemable as it was.
+pub async fn code_owner(db: &Db, code: &str) -> Result<Option<Principal>> {
+    let owner: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT org_id, user_id FROM enrollment_codes \
+         WHERE code_hash = $1 AND used_at IS NULL AND expires_at > now()",
+    )
+    .bind(&hash_code(code)[..])
+    .fetch_optional(&db.pool)
+    .await?;
+    Ok(owner.map(|(org_id, user_id)| Principal { org_id, user_id }))
+}
+
 /// A session as the hub stores it: the SHA-256 of the token that opened it. A link keeps this, not
 /// the token, to look its session up again ([`authenticate_session`]).
 #[derive(Clone, Copy, PartialEq, Eq)]
