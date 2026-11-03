@@ -33,12 +33,17 @@ case "$1" in
   test)
     env_name="test"
     hostname=hub.test.b4.run
-    apple_callback_scheme=b4app-beta
+    # Apple's web flow hands back to an https URL on the beta site (D-160),
+    # which only the Beta Mac app (webcredentials:test.b4.run) takes back.
+    apple_callback_name=B4HUB_APPLE_CALLBACK_URL
+    apple_callback_value=https://test.b4.run/app/auth/apple
     ;;
   production | prod)
     env_name="prod"
     hostname=hub.b4.run
-    apple_callback_scheme=b4app
+    # The prod app's scheme (D-140) until a prod Mac build with D-160 ships.
+    apple_callback_name=B4HUB_APPLE_CALLBACK_SCHEME
+    apple_callback_value=b4app
     ;;
   *) die "environment must be test or production, not '$1'" ;;
 esac
@@ -139,7 +144,8 @@ step "registering $hub_family"
   --include-signin-secrets "$signin" \
   --include-apns-secrets "$apns" \
   --var "db_url_secret_arn=$db_url_arn" \
-  --var "apple_callback_scheme=$apple_callback_scheme" \
+  --var "apple_callback_name=$apple_callback_name" \
+  --var "apple_callback_value=$apple_callback_value" \
   ${signin_vars[@]+"${signin_vars[@]}"} \
   ${apns_vars[@]+"${apns_vars[@]}"}
 hub_arn="$(register "$work/hub.json")"
