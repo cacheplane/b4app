@@ -23,6 +23,11 @@ private func enrolled(
     user: UserInfo(username: "u-mac", displayName: "Brian Love"))
 }
 
+/// The code's answer when it is for the account the phone signs in to (`ownSession`'s org).
+private let ownEnrolled = EnrollResponse(
+  deviceId: "dev-own-2", token: "tok-own-2", org: OrgInfo(slug: "o-own", name: "Phone's Org"),
+  user: UserInfo(username: "u-own", displayName: "Brian"))
+
 private func ownSession(token: String = "tok-own-5501") -> AuthSession {
   AuthSession(
     deviceId: "dev-own", token: token, org: OrgInfo(slug: "o-own", name: "Phone's Org"),
@@ -46,6 +51,8 @@ private struct LoggingHub: HubAPI {
   let log: CallLog
   var mergeRefusal: String?? = nil
   var refuseToken = false
+  /// The check answers `404 not_found`, as a hub from before D-170 does.
+  var unsupportedCheck = false
   /// When set, `endSession` waits for it and then answers without reaching the fake: the real hub
   /// ends only the presented token, which the fake (which does not check tokens) cannot model.
   var holdEndSession: Gate? = nil
@@ -73,6 +80,13 @@ private struct LoggingHub: HubAPI {
   func snapshot() async throws -> SnapshotResponse { try await fake.snapshot() }
   func devices() async throws -> [DeviceInfo] { try await fake.devices() }
   func mintPairingCode() async throws -> PairingCodeResponse { try await fake.mintPairingCode() }
+  func checkPairingCode(_ request: PairingCodeCheckRequest) async throws -> PairingCodeCheckResponse {
+    log.append("checkPairingCode")
+    if unsupportedCheck {
+      throw HubError(kind: "request_error", code: "not_found", message: "not found", status: 404)
+    }
+    return try await fake.checkPairingCode(request)
+  }
   func revokeSelf() async throws { try await fake.revokeSelf() }
   func passkeyBegin() async throws -> PasskeyBeginResponse { try await fake.passkeyBegin() }
   func passkeyFinish(_ request: PasskeyFinishRequest) async throws -> AuthSession {
@@ -115,13 +129,13 @@ private struct Rig {
 
   init(
     flavor: PhoneFlavor = .prod, mergeRefusal: String?? = nil, refuseToken: Bool = false,
-    holdEndSession: Gate? = nil
+    unsupportedCheck: Bool = false, holdEndSession: Gate? = nil
   ) throws {
     store = try MirrorStore.inMemory()
     fake = FakeHubAPI(enrollmentCodes: [code: enrolled()])
     let hub = LoggingHub(
       fake: fake, log: log, mergeRefusal: mergeRefusal, refuseToken: refuseToken,
-      holdEndSession: holdEndSession)
+      unsupportedCheck: unsupportedCheck, holdEndSession: holdEndSession)
     account = MirrorAccount(
       store: store, secrets: secrets,
       configuration: MirrorAccount.Configuration(
@@ -318,6 +332,64 @@ private let withAMac = [
     #expect(rig.account.accountStatus.account?.orgName == "Phone's Org")
     #expect(try await rig.token() == "tok-own-5501")
     #expect(rig.account.sync != nil)
+    await rig.account.stopSync()
+  }
+
+  // MARK: What a link shows before it asks (D-170)
+
+  @MainActor @Test func aPairedPhoneIsToldAtOnceThatItsOwnCodeIsPaired() async throws {
+    // Signed in to the account the code is for: the hub says so, and nothing is spent or changed.
+    let rig = try Rig()
+    try await rig.signIn(devices: withAMac)
+    await rig.fake.addEnrollmentCode(code, ownEnrolled)
+    let link = PairLink(hub: PhoneFlavor.prod.hubURL, code: code)
+    #expect(await rig.account.offer(for: link) == .alreadyPaired)
+    #expect(rig.log.all == ["checkPairingCode"])
+    #expect(await rig.fake.enrollmentCodes[code] != nil)
+    #expect(await rig.fake.enrollCalls == 0)
+    #expect(rig.account.accountStatus.account?.orgName == "Phone's Org")
+    #expect(try await rig.token() == "tok-own-5501")
+    await rig.account.stopSync()
+  }
+
+  @MainActor @Test func anotherAccountsCodeIsStillAsked() async throws {
+    let rig = try Rig()
+    try await rig.signIn(devices: iPhoneOnly)
+    #expect(await rig.account.offer(for: PairLink(hub: PhoneFlavor.prod.hubURL, code: code)) == .ask)
+    #expect(rig.log.all == ["checkPairingCode"])
+    #expect(await rig.fake.enrollmentCodes[code] != nil)
+    await rig.account.stopSync()
+  }
+
+  @MainActor @Test func aSignedOutPhoneOrAnotherHubIsAskedWithoutAnyCheck() async throws {
+    // Signed out: no token to check with.
+    let signedOut = try Rig()
+    #expect(await signedOut.account.offer(for: PairLink(hub: PhoneFlavor.prod.hubURL, code: code)) == .ask)
+    #expect(await signedOut.fake.pairingChecks == 0)
+    // Signed in at the flavour's hub, a link for another: the token is never sent there.
+    let elsewhere = try Rig(flavor: .local)
+    try await elsewhere.signIn(devices: iPhoneOnly)
+    let other = PairLink(hub: try HubURL.validate("https://hub.example.com"), code: code)
+    #expect(await elsewhere.account.offer(for: other) == .ask)
+    #expect(await elsewhere.fake.pairingChecks == 0)
+    await elsewhere.account.stopSync()
+  }
+
+  @MainActor @Test func aCheckThatFailsFallsBackToTheQuestion() async throws {
+    // A hub from before the check, and a code the hub refuses: each asks, the phone stays signed in,
+    // and Pair meets whatever the hub says.
+    let old = try Rig(unsupportedCheck: true)
+    try await old.signIn(devices: withAMac)
+    #expect(await old.account.offer(for: PairLink(hub: PhoneFlavor.prod.hubURL, code: code)) == .ask)
+    #expect(old.account.accountStatus.state == .signedIn)
+    await old.account.stopSync()
+
+    let rig = try Rig()
+    try await rig.signIn(devices: withAMac)
+    #expect(await rig.account.offer(for: PairLink(hub: PhoneFlavor.prod.hubURL, code: "BCDFGHJK")) == .ask)
+    #expect(rig.log.all == ["checkPairingCode"])
+    #expect(rig.account.accountStatus.state == .signedIn)
+    #expect(await rig.fake.enrollmentCodes[code] != nil)
     await rig.account.stopSync()
   }
 

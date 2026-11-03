@@ -361,6 +361,13 @@ extension MirrorAccount: @retroactive AccountHost {}
     try await phoneAccount().pair(link, deviceName: deviceName)
   }
 
+  /// What a pairing link shows before anything is asked: "already paired" for this phone's own account's
+  /// code, otherwise the question (`MirrorAccount.offer(for:)`, D-170). Spends nothing.
+  func offer(for link: PairLink) async -> PairOffer {
+    guard let account else { return .ask }
+    return await account.offer(for: link)
+  }
+
   /// The switch question was confirmed: log out, then enroll into the code's account.
   func switchAndPair(_ link: PairLink, deviceName: String) async throws {
     _ = try await phoneAccount().switchAndPair(link, deviceName: deviceName)

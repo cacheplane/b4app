@@ -46,6 +46,15 @@ extension PhoneFlavor {
   }
 }
 
+/// What a pairing link that arrived shows before anything is asked (`MirrorAccount.offer(for:)`, D-170).
+public enum PairOffer: Sendable, Equatable {
+  /// Ask "Pair this iPhone with the hub at <host>?", as for any link.
+  case ask
+  /// The code is the account this phone is signed in to: say `PairingCopy.alreadyPaired` and ask
+  /// nothing. The code is not spent.
+  case alreadyPaired
+}
+
 /// What `MirrorAccount.pair` did with a confirmed pairing link.
 public enum MirrorPairOutcome: Sendable, Equatable {
   /// The phone enrolled into the code's account (it was signed out), or merged its phone-only account
@@ -64,6 +73,9 @@ public enum MirrorPairOutcome: Sendable, Equatable {
 public enum PairingCopy {
   /// M8c's answer on a phone that is paired already.
   public static let alreadyPaired = "This iPhone is already paired"
+  /// The line under it.
+  public static let alreadyPairedDetail =
+    "This code is for the account this iPhone is signed in to, so there is nothing to pair."
   public static let switchButton = "Switch"
 
   /// "Switch to <org name>? You'll be signed out of <other org name>." The phone does not know the

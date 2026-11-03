@@ -61,6 +61,10 @@ public final class HTTPHubAPI: HubAPI {
     try await send(.post, "v1/pairing-codes", body: EmptyBody())
   }
 
+  public func checkPairingCode(_ request: PairingCodeCheckRequest) async throws -> PairingCodeCheckResponse {
+    try await send(.post, "v1/pairing-codes/check", body: request)
+  }
+
   public func revokeSelf() async throws {
     _ = try await perform(.delete, "v1/devices/self")
   }
