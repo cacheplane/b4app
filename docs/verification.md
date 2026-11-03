@@ -2,6 +2,10 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-11-02: The attention burst test waits out a slow runner
+
+`AttentionModelTests.aBurstOfDeltasSendsNoReadAndTurnEventsCoalesce` failed CI once on main (`7c38573`): three `thread.read` calls where it expected two. The model reads the test's 56 events on its own task, and a slow runner took longer than the 200 ms refetch window to get through them, so a second window rightly opened. `WorkspaceModel.refetchDelay` is now per model (as `draftSaveDelay` is), so the test widens its own window to 1 s without changing the others'; the app keeps 200 ms. Local: the test 5 of 5 alone, `WorkspaceUITests` 284 pass, `swift format lint --strict` clean.
+
 ## 2026-11-03: M8c pairing and relay on a physical iPhone (beta flavour, test hub)
 
 The owner's iPhone, with TestFlight beta build 0.1.0 (2611030054). It was uploaded from #63's branch (`abb41df`, which contains main `9140cf5`) by `B4APP_FLAVOR=beta ./Scripts/upload-ios.sh`, and reached the Internal group. The Mac is `Agent Workspace (Beta).app`, packaged from main `9140cf5` (`B4APP_FLAVOR=beta`, Developer ID, not notarized) beside the prod and Local apps, against `https://hub.test.b4.run`.

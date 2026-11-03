@@ -180,8 +180,9 @@ public final class WorkspaceModel {
   private var restoringDraft = false
   /// Per model, so tests that change it cannot slow each other down (suites run in parallel).
   @ObservationIgnored public var draftSaveDelay: Duration = .milliseconds(600)
-  /// A burst of events about one thread becomes one `thread.read` this long after the first.
-  public static var refetchDelay: Duration = .milliseconds(200)
+  /// A burst of events about one thread becomes one `thread.read` this long after the first. Per model,
+  /// like `draftSaveDelay`, so a test that widens it does not change the window for the others.
+  @ObservationIgnored public var refetchDelay: Duration = .milliseconds(200)
   /// A draft that changed elsewhere replaces the composer only when it has not been typed in for this long.
   public static var remoteDraftIdle: TimeInterval = 2
   /// The clock for relative times ("Replied 3m ago") and the composer idle rule; tests replace it.
@@ -1111,8 +1112,9 @@ public final class WorkspaceModel {
   /// turns and requests) are current. The first event opens a window; the rest join its one read.
   private func scheduleRefetch(threadId: String) {
     guard refetchTasks[threadId] == nil else { return }
+    let delay = refetchDelay
     refetchTasks[threadId] = Task { [weak self] in
-      try? await Task.sleep(for: Self.refetchDelay)
+      try? await Task.sleep(for: delay)
       guard !Task.isCancelled, let self else { return }
       self.refetchTasks[threadId] = nil
       await self.refetch(threadId: threadId)
