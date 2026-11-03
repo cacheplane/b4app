@@ -20,6 +20,7 @@ use b4hub::routes::auth::{
 };
 use b4hub::routes::enroll::EnrollRequest;
 use b4hub::routes::me::{AddPasskeyBeginResponse, AddPasskeyFinishRequest, ProfileRequest};
+use b4hub::routes::pairing::{PairingCodeCheckRequest, PairingCodeCheckResponse};
 use b4hub::routes::step_up::{
     StepUpBeginResponse, StepUpCodeRequest, StepUpFinishRequest, StepUpResponse,
 };
@@ -200,6 +201,15 @@ fn step_up_types_match_the_hub_types() {
     let answer: StepUpResponse = round_trips("stepUpResponse");
     assert!(!format!("{answer:?}").contains(&answer.step_up));
     assert!(answer.expires_at.ends_with('Z'));
+}
+
+#[test]
+fn pairing_code_check_types_match_the_hub_types() {
+    let request: PairingCodeCheckRequest = round_trips("pairingCodeCheck");
+    assert_eq!(request.code.len(), b4hub_core::tokens::CODE_LENGTH);
+    assert!(!format!("{request:?}").contains(&request.code));
+    let answer: PairingCodeCheckResponse = round_trips("pairingCodeCheckResponse");
+    assert!(answer.same_account);
 }
 
 // ---- The answers the routes build as JSON ----
@@ -438,4 +448,20 @@ async fn routes_answer_the_shapes_the_fixture_holds(pool: PgPool) {
         .await;
     assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
     assert_eq!(refused.body, example("mergeRefused"));
+
+    // The same phone checks that code, which the refusal left unspent, before it would offer to
+    // pair (D-170): the request, and the answer word for word. (The example enrollment is an
+    // iPhone's.)
+    let mut checked = example("pairingCodeCheck");
+    checked["code"] = json!(again);
+    let answer = hub
+        .send(
+            "POST",
+            "/v1/pairing-codes/check",
+            Some(&checked),
+            &[("authorization", mac_auth.as_str())],
+        )
+        .await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    assert_eq!(answer.body, example("pairingCodeCheckResponse"));
 }
