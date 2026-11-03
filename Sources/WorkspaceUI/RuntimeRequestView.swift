@@ -129,8 +129,8 @@ struct RuntimeRequestCard: View {
     answerState
   }
 
-  /// The phone's answer: "Waiting for your Mac…", then "Not confirmed: …", "Already answered", or the
-  /// reason. The buttons stay while the request is still pending; sync resolves the card.
+  /// The phone's answer: "Waiting for your Mac…", then "Not confirmed: …" or the reason. The buttons
+  /// stay while the request is still pending; sync resolves the card.
   @ViewBuilder private var answerState: some View {
     if let state = model.answerStates[request.id] {
       HStack(spacing: LLA.Space.xs) {
@@ -138,7 +138,7 @@ struct RuntimeRequestCard: View {
         Text(state.label)
           .font(LLAFont.caption)
           .foregroundStyle(
-            state == .waiting || state == .alreadyAnswered ? LLA.Color.muted : LLA.Color.danger
+            state == .waiting ? LLA.Color.muted : LLA.Color.danger
           )
           .fixedSize(horizontal: false, vertical: true)
       }
