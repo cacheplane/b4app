@@ -162,6 +162,30 @@ import WorkspaceProtocol
     #expect(body.error.details?.reason == HubError.unknownCredential)
   }
 
+  /// D-150's routes: the passkey step-up's begin and finish, the native Apple step-up, the grant, and
+  /// the refusal of a change that lacks one.
+  @Test func stepUpTypesRoundTrip() throws {
+    let begun = try roundTrips(StepUpBeginResponse.self, "stepUpBegin")
+    #expect(begun.authentication["publicKey"]?["userVerification"] == "required")
+    let allowed = try WebAuthnJSONProbe.allowCredentials(begun.authentication)
+    #expect(allowed == ["eclhATwh80g_tlpqAfIW55BFNYxFT4gumxfiBNbXvzM"])
+
+    let finish = try roundTrips(StepUpFinishRequest.self, "stepUpFinish")
+    #expect(finish.ceremonyId == begun.ceremonyId)
+    #expect(!finish.description.contains("signature"))
+
+    let native = try roundTrips(StepUpAppleNativeRequest.self, "stepUpAppleNative")
+    #expect(!native.description.contains(native.identityToken))
+
+    let grant = try roundTrips(StepUpResponse.self, "stepUpResponse")
+    #expect(!grant.description.contains(grant.stepUp))
+    #expect(grant.expiresAt.hasSuffix("Z"))
+
+    let refused = try roundTrips(HubErrorBody.self, "stepUpRequired")
+    #expect(refused.error.details?.code == "step_up_required")
+    #expect(refused.error.details?.methods == ["passkey"])
+  }
+
   @Test func deviceSpecLeavesOutAbsentCandidates() throws {
     let spec = DeviceSpec(deviceName: "Mac", platform: "macos", deviceId: "d")
     let encoded = try JSONCoding.decoder.decode(JSONValue.self, from: JSONCoding.encoder.encode(spec))
@@ -232,5 +256,13 @@ import WorkspaceProtocol
     for name in names {
       #expect(ErrorCode(rawValue: name) != nil, "ErrorCode has no \(name)")
     }
+  }
+}
+
+/// The ids in WebAuthn options' `allowCredentials` (WorkspaceSync does not link WorkspaceUI's reader).
+private enum WebAuthnJSONProbe {
+  static func allowCredentials(_ options: JSONValue) throws -> [String] {
+    guard case .array(let descriptors)? = options["publicKey"]?["allowCredentials"] else { return [] }
+    return descriptors.compactMap { $0["id"]?.stringValue }
   }
 }

@@ -217,6 +217,16 @@ impl ApiError {
         )
     }
 
+    /// A change that needs a fresh assertion (D-150) arrived without a live step-up grant of this
+    /// user and device. [`crate::routes::step_up::step_up_required`] adds `details.methods`.
+    pub fn step_up_required() -> ApiError {
+        ApiError::request(
+            StatusCode::FORBIDDEN,
+            "step_up_required",
+            "confirm it is you with a passkey or your Apple ID, then try again",
+        )
+    }
+
     /// A caller is over a rate limit; used before a link upgrade, where the answer is HTTP.
     pub fn rate_limited() -> ApiError {
         ApiError::request(

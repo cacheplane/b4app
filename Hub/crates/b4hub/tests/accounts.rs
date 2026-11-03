@@ -406,8 +406,21 @@ async fn add_second_passkey_then_sign_in_with_either(pool: PgPool) {
         StatusCode::UNAUTHORIZED
     );
 
-    let begun = call(hub, "POST", ADD_BEGIN, None, t).await;
+    // An account with a sign-in method adds another only after stepping up (D-150).
+    let refused = call(hub, "POST", ADD_BEGIN, None, t).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert_eq!(refused.code(), "step_up_required");
+    assert_eq!(
+        refused.body["error"]["details"]["methods"],
+        json!(["passkey"])
+    );
+
+    let grant = hub.step_up(&mut first, 0, t).await;
+    let begun = hub.stepped("POST", ADD_BEGIN, None, t, Some(&grant)).await;
     assert_eq!(begun.status, StatusCode::OK, "{}", begun.body);
+    // The grant was used up.
+    let again = hub.stepped("POST", ADD_BEGIN, None, t, Some(&grant)).await;
+    assert_eq!(again.code(), "step_up_required");
     let options = &begun.body["registration"]["publicKey"];
     assert_eq!(options["user"]["name"], "Agent Workspace account");
     assert_eq!(options["user"]["displayName"], "Agent Workspace account");
@@ -441,7 +454,8 @@ async fn add_second_passkey_then_sign_in_with_either(pool: PgPool) {
         json!([])
     );
 
-    let begun = call(hub, "POST", ADD_BEGIN, None, t).await;
+    let grant = hub.step_up(&mut first, 0, t).await;
+    let begun = hub.stepped("POST", ADD_BEGIN, None, t, Some(&grant)).await;
     let attestation = second.register(&begun.body["registration"]);
     let sign_in_ceremony = hub.post(BEGIN, None).await.body["ceremonyId"].clone();
     let wrong_kind = call(
@@ -481,7 +495,8 @@ async fn add_second_passkey_then_sign_in_with_either(pool: PgPool) {
     assert_eq!(with_second.status, StatusCode::OK, "{}", with_second.body);
     assert_eq!(with_second.body["user"]["username"], username);
 
-    // An enrolled user with no identity adds their first passkey the same way.
+    // An enrolled user with no identity has nothing to step up with, and adds their first passkey
+    // on the token alone.
     let begun = call(hub, "POST", ADD_BEGIN, None, token(&blove)).await;
     assert_eq!(
         begun.body["registration"]["publicKey"]["excludeCredentials"]
@@ -504,6 +519,117 @@ async fn add_second_passkey_then_sign_in_with_either(pool: PgPool) {
     assert_eq!(as_blove.status, StatusCode::OK, "{}", as_blove.body);
     assert_eq!(as_blove.body["user"]["username"], "blove");
     assert_eq!(as_blove.body["org"]["slug"], "cacheplane");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_step_up_and_an_add_belong_to_one_device(pool: PgPool) {
+    let setup = setup(&pool).await;
+    let hub = &setup.hub;
+    let mut keys = Authenticator::new(ORIGIN);
+    let mac = sign_up(hub, &mut keys, device("Brian's Mac", "macos")).await;
+    let phone = sign_in(hub, &mut keys, 0, device("iPhone", "ios")).await;
+    assert_eq!(phone.status, StatusCode::OK, "{}", phone.body);
+    let (mac, phone) = (token(&mac), token(&phone.body));
+
+    // A grant earned on the phone does not serve the Mac.
+    let phone_grant = hub.step_up(&mut keys, 0, phone).await;
+    let borrowed = hub
+        .stepped("POST", ADD_BEGIN, None, mac, Some(&phone_grant))
+        .await;
+    assert_eq!(borrowed.status, StatusCode::FORBIDDEN, "{}", borrowed.body);
+    assert_eq!(borrowed.code(), "step_up_required");
+
+    // Nor is a step-up the Mac began finished by the phone.
+    let begun = hub
+        .stepped("POST", common::STEP_UP_BEGIN, None, mac, None)
+        .await;
+    let assertion = keys.assert(&begun.body["authentication"]);
+    let body = json!({"ceremonyId": begun.body["ceremonyId"], "assertion": assertion});
+    let stolen = hub
+        .stepped("POST", common::STEP_UP_FINISH, Some(&body), phone, None)
+        .await;
+    assert_eq!(stolen.code(), "ceremony_expired");
+
+    // An add the Mac began (with its own grant) is not finished from the phone.
+    let grant = hub.step_up(&mut keys, 0, mac).await;
+    let begun = hub
+        .stepped("POST", ADD_BEGIN, None, mac, Some(&grant))
+        .await;
+    assert_eq!(begun.status, StatusCode::OK, "{}", begun.body);
+    let attestation = Authenticator::new(ORIGIN).register(&begun.body["registration"]);
+    let other_device = call(
+        hub,
+        "POST",
+        ADD_FINISH,
+        Some(&json!({"ceremonyId": begun.body["ceremonyId"], "attestation": attestation})),
+        phone,
+    )
+    .await;
+    assert_eq!(other_device.code(), "ceremony_expired");
+    assert_eq!(
+        hub.get("/v1/me", Some(mac)).await.body["identities"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_step_up_needs_one_of_the_accounts_own_passkeys(pool: PgPool) {
+    let setup = setup(&pool).await;
+    let hub = &setup.hub;
+    let mut mine = Authenticator::new(ORIGIN);
+    let session = sign_up(hub, &mut mine, device("Brian's Mac", "macos")).await;
+    let t = token(&session);
+    let mut theirs = Authenticator::new(ORIGIN);
+    sign_up(hub, &mut theirs, device("Mac", "macos")).await;
+
+    let begun = hub
+        .stepped("POST", common::STEP_UP_BEGIN, None, t, None)
+        .await;
+    assert_eq!(begun.status, StatusCode::OK, "{}", begun.body);
+    let options = &begun.body["authentication"]["publicKey"];
+    assert_eq!(options["userVerification"], "required");
+    let allowed: Vec<Vec<u8>> = options["allowCredentials"]
+        .as_array()
+        .expect("allowCredentials")
+        .iter()
+        .map(|c| decode(c["id"].as_str().unwrap()))
+        .collect();
+    assert_eq!(allowed, vec![mine.credentials[0].id.clone()]);
+
+    // Another account's passkey, and a signature by the wrong key, earn nothing.
+    let foreign = theirs.assert(&begun.body["authentication"]);
+    let body = json!({"ceremonyId": begun.body["ceremonyId"], "assertion": foreign});
+    let rejected = hub
+        .stepped("POST", common::STEP_UP_FINISH, Some(&body), t, None)
+        .await;
+    assert_eq!(rejected.code(), "credential_rejected", "{}", rejected.body);
+    let begun = hub
+        .stepped("POST", common::STEP_UP_BEGIN, None, t, None)
+        .await;
+    mine.replace_key(0);
+    let forged = mine.assert(&begun.body["authentication"]);
+    let body = json!({"ceremonyId": begun.body["ceremonyId"], "assertion": forged});
+    let rejected = hub
+        .stepped("POST", common::STEP_UP_FINISH, Some(&body), t, None)
+        .await;
+    assert_eq!(rejected.code(), "credential_rejected", "{}", rejected.body);
+    // A sign-in ceremony is not a step-up.
+    let sign_in_ceremony = hub.post(BEGIN, None).await.body["ceremonyId"].clone();
+    let body = json!({"ceremonyId": sign_in_ceremony, "assertion": forged});
+    let wrong_kind = hub
+        .stepped("POST", common::STEP_UP_FINISH, Some(&body), t, None)
+        .await;
+    assert_eq!(wrong_kind.code(), "ceremony_expired");
+
+    // An account with no passkey has no passkey step-up.
+    let (_, blove) = enrolled_blove(&setup).await;
+    let none = hub
+        .stepped("POST", common::STEP_UP_BEGIN, None, token(&blove), None)
+        .await;
+    assert_eq!(none.status, StatusCode::NOT_FOUND, "{}", none.body);
 }
 
 #[sqlx::test(migrations = false)]
@@ -589,14 +715,16 @@ async fn remove_last_identity_is_last_identity(pool: PgPool) {
         1
     );
 
-    let removed = call(
-        hub,
-        "DELETE",
-        &format!("/v1/me/identities/{passkey_id}"),
-        None,
-        t,
-    )
-    .await;
+    // The removal itself needs a step-up; the refusals above spent none.
+    let path = format!("/v1/me/identities/{passkey_id}");
+    let refused = call(hub, "DELETE", &path, None, t).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert_eq!(
+        refused.body["error"]["details"]["methods"],
+        json!(["passkey", "apple"])
+    );
+    let grant = hub.step_up(&mut authenticator, 0, t).await;
+    let removed = hub.stepped("DELETE", &path, None, t, Some(&grant)).await;
     assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.body);
     let identities = hub.get("/v1/me", Some(t)).await.body["identities"].clone();
     assert_eq!(identities.as_array().unwrap().len(), 1);
@@ -724,7 +852,14 @@ async fn delete_me_removes_org_rows_and_calls_revoker(pool: PgPool) {
         .iter()
         .any(|(table, n)| table == "projects" && *n == 2));
 
-    let deleted = call(hub, "DELETE", "/v1/me", None, t).await;
+    let refused = call(hub, "DELETE", "/v1/me", None, t).await;
+    assert_eq!(refused.code(), "step_up_required");
+    assert!(
+        revoker.seen().is_empty(),
+        "refused before anything is revoked"
+    );
+    let grant = hub.step_up(&mut authenticator, 0, t).await;
+    let deleted = hub.stepped("DELETE", "/v1/me", None, t, Some(&grant)).await;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
 
     // Each stored refresh token reached the revoker decrypted, once.
@@ -762,9 +897,9 @@ async fn delete_me_with_a_failed_revoke_deletes_nothing(pool: PgPool) {
     accounts::add_identity(&hub.state.db, who, apple(&key, "001.a", Some("rt-one")))
         .await
         .unwrap();
+    let grant = hub.step_up(&mut authenticator, 0, t).await;
     let before = org_rows(&pool, who.org_id).await;
-
-    let answer = call(hub, "DELETE", "/v1/me", None, t).await;
+    let answer = hub.stepped("DELETE", "/v1/me", None, t, Some(&grant)).await;
     assert_eq!(
         answer.status,
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -776,6 +911,9 @@ async fn delete_me_with_a_failed_revoke_deletes_nothing(pool: PgPool) {
     assert!(!answer.body.to_string().contains("rt-one"));
     assert_eq!(org_rows(&pool, who.org_id).await, before);
     assert_eq!(hub.get("/v1/me", Some(t)).await.status, StatusCode::OK);
+    // The grant was spent on the failed attempt: a retry steps up again.
+    let retry = hub.stepped("DELETE", "/v1/me", None, t, Some(&grant)).await;
+    assert_eq!(retry.code(), "step_up_required");
 }
 
 #[sqlx::test(migrations = false)]
@@ -799,7 +937,7 @@ async fn delete_me_in_a_shared_org_is_shared_org(pool: PgPool) {
     let answer = call(hub, "DELETE", "/v1/me", None, token(&blove)).await;
     assert_eq!(answer.status, StatusCode::CONFLICT, "{}", answer.body);
     assert_eq!(answer.code(), "shared_org");
-    // Refused before anything is revoked.
+    // Refused before anything is revoked, and before a step-up is asked for.
     assert!(revoker.seen().is_empty());
     assert_eq!(
         hub.get("/v1/me", Some(token(&blove))).await.status,
@@ -1222,8 +1360,33 @@ async fn no_secret_in_logs(pool: PgPool) {
     .await
     .unwrap();
     secrets.push("rt-plaintext-secret".into());
+    // Step up with a passkey: the challenge, the assertion, and the grant stay out of the logs.
+    let begun = hub
+        .stepped("POST", common::STEP_UP_BEGIN, None, token(&doomed), None)
+        .await;
+    secrets.push(
+        begun.body["authentication"]["publicKey"]["challenge"]
+            .as_str()
+            .unwrap()
+            .into(),
+    );
+    let assertion = doomed_keys.assert(&begun.body["authentication"]);
+    for field in ["clientDataJSON", "authenticatorData", "signature"] {
+        secrets.push(assertion["response"][field].as_str().unwrap().into());
+    }
+    let finished = hub
+        .stepped(
+            "POST",
+            common::STEP_UP_FINISH,
+            Some(&json!({"ceremonyId": begun.body["ceremonyId"], "assertion": assertion})),
+            token(&doomed),
+            None,
+        )
+        .await;
+    let grant = finished.body["stepUp"].as_str().unwrap().to_string();
+    secrets.push(grant.clone());
     assert_eq!(
-        call(hub, "DELETE", "/v1/me", None, token(&doomed))
+        hub.stepped("DELETE", "/v1/me", None, token(&doomed), Some(&grant))
             .await
             .status,
         StatusCode::NO_CONTENT
@@ -1232,6 +1395,7 @@ async fn no_secret_in_logs(pool: PgPool) {
     let text = captured.text();
     for line in [
         "added a passkey",
+        "stepped up",
         "merged a phone-only account while pairing",
         "ended a session",
         "deleted an account",
@@ -1273,6 +1437,15 @@ async fn maintenance_pauses_sign_in_and_account_writes(pool: PgPool) {
         )
         .await,
         call(&hub, "POST", ADD_BEGIN, None, token).await,
+        call(&hub, "POST", common::STEP_UP_BEGIN, None, token).await,
+        call(
+            &hub,
+            "POST",
+            common::STEP_UP_FINISH,
+            Some(&json!({"ceremonyId": Uuid::nil(), "assertion": {}})),
+            token,
+        )
+        .await,
         call(
             &hub,
             "DELETE",

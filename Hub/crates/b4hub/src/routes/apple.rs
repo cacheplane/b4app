@@ -15,7 +15,10 @@
 //! The callback changes no account and exchanges no code: it records the verified result,
 //! sealed to the handoff, and everything happens at the redemption (for a link, only from a
 //! device of the account that began it). An account links at most one Apple ID
-//! (`apple_linked`).
+//! (`apple_linked`), and linking one needs a step-up grant ([`crate::routes::step_up`]). The
+//! step-up itself can be earned here too, with the account's own Apple ID (`POST
+//! /v1/me/step-up/apple`, then `POST /v1/me/step-up/apple/native` or the web flow ending in
+//! `POST /v1/me/step-up/apple/handoff`); no code is exchanged for it.
 //!
 //! A new Apple ID signs up while sign-up is open (`signup_closed` otherwise, before the code is
 //! exchanged, so Apple keeps no grant for it). Apple's email is stored with the identity but
@@ -51,6 +54,7 @@ use crate::error::{ApiError, ApiJson, OptionalJson};
 use crate::maintenance::WritesAllowed;
 use crate::routes::auth::{answer, AuthSession, DeviceRequest};
 use crate::routes::me::{identity_json, MAX_FULL_NAME_CHARS};
+use crate::routes::step_up::{self, StepUp, StepUpResponse};
 use crate::serve::AppState;
 
 /// The ceremony kind a sign-in (or sign-up) with Apple stores.
@@ -59,6 +63,13 @@ pub const APPLE_CEREMONY: &str = "apple";
 /// The ceremony kind linking an Apple ID to a signed-in account stores; a sign-in's ceremony
 /// cannot finish a link, nor a link's a sign-in.
 pub const APPLE_LINK_CEREMONY: &str = "apple_link";
+
+/// The ceremony kind a step-up with the account's Apple ID stores (D-150); it finishes neither a
+/// sign-in nor a link.
+pub const APPLE_STEP_UP_CEREMONY: &str = "apple_step_up";
+
+/// The ceremony kinds Apple's callback finishes.
+const WEB_KINDS: [&str; 3] = [APPLE_CEREMONY, APPLE_LINK_CEREMONY, APPLE_STEP_UP_CEREMONY];
 
 /// The app URL schemes, one per build flavour; `B4HUB_APPLE_CALLBACK_SCHEME` names the one a hub
 /// hands web results back to.
@@ -139,6 +150,23 @@ impl fmt::Debug for AppleLinkNativeRequest {
     }
 }
 
+/// `POST /v1/me/step-up/apple/native`'s body: the identity token alone (no code is exchanged for a
+/// step-up). `Debug` leaves out the token.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AppleStepUpNativeRequest {
+    pub ceremony_id: Uuid,
+    pub identity_token: String,
+}
+
+impl fmt::Debug for AppleStepUpNativeRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AppleStepUpNativeRequest")
+            .field("ceremony_id", &self.ceremony_id)
+            .finish_non_exhaustive()
+    }
+}
+
 /// `POST /v1/auth/handoff`'s body: the code a sign-in's callback redirect carried, the verifier
 /// whose hash the ceremony recorded, and the device to sign in. `Debug` leaves out the code and
 /// the verifier.
@@ -181,8 +209,11 @@ struct AppleCeremony {
     nonce: String,
     /// Present for the web flow.
     web: Option<WebFlow>,
-    /// Present for a link: who began it.
+    /// Present for a link and a step-up: who began it.
     link: Option<LinkTo>,
+    /// Present for a step-up: the device that began it, which alone may finish it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device_id: Option<Uuid>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -288,12 +319,14 @@ async fn create_ceremony(
     kind: &str,
     web: Option<WebFlow>,
     link: Option<LinkTo>,
+    device_id: Option<Uuid>,
 ) -> Result<Json<AppleBeginResponse>, ApiError> {
     let nonce = new_token();
     let stored = serde_json::to_value(AppleCeremony {
         nonce: nonce.clone(),
         web,
         link,
+        device_id,
     })
     .map_err(|error| {
         tracing::error!(%error, "could not serialise an Apple ceremony");
@@ -312,12 +345,37 @@ pub async fn begin(
     OptionalJson(request): OptionalJson<AppleBeginRequest>,
 ) -> Result<Json<AppleBeginResponse>, ApiError> {
     let web = web_flow(&state, request)?;
-    create_ceremony(&state, APPLE_CEREMONY, web, None).await
+    create_ceremony(&state, APPLE_CEREMONY, web, None, None).await
 }
 
 /// `POST /v1/me/apple`: begins linking an Apple ID to the caller's account, natively or on the
-/// web, as `POST /v1/auth/apple/begin` begins a sign-in.
+/// web, as `POST /v1/auth/apple/begin` begins a sign-in. Takes the device's step-up grant, after
+/// `apple_linked`: the finish needs this ceremony, so the link is gated here.
 pub async fn link_begin(
+    State(state): State<AppState>,
+    _apple: Apple,
+    _allowed: BeginAllowed,
+    device: AuthedDevice,
+    _writes: WritesAllowed,
+    step_up: StepUp,
+    OptionalJson(request): OptionalJson<AppleBeginRequest>,
+) -> Result<Json<AppleBeginResponse>, ApiError> {
+    let web = web_flow(&state, request)?;
+    let link = LinkTo {
+        org_id: device.org_id,
+        user_id: device.user_id,
+    };
+    if accounts::has_apple_identity(&state.db, link.into()).await? {
+        return Err(ApiError::apple_linked());
+    }
+    step_up.require(&state, &device).await?;
+    create_ceremony(&state, APPLE_LINK_CEREMONY, web, Some(link), None).await
+}
+
+/// `POST /v1/me/step-up/apple`: begins a step-up with the caller's own Apple ID, natively or on
+/// the web, as `POST /v1/me/apple` begins a link. The ceremony records the caller and this device.
+/// An account with no Apple ID is `not_found`.
+pub async fn step_up_begin(
     State(state): State<AppState>,
     _apple: Apple,
     _allowed: BeginAllowed,
@@ -330,10 +388,91 @@ pub async fn link_begin(
         org_id: device.org_id,
         user_id: device.user_id,
     };
-    if accounts::has_apple_identity(&state.db, link.into()).await? {
-        return Err(ApiError::apple_linked());
+    if !accounts::has_apple_identity(&state.db, link.into()).await? {
+        return Err(ApiError::not_found());
     }
-    create_ceremony(&state, APPLE_LINK_CEREMONY, web, Some(link)).await
+    create_ceremony(
+        &state,
+        APPLE_STEP_UP_CEREMONY,
+        web,
+        Some(link),
+        Some(device.device_id),
+    )
+    .await
+}
+
+/// `POST /v1/me/step-up/apple/native`: verifies the identity token against a native step-up this
+/// device began, and that its Apple ID is the caller's own; answers the grant. The authorization
+/// code is never sent, so Apple keeps no new grant.
+pub async fn step_up_native(
+    State(state): State<AppState>,
+    Apple(apple): Apple,
+    _allowed: FinishAllowed,
+    device: AuthedDevice,
+    _writes: WritesAllowed,
+    ApiJson(request): ApiJson<AppleStepUpNativeRequest>,
+) -> Result<Json<StepUpResponse>, ApiError> {
+    check_sizes(&request.identity_token, "")?;
+    let principal = Principal::from(*device);
+    let ceremony = take(&state, request.ceremony_id, APPLE_STEP_UP_CEREMONY).await?;
+    let began_here = ceremony
+        .link
+        .is_some_and(|link| Principal::from(link) == principal)
+        && ceremony.device_id == Some(device.device_id);
+    if !began_here || ceremony.web.is_some() {
+        tracing::info!(
+            reason = "the step-up was begun by another user or device, or for the web flow",
+            "Apple verification failed"
+        );
+        return Err(ApiError::ceremony_expired());
+    }
+    let claims = verify(&apple, &request.identity_token, &ceremony.nonce).await?;
+    own_apple_id(&state, principal, &claims.sub).await?;
+    step_up::grant(&state, &device, "apple").await
+}
+
+/// `POST /v1/me/step-up/apple/handoff`: redeems a step-up's handoff with the verifier, once, from
+/// the device that began it, and checks again that its Apple ID is the caller's; answers the grant.
+pub async fn step_up_handoff(
+    State(state): State<AppState>,
+    _apple: Apple,
+    _allowed: FinishAllowed,
+    device: AuthedDevice,
+    _writes: WritesAllowed,
+    ApiJson(request): ApiJson<AppleLinkHandoffRequest>,
+) -> Result<Json<StepUpResponse>, ApiError> {
+    let principal = Principal::from(*device);
+    let (code_hash, verifier_hash) = handoff_hashes(&request.handoff, &request.verifier)?;
+    let pending = redeem_pending(
+        &state,
+        &code_hash,
+        &verifier_hash,
+        APPLE_STEP_UP_CEREMONY,
+        Some(principal),
+    )
+    .await?;
+    if pending.device_id != Some(device.device_id) {
+        tracing::info!(
+            reason = "the step-up was begun on another device",
+            "Apple verification failed"
+        );
+        return Err(ApiError::credential_rejected());
+    }
+    own_apple_id(&state, principal, &pending.sub).await?;
+    step_up::grant(&state, &device, "apple").await
+}
+
+/// The Apple ID `sub` is `principal`'s own (one they linked); `credential_rejected` otherwise.
+async fn own_apple_id(state: &AppState, principal: Principal, sub: &str) -> Result<(), ApiError> {
+    let owner = accounts::find_apple_identity(&state.db, sub).await?;
+    if owner.map(|(owner, _)| owner) != Some(principal) {
+        tracing::info!(
+            reason = "the Apple ID is not the account's own",
+            "Apple verification failed"
+        );
+        return Err(ApiError::credential_rejected());
+    }
+    Ok(())
 }
 
 // ---- The native flow ----
@@ -458,12 +597,7 @@ pub async fn start(
     let ceremony_id =
         ceremony_id.ok_or_else(|| ApiError::invalid_request("ceremony is required"))?;
     let redirect_uri = callback_url(&state).ok_or_else(ApiError::not_found)?;
-    let (_, stored) = ceremonies::peek(
-        &state.db,
-        ceremony_id,
-        &[APPLE_CEREMONY, APPLE_LINK_CEREMONY],
-    )
-    .await?;
+    let (_, stored) = ceremonies::peek(&state.db, ceremony_id, &WEB_KINDS).await?;
     let ceremony = stored_ceremony(stored)?;
     if ceremony.web.is_none() {
         return Err(ApiError::ceremony_expired());
@@ -553,12 +687,7 @@ pub async fn callback(
         .as_deref()
         .ok_or_else(|| ApiError::invalid_request("state is required"))?;
     let ceremony_id = Uuid::parse_str(ceremony_id).map_err(|_| ApiError::ceremony_expired())?;
-    let (kind, stored) = ceremonies::take_any(
-        &state.db,
-        ceremony_id,
-        &[APPLE_CEREMONY, APPLE_LINK_CEREMONY],
-    )
-    .await?;
+    let (kind, stored) = ceremonies::take_any(&state.db, ceremony_id, &WEB_KINDS).await?;
     let ceremony = stored_ceremony(stored)?;
     let Some(web) = &ceremony.web else {
         return Err(ApiError::ceremony_expired());
@@ -621,7 +750,24 @@ async fn finish_web(
         return Err(ApiError::credential_rejected());
     }
     let owner = accounts::find_apple_identity(&state.db, &claims.sub).await?;
-    let link = if kind == APPLE_LINK_CEREMONY {
+    let link = if kind == APPLE_STEP_UP_CEREMONY {
+        let to: Principal = ceremony
+            .link
+            .ok_or_else(|| {
+                tracing::error!("a stored Apple step-up ceremony names no account");
+                ApiError::internal()
+            })?
+            .into();
+        // Refused early so the browser hears it; checked again at the redemption.
+        if owner.map(|(owner, _)| owner) != Some(to) {
+            tracing::info!(
+                reason = "the Apple ID is not the account's own",
+                "Apple verification failed"
+            );
+            return Err(ApiError::credential_rejected());
+        }
+        Some(to)
+    } else if kind == APPLE_LINK_CEREMONY {
         let to: Principal = ceremony
             .link
             .ok_or_else(|| {
@@ -645,6 +791,7 @@ async fn finish_web(
         name: if link.is_none() { form.name() } else { None },
         client_id: services_id.to_string(),
         code: code.clone(),
+        device_id: ceremony.device_id,
     };
     let verifier_hash = decode_hex(&web.verifier_hash).ok_or_else(|| {
         tracing::error!("a stored Apple ceremony's verifier hash is not hex");

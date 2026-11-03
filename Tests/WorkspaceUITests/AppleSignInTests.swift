@@ -451,27 +451,38 @@ private func sha256Hex(_ text: String) -> String {
     await model.refreshIdentities()
     #expect(AccountSettingsContent(model: model).connectApple == "Connect Apple ID")
 
+    // Each try is confirmed with the account's passkey first (D-150).
+    let passkeys = FakePasskeys()
+    let confirm: ScriptedTransport.Reply = .result([
+      "ceremonyId": "s1", "authentication": ["publicKey": ["challenge": "c3RlcA", "rpId": "test.b4.run"]],
+    ])
+    transport.script(.accountStepUpBegin, Array(repeating: confirm, count: 5))
     // Closed sheet, or Cancel on Apple's page: nothing, and nothing redeemed.
     let apple = FakeApple()
     transport.script(.accountAppleLinkStart, [start("l1"), start("l2"), start("l3"), start("l4")])
     apple.web = .success(nil)
-    await model.connectAppleID(using: apple)
+    await model.connectAppleID(using: apple, passkey: passkeys)
     apple.web = .success(URL(string: "b4app-beta://auth?error=cancelled")!)
-    await model.connectAppleID(using: apple)
+    await model.connectAppleID(using: apple, passkey: passkeys)
     #expect(model.accountSettingsFailure == nil)
     #expect(transport.calls(.accountAppleLinkFinish).isEmpty)
 
     // Already linked elsewhere in the meantime: one line.
     apple.web = .success(URL(string: "b4app-beta://auth?error=apple_linked")!)
-    await model.connectAppleID(using: apple)
+    await model.connectAppleID(using: apple, passkey: passkeys)
     #expect(model.accountSettingsFailure == AccountCopy.alreadyApple)
 
     let linked = AccountIdentity(
       id: "i2", kind: "apple", name: "x@privaterelay.appleid.com", createdAt: "2026-11-02T09:00:00Z")
     transport.script(.accountAppleLinkFinish, [try reply(AccountAppleLinkFinish.Result(identity: linked))])
     apple.web = .success(URL(string: "b4app-beta://auth?handoff=L-one-time")!)
-    await model.connectAppleID(using: apple)
+    await model.connectAppleID(using: apple, passkey: passkeys)
     #expect(transport.calls(.accountAppleLinkFinish) == [["handoff": "L-one-time"]])
+    #expect(
+      transport.calls(.accountAppleLinkStart).last
+        == [
+          "stepUp": ["ceremonyId": "s1", "assertion": ["id": "cred", "rawId": "cred", "type": "public-key"]]
+        ])
     #expect(apple.nonces.isEmpty)
     #expect(model.accountSettingsFailure == nil)
     #expect(model.identities?.map(\.kind) == ["passkey", "apple"])
@@ -479,7 +490,7 @@ private func sha256Hex(_ text: String) -> String {
 
     // A refusal at the start (the hub's `apple_linked`) is the same line.
     transport.script(.accountAppleLinkStart, [.failure(WorkspaceError(.appleLinked, "has one"))])
-    await model.connectAppleID(using: apple)
+    await model.connectAppleID(using: apple, passkey: passkeys)
     #expect(model.accountSettingsFailure == AccountCopy.alreadyApple)
   }
 
@@ -509,14 +520,16 @@ private func sha256Hex(_ text: String) -> String {
 
     let apple = FakeApple()
     apple.native = .success(nil)
-    await phone.model.connectAppleID(using: apple)
+    await phone.model.connectAppleID(using: apple, passkey: FakePasskeys())
     #expect(await phone.fake.appleLinkNatives.isEmpty)
     #expect(phone.model.accountSettingsFailure == nil)
 
     apple.native = .success(AppleCredential(identityToken: "jwt-link", authorizationCode: "code-link"))
-    await phone.model.connectAppleID(using: apple)
+    await phone.model.connectAppleID(using: apple, passkey: FakePasskeys())
     #expect(apple.nonces == ["fake-nonce", "fake-nonce"])
     #expect(apple.opened.isEmpty)
+    // The phone confirmed with its passkey each time, finishing the step-up itself.
+    #expect(await phone.fake.stepUpFinishes.count == 2)
     #expect(
       await phone.fake.appleLinkNatives
         == [
@@ -527,7 +540,7 @@ private func sha256Hex(_ text: String) -> String {
     #expect(AccountSettingsContent(model: phone.model).connectApple == nil)
 
     // The account has one now: the hub's `apple_linked` is one line.
-    await phone.model.connectAppleID(using: apple)
+    await phone.model.connectAppleID(using: apple, passkey: FakePasskeys())
     #expect(phone.model.accountSettingsFailure == AccountCopy.alreadyApple)
   }
 

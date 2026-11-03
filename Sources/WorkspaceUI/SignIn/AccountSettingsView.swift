@@ -38,6 +38,9 @@ public enum AccountCopy {
   public static let passkeyRejected = "That passkey wasn't accepted. Try again."
   public static let alreadyApple = "This account already has an Apple ID."
   public static let expired = "That took too long. Try again."
+  /// The hub wanted a fresh confirmation it did not get (a grant it refused, or a sign-in method another
+  /// device added meanwhile): the methods are read again, and the next try asks.
+  public static let stepUpRequired = "Confirm it's you to make this change, then try again."
   /// The hub deleted the account, but the coordinator could not drop its database on this Mac. Nothing
   /// retries that, so the line says only what happened.
   public static let deletedLocalDataKept =
@@ -51,6 +54,7 @@ public enum AccountCopy {
     case .credentialRejected: return passkeyRejected
     case .appleLinked: return alreadyApple
     case .ceremonyExpired: return expired
+    case .stepUpRequired: return stepUpRequired
     default: return SignInCopy.accountFailure(for: error)
     }
   }
@@ -176,12 +180,13 @@ extension WorkspaceModel {
     }
   }
 
-  /// "Add a passkey": the coordinator begins, the system sheet makes the passkey, and the attestation
-  /// goes to the coordinator once. A closed sheet shows nothing; a passkey the hub refused is reported
-  /// unknown to the password manager, as at sign-up. A passkey the hub kept takes the account's name
-  /// in the password manager, in place of the hub's placeholder, as the sign-up passkey does after
-  /// onboarding (D-105, D-132).
-  public func addPasskey(using ceremony: any PasskeyCeremony) async {
+  /// "Add a passkey": confirm it's you (with a passkey, or the Apple ID of an account that has no
+  /// passkey yet), then the coordinator begins with that confirmation, the system sheet makes the
+  /// passkey, and the attestation goes to the coordinator once. A closed sheet, either one, shows
+  /// nothing; a passkey the hub refused is reported unknown to the password manager, as at sign-up.
+  /// A passkey the hub kept takes the account's name in the password manager, in place of the hub's
+  /// placeholder, as the sign-up passkey does after onboarding (D-105, D-132).
+  public func addPasskey(using ceremony: any PasskeyCeremony, apple: any AppleCeremony) async {
     guard !accountSettingsBusy else { return }
     accountSettingsBusy = true
     defer { accountSettingsBusy = false }
@@ -189,7 +194,8 @@ extension WorkspaceModel {
     let generation = accountGeneration
     do {
       let calls = try accountCalls()
-      let begun = try await calls.addPasskeyBegin()
+      let stepUp = try await confirmIdentity(passkey: ceremony, apple: apple)
+      let begun = try await calls.addPasskeyBegin(stepUp: stepUp)
       let attestation = try await ceremony.register(begun.registration)
       let added: AccountIdentity
       do {
@@ -212,8 +218,7 @@ extension WorkspaceModel {
       // The device refused before making anything: there is no new passkey to report.
       accountSettingsFailure = SignInCopy.passkeyAlreadyOnDevice
     } catch {
-      guard generation == accountGeneration else { return }
-      accountSettingsFailure = AccountCopy.failure(for: WorkspaceError.from(error))
+      await accountChangeFailed(error, generation: generation)
     }
   }
 
@@ -233,11 +238,12 @@ extension WorkspaceModel {
     await ceremony.renamePasskey(relyingParty: request.relyingParty, userHandle: request.userID, name: name)
   }
 
-  /// "Connect Apple ID" (beta and prod, while the account has none). On the Mac, Apple's web flow
-  /// through the coordinator, which keeps the verifier (`account.appleLinkStart`, then the session,
-  /// then `account.appleLinkFinish`); on the phone, Apple's native sheet through the host. A closed
-  /// sheet shows nothing; `apple_linked` is one line.
-  public func connectAppleID(using ceremony: any AppleCeremony) async {
+  /// "Connect Apple ID" (beta and prod, while the account has none), after confirming it's you with a
+  /// passkey. On the Mac, Apple's web flow through the coordinator, which keeps the verifier
+  /// (`account.appleLinkStart` with the confirmation, then the session, then
+  /// `account.appleLinkFinish`); on the phone, Apple's native sheet through the host. A closed sheet
+  /// shows nothing; `apple_linked` is one line.
+  public func connectAppleID(using ceremony: any AppleCeremony, passkey: any PasskeyCeremony) async {
     guard !accountSettingsBusy else { return }
     accountSettingsBusy = true
     defer { accountSettingsBusy = false }
@@ -245,14 +251,16 @@ extension WorkspaceModel {
     let generation = accountGeneration
     do {
       let linked: AccountIdentity
-      switch try accountCalls() {
+      let calls = try accountCalls()
+      let stepUp = try await confirmIdentity(passkey: passkey, apple: ceremony)
+      switch calls {
       case .host(let host):
-        let begun = try await host.appleLinkBegin()
+        let begun = try await host.appleLinkBegin(stepUp: stepUp)
         guard let credential = try await ceremony.nativeSignIn(nonce: begun.nonce) else { return }
         linked = try await host.linkApple(credential, ceremonyId: begun.ceremonyId)
       case .coordinator(let client):
         let start = try await client.request(
-          AccountAppleLinkStart.self, EmptyParams(), options: Self.signInCall)
+          AccountAppleLinkStart.self, AccountStepUpParams(stepUp: stepUp), options: Self.signInCall)
         let handoff = try await Self.webHandoff(
           ceremony, url: start.url, callbackScheme: start.callbackScheme)
         linked = try await client.request(
@@ -267,9 +275,45 @@ extension WorkspaceModel {
     } catch is CancellationError {
       return
     } catch {
-      guard generation == accountGeneration else { return }
-      accountSettingsFailure = AccountCopy.failure(for: WorkspaceError.from(error))
+      await accountChangeFailed(error, generation: generation)
     }
+  }
+
+  /// Confirm it's you before a change that needs it (D-150), and answer the confirmation the change
+  /// carries: with a passkey when the account has one, else with its Apple ID (Apple's web flow through
+  /// the coordinator on the Mac, the native sheet on the phone). `nil` for an account with no sign-in
+  /// method, which has nothing to confirm with and needs none. A closed sheet is `SignInCanceled`.
+  func confirmIdentity(passkey: any PasskeyCeremony, apple: any AppleCeremony) async throws -> AccountStepUp?
+  {
+    if identities == nil { await refreshIdentities() }
+    let listed = identities ?? []
+    guard !listed.isEmpty else { return nil }
+    let calls = try accountCalls()
+    if listed.contains(where: { $0.kind == "passkey" }) {
+      let begun = try await calls.stepUpBegin()
+      let assertion = try await passkey.confirm(begun.authentication)
+      return .passkey(ceremonyId: begun.ceremonyId, assertion: assertion)
+    }
+    switch calls {
+    case .host(let host):
+      let begun = try await host.stepUpAppleBegin()
+      guard let credential = try await apple.nativeSignIn(nonce: begun.nonce) else { throw SignInCanceled() }
+      return .appleNative(ceremonyId: begun.ceremonyId, identityToken: credential.identityToken)
+    case .coordinator(let client):
+      let start = try await client.request(
+        AccountStepUpAppleStart.self, EmptyParams(), options: Self.signInCall)
+      return .appleWeb(
+        handoff: try await Self.webHandoff(apple, url: start.url, callbackScheme: start.callbackScheme))
+    }
+  }
+
+  /// A refused Settings → Account change, as one line. `step_up_required` means the methods changed
+  /// under the page (or the hub refused the confirmation), so they are read again for the next try.
+  private func accountChangeFailed(_ error: any Error, generation: Int) async {
+    guard generation == accountGeneration else { return }
+    let failure = WorkspaceError.from(error)
+    accountSettingsFailure = AccountCopy.failure(for: failure)
+    if failure.code == .stepUpRequired { await refreshIdentities() }
   }
 
   /// A method just added, at the end of the list (once).
@@ -280,8 +324,9 @@ extension WorkspaceModel {
     identities = listed
   }
 
-  /// "Remove" on one sign-in method. The last one is never sent: the hub would refuse it.
-  public func removeIdentity(id: String) async {
+  /// "Remove" on one sign-in method, once it is confirmed it's you. The last one is never sent: the
+  /// hub would refuse it. A closed sheet removes nothing and shows nothing.
+  public func removeIdentity(id: String, passkey: any PasskeyCeremony, apple: any AppleCeremony) async {
     guard let current = identities, current.count > 1, current.contains(where: { $0.id == id }),
       !accountSettingsBusy
     else { return }
@@ -290,15 +335,20 @@ extension WorkspaceModel {
     accountSettingsFailure = nil
     let generation = accountGeneration
     do {
-      let left = try await accountCalls().removeIdentity(id)
+      let stepUp = try await confirmIdentity(passkey: passkey, apple: apple)
+      let left = try await accountCalls().removeIdentity(id, stepUp: stepUp)
       guard generation == accountGeneration else { return }
       identities = left
+    } catch is SignInCanceled {
+      return
+    } catch is CancellationError {
+      return
     } catch {
       guard generation == accountGeneration else { return }
       let failure = WorkspaceError.from(error)
       accountSettingsFailure = AccountCopy.failure(for: failure)
       // Another device changed the methods: show what the hub has now.
-      if failure.code == .lastIdentity { await refreshIdentities() }
+      if failure.code == .lastIdentity || failure.code == .stepUpRequired { await refreshIdentities() }
     }
   }
 
@@ -310,9 +360,12 @@ extension WorkspaceModel {
 
   /// Delete the account at the hub and its data on this Mac, once the org name is typed exactly, and
   /// only while `accountId` (the account the sheet was opened for) is still the signed-in one: after a
-  /// switch to an account whose org has the same name, nothing is sent. A refusal (`shared_org`, or any
-  /// other) is one line and changes nothing.
-  public func deleteAccount(typed: String, accountId: String?) async {
+  /// switch to an account whose org has the same name, nothing is sent. It is confirmed it's you first
+  /// (a closed sheet sends nothing and shows nothing). A refusal (`shared_org`, `step_up_required`, or
+  /// any other) is one line and changes nothing.
+  public func deleteAccount(
+    typed: String, accountId: String?, passkey: any PasskeyCeremony, apple: any AppleCeremony
+  ) async {
     guard let accountId, accountId == accountStatus?.account?.id, canDeleteAccount(typed: typed),
       !deleteInFlight
     else { return }
@@ -320,8 +373,15 @@ extension WorkspaceModel {
     defer { deleteInFlight = false }
     deleteFailure = nil
     do {
-      let status = try await accountCalls().deleteAccount()
+      let stepUp = try await confirmIdentity(passkey: passkey, apple: apple)
+      // A switch while the sheet was up: the confirmation is the old account's, so nothing is sent.
+      guard accountId == accountStatus?.account?.id else { return }
+      let status = try await accountCalls().deleteAccount(stepUp: stepUp)
       applyAccountStatus(status)
+    } catch is SignInCanceled {
+      return
+    } catch is CancellationError {
+      return
     } catch {
       let failure = WorkspaceError.from(error)
       if failure.code == .internalError, failure.details?["database"] != nil {
@@ -334,6 +394,7 @@ extension WorkspaceModel {
         return
       }
       deleteFailure = AccountCopy.failure(for: failure)
+      if failure.code == .stepUpRequired { await refreshIdentities() }
     }
   }
 }
@@ -387,7 +448,13 @@ struct AccountSettingsView: View {
     .alert(
       AccountCopy.removeTitle(removing?.text ?? ""), isPresented: removeBinding, presenting: removing
     ) { method in
-      Button(AccountCopy.remove, role: .destructive) { Task { await model.removeIdentity(id: method.id) } }
+      Button(AccountCopy.remove, role: .destructive) {
+        Task {
+          await model.removeIdentity(
+            id: method.id, passkey: SystemPasskeyCeremony(),
+            apple: SystemAppleCeremony(session: webAuthenticationSession))
+        }
+      }
       Button(AccountCopy.cancel, role: .cancel) {}
     } message: { _ in
       Text(AccountCopy.removeMessage)
@@ -462,14 +529,19 @@ struct AccountSettingsView: View {
         if !content.methods.isEmpty || content.methodsLoaded { Hairline() }
         HStack(spacing: LLA.Space.s) {
           Button(content.addPasskey) {
-            Task { await model.addPasskey(using: SystemPasskeyCeremony()) }
+            Task {
+              await model.addPasskey(
+                using: SystemPasskeyCeremony(), apple: SystemAppleCeremony(session: webAuthenticationSession))
+            }
           }
           .buttonStyle(.llaSecondary)
           .accessibilityIdentifier("account.addPasskey")
           if let apple = content.connectApple {
             Button(apple) {
               Task {
-                await model.connectAppleID(using: SystemAppleCeremony(session: webAuthenticationSession))
+                await model.connectAppleID(
+                  using: SystemAppleCeremony(session: webAuthenticationSession),
+                  passkey: SystemPasskeyCeremony())
               }
             }
             .buttonStyle(.llaSecondary)
@@ -491,6 +563,7 @@ struct DeleteAccountSheet: View {
   let accountId: String?
   @State private var typed = ""
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.webAuthenticationSession) private var webAuthenticationSession
 
   var body: some View {
     VStack(alignment: .leading, spacing: LLA.Space.l) {
@@ -534,8 +607,11 @@ struct DeleteAccountSheet: View {
     guard model.canDeleteAccount(typed: typed), !model.deleteInFlight else { return }
     let typed = self.typed
     Task {
-      await model.deleteAccount(typed: typed, accountId: accountId)
-      if model.deleteFailure == nil { dismiss() }
+      await model.deleteAccount(
+        typed: typed, accountId: accountId, passkey: SystemPasskeyCeremony(),
+        apple: SystemAppleCeremony(session: webAuthenticationSession))
+      // A closed confirmation sheet leaves the account and this sheet as they were.
+      if model.deleteFailure == nil, model.accountStatus?.account?.id != accountId { dismiss() }
     }
   }
 }

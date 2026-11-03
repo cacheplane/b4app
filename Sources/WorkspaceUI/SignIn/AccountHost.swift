@@ -25,12 +25,18 @@ public protocol AccountHost: AnyObject {
   func logOut() async -> AccountStatus.Result
 
   func identities() async throws -> [AccountIdentity]
-  func addPasskeyBegin() async throws -> AccountAddPasskeyBegin.Result
+  /// Begin confirming it's you with a passkey (D-150): options for the account's own passkeys.
+  func stepUpPasskeyBegin() async throws -> AccountStepUpBegin.Result
+  /// Begin confirming it's you with the account's Apple ID, on the native sheet.
+  func stepUpAppleBegin() async throws -> AppleNativeCeremony
+  /// The changes below take the confirmation (`nil` only for an account with no sign-in method),
+  /// finish it at the hub, and make the change with the grant it earns, in one call.
+  func addPasskeyBegin(stepUp: AccountStepUp?) async throws -> AccountAddPasskeyBegin.Result
   func addPasskeyFinish(_ params: AccountAddPasskeyFinish.Params) async throws -> AccountIdentity
   /// Answers the methods left.
-  func removeIdentity(id: String) async throws -> [AccountIdentity]
-  func deleteAccount() async throws -> AccountStatus.Result
+  func removeIdentity(id: String, stepUp: AccountStepUp?) async throws -> [AccountIdentity]
+  func deleteAccount(stepUp: AccountStepUp?) async throws -> AccountStatus.Result
   /// Begin linking an Apple ID with the native sheet.
-  func appleLinkBegin() async throws -> AppleNativeCeremony
+  func appleLinkBegin(stepUp: AccountStepUp?) async throws -> AppleNativeCeremony
   func linkApple(_ credential: AppleCredential, ceremonyId: String) async throws -> AccountIdentity
 }

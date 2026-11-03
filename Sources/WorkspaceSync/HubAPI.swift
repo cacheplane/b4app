@@ -46,16 +46,18 @@ public protocol HubAPI: Sendable {
   func setProfile(_ request: ProfileRequest) async throws -> MeResponse
   /// The account's sign-in methods, oldest first (`GET /v1/me`'s `identities`).
   func identities() async throws -> [Identity]
-  /// `POST /v1/me/passkeys/begin`.
-  func addPasskeyBegin() async throws -> AddPasskeyBeginResponse
+  /// `POST /v1/me/passkeys/begin`, with the step-up grant (`nil` only for an account with no sign-in
+  /// method, which needs none).
+  func addPasskeyBegin(stepUp: String?) async throws -> AddPasskeyBeginResponse
   /// `POST /v1/me/passkeys/finish`: answers the new identity.
   func addPasskeyFinish(_ request: AddPasskeyFinishRequest) async throws -> Identity
-  /// `DELETE /v1/me/identities/{id}`. The account's last one is `last_identity`.
-  func removeIdentity(_ id: String) async throws
+  /// `DELETE /v1/me/identities/{id}`, with the step-up grant. The account's last one is
+  /// `last_identity`.
+  func removeIdentity(_ id: String, stepUp: String?) async throws
   /// `POST /v1/me/apple`: begin linking an Apple ID to the signed-in account. The body is
   /// `appleBegin`'s (empty natively, the verifier's hash and the scheme on the web); `apple_linked`
-  /// when the account has one already.
-  func appleLinkBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse
+  /// when the account has one already. Carries the step-up grant.
+  func appleLinkBegin(_ request: AppleBeginRequest, stepUp: String?) async throws -> AppleBeginResponse
   /// `POST /v1/me/apple/native`: finish a native link; answers the new identity.
   func appleLinkNative(_ request: AppleLinkNativeRequest) async throws -> Identity
   /// `POST /v1/me/apple/handoff`: finish a web link with the redirect's handoff and the verifier;
@@ -63,8 +65,23 @@ public protocol HubAPI: Sendable {
   func appleLinkHandoff(_ request: AppleLinkHandoffRequest) async throws -> Identity
   /// `DELETE /v1/sessions/self`: logs out. The device stays enrolled and unrevoked.
   func endSession() async throws
-  /// `DELETE /v1/me`: deletes the account and everything in its personal org.
-  func deleteAccount() async throws
+  /// `DELETE /v1/me`: deletes the account and everything in its personal org. Carries the step-up
+  /// grant.
+  func deleteAccount(stepUp: String?) async throws
+
+  // MARK: Step-up (bearer, D-150)
+
+  /// `POST /v1/me/step-up/passkey/begin`: assertion options for the account's own passkeys.
+  func stepUpPasskeyBegin() async throws -> StepUpBeginResponse
+  /// `POST /v1/me/step-up/passkey/finish`: answers the grant.
+  func stepUpPasskeyFinish(_ request: StepUpFinishRequest) async throws -> StepUpResponse
+  /// `POST /v1/me/step-up/apple`: `appleBegin`'s body (empty natively, the verifier's hash and the
+  /// scheme on the web); `not_found` for an account with no Apple ID.
+  func stepUpAppleBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse
+  /// `POST /v1/me/step-up/apple/native`: answers the grant.
+  func stepUpAppleNative(_ request: StepUpAppleNativeRequest) async throws -> StepUpResponse
+  /// `POST /v1/me/step-up/apple/handoff`: the web flow's handoff and verifier; answers the grant.
+  func stepUpAppleHandoff(_ request: AppleLinkHandoffRequest) async throws -> StepUpResponse
 }
 
 extension HubAPI {
@@ -95,14 +112,17 @@ extension HubAPI {
     throw HubError.unsupported("setProfile")
   }
   public func identities() async throws -> [Identity] { throw HubError.unsupported("identities") }
-  public func addPasskeyBegin() async throws -> AddPasskeyBeginResponse {
+  public func addPasskeyBegin(stepUp: String?) async throws -> AddPasskeyBeginResponse {
     throw HubError.unsupported("addPasskeyBegin")
   }
   public func addPasskeyFinish(_ request: AddPasskeyFinishRequest) async throws -> Identity {
     throw HubError.unsupported("addPasskeyFinish")
   }
-  public func removeIdentity(_ id: String) async throws { throw HubError.unsupported("removeIdentity") }
-  public func appleLinkBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse {
+  public func removeIdentity(_ id: String, stepUp: String?) async throws {
+    throw HubError.unsupported("removeIdentity")
+  }
+  public func appleLinkBegin(_ request: AppleBeginRequest, stepUp: String?) async throws -> AppleBeginResponse
+  {
     throw HubError.unsupported("appleLinkBegin")
   }
   public func appleLinkNative(_ request: AppleLinkNativeRequest) async throws -> Identity {
@@ -112,7 +132,22 @@ extension HubAPI {
     throw HubError.unsupported("appleLinkHandoff")
   }
   public func endSession() async throws { throw HubError.unsupported("endSession") }
-  public func deleteAccount() async throws { throw HubError.unsupported("deleteAccount") }
+  public func deleteAccount(stepUp: String?) async throws { throw HubError.unsupported("deleteAccount") }
+  public func stepUpPasskeyBegin() async throws -> StepUpBeginResponse {
+    throw HubError.unsupported("stepUpPasskeyBegin")
+  }
+  public func stepUpPasskeyFinish(_ request: StepUpFinishRequest) async throws -> StepUpResponse {
+    throw HubError.unsupported("stepUpPasskeyFinish")
+  }
+  public func stepUpAppleBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse {
+    throw HubError.unsupported("stepUpAppleBegin")
+  }
+  public func stepUpAppleNative(_ request: StepUpAppleNativeRequest) async throws -> StepUpResponse {
+    throw HubError.unsupported("stepUpAppleNative")
+  }
+  public func stepUpAppleHandoff(_ request: AppleLinkHandoffRequest) async throws -> StepUpResponse {
+    throw HubError.unsupported("stepUpAppleHandoff")
+  }
 }
 
 extension HubError {

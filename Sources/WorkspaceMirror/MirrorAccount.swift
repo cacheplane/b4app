@@ -317,8 +317,46 @@ import os
     try await authed("list your sign-in methods") { try await $0.identities() }.map(Self.identity)
   }
 
-  public func addPasskeyBegin() async throws -> AccountAddPasskeyBegin.Result {
-    let begun = try await authed("begin adding a passkey") { try await $0.addPasskeyBegin() }
+  // MARK: Step-up (D-150)
+
+  /// Begin confirming with a passkey: options for the account's own passkeys.
+  public func stepUpPasskeyBegin() async throws -> AccountStepUpBegin.Result {
+    let begun = try await authed("begin confirming it's you") { try await $0.stepUpPasskeyBegin() }
+    return AccountStepUpBegin.Result(ceremonyId: begun.ceremonyId, authentication: begun.authentication)
+  }
+
+  /// Begin confirming with the account's Apple ID on Apple's native sheet.
+  public func stepUpAppleBegin() async throws -> AppleNativeCeremony {
+    let begun = try await authed("begin confirming it's you") {
+      try await $0.stepUpAppleBegin(AppleBeginRequest())
+    }
+    return AppleNativeCeremony(ceremonyId: begun.ceremonyId, nonce: begun.nonce)
+  }
+
+  /// The grant `proof` earns, inside the same call as the change it is for (`nil` for none: an account
+  /// with no sign-in method needs none). The grant goes no further than `api`'s next request.
+  private static func grant(_ proof: AccountStepUp?, on api: any HubAPI) async throws -> String? {
+    guard let proof else { return nil }
+    if let ceremonyId = proof.ceremonyId, let assertion = proof.assertion {
+      return try await api.stepUpPasskeyFinish(
+        StepUpFinishRequest(ceremonyId: ceremonyId, assertion: assertion)
+      )
+      .stepUp
+    }
+    if let ceremonyId = proof.ceremonyId, let token = proof.identityToken {
+      return try await api.stepUpAppleNative(
+        StepUpAppleNativeRequest(ceremonyId: ceremonyId, identityToken: token)
+      )
+      .stepUp
+    }
+    throw WorkspaceError(
+      .protocolInvalid, "Confirm with a passkey assertion or Apple's sheet, each with its ceremony.")
+  }
+
+  public func addPasskeyBegin(stepUp: AccountStepUp?) async throws -> AccountAddPasskeyBegin.Result {
+    let begun = try await authed("begin adding a passkey") { api in
+      try await api.addPasskeyBegin(stepUp: try await Self.grant(stepUp, on: api))
+    }
     return AccountAddPasskeyBegin.Result(ceremonyId: begun.ceremonyId, registration: begun.registration)
   }
 
@@ -327,19 +365,20 @@ import os
     return Self.identity(try await authed("add the passkey") { try await $0.addPasskeyFinish(request) })
   }
 
-  /// Unlink one sign-in method; answers the ones left.
-  public func removeIdentity(id: String) async throws -> [AccountIdentity] {
+  /// Unlink one sign-in method, confirmed by `stepUp`; answers the ones left.
+  public func removeIdentity(id: String, stepUp: AccountStepUp?) async throws -> [AccountIdentity] {
     try await authed("remove the sign-in method") { api in
-      try await api.removeIdentity(id)
+      try await api.removeIdentity(id, stepUp: try await Self.grant(stepUp, on: api))
       return try await api.identities()
     }
     .map(Self.identity)
   }
 
-  /// Begin linking an Apple ID with the native sheet. `apple_linked` with one already.
-  public func appleLinkBegin() async throws -> AppleNativeCeremony {
-    let begun = try await authed("begin connecting an Apple ID") {
-      try await $0.appleLinkBegin(AppleBeginRequest())
+  /// Begin linking an Apple ID with the native sheet, confirmed by `stepUp`. `apple_linked` with one
+  /// already.
+  public func appleLinkBegin(stepUp: AccountStepUp?) async throws -> AppleNativeCeremony {
+    let begun = try await authed("begin connecting an Apple ID") { api in
+      try await api.appleLinkBegin(AppleBeginRequest(), stepUp: try await Self.grant(stepUp, on: api))
     }
     return AppleNativeCeremony(ceremonyId: begun.ceremonyId, nonce: begun.nonce)
   }
@@ -356,13 +395,15 @@ import os
   /// sync starts again). The device went with the account, so no later sign-in offers it. The link is
   /// taken and the sync stopped first, so a 401 the sync meets as the account goes cannot sign the
   /// phone out with "This iPhone was signed out of …" or change which device is forgotten.
-  public func deleteAccount() async throws -> AccountStatus.Result {
+  public func deleteAccount(stepUp: AccountStepUp?) async throws -> AccountStatus.Result {
     guard let deleting = link else { throw WorkspaceError(.signedOut, "Nobody is signed in on this iPhone.") }
     generation += 1
     await stopSync()
     let seen = generation
     do {
-      try await authed("delete the account") { try await $0.deleteAccount() }
+      try await authed("delete the account") { api in
+        try await api.deleteAccount(stepUp: try await Self.grant(stepUp, on: api))
+      }
     } catch {
       if seen == generation, link?.tokenRef == deleting.tokenRef { startSync(deleting, fromSnapshot: false) }
       throw error
@@ -598,7 +639,7 @@ import os
   static func accountError(_ error: HubError, doing action: String) -> WorkspaceError {
     let known: Set<ErrorCode> = [
       .signupClosed, .ceremonyExpired, .credentialRejected, .lastIdentity, .mergeRefused, .appleLinked,
-      .sharedOrg, .rateLimited, .notFound,
+      .sharedOrg, .rateLimited, .notFound, .stepUpRequired,
     ]
     let code: ErrorCode
     if let own = ErrorCode(rawValue: error.code), known.contains(own) {
@@ -613,6 +654,7 @@ import os
     }
     var details: [String: JSONValue] = ["hubCode": .string(error.code)]
     if let wait = error.retryAfterMs { details["retryAfterMs"] = .number(Double(wait)) }
+    if let methods = error.methods { details["methods"] = .array(methods.map { .string($0) }) }
     // The hub's reason names no secret (`unknown_credential`, a merge refusal's).
     if let reason = error.reason { details["reason"] = .string(reason) }
     return WorkspaceError(code, "Could not \(action): \(error.message)", details: .object(details))

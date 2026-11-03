@@ -463,7 +463,13 @@ final class TokenSequence: @unchecked Sendable {
       return .json(200, #"{"ceremonyId":"c3","registration":{"publicKey":{"challenge":"y"}}}"#)
     case "POST /v1/me/passkeys/finish", "POST /v1/me/apple/native", "POST /v1/me/apple/handoff":
       return .json(200, identityJSON)
-    case "POST /v1/me/apple": return .json(200, #"{"ceremonyId":"c4","nonce":"n4"}"#)
+    case "POST /v1/me/apple", "POST /v1/me/step-up/apple":
+      return .json(200, #"{"ceremonyId":"c4","nonce":"n4"}"#)
+    case "POST /v1/me/step-up/passkey/begin":
+      return .json(200, #"{"ceremonyId":"c5","authentication":{"publicKey":{"challenge":"z"}}}"#)
+    case "POST /v1/me/step-up/passkey/finish", "POST /v1/me/step-up/apple/native",
+      "POST /v1/me/step-up/apple/handoff":
+      return .json(200, #"{"stepUp":"g1","expiresAt":"2026-11-02T12:02:00.000000Z"}"#)
     case "DELETE /v1/me/identities/i2", "DELETE /v1/sessions/self", "DELETE /v1/me":
       return StubProtocol.Reply(status: 204, body: Data())
     default:
@@ -557,14 +563,14 @@ final class TokenSequence: @unchecked Sendable {
     #expect(profile.fullName == "Brian Love" && profile.onboarded)
     let identities = try await api.identities()
     #expect(identities.map(\.id) == ["i1"])
-    let begun = try await api.addPasskeyBegin()
+    let begun = try await api.addPasskeyBegin(stepUp: "g-add")
     #expect(begun.ceremonyId == "c3")
     let added = try await api.addPasskeyFinish(
       AddPasskeyFinishRequest(ceremonyId: "c3", attestation: ["id": "a"]))
     #expect(added.id == "i2")
-    try await api.removeIdentity("i2")
+    try await api.removeIdentity("i2", stepUp: "g-remove")
     try await api.endSession()
-    try await api.deleteAccount()
+    try await api.deleteAccount(stepUp: "g-delete")
 
     let seen = recorder.all.map { "\($0.request.httpMethod ?? "") \($0.request.url?.path ?? "")" }
     #expect(
@@ -575,6 +581,11 @@ final class TokenSequence: @unchecked Sendable {
     for captured in recorder.all {
       #expect(captured.request.value(forHTTPHeaderField: "Authorization") == "Bearer t0k")
     }
+    // A change that needs a step-up carries its grant in `B4-Step-Up`; no other call has one.
+    #expect(
+      recorder.all.map { $0.request.value(forHTTPHeaderField: "B4-Step-Up") } == [
+        nil, nil, "g-add", nil, "g-remove", nil, "g-delete",
+      ])
     let profileBody = try JSONCoding.decoder.decode(
       JSONValue.self, from: try #require(recorder.all.first).body)
     #expect(profileBody == ["fullName": "Brian Love"])
@@ -588,10 +599,10 @@ final class TokenSequence: @unchecked Sendable {
       return Self.accountReply(captured)
     }
 
-    let native = try await api.appleLinkBegin(AppleBeginRequest())
+    let native = try await api.appleLinkBegin(AppleBeginRequest(), stepUp: "g1")
     #expect(native == AppleBeginResponse(ceremonyId: "c4", nonce: "n4"))
     _ = try await api.appleLinkBegin(
-      AppleBeginRequest(verifierHash: String(repeating: "b", count: 64), scheme: "b4app-beta"))
+      AppleBeginRequest(verifierHash: String(repeating: "b", count: 64), scheme: "b4app-beta"), stepUp: "g2")
     let linked = try await api.appleLinkNative(
       AppleLinkNativeRequest(ceremonyId: "c4", identityToken: "jwt", authorizationCode: "code"))
     #expect(linked.id == "i2")
@@ -606,6 +617,8 @@ final class TokenSequence: @unchecked Sendable {
     for captured in recorder.all {
       #expect(captured.request.value(forHTTPHeaderField: "Authorization") == "Bearer t0k")
     }
+    #expect(
+      recorder.all.map { $0.request.value(forHTTPHeaderField: "B4-Step-Up") } == ["g1", "g2", nil, nil])
     let bodies = recorder.all.map { try? JSONCoding.decoder.decode(JSONValue.self, from: $0.body) }
     #expect(
       bodies == [
@@ -615,16 +628,65 @@ final class TokenSequence: @unchecked Sendable {
       ])
   }
 
+  /// D-150: the step-up routes carry the bearer and their bodies, and answer the grant.
+  @Test func stepUpCallsSendTheBearerAndTheirBodies() async throws {
+    let recorder = Recorder()
+    let api = make(host: "step-up.test") { captured in
+      recorder.add(captured)
+      return Self.accountReply(captured)
+    }
+    let begun = try await api.stepUpPasskeyBegin()
+    #expect(begun.ceremonyId == "c5")
+    let passkey = try await api.stepUpPasskeyFinish(
+      StepUpFinishRequest(ceremonyId: "c5", assertion: ["id": "a"]))
+    #expect(passkey == StepUpResponse(stepUp: "g1", expiresAt: "2026-11-02T12:02:00.000000Z"))
+    _ = try await api.stepUpAppleBegin(AppleBeginRequest())
+    _ = try await api.stepUpAppleNative(StepUpAppleNativeRequest(ceremonyId: "c4", identityToken: "jwt"))
+    _ = try await api.stepUpAppleHandoff(AppleLinkHandoffRequest(handoff: "h", verifier: "v"))
+
+    let seen = recorder.all.map { "\($0.request.httpMethod ?? "") \($0.request.url?.path ?? "")" }
+    #expect(
+      seen == [
+        "POST /v1/me/step-up/passkey/begin", "POST /v1/me/step-up/passkey/finish",
+        "POST /v1/me/step-up/apple",
+        "POST /v1/me/step-up/apple/native", "POST /v1/me/step-up/apple/handoff",
+      ])
+    for captured in recorder.all {
+      #expect(captured.request.value(forHTTPHeaderField: "Authorization") == "Bearer t0k")
+    }
+    let bodies = recorder.all.dropFirst().map {
+      try? JSONCoding.decoder.decode(JSONValue.self, from: $0.body)
+    }
+    #expect(
+      bodies == [
+        ["ceremonyId": "c5", "assertion": ["id": "a"]], [:], ["ceremonyId": "c4", "identityToken": "jwt"],
+        ["handoff": "h", "verifier": "v"],
+      ])
+    #expect(!passkey.description.contains("g1"))
+  }
+
+  @Test func aStepUpRefusalCarriesTheMethods() async throws {
+    let api = make(host: "refused.test") { _ in
+      .json(
+        403,
+        #"{"error":{"kind":"request_error","message":"confirm","details":{"code":"step_up_required","methods":["passkey","apple"]}}}"#
+      )
+    }
+    let refused = await #expect(throws: HubError.self) { try await api.deleteAccount(stepUp: nil) }
+    #expect(refused?.code == "step_up_required" && refused?.status == 403)
+    #expect(refused?.methods == ["passkey", "apple"])
+  }
+
   @Test func theFakeLinksOneAppleIDAndRecordsTheCalls() async throws {
     let fake = FakeHubAPI()
-    _ = try await fake.appleLinkBegin(AppleBeginRequest())
+    _ = try await fake.appleLinkBegin(AppleBeginRequest(), stepUp: nil)
     let first = try await fake.appleLinkNative(
       AppleLinkNativeRequest(ceremonyId: "fake-apple-ceremony", identityToken: "t", authorizationCode: "c"))
     #expect(first.kind == "apple")
     #expect(try await fake.identities().map(\.kind) == ["apple"])
     // One Apple ID per account: the begin is refused once there is one.
     let refused = await #expect(throws: HubError.self) {
-      _ = try await fake.appleLinkBegin(AppleBeginRequest())
+      _ = try await fake.appleLinkBegin(AppleBeginRequest(), stepUp: nil)
     }
     #expect(refused?.code == "apple_linked" && refused?.status == 409)
     _ = try await fake.appleLinkHandoff(AppleLinkHandoffRequest(handoff: "h", verifier: "v"))
@@ -717,7 +779,7 @@ final class TokenSequence: @unchecked Sendable {
     }
     for id in ["", "a/b", "../me", "a b", "i1?x=1"] {
       do {
-        try await api.removeIdentity(id)
+        try await api.removeIdentity(id, stepUp: nil)
         Issue.record("\"\(id)\" should be refused")
       } catch let error as HubError {
         #expect(error.code == "invalid_request" && error.status == 0)
@@ -864,21 +926,33 @@ final class TokenSequence: @unchecked Sendable {
 
     let first = Identity(id: "i1", kind: "passkey", name: "Agent Workspace account", createdAt: "t")
     await fake.setIdentities([first])
-    _ = try await fake.addPasskeyBegin()
+    // Like the hub, a change of an account with a sign-in method needs a live grant, used once.
+    do {
+      _ = try await fake.addPasskeyBegin(stepUp: nil)
+      Issue.record("an add needs a step-up")
+    } catch let error as HubError {
+      #expect(error.code == "step_up_required" && error.status == 403 && error.methods == ["passkey"])
+    }
+    let grant = try await fake.stepUpPasskeyFinish(
+      StepUpFinishRequest(ceremonyId: "c", assertion: ["id": "a"]))
+    _ = try await fake.addPasskeyBegin(stepUp: grant.stepUp)
+    await #expect(throws: HubError.self) { _ = try await fake.addPasskeyBegin(stepUp: grant.stepUp) }
     let added = try await fake.addPasskeyFinish(
       AddPasskeyFinishRequest(ceremonyId: "c", attestation: ["id": "b"]))
     #expect(added.kind == "passkey")
     #expect(try await fake.identities().count == 2)
 
-    try await fake.removeIdentity(added.id)
+    let again = try await fake.stepUpPasskeyFinish(
+      StepUpFinishRequest(ceremonyId: "c", assertion: ["id": "a"]))
+    try await fake.removeIdentity(added.id, stepUp: again.stepUp)
     do {
-      try await fake.removeIdentity("i1")
+      try await fake.removeIdentity("i1", stepUp: nil)
       Issue.record("the last identity cannot be removed")
     } catch let error as HubError {
       #expect(error.code == "last_identity" && error.status == 409)
     }
     do {
-      try await fake.removeIdentity("nope")
+      try await fake.removeIdentity("nope", stepUp: nil)
       Issue.record("an unknown identity is not found")
     } catch let error as HubError {
       #expect(error.code == "not_found" && error.status == 404)
@@ -903,7 +977,7 @@ final class TokenSequence: @unchecked Sendable {
       PasskeyFinishRequest(ceremonyId: "c", assertion: ["id": "a"], attestation: nil, device: mac))
     #expect(try await fake.me().deviceId == "dev-9")
 
-    try await fake.deleteAccount()
+    try await fake.deleteAccount(stepUp: nil)
     #expect(await fake.deleteAccountCalls == 1)
     do {
       _ = try await fake.identities()

@@ -728,11 +728,20 @@ enum AccountCalls {
     }
   }
 
-  func addPasskeyBegin() async throws -> AccountAddPasskeyBegin.Result {
+  func stepUpBegin() async throws -> AccountStepUpBegin.Result {
     switch self {
     case .coordinator(let client):
-      return try await client.request(AccountAddPasskeyBegin.self, EmptyParams(), options: Self.call())
-    case .host(let host): return try await host.addPasskeyBegin()
+      return try await client.request(AccountStepUpBegin.self, EmptyParams(), options: Self.call())
+    case .host(let host): return try await host.stepUpPasskeyBegin()
+    }
+  }
+
+  func addPasskeyBegin(stepUp: AccountStepUp?) async throws -> AccountAddPasskeyBegin.Result {
+    switch self {
+    case .coordinator(let client):
+      return try await client.request(
+        AccountAddPasskeyBegin.self, AccountStepUpParams(stepUp: stepUp), options: Self.call())
+    case .host(let host): return try await host.addPasskeyBegin(stepUp: stepUp)
     }
   }
 
@@ -744,21 +753,23 @@ enum AccountCalls {
     }
   }
 
-  func removeIdentity(_ id: String) async throws -> [AccountIdentity] {
+  func removeIdentity(_ id: String, stepUp: AccountStepUp?) async throws -> [AccountIdentity] {
     switch self {
     case .coordinator(let client):
       return try await client.request(
-        AccountRemoveIdentity.self, AccountRemoveIdentity.Params(identityId: id), options: Self.mutation()
+        AccountRemoveIdentity.self, AccountRemoveIdentity.Params(identityId: id, stepUp: stepUp),
+        options: Self.mutation()
       ).identities
-    case .host(let host): return try await host.removeIdentity(id: id)
+    case .host(let host): return try await host.removeIdentity(id: id, stepUp: stepUp)
     }
   }
 
-  func deleteAccount() async throws -> AccountStatus.Result {
+  func deleteAccount(stepUp: AccountStepUp?) async throws -> AccountStatus.Result {
     switch self {
     case .coordinator(let client):
-      return try await client.request(AccountDelete.self, EmptyParams(), options: Self.mutation())
-    case .host(let host): return try await host.deleteAccount()
+      return try await client.request(
+        AccountDelete.self, AccountStepUpParams(stepUp: stepUp), options: Self.mutation())
+    case .host(let host): return try await host.deleteAccount(stepUp: stepUp)
     }
   }
 }

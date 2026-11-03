@@ -668,6 +668,9 @@ pub struct PendingApple {
     pub name: Option<String>,
     pub client_id: String,
     pub code: String,
+    /// For a step-up: the device that began it, which alone may redeem it (D-150).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<uuid::Uuid>,
 }
 
 impl fmt::Debug for PendingApple {
@@ -807,6 +810,7 @@ mod tests {
             name: Some("Bea".into()),
             client_id: "com.cacheplane.b4app.signin".into(),
             code: "c.secret-code".into(),
+            device_id: None,
         };
         let sealed = seal_pending(&key, b"hash-one", &pending).unwrap();
         assert!(!sealed.windows(13).any(|w| w == b"c.secret-code"));

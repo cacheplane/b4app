@@ -312,9 +312,24 @@ impl Hub {
         token: Option<&str>,
         body: Option<&Value>,
     ) -> (StatusCode, Value) {
+        self.http_stepped(method, path, token, body, None).await
+    }
+
+    /// [`Hub::http_with`] carrying a step-up grant (D-150) when given.
+    pub async fn http_stepped(
+        &self,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        body: Option<&Value>,
+        step_up: Option<&str>,
+    ) -> (StatusCode, Value) {
         let mut request = Request::builder().method(method).uri(path);
         if let Some(token) = token {
             request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        if let Some(grant) = step_up {
+            request = request.header("b4-step-up", grant);
         }
         let body = match body {
             Some(json) => {

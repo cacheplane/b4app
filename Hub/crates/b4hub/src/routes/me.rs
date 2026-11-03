@@ -5,6 +5,9 @@
 //! [`crate::routes::apple`]), logging out
 //! (`DELETE /v1/sessions/self`), and deleting the account (`DELETE /v1/me`).
 //!
+//! Adding a passkey (at its begin), unlinking a sign-in method, and deleting the account also need
+//! a step-up grant ([`crate::routes::step_up`], D-150); every refusal that needs none comes first.
+//!
 //! The principal is always the token's; nothing in a body names a user. An identity is listed
 //! with its id, kind, name, and timestamps only: never a credential id, a passkey's stored
 //! state, an Apple `sub`, or a refresh token.
@@ -33,6 +36,7 @@ use crate::error::{ApiError, ApiJson};
 use crate::maintenance::WritesAllowed;
 use crate::relay::Close;
 use crate::routes::auth::{parse, rejected, start_registration, ACCOUNT_LABEL};
+use crate::routes::step_up::StepUp;
 use crate::serve::AppState;
 
 /// The ceremony kind adding a passkey stores; a sign-in's ceremony cannot finish an add.
@@ -79,12 +83,13 @@ impl fmt::Debug for AddPasskeyFinishRequest {
     }
 }
 
-/// What adding a passkey keeps between begin and finish: who began it, the user handle, and
-/// webauthn-rs's registration state.
+/// What adding a passkey keeps between begin and finish: who began it and on which device (the
+/// begin took that device's step-up grant), the user handle, and webauthn-rs's registration state.
 #[derive(Serialize, Deserialize)]
 struct AddPasskeyCeremony {
     org_id: Uuid,
     user_id: Uuid,
+    device_id: Uuid,
     user_handle: Uuid,
     registration: PasskeyRegistration,
 }
@@ -118,13 +123,16 @@ pub async fn profile(
 }
 
 /// `POST /v1/me/passkeys/begin`: registration options for another passkey of the signed-in
-/// user, excluding the passkeys they have.
+/// user, excluding the passkeys they have. Takes the device's step-up grant: the finish needs this
+/// ceremony, so the add is gated here.
 pub async fn passkey_begin(
     State(state): State<AppState>,
     _allowed: BeginAllowed,
     device: AuthedDevice,
     _writes: WritesAllowed,
+    step_up: StepUp,
 ) -> Result<Json<AddPasskeyBeginResponse>, ApiError> {
+    step_up.require(&state, &device).await?;
     let principal = Principal::from(*device);
     let existing = accounts::passkey_credentials(&state.db, principal).await?;
     // The user's passkeys share one user handle, the first one's; an account with none (made
@@ -142,6 +150,7 @@ pub async fn passkey_begin(
     let ceremony = AddPasskeyCeremony {
         org_id: principal.org_id,
         user_id: principal.user_id,
+        device_id: device.device_id,
         user_handle,
         registration: reg_state,
     };
@@ -157,7 +166,7 @@ pub async fn passkey_begin(
 }
 
 /// `POST /v1/me/passkeys/finish`: verifies the attestation against a ceremony the same user
-/// began and adds the passkey; answers the new identity.
+/// began on this device and adds the passkey; answers the new identity.
 pub async fn passkey_finish(
     State(state): State<AppState>,
     _allowed: FinishAllowed,
@@ -172,10 +181,13 @@ pub async fn passkey_finish(
         tracing::error!(%error, "a stored passkey ceremony does not deserialise");
         ApiError::internal()
     })?;
-    if ceremony.org_id != principal.org_id || ceremony.user_id != principal.user_id {
-        // To this user the ceremony does not exist.
+    if ceremony.org_id != principal.org_id
+        || ceremony.user_id != principal.user_id
+        || ceremony.device_id != device.device_id
+    {
+        // To this device the ceremony does not exist.
         tracing::info!(
-            reason = "the ceremony was begun by another user",
+            reason = "the ceremony was begun by another user or device",
             "passkey verification failed"
         );
         return Err(ApiError::ceremony_expired());
@@ -223,15 +235,26 @@ pub async fn passkey_finish(
 /// not one of theirs (or not an id) is `not_found`; their last one is `last_identity`. An Apple ID
 /// holding a refresh token is revoked at Apple first: a token that does not open, or a revoke
 /// that fails (as it always does on a hub without Sign in with Apple), removes nothing and fails
-/// the request so it can be retried, as deleting the account does.
+/// the request so it can be retried, as deleting the account does (with a new step-up grant: the
+/// one presented is spent).
 pub async fn remove_identity(
     State(state): State<AppState>,
     device: AuthedDevice,
     _writes: WritesAllowed,
+    step_up: StepUp,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let id = Uuid::parse_str(&id).map_err(|_| ApiError::not_found())?;
     let principal = Principal::from(*device);
+    // Refused before the grant is taken; checked again, under lock, by the removal.
+    let identities = accounts::list_identities(&state.db, principal).await?;
+    if !identities.iter().any(|identity| identity.id == id) {
+        return Err(ApiError::not_found());
+    }
+    if identities.len() == 1 {
+        return Err(ApiError::last_identity());
+    }
+    step_up.require(&state, &device).await?;
     let mut revoked: Option<SealedAppleToken> = None;
     for _ in 0..DELETE_ROUNDS {
         match accounts::remove_identity(&state.db, principal, id, revoked.as_ref()).await? {
@@ -294,15 +317,17 @@ pub async fn end_session(
 /// only when all of them open is each revoked at Apple; a token that does not open revokes
 /// nothing, and a failed revoke deletes nothing, and either fails the request so it can be
 /// retried. Then the user, their tokens, identities, devices, and every row of their personal
-/// org go in one transaction. An account in a shared org is `shared_org`, before anything is
-/// revoked.
+/// org go in one transaction. An account in a shared org is `shared_org`, before the step-up grant
+/// is taken or anything is revoked.
 pub async fn delete_me(
     State(state): State<AppState>,
     device: AuthedDevice,
     _writes: WritesAllowed,
+    step_up: StepUp,
 ) -> Result<StatusCode, ApiError> {
     let principal = Principal::from(*device);
     let mut to_revoke = accounts::apple_tokens_to_revoke(&state.db, principal).await?;
+    step_up.require(&state, &device).await?;
     let mut revoked = SealedAppleTokens::default();
     for _ in 0..DELETE_ROUNDS {
         let grants = to_revoke

@@ -13,13 +13,14 @@ use axum::http::StatusCode;
 use b4hub::config::Signup;
 use b4hub::routes::apple::{
     AppleBeginRequest, AppleBeginResponse, AppleLinkHandoffRequest, AppleLinkNativeRequest,
-    AppleNativeRequest, HandoffRequest, SCHEMES,
+    AppleNativeRequest, AppleStepUpNativeRequest, HandoffRequest, SCHEMES,
 };
 use b4hub::routes::auth::{
     AuthConfigResponse, AuthSession, PasskeyBeginResponse, PasskeyFinishRequest,
 };
 use b4hub::routes::enroll::EnrollRequest;
 use b4hub::routes::me::{AddPasskeyBeginResponse, AddPasskeyFinishRequest, ProfileRequest};
+use b4hub::routes::step_up::{StepUpBeginResponse, StepUpFinishRequest, StepUpResponse};
 use b4hub_db::accounts::{self, Identity, Principal};
 use b4hub_db::{devices, orgs};
 use common::authenticator::Authenticator;
@@ -162,6 +163,30 @@ fn apple_types_match_the_hub_types() {
     assert!(!format!("{link_handoff:?}").contains(&link_handoff.verifier));
 }
 
+#[test]
+fn step_up_types_match_the_hub_types() {
+    let begun: StepUpBeginResponse = round_trips("stepUpBegin");
+    let options = serde_json::to_value(&begun.authentication).unwrap();
+    assert_eq!(options["publicKey"]["userVerification"], "required");
+    assert_eq!(
+        options["publicKey"]["allowCredentials"][0]["type"],
+        "public-key"
+    );
+
+    let finish: StepUpFinishRequest = round_trips("stepUpFinish");
+    assert_eq!(finish.ceremony_id, begun.ceremony_id);
+    serde_json::from_value::<PublicKeyCredential>(finish.assertion.clone())
+        .expect("the assertion example is a PublicKeyCredential");
+    assert!(!format!("{finish:?}").contains("signature"));
+
+    let native: AppleStepUpNativeRequest = round_trips("stepUpAppleNative");
+    assert!(!format!("{native:?}").contains(&native.identity_token));
+
+    let answer: StepUpResponse = round_trips("stepUpResponse");
+    assert!(!format!("{answer:?}").contains(&answer.step_up));
+    assert!(answer.expires_at.ends_with('Z'));
+}
+
 // ---- The answers the routes build as JSON ----
 
 /// The JSON type of `value`, for comparing shapes.
@@ -258,6 +283,10 @@ async fn routes_answer_the_shapes_the_fixture_holds(pool: PgPool) {
     let refused = hub.post("/v1/auth/passkey/finish", Some(&unknown)).await;
     assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{}", refused.body);
     assert_eq!(refused.body, example("credentialUnknown"));
+    // A change that needs a step-up, without one: the fixture's refusal, word for word.
+    let refused = hub.send("DELETE", "/v1/me", None, &headers).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert_eq!(refused.body, example("stepUpRequired"));
 
     // The profile request and the `me` answer, with a passkey and an Apple identity.
     let principal = Principal::from(
@@ -289,9 +318,34 @@ async fn routes_answer_the_shapes_the_fixture_holds(pool: PgPool) {
     assert_eq!(me.body["userId"], session.body["userId"]);
     assert_eq!(me.body["identities"].as_array().unwrap().len(), 2);
 
-    // Adding a passkey: the begin answer and the identity it ends in.
+    // A passkey step-up: the begin answer, the finish request, and the grant.
+    let begun = hub
+        .send("POST", "/v1/me/step-up/passkey/begin", None, &headers)
+        .await;
+    assert_eq!(begun.status, StatusCode::OK, "{}", begun.body);
+    same_shape("stepUpBegin", &begun.body, &example("stepUpBegin"));
+    let mut finish = example("stepUpFinish");
+    finish["ceremonyId"] = begun.body["ceremonyId"].clone();
+    finish["assertion"] = authenticator.assert(&begun.body["authentication"]);
+    let granted = hub
+        .send(
+            "POST",
+            "/v1/me/step-up/passkey/finish",
+            Some(&finish),
+            &headers,
+        )
+        .await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.body);
+    same_shape("stepUpResponse", &granted.body, &example("stepUpResponse"));
+    let grant = granted.body["stepUp"].as_str().unwrap();
+
+    // Adding a passkey, with the grant: the begin answer and the identity it ends in.
+    let stepped = [
+        ("authorization", auth.as_str()),
+        (common::STEP_UP_HEADER, grant),
+    ];
     let added = hub
-        .send("POST", "/v1/me/passkeys/begin", None, &headers)
+        .send("POST", "/v1/me/passkeys/begin", None, &stepped)
         .await;
     assert_eq!(added.status, StatusCode::OK, "{}", added.body);
     same_shape("addPasskeyBegin", &added.body, &example("addPasskeyBegin"));

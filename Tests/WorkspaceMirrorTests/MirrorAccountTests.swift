@@ -169,9 +169,9 @@ private struct SlowDeleteHub: HubAPI {
     try await fake.passkeyFinish(request)
   }
   func endSession() async throws { try await fake.endSession() }
-  func deleteAccount() async throws {
+  func deleteAccount(stepUp: String?) async throws {
     if let refusal { throw refusal }
-    try await fake.deleteAccount()
+    try await fake.deleteAccount(stepUp: stepUp)
     try await Task.sleep(for: .milliseconds(400))
   }
 }
@@ -475,23 +475,55 @@ private struct SlowDeleteHub: HubAPI {
     await rig.account.stopSync()
     await rig.fake.setIdentities([Identity(id: "i1", kind: "passkey", createdAt: "2026-11-01T09:00:00Z")])
     #expect(try await rig.account.identities().map(\.id) == ["i1"])
-    let begun = try await rig.account.addPasskeyBegin()
+    // Without a confirmation the hub asks for one, and says what the account can confirm with.
+    let unconfirmed = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.account.addPasskeyBegin(stepUp: nil)
+    }
+    #expect(unconfirmed?.code == .stepUpRequired)
+    #expect(unconfirmed?.details?["methods"] == ["passkey"])
+    let options = try await rig.account.stepUpPasskeyBegin()
+    let confirmed = AccountStepUp.passkey(ceremonyId: options.ceremonyId, assertion: ["id": "i1"])
+    let begun = try await rig.account.addPasskeyBegin(stepUp: confirmed)
     #expect(begun.ceremonyId == "fake-add-ceremony")
+    // The phone finished the step-up itself, once, and sent the grant with the change.
+    #expect(
+      await rig.fake.stepUpFinishes == [
+        StepUpFinishRequest(ceremonyId: options.ceremonyId, assertion: ["id": "i1"])
+      ])
+    #expect(await rig.fake.presentedStepUps == [nil, "fake-step-up-1"])
     let added = try await rig.account.addPasskeyFinish(
       AccountAddPasskeyFinish.Params(ceremonyId: begun.ceremonyId, attestation: ["id": "new"]))
     #expect(added.kind == "passkey")
-    #expect(try await rig.account.removeIdentity(id: added.id).map(\.id) == ["i1"])
+    #expect(try await rig.account.removeIdentity(id: added.id, stepUp: confirmed).map(\.id) == ["i1"])
     let refused = await #expect(throws: WorkspaceError.self) {
-      _ = try await rig.account.removeIdentity(id: "i1")
+      _ = try await rig.account.removeIdentity(id: "i1", stepUp: confirmed)
     }
     #expect(refused?.code == .lastIdentity)
+  }
+
+  @Test func anAppleOnlyAccountConfirmsWithAppleNatively() async throws {
+    let rig = try Rig()
+    try await rig.signIn()
+    await rig.account.stopSync()
+    await rig.fake.setIdentities([Identity(id: "a1", kind: "apple", createdAt: "2026-11-01T09:00:00Z")])
+    let ceremony = try await rig.account.stepUpAppleBegin()
+    #expect(await rig.fake.stepUpAppleBegins == [AppleBeginRequest()])
+    let confirmed = AccountStepUp.appleNative(ceremonyId: ceremony.ceremonyId, identityToken: "jwt")
+    _ = try await rig.account.addPasskeyBegin(stepUp: confirmed)
+    // Only the identity token goes to the hub: no code is exchanged for a step-up.
+    #expect(
+      await rig.fake.stepUpAppleNatives == [
+        StepUpAppleNativeRequest(ceremonyId: ceremony.ceremonyId, identityToken: "jwt")
+      ])
+    #expect(await rig.fake.presentedStepUps == ["fake-step-up-1"])
   }
 
   @Test func linkingAnAppleIDNatively() async throws {
     let rig = try Rig()
     try await rig.signIn()
     await rig.account.stopSync()
-    let ceremony = try await rig.account.appleLinkBegin()
+    // An account with no sign-in method yet has nothing to confirm with, and needs nothing.
+    let ceremony = try await rig.account.appleLinkBegin(stepUp: nil)
     #expect(await rig.fake.appleLinkBegins == [AppleBeginRequest()])
     let linked = try await rig.account.linkApple(
       AppleCredential(identityToken: "jwt", authorizationCode: "code"), ceremonyId: ceremony.ceremonyId)
@@ -503,7 +535,9 @@ private struct SlowDeleteHub: HubAPI {
             ceremonyId: "fake-apple-ceremony", identityToken: "jwt", authorizationCode: "code")
         ])
     // One Apple ID per account.
-    let refused = await #expect(throws: WorkspaceError.self) { _ = try await rig.account.appleLinkBegin() }
+    let refused = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.account.appleLinkBegin(stepUp: nil)
+    }
     #expect(refused?.code == .appleLinked)
   }
 
@@ -511,7 +545,7 @@ private struct SlowDeleteHub: HubAPI {
     let rig = try Rig()
     try await rig.signIn()
     await rig.account.stopSync()
-    let status = try await rig.account.deleteAccount()
+    let status = try await rig.account.deleteAccount(stepUp: nil)
     #expect(status.state == .signedOut)
     #expect(await rig.fake.deleteAccountCalls == 1)
     #expect(try rig.store.link() == nil)
@@ -527,7 +561,7 @@ private struct SlowDeleteHub: HubAPI {
     try await rig.signIn()
     try await eventually("the sync's first push") { !(await rig.fake.pushed.isEmpty) }
     #expect(rig.account.sync != nil)
-    let status = try await rig.account.deleteAccount()
+    let status = try await rig.account.deleteAccount(stepUp: nil)
     #expect(status == AccountStatus.Result(state: .signedOut))
     #expect(!rig.changes.all.contains { $0.reason != nil })
     #expect(try rig.store.link() == nil)
@@ -541,7 +575,9 @@ private struct SlowDeleteHub: HubAPI {
       kind: "request_error", code: "shared_org", message: "the account belongs to a shared org", status: 409)
     let rig = try Rig(fake: fake, makeAPI: { _, _ in SlowDeleteHub(fake: fake, refusal: refusal) })
     try await rig.signIn()
-    let refused = await #expect(throws: WorkspaceError.self) { _ = try await rig.account.deleteAccount() }
+    let refused = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.account.deleteAccount(stepUp: nil)
+    }
     #expect(refused?.code == .sharedOrg)
     #expect(rig.account.accountStatus.state == .signedIn)
     #expect(try rig.store.link() != nil)
@@ -577,7 +613,9 @@ private struct SlowDeleteHub: HubAPI {
     let rig = try Rig(fake: fake, makeAPI: { _, _ in SlowDeleteHub(fake: fake, refusal: refusal) })
     await rig.account.suspendSync()
     try await rig.signIn()
-    let refused = await #expect(throws: WorkspaceError.self) { _ = try await rig.account.deleteAccount() }
+    let refused = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.account.deleteAccount(stepUp: nil)
+    }
     #expect(refused?.code == .sharedOrg)
     #expect(rig.account.sync != nil)
     try await Task.sleep(for: .milliseconds(300))
