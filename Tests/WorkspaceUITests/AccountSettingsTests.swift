@@ -74,14 +74,24 @@ private let registrationOptions: JSONValue = [
   ]
 ]
 
-/// Stands in for the system passkey sheet when adding a passkey.
+/// Stands in for the system passkey sheet when adding a passkey, and when confirming it's you.
 @MainActor
 private final class FakeCeremony: PasskeyCeremony {
   var registerError: (any Error)?
+  var confirmError: (any Error)?
   private(set) var registered: [JSONValue] = []
+  private(set) var confirmed: [JSONValue] = []
   private(set) var reportedUnknown: [String] = []
 
   func assert(_ options: JSONValue) async throws -> JSONValue? { nil }
+
+  func confirm(_ options: JSONValue) async throws -> JSONValue {
+    confirmed.append(options)
+    if let confirmError { throw confirmError }
+    return Self.assertion
+  }
+
+  static let assertion: JSONValue = ["id": "aTE", "rawId": "aTE", "type": "public-key"]
 
   func register(_ options: JSONValue) async throws -> JSONValue {
     registered.append(options)
@@ -92,6 +102,33 @@ private final class FakeCeremony: PasskeyCeremony {
   func reportUnknownCredential(relyingParty: String, credentialID: Data) async {
     reportedUnknown.append(relyingParty)
   }
+}
+
+/// Stands in for Apple's sheets when confirming it's you: the web flow answers `web`.
+@MainActor
+private final class FakeAppleSheet: AppleCeremony {
+  var web: URL? = URL(string: "b4app-beta://auth?handoff=S-one-time")
+  private(set) var opened: [URL] = []
+  func nativeSignIn(nonce: String) async throws -> AppleCredential? { nil }
+  func webSignIn(url: URL, callbackScheme: String) async throws -> URL? {
+    opened.append(url)
+    return web
+  }
+}
+
+private let stepUpOptions: JSONValue = [
+  "publicKey": [
+    "challenge": "c3RlcA", "rpId": "test.b4.run", "allowCredentials": [["id": "aTE", "type": "public-key"]],
+  ]
+]
+
+private func stepUpBegun(_ id: String = "s1") throws -> ScriptedTransport.Reply {
+  try reply(AccountStepUpBegin.Result(ceremonyId: id, authentication: stepUpOptions))
+}
+
+/// The confirmation a passkey step-up sends with the change, as the coordinator receives it.
+private func passkeyStepUp(_ id: String = "s1") -> JSONValue {
+  ["ceremonyId": .string(id), "assertion": FakeCeremony.assertion]
 }
 
 /// A flow whose sleeps return at once, moving a clock the test owns by a second each.
@@ -305,7 +342,7 @@ private let minted = HubPair.Result(
     #expect(page.methods.count == 1)
     #expect(page.methods.first?.removeEnabled == false)
     // Removing it anyway is not sent.
-    await model.removeIdentity(id: "i1")
+    await model.removeIdentity(id: "i1", passkey: FakeCeremony(), apple: FakeAppleSheet())
     #expect(transport.calls(.accountRemoveIdentity).isEmpty)
 
     // With two, both can go; the hub's `last_identity` (another device removed one) is one line.
@@ -316,10 +353,11 @@ private let minted = HubPair.Result(
     #expect(
       AccountSettingsContent(model: model, now: today, locale: gb).methods.allSatisfy { $0.removeEnabled })
     // The list is read again, so the stale row stops offering Remove.
+    transport.script(.accountStepUpBegin, [try stepUpBegun()])
     transport.script(.accountRemoveIdentity, [.failure(WorkspaceError(.lastIdentity, "hub detail"))])
     transport.script(
       .accountIdentities, [try reply(AccountIdentities.Result(identities: [identity("i1")]))])
-    await model.removeIdentity(id: "i2")
+    await model.removeIdentity(id: "i2", passkey: FakeCeremony(), apple: FakeAppleSheet())
     #expect(model.accountSettingsFailure == AccountCopy.lastIdentity)
     #expect(model.identities?.map(\.id) == ["i1"])
     #expect(AccountSettingsContent(model: model).methods.first?.removeEnabled == false)
@@ -329,10 +367,13 @@ private let minted = HubPair.Result(
       .accountIdentities,
       [try reply(AccountIdentities.Result(identities: [identity("i1"), identity("i2", kind: "apple")]))])
     await model.refreshIdentities()
+    transport.script(.accountStepUpBegin, [try stepUpBegun("s2")])
     transport.script(
       .accountRemoveIdentity, [try reply(AccountIdentities.Result(identities: [identity("i1")]))])
-    await model.removeIdentity(id: "i2")
-    #expect(transport.calls(.accountRemoveIdentity).last == ["identityId": "i2"])
+    await model.removeIdentity(id: "i2", passkey: FakeCeremony(), apple: FakeAppleSheet())
+    // Confirmed with the account's passkey first; the assertion goes with the removal.
+    #expect(
+      transport.calls(.accountRemoveIdentity).last == ["identityId": "i2", "stepUp": passkeyStepUp("s2")])
     #expect(model.identities?.map(\.id) == ["i1"])
     #expect(model.accountSettingsFailure == nil)
   }
@@ -344,25 +385,73 @@ private let minted = HubPair.Result(
     #expect(!model.canDeleteAccount(typed: "brian's org"))
     #expect(!model.canDeleteAccount(typed: "Brian's Org "))
     #expect(model.canDeleteAccount(typed: "Brian's Org"))
-    await model.deleteAccount(typed: "Brians Org", accountId: theAccount.id)
+    await model.deleteAccount(
+      typed: "Brians Org", accountId: theAccount.id, passkey: FakeCeremony(), apple: FakeAppleSheet())
     #expect(transport.calls(.accountDelete).isEmpty)
 
     // A shared org is refused at the hub: one line, nothing changes.
     transport.script(.accountDelete, [.failure(WorkspaceError(.sharedOrg, "hub detail"))])
-    await model.deleteAccount(typed: "Brian's Org", accountId: theAccount.id)
+    await model.deleteAccount(
+      typed: "Brian's Org", accountId: theAccount.id, passkey: FakeCeremony(), apple: FakeAppleSheet())
     #expect(transport.calls(.accountDelete).count == 1)
     #expect(model.deleteFailure == AccountCopy.sharedOrg)
     #expect(model.accountState == .signedIn)
 
     transport.script(.accountDelete, [.failure(WorkspaceError(.internalError, "secret hub detail"))])
-    await model.deleteAccount(typed: "Brian's Org", accountId: theAccount.id)
+    await model.deleteAccount(
+      typed: "Brian's Org", accountId: theAccount.id, passkey: FakeCeremony(), apple: FakeAppleSheet())
     #expect(model.deleteFailure == "That didn't work. Try again.")
     #expect(model.accountState == .signedIn)
 
     transport.script(.accountDelete, [try status(signedOut)])
-    await model.deleteAccount(typed: "Brian's Org", accountId: theAccount.id)
+    await model.deleteAccount(
+      typed: "Brian's Org", accountId: theAccount.id, passkey: FakeCeremony(), apple: FakeAppleSheet())
     #expect(model.deleteFailure == nil)
     #expect(model.accountState == .signedOut(reason: nil))
+  }
+
+  /// D-135: a change is confirmed with the account's passkey first. Closing that sheet sends nothing
+  /// and shows nothing; the hub asking for a step-up anyway reads the methods again and says so.
+  @Test func aClosedConfirmationSendsNothingAndAStepUpRefusalSaysSo() async throws {
+    let transport = ScriptedTransport()
+    let model = try await connected(transport: transport)
+    let both = AccountIdentities.Result(identities: [identity("i1"), identity("i2", kind: "apple")])
+    transport.script(.accountIdentities, [try reply(both)])
+    await model.refreshIdentities()
+
+    let closed = FakeCeremony()
+    closed.confirmError = SignInCanceled()
+    transport.script(.accountStepUpBegin, [try stepUpBegun(), try stepUpBegun(), try stepUpBegun()])
+    await model.removeIdentity(id: "i2", passkey: closed, apple: FakeAppleSheet())
+    await model.deleteAccount(
+      typed: "Brian's Org", accountId: theAccount.id, passkey: closed, apple: FakeAppleSheet())
+    await model.addPasskey(using: closed, apple: FakeAppleSheet())
+    #expect(closed.confirmed.count == 3)
+    // The confirmation asked for the account's own passkeys.
+    #expect(closed.confirmed.first == stepUpOptions)
+    #expect(transport.calls(.accountRemoveIdentity).isEmpty)
+    #expect(transport.calls(.accountDelete).isEmpty)
+    #expect(transport.calls(.accountAddPasskeyBegin).isEmpty)
+    #expect(model.accountSettingsFailure == nil && model.deleteFailure == nil)
+    #expect(model.accountState == .signedIn)
+
+    // The hub refused the confirmation (or another device changed the methods): one line, and the
+    // methods are read again.
+    transport.script(.accountStepUpBegin, [try stepUpBegun()])
+    transport.script(.accountRemoveIdentity, [.failure(WorkspaceError(.stepUpRequired, "hub detail"))])
+    transport.script(.accountIdentities, [try reply(both)])
+    let reads = transport.calls(.accountIdentities).count
+    await model.removeIdentity(id: "i2", passkey: FakeCeremony(), apple: FakeAppleSheet())
+    #expect(model.accountSettingsFailure == AccountCopy.stepUpRequired)
+    #expect(transport.calls(.accountIdentities).count == reads + 1)
+
+    transport.script(.accountStepUpBegin, [try stepUpBegun()])
+    transport.script(.accountDelete, [.failure(WorkspaceError(.stepUpRequired, "hub detail"))])
+    transport.script(.accountIdentities, [try reply(both)])
+    await model.deleteAccount(
+      typed: "Brian's Org", accountId: theAccount.id, passkey: FakeCeremony(), apple: FakeAppleSheet())
+    #expect(model.deleteFailure == AccountCopy.stepUpRequired)
+    #expect(transport.calls(.accountDelete) == [["stepUp": passkeyStepUp()]])
   }
 
   @Test func editingTheNameSavesIt() async throws {
@@ -390,17 +479,27 @@ private let minted = HubPair.Result(
     transport.script(.accountAddPasskeyBegin, [try reply(begun)])
     transport.script(
       .accountAddPasskeyFinish, [try reply(AccountAddPasskeyFinish.Result(identity: identity("i2")))])
+    // An account with only an Apple ID confirms it's you with Apple's web flow, then adds its passkey.
+    let start = AccountStepUpAppleStart.Result(
+      url: "https://hub.test.b4.run/v1/auth/apple/start?ceremony=s9", callbackScheme: "b4app-beta")
+    transport.script(.accountStepUpAppleStart, [try reply(start)])
     let ceremony = FakeCeremony()
-    await model.addPasskey(using: ceremony)
+    let apple = FakeAppleSheet()
+    await model.addPasskey(using: ceremony, apple: apple)
+    #expect(apple.opened == [URL(string: start.url)!])
+    #expect(ceremony.confirmed.isEmpty)
+    #expect(transport.calls(.accountAddPasskeyBegin) == [["stepUp": ["handoff": "S-one-time"]]])
     #expect(ceremony.registered == [registrationOptions])
     let finish = try #require(transport.calls(.accountAddPasskeyFinish).first)
     #expect(finish["ceremonyId"] == "c9")
     #expect(model.identities?.map(\.id) == ["i1", "i2"])
 
+    // With a passkey now, the next changes confirm with it rather than Apple.
+    transport.script(.accountStepUpBegin, [try stepUpBegun(), try stepUpBegun()])
     // Closing the sheet shows nothing and sends nothing more.
     transport.script(.accountAddPasskeyBegin, [try reply(begun)])
     ceremony.registerError = SignInCanceled()
-    await model.addPasskey(using: ceremony)
+    await model.addPasskey(using: ceremony, apple: apple)
     #expect(transport.calls(.accountAddPasskeyFinish).count == 1)
     #expect(model.accountSettingsFailure == nil)
 
@@ -408,9 +507,10 @@ private let minted = HubPair.Result(
     ceremony.registerError = nil
     transport.script(.accountAddPasskeyBegin, [try reply(begun)])
     transport.script(.accountAddPasskeyFinish, [.failure(WorkspaceError(.credentialRejected, "no"))])
-    await model.addPasskey(using: ceremony)
+    await model.addPasskey(using: ceremony, apple: apple)
     #expect(model.accountSettingsFailure != nil)
     #expect(ceremony.reportedUnknown == ["test.b4.run"])
+    #expect(ceremony.confirmed.count == 2 && apple.opened.count == 1)
   }
 
   @Test func connectAppleIDShowsOnBetaAndProdOnly() async throws {
@@ -537,8 +637,9 @@ private let minted = HubPair.Result(
     let begun = AccountAddPasskeyBegin.Result(ceremonyId: "c9", registration: registrationOptions)
     transport.script(.accountAddPasskeyBegin, [try reply(begun)])
     let ceremony = FakeCeremony()
+    let apple = FakeAppleSheet()
     ceremony.registerError = PasskeyAlreadyOnDevice()
-    await model.addPasskey(using: ceremony)
+    await model.addPasskey(using: ceremony, apple: apple)
     #expect(model.accountSettingsFailure == "This device already has a passkey for this account.")
     #expect(transport.calls(.accountAddPasskeyFinish).isEmpty)
     #expect(ceremony.reportedUnknown.isEmpty)
@@ -569,9 +670,11 @@ private let minted = HubPair.Result(
     other.account?.id = "ffffffffffffffff"
     model.applyAccountStatus(other)
     #expect(model.canDeleteAccount(typed: "Brian's Org"))
-    await model.deleteAccount(typed: "Brian's Org", accountId: openedFor)
+    await model.deleteAccount(
+      typed: "Brian's Org", accountId: openedFor, passkey: FakeCeremony(), apple: FakeAppleSheet())
     #expect(transport.calls(.accountDelete).isEmpty)
-    await model.deleteAccount(typed: "Brian's Org", accountId: nil)
+    await model.deleteAccount(
+      typed: "Brian's Org", accountId: nil, passkey: FakeCeremony(), apple: FakeAppleSheet())
     #expect(transport.calls(.accountDelete).isEmpty)
   }
 
@@ -661,13 +764,17 @@ private let minted = HubPair.Result(
             "The account was deleted at the hub, but its data on this Mac could not be removed",
             details: ["database": "workspace_a1b2c3d4e5f60718"]))
       ])
-    await model.deleteAccount(typed: "Brian's Org", accountId: theAccount.id)
+    await model.deleteAccount(
+      typed: "Brian's Org", accountId: theAccount.id, passkey: FakeCeremony(), apple: FakeAppleSheet())
     #expect(model.deleteFailure == AccountCopy.deletedLocalDataKept)
     #expect(!AccountCopy.deletedLocalDataKept.contains("Try again"))
 
     // The sign-out usually lands first and closes Settings: the sign-in screen says it then.
     transport.script(.accountDelete, [.hold])
-    let deleting = Task { await model.deleteAccount(typed: "Brian's Org", accountId: theAccount.id) }
+    let deleting = Task {
+      await model.deleteAccount(
+        typed: "Brian's Org", accountId: theAccount.id, passkey: FakeCeremony(), apple: FakeAppleSheet())
+    }
     try await waitUntil("the delete to be sent") { transport.heldCount(.accountDelete) == 1 }
     transport.emit(try .accountChanged(signedOut))
     try await waitUntil("the sign-out") { model.accountState == .signedOut(reason: nil) }

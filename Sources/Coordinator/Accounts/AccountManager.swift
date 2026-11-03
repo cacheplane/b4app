@@ -92,6 +92,8 @@ public actor AccountManager {
   var appleCeremony: AppleCeremony?
   /// The Connect Apple ID web ceremony in flight (Task 14), for the account that began it.
   var appleLinkCeremony: AppleLinkCeremony?
+  /// The Apple web step-up in flight (D-135), for the account that began it.
+  var stepUpAppleCeremony: AppleLinkCeremony?
   /// Log-out's bounds; tests shorten them.
   var logoutTimeouts = LogoutTimeouts.standard
   /// One transition at a time (`acquire`/`release`).

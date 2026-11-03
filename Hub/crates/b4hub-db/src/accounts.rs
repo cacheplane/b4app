@@ -682,6 +682,20 @@ pub async fn passkey_credentials(db: &Db, principal: Principal) -> Result<Vec<Pa
         .collect())
 }
 
+/// `principal`'s passkeys as stored (webauthn-rs's serialised `Passkey`), with their identity ids,
+/// oldest first: what a step-up assertion is checked against.
+pub async fn passkeys(db: &Db, principal: Principal) -> Result<Vec<(Uuid, Value)>> {
+    let rows = sqlx::query_as(
+        "SELECT id, passkey FROM user_identities \
+         WHERE org_id = $1 AND user_id = $2 AND kind = 'passkey' ORDER BY created_at, id",
+    )
+    .bind(principal.org_id)
+    .bind(principal.user_id)
+    .fetch_all(&db.pool)
+    .await?;
+    Ok(rows)
+}
+
 /// Locks the user row `FOR UPDATE`; `false` when there is no such user. `tx` must carry the
 /// user's tenant context.
 async fn lock_user(tx: &mut Transaction<'_, Postgres>, user_id: Uuid) -> Result<bool> {
@@ -734,7 +748,7 @@ async fn owns_personal_org(
 /// reference. `users` and `orgs` follow. A table added later must be added here too; the test
 /// `delete_user_removes_every_tenant_row` lists the tables from the catalogue and fails until it
 /// is.
-const ORG_TABLES: [&str; 18] = [
+const ORG_TABLES: [&str; 19] = [
     "changes",
     "column_clocks",
     "org_sync_horizons",
@@ -751,6 +765,7 @@ const ORG_TABLES: [&str; 18] = [
     "pairing_mints",
     "user_identities",
     "enrollment_codes",
+    "step_up_grants",
     "device_tokens",
     "devices",
 ];

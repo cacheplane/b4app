@@ -213,6 +213,51 @@ impl Hub {
     }
 }
 
+/// The step-up routes (D-135) and the header a gated change carries its grant in.
+pub const STEP_UP_BEGIN: &str = "/v1/me/step-up/passkey/begin";
+pub const STEP_UP_FINISH: &str = "/v1/me/step-up/passkey/finish";
+pub const STEP_UP_HEADER: &str = "b4-step-up";
+
+impl Hub {
+    /// Sends with the device token `token` and, when given, the step-up grant `grant`.
+    pub async fn stepped(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        token: &str,
+        grant: Option<&str>,
+    ) -> Answer {
+        let bearer = format!("Bearer {token}");
+        let mut headers = vec![("authorization", bearer.as_str())];
+        if let Some(grant) = grant {
+            headers.push((STEP_UP_HEADER, grant));
+        }
+        self.send(method, path, body, &headers).await
+    }
+
+    /// Earns a step-up grant for the device of `token` with `authenticator`'s credential `index`.
+    pub async fn step_up(
+        &self,
+        authenticator: &mut authenticator::Authenticator,
+        index: usize,
+        token: &str,
+    ) -> String {
+        let begun = self.stepped("POST", STEP_UP_BEGIN, None, token, None).await;
+        assert_eq!(begun.status, StatusCode::OK, "{}", begun.body);
+        let assertion = authenticator.assert_with(index, &begun.body["authentication"]);
+        let body = serde_json::json!({
+            "ceremonyId": begun.body["ceremonyId"],
+            "assertion": assertion,
+        });
+        let finished = self
+            .stepped("POST", STEP_UP_FINISH, Some(&body), token, None)
+            .await;
+        assert_eq!(finished.status, StatusCode::OK, "{}", finished.body);
+        finished.body["stepUp"].as_str().unwrap().to_string()
+    }
+}
+
 impl Drop for Hub {
     fn drop(&mut self) {
         self.server.abort();

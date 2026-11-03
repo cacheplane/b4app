@@ -10,7 +10,9 @@ import WorkspaceSync
 /// account's sign-in methods, log-out, and deletion. The app runs only the ceremony UI; the token never
 /// leaves the coordinator. A WebAuthn response or an Apple handoff arrives once over the socket and goes
 /// to the hub; the Apple flow's verifier is made and kept here. None of them is logged, stored, or put
-/// in an error.
+/// in an error. A change that needs a step-up (D-135) brings its assertion or handoff in its own
+/// params; the coordinator finishes the step-up and makes the change in the same command, so the grant
+/// the hub answers never leaves it.
 extension AccountManager {
   /// Log-out's bounds: the spec's two steps of about 10 s, a short last word for the hub session, and
   /// the close, all inside 21 s.
@@ -136,9 +138,11 @@ extension AccountManager {
   }
 
   /// Begin linking an Apple ID to the signed-in account (`POST /v1/me/apple` with a fresh verifier's
-  /// hash and this flavour's scheme), keep the verifier, and answer the start URL. A start replaces a
-  /// link already in flight. `apple_linked` when the account has one.
-  public func appleLinkStart() async throws -> AccountAppleLinkStart.Result {
+  /// hash and this flavour's scheme, and the step-up `params` carries), keep the verifier, and answer
+  /// the start URL. A start replaces a link already in flight. `apple_linked` when the account has one.
+  public func appleLinkStart(
+    _ params: AccountAppleLinkStart.Params = AccountStepUpParams()
+  ) async throws -> AccountAppleLinkStart.Result {
     try requireAppleSignIn()
     let scope = try self.scope()
     await appleStarts.lock()
@@ -146,8 +150,9 @@ extension AccountManager {
     let verifier = Self.newVerifier()
     let request = AppleBeginRequest(verifierHash: Self.sha256Hex(verifier), scheme: flavor.urlScheme)
     let begun = try await Self.inScope(scope) {
-      try await Self.hubCall("begin connecting an Apple ID") {
-        try await scope.hub.client().appleLinkBegin(request)
+      let grant = try await stepUpGrant(params.stepUp, in: scope)
+      return try await Self.hubCall("begin connecting an Apple ID") {
+        try await scope.hub.client().appleLinkBegin(request, stepUp: grant)
       }
     }
     let url = try appleStartURL(ceremony: begun.ceremonyId)
@@ -178,6 +183,70 @@ extension AccountManager {
       }
     }
     return AccountAppleLinkFinish.Result(identity: Self.identity(added))
+  }
+
+  // MARK: - Step-up (D-135)
+
+  /// Begin confirming with a passkey: options for the account's own passkeys.
+  public func stepUpBegin() async throws -> AccountStepUpBegin.Result {
+    let scope = try self.scope()
+    let begun = try await Self.inScope(scope) {
+      try await Self.hubCall("begin confirming it's you") {
+        try await scope.hub.client().stepUpPasskeyBegin()
+      }
+    }
+    return AccountStepUpBegin.Result(ceremonyId: begun.ceremonyId, authentication: begun.authentication)
+  }
+
+  /// Begin confirming with the account's Apple ID on the web: a fresh verifier's hash and this
+  /// flavour's scheme to `POST /v1/me/step-up/apple`, the verifier kept for the change that brings the
+  /// handoff. A start replaces a step-up already in flight.
+  public func stepUpAppleStart() async throws -> AccountStepUpAppleStart.Result {
+    try requireAppleSignIn()
+    let scope = try self.scope()
+    await appleStarts.lock()
+    defer { appleStarts.unlock() }
+    let verifier = Self.newVerifier()
+    let request = AppleBeginRequest(verifierHash: Self.sha256Hex(verifier), scheme: flavor.urlScheme)
+    let begun = try await Self.inScope(scope) {
+      try await Self.hubCall("begin confirming it's you") {
+        try await scope.hub.client().stepUpAppleBegin(request)
+      }
+    }
+    let url = try appleStartURL(ceremony: begun.ceremonyId)
+    stepUpAppleCeremony = AppleLinkCeremony(
+      id: begun.ceremonyId, verifier: verifier, accountId: scope.account.id)
+    return AccountStepUpAppleStart.Result(url: url.absoluteString, callbackScheme: flavor.urlScheme)
+  }
+
+  /// The grant `proof` earns for `scope`'s account (`nil` for no proof: an account with no sign-in
+  /// method needs none, and the hub refuses any other with `step_up_required`). A passkey assertion
+  /// goes to the hub once; an Apple handoff is redeemed with the verifier `account.stepUpAppleStart`
+  /// kept, which is used up whatever the hub answers. The grant is answered only to the caller, which
+  /// sends it with the change at once.
+  func stepUpGrant(_ proof: AccountStepUp?, in scope: AccountScope) async throws -> String? {
+    guard let proof else { return nil }
+    if let ceremonyId = proof.ceremonyId, let assertion = proof.assertion, proof.handoff == nil {
+      let request = StepUpFinishRequest(ceremonyId: ceremonyId, assertion: assertion)
+      return try await Self.hubCall("confirm it's you") {
+        try await scope.hub.client().stepUpPasskeyFinish(request)
+      }.stepUp
+    }
+    if let handoff = proof.handoff, proof.assertion == nil, proof.ceremonyId == nil {
+      let ceremony = stepUpAppleCeremony
+      // Single use, whatever the hub answers.
+      stepUpAppleCeremony = nil
+      guard let ceremony, ceremony.accountId == scope.account.id else {
+        throw WorkspaceError(
+          .ceremonyExpired, "No Apple confirmation is in progress on this Mac. Start again.")
+      }
+      let request = AppleLinkHandoffRequest(handoff: handoff, verifier: ceremony.verifier)
+      return try await Self.hubCall("confirm it's you") {
+        try await scope.hub.client().stepUpAppleHandoff(request)
+      }.stepUp
+    }
+    throw WorkspaceError(
+      .protocolInvalid, "Confirm with a passkey assertion and its ceremony, or an Apple handoff.")
   }
 
   /// `<hub>/v1/auth/apple/start?ceremony=<id>`, which the browser session opens.
@@ -225,10 +294,16 @@ extension AccountManager {
     return AccountIdentities.Result(identities: listed.map(Self.identity))
   }
 
-  public func addPasskeyBegin() async throws -> AccountAddPasskeyBegin.Result {
+  /// Finish the step-up `params` carries and begin adding a passkey with its grant.
+  public func addPasskeyBegin(
+    _ params: AccountAddPasskeyBegin.Params = AccountStepUpParams()
+  ) async throws -> AccountAddPasskeyBegin.Result {
     let scope = try self.scope()
     let begun = try await Self.inScope(scope) {
-      try await Self.hubCall("begin adding a passkey") { try await scope.hub.client().addPasskeyBegin() }
+      let grant = try await stepUpGrant(params.stepUp, in: scope)
+      return try await Self.hubCall("begin adding a passkey") {
+        try await scope.hub.client().addPasskeyBegin(stepUp: grant)
+      }
     }
     return AccountAddPasskeyBegin.Result(ceremonyId: begun.ceremonyId, registration: begun.registration)
   }
@@ -246,14 +321,16 @@ extension AccountManager {
     return AccountAddPasskeyFinish.Result(identity: Self.identity(added))
   }
 
-  /// Unlink one sign-in method, answering the ones left.
+  /// Finish the step-up `params` carries and unlink one sign-in method with its grant, answering the
+  /// ones left.
   public func removeIdentity(_ params: AccountRemoveIdentity.Params) async throws -> AccountIdentities.Result
   {
     let scope = try self.scope()
     let left = try await Self.inScope(scope) {
-      try await Self.hubCall("remove the sign-in method") {
+      let grant = try await stepUpGrant(params.stepUp, in: scope)
+      return try await Self.hubCall("remove the sign-in method") {
         let api = try await scope.hub.client()
-        try await api.removeIdentity(params.identityId)
+        try await api.removeIdentity(params.identityId, stepUp: grant)
         return try await api.identities()
       }
     }
@@ -406,15 +483,23 @@ extension AccountManager {
 
   // MARK: - Deleting the account
 
-  /// `DELETE /v1/me` (waiting at most `deleteWait`), then sign out and drop the account's database, and
-  /// only once it is gone the registry row. A refusal from the hub, or no answer, changes nothing here.
-  /// A drop that fails keeps the (signed-out) row, so the database is not lost track of, and reports it.
-  public func deleteAccount() async throws -> AccountStatus.Result {
+  /// Finish the step-up `params` carries, then `DELETE /v1/me` with its grant (both waiting at most
+  /// `deleteWait`), then sign out and drop the account's database, and only once it is gone the
+  /// registry row. A refusal from the hub, or no answer, changes nothing here. A drop that fails keeps
+  /// the (signed-out) row, so the database is not lost track of, and reports it.
+  public func deleteAccount(
+    _ params: AccountDelete.Params = AccountStepUpParams()
+  ) async throws
+    -> AccountStatus.Result
+  {
     try await acquire(within: logoutTimeouts.lockWait)
     defer { release() }
     guard let scope = slot.get() else { throw WorkspaceError(.signedOut, Self.signedOutMessage) }
     let answer = await Bounded.run(within: Self.deleteWait) {
-      try await Self.hubCall("delete the account") { try await scope.hub.client().deleteAccount() }
+      let grant = try await self.stepUpGrant(params.stepUp, in: scope)
+      return try await Self.hubCall("delete the account") {
+        try await scope.hub.client().deleteAccount(stepUp: grant)
+      }
     }
     switch answer {
     case .none:
@@ -499,13 +584,14 @@ extension AccountManager {
   static func accountError(_ error: HubError, doing action: String) -> WorkspaceError {
     let known: Set<ErrorCode> = [
       .signupClosed, .ceremonyExpired, .credentialRejected, .lastIdentity, .mergeRefused, .appleLinked,
-      .sharedOrg, .rateLimited, .notFound,
+      .sharedOrg, .rateLimited, .notFound, .stepUpRequired,
     ]
     guard let code = ErrorCode(rawValue: error.code), known.contains(code) else {
       return HubSync.workspaceError(error, doing: action)
     }
     var details: [String: JSONValue] = ["hubCode": .string(error.code)]
     if let wait = error.retryAfterMs { details["retryAfterMs"] = .number(Double(wait)) }
+    if let methods = error.methods { details["methods"] = .array(methods.map { .string($0) }) }
     // The hub's reason names no secret (`unknown_credential`, a merge refusal's).
     if let reason = error.reason { details["reason"] = .string(reason) }
     return WorkspaceError(code, "Could not \(action): \(error.message)", details: .object(details))

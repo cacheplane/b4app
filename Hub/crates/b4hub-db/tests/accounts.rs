@@ -461,6 +461,80 @@ async fn prune_expired_removes_old_ceremonies_and_handoffs(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn a_step_up_grant_is_taken_once_by_its_own_user_and_device(pool: PgPool) {
+    let (_admin, app) = common::migrated(&pool).await;
+    let created = accounts::create_personal(&app, passkey(b"c"), device("Mac", Platform::Macos))
+        .await
+        .unwrap();
+    let principal = Principal {
+        org_id: created.org_id,
+        user_id: created.user_id,
+    };
+    let other = accounts::issue_session(&app, principal, device("iPhone", Platform::Ios), None)
+        .await
+        .unwrap();
+    let grant = ceremonies::create_step_up(&app, principal, created.device_id, "passkey")
+        .await
+        .unwrap();
+    assert!(grant.expires_at.ends_with('Z'), "{}", grant.expires_at);
+    // Only the hash is stored.
+    let stored: Vec<u8> = sqlx::query_scalar("SELECT token_hash FROM step_up_grants")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, hash_token(&grant.token).to_vec());
+
+    // Another device of the same user, another user, and a wrong token take nothing.
+    for (token, who, device) in [
+        (grant.token.as_str(), principal, other.device_id),
+        (
+            grant.token.as_str(),
+            Principal {
+                org_id: principal.org_id,
+                user_id: new_uuid(),
+            },
+            created.device_id,
+        ),
+        ("not-the-grant", principal, created.device_id),
+    ] {
+        assert!(!ceremonies::take_step_up(&app, token, who, device)
+            .await
+            .unwrap());
+    }
+    assert!(
+        ceremonies::take_step_up(&app, &grant.token, principal, created.device_id)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !ceremonies::take_step_up(&app, &grant.token, principal, created.device_id)
+            .await
+            .unwrap(),
+        "a grant is used once"
+    );
+
+    // An expired grant is refused, and pruned a minute after it expired.
+    let expired = ceremonies::create_step_up(&app, principal, created.device_id, "apple")
+        .await
+        .unwrap();
+    sqlx::query("UPDATE step_up_grants SET expires_at = now() - interval '1 second'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        !ceremonies::take_step_up(&app, &expired.token, principal, created.device_id)
+            .await
+            .unwrap()
+    );
+    assert_eq!(ceremonies::prune_expired(&app).await.unwrap(), 0);
+    sqlx::query("UPDATE step_up_grants SET expires_at = now() - interval '61 seconds'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(ceremonies::prune_expired(&app).await.unwrap(), 2);
+}
+
+#[sqlx::test(migrations = false)]
 async fn issue_session_reuses_own_device(pool: PgPool) {
     let (_admin, app) = common::migrated(&pool).await;
     let created = accounts::create_personal(&app, passkey(b"c"), device("iPhone", Platform::Ios))
@@ -765,7 +839,7 @@ async fn remove_last_identity_refused(pool: PgPool) {
 
 /// Every table with an `org_id` column. A new one fails `delete_user_removes_every_tenant_row`
 /// until it is listed here and `delete_user` clears it.
-const ORG_TABLES: [&str; 19] = [
+const ORG_TABLES: [&str; 20] = [
     "auth_handoffs",
     "changes",
     "column_clocks",
@@ -781,6 +855,7 @@ const ORG_TABLES: [&str; 19] = [
     "projectFolders",
     "projects",
     "runtimeRequests",
+    "step_up_grants",
     "threads",
     "turns",
     "user_identities",

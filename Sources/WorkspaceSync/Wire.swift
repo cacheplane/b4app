@@ -430,6 +430,9 @@ public struct HubErrorBody: Codable, Sendable, Equatable {
     /// `credential_rejected`, `unknown_credential` when no account holds the passkey. Absent from an
     /// older hub, when the hub does not know, and on every other refusal.
     public var reason: String?
+    /// On `step_up_required`, the kinds of sign-in method the account can confirm with (`passkey`,
+    /// `apple`).
+    public var methods: [String]?
   }
 
   public struct Body: Codable, Sendable, Equatable {
@@ -456,12 +459,15 @@ public struct HubError: Error, Sendable, Equatable, CustomStringConvertible {
   /// `details.reason`: on a `merge_refused` answer `same_account`, `has_mac`, or `shared_org`; on a
   /// passkey sign-in's `credential_rejected`, `unknownCredential` or nothing.
   public var reason: String?
+  /// `details.methods` of a `step_up_required` answer: what the account can confirm with.
+  public var methods: [String]?
 
   /// The `credential_rejected` reason that says no account holds the asserted passkey.
   public static let unknownCredential = "unknown_credential"
 
   public init(
-    kind: String, code: String, message: String, status: Int, retryAfterMs: Int? = nil, reason: String? = nil
+    kind: String, code: String, message: String, status: Int, retryAfterMs: Int? = nil, reason: String? = nil,
+    methods: [String]? = nil
   ) {
     self.kind = kind
     self.code = code
@@ -469,6 +475,7 @@ public struct HubError: Error, Sendable, Equatable, CustomStringConvertible {
     self.status = status
     self.retryAfterMs = retryAfterMs
     self.reason = reason
+    self.methods = methods
   }
 
   public var description: String { "Hub error \(status) \(code): \(message)" }

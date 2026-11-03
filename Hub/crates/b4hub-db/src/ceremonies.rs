@@ -1,12 +1,15 @@
-//! Sign-in ceremonies and handoffs: the short-lived, single-use state a sign-in passes through.
+//! Sign-in ceremonies, handoffs, and step-up grants: the short-lived, single-use state a sign-in
+//! (or a step-up) passes through.
 //!
 //! A ceremony holds what the hub needs to finish a sign-in it began (webauthn-rs's registration
 //! and authentication state, the Apple nonce and verifier hash) for five minutes, in the database
 //! so any hub instance can finish it. A handoff carries the web Apple flow's result to the app
 //! that began it for two minutes; it is redeemed with the code from the redirect and the verifier
 //! the app kept. Neither table has row-level security: both are read before the org is known.
+//! A step-up grant proves, for two minutes and once, that the signed-in user just finished a
+//! passkey or Apple assertion on one device (D-135); only its hash is stored.
 //!
-//! Taking either is one conditional `UPDATE`: of two concurrent takes the second waits on the row
+//! Taking any of them is one conditional `UPDATE`: of two concurrent takes the second waits on the row
 //! lock, then finds `used_at` set and matches nothing, so exactly one succeeds.
 
 use std::time::Duration;
@@ -24,7 +27,10 @@ pub const CEREMONY_TTL: Duration = Duration::from_secs(5 * 60);
 /// How long a handoff can be redeemed after it was recorded.
 pub const HANDOFF_TTL: Duration = Duration::from_secs(2 * 60);
 
-/// How long after expiring a ceremony or handoff is kept before pruning deletes it, so a finish
+/// How long a step-up grant can be used after the assertion that earned it.
+pub const STEP_UP_TTL: Duration = Duration::from_secs(2 * 60);
+
+/// How long after expiring a ceremony, handoff, or step-up grant is kept before pruning deletes it, so a finish
 /// that read the row just before the deadline never finds it gone mid-request.
 pub const PRUNE_GRACE: Duration = Duration::from_secs(60);
 
@@ -208,8 +214,64 @@ pub async fn handoff_is_live(db: &Db, code_hash: &[u8], verifier_hash: &[u8]) ->
     Ok(live)
 }
 
-/// Deletes handoffs, then ceremonies no remaining handoff points at, that expired more than
-/// [`PRUNE_GRACE`] ago, and returns how many rows went. The serve loop runs it with each
+/// A step-up grant just minted: the token (handed to the device once, never stored) and when it
+/// expires, as RFC 3339 in UTC.
+pub struct StepUpGrant {
+    pub token: String,
+    pub expires_at: String,
+}
+
+/// Records that `principal` just finished a step-up assertion of `method` (`passkey` or `apple`) on
+/// the device `device_id`, and returns the grant. Only the token's hash is stored.
+pub async fn create_step_up(
+    db: &Db,
+    principal: Principal,
+    device_id: Uuid,
+    method: &str,
+) -> Result<StepUpGrant> {
+    let token = new_token();
+    let expires_at: String = sqlx::query_scalar(
+        "INSERT INTO step_up_grants (token_hash, org_id, user_id, device_id, method, expires_at) \
+         VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6)) \
+         RETURNING to_char(expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')",
+    )
+    .bind(&hash_token(&token)[..])
+    .bind(principal.org_id)
+    .bind(principal.user_id)
+    .bind(device_id)
+    .bind(method)
+    .bind(STEP_UP_TTL.as_secs_f64())
+    .fetch_one(&db.pool)
+    .await?;
+    Ok(StepUpGrant { token, expires_at })
+}
+
+/// Takes the step-up grant `token`, once, when it was earned by `principal` on `device_id` and has
+/// not expired; whether it was. An unknown, expired, spent, or another user's or device's grant is
+/// `false`, indistinguishably, and leaves a live grant of another device untouched.
+pub async fn take_step_up(
+    db: &Db,
+    token: &str,
+    principal: Principal,
+    device_id: Uuid,
+) -> Result<bool> {
+    let taken = sqlx::query(
+        "UPDATE step_up_grants SET used_at = now() \
+         WHERE token_hash = $1 AND org_id = $2 AND user_id = $3 AND device_id = $4 \
+           AND used_at IS NULL AND expires_at > now()",
+    )
+    .bind(&hash_token(token)[..])
+    .bind(principal.org_id)
+    .bind(principal.user_id)
+    .bind(device_id)
+    .execute(&db.pool)
+    .await?
+    .rows_affected();
+    Ok(taken == 1)
+}
+
+/// Deletes handoffs, then ceremonies no remaining handoff points at, and step-up grants, that
+/// expired more than [`PRUNE_GRACE`] ago, and returns how many rows went. The serve loop runs it with each
 /// change-log prune.
 pub async fn prune_expired(db: &Db) -> Result<u64> {
     let grace = PRUNE_GRACE.as_secs_f64();
@@ -229,6 +291,13 @@ pub async fn prune_expired(db: &Db) -> Result<u64> {
     .execute(&mut *tx)
     .await?
     .rows_affected();
+    let grants = sqlx::query(
+        "DELETE FROM step_up_grants WHERE expires_at <= now() - make_interval(secs => $1)",
+    )
+    .bind(grace)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
     tx.commit().await?;
-    Ok(handoffs + ceremonies)
+    Ok(handoffs + ceremonies + grants)
 }

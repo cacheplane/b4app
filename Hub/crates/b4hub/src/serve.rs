@@ -24,7 +24,9 @@ use crate::maintenance::MaintenanceState;
 use crate::notify::Notifier;
 use crate::relay::{link, Relay};
 use crate::request_log;
-use crate::routes::{apple, auth, changes, devices, enroll, health, me, pairing, snapshot};
+use crate::routes::{
+    apple, auth, changes, devices, enroll, health, me, pairing, snapshot, step_up,
+};
 
 /// How long the listener stays open, answering `/readyz` 503, after shutdown begins, so a load
 /// balancer polling readiness stops routing here before connections are refused. Capped at a
@@ -154,6 +156,14 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/me/apple/native", post(apple::link_native))
         .route("/v1/me/apple/handoff", post(apple::link_handoff))
         .route("/v1/me/identities/{id}", delete(me::remove_identity))
+        .route("/v1/me/step-up/passkey/begin", post(step_up::passkey_begin))
+        .route(
+            "/v1/me/step-up/passkey/finish",
+            post(step_up::passkey_finish),
+        )
+        .route("/v1/me/step-up/apple", post(apple::step_up_begin))
+        .route("/v1/me/step-up/apple/native", post(apple::step_up_native))
+        .route("/v1/me/step-up/apple/handoff", post(apple::step_up_handoff))
         .route("/v1/sessions/self", delete(me::end_session))
         .route("/v1/devices", get(devices::list))
         .route("/v1/snapshot", get(snapshot::get))

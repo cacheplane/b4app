@@ -369,14 +369,9 @@ async fn a_deleted_accounts_passkey_is_unknown(pool: PgPool) {
     let mut authenticator = Authenticator::new(ORIGIN);
     let session = sign_up(&hub, &mut authenticator).await;
     let token = session["token"].as_str().unwrap();
-    let auth = format!("Bearer {token}");
+    let grant = hub.step_up(&mut authenticator, 0, token).await;
     let deleted = hub
-        .send(
-            "DELETE",
-            "/v1/me",
-            None,
-            &[("authorization", auth.as_str())],
-        )
+        .stepped("DELETE", "/v1/me", None, token, Some(&grant))
         .await;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
     let answer = sign_in(&hub, &mut authenticator, device("Mac", "macos")).await;

@@ -217,6 +217,75 @@ public struct AddPasskeyFinishRequest: Codable, Sendable, Equatable, CustomStrin
   public var debugDescription: String { description }
 }
 
+// MARK: - Step-up (D-135)
+//
+// Adding or removing a sign-in method and deleting the account carry a step-up grant, earned by a
+// passkey or Apple assertion on this device moments before, in the `B4-Step-Up` header.
+
+/// `POST /v1/me/step-up/passkey/begin`'s answer: assertion options whose `allowCredentials` are the
+/// account's own passkeys.
+public struct StepUpBeginResponse: Codable, Sendable, Equatable {
+  public var ceremonyId: String
+  public var authentication: JSONValue
+
+  public init(ceremonyId: String, authentication: JSONValue) {
+    self.ceremonyId = ceremonyId
+    self.authentication = authentication
+  }
+}
+
+/// `POST /v1/me/step-up/passkey/finish`'s body.
+public struct StepUpFinishRequest: Codable, Sendable, Equatable, CustomStringConvertible,
+  CustomDebugStringConvertible
+{
+  public var ceremonyId: String
+  public var assertion: JSONValue
+
+  public init(ceremonyId: String, assertion: JSONValue) {
+    self.ceremonyId = ceremonyId
+    self.assertion = assertion
+  }
+
+  public var description: String { "StepUpFinishRequest(ceremonyId: \(ceremonyId), assertion: <redacted>)" }
+  public var debugDescription: String { description }
+}
+
+/// `POST /v1/me/step-up/apple/native`'s body: the identity token alone; no code is exchanged.
+public struct StepUpAppleNativeRequest: Codable, Sendable, Equatable, CustomStringConvertible,
+  CustomDebugStringConvertible
+{
+  public var ceremonyId: String
+  public var identityToken: String
+
+  public init(ceremonyId: String, identityToken: String) {
+    self.ceremonyId = ceremonyId
+    self.identityToken = identityToken
+  }
+
+  public var description: String {
+    "StepUpAppleNativeRequest(ceremonyId: \(ceremonyId), identityToken: <redacted>)"
+  }
+  public var debugDescription: String { description }
+}
+
+/// What every step-up finish answers: the grant, for the one change that follows, and when it
+/// expires (two minutes on). The grant is a secret: it is sent once, in the change's header, and
+/// never logged, stored, or handed on.
+public struct StepUpResponse: Codable, Sendable, Equatable, CustomStringConvertible,
+  CustomDebugStringConvertible
+{
+  public var stepUp: String
+  public var expiresAt: String
+
+  public init(stepUp: String, expiresAt: String) {
+    self.stepUp = stepUp
+    self.expiresAt = expiresAt
+  }
+
+  public var description: String { "StepUpResponse(stepUp: <redacted>, expiresAt: \(expiresAt))" }
+  public var debugDescription: String { description }
+}
+
 // MARK: - Sign in with Apple
 //
 // `Hub/API.md`'s Apple routes (`routes/apple.rs`): `auth.json` holds one example of each.

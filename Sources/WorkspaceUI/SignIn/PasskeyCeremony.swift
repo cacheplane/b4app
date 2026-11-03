@@ -16,6 +16,10 @@ public protocol PasskeyCeremony {
   /// Sign in with a passkey the device already has for the relying party. Nil when there is none the
   /// person wants to use (none on the device, or the sheet closed: the system does not tell them apart).
   func assert(_ options: JSONValue) async throws -> JSONValue?
+  /// Confirm it's you with one of the account's own passkeys (the options' `allowCredentials`), on this
+  /// device or another (a phone's or a security key), before a change that needs it (D-135).
+  /// `SignInCanceled` when the person closed the sheet.
+  func confirm(_ options: JSONValue) async throws -> JSONValue
   /// Make a new passkey. `SignInCanceled` when the person closed the sheet, `PasskeysNotSetUp` when
   /// the device cannot keep one.
   func register(_ options: JSONValue) async throws -> JSONValue
@@ -29,6 +33,12 @@ public protocol PasskeyCeremony {
 }
 
 extension PasskeyCeremony {
+  /// `assert`, with a closed sheet as `SignInCanceled`.
+  public func confirm(_ options: JSONValue) async throws -> JSONValue {
+    guard let assertion = try await assert(options) else { throw SignInCanceled() }
+    return assertion
+  }
+
   public func reportUnknownCredential(relyingParty: String, credentialID: Data) async {}
   public func renamePasskey(relyingParty: String, userHandle: Data, name: String) async {}
 }
@@ -72,6 +82,35 @@ public final class SystemPasskeyCeremony: NSObject, PasskeyCeremony {
         userID: credential.userID)
     } catch  where Self.meansNoCredential(error) {
       return nil
+    }
+  }
+
+  /// Confirm with one of the passkeys the options allow. Unlike `assert`, not limited to credentials
+  /// already on this device, so the sheet also offers a nearby phone or a security key; any `.canceled`
+  /// is the person closing it.
+  public func confirm(_ options: JSONValue) async throws -> JSONValue {
+    let request = try WebAuthnJSON.assertionRequest(from: options)
+    let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(
+      relyingPartyIdentifier: request.relyingParty)
+    let assertion = provider.createCredentialAssertionRequest(challenge: request.challenge)
+    assertion.allowedCredentials = request.allowedCredentials.map {
+      ASAuthorizationPlatformPublicKeyCredentialDescriptor(credentialID: $0)
+    }
+    if let preference = request.userVerification {
+      assertion.userVerificationPreference = ASAuthorizationPublicKeyCredentialUserVerificationPreference(
+        rawValue: preference)
+    }
+    let run = AuthorizationRun()
+    do {
+      let authorization = try await run.perform(assertion, options: [])
+      guard let credential = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialAssertion
+      else { throw WorkspaceError(.credentialRejected, "The passkey sheet answered something else.") }
+      return WebAuthnJSON.assertion(
+        credentialID: credential.credentialID, authenticatorData: credential.rawAuthenticatorData,
+        clientDataJSON: credential.rawClientDataJSON, signature: credential.signature,
+        userID: credential.userID)
+    } catch let error as ASAuthorizationError where error.code == .canceled {
+      throw SignInCanceled()
     }
   }
 
@@ -222,6 +261,8 @@ public enum WebAuthnJSON {
     public var relyingParty: String
     public var challenge: Data
     public var userVerification: String?
+    /// `allowCredentials`' ids: for a step-up, the account's own passkeys; empty for a sign-in.
+    public var allowedCredentials: [Data] = []
   }
 
   public struct RegistrationRequest: Equatable {
@@ -244,8 +285,18 @@ public enum WebAuthnJSON {
     guard let challenge = key["challenge"]?.stringValue.flatMap(data(base64URL:)) else {
       throw invalid("a challenge")
     }
+    var allowed: [Data] = []
+    if case .array(let descriptors)? = key["allowCredentials"] {
+      for descriptor in descriptors {
+        guard let id = descriptor["id"]?.stringValue.flatMap(data(base64URL:)) else {
+          throw invalid("an id for each allowed credential")
+        }
+        allowed.append(id)
+      }
+    }
     return AssertionRequest(
-      relyingParty: rpId, challenge: challenge, userVerification: key["userVerification"]?.stringValue)
+      relyingParty: rpId, challenge: challenge, userVerification: key["userVerification"]?.stringValue,
+      allowedCredentials: allowed)
   }
 
   public static func registrationRequest(from options: JSONValue) throws -> RegistrationRequest {

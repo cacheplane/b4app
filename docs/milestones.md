@@ -224,7 +224,7 @@ Known limitations (the ones a person could notice; the full list is in the build
 
 Exit gate status: the fixture gates and the live gate (spec items 1 to 7) pass; see `docs/verification.md`. Not exercised live: the Mac's QR sheet on screen, the camera on a device, the "Already answered" copy, and keep-awake "off".
 
-## M8d: accounts and sign-in (D-062 to D-067, D-090 to D-117)
+## M8d: accounts and sign-in (D-062 to D-067, D-090 to D-117, D-135)
 
 Design: `docs/superpowers/specs/2026-11-01-sign-in-design.md`. Plan: `docs/superpowers/plans/2026-11-01-sign-in.md`. Built 2026-11-01 and 2026-11-02 on `blove/sign-in`. Every item below is `implemented` and `fixture-tested` unless it says otherwise (test names in `docs/verification.md`, "Sign-in (fixture gates)"); none is `live-tested`: live gate pending (owner's passkey).
 
@@ -245,7 +245,7 @@ Design: `docs/superpowers/specs/2026-11-01-sign-in-design.md`. Plan: `docs/super
 - [x] The live gate (plan Task 18 Step 4, seven steps). All seven `live-tested` on 2026-11-02 (`docs/verification.md`): adoption without a sign-in, a passkey added and used to sign back in, a second account signed up and onboarded, the two accounts' threads kept apart, the signed-out CLI, and the iPhone pairing by `https` link.
 - [x] Enrollment reuses this device, as sign-in does: `POST /v1/enroll` takes `deviceId` and `candidateDeviceIds`, `hub join` and the phone's code and pairing enrollments send them (D-096 amended, found at the live gate). `fixture-tested` (`enroll.rs`, `accounts.rs`, `AccountCommandTests`, `PairLinkTests`). `live-tested`: pending.
 - [ ] Pin the Apple callback scheme to the hub's flavour (configuration), refusing any other at begin, or hand back through a domain-verified universal link (D-114). `open`: must be done before Sign in with Apple is enabled on any hosted hub; the scheme is the caller's choice today, which on a hosted hub is account takeover with a malicious app and phishing.
-- [ ] A fresh-assertion step-up for adding or removing a sign-in method and deleting the account (D-113). `open`: these need only a device token today, an accepted risk.
+- [x] A fresh-assertion step-up for adding or removing a sign-in method and deleting the account (D-113, resolved by D-135). Adding a passkey, connecting an Apple ID, removing a sign-in method, and deleting the account carry a step-up grant in `B4-Step-Up`: a passkey or Apple assertion of the same user on the same device, two minutes, used once (migration `0012_step_up`, `routes/step_up.rs`, the Apple step-up in `routes/apple.rs`). Settings → Account confirms with a passkey, or with Apple when the account has none, on both platforms; the grant stays in the coordinator or `MirrorAccount`. `fixture-tested` (`tests/accounts.rs`, `tests/apple.rs`, `auth_fixture.rs`, `b4hub-db/tests/accounts.rs`, `AccountCommandTests`, `MirrorAccountTests`, `AccountSettingsTests`, `AppleSignInTests`, `AuthWireTests`, `HTTPHubAPITests`). `live-tested`: pending (the owner's Touch ID; checklist in `docs/verification.md`).
 
 Known limitations (the ones a person could notice; the rest are in the build's review notes):
 
