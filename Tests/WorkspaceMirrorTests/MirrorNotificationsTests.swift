@@ -83,14 +83,15 @@ private func turnRow(_ id: String, thread: String, created: String) throws -> JS
     #expect(try store.needsYouCount() == before - 2)
   }
 
-  @Test func archivedThreadIsNotCountedOrOutstandingForItsRequest() throws {
+  @Test func archivedThreadIsNotCountedButKeepsItsNotifications() throws {
     let store = try AttentionFixture.load().store()
     let before = try store.needsYouCount()
     _ = try store.apply([
       change("threads", "t-ask-request-late", "update", column: "archived", value: true),
       change("threads", "t-unread-a", "update", column: "archived", value: true),
     ])
-    #expect(try store.stillOutstanding(keys: ["request:r-arl1"]).isEmpty)
+    #expect(
+      try store.stillOutstanding(keys: ["request:r-arl1", "turn:u-ua1"]) == ["request:r-arl1", "turn:u-ua1"])
     #expect(try store.needsYouCount() == before - 2)
   }
 

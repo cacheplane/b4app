@@ -5,11 +5,12 @@ extension MirrorStore {
   /// The subset of `keys` whose notification still announces something open, so the app removes the
   /// delivered ones that are not in it (the backstop for a withdrawal push that never arrived).
   ///
-  /// - `request:<id>`: the request exists and is `pending`, and its thread is neither archived nor
-  ///   deleted.
+  /// - `request:<id>`: the request exists and is `pending`, and its thread is not deleted.
   /// - `turn:<id>`: the turn exists, its thread is not deleted, and the thread's `readTurnId` is nil
   ///   or names a turn created before it (`createdAt`, then `id`, bytewise, as the hub compares).
   ///   A read turn the mirror does not hold cannot be compared and leaves the notification up.
+  /// - Archiving a thread ends neither kind of notification (the hub withdraws only on answer, read, or
+  ///   delete); it only takes the thread out of the badge and the list.
   /// - Anything else (an unknown id, another prefix, a malformed key) is not outstanding.
   public func stillOutstanding(keys: [String]) throws -> Set<String> {
     try locked {
@@ -47,7 +48,7 @@ extension MirrorStore {
   private func requestIsOutstanding(_ id: String) throws -> Bool {
     let rows = try query(
       """
-      SELECT r."state" = 'pending' AND t."archived" = 0 AND t."userDeletedAt" IS NULL AS "open"
+      SELECT r."state" = 'pending' AND t."userDeletedAt" IS NULL AS "open"
       FROM "runtimeRequests" r JOIN "threads" t ON t."id" = r."threadId" WHERE r."id" = ?
       """, [.text(id)])
     return rows.first?["open"] == .integer(1)
