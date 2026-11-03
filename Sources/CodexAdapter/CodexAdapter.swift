@@ -319,8 +319,9 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
     return SubmissionReceipt(nativeTurnId: turnId, acknowledged: true)
   }
 
-  /// `thread/delete` (codex-cli 0.166.0). Method-not-found means this Codex has no delete; a thread
-  /// Codex cannot find is already gone.
+  /// `thread/delete` (codex-cli 0.166.0). Method-not-found means this Codex has no delete; an error
+  /// whose message says the thread is not found means it is already gone. Any other error, an invalid
+  /// params included, is thrown and the delete is tried again.
   public func deleteSession(_ ref: NativeSessionRef) async throws -> SessionDeletion {
     let server = try await ensureStarted()
     defer { loadedThreads.remove(ref.nativeSessionId) }
@@ -331,9 +332,7 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
       let failure = WorkspaceError.from(error)
       guard let code = failure.details?["rpcCode"]?.numberValue else { throw failure }
       if code == -32601 { return .unsupported }
-      if code == -32602 || failure.message.localizedCaseInsensitiveContains("not found") {
-        return .alreadyGone
-      }
+      if failure.message.localizedCaseInsensitiveContains("not found") { return .alreadyGone }
       throw failure
     }
   }

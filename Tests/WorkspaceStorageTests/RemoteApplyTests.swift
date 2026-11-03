@@ -105,6 +105,32 @@ private func clock(_ db: WorkspaceDatabase, _ table: String, _ rowId: String, _ 
     #expect(try db.project(id: "p1")?.name == "Renamed")
   }
 
+  @Test func aPulledNullNeverClearsTheDeleteMark() throws {
+    let db = try WorkspaceDatabase.temporary()
+    try seed(db)
+    let mark = "2026-11-02T12:00:00.000Z"
+    let marked = try db.applyRemote(
+      [
+        remote(
+          phone, stamp(epochMillis() + 1_000, phone), "threads", "t1", column: "userDeletedAt",
+          value: .string(mark))
+      ],
+      ownDeviceId: mac, macDeviceIds: [mac], cursor: 1)
+    #expect(marked.applied == 1)
+    let markClock = try db.columnClock(table: "threads", rowId: "t1", column: "userDeletedAt")
+
+    // A newer change that sets it to null is skipped, and its clock is not taken.
+    let cleared = try db.applyRemote(
+      [
+        remote(
+          phone, stamp(epochMillis() + 2_000, phone), "threads", "t1", column: "userDeletedAt", value: .null)
+      ],
+      ownDeviceId: mac, macDeviceIds: [mac], cursor: 2)
+    #expect(cleared.applied == 0 && cleared.skipped == 1 && cleared.touchedThreadIds.isEmpty)
+    #expect(try db.thread(id: "t1")?.userDeletedAt == mark)
+    #expect(try db.columnClock(table: "threads", rowId: "t1", column: "userDeletedAt") == markClock)
+  }
+
   @Test func remoteRowsNeverOverwriteLocalMacColumns() throws {
     let db = try WorkspaceDatabase.temporary()
     try seed(db)
