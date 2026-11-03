@@ -46,7 +46,7 @@ jobs:
           shellcheck .github/scripts/*.sh Hub/scripts/*.sh Hub/chart/scripts/*.sh Infra/scripts/*.sh Infra/scripts/tests/stubs/* Infra/scripts/tests/helpers.bash
       - name: Release tag guard test
         run: .github/scripts/test-tag-guard.sh
-      - name: CI observation tests (isolated API fixtures)
+      - name: CI tooling tests (isolated fixtures)
         run: python3 -m unittest discover -s .github/scripts/tests -v
       - name: Deploy script tests
         run: bats Infra/scripts/tests
@@ -83,7 +83,7 @@ jobs:
       - name: Test
         env:
           SWIFTNIO_STRICT: "1"
-        run: swift test
+        run: python3 Scripts/test-swift.py
 
   apps:
     name: macOS and iOS app builds

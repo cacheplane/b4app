@@ -1,0 +1,19 @@
+{
+  "version": 6,
+  "frozen_at": "2026-11-03T23:34:02.902816+00:00",
+  "parent": "../rollback/manifest-v5.json",
+  "reason": "Rollback23a cold full1170/148 reproduced existing MirrorLogOut happy-path ended failure at10s; standard10s not100ms. endSessionCalls==1 assertion passed, fake has no suspension/throw aftercount, unrelatedasync tests finish10.956s. Earlier PQexec sample directly shows cooperative-worker fixture blocking. Deadlines remain correct; isolate independent suites to remove unrepresentative cross-suite fixture interference.",
+  "scope": "CI-only five-process execution: four exact timing-sensitive suites separately, all remaining test IDs once. No shared test executor or global concurrency-width override. Product code/test bodies/deadlines unchanged23a. Preserve per-test and intra-suite concurrency/serialized traits; explicitly changes cross-suite concurrency, not identical runtime conditions or production starvation guarantees.",
+  "suites": [
+    "WorkspaceMirrorTests.MirrorLogOutTests",
+    "CoordinatorTests.SocketShutdownTests",
+    "CoordinatorTests.AccountCommandTests",
+    "WorkspaceUITests.AttentionModelTests"
+  ],
+  "coverage": "Build/list/run with identical build/environment inputs. Strict unique nonempty inventory; exact escaped suite-prefix boundaries; expected groups nonempty; disjoint/exhaustive method-ID union; every actual child summary/result required and nonzero. Frozen expected1170tests/148suites for this source; dynamic inventory coverage in reusable script allows future test additions. Preserve parameterized arguments and live opt-in gates.",
+  "liveness": "Existing45minute job and allSwift deadlines unchanged. New aggregate35minute helper budget includes discovery/build and all5children. Each execution receives remaining budget divided by remaining partitions; on watchdog expiry terminate only owned child process group, escalate after2s, recordfailure, continueremaininggroups. No all-tests-executed claim when discovery/outerjobtimeout prevents it. Ordinary failure also executesremaininggroups; anymissing/failed/countmismatch result fails finalgate.",
+  "budget_amendment": "Original3request experiment failed; rollback1request remains fullyaccounted afternewcoldfailure. Necessary correctness follow-up:1partitioned warm full,1fresh cold full, exactly1new hosted full request;5totalrequests. No additional performance variant or until-green reruns.",
+  "metrics": "Measure complete helper command including test discovery/build, all5command intervals, repeated PG startup/cleanup. Sum childlibraryseconds explicitly; never label it one libraryspan or comparepercentto unpartitioned span. Failed unsplit cold remains required Fail; original rejected experiment staysfailed. No accepted speed claim without equivalent supported evidence.",
+  "required": "All1170tests/148suites, originalassertions/deadlines, strictNIO, all existing20Python+newnegativechecks/48Bats/fullRust/4nativeCIbuilds. All4CIjobs and eachpartition mustpass. Fresh final cold and native shipped-input/graph equivalence required.",
+  "safety": "User-approved publicsource-only CI push/minimalmanifest; no evidencearchives/privateancestry/main/tag/PR/release/publication/deployment. Retain all earlierrequests and errors, no cancellation of otherworkflows."
+}
