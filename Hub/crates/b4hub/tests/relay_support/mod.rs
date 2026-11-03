@@ -675,8 +675,33 @@ impl FakeDevice {
         loop {
             match self.next().await {
                 RelayMessage::Pong { .. } | RelayMessage::Presence { .. } => {}
-                RelayMessage::Watching { thread_ids } => return thread_ids,
+                RelayMessage::Watching { thread_ids, .. } => return thread_ids,
                 other => panic!("expected watching, got {other:?}"),
+            }
+        }
+    }
+
+    /// The next `watching` frame (past `pong` and `presence`): `(threadIds, refresh)`.
+    pub async fn expect_watching_refresh(&mut self) -> (Vec<String>, Vec<String>) {
+        loop {
+            match self.next().await {
+                RelayMessage::Pong { .. } | RelayMessage::Presence { .. } => {}
+                RelayMessage::Watching {
+                    thread_ids,
+                    refresh,
+                } => return (thread_ids, refresh),
+                other => panic!("expected watching, got {other:?}"),
+            }
+        }
+    }
+
+    /// The next `error` frame (past `pong` and `presence`): `(code, details)`.
+    pub async fn expect_error_details(&mut self) -> (String, Option<Value>) {
+        loop {
+            match self.next().await {
+                RelayMessage::Pong { .. } | RelayMessage::Presence { .. } => {}
+                RelayMessage::Error { code, details, .. } => return (code, details),
+                other => panic!("expected an error frame, got {other:?}"),
             }
         }
     }

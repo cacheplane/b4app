@@ -7,6 +7,9 @@
 //!   deletion, a merge), the instance that did it asks for a [`recheck`] of the user's links, and
 //!   the instance that serves them looks each link's session up again and closes the dead ones
 //!   (D-162).
+//! - [`ECHO`]: every instance heartbeat also [`echo`]es, so a listener always hears something; one
+//!   that hears nothing for a liveness window is presumed cut off (a half-open connection reports
+//!   no error) and reconnects (D-164).
 //!
 //! The payloads name the sending instance, which skips its own (it acted already), and carry ids
 //! only, never a token or its hash. A signal is a hint, never the data: a lost one (a failed
@@ -24,6 +27,9 @@ pub const CHANGES: &str = "b4hub_changes";
 /// The channel of link re-checks.
 pub const LINKS: &str = "b4hub_links";
 
+/// The channel of heartbeat echoes.
+pub const ECHO: &str = "b4hub_echo";
+
 /// Tells every listening instance that `org` has new changes, from `instance`. Call it after the
 /// push has committed.
 pub async fn announce(db: &Db, org: Uuid, instance: Uuid) -> Result<()> {
@@ -34,6 +40,11 @@ pub async fn announce(db: &Db, org: Uuid, instance: Uuid) -> Result<()> {
 /// `instance`. Call it after the change that ended them has committed.
 pub async fn recheck(db: &Db, org: Uuid, user: Uuid, instance: Uuid) -> Result<()> {
     notify(db, LINKS, format!("{org} {user} {instance}")).await
+}
+
+/// Sends `instance`'s heartbeat echo, which proves every listener's connection still delivers.
+pub async fn echo(db: &Db, instance: Uuid) -> Result<()> {
+    notify(db, ECHO, instance.to_string()).await
 }
 
 async fn notify(db: &Db, channel: &str, payload: String) -> Result<()> {
@@ -56,11 +67,13 @@ pub enum Signal {
         user: Uuid,
         instance: Uuid,
     },
+    /// `instance`'s heartbeat echo: nothing to do but note that the connection works.
+    Echo { instance: Uuid },
     /// The connection dropped and was re-established; signals in between are lost.
     Lost,
 }
 
-/// A `LISTEN` on [`CHANGES`] and [`LINKS`] over [`Db::dedicated`], so it never takes one of the
+/// A `LISTEN` on [`CHANGES`], [`LINKS`], and [`ECHO`] over [`Db::dedicated`], so it never takes one of the
 /// service pool's connections. It reconnects and listens again on its own.
 pub struct Listener(PgListener);
 
@@ -68,7 +81,7 @@ impl Listener {
     /// Connects with `db`'s settings and starts listening.
     pub async fn connect(db: &Db) -> Result<Listener> {
         let mut listener = PgListener::connect_with(&db.dedicated().pool).await?;
-        listener.listen_all([CHANGES, LINKS]).await?;
+        listener.listen_all([CHANGES, LINKS, ECHO]).await?;
         Ok(Listener(listener))
     }
 
@@ -97,6 +110,7 @@ fn parse(channel: &str, payload: &str) -> Option<Signal> {
             user,
             instance,
         }),
+        (ECHO, &[instance]) => Some(Signal::Echo { instance }),
         _ => None,
     }
 }
@@ -119,6 +133,10 @@ mod tests {
                 user,
                 instance
             })
+        );
+        assert_eq!(
+            parse(ECHO, &instance.to_string()),
+            Some(Signal::Echo { instance })
         );
         assert_eq!(parse(CHANGES, &format!("{org} {user} {instance}")), None);
         assert_eq!(parse(LINKS, &format!("{org} {instance}")), None);
