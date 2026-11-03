@@ -16,6 +16,10 @@ Fixture gates only. Nothing deployed; the hosted hubs keep `B4HUB_APPLE_CALLBACK
 
 Open (live): Continue with Apple through `.https(host:path:)` with a Mac build that has this, against the test hub set to `B4HUB_APPLE_CALLBACK_URL=https://test.b4.run/app/auth/apple`. Whether `ASWebAuthenticationSession` takes the result back through the app's `webcredentials:test.b4.run` association can only be shown there.
 
+## 2026-11-02: The attention burst test waits out a slow runner
+
+`AttentionModelTests.aBurstOfDeltasSendsNoReadAndTurnEventsCoalesce` failed CI once on main (`7c38573`): three `thread.read` calls where it expected two. The model reads the test's 56 events on its own task, and a slow runner took longer than the 200 ms refetch window to get through them, so a second window rightly opened. `WorkspaceModel.refetchDelay` is now per model (as `draftSaveDelay` is), so the test widens its own window to 1 s without changing the others'; the app keeps 200 ms. Local: the test 5 of 5 alone, `WorkspaceUITests` 284 pass, `swift format lint --strict` clean.
+
 ## 2026-11-03: M8f APNs on a real iPhone (live gate 2) and the cancelled-BEGIN fix (D-153)
 
 Target: Brian's iPhone with the beta TestFlight build 0.1.0 (2611030437, uploaded from `main` at `5882a60` with `Scripts/upload-ios.sh`, beta flavour), signed in to `hub.test.b4.run`; the test hub at task definition revision 16 (`B4HUB_PUSH_SENDER=apns`, the three APNs secrets set per runbook 3a, `INCLUDE_APNS_SECRETS=1` from #76); the Mac side was the packaged beta Mac app on the build Mac, driven in the background, with a Claude Code connection added through its bundled `agent-workspace` (its Codex follows `~/.codex/config.toml`, `approval_policy = "never"`, so Codex never asks). Evidence is the test hub's CloudWatch log (`APNs accepted`, kind, key, status 200, `apns-id`), never a token or payload.
