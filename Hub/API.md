@@ -830,8 +830,9 @@ Log out: deletes the presented token and nothing else. `204` with no body. The t
 unauthorized` from then on, but the device stays enrolled and **unrevoked**: a later sign-in that
 sends its `deviceId` reuses it, and sync continues from where it was. To remove the device from
 the account instead, use `DELETE /v1/devices/self`. The device's push token is kept, but a device
-with no session is not notified (see *When the hub notifies*) until it signs in again. Errors: `401
-unauthorized`.
+with no session is not notified (see *When the hub notifies*) until it signs in again. A relay link
+opened with the token is closed with code 4001, on whichever instance serves it (see *Sessions
+end on every instance*). Errors: `401 unauthorized`.
 
 ### `DELETE /v1/me`
 
@@ -851,8 +852,8 @@ with no body. In order:
    revoked too before the delete goes ahead.
 
 The same transaction deletes the user's relay link claim (`user_links`). Once it commits, every
-token of the account is `401 unauthorized`, and every relay link of the account on the instance
-that served the request is closed with code 4001 (device revoked) at once; its passkeys and Apple
+token of the account is `401 unauthorized`, and every relay link of the account is closed with
+code 4001 (device revoked) at once, on whichever instance serves it; its passkeys and Apple
 IDs can sign up afresh. Errors also: `401 unauthorized`, `403 step_up_required`.
 
 ### `GET /v1/devices`
@@ -879,7 +880,8 @@ Revoke the calling device (remove it from the account): its token rows are delet
 device already uploaded stay in the feed. `204` with no body. The token stops working
 immediately; the next request with it is `401 unauthorized`. A pairing code the device minted
 that is still unused is withdrawn with it (redeeming it is then `401 invalid_code`). If the device
-has an open link (see *Link*), the hub closes it with code 4001. Errors: `401 unauthorized`.
+has an open link (see *Link*), the hub closes it with code 4001, on whichever instance serves it.
+Errors: `401 unauthorized`.
 
 ### `POST /v1/devices/self/push-token`
 
@@ -1314,6 +1316,17 @@ events, holds, and presence never cross instances; no frame is ever forwarded be
   point at the wrong target) and retries at once, at most 3 times in a row; after that it uses the
   normal reconnect backoff. A successful link resets the count and keeps the new cookies.
   `instanceId` is informational: a device cannot address an instance directly.
+- **Pulls.** Only the link is bound to an instance; a push and a long-poll (`GET /v1/changes`) may
+  reach any instance. The instance that takes a push wakes its own long-polls and announces the
+  org to the others over PostgreSQL `LISTEN` / `NOTIFY`, so a long-poll on another instance
+  returns within moments, not at the end of its `wait`. The announcement is a hint, never the
+  data: if one is lost the long-poll still answers when its `wait` runs out.
+- **Sessions end on every instance.** A link remembers the session (token) it was opened with.
+  After a log-out, a revocation, an account deletion, or a merge, the instance that made the change
+  checks the user's links it serves and asks the others, over `LISTEN` / `NOTIFY`, to check theirs;
+  a link whose token is gone, whose device is revoked, or whose token now names another device or
+  account is closed with code 4001. Every link also checks its own session once a minute, so it
+  closes within a minute even if that request is lost.
 
 ### Frames in this version
 
@@ -1518,7 +1531,7 @@ replies and errors wait for room, and presence is kept as described under *Prese
 | --- | --- | --- |
 | 1001 | the hub is shutting down, or another instance now serves this user's links | reconnect with backoff |
 | 4000 | replaced by a newer link of the same device (after an `error` frame `link_replaced`) | not reconnect |
-| 4001 | the device was revoked | stop until it joins again |
+| 4001 | the device was revoked, or the token the link was opened with is no longer valid (log-out, account deleted or merged) | stop until it joins or signs in again |
 | 4002 | `client_too_old` | stop and update |
 | 4003 | no frame for 30 seconds | reconnect with backoff |
 

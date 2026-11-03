@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 
 use b4hub_core::relay::{HostPresence, RelayMessage, Role, LINK_QUEUE, WATCH_MAX};
+use b4hub_db::devices::SessionKey;
 use b4hub_db::relay::host_devices;
 use b4hub_db::Db;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -46,6 +47,17 @@ impl Close {
         Close {
             code: close_code::REVOKED,
             reason: "device revoked",
+            error: None,
+        }
+    }
+
+    /// The token that opened the link was deleted (log-out, account deletion) or now names
+    /// another device or account: the same code as a revocation, since reconnecting with that
+    /// token cannot help.
+    pub fn session_ended() -> Close {
+        Close {
+            code: close_code::REVOKED,
+            reason: "session ended",
             error: None,
         }
     }
@@ -114,6 +126,9 @@ pub struct LinkHandle {
     pub role: Role,
     pub user_id: Uuid,
     pub org_id: Uuid,
+    /// The session the link was opened with, looked up again to find out whether it still holds;
+    /// `None` for the readiness probe.
+    pub session: Option<SessionKey>,
     tx: mpsc::Sender<RelayMessage>,
     /// What a full queue made the link miss; see [`Missed`].
     missed: Arc<Mutex<Missed>>,
@@ -268,6 +283,8 @@ pub struct Identity {
     pub role: Role,
     pub user_id: Uuid,
     pub org_id: Uuid,
+    /// The session the link was opened with; `None` for the readiness probe.
+    pub session: Option<SessionKey>,
     /// The readiness probe's in-process link (`link::probe`): [`Relay::register`] hands it a
     /// handle and queues but never enters it in the registry, so it is never online, never in
     /// presence, and never watches.
@@ -283,6 +300,7 @@ impl Identity {
             role: Role::Client,
             user_id: Uuid::nil(),
             org_id: Uuid::nil(),
+            session: None,
             probe: true,
         }
     }
@@ -396,6 +414,7 @@ impl Relay {
             role: who.role,
             user_id: who.user_id,
             org_id: who.org_id,
+            session: who.session,
             tx,
             missed: Arc::default(),
         };
@@ -477,6 +496,31 @@ impl Relay {
             let _ = closing.send(close);
         }
         true
+    }
+
+    /// Asks the link of `device_id` to close with `close` if it is still registration
+    /// `generation`, so a newer link of the same device is left alone. True when it was.
+    pub fn close_generation(&self, device_id: Uuid, generation: u64, close: Close) -> bool {
+        let mut links = self.links();
+        let Some(entry) = links.get_mut(&device_id) else {
+            return false;
+        };
+        if entry.handle.generation != generation {
+            return false;
+        }
+        if let Some(closing) = entry.closing.take() {
+            let _ = closing.send(close);
+        }
+        true
+    }
+
+    /// The handles of every link of `user_id` here.
+    pub fn links_of(&self, user_id: Uuid) -> Vec<LinkHandle> {
+        self.links()
+            .values()
+            .filter(|entry| entry.handle.user_id == user_id)
+            .map(|entry| entry.handle.clone())
+            .collect()
     }
 
     /// Asks every link of `user_id` to close with `close`; returns how many there were.
@@ -803,6 +847,7 @@ mod tests {
             role,
             user_id: Uuid::from_u128(1000),
             org_id: Uuid::from_u128(2000),
+            session: None,
             probe: false,
         }
     }

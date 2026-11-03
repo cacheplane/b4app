@@ -26,6 +26,40 @@ Branch `blove/drop-already-answered`.
 - **A passkey on the iPhone (build 2611030608).** Settings → Account → Add passkey asked for the Mac's passkey, which iCloud Keychain had synced, for the step-up, and that passed. The add then said "This device already has a passkey for this account." and made nothing: the hub lists the account's passkeys in `excludeCredentials`, and the phone already holds the synced one (a known limitation in `docs/milestones.md`). The phone then logged out and signed back in with that passkey, to the same account, still paired with the Mac. Pass.
 - During the session, a deploy of the test hub stopped its only task at 05:51Z and served 503 until 05:53:20Z. The Beta Mac's relay reconnected by itself at 05:53:30Z.
 
+
+## 2026-11-03: Step-up by enrollment code, live (D-151, D-152)
+
+Run on the owner's MacBook Pro from main `2338c2e` (#81 merged), by the build session alone: no Touch ID was needed, and the owner's Mac stayed signed in to cacheplane throughout. No other session was running; only the Local app, the Compose hub (`hub-hub-1`), and the Local iPhone app on the iPhone 17 Pro Simulator were touched (the Beta and prod apps and the M8f Simulator were left alone).
+
+**What was rebuilt**
+- **The Compose hub.** `b4hub:local` from `2338c2e` (the cached `rust:1.93.1` tag in place of the pinned digest, as before; the repository's Dockerfile is unchanged); `migrate` applied 0015 ("migrated: 15 applied, 0 pending") and `/readyz` was ok. The old image is tagged `b4hub:local-before-step-up-live`.
+- **The Local app.** `B4APP_FLAVOR=local B4APP_SKIP_NOTARIZE=1 B4APP_SIGN_IDENTITY="Developer ID Application: …" ./Scripts/package.sh` in a scratch checkout; the old app and `agent-workspace db backup` (774 rows) are in `~/Library/Application Support/b4app-signin-gate-backups/20261103T193308Z-step-up-live/` with a `pg_dumpall` of the hub. Every other LaunchServices registration of `com.cacheplane.b4app.local` was unregistered first.
+- **The iPhone.** The local flavour from `2338c2e` (`B4App-iOS`, Debug) on the iPhone 17 Pro Simulator, iOS 26.5.
+
+**Found on the way: Docker Desktop's disk was full.** The image build filled the Docker VM's disk (58 GB, 0 free), and the hub's PostgreSQL crash-looped in recovery ("could not write to file \"pg_logical/replorigin_checkpoint.tmp\": No space left on device"); the first `pg_dumpall` failed for that reason. `docker builder prune` freed the 17.6 GB of unused build cache (no images, volumes, or containers were removed), PostgreSQL finished its recovery by itself ("database system is ready to accept connections"), the backup was taken, and only then was the hub migrated and started. The Mac's disk had 760 GB free; the limit is Docker Desktop's own disk.
+
+| Check | Result |
+| --- | --- |
+| Codex's "no rollout found" counts as gone (D-152) | Pass. The four Codex deletes left from the thread cleanup had been waiting with `lastError` "no rollout found for thread id …" for 20 attempts each; at their next retry (19:46:20Z) the new coordinator marked them done: `threadDeletes` 13 done, 0 waiting |
+| An enrollment code confirms a change when no passkey can (D-151) | Pass, on the iPhone. A throwaway operator user ("Code Check", seeded) was given a passkey row copied from another with a fresh random credential id and user handle, so no device holds it, the state of an account whose passkey was deleted from the keychain. The Simulator logged out of cacheplane and signed in to it with "Use an enrollment code". In Settings → Account, Delete account… with the org name typed asked iOS for the passkey: iOS found none and offered another device ("Bluetooth Off", then "Scan QR Code"); closing it showed, in the still-open delete sheet, "Can't confirm it's you here? Enter an enrollment code from your hub's operator." with a field, Confirm, and Cancel. A wrong code showed "That code didn't work. A code works once and expires; ask your hub's operator for a new one." and kept the row (hub: `401` "a step-up code was refused"). A real `enroll` code, typed in mixed case, stepped up ("stepped up", method `code`), but the delete was refused `409 shared_org`, because a seeded org is shared (D-107), not a fault of the code; after the throwaway org was marked personal and owned by its user, a fresh code stepped up again and the hub "deleted an account" (`204`), and the phone returned to the sign-in screen. The hub then held only cacheplane (1 user, 1 passkey), and the phone was paired back to cacheplane by link |
+| A passkey sheet that cannot open says what to do | Not seen live: no sheet failed with 1004 during the run (fixture-tested only) |
+
+## 2026-11-03: Two more flaky tests now wait for what they depend on
+
+Test-only changes. No assertion is weaker.
+
+- **Rust `instances::readiness_reports_a_stale_heartbeat`.** The `settle()` fix above covered the pause. CI then failed the test's *first* `/readyz` (503 where 200 was expected, run 41553837650). With the test's 200 ms beat, the liveness window is 800 ms. A loaded runner can stall the heartbeat writes for longer than that, so the instance already reports `"instances": "stale"` before anything is paused. Reproduced locally (`"instances":"stale"`, 1 run in 15 of the `instances` binary under 30 CPU burners). The test now waits (`eventually`) for a fresh heartbeat before it pauses, as its last step already did. The probe test in the same file (`the_probe_passes_…`) asserts `"instances": "ok"` with the same window, so it now runs on the default 5 s heartbeat; it is about the relay, not the heartbeat.
+- **`LifecycleTests.reconcileSettlesATurnThatFinishedWhileTheCoordinatorWasDown`.** The fake B4 "slow" run ends on its own after 3 s. The test needs that end to happen after `h.stop()`. Under load, the stop took longer (the CI run took 44 s), so the first coordinator saw the run finish and marked the turn `terminal` (`SessionTests.swift:1216`, run 41561882799). A 4 s pause before `h.stop()` reproduced it every time. `fake-b4.py` has a new "held" run that ends only on `POST /threads/<id>/release`, a fixture control. The test releases the run once the coordinator is down, and still passes with that 4 s pause.
+
+Runs:
+- **Rust:** 15 alone. 25 of the whole `instances` binary under 30 CPU burners. 10 alongside a parallel `cargo test --workspace`, which passed.
+- **Swift:** 10 alone. 10 inside `swift test --filter CoordinatorTests` (297 tests each, all passing), 5 of them with 12 CPU burners.
+- **Gates:** `swift format lint --strict`, `cargo fmt --check` and `cargo clippy -D warnings` are clean.
+
+Environmental, not this flake:
+- `#[sqlx::test]` names each test's database by hashing its path. Two processes running the same test on one server drop each other's database ("database … does not exist", or a failed `Db::connect`).
+- `test-db.sh --stop` from another worktree ends every run on port 54329.
+- These runs used private clusters on other ports.
 ## 2026-11-03: Apple's web flow through an https callback (D-160)
 
 Fixture gates only. Nothing deployed; the hosted hubs keep `B4HUB_APPLE_CALLBACK_SCHEME` until a Mac build with this ships.

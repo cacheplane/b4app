@@ -1,6 +1,6 @@
-//! Wakes long-polling pulls when a push lands. One `Notify` per org; the hub runs a single
-//! replica in M8a, so an in-process signal is enough (a second replica would need `LISTEN` /
-//! `NOTIFY` or the same signal over the database).
+//! Wakes long-polling pulls when a push lands. One `Notify` per org. The instance that took the
+//! push wakes its own pulls at once; the others hear of it over `LISTEN` / `NOTIFY`
+//! (`crate::signals`), since a device's pulls may reach any instance.
 //!
 //! A long-poll must not miss a push that commits between its query and its wait. The caller
 //! therefore takes the future from [`Notifier::notified`] *before* it queries: a `Notified`
@@ -31,6 +31,13 @@ impl Notifier {
         // No entry means no future was ever taken for this org, so nobody is waiting; a future
         // taken after this point queries after the commit and sees the push.
         if let Some(notify) = self.lock().get(&org) {
+            notify.notify_waiters();
+        }
+    }
+
+    /// Completes every future taken so far, for every org: for when wake-ups may have been lost.
+    pub fn wake_all(&self) {
+        for notify in self.lock().values() {
             notify.notify_waiters();
         }
     }
@@ -73,5 +80,19 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_millis(50), for_a)
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn wake_all_wakes_every_org() {
+        let notifier = Notifier::default();
+        let for_a = notifier.notified(Uuid::from_u128(1));
+        let for_b = notifier.notified(Uuid::from_u128(2));
+        notifier.wake_all();
+        tokio::time::timeout(Duration::from_millis(100), async {
+            for_a.await;
+            for_b.await;
+        })
+        .await
+        .expect("both orgs are woken");
     }
 }

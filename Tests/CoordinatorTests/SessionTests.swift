@@ -54,6 +54,14 @@ final class FakeB4: Sendable {
     _ = await process.waitForExit()
   }
 
+  /// Lets the thread's "held" run complete (the fixture's `POST /threads/<id>/release`).
+  func release(nativeThreadId: String) async throws {
+    var request = URLRequest(url: try #require(URL(string: "\(baseURL)/threads/\(nativeThreadId)/release")))
+    request.httpMethod = "POST"
+    let (_, response) = try await URLSession.shared.data(for: request)
+    #expect((response as? HTTPURLResponse)?.statusCode == 200)
+  }
+
   /// Returns once the thread's run has finished on the server: a reattach (`GET /runs/stream`) streams
   /// the live run until its `done` frame, which the fixture sends after recording the outcome, and
   /// answers `done` at once when no run is live.
@@ -1205,10 +1213,12 @@ actor EventCollector {
     let h = try await Harness.start()
     let b4 = try await h.addB4(server).connection
     let thread = try await h.newB4Thread(b4)
-    let turn = try await h.send(thread, "slow please")
+    let turn = try await h.send(thread, "held please")
     #expect(turn.status == .running)
     let paths = h.coordinator.paths
     await h.stop()
+    // The run ends on its server only now, with no coordinator attached to see it end.
+    try await server.release(nativeThreadId: thread.nativeThreadId)
     try await server.waitForRunToEnd(nativeThreadId: thread.nativeThreadId)
 
     let back = try await Harness.start(paths: paths)

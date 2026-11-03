@@ -28,6 +28,7 @@ use crate::request_log;
 use crate::routes::{
     apple, auth, changes, devices, enroll, health, me, pairing, push_token, snapshot, step_up,
 };
+use crate::signals;
 
 /// How long the listener stays open, answering `/readyz` 503, after shutdown begins, so a load
 /// balancer polling readiness stops routing here before connections are refused. Capped at a
@@ -52,7 +53,7 @@ pub struct AppState {
     pub shutdown: Shutdown,
     /// When each device last had `last_seen_at` written (throttle: once a minute).
     pub last_touched: LastTouched,
-    /// Wakes long-polling pulls when a push commits (single replica in M8a).
+    /// Wakes long-polling pulls when a push commits, here or (over `LISTEN`) on another instance.
     pub notifier: Notifier,
     /// The sign-in configuration `serve` read at start.
     pub config: Arc<Config>,
@@ -196,7 +197,8 @@ pub fn router(state: AppState) -> Router {
 /// grace and then closes, and in-flight requests drain.
 ///
 /// Around that, the instance: it registers before serving and heartbeats while it serves
-/// (`instances::heartbeat_loop`); when the signal arrives, commands held for offline Macs are
+/// (`instances::heartbeat_loop`, on a connection of its own), and listens for the other
+/// instances' signals (`signals::listen_loop`); when the signal arrives, commands held for offline Macs are
 /// answered `device_offline` first (so the answers go out before the links close), and once the
 /// links are closed the instance releases its claims, so its users are claimed at once by the
 /// instance they reconnect to.
@@ -220,13 +222,23 @@ pub async fn run(
     let signalled_at = Arc::new(std::sync::Mutex::new(None::<tokio::time::Instant>));
 
     let public_url = state.public_url.as_ref().map(|url| url.to_string());
-    instances::register(&state.db, &state.instances, public_url.as_deref()).await;
+    // The heartbeat has a connection of its own: one that queued behind busy requests for the
+    // pool's 5 s acquire wait could let a healthy instance read as dead to the others.
+    let beat_db = state.db.dedicated();
+    instances::register(&beat_db, &state.instances, public_url.as_deref()).await;
     // Aborted however `run` ends, dropped mid-drain included.
     let heartbeat = AbortOnDrop(tokio::spawn(instances::heartbeat_loop(
-        state.db.clone(),
+        beat_db,
         state.instances.clone(),
         state.relay.clone(),
         public_url,
+        state.shutdown.clone(),
+    )));
+    let listening = AbortOnDrop(tokio::spawn(signals::listen_loop(
+        state.db.clone(),
+        state.notifier.clone(),
+        state.relay.clone(),
+        state.instances.id(),
         state.shutdown.clone(),
     )));
     let (db, instance) = (state.db.clone(), state.instances.clone());
@@ -271,6 +283,7 @@ pub async fn run(
         }
     };
     drop(heartbeat);
+    drop(listening);
     let left = signalled_at
         .lock()
         .unwrap_or_else(|p| p.into_inner())

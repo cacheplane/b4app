@@ -8,6 +8,7 @@ mod relay_support;
 use std::time::Duration;
 
 use axum::http::StatusCode;
+use b4hub::instances::DEFAULT_HEARTBEAT;
 use b4hub::relay::close_code;
 use b4hub_core::relay::RelayMethod;
 use b4hub_db::instances;
@@ -272,7 +273,9 @@ async fn a_draining_instance_answers_holds_and_releases_its_claims(pool: PgPool)
 async fn the_probe_passes_on_a_healthy_instance_and_fails_when_the_relay_cannot_serve(
     pool: PgPool,
 ) {
-    let hub = spawn_instance(&pool, BEAT).await;
+    // The default heartbeat: this test is about the relay, and with the short test heartbeat a
+    // loaded runner could stall the writes long enough to report the instance stale as well.
+    let hub = spawn_instance(&pool, DEFAULT_HEARTBEAT).await;
     let blove = user(&hub).await;
     let (mut phone, _) = link(&hub, &blove.phone_token, None).await;
     phone.next().await; // presence
@@ -304,8 +307,12 @@ async fn the_probe_passes_on_a_healthy_instance_and_fails_when_the_relay_cannot_
 #[sqlx::test(migrations = false)]
 async fn readiness_reports_a_stale_heartbeat(pool: PgPool) {
     let hub = spawn_instance(&pool, BEAT).await;
-    let (status, _) = hub.http("GET", "/readyz", None).await;
-    assert_eq!(status, StatusCode::OK);
+    // Ready once a heartbeat has landed within the window. A loaded runner can stall the writes for
+    // longer than this test's short window, so wait for a fresh one rather than assume it.
+    eventually("the heartbeat to be fresh", || async {
+        (hub.http("GET", "/readyz", None).await.0 == StatusCode::OK).then_some(())
+    })
+    .await;
 
     hub.state.instances.pause_heartbeat(true);
     // A write already past the pause check may still land; once it has, the last write is behind
@@ -385,4 +392,115 @@ async fn a_hold_that_was_forwarded_does_not_delay_the_drain(pool: PgPool) {
     );
     mac.reply("stop-1", json!({})).await;
     assert_eq!(phone.expect_reply().await.0, "stop-1");
+}
+
+/// Pushes one change as `token` through `hub`.
+async fn push_one(hub: &Hub, token: &str, seq: i64) {
+    let row = format!("conn-{seq}");
+    let change = json!({"changes": [{
+        "deviceSeq": seq, "wall": 1_761_900_000_000_i64 + seq, "table": "connections",
+        "rowId": row, "op": "insert", "column": null,
+        "value": {"id": row, "kind": "codex", "label": row},
+    }]});
+    let (status, _) = hub
+        .http_with("POST", "/v1/changes", Some(token), Some(&change))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// Long-polls `/v1/changes` on `poller` after `after` while `pusher` pushes change `seq` 300 ms
+/// in; asserts the poll returned that change well before its 20 s wait.
+async fn pull_wakes_on_push(poller: &Hub, pusher: &Hub, blove: &User, after: i64, seq: i64) {
+    let started = std::time::Instant::now();
+    let path = format!("/v1/changes?after={after}&wait=20");
+    let poll = poller.http("GET", &path, Some(&blove.phone_token));
+    let push = async {
+        real_sleep(Duration::from_millis(300)).await;
+        push_one(pusher, &blove.mac_token, seq).await;
+    };
+    let ((status, page), ()) = tokio::join!(poll, push);
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["changes"].as_array().map(Vec::len), Some(1), "{page}");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the poll slept through the other instance's push: {:?}",
+        started.elapsed()
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_push_on_one_instance_wakes_a_long_poll_on_the_other(pool: PgPool) {
+    let a = spawn_instance(&pool, BEAT).await;
+    let b = spawn_instance(&pool, BEAT).await;
+    let blove = user(&a).await;
+    // Let both listeners subscribe first: a listener wakes every pull when it starts.
+    real_sleep(Duration::from_millis(300)).await;
+    pull_wakes_on_push(&b, &a, &blove, 0, 1).await;
+    // And the other way round.
+    pull_wakes_on_push(&a, &b, &blove, 1, 2).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_change_listener_survives_a_dropped_connection(pool: PgPool) {
+    let a = spawn_instance(&pool, BEAT).await;
+    let b = spawn_instance(&pool, BEAT).await;
+    let blove = user(&a).await;
+    real_sleep(Duration::from_millis(300)).await;
+
+    // Both instances' listener connections are cut, as a database failover would.
+    let cut: Vec<bool> = sqlx::query_scalar(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+         WHERE datname = current_database() AND query LIKE 'LISTEN%'",
+    )
+    .fetch_all(&a.admin.pool)
+    .await
+    .unwrap();
+    assert_eq!(cut, [true, true]);
+    // The listeners notice on their next read and listen again on new connections.
+    real_sleep(Duration::from_millis(500)).await;
+    pull_wakes_on_push(&b, &a, &blove, 0, 1).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn logging_out_on_another_instance_closes_the_link(pool: PgPool) {
+    let a = spawn_instance(&pool, BEAT).await;
+    let b = spawn_instance(&pool, BEAT).await;
+    let blove = user(&a).await;
+    real_sleep(Duration::from_millis(300)).await;
+    let (mut phone, _) = link(&a, &blove.phone_token, None).await;
+    let (status, _) = b
+        .http("DELETE", "/v1/sessions/self", Some(&blove.phone_token))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(phone.expect_close().await, close_code::REVOKED);
+}
+
+#[sqlx::test(migrations = false)]
+async fn revoking_on_another_instance_closes_the_link(pool: PgPool) {
+    let a = spawn_instance(&pool, BEAT).await;
+    let b = spawn_instance(&pool, BEAT).await;
+    let blove = user(&a).await;
+    real_sleep(Duration::from_millis(300)).await;
+    let (mut mac, _) = link(&a, &blove.mac_token, None).await;
+    let (status, _) = b
+        .http("DELETE", "/v1/devices/self", Some(&blove.mac_token))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(mac.expect_close().await, close_code::REVOKED);
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_heartbeat_does_not_wait_behind_a_busy_pool(pool: PgPool) {
+    let a = spawn_instance(&pool, BEAT).await;
+    // Every connection of the request pool is taken, for longer than the liveness window.
+    let mut held = Vec::new();
+    for _ in 0..a.state.db.pool.options().get_max_connections() {
+        held.push(a.state.db.pool.acquire().await.unwrap());
+    }
+    real_sleep(a.state.instances.alive_within() * 2).await;
+    assert!(
+        !a.state.instances.stale(),
+        "the heartbeat queued behind requests"
+    );
+    drop(held);
 }

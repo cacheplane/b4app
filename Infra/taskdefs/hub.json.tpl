@@ -14,7 +14,7 @@
       { "name": "B4HUB_WEBAUTHN_RP_ID", "value": "${rp_id}" },
       { "name": "B4HUB_APPLE_AUDIENCES", "value": "com.cacheplane.b4app.ios,com.cacheplane.b4app.signin" },
       { "name": "B4HUB_APPLE_SERVICES_ID", "value": "com.cacheplane.b4app.signin" },
-      { "name": "B4HUB_APPLE_CALLBACK_SCHEME", "value": "${apple_callback_scheme}" },
+      { "name": "${apple_callback_name}", "value": "${apple_callback_value}" },
       { "name": "B4HUB_TRUST_X_FORWARDED_FOR", "value": "1" },
       { "name": "B4HUB_RETENTION_DAYS", "value": "30" },
 %{ if include_apns_secrets ~}
