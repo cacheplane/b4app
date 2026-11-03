@@ -141,7 +141,7 @@ private func fixtureAsStored(file: StaticString = #filePath) throws -> [StoredCh
   // MARK: - Answering a request the Mac answered first
 
   /// The Mac answers while the phone's answer is out: its "resolved" event comes first on the ordered
-  /// link and takes the card away, then the hub refuses the phone's answer. Nothing is said (D-151):
+  /// link and takes the card away, then the hub refuses the phone's answer. Nothing is said (D-154):
   /// no state, no error, and the request stays gone, as it did live on 2026-11-03.
   @Test func theMacAnsweringFirstTakesTheCardAwayQuietly() async throws {
     let (model, store, transport, socket) = try await relayedModel()

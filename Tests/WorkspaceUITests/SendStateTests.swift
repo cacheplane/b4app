@@ -601,7 +601,7 @@ enum PhoneFixture {
     await model.disconnect()
   }
 
-  /// Another surface answered first: the refusal clears the phone's state and says nothing (D-151),
+  /// Another surface answered first: the refusal clears the phone's state and says nothing (D-154),
   /// never an error, and the buttons come back until sync resolves the card.
   @Test func aStaleAnswerClearsQuietly() async throws {
     let clock = TestClock()
