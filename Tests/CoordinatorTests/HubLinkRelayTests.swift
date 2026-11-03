@@ -553,6 +553,21 @@ private struct JoinedHarness {
     #expect(await h.link.openText(threadId: "t1").isEmpty)
   }
 
+  /// Another client starts watching a thread already watched: the hub names it in `refresh`, and the
+  /// Mac sends the text so far again, so that client does not start mid-reply.
+  @Test func refreshSendsTheCatchUpAgain() async throws {
+    let h = try await LinkHarness.start()
+    defer { Task { await h.close() } }
+    let socket = try await h.connect()
+    await h.watch(socket, ["t1"])
+    await h.publish(delta(thread: "t1", item: "i1", "Hi"))
+    #expect(event(try await nextFrame(socket))?.payload["catchUp"] == nil)
+    socket.deliver(.watching(threadIds: ["t1"], refresh: ["t1"]))
+    let again = event(try await nextFrame(socket))
+    #expect(again?.payload["delta"]?.stringValue == "Hi")
+    #expect(again?.payload["catchUp"]?.boolValue == true)
+  }
+
   /// A relink mid-reply sends the whole text so far again, marked `catchUp` so the phone (whose item is
   /// still open) resumes from it instead of appending it to what it has.
   @Test func reconnectCatchesUpTheWatchedThreadsAgain() async throws {

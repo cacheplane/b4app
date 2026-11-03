@@ -381,6 +381,31 @@ struct MirrorRelayTests {
     await h.relay.stop()
   }
 
+  /// A refused watch names its thread: the phone reports a gap for it (its live text may be missing)
+  /// and, when the refusal may pass (`internal_error`, or `not_found` for a thread not synced yet),
+  /// watches it again after a pause. `watch_limit` is final.
+  @Test func aRefusedWatchIsAGapAndIsRetried() async throws {
+    let h = RelayHarness()
+    await h.relay.watch("thread-1")
+    let socket = await h.connect()
+    #expect(try await RelayHarness.nextFrame(socket) == .watch(threadId: "thread-1"))
+    var updates = h.relay.updates().makeAsyncIterator()
+    let named: JSONValue = .object(["threadId": .string("thread-1")])
+
+    socket.deliver(.error(code: "internal_error", message: "Something went wrong.", details: named))
+    while let update = await updates.next(), update != .gap(threadId: "thread-1") {}
+    await waitUntil("the retry wait") { h.clock.hasSleeper(dueIn: .seconds(2)) }
+    h.clock.advance(by: .seconds(2))
+    #expect(try await RelayHarness.nextFrame(socket) == .watch(threadId: "thread-1"))
+
+    socket.deliver(.error(code: "watch_limit", message: "Too many.", details: named))
+    while let update = await updates.next(), update != .gap(threadId: "thread-1") {}
+    #expect(!h.clock.hasSleeper(dueIn: .seconds(4)))
+    // An error frame naming no thread is the link's, not a watch's.
+    socket.deliver(.error(code: "internal_error", message: "Something went wrong."))
+    await h.relay.stop()
+  }
+
   @Test func presenceBecomesHostPresenceEvents() async throws {
     let store = try MirrorStore.inMemory()
     let h = RelayHarness()

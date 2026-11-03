@@ -248,8 +248,8 @@ public actor HubLink {
           id: id, method: method, params: params, deadline: due, hubNow: hubNow)
         await self?.enqueue(reply, generation: nil)
       }
-    case .watching(let threadIds):
-      watch(threadIds)
+    case .watching(let threadIds, let refresh):
+      watch(threadIds, refresh: Set(refresh))
     case .error(let code, _, _):
       logger.warning("the hub reported \(code, privacy: .public) on the link")
     default:
@@ -257,12 +257,13 @@ public actor HubLink {
     }
   }
 
-  /// Takes the hub's new watched set; each newly watched thread gets its open text first.
-  private func watch(_ threadIds: [String]) {
+  /// Takes the hub's new watched set; each newly watched thread, and each the hub asks to refresh
+  /// (another client started watching it), gets its open text first.
+  private func watch(_ threadIds: [String], refresh: Set<String> = []) {
     guard linkUp else { return }
     let previous = watchedThreads
     watchedThreads = Set(threadIds)
-    for threadId in threadIds where !previous.contains(threadId) {
+    for threadId in threadIds where !previous.contains(threadId) || refresh.contains(threadId) {
       for item in open[threadId] ?? [] {
         var catchUp = item.template
         // Marked, so a phone whose item is still open (a relink mid-reply) resumes from it rather than

@@ -504,3 +504,62 @@ async fn the_heartbeat_does_not_wait_behind_a_busy_pool(pool: PgPool) {
     );
     drop(held);
 }
+
+#[sqlx::test(migrations = false)]
+async fn a_draining_instance_frees_each_user_as_their_links_close(pool: PgPool) {
+    let mut a = spawn_instance(&pool, BEAT).await;
+    let b = spawn_instance(&pool, BEAT).await;
+    let blove = user(&a).await;
+    // Another user's phone, also on `a`, that stops reading: it never answers the close, so `a`'s
+    // drain waits out the close grace for it.
+    let alice = a.user("cacheplane", "alice").await;
+    let (alice_token, _) = a.enroll(&alice, "ios", "Alice's iPhone").await;
+    let (_alice_phone, _) = link(&a, &alice_token, None).await;
+    let (mut phone, _) = link(&a, &blove.phone_token, None).await;
+
+    a.signal();
+    assert_eq!(phone.expect_close().await, close_code::SHUTDOWN);
+    // `a` is still draining, but blove's links are gone, so `b` takes blove at once.
+    eventually("blove's claim to be released", || async {
+        instances::owner_of(&b.state.db, blove.who.user_id)
+            .await
+            .unwrap()
+            .is_none()
+            .then_some(())
+    })
+    .await;
+    assert!(!a.server.is_finished(), "the drain should still be waiting");
+    let (_phone, set_cookie) = link(&b, &blove.phone_token, None).await;
+    assert_eq!(set_cookie.as_deref(), Some(cookie_for(&b).as_str()));
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_listener_that_goes_quiet_reconnects_and_wakes_its_polls(pool: PgPool) {
+    let a = spawn_instance(&pool, BEAT).await;
+    let b = spawn_instance(&pool, BEAT).await;
+    let blove = user(&a).await;
+    real_sleep(Duration::from_millis(300)).await;
+    // `b`'s listener stops hearing anything while its connection stays up, as a half-open TCP
+    // connection would: `a`'s wake-up for the push below never reaches it.
+    b.state.instances.deafen_listener(true);
+
+    let started = std::time::Instant::now();
+    let poll = b.http(
+        "GET",
+        "/v1/changes?after=0&wait=20",
+        Some(&blove.phone_token),
+    );
+    let push = async {
+        real_sleep(Duration::from_millis(100)).await;
+        push_one(&a, &blove.mac_token, 1).await;
+    };
+    let ((status, page), ()) = tokio::join!(poll, push);
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["changes"].as_array().map(Vec::len), Some(1), "{page}");
+    // Within about a liveness window of silence (800 ms here), not the poll's 20 s.
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the quiet listener went unnoticed: {:?}",
+        started.elapsed()
+    );
+}
