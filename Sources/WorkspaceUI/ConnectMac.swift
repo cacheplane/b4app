@@ -22,6 +22,25 @@ public enum ConnectMacCopy {
   public static let help = "Help"
 }
 
+/// Which of its three faces the iPhone's enrollment sheet ("Use an enrollment code", and every pairing
+/// link) shows. A pairing that signed the phone in keeps the confirmation it answered on screen while
+/// the sheet slides away: the offer (and its code) is cleared as the request returns, and showing the
+/// face that would follow (the typed entry, for a phone that opened the sheet signed out) would flash
+/// it for the length of the dismissal.
+public enum EnrollSheetFace: Equatable, Sendable {
+  /// "Pair this iPhone with the hub at <host>?", for an offer, or for the one that just paired.
+  case confirmation
+  /// A signed-in phone whose pairing ended without one: the line, and Done.
+  case signedInResult
+  /// The hub URL and the code, typed.
+  case typedEntry
+
+  public static func face(offering: Bool, paired: Bool, openedSignedIn: Bool) -> EnrollSheetFace {
+    if offering || paired { return .confirmation }
+    return openedSignedIn ? .signedInResult : .typedEntry
+  }
+}
+
 extension WorkspaceModel {
   /// The phone is signed in to an account that has no Mac. Never on the Mac, whose account is the
   /// coordinator's, and never while signed out or onboarding (those screens come first).

@@ -7,6 +7,10 @@ B4APP_FLAVOR = prod
 B4APP_SITE_DOMAIN = b4.run
 B4APP_URL_SCHEME = b4app
 B4APP_IOS_ENTITLEMENTS = Apps/iOS/B4App/B4App.entitlements
+// The App Group the iPhone app and its widget share the mirror through (M8f, D-125).
+B4APP_APP_GROUP = group.com.cacheplane.b4app
 
 PRODUCT_BUNDLE_IDENTIFIER[sdk=macosx*] = com.cacheplane.b4app
-PRODUCT_BUNDLE_IDENTIFIER[sdk=iphone*] = com.cacheplane.b4app.ios
+// The widget extension sets B4APP_BUNDLE_ID_SUFFIX to `.widget`; the app leaves it empty.
+B4APP_BUNDLE_ID_SUFFIX =
+PRODUCT_BUNDLE_IDENTIFIER[sdk=iphone*] = com.cacheplane.b4app.ios$(B4APP_BUNDLE_ID_SUFFIX)

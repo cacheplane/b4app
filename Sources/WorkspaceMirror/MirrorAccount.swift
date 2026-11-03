@@ -68,6 +68,10 @@ import os
   public var onDevices: (@MainActor () -> Void)?
   /// The running sync, while signed in.
   public private(set) var sync: MirrorSync?
+  /// Set by `suspendSync()` (the app is going to the background, M8f) and cleared by `resumeSync()`: a
+  /// sync started meanwhile (a sign-in that finished late, a restart after a refused call) begins
+  /// parked, so it holds no lock on the App Group's mirror while the app is suspended.
+  private var syncSuspended = false
   private var syncTask: Task<Void, Never>?
   /// Moves on every sign-in and sign-out, so a late answer or refusal for an old link changes nothing.
   private var generation = 0
@@ -102,6 +106,25 @@ import os
   public func startSync(fromSnapshot: Bool = false) {
     guard sync == nil, let link else { return }
     startSync(link, fromSnapshot: fromSnapshot)
+  }
+
+  /// Mark the sync suspended without awaiting, so a sync started afterwards (`startSync`) begins
+  /// parked. For a launch in the background, before the first `startSync`; `resumeSync()` undoes it.
+  public func prepareSuspended() {
+    syncSuspended = true
+  }
+
+  /// Park the sync between turns and return once it is idle (`MirrorSync.suspend`); syncs started
+  /// before `resumeSync()` begin parked.
+  public func suspendSync() async {
+    syncSuspended = true
+    await sync?.suspend()
+  }
+
+  /// Let the sync go round again (`MirrorSync.resume`), and the syncs started from now on run at once.
+  public func resumeSync() async {
+    syncSuspended = false
+    await sync?.resume()
   }
 
   /// Stop syncing and wait for the loop to end, so nothing it does lands after this returns.
@@ -478,7 +501,8 @@ import os
         // Not awaited by the loop's caller: signing out waits for the loop, which is still running.
         Task { @MainActor in await self?.rejected(generation: seen) }
       },
-      onDevices: { [weak self] in await self?.devicesRead(generation: seen) })
+      onDevices: { [weak self] in await self?.devicesRead(generation: seen) },
+      startSuspended: syncSuspended)
     self.sync = sync
     syncTask = Task { await sync.run() }
     Task { await refreshProfile() }

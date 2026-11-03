@@ -116,6 +116,20 @@ targets:
         NSLocalNetworkUsageDescription: Agent Workspace connects to your sync hub when it runs on your local network.
         # Pairing (M8c, D-066): the QR code the Mac shows, scanned here or opened by the system Camera.
         NSCameraUsageDescription: Scan the pairing code your Mac shows.
+        # The App Group the app and the widget share the mirror through and the scheme of the app's own
+        # links (`<scheme>://thread/<id>`), both the flavour's (Config/Flavor-*.xcconfig, D-125), so
+        # flavours installed side by side never share a mirror. The scheme is CFBundleURLSchemes' above.
+        B4AppAppGroup: $(B4APP_APP_GROUP)
+        B4AppURLScheme: $(B4APP_URL_SCHEME)
+        # A push with `content-available` wakes the app to pull before the banner is tapped (D-124).
+        # `fetch` is for the Simulator only: `xcrun simctl push` delivers a content-available payload
+        # as a background-fetch launch, which iOS refuses without it. On a device APNs wakes the app
+        # through `remote-notification`, and the app never sets a minimum background-fetch interval,
+        # so the system gives it no fetch wakes of its own. Debug only: the post-build script below
+        # rewrites the array to `remote-notification` alone in every other configuration.
+        UIBackgroundModes:
+          - remote-notification
+          - fetch
         # Plain HTTP only to the hub on this machine (the Simulator's localhost); HubURL refuses any
         # other non-HTTPS URL before a request is made. Debug only: the post-build script below
         # removes it from every other configuration, since on a device localhost is the phone.
@@ -138,7 +152,8 @@ targets:
         PRODUCT_NAME: Agent Workspace
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_FILE: Apps/iOS/B4App/Info.plist
-        # B4APP_IOS_ENTITLEMENTS comes from the flavour's xcconfig: no Sign in with Apple for local.
+        # B4APP_IOS_ENTITLEMENTS comes from the flavour's xcconfig: no Sign in with Apple for local. Each
+        # file also carries push (aps-environment) and the flavour's App Group, $(B4APP_APP_GROUP) (M8f).
         CODE_SIGN_ENTITLEMENTS: $(B4APP_IOS_ENTITLEMENTS)
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
@@ -148,11 +163,15 @@ targets:
         # The post-build script edits the processed Info.plist in the build folder.
         ENABLE_USER_SCRIPT_SANDBOXING: NO
     postBuildScripts:
-      - name: Drop the localhost ATS exception outside Debug
+      - name: Drop the localhost ATS exception and the fetch background mode outside Debug
         basedOnDependencyAnalysis: false
         script: |
           if [ "$CONFIGURATION" != "Debug" ]; then
-            /usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity" "$TARGET_BUILD_DIR/$INFOPLIST_PATH" 2>/dev/null || true
+            plist="$TARGET_BUILD_DIR/$INFOPLIST_PATH"
+            /usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity" "$plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Delete :UIBackgroundModes" "$plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" \
+              -c "Add :UIBackgroundModes:0 string remote-notification" "$plist"
           fi
     dependencies:
       - package: b4app
@@ -167,6 +186,46 @@ targets:
         product: WorkspaceSync
       - package: b4app
         product: WorkspaceSecrets
+      - target: B4App-iOSWidget
+        embed: true
+  # The attention widget (M8f, D-126): the top three threads, read from the mirror in the App Group.
+  # The flavour, the group id, and the URL scheme come from the flavour's xcconfig, as the app's do, so
+  # each flavour's widget reads its own app's mirror; the version keys must match the app's or embedding
+  # the extension fails. Its bundle id is the app's plus `.widget`: the xcconfig appends
+  # B4APP_BUNDLE_ID_SUFFIX to the iOS id, and this target sets only that suffix (no target sets
+  # PRODUCT_BUNDLE_IDENTIFIER).
+  B4App-iOSWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Apps/iOSWidget
+      - path: Apps/Shared/Assets.xcassets
+    info:
+      path: Apps/iOSWidget/Info.plist
+      properties:
+        CFBundleDisplayName: Agent Workspace
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        B4AppFlavor: $(B4APP_FLAVOR)
+        B4AppAppGroup: $(B4APP_APP_GROUP)
+        B4AppURLScheme: $(B4APP_URL_SCHEME)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        B4APP_BUNDLE_ID_SUFFIX: .widget
+        # The App Group only, as $(B4APP_APP_GROUP), which Xcode substitutes when it signs.
+        CODE_SIGN_ENTITLEMENTS: Apps/iOSWidget/B4AppWidget.entitlements
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        "CODE_SIGN_IDENTITY[sdk=iphonesimulator*]": "-"
+    dependencies:
+      - package: b4app
+        product: WorkspaceMirror
+      - package: b4app
+        product: WorkspaceProtocol
+      - package: b4app
+        product: WorkspaceUI
 schemes:
   B4App-macOS:
     build:

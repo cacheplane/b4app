@@ -765,7 +765,7 @@ async fn remove_last_identity_refused(pool: PgPool) {
 
 /// Every table with an `org_id` column. A new one fails `delete_user_removes_every_tenant_row`
 /// until it is listed here and `delete_user` clears it.
-const ORG_TABLES: [&str; 19] = [
+const ORG_TABLES: [&str; 21] = [
     "auth_handoffs",
     "changes",
     "column_clocks",
@@ -776,10 +776,12 @@ const ORG_TABLES: [&str; 19] = [
     "displayItems",
     "drafts",
     "enrollment_codes",
+    "notifications_sent",
     "org_sync_horizons",
     "pairing_mints",
     "projectFolders",
     "projects",
+    "push_tokens",
     "runtimeRequests",
     "threads",
     "turns",
@@ -870,6 +872,16 @@ async fn fill_org(admin: &Db, app: &Db, pool: &PgPool, created: &accounts::Creat
         .execute(pool)
         .await
         .unwrap();
+    // A push token (M8f); the fixture's pending request already wrote a `notifications_sent` row.
+    sqlx::query(
+        "INSERT INTO push_tokens (org_id, device_id, token, environment, bundle_id) \
+         VALUES ($1, $2, 'token', 'sandbox', 'com.example.app')",
+    )
+    .bind(created.org_id)
+    .bind(created.device_id)
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 /// Gives `user_id` a relay link claim (`user_links`), as an instance serving its links writes.

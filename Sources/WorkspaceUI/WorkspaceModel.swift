@@ -152,6 +152,11 @@ public final class WorkspaceModel {
   /// Mac, a sheet on the iPhone); a counter so asking twice opens it twice.
   public var settingsPage: SettingsPage = SettingsPage.allCases[0]
   public var settingsRequest = 0
+  /// A thread a notification tap or widget row asked for before the link was ready; `connect()` opens
+  /// it once the first snapshot is in. A later request replaces an earlier one.
+  public private(set) var pendingThreadOpen: String?
+  /// Counts every `requestOpenThread`; the root view moves the iPhone to the thread column on a change.
+  public private(set) var detailRequest = 0
   /// The iPhone's Settings sheet.
   public var showSettingsSheet = false
   /// Set by the Settings views while they are on screen.
@@ -468,7 +473,11 @@ public final class WorkspaceModel {
         let covered = snapshotPosition ?? (hello.epoch, hello.sequence)
         try Task.checkCancellation()
         link = .ready
+        let requested = pendingThreadOpen
+        pendingThreadOpen = nil
         settleLink()
+        // Not awaited: a slow `thread.read` must not hold up `observe` (events, desync handling).
+        if let requested { Task { await openThread(id: requested) } }
         await observe(client, events: events, covered: covered)
       } catch {
         guard !Task.isCancelled else { return }
@@ -513,6 +522,19 @@ public final class WorkspaceModel {
     settleLink()
   }
 
+  /// Open the thread a notification or widget row asked for. When the link is ready it opens at once;
+  /// otherwise (a cold launch) the id waits and `connect()` opens it right after the first snapshot. An
+  /// id that is not in the list still goes through `openThread`; the detail read decides.
+  public func requestOpenThread(_ id: String) {
+    detailRequest += 1
+    guard link == .ready else {
+      pendingThreadOpen = id
+      return
+    }
+    pendingThreadOpen = nil
+    Task { await openThread(id: id) }
+  }
+
   /// Open Settings, at `page` when given.
   public func openSettings(_ page: SettingsPage? = nil) {
     if let page { settingsPage = page }
@@ -526,7 +548,7 @@ public final class WorkspaceModel {
     guard let status = try? await client.request(HubStatus.self, EmptyParams()),
       generation == accountGeneration
     else { return }
-    account = WorkspaceAccount(status: status)
+    account = WorkspaceAccount(status: status, profile: accountStatus?.account)
     hubJoined = status.joined
     hubLink = status.link
     // A status read never clears the notice: only `account.dismissNotice` does.
@@ -1439,6 +1461,10 @@ public final class WorkspaceModel {
     activeTurns = [:]
     detail = nil
     selectedThreadId = nil
+    // An open request of the account that left must not move the next sign-in to an empty thread
+    // column (the root view acts on `detailRequest` when it mounts) or open a thread of the old one.
+    detailRequest = 0
+    pendingThreadOpen = nil
     // With no thread open, clearing the composer schedules no draft save.
     composerText = ""
     account = nil

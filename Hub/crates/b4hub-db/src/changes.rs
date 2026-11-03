@@ -32,6 +32,7 @@ use sqlx::types::Uuid;
 use sqlx::{Acquire, FromRow, Postgres, Transaction};
 
 use crate::devices::{AuthedDevice, Platform};
+use crate::push::{self, Kind, Notification};
 use crate::{Db, Error, Result};
 
 /// What happened to one change that was new to the hub.
@@ -69,6 +70,10 @@ pub struct PushOutcome {
     /// resend them.
     pub accepted_through: i64,
     pub rejected: Vec<Rejected>,
+    /// The notifications the push's applied changes caused, decided in its transaction and to be
+    /// delivered after the commit: in batch order, then by device id. Empty for a push that
+    /// notifies nobody.
+    pub notifications: Vec<Notification>,
 }
 
 /// Why `auth` may not make `change`, if it may not.
@@ -172,6 +177,8 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
     let now = now_ms();
     let mut rejected = Vec::new();
     let (mut applied, mut skipped, mut lost, mut duplicates) = (0usize, 0usize, 0usize, 0usize);
+    // Turns and runtime requests this push changed, for the notification decision below.
+    let mut touched: Vec<(Kind, String)> = Vec::new();
     for change in batch {
         if let Some(code) = refusal(auth, change) {
             tracing::warn!(
@@ -222,6 +229,12 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
             Ok(Applied::Yes) => {
                 savepoint.commit().await?;
                 applied += 1;
+                if let Some(kind) = Kind::of_table(&change.table) {
+                    let entry = (kind, change.row_id.clone());
+                    if !touched.contains(&entry) {
+                        touched.push(entry);
+                    }
+                }
             }
             Ok(Applied::Lost) => {
                 savepoint.rollback().await?;
@@ -250,6 +263,9 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
             .await?
         }
     };
+    // Which applied rows notify whom is decided here, in the same transaction, so the ledger
+    // commits with the rows and a retried batch cannot notify twice.
+    let notifications = push::detect(&mut tx, auth, &touched).await?;
     tx.commit().await?;
 
     if skipped > 0 {
@@ -265,6 +281,7 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
     Ok(PushOutcome {
         accepted_through: accepted,
         rejected,
+        notifications,
     })
 }
 
@@ -429,7 +446,7 @@ impl Row {
 }
 
 /// SQLSTATE class 22: the value does not fit the column (wrong type, out of range).
-fn is_data_error(error: &sqlx::Error) -> bool {
+pub(crate) fn is_data_error(error: &sqlx::Error) -> bool {
     error
         .as_database_error()
         .and_then(|e| e.code())
