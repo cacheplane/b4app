@@ -28,7 +28,7 @@ pub async fn seed(
     display_name: &str,
     email: &str,
 ) -> Result<SeedOutcome> {
-    let mut tx = db.pool.begin().await?;
+    let mut tx = db.begin(None).await?;
 
     let new_org: Option<Uuid> = sqlx::query_scalar(
         "INSERT INTO orgs (id, slug, name) VALUES ($1, $2, $3) \
