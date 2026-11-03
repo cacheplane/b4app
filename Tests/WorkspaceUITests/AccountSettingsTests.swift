@@ -82,6 +82,8 @@ private final class FakeCeremony: PasskeyCeremony {
   private(set) var registered: [JSONValue] = []
   private(set) var confirmed: [JSONValue] = []
   private(set) var reportedUnknown: [String] = []
+  /// Each rename asked of the password manager: relying party, user handle, name.
+  private(set) var renamed: [(String, Data, String)] = []
 
   func assert(_ options: JSONValue) async throws -> JSONValue? { nil }
 
@@ -92,6 +94,10 @@ private final class FakeCeremony: PasskeyCeremony {
   }
 
   static let assertion: JSONValue = ["id": "aTE", "rawId": "aTE", "type": "public-key"]
+
+  func renamePasskey(relyingParty: String, userHandle: Data, name: String) async {
+    renamed.append((relyingParty, userHandle, name))
+  }
 
   func register(_ options: JSONValue) async throws -> JSONValue {
     registered.append(options)
@@ -493,6 +499,12 @@ private let minted = HubPair.Result(
     let finish = try #require(transport.calls(.accountAddPasskeyFinish).first)
     #expect(finish["ceremonyId"] == "c9")
     #expect(model.identities?.map(\.id) == ["i1", "i2"])
+    // Live gate, step 4: the new passkey takes the account's name in the password manager, by the
+    // registration's user handle, instead of keeping the hub's "Agent Workspace account".
+    #expect(ceremony.renamed.count == 1)
+    #expect(ceremony.renamed.first?.0 == "test.b4.run")
+    #expect(ceremony.renamed.first.map { WebAuthnJSON.base64URL($0.1) } == "x1DZeP_JTHG6OCuGv4E2CQ")
+    #expect(ceremony.renamed.first?.2 == "Brian Love")
 
     // With a passkey now, the next changes confirm with it rather than Apple.
     transport.script(.accountStepUpBegin, [try stepUpBegun(), try stepUpBegun()])
@@ -511,6 +523,8 @@ private let minted = HubPair.Result(
     #expect(model.accountSettingsFailure != nil)
     #expect(ceremony.reportedUnknown == ["test.b4.run"])
     #expect(ceremony.confirmed.count == 2 && apple.opened.count == 1)
+    // Neither a closed sheet nor a refused passkey renames anything.
+    #expect(ceremony.renamed.count == 1)
   }
 
   @Test func connectAppleIDShowsOnBetaAndProdOnly() async throws {

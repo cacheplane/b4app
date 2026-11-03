@@ -33,10 +33,12 @@ case "$1" in
   test)
     env_name="test"
     hostname=hub.test.b4.run
+    apple_callback_scheme=b4app-beta
     ;;
   production | prod)
     env_name="prod"
     hostname=hub.b4.run
+    apple_callback_scheme=b4app
     ;;
   *) die "environment must be test or production, not '$1'" ;;
 esac
@@ -134,6 +136,7 @@ step "registering $hub_family"
   --task-role "$hub_task" \
   --include-signin-secrets "$signin" \
   --var "db_url_secret_arn=$db_url_arn" \
+  --var "apple_callback_scheme=$apple_callback_scheme" \
   ${signin_vars[@]+"${signin_vars[@]}"}
 hub_arn="$(register "$work/hub.json")"
 echo "$hub_arn"

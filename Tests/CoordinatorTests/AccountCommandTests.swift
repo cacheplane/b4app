@@ -899,6 +899,45 @@ private func sha256Hex(_ text: String) -> String {
     }
   }
 
+  /// D-114: a hub hands Apple's web flow back only to the flavour it serves, and refuses another's
+  /// scheme at begin (the starts above check that the Mac sends its own). The Mac shows the hub's
+  /// refusal and keeps no ceremony for it.
+  @Test func appleStartsShowTheHubsSchemeRefusal() async throws {
+    let rig = try await CommandRig.start(flavor: .beta)
+    defer { Task { await rig.close() } }
+    let message = "this hub hands Sign in with Apple back only to the b4app app, not b4app-beta"
+    let refusal = HubError(kind: "request_error", code: "invalid_request", message: message, status: 400)
+
+    rig.hub.fail("appleBegin", with: refusal)
+    let start = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.client.request(AccountAppleStart.self, EmptyParams())
+    }
+    #expect(start?.code == .protocolInvalid)
+    #expect(start?.message.contains(message) == true)
+    // Nothing is in flight: a redirect now is dropped without asking the hub.
+    let finish = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.client.request(
+        AccountAppleFinish.self, AccountAppleFinish.Params(handoff: "h"), options: CommandRig.mutation())
+    }
+    #expect(finish?.code == .ceremonyExpired)
+    #expect(!rig.hub.calls.contains("handoff"))
+
+    try await rig.signIn(ann)
+    rig.hub.fail("appleLinkBegin", with: refusal)
+    let link = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.client.request(AccountAppleLinkStart.self, EmptyParams())
+    }
+    #expect(link?.code == .protocolInvalid)
+    #expect(link?.message.contains(message) == true)
+    let linkFinish = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.client.request(
+        AccountAppleLinkFinish.self, AccountAppleLinkFinish.Params(handoff: "h"),
+        options: CommandRig.mutation())
+    }
+    #expect(linkFinish?.code == .ceremonyExpired)
+    #expect(!rig.hub.calls.contains("appleLinkHandoff"))
+  }
+
   @Test func appleFinishWithoutACeremonyIsDropped() async throws {
     let rig = try await CommandRig.start(flavor: .beta)
     defer { Task { await rig.close() } }

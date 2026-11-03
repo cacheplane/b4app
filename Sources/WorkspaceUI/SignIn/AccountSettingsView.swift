@@ -184,6 +184,8 @@ extension WorkspaceModel {
   /// passkey yet), then the coordinator begins with that confirmation, the system sheet makes the
   /// passkey, and the attestation goes to the coordinator once. A closed sheet, either one, shows
   /// nothing; a passkey the hub refused is reported unknown to the password manager, as at sign-up.
+  /// A passkey the hub kept takes the account's name in the password manager, in place of the hub's
+  /// placeholder, as the sign-up passkey does after onboarding (D-105, D-132).
   public func addPasskey(using ceremony: any PasskeyCeremony, apple: any AppleCeremony) async {
     guard !accountSettingsBusy else { return }
     accountSettingsBusy = true
@@ -205,6 +207,7 @@ extension WorkspaceModel {
       }
       guard generation == accountGeneration else { return }
       add(identity: added)
+      await renameAddedPasskey(options: begun.registration, ceremony: ceremony)
     } catch is SignInCanceled {
       return
     } catch is CancellationError {
@@ -217,6 +220,22 @@ extension WorkspaceModel {
     } catch {
       await accountChangeFailed(error, generation: generation)
     }
+  }
+
+  /// The name a passkey added in Settings takes: the account's display name, else the profile
+  /// button's. The password manager renames by user handle, which all of an account's passkeys
+  /// share, so a per-device name is not possible there.
+  var addedPasskeyName: String? {
+    let names = [accountStatus?.account?.displayName, account?.name]
+    return names.lazy.compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .first { !$0.isEmpty }
+  }
+
+  private func renameAddedPasskey(options: JSONValue, ceremony: any PasskeyCeremony) async {
+    guard let name = addedPasskeyName,
+      let request = try? WebAuthnJSON.registrationRequest(from: options)
+    else { return }
+    await ceremony.renamePasskey(relyingParty: request.relyingParty, userHandle: request.userID, name: name)
   }
 
   /// "Connect Apple ID" (beta and prod, while the account has none), after confirming it's you with a

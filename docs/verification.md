@@ -21,6 +21,34 @@ Built on `blove/xenodochial-morse-e3bed8`.
 6. With Apple enabled (beta, after D-114): an Apple-only account's **Add a passkey** opens Apple's page first (web on the Mac, the native sheet on the phone), then the registration sheet; **Connect Apple ID** on a passkey account asks for the passkey first.
 7. `curl -X DELETE -H "Authorization: Bearer <a device token>" <hub>/v1/me` answers `403 step_up_required` with `details.methods`; the hub's log has "a change was refused: it needs a step-up" and no token or grant.
 
+## 2026-11-02: The Apple callback scheme pinned per hub (D-114, D-140)
+
+Fixture gates only, run on the build MacBook Pro from the worktree branch. Nothing was deployed: the hosted hubs pick this up with the next deploy (test on merge, prod with a `hub-v*` release).
+
+| Gate | Result |
+| --- | --- |
+| `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo test --workspace --locked` (throwaway PostgreSQL) | Pass apart from one relay timing flake. New: `config.rs` `the_web_flow_names_its_one_callback_scheme`; `apple.rs` `web_begin_refuses_another_flavours_scheme`, `the_callback_redirects_to_the_configured_scheme`. Run on a private cluster (port 54341), because another worktree's run on the shared 54329 cluster raced sqlx's setup database (`duplicate key … _sqlx_test_…`). `relay.rs` `presence_is_sent_when_the_queue_has_room_again` failed once, then passed 2 of 3 reruns alone: it waits with sleeps and touches no Apple code. |
+| `swift build`, `swift format lint --strict` | Pass |
+| `swift test` | 1208 tests: 7 failed in the full run, all timeouts or wall-clock checks (`MirrorSyncTests` ×4, `MirrorRelayTests.presenceBecomesHostPresenceEvents`, `PairLinkTests.aScanDuringASlowLogOutKeepsTheNewAccount`, `PairingTests.pairIsRoutedAndNeverReplayedFromTheOperationCache`, `SessionTests.reconcileSettles…`), while other sessions' builds loaded the Mac (single tests took over 117 s). Rerun alone with `AccountCommandTests`: 58 tests in 8 suites pass, including the new `appleStartsShowTheHubsSchemeRefusal`. No Swift source changed. |
+| `bats Infra/scripts/tests/` | 52 pass (`render.bats` and `deploy.bats` check `B4HUB_APPLE_CALLBACK_SCHEME`: `b4app-beta` for test, `b4app` for prod) |
+| `terraform test` on `Infra/modules/hub/tests/ecs.tftest.hcl` (mocked provider) | 20 pass |
+| `helm unittest Hub/chart/b4hub`, `helm lint` with the CI values | 56 pass; lint clean; the schema refuses a `callbackScheme` off the list |
+
+Open: confirming on `hub.test.b4.run` after the merge's deploy that a web begin with `scheme: "b4app"` is refused and `b4app-beta` is accepted; then the same on `hub.b4.run` after the release, with the schemes swapped.
+
+## 2026-11-02: Sign-in polish from the live gate (D-132, D-133)
+
+Branch `blove/sign-in-polish`, from main at `b5c0f5b`. Fixes the five minor findings of the sign-in live gate (below): the profile button's name, the added passkey's name, the local flavour's "New here?" line, the enrollment sheet's flash after Pair, and the old LaunchAgent left loaded by adoption. No hub, wire, or fixture change.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Swift format | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass (exit 0) |
+| Build | `swift build` | Pass |
+| Swift tests | `swift test` (PostgreSQL from the main checkout's `.build/postgres`) | 1212 tests in 154 suites; the new and changed tests pass: `SignInTests.theProfileButtonShowsTheNameOnboardingGave` and `signInViewCopy`, `AccountSettingsTests.addAPasskey`, `ConnectMacTests.theEnrollmentSheetKeepsItsConfirmationWhileClosing`, `LegacyAdoptionTests.jobStateReadsLaunchctlPrint`, `anUnreadableJobIsBootedOutByItsPlist`, `retiringTheOldAgentBootsItOutThenRemovesItsPlist`, `bootOutDecisionFollowsTheProgramPath`. The last full run had 3 issues in two timing tests this change does not touch, `B4AdapterSessionTests.aDroppedStreamReattachesWithoutResubmitting` and `SessionTests.reconcileSettlesATurnThatFinishedWhileTheCoordinatorWasDown` (the second also in an earlier run, with `MirrorSyncTests` long-poll timeouts and a `MirrorRelayTests` presence check off by 0.23 s); each passed three times run alone, and `PostgresServerTests`, `MirrorSyncTests`, `MirrorRelayTests`, and `SessionTests` passed together (82 tests) |
+| iPhone app | `xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO` | `** BUILD SUCCEEDED **` (`EnrollView` is compiled only here) |
+
+Not run live: the passkey rename in Passwords, the enrollment sheet's dismissal on a device or Simulator, and the boot-out on a fresh adoption (the owner's install is already adopted). A new account starting with no connections is expected (connections are per account, D-065); recorded in `docs/milestones.md`.
 ## 2026-11-02: Deleting threads, the review's minors (D-138)
 
 Branch `blove/delete-threads-minors`. Each fix was test-first: the test failed, then passed with the fix.

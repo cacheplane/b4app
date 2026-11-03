@@ -437,6 +437,7 @@ fn apple_config(fake: &FakeApple, signup: Signup) -> Config {
         private_key_pem: fake.team_pem.clone(),
         audiences: vec![BUNDLE_ID.into(), SERVICES_ID.into()],
         services_id: Some(SERVICES_ID.into()),
+        callback_scheme: Some("b4app".into()),
         base_url: Url::parse(&fake.base).unwrap(),
     });
     config
@@ -1047,7 +1048,7 @@ async fn web_flow_start_redirects_with_state_and_nonce(pool: PgPool) {
     let begun = hub
         .post(
             BEGIN,
-            Some(&json!({"verifierHash": hash, "scheme": "b4app-local"})),
+            Some(&json!({"verifierHash": hash, "scheme": "b4app"})),
         )
         .await;
     assert_eq!(begun.status, StatusCode::OK, "{}", begun.body);
@@ -1127,17 +1128,79 @@ async fn web_flow_start_redirects_with_state_and_nonce(pool: PgPool) {
     assert_eq!(hub.post(BEGIN, None).await.status, StatusCode::OK);
 }
 
+/// D-114: the web flow hands back only to the hub's configured scheme. Another flavour's scheme
+/// is refused at begin, for a sign-in and a link, and no ceremony is made for it.
+#[sqlx::test(migrations = false)]
+async fn web_begin_refuses_another_flavours_scheme(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let hub = &setup.hub;
+    let token = token_of(&passkey_account(hub).await).to_string();
+    let (_, hash) = new_verifier();
+    for scheme in ["b4app-beta", "b4app-local"] {
+        let body = json!({"verifierHash": hash, "scheme": scheme});
+        for answer in [
+            hub.post(BEGIN, Some(&body)).await,
+            authed(hub, "POST", LINK, Some(&body), &token).await,
+        ] {
+            assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{}", answer.body);
+            assert_eq!(answer.code(), "invalid_request");
+            let message = answer.body["error"]["message"].as_str().unwrap();
+            assert!(
+                message.contains("only to the b4app app") && message.contains(scheme),
+                "{message}"
+            );
+        }
+    }
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT count(*) FROM auth_ceremonies WHERE kind IN ('apple', 'apple_link')"
+        )
+        .await,
+        0
+    );
+}
+
+/// A hub configured for another flavour redirects there, and refuses the others.
+#[sqlx::test(migrations = false)]
+async fn the_callback_redirects_to_the_configured_scheme(pool: PgPool) {
+    let fake = FakeApple::start().await;
+    let (admin, app) = common::migrated(&pool).await;
+    let mut config = apple_config(&fake, Signup::Open);
+    config.apple.as_mut().unwrap().callback_scheme = Some("b4app-beta".into());
+    let setup = Setup {
+        admin,
+        hub: Hub::start(app, config).await,
+        fake,
+    };
+    let hub = &setup.hub;
+    let (verifier, hash) = new_verifier();
+    let refused = hub
+        .post(
+            BEGIN,
+            Some(&json!({"verifierHash": hash, "scheme": "b4app"})),
+        )
+        .await;
+    assert_eq!(refused.code(), "invalid_request", "{}", refused.body);
+
+    let (ceremony, nonce_claim) = begin_web(hub, BEGIN, None, &hash, "b4app-beta").await;
+    let posted = apple_posts(&setup, &ceremony, &nonce_claim, "001.beta", None).await;
+    let handoff = handoff_in(&location(&posted), "b4app-beta");
+    let redeemed = redeem(hub, &handoff, &verifier).await;
+    assert_eq!(redeemed.status, StatusCode::OK, "{}", redeemed.body);
+}
+
 #[sqlx::test(migrations = false)]
 async fn callback_exchanges_and_redirects_to_scheme_with_handoff(pool: PgPool) {
     let setup = setup(&pool, Signup::Open).await;
     let hub = &setup.hub;
     let (verifier, hash) = new_verifier();
-    let (ceremony, nonce_claim) = begin_web(hub, BEGIN, None, &hash, "b4app-beta").await;
+    let (ceremony, nonce_claim) = begin_web(hub, BEGIN, None, &hash, "b4app").await;
 
     let user = r#"{"name":{"firstName":"Bea","lastName":"Beta"},"email":"bea@example.test"}"#;
     let token = setup.fake.token("001.bea", SERVICES_ID, Some(&nonce_claim));
     let code = setup.fake.code("001.bea", SERVICES_ID, Some(CALLBACK_URL));
-    // A scheme in the post is ignored: the redirect goes where the ceremony said.
+    // A scheme in the post is ignored: the redirect goes to the hub's one scheme.
     let posted = hub
         .post_form(
             CALLBACK,
@@ -1151,7 +1214,7 @@ async fn callback_exchanges_and_redirects_to_scheme_with_handoff(pool: PgPool) {
         )
         .await;
     let target = location(&posted);
-    let handoff = handoff_in(&target, "b4app-beta");
+    let handoff = handoff_in(&target, "b4app");
     assert_eq!(handoff.len(), 43, "{target}");
     // An unredeemed sign-up changes nothing: no user, org, identity, or device, and the code is
     // not exchanged until the verifier comes with the handoff.
@@ -1212,15 +1275,12 @@ async fn callback_failures_redirect_with_an_error(pool: PgPool) {
 
     // A token that does not verify.
     let (_, hash) = new_verifier();
-    let (ceremony, _) = begin_web(hub, BEGIN, None, &hash, "b4app-local").await;
+    let (ceremony, _) = begin_web(hub, BEGIN, None, &hash, "b4app").await;
     let wrong = apple_posts(&setup, &ceremony, &sha256_hex("not it"), "001.f", None).await;
-    assert_eq!(
-        location(&wrong),
-        "b4app-local://auth?error=credential_rejected"
-    );
+    assert_eq!(location(&wrong), "b4app://auth?error=credential_rejected");
 
     // A native-audience token posted to the web flow.
-    let (ceremony, nonce_claim) = begin_web(hub, BEGIN, None, &hash, "b4app-local").await;
+    let (ceremony, nonce_claim) = begin_web(hub, BEGIN, None, &hash, "b4app").await;
     let token = setup.fake.token("001.f", BUNDLE_ID, Some(&nonce_claim));
     let posted = hub
         .post_form(
@@ -1228,20 +1288,17 @@ async fn callback_failures_redirect_with_an_error(pool: PgPool) {
             &[("state", &ceremony), ("code", "c.x"), ("id_token", &token)],
         )
         .await;
-    assert_eq!(
-        location(&posted),
-        "b4app-local://auth?error=credential_rejected"
-    );
+    assert_eq!(location(&posted), "b4app://auth?error=credential_rejected");
 
     // The person cancelled on Apple's page.
-    let (ceremony, _) = begin_web(hub, BEGIN, None, &hash, "b4app-local").await;
+    let (ceremony, _) = begin_web(hub, BEGIN, None, &hash, "b4app").await;
     let cancelled = hub
         .post_form(
             CALLBACK,
             &[("state", &ceremony), ("error", "user_cancelled_authorize")],
         )
         .await;
-    assert_eq!(location(&cancelled), "b4app-local://auth?error=cancelled");
+    assert_eq!(location(&cancelled), "b4app://auth?error=cancelled");
 
     // An unknown state cannot be redirected anywhere.
     let lost = hub
@@ -2177,7 +2234,9 @@ async fn routes_404_without_apple_config(pool: PgPool) {
 
     // Without a Services ID: native only too.
     let mut config = apple_config(&fake, Signup::Open);
-    config.apple.as_mut().unwrap().services_id = None;
+    let apple = config.apple.as_mut().unwrap();
+    apple.services_id = None;
+    apple.callback_scheme = None;
     let no_services = Hub::start(app.clone(), config).await;
     let offered = no_services.get("/v1/auth/config", None).await;
     assert_eq!(offered.body["apple"], json!({"native": true, "web": false}));

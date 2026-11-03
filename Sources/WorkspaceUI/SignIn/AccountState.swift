@@ -116,6 +116,13 @@ public enum SignInCopy {
   public static let passkey = "Continue with a passkey"
   public static let signingIn = "Signing in…"
   public static let newHere = "New here? Either one creates your account."
+  /// The local flavour offers no Apple, so there is one way to make an account.
+  public static let newHerePasskeyOnly = "New here? A passkey creates your account."
+
+  /// The "New here?" line for the methods the screen shows.
+  public static func newHere(appleSignIn: Bool) -> String {
+    appleSignIn ? newHere : newHerePasskeyOnly
+  }
   public static let terms = "By continuing you agree to the terms and privacy policy."
   public static let createAccount = "Create account"
   public static let cancel = "Cancel"
@@ -273,8 +280,13 @@ extension WorkspaceModel {
       forgetWorkspace()
       closeAccountWindows()
     }
-    // The phone's profile button names the account its host signed in to.
-    if hostOwnsAccount { account = Self.hostProfile(status) }
+    // The phone's profile button names the account its host signed in to; the Mac's takes the
+    // account's display name as soon as onboarding or Settings changes it.
+    if hostOwnsAccount {
+      account = Self.hostProfile(status)
+    } else if accountSource == .coordinator {
+      account?.rename(from: status.account)
+    }
     if loadStore, !wasSignedIn || switched {
       if hostOwnsAccount {
         // A fresh transport, over the new link's relay, reads the mirror the new sync fills.

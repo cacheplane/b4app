@@ -679,6 +679,32 @@ extension Array where Element == ScreenElement {
     #expect(model.accountState == .signedIn)
   }
 
+  /// Live gate, step 4: a new account's hub link was joined before onboarding named it, so `hub.status`
+  /// still has no display name; the profile button shows the name onboarding gave, not the username,
+  /// and follows a later rename in Settings.
+  @Test func theProfileButtonShowsTheNameOnboardingGave() async throws {
+    let transport = ScriptedTransport()
+    let hub = HubStatus.Result(
+      joined: true, url: "http://localhost:8080", deviceId: "d", deviceName: "Mac", orgSlug: "o",
+      username: "u-not33mk7", displayName: "", unsyncedChanges: 0)
+    transport.setHub(hub)
+    let model = try await connected(onboarding(name: ""), transport: transport)
+    transport.script(.accountCompleteProfile, [try status(signedIn)])
+    await model.completeProfile(fullName: "Brian Love")
+    try await waitUntil("the profile") { model.account != nil }
+    #expect(model.account?.name == "Brian Love")
+    #expect(model.account?.initials == "BL")
+
+    var renamed = signedIn
+    renamed.account?.displayName = "Brian de Love"
+    transport.script(.accountCompleteProfile, [try status(renamed)])
+    await model.updateFullName("Brian de Love")
+    #expect(model.account?.name == "Brian de Love")
+
+    // Without a name anywhere, the username.
+    #expect(WorkspaceAccount(status: hub, profile: nil)?.name == "u-not33mk7")
+  }
+
   @Test func onboardingLogOutNeverStopsWork() async throws {
     let transport = ScriptedTransport()
     let model = try await connected(onboarding(name: ""), transport: transport)
@@ -792,6 +818,11 @@ extension Array where Element == ScreenElement {
     #expect(tree.shows("Your Codex, Claude, and B4 threads, on your Mac and your phone."))
     #expect(tree.shows("New here? Either one creates your account."))
     #expect(tree.shows("By continuing you agree to the terms and privacy policy."))
+    // Live gate: the local flavour offers no Apple, so the line names the one way it has.
+    let passkeyOnly = signInScreen(try await connected(signedOut, configuration: local))
+    #expect(!passkeyOnly.has("signIn.apple"))
+    #expect(passkeyOnly.text(of: "signIn.newHere") == "New here? A passkey creates your account.")
+    #expect(!passkeyOnly.shows("New here? Either one creates your account."))
     // The line as drawn, with its two links, reads the same.
     let terms = SignInView.termsLine(beta)
     #expect(String(terms.characters) == "By continuing you agree to the terms and privacy policy.")

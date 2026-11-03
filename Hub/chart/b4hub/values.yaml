@@ -66,6 +66,8 @@ hub:
     audiences: []
     # -- Apple Services ID for web sign-in (`B4HUB_APPLE_SERVICES_ID`); rendered only when set.
     servicesId: ""
+    # -- The one app URL scheme web sign-in hands back to (`B4HUB_APPLE_CALLBACK_SCHEME`): `b4app`, `b4app-beta`, or `b4app-local`, the flavour this hub serves. Required with `servicesId` (the hub exits 2 without it) and refused without it; rendered only when set.
+    callbackScheme: ""
   # -- Extra `EnvVar` entries appended verbatim to the hub container. For OTLP use `otel.endpoint`, `otel.protocol`, and `otel.extraEnv` instead.
   extraEnv: []
 
