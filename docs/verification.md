@@ -2,6 +2,19 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-11-03: M8c loose ends (Already answered, Camera pair link, beta passkeys)
+
+Branch `blove/drop-already-answered`.
+
+- **"Already answered" dropped (D-151).** The owner chose to drop the copy over a "Your Mac answered first" notice. Fixture: `SendStateTests.aStaleAnswerClearsQuietly`, `MirrorModelTests.theMacAnsweringFirstTakesTheCardAwayQuietly`. Full `swift test`: 1293 tests. Two failures outside the change passed when re-run alone: `B4AdapterSessionTests.aDroppedStreamReattachesWithoutResubmitting` and `LifecycleTests.reconcileSettlesATurnThatFinishedWhileTheCoordinatorWasDown`.
+- **The iPhone Camera app opening a pair link.** The owner's iPhone (TestFlight beta 2611030054, already paired and connected) and the Beta Mac app (`9140cf5`) on `https://hub.test.b4.run`. Before the run, `https://test.b4.run/.well-known/apple-app-site-association` and Apple's CDN copy (`app-site-association.cdn-apple.com/a/v1/test.b4.run`) both served `applinks` for `GJJKL34HCT.com.cacheplane.b4app.ios` on `/pair`, and `webcredentials` for that app and `GJJKL34HCT.com.cacheplane.b4app.beta`.
+  1. On the Mac: Settings → Remote access → Pair iPhone….
+  2. The owner scanned the code with the system Camera and tapped its banner. Agent Workspace opened (`onContinueUserActivity`) with the pairing offer.
+  3. Pair answered "This iPhone is already paired" (`merge_refused`, `same_account`, D-098), and the phone stayed paired.
+
+  Pass. The owner expected a paired phone's offer to say "already paired" before the tap. By design it cannot: nothing is sent until Pair (D-066, D-110), and the code does not tell the phone which account it belongs to. Knowing up front needs a hub check that does not spend the code; the owner made that a separate task.
+- During the session, a deploy of the test hub stopped its only task at 05:51Z and served 503 until 05:53:20Z. The Beta Mac's relay reconnected by itself at 05:53:30Z.
+
 ## 2026-11-03: M8c pairing and relay on a physical iPhone (beta flavour, test hub)
 
 The owner's iPhone, with TestFlight beta build 0.1.0 (2611030054). It was uploaded from #63's branch (`abb41df`, which contains main `9140cf5`) by `B4APP_FLAVOR=beta ./Scripts/upload-ios.sh`, and reached the Internal group. The Mac is `Agent Workspace (Beta).app`, packaged from main `9140cf5` (`B4APP_FLAVOR=beta`, Developer ID, not notarized) beside the prod and Local apps, against `https://hub.test.b4.run`.
