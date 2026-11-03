@@ -33,6 +33,18 @@ signin_flag() { # -> 0 or 1, from Infra/taskdefs/features.env
   esac
 }
 
+apns_flag() { # -> 0 or 1, from Infra/taskdefs/features.env
+  local flag
+  flag="$(sed -n 's/^INCLUDE_APNS_SECRETS=\([01]\)[[:space:]]*$/\1/p' "${taskdefs:?}/features.env")"
+  case "$flag" in
+    0 | 1) printf '%s' "$flag" ;;
+    *)
+      echo "$prog: Infra/taskdefs/features.env must set INCLUDE_APNS_SECRETS=0 or 1" >&2
+      exit 2
+      ;;
+  esac
+}
+
 secret_arn() { # name under b4hub/ -> its ARN
   resolved "secret b4hub/$1" "$ARN" "$(aws secretsmanager describe-secret --secret-id "b4hub/$1" --output json | jq -r .ARN)"
 }
@@ -50,6 +62,18 @@ collect_signin_vars() { # 0|1 -> fills signin_vars with the four sign-in secret 
     apple_key_id_arn=apple-key-id apple_private_key_arn=apple-private-key; do
     arn="$(secret_arn "${pair#*=}")"
     signin_vars+=(--var "${pair%%=*}=$arn")
+  done
+}
+
+apns_vars=()
+collect_apns_vars() { # 0|1 -> fills apns_vars with the three APNs secret ARNs as --var flags
+  local pair arn
+  apns_vars=()
+  [ "$1" = 1 ] || return 0
+  for pair in apns_key_id_arn=apns-key-id apns_team_id_arn=apns-team-id \
+    apns_private_key_arn=apns-private-key; do
+    arn="$(secret_arn "${pair#*=}")"
+    apns_vars+=(--var "${pair%%=*}=$arn")
   done
 }
 

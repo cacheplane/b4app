@@ -49,15 +49,26 @@ services:
       B4HUB_SECRET_KEY: ${B4HUB_SECRET_KEY:?set B4HUB_SECRET_KEY in Hub/.env (see .env.example)}
       B4HUB_WEBAUTHN_RP_ID: ${B4HUB_WEBAUTHN_RP_ID:-local.b4.run}
       B4HUB_SIGNUP: ${B4HUB_SIGNUP:-closed}
-      # Notifications for a phone in the Simulator: the hub writes `.apns` files into /spool, and
+      # Notifications for a phone in the Simulator, by default (spool): the hub writes `.apns` files into /spool, and
       # B4HUB_PUSH_SPOOL_HOST_DIR (default ./push-spool) is where they appear on this machine.
       # Run `Scripts/sim-push.sh` to feed each file to the booted Simulator
       # (`xcrun simctl push` reads them), moving it to sent/ or failed/. Nothing cleans the
       # directory up, so files pile up there and in sent/; empty it at any time.
-      B4HUB_PUSH_SENDER: spool
+      B4HUB_PUSH_SENDER: ${B4HUB_PUSH_SENDER:-spool}
       B4HUB_PUSH_SPOOL_DIR: /spool
+      # B4HUB_PUSH_SENDER=apns sends through Apple instead: the hub reads these three only then
+      # (with the spool they are ignored, so the empty defaults are harmless). The key is a file:
+      # B4HUB_APNS_KEY_HOST_PATH, the .p8 on this machine, is mounted read-only below. See .env.example.
+      B4HUB_APNS_KEY_ID: ${B4HUB_APNS_KEY_ID:-}
+      B4HUB_APNS_TEAM_ID: ${B4HUB_APNS_TEAM_ID:-}
+      B4HUB_APNS_PRIVATE_KEY_FILE: /run/secrets/apns.p8
     volumes:
       - ${B4HUB_PUSH_SPOOL_HOST_DIR:-./push-spool}:/spool
+      # /dev/null when unset, so Compose starts without a key; the hub opens this path only for apns.
+      - type: bind
+        source: ${B4HUB_APNS_KEY_HOST_PATH:-/dev/null}
+        target: /run/secrets/apns.p8
+        read_only: true
     ports:
       - "127.0.0.1:8080:8080"
     # The hub drains open long-polls for up to B4HUB_SHUTDOWN_WAIT_MS (30 s); Compose's default

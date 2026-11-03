@@ -26,12 +26,16 @@ render_hub() { # $1 = include_signin_secrets, extra args follow
     --exec-role arn:aws:iam::123456789012:role/b4hub-test-task-exec \
     --task-role arn:aws:iam::123456789012:role/b4hub-test-task \
     --include-signin-secrets "$signin" \
+    --include-apns-secrets "${APNS:-0}" \
     --var "db_url_secret_arn=${DB_URL_ARN:-$(arn database-url)}" \
     --var apple_callback_scheme=b4app-beta \
     --var "secret_key_arn=$(arn secret-key)" \
     --var "apple_team_id_arn=$(arn apple-team-id)" \
     --var "apple_key_id_arn=$(arn apple-key-id)" \
     --var "apple_private_key_arn=$(arn apple-private-key)" \
+    --var "apns_key_id_arn=$(arn apns-key-id)" \
+    --var "apns_team_id_arn=$(arn apns-team-id)" \
+    --var "apns_private_key_arn=$(arn apns-private-key)" \
     "$@"
 }
 
@@ -49,6 +53,73 @@ render_hub() { # $1 = include_signin_secrets, extra args follow
   [ "$(jq -r '[.containerDefinitions[0].secrets[].name] | join(",")' "$out")" = \
     "B4HUB_SECRET_KEY,B4HUB_APPLE_TEAM_ID,B4HUB_APPLE_KEY_ID,B4HUB_APPLE_PRIVATE_KEY,DATABASE_URL" ]
   [ "$(jq -r '.containerDefinitions[0].secrets[3].valueFrom' "$out")" = "$(arn apple-private-key)" ]
+}
+
+@test "with the APNs flag off the serving task is the same whether or not the ARNs are passed" {
+  run render_hub 1
+  [ "$status" -eq 0 ]
+  cp "$out" "$BATS_TEST_TMPDIR/flag-off.json"
+  # Without the flag and without the ARNs (the form every earlier caller used).
+  run "$render" "$taskdefs/hub.json.tpl" "$out" \
+    --family b4hub-test-hub \
+    --image 123456789012.dkr.ecr.us-east-2.amazonaws.com/b4hub@sha256:0123 \
+    --region us-east-2 --log-group /b4hub/test/hub --env-name test \
+    --public-url https://hub.test.b4.run --rp-id test.b4.run \
+    --exec-role arn:aws:iam::123456789012:role/b4hub-test-task-exec \
+    --task-role arn:aws:iam::123456789012:role/b4hub-test-task \
+    --include-signin-secrets 1 \
+    --var "db_url_secret_arn=$(arn database-url)" \
+    --var "secret_key_arn=$(arn secret-key)" \
+    --var "apple_team_id_arn=$(arn apple-team-id)" \
+    --var "apple_key_id_arn=$(arn apple-key-id)" \
+    --var "apple_private_key_arn=$(arn apple-private-key)" \
+    --var apple_callback_scheme=b4app-beta
+  [ "$status" -eq 0 ]
+  cmp "$out" "$BATS_TEST_TMPDIR/flag-off.json"
+  [ "$(jq -r '[.containerDefinitions[0].environment[].name] | index("B4HUB_PUSH_SENDER")' "$out")" = null ]
+  [ "$(jq -r '[.containerDefinitions[0].secrets[].name | select(startswith("B4HUB_APNS"))] | length' "$out")" -eq 0 ]
+}
+
+@test "with the APNs flag on the hub gets exactly the three APNs secrets and the sender" {
+  APNS=0 run render_hub 1
+  [ "$status" -eq 0 ]
+  cp "$out" "$BATS_TEST_TMPDIR/off.json"
+  APNS=1 run render_hub 1
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '[.containerDefinitions[0].secrets[].name] | join(",")' "$out")" = \
+    "B4HUB_SECRET_KEY,B4HUB_APPLE_TEAM_ID,B4HUB_APPLE_KEY_ID,B4HUB_APPLE_PRIVATE_KEY,B4HUB_APNS_KEY_ID,B4HUB_APNS_TEAM_ID,B4HUB_APNS_PRIVATE_KEY,DATABASE_URL" ]
+  [ "$(jq -r '.containerDefinitions[0].secrets[] | select(.name == "B4HUB_APNS_KEY_ID") | .valueFrom' "$out")" = "$(arn apns-key-id)" ]
+  [ "$(jq -r '.containerDefinitions[0].secrets[] | select(.name == "B4HUB_APNS_TEAM_ID") | .valueFrom' "$out")" = "$(arn apns-team-id)" ]
+  [ "$(jq -r '.containerDefinitions[0].secrets[] | select(.name == "B4HUB_APNS_PRIVATE_KEY") | .valueFrom' "$out")" = "$(arn apns-private-key)" ]
+  [ "$(jq -r '.containerDefinitions[0].environment[] | select(.name == "B4HUB_PUSH_SENDER") | .value' "$out")" = apns ]
+  # Nothing else differs from the flag-off document.
+  [ "$(jq -S 'del(.containerDefinitions[0].secrets, .containerDefinitions[0].environment)' "$out")" = \
+    "$(jq -S 'del(.containerDefinitions[0].secrets, .containerDefinitions[0].environment)' "$BATS_TEST_TMPDIR/off.json")" ]
+  [ "$(jq -c '[.containerDefinitions[0].environment[] | select(.name != "B4HUB_PUSH_SENDER")]' "$out")" = \
+    "$(jq -c '.containerDefinitions[0].environment' "$BATS_TEST_TMPDIR/off.json")" ]
+}
+
+@test "the APNs flag also works with the sign-in secrets off" {
+  APNS=1 run render_hub 0
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '[.containerDefinitions[0].secrets[].name] | join(",")' "$out")" = \
+    "B4HUB_APNS_KEY_ID,B4HUB_APNS_TEAM_ID,B4HUB_APNS_PRIVATE_KEY,DATABASE_URL" ]
+}
+
+@test "a bad APNs flag exits 2 and writes nothing" {
+  APNS=2 run render_hub 0
+  [ "$status" -eq 2 ]
+  output_has "--include-apns-secrets must be 0 or 1"
+  [ ! -e "$out" ]
+}
+
+@test "the APNs block with its flag on but an ARN missing exits 2" {
+  run "$render" "$taskdefs/hub.json.tpl" "$out" --family f --image i --region r --log-group g --env-name e \
+    --public-url u --rp-id p --exec-role x --task-role t --include-signin-secrets 0 \
+    --include-apns-secrets 1 --var db_url_secret_arn=a
+  [ "$status" -eq 2 ]
+  output_has "apns_key_id_arn"
+  [ ! -e "$out" ]
 }
 
 @test "a placeholder with no value exits 2 and writes nothing" {

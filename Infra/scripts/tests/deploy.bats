@@ -95,6 +95,10 @@ line_of() { grep -n -m1 -- "$1" "$STUB_LOG" | cut -d: -f1; }
   [ "$(jq -r '.containerDefinitions[0].image' "$BATS_TEST_TMPDIR/registered-b4hub-test-hub-migrate.json")" = "123456789012.dkr.ecr.us-east-2.amazonaws.com/b4hub@$digest" ]
   # With INCLUDE_SIGNIN_SECRETS=1 (Infra/taskdefs/features.env), the four sign-in secrets, then DATABASE_URL.
   [ "$(jq -r '[.containerDefinitions[0].secrets[].name] | join(",")' "$BATS_TEST_TMPDIR/registered-b4hub-test-hub.json")" = B4HUB_SECRET_KEY,B4HUB_APPLE_TEAM_ID,B4HUB_APPLE_KEY_ID,B4HUB_APPLE_PRIVATE_KEY,DATABASE_URL ]
+  # INCLUDE_APNS_SECRETS=0 there too: no APNs secret, no push sender, no lookup of their ARNs.
+  [ "$(jq -r '[.containerDefinitions[0].secrets[].name | select(startswith("B4HUB_APNS"))] | length' "$BATS_TEST_TMPDIR/registered-b4hub-test-hub.json")" -eq 0 ]
+  [ "$(jq -r '[.containerDefinitions[0].environment[].name | select(. == "B4HUB_PUSH_SENDER")] | length' "$BATS_TEST_TMPDIR/registered-b4hub-test-hub.json")" -eq 0 ]
+  not_logged 'b4hub/apns-'
   logged 'aws ecs run-task --cluster b4hub-test --task-definition arn:aws:ecs:us-east-2:123456789012:task-definition/b4hub-test-hub-migrate:7'
   logged 'securityGroups=\[sg-admin\]'
   # The test hub hands Apple's web flow back to the beta app only (D-140).

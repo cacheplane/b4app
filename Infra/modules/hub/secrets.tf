@@ -6,6 +6,9 @@ locals {
     "apple-team-id",
     "apple-key-id",
     "apple-private-key",
+    "apns-key-id",
+    "apns-team-id",
+    "apns-private-key",
   ]
 }
 
