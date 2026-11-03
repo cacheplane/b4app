@@ -17,6 +17,7 @@ Under that load, the full runs failed in places that this fixture change does no
 - **`B4AdapterSessionTests.aDroppedStreamReattachesWithoutResubmitting`** (line 241, `deltas != "Part one. Part two."`). The "drop" run emits "Part two." 1 s after the drop. A reattach to a live run gets only frames emitted after it attaches, and a reattach after `done` gets none. The test therefore assumes the adapter reattaches within 1 s, and its backoff (250, 500, 750 ms) under load does not promise that.
 - **`FakeHubLinkConnection.nextSocket()`** calls `preconditionFailure` when it is cancelled. When a test passes its 120 s limit (`HubLinkRelayTests.expiredOrUndatedCommandIsRefused`), swift-testing cancels it and the whole test process crashes (`HubLinkConnection.swift:317`). That was an earlier run with the single runs going through `swift test` too.
 - Load timeouts in `MirrorSyncTests` (six), `PairLinkTests.aSwitchKeepsTheNewSignInBeforeEndingTheOldSession`, and `PairingTests.pairIsRoutedAndNeverReplayedFromTheOperationCache` (15 s `diagnostics.read`).
+
 ## 2026-11-03: Apple's web flow through an https callback, live (D-160)
 
 Run on the owner's MacBook Pro at about 20:25Z, the owner at Apple's page and the build session driving the app.
