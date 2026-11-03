@@ -23,6 +23,9 @@ public protocol HubAPI: Sendable {
   /// `POST /v1/pairing-codes`: a single-use code that enrolls a phone, valid five minutes. A `macos`
   /// device only; the eleventh in an hour is `429 rate_limited` with `retryAfterMs`.
   func mintPairingCode() async throws -> PairingCodeResponse
+  /// `POST /v1/pairing-codes/check`: whether a code is this phone's own account's, without spending it
+  /// (D-170). An `ios` device only; a code `enroll` would refuse is `401 invalid_code`.
+  func checkPairingCode(_ request: PairingCodeCheckRequest) async throws -> PairingCodeCheckResponse
   func revokeSelf() async throws
 
   // MARK: Signing in (no bearer)
@@ -93,6 +96,9 @@ extension HubAPI {
     return try await enroll(request)
   }
 
+  public func checkPairingCode(_ request: PairingCodeCheckRequest) async throws -> PairingCodeCheckResponse {
+    throw HubError.unsupported("checkPairingCode")
+  }
   public func authConfig() async throws -> AuthConfig { throw HubError.unsupported("authConfig") }
   public func passkeyBegin() async throws -> PasskeyBeginResponse {
     throw HubError.unsupported("passkeyBegin")

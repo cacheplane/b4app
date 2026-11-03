@@ -153,6 +153,7 @@ pub fn router(state: AppState) -> Router {
         .route("/readyz", get(health::readyz))
         .route("/v1/enroll", post(enroll::enroll))
         .route("/v1/pairing-codes", post(pairing::create))
+        .route("/v1/pairing-codes/check", post(pairing::check))
         .route("/v1/changes", changes::route())
         .route("/v1/me", get(me::me).delete(me::delete_me))
         .route("/v1/me/profile", put(me::profile))

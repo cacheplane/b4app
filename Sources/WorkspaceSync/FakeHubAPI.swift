@@ -27,6 +27,8 @@ public actor FakeHubAPI: HubAPI {
   public private(set) var meCalls = 0
   /// How many times `mintPairingCode` was called, refused or not.
   public private(set) var mintCalls = 0
+  /// How many times `checkPairingCode` was called, answered or not.
+  public private(set) var pairingChecks = 0
   private var mintFailure: HubError?
   private var mintResponse: PairingCodeResponse?
   private var failMe: HubError?
@@ -246,6 +248,17 @@ public actor FakeHubAPI: HubAPI {
     if let mintResponse { return mintResponse }
     return PairingCodeResponse(
       code: "FAKE\(2345 + mintCalls)", expiresAt: Timestamp.string(from: Date().addingTimeInterval(300)))
+  }
+
+  /// Answers for a code `enroll` would redeem, without redeeming it: the same account when the code's
+  /// org is the signed-in device's. Any other code is `invalid_code`, as on the hub.
+  public func checkPairingCode(_ request: PairingCodeCheckRequest) async throws -> PairingCodeCheckResponse {
+    pairingChecks += 1
+    try authorize()
+    guard let owner = enrollmentCodes[request.code] else {
+      throw Self.error("invalid_code", "The enrollment code is not valid.", status: 401)
+    }
+    return PairingCodeCheckResponse(sameAccount: owner.org.slug == device?.org.slug)
   }
 
   public func pull(after: Int, limit: Int, wait: Int) async throws -> PullResponse {

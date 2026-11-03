@@ -59,12 +59,12 @@ in whole seconds.
 | 400 | `ceremony_expired` | request | A sign-in ceremony that is unknown, expired (5 minutes), already finished, of another kind or another user, or (for a sign-up) was begun while sign-up was closed; or a handoff that is unknown, expired (2 minutes), spent, or presented with the wrong verifier. The cases are indistinguishable. Begin again. |
 | 400 | `invalid_request` | request | The body is not valid JSON for the endpoint (malformed JSON, an unknown or missing field, a wrong value type, a missing or wrong `Content-Type`); a `deviceName`, `platform`, or `fullName` that fails validation; a push token, environment, or bundle id that fails validation; a push with more than 1000 changes; a non-numeric `after`, `limit`, or `wait`; a link request that is not a WebSocket upgrade or whose `B4-Protocol` is not a whole number. |
 | 401 | `unauthorized` | request | The bearer token is missing, malformed, unknown, or belongs to a revoked device. |
-| 401 | `invalid_code` | request | The enrollment code is wrong, expired, or already used (the three are indistinguishable); at `POST /v1/me/step-up/code`, also a pairing code or another user's code. |
+| 401 | `invalid_code` | request | The enrollment code is wrong, expired, or already used (the three are indistinguishable); at `POST /v1/me/step-up/code`, also a pairing code or another user's code. `POST /v1/pairing-codes/check` answers it for the same codes `POST /v1/enroll` would. |
 | 401 | `credential_rejected` | request | A sign-in credential failed verification: a malformed WebAuthn response, a wrong origin or relying party, a bad signature, a passkey no account has, a user handle that is not the passkey's, a counter that went backwards, or a new passkey that already belongs to an account; any failed Apple check (see *Sign in with Apple*); a link's handoff at `POST /v1/auth/handoff`, or one presented by another account's device. Deliberately vague, except that a passkey sign-in whose credential no account has says `details.reason: "unknown_credential"` (see `POST /v1/auth/passkey/finish`). |
 | 403 | `forbidden` | request | The device is authenticated but may not do this: `POST /v1/devices/self/push-token` from a device that is not `ios`. |
 | 403 | `signup_closed` | request | A sign-up (a passkey `attestation`, or an Apple ID no account has) while the hub's sign-up policy is `closed`. |
 | 403 | `step_up_required` | request | A change that needs a step-up (`POST /v1/me/passkeys/begin`, `POST /v1/me/apple`, `DELETE /v1/me/identities/{id}`, `DELETE /v1/me`) without a live grant in `B4-Step-Up`: none, unknown, expired, already used, or earned by another device or user (indistinguishable). `details.methods` lists the kinds of sign-in method the account can step up with, `passkey` before `apple`. See *Step-up*. |
-| 404 | `not_found` | request | No such route, or a resource that does not exist or is not yours (including another account's identity id). |
+| 404 | `not_found` | request | No such route, or a resource that does not exist or is not yours (including another account's identity id); `POST /v1/pairing-codes` from a device that is not `macos`, and `POST /v1/pairing-codes/check` from one that is not `ios`. |
 | 405 | `method_not_allowed` | request | The route exists but not for that method. |
 | 409 | `last_identity` | request | `DELETE /v1/me/identities/{id}` of the account's only sign-in method, which would leave it unable to sign in. Add another first. |
 | 409 | `apple_linked` | request | `POST /v1/me/apple`, `/v1/me/apple/native`, or `/v1/me/apple/handoff` (or a link's callback) for an account that already has an Apple ID: an account links at most one. |
@@ -103,7 +103,7 @@ frame (a problem with the link or a frame) or in a `reply`'s `error` (a problem 
 | Long-poll `wait` | 25 seconds | `GET /v1/changes`; a larger `wait` is clamped to 25 |
 | Other request bodies | 2 MiB (axum's default) | `POST /v1/enroll`, `POST /v1/auth/passkey/finish`, `PUT /v1/me/profile`, `POST /v1/me/passkeys/finish`, and the Apple routes |
 | Sign-in begins | 20 per client IP per minute | `POST /v1/auth/passkey/begin`, `POST /v1/me/passkeys/begin`, `POST /v1/auth/apple/begin`, `GET /v1/auth/apple/start`, and `POST /v1/me/apple`, together; over it, `429 rate_limited` |
-| Sign-in finishes | 10 per client IP per minute | `POST /v1/auth/passkey/finish`, `POST /v1/me/passkeys/finish`, `POST /v1/auth/apple/native`, `POST /v1/auth/apple/callback`, `POST /v1/auth/handoff`, `POST /v1/me/apple/native`, `POST /v1/me/apple/handoff`, `POST /v1/me/step-up/passkey/finish`, `POST /v1/me/step-up/apple/native`, `POST /v1/me/step-up/apple/handoff`, and `POST /v1/me/step-up/code`, together, counted before the token is checked or the body read; over it, `429 rate_limited` |
+| Sign-in finishes | 10 per client IP per minute | `POST /v1/auth/passkey/finish`, `POST /v1/me/passkeys/finish`, `POST /v1/auth/apple/native`, `POST /v1/auth/apple/callback`, `POST /v1/auth/handoff`, `POST /v1/me/apple/native`, `POST /v1/me/apple/handoff`, `POST /v1/me/step-up/passkey/finish`, `POST /v1/me/step-up/apple/native`, `POST /v1/me/step-up/apple/handoff`, `POST /v1/me/step-up/code`, and `POST /v1/pairing-codes/check`, together, counted before the token is checked or the body read; over it, `429 rate_limited` |
 | Full name | 1 to 200 characters after trimming | `PUT /v1/me/profile` |
 | Ceremony lifetime | 5 minutes, single use | a `ceremonyId` from a begin |
 | Handoff lifetime | 2 minutes, single use | the code in the web flow's redirect |
@@ -243,6 +243,32 @@ is logged.
 A user may mint 10 codes in any hour. The eleventh is `429 rate_limited` with
 `details.retryAfterMs`, the milliseconds until the tenth most recent mint is an hour old; the
 refused request stores nothing. Codes of different users are limited separately.
+
+### `POST /v1/pairing-codes/check`
+
+A signed-in phone asks whether a code is its own account's, before it offers to pair (D-170).
+Bearer auth; only an `ios` device may check (any other gets `404 not_found`, as a phone minting
+does).
+
+```json
+{"code": "K7QX2M9P"}
+```
+
+`200`:
+
+```json
+{"sameAccount": true}
+```
+
+`sameAccount` is whether the code's org is the caller's, the rule a merge's `same_account`
+refusal follows: `true` means `POST /v1/enroll` with this phone's token would answer `409
+merge_refused` (`same_account`), so the phone says "already paired" instead of offering. The check
+spends nothing: the code stays exactly as redeemable as it was. It answers for any code an iPhone
+could redeem at `POST /v1/enroll` (a pairing code or an operator's, compared in any case); an
+unknown, expired, or used one is `401 invalid_code`, indistinguishably. The code is never logged.
+Errors also: `400 invalid_request` (an unknown or missing field), `401 unauthorized`, `429
+rate_limited` (counted with the sign-in finishes, before the token is checked, so it is no way to
+probe codes).
 
 ### Sign-in
 

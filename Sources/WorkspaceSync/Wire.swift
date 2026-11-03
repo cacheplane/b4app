@@ -420,6 +420,27 @@ public struct PairingCodeResponse: Codable, Sendable, Equatable, CustomStringCon
   public var debugDescription: String { description }
 }
 
+/// `POST /v1/pairing-codes/check`'s body: a pairing link's code, which the check never spends (D-170).
+/// The code is a credential: never logged or described.
+public struct PairingCodeCheckRequest: Codable, Sendable, Equatable, CustomStringConvertible,
+  CustomDebugStringConvertible
+{
+  public var code: String
+
+  public init(code: String) { self.code = code }
+
+  public var description: String { "PairingCodeCheckRequest(code: <redacted>)" }
+  public var debugDescription: String { description }
+}
+
+/// What `POST /v1/pairing-codes/check` answers: whether the code is for this phone's own account (its
+/// org), so pairing would only answer `merge_refused` (`same_account`).
+public struct PairingCodeCheckResponse: Codable, Sendable, Equatable {
+  public var sameAccount: Bool
+
+  public init(sameAccount: Bool) { self.sameAccount = sameAccount }
+}
+
 /// B4's error envelope as the hub sends it: `{"error":{"kind","message","details":{"code"}}}`.
 public struct HubErrorBody: Codable, Sendable, Equatable {
   public struct Details: Codable, Sendable, Equatable {
