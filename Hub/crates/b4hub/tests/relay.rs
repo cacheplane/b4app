@@ -754,6 +754,14 @@ impl World {
         })
         .await;
     }
+
+    /// Waits, in real time, until `count` commands are held for the offline Mac.
+    async fn await_held(&self, count: usize) {
+        eventually(&format!("{count} held commands"), || async {
+            (self.hub.state.relay.held(self.mac_id) == count).then_some(())
+        })
+        .await;
+    }
 }
 
 fn seconds_between(earlier: &str, later: &str) -> f64 {
@@ -1053,6 +1061,9 @@ async fn interrupt_is_held_and_delivered_on_reconnect(pool: PgPool) {
             params_for(RelayMethod::TurnInterrupt),
         )
         .await;
+    // The command is held before the clock moves: a lookup still in flight would straddle the jump
+    // (and the pool's 5 s acquire timeout fire inside it).
+    world.await_held(1).await;
     clock
         .advance_alive(Duration::from_secs(20), &mut [&mut phone])
         .await;
@@ -1105,6 +1116,7 @@ async fn held_answer_expires_after_sixty_seconds(pool: PgPool) {
             params_for(RelayMethod::RequestRespond),
         )
         .await;
+    world.await_held(1).await;
     clock
         .advance_alive(left - Duration::from_secs(1), &mut [&mut phone])
         .await;
@@ -1670,14 +1682,20 @@ async fn watching_tells_the_mac_the_full_set(pool: PgPool) {
     assert_eq!(mac.expect_watching().await, ["thread-2"]);
 
     // A second watcher of a thread already in the set changes nothing, so nothing is sent; nor
-    // does the first one letting go of it.
+    // does the first one letting go of it. A link handles its frames in order, so the `pong` after
+    // a `watch` means the watch (and its lookup) is done; without it the phone's `unwatch`, on
+    // another link, could land first and empty the set.
     ipad.watch("thread-2").await;
+    ipad.ping().await;
     mac.expect_no_frame(QUIET).await;
     phone.unwatch("thread-2").await;
+    phone.ping().await;
     mac.expect_no_frame(QUIET).await;
     // Watching twice, and unwatching what was never watched, are harmless.
     ipad.watch("thread-2").await;
     phone.unwatch("thread-1").await;
+    ipad.ping().await;
+    phone.ping().await;
     mac.expect_no_frame(QUIET).await;
     ipad.unwatch("thread-2").await;
     assert!(mac.expect_watching().await.is_empty());
@@ -1890,7 +1908,7 @@ async fn presence_is_sent_when_the_queue_has_room_again(pool: PgPool) {
 
     // The phone stops reading until its queue is full. The Mac drops and comes back meanwhile:
     // two changes, neither of which fits.
-    fill_queue(&world.hub.state.relay, world.phone_id).await;
+    let backlog = fill_queue(&world.hub.state.relay, world.phone_id).await;
     mac.close().await;
     let mac_id = world.mac_id;
     eventually("the Mac to go offline", || async {
@@ -1902,36 +1920,48 @@ async fn presence_is_sent_when_the_queue_has_room_again(pool: PgPool) {
     settle().await;
 
     // Reading again: the backlog, then the current presence once (not the stale "offline").
-    let mut presences = Vec::new();
-    loop {
-        match phone.next_within(QUIET).await {
-            Some(RelayMessage::Event { .. }) => {}
-            Some(RelayMessage::Presence { hosts }) => presences.push(hosts),
-            Some(other) => panic!("unexpected {other:?}"),
-            None => break,
-        }
-    }
+    let presences = presences_past_backlog(&mut phone, backlog).await;
     assert_eq!(presences.len(), 1, "{presences:?}");
     assert_eq!(presences[0].len(), 1);
     assert_eq!(presences[0][0].device_id, mac_id);
     assert!(presences[0][0].online, "{presences:?}");
 
     // The same when the last change is the Mac going away.
-    fill_queue(&world.hub.state.relay, world.phone_id).await;
+    let backlog = fill_queue(&world.hub.state.relay, world.phone_id).await;
     mac.close().await;
     eventually("the Mac to go offline again", || async {
         (!world.hub.state.relay.online(mac_id)).then_some(())
     })
     .await;
     settle().await;
-    let mut last = None;
-    while let Some(frame) = phone.next_within(QUIET).await {
-        if let RelayMessage::Presence { hosts } = frame {
-            assert!(last.is_none(), "presence came twice");
-            last = Some(hosts);
+    let presences = presences_past_backlog(&mut phone, backlog).await;
+    assert_eq!(presences.len(), 1, "presence came twice: {presences:?}");
+    assert!(!presences[0][0].online);
+}
+
+/// Reads the `backlog` padding events [`fill_queue`] queued and the `presence` frames among them,
+/// waiting for each frame (a slow hub pauses between frames, so a pause does not end the read),
+/// until the whole backlog and a presence have arrived; then whatever follows within [`QUIET`],
+/// which may only be another presence. Returns the presences in order.
+async fn presences_past_backlog(
+    phone: &mut FakeDevice,
+    backlog: usize,
+) -> Vec<Vec<b4hub_core::relay::HostPresence>> {
+    let (mut events, mut presences) = (0, Vec::new());
+    while events < backlog || presences.is_empty() {
+        match phone.next().await {
+            RelayMessage::Event { .. } => events += 1,
+            RelayMessage::Presence { hosts } => presences.push(hosts),
+            other => panic!("unexpected {other:?}"),
         }
     }
-    assert!(!last.expect("presence arrived")[0].online);
+    while let Some(frame) = phone.next_within(QUIET).await {
+        match frame {
+            RelayMessage::Presence { hosts } => presences.push(hosts),
+            other => panic!("unexpected after the backlog: {other:?}"),
+        }
+    }
+    presences
 }
 
 /// `{"type":"ping"}` padded with trailing spaces to exactly `bytes` bytes: valid JSON, so only
