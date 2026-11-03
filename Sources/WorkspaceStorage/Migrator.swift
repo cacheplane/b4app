@@ -9,7 +9,8 @@ public enum Migrator {
 
   /// The bundled migration files, sorted by name.
   public static func files() throws -> [(name: String, sql: String)] {
-    guard let urls = Bundle.module.urls(forResourcesWithExtension: "sql", subdirectory: "SQL"), !urls.isEmpty
+    guard let urls = StorageResources.bundle.urls(forResourcesWithExtension: "sql", subdirectory: "SQL"),
+      !urls.isEmpty
     else {
       throw WorkspaceError(.internalError, "No SQL migrations are bundled with WorkspaceStorage.")
     }

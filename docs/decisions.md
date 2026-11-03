@@ -2,6 +2,10 @@
 
 Material implementation decisions, newest first. The spec (`docs/roadmaps/Personal_Agent_Workspace_Technical_Spec_and_Roadmap.md`) is the requirement source; this log records deviations and choices the spec left open.
 
+## 2026-11-03 (the packaged coordinator's migrations)
+
+- **D-171 The packaged coordinator reads its migrations from the app it ships in, not from the build tree.** Found at the step-up live check on the Mac: joining a new account failed with "The file 0001_init.sql couldn't be opened" from a path inside the scratch checkout the Local package was built in, which had been deleted. SwiftPM's generated `Bundle.module` for `WorkspaceStorage` looks only at `<main bundle>/b4app_WorkspaceStorage.bundle` (for the coordinator, the root of `B4AppCoordinator.app`, where a signed app can hold no files) and then at the absolute build path it was compiled in, and stops the process with `fatalError` when neither exists. So every packaged coordinator depended on the build tree of the checkout that made it: the owner's apps worked only because those trees were still on disk, and on any other Mac the coordinator would have stopped at its first migration (shown live: the previous Local package, started with its build tree hidden, exited 133 with "could not load resource bundle"). The app already carries the bundle in its own `Contents/Resources` (Xcode copies it), so `StorageResources.bundle` walks up from the executable through every enclosing `.app` and uses the first `Contents/Resources/b4app_WorkspaceStorage.bundle`, falling back to `Bundle.module` only outside an app (a development build or a test). The migrator, the registry, and the PostgreSQL lookup's anchor all use it. `package.sh` now fails an app whose bundle lacks `SQL/0001_init.sql` or `SQL/registry/0001_registry.sql`.
+
 ## 2026-11-03 (M8c loose ends)
 
 Numbered D-154: main's highest was D-153, PR #81 holds D-151, and PR #83 holds D-160.
