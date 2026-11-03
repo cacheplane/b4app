@@ -2,6 +2,20 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-11-03: Apple's web flow through an https callback (D-160)
+
+Fixture gates only. Nothing deployed; the hosted hubs keep `B4HUB_APPLE_CALLBACK_SCHEME` until a Mac build with this ships.
+
+| Gate | Result |
+| --- | --- |
+| `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo test --workspace --locked` (throwaway PostgreSQL) | 462 pass. New: `config.rs` `the_web_flow_can_hand_back_to_an_https_url_instead`; `apple.rs` `a_hub_with_a_callback_url_hands_back_there`; `begin_web` now checks every web begin's `callback`; `auth_fixture` checks `httpsCallback` and `callback` |
+| `swift format lint --strict`, `swift build` | Pass |
+| `swift test` | 1294 tests; 1 failed in the full run, `SessionTests.reconcileSettlesATurnThatFinishedWhileTheCoordinatorWasDown`, which this change does not touch and which passed 3 of 3 alone (it failed the same way in the D-140 run). New: `AccountCommandTests.appleStartsTakeTheHubsHttpsCallbackOnlyOnTheirSite`, `AppleSignInTests.theCallbackBecomesTheSessionsWait`; `AuthWireTests` round-trips both new fields |
+| `helm unittest Hub/chart/b4hub`, `helm lint` with the CI values | 57 pass; lint clean; the schema refuses a `callbackUrl` with a query |
+
+Open (live): Continue with Apple through `.https(host:path:)` with a Mac build that has this, against the test hub set to `B4HUB_APPLE_CALLBACK_URL=https://test.b4.run/app/auth/apple`. Whether `ASWebAuthenticationSession` takes the result back through the app's `webcredentials:test.b4.run` association can only be shown there.
+
 ## 2026-11-03: M8c pairing and relay on a physical iPhone (beta flavour, test hub)
 
 The owner's iPhone, with TestFlight beta build 0.1.0 (2611030054). It was uploaded from #63's branch (`abb41df`, which contains main `9140cf5`) by `B4APP_FLAVOR=beta ./Scripts/upload-ios.sh`, and reached the Internal group. The Mac is `Agent Workspace (Beta).app`, packaged from main `9140cf5` (`B4APP_FLAVOR=beta`, Developer ID, not notarized) beside the prod and Local apps, against `https://hub.test.b4.run`.

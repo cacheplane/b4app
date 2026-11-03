@@ -264,10 +264,14 @@ bundle id and the Services ID), all set or none (any other combination exits 2, 
 does not sign). Without them every Apple route below answers `404 not_found`. The web flow (the
 Mac's) also needs `B4HUB_APPLE_SERVICES_ID`, the Services ID it signs in with (one of the
 audiences), and `B4HUB_PUBLIC_URL`, under which Apple posts back; without either only the native
-flow is offered. With `B4HUB_APPLE_SERVICES_ID`, `B4HUB_APPLE_CALLBACK_SCHEME` is required: the one
-app URL scheme the web flow hands results back to, the flavour this hub serves (`b4app` for prod,
-`b4app-beta` for beta, `b4app-local` for local). It exits 2 when it is missing, not one of those
-three, or set without `B4HUB_APPLE_SERVICES_ID`. `B4HUB_APPLE_BASE_URL` (tests only; default
+flow is offered. With `B4HUB_APPLE_SERVICES_ID`, exactly one of two settings names the one place
+the web flow hands results back to. `B4HUB_APPLE_CALLBACK_SCHEME` is the flavour's app URL scheme
+(`b4app` for prod, `b4app-beta` for beta, `b4app-local` for local). `B4HUB_APPLE_CALLBACK_URL` is
+an https URL on the flavour's site with a path and no port, query, or fragment (for example
+`https://b4.run/app/auth/apple`); only the app the site's `webcredentials` names can take a result
+back from it, where another app on the Mac can claim a custom scheme (D-160). It exits 2 when
+neither or both are set, when the value is invalid, or when either is set without
+`B4HUB_APPLE_SERVICES_ID`. `B4HUB_APPLE_BASE_URL` (tests only; default
 `https://appleid.apple.com`) moves every Apple endpoint and the issuer identity tokens must name.
 A secret's variable holds the value itself, never a path (`B4HUB_APPLE_PRIVATE_KEY` is the PEM
 contents). `seed` and `enroll` read none of these.
@@ -449,23 +453,31 @@ Both begin with `POST /v1/auth/apple/begin`.
 ##### `POST /v1/auth/apple/begin`
 
 Begins an Apple ceremony (valid 5 minutes, finished once). The body is empty (or `{}`) for the
-native flow; the web flow sends both fields:
+native flow; the web flow sends `verifierHash` and `scheme`, and `httpsCallback` when the app can
+take the result back from an https URL:
 
 ```json
-{"verifierHash": "<64 lowercase hex characters>", "scheme": "b4app"}
+{"verifierHash": "<64 lowercase hex characters>", "scheme": "b4app", "httpsCallback": true}
 ```
 
 - `verifierHash` is the lowercase hex SHA-256 of a random verifier (43 to 128 characters of
   `A-Z a-z 0-9 - . _ ~`) the app keeps for `POST /v1/auth/handoff`.
-- `scheme` is the app's URL scheme, one of `b4app`, `b4app-beta`, `b4app-local`, and it must be
-  this hub's `B4HUB_APPLE_CALLBACK_SCHEME`: a hub hands results back only to the flavour it
-  serves, so no caller can have a handoff sent to an app the person did not start from. The
-  callback redirects only to that scheme, never to one from a later request.
+- `scheme` is the app's URL scheme, one of `b4app`, `b4app-beta`, `b4app-local`. On a hub with
+  `B4HUB_APPLE_CALLBACK_SCHEME` it must be that one: a hub hands results back only to the
+  flavour it serves, so no caller can have a handoff sent to an app the person did not start
+  from.
+- `httpsCallback` (optional) is `true` when the app can take the result back from an https URL.
+  A hub with `B4HUB_APPLE_CALLBACK_URL` requires it.
 
-`200`: `{"ceremonyId": "5b0f...", "nonce": "<43 characters>"}`. Errors: `400 invalid_request` (one
-field without the other, a scheme off the list, a malformed hash, or another flavour's scheme,
-whose message names the scheme this hub serves; no ceremony is made), `404 not_found` (no Apple,
-or the web flow asked of a hub without it), `429 rate_limited` (a begin).
+The callback redirects only to the hub's one configured place, never to one from a later request.
+`200`: `{"ceremonyId": "5b0f...", "nonce": "<43 characters>", "callback": "b4app://auth"}`. For the
+web flow, `callback` is where the result comes back, `<scheme>://auth` or the hub's
+`B4HUB_APPLE_CALLBACK_URL`, with `?handoff=` or `?error=` appended; the app waits for exactly that.
+The native flow's answer has no `callback`. Errors: `400 invalid_request` (one field without the
+other, `httpsCallback` alone, a scheme off the list, a malformed hash, another flavour's scheme on
+a scheme hub, or an app without `httpsCallback` on a URL hub; the message names where this hub
+hands back, and no ceremony is made), `404 not_found` (no Apple, or the web flow asked of a hub
+without it), `429 rate_limited` (a begin).
 
 ##### `POST /v1/auth/apple/native`
 
@@ -511,12 +523,12 @@ email and (on a first sign-in) name, the client id, and the authorization code, 
 app redeems it with its verifier. For a link ceremony, an Apple ID another account holds is
 refused here (`credential_rejected`), as is a link to an account that already has an Apple ID
 (`apple_linked`); for a sign-in, a new Apple ID while sign-up is closed (`signup_closed`, checked
-again at the redemption). The answer is a `302` to the hub's scheme
-(`B4HUB_APPLE_CALLBACK_SCHEME`):
+again at the redemption). The answer is a `302` to the hub's one callback, the begin answer's
+`callback` (`<scheme>://auth` or `B4HUB_APPLE_CALLBACK_URL`):
 
-- `<scheme>://auth?handoff=<43 characters>` on success: a sign-in's goes to `POST
+- `<callback>?handoff=<43 characters>` on success: a sign-in's goes to `POST
   /v1/auth/handoff`, a link's to `POST /v1/me/apple/handoff`;
-- `<scheme>://auth?error=<code>` once the ceremony is known: `cancelled` (Apple's
+- `<callback>?error=<code>` once the ceremony is known: `cancelled` (Apple's
   `user_cancelled_authorize`), `credential_rejected`, `signup_closed`, `apple_linked`, or
   `internal_error`.
 

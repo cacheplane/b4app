@@ -862,12 +862,12 @@ private func sha256Hex(_ text: String) -> String {
     _ = try await rig.client.request(AccountAppleStart.self, EmptyParams())
     await rig.hub.fake.setAppleBegin(AppleBeginResponse(ceremonyId: "apple-2", nonce: "n2"))
     let started = try await rig.client.request(AccountAppleStart.self, EmptyParams())
-    #expect(started.callbackScheme == "b4app-beta")
+    #expect(started.callback == "b4app-beta://auth")
     #expect(started.url == "https://hub.test.b4.run/v1/auth/apple/start?ceremony=apple-2")
     let begins = await rig.hub.fake.appleBegins
     #expect(begins.count == 2)
     let begin = try #require(begins.last)
-    #expect(begin.scheme == "b4app-beta")
+    #expect(begin.scheme == "b4app-beta" && begin.httpsCallback == true)
     let hash = try #require(begin.verifierHash)
     #expect(hash.count == 64 && hash.allSatisfy { "0123456789abcdef".contains($0) })
     #expect(begins[0].verifierHash != hash)
@@ -938,6 +938,34 @@ private func sha256Hex(_ text: String) -> String {
     #expect(!rig.hub.calls.contains("appleLinkHandoff"))
   }
 
+  /// D-160: a hub that hands back to an https URL names it in its answer, and the Mac waits there, but
+  /// only for an https URL on its own flavour's site; any other answer keeps no ceremony.
+  @Test func appleStartsTakeTheHubsHttpsCallbackOnlyOnTheirSite() async throws {
+    let rig = try await CommandRig.start(flavor: .beta)
+    defer { Task { await rig.close() } }
+    await rig.hub.fake.setAppleBegin(
+      AppleBeginResponse(ceremonyId: "https-1", nonce: "n1", callback: "https://test.b4.run/app/auth/apple"))
+    let started = try await rig.client.request(AccountAppleStart.self, EmptyParams())
+    #expect(started.callback == "https://test.b4.run/app/auth/apple")
+
+    for foreign in [
+      "https://b4.run/app/auth/apple", "https://evil.example/app/auth/apple",
+      "http://test.b4.run/app/auth/apple",
+      "https://test.b4.run", "https://test.b4.run/app/auth/apple?x=1", "b4app://auth", "evil://auth",
+    ] {
+      await rig.hub.fake.setAppleBegin(AppleBeginResponse(ceremonyId: "bad", nonce: "n", callback: foreign))
+      let refused = await #expect(throws: WorkspaceError.self, "\(foreign)") {
+        _ = try await rig.client.request(AccountAppleStart.self, EmptyParams())
+      }
+      #expect(refused?.code == .protocolInvalid, "\(foreign)")
+    }
+    // The refusals kept no ceremony: the last good start's is still the one a redirect finishes.
+    await rig.hub.fake.setSession(newcomer)
+    _ = try await rig.client.request(
+      AccountAppleFinish.self, AccountAppleFinish.Params(handoff: "h-https"), options: CommandRig.mutation())
+    #expect(await rig.hub.fake.handoffs.last?.handoff == "h-https")
+  }
+
   @Test func appleFinishWithoutACeremonyIsDropped() async throws {
     let rig = try await CommandRig.start(flavor: .beta)
     defer { Task { await rig.close() } }
@@ -974,10 +1002,10 @@ private func sha256Hex(_ text: String) -> String {
     try await rig.signIn(ann)
     await rig.hub.fake.setAppleBegin(AppleBeginResponse(ceremonyId: "link-1", nonce: "n1"))
     let started = try await rig.client.request(AccountAppleLinkStart.self, AccountStepUpParams())
-    #expect(started.callbackScheme == "b4app-beta")
+    #expect(started.callback == "b4app-beta://auth")
     #expect(started.url == "https://hub.test.b4.run/v1/auth/apple/start?ceremony=link-1")
     let begin = try #require(await rig.hub.fake.appleLinkBegins.last)
-    #expect(begin.scheme == "b4app-beta")
+    #expect(begin.scheme == "b4app-beta" && begin.httpsCallback == true)
     let hash = try #require(begin.verifierHash)
     // A sign-in ceremony is not a link's, and a link's is not a sign-in's.
     #expect(await rig.hub.fake.appleBegins.isEmpty)
@@ -1021,10 +1049,10 @@ private func sha256Hex(_ text: String) -> String {
     ])
     await rig.hub.fake.setAppleBegin(AppleBeginResponse(ceremonyId: "step-1", nonce: "n1"))
     let started = try await rig.client.request(AccountStepUpAppleStart.self, EmptyParams())
-    #expect(started.callbackScheme == "b4app-beta")
+    #expect(started.callback == "b4app-beta://auth")
     #expect(started.url == "https://hub.test.b4.run/v1/auth/apple/start?ceremony=step-1")
     let begin = try #require(await rig.hub.fake.stepUpAppleBegins.last)
-    #expect(begin.scheme == "b4app-beta")
+    #expect(begin.scheme == "b4app-beta" && begin.httpsCallback == true)
     let hash = try #require(begin.verifierHash)
     #expect(await rig.hub.fake.appleLinkBegins.isEmpty)
 

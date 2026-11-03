@@ -116,7 +116,7 @@ private final class FakeAppleSheet: AppleCeremony {
   var web: URL? = URL(string: "b4app-beta://auth?handoff=S-one-time")
   private(set) var opened: [URL] = []
   func nativeSignIn(nonce: String) async throws -> AppleCredential? { nil }
-  func webSignIn(url: URL, callbackScheme: String) async throws -> URL? {
+  func webSignIn(url: URL, callback: AppleWebCallback) async throws -> URL? {
     opened.append(url)
     return web
   }
@@ -487,7 +487,7 @@ private let minted = HubPair.Result(
       .accountAddPasskeyFinish, [try reply(AccountAddPasskeyFinish.Result(identity: identity("i2")))])
     // An account with only an Apple ID confirms it's you with Apple's web flow, then adds its passkey.
     let start = AccountStepUpAppleStart.Result(
-      url: "https://hub.test.b4.run/v1/auth/apple/start?ceremony=s9", callbackScheme: "b4app-beta")
+      url: "https://hub.test.b4.run/v1/auth/apple/start?ceremony=s9", callback: "b4app-beta://auth")
     transport.script(.accountStepUpAppleStart, [try reply(start)])
     let ceremony = FakeCeremony()
     let apple = FakeAppleSheet()
