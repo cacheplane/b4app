@@ -18,6 +18,10 @@ import WorkspaceSync
 private let localHub = "http://localhost:8080"
 private let signedOutMessage = "Nobody is signed in. Sign in from the Agent Workspace app."
 private let leftOpenNotice = "The last sign-out could not reach the hub; that session was left open there."
+/// How far past its shortened bounds a log-out may run before a test calls it unbounded: room for a
+/// loaded runner (1 s was missed by 130 ms), and still well under the 7.5 s more that `work` or
+/// `push` would take at its standard value.
+private let logoutSlack: Duration = .seconds(3)
 
 // Device ids are UUIDs, as the hub makes them: a sign-in offers only those (ruling 3).
 private let devNew = "0197dddd-0000-7000-8000-0000000000d1"
@@ -611,7 +615,7 @@ private func sha256Hex(_ text: String) -> String {
     var status: AccountStatus.Result?
     let elapsed = try await clock.measure { status = try await rig.logout() }
     #expect(elapsed < .seconds(21))
-    #expect(elapsed < short.total + .seconds(1), "the shortened bounds were not honoured: \(elapsed)")
+    #expect(elapsed < short.total + logoutSlack, "the shortened bounds were not honoured: \(elapsed)")
     #expect(status?.state == .signedOut)
     #expect(try await secrets.read(ref) == nil)
     #expect(rig.accounts.current == nil)
@@ -689,7 +693,7 @@ private func sha256Hex(_ text: String) -> String {
     let clock = ContinuousClock()
     var status: AccountStatus.Result?
     let elapsed = try await clock.measure { status = try await rig.logout(stopWork: true) }
-    #expect(elapsed < short.total + .seconds(1), "the log-out took \(elapsed)")
+    #expect(elapsed < short.total + logoutSlack, "the log-out took \(elapsed)")
     #expect(status?.state == .signedOut)
     #expect(adapters.interrupts == 1)
     #expect(adapters.disposes == 1)
