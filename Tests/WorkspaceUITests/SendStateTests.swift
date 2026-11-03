@@ -601,7 +601,9 @@ enum PhoneFixture {
     await model.disconnect()
   }
 
-  @Test func alreadyAnsweredCopy() async throws {
+  /// Another surface answered first: the refusal clears the phone's state and says nothing (D-154),
+  /// never an error, and the buttons come back until sync resolves the card.
+  @Test func aStaleAnswerClearsQuietly() async throws {
     let clock = TestClock()
     let request = RuntimeRequest(
       id: "r1", nativeRequestId: "n-r1", threadId: "t1", adapterGeneration: 1, kind: .commandApproval,
@@ -624,9 +626,10 @@ enum PhoneFixture {
     #expect(model.answerStates["r1"] == nil)
 
     await model.respond(requestId: "r1", decision: .deny)
-    #expect(model.answerStates["r1"] == .alreadyAnswered)
-    #expect(model.answerStates["r1"]?.label == "Already answered")
+    #expect(transport.recorded(.requestRespond).count == 2)
+    #expect(model.answerStates["r1"] == nil)
     #expect(model.lastError == nil)
+    #expect(model.canAnswer(request))
     await model.disconnect()
   }
 
