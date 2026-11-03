@@ -312,10 +312,9 @@ public final class FakeHubLinkConnection: HubLinkConnection, @unchecked Sendable
     failNext(HubLinkError.refused(status: status), times: times)
   }
 
-  /// The hub's side of the next successfully opened socket, waiting for it.
-  public func nextSocket() async -> FakeHubLinkSocket {
-    do { return try await opened.next() } catch { preconditionFailure("nextSocket was cancelled") }
-  }
+  /// The hub's side of the next successfully opened socket, waiting for it. Throws `CancellationError`
+  /// when the wait is cancelled (a test past its time limit), so only that test fails.
+  public func nextSocket() async throws -> FakeHubLinkSocket { try await opened.next() }
 
   public func open(url: URL, token: String, protocolVersion: Int) async throws -> any HubLinkSocket {
     try await open(url: url, token: token, protocolVersion: protocolVersion, cookies: [:])

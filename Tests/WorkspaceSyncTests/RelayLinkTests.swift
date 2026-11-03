@@ -124,9 +124,9 @@ struct LinkHarness {
   }
 
   /// Starts the link and answers its first open with a `hello`, returning the hub's side.
-  func connect(role: RelayRole = .host) async -> FakeHubLinkSocket {
+  func connect(role: RelayRole = .host) async throws -> FakeHubLinkSocket {
     await link.start()
-    let socket = await connection.nextSocket()
+    let socket = try await connection.nextSocket()
     socket.deliver(helloMessage(role: role))
     await waitUntil("connected") {
       if case .connected? = await recorder.last { return true }
@@ -162,7 +162,7 @@ struct RelayLinkTests {
   @Test func connectsAndReportsTheRoleFromHello() async throws {
     let h = LinkHarness()
     await h.link.start()
-    let socket = await h.connection.nextSocket()
+    let socket = try await h.connection.nextSocket()
     #expect(socket.token == "tok")
     #expect(socket.protocolVersion == 1)
     #expect(socket.url.absoluteString == "https://hub.example.com")
@@ -177,9 +177,29 @@ struct RelayLinkTests {
     #expect(role == .client)
   }
 
+  /// A test past its time limit is cancelled while it waits for a socket; that wait throws instead of
+  /// crashing the test process, and the fake still hands out the next socket.
+  @Test func aCancelledNextSocketThrowsAndTheFakeStillWorks() async throws {
+    let connection = FakeHubLinkConnection()
+    let waiting = Task { try await connection.nextSocket() }
+    try await Task.sleep(for: .milliseconds(50))  // long enough for the wait to register
+    waiting.cancel()
+    await #expect(throws: CancellationError.self) { try await waiting.value }
+
+    let early = Task {
+      withUnsafeCurrentTask { $0?.cancel() }  // cancelled before the wait registers
+      return try await connection.nextSocket()
+    }
+    await #expect(throws: CancellationError.self) { try await early.value }
+
+    _ = try await connection.open(
+      url: URL(string: "https://hub.example.com")!, token: "tok", protocolVersion: 1)
+    #expect(try await connection.nextSocket().token == "tok")
+  }
+
   @Test func framesReachOnMessageInOrderAndPongsStayInside() async throws {
     let h = LinkHarness()
-    let socket = await h.connect()
+    let socket = try await h.connect()
     let presence = RelayMessage.presence(hosts: [])
     socket.deliver(.pong(hubTime: isoString(Date())))
     socket.deliver(presence)
@@ -191,7 +211,7 @@ struct RelayLinkTests {
   @Test func sendWritesToTheHubAndThrowsWhenNotConnected() async throws {
     let h = LinkHarness()
     await #expect(throws: HubLinkError.notConnected) { try await h.link.send(.ping) }
-    let socket = await h.connect()
+    let socket = try await h.connect()
     let watch = RelayMessage.watch(threadId: "t1")
     try await h.link.send(watch)
     #expect(try await socket.nextSent() == watch)
@@ -213,7 +233,7 @@ struct RelayLinkTests {
     #expect(delays == [1, 2, 4, 8, 16, 30, 30].map { Duration.seconds($0) })
 
     // The eighth attempt connects and stays 60 s.
-    let socket = await h.connection.nextSocket()
+    let socket = try await h.connection.nextSocket()
     socket.deliver(helloMessage())
     await waitUntil("connected") { if case .connected? = await h.recorder.last { true } else { false } }
     for _ in 0..<6 {
@@ -237,7 +257,7 @@ struct RelayLinkTests {
     let h = LinkHarness()
     await h.link.start()
     for expected in [1, 2, 4] {
-      let socket = await h.connection.nextSocket()
+      let socket = try await h.connection.nextSocket()
       socket.deliver(helloMessage())
       await waitUntil("connected") { if case .connected? = await h.recorder.last { true } else { false } }
       let seenStates = await h.recorder.states.count
@@ -263,7 +283,7 @@ struct RelayLinkTests {
 
   @Test func pingsEveryTenSecondsAndReconnectsAfterThirtySilent() async throws {
     let h = LinkHarness()
-    let socket = await h.connect()
+    let socket = try await h.connect()
     await waitUntil("timers") { h.clock.sleeperCount == 3 }
     h.clock.advance(by: .seconds(10))
     #expect(try await socket.nextSent() == .ping)
@@ -279,13 +299,13 @@ struct RelayLinkTests {
     #expect(socket.deviceClosedCode != nil)
     await waitUntil("backoff") { h.clock.sleeperCount == 1 }
     h.clock.advance(by: .seconds(1))
-    _ = await h.connection.nextSocket()
+    _ = try await h.connection.nextSocket()
     #expect(h.connection.openCount == 2)
   }
 
   @Test func anyFrameKeepsTheLinkAlive() async throws {
     let h = LinkHarness()
-    let socket = await h.connect()
+    let socket = try await h.connect()
     for _ in 0..<4 {
       await waitUntil("timers") { h.clock.sleeperCount >= 2 }
       h.clock.advance(by: .seconds(20))
@@ -332,7 +352,7 @@ struct RelayLinkTests {
     await waitUntil("backoff") { h.clock.sleeperCount == 1 }
     #expect(await h.recorder.last == .connecting(attempt: 2, lastError: "refused (429)"))
     h.clock.advance(by: .seconds(1))
-    _ = await h.connection.nextSocket()
+    _ = try await h.connection.nextSocket()
     #expect(h.connection.openCount == 2)
   }
 
@@ -346,7 +366,7 @@ struct RelayLinkTests {
     #expect(h.clock.nextWake == .seconds(1))
     #expect(await h.recorder.last == .connecting(attempt: 5, lastError: "relocated"))
     h.clock.advance(by: .seconds(1))
-    let socket = await h.connection.nextSocket()
+    let socket = try await h.connection.nextSocket()
     #expect(h.connection.openCount == 5)
 
     // A link resets the count: the next three 409s are immediate again.
@@ -358,7 +378,7 @@ struct RelayLinkTests {
     // The 1001 drop itself backs off; the three relocations after it do not.
     let backoff = await h.awaitBackoff(pastStates: seen)
     h.clock.advance(by: backoff.delay)
-    _ = await h.connection.nextSocket()
+    _ = try await h.connection.nextSocket()
     #expect(h.connection.openCount == 9)
   }
 
@@ -367,7 +387,7 @@ struct RelayLinkTests {
     let sticky = ["b4hub-instance": "inst-a", "AWSALBAPP-0": "opaque"]
     let moved = ["b4hub-instance": "inst-b", "AWSALBAPP-0": "other"]
     h.connection.setCookiesOnNextOpen(sticky)
-    let first = await h.connect()
+    let first = try await h.connect()
     #expect(first.responseCookies == sticky)
     #expect(h.connection.cookiesSent == [[:]])
 
@@ -379,7 +399,7 @@ struct RelayLinkTests {
     first.closeFromHub(code: 1001)
     let backoff = await h.awaitBackoff(pastStates: seen)
     h.clock.advance(by: backoff.delay)
-    let second = await h.connection.nextSocket()
+    let second = try await h.connection.nextSocket()
     #expect(h.connection.cookiesSent == [[:], sticky, [:]])
     #expect(second.responseCookies == moved)
 
@@ -387,7 +407,7 @@ struct RelayLinkTests {
     second.deliver(helloMessage())
     await waitUntil("connected") { if case .connected? = await h.recorder.last { true } else { false } }
     await h.link.reconnectNow()
-    _ = await h.connection.nextSocket()
+    _ = try await h.connection.nextSocket()
     #expect(h.connection.cookiesSent == [[:], sticky, [:], moved])
   }
 
@@ -400,7 +420,7 @@ struct RelayLinkTests {
 
   @Test func replacedStops() async throws {
     let h = LinkHarness()
-    let socket = await h.connect()
+    let socket = try await h.connect()
     socket.deliver(.error(code: "link_replaced", message: "replaced"))
     socket.closeFromHub(code: 4000)
     await waitUntil("stopped") { await h.recorder.last == .stopped(reason: "replaced") }
@@ -412,7 +432,7 @@ struct RelayLinkTests {
   @Test(arguments: [(4000, "replaced"), (4001, "revoked"), (4002, "client_too_old")])
   func terminalCloseCodesStop(code: Int, reason: String) async throws {
     let h = LinkHarness()
-    let socket = await h.connect()
+    let socket = try await h.connect()
     socket.closeFromHub(code: code)
     await waitUntil("stopped") { await h.recorder.last == .stopped(reason: reason) }
     #expect(h.connection.openCount == 1)
@@ -421,7 +441,7 @@ struct RelayLinkTests {
   @Test func clientTooOldErrorFrameStopsEvenBeforeHello() async throws {
     let h = LinkHarness()
     await h.link.start()
-    let socket = await h.connection.nextSocket()
+    let socket = try await h.connection.nextSocket()
     socket.deliver(.error(code: "client_too_old", message: "update", details: nil))
     await waitUntil("stopped") { await h.recorder.last == .stopped(reason: "client_too_old") }
     #expect(await h.recorder.messages.count == 1)
@@ -431,7 +451,7 @@ struct RelayLinkTests {
   @Test(arguments: [4003, 1001, 1006])
   func otherClosesAreRetried(code: Int) async throws {
     let h = LinkHarness()
-    let socket = await h.connect()
+    let socket = try await h.connect()
     socket.closeFromHub(code: code)
     await waitUntil("a retry") {
       await h.recorder.last == .connecting(attempt: 1, lastError: "closed (\(code))")
@@ -442,7 +462,7 @@ struct RelayLinkTests {
     let h = LinkHarness()
     #expect(await h.link.hubNow() == nil)
     await h.link.start()
-    let socket = await h.connection.nextSocket()
+    let socket = try await h.connection.nextSocket()
     socket.deliver(helloMessage(hubTime: Date().addingTimeInterval(120)))
     await waitUntil("hello") { await h.link.hubNow() != nil }
     let afterHello = try #require(await h.link.hubNow())
@@ -460,23 +480,23 @@ struct RelayLinkTests {
     await h.link.start()
     await waitUntil("backoff") { h.clock.sleeperCount == 1 }
     await h.link.reconnectNow()
-    _ = await h.connection.nextSocket()  // no clock.advance
+    _ = try await h.connection.nextSocket()  // no clock.advance
     #expect(h.connection.openCount == 2)
   }
 
   @Test func reconnectNowDropsAConnectedLinkAndReopensAtOnce() async throws {
     let h = LinkHarness()
-    let first = await h.connect()
+    let first = try await h.connect()
     await h.link.reconnectNow()
     #expect(first.deviceClosedCode != nil)
-    let second = await h.connection.nextSocket()
+    let second = try await h.connection.nextSocket()
     #expect(second !== first)
     #expect(h.clock.nextWake != .seconds(1))
   }
 
   @Test func stopClosesTheSocketAndStartsAgain() async throws {
     let h = LinkHarness()
-    let socket = await h.connect()
+    let socket = try await h.connect()
     await h.link.stop()
     #expect(socket.deviceClosedCode != nil)
     #expect(await h.recorder.last == .stopped(reason: "stopped"))
@@ -485,13 +505,13 @@ struct RelayLinkTests {
 
     let opens = h.connection.openCount
     await h.link.start()
-    _ = await h.connection.nextSocket()
+    _ = try await h.connection.nextSocket()
     #expect(h.connection.openCount == opens + 1)
   }
 
   @Test func aTerminalCloseCodeWinsOverALocalReconnect() async throws {
     let h = LinkHarness()
-    let socket = await h.connect()
+    let socket = try await h.connect()
     socket.closeFromHub(code: 4001)
     await h.link.reconnectNow()
     await waitUntil("stopped") { await h.recorder.last == .stopped(reason: "revoked") }
@@ -500,7 +520,7 @@ struct RelayLinkTests {
 
   @Test func aTerminalCloseCodeWinsOverTheSilenceTimer() async throws {
     let h = LinkHarness()
-    let socket = await h.connect()
+    let socket = try await h.connect()
     await waitUntil("timers") { h.clock.sleeperCount == 3 }
     socket.closeFromHub(code: 4001)
     h.clock.advance(by: .seconds(30))
@@ -519,7 +539,7 @@ struct RelayLinkTests {
     await waitUntil("the first open") { gate.openCount == 1 }
     await link.reconnectNow()
     gate.release()  // the first open fails
-    _ = await gate.inner.nextSocket()  // the second open, with no clock.advance
+    _ = try await gate.inner.nextSocket()  // the second open, with no clock.advance
     #expect(gate.openCount == 2)
     await link.stop()
   }
@@ -538,7 +558,7 @@ struct RelayLinkTests {
     await tokenGate.release(nil, throwing: true)  // the first fetch fails
     await waitUntil("the second token request") { await tokenGate.requests == 2 }
     await tokenGate.release("tok", throwing: false)
-    _ = await connection.nextSocket()
+    _ = try await connection.nextSocket()
     #expect(connection.openCount == 1)
     await link.stop()
   }
@@ -559,13 +579,13 @@ struct RelayLinkTests {
       onState: { await recorder.state($0) })
 
     await link.start()
-    let old = await connection.nextSocket()
+    let old = try await connection.nextSocket()
     old.deliver(helloMessage())
     await waitUntil("the old run is in its handler") { await handlerGate.holding }
     old.deliverUndecodable()  // buffered behind the hello, for the old loop to read later
     await link.stop()
     await link.start()
-    let current = await connection.nextSocket()
+    let current = try await connection.nextSocket()
     current.deliver(helloMessage())
     await waitUntil("the new run is connected") {
       await recorder.states.filter { if case .connected = $0 { true } else { false } }.count == 2
@@ -581,7 +601,7 @@ struct RelayLinkTests {
 
   @Test func anUndecodableFrameDoesNotEndTheLink() async throws {
     let h = LinkHarness()
-    let socket = await h.connect()
+    let socket = try await h.connect()
     socket.deliverUndecodable()
     await h.flush(socket)
     #expect(socket.deviceClosedCode == nil)

@@ -68,7 +68,7 @@ private func fixtureAsStored(file: StaticString = #filePath) throws -> [StoredCh
       url: URL(string: "https://hub.example.com")!, token: { "tok" }, connection: connection,
       clock: TestClock(), jitter: { 1.0 })
     await relay.start()
-    let socket = await connection.nextSocket()
+    let socket = try await connection.nextSocket()
     socket.deliver(
       .hello(
         protocol: 1, minClientProtocol: 1, deviceId: "phone-1", role: .client, heartbeatSeconds: 10,
@@ -94,7 +94,7 @@ private func fixtureAsStored(file: StaticString = #filePath) throws -> [StoredCh
       url: URL(string: "https://hub.example.com")!, token: { "tok" }, connection: connection,
       clock: TestClock(), jitter: { 1.0 })
     await relay.start()
-    let socket = await connection.nextSocket()
+    let socket = try await connection.nextSocket()
     socket.deliver(
       .hello(
         protocol: 1, minClientProtocol: 1, deviceId: "phone-1", role: .client, heartbeatSeconds: 10,
