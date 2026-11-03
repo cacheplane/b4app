@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 import Synchronization
 import WorkspacePlatform
@@ -123,7 +122,7 @@ public enum EphemeralPostgres {
     let fm = FileManager.default
     var removed: [String] = []
     for directory in Set(directories.map { ($0 as NSString).standardizingPath }) {
-      guard let names = scratchNames(in: directory) else { continue }
+      guard let names = try? fm.contentsOfDirectory(atPath: directory) else { continue }
       for name in names {
         guard let owner = scratchOwner(name) else { continue }
         let path = (directory as NSString).appendingPathComponent(name)
@@ -145,26 +144,6 @@ public enum EphemeralPostgres {
       }
     }
     return removed.sorted()
-  }
-
-  /// Name discovery must not fetch metadata for every unrelated temporary entry. Foundation's
-  /// directory listing does that on macOS, blocking the startup lock (and sometimes the main actor)
-  /// for seconds in a busy temporary directory. Metadata is needed only after a scratch name matches.
-  private static func scratchNames(in directory: String) -> [String]? {
-    guard let stream = opendir(directory) else { return nil }
-    defer { closedir(stream) }
-    var names: [String] = []
-    while true {
-      errno = 0
-      guard let entry = readdir(stream) else { return errno == 0 ? names : nil }
-      let count = Int(entry.pointee.d_namlen)
-      let name = withUnsafeBytes(of: entry.pointee.d_name) {
-        String(validating: $0.prefix(count), as: UTF8.self)
-      }
-      // Invalid UTF-8 cannot safely name a Foundation path; leave it alone rather than repair it
-      // into a different filename. All age, liveness and process-identity checks remain in the sweep.
-      if let name, scratchOwner(name) != nil { names.append(name) }
-    }
   }
 
   /// The first line of `<dataDir>/postmaster.pid`.

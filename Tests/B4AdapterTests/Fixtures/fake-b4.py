@@ -36,10 +36,7 @@ class FixtureHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def server_bind(self):
-        # HTTPServer performs reverse DNS just to populate server_name. It can stall for
-        # >30s on macOS CI, and our JSON/SSE handlers never need a canonical hostname.
-        TCPServer.server_bind(self)
-        self.server_name, self.server_port = self.server_address[:2]
+        super().server_bind()
 
 
 def log(text):
