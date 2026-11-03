@@ -548,7 +548,7 @@ public final class WorkspaceModel {
     guard let status = try? await client.request(HubStatus.self, EmptyParams()),
       generation == accountGeneration
     else { return }
-    account = WorkspaceAccount(status: status)
+    account = WorkspaceAccount(status: status, profile: accountStatus?.account)
     hubJoined = status.joined
     hubLink = status.link
     // A status read never clears the notice: only `account.dismissNotice` does.

@@ -28,6 +28,9 @@ struct EnrollView: View {
   @State private var connecting = false
   /// The link waiting for "Pair". Holds the code until the request returns or Brian cancels.
   @State private var offer: PairLink?
+  /// The question of the link that just paired, kept (without its code) while the sheet closes, so
+  /// the face behind it never flashes (`EnrollSheetFace`).
+  @State private var paired: String?
   @State private var scanning = false
   /// The switch question, after "Pair" on a phone signed in to another account: the org it leaves. The
   /// offer keeps the code until it is answered.
@@ -52,12 +55,12 @@ struct EnrollView: View {
     NavigationStack {
       ScrollView {
         VStack(alignment: .leading, spacing: LLA.Space.l) {
-          if let offer {
-            confirmation(offer)
-          } else if openedSignedIn {
-            signedInResult
-          } else {
-            typedEntry
+          switch EnrollSheetFace.face(
+            offering: offer != nil, paired: paired != nil, openedSignedIn: openedSignedIn)
+          {
+          case .confirmation: confirmation(offer?.prompt ?? paired ?? "")
+          case .signedInResult: signedInResult
+          case .typedEntry: typedEntry
           }
         }
         .frame(maxWidth: 480, alignment: .leading)
@@ -68,7 +71,7 @@ struct EnrollView: View {
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
           Button("Cancel") { dismiss() }
-            .disabled(connecting)
+            .disabled(connecting || paired != nil)
             .accessibilityIdentifier("enroll.cancel")
         }
       }
@@ -161,24 +164,24 @@ struct EnrollView: View {
 
   // MARK: From a link or a scan
 
-  @ViewBuilder private func confirmation(_ offer: PairLink) -> some View {
+  @ViewBuilder private func confirmation(_ prompt: String) -> some View {
     LLASectionHead(
-      offer.prompt,
+      prompt,
       intro:
         "Pair only with a hub you run. This iPhone will show the threads your Mac syncs there and can send turns to it."
     )
     deviceNameField
     errors
     HStack(spacing: LLA.Space.m) {
-      Button(connecting ? "Pairing…" : "Pair") {
-        Task { await pair(offer) }
+      Button(connecting || paired != nil ? "Pairing…" : "Pair") {
+        if let offer { Task { await pair(offer) } }
       }
       .buttonStyle(.llaPrimary)
-      .disabled(connecting)
+      .disabled(connecting || offer == nil)
       .accessibilityIdentifier("connect.pair")
       Button("Cancel") { cancelOffer() }
         .buttonStyle(.llaSecondary)
-        .disabled(connecting)
+        .disabled(connecting || offer == nil)
     }
   }
 
@@ -217,6 +220,7 @@ struct EnrollView: View {
     do {
       switch try await host.pair(link, deviceName: deviceName) {
       case .signedIn:
+        paired = link.prompt
         offer = nil
         dismiss()
       case .alreadyPaired:
@@ -245,6 +249,7 @@ struct EnrollView: View {
     }
     do {
       try await host.switchAndPair(link, deviceName: deviceName)
+      paired = link.prompt
       dismiss()
     } catch {
       openedSignedIn = host.isSignedIn
