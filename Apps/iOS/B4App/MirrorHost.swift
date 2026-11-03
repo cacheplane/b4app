@@ -108,6 +108,9 @@ extension MirrorAccount: @retroactive AccountHost {}
   @ObservationIgnored private var notificationWork: Task<Void, Never>?
   /// The throttled backstop's pending run, and when the last one began.
   @ObservationIgnored private var reconcileScheduled: Task<Void, Never>?
+  /// A backstop was asked for and has not begun: a suspend that cancelled the pending run, or a run
+  /// that found the loop parked, leaves it owed for the suspend (or the next resume) to run.
+  @ObservationIgnored private var reconcileOwed = false
   @ObservationIgnored private var lastReconcileAt: ContinuousClock.Instant?
   /// The badge last set, so only a change is logged.
   @ObservationIgnored private var lastBadge: Int?
@@ -493,6 +496,12 @@ extension MirrorAccount: @retroactive AccountHost {}
   ) -> Task<Void, Never>? {
     guard let account else { return nil }
     let assertion = action == .suspend ? BackgroundAssertion(name: "Pause the mirror sync") : nil
+    if action == .suspend {
+      // A deferred backstop must not read the mirror after this suspend has parked the loop and let
+      // the app be suspended; the suspend runs it itself, below, under its background task.
+      reconcileScheduled?.cancel()
+      reconcileScheduled = nil
+    }
     let previous = syncControl
     syncControlSerial += 1
     let serial = syncControlSerial
@@ -515,6 +524,13 @@ extension MirrorAccount: @retroactive AccountHost {}
             turnStartsAfter = Date()
           }
         }
+        // Before the background task ends: the owed backstop, or the one already running, so the
+        // badge and the notifications settle and nothing reads the mirror once the app may sleep.
+        if reconcileOwed {
+          await reconcileNotifications()
+        } else {
+          await notificationWork?.value
+        }
       case .resume:
         let at = Date()
         await account.resumeSync()
@@ -522,6 +538,7 @@ extension MirrorAccount: @retroactive AccountHost {}
           syncParked = false
           turnStartsAfter = max(turnStartsAfter ?? at, at)
         }
+        if reconcileOwed { scheduleReconcile() }
       }
       assertion?.end()
     }
@@ -540,13 +557,14 @@ extension MirrorAccount: @retroactive AccountHost {}
     }
     return await withCheckedContinuation { continuation in
       pending.withLock { $0 = continuation }
-      Task {
-        await task.value
-        finish(true)
-      }
-      Task {
+      let sleeper = Task {
         try? await Task.sleep(for: limit)
         finish(false)
+      }
+      Task {
+        await task.value
+        sleeper.cancel()
+        finish(true)
       }
     }
   }
@@ -561,7 +579,8 @@ extension MirrorAccount: @retroactive AccountHost {}
   }
 
   /// A withdrawal push named these keys (`request:<id>`, `turn:<id>`): remove the delivered
-  /// notifications that carry one of them.
+  /// notifications that carry one of them. It runs before the wake's background task begins, so it
+  /// must never touch the mirror.
   func withdraw(keys: [String]) async {
     let wanted = Set(keys)
     let identifiers = await Self.deliveredNotifications().filter { $0.key.map(wanted.contains) ?? false }
@@ -572,16 +591,19 @@ extension MirrorAccount: @retroactive AccountHost {}
   }
 
   /// The backstop, at most once a second: a burst of batches (a streaming reply) runs it once at the
-  /// end of the interval rather than for each.
+  /// end of the interval rather than for each. It never starts while the loop is parked (the app may
+  /// be suspended at any moment then); it stays owed for the next resume or suspend.
   private func scheduleReconcile() {
-    guard reconcileScheduled == nil else { return }
+    reconcileOwed = true
+    guard reconcileScheduled == nil, !syncParked else { return }
     let elapsed = lastReconcileAt.map { $0.duration(to: .now) } ?? Self.reconcileInterval
     let delay = Self.reconcileInterval - elapsed
     reconcileScheduled = Task {
       if delay > .zero { try? await Task.sleep(for: delay) }
-      // Cancelled by a sign-out, which has already let go of it.
+      // Cancelled by a sign-out or a suspend, which has already let go of it.
       guard !Task.isCancelled else { return }
       reconcileScheduled = nil
+      guard !syncParked else { return }
       await reconcileNotifications()
     }
   }
@@ -591,6 +613,7 @@ extension MirrorAccount: @retroactive AccountHost {}
   /// turn has been read in the mirror, and sets the app icon's badge to the threads that need the owner.
   /// Does nothing while the mirror is unavailable or nobody is signed in.
   func reconcileNotifications() async {
+    reconcileOwed = false
     let previous = notificationWork
     let task = Task {
       await previous?.value
@@ -634,6 +657,7 @@ extension MirrorAccount: @retroactive AccountHost {}
   private func clearNotifications() {
     reconcileScheduled?.cancel()
     reconcileScheduled = nil
+    reconcileOwed = false
     let previous = notificationWork
     notificationWork = Task {
       await previous?.value
