@@ -136,7 +136,7 @@ pub async fn lost_claims(db: &Db, instance_id: Uuid, users: &[Uuid]) -> Result<V
 /// users is claimed at once by whichever instance it reaches. A draining instance calls it after
 /// its links have closed. Returns how many claims were released.
 pub async fn release_claims(db: &Db, instance_id: Uuid) -> Result<u64> {
-    let mut tx = db.pool.begin().await?;
+    let mut tx = db.begin(None).await?;
     let released = sqlx::query("DELETE FROM user_links WHERE instance_id = $1")
         .bind(instance_id)
         .execute(&mut *tx)
@@ -160,7 +160,7 @@ pub struct Pruned {
 /// Deletes instances dead for longer than `alive_within` and every claim that no live instance
 /// holds (a dead instance's, or one whose instance row is gone).
 pub async fn prune(db: &Db, alive_within: Duration) -> Result<Pruned> {
-    let mut tx = db.pool.begin().await?;
+    let mut tx = db.begin(None).await?;
     let instances = sqlx::query(
         "DELETE FROM hub_instances WHERE heartbeat_at <= now() - make_interval(secs => $1)",
     )

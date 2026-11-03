@@ -19,6 +19,35 @@ Environmental, not this flake:
 - `test-db.sh --stop` from another worktree ends every run on port 54329.
 - These runs used private clusters on other ports.
 
+## 2026-11-03: M8f APNs on a real iPhone (live gate 2) and the cancelled-BEGIN fix (D-153)
+
+Target: Brian's iPhone with the beta TestFlight build 0.1.0 (2611030437, uploaded from `main` at `5882a60` with `Scripts/upload-ios.sh`, beta flavour), signed in to `hub.test.b4.run`; the test hub at task definition revision 16 (`B4HUB_PUSH_SENDER=apns`, the three APNs secrets set per runbook 3a, `INCLUDE_APNS_SECRETS=1` from #76); the Mac side was the packaged beta Mac app on the build Mac, driven in the background, with a Claude Code connection added through its bundled `agent-workspace` (its Codex follows `~/.codex/config.toml`, `approval_policy = "never"`, so Codex never asks). Evidence is the test hub's CloudWatch log (`APNs accepted`, kind, key, status 200, `apns-id`), never a token or payload.
+
+- The new build registered its token on first launch (05:45:44 UTC). A notification the earlier build had left behind (an approval answered while that build had no withdrawal code) was removed by the new build's backstop when it opened.
+- An approval from the Mac (`curl -sI https://example.org` under Claude Code's default permission mode) reached the locked iPhone's lock screen through `api.push.apple.com` (alert accepted 05:46:01). Answering it on the Mac withdrew it (background push accepted 05:46:29, the phone woke and pulled), and it left the lock screen; the badge matched the list (1: an unread reply, nothing waiting).
+- "Replied" arrived (05:46:30); tapping it opened the thread in the app, and the phone's read withdrew it (accepted 05:48:55, after the retry below). Earlier, a Codex turn's "Replied" was withdrawn by the Mac reading it (05:34:22 alert, 05:34:31 withdrawal).
+- With the earlier build (2611022211) installed, the same pushes arrived and woke the app, but its approval stayed: that build has no withdrawal code. Recorded so the cause is not mistaken for a delivery failure.
+- Found during the gate: at 05:46:37 the test hub's pool kept a connection inside a read-only transaction that sqlx did not know about (D-153), and the phone's read failed with "current transaction is aborted" until a retry reached a good connection. Restarting the test service (`aws ecs update-service --force-new-deployment`) cleared it; no error in the minute after. Prod's log has none in two days.
+- The fix, at this branch's head: `cargo test --workspace --locked` 464 passed, 0 failed (the new `tests/cancel.rs`: 4, and its three cancellation tests failed on `main` before the change, 3 of 3; 5 repeated runs passed); `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo fmt --all -- --check` clean.
+- Not exercised: Low Power Mode, an app swiped away in the switcher (the backstop then clears notifications at the next launch, D-146), prod (`hub.b4.run` runs hub-v0.1.0, which predates the APNs code; it sends through Apple after the next release).
+
+## 2026-11-02: Sign-in polish, live (D-132, D-133)
+
+Run on the owner's MacBook Pro from main `8e7a4ca` (#68 merged), with the owner at Touch ID for the passkey step and the build session driving the apps.
+
+**What was rebuilt**
+- **The Local app.** `B4APP_FLAVOR=local B4APP_SKIP_NOTARIZE=1 B4APP_SIGN_IDENTITY="Developer ID Application: …" ./Scripts/package.sh` in a scratch checkout of `8e7a4ca`; the package carries `webcredentials:local.b4.run`. Before the swap: `agent-workspace db backup` (746 rows) and the old app, both in `~/Library/Application Support/b4app-signin-gate-backups/20261103T042407Z-polish/`; the old coordinator was stopped with `coordinator stop`. LaunchServices held eleven registrations of `com.cacheplane.b4app.local` (Xcode Debug builds, scratch packages, the backup), so every one but `dist`'s was unregistered (`lsregister -u`), as the README's "Signing in" says, before any passkey step.
+- **The Compose hub.** The first Add a passkey failed with "That didn't work. Try again.": main's app first calls `POST /v1/me/step-up/passkey/begin` (D-150), and the running `b4hub:local` predated it, so the hub logged two `404 POST (unmatched)`. After a `pg_dumpall` (same folder) and tagging the old image `b4hub:local-before-polish-checks`, `b4hub:local` was rebuilt from `8e7a4ca` (with the cached `rust:1.93.1` tag in place of the pinned digest, the workaround the earlier gates used; the repository's Dockerfile is unchanged); `migrate` applied 0012 to 0014 ("migrated: 14 applied, 0 pending") and `/readyz` was ok.
+- **The iPhone.** The local flavour from `8e7a4ca` (`B4App-iOS`, Debug) on the iPhone 17 Pro Simulator, iOS 26.5.
+
+| Check | Result |
+| --- | --- |
+| The profile button follows the account's name | Pass. Signed in to cacheplane, Settings → Account renamed "Brian Love" to "Brian Love Live": `account status` and the sidebar's profile button read "Brian Love Live" at once, while `hub status` still had the name `HubSync` read at join, "Brian Love", which is the staleness that showed `u-not33mk7` at the sign-in gate. Renamed back; cacheplane is not a personal org, so its name never changed. A freshly joined operator-enrolled account, "Passkey Check", showed its name on the profile button too |
+| The local sign-in screen offers one way in | Pass. Signed out, the screen shows only Continue with a passkey and "New here? A passkey creates your account." |
+| The pairing sheet closes without the typed form | Pass. The phone logged out (the landing, "Connect your Mac"), then the Mac's `hub.pair` link went straight to `simctl openurl` (never printed): "Pair this iPhone with the hub at localhost?", then Pair. A screen recording through the dismissal (about 56 frames in its last second) shows the question with "Pairing…" until the thread list, and no frame of the hub URL and code form. The phone was signed in to cacheplane again with its threads |
+| An added passkey takes the account's name in Passwords | Pass, on the operator-enrolled account. On cacheplane, the step-up passed twice ("stepped up", then `passkeys/begin`), but the system refused to make a second passkey: "This device already has a passkey for this account.", because the hub lists the account's passkeys in `excludeCredentials` and the owner's synced keychain holds one. So a throwaway user was seeded (`seed --org passkey-check --user passkey-check --name "Passkey Check"`, not personal), the Mac logged out and joined it with an enrollment code piped from `enroll` into `hub join` (never printed), and the owner added a passkey in Settings → Account: one Touch ID (no step-up, since the account had no sign-in method). The hub logged `added a passkey`, stored under its placeholder name "Agent Workspace account", and the Passwords app lists the new `local.b4.run` passkey as "Passkey Check" |
+| Adoption boots the old LaunchAgent out | Not run: the owner's install was adopted at the sign-in gate, so the fix can be seen only on a fresh adoption |
+
 ## 2026-11-03: M8c pairing and relay on a physical iPhone (beta flavour, test hub)
 
 The owner's iPhone, with TestFlight beta build 0.1.0 (2611030054). It was uploaded from #63's branch (`abb41df`, which contains main `9140cf5`) by `B4APP_FLAVOR=beta ./Scripts/upload-ios.sh`, and reached the Internal group. The Mac is `Agent Workspace (Beta).app`, packaged from main `9140cf5` (`B4APP_FLAVOR=beta`, Developer ID, not notarized) beside the prod and Local apps, against `https://hub.test.b4.run`.
@@ -109,7 +138,7 @@ Screenshots (kept with the session; not committed): the approval with badge 1, t
 
 ### Not exercised, and blocked
 
-- The iPhone gate (live gate 2): the owner's secrets step (`Infra/README.md`, runbook 3a) and the follow-up that sets `INCLUDE_APNS_SECRETS=1` are done (2026-11-03); `blocked` on a beta TestFlight build signed in to `hub.test.b4.run`. It covers what the Simulator cannot: a withdrawal push waking the app on a device, a `production` token from a TestFlight build and `api.push.apple.com`, a tap on the lock screen, Low Power Mode, and the badge on a real icon.
+- The iPhone gate (live gate 2): passed 2026-11-03 (see that entry). It covers what the Simulator cannot: a withdrawal push waking the app on a device, a `production` token from a TestFlight build and `api.push.apple.com`, a tap on the lock screen, Low Power Mode, and the badge on a real icon.
 - `api.push.apple.com` (production) and a 410/400 from the real Apple (dead-token deletion is fixture-tested against a fake APNs only); a provider-token expiry in the field (re-mint is fixture-tested with a fixed clock).
 - The >1000-change catch-up case (D-146) and an overtaken suspend's owed reconcile (D-147), both parked and unreproduced.
 - The hosted hubs: nothing applied to either AWS account.

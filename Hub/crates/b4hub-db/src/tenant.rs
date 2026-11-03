@@ -12,7 +12,7 @@ impl Db {
     /// touches a tenant-secured table runs inside one of these; `org_id` comes from the verified
     /// device token, never from the request.
     pub async fn tenant_tx(&self, org_id: Uuid) -> Result<Transaction<'_, Postgres>> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin(None).await?;
         set_tenant(&mut tx, org_id).await?;
         Ok(tx)
     }
@@ -22,8 +22,7 @@ impl Db {
     /// each other (the horizon with the feed, the snapshot's tables with its cursor).
     pub async fn read_tx(&self, org_id: Uuid) -> Result<Transaction<'_, Postgres>> {
         let mut tx = self
-            .pool
-            .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .begin(Some("BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
             .await?;
         set_tenant(&mut tx, org_id).await?;
         Ok(tx)
@@ -34,7 +33,35 @@ impl Db {
     /// hash of a presented secret before the org is known. Against any tenant-secured table such
     /// a transaction sees and writes nothing.
     pub async fn untenanted_tx(&self) -> Result<Transaction<'_, Postgres>> {
-        Ok(self.pool.begin().await?)
+        self.begin(None).await
+    }
+
+    /// Begins a transaction with `statement` (a plain `BEGIN` when `None`), in a task of its own,
+    /// so a caller dropped while Postgres answers the `BEGIN` (a client that disconnects mid-
+    /// request) cannot interrupt it. sqlx 0.8 counts a transaction only once that answer has
+    /// arrived, so interrupting it there would return the connection to the pool still inside the
+    /// transaction, unknown to sqlx: every later user of the connection would run inside it (a
+    /// write fails as read-only after `read_tx`, and after any error the connection answers
+    /// "current transaction is aborted" until it is closed). Run to completion, an abandoned
+    /// transaction is dropped like any other and rolled back before the connection is reused.
+    /// Every transaction on the pool starts here.
+    pub(crate) async fn begin(
+        &self,
+        statement: Option<&'static str>,
+    ) -> Result<Transaction<'static, Postgres>> {
+        let pool = self.pool.clone();
+        let begin = tokio::spawn(async move {
+            match statement {
+                Some(statement) => pool.begin_with(statement).await,
+                None => pool.begin().await,
+            }
+        });
+        match begin.await {
+            Ok(begun) => Ok(begun?),
+            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+            // Cancelled only when the runtime is shutting down, which closes the pool too.
+            Err(_) => Err(sqlx::Error::PoolClosed.into()),
+        }
     }
 }
 
