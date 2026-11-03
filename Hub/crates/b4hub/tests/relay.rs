@@ -2383,3 +2383,39 @@ async fn logging_out_closes_the_link_opened_with_that_token(pool: PgPool) {
     // The Mac's session is its own.
     mac.expect_quiet(QUIET).await;
 }
+
+#[sqlx::test(migrations = false)]
+async fn a_link_runs_a_bounded_number_of_commands_at_once(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    world.hub.state.relay.set_commands_in_flight_max(2);
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+    let interrupt = params_for(RelayMethod::TurnInterrupt);
+
+    // Two commands wait on the Mac, which has not answered: the link's budget is spent.
+    for id in ["c-1", "c-2"] {
+        phone
+            .command(id, RelayMethod::TurnInterrupt, interrupt.clone())
+            .await;
+        assert_eq!(mac.expect_command().await.0, id);
+    }
+    // A third is refused at once, without running.
+    phone
+        .command("c-3", RelayMethod::TurnInterrupt, interrupt.clone())
+        .await;
+    let (id, error) = phone.expect_refusal().await;
+    assert_eq!((id.as_str(), error.code.as_str()), ("c-3", "rate_limited"));
+    // A resend of one still running attaches to it, as always: no second answer.
+    phone
+        .command("c-1", RelayMethod::TurnInterrupt, interrupt.clone())
+        .await;
+    phone.expect_quiet(QUIET).await;
+
+    // Once the Mac answers, the room is back.
+    mac.reply("c-1", json!({})).await;
+    assert_eq!(phone.expect_reply().await.0, "c-1");
+    phone
+        .command("c-4", RelayMethod::TurnInterrupt, interrupt)
+        .await;
+    assert_eq!(mac.expect_command().await.0, "c-4");
+}

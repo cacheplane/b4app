@@ -27,10 +27,12 @@ use b4hub_db::devices::{self, Platform, SessionKey};
 use b4hub_db::instances::Claim;
 use b4hub_db::relay::set_last_seen;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use tokio::time::Instant;
 
+use super::limits::IN_FLIGHT_RETRY;
 use super::registry::{Close, Identity, LinkHandle, LiveLink, Registration};
 use super::{invalid_frame, route, PROTOCOL};
 use crate::auth::{bearer_token, AuthedDevice};
@@ -292,7 +294,7 @@ async fn serve_link<S: LinkSocket>(
         } else {
             tracing::info!(device = %who.device_id, protocol, min, "link refused: client too old");
         }
-        if send_close(&mut socket, &Close::client_too_old(min)).await {
+        if send_close(&mut socket, &Close::client_too_old(min), DEAD_LINK).await {
             await_peer_close(&mut socket).await;
         }
         return;
@@ -321,6 +323,7 @@ async fn serve_link<S: LinkSocket>(
         last_written: Instant::now(),
         peer_closed: false,
         probe,
+        running: Arc::new(Semaphore::new(relay.commands_in_flight_max())),
     };
     // The upgrade checked the session, but a log-out or revocation can land between that check
     // and the registration above, when the check that follows it finds no link to close.
@@ -338,8 +341,26 @@ async fn serve_link<S: LinkSocket>(
     // sees it offline (a command judging how recently it was seen) finds the time already there.
     link.write_last_seen(link.last_frame).await;
     let was_current = relay.unregister(link.handle.device_id, link.handle.generation);
+    // Draining: once the user has no link left here, their claim goes now, before this link's
+    // close is even written, so the instance they reconnect to takes them at once instead of
+    // refusing them `relocated` until the slowest link of any user has closed. No new link of
+    // theirs can arrive meanwhile: a draining instance refuses upgrades.
+    let draining = link.state.shutdown.is_triggered();
+    if !probe && was_current && draining && relay.links_of(link.handle.user_id).is_empty() {
+        let released = b4hub_db::instances::release_user(
+            &link.state.db,
+            link.handle.user_id,
+            link.state.instances.id(),
+        )
+        .await;
+        if let Err(error) = released {
+            tracing::warn!(%error, "could not release a user's claim while draining");
+        }
+    }
+    // A draining hub gives a device that is not reading the close grace, not a dead link's wait.
+    let patience = if draining { CLOSE_GRACE } else { DEAD_LINK };
     let closed = match &close {
-        Some(close) => send_close(&mut socket, close).await,
+        Some(close) => send_close(&mut socket, close, patience).await,
         None => false,
     };
     if was_current && role == Role::Host {
@@ -378,6 +399,8 @@ struct Link {
     peer_closed: bool,
     /// The readiness probe's link: it writes no `last_seen_at` (there is no such device).
     probe: bool,
+    /// One permit per command this link may have running ([`Relay::commands_in_flight_max`]).
+    running: Arc<Semaphore>,
 }
 
 impl Link {
@@ -451,9 +474,9 @@ impl Link {
                 }
                 () = hub_stopping(&mut stopping) => {
                     // What is already queued (the drain's answers to held commands, a reply)
-                    // goes out before the close.
+                    // goes out before the close, to a device that is still reading.
                     while let Ok(message) = outbound.try_recv() {
-                        write(socket, &message).await.ok()?;
+                        write_within(socket, &message, CLOSE_GRACE).await.ok()?;
                     }
                     return Some(Close::shutdown());
                 }
@@ -572,11 +595,34 @@ impl Link {
                         });
                     }
                 }
+                let Ok(running) = Arc::clone(&self.running).try_acquire_owned() else {
+                    // A resend of a command still running attaches to it, as it would have.
+                    if self
+                        .state
+                        .relay
+                        .commands()
+                        .in_flight(self.handle.device_id, &id)
+                    {
+                        return None;
+                    }
+                    tracing::warn!(
+                        device = %self.handle.device_id,
+                        method = method.as_str(),
+                        outcome = "too_many_in_flight",
+                        "command"
+                    );
+                    return Some(RelayMessage::Reply {
+                        id,
+                        result: None,
+                        error: Some(route::rate_limited(IN_FLIGHT_RETRY)),
+                    });
+                };
                 let relay = self.state.relay.clone();
                 let db = self.state.db.clone();
                 let caller = self.handle.clone();
                 tokio::spawn(async move {
                     route::handle_command(&relay, &db, &caller, id, method, params).await;
+                    drop(running);
                 });
                 None
             }
@@ -661,29 +707,42 @@ fn writes(method: RelayMethod) -> bool {
 
 /// Writes one frame, giving up if the device stops reading for as long as a dead link.
 async fn write<S: LinkSocket>(socket: &mut S, message: &RelayMessage) -> Result<(), ()> {
-    // A relay frame is plain data, so encoding it cannot fail.
-    let text = serde_json::to_string(message).map_err(|_| ())?;
-    write_message(socket, Message::Text(text.into())).await
+    write_within(socket, message, DEAD_LINK).await
 }
 
-async fn write_message<S: LinkSocket>(socket: &mut S, message: Message) -> Result<(), ()> {
-    match tokio::time::timeout(DEAD_LINK, socket.send(message)).await {
+/// Writes one frame, giving up if the device stops reading for `patience`.
+async fn write_within<S: LinkSocket>(
+    socket: &mut S,
+    message: &RelayMessage,
+    patience: Duration,
+) -> Result<(), ()> {
+    // A relay frame is plain data, so encoding it cannot fail.
+    let text = serde_json::to_string(message).map_err(|_| ())?;
+    write_message(socket, Message::Text(text.into()), patience).await
+}
+
+async fn write_message<S: LinkSocket>(
+    socket: &mut S,
+    message: Message,
+    patience: Duration,
+) -> Result<(), ()> {
+    match tokio::time::timeout(patience, socket.send(message)).await {
         Ok(Ok(())) => Ok(()),
         _ => Err(()),
     }
 }
 
-/// Writes the close's `error` frame, if any, then its close frame. True when the close frame was
-/// written, so the device may still answer it.
-async fn send_close<S: LinkSocket>(socket: &mut S, close: &Close) -> bool {
+/// Writes the close's `error` frame, if any, then its close frame, each within `patience`. True
+/// when the close frame was written, so the device may still answer it.
+async fn send_close<S: LinkSocket>(socket: &mut S, close: &Close, patience: Duration) -> bool {
     if let Some(error) = &close.error {
-        let _ = write(socket, error).await;
+        let _ = write_within(socket, error, patience).await;
     }
     let frame = CloseFrame {
         code: close.code,
         reason: close.reason.into(),
     };
-    write_message(socket, Message::Close(Some(frame)))
+    write_message(socket, Message::Close(Some(frame)), patience)
         .await
         .is_ok()
 }

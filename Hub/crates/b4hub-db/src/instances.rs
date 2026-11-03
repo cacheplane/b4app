@@ -150,6 +150,18 @@ pub async fn release_claims(db: &Db, instance_id: Uuid) -> Result<u64> {
     Ok(released)
 }
 
+/// Releases `instance_id`'s claim on `user_id`, if it holds it: a draining instance frees each
+/// user as their last link closes, so the instance they reconnect to takes them at once rather
+/// than after the whole drain.
+pub async fn release_user(db: &Db, user_id: Uuid, instance_id: Uuid) -> Result<()> {
+    sqlx::query("DELETE FROM user_links WHERE user_id = $1 AND instance_id = $2")
+        .bind(user_id)
+        .bind(instance_id)
+        .execute(&db.pool)
+        .await?;
+    Ok(())
+}
+
 /// What [`prune`] removed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Pruned {

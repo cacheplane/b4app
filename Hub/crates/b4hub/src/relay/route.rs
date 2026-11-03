@@ -169,6 +169,11 @@ impl Commands {
         }
     }
 
+    /// True when `caller`'s command `id` is in flight, so a resend of it attaches.
+    pub(super) fn in_flight(&self, caller: Uuid, id: &str) -> bool {
+        lock(&self.in_flight).contains_key(&(caller, id.to_string()))
+    }
+
     /// Takes the reply senders of every command `id` forwarded to `host` and still waiting.
     fn answered(&self, host: Uuid, id: &str) -> Vec<oneshot::Sender<Answer>> {
         lock(&self.in_flight)
@@ -722,7 +727,7 @@ fn relay_timeout() -> WireError {
     )
 }
 
-fn rate_limited(wait: Duration) -> WireError {
+pub(super) fn rate_limited(wait: Duration) -> WireError {
     let millis = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX).max(1);
     wire(
         relay_code::RATE_LIMITED,

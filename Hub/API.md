@@ -1302,8 +1302,8 @@ events, holds, and presence never cross instances; no frame is ever forwarded be
 
   with status `409` and no socket, so the device hears no `hello` and the refused link never
   appears in presence or `watching`. A live owner keeps its claim; a draining instance releases
-  its claims after its links close, and a dead one's are taken over by the next instance a link
-  of that user reaches. An instance whose heartbeat stalled and recovers closes, with code 1001,
+  each user's claim as that user's last link on it closes (and any left after its links close),
+  and a dead one's are taken over by the next instance a link of that user reaches. An instance whose heartbeat stalled and recovers closes, with code 1001,
   the links of any user another instance took over meanwhile.
 - **The cookie.** Every instance sets `Set-Cookie: b4hub-instance=<its own id>` on its `101`
   upgrade responses and on `/readyz`. With the AWS load balancer's application-cookie stickiness
@@ -1321,6 +1321,10 @@ events, holds, and presence never cross instances; no frame is ever forwarded be
   org to the others over PostgreSQL `LISTEN` / `NOTIFY`, so a long-poll on another instance
   returns within moments, not at the end of its `wait`. The announcement is a hint, never the
   data: if one is lost the long-poll still answers when its `wait` runs out.
+- **A quiet listener is replaced.** Every heartbeat also sends an echo notification, so an
+  instance's listener always hears something. One that hears nothing for the liveness window (20
+  seconds) is presumed cut off without an error (a half-open connection) and is replaced; as after
+  any reconnect, every long-poll there is woken and every link's session checked again.
 - **Sessions end on every instance.** A link remembers the session (token) it was opened with.
   After a log-out, a revocation, an account deletion, or a merge, the instance that made the change
   checks the user's links it serves and asks the others, over `LISTEN` / `NOTIFY`, to check theirs;
@@ -1410,7 +1414,10 @@ checks, in this order:
    most 20 (after a burst, one a second). A user's `turn.send` and `thread.start` together are
    limited to 20 a minute across all of their devices. Over a limit the answer is `rate_limited`
    with `details.retryAfterMs`. A command refused by the user's limit still counts toward the
-   device's. Limits are in memory and per hub process.
+   device's. Limits are in memory and per hub process. Before any of this, a link may have at
+   most 40 commands running at once (twice the burst); past that a new command is answered
+   `rate_limited` (`retryAfterMs: 1000`) at once, without being checked or counted, while a
+   resend of one still running attaches to it as usual.
 3. **Lookup.** The row is looked up by id within the caller's org and user. A missing row,
    another user's or another org's, a missing routing param, and a row whose owner is not a
    non-revoked `macos` device of the caller's own user all answer `not_found`, the same way.
@@ -1565,9 +1572,11 @@ accepting connections and lets in-flight requests finish. Every open link is clo
 1001 as soon as shutdown begins (an upgraded connection is no longer an in-flight request, so the
 drain waits for the links separately). Just before that, every command held for an offline Mac is
 answered `device_offline` (a hold never times out silently on an instance nobody is connected to),
-and a link writes what is already queued before its close. Once the links are closed, the instance
-deletes its claims and its instance row, so its users are claimed at once by the instance they
-reconnect to. The whole sequence, the release of the claims included, is bounded by
+and a link writes what is already queued before its close, giving a device that is not reading 2
+seconds for each write rather than a dead link's 30. As each user's last link here closes, that
+user's claim is deleted before the close frame is written, so they are claimed at once by the
+instance they reconnect to, whatever other users' links are still closing. Once the links are
+closed, the instance deletes any claims left and its instance row. The whole sequence, the release of the claims included, is bounded by
 `B4HUB_SHUTDOWN_WAIT_MS` (default 30000) from the moment the signal arrives: the drain gets the
 wait less a reserve for the release (an eighth of it, at most 1 second), anything still open then
 is dropped, the release gets what is left, and the process exits. Behind the AWS load balancer with
