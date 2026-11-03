@@ -72,7 +72,8 @@ render_hub() { # $1 = include_signin_secrets, extra args follow
     --var "secret_key_arn=$(arn secret-key)" \
     --var "apple_team_id_arn=$(arn apple-team-id)" \
     --var "apple_key_id_arn=$(arn apple-key-id)" \
-    --var "apple_private_key_arn=$(arn apple-private-key)"
+    --var "apple_private_key_arn=$(arn apple-private-key)" \
+    --var apple_callback_scheme=b4app-beta
   [ "$status" -eq 0 ]
   cmp "$out" "$BATS_TEST_TMPDIR/flag-off.json"
   [ "$(jq -r '[.containerDefinitions[0].environment[].name] | index("B4HUB_PUSH_SENDER")' "$out")" = null ]
