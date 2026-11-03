@@ -104,6 +104,11 @@ impl ApiError {
         )
     }
 
+    /// The credential is good but this device may not do this.
+    pub fn forbidden(message: impl Into<String>) -> ApiError {
+        ApiError::request(StatusCode::FORBIDDEN, "forbidden", message)
+    }
+
     pub fn invalid_code() -> ApiError {
         ApiError::request(
             StatusCode::UNAUTHORIZED,

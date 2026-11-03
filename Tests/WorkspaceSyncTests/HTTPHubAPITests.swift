@@ -362,6 +362,43 @@ final class TokenSequence: @unchecked Sendable {
     #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer t0k")
   }
 
+  @Test func registerPushTokenPostsBody() async throws {
+    let recorder = Recorder()
+    let api = make(host: "push-token.test") { captured in
+      recorder.add(captured)
+      return StubProtocol.Reply(status: 204, body: Data())
+    }
+    try await api.registerPushToken("ab12cd", environment: "sandbox", bundleId: "com.cacheplane.b4app.dev")
+    let captured = try #require(recorder.all.first)
+    #expect(captured.request.httpMethod == "POST")
+    #expect(captured.request.url?.path == "/v1/devices/self/push-token")
+    #expect(captured.request.value(forHTTPHeaderField: "Authorization") == "Bearer t0k")
+    #expect(captured.request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+    let body = try JSONCoding.decoder.decode(JSONValue.self, from: captured.body)
+    #expect(body["token"] == .string("ab12cd"))
+    #expect(body["environment"] == .string("sandbox"))
+    #expect(body["bundleId"] == .string("com.cacheplane.b4app.dev"))
+    #expect(body.objectValue?.count == 3)
+  }
+
+  @Test func registerPushTokenSurfacesAForbiddenAsAHubError() async {
+    let api = make(host: "push-token-403.test") { _ in
+      .json(
+        403,
+        #"{"error":{"kind":"request_error","message":"Only an iOS device can register a push token.","details":{"code":"forbidden"}}}"#
+      )
+    }
+    do {
+      try await api.registerPushToken("ab12", environment: "production", bundleId: "com.cacheplane.b4app")
+      Issue.record("expected a HubError")
+    } catch let error as HubError {
+      #expect(error.code == "forbidden")
+      #expect(error.status == 403)
+    } catch {
+      Issue.record("expected a HubError, got \(error)")
+    }
+  }
+
   @Test func theTokenClosureRunsPerRequestAndNilSendsNoAuthorization() async throws {
     let recorder = Recorder()
     let tokens = TokenSequence(["first", nil, "third"])

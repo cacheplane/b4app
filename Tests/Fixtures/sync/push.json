@@ -1,0 +1,690 @@
+{
+ "requests": [
+  {
+   "kind": "command_approval",
+   "state": "pending",
+   "reason": "approval"
+  },
+  {
+   "kind": "command_approval",
+   "state": "resolved",
+   "reason": null
+  },
+  {
+   "kind": "command_approval",
+   "state": "expired",
+   "reason": null
+  },
+  {
+   "kind": "command_approval",
+   "state": "cancelled",
+   "reason": null
+  },
+  {
+   "kind": "file_change_approval",
+   "state": "pending",
+   "reason": "approval"
+  },
+  {
+   "kind": "file_change_approval",
+   "state": "resolved",
+   "reason": null
+  },
+  {
+   "kind": "file_change_approval",
+   "state": "expired",
+   "reason": null
+  },
+  {
+   "kind": "file_change_approval",
+   "state": "cancelled",
+   "reason": null
+  },
+  {
+   "kind": "tool_permission",
+   "state": "pending",
+   "reason": "approval"
+  },
+  {
+   "kind": "tool_permission",
+   "state": "resolved",
+   "reason": null
+  },
+  {
+   "kind": "tool_permission",
+   "state": "expired",
+   "reason": null
+  },
+  {
+   "kind": "tool_permission",
+   "state": "cancelled",
+   "reason": null
+  },
+  {
+   "kind": "user_question",
+   "state": "pending",
+   "reason": "question"
+  },
+  {
+   "kind": "user_question",
+   "state": "resolved",
+   "reason": null
+  },
+  {
+   "kind": "user_question",
+   "state": "expired",
+   "reason": null
+  },
+  {
+   "kind": "user_question",
+   "state": "cancelled",
+   "reason": null
+  },
+  {
+   "kind": "elicitation",
+   "state": "pending",
+   "reason": "question"
+  },
+  {
+   "kind": "elicitation",
+   "state": "resolved",
+   "reason": null
+  },
+  {
+   "kind": "elicitation",
+   "state": "expired",
+   "reason": null
+  },
+  {
+   "kind": "elicitation",
+   "state": "cancelled",
+   "reason": null
+  },
+  {
+   "kind": "unknown",
+   "state": "pending",
+   "reason": "approval"
+  },
+  {
+   "kind": "unknown",
+   "state": "resolved",
+   "reason": null
+  },
+  {
+   "kind": "unknown",
+   "state": "expired",
+   "reason": null
+  },
+  {
+   "kind": "unknown",
+   "state": "cancelled",
+   "reason": null
+  },
+  {
+   "kind": "future_kind",
+   "state": "pending",
+   "reason": "approval"
+  },
+  {
+   "kind": "future_kind",
+   "state": "resolved",
+   "reason": null
+  },
+  {
+   "kind": "future_kind",
+   "state": "expired",
+   "reason": null
+  },
+  {
+   "kind": "future_kind",
+   "state": "cancelled",
+   "reason": null
+  }
+ ],
+ "turns": [
+  {
+   "status": "submitting",
+   "outcome": null,
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "submitting",
+   "outcome": null,
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "submitting",
+   "outcome": "completed",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "submitting",
+   "outcome": "completed",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "submitting",
+   "outcome": "cancelled",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "submitting",
+   "outcome": "cancelled",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "submitting",
+   "outcome": "failed",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "submitting",
+   "outcome": "failed",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "submitting",
+   "outcome": "superseded",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "submitting",
+   "outcome": "superseded",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "running",
+   "outcome": null,
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "running",
+   "outcome": null,
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "running",
+   "outcome": "completed",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "running",
+   "outcome": "completed",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "running",
+   "outcome": "cancelled",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "running",
+   "outcome": "cancelled",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "running",
+   "outcome": "failed",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "running",
+   "outcome": "failed",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "running",
+   "outcome": "superseded",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "running",
+   "outcome": "superseded",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "waiting_for_user",
+   "outcome": null,
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "waiting_for_user",
+   "outcome": null,
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "waiting_for_user",
+   "outcome": "completed",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "waiting_for_user",
+   "outcome": "completed",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "waiting_for_user",
+   "outcome": "cancelled",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "waiting_for_user",
+   "outcome": "cancelled",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "waiting_for_user",
+   "outcome": "failed",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "waiting_for_user",
+   "outcome": "failed",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "waiting_for_user",
+   "outcome": "superseded",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "waiting_for_user",
+   "outcome": "superseded",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "stopping",
+   "outcome": null,
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "stopping",
+   "outcome": null,
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "stopping",
+   "outcome": "completed",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "stopping",
+   "outcome": "completed",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "stopping",
+   "outcome": "cancelled",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "stopping",
+   "outcome": "cancelled",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "stopping",
+   "outcome": "failed",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "stopping",
+   "outcome": "failed",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "stopping",
+   "outcome": "superseded",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "stopping",
+   "outcome": "superseded",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "reconciling",
+   "outcome": null,
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "reconciling",
+   "outcome": null,
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "reconciling",
+   "outcome": "completed",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "reconciling",
+   "outcome": "completed",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "reconciling",
+   "outcome": "cancelled",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "reconciling",
+   "outcome": "cancelled",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "reconciling",
+   "outcome": "failed",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "reconciling",
+   "outcome": "failed",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "reconciling",
+   "outcome": "superseded",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "reconciling",
+   "outcome": "superseded",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "terminal",
+   "outcome": null,
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "terminal",
+   "outcome": null,
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "terminal",
+   "outcome": "completed",
+   "recent": true,
+   "reason": "replied"
+  },
+  {
+   "status": "terminal",
+   "outcome": "completed",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "terminal",
+   "outcome": "cancelled",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "terminal",
+   "outcome": "cancelled",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "terminal",
+   "outcome": "failed",
+   "recent": true,
+   "reason": "failed"
+  },
+  {
+   "status": "terminal",
+   "outcome": "failed",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "terminal",
+   "outcome": "superseded",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "terminal",
+   "outcome": "superseded",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "paused",
+   "outcome": null,
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "paused",
+   "outcome": null,
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "paused",
+   "outcome": "completed",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "paused",
+   "outcome": "completed",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "paused",
+   "outcome": "cancelled",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "paused",
+   "outcome": "cancelled",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "paused",
+   "outcome": "failed",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "paused",
+   "outcome": "failed",
+   "recent": false,
+   "reason": null
+  },
+  {
+   "status": "paused",
+   "outcome": "superseded",
+   "recent": true,
+   "reason": null
+  },
+  {
+   "status": "paused",
+   "outcome": "superseded",
+   "recent": false,
+   "reason": null
+  }
+ ],
+ "titles": [
+  {
+   "input": "Fix the login bug",
+   "expected": "Fix the login bug"
+  },
+  {
+   "input": "  padded title \n",
+   "expected": "padded title"
+  },
+  {
+   "input": null,
+   "expected": "Untitled thread"
+  },
+  {
+   "input": "",
+   "expected": "Untitled thread"
+  },
+  {
+   "input": "   \t\n ",
+   "expected": "Untitled thread"
+  },
+  {
+   "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "input": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb😀cc",
+   "expected": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb😀"
+  },
+  {
+   "input": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb😀",
+   "expected": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  {
+   "input": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+   "expected": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+  }
+ ],
+ "payloads": [
+  {
+   "threadId": "thread-1",
+   "title": "Fix the login bug",
+   "reason": "approval",
+   "bundleId": "com.cacheplane.b4app.dev",
+   "expected": {
+    "aps": {
+     "alert": {
+      "title": "Fix the login bug",
+      "body": "Waiting for your approval"
+     },
+     "sound": "default",
+     "content-available": 1,
+     "thread-id": "thread-1"
+    },
+    "threadId": "thread-1",
+    "reason": "approval",
+    "Simulator Target Bundle": "com.cacheplane.b4app.dev"
+   }
+  },
+  {
+   "threadId": "thread-2",
+   "title": "Untitled thread",
+   "reason": "question",
+   "bundleId": "com.cacheplane.b4app.dev",
+   "expected": {
+    "aps": {
+     "alert": {
+      "title": "Untitled thread",
+      "body": "Has a question for you"
+     },
+     "sound": "default",
+     "content-available": 1,
+     "thread-id": "thread-2"
+    },
+    "threadId": "thread-2",
+    "reason": "question",
+    "Simulator Target Bundle": "com.cacheplane.b4app.dev"
+   }
+  },
+  {
+   "threadId": "thread-3",
+   "title": "Ship it",
+   "reason": "replied",
+   "bundleId": "com.cacheplane.b4app.dev",
+   "expected": {
+    "aps": {
+     "alert": {
+      "title": "Ship it",
+      "body": "Replied"
+     },
+     "sound": "default",
+     "content-available": 1,
+     "thread-id": "thread-3"
+    },
+    "threadId": "thread-3",
+    "reason": "replied",
+    "Simulator Target Bundle": "com.cacheplane.b4app.dev"
+   }
+  },
+  {
+   "threadId": "thread-4",
+   "title": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb😀",
+   "reason": "failed",
+   "bundleId": "com.cacheplane.b4app.dev",
+   "expected": {
+    "aps": {
+     "alert": {
+      "title": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb😀",
+      "body": "Turn failed"
+     },
+     "sound": "default",
+     "content-available": 1,
+     "thread-id": "thread-4"
+    },
+    "threadId": "thread-4",
+    "reason": "failed",
+    "Simulator Target Bundle": "com.cacheplane.b4app.dev"
+   }
+  }
+ ]
+}

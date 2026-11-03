@@ -285,8 +285,8 @@ public struct PairLink: Sendable, Equatable, CustomStringConvertible, CustomDebu
 
   /// A link shaped like a pairing link, whatever it carries and whichever site it names: an https URL
   /// whose path is `/pair`, or `<scheme>://pair` for one of `legacySchemes` (`b4app` unless a flavour
-  /// adds its own). `parse` is the judge of which this phone may act on; other links (a later
-  /// `b4app://thread/<id>`, a sign-in callback, any other page) are not these.
+  /// adds its own). `parse` is the judge of which this phone may act on; other links (a
+  /// `<scheme>://thread/<id>`, which is `ThreadLink`'s, a sign-in callback, any other page) are not these.
   public static func isPairLink(_ url: URL, legacySchemes: Set<String> = [linkScheme]) -> Bool {
     isLegacyPairLink(url, schemes: legacySchemes) || isSiteShaped(url)
   }
