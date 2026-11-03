@@ -260,6 +260,9 @@ public final class WorkspaceModel {
   /// "Delete account…": the call is out, and the one line a refusal shows.
   public internal(set) var deleteInFlight = false
   public internal(set) var deleteFailure: String?
+  /// A change whose passkey or Apple confirmation was closed or could not open: the page offers to
+  /// confirm it with an operator's enrollment code instead (D-151). Never holds the code.
+  public internal(set) var stepUpCodeOffer: StepUpChange?
   /// "Add your iPhone": set once after a new account finishes onboarding on the Mac, and by the views.
   public var showAddPhone = false
   /// Bumped when the account leaves `.signedIn`, so an open Settings window closes.
@@ -1481,6 +1484,7 @@ public final class WorkspaceModel {
     identities = nil
     accountSettingsFailure = nil
     deleteFailure = nil
+    stepUpCodeOffer = nil
     pendingRename = nil
   }
 

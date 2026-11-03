@@ -266,7 +266,7 @@ docker compose run --rm migrate enroll --user blove
 
 During maintenance, `docker compose run --rm migrate maintenance on|off|status` pauses and resumes writes while reads continue (`Hub/API.md`, "Maintenance mode").
 
-With sign-up open, the apps can instead sign up on this hub with a passkey (see "Signing in"); a seeded user adds one in Settings → Account after joining by code. The code is eight characters, valid for ten minutes, and works once. Join the Mac while it is signed out (the code is read from a hidden prompt or one line of stdin, never an argument); it signs the Mac in:
+With sign-up open, the apps can instead sign up on this hub with a passkey (see "Signing in"); a seeded user adds one in Settings → Account after joining by code. The code is eight characters, valid for ten minutes, and works once. The same command also unblocks an account that can no longer confirm it's you (its only passkey deleted from the keychain): adding or removing a sign-in method and deleting the account ask for a fresh passkey, and when that sheet is closed Settings → Account offers to take an enrollment code instead (D-151). A pairing code from "Add your iPhone" never counts there. Join the Mac while it is signed out (the code is read from a hidden prompt or one line of stdin, never an argument); it signs the Mac in:
 
 ```bash
 .build/debug/agent-workspace hub join http://localhost:8080

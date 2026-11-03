@@ -473,7 +473,9 @@ extension Array where Element == ScreenElement {
     #expect(
       SystemPasskeyCeremony.registrationError(ASAuthorizationError(.deviceNotConfiguredForPasskeyCreation))
         is PasskeysNotSetUp)
-    #expect(SystemPasskeyCeremony.registrationError(ASAuthorizationError(.failed)) is ASAuthorizationError)
+    // A sheet that failed to run at all has its own line (the live gate's stuck request).
+    #expect(SystemPasskeyCeremony.registrationError(ASAuthorizationError(.failed)) is PasskeySheetFailed)
+    #expect(SystemPasskeyCeremony.registrationError(ASAuthorizationError(.unknown)) is ASAuthorizationError)
 
     // A device with nowhere to keep a passkey gets its own line, not "try again".
     let transport = ScriptedTransport()
@@ -601,6 +603,23 @@ extension Array where Element == ScreenElement {
       lines.insert(next)
     }
     #expect(lines.count == 6)
+  }
+
+  /// Live, 2026-11-02: a sign-in while another passkey request of the app was still open failed with
+  /// `ASAuthorizationError.failed` and read "Couldn't sign in. Try again." Now it says what to do.
+  @Test func aPasskeySheetThatCannotOpenSaysWhy() async throws {
+    let transport = ScriptedTransport()
+    let model = try await connected(signedOut, transport: transport)
+    let ceremony = FakeCeremony()
+    ceremony.assertOutcome = .failure(PasskeySheetFailed())
+    transport.script(.accountPasskeyBegin, [try begin()])
+    await model.signInWithPasskey(using: ceremony)
+    #expect(
+      model.signInProgress.failure
+        == "The passkey sheet couldn't open. If another passkey request is still on screen, close it, then try again."
+    )
+    #expect(transport.calls(.accountPasskeyFinish).isEmpty)
+    #expect(model.signInProgress.inFlight == nil)
   }
 
   // MARK: Apple on the Mac

@@ -169,6 +169,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/me/step-up/apple", post(apple::step_up_begin))
         .route("/v1/me/step-up/apple/native", post(apple::step_up_native))
         .route("/v1/me/step-up/apple/handoff", post(apple::step_up_handoff))
+        .route("/v1/me/step-up/code", post(step_up::code))
         .route("/v1/sessions/self", delete(me::end_session))
         .route("/v1/devices", get(devices::list))
         .route("/v1/snapshot", get(snapshot::get))

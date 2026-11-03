@@ -518,6 +518,30 @@ private struct SlowDeleteHub: HubAPI {
     #expect(await rig.fake.presentedStepUps == ["fake-step-up-1"])
   }
 
+  /// D-151 on the phone: an operator's enrollment code confirms a change in process, spent once; any
+  /// other code is `invalid_code` and the change is not made.
+  @Test func anEnrollmentCodeConfirmsAChange() async throws {
+    let rig = try Rig()
+    try await rig.signIn()
+    await rig.account.stopSync()
+    await rig.fake.setIdentities([Identity(id: "i1", kind: "passkey", createdAt: "2026-11-01T09:00:00Z")])
+    await rig.fake.addStepUpCode("K7QX2M9P")
+    let refused = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.account.addPasskeyBegin(stepUp: .enrollmentCode("ZZZZZZZZ"))
+    }
+    #expect(refused?.code == .invalidCode)
+    #expect(await rig.fake.presentedStepUps.isEmpty)
+    let begun = try await rig.account.addPasskeyBegin(stepUp: .enrollmentCode("K7QX2M9P"))
+    #expect(begun.ceremonyId == "fake-add-ceremony")
+    #expect(await rig.fake.stepUpCodeRequests.map(\.code) == ["ZZZZZZZZ", "K7QX2M9P"])
+    #expect(await rig.fake.presentedStepUps == ["fake-step-up-1"])
+    // Spent: the same code again is refused.
+    let again = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.account.addPasskeyBegin(stepUp: .enrollmentCode("K7QX2M9P"))
+    }
+    #expect(again?.code == .invalidCode)
+  }
+
   @Test func linkingAnAppleIDNatively() async throws {
     let rig = try Rig()
     try await rig.signIn()

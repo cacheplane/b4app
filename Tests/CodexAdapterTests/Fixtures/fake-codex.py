@@ -171,6 +171,9 @@ while True:
         elif os.environ.get("FAKE_CODEX_DELETE_INVALID") == "1":
             # FAKE_CODEX_DELETE_INVALID=1: invalid params that say nothing about the thread being gone.
             send({"id": req_id, "error": {"code": -32602, "message": "invalid params: threadId"}})
+        elif thread_id == "thr_no_rollout":
+            # codex-cli 0.166.0 for a thread it keeps no rollout of (seen live, 2026-11-02).
+            send({"id": req_id, "error": {"code": -32600, "message": "no rollout found for thread id %s" % thread_id}})
         elif thread_id == "thr_missing" or thread_id in deleted:
             send({"id": req_id, "error": {"code": -32602, "message": "thread %s not found" % thread_id}})
         else:

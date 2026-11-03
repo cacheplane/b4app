@@ -213,6 +213,10 @@ private struct ForwardingAPI: HubAPI {
     try await hub.enter("stepUpAppleHandoff")
     return try await fake.stepUpAppleHandoff(request)
   }
+  func stepUpCode(_ request: StepUpCodeRequest) async throws -> StepUpResponse {
+    try await hub.enter("stepUpCode")
+    return try await fake.stepUpCode(request)
+  }
   func appleLinkNative(_ request: AppleLinkNativeRequest) async throws -> Identity {
     try await hub.enter("appleLinkNative")
     return try await fake.appleLinkNative(request)
@@ -1043,6 +1047,42 @@ private func sha256Hex(_ text: String) -> String {
     #expect(again?.code == .ceremonyExpired)
     #expect(again?.message.contains("step-handoff-7") == false)
     #expect(await rig.hub.fake.stepUpAppleHandoffs.count == 1)
+  }
+
+  /// D-151: an account whose only passkey is gone from this Mac confirms with an operator's
+  /// enrollment code. The coordinator spends it at the hub for a grant and deletes with that grant; a
+  /// code the hub does not take is `invalid_code`, deletes nothing, and never appears in the error.
+  @Test func anEnrollmentCodeConfirmsADelete() async throws {
+    let rig = try await CommandRig.start()
+    defer { Task { await rig.close() } }
+    try await rig.signIn(ann)
+    _ = try await rig.logout()
+    try await rig.signIn(bob)
+    let bobRow = try rig.accounts.scope().account
+    await rig.hub.fake.setIdentities([
+      Identity(id: "p1", kind: "passkey", name: "Agent Workspace account", createdAt: "2026-11-01")
+    ])
+    await rig.hub.fake.addStepUpCode("K7QX2M9P")
+
+    let refused = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.client.request(
+        AccountDelete.self, AccountStepUpParams(stepUp: .enrollmentCode("WRONG123")),
+        options: CommandRig.mutation())
+    }
+    #expect(refused?.code == .invalidCode)
+    #expect(refused?.message.contains("WRONG123") == false)
+    #expect(await rig.hub.fake.deleteAccountCalls == 0)
+    #expect(try rig.databaseExists(bobRow.database))
+
+    // Typed in lower case, with spaces around it: the hub matches codes in any case.
+    let status = try await rig.client.request(
+      AccountDelete.self, AccountStepUpParams(stepUp: .enrollmentCode(" k7qx2m9p ")),
+      options: CommandRig.mutation())
+    #expect(status.state == .signedOut)
+    #expect(await rig.hub.fake.deleteAccountCalls == 1)
+    #expect(await rig.hub.fake.stepUpCodeRequests.map(\.code) == ["WRONG123", "k7qx2m9p"])
+    #expect(await rig.hub.fake.presentedStepUps.last == "fake-step-up-1")
+    #expect(!(try rig.databaseExists(bobRow.database)))
   }
 
   @Test func appleLinkNeedsAnAccountAndApple() async throws {

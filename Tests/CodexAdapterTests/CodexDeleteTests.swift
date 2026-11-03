@@ -27,6 +27,16 @@ private func makeAdapter(_ environment: [String: String] = [:]) -> CodexAdapter 
     await adapter.dispose()
   }
 
+  /// Live, 2026-11-02: codex-cli 0.166.0 answers a thread whose rollout it no longer has with
+  /// "no rollout found for thread id …" (-32600). It has no copy to delete, so that is gone too, not a
+  /// failure retried every hour for ever (D-152, amending D-138).
+  @Test func noRolloutFoundIsAlreadyGone() async throws {
+    let adapter = makeAdapter()
+    let ref = NativeSessionRef(nativeSessionId: "thr_no_rollout", nativeScope: "owner@example.com")
+    #expect(try await adapter.deleteSession(ref) == .alreadyGone)
+    await adapter.dispose()
+  }
+
   @Test func invalidParamsWithoutNotFoundAreNotAlreadyGone() async throws {
     let adapter = makeAdapter(["FAKE_CODEX_DELETE_INVALID": "1"])
     let ref = try await adapter.createSession(NewSessionInput(workingDirectory: "/tmp/work"))
