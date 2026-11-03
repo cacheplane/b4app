@@ -745,7 +745,8 @@ async fn phone_title_edit_applies_and_later_mac_edit_wins(pool: PgPool) {
         outcome,
         PushOutcome {
             accepted_through: 1,
-            rejected: vec![]
+            rejected: vec![],
+            notifications: vec![]
         }
     );
     assert_eq!(title(&app, &mac).await, "Phone title");
@@ -793,7 +794,8 @@ async fn a_phone_marks_a_thread_deleted_and_the_row_stays(pool: PgPool) {
         outcome,
         PushOutcome {
             accepted_through: 1,
-            rejected: vec![]
+            rejected: vec![],
+            notifications: vec![]
         }
     );
     let thread = row(&app, &mac, "threads", "id", "thread-1").await.unwrap();
@@ -809,6 +811,71 @@ async fn a_phone_marks_a_thread_deleted_and_the_row_stays(pool: PgPool) {
     );
     push_through(&app, &mac, &[stale]).await.unwrap();
     let thread = row(&app, &mac, "threads", "id", "thread-1").await.unwrap();
+    assert_eq!(thread["userDeletedAt"], "2026-11-02T12:00:00.000Z");
+}
+
+/// The mark is never cleared: an update that sets `userDeletedAt` to null is refused, from the
+/// phone or the Mac, however new its clock, and is not recorded.
+#[sqlx::test(migrations = false)]
+async fn clearing_the_delete_mark_is_refused(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let (mac, phone) = mac_and_phone(&admin, &app).await;
+    let mark = at(
+        update(
+            1,
+            "threads",
+            "thread-1",
+            "userDeletedAt",
+            Some(json!("2026-11-02T12:00:00.000Z")),
+        ),
+        200,
+        PHONE_CLOCK,
+    );
+    push_through(&app, &phone, &[mark]).await.unwrap();
+
+    for (who, seq, value) in [
+        (&phone, 2, None),
+        (&phone, 3, Some(Value::Null)),
+        (&mac, 3, None),
+    ] {
+        let clear = at(
+            update(seq, "threads", "thread-1", "userDeletedAt", value),
+            900,
+            if who.platform == Platform::Macos {
+                MAC_CLOCK
+            } else {
+                PHONE_CLOCK
+            },
+        );
+        let outcome = changes::push(&app, who, &[clear]).await.unwrap();
+        assert_eq!(
+            outcome,
+            PushOutcome {
+                accepted_through: seq,
+                rejected: vec![Rejected {
+                    device_seq: seq,
+                    code: changes::CANNOT_CLEAR
+                }]
+            }
+        );
+    }
+    let thread = row(&app, &mac, "threads", "id", "thread-1").await.unwrap();
+    assert_eq!(thread["userDeletedAt"], "2026-11-02T12:00:00.000Z");
+
+    // A newer insert of the thread that carries a null mark leaves the mark alone.
+    let reinsert = at(
+        insert(
+            4,
+            "threads",
+            "thread-1",
+            json!({"id": "thread-1", "connectionId": "conn-1", "title": "Again", "userDeletedAt": null}),
+        ),
+        950,
+        MAC_CLOCK,
+    );
+    push_through(&app, &mac, &[reinsert]).await.unwrap();
+    let thread = row(&app, &mac, "threads", "id", "thread-1").await.unwrap();
+    assert_eq!(thread["title"], "Again");
     assert_eq!(thread["userDeletedAt"], "2026-11-02T12:00:00.000Z");
 }
 
@@ -835,7 +902,8 @@ async fn stale_phone_edit_loses(pool: PgPool) {
         outcome,
         PushOutcome {
             accepted_through: 1,
-            rejected: vec![]
+            rejected: vec![],
+            notifications: vec![]
         }
     );
     assert_eq!(title(&app, &mac).await, "Mac title");

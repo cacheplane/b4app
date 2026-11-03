@@ -443,10 +443,7 @@ public actor SessionService {
 
   /// A thread created under one native identity never continues under another (spec 5.1).
   static func identityChanged(thread: ConversationThread, connection: Connection) -> Bool {
-    guard !thread.nativeScope.isEmpty, let scope = connection.nativeScope, !scope.isEmpty else {
-      return false
-    }
-    return scope != thread.nativeScope
+    thread.identityChanged(on: connection)
   }
 
   /// Record a continuity change and tell viewers; a no-op when nothing changed.

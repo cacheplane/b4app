@@ -134,8 +134,10 @@ struct SidebarErrorBanner: View {
 /// The attention band as an 8 pt dot (D-036, one accent): needs input is the accent, filled; unread is
 /// ink, filled; working is an ink ring that breathes unless Reduce Motion is on; quiet is a small
 /// muted hollow ring. The band is also the accessibility label, so colour is never the only signal.
-struct AttentionDot: View {
+public struct AttentionDot: View {
   let band: AttentionBand
+
+  public init(band: AttentionBand) { self.band = band }
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var dim = false
   /// 8 pt at the default size; it grows with the row's text so it stays legible beside it.
@@ -152,7 +154,7 @@ struct AttentionDot: View {
 
   private var pulses: Bool { Self.pulses(band: band, reduceMotion: reduceMotion) }
 
-  var body: some View {
+  public var body: some View {
     ZStack {
       switch band {
       case .needsInput:

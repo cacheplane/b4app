@@ -550,6 +550,66 @@ private struct SlowDeleteHub: HubAPI {
     await rig.account.stopSync()
   }
 
+  // MARK: Suspending the sync
+
+  /// A sync started while the app is suspended begins parked: nothing reaches the hub until
+  /// `resumeSync()`.
+  @Test func aSignInWhileSuspendedStartsTheSyncParked() async throws {
+    let rig = try Rig()
+    await rig.account.suspendSync()
+    try await rig.signIn()
+    #expect(rig.account.sync != nil)
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(await rig.fake.pushed.isEmpty)
+    #expect(await rig.fake.parkedPulls == 0)
+
+    await rig.account.resumeSync()
+    try await eventually("the resumed sync's first push") { !(await rig.fake.pushed.isEmpty) }
+    try await eventually("the resumed sync's pull") { await rig.fake.parkedPulls > 0 }
+    await rig.account.stopSync()
+  }
+
+  /// A refused delete restarts the sync it stopped; while the app is suspended, that sync stays parked.
+  @Test func aRefusedDeleteWhileSuspendedRestartsTheSyncParked() async throws {
+    let fake = FakeHubAPI()
+    let refusal = HubError(
+      kind: "request_error", code: "shared_org", message: "the account belongs to a shared org", status: 409)
+    let rig = try Rig(fake: fake, makeAPI: { _, _ in SlowDeleteHub(fake: fake, refusal: refusal) })
+    await rig.account.suspendSync()
+    try await rig.signIn()
+    let refused = await #expect(throws: WorkspaceError.self) { _ = try await rig.account.deleteAccount() }
+    #expect(refused?.code == .sharedOrg)
+    #expect(rig.account.sync != nil)
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(await rig.fake.pushed.isEmpty)
+    #expect(await rig.fake.parkedPulls == 0)
+
+    await rig.account.resumeSync()
+    try await eventually("the resumed sync's first push") { !(await rig.fake.pushed.isEmpty) }
+    await rig.account.stopSync()
+  }
+
+  /// A launch in the background marks the account suspended before its first sync starts.
+  @Test func aPreparedSuspensionParksTheFirstSync() async throws {
+    let rig = try Rig()
+    try await rig.signIn()
+    try await eventually("the first push") { !(await rig.fake.pushed.isEmpty) }
+    await rig.account.stopSync()
+    let before = await rig.fake.pushed.count
+
+    // The app launches again with the link stored, in the background.
+    rig.account.prepareSuspended()
+    rig.account.startSync()
+    #expect(rig.account.sync != nil)
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(await rig.fake.pushed.count == before)
+    #expect(await rig.fake.parkedPulls == 0)
+
+    await rig.account.resumeSync()
+    try await eventually("the resumed sync's push") { await rig.fake.pushed.count > before }
+    await rig.account.stopSync()
+  }
+
   /// Final review I2: a sign-in empties a mirror that holds rows with no link (left by a log-out that
   /// another sign-in overtook), so the new account never inherits them.
   @Test func aSignInEmptiesRowsLeftWithoutALink() async throws {

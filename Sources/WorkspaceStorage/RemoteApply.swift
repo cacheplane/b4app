@@ -57,7 +57,8 @@ extension WorkspaceDatabase {
   ///   attribution or by its clock's device, is the Mac's own history and is skipped.
   /// - Only updates of `SyncColumns.phoneWritable` columns of `threads` and `projects` rows that exist
   ///   here apply, plus inserts and updates of `drafts` whose thread exists here. No other table is
-  ///   inserted into, no other column is written, and nothing is deleted.
+  ///   inserted into, no other column is written, and nothing is deleted. A null for a
+  ///   `SyncColumns.neverCleared` column (a thread's delete mark) is skipped.
   /// - Each column applies only when the change's clock is greater than the column's `columnClocks`
   ///   entry (a missing entry is older than any clock), and then the entry advances to it. A draft
   ///   insert onto an existing draft is one write per column at the insert's clock.
@@ -156,7 +157,9 @@ extension WorkspaceDatabase {
     switch (change.table, change.op) {
     case ("threads", "update"), ("projects", "update"):
       guard let column = change.column, SyncColumns.isPhoneWritable(table: change.table, column: column),
-        let value = change.value, try lock(c, change.table, key: "id", change.rowId)
+        let value = change.value,
+        value != .null || !SyncColumns.isNeverCleared(table: change.table, column: column),
+        try lock(c, change.table, key: "id", change.rowId)
       else { return false }
       return try mergeColumn(c, table: change.table, key: "id", rowId: change.rowId, column, value, at: hlc)
     case ("drafts", "update"):

@@ -27,6 +27,13 @@ private func makeAdapter(_ environment: [String: String] = [:]) -> CodexAdapter 
     await adapter.dispose()
   }
 
+  @Test func invalidParamsWithoutNotFoundAreNotAlreadyGone() async throws {
+    let adapter = makeAdapter(["FAKE_CODEX_DELETE_INVALID": "1"])
+    let ref = try await adapter.createSession(NewSessionInput(workingDirectory: "/tmp/work"))
+    await #expect(throws: WorkspaceError.self) { try await adapter.deleteSession(ref) }
+    await adapter.dispose()
+  }
+
   @Test func anOldCodexIsUnsupported() async throws {
     let adapter = makeAdapter(["FAKE_CODEX_NO_DELETE": "1"])
     let ref = try await adapter.createSession(NewSessionInput(workingDirectory: "/tmp/work"))
