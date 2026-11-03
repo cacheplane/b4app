@@ -162,6 +162,9 @@ public final class WorkspaceModel {
   /// The profile menu above the sidebar's profile button.
   public var showProfileMenu = false
   public var connectionFilter: String?
+  /// The iPhone list's pull-down search: narrows the list to threads whose shown title contains it
+  /// (D-053, amended). Empty shows every thread.
+  public var listSearch = ""
   public var showArchived = false
   public var showNewThread = false
   /// The iPhone's "Other ways to sign in" sheet, over the signed-out screen. On the model, like the
@@ -352,8 +355,10 @@ public final class WorkspaceModel {
   }
 
   private func filtered(archived: Bool, project: ProjectFilter) -> [ConversationThread] {
-    threads.filter { $0.archived == archived }
+    let needle = listSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+    return threads.filter { $0.archived == archived }
       .filter { connectionFilter == nil || $0.connectionId == connectionFilter }
+      .filter { needle.isEmpty || ThreadSearch.shownTitle($0).localizedCaseInsensitiveContains(needle) }
       .filter {
         switch project {
         case .all, .archived: return true

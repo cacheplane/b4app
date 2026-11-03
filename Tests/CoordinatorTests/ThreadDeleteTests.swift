@@ -1,16 +1,26 @@
 import Foundation
 import Testing
 import WorkspaceClient
+import WorkspacePlatform
 import WorkspaceProtocol
 import WorkspaceStorage
+import WorkspaceSync
 
 @testable import Coordinator
+
+private let fakeCodex =
+  URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+  .appendingPathComponent("CodexAdapterTests/Fixtures/fake-codex.py").path
 
 /// What reached the runtimes, in order: `interrupt:<native thread>` and `delete:<native thread>`.
 actor RuntimeCalls {
   private(set) var calls: [String] = []
+  /// A delete of one of these native threads takes this long instead of the adapter's `deleteDelay`.
+  private var delays: [String: Duration] = [:]
   func record(_ call: String) { calls.append(call) }
   var deletes: [String] { calls.filter { $0.hasPrefix("delete:") } }
+  func slowDelete(of nativeThreadId: String, by delay: Duration) { delays[nativeThreadId] = delay }
+  func deleteDelay(of nativeThreadId: String) -> Duration? { delays[nativeThreadId] }
 }
 
 /// A real adapter (the fake runtimes) that records interrupts and deletes on their way through.
@@ -41,7 +51,7 @@ private struct RecordingAdapter: AgentAdapter {
   }
   func deleteSession(_ ref: NativeSessionRef) async throws -> SessionDeletion {
     await calls.record("delete:\(ref.nativeSessionId)")
-    try await Task.sleep(for: deleteDelay)
+    try await Task.sleep(for: await calls.deleteDelay(of: ref.nativeSessionId) ?? deleteDelay)
     return try await inner.deleteSession(ref)
   }
   func events() -> AsyncStream<AdapterEvent> { inner.events() }
@@ -271,6 +281,83 @@ extension Harness {
     #expect(try h.coordinator.database.activeTurn(threadId: thread.id) == nil)
     #expect(try h.coordinator.database.turn(id: "stuck")?.outcome == .cancelled)
     await h.stop()
+  }
+
+  /// A sweep that read its due list before another sweep finished a thread does not try it again.
+  @Test func aSweepSkipsAThreadAnotherSweepFinished() async throws {
+    let calls = RuntimeCalls()
+    let h = try await Harness.start(adapterFactory: recording(calls))
+    let codex = try await h.addCodex()
+    let first = try await h.newThread(codex)
+    let second = try await h.newThread(codex)
+    _ = try h.coordinator.database.markThreadDeleted(id: first.id, at: "2026-11-02T12:00:00.000Z")
+    _ = try h.coordinator.database.markThreadDeleted(id: second.id, at: "2026-11-02T12:00:01.000Z")
+    await calls.slowDelete(of: first.nativeThreadId, by: .seconds(3))
+    // This sweep reads both as due, then spends three seconds on the first.
+    let slow = Task { await h.coordinator.sessions.sweepThreadDeletes() }
+    try await eventually("the first delete started") { await !calls.deletes.isEmpty }
+    // Meanwhile the second is deleted by a sweep of its own.
+    await h.coordinator.sessions.sweepThreadDeletes(only: second.id)
+    await slow.value
+    #expect(await calls.deletes == ["delete:\(first.nativeThreadId)", "delete:\(second.nativeThreadId)"])
+    await h.stop()
+  }
+
+  @Test func theBackoffDoublesFromThirtySecondsAndCapsAtAnHour() {
+    let waits = (0...8).map { SessionService.threadDeleteBackoff(attempts: $0) }
+    #expect(waits == [30, 60, 120, 240, 480, 960, 1920, 3600, 3600])
+    #expect(SessionService.threadDeleteBackoff(attempts: 10_000) == 3600)
+  }
+
+  /// A delete marked on the phone reaches the Mac by pull, and the sweep then deletes the runtime's copy.
+  @Test func aPulledPhoneDeleteIsSweptToTheRuntime() async throws {
+    let base = NSTemporaryDirectory() + "b4td-\(UUID().uuidString.prefix(8))"
+    try FileManager.default.createDirectory(atPath: base + "/work", withIntermediateDirectories: true)
+    let paths = try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
+    var env = ProcessInfo.processInfo.environment
+    env["B4APP_NODE_PATH"] = "/nonexistent/node"
+    let fake = FakeHubAPI()
+    await fake.addEnrollmentCode(
+      "DLTE2345",
+      EnrollResponse(
+        deviceId: "dev-mac", token: "tok-delete", org: OrgInfo(slug: "acme", name: "Acme"),
+        user: UserInfo(username: "brian", displayName: "Brian")))
+    await fake.setDevices([
+      DeviceInfo(id: "dev-mac", name: "Mac", platform: "macos"),
+      DeviceInfo(id: "dev-phone", name: "Phone", platform: "ios"),
+    ])
+    let calls = RuntimeCalls()
+    let outcome = try await Coordinator.start(
+      options: CoordinatorOptions(
+        paths: paths, environment: env, secretStore: MemorySecretStore(), adapterFactory: recording(calls),
+        hubAPIFactory: { _, _ in fake }, hubLinkConnection: FakeHubLinkConnection()))
+    guard case .running(let coordinator) = outcome else {
+      throw WorkspaceError(.internalError, "expected running")
+    }
+    _ = try await coordinator.accounts.join(url: "http://localhost:8080", code: "DLTE2345", deviceName: "Mac")
+    let codex = try await coordinator.sessions.connectionAdd(
+      ConnectionAdd.Params(kind: .codex, label: "Fake Codex", executablePath: fakeCodex)
+    ).connection
+    let thread = try await coordinator.sessions.threadCreate(
+      ThreadCreate.Params(connectionId: codex.id, workingDirectory: base + "/work")
+    ).thread
+
+    let mark = "2026-11-02T12:00:00.000Z"
+    let next = (await fake.stored.last?.hubSeq ?? 0) + 1
+    await fake.append([
+      StoredChange(
+        hubSeq: next, deviceId: "dev-phone", deviceSeq: 1, wall: Int(epochMillis()), table: "threads",
+        rowId: thread.id, op: "update", column: "userDeletedAt", value: .string(mark),
+        hlc: HLC(millis: epochMillis() + 60_000, counter: 0, deviceId: "dev-phone").rawValue)
+    ])
+    try await eventually("the phone's mark pulled") {
+      try coordinator.database.thread(id: thread.id)?.userDeletedAt == mark
+    }
+    #expect(await calls.deletes.isEmpty)
+    await coordinator.sessions.sweepThreadDeletes()
+    #expect(await calls.deletes == ["delete:\(thread.nativeThreadId)"])
+    #expect(try coordinator.database.threadDeleteSummary().isEmpty)
+    await coordinator.close()
   }
 
   @Test func aLateEventDoesNotBringTheThreadBack() async throws {
