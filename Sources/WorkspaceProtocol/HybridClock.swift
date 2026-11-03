@@ -141,7 +141,15 @@ public enum SyncColumns {
     return all
   }()
 
+  /// Columns set once and never cleared (`threads.userDeletedAt`, D-119): a change that sets one to
+  /// null is refused, by the hub and by the Mac's merge.
+  public static let neverCleared: [String: Set<String>] = ["threads": ["userDeletedAt"]]
+
   public static func isPhoneWritable(table: String, column: String) -> Bool {
     phoneWritable[table]?.contains(column) ?? false
+  }
+
+  public static func isNeverCleared(table: String, column: String) -> Bool {
+    neverCleared[table]?.contains(column) ?? false
   }
 }

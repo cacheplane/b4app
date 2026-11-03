@@ -270,6 +270,15 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
   }
 }
 
+extension ConversationThread {
+  /// True when `connection` now presents a different native identity than this thread was created
+  /// under; such a thread never continues there (spec 5.1), and its runtime copy is not deleted.
+  public func identityChanged(on connection: Connection) -> Bool {
+    guard !nativeScope.isEmpty, let scope = connection.nativeScope, !scope.isEmpty else { return false }
+    return scope != nativeScope
+  }
+}
+
 public struct Turn: Codable, Sendable, Equatable, Identifiable {
   public var id: String
   public var threadId: String

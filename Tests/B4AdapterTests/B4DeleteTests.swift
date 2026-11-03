@@ -32,6 +32,16 @@ private func adapter(_ server: FakeB4Server) -> B4Adapter {
     await server.stop()
   }
 
+  @Test func aRoutelessNotFoundIsUnsupportedWhenTheThreadStillExists() async throws {
+    let server = try await FakeB4Server.start(environment: ["FAKE_B4_DELETE_404": "1"])
+    let b4 = adapter(server)
+    let ref = try await b4.createSession(NewSessionInput())
+    // DELETE says 404, but GET /threads/:id still finds the thread.
+    #expect(try await b4.deleteSession(ref) == .unsupported)
+    await b4.dispose()
+    await server.stop()
+  }
+
   @Test func aServerWithoutTheRouteIsUnsupported() async throws {
     let server = try await FakeB4Server.start(environment: ["FAKE_B4_NO_DELETE": "1"])
     let b4 = adapter(server)

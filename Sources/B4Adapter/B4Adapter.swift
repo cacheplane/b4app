@@ -152,15 +152,24 @@ public actor B4Adapter: AgentAdapter {
     return inspection
   }
 
-  /// `DELETE /threads/:id`: 404 means the server no longer has it; 405 means it cannot delete threads.
+  /// `DELETE /threads/:id`; 405 means the server cannot delete threads. A 404 may come from a server
+  /// without the route, so `GET /threads/:id` confirms it: gone only if that is a 404 too, and a
+  /// thread the server still has means it cannot delete threads.
   public func deleteSession(_ ref: NativeSessionRef) async throws -> SessionDeletion {
     let client = try requireClient()
-    let (status, body) = try await client.json("DELETE", "/threads/\(ref.nativeSessionId)")
+    let path = "/threads/\(ref.nativeSessionId)"
+    let (status, body) = try await client.json("DELETE", path)
     switch status {
     case 200, 204: return .deleted
-    case 404: return .alreadyGone
+    case 404: break
     case 405: return .unsupported
     default: throw B4Protocol.error(status: status, body: body, operation: "thread deletion")
+    }
+    let (readStatus, readBody) = try await client.json("GET", path)
+    switch readStatus {
+    case 404: return .alreadyGone
+    case 200: return .unsupported
+    default: throw B4Protocol.error(status: readStatus, body: readBody, operation: "thread deletion check")
     }
   }
 
