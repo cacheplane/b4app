@@ -9,6 +9,7 @@ mod relay_support;
 
 use std::time::{Duration, SystemTime};
 
+use axum::http::StatusCode;
 use b4hub::relay::{close_code, rfc3339_millis};
 use b4hub_core::relay::{RelayMessage, RelayMethod, Role};
 use b4hub_db::accounts::{self, DeviceSpec, Identity, Principal};
@@ -2346,4 +2347,39 @@ async fn maintenance_refuses_link_writes_and_keeps_reads(pool: PgPool) {
     mac.reply("send-after", json!({"turnId": "turn-1"})).await;
     phone.expect_reply().await;
     world.hub.state.shutdown.trigger();
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_link_whose_token_is_deleted_behind_its_back_closes_within_a_minute(pool: PgPool) {
+    let world = World::new(spawn_hub_paused(&pool).await).await;
+    let clock = pause_clock();
+    let mut phone = world.phone().await;
+    // The token goes without a request to the hub, so nothing signals: only the link's own
+    // once-a-minute check can notice.
+    sqlx::query("DELETE FROM device_tokens WHERE device_id = $1")
+        .bind(world.phone_id)
+        .execute(&world.hub.admin.pool)
+        .await
+        .unwrap();
+    clock
+        .advance_alive(Duration::from_secs(50), &mut [&mut phone])
+        .await;
+    clock.advance(Duration::from_secs(11)).await;
+    phone.send(&RelayMessage::Ping).await;
+    assert_eq!(phone.expect_close().await, close_code::REVOKED);
+}
+
+#[sqlx::test(migrations = false)]
+async fn logging_out_closes_the_link_opened_with_that_token(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mut phone = world.phone().await;
+    let mut mac = world.mac().await;
+    let (status, _) = world
+        .hub
+        .http("DELETE", "/v1/sessions/self", Some(&world.phone_token))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(phone.expect_close().await, close_code::REVOKED);
+    // The Mac's session is its own.
+    mac.expect_quiet(QUIET).await;
 }

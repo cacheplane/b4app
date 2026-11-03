@@ -17,9 +17,9 @@ pub mod prune;
 pub mod push;
 pub mod relay;
 pub mod settings;
+pub mod signals;
 pub mod snapshot;
 mod tenant;
-pub mod wakes;
 
 /// Everything that can go wrong in this crate. Messages never include a connection URL.
 #[derive(Debug, thiserror::Error)]
@@ -111,5 +111,19 @@ impl Db {
             .connect_with(options)
             .await?;
         Ok(Db { pool })
+    }
+
+    /// A pool of one connection with this pool's settings, kept open and never recycled, for work
+    /// that must not queue behind requests: the instance heartbeat and the `LISTEN` of
+    /// [`signals::Listener`]. It connects on first use.
+    pub fn dedicated(&self) -> Db {
+        let options = (*self.pool.connect_options()).clone();
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .idle_timeout(None)
+            .max_lifetime(None)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect_lazy_with(options);
+        Db { pool }
     }
 }

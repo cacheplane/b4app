@@ -12,6 +12,7 @@ use crate::error::ApiError;
 use crate::maintenance::WritesAllowed;
 use crate::relay::Close;
 use crate::serve::AppState;
+use crate::signals;
 
 pub async fn revoke_self(
     State(state): State<AppState>,
@@ -29,6 +30,8 @@ pub async fn revoke_self(
             .broadcast_presence(&state.db, device.org_id, device.user_id)
             .await;
     }
+    // The link, or the user's phones, may be on another instance.
+    signals::sessions_changed(&state, device.org_id, device.user_id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -460,3 +460,47 @@ async fn the_change_listener_survives_a_dropped_connection(pool: PgPool) {
     real_sleep(Duration::from_millis(500)).await;
     pull_wakes_on_push(&b, &a, &blove, 0, 1).await;
 }
+
+#[sqlx::test(migrations = false)]
+async fn logging_out_on_another_instance_closes_the_link(pool: PgPool) {
+    let a = spawn_instance(&pool, BEAT).await;
+    let b = spawn_instance(&pool, BEAT).await;
+    let blove = user(&a).await;
+    real_sleep(Duration::from_millis(300)).await;
+    let (mut phone, _) = link(&a, &blove.phone_token, None).await;
+    let (status, _) = b
+        .http("DELETE", "/v1/sessions/self", Some(&blove.phone_token))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(phone.expect_close().await, close_code::REVOKED);
+}
+
+#[sqlx::test(migrations = false)]
+async fn revoking_on_another_instance_closes_the_link(pool: PgPool) {
+    let a = spawn_instance(&pool, BEAT).await;
+    let b = spawn_instance(&pool, BEAT).await;
+    let blove = user(&a).await;
+    real_sleep(Duration::from_millis(300)).await;
+    let (mut mac, _) = link(&a, &blove.mac_token, None).await;
+    let (status, _) = b
+        .http("DELETE", "/v1/devices/self", Some(&blove.mac_token))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(mac.expect_close().await, close_code::REVOKED);
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_heartbeat_does_not_wait_behind_a_busy_pool(pool: PgPool) {
+    let a = spawn_instance(&pool, BEAT).await;
+    // Every connection of the request pool is taken, for longer than the liveness window.
+    let mut held = Vec::new();
+    for _ in 0..a.state.db.pool.options().get_max_connections() {
+        held.push(a.state.db.pool.acquire().await.unwrap());
+    }
+    real_sleep(a.state.instances.alive_within() * 2).await;
+    assert!(
+        !a.state.instances.stale(),
+        "the heartbeat queued behind requests"
+    );
+    drop(held);
+}

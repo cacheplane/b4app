@@ -91,13 +91,15 @@ impl InstancesState {
         self.0.heartbeat * BEATS_PER_WINDOW
     }
 
-    /// Records a successful write of the instance row.
-    pub fn record_ok(&self) {
+    /// Records a successful write of the instance row that was sent at `sent`. The database
+    /// stamped the row somewhere between sending and answering, so counting from when it was sent
+    /// errs early: this instance turns stale no later than the others judge it dead.
+    pub fn record_ok(&self, sent: Instant) {
         *self
             .0
             .last_ok
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = sent;
     }
 
     /// True when the instance row has not been written for longer than the liveness window: the
@@ -141,9 +143,10 @@ impl InstancesState {
 /// Registers the instance, recording the write when it succeeds; a failure is logged and the
 /// heartbeat loop keeps trying.
 pub async fn register(db: &Db, instances: &InstancesState, public_url: Option<&str>) {
+    let sent = Instant::now();
     match b4hub_db::instances::register(db, instances.id(), public_url).await {
         Ok(()) => {
-            instances.record_ok();
+            instances.record_ok(sent);
             tracing::info!(instance = %instances.id(), "instance registered");
         }
         Err(error) => tracing::warn!(%error, "could not register the instance"),
@@ -171,8 +174,9 @@ pub async fn heartbeat_loop(
         if instances.paused() {
             continue;
         }
+        let sent = Instant::now();
         match b4hub_db::instances::heartbeat(&db, instances.id()).await {
-            Ok(true) => instances.record_ok(),
+            Ok(true) => instances.record_ok(sent),
             Ok(false) => register(&db, &instances, public_url.as_deref()).await,
             Err(error) => {
                 tracing::warn!(%error, "could not write the instance heartbeat");
@@ -231,7 +235,7 @@ mod tests {
         let instances = InstancesState::new(Duration::from_secs(5));
         assert!(!instances.stale());
         tokio::time::advance(Duration::from_secs(19)).await;
-        instances.record_ok();
+        instances.record_ok(Instant::now());
         tokio::time::advance(Duration::from_secs(20)).await;
         assert!(!instances.stale());
         tokio::time::advance(Duration::from_millis(1)).await;

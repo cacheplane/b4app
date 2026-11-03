@@ -27,6 +27,7 @@ use crate::maintenance::WritesAllowed;
 use crate::relay::Close;
 use crate::routes::auth::DeviceRequest;
 use crate::serve::AppState;
+use crate::signals;
 
 /// The longest device name accepted, in characters.
 pub(crate) const MAX_DEVICE_NAME_CHARS: usize = 200;
@@ -80,6 +81,7 @@ pub async fn enroll(
     if let Some(from) = merge_from {
         // The merged-away account and its tokens are gone; its links end now.
         state.relay.close_user(from.user_id, Close::revoked());
+        signals::sessions_changed(&state, from.org_id, from.user_id).await;
         tracing::info!(
             from_user_id = %from.user_id,
             into_org_id = %enrolled.org_id,

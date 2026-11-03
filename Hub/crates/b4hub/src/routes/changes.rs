@@ -60,7 +60,7 @@ async fn push(
     // wait, so it is logged rather than failing a push that has landed.
     state.notifier.wake(device.org_id);
     if let Err(error) =
-        b4hub_db::wakes::announce(&state.db, device.org_id, state.instances.id()).await
+        b4hub_db::signals::announce(&state.db, device.org_id, state.instances.id()).await
     {
         tracing::error!(%error, "announcing a push to the other instances failed");
     }

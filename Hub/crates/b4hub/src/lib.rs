@@ -17,3 +17,4 @@ pub mod relay;
 pub mod request_log;
 pub mod routes;
 pub mod serve;
+pub mod signals;

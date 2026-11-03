@@ -321,14 +321,37 @@ pub async fn take_operator_code(db: &Db, code: &str, principal: Principal) -> Re
     Ok(taken == 1)
 }
 
+/// A session as the hub stores it: the SHA-256 of the token that opened it. A link keeps this, not
+/// the token, to look its session up again ([`authenticate_session`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SessionKey([u8; 32]);
+
+impl SessionKey {
+    pub fn of(token: &str) -> SessionKey {
+        SessionKey(hash_token(token))
+    }
+}
+
+impl std::fmt::Debug for SessionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SessionKey(..)")
+    }
+}
+
 /// Resolves a presented token to its device. `None` when the token is unknown, or when the token
 /// or its device has been revoked; the caller cannot tell those apart.
 pub async fn authenticate(db: &Db, token: &str) -> Result<Option<AuthedDevice>> {
+    authenticate_session(db, &SessionKey::of(token)).await
+}
+
+/// [`authenticate`] for a session already hashed: what it resolves to now, or `None` once its
+/// token is deleted (log-out, account deletion) or its device revoked.
+pub async fn authenticate_session(db: &Db, session: &SessionKey) -> Result<Option<AuthedDevice>> {
     let mut tx = db.untenanted_tx().await?;
     let found: Option<(Uuid, Uuid)> = sqlx::query_as(
         "SELECT org_id, device_id FROM device_tokens WHERE token_hash = $1 AND revoked_at IS NULL",
     )
-    .bind(&hash_token(token)[..])
+    .bind(&session.0[..])
     .fetch_optional(&mut *tx)
     .await?;
     let Some((org_id, device_id)) = found else {
