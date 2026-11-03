@@ -3,6 +3,7 @@ import Synchronization
 import Testing
 import WorkspacePlatform
 import WorkspaceProtocol
+import WorkspaceTestSupport
 
 @testable import Coordinator
 
@@ -52,7 +53,7 @@ private struct TemporaryHome {
   }
 }
 
-@Suite struct LegacyAdoptionTests {
+@Suite(BlockingDatabaseWork()) struct LegacyAdoptionTests {
   private func run(
     _ fixture: TemporaryHome, flavor: Flavor = .local, link: String? = "http://localhost:8080",
     readFails: Bool = false, bootOutFails: Bool = false, calls: Calls = Calls()
@@ -485,7 +486,7 @@ private struct ForgetfulSecretStore: SecretStore {
   func remove(_ ref: SecretRef) async throws -> Bool { false }
 }
 
-@Suite struct LegacyAdoptionGateTests {
+@Suite(BlockingDatabaseWork()) struct LegacyAdoptionGateTests {
   private func plan(
     flavor: Flavor = .local, source: Flavor.Source = .environment, environment: [String: String] = [:]
   ) -> LegacyAdoption.Plan? {

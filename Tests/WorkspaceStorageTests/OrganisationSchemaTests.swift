@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import WorkspaceProtocol
+import WorkspaceTestSupport
 
 @testable import WorkspaceStorage
 
@@ -27,7 +28,7 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
   }
 }
 
-@Suite struct OrganisationSchemaTests {
+@Suite(BlockingDatabaseWork()) struct OrganisationSchemaTests {
   @Test func everyChangeCarriesAClockAndOneTransactionSharesIt() throws {
     let db = try WorkspaceDatabase.temporary()
     _ = try db.write { c in

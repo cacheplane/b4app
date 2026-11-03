@@ -6,6 +6,7 @@ import WorkspaceClient
 import WorkspacePlatform
 import WorkspaceProtocol
 import WorkspaceSync
+import WorkspaceTestSupport
 
 @testable import Coordinator
 @testable import WorkspaceStorage
@@ -240,7 +241,7 @@ private let acme = AuthSession(
   user: UserInfo(username: "brian", displayName: "Brian"), needsOnboarding: false,
   userId: "0197cccc-0000-7000-8000-00000000c003")
 
-@Suite(.serialized, .timeLimit(.minutes(3))) struct AccountManagerTests {
+@Suite(BlockingDatabaseWork(), .serialized, .timeLimit(.minutes(3))) struct AccountManagerTests {
   @Test func adoptsJoinedWorkspace() async throws {
     let paths = try AccountRig.paths()
     let secrets = MemorySecretStore()
@@ -817,7 +818,7 @@ private func seedConnectionSecret(
   return ref
 }
 
-@Suite(.serialized, .timeLimit(.minutes(3))) struct LegacySecretCopyTests {
+@Suite(BlockingDatabaseWork(), .serialized, .timeLimit(.minutes(3))) struct LegacySecretCopyTests {
   @Test func anAdoptedWorkspacesSecretsAreCopiedAndItStaysSignedIn() async throws {
     let paths = try AccountRig.paths()
     let prod = CountingSecretStore()

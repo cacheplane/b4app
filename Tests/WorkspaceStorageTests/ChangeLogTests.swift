@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import WorkspaceProtocol
+import WorkspaceTestSupport
 
 @testable import WorkspaceStorage
 
@@ -23,7 +24,7 @@ private func seed(_ db: WorkspaceDatabase) throws -> (thread: ConversationThread
   return (thread, turn)
 }
 
-@Suite struct ChangeLogTests {
+@Suite(BlockingDatabaseWork()) struct ChangeLogTests {
   @Test func everyWriteLeavesChangesAndTheLogReplaysIntoAnEqualStore() throws {
     let source = try WorkspaceDatabase.temporary()
     let (thread, turn) = try seed(source)

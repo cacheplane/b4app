@@ -125,13 +125,15 @@ extension UnixSocketTransport {
   public static func client(path: String, timeout: Duration = .seconds(3)) async throws -> WorkspaceClient {
     let transport = try await connect(path: path, timeout: timeout)
     let client = WorkspaceClient(transport: transport)
+    let deadline = ContinuousClock.now + timeout
     let helloTask = Task { try await client.ready() }
     let timer = Task {
-      try await Task.sleep(for: timeout)
+      try await Task.sleep(until: deadline, clock: .continuous)
       helloTask.cancel()
     }
     do {
       _ = try await helloTask.value
+      guard ContinuousClock.now < deadline else { throw CancellationError() }
       timer.cancel()
       return client
     } catch {

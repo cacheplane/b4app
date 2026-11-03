@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "frozen_at": "2026-11-03T21:06:13.890124+00:00",
+  "parent": "manifest-v1.json",
+  "authorization": "User explicitly approved public source-only CI pushes to cacheplane/b4app. Full evidence archives stay local. No release/package/image/chart/site publication, PR/main/tag changes or deployment.",
+  "amendment": "Local instrumented full1166 run plus process sampling and matched1170 controls diagnosed cooperative-worker blocking. Replace the planned hosted diagnostic-first run with final-candidate validation; preserve at-most3total new full hosted attempts, two final full passes required. Reserve third only for necessary diagnosis, never hide failures.",
+  "candidate": "Absolute captured logout/hello deadlines and late-result checks; per-waiter hello cancellation; unchanged200ms coalescing with deterministic one-window plus wire coverage; shared blocking-work execution trait for storage/coordinator tests, no case-count cap or removed coverage.",
+  "populations": {
+    "swift": "1170tests/148suites, every original test/assertion/deadline retained plus4regressions",
+    "python": 20,
+    "bats": 48,
+    "native": "All4existing unsigned macOS/iOS local/beta CI schemes",
+    "rust": "Complete existing locked format/clippy/test workspace job"
+  },
+  "inputs": "Existing runner labels, cache keys/policy, timeouts, services and permissions. No global SwiftTesting width override. Test-only executor changes thread scheduling intentionally; no fixed-thread-count or hardware change claim.",
+  "source_payload": "Clean commit parent0d8e51b33f6fdf046aa4bbda9b1940f96e4576e6, updated Swift source/tests/Package plus this minimal manifest only. No private4d5ab2d ancestry or new raw logs/evidence archives. Exact resulting commit/tree recorded locally after creation.",
+  "acceptance": "Two complete final hosted attempts on identical source/workflow must pass every required job/population. Previous6attempts and all local failures remain separate. Passing retry cannot erase failed first attempt.",
+  "measurement": "Do not pool new1170-test scheduling configuration with prior1166-test cohorts. Local matched timing includes a failed control and failed all-four-green gate; observed timings do not certify hosted gain.",
+  "remaining": "Fresh cold/native checks in progress; source unchanged across them and hosted candidate. No signed/distribution/install acceptance claim."
+}

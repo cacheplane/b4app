@@ -11,12 +11,18 @@ enum Bounded {
   static func run<T: Sendable>(
     within timeout: Duration, _ work: @escaping @Sendable () async throws -> T
   ) async -> Result<T, any Error>? {
+    let deadline = ContinuousClock.now + timeout
     let once = Once<Result<T, any Error>?>()
     let task = Task {
-      do { once.resolve(.success(try await work())) } catch { once.resolve(.failure(error)) }
+      do {
+        let result = try await work()
+        once.resolve(ContinuousClock.now < deadline ? .success(result) : nil)
+      } catch {
+        once.resolve(ContinuousClock.now < deadline ? .failure(error) : nil)
+      }
     }
     let timer = Task {
-      try? await Task.sleep(for: timeout)
+      try? await Task.sleep(until: deadline, clock: .continuous)
       once.resolve(nil)
     }
     let outcome = await once.value()

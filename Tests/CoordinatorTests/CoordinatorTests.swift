@@ -6,6 +6,7 @@ import WorkspaceClient
 import WorkspacePlatform
 import WorkspaceProtocol
 import WorkspaceStorage
+import WorkspaceTestSupport
 
 @testable import Coordinator
 
@@ -39,7 +40,7 @@ private func connect(_ coordinator: RunningCoordinator) async throws -> Workspac
   try await UnixSocketTransport.client(path: coordinator.paths.socketPath)
 }
 
-@Suite(.serialized) struct CoordinatorSocketTests {
+@Suite(BlockingDatabaseWork(), .serialized) struct CoordinatorSocketTests {
   @Test func answersPingWithItsEpochAndRejectsUnknownMethods() async throws {
     let coordinator = try await startIsolated()
     defer { Task { await coordinator.close() } }
@@ -176,7 +177,7 @@ private func connect(_ coordinator: RunningCoordinator) async throws -> Workspac
   }
 }
 
-@Suite struct EventLogTests {
+@Suite(BlockingDatabaseWork()) struct EventLogTests {
   @Test func demandsSnapshotOnceBufferRolledPastRequestedPosition() async {
     let log = EventLog(epoch: "e", bufferSize: 2)
     let event = AdapterEvent(kind: .sessionCreated, connectionId: "c", payload: ["nativeSessionId": "s"])
@@ -218,7 +219,7 @@ private final class RetireCount: Sendable {
 /// The pre-flavour adoption runs inside `Coordinator.start`, under the singleton lock and before the
 /// data directory exists (sign-in plan, Task 3 fix round 1). Plans here use fake closures and a
 /// temporary home.
-@Suite(.serialized) struct CoordinatorAdoptionOrderTests {
+@Suite(BlockingDatabaseWork(), .serialized) struct CoordinatorAdoptionOrderTests {
   private func plan(
     _ probe: AdoptionProbe, paths: PlatformPaths, fails: Bool = false
   ) -> LegacyAdoption.Plan {
@@ -332,13 +333,23 @@ private final class RetireCount: Sendable {
   }
 }
 
-@Suite(.serialized, .timeLimit(.minutes(1))) struct SocketShutdownTests {
+@Suite(BlockingDatabaseWork(), .serialized, .timeLimit(.minutes(1))) struct SocketShutdownTests {
   @Test func closingTheTransportTwiceIsSafe() async throws {
+    let start = ContinuousClock.now
+    func phase(_ name: String) {
+      print("CI_PHASE double-close \(name) elapsed=\(start.duration(to: .now))")
+    }
+    phase("startup-begin")
     let coordinator = try await startIsolated()
+    phase("startup-end")
     let transport = try await UnixSocketTransport.connect(path: coordinator.paths.socketPath)
+    phase("connected")
     await transport.close()
+    phase("first-close-end")
     await transport.close()
+    phase("second-close-end")
     await coordinator.close()
+    phase("coordinator-close-end")
   }
 
   @Test func concurrentTransportClosesAndALateSendAreSafe() async throws {

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import WorkspaceProtocol
+import WorkspaceTestSupport
 
 @testable import WorkspaceStorage
 
@@ -16,7 +17,7 @@ private func thread(
     title: "ConversationThread \(id)", context: "/tmp/project")
 }
 
-@Suite struct DatabaseTests {
+@Suite(BlockingDatabaseWork()) struct DatabaseTests {
   @Test func appliesTheBundledMigrationsOnce() throws {
     let db = try WorkspaceDatabase.temporary()
     #expect(

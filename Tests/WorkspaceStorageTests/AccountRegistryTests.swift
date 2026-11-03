@@ -1,10 +1,11 @@
 import Foundation
 import Testing
 import WorkspaceProtocol
+import WorkspaceTestSupport
 
 @testable import WorkspaceStorage
 
-@Suite struct AccountRegistryTests {
+@Suite(BlockingDatabaseWork()) struct AccountRegistryTests {
   /// A registry in its own database on the shared test cluster, so tests never collide on `registry`.
   private func makeRegistry() throws -> AccountRegistry {
     let endpoint = try EphemeralPostgres.endpoint()

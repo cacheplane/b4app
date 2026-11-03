@@ -5,10 +5,11 @@ import WorkspacePlatform
 import WorkspaceProtocol
 import WorkspaceStorage
 import WorkspaceSync
+import WorkspaceTestSupport
 
 @testable import Coordinator
 
-@Suite(.serialized) struct KeepAwakeTests {
+@Suite(BlockingDatabaseWork(), .serialized) struct KeepAwakeTests {
   @Test func assertionHeldOnlyWhenEnabledAndJoined() {
     let fake = FakePowerAssertions()
     let awake = KeepAwake(assertions: fake)

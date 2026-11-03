@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 import WorkspaceProtocol
 
@@ -95,6 +96,39 @@ private let hello = HelloEnvelope(
 }
 
 @Suite struct WorkspaceClientTests {
+  @Test func cancellingAHelloWaitDoesNotWaitForThePeerToClose() async throws {
+    let transport = FakeTransport()
+    let client = WorkspaceClient(transport: transport)
+    let cancelled = Mutex(0)
+    let beforeRegistration = Task { @Sendable in
+      do { _ = try await client.ready() } catch is CancellationError { cancelled.withLock { $0 += 1 } } catch
+      {}
+    }
+    beforeRegistration.cancel()
+    // Task.immediate starts on the already-isolated client until ready() suspends, so these
+    // waiters are registered before this helper returns; no sleep guesses at registration.
+    let registered = await registeredHelloWait(client)
+    let survivor = await registeredHelloWait(client)
+    registered.cancel()
+    let observed = Task { @Sendable in
+      do { _ = try await registered.value } catch is CancellationError {
+        cancelled.withLock { $0 += 1 }
+      } catch {}
+    }
+    let deadline = ContinuousClock.now + .seconds(30)
+    while cancelled.withLock({ $0 < 2 }), ContinuousClock.now < deadline { await Task.yield() }
+    #expect(cancelled.withLock { $0 } == 2, "Both cancelled waits finish while the peer remains open")
+    try transport.receive(.hello(hello))
+    #expect(try await survivor.value == hello, "Cancelling one waiter leaves the other registered")
+    await client.close()
+    await beforeRegistration.value
+    await observed.value
+  }
+
+  private func registeredHelloWait(_ client: isolated WorkspaceClient) -> Task<HelloEnvelope, any Error> {
+    Task.immediate { try await client.ready() }
+  }
+
   private func waitForSent(_ transport: FakeTransport, count: Int) async throws -> [Data] {
     await transport.sent(atLeast: count)
   }

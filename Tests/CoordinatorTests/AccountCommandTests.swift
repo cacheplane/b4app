@@ -7,6 +7,7 @@ import WorkspaceClient
 import WorkspacePlatform
 import WorkspaceProtocol
 import WorkspaceSync
+import WorkspaceTestSupport
 
 @testable import Coordinator
 @testable import WorkspaceStorage
@@ -355,7 +356,7 @@ private func sha256Hex(_ text: String) -> String {
   SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
 }
 
-@Suite(.serialized, .timeLimit(.minutes(3))) struct AccountCommandTests {
+@Suite(BlockingDatabaseWork(), .serialized, .timeLimit(.minutes(3))) struct AccountCommandTests {
   @Test func passkeyRoundTripThroughCoordinator() async throws {
     let rig = try await CommandRig.start()
     defer { Task { await rig.close() } }
@@ -1198,7 +1199,7 @@ private func runCLI(
 
 /// The hub's `details.reason` reaches the app in the error's details (final review M11): the app
 /// forgets a passkey only on `unknown_credential`.
-@Suite struct AccountErrorReasonTests {
+@Suite(BlockingDatabaseWork()) struct AccountErrorReasonTests {
   @Test func theHubsReasonIsPassedOn() {
     let unknown = AccountManager.accountError(
       HubError(
@@ -1215,7 +1216,7 @@ private func runCLI(
   }
 }
 
-@Suite(.serialized, .timeLimit(.minutes(3))) struct AccountCLITests {
+@Suite(BlockingDatabaseWork(), .serialized, .timeLimit(.minutes(3))) struct AccountCLITests {
   @Test func accountStatusJSON() async throws {
     let rig = try await CommandRig.start()
     defer { Task { await rig.close() } }

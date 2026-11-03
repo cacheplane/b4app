@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import WorkspaceProtocol
+import WorkspaceTestSupport
 
 @testable import WorkspaceStorage
 
@@ -13,7 +14,7 @@ private func seeded() throws -> WorkspaceDatabase {
   return db
 }
 
-@Suite struct ConversationStorageTests {
+@Suite(BlockingDatabaseWork()) struct ConversationStorageTests {
   @Test func upsertReplacesByNativeIdAndKeepsSequence() throws {
     let db = try seeded()
     _ = try db.insertTurn(Turn(id: "turn_a", threadId: "t1", operationId: "op-a"))
@@ -86,7 +87,7 @@ private func seeded() throws -> WorkspaceDatabase {
   }
 }
 
-@Suite struct SnapshotMergeTests {
+@Suite(BlockingDatabaseWork()) struct SnapshotMergeTests {
   private func snapshot(_ id: String?, _ role: String, _ text: String) -> SnapshotItem {
     SnapshotItem(
       nativeItemId: id, role: role, type: role == "user" ? "userMessage" : "agentMessage",

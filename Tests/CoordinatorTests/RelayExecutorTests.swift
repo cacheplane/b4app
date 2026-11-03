@@ -6,6 +6,7 @@ import WorkspacePlatform
 import WorkspaceProtocol
 import WorkspaceStorage
 import WorkspaceSync
+import WorkspaceTestSupport
 
 @testable import Coordinator
 
@@ -226,7 +227,7 @@ private func failure(
   return error
 }
 
-@Suite(.serialized) struct RelayExecutorTests {
+@Suite(BlockingDatabaseWork(), .serialized) struct RelayExecutorTests {
   // MARK: - turn.send
 
   @Test func relayedSendRunsATurn() async throws {

@@ -6,6 +6,7 @@ import WorkspacePlatform
 import WorkspaceProtocol
 import WorkspaceStorage
 import WorkspaceSync
+import WorkspaceTestSupport
 
 @testable import Coordinator
 
@@ -194,7 +195,7 @@ private struct HubHarness {
   }
 }
 
-@Suite struct SyncFilterTests {
+@Suite(BlockingDatabaseWork()) struct SyncFilterTests {
   @Test func filterBlanksConnectionSecretsAndPathsAndTruncatesBigItems() throws {
     let connection = try record(
       1, "connections", "insert", rowId: "c1",
@@ -339,7 +340,7 @@ private struct HubHarness {
   }
 }
 
-@Suite(.serialized) struct HubSyncTests {
+@Suite(BlockingDatabaseWork(), .serialized) struct HubSyncTests {
   @Test func connectionProjectIdIsUploaded() async throws {
     let h = try await HubHarness.start()
     defer { Task { await h.close() } }

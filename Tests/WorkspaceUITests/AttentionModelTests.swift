@@ -752,14 +752,19 @@ private struct AttentionDocument: Decodable {
     await model.openThread(id: "t1")
     let baseline = transport.calls(.threadRead).count
 
-    for _ in 0..<50 { transport.emit(delta("t1")) }
-    transport.emit(
+    // This assertion concerns one model application window. A transport emits into two async
+    // streams; under load its queued events can legitimately arrive more than200ms apart.
+    // Apply this one burst in a single MainActor turn, keeping the real200ms timer unchanged.
+    for _ in 0..<50 { model.apply(delta("t1")) }
+    #expect(model.detail?.liveText["i1"] == String(repeating: "x", count: 50))
+    #expect(transport.calls(.threadRead).count == baseline)
+    model.apply(
       AdapterEvent(
         kind: .runtimeRequestOpened, connectionId: "c1", threadId: "t1",
         payload: ["runtimeRequest": try JSONValue(encoding: request("r1", in: "t1", kind: .commandApproval))])
     )
     for _ in 0..<5 {
-      transport.emit(
+      model.apply(
         AdapterEvent(
           kind: .turnStateChanged, connectionId: "c1", threadId: "t1", turnId: "u1",
           payload: ["turn": try JSONValue(encoding: turn("u1", in: "t1", status: .running, at: 2))]))
@@ -768,6 +773,36 @@ private struct AttentionDocument: Decodable {
     // Timed on purpose: no second refetch may follow; an absence has no event to await.
     try await Task.sleep(for: .milliseconds(400))
     #expect(transport.calls(.threadRead).count == baseline + 1)
+  }
+
+  @Test func transportEventsDeliveredInSeparateWindowsEachRefetch() async throws {
+    let transport = ScriptedTransport()
+    let t = thread("t1", activity: activity(turn: "u1", status: .running, at: 2))
+    transport.set(threads: [t])
+    transport.setRead(read(t, turns: [turn("u1", in: "t1", status: .running, at: 2)]))
+    let model = try await connected(transport)
+    await model.openThread(id: "t1")
+    let baseline = transport.calls(.threadRead).count
+    for _ in 0..<50 { transport.emit(delta("t1")) }
+    try await waitUntil("all wire deltas applied") {
+      model.detail?.liveText["i1"] == String(repeating: "x", count: 50)
+    }
+    #expect(transport.calls(.threadRead).count == baseline)
+    transport.emit(
+      AdapterEvent(
+        kind: .runtimeRequestOpened, connectionId: "c1", threadId: "t1",
+        payload: ["runtimeRequest": try JSONValue(encoding: request("r1", in: "t1", kind: .commandApproval))])
+    )
+    try await waitUntil("first wire window") { transport.calls(.threadRead).count == baseline + 1 }
+    // Delivery of the next event is deliberately held until after the first window. Enqueue time
+    // cannot make an event delivered later part of an already completed model window.
+    transport.emit(
+      AdapterEvent(
+        kind: .turnStateChanged, connectionId: "c1", threadId: "t1", turnId: "u1",
+        payload: ["turn": try JSONValue(encoding: turn("u1", in: "t1", status: .running, at: 2))]))
+    try await waitUntil("second wire window") { transport.calls(.threadRead).count == baseline + 2 }
+    try await Task.sleep(for: .milliseconds(400))
+    #expect(transport.calls(.threadRead).count == baseline + 2)
   }
 
   @Test func deltasAloneNeverRefetch() async throws {

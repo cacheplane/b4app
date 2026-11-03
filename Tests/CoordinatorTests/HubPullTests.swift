@@ -4,6 +4,7 @@ import WorkspacePlatform
 import WorkspaceProtocol
 import WorkspaceStorage
 import WorkspaceSync
+import WorkspaceTestSupport
 
 @testable import Coordinator
 
@@ -154,7 +155,7 @@ private actor EventRecorder {
   }
 }
 
-@Suite(.serialized) struct HubPullTests {
+@Suite(BlockingDatabaseWork(), .serialized) struct HubPullTests {
   @Test func pullAppliesPhoneEditsAndPublishes() async throws {
     try await PullHarness.with { h in
       let recorder = await EventRecorder(h.events, signal: h.signal)

@@ -112,6 +112,8 @@ let package = Package(
       resources: [.copy("Resources/Fonts"), .copy("Resources/Brand")],
       swiftSettings: mainActorDefault),
 
+    // Test execution support: never a dependency of a shipped product.
+    .target(name: "WorkspaceTestSupport", path: "Tests/WorkspaceTestSupport", swiftSettings: concurrency),
     // Tests.
     .testTarget(
       name: "WorkspaceProtocolTests", dependencies: ["WorkspaceProtocol"], swiftSettings: concurrency),
@@ -133,7 +135,8 @@ let package = Package(
     .testTarget(
       name: "WorkspacePlatformTests", dependencies: ["WorkspacePlatform"], swiftSettings: concurrency),
     .testTarget(
-      name: "WorkspaceStorageTests", dependencies: ["WorkspaceStorage"], swiftSettings: concurrency),
+      name: "WorkspaceStorageTests", dependencies: ["WorkspaceStorage", "WorkspaceTestSupport"],
+      swiftSettings: concurrency),
     .testTarget(
       name: "CodexAdapterTests", dependencies: ["CodexAdapter"], exclude: ["Fixtures"],
       swiftSettings: concurrency),
@@ -143,7 +146,8 @@ let package = Package(
     .testTarget(
       name: "B4AdapterTests", dependencies: ["B4Adapter"], exclude: ["Fixtures"], swiftSettings: concurrency),
     .testTarget(
-      name: "CoordinatorTests", dependencies: ["Coordinator", "NIOTransport"], swiftSettings: concurrency),
+      name: "CoordinatorTests", dependencies: ["Coordinator", "NIOTransport", "WorkspaceTestSupport"],
+      swiftSettings: concurrency),
     // Model-level tests of the shared UI against a real in-process coordinator (macOS only).
     .testTarget(
       name: "WorkspaceUITests",

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import WorkspaceProtocol
+import WorkspaceTestSupport
 
 @testable import WorkspaceStorage
 
@@ -61,7 +62,7 @@ private func turn(
     outcome: outcome, createdAt: created, updatedAt: updated ?? created)
 }
 
-@Suite struct ActivityQueryTests {
+@Suite(BlockingDatabaseWork()) struct ActivityQueryTests {
   @Test func activityMatchesTheSharedFixture() throws {
     let fixture = try AttentionRows.load()
     let db = try fixture.store()

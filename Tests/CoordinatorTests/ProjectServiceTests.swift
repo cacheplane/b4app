@@ -5,6 +5,7 @@ import WorkspaceClient
 import WorkspacePlatform
 import WorkspaceProtocol
 import WorkspaceStorage
+import WorkspaceTestSupport
 
 @testable import Coordinator
 
@@ -131,7 +132,7 @@ private struct ProjectHarness {
   }
 }
 
-@Suite(.serialized) struct ProjectServiceTests {
+@Suite(BlockingDatabaseWork(), .serialized) struct ProjectServiceTests {
   @Test func newThreadsShareAProjectAcrossSpellings() async throws {
     let h = try await ProjectHarness.start()
     defer { Task { await h.close() } }
@@ -573,7 +574,7 @@ private struct ProjectHarness {
 
 /// `connections.projectId` (migration 0005): a local B4 connection belongs to the project of its managed
 /// server's folder, and follows that folder when a project edit moves it.
-@Suite(.serialized) struct ConnectionProjectTests {
+@Suite(BlockingDatabaseWork(), .serialized) struct ConnectionProjectTests {
   private func connect(_ h: ServerHarness, _ server: LocalServer) async throws -> Connection {
     try await h.client.request(
       ConnectionAdd.self, ConnectionAdd.Params(kind: .b4, route: "/chat#agent", serverId: server.id),

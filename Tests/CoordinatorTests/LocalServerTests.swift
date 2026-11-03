@@ -6,6 +6,7 @@ import WorkspaceClient
 import WorkspacePlatform
 import WorkspaceProtocol
 import WorkspaceStorage
+import WorkspaceTestSupport
 
 @testable import Coordinator
 
@@ -103,7 +104,7 @@ struct ServerHarness {
   }
 }
 
-@Suite(.serialized) struct LocalServerRegistryTests {
+@Suite(BlockingDatabaseWork(), .serialized) struct LocalServerRegistryTests {
   @Test func addsAProjectAndInspectsItsRoutes() async throws {
     let h = try await ServerHarness.start()
     defer { Task { await h.close() } }
@@ -186,7 +187,7 @@ struct ServerHarness {
 }
 
 /// Owned-server lifecycle against the fake project CLI.
-@Suite(.serialized) struct LocalServerLifecycleTests {
+@Suite(BlockingDatabaseWork(), .serialized) struct LocalServerLifecycleTests {
   /// The server's row once a `server.changed` event has moved it from the health it had in `server` to
   /// `health` (every change to a managed server is published). Events are ordered, so a match after
   /// the one that reported `server.health` is the change the caller waits for, not an older one.
@@ -452,7 +453,7 @@ struct ServerHarness {
   }
 }
 
-@Suite(.serialized) struct LocalServerLogTests {
+@Suite(BlockingDatabaseWork(), .serialized) struct LocalServerLogTests {
   @Test func logsAreTailedRedactedAndFollowable() async throws {
     let h = try await ServerHarness.start()
     defer { Task { await h.close() } }
@@ -495,7 +496,7 @@ struct ServerHarness {
   }
 }
 
-@Suite(.serialized) struct ManagedConnectionTests {
+@Suite(BlockingDatabaseWork(), .serialized) struct ManagedConnectionTests {
   private func connect(
     _ h: ServerHarness, _ server: LocalServer, route: String = "/chat#agent"
   ) async throws -> ConnectionAdd.Result {

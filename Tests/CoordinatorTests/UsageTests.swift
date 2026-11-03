@@ -3,6 +3,7 @@ import Testing
 import WorkspaceClient
 import WorkspacePlatform
 import WorkspaceProtocol
+import WorkspaceTestSupport
 
 @testable import Coordinator
 
@@ -41,7 +42,7 @@ actor RefusingRemoveStore: SecretStore {
   }
 }
 
-@Suite(.serialized) struct UsageTests {
+@Suite(BlockingDatabaseWork(), .serialized) struct UsageTests {
   @Test func tokenBoundariesAreLocalMidnightAndMonday() throws {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = try #require(TimeZone(identifier: "America/Denver"))

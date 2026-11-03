@@ -2,10 +2,11 @@ import Foundation
 import Testing
 import WorkspacePlatform
 import WorkspaceProtocol
+import WorkspaceTestSupport
 
 @testable import Coordinator
 
-@Suite struct LauncherTests {
+@Suite(BlockingDatabaseWork()) struct LauncherTests {
   /// `LockRecord` has no public initializer; the coordinator writes it as JSON.
   func record(pid: Int32) -> LockRecord {
     try! JSONDecoder().decode(

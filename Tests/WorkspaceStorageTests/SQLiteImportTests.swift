@@ -3,6 +3,7 @@ import SQLite3
 import Testing
 import WorkspacePlatform
 import WorkspaceProtocol
+import WorkspaceTestSupport
 
 @testable import WorkspaceStorage
 
@@ -138,7 +139,7 @@ private enum SQLiteFixture {
   ]
 }
 
-@Suite struct SQLiteImportTests {
+@Suite(BlockingDatabaseWork()) struct SQLiteImportTests {
   @Test func importsEveryTableWithTypedValues() throws {
     let path = try SQLiteFixture.temporaryPath("workspace.sqlite")
     try SQLiteFixture.write(to: path)
