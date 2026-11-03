@@ -189,17 +189,18 @@ def execute(run):
             value = {"interruptId": interrupt_id, "type": "permission-request", "kind": "command",
                      "detail": {"command": "rm -rf tmp", "suggestedPattern": "rm -rf *"},
                      "toolCallId": "call_9", "grant": grant}
+            # Like the real server (b4 T-018), the park is saved before the prompt is disclosed, so a
+            # client that saw the prompt can count on it surviving a restart.
             with LOCK:
                 thread["pending"].append({"interruptId": interrupt_id, "resumeKey": uuid.uuid4().hex,
                                           "value": value, "grant": grant})
                 turn["status"] = "awaiting"
                 turn["approvals"].append({"interruptId": interrupt_id, "kind": "command",
                                           "detail": value["detail"], "grant": grant, "offersAlways": True})
-            run.emit("interrupt", value)
-            with LOCK:
                 thread["status"] = "interrupted"
                 thread["updated_at"] = now()
                 save_state()
+            run.emit("interrupt", value)
             run.emit("done", {"output": None})
             with LOCK:
                 if LIVE.get(run.thread_id) is run:
