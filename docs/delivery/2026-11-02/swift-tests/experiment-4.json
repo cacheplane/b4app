@@ -1,0 +1,17 @@
+{
+  "hypothesis": "The16-case cap reduces initial contention but may unnecessarily constrain I/O-heavy recovery suites. Test32 as the final concurrency experiment; preserve same fixed source and test population.",
+  "frozen_inputs": "Final fixture fixes; no source edits during repetitions. input_hashes in each observation.",
+  "candidate": "SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH=32; swift test --skip-build",
+  "control": "default width; identical command",
+  "sequence": [
+    "fixed-default full with build (correctness only)",
+    "width32 warm1",
+    "default warm1",
+    "width32 warm2",
+    "default warm2"
+  ],
+  "decision": "Use two comparable warm observations per variant; >=10% median total command wall reduction and <=5% median child CPU increase; all1160 tests plus2parameter cases complete and all runs pass. Otherwise do not retain the width setting. Small sample provisional only, no hosted SLA claim.",
+  "cold": "Full scratch-path regeneration and native builds; cold source build unchanged outside2fake API lines; no measured comparable baseline/candidate cold speed claim.",
+  "holdout": "Existing B4 restart and parked-permission cases after final configuration decision, followed by full cold run.",
+  "budget": "Fourth and last substantive experiment; correctness fixes still permitted; no new hosted runs/publication."
+}

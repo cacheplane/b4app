@@ -1,0 +1,152 @@
+{
+  "findings": [
+    {
+      "id": "F01",
+      "primary_criterion": "C15.1",
+      "severity": "S2",
+      "designation": "candidate",
+      "title": "Unbounded API reads",
+      "reproduction_observed": "Simulated 51 attempts produced 103 GETs despite budget100.",
+      "expected": "Accurate complete observations without losing required failures.",
+      "consequence": "Misleading timing/completeness could lead to unsupported optimization choices.",
+      "evidence": [
+        "B01",
+        "R01"
+      ],
+      "decision": "Stop before GET101; test_request_budget_is_enforced.",
+      "retest": "Resolved; no actual over-budget capture observed."
+    },
+    {
+      "id": "F02",
+      "primary_criterion": "C02.1",
+      "severity": "S2",
+      "designation": "candidate",
+      "title": "Missing late-job start shortened span",
+      "reproduction_observed": "Completed job without start but later end was excluded, falsely reporting70s.",
+      "expected": "Accurate complete observations without losing required failures.",
+      "consequence": "Misleading timing/completeness could lead to unsupported optimization choices.",
+      "evidence": [
+        "B01",
+        "R01"
+      ],
+      "decision": "test_missing_late_job_start_cannot_shorten_span; incomplete span now null.",
+      "retest": "Resolved; final reviewer reproduced unknown span."
+    },
+    {
+      "id": "F03",
+      "primary_criterion": "C05.1",
+      "severity": "S2",
+      "designation": "candidate",
+      "title": "Snapshot mismatch",
+      "reproduction_observed": "Selected source/path/event could differ from collected attempts.",
+      "expected": "Accurate complete observations without losing required failures.",
+      "consequence": "Misleading timing/completeness could lead to unsupported optimization choices.",
+      "evidence": [
+        "B01",
+        "R01"
+      ],
+      "decision": "test_empty_or_mismatched_snapshot_rejected; source/path/event checked.",
+      "retest": "Resolved; exact executed workflow revision still separately Untested."
+    },
+    {
+      "id": "F04",
+      "primary_criterion": "C09.3",
+      "severity": "S2",
+      "designation": "candidate",
+      "title": "Malformed terminal result",
+      "reproduction_observed": "Completed job with null conclusion produced numeric completion.",
+      "expected": "Accurate complete observations without losing required failures.",
+      "consequence": "Misleading timing/completeness could lead to unsupported optimization choices.",
+      "evidence": [
+        "B01",
+        "R01"
+      ],
+      "decision": "test_completed_result_without_conclusion_or_steps_rejected; status/conclusion consistency enforced.",
+      "retest": "Resolved."
+    },
+    {
+      "id": "F05",
+      "primary_criterion": "C14.1",
+      "severity": "S2",
+      "designation": "candidate",
+      "title": "Missing step evidence",
+      "reproduction_observed": "Absent steps silently became empty inventory.",
+      "expected": "Accurate complete observations without losing required failures.",
+      "consequence": "Misleading timing/completeness could lead to unsupported optimization choices.",
+      "evidence": [
+        "B01",
+        "R01"
+      ],
+      "decision": "test_completed_result_without_conclusion_or_steps_rejected; explicit steps field required.",
+      "retest": "Resolved; actual empty inventories retained."
+    },
+    {
+      "id": "F06",
+      "primary_criterion": "C02.2",
+      "severity": "S2",
+      "designation": "candidate",
+      "title": "Empty/truncated sample",
+      "reproduction_observed": "Empty or partial run page accepted without cardinality check.",
+      "expected": "Accurate complete observations without losing required failures.",
+      "consequence": "Misleading timing/completeness could lead to unsupported optimization choices.",
+      "evidence": [
+        "B01",
+        "R01"
+      ],
+      "decision": "test_truncated_selection_rejected; total_count/limit retained and checked during replay.",
+      "retest": "Resolved."
+    },
+    {
+      "id": "F07",
+      "primary_criterion": "C02.1",
+      "severity": "S1",
+      "designation": "candidate",
+      "title": "Retry-clock ambiguity",
+      "reproduction_observed": "Attempt2 API creation differs from original run creation by1165s.",
+      "expected": "Accurate complete observations without losing required failures.",
+      "consequence": "Misleading timing/completeness could lead to unsupported optimization choices.",
+      "evidence": [
+        "B01",
+        "R01"
+      ],
+      "decision": "test_original_creation_survives_retry_endpoint_creation; both clocks exposed.",
+      "retest": "Resolved; actual478s versus1643s, neither availability."
+    },
+    {
+      "id": "F08",
+      "primary_criterion": "C08.3",
+      "severity": "S2",
+      "designation": "baseline",
+      "title": "Historical test failures",
+      "reproduction_observed": "Runs41519013466,41515966943,41514981940 report Test failure after751,717,745s.",
+      "expected": "Accurate complete observations without losing required failures.",
+      "consequence": "Failed validation delays completion; root cause unknown.",
+      "evidence": [
+        "R01"
+      ],
+      "decision": "Replay evidence.json and inspect package job Test step. Root cause uninvestigated; retain outcomes.",
+      "retest": "Open diagnostic; candidate changes no tests or existing product code."
+    }
+  ],
+  "disagreements": "No unresolved disagreement. Independent duplicates consolidated by cause; no voting or probability calculation.",
+  "rejected_hypotheses": [
+    {
+      "idea": "Split native jobs",
+      "decision": "Deferred; no equivalent measured contention/setup evidence."
+    },
+    {
+      "idea": "Change compiled caches",
+      "decision": "Deferred; no exact compatibility/cold-path evidence."
+    }
+  ],
+  "reviewer_roles": [
+    "dependency/performance",
+    "integrity/recovery",
+    "measurement/tests"
+  ],
+  "artifact_lineage": {
+    "release_intents": [],
+    "release_artifacts": null,
+    "reason": "No package constructed/published/downloaded; API metadata is not provenance. Local evidence hashes only."
+  }
+}

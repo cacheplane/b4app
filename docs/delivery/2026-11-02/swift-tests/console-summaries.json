@@ -1,0 +1,169 @@
+{
+  "recovery-focused-green.log": {
+    "summary_lines": [
+      "Build complete! (19.98s)",
+      "\udbc2\udc84  Test run with 54 tests in 8 suites failed after 65.253 seconds with 2 issues."
+    ],
+    "nio_shutdown_diagnostics": 2,
+    "raw_log_sha256": "5bea2261a4f8a410987b8f58906fe123f1049e016f63c1b75e05febc24314105"
+  },
+  "fixed-default-warm-2.log": {
+    "summary_lines": [
+      "\udbc4\udc5b  Test run with 1160 tests in 145 suites passed after 66.869 seconds."
+    ],
+    "nio_shutdown_diagnostics": 9,
+    "raw_log_sha256": "edd83840324363a145ff8cfcd45ace3acb97f920a1b6b4e1b8583c46640748df"
+  },
+  "baseline-warm-full-1.log": {
+    "summary_lines": [
+      "\udbc2\udc84  Test run with 1159 tests in 144 suites failed after 75.216 seconds with 9 issues."
+    ],
+    "nio_shutdown_diagnostics": 22,
+    "raw_log_sha256": "dc1f8ed82ecb97100dba54dbf1c3bc0678320630d1b434215c80d33f6a3c41f2"
+  },
+  "fixed-default-warm-1.log": {
+    "summary_lines": [
+      "\udbc4\udc5b  Test run with 1160 tests in 145 suites passed after 73.136 seconds."
+    ],
+    "nio_shutdown_diagnostics": 10,
+    "raw_log_sha256": "fa3e7f4e94bb061cd2738da17efe58270fec214e73b44816aee1d86c456bbf78"
+  },
+  "native-ios-local.log": {
+    "summary_lines": [
+      "** BUILD SUCCEEDED **"
+    ],
+    "nio_shutdown_diagnostics": 0,
+    "raw_log_sha256": "2c32767ea6af3abb8c22d81eb2572193aec6d2786d17c975611efecf12e0071f"
+  },
+  "native-macos-beta.log": {
+    "summary_lines": [
+      "** BUILD SUCCEEDED **"
+    ],
+    "nio_shutdown_diagnostics": 0,
+    "raw_log_sha256": "d9c97ec524c60788eba47142db137f123f60acbc2ec7089689f9e6ec654e92f9"
+  },
+  "native-macos-prod-release.log": {
+    "summary_lines": [
+      "** BUILD SUCCEEDED **"
+    ],
+    "nio_shutdown_diagnostics": 0,
+    "raw_log_sha256": "47250a5e333744ed8e92d6a3a96fdd35f83d73ad1bbbb77ac561790dfda59028"
+  },
+  "final-python-tests.log": {
+    "summary_lines": [
+      "Ran 19 tests in 0.174s",
+      "OK"
+    ],
+    "nio_shutdown_diagnostics": 0,
+    "raw_log_sha256": "e39616fe828e586fcd454ed8b40eaa5ba4d35de16138d2db35056e0c4c34a799"
+  },
+  "native-macos-local.log": {
+    "summary_lines": [
+      "** BUILD SUCCEEDED **"
+    ],
+    "nio_shutdown_diagnostics": 0,
+    "raw_log_sha256": "27f748d611fbb0bf745a8b3e437428cc4a41f2b3f31e20c7dccf556773f59a52"
+  },
+  "final-checks.log": {
+    "summary_lines": [
+      "Ran 19 tests in 0.214s",
+      "OK"
+    ],
+    "nio_shutdown_diagnostics": 0,
+    "raw_log_sha256": "efc3660978deb4456ea7965a0daa41886e8e48ee633e2ff44d073cd024349531"
+  },
+  "native-project-generation.log": {
+    "summary_lines": [],
+    "nio_shutdown_diagnostics": 0,
+    "raw_log_sha256": "0a9b4270c44efbbe1ba24c7997a17544cf4fed31b1cdca6425c7ce94ad6b9395"
+  },
+  "final-cold-full.log": {
+    "summary_lines": [
+      "Build complete! (163.75s)",
+      "\udbc4\udc5b  Test run with 1160 tests in 145 suites passed after 83.224 seconds."
+    ],
+    "nio_shutdown_diagnostics": 14,
+    "raw_log_sha256": "06b7e59482c1c33cba774970740bbc6ebf8d919b0fc29b4afc3a914953299787"
+  },
+  "native-ios-prod-release.log": {
+    "summary_lines": [
+      "** BUILD SUCCEEDED **"
+    ],
+    "nio_shutdown_diagnostics": 0,
+    "raw_log_sha256": "4cfe6cf95cc4dcaa91d4b9fddac8aad255719a1a908965a2e83db8c6b4fcac15"
+  },
+  "fixed-width32-warm-2.log": {
+    "summary_lines": [
+      "\udbc4\udc5b  Test run with 1160 tests in 145 suites passed after 64.386 seconds."
+    ],
+    "nio_shutdown_diagnostics": 15,
+    "raw_log_sha256": "0977c24369ee597833f0211bb2ca683e930a5d11b4873fcc9887acea003e1f1d"
+  },
+  "width16-original-full.log": {
+    "summary_lines": [
+      "\udbc2\udc84  Test run with 1159 tests in 144 suites failed after 66.029 seconds with 6 issues."
+    ],
+    "nio_shutdown_diagnostics": 16,
+    "raw_log_sha256": "254b1f5b1686661cbeb4bb5406ce981ed05f3eec13bde813ac4b130463a13fbc"
+  },
+  "fixed-width32-warm-1.log": {
+    "summary_lines": [
+      "\udbc4\udc5b  Test run with 1160 tests in 145 suites passed after 65.734 seconds."
+    ],
+    "nio_shutdown_diagnostics": 12,
+    "raw_log_sha256": "1a607d879bda2ef5481bd7341e97c9c0f4c9097aded3128d165fac7a45cbbc22"
+  },
+  "baseline-full-1.log": {
+    "summary_lines": [
+      "Build complete! (75.11s)",
+      "\udbc2\udc84  Test run with 1159 tests in 144 suites failed after 79.312 seconds with 8 issues."
+    ],
+    "nio_shutdown_diagnostics": 4,
+    "raw_log_sha256": "f7d7f0d2e6c2f5eaaf234df123e8ee597b2276acae42a72ee4b5ff19d4e628d1"
+  },
+  "final-swift-build.log": {
+    "summary_lines": [
+      "Build complete! (23.91s)"
+    ],
+    "nio_shutdown_diagnostics": 0,
+    "raw_log_sha256": "6088c8fb0df87109c1482f1ebb4508af1fc9b0e732a00edd52cb587da66c699f"
+  },
+  "revocation-regression-red.log": {
+    "summary_lines": [
+      "Build complete! (15.19s)",
+      "\udbc2\udc84  Test run with 1 test in 1 suite failed after 2.093 seconds with 6 issues."
+    ],
+    "nio_shutdown_diagnostics": 0,
+    "raw_log_sha256": "5e2edca36bf5db59d9480b2f907eb480b22ec25c7f914821bea9a29c6670f819"
+  },
+  "revocation-regression-green.log": {
+    "summary_lines": [
+      "Build complete! (18.68s)",
+      "\udbc4\udc5b  Test run with 2 tests in 2 suites passed after 0.032 seconds."
+    ],
+    "nio_shutdown_diagnostics": 0,
+    "raw_log_sha256": "47fb9934df78319ff20a9cca43bfeb506fdedd77b87f313af32c1b0e33e64d55"
+  },
+  "native-ios-beta.log": {
+    "summary_lines": [
+      "** BUILD SUCCEEDED **"
+    ],
+    "nio_shutdown_diagnostics": 0,
+    "raw_log_sha256": "7719eb90b4f9d3c6588051f32d69476494d0e572a52073498e277d3c5aad0720"
+  },
+  "fixed-default-full-1.log": {
+    "summary_lines": [
+      "Build complete! (16.78s)",
+      "\udbc4\udc5b  Test run with 1160 tests in 145 suites passed after 63.643 seconds."
+    ],
+    "nio_shutdown_diagnostics": 11,
+    "raw_log_sha256": "bff40d5fe8de73ece0a2adf1f971602ed21480e7fa1d49ad95a85a9739aa815d"
+  },
+  "permission-durability-red": {
+    "origin": "Actual local unittest execution retained from tool transcript; raw values anonymous",
+    "exit_code": 1,
+    "summary": "One test failed: busy != interrupted at permission event publication; Ran1test in0.025s.",
+    "timestamps": "unknown",
+    "fixture_input_hash": "e0f2e6be0753541cc35e59e9782dc397f85fb263d4f7fcb749df0f5d35fa2d7c"
+  }
+}

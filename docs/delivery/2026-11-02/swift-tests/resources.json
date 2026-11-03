@@ -1,0 +1,19 @@
+{
+  "local_command_wall_seconds_sum": 1911.1236639580457,
+  "wall_budget_seconds": 2700,
+  "summed_wall_is_not_elapsed": "Native and cold commands overlap; sum retains resource intervals rather than treating overlap as a speedup.",
+  "child_cpu_proxy_seconds_sum": 1428.273669,
+  "resource_limitations": "ChildCPU may omit reparented database and Xcode build-service work; not billed resource use. No hosted run, paidservice or cache purge; dollar cost unknown.",
+  "observations": 26,
+  "complete_full_candidate_runs": [
+    "final-cold-full",
+    "fixed-default-full-1",
+    "fixed-default-warm-1",
+    "fixed-default-warm-2",
+    "fixed-width32-warm-1",
+    "fixed-width32-warm-2"
+  ],
+  "new_hosted_runs": 0,
+  "native_builds_passed": 6,
+  "distribution_checks": "Not performed; not inferred from build/test success."
+}

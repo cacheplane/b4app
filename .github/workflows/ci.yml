@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "blove/ci-validation/**"]
   pull_request:
 
 concurrency:
@@ -46,6 +46,8 @@ jobs:
           shellcheck .github/scripts/*.sh Hub/scripts/*.sh Hub/chart/scripts/*.sh Infra/scripts/*.sh Infra/scripts/tests/stubs/* Infra/scripts/tests/helpers.bash
       - name: Release tag guard test
         run: .github/scripts/test-tag-guard.sh
+      - name: CI observation tests (isolated API fixtures)
+        run: python3 -m unittest discover -s .github/scripts/tests -v
       - name: Deploy script tests
         run: bats Infra/scripts/tests
 
@@ -67,6 +69,8 @@ jobs:
           restore-keys: spm-${{ runner.os }}-
       - name: Format lint
         run: swift format lint --strict --recursive Sources Tests Apps Package.swift
+      - name: B4 fixture bind timings (DNS probe advisory)
+        run: python3 .github/scripts/b4-fixture-timings.py
       - name: Cache the pinned PostgreSQL archive
         uses: actions/cache@v4
         with:
@@ -77,6 +81,8 @@ jobs:
       - name: Build
         run: swift build
       - name: Test
+        env:
+          SWIFTNIO_STRICT: "1"
         run: swift test
 
   apps:

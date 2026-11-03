@@ -1,0 +1,17 @@
+{
+  "scope": "New follow-up cases only; parent retains all45atomic original assessments, not overwritten. Not a release quality score.",
+  "required": {
+    "Pass": 19,
+    "Fail": 0,
+    "Untested": 1
+  },
+  "G": 20,
+  "assessed_coverage": 0.95,
+  "verified_pass_coverage": 0.95,
+  "advisory": {
+    "Pass": 0,
+    "Fail": 0,
+    "Untested": 4,
+    "Not applicable": 1
+  }
+}

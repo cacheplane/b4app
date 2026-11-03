@@ -1,0 +1,7 @@
+# Remove timing assumptions from recovery fixtures
+
+Baseline full runs reproduce the restart test's terminal-before-shutdown failure and a dropped-stream text failure under default concurrency. The Python fixture's three-second "slow" timer and one-second dropped-stream timer are independent of coordinator shutdown and GET reattachment. A loaded runner can miss the intended state; increasing sleeps or accepting terminal state would weaken/delay the check.
+
+Candidate: add a test-only gated run released through a temporary file after shutdown; fail explicitly if the release never comes. For dropped streams, finish only after the reattaching GET has captured its cursor and written its initial state; use a threading.Event with a diagnostic failure deadline. Preserve all existing outcome/text/turn-count assertions. Quiesce HubSync around store snapshots and drive the injected push failure explicitly so another background call cannot consume it. No production adapter behavior changes.
+
+Required checks: lifecycle recovery/stream-drop/HubSync focused suite; full1159 existing tests plus added revocation case; repeated default/width16 equivalent runs; cold regenerated tests; all native schemes signing disabled. Holdout: existing B4 server restart and parked-permission tests, after final relevant edit. Revert any concurrency setting that fails its predeclared latency/resource/full-population rule; retain necessary correctness fixes separately.

@@ -1,0 +1,20 @@
+{
+  "control_seconds": [
+    101.14831191702979,
+    89.56906591600273
+  ],
+  "candidate_seconds": [
+    95.26327662501717,
+    93.67451745801372
+  ],
+  "control_median_seconds": 95.35868891651626,
+  "candidate_median_seconds": 94.46889704151545,
+  "latency_reduction_fraction": 0.009330999462249287,
+  "control_median_child_cpu_seconds": 67.25870499999999,
+  "candidate_median_child_cpu_seconds": 68.476007,
+  "child_cpu_increase_fraction": 0.018098802229391777,
+  "decision": "Reject width32; latency gain below frozen10% threshold. No concurrency env retained in CI. Width16 preliminary also unproven.",
+  "sample_limit": "Two warm observations per variant; no tail/reliability confidence claims. ChildCPU may omit reparented Postgres descendants.",
+  "source_equivalence": true,
+  "all_tests_passed": true
+}

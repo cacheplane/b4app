@@ -1,0 +1,14 @@
+{
+  "scope": "This phase only. Main instrumented attempts are in observations.jsonl; separately measured static command wall is in auxiliary-attempts.json. Individual bind samples are narrower clocks, not command-wall measurements. Other auxiliary command clocks/CPU remain unknown. Parent packet totals excluded; no cloud cost inferred.",
+  "collected_at": "2026-11-03T00:08:47.358526+00:00",
+  "main_instrumented_command_attempts": 18,
+  "main_instrumented_command_wall_seconds": 2377.823581459059,
+  "known_auxiliary_command_wall_seconds": 55.48655212495942,
+  "known_command_wall_sum_seconds": 2433.3101335840183,
+  "main_instrumented_child_cpu_seconds": 1147.141016,
+  "cpu_limitation": "RUSAGE_CHILDREN only; Xcode build-service/other non-child daemon CPU, parent harness CPU and machine-wide contention are not captured. Not total native compute.",
+  "hosted_compute_dollars": null,
+  "publication_latency_seconds": null,
+  "accepted_availability_seconds": null,
+  "interpretation": "Sum of attempts includes failures and repeated planning; not elapsed recovery time or comparable performance. Parent budgets/resources are unchanged."
+}

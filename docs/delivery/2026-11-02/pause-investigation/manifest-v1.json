@@ -1,0 +1,10 @@
+{
+  "scope": "Diagnose the shared full-suite pause left unresolved by the NIO/B4 phase; no publication/deployment",
+  "source_identity": "../nio-b4/candidate-files.sha256; preserve the complete existing diff",
+  "budget": "15 minutes of initial diagnostic runs; no optimization or production fix without a reproduced cause",
+  "hypotheses": ["Synchronous ephemeral PostgreSQL setup/sweep blocks cooperative workers", "Synchronous database/fixture operations exhaust workers", "External contention or another unidentified blocking call"],
+  "experiment": "Unchanged full strict suite, fresh isolated TMPDIR, samples of only its own test helper at approximately2/15/40seconds after testing starts",
+  "required": ["All1164 existing tests/assertions retained", "SWIFTNIO_STRICT=1", "No production state, shared cache purge, remote writes or other-worktree process signals"],
+  "measurement": "Diagnostic sampling adds overhead; no speedup comparison. Record command wall/CPU, all outcomes and source identity. Raw stacks remain local; sanitized functions/hashes retained.",
+  "decision": "Use stacks to localize the blocker; if not reproduced, leave unresolved rather than guessing or changing timeouts"
+}

@@ -1,0 +1,46 @@
+criterion,case,authority,gate,status,evidence,reason
+C01.1,scope,User delivery contract; adopted observation-completeness gate,required,Pass,"S01,R01",CI endpoint and inherited channels/assets declared; acceptance remains unknown.
+C01.2,obligations,Repository AGENTS.md and existing CI obligation; user preservation gate,required,Pass,"S01,S02",Diff preserves every existing target/test/cache/signing/publication step; adds one fixture step.
+C01.3,authority,User delivery contract; adopted observation-completeness gate,required,Pass,S01,User authorizes reversible instrumentation; no new release gates or numeric SLO silently adopted.
+C02.1,clocks,User delivery contract; adopted observation-completeness gate,required,Pass,"B01,R01",Explicit original and attempt API creation clocks; updated_at never completion; absent timestamps unknown.
+C02.2,population,User delivery contract; adopted observation-completeness gate,required,Pass,"B01,R01",Eight frozen runs/nine attempts; outcomes unfiltered; all attempt pages required; no release intents inferred.
+C02.3,equivalence,User delivery contract; adopted observation-completeness gate,required,Pass,"S01,R01",No latency comparison across differing source/cache inputs; no precomputation or new hosted builds.
+C03.1,graph,Engineering recommendation; unchanged repository mechanism,advisory,Pass,S02,Workflow/script dependencies traced in report; runtime approval waits unknown.
+C03.2,critical-path,Engineering recommendation; unchanged repository mechanism,advisory,Untested,R01,Package/test duration is diagnostic hypothesis; no equivalent accepted-endpoint measurements.
+C03.3,serialization,Engineering recommendation; unchanged repository mechanism,advisory,Not applicable,S02,No scheduling optimization attempted without bottleneck/equivalence evidence.
+C04.1,shards,Engineering recommendation; unchanged repository mechanism,advisory,Not applicable,S02,No sharding or worker count change.
+C04.2,capacity,Engineering recommendation; unchanged repository mechanism,advisory,Untested,R01,Runner labels observed; allocation capacity/image versions/CPU/billing unavailable.
+C04.3,concurrency,Engineering recommendation; unchanged repository mechanism,advisory,Untested,S02,Existing ci cancellation preserved; no hosted concurrent candidate requests launched.
+C05.1,identity,User delivery contract; adopted observation-completeness gate,required,Untested,"B01,R01",Run/source/path/event/attempt matched; exact executed workflow revision unavailable; code content hashes frozen.
+C05.2,dependency-native,Engineering recommendation; unchanged repository mechanism,advisory,Untested,S02,Locks unchanged; dependency/toolchain/native cold-path candidate runs not performed.
+C05.3,reproducibility,User delivery contract; adopted observation-completeness gate,required,Pass,B01,Offline replay deterministic for same packet; no reproducible binary/signature claim.
+C06.1,cache-classification,Engineering recommendation; unchanged repository mechanism,advisory,Pass,"S01,S02",Existing cache classes enumerated; no caches added or restored by collector.
+C06.2,cold-partial-cache,Engineering recommendation; unchanged repository mechanism,advisory,Untested,S01,Hosted cache states unknown; cold/evicted/partial and invalidation experiments not run.
+C06.3,cache-trust,Engineering recommendation; unchanged repository mechanism,advisory,Untested,S02,No cache policy change; adversarial existing-cache namespace tests not performed.
+C07.1,selection,Engineering recommendation; unchanged repository mechanism,advisory,Not applicable,S02,No change-based work selection added; workflow tests run on all CI events.
+C07.2,unknown-paths,Engineering recommendation; unchanged repository mechanism,advisory,Not applicable,S02,No affected-work classifier or comparison base used.
+C07.3,reference-validation,Engineering recommendation; unchanged repository mechanism,advisory,Not applicable,S02,No test filtering or claimed equivalent selection.
+C08.1,checks,Repository AGENTS.md and existing CI obligation; user preservation gate,required,Pass,"S02,B01,R02",Existing checks preserved; new observation fixtures execute in lint.
+C08.2,reports,User delivery contract; adopted observation-completeness gate,required,Pass,B01,"Missing attempts/jobs/steps, duplicates and incomplete pagination denied; no shards introduced."
+C08.3,retry-signal,User delivery contract; adopted observation-completeness gate,required,Pass,"B01,R01",First failure retained; retry distinct; skipped/running unknown spans; no eventual-green reliability inference.
+C09.1,publication-manifest,Engineering recommendation; unchanged repository mechanism,advisory,Untested,S02,"Collector cannot authorize publication; existing publication gates unchanged, not exercised."
+C09.2,failure-propagation,User delivery contract; adopted observation-completeness gate,required,Pass,"B01,R02","CLI/API/schema failures nonzero, no report stdout; CI test command has no suppression."
+C09.3,negative-observation-gate,User delivery contract; adopted observation-completeness gate,required,Pass,B01,Known failure retained; missing/cancelled/skipped/malformed/incomplete observations handled; digest gate not introduced.
+C10.1,promotion,Engineering recommendation; unchanged repository mechanism,advisory,Untested,S02,Hub digest promotion retained; no final package built or republished.
+C10.2,artifact-lineage,Engineering recommendation; unchanged repository mechanism,advisory,Untested,A01,"Evidence/code digests recorded; release artifact/provenance lineage unavailable, explicitly null."
+C10.3,package-inventory,Engineering recommendation; unchanged repository mechanism,advisory,Untested,S02,No signed ZIP/OCI/chart/iOS package constructed or downloaded.
+C11.1,signing,Engineering recommendation; unchanged repository mechanism,advisory,Untested,S02,Owner signing/notarization and hub attestation paths unchanged; external verification not exercised.
+C11.2,privilege,User delivery contract; adopted observation-completeness gate,required,Pass,"S02,B01",No new permissions; collector fixed GET endpoints; local exclusive output; no credential/log collection.
+C11.3,origin,Engineering recommendation; unchanged repository mechanism,advisory,Untested,S02,"Release provenance checks not changed or exercised; metadata is observation, not proof of origin."
+C12.1,staging,Engineering recommendation; unchanged repository mechanism,advisory,Untested,S02,Publication/asset staging paths unchanged and not invoked.
+C12.2,distribution,Engineering recommendation; unchanged repository mechanism,advisory,Untested,S01,Download/install/update/adoption/endpoint checks outside authorized nonpublishing experiment; not certified.
+C12.3,partial-publication,Engineering recommendation; unchanged repository mechanism,advisory,Untested,S02,No release visibility changed; production partial-publication recovery not exercised.
+C13.1,cancellation,Engineering recommendation; unchanged repository mechanism,advisory,Untested,"S02,R01",Cancelled history retained; no cancellation across publication boundary injected.
+C13.2,capture-idempotency,User delivery contract; adopted observation-completeness gate,required,Pass,B01,Repeated capture refuses existing output before network; replay offline; no release effects.
+C13.3,channel-pointers,Engineering recommendation; unchanged repository mechanism,advisory,Untested,S02,No channel mutation added; cross-workflow stale-release synchronization not runtime-tested.
+C14.1,evidence,User delivery contract; adopted observation-completeness gate,required,Pass,"B01,R01",Allowlisted timestamps/steps/source and explicit metadata correction retained; unknowns stay null.
+C14.2,retries,User delivery contract; adopted observation-completeness gate,required,Pass,B01,"No automatic API retries; 100-request cap, 60s per-request timeout; interrupted collection writes no packet."
+C14.3,rollback,User delivery contract; adopted observation-completeness gate,required,Pass,"S02,B01",Local new-file boundary and output preservation exercised; reversal touches only listed files.
+C15.1,cost,User delivery contract; adopted observation-completeness gate,required,Pass,"B01,R01,M01",100-GET hard bound; zero added hosted runs/services; observed intervals not dollars; costs unknown.
+C15.2,maintainability,Engineering recommendation; unchanged repository mechanism,advisory,Pass,S02,"One standard-library collector/test module, no duplicate pipelines; three scoped reviews resolved findings."
+C15.3,final-integrated-native,User delivery contract; adopted observation-completeness gate,required,Untested,"B01,R02",Local integrated collector/holdout pass; hosted final pipeline/native/cold and accepted availability evidence absent.

@@ -2,6 +2,7 @@ import Foundation
 import NIOCore
 import NIOExtras
 import NIOPosix
+import Synchronization
 import WorkspaceClient
 import WorkspaceProtocol
 
@@ -12,6 +13,7 @@ public final class UnixSocketTransport: WorkspaceTransport, Sendable {
   private let outbound: NIOAsyncChannelOutboundWriter<ByteBuffer>
   private let group: EventLoopGroup
   private let readerTask: Task<Void, Never>
+  private let closeTask = Mutex<Task<Void, Never>?>(nil)
 
   private init(channel: NIOAsyncChannel<ByteBuffer, ByteBuffer>, group: EventLoopGroup) async throws {
     self.channel = channel
@@ -80,10 +82,21 @@ public final class UnixSocketTransport: WorkspaceTransport, Sendable {
   }
 
   public func close() async {
-    outbound.finish()
-    readerTask.cancel()
-    try? await channel.channel.close()
-    try? await group.shutdownGracefully()
+    let closing = closeTask.withLock { task in
+      if let task { return task }
+      let closing = Task { [outbound, readerTask, channel, group] in
+        outbound.finish()
+        readerTask.cancel()
+        try? await channel.channel.close()
+        // executeThenClose still finishes writers/closes the channel as its scope unwinds.
+        // Keep the event loop alive until that owner has completed all of its cleanup.
+        await readerTask.value
+        try? await group.shutdownGracefully()
+      }
+      task = closing
+      return closing
+    }
+    await closing.value
   }
 }
 

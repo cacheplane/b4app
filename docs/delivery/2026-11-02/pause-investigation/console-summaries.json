@@ -1,0 +1,200 @@
+[
+  {
+    "case_id": "final-build",
+    "test_summary": [],
+    "shutdown_diagnostic": false,
+    "scan_stage_seconds": [],
+    "build_succeeded": false,
+    "issues": []
+  },
+  {
+    "case_id": "actual-sweep-baseline",
+    "test_summary": [],
+    "shutdown_diagnostic": false,
+    "scan_stage_seconds": [
+      10.239021167,
+      7.101231291,
+      7.424150958
+    ],
+    "build_succeeded": false,
+    "issues": []
+  },
+  {
+    "case_id": "actual-frozen-baseline",
+    "test_summary": [],
+    "shutdown_diagnostic": false,
+    "scan_stage_seconds": [
+      0.027007,
+      0.012842084,
+      0.010961208
+    ],
+    "build_succeeded": false,
+    "issues": []
+  },
+  {
+    "case_id": "actual-frozen-candidate-corrected",
+    "test_summary": [
+      [
+        "6",
+        "2",
+        "passed",
+        "0.018",
+        ""
+      ]
+    ],
+    "shutdown_diagnostic": false,
+    "scan_stage_seconds": [
+      0.006350958,
+      0.00567175,
+      0.005610209
+    ],
+    "build_succeeded": false,
+    "issues": []
+  },
+  {
+    "case_id": "native-macos-local",
+    "test_summary": [],
+    "shutdown_diagnostic": false,
+    "scan_stage_seconds": [],
+    "build_succeeded": true,
+    "issues": []
+  },
+  {
+    "case_id": "diagnostic-full-1",
+    "test_summary": [
+      [
+        "1164",
+        "146",
+        "passed",
+        "79.246",
+        ""
+      ]
+    ],
+    "shutdown_diagnostic": false,
+    "scan_stage_seconds": [],
+    "build_succeeded": false,
+    "issues": []
+  },
+  {
+    "case_id": "actual-sweep-candidate",
+    "test_summary": [
+      [
+        "5",
+        "2",
+        "passed",
+        "0.966",
+        ""
+      ]
+    ],
+    "shutdown_diagnostic": false,
+    "scan_stage_seconds": [
+      0.622194667,
+      0.173510791,
+      0.16889925
+    ],
+    "build_succeeded": false,
+    "issues": []
+  },
+  {
+    "case_id": "actual-frozen-candidate",
+    "test_summary": [
+      [
+        "6",
+        "2",
+        "failed",
+        "0.017",
+        "2"
+      ]
+    ],
+    "shutdown_diagnostic": false,
+    "scan_stage_seconds": [
+      0.006183875,
+      0.005534625,
+      0.005378292
+    ],
+    "build_succeeded": false,
+    "issues": [
+      "\udbc2\udc84  Test anInvalidUTF8ScratchNameIsLeftAlone() recorded an issue at ScratchSweepTests.swift:104:5: Expectation failed: (path.withUnsafeBufferPointer { mkdir($0.baseAddress!, 0o700) } \u2192 -1) == 0",
+      "\udbc2\udc84  Test anInvalidUTF8ScratchNameIsLeftAlone() recorded an issue at ScratchSweepTests.swift:111:5: Expectation failed: (path.withUnsafeBufferPointer { access($0.baseAddress!, F_OK) } \u2192 -1) == 0"
+    ]
+  },
+  {
+    "case_id": "actual-frozen-candidate-final",
+    "test_summary": [
+      [
+        "6",
+        "2",
+        "failed",
+        "0.018",
+        "2"
+      ]
+    ],
+    "shutdown_diagnostic": false,
+    "scan_stage_seconds": [
+      0.006385875,
+      0.005498125,
+      0.005396
+    ],
+    "build_succeeded": false,
+    "issues": [
+      "\udbc2\udc84  Test aMaximumLengthScratchNameIsRecognized() recorded an issue at ScratchSweepTests.swift:106:5: Expectation failed: (removed \u2192 []) == ([root + \"/\" + name] \u2192 [\"/var/folders/_b/0t5_pyt94n7dlqkv1gmt29300000gn/T/scratch-long-name-12D31337-D440-4920-95EE-017FE5605B39/b4pgs-114-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "\udbc2\udc84  Test aMaximumLengthScratchNameIsRecognized() recorded an issue at ScratchSweepTests.swift:107:5: Expectation failed: try fm.contentsOfDirectory(atPath: root).isEmpty"
+    ]
+  },
+  {
+    "case_id": "native-macos-prod-release",
+    "test_summary": [],
+    "shutdown_diagnostic": false,
+    "scan_stage_seconds": [],
+    "build_succeeded": true,
+    "issues": []
+  },
+  {
+    "case_id": "native-macos-beta",
+    "test_summary": [],
+    "shutdown_diagnostic": false,
+    "scan_stage_seconds": [],
+    "build_succeeded": true,
+    "issues": []
+  },
+  {
+    "case_id": "native-project-generation",
+    "test_summary": [],
+    "shutdown_diagnostic": false,
+    "scan_stage_seconds": [],
+    "build_succeeded": false,
+    "issues": []
+  },
+  {
+    "case_id": "final-cold",
+    "test_summary": [
+      [
+        "1166",
+        "146",
+        "passed",
+        "55.835",
+        ""
+      ]
+    ],
+    "shutdown_diagnostic": false,
+    "scan_stage_seconds": [],
+    "build_succeeded": false,
+    "issues": []
+  },
+  {
+    "case_id": "final-full-warm",
+    "test_summary": [
+      [
+        "1166",
+        "146",
+        "passed",
+        "54.501",
+        ""
+      ]
+    ],
+    "shutdown_diagnostic": false,
+    "scan_stage_seconds": [],
+    "build_succeeded": false,
+    "issues": []
+  }
+]

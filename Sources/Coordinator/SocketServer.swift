@@ -2,6 +2,7 @@ import Foundation
 import NIOCore
 import NIOExtras
 import NIOPosix
+import Synchronization
 import WorkspaceProtocol
 
 /// NIO server on the coordinator's Unix socket: hello on connect, events fanned out, commands routed.
@@ -9,6 +10,7 @@ public final class SocketServer: Sendable {
   private let group: MultiThreadedEventLoopGroup
   private let serverChannel: NIOAsyncChannel<NIOAsyncChannel<ByteBuffer, ByteBuffer>, Never>
   private let acceptTask: Task<Void, Never>
+  private let closeTask = Mutex<Task<Void, Never>?>(nil)
   public let socketPath: String
 
   private init(
@@ -79,7 +81,10 @@ public final class SocketServer: Sendable {
           }
           group.addTask {
             for try await buffer in inbound {
-              let response = await router.dispatch(line: Data(buffer.readableBytesView))
+              guard
+                let response = await Self.dispatch(
+                  line: Data(buffer.readableBytesView), router: router), !Task.isCancelled
+              else { return }
               try await outbound.write(ByteBuffer(bytes: try NDJSON.encodeLine(response)))
             }
           }
@@ -92,10 +97,69 @@ public final class SocketServer: Sendable {
     }
   }
 
+  /// Disconnecting a viewer cancels its wait, even if an external call ignores cancellation.
+  /// The command may still finish (as before); its task owns no NIO channel or writer, so a late
+  /// result cannot schedule work on an event loop whose connection has already been closed.
+  private static func dispatch(line: Data, router: Router) async -> ResponseEnvelope? {
+    let reply = SocketReply()
+    let work = Task { [line, router, reply] in
+      reply.resolve(await router.dispatch(line: line))
+    }
+    return await withTaskCancellationHandler {
+      await reply.value()
+    } onCancel: {
+      work.cancel()
+      reply.resolve(nil)
+    }
+  }
+
   public func close() async {
-    acceptTask.cancel()
-    try? await serverChannel.channel.close()
-    try? await group.shutdownGracefully()
-    try? FileManager.default.removeItem(atPath: socketPath)
+    let closing = closeTask.withLock { task in
+      if let task { return task }
+      let closing = Task { [acceptTask, serverChannel, group, socketPath] in
+        acceptTask.cancel()
+        try? await serverChannel.channel.close()
+        // The accept task owns the per-connection scopes too. They must unwind before
+        // the shared event loop is shut down, including when clients are still connected.
+        await acceptTask.value
+        try? await group.shutdownGracefully()
+        try? FileManager.default.removeItem(atPath: socketPath)
+      }
+      task = closing
+      return closing
+    }
+    await closing.value
+  }
+}
+
+/// A single reply or a cancelled wait. Late results are discarded without retaining any I/O state.
+private final class SocketReply: Sendable {
+  private struct State {
+    var resolved = false
+    var response: ResponseEnvelope?
+    var waiter: CheckedContinuation<ResponseEnvelope?, Never>?
+  }
+  private let state = Mutex(State())
+
+  func resolve(_ response: ResponseEnvelope?) {
+    let waiter = state.withLock { state -> CheckedContinuation<ResponseEnvelope?, Never>? in
+      guard !state.resolved else { return nil }
+      state.resolved = true
+      state.response = response
+      defer { state.waiter = nil }
+      return state.waiter
+    }
+    waiter?.resume(returning: response)
+  }
+
+  func value() async -> ResponseEnvelope? {
+    await withCheckedContinuation { continuation in
+      let ready = state.withLock { state in
+        if state.resolved { return (true, state.response) }
+        state.waiter = continuation
+        return (false, nil as ResponseEnvelope?)
+      }
+      if ready.0 { continuation.resume(returning: ready.1) }
+    }
   }
 }

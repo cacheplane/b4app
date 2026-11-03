@@ -2,6 +2,28 @@
 
 States: `implemented` (code exists), `fixture-tested` (covered by tests with fixtures or fake executables), `live-tested` (exercised on the target Mac against the real runtime), `blocked` (needs an external action, named). Never mark a mocked path as live.
 
+## Test startup scan follow-up (2026-11-02)
+
+- [x] Names-only ephemeral PostgreSQL scratch discovery with all existing cleanup protections. `implemented`, `fixture-tested`; two regressions, full strict 1,166-test warm/cold passes and three affected unsigned macOS builds. Three unchanged iOS results reused with digest/input proof.
+- [x] Actual frozen-namespace helper measurements: 55.83% median focused-stage reduction. Failed controls and retrospective input metadata retained.
+- [ ] Hosted candidate speed/reliability and accepted distribution remain untested under the nonpublishing scope. Historical60s pause attribution remains limited to the directly sampled blocker. Evidence: `docs/delivery/2026-11-02/pause-investigation/README.md`.
+
+## NIO shutdown and B4 bind follow-up (2026-11-02)
+
+- [x] Idempotent NIO owner-joined shutdown, cancellation-independent reply wait and strict CI checking. `implemented`, `fixture-tested`; four regressions, full1,164-test warm/cold passes and six unsigned native builds.
+- [x] Both B4 fixture binds skip unused reverse DNS; negative regression and bounded timing profiler. `implemented`, `fixture-tested`; controlled 35s injection 35.055110s→.000632s.
+- [ ] Actual hosted CI gain and distribution acceptance remain `blocked` by unexecuted external validation under the nonpublishing scope. No publication/deployment performed. Evidence: `docs/delivery/2026-11-02/nio-b4/README.md`. Earlier open NIO notes below describe the preceding verification state.
+
+## CI fixture reliability follow-up (2026-11-02)
+
+- [x] Revocation wake-up, durable permission publication, explicit B4 recovery handshakes and quiescent sync assertions. `implemented`, `fixture-tested`; negative controls red/green,19Python checks, six full corrected-suite passes (four default), isolated cold full holdout and six signing-disabled native builds. Evidence: `docs/delivery/2026-11-02/swift-tests/README.md`.
+- [ ] Current hosted candidate and distribution acceptance; supported latency improvement. Concurrency trials rejected rather than installed; delivery-speed conclusion remains `Incomplete`. Existing NIO shutdown diagnostic remains open; no production action taken.
+
+## Delivery instrumentation (2026-11-02)
+
+- [x] Read-only CI observation capture, complete attempt/page accounting, offline replay, negative/partial-rerun holdout and CLI output preservation. `implemented`, `fixture-tested`; actual GitHub GET metadata capture/replay for eight historical runs/nine attempts, not a live distribution test. Evidence: `docs/delivery/2026-11-02/README.md`.
+- [ ] Hosted final candidate, cold/native equivalence, release artifact lineage, endpoint/install acceptance and supported latency improvement. Open evidence gates; no release mutation performed.
+
 ## M0: build and compatibility baseline
 
 - [x] Inspect the repository; create the minimal workspace. `implemented` (this PR, Swift package plus XcodeGen apps).

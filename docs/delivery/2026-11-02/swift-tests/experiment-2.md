@@ -1,0 +1,7 @@
+# Fixture correctness iteration (pre-change)
+
+Observed baseline: full Swift tests fail on the phone's account revocation (also in hosted run41519013466). FakeHubAPI.endSession/deleteAccount set revoked without waking parked pulls; revokeSelf already wakes them. Add parameterized bounded regression: park first, revoke, require401 before a2-second cancellation guard; CancellationError must fail. Then add the missing wake to both revocation paths. Preserve the existing phone/account assertions and run them after the direct regression.
+
+Other baseline failures: lifecycle restart sends a three-second "slow" turn, but coordinator setup/shutdown can outlast the run; dropped-stream test waits a fixed1s before completing the server run, but reattachment can take longer under load. Both tests intend a particular event ordering, not a particular machine speed. A separate iteration will replace those fixture delays with explicit handshakes while preserving existing outcome/text/turn-count assertions. No production adapter/runtime logic change is proposed.
+
+The two historical HubSync failures compare a store while timer/nudge/pull can mutate it and inject a single401 into whichever call wins. Synchronize those tests with stopped background sync and an explicit push when fault injection is required; retain every data/sign-out assertion. These are test-state controls, not removal of required sync coverage (other tests exercise live background push/pull).

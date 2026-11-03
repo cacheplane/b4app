@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "frozen_before_candidate": true,
+  "product_source_revision": "02f201c0e504004df512d88e267ca6d82af8410d",
+  "candidate_identity": "candidate-files.sha256 (final content identity; no commit created)",
+  "scope": "CI attempt observation; release paths inspected, unchanged; no distribution acceptance claim",
+  "authority": "User delivery contract sections 2, 3, 6; repository AGENTS.md and existing workflows",
+  "required_gates": [
+    "measurement honesty",
+    "unchanged existing delivery obligations",
+    "fail-closed observation completeness",
+    "evidence for every claimed improvement"
+  ],
+  "adopted_gate": "Collector rejects incomplete/malformed attempt/job sets; never certifies release acceptance",
+  "objective": {
+    "delivery": "Provisional future objective: >=10% lower median creation-to-last-required-job completion on equivalent warm CI inputs; <=5% runner-second increase, no cold regression >10%, no lost coverage. Not evaluated in instrumentation iteration.",
+    "iteration": "Capture all eight sampled runs and all attempts including non-success; reproducible job/step durations; unknown release boundaries remain null."
+  },
+  "population": {
+    "workflow": "ci.yml",
+    "selection": "latest eight runs, unfiltered by outcome, captured once before candidate",
+    "window": "Snapshot in /tmp/b4-ci-runs.json; raw selected metadata retained in evidence.json",
+    "exclusions": []
+  },
+  "cases": [
+    "ordinary/warm (cache unknown in API)",
+    "queued and running",
+    "failed/cancelled/skipped",
+    "retry attempts and missing attempt",
+    "pagination >100 jobs",
+    "malformed time / duplicate job / incomplete page",
+    "broad/workflow change",
+    "held-out partial rerun after failure"
+  ],
+  "native_targets": [
+    "Swift libraries/coordinator/CLI tests",
+    "macOS local and beta",
+    "iOS simulator local and beta",
+    "Rust hub format/clippy/tests"
+  ],
+  "unchanged_release_channels": [
+    "Mac prod signed/notarized ZIP plus stable-name asset and tap PR",
+    "Mac beta prerelease signed/notarized ZIP",
+    "iOS prod/beta upload via owner script",
+    "hub linux/amd64 and linux/arm64 OCI index, GHCR semver tags, ECS production, Helm OCI chart"
+  ],
+  "locks": {
+    "Package.resolved": "2ccd523e0a9073145aa6b835a1fe00b252ba476b19c24851c9c355ca481d0ce1",
+    "Hub/Cargo.lock": "be3e7b923426170c8df5b987b248335db8197098c6523705526149fe937dab45"
+  },
+  "runners": {
+    "ci": [
+      "macos-26 / Xcode 26.6",
+      "ubuntu-latest / Rust 1.93.1",
+      "ubuntu-latest lint"
+    ],
+    "image_versions": "actual historical runner image/tool versions unknown without logs; labels retained per job",
+    "local": "macOS-26.5-arm64-arm-64bit",
+    "python": "3.12.12"
+  },
+  "environment": "No secret values collected; event/head_sha/path/attempt/labels retained; flags per unchanged workflows",
+  "caches": {
+    "SwiftPM": "existing .build and dependency downloads; OS+lock key; broad OS restore",
+    "Xcode": "existing .spm; OS+lock key",
+    "Cargo": "registry/git/target OS+lock key",
+    "Postgres": "archive keyed on fetch script",
+    "state": "unknown per sampled run; no shared cache operations"
+  },
+  "cost_limits": {
+    "new_hosted_runs": 0,
+    "new_services": 0,
+    "local_seconds_budget": 300,
+    "read_api_requests_budget": 100,
+    "dollars": "unknown; no additional hosted compute authorized or used"
+  },
+  "rollback": "Remove collector/tests and CI test step; revert evidence docs. No database, artifact, cache or channel state changed.",
+  "holdout": "Synthetic failed attempt followed by partial rerun with skipped native job; reserved until implementation frozen",
+  "experiment_budget": 1,
+  "pipeline_policy": "No speed optimization without equivalent run evidence; instrumentation is reported separately"
+}

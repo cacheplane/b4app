@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "parent": "manifest-v1.json",
+  "diagnoses": [
+    "Strict NIO baseline and repeated transport closure terminate with the existing scheduling-after-shutdown fatal error.",
+    "Cancellation plus channel close must be followed by joining executeThenClose owners, with one shared shutdown task for repeated/concurrent callers.",
+    "A regression caught unbounded server closure with a cancellation-ignoring router call. A cancellation-aware reply box now separates that work from the NIO scope; late replies retain no channel or writer.",
+    "Both fake B4 entry points use HTTPServer.server_bind, whose unused getfqdn call matches GitHub's independently reproduced macOS26 loopback resolver stall. Negative tests catch that call; a controlled35-second injection reproduces its cost."
+  ],
+  "adopted_checks": {
+    "Swift package Test step": "SWIFTNIO_STRICT=1 makes the former warning a required failure rather than suppressing it.",
+    "fixture bind profiler": "Required successful real bind/readiness/cleanup for both entry points; existing full Swift HTTP/SSE assertions remain required.",
+    "unpatched DNS probe": "Advisory, process timeout1second including interpreter startup; lookup duration is unknown on timeout. Never accepted as a measured35-second DNS call."
+  },
+  "evidence_classes": {
+    "strict regressions/full suites": "R+B actual local fixture runs",
+    "injected resolver measurements": "B+M simulated runner condition; not live CI or accepted-availability measurements",
+    "upstream report": "Primary maintainer reproduction supports inference; not this repository's current CI evidence",
+    "local unpatched profile": "R+M local resolver is fast; not comparable to hosted runner environment"
+  },
+  "upstream": "https://github.com/actions/setup-python/issues/1223",
+  "new_test_coverage": "Four shutdown regressions added; original1160 Swift tests retained. Python regression checks both real entry points with only OS bind/listen and serving stubbed.",
+  "local_capacity": "Observed concurrent compiler activity and SwiftPM lock waiting. Ownership/cause not fully established; no cross-run whole-path latency claim. Later compiles use --jobs2 locally without changing CI worker count.",
+  "CI_execution_limit": "Existing CI triggers only main push or pull_request. No remote write/push/PR/dispatch performed under nonpublishing restriction; hosted candidate confirmation remains Untested.",
+  "holdout": "Full strict suite on final code plus fresh isolated cache regeneration; idle clients and delayed noncooperative request covered without relying on sleeps for success.",
+  "rollback": "Revert only this phase's NIO lifecycle/reply changes, DNS-free fixture bind and added CI strict/profiler settings/tests; preserve prior fixture fixes/collector. No production state touched."
+}

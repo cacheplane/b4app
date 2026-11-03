@@ -1,0 +1,128 @@
+{
+  "findings": [
+    {
+      "id": "NB01",
+      "primary_criterion": "C09.2",
+      "severity": "S2",
+      "designation": "baseline",
+      "title": "Cleanup scheduled after event-loop shutdown",
+      "reproduction": "SWIFTNIO_STRICT=1 baseline and repeated-close regression terminate at SelectableEventLoop.swift511.",
+      "expected": "Owner cleanup completes before loop shutdown, once per instance.",
+      "observed": "SWIFTNIO_STRICT=1 baseline and repeated-close regression terminate at SelectableEventLoop.swift511.",
+      "consequence": "Correctness/reliability or attribution risk within the declared CI scope.",
+      "evidence": [
+        "observations.jsonl",
+        "console-summaries.json",
+        "baseline-bind.json",
+        "candidate-bind.json",
+        "code diff",
+        "manifest-v3-amendment.json"
+      ],
+      "decision": "Join I/O owners through one shared close task; preserve strict fatal as a required gate.",
+      "retest": "Final warm1164 strict pass, four shutdown regressions; cold/native separately recorded."
+    },
+    {
+      "id": "NB02",
+      "primary_criterion": "C03.3",
+      "severity": "S2",
+      "designation": "baseline",
+      "title": "Unused reverse DNS on each B4 fixture bind",
+      "reproduction": "HTTPServer.server_bind invokes getfqdn; both actual entry points fail the negative no-DNS test. Controlled35s resolver injection35.055110s baseline, .000631542s candidate.",
+      "expected": "Bind/readiness never depends on canonical hostname unused by fixture.",
+      "observed": "HTTPServer.server_bind invokes getfqdn; both actual entry points fail the negative no-DNS test. Controlled35s resolver injection35.055110s baseline, .000631542s candidate.",
+      "consequence": "Correctness/reliability or attribution risk within the declared CI scope.",
+      "evidence": [
+        "observations.jsonl",
+        "console-summaries.json",
+        "baseline-bind.json",
+        "candidate-bind.json",
+        "code diff",
+        "manifest-v3-amendment.json"
+      ],
+      "decision": "Shared numeric-address bind retained; unchanged HTTP/SSE behavior still required.",
+      "retest": "20Python checks and1164fullwarm pass. Hosted35second attribution inferred, actual hosted improvement Untested."
+    },
+    {
+      "id": "NB03",
+      "primary_criterion": "C08.1",
+      "severity": "S2",
+      "designation": "intermediate regression",
+      "title": "Joining request work could make server close unbounded",
+      "reproduction": "Initial owner-join candidate fails held-hub shutdown regression while externalcall ignores cancellation.",
+      "expected": "Shutdown should finish while hub remains held; command may finish later without I/O state.",
+      "observed": "Initial owner-join candidate fails held-hub shutdown regression while externalcall ignores cancellation.",
+      "consequence": "Correctness/reliability or attribution risk within the declared CI scope.",
+      "evidence": [
+        "observations.jsonl",
+        "console-summaries.json",
+        "baseline-bind.json",
+        "candidate-bind.json",
+        "code diff",
+        "manifest-v3-amendment.json"
+      ],
+      "decision": "Cancellation-aware reply isolates router work from I/O owner; one dispatch, no reply after cancellation.",
+      "retest": "Four focused strict tests pass; final warm held-hub regression6.147s under load. Final cold/native separate."
+    },
+    {
+      "id": "NB04",
+      "primary_criterion": "C08.3",
+      "severity": "S1",
+      "designation": "intermediate test guard",
+      "title": "Full-run timing guards failed",
+      "reproduction": "First1164full final-bridge run: existing mirror elapsed60.012s exceeds30s; new1s shutdown guard false. Many unrelated cases delayed60s; pause cause unresolved.",
+      "expected": "Retain existing assertion; separate liveness requirement from tight performance guard.",
+      "observed": "First1164full final-bridge run: existing mirror elapsed60.012s exceeds30s; new1s shutdown guard false. Many unrelated cases delayed60s; pause cause unresolved.",
+      "consequence": "Correctness/reliability or attribution risk within the declared CI scope.",
+      "evidence": [
+        "observations.jsonl",
+        "console-summaries.json",
+        "baseline-bind.json",
+        "candidate-bind.json",
+        "code diff",
+        "manifest-v3-amendment.json"
+      ],
+      "decision": "Existing mirror unchanged. New shutdown deadlock guard30s, hub stillheld untilafterassert. No CI retry/cap. All failures retained.",
+      "retest": "8test isolationpass; amended full1164pass. Not first-attempt-perfect reliability or speedup evidence."
+    },
+    {
+      "id": "NB05",
+      "primary_criterion": "C15.3",
+      "severity": "S2",
+      "designation": "evidence gap",
+      "title": "Hosted candidate not executed",
+      "reproduction": "Workflow onlypushmain/PR; no remote write made per no publication instruction.",
+      "expected": "Verify actual runner with strict gate/profiler before claiming hostedCI gain.",
+      "observed": "Workflow onlypushmain/PR; no remote write made per no publication instruction.",
+      "consequence": "Correctness/reliability or attribution risk within the declared CI scope.",
+      "evidence": [
+        "observations.jsonl",
+        "console-summaries.json",
+        "baseline-bind.json",
+        "candidate-bind.json",
+        "code diff",
+        "manifest-v3-amendment.json"
+      ],
+      "decision": "Leave candidate reviewable and currentCI confirmation Untested.",
+      "retest": "No hosted/delivery acceptance claim; no new authority requested or publication performed."
+    },
+    {
+      "id": "NB06",
+      "primary_criterion": "C15.1",
+      "severity": "S1",
+      "designation": "reporting",
+      "title": "Resource total scope omitted measured static wall",
+      "reproduction": "Compare main ledger wall sum with seven final-static auxiliary wall values.",
+      "expected": "Account for known command clocks separately and leave unknown CPU explicit.",
+      "observed": "Old aggregate label omitted auxiliary static-check wall.",
+      "consequence": "Understated apparent validation effort if interpreted as all command wall.",
+      "evidence": [
+        "auxiliary-attempts.json",
+        "resources.json",
+        "audit.py",
+        "review.json"
+      ],
+      "decision": "Renamed main instrumented totals, separately summed known auxiliary command wall, added known sum and Xcode non-child CPU limitation.",
+      "retest": "Audit regenerated from both ledgers; exact sums retained with no benchmark rerun."
+    }
+  ]
+}

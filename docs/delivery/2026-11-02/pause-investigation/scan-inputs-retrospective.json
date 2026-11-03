@@ -1,0 +1,18 @@
+{
+  "augmented_at": "2026-11-03T04:43:58.360450+00:00",
+  "retrospective": true,
+  "limitation": "Recipe and command environment are reconstructed from executed setup/commands; inventory verified now, not a contemporaneous baseline snapshot. Owned namespace was not modified by read-only benchmark calls. No live namespace equivalence assumed.",
+  "frozen_root": "/tmp/b4-pause-evidence/scan-control",
+  "recipe": "For n in range(5000), create unrelated-n: n%3=0 directory,1 zero-byte file,2 symlink to root/missing-target. No other entries.",
+  "inventory_encoding": "JSON sorted_keys=True,separators=(comma,colon), records in numeric order",
+  "inventory_sha256": "f77d11871651a8cdae4fd2cb2215f6b74a7ae7c15b7c20c5007e6d0bce3f3ebd",
+  "entries": 5000,
+  "case_scan_roots": {
+    "actual-sweep-baseline": "/private/var/folders/_b/0t5_pyt94n7dlqkv1gmt29300000gn/T",
+    "actual-sweep-candidate": "/private/var/folders/_b/0t5_pyt94n7dlqkv1gmt29300000gn/T",
+    "actual-frozen-baseline": "/tmp/b4-pause-evidence/scan-control",
+    "actual-frozen-candidate": "/tmp/b4-pause-evidence/scan-control",
+    "actual-frozen-candidate-final": "/tmp/b4-pause-evidence/scan-control",
+    "actual-frozen-candidate-corrected": "/tmp/b4-pause-evidence/scan-control"
+  }
+}

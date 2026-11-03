@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "python": "3.12.12",
+  "executable": "/Users/blove/.pyenv/versions/3.12.12/bin/python3",
+  "platform": "macOS-26.5-arm64-arm-64bit",
+  "resolver_probe": {
+    "status": "completed",
+    "lookup_seconds": 0.009855000011157244,
+    "probe_process_wall_seconds": 0.05631383397849277
+  },
+  "fixture_timings": [
+    {
+      "entry": "standalone",
+      "bind_readiness_cleanup_seconds": 0.0008562079747207463
+    },
+    {
+      "entry": "managed",
+      "bind_readiness_cleanup_seconds": 5.0125003326684237e-05
+    }
+  ],
+  "source_hashes": {
+    "fake-b4.py": "b7ebeca7086af8db62c388702231facb8df40f6c77dd6a7a6bb29191e73bd118",
+    "fake-b4-cli.py": "c20e7c08b7425b1d55f686e23b575fc0858def6d3304efaf3722cf2b7c070646"
+  },
+  "stdlib_bind_source_sha256": "61b8d2865084de56a288579113b8a0cd09aaf3f4a1fc2b7fb6def6903442a96c",
+  "requiredness": {
+    "resolver_probe": "advisory",
+    "fixture_bind_readiness": "required"
+  },
+  "boundary": "Real socket bind, readiness and immediate cleanup; serve loop interrupted. Excludes imports and HTTP traffic."
+}

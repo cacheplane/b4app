@@ -1,0 +1,11 @@
+{
+  "parent": "manifest-v1.json",
+  "observed": "A3second sample shows main-thread EphemeralPostgres.sweepStale→FileManager.contentsOfDirectory→getattrlistbulk for2551sample ticks; startup-lock waiters block other workers. Later samples show normal SQL work. This local scan blocker is observed, but does not prove every historical60second pause had the same cause.",
+  "candidate": "Use Darwin directory names only, then retain the existing scratch-owner, liveness, age, process-identity and removal checks unchanged. No startup prewarming, asynchronous lifecycle redesign, cache purge or worker cap.",
+  "alternatives_rejected": ["Prewarm would move work outside the measured tests and leave the expensive scan", "Skip global temporary-directory cleanup would remove crash recovery coverage"],
+  "focused_objective": "Provisional>=10% scan-stage improvement, unchanged returned names in a frozen mixed-type namespace and unchanged cleanup decisions. No whole-CI speed conclusion from contended/sampled full runs.",
+  "controls": "Three interleaved scan pairs;5000owned mixed-type entries are frozen. Live temporary directory is mutable, so exact name equality is advisory and no stable-input speed ratio claimed there. Initial live equality assertion failed and remains recorded.",
+  "validation": "Existing scratch sweep tests, extra Unicode/file/symlink cleanup characterization, complete strict Swift suite and fresh-cache holdout. Native macOS rebuild required; iOS reuse permitted only if its source dependency graph is unchanged.",
+  "budget": "One focused implementation after diagnostic localization; necessary correctness verification may continue beyond the initial15minute diagnostic budget. No additional optimization hypotheses.",
+  "rollback": "Revert only names-only enumeration and its added test; preserve all prior NIO/B4 work and cleanup protections"
+}

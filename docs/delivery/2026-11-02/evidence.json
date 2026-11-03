@@ -1,0 +1,3942 @@
+{
+  "schema_version": 1,
+  "evidence_mode": "actual-api",
+  "repository": "cacheplane/b4app",
+  "collection_started_at": "2026-11-02T21:06:33.604653+00:00",
+  "selection": "latest unfiltered runs at selection snapshot; attempts bounded by that snapshot",
+  "selected_runs": [
+    {
+      "id": 41524933845,
+      "run_attempt": 1,
+      "head_sha": "c0e2df20e1606821c64b84d58c00809d78f70b72",
+      "path": ".github/workflows/ci.yml",
+      "event": "push",
+      "status": "queued",
+      "conclusion": null,
+      "created_at": "2026-11-02T21:04:11Z",
+      "run_started_at": "2026-11-02T21:04:11Z",
+      "updated_at": "2026-11-02T21:04:11Z",
+      "html_url": "https://github.com/cacheplane/b4app/actions/runs/41524933845"
+    },
+    {
+      "id": 41523904947,
+      "run_attempt": 1,
+      "head_sha": "8b6cf35ebee0a8c412ec15da5ebeb614933a39b9",
+      "path": ".github/workflows/ci.yml",
+      "event": "pull_request",
+      "status": "in_progress",
+      "conclusion": null,
+      "created_at": "2026-11-02T20:57:22Z",
+      "run_started_at": "2026-11-02T20:57:22Z",
+      "updated_at": "2026-11-02T20:57:59Z",
+      "html_url": "https://github.com/cacheplane/b4app/actions/runs/41523904947"
+    },
+    {
+      "id": 41522427289,
+      "run_attempt": 1,
+      "head_sha": "738f9aa3aff43927094a412aa46f9e0201c12ec2",
+      "path": ".github/workflows/ci.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "cancelled",
+      "created_at": "2026-11-02T20:47:33Z",
+      "run_started_at": "2026-11-02T20:47:33Z",
+      "updated_at": "2026-11-02T20:57:55Z",
+      "html_url": "https://github.com/cacheplane/b4app/actions/runs/41522427289"
+    },
+    {
+      "id": 41519926572,
+      "run_attempt": 2,
+      "head_sha": "138cdf33e6dfdaafbec89fff2574e1089427d544",
+      "path": ".github/workflows/ci.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-02T20:31:10Z",
+      "run_started_at": "2026-11-02T20:50:34Z",
+      "updated_at": "2026-11-02T20:58:34Z",
+      "html_url": "https://github.com/cacheplane/b4app/actions/runs/41519926572"
+    },
+    {
+      "id": 41519013466,
+      "run_attempt": 1,
+      "head_sha": "e1be022fae74dda235fe13629887069706d6505c",
+      "path": ".github/workflows/ci.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-11-02T20:25:10Z",
+      "run_started_at": "2026-11-02T20:25:10Z",
+      "updated_at": "2026-11-02T20:56:16Z",
+      "html_url": "https://github.com/cacheplane/b4app/actions/runs/41519013466"
+    },
+    {
+      "id": 41515966943,
+      "run_attempt": 1,
+      "head_sha": "8d3382fc2a2a4eb7faa8207acc2991b2b6b768c0",
+      "path": ".github/workflows/ci.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-11-02T20:05:25Z",
+      "run_started_at": "2026-11-02T20:05:25Z",
+      "updated_at": "2026-11-02T20:26:12Z",
+      "html_url": "https://github.com/cacheplane/b4app/actions/runs/41515966943"
+    },
+    {
+      "id": 41514981940,
+      "run_attempt": 1,
+      "head_sha": "cd73fbc3a059d7a6d0d592f2154ab102a6a1ce08",
+      "path": ".github/workflows/ci.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-11-02T19:59:11Z",
+      "run_started_at": "2026-11-02T19:59:11Z",
+      "updated_at": "2026-11-02T20:25:29Z",
+      "html_url": "https://github.com/cacheplane/b4app/actions/runs/41514981940"
+    },
+    {
+      "id": 41513320488,
+      "run_attempt": 1,
+      "head_sha": "7ba13488814179f7ddcfd213b53f443bdb4e4572",
+      "path": ".github/workflows/ci.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "cancelled",
+      "created_at": "2026-11-02T19:48:15Z",
+      "run_started_at": "2026-11-02T19:48:15Z",
+      "updated_at": "2026-11-02T20:05:57Z",
+      "html_url": "https://github.com/cacheplane/b4app/actions/runs/41513320488"
+    }
+  ],
+  "attempts": [
+    {
+      "run": {
+        "id": 41524933845,
+        "run_attempt": 1,
+        "head_sha": "c0e2df20e1606821c64b84d58c00809d78f70b72",
+        "path": ".github/workflows/ci.yml",
+        "event": "push",
+        "status": "queued",
+        "conclusion": null,
+        "created_at": "2026-11-02T21:04:11Z",
+        "run_started_at": "2026-11-02T21:04:11Z",
+        "updated_at": "2026-11-02T21:04:12Z",
+        "html_url": "https://github.com/cacheplane/b4app/actions/runs/41524933845"
+      },
+      "jobs": [
+        {
+          "id": 125550110975,
+          "run_id": 41524933845,
+          "head_sha": "c0e2df20e1606821c64b84d58c00809d78f70b72",
+          "name": "macOS and iOS app builds",
+          "labels": [
+            "macos-26"
+          ],
+          "status": "in_progress",
+          "conclusion": null,
+          "started_at": "2026-11-02T21:04:15Z",
+          "completed_at": null,
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41524933845/job/125550110975",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:16Z",
+              "completed_at": "2026-11-02T21:04:17Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:17Z",
+              "completed_at": "2026-11-02T21:04:20Z"
+            },
+            {
+              "number": 3,
+              "name": "Select Xcode 26.6",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:20Z",
+              "completed_at": "2026-11-02T21:04:20Z"
+            },
+            {
+              "number": 4,
+              "name": "Install XcodeGen",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:20Z",
+              "completed_at": "2026-11-02T21:04:27Z"
+            },
+            {
+              "number": 5,
+              "name": "Generate project",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:27Z",
+              "completed_at": "2026-11-02T21:04:27Z"
+            },
+            {
+              "number": 6,
+              "name": "Cache SwiftPM (xcodebuild)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:27Z",
+              "completed_at": "2026-11-02T21:04:40Z"
+            },
+            {
+              "number": 7,
+              "name": "Build macOS app",
+              "status": "in_progress",
+              "conclusion": null,
+              "started_at": "2026-11-02T21:04:40Z",
+              "completed_at": null
+            },
+            {
+              "number": 8,
+              "name": "Build iOS app (simulator)",
+              "status": "pending",
+              "conclusion": null,
+              "started_at": null,
+              "completed_at": null
+            },
+            {
+              "number": 9,
+              "name": "Build macOS app (beta)",
+              "status": "pending",
+              "conclusion": null,
+              "started_at": null,
+              "completed_at": null
+            },
+            {
+              "number": 10,
+              "name": "Build iOS app (beta, simulator)",
+              "status": "pending",
+              "conclusion": null,
+              "started_at": null,
+              "completed_at": null
+            },
+            {
+              "number": 19,
+              "name": "Post Cache SwiftPM (xcodebuild)",
+              "status": "pending",
+              "conclusion": null,
+              "started_at": null,
+              "completed_at": null
+            },
+            {
+              "number": 20,
+              "name": "Post Run actions/checkout@v5",
+              "status": "pending",
+              "conclusion": null,
+              "started_at": null,
+              "completed_at": null
+            }
+          ]
+        },
+        {
+          "id": 125550111645,
+          "run_id": 41524933845,
+          "head_sha": "c0e2df20e1606821c64b84d58c00809d78f70b72",
+          "name": "Package build and tests",
+          "labels": [
+            "macos-26"
+          ],
+          "status": "queued",
+          "conclusion": null,
+          "started_at": "2026-11-02T21:04:12Z",
+          "completed_at": null,
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41524933845/job/125550111645",
+          "steps": []
+        },
+        {
+          "id": 125550111779,
+          "run_id": 41524933845,
+          "head_sha": "c0e2df20e1606821c64b84d58c00809d78f70b72",
+          "name": "Workflow and shell lint",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T21:04:24Z",
+          "completed_at": "2026-11-02T21:04:42Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41524933845/job/125550111779",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:25Z",
+              "completed_at": "2026-11-02T21:04:25Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:25Z",
+              "completed_at": "2026-11-02T21:04:27Z"
+            },
+            {
+              "number": 3,
+              "name": "Install actionlint 1.7.12",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:27Z",
+              "completed_at": "2026-11-02T21:04:27Z"
+            },
+            {
+              "number": 4,
+              "name": "Install shellcheck",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:27Z",
+              "completed_at": "2026-11-02T21:04:30Z"
+            },
+            {
+              "number": 5,
+              "name": "Install bats 1.14.0",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:30Z",
+              "completed_at": "2026-11-02T21:04:30Z"
+            },
+            {
+              "number": 6,
+              "name": "actionlint",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:30Z",
+              "completed_at": "2026-11-02T21:04:31Z"
+            },
+            {
+              "number": 7,
+              "name": "shellcheck",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:31Z",
+              "completed_at": "2026-11-02T21:04:32Z"
+            },
+            {
+              "number": 8,
+              "name": "Release tag guard test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:32Z",
+              "completed_at": "2026-11-02T21:04:32Z"
+            },
+            {
+              "number": 9,
+              "name": "Deploy script tests",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:32Z",
+              "completed_at": "2026-11-02T21:04:40Z"
+            },
+            {
+              "number": 18,
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:40Z",
+              "completed_at": "2026-11-02T21:04:40Z"
+            },
+            {
+              "number": 19,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:40Z",
+              "completed_at": "2026-11-02T21:04:40Z"
+            }
+          ]
+        },
+        {
+          "id": 125550111868,
+          "run_id": 41524933845,
+          "head_sha": "c0e2df20e1606821c64b84d58c00809d78f70b72",
+          "name": "Hub (Rust)",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "status": "in_progress",
+          "conclusion": null,
+          "started_at": "2026-11-02T21:04:14Z",
+          "completed_at": null,
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41524933845/job/125550111868",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:15Z",
+              "completed_at": "2026-11-02T21:04:16Z"
+            },
+            {
+              "number": 2,
+              "name": "Initialize containers",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:16Z",
+              "completed_at": "2026-11-02T21:04:29Z"
+            },
+            {
+              "number": 3,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:29Z",
+              "completed_at": "2026-11-02T21:04:31Z"
+            },
+            {
+              "number": 4,
+              "name": "Install Rust 1.93.1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:31Z",
+              "completed_at": "2026-11-02T21:04:40Z"
+            },
+            {
+              "number": 5,
+              "name": "Cache Cargo",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:04:40Z",
+              "completed_at": "2026-11-02T21:05:25Z"
+            },
+            {
+              "number": 6,
+              "name": "Format",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:05:25Z",
+              "completed_at": "2026-11-02T21:05:31Z"
+            },
+            {
+              "number": 7,
+              "name": "Clippy",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:05:31Z",
+              "completed_at": "2026-11-02T21:05:37Z"
+            },
+            {
+              "number": 8,
+              "name": "Test",
+              "status": "in_progress",
+              "conclusion": null,
+              "started_at": "2026-11-02T21:05:37Z",
+              "completed_at": null
+            },
+            {
+              "number": 14,
+              "name": "Post Cache Cargo",
+              "status": "pending",
+              "conclusion": null,
+              "started_at": null,
+              "completed_at": null
+            },
+            {
+              "number": 15,
+              "name": "Post Run actions/checkout@v5",
+              "status": "pending",
+              "conclusion": null,
+              "started_at": null,
+              "completed_at": null
+            },
+            {
+              "number": 16,
+              "name": "Stop containers",
+              "status": "pending",
+              "conclusion": null,
+              "started_at": null,
+              "completed_at": null
+            }
+          ]
+        }
+      ],
+      "jobs_total_count": 4
+    },
+    {
+      "run": {
+        "id": 41523904947,
+        "run_attempt": 1,
+        "head_sha": "8b6cf35ebee0a8c412ec15da5ebeb614933a39b9",
+        "path": ".github/workflows/ci.yml",
+        "event": "pull_request",
+        "status": "in_progress",
+        "conclusion": null,
+        "created_at": "2026-11-02T20:57:22Z",
+        "run_started_at": "2026-11-02T20:57:22Z",
+        "updated_at": "2026-11-02T20:57:59Z",
+        "html_url": "https://github.com/cacheplane/b4app/actions/runs/41523904947"
+      },
+      "jobs": [
+        {
+          "id": 125546848169,
+          "run_id": 41523904947,
+          "head_sha": "8b6cf35ebee0a8c412ec15da5ebeb614933a39b9",
+          "name": "Workflow and shell lint",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:57:57Z",
+          "completed_at": "2026-11-02T20:58:12Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41523904947/job/125546848169",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:57:57Z",
+              "completed_at": "2026-11-02T20:57:58Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:57:58Z",
+              "completed_at": "2026-11-02T20:57:59Z"
+            },
+            {
+              "number": 3,
+              "name": "Install actionlint 1.7.12",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:57:59Z",
+              "completed_at": "2026-11-02T20:57:59Z"
+            },
+            {
+              "number": 4,
+              "name": "Install shellcheck",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:57:59Z",
+              "completed_at": "2026-11-02T20:58:02Z"
+            },
+            {
+              "number": 5,
+              "name": "Install bats 1.14.0",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:02Z",
+              "completed_at": "2026-11-02T20:58:03Z"
+            },
+            {
+              "number": 6,
+              "name": "actionlint",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:03Z",
+              "completed_at": "2026-11-02T20:58:03Z"
+            },
+            {
+              "number": 7,
+              "name": "shellcheck",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:03Z",
+              "completed_at": "2026-11-02T20:58:04Z"
+            },
+            {
+              "number": 8,
+              "name": "Release tag guard test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:04Z",
+              "completed_at": "2026-11-02T20:58:04Z"
+            },
+            {
+              "number": 9,
+              "name": "Deploy script tests",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:04Z",
+              "completed_at": "2026-11-02T20:58:10Z"
+            },
+            {
+              "number": 18,
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:10Z",
+              "completed_at": "2026-11-02T20:58:10Z"
+            },
+            {
+              "number": 19,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:10Z",
+              "completed_at": "2026-11-02T20:58:10Z"
+            }
+          ]
+        },
+        {
+          "id": 125546848387,
+          "run_id": 41523904947,
+          "head_sha": "8b6cf35ebee0a8c412ec15da5ebeb614933a39b9",
+          "name": "Package build and tests",
+          "labels": [
+            "macos-26"
+          ],
+          "status": "in_progress",
+          "conclusion": null,
+          "started_at": "2026-11-02T20:57:58Z",
+          "completed_at": null,
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41523904947/job/125546848387",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:57:59Z",
+              "completed_at": "2026-11-02T20:58:00Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:00Z",
+              "completed_at": "2026-11-02T20:58:03Z"
+            },
+            {
+              "number": 3,
+              "name": "Select Xcode 26.6",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:03Z",
+              "completed_at": "2026-11-02T20:58:03Z"
+            },
+            {
+              "number": 4,
+              "name": "Cache SwiftPM",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:03Z",
+              "completed_at": "2026-11-02T20:58:37Z"
+            },
+            {
+              "number": 5,
+              "name": "Format lint",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:37Z",
+              "completed_at": "2026-11-02T20:58:45Z"
+            },
+            {
+              "number": 6,
+              "name": "Cache the pinned PostgreSQL archive",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:45Z",
+              "completed_at": "2026-11-02T20:58:49Z"
+            },
+            {
+              "number": 7,
+              "name": "Fetch PostgreSQL (the tests boot a private cluster from it)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:49Z",
+              "completed_at": "2026-11-02T20:58:49Z"
+            },
+            {
+              "number": 8,
+              "name": "Build",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:49Z",
+              "completed_at": "2026-11-02T21:00:18Z"
+            },
+            {
+              "number": 9,
+              "name": "Test",
+              "status": "in_progress",
+              "conclusion": null,
+              "started_at": "2026-11-02T21:00:18Z",
+              "completed_at": null
+            },
+            {
+              "number": 16,
+              "name": "Post Cache the pinned PostgreSQL archive",
+              "status": "pending",
+              "conclusion": null,
+              "started_at": null,
+              "completed_at": null
+            },
+            {
+              "number": 17,
+              "name": "Post Cache SwiftPM",
+              "status": "pending",
+              "conclusion": null,
+              "started_at": null,
+              "completed_at": null
+            },
+            {
+              "number": 18,
+              "name": "Post Run actions/checkout@v5",
+              "status": "pending",
+              "conclusion": null,
+              "started_at": null,
+              "completed_at": null
+            }
+          ]
+        },
+        {
+          "id": 125546848425,
+          "run_id": 41523904947,
+          "head_sha": "8b6cf35ebee0a8c412ec15da5ebeb614933a39b9",
+          "name": "macOS and iOS app builds",
+          "labels": [
+            "macos-26"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:57:58Z",
+          "completed_at": "2026-11-02T21:05:20Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41523904947/job/125546848425",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:57:59Z",
+              "completed_at": "2026-11-02T20:58:00Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:00Z",
+              "completed_at": "2026-11-02T20:58:05Z"
+            },
+            {
+              "number": 3,
+              "name": "Select Xcode 26.6",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:05Z",
+              "completed_at": "2026-11-02T20:58:05Z"
+            },
+            {
+              "number": 4,
+              "name": "Install XcodeGen",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:05Z",
+              "completed_at": "2026-11-02T20:58:12Z"
+            },
+            {
+              "number": 5,
+              "name": "Generate project",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:12Z",
+              "completed_at": "2026-11-02T20:58:12Z"
+            },
+            {
+              "number": 6,
+              "name": "Cache SwiftPM (xcodebuild)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:12Z",
+              "completed_at": "2026-11-02T20:58:19Z"
+            },
+            {
+              "number": 7,
+              "name": "Build macOS app",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:19Z",
+              "completed_at": "2026-11-02T21:00:47Z"
+            },
+            {
+              "number": 8,
+              "name": "Build iOS app (simulator)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:00:47Z",
+              "completed_at": "2026-11-02T21:02:18Z"
+            },
+            {
+              "number": 9,
+              "name": "Build macOS app (beta)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:02:18Z",
+              "completed_at": "2026-11-02T21:03:56Z"
+            },
+            {
+              "number": 10,
+              "name": "Build iOS app (beta, simulator)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:03:56Z",
+              "completed_at": "2026-11-02T21:05:12Z"
+            },
+            {
+              "number": 19,
+              "name": "Post Cache SwiftPM (xcodebuild)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:05:12Z",
+              "completed_at": "2026-11-02T21:05:12Z"
+            },
+            {
+              "number": 20,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:05:12Z",
+              "completed_at": "2026-11-02T21:05:14Z"
+            },
+            {
+              "number": 21,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:05:14Z",
+              "completed_at": "2026-11-02T21:05:19Z"
+            }
+          ]
+        },
+        {
+          "id": 125546848626,
+          "run_id": 41523904947,
+          "head_sha": "8b6cf35ebee0a8c412ec15da5ebeb614933a39b9",
+          "name": "Hub (Rust)",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:57:57Z",
+          "completed_at": "2026-11-02T21:01:47Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41523904947/job/125546848626",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:57:58Z",
+              "completed_at": "2026-11-02T20:57:59Z"
+            },
+            {
+              "number": 2,
+              "name": "Initialize containers",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:57:59Z",
+              "completed_at": "2026-11-02T20:58:11Z"
+            },
+            {
+              "number": 3,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:11Z",
+              "completed_at": "2026-11-02T20:58:13Z"
+            },
+            {
+              "number": 4,
+              "name": "Install Rust 1.93.1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:13Z",
+              "completed_at": "2026-11-02T20:58:22Z"
+            },
+            {
+              "number": 5,
+              "name": "Cache Cargo",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:22Z",
+              "completed_at": "2026-11-02T20:59:19Z"
+            },
+            {
+              "number": 6,
+              "name": "Format",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:59:19Z",
+              "completed_at": "2026-11-02T20:59:25Z"
+            },
+            {
+              "number": 7,
+              "name": "Clippy",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:59:25Z",
+              "completed_at": "2026-11-02T20:59:30Z"
+            },
+            {
+              "number": 8,
+              "name": "Test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:59:30Z",
+              "completed_at": "2026-11-02T21:01:33Z"
+            },
+            {
+              "number": 14,
+              "name": "Post Cache Cargo",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:01:33Z",
+              "completed_at": "2026-11-02T21:01:33Z"
+            },
+            {
+              "number": 15,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:01:33Z",
+              "completed_at": "2026-11-02T21:01:33Z"
+            },
+            {
+              "number": 16,
+              "name": "Stop containers",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:01:33Z",
+              "completed_at": "2026-11-02T21:01:34Z"
+            },
+            {
+              "number": 17,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T21:01:34Z",
+              "completed_at": "2026-11-02T21:01:34Z"
+            }
+          ]
+        }
+      ],
+      "jobs_total_count": 4
+    },
+    {
+      "run": {
+        "id": 41522427289,
+        "run_attempt": 1,
+        "head_sha": "738f9aa3aff43927094a412aa46f9e0201c12ec2",
+        "path": ".github/workflows/ci.yml",
+        "event": "pull_request",
+        "status": "completed",
+        "conclusion": "cancelled",
+        "created_at": "2026-11-02T20:47:33Z",
+        "run_started_at": "2026-11-02T20:47:33Z",
+        "updated_at": "2026-11-02T20:57:55Z",
+        "html_url": "https://github.com/cacheplane/b4app/actions/runs/41522427289"
+      },
+      "jobs": [
+        {
+          "id": 125541545836,
+          "run_id": 41522427289,
+          "head_sha": "738f9aa3aff43927094a412aa46f9e0201c12ec2",
+          "name": "macOS and iOS app builds",
+          "labels": [
+            "macos-26"
+          ],
+          "status": "completed",
+          "conclusion": "cancelled",
+          "started_at": "2026-11-02T20:47:33Z",
+          "completed_at": "2026-11-02T20:57:23Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41522427289/job/125541545836",
+          "steps": []
+        },
+        {
+          "id": 125541546185,
+          "run_id": 41522427289,
+          "head_sha": "738f9aa3aff43927094a412aa46f9e0201c12ec2",
+          "name": "Package build and tests",
+          "labels": [
+            "macos-26"
+          ],
+          "status": "completed",
+          "conclusion": "cancelled",
+          "started_at": "2026-11-02T20:50:03Z",
+          "completed_at": "2026-11-02T20:57:54Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41522427289/job/125541546185",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:50:04Z",
+              "completed_at": "2026-11-02T20:50:04Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:50:04Z",
+              "completed_at": "2026-11-02T20:50:07Z"
+            },
+            {
+              "number": 3,
+              "name": "Select Xcode 26.6",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:50:07Z",
+              "completed_at": "2026-11-02T20:50:07Z"
+            },
+            {
+              "number": 4,
+              "name": "Cache SwiftPM",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:50:07Z",
+              "completed_at": "2026-11-02T20:50:33Z"
+            },
+            {
+              "number": 5,
+              "name": "Format lint",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:50:33Z",
+              "completed_at": "2026-11-02T20:50:40Z"
+            },
+            {
+              "number": 6,
+              "name": "Cache the pinned PostgreSQL archive",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:50:40Z",
+              "completed_at": "2026-11-02T20:50:42Z"
+            },
+            {
+              "number": 7,
+              "name": "Fetch PostgreSQL (the tests boot a private cluster from it)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:50:42Z",
+              "completed_at": "2026-11-02T20:50:42Z"
+            },
+            {
+              "number": 8,
+              "name": "Build",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:50:42Z",
+              "completed_at": "2026-11-02T20:51:42Z"
+            },
+            {
+              "number": 9,
+              "name": "Test",
+              "status": "completed",
+              "conclusion": "cancelled",
+              "started_at": "2026-11-02T20:51:42Z",
+              "completed_at": "2026-11-02T20:57:46Z"
+            },
+            {
+              "number": 16,
+              "name": "Post Cache the pinned PostgreSQL archive",
+              "status": "completed",
+              "conclusion": "skipped",
+              "started_at": "2026-11-02T20:57:46Z",
+              "completed_at": "2026-11-02T20:57:46Z"
+            },
+            {
+              "number": 17,
+              "name": "Post Cache SwiftPM",
+              "status": "completed",
+              "conclusion": "skipped",
+              "started_at": "2026-11-02T20:57:46Z",
+              "completed_at": "2026-11-02T20:57:46Z"
+            },
+            {
+              "number": 18,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:57:46Z",
+              "completed_at": "2026-11-02T20:57:47Z"
+            },
+            {
+              "number": 19,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:57:47Z",
+              "completed_at": "2026-11-02T20:57:51Z"
+            }
+          ]
+        },
+        {
+          "id": 125541546229,
+          "run_id": 41522427289,
+          "head_sha": "738f9aa3aff43927094a412aa46f9e0201c12ec2",
+          "name": "Hub (Rust)",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:47:35Z",
+          "completed_at": "2026-11-02T20:51:15Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41522427289/job/125541546229",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:47:36Z",
+              "completed_at": "2026-11-02T20:47:36Z"
+            },
+            {
+              "number": 2,
+              "name": "Initialize containers",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:47:36Z",
+              "completed_at": "2026-11-02T20:47:49Z"
+            },
+            {
+              "number": 3,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:47:49Z",
+              "completed_at": "2026-11-02T20:47:51Z"
+            },
+            {
+              "number": 4,
+              "name": "Install Rust 1.93.1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:47:51Z",
+              "completed_at": "2026-11-02T20:47:58Z"
+            },
+            {
+              "number": 5,
+              "name": "Cache Cargo",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:47:58Z",
+              "completed_at": "2026-11-02T20:49:19Z"
+            },
+            {
+              "number": 6,
+              "name": "Format",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:49:19Z",
+              "completed_at": "2026-11-02T20:49:23Z"
+            },
+            {
+              "number": 7,
+              "name": "Clippy",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:49:23Z",
+              "completed_at": "2026-11-02T20:49:32Z"
+            },
+            {
+              "number": 8,
+              "name": "Test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:49:32Z",
+              "completed_at": "2026-11-02T20:51:12Z"
+            },
+            {
+              "number": 14,
+              "name": "Post Cache Cargo",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:51:12Z",
+              "completed_at": "2026-11-02T20:51:13Z"
+            },
+            {
+              "number": 15,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:51:13Z",
+              "completed_at": "2026-11-02T20:51:13Z"
+            },
+            {
+              "number": 16,
+              "name": "Stop containers",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:51:13Z",
+              "completed_at": "2026-11-02T20:51:13Z"
+            },
+            {
+              "number": 17,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:51:13Z",
+              "completed_at": "2026-11-02T20:51:13Z"
+            }
+          ]
+        },
+        {
+          "id": 125541546283,
+          "run_id": 41522427289,
+          "head_sha": "738f9aa3aff43927094a412aa46f9e0201c12ec2",
+          "name": "Workflow and shell lint",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:47:36Z",
+          "completed_at": "2026-11-02T20:47:55Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41522427289/job/125541546283",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:47:37Z",
+              "completed_at": "2026-11-02T20:47:38Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:47:38Z",
+              "completed_at": "2026-11-02T20:47:39Z"
+            },
+            {
+              "number": 3,
+              "name": "Install actionlint 1.7.12",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:47:39Z",
+              "completed_at": "2026-11-02T20:47:39Z"
+            },
+            {
+              "number": 4,
+              "name": "Install shellcheck",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:47:39Z",
+              "completed_at": "2026-11-02T20:47:43Z"
+            },
+            {
+              "number": 5,
+              "name": "Install bats 1.14.0",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:47:43Z",
+              "completed_at": "2026-11-02T20:47:43Z"
+            },
+            {
+              "number": 6,
+              "name": "actionlint",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:47:43Z",
+              "completed_at": "2026-11-02T20:47:44Z"
+            },
+            {
+              "number": 7,
+              "name": "shellcheck",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:47:44Z",
+              "completed_at": "2026-11-02T20:47:45Z"
+            },
+            {
+              "number": 8,
+              "name": "Release tag guard test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:47:45Z",
+              "completed_at": "2026-11-02T20:47:45Z"
+            },
+            {
+              "number": 9,
+              "name": "Deploy script tests",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:47:45Z",
+              "completed_at": "2026-11-02T20:47:53Z"
+            },
+            {
+              "number": 18,
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:47:53Z",
+              "completed_at": "2026-11-02T20:47:53Z"
+            },
+            {
+              "number": 19,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:47:53Z",
+              "completed_at": "2026-11-02T20:47:53Z"
+            }
+          ]
+        }
+      ],
+      "jobs_total_count": 4
+    },
+    {
+      "run": {
+        "id": 41519926572,
+        "run_attempt": 1,
+        "head_sha": "138cdf33e6dfdaafbec89fff2574e1089427d544",
+        "path": ".github/workflows/ci.yml",
+        "event": "pull_request",
+        "status": "completed",
+        "conclusion": "failure",
+        "created_at": "2026-11-02T20:31:10Z",
+        "run_started_at": "2026-11-02T20:31:10Z",
+        "updated_at": "2026-11-02T20:50:01Z",
+        "html_url": "https://github.com/cacheplane/b4app/actions/runs/41519926572"
+      },
+      "jobs": [
+        {
+          "id": 125533003322,
+          "run_id": 41519926572,
+          "head_sha": "138cdf33e6dfdaafbec89fff2574e1089427d544",
+          "name": "Workflow and shell lint",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:31:12Z",
+          "completed_at": "2026-11-02T20:31:32Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41519926572/job/125533003322",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:13Z",
+              "completed_at": "2026-11-02T20:31:14Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:14Z",
+              "completed_at": "2026-11-02T20:31:16Z"
+            },
+            {
+              "number": 3,
+              "name": "Install actionlint 1.7.12",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:16Z",
+              "completed_at": "2026-11-02T20:31:16Z"
+            },
+            {
+              "number": 4,
+              "name": "Install shellcheck",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:16Z",
+              "completed_at": "2026-11-02T20:31:19Z"
+            },
+            {
+              "number": 5,
+              "name": "Install bats 1.14.0",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:19Z",
+              "completed_at": "2026-11-02T20:31:19Z"
+            },
+            {
+              "number": 6,
+              "name": "actionlint",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:19Z",
+              "completed_at": "2026-11-02T20:31:20Z"
+            },
+            {
+              "number": 7,
+              "name": "shellcheck",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:20Z",
+              "completed_at": "2026-11-02T20:31:21Z"
+            },
+            {
+              "number": 8,
+              "name": "Release tag guard test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:21Z",
+              "completed_at": "2026-11-02T20:31:21Z"
+            },
+            {
+              "number": 9,
+              "name": "Deploy script tests",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:21Z",
+              "completed_at": "2026-11-02T20:31:29Z"
+            },
+            {
+              "number": 18,
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:29Z",
+              "completed_at": "2026-11-02T20:31:29Z"
+            },
+            {
+              "number": 19,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:29Z",
+              "completed_at": "2026-11-02T20:31:29Z"
+            }
+          ]
+        },
+        {
+          "id": 125533003635,
+          "run_id": 41519926572,
+          "head_sha": "138cdf33e6dfdaafbec89fff2574e1089427d544",
+          "name": "Hub (Rust)",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:31:12Z",
+          "completed_at": "2026-11-02T20:34:34Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41519926572/job/125533003635",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:13Z",
+              "completed_at": "2026-11-02T20:31:14Z"
+            },
+            {
+              "number": 2,
+              "name": "Initialize containers",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:14Z",
+              "completed_at": "2026-11-02T20:31:26Z"
+            },
+            {
+              "number": 3,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:26Z",
+              "completed_at": "2026-11-02T20:31:27Z"
+            },
+            {
+              "number": 4,
+              "name": "Install Rust 1.93.1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:27Z",
+              "completed_at": "2026-11-02T20:31:36Z"
+            },
+            {
+              "number": 5,
+              "name": "Cache Cargo",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:36Z",
+              "completed_at": "2026-11-02T20:32:22Z"
+            },
+            {
+              "number": 6,
+              "name": "Format",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:32:22Z",
+              "completed_at": "2026-11-02T20:32:24Z"
+            },
+            {
+              "number": 7,
+              "name": "Clippy",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:32:24Z",
+              "completed_at": "2026-11-02T20:32:30Z"
+            },
+            {
+              "number": 8,
+              "name": "Test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:32:30Z",
+              "completed_at": "2026-11-02T20:34:32Z"
+            },
+            {
+              "number": 14,
+              "name": "Post Cache Cargo",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:34:32Z",
+              "completed_at": "2026-11-02T20:34:32Z"
+            },
+            {
+              "number": 15,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:34:32Z",
+              "completed_at": "2026-11-02T20:34:32Z"
+            },
+            {
+              "number": 16,
+              "name": "Stop containers",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:34:32Z",
+              "completed_at": "2026-11-02T20:34:33Z"
+            },
+            {
+              "number": 17,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:34:33Z",
+              "completed_at": "2026-11-02T20:34:33Z"
+            }
+          ]
+        },
+        {
+          "id": 125533003720,
+          "run_id": 41519926572,
+          "head_sha": "138cdf33e6dfdaafbec89fff2574e1089427d544",
+          "name": "macOS and iOS app builds",
+          "labels": [
+            "macos-26"
+          ],
+          "status": "completed",
+          "conclusion": "cancelled",
+          "started_at": "2026-11-02T20:31:10Z",
+          "completed_at": "2026-11-02T20:50:00Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41519926572/job/125533003720",
+          "steps": []
+        },
+        {
+          "id": 125533003867,
+          "run_id": 41519926572,
+          "head_sha": "138cdf33e6dfdaafbec89fff2574e1089427d544",
+          "name": "Package build and tests",
+          "labels": [
+            "macos-26"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:35:03Z",
+          "completed_at": "2026-11-02T20:50:00Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41519926572/job/125533003867",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:35:04Z",
+              "completed_at": "2026-11-02T20:35:05Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:35:05Z",
+              "completed_at": "2026-11-02T20:35:08Z"
+            },
+            {
+              "number": 3,
+              "name": "Select Xcode 26.6",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:35:08Z",
+              "completed_at": "2026-11-02T20:35:09Z"
+            },
+            {
+              "number": 4,
+              "name": "Cache SwiftPM",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:35:09Z",
+              "completed_at": "2026-11-02T20:35:47Z"
+            },
+            {
+              "number": 5,
+              "name": "Format lint",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:35:47Z",
+              "completed_at": "2026-11-02T20:35:58Z"
+            },
+            {
+              "number": 6,
+              "name": "Cache the pinned PostgreSQL archive",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:35:58Z",
+              "completed_at": "2026-11-02T20:36:02Z"
+            },
+            {
+              "number": 7,
+              "name": "Fetch PostgreSQL (the tests boot a private cluster from it)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:36:02Z",
+              "completed_at": "2026-11-02T20:36:02Z"
+            },
+            {
+              "number": 8,
+              "name": "Build",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:36:02Z",
+              "completed_at": "2026-11-02T20:37:35Z"
+            },
+            {
+              "number": 9,
+              "name": "Test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:37:35Z",
+              "completed_at": "2026-11-02T20:49:53Z"
+            },
+            {
+              "number": 16,
+              "name": "Post Cache the pinned PostgreSQL archive",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:49:53Z",
+              "completed_at": "2026-11-02T20:49:54Z"
+            },
+            {
+              "number": 17,
+              "name": "Post Cache SwiftPM",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:49:54Z",
+              "completed_at": "2026-11-02T20:49:54Z"
+            },
+            {
+              "number": 18,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:49:54Z",
+              "completed_at": "2026-11-02T20:49:55Z"
+            },
+            {
+              "number": 19,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:49:55Z",
+              "completed_at": "2026-11-02T20:49:58Z"
+            }
+          ]
+        }
+      ],
+      "jobs_total_count": 4
+    },
+    {
+      "run": {
+        "id": 41519926572,
+        "run_attempt": 2,
+        "head_sha": "138cdf33e6dfdaafbec89fff2574e1089427d544",
+        "path": ".github/workflows/ci.yml",
+        "event": "pull_request",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-11-02T20:50:35Z",
+        "run_started_at": "2026-11-02T20:50:34Z",
+        "updated_at": "2026-11-02T20:58:34Z",
+        "html_url": "https://github.com/cacheplane/b4app/actions/runs/41519926572"
+      },
+      "jobs": [
+        {
+          "id": 125543100795,
+          "run_id": 41519926572,
+          "head_sha": "138cdf33e6dfdaafbec89fff2574e1089427d544",
+          "name": "macOS and iOS app builds",
+          "labels": [
+            "macos-26"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:50:39Z",
+          "completed_at": "2026-11-02T20:58:33Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41519926572/job/125543100795",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:50:39Z",
+              "completed_at": "2026-11-02T20:50:40Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:50:40Z",
+              "completed_at": "2026-11-02T20:50:43Z"
+            },
+            {
+              "number": 3,
+              "name": "Select Xcode 26.6",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:50:43Z",
+              "completed_at": "2026-11-02T20:50:44Z"
+            },
+            {
+              "number": 4,
+              "name": "Install XcodeGen",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:50:44Z",
+              "completed_at": "2026-11-02T20:50:51Z"
+            },
+            {
+              "number": 5,
+              "name": "Generate project",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:50:51Z",
+              "completed_at": "2026-11-02T20:50:51Z"
+            },
+            {
+              "number": 6,
+              "name": "Cache SwiftPM (xcodebuild)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:50:51Z",
+              "completed_at": "2026-11-02T20:51:02Z"
+            },
+            {
+              "number": 7,
+              "name": "Build macOS app",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:51:02Z",
+              "completed_at": "2026-11-02T20:53:45Z"
+            },
+            {
+              "number": 8,
+              "name": "Build iOS app (simulator)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:53:45Z",
+              "completed_at": "2026-11-02T20:55:45Z"
+            },
+            {
+              "number": 9,
+              "name": "Build macOS app (beta)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:55:45Z",
+              "completed_at": "2026-11-02T20:57:25Z"
+            },
+            {
+              "number": 10,
+              "name": "Build iOS app (beta, simulator)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:57:26Z",
+              "completed_at": "2026-11-02T20:58:28Z"
+            },
+            {
+              "number": 19,
+              "name": "Post Cache SwiftPM (xcodebuild)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:28Z",
+              "completed_at": "2026-11-02T20:58:29Z"
+            },
+            {
+              "number": 20,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:29Z",
+              "completed_at": "2026-11-02T20:58:30Z"
+            },
+            {
+              "number": 21,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:58:30Z",
+              "completed_at": "2026-11-02T20:58:32Z"
+            }
+          ]
+        },
+        {
+          "id": 125543102307,
+          "run_id": 41519926572,
+          "head_sha": "138cdf33e6dfdaafbec89fff2574e1089427d544",
+          "name": "Package build and tests",
+          "labels": [
+            "macos-26"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:35:03Z",
+          "completed_at": "2026-11-02T20:50:00Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41519926572/job/125543102307",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:35:04Z",
+              "completed_at": "2026-11-02T20:35:05Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:35:05Z",
+              "completed_at": "2026-11-02T20:35:08Z"
+            },
+            {
+              "number": 3,
+              "name": "Select Xcode 26.6",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:35:08Z",
+              "completed_at": "2026-11-02T20:35:09Z"
+            },
+            {
+              "number": 4,
+              "name": "Cache SwiftPM",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:35:09Z",
+              "completed_at": "2026-11-02T20:35:47Z"
+            },
+            {
+              "number": 5,
+              "name": "Format lint",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:35:47Z",
+              "completed_at": "2026-11-02T20:35:58Z"
+            },
+            {
+              "number": 6,
+              "name": "Cache the pinned PostgreSQL archive",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:35:58Z",
+              "completed_at": "2026-11-02T20:36:02Z"
+            },
+            {
+              "number": 7,
+              "name": "Fetch PostgreSQL (the tests boot a private cluster from it)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:36:02Z",
+              "completed_at": "2026-11-02T20:36:02Z"
+            },
+            {
+              "number": 8,
+              "name": "Build",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:36:02Z",
+              "completed_at": "2026-11-02T20:37:35Z"
+            },
+            {
+              "number": 9,
+              "name": "Test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:37:35Z",
+              "completed_at": "2026-11-02T20:49:53Z"
+            },
+            {
+              "number": 16,
+              "name": "Post Cache the pinned PostgreSQL archive",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:49:53Z",
+              "completed_at": "2026-11-02T20:49:54Z"
+            },
+            {
+              "number": 17,
+              "name": "Post Cache SwiftPM",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:49:54Z",
+              "completed_at": "2026-11-02T20:49:54Z"
+            },
+            {
+              "number": 18,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:49:54Z",
+              "completed_at": "2026-11-02T20:49:55Z"
+            },
+            {
+              "number": 19,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:49:55Z",
+              "completed_at": "2026-11-02T20:49:58Z"
+            }
+          ]
+        },
+        {
+          "id": 125543103208,
+          "run_id": 41519926572,
+          "head_sha": "138cdf33e6dfdaafbec89fff2574e1089427d544",
+          "name": "Hub (Rust)",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:31:12Z",
+          "completed_at": "2026-11-02T20:34:34Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41519926572/job/125543103208",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:13Z",
+              "completed_at": "2026-11-02T20:31:14Z"
+            },
+            {
+              "number": 2,
+              "name": "Initialize containers",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:14Z",
+              "completed_at": "2026-11-02T20:31:26Z"
+            },
+            {
+              "number": 3,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:26Z",
+              "completed_at": "2026-11-02T20:31:27Z"
+            },
+            {
+              "number": 4,
+              "name": "Install Rust 1.93.1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:27Z",
+              "completed_at": "2026-11-02T20:31:36Z"
+            },
+            {
+              "number": 5,
+              "name": "Cache Cargo",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:36Z",
+              "completed_at": "2026-11-02T20:32:22Z"
+            },
+            {
+              "number": 6,
+              "name": "Format",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:32:22Z",
+              "completed_at": "2026-11-02T20:32:24Z"
+            },
+            {
+              "number": 7,
+              "name": "Clippy",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:32:24Z",
+              "completed_at": "2026-11-02T20:32:30Z"
+            },
+            {
+              "number": 8,
+              "name": "Test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:32:30Z",
+              "completed_at": "2026-11-02T20:34:32Z"
+            },
+            {
+              "number": 14,
+              "name": "Post Cache Cargo",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:34:32Z",
+              "completed_at": "2026-11-02T20:34:32Z"
+            },
+            {
+              "number": 15,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:34:32Z",
+              "completed_at": "2026-11-02T20:34:32Z"
+            },
+            {
+              "number": 16,
+              "name": "Stop containers",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:34:32Z",
+              "completed_at": "2026-11-02T20:34:33Z"
+            },
+            {
+              "number": 17,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:34:33Z",
+              "completed_at": "2026-11-02T20:34:33Z"
+            }
+          ]
+        },
+        {
+          "id": 125543104046,
+          "run_id": 41519926572,
+          "head_sha": "138cdf33e6dfdaafbec89fff2574e1089427d544",
+          "name": "Workflow and shell lint",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:31:12Z",
+          "completed_at": "2026-11-02T20:31:32Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41519926572/job/125543104046",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:13Z",
+              "completed_at": "2026-11-02T20:31:14Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:14Z",
+              "completed_at": "2026-11-02T20:31:16Z"
+            },
+            {
+              "number": 3,
+              "name": "Install actionlint 1.7.12",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:16Z",
+              "completed_at": "2026-11-02T20:31:16Z"
+            },
+            {
+              "number": 4,
+              "name": "Install shellcheck",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:16Z",
+              "completed_at": "2026-11-02T20:31:19Z"
+            },
+            {
+              "number": 5,
+              "name": "Install bats 1.14.0",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:19Z",
+              "completed_at": "2026-11-02T20:31:19Z"
+            },
+            {
+              "number": 6,
+              "name": "actionlint",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:19Z",
+              "completed_at": "2026-11-02T20:31:20Z"
+            },
+            {
+              "number": 7,
+              "name": "shellcheck",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:20Z",
+              "completed_at": "2026-11-02T20:31:21Z"
+            },
+            {
+              "number": 8,
+              "name": "Release tag guard test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:21Z",
+              "completed_at": "2026-11-02T20:31:21Z"
+            },
+            {
+              "number": 9,
+              "name": "Deploy script tests",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:21Z",
+              "completed_at": "2026-11-02T20:31:29Z"
+            },
+            {
+              "number": 18,
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:29Z",
+              "completed_at": "2026-11-02T20:31:29Z"
+            },
+            {
+              "number": 19,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:29Z",
+              "completed_at": "2026-11-02T20:31:29Z"
+            }
+          ]
+        }
+      ],
+      "jobs_total_count": 4
+    },
+    {
+      "run": {
+        "id": 41519013466,
+        "run_attempt": 1,
+        "head_sha": "e1be022fae74dda235fe13629887069706d6505c",
+        "path": ".github/workflows/ci.yml",
+        "event": "pull_request",
+        "status": "completed",
+        "conclusion": "failure",
+        "created_at": "2026-11-02T20:25:11Z",
+        "run_started_at": "2026-11-02T20:25:10Z",
+        "updated_at": "2026-11-02T20:56:16Z",
+        "html_url": "https://github.com/cacheplane/b4app/actions/runs/41519013466"
+      },
+      "jobs": [
+        {
+          "id": 125529895175,
+          "run_id": 41519013466,
+          "head_sha": "e1be022fae74dda235fe13629887069706d6505c",
+          "name": "Package build and tests",
+          "labels": [
+            "macos-26"
+          ],
+          "status": "completed",
+          "conclusion": "failure",
+          "started_at": "2026-11-02T20:41:14Z",
+          "completed_at": "2026-11-02T20:56:15Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41519013466/job/125529895175",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:41:14Z",
+              "completed_at": "2026-11-02T20:41:16Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:41:16Z",
+              "completed_at": "2026-11-02T20:41:19Z"
+            },
+            {
+              "number": 3,
+              "name": "Select Xcode 26.6",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:41:19Z",
+              "completed_at": "2026-11-02T20:41:19Z"
+            },
+            {
+              "number": 4,
+              "name": "Cache SwiftPM",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:41:19Z",
+              "completed_at": "2026-11-02T20:41:42Z"
+            },
+            {
+              "number": 5,
+              "name": "Format lint",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:41:42Z",
+              "completed_at": "2026-11-02T20:41:50Z"
+            },
+            {
+              "number": 6,
+              "name": "Cache the pinned PostgreSQL archive",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:41:50Z",
+              "completed_at": "2026-11-02T20:41:51Z"
+            },
+            {
+              "number": 7,
+              "name": "Fetch PostgreSQL (the tests boot a private cluster from it)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:41:51Z",
+              "completed_at": "2026-11-02T20:41:52Z"
+            },
+            {
+              "number": 8,
+              "name": "Build",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:41:52Z",
+              "completed_at": "2026-11-02T20:43:38Z"
+            },
+            {
+              "number": 9,
+              "name": "Test",
+              "status": "completed",
+              "conclusion": "failure",
+              "started_at": "2026-11-02T20:43:38Z",
+              "completed_at": "2026-11-02T20:56:09Z"
+            },
+            {
+              "number": 16,
+              "name": "Post Cache the pinned PostgreSQL archive",
+              "status": "completed",
+              "conclusion": "skipped",
+              "started_at": "2026-11-02T20:56:09Z",
+              "completed_at": "2026-11-02T20:56:09Z"
+            },
+            {
+              "number": 17,
+              "name": "Post Cache SwiftPM",
+              "status": "completed",
+              "conclusion": "skipped",
+              "started_at": "2026-11-02T20:56:09Z",
+              "completed_at": "2026-11-02T20:56:09Z"
+            },
+            {
+              "number": 18,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:56:09Z",
+              "completed_at": "2026-11-02T20:56:10Z"
+            },
+            {
+              "number": 19,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:56:10Z",
+              "completed_at": "2026-11-02T20:56:13Z"
+            }
+          ]
+        },
+        {
+          "id": 125529895626,
+          "run_id": 41519013466,
+          "head_sha": "e1be022fae74dda235fe13629887069706d6505c",
+          "name": "Hub (Rust)",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:25:14Z",
+          "completed_at": "2026-11-02T20:29:08Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41519013466/job/125529895626",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:14Z",
+              "completed_at": "2026-11-02T20:25:15Z"
+            },
+            {
+              "number": 2,
+              "name": "Initialize containers",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:15Z",
+              "completed_at": "2026-11-02T20:25:28Z"
+            },
+            {
+              "number": 3,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:28Z",
+              "completed_at": "2026-11-02T20:25:29Z"
+            },
+            {
+              "number": 4,
+              "name": "Install Rust 1.93.1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:29Z",
+              "completed_at": "2026-11-02T20:25:38Z"
+            },
+            {
+              "number": 5,
+              "name": "Cache Cargo",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:38Z",
+              "completed_at": "2026-11-02T20:26:33Z"
+            },
+            {
+              "number": 6,
+              "name": "Format",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:26:33Z",
+              "completed_at": "2026-11-02T20:26:38Z"
+            },
+            {
+              "number": 7,
+              "name": "Clippy",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:26:38Z",
+              "completed_at": "2026-11-02T20:26:46Z"
+            },
+            {
+              "number": 8,
+              "name": "Test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:26:46Z",
+              "completed_at": "2026-11-02T20:29:03Z"
+            },
+            {
+              "number": 14,
+              "name": "Post Cache Cargo",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:29:03Z",
+              "completed_at": "2026-11-02T20:29:03Z"
+            },
+            {
+              "number": 15,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:29:03Z",
+              "completed_at": "2026-11-02T20:29:03Z"
+            },
+            {
+              "number": 16,
+              "name": "Stop containers",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:29:03Z",
+              "completed_at": "2026-11-02T20:29:03Z"
+            },
+            {
+              "number": 17,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:29:03Z",
+              "completed_at": "2026-11-02T20:29:03Z"
+            }
+          ]
+        },
+        {
+          "id": 125529895744,
+          "run_id": 41519013466,
+          "head_sha": "e1be022fae74dda235fe13629887069706d6505c",
+          "name": "Workflow and shell lint",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:25:14Z",
+          "completed_at": "2026-11-02T20:25:32Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41519013466/job/125529895744",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:15Z",
+              "completed_at": "2026-11-02T20:25:15Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:15Z",
+              "completed_at": "2026-11-02T20:25:17Z"
+            },
+            {
+              "number": 3,
+              "name": "Install actionlint 1.7.12",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:17Z",
+              "completed_at": "2026-11-02T20:25:17Z"
+            },
+            {
+              "number": 4,
+              "name": "Install shellcheck",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:17Z",
+              "completed_at": "2026-11-02T20:25:20Z"
+            },
+            {
+              "number": 5,
+              "name": "Install bats 1.14.0",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:20Z",
+              "completed_at": "2026-11-02T20:25:20Z"
+            },
+            {
+              "number": 6,
+              "name": "actionlint",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:20Z",
+              "completed_at": "2026-11-02T20:25:21Z"
+            },
+            {
+              "number": 7,
+              "name": "shellcheck",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:21Z",
+              "completed_at": "2026-11-02T20:25:22Z"
+            },
+            {
+              "number": 8,
+              "name": "Release tag guard test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:22Z",
+              "completed_at": "2026-11-02T20:25:22Z"
+            },
+            {
+              "number": 9,
+              "name": "Deploy script tests",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:22Z",
+              "completed_at": "2026-11-02T20:25:30Z"
+            },
+            {
+              "number": 18,
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:30Z",
+              "completed_at": "2026-11-02T20:25:30Z"
+            },
+            {
+              "number": 19,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:30Z",
+              "completed_at": "2026-11-02T20:25:30Z"
+            }
+          ]
+        },
+        {
+          "id": 125529895753,
+          "run_id": 41519013466,
+          "head_sha": "e1be022fae74dda235fe13629887069706d6505c",
+          "name": "macOS and iOS app builds",
+          "labels": [
+            "macos-26"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:27:23Z",
+          "completed_at": "2026-11-02T20:36:25Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41519013466/job/125529895753",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:27:24Z",
+              "completed_at": "2026-11-02T20:27:24Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:27:24Z",
+              "completed_at": "2026-11-02T20:27:26Z"
+            },
+            {
+              "number": 3,
+              "name": "Select Xcode 26.6",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:27:26Z",
+              "completed_at": "2026-11-02T20:27:27Z"
+            },
+            {
+              "number": 4,
+              "name": "Install XcodeGen",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:27:27Z",
+              "completed_at": "2026-11-02T20:27:33Z"
+            },
+            {
+              "number": 5,
+              "name": "Generate project",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:27:33Z",
+              "completed_at": "2026-11-02T20:27:33Z"
+            },
+            {
+              "number": 6,
+              "name": "Cache SwiftPM (xcodebuild)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:27:33Z",
+              "completed_at": "2026-11-02T20:27:52Z"
+            },
+            {
+              "number": 7,
+              "name": "Build macOS app",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:27:52Z",
+              "completed_at": "2026-11-02T20:31:06Z"
+            },
+            {
+              "number": 8,
+              "name": "Build iOS app (simulator)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:31:06Z",
+              "completed_at": "2026-11-02T20:33:05Z"
+            },
+            {
+              "number": 9,
+              "name": "Build macOS app (beta)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:33:05Z",
+              "completed_at": "2026-11-02T20:35:02Z"
+            },
+            {
+              "number": 10,
+              "name": "Build iOS app (beta, simulator)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:35:02Z",
+              "completed_at": "2026-11-02T20:36:18Z"
+            },
+            {
+              "number": 19,
+              "name": "Post Cache SwiftPM (xcodebuild)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:36:18Z",
+              "completed_at": "2026-11-02T20:36:19Z"
+            },
+            {
+              "number": 20,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:36:19Z",
+              "completed_at": "2026-11-02T20:36:20Z"
+            },
+            {
+              "number": 21,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:36:20Z",
+              "completed_at": "2026-11-02T20:36:23Z"
+            }
+          ]
+        }
+      ],
+      "jobs_total_count": 4
+    },
+    {
+      "run": {
+        "id": 41515966943,
+        "run_attempt": 1,
+        "head_sha": "8d3382fc2a2a4eb7faa8207acc2991b2b6b768c0",
+        "path": ".github/workflows/ci.yml",
+        "event": "pull_request",
+        "status": "completed",
+        "conclusion": "failure",
+        "created_at": "2026-11-02T20:05:25Z",
+        "run_started_at": "2026-11-02T20:05:25Z",
+        "updated_at": "2026-11-02T20:26:12Z",
+        "html_url": "https://github.com/cacheplane/b4app/actions/runs/41515966943"
+      },
+      "jobs": [
+        {
+          "id": 125519765011,
+          "run_id": 41515966943,
+          "head_sha": "8d3382fc2a2a4eb7faa8207acc2991b2b6b768c0",
+          "name": "Workflow and shell lint",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:07:45Z",
+          "completed_at": "2026-11-02T20:08:08Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41515966943/job/125519765011",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:07:46Z",
+              "completed_at": "2026-11-02T20:07:46Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:07:46Z",
+              "completed_at": "2026-11-02T20:07:49Z"
+            },
+            {
+              "number": 3,
+              "name": "Install actionlint 1.7.12",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:07:49Z",
+              "completed_at": "2026-11-02T20:07:49Z"
+            },
+            {
+              "number": 4,
+              "name": "Install shellcheck",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:07:49Z",
+              "completed_at": "2026-11-02T20:07:54Z"
+            },
+            {
+              "number": 5,
+              "name": "Install bats 1.14.0",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:07:54Z",
+              "completed_at": "2026-11-02T20:07:55Z"
+            },
+            {
+              "number": 6,
+              "name": "actionlint",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:07:55Z",
+              "completed_at": "2026-11-02T20:07:57Z"
+            },
+            {
+              "number": 7,
+              "name": "shellcheck",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:07:57Z",
+              "completed_at": "2026-11-02T20:07:57Z"
+            },
+            {
+              "number": 8,
+              "name": "Release tag guard test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:07:57Z",
+              "completed_at": "2026-11-02T20:07:57Z"
+            },
+            {
+              "number": 9,
+              "name": "Deploy script tests",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:07:57Z",
+              "completed_at": "2026-11-02T20:08:06Z"
+            },
+            {
+              "number": 18,
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:08:06Z",
+              "completed_at": "2026-11-02T20:08:06Z"
+            },
+            {
+              "number": 19,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:08:06Z",
+              "completed_at": "2026-11-02T20:08:06Z"
+            }
+          ]
+        },
+        {
+          "id": 125519765355,
+          "run_id": 41515966943,
+          "head_sha": "8d3382fc2a2a4eb7faa8207acc2991b2b6b768c0",
+          "name": "Hub (Rust)",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:07:45Z",
+          "completed_at": "2026-11-02T20:12:15Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41515966943/job/125519765355",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:07:45Z",
+              "completed_at": "2026-11-02T20:07:46Z"
+            },
+            {
+              "number": 2,
+              "name": "Initialize containers",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:07:46Z",
+              "completed_at": "2026-11-02T20:08:01Z"
+            },
+            {
+              "number": 3,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:08:01Z",
+              "completed_at": "2026-11-02T20:08:03Z"
+            },
+            {
+              "number": 4,
+              "name": "Install Rust 1.93.1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:08:03Z",
+              "completed_at": "2026-11-02T20:08:11Z"
+            },
+            {
+              "number": 5,
+              "name": "Cache Cargo",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:08:11Z",
+              "completed_at": "2026-11-02T20:09:49Z"
+            },
+            {
+              "number": 6,
+              "name": "Format",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:09:49Z",
+              "completed_at": "2026-11-02T20:09:55Z"
+            },
+            {
+              "number": 7,
+              "name": "Clippy",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:09:55Z",
+              "completed_at": "2026-11-02T20:10:07Z"
+            },
+            {
+              "number": 8,
+              "name": "Test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:10:07Z",
+              "completed_at": "2026-11-02T20:12:11Z"
+            },
+            {
+              "number": 14,
+              "name": "Post Cache Cargo",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:12:11Z",
+              "completed_at": "2026-11-02T20:12:11Z"
+            },
+            {
+              "number": 15,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:12:11Z",
+              "completed_at": "2026-11-02T20:12:11Z"
+            },
+            {
+              "number": 16,
+              "name": "Stop containers",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:12:11Z",
+              "completed_at": "2026-11-02T20:12:12Z"
+            },
+            {
+              "number": 17,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:12:12Z",
+              "completed_at": "2026-11-02T20:12:12Z"
+            }
+          ]
+        },
+        {
+          "id": 125519765515,
+          "run_id": 41515966943,
+          "head_sha": "8d3382fc2a2a4eb7faa8207acc2991b2b6b768c0",
+          "name": "macOS and iOS app builds",
+          "labels": [
+            "macos-26"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:08:22Z",
+          "completed_at": "2026-11-02T20:15:58Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41515966943/job/125519765515",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:08:23Z",
+              "completed_at": "2026-11-02T20:08:24Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:08:24Z",
+              "completed_at": "2026-11-02T20:08:26Z"
+            },
+            {
+              "number": 3,
+              "name": "Select Xcode 26.6",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:08:26Z",
+              "completed_at": "2026-11-02T20:08:27Z"
+            },
+            {
+              "number": 4,
+              "name": "Install XcodeGen",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:08:27Z",
+              "completed_at": "2026-11-02T20:08:33Z"
+            },
+            {
+              "number": 5,
+              "name": "Generate project",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:08:33Z",
+              "completed_at": "2026-11-02T20:08:33Z"
+            },
+            {
+              "number": 6,
+              "name": "Cache SwiftPM (xcodebuild)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:08:33Z",
+              "completed_at": "2026-11-02T20:08:45Z"
+            },
+            {
+              "number": 7,
+              "name": "Build macOS app",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:08:45Z",
+              "completed_at": "2026-11-02T20:11:16Z"
+            },
+            {
+              "number": 8,
+              "name": "Build iOS app (simulator)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:11:16Z",
+              "completed_at": "2026-11-02T20:12:50Z"
+            },
+            {
+              "number": 9,
+              "name": "Build macOS app (beta)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:12:51Z",
+              "completed_at": "2026-11-02T20:14:29Z"
+            },
+            {
+              "number": 10,
+              "name": "Build iOS app (beta, simulator)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:14:29Z",
+              "completed_at": "2026-11-02T20:15:48Z"
+            },
+            {
+              "number": 19,
+              "name": "Post Cache SwiftPM (xcodebuild)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:15:48Z",
+              "completed_at": "2026-11-02T20:15:48Z"
+            },
+            {
+              "number": 20,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:15:48Z",
+              "completed_at": "2026-11-02T20:15:49Z"
+            },
+            {
+              "number": 21,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:15:49Z",
+              "completed_at": "2026-11-02T20:15:54Z"
+            }
+          ]
+        },
+        {
+          "id": 125519765645,
+          "run_id": 41515966943,
+          "head_sha": "8d3382fc2a2a4eb7faa8207acc2991b2b6b768c0",
+          "name": "Package build and tests",
+          "labels": [
+            "macos-26"
+          ],
+          "status": "completed",
+          "conclusion": "failure",
+          "started_at": "2026-11-02T20:10:59Z",
+          "completed_at": "2026-11-02T20:26:11Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41515966943/job/125519765645",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:10:59Z",
+              "completed_at": "2026-11-02T20:11:00Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:11:00Z",
+              "completed_at": "2026-11-02T20:11:03Z"
+            },
+            {
+              "number": 3,
+              "name": "Select Xcode 26.6",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:11:03Z",
+              "completed_at": "2026-11-02T20:11:03Z"
+            },
+            {
+              "number": 4,
+              "name": "Cache SwiftPM",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:11:03Z",
+              "completed_at": "2026-11-02T20:11:21Z"
+            },
+            {
+              "number": 5,
+              "name": "Format lint",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:11:21Z",
+              "completed_at": "2026-11-02T20:11:27Z"
+            },
+            {
+              "number": 6,
+              "name": "Cache the pinned PostgreSQL archive",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:11:27Z",
+              "completed_at": "2026-11-02T20:11:28Z"
+            },
+            {
+              "number": 7,
+              "name": "Fetch PostgreSQL (the tests boot a private cluster from it)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:11:28Z",
+              "completed_at": "2026-11-02T20:11:28Z"
+            },
+            {
+              "number": 8,
+              "name": "Build",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:11:28Z",
+              "completed_at": "2026-11-02T20:12:47Z"
+            },
+            {
+              "number": 9,
+              "name": "Test",
+              "status": "completed",
+              "conclusion": "failure",
+              "started_at": "2026-11-02T20:12:47Z",
+              "completed_at": "2026-11-02T20:24:44Z"
+            },
+            {
+              "number": 16,
+              "name": "Post Cache the pinned PostgreSQL archive",
+              "status": "completed",
+              "conclusion": "skipped",
+              "started_at": "2026-11-02T20:24:44Z",
+              "completed_at": "2026-11-02T20:24:44Z"
+            },
+            {
+              "number": 17,
+              "name": "Post Cache SwiftPM",
+              "status": "completed",
+              "conclusion": "skipped",
+              "started_at": "2026-11-02T20:24:44Z",
+              "completed_at": "2026-11-02T20:24:44Z"
+            },
+            {
+              "number": 18,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:24:44Z",
+              "completed_at": "2026-11-02T20:24:45Z"
+            },
+            {
+              "number": 19,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:24:45Z",
+              "completed_at": "2026-11-02T20:24:46Z"
+            }
+          ]
+        }
+      ],
+      "jobs_total_count": 4
+    },
+    {
+      "run": {
+        "id": 41514981940,
+        "run_attempt": 1,
+        "head_sha": "cd73fbc3a059d7a6d0d592f2154ab102a6a1ce08",
+        "path": ".github/workflows/ci.yml",
+        "event": "pull_request",
+        "status": "completed",
+        "conclusion": "failure",
+        "created_at": "2026-11-02T19:59:11Z",
+        "run_started_at": "2026-11-02T19:59:11Z",
+        "updated_at": "2026-11-02T20:25:30Z",
+        "html_url": "https://github.com/cacheplane/b4app/actions/runs/41514981940"
+      },
+      "jobs": [
+        {
+          "id": 125516127633,
+          "run_id": 41514981940,
+          "head_sha": "cd73fbc3a059d7a6d0d592f2154ab102a6a1ce08",
+          "name": "Hub (Rust)",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T19:59:14Z",
+          "completed_at": "2026-11-02T20:03:05Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41514981940/job/125516127633",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:59:15Z",
+              "completed_at": "2026-11-02T19:59:16Z"
+            },
+            {
+              "number": 2,
+              "name": "Initialize containers",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:59:16Z",
+              "completed_at": "2026-11-02T19:59:28Z"
+            },
+            {
+              "number": 3,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:59:28Z",
+              "completed_at": "2026-11-02T19:59:29Z"
+            },
+            {
+              "number": 4,
+              "name": "Install Rust 1.93.1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:59:29Z",
+              "completed_at": "2026-11-02T19:59:38Z"
+            },
+            {
+              "number": 5,
+              "name": "Cache Cargo",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:59:38Z",
+              "completed_at": "2026-11-02T20:00:35Z"
+            },
+            {
+              "number": 6,
+              "name": "Format",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:00:35Z",
+              "completed_at": "2026-11-02T20:00:38Z"
+            },
+            {
+              "number": 7,
+              "name": "Clippy",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:00:38Z",
+              "completed_at": "2026-11-02T20:00:45Z"
+            },
+            {
+              "number": 8,
+              "name": "Test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:00:45Z",
+              "completed_at": "2026-11-02T20:02:50Z"
+            },
+            {
+              "number": 14,
+              "name": "Post Cache Cargo",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:02:50Z",
+              "completed_at": "2026-11-02T20:02:50Z"
+            },
+            {
+              "number": 15,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:02:50Z",
+              "completed_at": "2026-11-02T20:02:50Z"
+            },
+            {
+              "number": 16,
+              "name": "Stop containers",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:02:50Z",
+              "completed_at": "2026-11-02T20:02:50Z"
+            },
+            {
+              "number": 17,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:02:50Z",
+              "completed_at": "2026-11-02T20:02:51Z"
+            }
+          ]
+        },
+        {
+          "id": 125516128084,
+          "run_id": 41514981940,
+          "head_sha": "cd73fbc3a059d7a6d0d592f2154ab102a6a1ce08",
+          "name": "Workflow and shell lint",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T19:59:14Z",
+          "completed_at": "2026-11-02T19:59:56Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41514981940/job/125516128084",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:59:14Z",
+              "completed_at": "2026-11-02T19:59:15Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:59:15Z",
+              "completed_at": "2026-11-02T19:59:16Z"
+            },
+            {
+              "number": 3,
+              "name": "Install actionlint 1.7.12",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:59:16Z",
+              "completed_at": "2026-11-02T19:59:16Z"
+            },
+            {
+              "number": 4,
+              "name": "Install shellcheck",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:59:16Z",
+              "completed_at": "2026-11-02T19:59:19Z"
+            },
+            {
+              "number": 5,
+              "name": "Install bats 1.14.0",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:59:19Z",
+              "completed_at": "2026-11-02T19:59:20Z"
+            },
+            {
+              "number": 6,
+              "name": "actionlint",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:59:20Z",
+              "completed_at": "2026-11-02T19:59:20Z"
+            },
+            {
+              "number": 7,
+              "name": "shellcheck",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:59:20Z",
+              "completed_at": "2026-11-02T19:59:21Z"
+            },
+            {
+              "number": 8,
+              "name": "Release tag guard test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:59:21Z",
+              "completed_at": "2026-11-02T19:59:21Z"
+            },
+            {
+              "number": 9,
+              "name": "Deploy script tests",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:59:21Z",
+              "completed_at": "2026-11-02T19:59:27Z"
+            },
+            {
+              "number": 18,
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:59:27Z",
+              "completed_at": "2026-11-02T19:59:28Z"
+            },
+            {
+              "number": 19,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:59:28Z",
+              "completed_at": "2026-11-02T19:59:28Z"
+            }
+          ]
+        },
+        {
+          "id": 125516128129,
+          "run_id": 41514981940,
+          "head_sha": "cd73fbc3a059d7a6d0d592f2154ab102a6a1ce08",
+          "name": "Package build and tests",
+          "labels": [
+            "macos-26"
+          ],
+          "status": "completed",
+          "conclusion": "failure",
+          "started_at": "2026-11-02T20:05:07Z",
+          "completed_at": "2026-11-02T20:20:24Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41514981940/job/125516128129",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:05:08Z",
+              "completed_at": "2026-11-02T20:05:09Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:05:09Z",
+              "completed_at": "2026-11-02T20:05:11Z"
+            },
+            {
+              "number": 3,
+              "name": "Select Xcode 26.6",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:05:11Z",
+              "completed_at": "2026-11-02T20:05:11Z"
+            },
+            {
+              "number": 4,
+              "name": "Cache SwiftPM",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:05:11Z",
+              "completed_at": "2026-11-02T20:05:50Z"
+            },
+            {
+              "number": 5,
+              "name": "Format lint",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:05:50Z",
+              "completed_at": "2026-11-02T20:06:01Z"
+            },
+            {
+              "number": 6,
+              "name": "Cache the pinned PostgreSQL archive",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:06:01Z",
+              "completed_at": "2026-11-02T20:06:05Z"
+            },
+            {
+              "number": 7,
+              "name": "Fetch PostgreSQL (the tests boot a private cluster from it)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:06:05Z",
+              "completed_at": "2026-11-02T20:06:05Z"
+            },
+            {
+              "number": 8,
+              "name": "Build",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:06:05Z",
+              "completed_at": "2026-11-02T20:07:48Z"
+            },
+            {
+              "number": 9,
+              "name": "Test",
+              "status": "completed",
+              "conclusion": "failure",
+              "started_at": "2026-11-02T20:07:48Z",
+              "completed_at": "2026-11-02T20:20:13Z"
+            },
+            {
+              "number": 16,
+              "name": "Post Cache the pinned PostgreSQL archive",
+              "status": "completed",
+              "conclusion": "skipped",
+              "started_at": "2026-11-02T20:20:13Z",
+              "completed_at": "2026-11-02T20:20:13Z"
+            },
+            {
+              "number": 17,
+              "name": "Post Cache SwiftPM",
+              "status": "completed",
+              "conclusion": "skipped",
+              "started_at": "2026-11-02T20:20:13Z",
+              "completed_at": "2026-11-02T20:20:13Z"
+            },
+            {
+              "number": 18,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:20:13Z",
+              "completed_at": "2026-11-02T20:20:14Z"
+            },
+            {
+              "number": 19,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:20:14Z",
+              "completed_at": "2026-11-02T20:20:17Z"
+            }
+          ]
+        },
+        {
+          "id": 125516128847,
+          "run_id": 41514981940,
+          "head_sha": "cd73fbc3a059d7a6d0d592f2154ab102a6a1ce08",
+          "name": "macOS and iOS app builds",
+          "labels": [
+            "macos-26"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T20:16:18Z",
+          "completed_at": "2026-11-02T20:25:29Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41514981940/job/125516128847",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:16:18Z",
+              "completed_at": "2026-11-02T20:16:19Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:16:19Z",
+              "completed_at": "2026-11-02T20:16:22Z"
+            },
+            {
+              "number": 3,
+              "name": "Select Xcode 26.6",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:16:22Z",
+              "completed_at": "2026-11-02T20:16:22Z"
+            },
+            {
+              "number": 4,
+              "name": "Install XcodeGen",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:16:22Z",
+              "completed_at": "2026-11-02T20:16:30Z"
+            },
+            {
+              "number": 5,
+              "name": "Generate project",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:16:30Z",
+              "completed_at": "2026-11-02T20:16:30Z"
+            },
+            {
+              "number": 6,
+              "name": "Cache SwiftPM (xcodebuild)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:16:30Z",
+              "completed_at": "2026-11-02T20:16:39Z"
+            },
+            {
+              "number": 7,
+              "name": "Build macOS app",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:16:39Z",
+              "completed_at": "2026-11-02T20:19:52Z"
+            },
+            {
+              "number": 8,
+              "name": "Build iOS app (simulator)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:19:52Z",
+              "completed_at": "2026-11-02T20:21:40Z"
+            },
+            {
+              "number": 9,
+              "name": "Build macOS app (beta)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:21:40Z",
+              "completed_at": "2026-11-02T20:23:21Z"
+            },
+            {
+              "number": 10,
+              "name": "Build iOS app (beta, simulator)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:23:21Z",
+              "completed_at": "2026-11-02T20:25:14Z"
+            },
+            {
+              "number": 19,
+              "name": "Post Cache SwiftPM (xcodebuild)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:14Z",
+              "completed_at": "2026-11-02T20:25:15Z"
+            },
+            {
+              "number": 20,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:15Z",
+              "completed_at": "2026-11-02T20:25:16Z"
+            },
+            {
+              "number": 21,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:25:16Z",
+              "completed_at": "2026-11-02T20:25:22Z"
+            }
+          ]
+        }
+      ],
+      "jobs_total_count": 4
+    },
+    {
+      "run": {
+        "id": 41513320488,
+        "run_attempt": 1,
+        "head_sha": "7ba13488814179f7ddcfd213b53f443bdb4e4572",
+        "path": ".github/workflows/ci.yml",
+        "event": "pull_request",
+        "status": "completed",
+        "conclusion": "cancelled",
+        "created_at": "2026-11-02T19:48:15Z",
+        "run_started_at": "2026-11-02T19:48:15Z",
+        "updated_at": "2026-11-02T20:05:57Z",
+        "html_url": "https://github.com/cacheplane/b4app/actions/runs/41513320488"
+      },
+      "jobs": [
+        {
+          "id": 125510413281,
+          "run_id": 41513320488,
+          "head_sha": "7ba13488814179f7ddcfd213b53f443bdb4e4572",
+          "name": "Hub (Rust)",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T19:48:18Z",
+          "completed_at": "2026-11-02T19:51:52Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41513320488/job/125510413281",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:48:19Z",
+              "completed_at": "2026-11-02T19:48:20Z"
+            },
+            {
+              "number": 2,
+              "name": "Initialize containers",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:48:20Z",
+              "completed_at": "2026-11-02T19:48:33Z"
+            },
+            {
+              "number": 3,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:48:33Z",
+              "completed_at": "2026-11-02T19:48:34Z"
+            },
+            {
+              "number": 4,
+              "name": "Install Rust 1.93.1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:48:34Z",
+              "completed_at": "2026-11-02T19:48:43Z"
+            },
+            {
+              "number": 5,
+              "name": "Cache Cargo",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:48:43Z",
+              "completed_at": "2026-11-02T19:49:34Z"
+            },
+            {
+              "number": 6,
+              "name": "Format",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:49:34Z",
+              "completed_at": "2026-11-02T19:49:39Z"
+            },
+            {
+              "number": 7,
+              "name": "Clippy",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:49:39Z",
+              "completed_at": "2026-11-02T19:49:44Z"
+            },
+            {
+              "number": 8,
+              "name": "Test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:49:44Z",
+              "completed_at": "2026-11-02T19:51:46Z"
+            },
+            {
+              "number": 14,
+              "name": "Post Cache Cargo",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:51:46Z",
+              "completed_at": "2026-11-02T19:51:46Z"
+            },
+            {
+              "number": 15,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:51:46Z",
+              "completed_at": "2026-11-02T19:51:46Z"
+            },
+            {
+              "number": 16,
+              "name": "Stop containers",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:51:46Z",
+              "completed_at": "2026-11-02T19:51:47Z"
+            },
+            {
+              "number": 17,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:51:47Z",
+              "completed_at": "2026-11-02T19:51:47Z"
+            }
+          ]
+        },
+        {
+          "id": 125510413570,
+          "run_id": 41513320488,
+          "head_sha": "7ba13488814179f7ddcfd213b53f443bdb4e4572",
+          "name": "Package build and tests",
+          "labels": [
+            "macos-26"
+          ],
+          "status": "completed",
+          "conclusion": "cancelled",
+          "started_at": "2026-11-02T19:53:06Z",
+          "completed_at": "2026-11-02T20:05:56Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41513320488/job/125510413570",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:53:06Z",
+              "completed_at": "2026-11-02T19:53:07Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:53:07Z",
+              "completed_at": "2026-11-02T19:53:10Z"
+            },
+            {
+              "number": 3,
+              "name": "Select Xcode 26.6",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:53:10Z",
+              "completed_at": "2026-11-02T19:53:10Z"
+            },
+            {
+              "number": 4,
+              "name": "Cache SwiftPM",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:53:10Z",
+              "completed_at": "2026-11-02T19:53:28Z"
+            },
+            {
+              "number": 5,
+              "name": "Format lint",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:53:28Z",
+              "completed_at": "2026-11-02T19:53:35Z"
+            },
+            {
+              "number": 6,
+              "name": "Cache the pinned PostgreSQL archive",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:53:35Z",
+              "completed_at": "2026-11-02T19:53:36Z"
+            },
+            {
+              "number": 7,
+              "name": "Fetch PostgreSQL (the tests boot a private cluster from it)",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:53:36Z",
+              "completed_at": "2026-11-02T19:53:36Z"
+            },
+            {
+              "number": 8,
+              "name": "Build",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:53:36Z",
+              "completed_at": "2026-11-02T19:55:06Z"
+            },
+            {
+              "number": 9,
+              "name": "Test",
+              "status": "completed",
+              "conclusion": "cancelled",
+              "started_at": "2026-11-02T19:55:06Z",
+              "completed_at": "2026-11-02T20:05:48Z"
+            },
+            {
+              "number": 16,
+              "name": "Post Cache the pinned PostgreSQL archive",
+              "status": "completed",
+              "conclusion": "skipped",
+              "started_at": "2026-11-02T20:05:48Z",
+              "completed_at": "2026-11-02T20:05:48Z"
+            },
+            {
+              "number": 17,
+              "name": "Post Cache SwiftPM",
+              "status": "completed",
+              "conclusion": "skipped",
+              "started_at": "2026-11-02T20:05:48Z",
+              "completed_at": "2026-11-02T20:05:48Z"
+            },
+            {
+              "number": 18,
+              "name": "Post Run actions/checkout@v5",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:05:48Z",
+              "completed_at": "2026-11-02T20:05:49Z"
+            },
+            {
+              "number": 19,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T20:05:49Z",
+              "completed_at": "2026-11-02T20:05:54Z"
+            }
+          ]
+        },
+        {
+          "id": 125510413598,
+          "run_id": 41513320488,
+          "head_sha": "7ba13488814179f7ddcfd213b53f443bdb4e4572",
+          "name": "Workflow and shell lint",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-02T19:48:17Z",
+          "completed_at": "2026-11-02T19:48:34Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41513320488/job/125510413598",
+          "steps": [
+            {
+              "number": 1,
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:48:19Z",
+              "completed_at": "2026-11-02T19:48:19Z"
+            },
+            {
+              "number": 2,
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:48:19Z",
+              "completed_at": "2026-11-02T19:48:21Z"
+            },
+            {
+              "number": 3,
+              "name": "Install actionlint 1.7.12",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:48:21Z",
+              "completed_at": "2026-11-02T19:48:21Z"
+            },
+            {
+              "number": 4,
+              "name": "Install shellcheck",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:48:21Z",
+              "completed_at": "2026-11-02T19:48:24Z"
+            },
+            {
+              "number": 5,
+              "name": "Install bats 1.14.0",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:48:24Z",
+              "completed_at": "2026-11-02T19:48:24Z"
+            },
+            {
+              "number": 6,
+              "name": "actionlint",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:48:24Z",
+              "completed_at": "2026-11-02T19:48:25Z"
+            },
+            {
+              "number": 7,
+              "name": "shellcheck",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:48:25Z",
+              "completed_at": "2026-11-02T19:48:25Z"
+            },
+            {
+              "number": 8,
+              "name": "Release tag guard test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:48:25Z",
+              "completed_at": "2026-11-02T19:48:25Z"
+            },
+            {
+              "number": 9,
+              "name": "Deploy script tests",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:48:25Z",
+              "completed_at": "2026-11-02T19:48:32Z"
+            },
+            {
+              "number": 18,
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:48:32Z",
+              "completed_at": "2026-11-02T19:48:32Z"
+            },
+            {
+              "number": 19,
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-02T19:48:32Z",
+              "completed_at": "2026-11-02T19:48:32Z"
+            }
+          ]
+        },
+        {
+          "id": 125510413714,
+          "run_id": 41513320488,
+          "head_sha": "7ba13488814179f7ddcfd213b53f443bdb4e4572",
+          "name": "macOS and iOS app builds",
+          "labels": [
+            "macos-26"
+          ],
+          "status": "completed",
+          "conclusion": "cancelled",
+          "started_at": "2026-11-02T19:48:16Z",
+          "completed_at": "2026-11-02T20:05:26Z",
+          "html_url": "https://github.com/cacheplane/b4app/actions/runs/41513320488/job/125510413714",
+          "steps": []
+        }
+      ],
+      "jobs_total_count": 4
+    }
+  ],
+  "collected_at": "2026-11-02T21:06:46.445606+00:00",
+  "selection_limit": 8,
+  "selection_total_count": 178,
+  "api_request_count": 18,
+  "metadata_correction": "Selection count/limit copied from frozen original workflow-runs response; 18 = two GETs for each of nine attempts. Added during review; no run/job/step observations changed."
+}

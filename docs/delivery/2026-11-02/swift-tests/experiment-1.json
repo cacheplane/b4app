@@ -1,0 +1,8 @@
+{
+  "hypothesis": "Unbounded Swift Testing case concurrency contends on synchronous PostgreSQL database creation/migration and process setup, causing initial tens-of-seconds stalls. A bounded16-test width can reduce contention without dropping work.",
+  "control": "Same compiled1159-test baseline; swift test --skip-build; same short TMPDIR and liveflags unset.",
+  "candidate": "Same command with SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH=16. Installed Swift6.3.3 Testing binary exposes this input; CI selects same Xcode26.6. Experimental pin must be documented if retained.",
+  "threshold": "Keep only if >=10% lower full warm span (provisional small sample), <=5% child CPU increase and complete same test population; fixes to known failures evaluated separately; final heldout full run required.",
+  "limits": "No hosted run or newrunner; run fails if existing failures remain; failedruns retained.",
+  "unchanged": "No new source, test filtering, cache or artifacts for this experiment."
+}

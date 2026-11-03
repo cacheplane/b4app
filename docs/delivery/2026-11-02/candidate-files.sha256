@@ -1,0 +1,3 @@
+053ac6aa0b4b656109a6822dae22f004f7a993c1b1f6cad74c02dd71a9c933cc  .github/scripts/ci-observations.py
+3b758199f5f4c1aa569d05f3479d21110ccc4be13f11c8301554cf2c47c0a92b  .github/scripts/tests/test_ci_observations.py
+7f73f71d66d70b4becaf382448928d1c57ec91bf015d824b495107cb4f63a546  .github/workflows/ci.yml

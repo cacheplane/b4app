@@ -1,0 +1,29 @@
+[
+  {
+    "case_id": "prototype-initial",
+    "exit_code": 133,
+    "evidence": "scan-benchmark-initial.jsonl",
+    "wall_seconds": null,
+    "cpu_seconds": null,
+    "reason": "Mutable input equality precondition failed; not used as equivalent input comparison."
+  },
+  {
+    "case_id": "prototype-frozen-and-live",
+    "exit_code": 0,
+    "evidence": [
+      "scan-control.jsonl",
+      "scan-live.jsonl"
+    ],
+    "wall_seconds": null,
+    "cpu_seconds": null,
+    "reason": "Per-scan clocks retained; no complete command clock/CPU; live equality explicitlyfalse."
+  },
+  {
+    "case_id": "invalid-name-fixture-reproduction",
+    "exit_code": 0,
+    "evidence": "invalid-name-fixture.json",
+    "wall_seconds": null,
+    "cpu_seconds": null,
+    "reason": "Caught expected OS92 error, proves unsupported fixture setup."
+  }
+]

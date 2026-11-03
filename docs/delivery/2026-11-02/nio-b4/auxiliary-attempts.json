@@ -1,0 +1,203 @@
+[
+  {
+    "case_id": "dns-regression-red",
+    "status": "Fail (expected negative)",
+    "scope": "2Python test methods, two failing entrypoint subcases; baselineDNS call",
+    "evidence": "/tmp/b4-dns-regression-red.log",
+    "sha256": "48efd6942a2b8b098d3dfbfe5ce991c4c6eb5b0b99971bcf6de1eec62e5d77f9",
+    "started_at": null,
+    "ended_at": null,
+    "wall_seconds": null,
+    "child_cpu_seconds": null,
+    "limitation": "Log-only helper run; no complete command clock/CPU retained. Not included in aggregate CPU or end-to-end comparisons."
+  },
+  {
+    "case_id": "dns-regression-green",
+    "status": "Pass",
+    "scope": "20Python tests afterDNSchange",
+    "evidence": "/tmp/b4-dns-regression-green.log",
+    "sha256": "80425084500e1fffc6ebddbc21254571462304685fdd1c268afc6c3aabf26d14",
+    "started_at": null,
+    "ended_at": null,
+    "wall_seconds": null,
+    "child_cpu_seconds": null,
+    "limitation": "Log-only helper run; no complete command clock/CPU retained. Not included in aggregate CPU or end-to-end comparisons."
+  },
+  {
+    "case_id": "python-final",
+    "status": "Pass",
+    "scope": "20Python tests on finalcode; actionlint/diff ran in same command and exited0",
+    "evidence": "/tmp/b4-nio-b4-evidence/python-final.log",
+    "sha256": "d7cb2cf70218d56d454314fd6497b940480d9658ae26824cbf108f789d1aeb82",
+    "started_at": null,
+    "ended_at": null,
+    "wall_seconds": null,
+    "child_cpu_seconds": null,
+    "limitation": "Log-only helper run; no complete command clock/CPU retained. Not included in aggregate CPU or end-to-end comparisons."
+  },
+  {
+    "case_id": "local-profile-initial",
+    "status": "Pass",
+    "scope": "actual local probe/binds; old field bind_to_readiness_seconds includes cleanup, superseded naming only",
+    "evidence": "/tmp/b4-nio-b4-evidence/fixture-profile-local.json",
+    "sha256": "0adfc16c0389322a821ece87b1c142b6f1820cd9bb862ec45c0828df1c2c4d1c",
+    "started_at": null,
+    "ended_at": null,
+    "wall_seconds": null,
+    "child_cpu_seconds": null,
+    "limitation": "Log-only helper run; no complete command clock/CPU retained. Not included in aggregate CPU or end-to-end comparisons."
+  },
+  {
+    "case_id": "local-profile-final",
+    "status": "Pass",
+    "scope": "actual local probe/binds with precise field bind_readiness_cleanup_seconds",
+    "evidence": "/tmp/b4-nio-b4-evidence/fixture-profile-final.json",
+    "sha256": "a434caf28f15f8f84c556b209322fedb43dc16919001ed955b59fd592ddc5807",
+    "started_at": null,
+    "ended_at": null,
+    "wall_seconds": null,
+    "child_cpu_seconds": null,
+    "limitation": "Log-only helper run; no complete command clock/CPU retained. Not included in aggregate CPU or end-to-end comparisons."
+  },
+  {
+    "case_id": "baseline-bind",
+    "status": "Pass (readiness reached)",
+    "evidence": "/tmp/b4-nio-b4-evidence/baseline-bind.json",
+    "sha256": "0182b6f6472d6d1192a4a52357d604c567b472ca71d4b4660e9a164edc2a6e4e",
+    "observations": 7,
+    "scope": "Controlled injected resolver condition, bind/readiness/cleanup, excludes imports and HTTP",
+    "started_at": null,
+    "ended_at": null,
+    "child_cpu_seconds": null,
+    "limitation": "Individual monotonic sample clocks retained; command clock/CPU unavailable; simulatedCIcondition, not hosted."
+  },
+  {
+    "case_id": "candidate-bind",
+    "status": "Pass (readiness reached)",
+    "evidence": "/tmp/b4-nio-b4-evidence/candidate-bind.json",
+    "sha256": "6b39da330470574fd46510f42bae8b34495424a781c49258f14025f385c6ad6a",
+    "observations": 7,
+    "scope": "Controlled injected resolver condition, bind/readiness/cleanup, excludes imports and HTTP",
+    "started_at": null,
+    "ended_at": null,
+    "child_cpu_seconds": null,
+    "limitation": "Individual monotonic sample clocks retained; command clock/CPU unavailable; simulatedCIcondition, not hosted."
+  },
+  {
+    "case_id": "final-static-0",
+    "command": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      ".github/scripts/tests",
+      "-v"
+    ],
+    "exit_code": 0,
+    "wall_seconds": 0.5202387910103425,
+    "started_at": null,
+    "ended_at": null,
+    "evidence": "final-checks.log",
+    "limitation": "Per-command wall measured, no child CPU/UTCbounds retained."
+  },
+  {
+    "case_id": "final-static-1",
+    "command": [
+      "swift",
+      "format",
+      "lint",
+      "--strict",
+      "--recursive",
+      "Sources",
+      "Tests",
+      "Apps",
+      "Package.swift"
+    ],
+    "exit_code": 0,
+    "wall_seconds": 4.376418958010618,
+    "started_at": null,
+    "ended_at": null,
+    "evidence": "final-checks.log",
+    "limitation": "Per-command wall measured, no child CPU/UTCbounds retained."
+  },
+  {
+    "case_id": "final-static-2",
+    "command": [
+      "actionlint"
+    ],
+    "exit_code": 0,
+    "wall_seconds": 3.841787874989677,
+    "started_at": null,
+    "ended_at": null,
+    "evidence": "final-checks.log",
+    "limitation": "Per-command wall measured, no child CPU/UTCbounds retained."
+  },
+  {
+    "case_id": "final-static-3",
+    "command": [
+      "shellcheck",
+      ".github/scripts/test-tag-guard.sh",
+      ".github/scripts/chart-kind-test.sh",
+      ".github/scripts/hub-release-tags.sh",
+      ".github/scripts/is-hub-release.sh",
+      "Hub/scripts/check-image.sh",
+      "Hub/scripts/test-db.sh",
+      "Hub/chart/scripts/chart-version-published.sh",
+      "Infra/scripts/admin-shell.sh",
+      "Infra/scripts/taskdef-lib.sh",
+      "Infra/scripts/render-taskdef.sh",
+      "Infra/scripts/run-migrate.sh",
+      "Infra/scripts/deploy.sh",
+      "Infra/scripts/tests/stubs/docker",
+      "Infra/scripts/tests/stubs/curl",
+      "Infra/scripts/tests/stubs/aws",
+      "Infra/scripts/tests/helpers.bash"
+    ],
+    "exit_code": 0,
+    "wall_seconds": 1.149375874956604,
+    "started_at": null,
+    "ended_at": null,
+    "evidence": "final-checks.log",
+    "limitation": "Per-command wall measured, no child CPU/UTCbounds retained."
+  },
+  {
+    "case_id": "final-static-4",
+    "command": [
+      ".github/scripts/test-tag-guard.sh"
+    ],
+    "exit_code": 0,
+    "wall_seconds": 0.2625359169906005,
+    "started_at": null,
+    "ended_at": null,
+    "evidence": "final-checks.log",
+    "limitation": "Per-command wall measured, no child CPU/UTCbounds retained."
+  },
+  {
+    "case_id": "final-static-5",
+    "command": [
+      "bats",
+      "Infra/scripts/tests"
+    ],
+    "exit_code": 0,
+    "wall_seconds": 45.18886058399221,
+    "started_at": null,
+    "ended_at": null,
+    "evidence": "final-checks.log",
+    "limitation": "Per-command wall measured, no child CPU/UTCbounds retained."
+  },
+  {
+    "case_id": "final-static-6",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit_code": 0,
+    "wall_seconds": 0.14733412500936538,
+    "started_at": null,
+    "ended_at": null,
+    "evidence": "final-checks.log",
+    "limitation": "Per-command wall measured, no child CPU/UTCbounds retained."
+  }
+]

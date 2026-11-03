@@ -1,0 +1,87 @@
+{
+  "collected_at": "2026-11-02T22:16:42.041253+00:00",
+  "results": [
+    {
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        ".github/scripts/tests",
+        "-v"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.3240933329798281
+    },
+    {
+      "command": [
+        "swift",
+        "format",
+        "lint",
+        "--strict",
+        "--recursive",
+        "Sources",
+        "Tests",
+        "Apps",
+        "Package.swift"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 4.199240166984964
+    },
+    {
+      "command": [
+        "actionlint"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 3.3085575419827364
+    },
+    {
+      "command": [
+        "shellcheck",
+        ".github/scripts/test-tag-guard.sh",
+        ".github/scripts/chart-kind-test.sh",
+        ".github/scripts/hub-release-tags.sh",
+        ".github/scripts/is-hub-release.sh",
+        "Hub/scripts/check-image.sh",
+        "Hub/scripts/test-db.sh",
+        "Hub/chart/scripts/chart-version-published.sh",
+        "Infra/scripts/admin-shell.sh",
+        "Infra/scripts/taskdef-lib.sh",
+        "Infra/scripts/render-taskdef.sh",
+        "Infra/scripts/run-migrate.sh",
+        "Infra/scripts/deploy.sh",
+        "Infra/scripts/tests/stubs/docker",
+        "Infra/scripts/tests/stubs/curl",
+        "Infra/scripts/tests/stubs/aws",
+        "Infra/scripts/tests/helpers.bash"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 3.057746042031795
+    },
+    {
+      "command": [
+        ".github/scripts/test-tag-guard.sh"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.10156724997796118
+    },
+    {
+      "command": [
+        "bats",
+        "Infra/scripts/tests"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 47.40332241600845
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.12352941697463393
+    }
+  ]
+}

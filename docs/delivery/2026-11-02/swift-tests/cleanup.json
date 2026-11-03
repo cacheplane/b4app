@@ -1,0 +1,11 @@
+{
+  "verified_orphan_fixtures_stopped": [
+    {
+      "pid": 43185,
+      "started_at": "2026-11-02T21:49:36+00:00",
+      "verified_fixture": "/Users/blove/.codex/worktrees/f4fa/b4app/Tests/B4AdapterTests/Fixtures/fake-b4.py",
+      "exit_verified": true
+    }
+  ],
+  "boundary": "Exact fake-B4 source argv, parent1, failed-experiment start window, identity reread before SIGTERM; no other process signalled."
+}

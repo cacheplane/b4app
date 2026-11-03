@@ -1,0 +1,59 @@
+{
+  "collected_at": "2026-11-03T04:51:59.921644+00:00",
+  "origin": "../nio-b4/native-products.json and observations.jsonl",
+  "origin_source_head": "02f201c0e504004df512d88e267ca6d82af8410d",
+  "unchanged_prior_catalog_verified": true,
+  "new_source_changes": [
+    "Sources/WorkspaceStorage/EphemeralPostgres.swift",
+    "Tests/WorkspaceStorageTests/ScratchSweepTests.swift"
+  ],
+  "reuse_basis": "Only these new files differ from preceding candidate. Storage is absent from project.yml iOS products and their Package.swift transitive graph; tests are not native app inputs. Prior source/config/lock/toolchain compatibility retained. Actual iOS binary/plist digests will be rechecked after macOS builds.",
+  "toolchain": "Xcode26.6(17F113),Swift6.3.3,SDK26.5",
+  "products": [
+    {
+      "configuration": "Debug-Beta-iphonesimulator",
+      "platforms": [
+        "iPhoneSimulator"
+      ],
+      "bundle_id": "com.cacheplane.b4app.ios",
+      "flavor": "beta",
+      "version": "0.1.0",
+      "binary_sha256": "9d045022b94fc64ca3386547c8bce7e3eb3e607a4751577e8f9ef63bbf895414",
+      "info_plist_sha256": "d65010a09afd74df6f64eab00b3c174745506576d2dac8a185cd7e2355042a85",
+      "file": "Mach-O universal binary with 2 architectures: [x86_64:Mach-O 64-bit executable x86_64] [arm64:Mach-O 64-bit executable arm64]\n/tmp/b4-ci-swift-evidence/native/DerivedData/Build/Products/Debug-Beta-iphonesimulator/Agent Workspace.app/Agent Workspace (for architecture x86_64):\tMach-O 64-bit executable x86_64\n/tmp/b4-ci-swift-evidence/native/DerivedData/Build/Products/Debug-Beta-iphonesimulator/Agent Workspace.app/Agent Workspace (for architecture arm64):\tMach-O 64-bit executable arm64",
+      "artifact_kind": "Unsigned local build product, not distributable package",
+      "signing_allowed": false
+    },
+    {
+      "configuration": "Debug-iphonesimulator",
+      "platforms": [
+        "iPhoneSimulator"
+      ],
+      "bundle_id": "com.cacheplane.b4app.ios.local",
+      "flavor": "local",
+      "version": "0.1.0",
+      "binary_sha256": "eb19961d5d64c086a2b9483f4a5f518136b074b2f1db809738b9a59efaf13a89",
+      "info_plist_sha256": "2ce937aeaac15ede9a18e72d238789dfb67988c3af79cc2e39df5692e0491f60",
+      "file": "Mach-O universal binary with 2 architectures: [x86_64:Mach-O 64-bit executable x86_64] [arm64:Mach-O 64-bit executable arm64]\n/tmp/b4-ci-swift-evidence/native/DerivedData/Build/Products/Debug-iphonesimulator/Agent Workspace.app/Agent Workspace (for architecture x86_64):\tMach-O 64-bit executable x86_64\n/tmp/b4-ci-swift-evidence/native/DerivedData/Build/Products/Debug-iphonesimulator/Agent Workspace.app/Agent Workspace (for architecture arm64):\tMach-O 64-bit executable arm64",
+      "artifact_kind": "Unsigned local build product, not distributable package",
+      "signing_allowed": false
+    },
+    {
+      "configuration": "Release-iphonesimulator",
+      "platforms": [
+        "iPhoneSimulator"
+      ],
+      "bundle_id": "com.cacheplane.b4app.ios",
+      "flavor": "prod",
+      "version": "0.1.0",
+      "binary_sha256": "e1fa2d096b385e77ceed85f64a4b0655340063409a7bf48414eb390c2a11e079",
+      "info_plist_sha256": "35900650e8615bc92c78e9860d06d3a338834394ffe43aa184484683eff4ae9f",
+      "file": "Mach-O universal binary with 2 architectures: [x86_64:Mach-O 64-bit executable x86_64] [arm64]\n/tmp/b4-ci-swift-evidence/native/DerivedData/Build/Products/Release-iphonesimulator/Agent Workspace.app/Agent Workspace (for architecture x86_64):\tMach-O 64-bit executable x86_64\n/tmp/b4-ci-swift-evidence/native/DerivedData/Build/Products/Release-iphonesimulator/Agent Workspace.app/Agent Workspace (for architecture arm64):\tMach-O 64-bit executable arm64",
+      "artifact_kind": "Unsigned local build product, not distributable package",
+      "signing_allowed": false
+    }
+  ],
+  "fresh_execution": false,
+  "actual_binary_and_plist_digests_reverified": true,
+  "reverified_at": "2026-11-03T04:54:26.896488+00:00"
+}

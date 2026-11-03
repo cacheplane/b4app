@@ -1,0 +1,27 @@
+{
+  "required_cases": [
+    "macOS Debug local",
+    "iOS Simulator Debug local",
+    "macOS Debug-Beta",
+    "iOS Simulator Debug-Beta"
+  ],
+  "additional_cases": [
+    "macOS Release prod unsigned",
+    "iOS Simulator Release prod unsigned"
+  ],
+  "flags": [
+    "CODE_SIGNING_ALLOWED=NO",
+    "-onlyUsePackageVersionsFromResolvedFile",
+    "-disablePackageRepositoryCache"
+  ],
+  "output_roots": "/tmp/b4-ci-swift-evidence/native/{SourcePackages,DerivedData}, initially absent",
+  "resolved_file": "Copy root Package.resolved into generated project workspace; assert root hash unchanged.",
+  "budget": "Existing45min local experiment ceiling; six builds, no archive/export/package/upload/sign/notarize/deploy.",
+  "artifact_checks": [
+    "Expected configuration/platform/flavor/bundle identity/version",
+    "Executable and Info.plist SHA256",
+    "Mach-O architecture metadata"
+  ],
+  "cold_definition": "First native build uses empty cloned sources and DerivedData; subsequent target/config branches share only compatible outputs. Installed SDK caches remain.",
+  "scope_limit": "Build products are unsigned. No Finder launch, real login, installation/update or release availability is inferred."
+}

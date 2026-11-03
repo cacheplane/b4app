@@ -1,0 +1,27 @@
+{
+  "collected_at": "2026-11-03T00:09:50.584669+00:00",
+  "final_source_hashes_match": true,
+  "final_warm_cold_build": [
+    "strict-final-full-warm-2",
+    "strict-final-cold",
+    "final-swift-build"
+  ],
+  "full_tests_each": 1164,
+  "suites_each": 146,
+  "nio_shutdown_diagnostics_each": 0,
+  "native_builds": 6,
+  "native_products_digest_verified": 6,
+  "static_commands": 7,
+  "static_exit_codes": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "hosted_candidate": "Untested",
+  "published_or_deployed": false,
+  "verdict": "Incomplete for hosted CI delivery improvement; final local correctness/native/cold checks pass"
+}

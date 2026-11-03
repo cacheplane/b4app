@@ -1,0 +1,80 @@
+{
+  "source_hashes": {
+    "fake-b4.py": "a2402ddc127daab8b71383fe37c4cf2b06adb86c0c616346f7f5e31d454236e3",
+    "fake-b4-cli.py": "97af751f518830eeea07371fb91d6ecbcbac8ca330b776df575a0c180f855d3c"
+  },
+  "python": "3.12.12",
+  "conditions": "Real loopback bind; serve_forever interrupted after readiness; only getfqdn delay injected. Module imports excluded consistently.",
+  "observations": [
+    {
+      "phase": "baseline",
+      "entry": "standalone",
+      "injected_resolver_delay_seconds": 0.25,
+      "repetition": 0,
+      "wall_seconds": 0.25557033298537135,
+      "resolver_calls": 1,
+      "readiness_seen": true,
+      "evidence_mode": "B+M controlled resolver injection; not actual CI timing"
+    },
+    {
+      "phase": "baseline",
+      "entry": "standalone",
+      "injected_resolver_delay_seconds": 0.25,
+      "repetition": 1,
+      "wall_seconds": 0.2538021249929443,
+      "resolver_calls": 1,
+      "readiness_seen": true,
+      "evidence_mode": "B+M controlled resolver injection; not actual CI timing"
+    },
+    {
+      "phase": "baseline",
+      "entry": "standalone",
+      "injected_resolver_delay_seconds": 0.25,
+      "repetition": 2,
+      "wall_seconds": 0.25412587501341477,
+      "resolver_calls": 1,
+      "readiness_seen": true,
+      "evidence_mode": "B+M controlled resolver injection; not actual CI timing"
+    },
+    {
+      "phase": "baseline",
+      "entry": "managed",
+      "injected_resolver_delay_seconds": 0.25,
+      "repetition": 0,
+      "wall_seconds": 0.2552522499463521,
+      "resolver_calls": 1,
+      "readiness_seen": true,
+      "evidence_mode": "B+M controlled resolver injection; not actual CI timing"
+    },
+    {
+      "phase": "baseline",
+      "entry": "managed",
+      "injected_resolver_delay_seconds": 0.25,
+      "repetition": 1,
+      "wall_seconds": 0.2559539999929257,
+      "resolver_calls": 1,
+      "readiness_seen": true,
+      "evidence_mode": "B+M controlled resolver injection; not actual CI timing"
+    },
+    {
+      "phase": "baseline",
+      "entry": "managed",
+      "injected_resolver_delay_seconds": 0.25,
+      "repetition": 2,
+      "wall_seconds": 0.250865708978381,
+      "resolver_calls": 1,
+      "readiness_seen": true,
+      "evidence_mode": "B+M controlled resolver injection; not actual CI timing"
+    },
+    {
+      "phase": "baseline",
+      "entry": "standalone",
+      "injected_resolver_delay_seconds": 35,
+      "repetition": 0,
+      "wall_seconds": 35.0551100000157,
+      "resolver_calls": 1,
+      "readiness_seen": true,
+      "evidence_mode": "B+M controlled resolver injection; not actual CI timing"
+    }
+  ]
+}

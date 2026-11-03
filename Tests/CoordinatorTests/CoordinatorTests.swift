@@ -331,3 +331,60 @@ private final class RetireCount: Sendable {
     await coordinator.close()
   }
 }
+
+@Suite(.serialized, .timeLimit(.minutes(1))) struct SocketShutdownTests {
+  @Test func closingTheTransportTwiceIsSafe() async throws {
+    let coordinator = try await startIsolated()
+    let transport = try await UnixSocketTransport.connect(path: coordinator.paths.socketPath)
+    await transport.close()
+    await transport.close()
+    await coordinator.close()
+  }
+
+  @Test func concurrentTransportClosesAndALateSendAreSafe() async throws {
+    let coordinator = try await startIsolated()
+    let transport = try await UnixSocketTransport.connect(path: coordinator.paths.socketPath)
+    await withTaskGroup(of: Void.self) { group in
+      for _ in 0..<8 { group.addTask { await transport.close() } }
+    }
+    let error = await #expect(throws: WorkspaceError.self) { try await transport.send(Data("late\n".utf8)) }
+    #expect(error?.code == .endpointUnavailable)
+    await coordinator.close()
+  }
+
+  @Test func closingTheServerDoesNotWaitForAnUncooperativeCommand() async throws {
+    let rig = try await CommandRig.start()
+    rig.hub.stick()
+    let request = Task {
+      try? await rig.client.request(
+        AccountPasskeyBegin.self, EmptyParams(), options: RequestOptions(timeout: .seconds(3)))
+    }
+    let deadline = ContinuousClock.now + .seconds(5)
+    while !rig.hub.calls.contains("passkeyBegin"), ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(2))
+    }
+    #expect(rig.hub.calls.contains("passkeyBegin"))
+    // This is a deadlock guard, not a one-second performance requirement. The hub remains
+    // held until after the assertion, so waiting for the command cannot satisfy this check.
+    let closed = await Bounded.run(within: .seconds(30)) { await rig.coordinator.server.close() }
+    #expect(closed, "Socket closure must not wait for an external call that ignores cancellation")
+    rig.hub.unstick()
+    await rig.coordinator.server.close()
+    _ = await request.value
+    await rig.close()
+  }
+
+  @Test func closingTheServerWithIdleClientsFinishesTheirStreams() async throws {
+    let coordinator = try await startIsolated()
+    let client = try await connect(coordinator)
+    await coordinator.server.close()
+    await coordinator.server.close()
+    let error = await #expect(throws: WorkspaceError.self) {
+      _ = try await client.request(
+        SystemPing.self, EmptyParams(), options: RequestOptions(timeout: .seconds(2)))
+    }
+    #expect(error?.code == .endpointUnavailable)
+    await client.close()
+    await coordinator.close()
+  }
+}

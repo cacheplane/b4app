@@ -1,0 +1,144 @@
+{
+  "collected_at": "2026-11-02T21:16:02.640225+00:00",
+  "local_validation_total_wall_seconds": 24.40634145803051,
+  "results": [
+    {
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        ".github/scripts/tests",
+        "-v"
+      ],
+      "started_at": "2026-11-02T21:15:38.233875+00:00",
+      "wall_seconds": 0.22365370899206027,
+      "exit_code": 0,
+      "evidence_mode": "actual-local",
+      "limitation": "Fixture/control checks; not native or distribution acceptance"
+    },
+    {
+      "command": [
+        "actionlint"
+      ],
+      "started_at": "2026-11-02T21:15:38.457873+00:00",
+      "wall_seconds": 1.5809184999670833,
+      "exit_code": 0,
+      "evidence_mode": "actual-local",
+      "limitation": "Fixture/control checks; not native or distribution acceptance"
+    },
+    {
+      "command": [
+        "shellcheck",
+        ".github/scripts/test-tag-guard.sh",
+        ".github/scripts/chart-kind-test.sh",
+        ".github/scripts/hub-release-tags.sh",
+        ".github/scripts/is-hub-release.sh",
+        "Hub/scripts/check-image.sh",
+        "Hub/scripts/test-db.sh",
+        "Hub/chart/scripts/chart-version-published.sh",
+        "Infra/scripts/admin-shell.sh",
+        "Infra/scripts/taskdef-lib.sh",
+        "Infra/scripts/render-taskdef.sh",
+        "Infra/scripts/run-migrate.sh",
+        "Infra/scripts/deploy.sh",
+        "Infra/scripts/tests/stubs/docker",
+        "Infra/scripts/tests/stubs/curl",
+        "Infra/scripts/tests/stubs/aws",
+        "Infra/scripts/tests/helpers.bash"
+      ],
+      "started_at": "2026-11-02T21:15:40.038958+00:00",
+      "wall_seconds": 0.7985100829973817,
+      "exit_code": 0,
+      "evidence_mode": "actual-local",
+      "limitation": "Fixture/control checks; not native or distribution acceptance"
+    },
+    {
+      "command": [
+        ".github/scripts/test-tag-guard.sh"
+      ],
+      "started_at": "2026-11-02T21:15:40.837583+00:00",
+      "wall_seconds": 0.07949466601712629,
+      "exit_code": 0,
+      "evidence_mode": "actual-local",
+      "limitation": "Fixture/control checks; not native or distribution acceptance"
+    },
+    {
+      "command": [
+        "bats",
+        "Infra/scripts/tests"
+      ],
+      "started_at": "2026-11-02T21:15:40.917172+00:00",
+      "wall_seconds": 18.32262270897627,
+      "exit_code": 0,
+      "evidence_mode": "actual-local",
+      "limitation": "Fixture/control checks; not native or distribution acceptance"
+    },
+    {
+      "command": [
+        "swift",
+        "format",
+        "lint",
+        "--strict",
+        "--recursive",
+        "Sources",
+        "Tests",
+        "Apps",
+        "Package.swift"
+      ],
+      "started_at": "2026-11-02T21:15:59.240230+00:00",
+      "wall_seconds": 3.186885999981314,
+      "exit_code": 0,
+      "evidence_mode": "actual-local",
+      "limitation": "Fixture/control checks; not native or distribution acceptance"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "started_at": "2026-11-02T21:16:02.427257+00:00",
+      "wall_seconds": 0.11755016597453505,
+      "exit_code": 0,
+      "evidence_mode": "actual-local",
+      "limitation": "Fixture/control checks; not native or distribution acceptance"
+    },
+    {
+      "command": [
+        "python3",
+        ".github/scripts/ci-observations.py",
+        "report",
+        "/Users/blove/.codex/worktrees/f4fa/b4app/docs/delivery/2026-11-02/evidence.json"
+      ],
+      "wall_seconds": 0.04767183295916766,
+      "exit_code": 0,
+      "evidence_mode": "actual-metadata-replay",
+      "run_count": 8,
+      "attempt_count": 9
+    },
+    {
+      "command": [
+        "python3",
+        ".github/scripts/ci-observations.py",
+        "report",
+        "/Users/blove/.codex/worktrees/f4fa/b4app/docs/delivery/2026-11-02/evidence-final.json"
+      ],
+      "wall_seconds": 0.04745541699230671,
+      "exit_code": 0,
+      "evidence_mode": "actual-metadata-replay",
+      "run_count": 8,
+      "attempt_count": 9
+    }
+  ],
+  "unperformed": [
+    "swift build/test",
+    "xcodebuild native targets",
+    "cargo full tests",
+    "cold-cache and dependency/toolchain candidate",
+    "hosted candidate pipeline",
+    "release/download/install/update checks"
+  ],
+  "verdict": "Incomplete for delivery optimization; local instrumentation checks only"
+}

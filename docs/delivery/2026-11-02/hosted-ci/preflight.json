@@ -1,0 +1,37 @@
+{
+  "collected_at": "2026-11-03T06:10:18.608169+00:00",
+  "results": [
+    {
+      "command": [
+        "swift",
+        "format",
+        "lint",
+        "--strict",
+        "--recursive",
+        "Sources",
+        "Tests",
+        "Apps",
+        "Package.swift"
+      ],
+      "exit_code": 0,
+      "output": ""
+    },
+    {
+      "command": [
+        "actionlint"
+      ],
+      "exit_code": 0,
+      "output": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "output": ""
+    }
+  ],
+  "product_test_reuse": "Final local strict1166 warm/cold source hashes checked unchanged except CI opt-in trigger; see ../pause-investigation/final-verification.json. Python20 tests freshly passed this turn."
+}

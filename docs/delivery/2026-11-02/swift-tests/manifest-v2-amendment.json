@@ -1,0 +1,59 @@
+{
+  "version": 2,
+  "parent": "manifest-v1.json",
+  "scope": "Focus now includes fixture correctness and full local native/cold validation, authorized by user follow-up. No signing or distribution mutation.",
+  "sample_cases": "Original compiled baseline1159tests/144suites; corrected1160tests/145suites, adding1parameterized revocation test with2cases; every original assertion retained. NewPythondurabilityregression adds1check to existingCIteststep.",
+  "hypotheses_ranked": [
+    {
+      "rank": 1,
+      "finding": "Missing fake revocation wake; deterministic red then green, phone failure eliminated",
+      "decision": "Retain minimal wake fix."
+    },
+    {
+      "rank": 2,
+      "finding": "Timed fake recovery and persistence-before-event races; first full baseline and focused holdout fail",
+      "decision": "Use explicit event/file signals and durable permission emission; preserve assertions."
+    },
+    {
+      "rank": 3,
+      "finding": "Background sync mutates snapshots or consumes one-shot failures",
+      "decision": "Quiesce/drain tests and direct the failing push; preserve data/sign-out checks."
+    },
+    {
+      "rank": 4,
+      "finding": "Test concurrency contention; trial16below10% total-span threshold",
+      "decision": "One final32-case trial with fixed-source interleaved warm measurements; retain only if predeclared gates pass."
+    }
+  ],
+  "holdout_amendment": "The parked-restart holdout exposed an event-before-persistence bug and is now a regression, not unseen evidence. Final reserved state is complete isolated dependency/build-cache regeneration with the final suite and the previously unbuilt nativebeta configurations.",
+  "clock_correction": "Initial cold-build harness labeled its end observation started_at. In normalized ledger rename to ended_at, start unknown; monotonic91.737s unchanged. No commit timestamp substituted.",
+  "pipeline_identity": "Local command/runtime/config/input hashes available. Historical hosted run/source identity recorded; current hosted execution and exact workflow revision still unknown.",
+  "cost": "Four substantive experiments maximum, no hosted runs or newworkers; local childCPU is a proxy and may exclude reparented PostgreSQL descendants. Dollarcost unknown; no claim of full compute equivalence from CPU alone.",
+  "cold_cache_definition": "Fresh isolated SwiftPM download/checkout/manifest/build roots with shared dependency cache disabled; existing toolchain/OS SDK caches are not purged. Native uses fresh clonedSourcePackages and DerivedData; installed SDK remains.",
+  "native_matrix": [
+    {
+      "scheme": "B4App-macOS",
+      "destination": "platform=macOS",
+      "configuration": "Debug/local"
+    },
+    {
+      "scheme": "B4App-iOS",
+      "destination": "generic/platform=iOS Simulator",
+      "configuration": "Debug/local"
+    },
+    {
+      "scheme": "B4App-macOS-Beta",
+      "destination": "platform=macOS",
+      "configuration": "Debug-Beta"
+    },
+    {
+      "scheme": "B4App-iOS-Beta",
+      "destination": "generic/platform=iOS Simulator",
+      "configuration": "Debug-Beta"
+    }
+  ],
+  "native_flags": [
+    "CODE_SIGNING_ALLOWED=NO"
+  ],
+  "rollback": "Remove the2fake-hub wakes, revert only fixture/test changes, remove the new revocation/durability regression if reverting the behavior, and remove any concurrency env only if adopted. Preserve prior collector work and unrelated edits."
+}

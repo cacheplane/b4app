@@ -1,0 +1,36 @@
+--- a/Tests/B4AdapterTests/Fixtures/fake-b4.py
++++ b/Tests/B4AdapterTests/Fixtures/fake-b4.py
+@@ -20,0 +21 @@
++from socketserver import TCPServer
+@@ -30,0 +32,11 @@
++
++
++class FixtureHTTPServer(ThreadingHTTPServer):
++    allow_reuse_address = True
++    daemon_threads = True
++
++    def server_bind(self):
++        # HTTPServer performs reverse DNS just to populate server_name. It can stall for
++        # >30s on macOS CI, and our JSON/SSE handlers never need a canonical hostname.
++        TCPServer.server_bind(self)
++        self.server_name, self.server_port = self.server_address[:2]
+@@ -555,3 +567 @@
+-    ThreadingHTTPServer.allow_reuse_address = True
+-    ThreadingHTTPServer.daemon_threads = True
+-    server = ThreadingHTTPServer((options.host, options.port), Handler)
++    server = FixtureHTTPServer((options.host, options.port), Handler)
+@@ -568,0 +579,2 @@
++    finally:
++        server.server_close()
+--- a/Tests/B4AdapterTests/Fixtures/fake-b4-cli.py
++++ b/Tests/B4AdapterTests/Fixtures/fake-b4-cli.py
+@@ -29 +28,0 @@
+-from http.server import ThreadingHTTPServer
+@@ -132,3 +131 @@
+-    ThreadingHTTPServer.allow_reuse_address = True
+-    ThreadingHTTPServer.daemon_threads = True
+-    server = ThreadingHTTPServer(("127.0.0.1", port), fake_b4.Handler)
++    server = fake_b4.FixtureHTTPServer(("127.0.0.1", port), fake_b4.Handler)
+@@ -139,0 +137,2 @@
++    finally:
++        server.server_close()

@@ -1,0 +1,12 @@
+{
+  "version": 3,
+  "parent": "manifest-v2-amendment.json",
+  "changes": [
+    "The new uncooperative-command test uses a30second deadlock guard rather than1second. The fake hub remains held until after the assertion, so this still rejects a server that joins external work. No existing assertion or timeout changed.",
+    "Final full strict run with1164 tests failed two guards: existing mirror log-out elapsed60.012s, new shutdown1second guard expired. Many unrelated tests completed at60s; root of shared pause unresolved. The8test isolation passed (mirror0.128s; held-hub shutdown0.704s). Retain failure in ledger and rerun full final source.",
+    "Observed competing Swift test bundles have explicit paths in other worktrees; no ownership or causal claim, no processes belonging to those worktrees stopped.",
+    "45minute optimization experiment budget ends; no more hypotheses. Necessary correctness verification, native rebuilds and cold holdout continue as allowed by the user contract."
+  ],
+  "gates": "Original tests, original30second mirror assertion and strict NIO checking remain required. No flaky-test retry installed in CI.",
+  "local_validation": "--jobs2 limits compiler parallelism locally, not Swift Testing runtime concurrency; CI has no new cap."
+}

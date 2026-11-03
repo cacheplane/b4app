@@ -68,6 +68,45 @@ import Testing
       ])
   }
 
+  @Test func scanningPreservesUnicodeAndFileKindsWithoutTouchingUnrelatedEntries() throws {
+    let root = NSTemporaryDirectory() + "scratch-names-\(UUID().uuidString)"
+    let fm = FileManager.default
+    defer { try? fm.removeItem(atPath: root) }
+    let directory = "b4pg-111-café-目录"
+    let file = "b4pgs-112"
+    let link = "b4pg-shared-113"
+    try fm.createDirectory(atPath: root + "/" + directory, withIntermediateDirectories: true)
+    try Data().write(to: URL(fileURLWithPath: root + "/" + file))
+    try fm.createSymbolicLink(atPath: root + "/" + link, withDestinationPath: root + "/missing")
+    try fm.createDirectory(atPath: root + "/unrelated", withIntermediateDirectories: true)
+    try Data("kept".utf8).write(to: URL(fileURLWithPath: root + "/unrelated/marker"))
+    try Data().write(to: URL(fileURLWithPath: root + "/.b4pgs-114"))
+    let removed = EphemeralPostgres.sweepStale(
+      in: [root, root + "/missing-directory"], ownPid: 999, isAlive: { _ in false },
+      stopOrphan: { _, _ in
+        Issue.record("No postmaster should be signalled"); return false
+      })
+    #expect(removed.map { ($0 as NSString).lastPathComponent }.sorted() == [directory, link, file].sorted())
+    #expect(try fm.contentsOfDirectory(atPath: root).sorted() == [".b4pgs-114", "unrelated"])
+    #expect(try String(contentsOfFile: root + "/unrelated/marker", encoding: .utf8) == "kept")
+  }
+
+  @Test func aMaximumLengthScratchNameIsRecognized() throws {
+    let root = NSTemporaryDirectory() + "scratch-long-name-\(UUID().uuidString)"
+    let fm = FileManager.default
+    defer { try? fm.removeItem(atPath: root) }
+    let prefix = "b4pg-114-"
+    let name = prefix + String(repeating: "x", count: 255 - prefix.utf8.count)
+    try fm.createDirectory(atPath: root + "/" + name, withIntermediateDirectories: true)
+    let removed = EphemeralPostgres.sweepStale(
+      in: [root], ownPid: 999, isAlive: { _ in false },
+      stopOrphan: { _, _ in
+        Issue.record("No postmaster should be signalled"); return false
+      })
+    #expect(removed == [root + "/" + name])
+    #expect(try fm.contentsOfDirectory(atPath: root).isEmpty)
+  }
+
   @Test func aRecycledPidIsNeverSignalled() {
     // This test process is alive but is not a postgres serving that directory.
     let me = ProcessInfo.processInfo.processIdentifier

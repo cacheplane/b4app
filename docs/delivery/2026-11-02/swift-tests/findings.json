@@ -1,0 +1,119 @@
+{
+  "findings": [
+    {
+      "id": "ST01",
+      "primary_criterion": "C08.3",
+      "severity": "S2",
+      "designation": "baseline",
+      "title": "Revocation did not wake a parked fake pull",
+      "reproduction": "Park a30s pull, call endSession/deleteAccount; before fix the2s guard causes CancellationError instead of401.",
+      "expected": "Fixture signal/state accurately exercises the unchanged required assertions; no missing evidence hidden.",
+      "observed": "Park a30s pull, call endSession/deleteAccount; before fix the2s guard causes CancellationError instead of401.",
+      "consequence": "False test failures/retries and longer validation, or diagnostic uncertainty.",
+      "evidence": [
+        "observations.jsonl",
+        "console-summaries.json",
+        "code diff"
+      ],
+      "decision": "Both fake revocation paths now wakePulls; parameterized regression and existing phone assertions retained.",
+      "retest": "Red six issues; green two cases0.001s, phone0.031s; full/cold runs pass."
+    },
+    {
+      "id": "ST02",
+      "primary_criterion": "C08.2",
+      "severity": "S2",
+      "designation": "baseline",
+      "title": "Recovery relied on a three-second run timer",
+      "reproduction": "Full original runs saw terminal rather than reconciling after shutdown.",
+      "expected": "Fixture signal/state accurately exercises the unchanged required assertions; no missing evidence hidden.",
+      "observed": "Full original runs saw terminal rather than reconciling after shutdown.",
+      "consequence": "False test failures/retries and longer validation, or diagnostic uncertainty.",
+      "evidence": [
+        "observations.jsonl",
+        "console-summaries.json",
+        "code diff"
+      ],
+      "decision": "Unique-file gate releases run only after coordinator shutdown; original reconciliation/outcome/turn-count checks retained.",
+      "retest": "Full corrected and cold runs pass."
+    },
+    {
+      "id": "ST03",
+      "primary_criterion": "C08.2",
+      "severity": "S2",
+      "designation": "baseline",
+      "title": "Dropped run completed before GET reattachment",
+      "reproduction": "Original warm repeat failed exact transcript assertion; one-second fixture timer could expire before reattach.",
+      "expected": "Fixture signal/state accurately exercises the unchanged required assertions; no missing evidence hidden.",
+      "observed": "Original warm repeat failed exact transcript assertion; one-second fixture timer could expire before reattach.",
+      "consequence": "False test failures/retries and longer validation, or diagnostic uncertainty.",
+      "evidence": [
+        "observations.jsonl",
+        "console-summaries.json",
+        "code diff"
+      ],
+      "decision": "Event signals after GET cursor capture/state write; timeout produces explicit failure.",
+      "retest": "Focused and six full corrected runs pass; no test assertion relaxed."
+    },
+    {
+      "id": "ST04",
+      "primary_criterion": "C08.1",
+      "severity": "S2",
+      "designation": "baseline",
+      "title": "Permission notification preceded durable state",
+      "reproduction": "Parked restart failed in focused holdout; Python regression observed busy on disk at interrupt publication.",
+      "expected": "Fixture signal/state accurately exercises the unchanged required assertions; no missing evidence hidden.",
+      "observed": "Parked restart failed in focused holdout; Python regression observed busy on disk at interrupt publication.",
+      "consequence": "False test failures/retries and longer validation, or diagnostic uncertainty.",
+      "evidence": [
+        "observations.jsonl",
+        "console-summaries.json",
+        "code diff"
+      ],
+      "decision": "Persist pending permission, awaiting turn and interrupted status before emitting interrupt.",
+      "retest": "Python red then green; restart assertions retained and full/cold runs pass."
+    },
+    {
+      "id": "ST05",
+      "primary_criterion": "C08.2",
+      "severity": "S2",
+      "designation": "baseline",
+      "title": "Background sync raced injected failure/snapshots",
+      "reproduction": "Hosted run41519013466: join backlog assertions and restore lastPushAt/changes assertions fail; static source permits background push/pull between snapshots and fault injection.",
+      "expected": "Fixture signal/state accurately exercises the unchanged required assertions; no missing evidence hidden.",
+      "observed": "Hosted run41519013466: join backlog assertions and restore lastPushAt/changes assertions fail; static source permits background push/pull between snapshots and fault injection.",
+      "consequence": "False test failures/retries and longer validation, or diagnostic uncertainty.",
+      "evidence": [
+        "observations.jsonl",
+        "console-summaries.json",
+        "code diff"
+      ],
+      "decision": "Stop background calls, explicitly drive failing push, and close then await inFlight before snapshots.",
+      "retest": "All corrected full/cold local runs pass; historical hosted source differs and no hosted candidate rerun performed."
+    },
+    {
+      "id": "ST06",
+      "primary_criterion": "C14.1",
+      "severity": "S2",
+      "designation": "baseline",
+      "title": "SwiftNIO scheduling-after-shutdown diagnostic",
+      "reproduction": "Passing/failing full runs print Cannot schedule tasks on an EventLoop that has already shut down.",
+      "expected": "Fixture signal/state accurately exercises the unchanged required assertions; no missing evidence hidden.",
+      "observed": "Passing/failing full runs print Cannot schedule tasks on an EventLoop that has already shut down.",
+      "consequence": "False test failures/retries and longer validation, or diagnostic uncertainty.",
+      "evidence": [
+        "observations.jsonl",
+        "console-summaries.json",
+        "code diff"
+      ],
+      "decision": "Retain diagnostic/counts; no unrelated NIO lifecycle rewrite in four-experiment budget.",
+      "retest": "Open; no claim of resolution or future-toolchain reliability."
+    }
+  ],
+  "rejected_hypotheses": [
+    "width16: preliminary improvement below10% total-command threshold, failed baseline retained",
+    "width32: fixed-source median reduction0.93%, within observed variation; no setting retained"
+  ],
+  "review_disagreements": "No vote-based acceptance. Integrity review caught inFlight close race; await added and review resolved.",
+  "unresolved_latency": "Hosted approximately35s B4 case timing not reproduced as steady local fixture startup cost; source/runner/cache differences prevent direct comparison.",
+  "configuration_observation": "Inherited beta/prod iOS IDs coincide; native artifact manifest records actual configured IDs, not separate installation acceptance."
+}

@@ -1,0 +1,210 @@
+[
+  {
+    "case_id": "native-ios-beta",
+    "test_summary": null,
+    "nio_shutdown_diagnostic": false,
+    "fatal": false,
+    "build_succeeded": true,
+    "build_span_seconds": [],
+    "limitations": "Raw logs retained locally by path/hash; parameterized fixture output omitted here to avoid sharing identifying sample values."
+  },
+  {
+    "case_id": "strict-final-full-warm",
+    "test_summary": [
+      "1164",
+      "146",
+      "failed",
+      "259.189",
+      "2"
+    ],
+    "nio_shutdown_diagnostic": false,
+    "fatal": false,
+    "build_succeeded": false,
+    "build_span_seconds": [
+      "23.99"
+    ],
+    "limitations": "Raw logs retained locally by path/hash; parameterized fixture output omitted here to avoid sharing identifying sample values."
+  },
+  {
+    "case_id": "native-macos-local",
+    "test_summary": null,
+    "nio_shutdown_diagnostic": false,
+    "fatal": false,
+    "build_succeeded": true,
+    "build_span_seconds": [],
+    "limitations": "Raw logs retained locally by path/hash; parameterized fixture output omitted here to avoid sharing identifying sample values."
+  },
+  {
+    "case_id": "strict-final-full-warm-2",
+    "test_summary": [
+      "1164",
+      "146",
+      "passed",
+      "118.252",
+      ""
+    ],
+    "nio_shutdown_diagnostic": false,
+    "fatal": false,
+    "build_succeeded": false,
+    "build_span_seconds": [
+      "30.58"
+    ],
+    "limitations": "Raw logs retained locally by path/hash; parameterized fixture output omitted here to avoid sharing identifying sample values."
+  },
+  {
+    "case_id": "nio-uncooperative-regression-red",
+    "test_summary": null,
+    "nio_shutdown_diagnostic": false,
+    "fatal": false,
+    "build_succeeded": false,
+    "build_span_seconds": [
+      "35.18"
+    ],
+    "limitations": "Raw logs retained locally by path/hash; parameterized fixture output omitted here to avoid sharing identifying sample values."
+  },
+  {
+    "case_id": "nio-final-regressions-green",
+    "test_summary": null,
+    "nio_shutdown_diagnostic": false,
+    "fatal": false,
+    "build_succeeded": false,
+    "build_span_seconds": [
+      "103.02"
+    ],
+    "limitations": "Raw logs retained locally by path/hash; parameterized fixture output omitted here to avoid sharing identifying sample values."
+  },
+  {
+    "case_id": "native-ios-local",
+    "test_summary": null,
+    "nio_shutdown_diagnostic": false,
+    "fatal": false,
+    "build_succeeded": true,
+    "build_span_seconds": [],
+    "limitations": "Raw logs retained locally by path/hash; parameterized fixture output omitted here to avoid sharing identifying sample values."
+  },
+  {
+    "case_id": "strict-final-cold",
+    "test_summary": [
+      "1164",
+      "146",
+      "passed",
+      "114.655",
+      ""
+    ],
+    "nio_shutdown_diagnostic": false,
+    "fatal": false,
+    "build_succeeded": false,
+    "build_span_seconds": [
+      "285.28"
+    ],
+    "limitations": "Raw logs retained locally by path/hash; parameterized fixture output omitted here to avoid sharing identifying sample values."
+  },
+  {
+    "case_id": "native-ios-prod-release",
+    "test_summary": null,
+    "nio_shutdown_diagnostic": false,
+    "fatal": false,
+    "build_succeeded": true,
+    "build_span_seconds": [],
+    "limitations": "Raw logs retained locally by path/hash; parameterized fixture output omitted here to avoid sharing identifying sample values."
+  },
+  {
+    "case_id": "native-macos-prod-release",
+    "test_summary": null,
+    "nio_shutdown_diagnostic": false,
+    "fatal": false,
+    "build_succeeded": true,
+    "build_span_seconds": [],
+    "limitations": "Raw logs retained locally by path/hash; parameterized fixture output omitted here to avoid sharing identifying sample values."
+  },
+  {
+    "case_id": "final-swift-build",
+    "test_summary": null,
+    "nio_shutdown_diagnostic": false,
+    "fatal": false,
+    "build_succeeded": false,
+    "build_span_seconds": [
+      "15.09"
+    ],
+    "limitations": "Raw logs retained locally by path/hash; parameterized fixture output omitted here to avoid sharing identifying sample values."
+  },
+  {
+    "case_id": "native-macos-beta",
+    "test_summary": null,
+    "nio_shutdown_diagnostic": false,
+    "fatal": false,
+    "build_succeeded": true,
+    "build_span_seconds": [],
+    "limitations": "Raw logs retained locally by path/hash; parameterized fixture output omitted here to avoid sharing identifying sample values."
+  },
+  {
+    "case_id": "native-project-generation",
+    "test_summary": null,
+    "nio_shutdown_diagnostic": false,
+    "fatal": false,
+    "build_succeeded": false,
+    "build_span_seconds": [],
+    "limitations": "Raw logs retained locally by path/hash; parameterized fixture output omitted here to avoid sharing identifying sample values."
+  },
+  {
+    "case_id": "strict-full-candidate-1",
+    "test_summary": [
+      "1163",
+      "146",
+      "passed",
+      "239.958",
+      ""
+    ],
+    "nio_shutdown_diagnostic": false,
+    "fatal": false,
+    "build_succeeded": false,
+    "build_span_seconds": [],
+    "limitations": "Raw logs retained locally by path/hash; parameterized fixture output omitted here to avoid sharing identifying sample values."
+  },
+  {
+    "case_id": "strict-timeout-isolation",
+    "test_summary": [
+      "8",
+      "2",
+      "passed",
+      "23.785",
+      ""
+    ],
+    "nio_shutdown_diagnostic": false,
+    "fatal": false,
+    "build_succeeded": false,
+    "build_span_seconds": [],
+    "limitations": "Raw logs retained locally by path/hash; parameterized fixture output omitted here to avoid sharing identifying sample values."
+  },
+  {
+    "case_id": "nio-close-regression-green",
+    "test_summary": null,
+    "nio_shutdown_diagnostic": false,
+    "fatal": false,
+    "build_succeeded": false,
+    "build_span_seconds": [
+      "69.14"
+    ],
+    "limitations": "Raw logs retained locally by path/hash; parameterized fixture output omitted here to avoid sharing identifying sample values."
+  },
+  {
+    "case_id": "nio-strict-baseline",
+    "test_summary": null,
+    "nio_shutdown_diagnostic": true,
+    "fatal": true,
+    "build_succeeded": false,
+    "build_span_seconds": [],
+    "limitations": "Raw logs retained locally by path/hash; parameterized fixture output omitted here to avoid sharing identifying sample values."
+  },
+  {
+    "case_id": "nio-close-regression-red",
+    "test_summary": null,
+    "nio_shutdown_diagnostic": true,
+    "fatal": true,
+    "build_succeeded": false,
+    "build_span_seconds": [
+      "68.59"
+    ],
+    "limitations": "Raw logs retained locally by path/hash; parameterized fixture output omitted here to avoid sharing identifying sample values."
+  }
+]

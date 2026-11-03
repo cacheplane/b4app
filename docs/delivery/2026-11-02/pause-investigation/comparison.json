@@ -1,0 +1,19 @@
+{
+  "scope": "Actual sweep helper, frozen5000entry namespace, three repetitions each. Baseline group before candidate; prototype interleaved control also retained. Not whole-test/fullCI latency.",
+  "baseline_seconds": [
+    0.027007,
+    0.012842084,
+    0.010961208
+  ],
+  "candidate_seconds": [
+    0.006350958,
+    0.00567175,
+    0.005610209
+  ],
+  "baseline_median_seconds": 0.012842084,
+  "candidate_median_seconds": 0.00567175,
+  "median_reduction_fraction": 0.5583466048033949,
+  "objective_fraction": 0.1,
+  "inventory_identity": "scan-inputs-retrospective.json (explicitly retrospective)",
+  "mutable_live_samples": "Separate actual-sweep logs; non-equivalent changing inputs; no exact ratio claimed."
+}

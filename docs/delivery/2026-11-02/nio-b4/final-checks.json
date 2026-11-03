@@ -1,0 +1,87 @@
+{
+  "collected_at": "2026-11-02T23:51:21.260662+00:00",
+  "results": [
+    {
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        ".github/scripts/tests",
+        "-v"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.5202387910103425
+    },
+    {
+      "command": [
+        "swift",
+        "format",
+        "lint",
+        "--strict",
+        "--recursive",
+        "Sources",
+        "Tests",
+        "Apps",
+        "Package.swift"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 4.376418958010618
+    },
+    {
+      "command": [
+        "actionlint"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 3.841787874989677
+    },
+    {
+      "command": [
+        "shellcheck",
+        ".github/scripts/test-tag-guard.sh",
+        ".github/scripts/chart-kind-test.sh",
+        ".github/scripts/hub-release-tags.sh",
+        ".github/scripts/is-hub-release.sh",
+        "Hub/scripts/check-image.sh",
+        "Hub/scripts/test-db.sh",
+        "Hub/chart/scripts/chart-version-published.sh",
+        "Infra/scripts/admin-shell.sh",
+        "Infra/scripts/taskdef-lib.sh",
+        "Infra/scripts/render-taskdef.sh",
+        "Infra/scripts/run-migrate.sh",
+        "Infra/scripts/deploy.sh",
+        "Infra/scripts/tests/stubs/docker",
+        "Infra/scripts/tests/stubs/curl",
+        "Infra/scripts/tests/stubs/aws",
+        "Infra/scripts/tests/helpers.bash"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 1.149375874956604
+    },
+    {
+      "command": [
+        ".github/scripts/test-tag-guard.sh"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.2625359169906005
+    },
+    {
+      "command": [
+        "bats",
+        "Infra/scripts/tests"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 45.18886058399221
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.14733412500936538
+    }
+  ]
+}

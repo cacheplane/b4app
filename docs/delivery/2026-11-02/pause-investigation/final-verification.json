@@ -1,0 +1,27 @@
+{
+  "collected_at": "2026-11-03T04:54:26.932438+00:00",
+  "tests_each": 1166,
+  "suites_each": 146,
+  "warm_cold_exit_codes": [
+    0,
+    0
+  ],
+  "shutdown_diagnostics": 0,
+  "affected_macOS_fresh_builds": 3,
+  "compatible_iOS_reused_products": 3,
+  "all_six_product_digests_reverified": true,
+  "source_hashes_match": true,
+  "static_commands": 7,
+  "static_exit_codes": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "hosted_candidate": "Untested",
+  "publication_or_deployment": false,
+  "verdict": "Local correctness and focused-stage improvement verified; hosted delivery optimization remains Incomplete"
+}

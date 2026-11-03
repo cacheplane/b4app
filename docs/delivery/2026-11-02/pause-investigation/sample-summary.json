@@ -1,0 +1,40 @@
+{
+  "evidence": [
+    {
+      "pid": 72191,
+      "elapsed_from_test_detection": 8.791526959044859,
+      "requested_offset": 2,
+      "exit_code": 0,
+      "path": "/tmp/b4-pause-evidence/sample-2-72191.txt",
+      "sha256": "3d7cde9de21f54f3085f89df5b755267d4760da7b2151d57b1d6bf39f8022159"
+    },
+    {
+      "pid": 72191,
+      "elapsed_from_test_detection": 20.875917959026992,
+      "requested_offset": 15,
+      "exit_code": 0,
+      "path": "/tmp/b4-pause-evidence/sample-15-72191.txt",
+      "sha256": "9851fe022a90fcb05c8be1bf85f5a7e697c6ef0b1b32d5bf6fc80e9b1aef6489"
+    },
+    {
+      "pid": 72191,
+      "elapsed_from_test_detection": 50.4002571250312,
+      "requested_offset": 40,
+      "exit_code": 0,
+      "path": "/tmp/b4-pause-evidence/sample-40-72191.txt",
+      "sha256": "47327983973b631fdc233dc85bce31acc4591007829d6e42878e1ad4690c8a96"
+    }
+  ],
+  "observed_first_sample_main_thread": [
+    "ConnectionsModelTests.usageArrivesAfterACheck",
+    "ModelHarness.start",
+    "EphemeralPostgres.paths",
+    "EphemeralPostgres.endpoint",
+    "EphemeralPostgres.ensureStarted",
+    "EphemeralPostgres.sweepStale",
+    "FileManager.contentsOfDirectory",
+    "getattrlistbulk"
+  ],
+  "observed_other_workers": "Waiting in EphemeralPostgres.ensureStarted\u2192NSLock\u2192__psynch_mutexwait",
+  "limits": "First3s sample localizes an actual startup blocker, not proof that every historical60s pause has this cause. Later samples show normal SQL/test work. Sampling overhead excludes full diagnostic run from speed comparisons."
+}

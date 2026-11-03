@@ -2,6 +2,22 @@
 
 Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M8a on 2026-10-31, M8b on 2026-11-01, hosted-hub tooling, M8c, and sign-in on 2026-11-02). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
 
+## Test scratch enumeration follow-up (2026-11-02)
+
+Verified locally with macOS 26.5 build 25F71, Xcode 26.6(17F113), Swift 6.3.3: Darwin name-only directory discovery in the macOS-only storage test helper preserves existing cleanup policy, including Unicode/file/broken-link and 255-byte names. APFS rejects invalid UTF-8 at fixture creation; that defensive skip branch is reviewed, not runtime-tested. Full strict warm/cold 1,166-test populations and three affected unsigned macOS configurations pass. Prior iOS Simulator builds are reused only after unchanged input/graph and binary/plist digest verification; no new iOS execution or provider/distribution claim. Evidence: `docs/delivery/2026-11-02/pause-investigation/`.
+
+## NIO/B4 CI follow-up (2026-11-02)
+
+Verified locally on the same Xcode 26.6/Swift6.3.3/macOS 26.5 arm64 and Python 3.12.12 toolchain: strict NIO shutdown lifecycle, both DNS-free fixture entry points, all 1,164 Swift tests warm and with fresh isolated cache roots, and six signing-disabled macOS/iOS Simulator app configurations. No dependency lock or runtime wire shape changed. The actual local resolver is fast; the 35s controlled injection is a mechanism check, and hosted runner compatibility/speed remains untested. Evidence: `docs/delivery/2026-11-02/nio-b4/README.md`. Earlier entries below retain their historical scope.
+
+## Swift CI fixture follow-up (2026-11-02)
+
+Verified locally: Xcode26.6 (17F113), Swift6.3.3, macOS26.5 arm64, macOS/iOS Simulator SDK26.5, Swift Testing library1902, Python3.12.12. The full fixture population, isolated cold cache, all four CI app schemes and macOS/iOS Simulator prod Release builds pass; no dependency pin changed. The experimental Swift Testing maximum-width input was tested and rejected, so no new runtime/toolchain control is required in CI. B4 fixture wire shapes are unchanged; only explicit recovery/durability sequencing changed. Signing-disabled native builds do not certify signed package or real-provider compatibility. Evidence: `docs/delivery/2026-11-02/swift-tests/README.md`.
+
+## CI observation tooling (2026-11-02)
+
+The collector uses only Python standard-library modules and `gh api --method GET`; local verification used Python 3.12.12 and gh 2.95.0, macOS 26.5 arm64. Fixture checks in CI use the existing Ubuntu runner's `python3`; its exact version and a hosted candidate execution remain unverified. Offline reporting needs no gh or network. Local actionlint 1.7.12, ShellCheck 0.11.0 and Bats 1.14.0 checked the unchanged shell/deploy controls. No existing product toolchain/dependency pin changed. Evidence: `docs/delivery/2026-11-02/`.
+
 ## Target machine
 
 | Item | Value |

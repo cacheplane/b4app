@@ -4,7 +4,9 @@ fixture tests. Endpoint shapes follow docs/research/2026-10-30-b4-runtime.md and
 Behavior is scripted by the user text: "tool" runs a tool call, "approve" parks on a command
 permission, "hang" waits for POST /cancel, "fail" ends with an error, "drop" closes the response
 mid-run while the run continues (reattach with GET /runs/stream), "slow" streams for three seconds,
-"plan" emits a capability event, "reason" streams reasoning first. Env: FAKE_B4_ROUTE (default
+"plan" emits a capability event, "reason" streams reasoning first. "gated" waits for the
+FAKE_B4_RELEASE_FILE before finishing, so a restart test controls when the run completes.
+Env: FAKE_B4_ROUTE (default
 /chat#agent), FAKE_B4_TOKEN (bearer required on middleware paths), FAKE_B4_STATE (JSON file that
 persists threads across restarts). Never a substitute for the real server in anything the docs call
 live-tested."""
@@ -16,6 +18,7 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 from urllib.parse import urlparse
 
 ROUTE = os.environ.get("FAKE_B4_ROUTE", "/chat#agent")
@@ -26,6 +29,17 @@ STATE = {"threads": {}, "counter": 0}
 LIVE = {}
 
 MIDDLEWARE_PATHS = ("runs/stream", "resume", "pending_interrupts", "turns", "events")
+
+
+class FixtureHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def server_bind(self):
+        # HTTPServer performs reverse DNS just to populate server_name. It can stall for
+        # >30s on macOS CI, and our JSON/SSE handlers never need a canonical hostname.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 def log(text):
@@ -73,6 +87,7 @@ class Run:
         self.cond = threading.Condition()
         self.done = False
         self.cancel = threading.Event()
+        self.reattached = threading.Event()
         self.started_at = now()
 
     def emit(self, event, data):
@@ -156,6 +171,19 @@ def execute(run):
             if run.wait_cancel(20):
                 return finish("stopped", cancelled=True)
             return finish("done")
+        if "gated" in text:
+            release = os.environ.get("FAKE_B4_RELEASE_FILE")
+            if not release:
+                return finish("failed", error="gated run needs FAKE_B4_RELEASE_FILE")
+            say("Working...")
+            deadline = time.monotonic() + 60
+            while not os.path.exists(release):
+                if time.monotonic() >= deadline:
+                    return finish("failed", error="fixture release timed out")
+                if run.wait_cancel(0.01):
+                    return finish("stopped", cancelled=True)
+            say("Finished.")
+            return finish("done")
         if "slow" in text:
             for i in range(6):
                 if run.cancel.is_set():
@@ -167,7 +195,10 @@ def execute(run):
         if "drop" in text:
             say("Part one. ")
             run.emit("__drop__", None)
-            time.sleep(1.0)
+            # Finish only after the reattaching GET has captured its cursor. A loaded runner
+            # may take longer than a guessed delay; a missing reattach must fail, not pass.
+            if not run.reattached.wait(30):
+                return finish("failed", error="fixture reattach timed out")
             say("Part two.")
             run.emit("message_end", {"messageId": next_id("m")})
             return finish("done")
@@ -185,11 +216,12 @@ def execute(run):
                 turn["status"] = "awaiting"
                 turn["approvals"].append({"interruptId": interrupt_id, "kind": "command",
                                           "detail": value["detail"], "grant": grant, "offersAlways": True})
-            run.emit("interrupt", value)
             with LOCK:
                 thread["status"] = "interrupted"
                 thread["updated_at"] = now()
                 save_state()
+            # The test may restart the server as soon as it sees the prompt.
+            run.emit("interrupt", value)
             run.emit("done", {"output": None})
             with LOCK:
                 if LIVE.get(run.thread_id) is run:
@@ -390,6 +422,7 @@ class Handler(BaseHTTPRequestHandler):
             self.write_frame("state", {"status": "busy", "live": True, "anchor": "cp_1", "input": None,
                                        "resume": run.resume is not None, "run_started_at": run.started_at,
                                        "turn": None, "values": None})
+            run.reattached.set()
             self.pump(run, index)
             return None
         with LOCK:
@@ -531,9 +564,7 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     options = parser.parse_args()
     load_state()
-    ThreadingHTTPServer.allow_reuse_address = True
-    ThreadingHTTPServer.daemon_threads = True
-    server = ThreadingHTTPServer((options.host, options.port), Handler)
+    server = FixtureHTTPServer((options.host, options.port), Handler)
     port = server.server_address[1]
     port_file = os.environ.get("FAKE_B4_PORT_FILE")
     if port_file:
@@ -545,6 +576,8 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

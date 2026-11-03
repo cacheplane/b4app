@@ -1,0 +1,111 @@
+$ python3 -m unittest discover -s .github/scripts/tests -v
+test_both_entry_points_bind_without_reverse_dns (test_b4_fixture.FixtureBindTests.test_both_entry_points_bind_without_reverse_dns) ... ok
+test_permission_is_durable_before_its_event_is_visible (test_b4_fixture.FixtureDurabilityTests.test_permission_is_durable_before_its_event_is_visible) ... ok
+test_api_failure_never_becomes_empty_success (test_ci_observations.ObservationsTests.test_api_failure_never_becomes_empty_success) ... ok
+test_carried_forward_jobs_do_not_inflate_retry_compute (test_ci_observations.ObservationsTests.test_carried_forward_jobs_do_not_inflate_retry_compute) ... ok
+test_cli_replay_failure_and_existing_output_preservation (test_ci_observations.ObservationsTests.test_cli_replay_failure_and_existing_output_preservation) ... ok
+test_completed_result_without_conclusion_or_steps_rejected (test_ci_observations.ObservationsTests.test_completed_result_without_conclusion_or_steps_rejected) ... ok
+test_empty_or_mismatched_snapshot_rejected (test_ci_observations.ObservationsTests.test_empty_or_mismatched_snapshot_rejected) ... ok
+test_holdout_failed_attempt_then_partial_rerun_with_skipped_native (test_ci_observations.ObservationsTests.test_holdout_failed_attempt_then_partial_rerun_with_skipped_native) ... ok
+test_invalid_evidence_rejected (test_ci_observations.ObservationsTests.test_invalid_evidence_rejected) ... ok
+test_missing_attempt_rejected (test_ci_observations.ObservationsTests.test_missing_attempt_rejected) ... ok
+test_missing_late_job_start_cannot_shorten_span (test_ci_observations.ObservationsTests.test_missing_late_job_start_cannot_shorten_span) ... ok
+test_named_boundaries_not_updated_at (test_ci_observations.ObservationsTests.test_named_boundaries_not_updated_at) ... ok
+test_original_creation_survives_retry_endpoint_creation (test_ci_observations.ObservationsTests.test_original_creation_survives_retry_endpoint_creation) ... ok
+test_paginated_collection_includes_every_job_and_attempt (test_ci_observations.ObservationsTests.test_paginated_collection_includes_every_job_and_attempt) ... ok
+test_request_budget_is_enforced (test_ci_observations.ObservationsTests.test_request_budget_is_enforced) ... ok
+test_retains_failed_and_cancelled_and_running (test_ci_observations.ObservationsTests.test_retains_failed_and_cancelled_and_running) ... ok
+test_retry_is_not_a_new_intent_or_first_pass_success (test_ci_observations.ObservationsTests.test_retry_is_not_a_new_intent_or_first_pass_success) ... ok
+test_skipped_missing_time_is_unknown_not_zero (test_ci_observations.ObservationsTests.test_skipped_missing_time_is_unknown_not_zero) ... ok
+test_truncated_selection_rejected (test_ci_observations.ObservationsTests.test_truncated_selection_rejected) ... ok
+test_unknown_result_is_malformed_not_success (test_ci_observations.ObservationsTests.test_unknown_result_is_malformed_not_success) ... ok
+
+----------------------------------------------------------------------
+Ran 20 tests in 0.367s
+
+OK
+
+exit=0
+
+$ swift format lint --strict --recursive Sources Tests Apps Package.swift
+
+exit=0
+
+$ actionlint
+
+exit=0
+
+$ shellcheck .github/scripts/test-tag-guard.sh .github/scripts/chart-kind-test.sh .github/scripts/hub-release-tags.sh .github/scripts/is-hub-release.sh Hub/scripts/check-image.sh Hub/scripts/test-db.sh Hub/chart/scripts/chart-version-published.sh Infra/scripts/admin-shell.sh Infra/scripts/taskdef-lib.sh Infra/scripts/render-taskdef.sh Infra/scripts/run-migrate.sh Infra/scripts/deploy.sh Infra/scripts/tests/stubs/docker Infra/scripts/tests/stubs/curl Infra/scripts/tests/stubs/aws Infra/scripts/tests/helpers.bash
+
+exit=0
+
+$ .github/scripts/test-tag-guard.sh
+ok   hub-v0.1.0 -> run
+ok   hub-v10.2.3-rc1 -> run
+ok   mac-v1.0.0 -> skip
+ok   v1.0.0 -> skip
+ok   hubv1 -> skip
+ok   tags hub-v0.1.0 -> 0.1.0,0.1,0,latest
+ok   tags hub-v10.2.3 -> 10.2.3,10.2,10,latest
+ok   tags hub-v1.0.0-rc1 -> 1.0.0-rc1
+ok   tags hub-v1.0 -> error
+ok   tags mac-v1.0.0 -> error
+
+exit=0
+
+$ bats Infra/scripts/tests
+1..48
+ok 1 run-task, then wait, then execute-command, then stop-task
+ok 2 the task runs the latest hub-admin definition in the admin group and public subnets
+ok 3 the image the service runs is registered as a new hub-admin revision and run
+ok 4 the render directory is removed after a registration and after a failed one
+ok 5 a service still on the placeholder falls back to the latest revision with a warning
+ok 6 the psql container is the default
+ok 7 hub selects the hub container
+ok 8 prod resolves b4hub-prod names
+ok 9 the task is stopped when execute-command fails, and its status is kept
+ok 10 the task ARN and the stop command are printed before the shell opens
+ok 11 a missing session-manager-plugin stops before any task is started
+ok 12 a task that does not start is an error and nothing is stopped
+ok 13 bad arguments are refused
+ok 14 200 means published
+ok 15 404 with NAME_UNKNOWN means not published
+ok 16 404 with MANIFEST_UNKNOWN means not published
+ok 17 404 without a known error code is an error, not 'not published'
+ok 18 401 on the manifest is an error
+ok 19 a refused token exchange is an error and skips the manifest request
+ok 20 an unreachable token endpoint is an error
+ok 21 the registry token never appears in the output
+ok 22 a failed migration never touches the service
+ok 23 a migration with no exit code counts as failed
+ok 24 a clean migration updates the service, waits, then checks readiness
+ok 25 a service scaled to zero skips the readiness check with a warning
+ok 26 the image is copied to ECR by digest and the task definitions pin it
+ok 27 an image already in ECR at the same digest is not pushed again
+ok 28 a digest mismatch after the ECR copy aborts before any registration
+ok 29 a rolled-back deployment fails before the readiness check
+ok 30 a hub below protocol 1 fails the readiness check
+ok 31 production deploys to the prod names and hub.b4.run
+ok 32 a malformed digest or environment is refused before any call
+ok 33 run-migrate exits with the container's exit code and prints the log tail
+ok 34 run-migrate honours --public-ip DISABLED
+ok 35 a malformed account id stops the deploy before the image is copied
+ok 36 run-migrate reads the migrate container's exit code, not the first container's
+ok 37 a migration that outlasts the wait is left running, with guidance, and fails the deploy
+ok 38 without sign-in secrets the hub gets only DATABASE_URL
+ok 39 with sign-in secrets the hub gets five, in template order
+ok 40 a placeholder with no value exits 2 and writes nothing
+ok 41 an unknown directive exits 2
+ok 42 values with sed and JSON metacharacters arrive byte-identical
+ok 43 the wrapped document matches what Terraform registers
+ok 44 the migrate template renders
+ok 45 the rendered document is never printed
+ok 46 a placeholder given twice exits 2
+ok 47 unknown flags are refused, so no secret value can be passed
+ok 48 a missing required flag exits 2
+
+exit=0
+
+$ git diff --check
+
+exit=0

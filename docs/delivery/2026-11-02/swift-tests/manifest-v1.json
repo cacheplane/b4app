@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "source_revision": "02f201c0e504004df512d88e267ca6d82af8410d",
+  "inherited_candidate": "../candidate-files.sha256",
+  "input_locks": {
+    "Package.resolved": "2ccd523e0a9073145aa6b835a1fe00b252ba476b19c24851c9c355ca481d0ce1",
+    "project.yml": "d66a331ad2552f8862d9ce467430a5331acf78faf371bd5149eb918bc8728f4c",
+    "Package.swift": "02bc52931e4cfde8199c55a55ca55d81c8a2d01bbce73e934a51f0317a5bf7c6"
+  },
+  "objective": "Focus on one diagnosed test latency/reliability cause; provisional >=10% same-input warm validation latency reduction, <=5% resource increase; cold regression <=10%, no removed tests or weakened assertions. Report local measurements separately from hosted latency.",
+  "baseline": "Initial empty .build; normal dependency download caches not removed. Then same-input full/focused warm repeats. Retain failed attempts.",
+  "experiment_budget": 4,
+  "budget": "No new hosted workflows/services/publication. Up to 45min local build/test wall time, retain exact elapsed and outcomes; network dependency downloads permitted. No shared cache purge.",
+  "toolchain": "Xcode default /Applications/Xcode.app; Swift6.3.3 macOS26.5 arm64; exact versions recorded with commands",
+  "cases": [
+    "cold Swift build/test",
+    "warm full Swift tests",
+    "focused slow B4 suite baseline/candidate repeats",
+    "known-failing sync/account tests",
+    "all four native schemes with signing disabled",
+    "isolated cold native derived data/package checkout",
+    "holdout existing B4 restart/recovery tests after final code change"
+  ],
+  "required_gates": [
+    "all existing tests/targets/signature obligations preserved",
+    "full tests pass or failures honestly unresolved",
+    "no suppressed failures",
+    "exact same input comparisons",
+    "cold/native validation where executable"
+  ],
+  "release_boundary": "Nonpublishing; xcodebuild build only CODE_SIGNING_ALLOWED=NO, no archive/export/upload/package/release/deploy script invocation.",
+  "rollback": "Revert only focused changes plus associated docs; temporary isolated build output disposable. Preserve previous instrumentation and all unrelated changes."
+}

@@ -1,0 +1,17 @@
+{
+  "scope": "New cases only; parent45atomic rubric plus follow-up assessments preserved, no original obligation erased. Not a release quality score.",
+  "required": {
+    "Pass": 24,
+    "Fail": 0,
+    "Untested": 1
+  },
+  "G": 25,
+  "assessed_coverage": 0.96,
+  "verified_pass_coverage": 0.96,
+  "advisory": {
+    "Pass": 0,
+    "Fail": 0,
+    "Untested": 2,
+    "Not applicable": 0
+  }
+}

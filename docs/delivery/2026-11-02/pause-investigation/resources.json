@@ -1,0 +1,8 @@
+{
+  "main_command_attempts": 15,
+  "main_command_wall_sum_seconds": 744.3260006229393,
+  "known_static_command_wall_seconds": 19.32676383497892,
+  "main_instrumented_child_cpu_seconds": 713.776261,
+  "limitations": "Includes failures and sampler children; excludes prototype compilation/scan commands with no complete wrapper clock, audit helper CPU and Xcode non-child build-service CPU. Sums are not elapsed recovery time or total native compute. No hosted cost/accepted availability measured.",
+  "hosted_cost": null
+}

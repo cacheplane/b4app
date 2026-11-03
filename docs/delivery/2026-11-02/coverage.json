@@ -1,0 +1,17 @@
+{
+  "required": {
+    "Pass": 18,
+    "Fail": 0,
+    "Untested": 2
+  },
+  "G": 20,
+  "assessed_coverage": 0.9,
+  "verified_pass_coverage": 0.9,
+  "advisory_counts": {
+    "Pass": 3,
+    "Fail": 0,
+    "Untested": 17,
+    "Not applicable": 5
+  },
+  "authority": "User contract mandatory evaluation gates; mechanism reviews advisory; existing release requirements preserved, not waived."
+}

@@ -1,0 +1,6 @@
+{
+  "created": false,
+  "errno": 92,
+  "message": "Illegal byte sequence",
+  "interpretation": "Invalid UTF-8 fixture cannot be represented on this filesystem; not a production sweep failure."
+}

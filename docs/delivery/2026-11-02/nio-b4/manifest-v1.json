@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "source_revision": "02f201c0e504004df512d88e267ca6d82af8410d",
+  "inherited_diff": "../swift-tests/candidate-files.sha256; preserve all prior work",
+  "scope": "NIO shutdown diagnostic and hosted35s B4 cases; nonpublishing only",
+  "objective": "Remove reproduced shutdown scheduling fault with full coverage; retain latency fix only with measured compatible controls, provisionally >=10% focused-stage/whole-path reduction, no removed checks. Keep focused and full boundaries separate.",
+  "required_gates": [
+    "all existing test coverage and assertions",
+    "strict NIO lifecycle checking without suppression",
+    "complete input/attempt evidence",
+    "no publish/deploy",
+    "full integrated/native checks for relevant modules"
+  ],
+  "adopted_gate": "Use SWIFTNIO_STRICT=1 during experiments to turn the existing diagnostic into a deterministic failing process; consider CI adoption only after complete validation.",
+  "baseline_inputs": {
+    "Sources/NIOTransport/UnixSocketTransport.swift": "30fd2793bb1c9319b9420589222c188fa8477f5a15731597ef03e96cf4a4ecf1",
+    "Sources/Coordinator/SocketServer.swift": "6752932e5b464852f132a55ad6fd12542140e8cb2881dde2aa5b7118c6187268",
+    "Tests/B4AdapterTests/Fixtures/fake-b4.py": "a2402ddc127daab8b71383fe37c4cf2b06adb86c0c616346f7f5e31d454236e3",
+    "Package.resolved": "2ccd523e0a9073145aa6b835a1fe00b252ba476b19c24851c9c355ca481d0ce1",
+    ".github/workflows/ci.yml": "7f73f71d66d70b4becaf382448928d1c57ec91bf015d824b495107cb4f63a546"
+  },
+  "local": "Xcode26.6 / Swift6.3.3 macOS26.5 arm64;10CPU32GiB; existing warm compile state",
+  "budget": "At most4 optimization hypotheses; local validation45min; no new services or deployment; read-only GitHub access for existing evidence. Any necessary new external action prepared concretely before requesting missing authority.",
+  "cache_policy": "No cache change or shared purge",
+  "holdout": "Full strict suite plus server shutdown with connected idle clients; B4 restart/drop recovery preserved",
+  "rollback": "File-local revert of lifecycle/helper changes and any explicitly adopted CI setting; no production state touched."
+}

@@ -1,0 +1,87 @@
+{
+  "collected_at": "2026-11-03T04:52:31.126064+00:00",
+  "results": [
+    {
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        ".github/scripts/tests",
+        "-v"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.2994385830243118
+    },
+    {
+      "command": [
+        "swift",
+        "format",
+        "lint",
+        "--strict",
+        "--recursive",
+        "Sources",
+        "Tests",
+        "Apps",
+        "Package.swift"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 2.6190392919816077
+    },
+    {
+      "command": [
+        "actionlint"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 1.5895330419880338
+    },
+    {
+      "command": [
+        "shellcheck",
+        ".github/scripts/test-tag-guard.sh",
+        ".github/scripts/chart-kind-test.sh",
+        ".github/scripts/hub-release-tags.sh",
+        ".github/scripts/is-hub-release.sh",
+        "Hub/scripts/check-image.sh",
+        "Hub/scripts/test-db.sh",
+        "Hub/chart/scripts/chart-version-published.sh",
+        "Infra/scripts/admin-shell.sh",
+        "Infra/scripts/taskdef-lib.sh",
+        "Infra/scripts/render-taskdef.sh",
+        "Infra/scripts/run-migrate.sh",
+        "Infra/scripts/deploy.sh",
+        "Infra/scripts/tests/stubs/docker",
+        "Infra/scripts/tests/stubs/curl",
+        "Infra/scripts/tests/stubs/aws",
+        "Infra/scripts/tests/helpers.bash"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.6740217090118676
+    },
+    {
+      "command": [
+        ".github/scripts/test-tag-guard.sh"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.08125766698503867
+    },
+    {
+      "command": [
+        "bats",
+        "Infra/scripts/tests"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 14.024386791978031
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.03908675001002848
+    }
+  ]
+}

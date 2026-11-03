@@ -2,6 +2,22 @@
 
 Material implementation decisions, newest first. The spec (`docs/roadmaps/Personal_Agent_Workspace_Technical_Spec_and_Roadmap.md`) is the requirement source; this log records deviations and choices the spec left open.
 
+## 2026-11-02 (test scratch discovery)
+
+- **D-121 Read scratch names before fetching metadata during ephemeral PostgreSQL recovery.** Own-process sampling identified Foundation temporary-directory metadata enumeration on the main thread while other tests waited for startup. `opendir/readdir` now acquires names only, then preserves the existing owner, age, liveness and process-identity checks. Invalid or unreadable names remain untouched; no recovery coverage, original assertion, worker count or timeout was removed. Unicode/types and maximum-length cleanup regressions pass. The actual helper on a frozen 5,000-entry namespace measured a 55.83% median stage reduction; this is not a hosted CI or whole-suite gain. Final strict full/cold checks pass all 1,166 tests, three affected macOS builds are fresh, and three unchanged iOS results are explicitly reused after digest checks. Evidence and limitations: `docs/delivery/2026-11-02/pause-investigation/README.md`.
+
+## 2026-11-02 (NIO shutdown and B4 fixture bind)
+
+- **D-120 Join NIO I/O owners before shutting down their event loop, and omit reverse DNS from numeric test fixture binds.** Client/server closure shares one task across repeated callers and joins `executeThenClose` owners. A cancellation-aware reply separates uncooperative router work from channel ownership; no late reply can schedule I/O. Four shutdown regressions and CI `SWIFTNIO_STRICT=1` preserve the diagnostic as a failure. Both B4 fixture entry points share a TCP bind that avoids unused `getfqdn`; a regression catches DNS calls and the bounded CI profiler records readiness plus advisory resolver evidence. Controlled 35s resolver injection measured 35.055110s→.000632s; this is not a hosted CI result. Original tests, wire behavior, platform/lock/cache/signing/release obligations remain. Final full strict warm/cold and six unsigned native checks pass; prior failures remain recorded. Evidence, limitations and rollback: `docs/delivery/2026-11-02/nio-b4/README.md`.
+
+## 2026-11-02 (Swift CI fixtures)
+
+- **D-119 Recovery tests synchronize on the state they exercise, and the fake hub wakes revoked long polls.** `FakeHubAPI.endSession/deleteAccount` wake pending pulls, matching `revokeSelf`. The B4 fixture persists a pending permission before publishing it, holds a dropped run until GET reattachment captures its cursor, and offers an explicit release file for shutdown/restart tests. HubSync tests settle background pushes before fault injection or snapshots. Existing outcome, transcript, data and turn-count assertions remain. Default concurrency is retained: trials at16/32 cases failed the frozen10% latency-improvement threshold (width32 median0.93%). No adapter, real hub, schema, dependency pin, signing or release behavior changed. Measurements, failed controls, six native builds and cold full verification: `docs/delivery/2026-11-02/swift-tests/README.md`.
+
+## 2026-11-02 (CI observation)
+
+- **D-118 Measure all CI attempts before changing scheduling or caches.** The delivery investigation adds a read-only, standard-library GitHub API collector and offline report, not a release gate. It preserves the unfiltered population, failures, reruns and unknown clocks; cloned prior-job intervals are separated from fresh execution. Exact executed workflow revisions, dollar cost and accepted availability remain unknown. No signing/publication/cache/target requirement changed. Scope, frozen manifest, negative controls and rollback: `docs/delivery/2026-11-02/README.md`.
+
 ## 2026-11-02 (sign-in build)
 
 Built from `docs/superpowers/specs/2026-11-01-sign-in-design.md` and `docs/superpowers/plans/2026-11-01-sign-in.md` on `blove/sign-in`. These record what the build chose where the design (D-062 to D-067) was silent or was changed by review; D-062 to D-067 carry "Amended by" notes, and the hub's Sign in with Apple decisions are D-090 to D-093. The live gate is pending (`docs/verification.md`).

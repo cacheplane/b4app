@@ -1201,14 +1201,17 @@ actor EventCollector {
   /// Spec 10.3 wake: a turn that finished on its server while the coordinator was down is settled by
   /// `workspace.reconcile`, with no re-send.
   @Test func reconcileSettlesATurnThatFinishedWhileTheCoordinatorWasDown() async throws {
-    let server = try await FakeB4.start()
+    let release = NSTemporaryDirectory() + "b4-release-\(UUID().uuidString)"
+    defer { try? FileManager.default.removeItem(atPath: release) }
+    let server = try await FakeB4.start(environment: ["FAKE_B4_RELEASE_FILE": release])
     let h = try await Harness.start()
     let b4 = try await h.addB4(server).connection
     let thread = try await h.newB4Thread(b4)
-    let turn = try await h.send(thread, "slow please")
+    let turn = try await h.send(thread, "gated please")
     #expect(turn.status == .running)
     let paths = h.coordinator.paths
     await h.stop()
+    try Data().write(to: URL(fileURLWithPath: release))
     try await server.waitForRunToEnd(nativeThreadId: thread.nativeThreadId)
 
     let back = try await Harness.start(paths: paths)

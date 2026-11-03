@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "frozen_at": "2026-11-03T06:09:52.717984+00:00",
+  "authorization": "User explicitly requested hosted CI validation and actual measurement, preserving coverage and forbidding publication/deployment. Dedicated feature branch pushes are solely CI inputs; no main update, PR, tags, releases, image/chart push or deploy dispatch.",
+  "base_source": "02f201c0e504004df512d88e267ca6d82af8410d",
+  "remote_main_at_inspection": "e9ee887b106da73514a0434cb74a9ff97c8af5b0",
+  "scope": "Exact combined working candidate on its original base; no merge with independently advanced main, which would change the experiment product.",
+  "branches": {
+    "candidate": "blove/ci-validation/combined-20261103",
+    "control": "blove/ci-validation/slow-path-control-20261103"
+  },
+  "trigger": "push only opted-in CI branches; inspected all workflows, other automatic write/deploy paths require main/release/manual events. No PR side effects.",
+  "pipeline": "Same ci.yml bytes for both; all four jobs and original commands/native schemes retained. Adds opt-in push branch route only.",
+  "populations": {
+    "swift": "All1166tests/146suites, identical tests in control and candidate; strict NIO=1 both",
+    "python": "All20checks both, including expected negative no-DNS regression failure on control",
+    "apps": "All four CI macOS/iOSSimulator local/beta builds, unsigned",
+    "hub": "Complete existing locked Rust format/clippy/test job"
+  },
+  "comparison": "Control keeps all correctness/reliability fixes and identical tests, restores only B4 getfqdn bind and Foundation scratch listing. Measures the two latency changes; candidate validates the entire combined change. Not a comparison against original unsafe/flaky implementation.",
+  "control_expected_failure": "Python no-DNS regression in lint must fail on slow control; acceptance remains failed, not waived. Package/full Swift workload must complete for latency comparison; failures/timeout retained otherwise.",
+  "metrics": [
+    "Test step wall (primary)",
+    "Library test span and full count",
+    "B4 suite/case and profiler values",
+    "Build/cache/setup separately",
+    "Package job and full workflow spans",
+    "Queue/creation/start intervals separate",
+    "Aggregate job seconds by runner; dollar cost unknown"
+  ],
+  "objective": "Existing provisional>=10% relative Test-step median reduction; focused/local earlier results remain separate. With2runs/condition, report individual values and range; no dependable percentile or reliability probability.",
+  "sample_budget": "At most2full attempts per condition (four total); initial control then candidate, then control/candidate reruns. No job-only reruns, shared cache purge, runner-class/worker change or extra services. Standard existing CI only; no spending configuration changes. Necessary correctness failures addressed explicitly before any further budget amendment.",
+  "cache": "Existing cache keys/restore behavior unchanged; first attempts and second attempts recorded separately. Capture actual hit/restore labels; unequal image/cache observations preclude an unconditional causal gain claim.",
+  "holdout": "Second full attempt on exact candidate SHA, no source edits between attempts.",
+  "required_gates": [
+    "All candidate CIjobs/checks pass, no missing/empty/disappearing tests",
+    "StrictNIO and original assertions preserved",
+    "Complete attempt ledger and measured boundaries",
+    "No publishing/deploying"
+  ],
+  "rollback": "Candidate changes remain on isolated branch; no merge. Stop validation runs if safety trigger mismatch; retain attempts. Control code is experimental and must not be promoted.",
+  "source_hashes": {
+    "Package.swift": "02bc52931e4cfde8199c55a55ca55d81c8a2d01bbce73e934a51f0317a5bf7c6",
+    "Package.resolved": "2ccd523e0a9073145aa6b835a1fe00b252ba476b19c24851c9c355ca481d0ce1",
+    "project.yml": "d66a331ad2552f8862d9ce467430a5331acf78faf371bd5149eb918bc8728f4c",
+    ".github/workflows/ci.yml": "7697fc51948ff6f3be1dc93a2291525408d8dc7c81235f31c3bb37b6831acf03",
+    "Sources/Coordinator/SocketServer.swift": "0a5c41e0e6c970246bb6d7ba793aeb0c1501a94905333513438f5b8d8d9e731c",
+    "Sources/NIOTransport/UnixSocketTransport.swift": "86a89b7cd437e9c382d6db97640ba19f66f37f8b1e13dfa28ffa3dcc4dae6dbe",
+    "Sources/WorkspaceStorage/EphemeralPostgres.swift": "65645c39b841d305c4dffe074b90cbf4f7ada82674fe8a293e86a4b35288d3d8",
+    "Tests/B4AdapterTests/Fixtures/fake-b4.py": "b7ebeca7086af8db62c388702231facb8df40f6c77dd6a7a6bb29191e73bd118",
+    "Tests/B4AdapterTests/Fixtures/fake-b4-cli.py": "c20e7c08b7425b1d55f686e23b575fc0858def6d3304efaf3722cf2b7c070646"
+  }
+}

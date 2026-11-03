@@ -1,0 +1,27 @@
+{
+  "manifest_version": 2,
+  "parent": "manifest-v1.json",
+  "changes": [
+    "GitHub GET access succeeded after sandbox network failure; initial authentication failure was not an access verdict.",
+    "Actual population is frozen in selection.json; eight runs and nine attempts, sources differ from local baseline.",
+    "Adopted strict selection cardinality, snapshot identity, terminal-result and step-inventory checks after negative review; no product/release gates changed.",
+    "Original-run and API attempt creation clocks separated after observing rerun semantics.",
+    "Final live collector recapture retained separately; not used as performance comparison.",
+    "Exact executed workflow revision remains unknown; source head SHA is not substituted for it."
+  ],
+  "local_tools": {
+    "OS": "macOS 26.5 (25F71)",
+    "arch": "arm64",
+    "Swift": "6.3.3",
+    "Python": "3.12.12",
+    "actionlint": "1.7.12 (Homebrew darwin/amd64)",
+    "shellcheck": "0.11.0",
+    "bats": "1.14.0",
+    "gh": "2.95.0"
+  },
+  "test_environment": "Local fixture tests; CI uses installed python3 on ubuntu-latest (exact version unknown until first hosted run).",
+  "review": "Three independent read-only first passes; all reproduced candidate findings fixed and final retested; extra CLI behavioral test after reviews changes no runtime code.",
+  "candidate_identity": "candidate-files.sha256",
+  "capture_limitations": "Non-atomic API reads; selection fixes maximum attempts; no overall collection deadline, 60-second per-request timeout; GET count hard cap100.",
+  "evidence_reuse": "Raw observed timestamps unchanged; final report replays final code. Shell and Swift source unchanged; final validation commands repeated where relevant."
+}

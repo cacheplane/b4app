@@ -418,11 +418,15 @@ private struct HubHarness {
     // A 401 is recorded and leaves the rows unsynced; since the per-account split (Task 9) it also signs
     // the account out, so no write-driven push follows.
     let accounts = h.coordinator.accounts
-    // Unsynced rows written straight to the store (no event, so no push yet); the 401 then arrives on
-    // whichever hub call comes next, the pull's long-poll as a rule.
+    let hub = h.coordinator.hub
+    // Quiesce background calls and finish any push already in flight. Otherwise a timer can sync
+    // the row before fault injection, or an unrelated call can consume the one-shot failure.
+    await hub.stop()
+    _ = try await hub.pushNow()
     _ = try db.insertConnection(
       Connection(id: "c-after", kind: .claude, label: "After", target: "/bin/claude"))
     await h.fake.setFailNext(unauthorized)
+    await #expect(throws: HubError.self) { _ = try await hub.pushNow() }
     // Polled: HubSync records the 401 on the link, and the account manager signs out, with no event
     // or later hub call after it.
     let deadline = ContinuousClock.now + .seconds(10)
@@ -567,6 +571,10 @@ private struct HubHarness {
       DatabaseBackup.self, DatabaseBackup.Params(path: h.workDir + "/archive.jsonl"),
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
     try await h.addThread()
+    // Restore is refused based on the persisted hub membership. Stop background writes before
+    // taking the snapshots so the assertions measure restore, not a racing push/pull.
+    await h.coordinator.hub.close()
+    _ = try await h.coordinator.hub.pushNow()  // Await a push already in flight before close.
     let counts = try db.tableCounts()
     let changes = try db.changes(after: 0)
     let link = try db.hubLink()

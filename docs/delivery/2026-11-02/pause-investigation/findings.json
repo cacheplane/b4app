@@ -1,0 +1,124 @@
+{
+  "findings": [
+    {
+      "id": "P01",
+      "primary_criterion": "C03.3",
+      "severity": "S2",
+      "designation": "baseline",
+      "title": "Metadata enumeration blocks test startup",
+      "reproduction": "Own-helper sample main thread in Foundation temp-directory enumeration, workers on startLock; actual live scans7\u201310s.",
+      "expected": "Acquire only names before existing ownership policy.",
+      "observed": "Own-helper sample main thread in Foundation temp-directory enumeration, workers on startLock; actual live scans7\u201310s.",
+      "consequence": "Local reliability, performance attribution or reviewability risk within scope.",
+      "evidence": [
+        "observations.jsonl",
+        "console-summaries.json",
+        "sample-summary.json",
+        "scan-inputs-retrospective.json",
+        "code diff"
+      ],
+      "decision": "Names-only scan retained; original cleanup checks unchanged.",
+      "retest": "Final warm/cold1166 green, three fresh macOS builds, compatible prior iOS digests and all static checks pass."
+    },
+    {
+      "id": "P02",
+      "primary_criterion": "C02.3",
+      "severity": "S1",
+      "designation": "experiment",
+      "title": "Mutable live namespace invalidated equality oracle",
+      "reproduction": "Initial prototype exits133 when directory entries change between listings.",
+      "expected": "Stable inputs required for equality/performance conclusion.",
+      "observed": "Initial prototype exits133 when directory entries change between listings.",
+      "consequence": "Local reliability, performance attribution or reviewability risk within scope.",
+      "evidence": [
+        "observations.jsonl",
+        "console-summaries.json",
+        "sample-summary.json",
+        "scan-inputs-retrospective.json",
+        "code diff"
+      ],
+      "decision": "Retain failed oracle; use owned frozen namespace; live data diagnostic only.",
+      "retest": "Three frozen prototype pairs return identical names; actual frozen helper stage56% median reduction."
+    },
+    {
+      "id": "P03",
+      "primary_criterion": "C08.1",
+      "severity": "S1",
+      "designation": "test fixture",
+      "title": "Invalid UTF8 cannot be created on APFS",
+      "reproduction": "New test mkdir/access failed; separate reproduction returns errno92.",
+      "expected": "Test must create a supported fixture before exercising helper.",
+      "observed": "New test mkdir/access failed; separate reproduction returns errno92.",
+      "consequence": "Local reliability, performance attribution or reviewability risk within scope.",
+      "evidence": [
+        "observations.jsonl",
+        "console-summaries.json",
+        "sample-summary.json",
+        "scan-inputs-retrospective.json",
+        "code diff"
+      ],
+      "decision": "Retained failure; replaced with supported maximum-length case; UTF8 defensive branch remains statically reviewed only.",
+      "retest": "Maximum-length and Unicode/types cases pass, original tests retained."
+    },
+    {
+      "id": "P04",
+      "primary_criterion": "C08.1",
+      "severity": "S1",
+      "designation": "test fixture",
+      "title": "New maximum-length fixture used unrecognized naming grammar",
+      "reproduction": "b4pgs-114-<suffix> is not a valid PID-only b4pgs name; failed expectation.",
+      "expected": "Use supported existing scratch grammar.",
+      "observed": "b4pgs-114-<suffix> is not a valid PID-only b4pgs name; failed expectation.",
+      "consequence": "Local reliability, performance attribution or reviewability risk within scope.",
+      "evidence": [
+        "observations.jsonl",
+        "console-summaries.json",
+        "sample-summary.json",
+        "scan-inputs-retrospective.json",
+        "code diff"
+      ],
+      "decision": "Changed only new test to b4pg-114-<suffix>; parser unchanged; reviewers independently found same issue.",
+      "retest": "Corrected6test diagnostic run green; final1166 full/cold green."
+    },
+    {
+      "id": "P05",
+      "primary_criterion": "C02.3",
+      "severity": "S2",
+      "designation": "reporting",
+      "title": "Scan root and frozen inventory missing from wrapper metadata",
+      "reproduction": "Measurement harness used B4APP_SCAN_ROOT but wrapper omitted its value.",
+      "expected": "Retain operative input identities without implying retrospective metadata existed earlier.",
+      "observed": "Measurement harness used B4APP_SCAN_ROOT but wrapper omitted its value.",
+      "consequence": "Local reliability, performance attribution or reviewability risk within scope.",
+      "evidence": [
+        "observations.jsonl",
+        "console-summaries.json",
+        "sample-summary.json",
+        "scan-inputs-retrospective.json",
+        "code diff"
+      ],
+      "decision": "Added explicitly retrospective per-case mapping, creation recipe and verified current inventory/digest; controlled.py preserves env assignment.",
+      "retest": "Root map/recipe/inventory retained; no contemporaneous snapshot claim; final helper source hashes match."
+    },
+    {
+      "id": "P06",
+      "primary_criterion": "C15.3",
+      "severity": "S2",
+      "designation": "evidence gap",
+      "title": "Hosted gain remains untested",
+      "reproduction": "No push/PR or CI trigger performed under nonpublishing instruction.",
+      "expected": "Actual runner verification before declaring hosted delivery improvement.",
+      "observed": "No push/PR or CI trigger performed under nonpublishing instruction.",
+      "consequence": "Local reliability, performance attribution or reviewability risk within scope.",
+      "evidence": [
+        "observations.jsonl",
+        "console-summaries.json",
+        "sample-summary.json",
+        "scan-inputs-retrospective.json",
+        "code diff"
+      ],
+      "decision": "Keep exact candidate reviewable and external status Untested.",
+      "retest": "No publication/deployment or accepted availability claim."
+    }
+  ]
+}

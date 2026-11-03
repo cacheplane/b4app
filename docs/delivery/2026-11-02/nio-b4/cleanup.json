@@ -1,0 +1,24 @@
+{
+  "collected_at": "2026-11-02T23:57:08.991670+00:00",
+  "actions": [
+    {
+      "pid": 35557,
+      "parent": 1,
+      "command": "python3 /Users/blove/.codex/worktrees/f4fa/b4app/Tests/B4AdapterTests/Fixtures/fake-b4.py --port 0",
+      "action": "SIGTERM orphaned exact-worktree test fixture"
+    },
+    {
+      "pid": 35623,
+      "parent": 1,
+      "command": "python3 /Users/blove/.codex/worktrees/f4fa/b4app/Tests/B4AdapterTests/Fixtures/fake-b4.py --port 0",
+      "action": "SIGTERM orphaned exact-worktree test fixture"
+    }
+  ],
+  "boundary": "Only PPID1 and exact fake-b4.py fixture argv in this worktree. No process tree or broad matching; no other-worktree fixture stopped.",
+  "generated_cache_cleanup_targets": [
+    "Tests/B4AdapterTests/Fixtures/__pycache__",
+    ".github/scripts/__pycache__",
+    ".github/scripts/tests/__pycache__"
+  ],
+  "generated_cache_targets_absent_at_final_check": true
+}

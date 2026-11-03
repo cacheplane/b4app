@@ -1,0 +1,17 @@
+{
+  "scope": "Only new criterion-case pairs; all preceding atomic assessments remain. Not a quality score.",
+  "required": {
+    "Pass": 19,
+    "Fail": 0,
+    "Untested": 1
+  },
+  "G": 20,
+  "assessed_coverage": 0.95,
+  "verified_pass_coverage": 0.95,
+  "advisory": {
+    "Pass": 0,
+    "Fail": 0,
+    "Untested": 2,
+    "Not applicable": 0
+  }
+}
