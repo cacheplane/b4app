@@ -940,6 +940,9 @@ async fn fill_org(admin: &Db, app: &Db, pool: &PgPool, created: &accounts::Creat
     ceremonies::create_handoff(app, ceremony, principal, &hash_token("v"))
         .await
         .unwrap();
+    ceremonies::create_step_up(app, principal, created.device_id, "passkey")
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO org_sync_horizons (org_id, horizon) VALUES ($1, 0)")
         .bind(created.org_id)
         .execute(pool)
