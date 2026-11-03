@@ -26,16 +26,12 @@ locals {
   # hub.b4.run -> b4.run, hub.test.b4.run -> test.b4.run
   webauthn_rp_id = trimprefix(var.hostname, "hub.")
 
-  # The one place the Apple web flow hands back to: prod's app scheme on prod
-  # (D-140), and an https URL on the beta site on test (D-160), which only the
-  # Beta Mac app takes back. Infra/scripts/deploy.sh sets the same per
-  # environment.
-  apple_callback = var.environment == "prod" ? {
-    name  = "B4HUB_APPLE_CALLBACK_SCHEME"
-    value = "b4app"
-    } : {
+  # The one place the Apple web flow hands back to: an https URL on each
+  # hub's site (D-160), which only that flavour's Mac app takes back.
+  # Infra/scripts/deploy.sh sets the same per environment.
+  apple_callback = {
     name  = "B4HUB_APPLE_CALLBACK_URL"
-    value = "https://test.b4.run/app/auth/apple"
+    value = "https://${local.webauthn_rp_id}/app/auth/apple"
   }
 }
 
