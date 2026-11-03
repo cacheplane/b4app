@@ -243,28 +243,103 @@ public enum LegacyAdoption {
   // MARK: - Stopping the old install
 
   public enum BootOutDecision: Equatable, Sendable {
-    /// The job is not loaded; there is nothing to boot out.
+    /// The job is not loaded, or nothing shows it is ours to stop; there is nothing to boot out.
     case skip
     case bootOut
     case refuse(String)
   }
 
+  /// What `launchctl print` showed of the old job.
+  public enum JobState: Equatable, Sendable {
+    case loaded
+    case notLoaded
+    /// The print timed out, could not run, or answered something else: it proves nothing either way.
+    /// (At the live gate a timed-out print read as "not loaded" and left the job loaded.)
+    case unknown
+  }
+
+  /// launchctl's exit codes for a service it does not have: `print` answers 113 ("Could not find
+  /// service"), `bootout` 3 ("No such process").
+  static let serviceNotFound: Int32 = 113
+  static let noSuchProcess: Int32 = 3
+
+  static func jobState(printed result: CommandResult?) -> JobState {
+    guard let result, !result.timedOut else { return .unknown }
+    switch result.exitCode {
+    case 0: return .loaded
+    case serviceNotFound: return .notLoaded
+    default: return .unknown
+    }
+  }
+
   /// D-052's identity rule for the old agent: boot a loaded job out only when its plist names a
   /// program that is not this process's own binary. A job that runs this binary would take us down
-  /// with it, and one whose program cannot be established is not ours to stop.
-  static func bootOutDecision(loaded: Bool, plistProgram: String?, ownProgram: String) -> BootOutDecision {
-    guard loaded else { return .skip }
-    guard let plistProgram else {
-      return .refuse(
-        "The LaunchAgent \(legacyLabel) is loaded but its plist is missing, so its program cannot be checked. Nothing was stopped or moved."
-      )
+  /// with it, and one whose program cannot be established is not ours to stop. A job whose state is
+  /// unknown is booted out by the same rule, but never refused: with no plist, or this binary's,
+  /// there is nothing to show it is loaded, so adoption goes on as for one that is not.
+  static func bootOutDecision(state: JobState, plistProgram: String?, ownProgram: String) -> BootOutDecision {
+    switch state {
+    case .notLoaded:
+      return .skip
+    case .unknown:
+      guard let plistProgram, !samePath(plistProgram, ownProgram) else { return .skip }
+      return .bootOut
+    case .loaded:
+      guard let plistProgram else {
+        return .refuse(
+          "The LaunchAgent \(legacyLabel) is loaded but its plist is missing, so its program cannot be checked. Nothing was stopped or moved."
+        )
+      }
+      if samePath(plistProgram, ownProgram) {
+        return .refuse(
+          "The LaunchAgent \(legacyLabel) runs this coordinator (\(ownProgram)). Nothing was stopped or moved; quit it and start the local build again."
+        )
+      }
+      return .bootOut
     }
-    if samePath(plistProgram, ownProgram) {
-      return .refuse(
-        "The LaunchAgent \(legacyLabel) runs this coordinator (\(ownProgram)). Nothing was stopped or moved; quit it and start the local build again."
-      )
+  }
+
+  /// Runs `/bin/launchctl` with these arguments and a timeout; nil when it could not be run.
+  public typealias Launchctl = @Sendable (_ arguments: [String], _ timeout: Duration) async -> CommandResult?
+
+  /// The real `launchctl`, an argument array and never a shell string.
+  public static let systemLaunchctl: Launchctl = { arguments, timeout in
+    try? await CommandRunner.run("/bin/launchctl", arguments, options: CommandOptions(timeout: timeout))
+  }
+
+  /// Boot the old job (`domainTarget`, `gui/<uid>/<legacy label>`) out by `bootOutDecision`: launchd
+  /// stops the job's process, and nothing here signals one itself. When the job's state was unknown,
+  /// launchctl's "not found" answers to the boot-out mean it was not loaded. Answers whether a job was
+  /// booted out; throws on a refusal or a boot-out that failed.
+  @discardableResult
+  static func bootOutLegacyJob(
+    home: URL, ownProgram: String, domainTarget: String, launchctl: Launchctl
+  ) async throws -> Bool {
+    let state = jobState(printed: await launchctl(["print", domainTarget], .seconds(15)))
+    switch bootOutDecision(state: state, plistProgram: legacyProgramPath(home: home), ownProgram: ownProgram)
+    {
+    case .skip:
+      return false
+    case .refuse(let message):
+      throw WorkspaceError(.ownedProcessConflict, message)
+    case .bootOut:
+      let result = await launchctl(["bootout", domainTarget], .seconds(90))
+      if result?.succeeded == true { return true }
+      if state == .unknown, let result, !result.timedOut,
+        result.exitCode == noSuchProcess || result.exitCode == serviceNotFound
+      {
+        return false
+      }
+      let answer =
+        result.map {
+          $0.timedOut
+            ? "timed out"
+            : "\($0.exitCode ?? -1): \($0.stderr.trimmingCharacters(in: .whitespacesAndNewlines))"
+        } ?? "could not run"
+      throw WorkspaceError(
+        .endpointUnavailable,
+        "launchctl bootout \(legacyLabel) failed (\(answer)). Nothing was moved.")
     }
-    return .bootOut
   }
 
   /// The pre-flavour LaunchAgent's plist under `home`.
@@ -281,7 +356,7 @@ public enum LegacyAdoption {
   @discardableResult
   static func removeLegacyPlist(home: URL, ownProgram: String) -> Bool {
     guard
-      bootOutDecision(loaded: true, plistProgram: legacyProgramPath(home: home), ownProgram: ownProgram)
+      bootOutDecision(state: .loaded, plistProgram: legacyProgramPath(home: home), ownProgram: ownProgram)
         == .bootOut
     else { return false }
     return (try? FileManager.default.removeItem(at: legacyPlist(home: home))) != nil
@@ -315,8 +390,9 @@ public enum LegacyAdoption {
     /// (`copySecretsOnce`, run by `AccountManager` before the adopted account's first hub call). Nil
     /// reads nothing.
     public var legacySecretStore: (any SecretStore)?
-    /// Runs once the data directory has moved: retires the old LaunchAgent's plist
-    /// (`removeLegacyPlist`), so the next login does not start the old coordinator again.
+    /// Runs once the data directory has moved: boots the old LaunchAgent out if it is still loaded
+    /// and retires its plist (`removeLegacyPlist`), so the next login does not start the old
+    /// coordinator again.
     public var retireLegacyAgent: @Sendable () async -> Void
 
     public init(
@@ -354,16 +430,22 @@ public enum LegacyAdoption {
     public var home: URL
     public var environment: [String: String]
     public var ownProgram: String
+    public var launchctl: Launchctl
 
     public init(
       home: URL = FileManager.default.homeDirectoryForCurrentUser,
       environment: [String: String] = ProcessInfo.processInfo.environment,
-      ownProgram: String = Bundle.main.executableURL?.path ?? CommandLine.arguments[0]
+      ownProgram: String = Bundle.main.executableURL?.path ?? CommandLine.arguments[0],
+      launchctl: @escaping Launchctl = LegacyAdoption.systemLaunchctl
     ) {
       self.home = home
       self.environment = environment
       self.ownProgram = ownProgram
+      self.launchctl = launchctl
     }
+
+    /// The old job in this user's GUI domain.
+    var domainTarget: String { "gui/\(getuid())/\(LegacyAdoption.legacyLabel)" }
 
     /// Where the pre-flavour coordinator kept its socket and lock: `$TMPDIR/b4app`.
     var legacyRuntimeDir: String {
@@ -372,16 +454,31 @@ public enum LegacyAdoption {
     }
 
     var plan: Plan {
-      let home = home
-      let ownProgram = ownProgram
-      return Plan(
+      Plan(
         home: home, readHubURL: { try await readHubURL($0) }, bootOutLegacy: { try await bootOutLegacy() },
         legacySecretStore: LegacyAdoption.legacySecretStore(),
-        retireLegacyAgent: {
-          if LegacyAdoption.removeLegacyPlist(home: home, ownProgram: ownProgram) {
-            Log.logger("coordinator").notice("removed the previous install's LaunchAgent plist")
-          }
-        })
+        retireLegacyAgent: { await retireLegacyAgent() })
+    }
+
+    /// After the move: the job goes first (still loaded if it came back, or if the boot-out before the
+    /// move could not tell), then its plist, both by D-052's rule. A boot-out that fails is logged and
+    /// the plist still goes, so at worst the job stays loaded until the next login.
+    func retireLegacyAgent() async {
+      let logger = Log.logger("coordinator")
+      do {
+        if try await LegacyAdoption.bootOutLegacyJob(
+          home: home, ownProgram: ownProgram, domainTarget: domainTarget, launchctl: launchctl)
+        {
+          logger.notice("booted out the previous install's LaunchAgent")
+        }
+      } catch {
+        logger.warning(
+          "could not boot out the previous install's LaunchAgent: \(WorkspaceError.from(error).message, privacy: .public)"
+        )
+      }
+      if LegacyAdoption.removeLegacyPlist(home: home, ownProgram: ownProgram) {
+        logger.notice("removed the previous install's LaunchAgent plist")
+      }
     }
 
     private func cluster(legacyDirectory: URL) throws -> PostgresCluster {
@@ -435,26 +532,8 @@ public enum LegacyAdoption {
     /// done.
     public func bootOutLegacy() async throws {
       let cluster = try cluster(legacyDirectory: legacyDirectory())
-      let domainTarget = "gui/\(getuid())/\(LegacyAdoption.legacyLabel)"
-      let loaded =
-        (try? await CommandRunner.run(
-          "/bin/launchctl", ["print", domainTarget], options: CommandOptions(timeout: .seconds(5))))?
-        .exitCode == 0
-      switch LegacyAdoption.bootOutDecision(
-        loaded: loaded, plistProgram: LegacyAdoption.legacyProgramPath(home: home), ownProgram: ownProgram)
-      {
-      case .skip: break
-      case .refuse(let message): throw WorkspaceError(.ownedProcessConflict, message)
-      case .bootOut:
-        let result = try await CommandRunner.run(
-          "/bin/launchctl", ["bootout", domainTarget], options: CommandOptions(timeout: .seconds(90)))
-        guard result.exitCode == 0 else {
-          throw WorkspaceError(
-            .endpointUnavailable,
-            "launchctl bootout \(LegacyAdoption.legacyLabel) failed (\(result.exitCode ?? -1)): \(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)). Nothing was moved."
-          )
-        }
-      }
+      try await LegacyAdoption.bootOutLegacyJob(
+        home: home, ownProgram: ownProgram, domainTarget: domainTarget, launchctl: launchctl)
       // A coordinator that is still alive (started by the old app or the CLI, not by launchd, or slow
       // to exit) owns the cluster; this never signals it.
       let lockPath = (legacyRuntimeDir as NSString).appendingPathComponent("coordinator.lock")

@@ -20,11 +20,12 @@ extension WorkspaceModel {
   }
 
   /// The confirmation alert's title and message. The runtime is named only when the thread's
-  /// connection is enabled, since only then will its copy be deleted too.
+  /// connection is enabled and still signed in as the thread's identity, since only then will its copy
+  /// be deleted too.
   public func deleteConfirmation(for thread: ConversationThread) -> (title: String, message: String) {
     let connection = connections.first { $0.id == thread.connectionId }
     var message: String
-    if let connection, connection.enabled {
+    if let connection, connection.enabled, !thread.identityChanged(on: connection) {
       message =
         "It's removed from this app and from \(Self.runtimeName(connection.kind)). You can't undo this."
     } else {

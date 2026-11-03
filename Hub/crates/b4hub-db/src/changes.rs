@@ -25,13 +25,14 @@ use b4hub_core::change::{
 };
 pub use b4hub_core::change::{Page, StoredChange};
 use b4hub_core::hlc::Hlc;
-use b4hub_core::writable::{is_clocked, is_phone_writable};
+use b4hub_core::writable::{is_clocked, is_never_cleared, is_phone_writable};
 use serde_json::Value;
 use sqlx::postgres::PgConnection;
 use sqlx::types::Uuid;
 use sqlx::{Acquire, FromRow, Postgres, Transaction};
 
 use crate::devices::{AuthedDevice, Platform};
+use crate::push::{self, Kind, Notification};
 use crate::{Db, Error, Result};
 
 /// What happened to one change that was new to the hub.
@@ -48,6 +49,9 @@ pub const COLUMN_NOT_WRITABLE: &str = "column_not_writable";
 /// A change carries an `hlc` that is not in the clock form. A change with none is fine: it gets
 /// one derived from its `wall`.
 pub const INVALID_CLOCK: &str = "invalid_clock";
+
+/// A change sets a column that is never cleared (`threads.userDeletedAt`) to null.
+pub const CANNOT_CLEAR: &str = "cannot_clear";
 
 /// A change's `value` is over [`MAX_PAYLOAD_BYTES`].
 pub const PAYLOAD_TOO_LARGE: &str = "payload_too_large";
@@ -66,6 +70,10 @@ pub struct PushOutcome {
     /// resend them.
     pub accepted_through: i64,
     pub rejected: Vec<Rejected>,
+    /// The notifications the push's applied changes caused, decided in its transaction and to be
+    /// delivered after the commit: in batch order, then by device id. Empty for a push that
+    /// notifies nobody.
+    pub notifications: Vec<Notification>,
 }
 
 /// Why `auth` may not make `change`, if it may not.
@@ -80,6 +88,15 @@ fn refusal(auth: &AuthedDevice, change: &Change) -> Option<&'static str> {
     };
     if auth.platform != Platform::Macos && !phone_allowed {
         return Some(COLUMN_NOT_WRITABLE);
+    }
+    if change.op == ChangeOp::Update
+        && change
+            .column
+            .as_deref()
+            .is_some_and(|column| is_never_cleared(&change.table, column))
+        && change.value.as_ref().is_none_or(Value::is_null)
+    {
+        return Some(CANNOT_CLEAR);
     }
     if change.value_bytes() > MAX_PAYLOAD_BYTES {
         return Some(PAYLOAD_TOO_LARGE);
@@ -160,6 +177,8 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
     let now = now_ms();
     let mut rejected = Vec::new();
     let (mut applied, mut skipped, mut lost, mut duplicates) = (0usize, 0usize, 0usize, 0usize);
+    // Turns and runtime requests this push changed, for the notification decision below.
+    let mut touched: Vec<(Kind, String)> = Vec::new();
     for change in batch {
         if let Some(code) = refusal(auth, change) {
             tracing::warn!(
@@ -210,6 +229,12 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
             Ok(Applied::Yes) => {
                 savepoint.commit().await?;
                 applied += 1;
+                if let Some(kind) = Kind::of_table(&change.table) {
+                    let entry = (kind, change.row_id.clone());
+                    if !touched.contains(&entry) {
+                        touched.push(entry);
+                    }
+                }
             }
             Ok(Applied::Lost) => {
                 savepoint.rollback().await?;
@@ -238,6 +263,9 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
             .await?
         }
     };
+    // Which applied rows notify whom is decided here, in the same transaction, so the ledger
+    // commits with the rows and a retried batch cannot notify twice.
+    let notifications = push::detect(&mut tx, auth, &touched).await?;
     tx.commit().await?;
 
     if skipped > 0 {
@@ -253,6 +281,7 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
     Ok(PushOutcome {
         accepted_through: accepted,
         rejected,
+        notifications,
     })
 }
 
@@ -417,7 +446,7 @@ impl Row {
 }
 
 /// SQLSTATE class 22: the value does not fit the column (wrong type, out of range).
-fn is_data_error(error: &sqlx::Error) -> bool {
+pub(crate) fn is_data_error(error: &sqlx::Error) -> bool {
     error
         .as_database_error()
         .and_then(|e| e.code())
@@ -504,13 +533,17 @@ async fn insert(
     // The columns the row carries, minus the key (that is the change's rowId) and anything that
     // is not a Mac column: ownership columns can only come from the token. The scrubbed columns
     // are always written, as NULL. A clocked column is written only if this insert's clock beats
-    // the clock of the change that last set it; it counts as set at that clock either way.
+    // the clock of the change that last set it; it counts as set at that clock either way. A null
+    // for a column that is never cleared is not carried, so it cannot clear a set one.
     let mut provided: Vec<&str> = Vec::new();
     for column in spec.columns.iter().copied() {
         if column == spec.key {
             continue;
         }
-        let carried = is_scrubbed(spec.name, column) || row.contains_key(column);
+        let carried = is_scrubbed(spec.name, column)
+            || row
+                .get(column)
+                .is_some_and(|value| !(value.is_null() && is_never_cleared(spec.name, column)));
         if carried
             && (!is_clocked(spec.name, column)
                 || claim_clock(conn, auth, spec.name, &change.row_id, column, hlc, reviving)

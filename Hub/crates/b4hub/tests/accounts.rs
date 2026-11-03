@@ -821,6 +821,33 @@ async fn enroll_with_phone_only_token_merges(pool: PgPool) {
     let phone_token = token(&phone);
     let phone_who = principal(hub, phone_token).await;
 
+    // The phone registered a push token before it paired; the merge must delete that row with the
+    // device, not trip over its foreign key.
+    let phone_device = devices::authenticate(&hub.state.db, phone_token)
+        .await
+        .unwrap()
+        .expect("the token authenticates");
+    b4hub_db::push::save_token(
+        &hub.state.db,
+        &phone_device,
+        &"ab12".repeat(16),
+        "sandbox",
+        "com.cacheplane.b4app",
+    )
+    .await
+    .unwrap();
+    let tokens = |pool: &PgPool, device_id: Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM push_tokens WHERE device_id = $1")
+                .bind(device_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(tokens(&pool, phone_device.device_id).await, 1);
+
     // A failed redemption (a spent code of the same account, or an unknown one) merges nothing.
     let spent = mint_code(&setup, &seeded).await;
     let used = hub
@@ -876,6 +903,7 @@ async fn enroll_with_phone_only_token_merges(pool: PgPool) {
     for (table, n) in org_rows(&pool, phone_who.org_id).await {
         assert_eq!(n, 0, "{table} still has rows of the merged-away account");
     }
+    assert_eq!(tokens(&pool, phone_device.device_id).await, 0);
 
     // The phone's passkey now signs in to the code's account.
     let signed_in = sign_in(hub, &mut phone_keys, 0, device("Brian's iPhone", "ios")).await;

@@ -168,6 +168,9 @@ while True:
         thread_id = params.get("threadId")
         if os.environ.get("FAKE_CODEX_NO_DELETE") == "1":
             send({"id": req_id, "error": {"code": -32601, "message": "unknown method thread/delete"}})
+        elif os.environ.get("FAKE_CODEX_DELETE_INVALID") == "1":
+            # FAKE_CODEX_DELETE_INVALID=1: invalid params that say nothing about the thread being gone.
+            send({"id": req_id, "error": {"code": -32602, "message": "invalid params: threadId"}})
         elif thread_id == "thr_missing" or thread_id in deleted:
             send({"id": req_id, "error": {"code": -32602, "message": "thread %s not found" % thread_id}})
         else:

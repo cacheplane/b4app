@@ -8,7 +8,7 @@ import WorkspaceSync
 /// `Tests/Fixtures/sync/attention.json`, which `ActivityQueryTests` (the Mac's Postgres query) and the
 /// protocol tests also read. Its rows are applied as the hub would serve them: one insert per row,
 /// connections, threads, turns, then requests.
-private struct AttentionFixture: Decodable {
+struct AttentionFixture: Decodable {
   struct Expected: Decodable {
     var bands: [String: String]
     var order: [String]

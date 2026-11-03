@@ -31,13 +31,34 @@ extension WorkspaceDatabase {
         Self.threadWithActivity
           + """
            LEFT JOIN "threadDeletes" d ON d."threadId" = t."id"
-          WHERE t."userDeletedAt" IS NOT NULL
-            AND (d."threadId" IS NULL
-              OR (d."state" = 'waiting' AND (d."nextAttemptAt" IS NULL OR d."nextAttemptAt" <= $1)))
+          WHERE \(Self.runtimeDeleteDue)
           ORDER BY t."userDeletedAt" COLLATE "C", t."id" COLLATE "C"
           """, [now])
     }
   }
+
+  /// The deleted thread `threadId` if its runtime copy is still due a try at `now`, else nil (done,
+  /// unsupported, waiting until later, or not deleted). A sweep checks again just before it tries.
+  public func threadAwaitingRuntimeDelete(id threadId: String, now: String) throws -> ConversationThread? {
+    try read {
+      try one(
+        $0, ConversationThread.self,
+        Self.threadWithActivity
+          + """
+           LEFT JOIN "threadDeletes" d ON d."threadId" = t."id"
+          WHERE t."id" = $2 AND \(Self.runtimeDeleteDue)
+          """, [now, threadId])
+    }
+  }
+
+  /// A deleted thread (`t`) whose runtime delete (`d`) was never tried, or is waiting with its next
+  /// attempt at or before `$1`. Timestamps compare byte by byte, as everywhere else.
+  private static let runtimeDeleteDue = """
+    t."userDeletedAt" IS NOT NULL
+      AND (d."threadId" IS NULL
+        OR (d."state" = 'waiting'
+          AND (d."nextAttemptAt" IS NULL OR d."nextAttemptAt" COLLATE "C" <= $1)))
+    """
 
   /// Record one try at deleting the thread's runtime copy.
   public func recordThreadDelete(
