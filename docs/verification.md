@@ -17,6 +17,15 @@ Under that load, the full runs failed in places that this fixture change does no
 - **`B4AdapterSessionTests.aDroppedStreamReattachesWithoutResubmitting`** (line 241, `deltas != "Part one. Part two."`). The "drop" run emits "Part two." 1 s after the drop. A reattach to a live run gets only frames emitted after it attaches, and a reattach after `done` gets none. The test therefore assumes the adapter reattaches within 1 s, and its backoff (250, 500, 750 ms) under load does not promise that.
 - **`FakeHubLinkConnection.nextSocket()`** calls `preconditionFailure` when it is cancelled. When a test passes its 120 s limit (`HubLinkRelayTests.expiredOrUndatedCommandIsRefused`), swift-testing cancels it and the whole test process crashes (`HubLinkConnection.swift:317`). That was an earlier run with the single runs going through `swift test` too.
 - Load timeouts in `MirrorSyncTests` (six), `PairLinkTests.aSwitchKeepsTheNewSignInBeforeEndingTheOldSession`, and `PairingTests.pairIsRoutedAndNeverReplayedFromTheOperationCache` (15 s `diagnostics.read`).
+## 2026-11-03: Apple's web flow through an https callback, live (D-160)
+
+Run on the owner's MacBook Pro at about 20:25Z, the owner at Apple's page and the build session driving the app.
+
+- **Build.** The Beta Mac app from main `2338c2e` (includes #83), packaged with `B4APP_FLAVOR=beta ./Scripts/package.sh` under the Developer ID identity. Notarized (submission `08828bf6…`, Accepted) and stapled; `codesign --verify --deep --strict` and `spctl` pass for the app and both helpers. Entitlements: `webcredentials:test.b4.run` and the `…b4app.beta.shared` keychain group. It replaced `~/repos/b4app/dist/Agent Workspace (Beta).app` after the app was quit and its LaunchAgent booted out (both of the account's threads idle, no managed servers); the previous bundle was kept aside.
+- **Hub.** #88 deployed the test hub with `B4HUB_APPLE_CALLBACK_URL=https://test.b4.run/app/auth/apple` in place of the scheme. A web begin without `httpsCallback` answers `400 invalid_request` ("…update the app"); with it, `200` and `"callback": "https://test.b4.run/app/auth/apple"`. Prod still refuses `b4app-beta` (`400`), so it stayed on `b4app`.
+- **Sign-in.** `agent-workspace account logout` (the Beta CLI), then Continue with Apple on the app's sign-in screen; the owner completed Apple's page. The sheet closed on its own, and the app came back signed in to the same account (`da2dee0f0ccdd746`, Brian's Org) on the same device (`01a19ee2-…`), with the relay connected. The hub hands back only to the https URL, so the handoff could only reach the app through `ASWebAuthenticationSession`'s `.https(host:path:)` callback and the app's `webcredentials` association: **pass**.
+
+Not run: the same on prod (needs a prod Mac build with D-160, then `B4HUB_APPLE_CALLBACK_URL=https://b4.run/app/auth/apple` in `deploy.sh` and `ecs.tf`).
 
 ## 2026-11-03: M8c loose ends (Already answered, Camera pair link, beta passkeys)
 
@@ -41,7 +50,6 @@ Branch `blove/drop-already-answered`.
   - Anyone building beta or prod in Xcode on the Mac they run the packaged app on can hit this again. Unregister the build products, or keep Xcode's products out of LaunchServices.
 - **A passkey on the iPhone (build 2611030608).** Settings → Account → Add passkey asked for the Mac's passkey, which iCloud Keychain had synced, for the step-up, and that passed. The add then said "This device already has a passkey for this account." and made nothing: the hub lists the account's passkeys in `excludeCredentials`, and the phone already holds the synced one (a known limitation in `docs/milestones.md`). The phone then logged out and signed back in with that passkey, to the same account, still paired with the Mac. Pass.
 - During the session, a deploy of the test hub stopped its only task at 05:51Z and served 503 until 05:53:20Z. The Beta Mac's relay reconnected by itself at 05:53:30Z.
-
 
 ## 2026-11-03: Step-up by enrollment code, live (D-151, D-152)
 
@@ -88,7 +96,7 @@ Fixture gates only. Nothing deployed; the hosted hubs keep `B4HUB_APPLE_CALLBACK
 | `swift test` | 1294 tests; 1 failed in the full run, `SessionTests.reconcileSettlesATurnThatFinishedWhileTheCoordinatorWasDown`, which this change does not touch and which passed 3 of 3 alone (it failed the same way in the D-140 run). New: `AccountCommandTests.appleStartsTakeTheHubsHttpsCallbackOnlyOnTheirSite`, `AppleSignInTests.theCallbackBecomesTheSessionsWait`; `AuthWireTests` round-trips both new fields |
 | `helm unittest Hub/chart/b4hub`, `helm lint` with the CI values | 57 pass; lint clean; the schema refuses a `callbackUrl` with a query |
 
-Open (live): Continue with Apple through `.https(host:path:)` with a Mac build that has this, against the test hub set to `B4HUB_APPLE_CALLBACK_URL=https://test.b4.run/app/auth/apple`. Whether `ASWebAuthenticationSession` takes the result back through the app's `webcredentials:test.b4.run` association can only be shown there.
+Live, 2026-11-03 (passed): see "Apple's web flow through an https callback, live" above.
 
 ## 2026-11-02: Step-up by enrollment code (D-151), Codex "no rollout found" (D-152), and the 1004 line
 
