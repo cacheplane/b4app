@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "parent": "manifest-v1.json",
+  "frozen_at": "2026-11-03T07:01:56.762069+00:00",
+  "reason": "Initial actual hosted candidate completed1166tests but failed existing mirror30s bound, new shutdown60s bound, and existing200ms-window burst count; local unchanged product with requested SwiftTesting width8 passed all1166. Second original attempts remain running, not cancelled or relabeled.",
+  "hypothesis": "Unbounded test scheduling on the hosted runner can delay timers and event consumption. Test one bounded SwiftTesting parallelization-width configuration; do not alter assertions, original time limits, production debounce behavior, or test discovery.",
+  "candidate_change": "Only add SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH=8 to the existing Test step, alongside SWIFTNIO_STRICT=1. Toolchain remains selected Xcode26.6, observed Testing1902. Experimental setting compatibility is explicitly limited to this tested toolchain.",
+  "budget_amendment": "At most2additional full attempts, six total across3exact source heads. Existing standard runner labels, permissions and services unchanged; no paid runner/spending configuration or shared cache purge. This is necessary correctness validation after a failed candidate, not additional uncontrolled tuning. No further widths in this phase.",
+  "new_branch": "blove/ci-validation/bounded-20261103",
+  "cohorts": "Original control2attempts and initial candidate2attempts retained. New bounded candidate2attempts are separate; never pool candidate configurations. Primary optimized-vs-control Test comparison includes both latency fixes plus the intentional capacity setting. Not DNS-only attribution.",
+  "coverage": "All1166Swift tests/146suites, all20Python checks and48Bats fixtures, four app schemes, full Rust workspace remain. No testfile or product source changes for this trial.",
+  "required": "Both final bounded full attempts must pass every CI job and complete the declared test populations; no passing rerun erases earlier failures. If unsuccessful, report Changes required rather than accepting faster failures.",
+  "comparison_limitations": "Control negative Python gate still fails and skips Bats, so whole-workflow/resource totals are diagnostics, not equivalent-obligation gain. Probe may warm DNS; cache/image/queue differences retained. New width is an intentional pipeline input difference, not silently treated as equal.",
+  "holdout": "Second full bounded attempt, identical source and workflow SHA, after first completes."
+}

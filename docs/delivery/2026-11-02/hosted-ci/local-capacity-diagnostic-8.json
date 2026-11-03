@@ -1,0 +1,37 @@
+{
+  "input_hashes": {
+    "Sources/WorkspaceStorage/EphemeralPostgres.swift": "65645c39b841d305c4dffe074b90cbf4f7ada82674fe8a293e86a4b35288d3d8",
+    "Tests/WorkspaceStorageTests/ScratchSweepTests.swift": "1c1794cabeb0b1d074e19997d1eb691b0095d3dfc9188f1f1fd39d4c6f8388a3",
+    "Sources/NIOTransport/UnixSocketTransport.swift": "86a89b7cd437e9c382d6db97640ba19f66f37f8b1e13dfa28ffa3dcc4dae6dbe",
+    "Sources/Coordinator/SocketServer.swift": "0a5c41e0e6c970246bb6d7ba793aeb0c1501a94905333513438f5b8d8d9e731c",
+    "Tests/CoordinatorTests/CoordinatorTests.swift": "86e04214fb64fcabe0bbfee2a6be946dcb38d4bc6e037ba10ebcf38ece35714b",
+    "Tests/B4AdapterTests/Fixtures/fake-b4-cli.py": "c20e7c08b7425b1d55f686e23b575fc0858def6d3304efaf3722cf2b7c070646",
+    "Sources/WorkspaceSync/FakeHubAPI.swift": "76459810241cf4dd46d70e832cbc9ebbc726c7ac7b052e4c846fe757f848ce48",
+    "Tests/WorkspaceSyncTests/FakeHubRevocationTests.swift": "0450e75aa675ec692b0e4f88e22a6f6c91f2c58a7297c6419c1ca107a70afa72",
+    "Tests/CoordinatorTests/HubSyncTests.swift": "15cb0c5a6d409f9d50500cd09b12c91da515ef0d6272b76dec2f89cea0978423",
+    "Tests/CoordinatorTests/SessionTests.swift": "cf12a3ea4b5056fbd6a314b0893693826c1198b161f982b83b34f021e8e5b499",
+    "Tests/B4AdapterTests/Fixtures/fake-b4.py": "b7ebeca7086af8db62c388702231facb8df40f6c77dd6a7a6bb29191e73bd118",
+    ".github/workflows/ci.yml": "7697fc51948ff6f3be1dc93a2291525408d8dc7c81235f31c3bb37b6831acf03"
+  },
+  "nio_strict": "1",
+  "test_width": "8",
+  "case_id": "local-capacity-diagnostic-8",
+  "command": [
+    "swift",
+    "test",
+    "--skip-build"
+  ],
+  "started_at": "2026-11-03T06:48:16.226811+00:00",
+  "ended_at": "2026-11-03T06:49:42.968558+00:00",
+  "wall_seconds": 86.74206595896976,
+  "child_user_seconds": 35.87279,
+  "child_system_seconds": 26.682538,
+  "exit_code": 0,
+  "log": "/tmp/b4-hosted-ci/local-capacity-diagnostic-8.log",
+  "source_revision": "0d8e51b33f6fdf046aa4bbda9b1940f96e4576e6",
+  "environment": {
+    "TMPDIR": "/tmp/b4-hosted-ci/runtime",
+    "live_provider_flags": "unset"
+  },
+  "cache_state": "case-specific; see manifest"
+}
