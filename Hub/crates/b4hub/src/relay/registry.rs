@@ -234,6 +234,9 @@ struct Watchers {
     /// client device -> thread -> the host that owns it. A client's watches belong to its current
     /// link and are dropped with it.
     by_client: HashMap<Uuid, HashMap<String, Uuid>>,
+    /// host device -> its watched threads that gained a client since the host was last told
+    /// ([`Relay::take_watching`]). Only watched threads are kept, so it stays bounded.
+    refresh: HashMap<Uuid, BTreeSet<String>>,
 }
 
 impl Watchers {
@@ -252,6 +255,12 @@ impl Watchers {
                 clients.remove(&client);
                 if clients.is_empty() {
                     threads.remove(thread_id);
+                    if let Some(refresh) = self.refresh.get_mut(&host) {
+                        refresh.remove(thread_id);
+                        if refresh.is_empty() {
+                            self.refresh.remove(&host);
+                        }
+                    }
                 }
             }
             if threads.is_empty() {
@@ -679,6 +688,11 @@ impl Relay {
                 .entry(thread_id.to_string())
                 .or_default()
                 .insert(client.device_id);
+            watchers
+                .refresh
+                .entry(host)
+                .or_default()
+                .insert(thread_id.to_string());
         }
         self.bump_watches();
         Ok(())
@@ -711,6 +725,18 @@ impl Relay {
             .unwrap_or_default();
         threads.sort();
         threads
+    }
+
+    /// What `host` is to be told in `watching`: [`Relay::watched_by`], and the threads of it that
+    /// gained a client since the last call (which this call clears), sorted.
+    pub fn take_watching(&self, host: Uuid) -> (Vec<String>, Vec<String>) {
+        let refresh = self
+            .watchers()
+            .refresh
+            .remove(&host)
+            .map(|threads| threads.into_iter().collect())
+            .unwrap_or_default();
+        (self.watched_by(host), refresh)
     }
 
     /// Sends `event` to every client link watching `thread_id` of `host`. A link whose queue is

@@ -1486,7 +1486,11 @@ owner must be a non-revoked `macos` device of the caller's own user. Otherwise t
 a device that is not the user's Mac all read the same. A success has no answer. The Mac need not
 be online: the watch is kept and the Mac is told when it links. The same link may watch a thread it
 already watches (nothing changes). At most **4** threads per link: a fifth distinct thread gets an
-`error` frame `watch_limit`, and the link and its other watches are untouched. `unwatch` of a
+`error` frame `watch_limit`, and the link and its other watches are untouched. Every `error` frame
+answering a `watch` carries `details.threadId`, the thread it refuses, so a client can tell it from
+an error about the link: the phone treats it as a gap for that thread, and watches again after a
+pause (2, 4, then 6 seconds, at most three times) when the code is `internal_error` or `not_found`
+(a thread just started may not have reached the hub yet). `unwatch` of a
 thread that is not watched is ignored. Watches belong to the link: they end when it closes, and a
 device's newer link (which replaces the older) starts with none. A phone therefore sends `watch`
 again after every reconnect. A host sending `watch` or `unwatch`, or a client sending `watching`,
@@ -1504,7 +1508,11 @@ auto-watch again. Any other answer (a result, an error with `details.turnId`, or
 watches, and sends the **whole** set to the host as `watching { threadIds }` (sorted) right after
 `hello` (an empty set when nothing is watched, so a Mac that linked again forgets what it knew),
 and again every time the set changes, including when a watching phone's link closes. A change that
-leaves the host's set the same (a second phone watching a thread already in it) sends nothing.
+leaves the host's set the same because another client started watching a thread already in it (a
+second phone, or a phone whose link was replaced) is sent too, with that thread in
+`refresh: [threadId, ...]` (sorted; omitted when empty): the host sends that thread's catch-up
+again, as for a thread new to the set, so the new watcher does not start mid-reply. A client that
+already had the text applies the catch-up in place (`payload.catchUp`).
 The frame is written by the host's link itself, so it is never dropped for a full queue and
 two changes are never reordered. A host streams events only for threads in its latest set.
 

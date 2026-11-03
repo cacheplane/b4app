@@ -162,9 +162,13 @@ pub enum RelayMessage {
     Unwatch {
         thread_id: String,
     },
-    /// Hub to host: the full set of its threads that some client watches.
+    /// Hub to host: the full set of its threads that some client watches, and those of them that
+    /// another client started watching since the host was last told (`refresh`): the host sends
+    /// their catch-up again, as it does for a thread new to the set. Omitted when empty.
     Watching {
         thread_ids: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        refresh: Vec<String>,
     },
     /// Host to hub, and hub to client: an `AdapterEvent` the hub never reads beyond its thread id.
     Event {
@@ -195,7 +199,7 @@ mod tests {
     #[test]
     fn relay_fixture_round_trips() {
         let elements: Vec<serde_json::Value> = serde_json::from_str(FIXTURE).unwrap();
-        assert_eq!(elements.len(), 17);
+        assert_eq!(elements.len(), 18);
         for element in elements {
             let decoded: RelayMessage = serde_json::from_value(element.clone()).unwrap();
             assert_eq!(serde_json::to_value(decoded).unwrap(), element);

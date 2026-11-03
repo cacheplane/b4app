@@ -46,7 +46,7 @@ use uuid::Uuid;
 
 use super::limits::{RateWithBurst, SlidingWindow, COMMAND_WINDOW, STARTS_PER_WINDOW};
 use super::registry::WatchError;
-use super::{error_frame, rfc3339_millis, LinkHandle, Relay, SendError};
+use super::{rfc3339_millis, LinkHandle, Relay, SendError};
 use crate::error::relay_code;
 
 /// How long a command or a reply waits for room in a full outbound queue before it is given up:
@@ -411,23 +411,36 @@ pub async fn handle_watch(
 ) -> Option<RelayMessage> {
     let owner = match thread_owner(relay, db, client, thread_id).await {
         Ok(owner) => owner,
-        Err(error) => {
-            return Some(RelayMessage::Error {
-                code: error.code,
-                message: error.message,
-                details: error.details,
-            })
-        }
+        Err(error) => return Some(watch_refused(error, thread_id)),
     };
     match relay.watch(client, owner.device_id, thread_id) {
         Ok(()) | Err(WatchError::Gone) => None,
         Err(WatchError::Limit) => {
             tracing::info!(device = %client.device_id, "watch limit hit");
-            Some(error_frame(
-                relay_code::WATCH_LIMIT,
-                "a link may watch at most 4 threads",
+            Some(watch_refused(
+                WireError {
+                    code: relay_code::WATCH_LIMIT.to_string(),
+                    message: "a link may watch at most 4 threads".to_string(),
+                    details: None,
+                },
+                thread_id,
             ))
         }
+    }
+}
+
+/// The `error` frame refusing a `watch`, with `details.threadId` naming the thread, so the client
+/// can tell which watch failed (and retry it or give up on it).
+fn watch_refused(error: WireError, thread_id: &str) -> RelayMessage {
+    let mut details = match error.details {
+        Some(Value::Object(details)) => details,
+        _ => serde_json::Map::new(),
+    };
+    details.insert("threadId".to_string(), Value::String(thread_id.to_string()));
+    RelayMessage::Error {
+        code: error.code,
+        message: error.message,
+        details: Some(Value::Object(details)),
     }
 }
 

@@ -450,16 +450,19 @@ impl Link {
         }
 
         // A host is told which of its threads are watched, whole, right after `hello` and again
-        // whenever the set changes. The receiver is made first, so a change that lands while the
-        // first frame is being written is not missed. It is written by this task, not queued: it
-        // is never dropped and never reordered behind a later change.
+        // whenever the set changes or a thread it was told of gains another client (`refresh`,
+        // so that client gets the catch-up too). The receiver is made first, so a change that
+        // lands while the first frame is being written is not missed. It is written by this task,
+        // not queued: it is never dropped and never reordered behind a later change.
         let mut watch_changes = self.state.relay.watch_changes();
         let is_host = self.handle.role == Role::Host;
         let mut told = Vec::new();
         if is_host {
-            told = self.state.relay.watched_by(self.handle.device_id);
+            // Every thread is new to this link, so nothing needs refreshing.
+            (told, _) = self.state.relay.take_watching(self.handle.device_id);
             let watching = RelayMessage::Watching {
                 thread_ids: told.clone(),
+                refresh: Vec::new(),
             };
             write(socket, &watching).await.ok()?;
         }
@@ -490,9 +493,14 @@ impl Link {
                     self.handle.flush_missed();
                 }
                 _ = watch_changes.changed(), if is_host => {
-                    let now = self.state.relay.watched_by(self.handle.device_id);
-                    if now != told {
-                        let watching = RelayMessage::Watching { thread_ids: now.clone() };
+                    let (now, mut refresh) = self.state.relay.take_watching(self.handle.device_id);
+                    // A thread new to the set is caught up anyway.
+                    refresh.retain(|thread| told.contains(thread));
+                    if now != told || !refresh.is_empty() {
+                        let watching = RelayMessage::Watching {
+                            thread_ids: now.clone(),
+                            refresh,
+                        };
                         write(socket, &watching).await.ok()?;
                         told = now;
                     }

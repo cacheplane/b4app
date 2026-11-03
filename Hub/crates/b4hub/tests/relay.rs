@@ -1702,13 +1702,17 @@ async fn watching_tells_the_mac_the_full_set(pool: PgPool) {
     phone.unwatch("thread-1").await;
     assert_eq!(mac.expect_watching().await, ["thread-2"]);
 
-    // A second watcher of a thread already in the set changes nothing, so nothing is sent; nor
-    // does the first one letting go of it. A link handles its frames in order, so the `pong` after
-    // a `watch` means the watch (and its lookup) is done; without it the phone's `unwatch`, on
-    // another link, could land first and empty the set.
+    // A second watcher of a thread already in the set leaves the set as it was, and the Mac is
+    // told so with the thread in `refresh`, to catch the new watcher up. The first one letting go
+    // of it sends nothing. A link handles its frames in order, so the `pong` after a `watch` means
+    // the watch (and its lookup) is done; without it the phone's `unwatch`, on another link, could
+    // land first and empty the set.
     ipad.watch("thread-2").await;
     ipad.ping().await;
-    mac.expect_no_frame(QUIET).await;
+    assert_eq!(
+        mac.expect_watching_refresh().await,
+        (vec!["thread-2".to_string()], vec!["thread-2".to_string()])
+    );
     phone.unwatch("thread-2").await;
     phone.ping().await;
     mac.expect_no_frame(QUIET).await;
@@ -2226,6 +2230,7 @@ async fn frames_from_the_wrong_end_are_invalid(pool: PgPool) {
     phone
         .send(&RelayMessage::Watching {
             thread_ids: vec!["thread-1".into()],
+            refresh: vec![],
         })
         .await;
     assert_eq!(phone.expect_error().await.0, "invalid_request");
@@ -2418,4 +2423,17 @@ async fn a_link_runs_a_bounded_number_of_commands_at_once(pool: PgPool) {
         .command("c-4", RelayMethod::TurnInterrupt, interrupt)
         .await;
     assert_eq!(mac.expect_command().await.0, "c-4");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_refused_watch_names_its_thread(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mut phone = world.phone().await;
+    phone.watch("no-such-thread").await;
+    let (code, details) = phone.expect_error_details().await;
+    assert_eq!(code, "not_found");
+    assert_eq!(
+        details.and_then(|d| d.get("threadId").cloned()),
+        Some(json!("no-such-thread"))
+    );
 }
