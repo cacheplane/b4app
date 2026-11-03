@@ -808,7 +808,7 @@ private func relayedMirror() async throws -> (MirrorStore, RelayHarness, FakeHub
   second["nativeThreadId"] = "native-thread-2"
   _ = try store.apply([change("threads", "thread-2", "insert", value: .object(second))])
   let h = RelayHarness()
-  let socket = await h.connect()
+  let socket = try await h.connect()
   return (store, h, socket)
 }
 
