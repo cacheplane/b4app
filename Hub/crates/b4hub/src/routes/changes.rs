@@ -55,8 +55,15 @@ async fn push(
     // A value over the size limit and a malformed clock are not refused here: `changes::push`
     // rejects each on its own, so the rest of the batch still lands and the client's queue moves.
     let mut outcome = changes::push(&state.db, &device, &request.changes).await?;
-    // After the commit, so a woken pull finds the changes.
+    // After the commit, so a woken pull finds the changes: this instance's pulls at once, the
+    // other instances' through the database. A failed announce costs their pulls at most their
+    // wait, so it is logged rather than failing a push that has landed.
     state.notifier.wake(device.org_id);
+    if let Err(error) =
+        b4hub_db::wakes::announce(&state.db, device.org_id, state.instances.id()).await
+    {
+        tracing::error!(%error, "announcing a push to the other instances failed");
+    }
     // Also after the commit, and on a task of its own: the response never waits on a sender.
     let messages: Vec<Message> = std::mem::take(&mut outcome.notifications)
         .into_iter()

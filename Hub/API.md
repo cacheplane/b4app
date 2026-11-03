@@ -1283,6 +1283,11 @@ events, holds, and presence never cross instances; no frame is ever forwarded be
   point at the wrong target) and retries at once, at most 3 times in a row; after that it uses the
   normal reconnect backoff. A successful link resets the count and keeps the new cookies.
   `instanceId` is informational: a device cannot address an instance directly.
+- **Pulls.** Only the link is bound to an instance; a push and a long-poll (`GET /v1/changes`) may
+  reach any instance. The instance that takes a push wakes its own long-polls and announces the
+  org to the others over PostgreSQL `LISTEN` / `NOTIFY`, so a long-poll on another instance
+  returns within moments, not at the end of its `wait`. The announcement is a hint, never the
+  data: if one is lost the long-poll still answers when its `wait` runs out.
 
 ### Frames in this version
 
