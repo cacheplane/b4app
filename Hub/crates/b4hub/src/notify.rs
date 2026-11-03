@@ -1,6 +1,6 @@
 //! Wakes long-polling pulls when a push lands. One `Notify` per org. The instance that took the
 //! push wakes its own pulls at once; the others hear of it over `LISTEN` / `NOTIFY`
-//! (`b4hub_db::wakes`, [`listen_loop`]), since a device's pulls may reach any instance.
+//! (`crate::signals`), since a device's pulls may reach any instance.
 //!
 //! A long-poll must not miss a push that commits between its query and its wait. The caller
 //! therefore takes the future from [`Notifier::notified`] *before* it queries: a `Notified`
@@ -11,18 +11,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use std::time::Duration;
-
-use b4hub_db::wakes::{Listener, Wake};
-use b4hub_db::Db;
 use tokio::sync::futures::OwnedNotified;
 use tokio::sync::Notify;
 use uuid::Uuid;
-
-use crate::serve::Shutdown;
-
-/// How long [`listen_loop`] waits before trying again after the database refused it.
-const RETRY: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, Default)]
 pub struct Notifier(Arc<Mutex<HashMap<Uuid, Arc<Notify>>>>);
@@ -58,59 +49,10 @@ impl Notifier {
     }
 }
 
-/// Wakes `notifier`'s pulls for every push another instance announces, until `shutdown`. Its own
-/// announcements (`instance`) are skipped: the push route already woke those pulls.
-///
-/// Whenever the listener is (re)established, every pull is woken, since announcements made while
-/// nobody listened are lost; a pull woken for nothing queries once more and answers what it
-/// finds. While the database refuses, the loop retries every [`RETRY`].
-pub async fn listen_loop(db: Db, notifier: Notifier, instance: Uuid, shutdown: Shutdown) {
-    let mut stopping = shutdown.subscribe();
-    let mut listener: Option<Listener> = None;
-    loop {
-        let heard = async {
-            let listening = match &mut listener {
-                Some(listening) => listening,
-                None => {
-                    let listening = listener.insert(Listener::connect(&db).await?);
-                    notifier.wake_all();
-                    listening
-                }
-            };
-            listening.next().await
-        };
-        let heard = tokio::select! {
-            heard = heard => heard,
-            _ = stopping.wait_for(|down| *down) => return,
-        };
-        match heard {
-            Ok(Wake::Org {
-                org,
-                instance: from,
-            }) => {
-                if from != instance {
-                    notifier.wake(org);
-                }
-            }
-            // sqlx has already listened again on a new connection.
-            Ok(Wake::Lost) => {
-                tracing::warn!("the change listener reconnected; waking every pull");
-                notifier.wake_all();
-            }
-            Err(error) => {
-                tracing::error!(%error, "the change listener failed; retrying");
-                listener = None;
-                tokio::select! {
-                    () = tokio::time::sleep(RETRY) => {}
-                    _ = stopping.wait_for(|down| *down) => return,
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[tokio::test]

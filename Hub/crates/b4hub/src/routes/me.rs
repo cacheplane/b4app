@@ -38,6 +38,7 @@ use crate::relay::Close;
 use crate::routes::auth::{parse, rejected, start_registration, ACCOUNT_LABEL};
 use crate::routes::step_up::StepUp;
 use crate::serve::AppState;
+use crate::signals;
 
 /// The ceremony kind adding a passkey stores; a sign-in's ceremony cannot finish an add.
 pub const ADD_PASSKEY_CEREMONY: &str = "passkey_add";
@@ -309,6 +310,8 @@ pub async fn end_session(
     // The extractor just verified this header.
     let token = bearer_token(&headers).ok_or_else(ApiError::unauthorized)?;
     devices::end_session(&state.db, token).await?;
+    // A link opened with this token ends now, on whichever instance serves it.
+    signals::sessions_changed(&state, device.org_id, device.user_id).await;
     tracing::info!(device_id = %device.device_id, "ended a session");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -353,6 +356,8 @@ pub async fn delete_me(
                 // Every token is gone with the account; its links end now, not at each client's
                 // next request.
                 state.relay.close_user(principal.user_id, Close::revoked());
+                // And on the other instances.
+                signals::sessions_changed(&state, principal.org_id, principal.user_id).await;
                 tracing::info!(
                     org_id = %principal.org_id,
                     user_id = %principal.user_id,

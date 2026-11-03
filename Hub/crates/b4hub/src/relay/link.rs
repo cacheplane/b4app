@@ -23,7 +23,7 @@ use b4hub_core::relay::{
     RelayMessage, RelayMethod, Role, WireError, CLIENT_FRAME_MAX, DEAD_LINK, HEARTBEAT_SECONDS,
     HOST_FRAME_MAX,
 };
-use b4hub_db::devices::{self, Platform};
+use b4hub_db::devices::{self, Platform, SessionKey};
 use b4hub_db::instances::Claim;
 use b4hub_db::relay::set_last_seen;
 use std::future::Future;
@@ -33,10 +33,11 @@ use tokio::time::Instant;
 
 use super::registry::{Close, Identity, LinkHandle, LiveLink, Registration};
 use super::{invalid_frame, route, PROTOCOL};
-use crate::auth::AuthedDevice;
+use crate::auth::{bearer_token, AuthedDevice};
 use crate::error::ApiError;
 use crate::maintenance;
 use crate::serve::AppState;
+use crate::signals;
 
 /// The header a device names its link protocol in; a missing header counts as 1.
 const PROTOCOL_HEADER: &str = "b4-protocol";
@@ -158,6 +159,8 @@ pub async fn upgrade(
         role: role_of(device.platform),
         user_id: device.user_id,
         org_id: device.org_id,
+        // The extractor verified this header; the link keeps its hash to look it up again.
+        session: bearer_token(&headers).map(SessionKey::of),
         probe: false,
     };
     let live = state.relay.track();
@@ -299,7 +302,6 @@ async fn serve_link<S: LinkSocket>(
         relay.pass_gate().await;
     }
     let role = who.role;
-    let identity = (who.org_id, who.device_id);
     let Registration {
         handle,
         mut outbound,
@@ -320,16 +322,13 @@ async fn serve_link<S: LinkSocket>(
         peer_closed: false,
         probe,
     };
-    // The upgrade checked that the device is not revoked, but a revocation can land between that
-    // check and the registration above, when `close` finds no link to close. Registering first and
-    // looking again closes that window: a revocation after this look finds the registered link.
-    let revoked = !probe
-        && matches!(
-            devices::me(&link.state.db, identity.0, identity.1).await,
-            Ok(None)
-        );
-    let close = if revoked {
-        Some(Close::revoked())
+    // The upgrade checked the session, but a log-out or revocation can land between that check
+    // and the registration above, when the check that follows it finds no link to close.
+    // Registering first and looking again closes that window: a change after this look finds the
+    // registered link.
+    let ended = !probe && !signals::check_session(&relay, &link.state.db, &link.handle).await;
+    let close = if ended {
+        Some(Close::session_ended())
     } else {
         link.run(&mut socket, &mut outbound, &mut closing).await
     };
@@ -601,8 +600,10 @@ impl Link {
         }
     }
 
-    /// Writes `last_seen_at` at most once a minute while the link is up, off the link's task so
-    /// a slow database never delays a heartbeat.
+    /// Writes `last_seen_at` at most once a minute while the link is up, and looks the link's
+    /// session up again, so a link whose token was deleted or whose device was revoked closes
+    /// within a minute even when no signal reached this instance. Off the link's task, so a slow
+    /// database never delays a heartbeat.
     fn keep_last_seen_fresh(&mut self, now: Instant) {
         if self.probe {
             return;
@@ -614,10 +615,12 @@ impl Link {
         let db = self.state.db.clone();
         let (org_id, device_id) = (self.handle.org_id, self.handle.device_id);
         let at = self.state.relay.wall(now);
+        let (relay, handle) = (self.state.relay.clone(), self.handle.clone());
         tokio::spawn(async move {
             if let Err(error) = set_last_seen(&db, org_id, device_id, at).await {
                 tracing::warn!(%error, "could not record last_seen_at");
             }
+            signals::check_session(&relay, &db, &handle).await;
         });
     }
 
