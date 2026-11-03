@@ -348,9 +348,10 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable {
     return nil
   }
 
-  /// Claude Code has no delete command; like the Claude desktop app, remove the session's transcript
-  /// (`<sessionId>.jsonl`) and its subagent folder (`<sessionId>/`) from the one project folder that
-  /// holds it. Nothing else is touched: not the project folder, not other sessions.
+  /// Claude Code has no delete command; like the Claude desktop app (`find … -exec rm`), remove the
+  /// session's transcript (`<sessionId>.jsonl`) and its subagent folder (`<sessionId>/`) from every
+  /// project folder that holds one. Nothing else is touched: not the project folders, not other
+  /// sessions. Already gone only when the projects root lists and no folder holds the transcript.
   public func deleteSession(_ ref: NativeSessionRef) async throws -> SessionDeletion {
     let id = ref.nativeSessionId
     guard id.wholeMatch(of: /[A-Za-z0-9_-]+/) != nil else {
@@ -359,21 +360,34 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable {
     if let session = sessions[id] { await session.close() }
     if projectsDirectory == nil { _ = try? await ensureAccount() }
     let root = projectsDirectory ?? Self.projectsRoot(environment: environment)
-    guard let file = Self.transcript(sessionId: id, under: root) else { return .alreadyGone }
-    let folder = (file as NSString).deletingLastPathComponent
-    let standardRoot = URL(fileURLWithPath: root).standardizedFileURL.path
-    guard URL(fileURLWithPath: folder).deletingLastPathComponent().standardizedFileURL.path == standardRoot
-    else {
-      throw WorkspaceError(.protocolInvalid, "Refusing to delete a Claude Code transcript outside \(root).")
-    }
     let fm = FileManager.default
-    try fm.removeItem(atPath: file)
-    let subagents = (folder as NSString).appendingPathComponent(id)
-    var isDirectory: ObjCBool = false
-    if fm.fileExists(atPath: subagents, isDirectory: &isDirectory), isDirectory.boolValue {
-      try fm.removeItem(atPath: subagents)
+    let projects: [String]
+    do {
+      projects = try fm.contentsOfDirectory(atPath: root)
+    } catch {
+      throw WorkspaceError(
+        .endpointUnavailable,
+        "Could not read Claude Code's projects folder \(root): \(error.localizedDescription)")
     }
-    return .deleted
+    let standardRoot = URL(fileURLWithPath: root).standardizedFileURL.path
+    var removed = false
+    for project in projects {
+      let folder = (root as NSString).appendingPathComponent(project)
+      let file = (folder as NSString).appendingPathComponent("\(id).jsonl")
+      guard fm.fileExists(atPath: file) else { continue }
+      guard URL(fileURLWithPath: folder).deletingLastPathComponent().standardizedFileURL.path == standardRoot
+      else {
+        throw WorkspaceError(.protocolInvalid, "Refusing to delete a Claude Code transcript outside \(root).")
+      }
+      try fm.removeItem(atPath: file)
+      let subagents = (folder as NSString).appendingPathComponent(id)
+      var isDirectory: ObjCBool = false
+      if fm.fileExists(atPath: subagents, isDirectory: &isDirectory), isDirectory.boolValue {
+        try fm.removeItem(atPath: subagents)
+      }
+      removed = true
+    }
+    return removed ? .deleted : .alreadyGone
   }
 
   /// Where Claude Code keeps transcripts when its auth status has not said: `$CLAUDE_CONFIG_DIR/projects`,
