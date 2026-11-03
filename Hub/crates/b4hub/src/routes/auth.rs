@@ -39,9 +39,21 @@ use crate::serve::AppState;
 /// The ceremony kind passkey sign-ins store.
 pub const PASSKEY_CEREMONY: &str = "passkey";
 
-/// The name and display name a new passkey is registered with. The client renames it to the
-/// person's full name after onboarding; it is also the identity's name until then.
+/// The name and display name a new passkey is registered with. The client renames it in the
+/// password manager to the person's full name (after onboarding, or after Add a passkey).
 pub const ACCOUNT_LABEL: &str = "Agent Workspace account";
+
+/// The name a new passkey's identity is listed with (D-169): the device it was made on, so
+/// Settings → Account tells the account's passkeys apart. A device with no name falls back to
+/// [`ACCOUNT_LABEL`].
+pub fn passkey_name(device_name: &str) -> String {
+    let name = device_name.trim();
+    if name.is_empty() {
+        ACCOUNT_LABEL.to_string()
+    } else {
+        name.to_string()
+    }
+}
 
 // ---- Wire types ----
 
@@ -424,7 +436,7 @@ async fn sign_up(
             ApiError::internal()
         })?,
         user_handle: user_handle.as_bytes().to_vec(),
-        name: ACCOUNT_LABEL.to_string(),
+        name: passkey_name(&device.name),
     };
     let created = match accounts::create_personal(&state.db, identity, device).await {
         Err(b4hub_db::Error::IdentityTaken) => {
