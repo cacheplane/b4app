@@ -146,17 +146,20 @@ public enum AccountPasskeyFinish: WorkspaceCommand {
 }
 
 /// Begin Sign in with Apple's web flow (the Mac's): open `url` in an `ASWebAuthenticationSession` that
-/// waits for `callbackScheme`, then hand the redirect's `handoff` to `account.appleFinish`. One
+/// waits for `callback`, then hand the redirect's `handoff` to `account.appleFinish`. One
 /// ceremony is in flight at a time; a new start replaces it. `unsupported_capability` on the local
 /// flavour.
 public enum AccountAppleStart: WorkspaceCommand {
   public typealias Params = EmptyParams
   public struct Result: Codable, Sendable, Equatable {
     public var url: String
-    public var callbackScheme: String
-    public init(url: String, callbackScheme: String) {
+    /// Where the result comes back, with `?handoff=` or `?error=` appended: `<scheme>://auth` (the
+    /// flavour's scheme) or an https URL on the flavour's site, which only this app can take back
+    /// from its session (D-160).
+    public var callback: String
+    public init(url: String, callback: String) {
       self.url = url
-      self.callbackScheme = callbackScheme
+      self.callback = callback
     }
   }
   public static let method = Method.accountAppleStart
@@ -242,7 +245,9 @@ public enum AccountIdentities: WorkspaceCommand {
 /// (adding a passkey, connecting an Apple ID, removing a sign-in method, deleting the account): a
 /// passkey assertion against `account.stepUpBegin`'s ceremony (`ceremonyId` and `assertion`), the
 /// Mac's Apple web flow (`handoff`, against `account.stepUpAppleStart`, whose verifier the coordinator
-/// keeps), or, on the phone only, Apple's native sheet (`ceremonyId` and `identityToken`). It crosses
+/// keeps), or, on the phone only, Apple's native sheet (`ceremonyId` and `identityToken`), or, where
+/// none of those can be used, an enrollment code the hub's operator minted for this user
+/// (`enrollmentCode`, D-151). It crosses
 /// once into whoever makes the change, which finishes it at the hub and makes the change with the
 /// grant it earns; neither is kept. An account with no sign-in method sends none.
 public struct AccountStepUp: Codable, Sendable, Equatable, CustomStringConvertible,
@@ -252,15 +257,17 @@ public struct AccountStepUp: Codable, Sendable, Equatable, CustomStringConvertib
   public var assertion: JSONValue?
   public var handoff: String?
   public var identityToken: String?
+  public var enrollmentCode: String?
 
   public init(
     ceremonyId: String? = nil, assertion: JSONValue? = nil, handoff: String? = nil,
-    identityToken: String? = nil
+    identityToken: String? = nil, enrollmentCode: String? = nil
   ) {
     self.ceremonyId = ceremonyId
     self.assertion = assertion
     self.handoff = handoff
     self.identityToken = identityToken
+    self.enrollmentCode = enrollmentCode
   }
 
   public static func passkey(ceremonyId: String, assertion: JSONValue) -> AccountStepUp {
@@ -273,10 +280,18 @@ public struct AccountStepUp: Codable, Sendable, Equatable, CustomStringConvertib
     AccountStepUp(ceremonyId: ceremonyId, identityToken: identityToken)
   }
 
+  /// An operator's enrollment code, trimmed; the hub matches it in any case.
+  public static func enrollmentCode(_ code: String) -> AccountStepUp {
+    AccountStepUp(enrollmentCode: code.trimmingCharacters(in: .whitespacesAndNewlines))
+  }
+
   public var description: String {
     let kind =
       assertion != nil
-      ? "passkey" : handoff != nil ? "appleWeb" : identityToken != nil ? "appleNative" : "none"
+      ? "passkey"
+      : handoff != nil
+        ? "appleWeb"
+        : identityToken != nil ? "appleNative" : enrollmentCode != nil ? "enrollmentCode" : "none"
     return "AccountStepUp(\(kind), <redacted>)"
   }
   public var debugDescription: String { description }
@@ -299,7 +314,7 @@ public enum AccountStepUpBegin: WorkspaceCommand {
 }
 
 /// Begin confirming with the account's Apple ID on the Mac's web flow, as `account.appleLinkStart`
-/// begins a link: open `url` in an `ASWebAuthenticationSession` waiting for `callbackScheme`, then send
+/// begins a link: open `url` in an `ASWebAuthenticationSession` waiting for `callback`, then send
 /// the redirect's `handoff` as an `AccountStepUp` with the change. The coordinator keeps the verifier;
 /// one step-up is in flight at a time. `not_found` for an account with no Apple ID,
 /// `unsupported_capability` on the local flavour.
@@ -387,7 +402,7 @@ public enum AccountDelete: WorkspaceCommand {
 
 /// Begin linking an Apple ID to the signed-in account with the web flow (the Mac's Settings →
 /// Account → Connect Apple ID): open `url` in an `ASWebAuthenticationSession` that waits for
-/// `callbackScheme`, then hand the redirect's `handoff` to `account.appleLinkFinish`. The coordinator
+/// `callback`, then hand the redirect's `handoff` to `account.appleLinkFinish`. The coordinator
 /// keeps the verifier, as for `account.appleStart`; one link is in flight at a time. `apple_linked`
 /// when the account has one already, `unsupported_capability` on the local flavour. Needs confirming
 /// (`stepUp`, a passkey's: an account with an Apple ID has nothing to link).

@@ -136,10 +136,10 @@ private func withOpenThread(_ transport: ScriptedTransport) async throws -> Work
 @MainActor
 private final class FakeAppleSession: AppleCeremony {
   var callback: Result<URL, any Error> = .success(URL(string: "b4app-beta://auth?handoff=H-one-time")!)
-  private(set) var opened: [(url: URL, scheme: String)] = []
+  private(set) var opened: [(url: URL, callback: AppleWebCallback)] = []
 
-  func webSignIn(url: URL, callbackScheme: String) async throws -> URL? {
-    opened.append((url, callbackScheme))
+  func webSignIn(url: URL, callback waitingFor: AppleWebCallback) async throws -> URL? {
+    opened.append((url, waitingFor))
     return try callback.get()
   }
 
@@ -436,7 +436,7 @@ extension Array where Element == ScreenElement {
       .accountAppleStart,
       [
         .result([
-          "url": "https://hub.test.b4.run/v1/auth/apple/start?ceremony=x", "callbackScheme": "b4app-beta",
+          "url": "https://hub.test.b4.run/v1/auth/apple/start?ceremony=x", "callback": "b4app-beta://auth",
         ])
       ])
     let apple = FakeAppleSession()
@@ -452,7 +452,7 @@ extension Array where Element == ScreenElement {
       .accountAppleStart,
       [
         .result([
-          "url": "https://hub.test.b4.run/v1/auth/apple/start?ceremony=y", "callbackScheme": "b4app-beta",
+          "url": "https://hub.test.b4.run/v1/auth/apple/start?ceremony=y", "callback": "b4app-beta://auth",
         ])
       ])
     apple.callback = .success(URL(string: "b4app-beta://auth?error=cancelled")!)
@@ -473,7 +473,9 @@ extension Array where Element == ScreenElement {
     #expect(
       SystemPasskeyCeremony.registrationError(ASAuthorizationError(.deviceNotConfiguredForPasskeyCreation))
         is PasskeysNotSetUp)
-    #expect(SystemPasskeyCeremony.registrationError(ASAuthorizationError(.failed)) is ASAuthorizationError)
+    // A sheet that failed to run at all has its own line (the live gate's stuck request).
+    #expect(SystemPasskeyCeremony.registrationError(ASAuthorizationError(.failed)) is PasskeySheetFailed)
+    #expect(SystemPasskeyCeremony.registrationError(ASAuthorizationError(.unknown)) is ASAuthorizationError)
 
     // A device with nowhere to keep a passkey gets its own line, not "try again".
     let transport = ScriptedTransport()
@@ -603,6 +605,23 @@ extension Array where Element == ScreenElement {
     #expect(lines.count == 6)
   }
 
+  /// Live, 2026-11-02: a sign-in while another passkey request of the app was still open failed with
+  /// `ASAuthorizationError.failed` and read "Couldn't sign in. Try again." Now it says what to do.
+  @Test func aPasskeySheetThatCannotOpenSaysWhy() async throws {
+    let transport = ScriptedTransport()
+    let model = try await connected(signedOut, transport: transport)
+    let ceremony = FakeCeremony()
+    ceremony.assertOutcome = .failure(PasskeySheetFailed())
+    transport.script(.accountPasskeyBegin, [try begin()])
+    await model.signInWithPasskey(using: ceremony)
+    #expect(
+      model.signInProgress.failure
+        == "The passkey sheet couldn't open. If another passkey request is still on screen, close it, then try again."
+    )
+    #expect(transport.calls(.accountPasskeyFinish).isEmpty)
+    #expect(model.signInProgress.inFlight == nil)
+  }
+
   // MARK: Apple on the Mac
 
   @Test func appleWebFlowHandsTheCodeToTheCoordinator() async throws {
@@ -612,7 +631,7 @@ extension Array where Element == ScreenElement {
       .accountAppleStart,
       [
         .result([
-          "url": "https://hub.test.b4.run/v1/auth/apple/start?ceremony=x", "callbackScheme": "b4app-beta",
+          "url": "https://hub.test.b4.run/v1/auth/apple/start?ceremony=x", "callback": "b4app-beta://auth",
         ])
       ])
     transport.script(.accountAppleFinish, [try status(onboarding(name: "Brian Love"))])
@@ -620,7 +639,7 @@ extension Array where Element == ScreenElement {
     await model.signInWithApple(using: apple)
     #expect(
       apple.opened.map(\.url.absoluteString) == ["https://hub.test.b4.run/v1/auth/apple/start?ceremony=x"])
-    #expect(apple.opened.map(\.scheme) == ["b4app-beta"])
+    #expect(apple.opened.map(\.callback) == [.scheme("b4app-beta")])
     #expect(transport.calls(.accountAppleFinish) == [["handoff": "H-one-time"]])
     #expect(model.accountState == .needsOnboarding(prefillName: "Brian Love"))
 
@@ -629,7 +648,7 @@ extension Array where Element == ScreenElement {
       .accountAppleStart,
       [
         .result([
-          "url": "https://hub.test.b4.run/v1/auth/apple/start?ceremony=y", "callbackScheme": "b4app-beta",
+          "url": "https://hub.test.b4.run/v1/auth/apple/start?ceremony=y", "callback": "b4app-beta://auth",
         ])
       ])
     apple.callback = .success(URL(string: "b4app-beta://auth?error=signup_closed")!)

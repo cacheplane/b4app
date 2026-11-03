@@ -24,7 +24,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use b4hub::apple::{open_refresh_token, sha256_hex};
 use b4hub::cli::Settings;
-use b4hub::config::{AppleConfig, Config, Signup};
+use b4hub::config::{AppleCallback, AppleConfig, Config, Signup};
 use b4hub_db::accounts::{self, Identity, Principal};
 use b4hub_db::{ceremonies, devices, Db};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -437,7 +437,7 @@ fn apple_config(fake: &FakeApple, signup: Signup) -> Config {
         private_key_pem: fake.team_pem.clone(),
         audiences: vec![BUNDLE_ID.into(), SERVICES_ID.into()],
         services_id: Some(SERVICES_ID.into()),
-        callback_scheme: Some("b4app".into()),
+        callback: Some(AppleCallback::Scheme("b4app".into())),
         base_url: Url::parse(&fake.base).unwrap(),
     });
     config
@@ -573,6 +573,8 @@ async fn begin_web(
         None => hub.post(begin_path, Some(&body)).await,
     };
     assert_eq!(begun.status, StatusCode::OK, "{}", begun.body);
+    // The answer names where the result comes back, which the app waits for.
+    assert_eq!(begun.body["callback"], format!("{scheme}://auth"));
     let ceremony = begun.body["ceremonyId"].as_str().unwrap().to_string();
     let started = hub
         .get(&format!("/v1/auth/apple/start?ceremony={ceremony}"), None)
@@ -1167,7 +1169,7 @@ async fn the_callback_redirects_to_the_configured_scheme(pool: PgPool) {
     let fake = FakeApple::start().await;
     let (admin, app) = common::migrated(&pool).await;
     let mut config = apple_config(&fake, Signup::Open);
-    config.apple.as_mut().unwrap().callback_scheme = Some("b4app-beta".into());
+    config.apple.as_mut().unwrap().callback = Some(AppleCallback::Scheme("b4app-beta".into()));
     let setup = Setup {
         admin,
         hub: Hub::start(app, config).await,
@@ -1188,6 +1190,100 @@ async fn the_callback_redirects_to_the_configured_scheme(pool: PgPool) {
     let handoff = handoff_in(&location(&posted), "b4app-beta");
     let redeemed = redeem(hub, &handoff, &verifier).await;
     assert_eq!(redeemed.status, StatusCode::OK, "{}", redeemed.body);
+}
+
+/// D-160: a hub with `B4HUB_APPLE_CALLBACK_URL` hands the result back to that https URL, which
+/// only the app associated with the site can take back; an app that cannot is refused at begin.
+#[sqlx::test(migrations = false)]
+async fn a_hub_with_a_callback_url_hands_back_there(pool: PgPool) {
+    const BACK: &str = "https://test.b4.run/app/auth/apple";
+    let fake = FakeApple::start().await;
+    let (admin, app) = common::migrated(&pool).await;
+    let mut config = apple_config(&fake, Signup::Open);
+    config.apple.as_mut().unwrap().callback = Some(AppleCallback::Url(Url::parse(BACK).unwrap()));
+    let setup = Setup {
+        admin,
+        hub: Hub::start(app, config).await,
+        fake,
+    };
+    let hub = &setup.hub;
+    let (verifier, hash) = new_verifier();
+
+    // An app that can take back only its scheme is told to update, and no ceremony is made.
+    let old_app = hub
+        .post(
+            BEGIN,
+            Some(&json!({"verifierHash": hash, "scheme": "b4app-beta"})),
+        )
+        .await;
+    assert_eq!(old_app.code(), "invalid_request", "{}", old_app.body);
+    let message = old_app.body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains(BACK) && message.contains("update the app"),
+        "{message}"
+    );
+    let declined = hub
+        .post(
+            BEGIN,
+            Some(&json!({"verifierHash": hash, "scheme": "b4app-beta", "httpsCallback": false})),
+        )
+        .await;
+    assert_eq!(declined.code(), "invalid_request", "{}", declined.body);
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT count(*) FROM auth_ceremonies WHERE kind LIKE 'apple%'"
+        )
+        .await,
+        0
+    );
+    // `httpsCallback` alone is not a web flow.
+    let alone = hub.post(BEGIN, Some(&json!({"httpsCallback": true}))).await;
+    assert_eq!(alone.code(), "invalid_request", "{}", alone.body);
+
+    let begun = hub
+        .post(
+            BEGIN,
+            Some(&json!({"verifierHash": hash, "scheme": "b4app-beta", "httpsCallback": true})),
+        )
+        .await;
+    assert_eq!(begun.status, StatusCode::OK, "{}", begun.body);
+    assert_eq!(begun.body["callback"], BACK);
+    let ceremony = begun.body["ceremonyId"].as_str().unwrap().to_string();
+    let started = hub
+        .get(&format!("/v1/auth/apple/start?ceremony={ceremony}"), None)
+        .await;
+    let nonce_claim = query(&location(&started))["nonce"].clone();
+
+    let posted = apple_posts(&setup, &ceremony, &nonce_claim, "001.https", None).await;
+    let target = location(&posted);
+    let handoff = target
+        .strip_prefix(&format!("{BACK}?handoff="))
+        .unwrap_or_else(|| panic!("{target} is not a handoff to {BACK}"));
+    let redeemed = redeem(hub, handoff, &verifier).await;
+    assert_eq!(redeemed.status, StatusCode::OK, "{}", redeemed.body);
+
+    // A cancel comes back to the same URL.
+    let (_, hash) = new_verifier();
+    let begun = hub
+        .post(
+            BEGIN,
+            Some(&json!({"verifierHash": hash, "scheme": "b4app-beta", "httpsCallback": true})),
+        )
+        .await;
+    let ceremony = begun.body["ceremonyId"].as_str().unwrap().to_string();
+    let cancelled = hub
+        .post_form(
+            CALLBACK,
+            &[("state", &ceremony), ("error", "user_cancelled_authorize")],
+        )
+        .await;
+    assert_eq!(location(&cancelled), format!("{BACK}?error=cancelled"));
+
+    // A native begin names no callback.
+    let native = hub.post(BEGIN, None).await;
+    assert_eq!(native.status, StatusCode::OK, "{}", native.body);
+    assert!(native.body.get("callback").is_none(), "{}", native.body);
 }
 
 #[sqlx::test(migrations = false)]
@@ -2236,7 +2332,7 @@ async fn routes_404_without_apple_config(pool: PgPool) {
     let mut config = apple_config(&fake, Signup::Open);
     let apple = config.apple.as_mut().unwrap();
     apple.services_id = None;
-    apple.callback_scheme = None;
+    apple.callback = None;
     let no_services = Hub::start(app.clone(), config).await;
     let offered = no_services.get("/v1/auth/config", None).await;
     assert_eq!(offered.body["apple"], json!({"native": true, "web": false}));

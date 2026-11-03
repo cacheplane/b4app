@@ -848,7 +848,7 @@ kZXiwkEnZYzZPc5fQx0VfT+fhjzYhYLgQ+KXi00zbyOb46KPzL6yEFza
             private_key_pem: PEM.into(),
             audiences: vec!["com.cacheplane.b4app.ios".into()],
             services_id: None,
-            callback_scheme: None,
+            callback: None,
             base_url: Url::parse(base_url).unwrap(),
         }
     }

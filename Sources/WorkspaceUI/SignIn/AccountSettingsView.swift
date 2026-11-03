@@ -45,6 +45,14 @@ public enum AccountCopy {
   /// retries that, so the line says only what happened.
   public static let deletedLocalDataKept =
     "Your account was deleted, but its data on this Mac couldn't be removed."
+  /// Offered when the passkey or Apple confirmation was closed or could not open (D-151).
+  public static let codeOffer =
+    "Can't confirm it's you here? Enter an enrollment code from your hub's operator."
+  public static let codePlaceholder = "Enrollment code"
+  public static let confirmCode = "Confirm"
+  /// The hub took no code (`invalid_code`): unknown, expired, used, or another account's.
+  public static let invalidCode =
+    "That code didn't work. A code works once and expires; ask your hub's operator for a new one."
 
   /// One line for a refused Account page call: never the code or the hub's own text.
   public static func failure(for error: WorkspaceError) -> String {
@@ -55,6 +63,7 @@ public enum AccountCopy {
     case .appleLinked: return alreadyApple
     case .ceremonyExpired: return expired
     case .stepUpRequired: return stepUpRequired
+    case .invalidCode: return invalidCode
     default: return SignInCopy.accountFailure(for: error)
     }
   }
@@ -137,6 +146,16 @@ struct AccountSettingsContent: Equatable {
   }
 }
 
+/// A Settings → Account change that needs confirming it's you (D-150), remembered while its
+/// confirmation is offered by enrollment code instead (D-151). What it holds is no secret.
+public enum StepUpChange: Equatable, Sendable {
+  case addPasskey
+  case connectApple
+  case removeIdentity(id: String)
+  /// The org name as typed, and the account the delete sheet was opened for.
+  case deleteAccount(accountId: String, typed: String)
+}
+
 // MARK: - The model
 
 extension WorkspaceModel {
@@ -185,8 +204,11 @@ extension WorkspaceModel {
   /// passkey, and the attestation goes to the coordinator once. A closed sheet, either one, shows
   /// nothing; a passkey the hub refused is reported unknown to the password manager, as at sign-up.
   /// A passkey the hub kept takes the account's name in the password manager, in place of the hub's
-  /// placeholder, as the sign-up passkey does after onboarding (D-105, D-132).
-  public func addPasskey(using ceremony: any PasskeyCeremony, apple: any AppleCeremony) async {
+  /// placeholder, as the sign-up passkey does after onboarding (D-105, D-132). With `code`, the
+  /// operator's enrollment code confirms it instead (D-151).
+  public func addPasskey(
+    using ceremony: any PasskeyCeremony, apple: any AppleCeremony, code: String? = nil
+  ) async {
     guard !accountSettingsBusy else { return }
     accountSettingsBusy = true
     defer { accountSettingsBusy = false }
@@ -194,8 +216,9 @@ extension WorkspaceModel {
     let generation = accountGeneration
     do {
       let calls = try accountCalls()
-      let stepUp = try await confirmIdentity(passkey: ceremony, apple: apple)
+      let stepUp = try await stepUp(for: .addPasskey, code: code, passkey: ceremony, apple: apple)
       let begun = try await calls.addPasskeyBegin(stepUp: stepUp)
+      stepUpCodeOffer = nil
       let attestation = try await ceremony.register(begun.registration)
       let added: AccountIdentity
       do {
@@ -217,6 +240,8 @@ extension WorkspaceModel {
     } catch is PasskeyAlreadyOnDevice {
       // The device refused before making anything: there is no new passkey to report.
       accountSettingsFailure = SignInCopy.passkeyAlreadyOnDevice
+    } catch is PasskeySheetFailed {
+      accountSettingsFailure = SignInCopy.passkeySheetFailed
     } catch {
       await accountChangeFailed(error, generation: generation)
     }
@@ -242,8 +267,11 @@ extension WorkspaceModel {
   /// passkey. On the Mac, Apple's web flow through the coordinator, which keeps the verifier
   /// (`account.appleLinkStart` with the confirmation, then the session, then
   /// `account.appleLinkFinish`); on the phone, Apple's native sheet through the host. A closed sheet
-  /// shows nothing; `apple_linked` is one line.
-  public func connectAppleID(using ceremony: any AppleCeremony, passkey: any PasskeyCeremony) async {
+  /// shows nothing; `apple_linked` is one line. With `code`, the operator's enrollment code confirms
+  /// it instead (D-151).
+  public func connectAppleID(
+    using ceremony: any AppleCeremony, passkey: any PasskeyCeremony, code: String? = nil
+  ) async {
     guard !accountSettingsBusy else { return }
     accountSettingsBusy = true
     defer { accountSettingsBusy = false }
@@ -252,17 +280,18 @@ extension WorkspaceModel {
     do {
       let linked: AccountIdentity
       let calls = try accountCalls()
-      let stepUp = try await confirmIdentity(passkey: passkey, apple: ceremony)
+      let stepUp = try await stepUp(for: .connectApple, code: code, passkey: passkey, apple: ceremony)
       switch calls {
       case .host(let host):
         let begun = try await host.appleLinkBegin(stepUp: stepUp)
+        stepUpCodeOffer = nil
         guard let credential = try await ceremony.nativeSignIn(nonce: begun.nonce) else { return }
         linked = try await host.linkApple(credential, ceremonyId: begun.ceremonyId)
       case .coordinator(let client):
         let start = try await client.request(
           AccountAppleLinkStart.self, AccountStepUpParams(stepUp: stepUp), options: Self.signInCall)
-        let handoff = try await Self.webHandoff(
-          ceremony, url: start.url, callbackScheme: start.callbackScheme)
+        stepUpCodeOffer = nil
+        let handoff = try await Self.webHandoff(ceremony, url: start.url, callback: start.callback)
         linked = try await client.request(
           AccountAppleLinkFinish.self, AccountAppleLinkFinish.Params(handoff: handoff),
           options: Self.accountCall()
@@ -274,6 +303,8 @@ extension WorkspaceModel {
       return
     } catch is CancellationError {
       return
+    } catch is PasskeySheetFailed {
+      accountSettingsFailure = SignInCopy.passkeySheetFailed
     } catch {
       await accountChangeFailed(error, generation: generation)
     }
@@ -303,9 +334,45 @@ extension WorkspaceModel {
       let start = try await client.request(
         AccountStepUpAppleStart.self, EmptyParams(), options: Self.signInCall)
       return .appleWeb(
-        handoff: try await Self.webHandoff(apple, url: start.url, callbackScheme: start.callbackScheme))
+        handoff: try await Self.webHandoff(apple, url: start.url, callback: start.callback))
     }
   }
+
+  /// The confirmation `change` carries: the operator's enrollment `code` when one was typed (D-151),
+  /// else `confirmIdentity`'s. A passkey or Apple sheet that was closed or could not open leaves the
+  /// code on offer for this change (`stepUpCodeOffer`) before the error goes on.
+  func stepUp(
+    for change: StepUpChange, code: String?, passkey: any PasskeyCeremony, apple: any AppleCeremony
+  ) async throws -> AccountStepUp? {
+    if let code { return .enrollmentCode(code) }
+    stepUpCodeOffer = nil
+    do {
+      return try await confirmIdentity(passkey: passkey, apple: apple)
+    } catch  where error is SignInCanceled || error is PasskeySheetFailed {
+      stepUpCodeOffer = change
+      throw error
+    }
+  }
+
+  /// "Confirm" on the offered code: the change that was waiting runs again, confirmed by `code`. A
+  /// refused code (`invalid_code`) keeps the offer, so another can be typed.
+  public func confirmWithCode(_ code: String, passkey: any PasskeyCeremony, apple: any AppleCeremony) async {
+    let code = code.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !code.isEmpty, let change = stepUpCodeOffer else { return }
+    switch change {
+    case .addPasskey:
+      await addPasskey(using: passkey, apple: apple, code: code)
+    case .connectApple:
+      await connectAppleID(using: apple, passkey: passkey, code: code)
+    case .removeIdentity(let id):
+      await removeIdentity(id: id, passkey: passkey, apple: apple, code: code)
+    case .deleteAccount(let accountId, let typed):
+      await deleteAccount(typed: typed, accountId: accountId, passkey: passkey, apple: apple, code: code)
+    }
+  }
+
+  /// "Cancel" on the offered code.
+  public func dismissCodeOffer() { stepUpCodeOffer = nil }
 
   /// A refused Settings → Account change, as one line. `step_up_required` means the methods changed
   /// under the page (or the hub refused the confirmation), so they are read again for the next try.
@@ -325,8 +392,11 @@ extension WorkspaceModel {
   }
 
   /// "Remove" on one sign-in method, once it is confirmed it's you. The last one is never sent: the
-  /// hub would refuse it. A closed sheet removes nothing and shows nothing.
-  public func removeIdentity(id: String, passkey: any PasskeyCeremony, apple: any AppleCeremony) async {
+  /// hub would refuse it. A closed sheet removes nothing and shows nothing. With `code`, the operator's
+  /// enrollment code confirms it instead (D-151).
+  public func removeIdentity(
+    id: String, passkey: any PasskeyCeremony, apple: any AppleCeremony, code: String? = nil
+  ) async {
     guard let current = identities, current.count > 1, current.contains(where: { $0.id == id }),
       !accountSettingsBusy
     else { return }
@@ -335,14 +405,17 @@ extension WorkspaceModel {
     accountSettingsFailure = nil
     let generation = accountGeneration
     do {
-      let stepUp = try await confirmIdentity(passkey: passkey, apple: apple)
+      let stepUp = try await stepUp(for: .removeIdentity(id: id), code: code, passkey: passkey, apple: apple)
       let left = try await accountCalls().removeIdentity(id, stepUp: stepUp)
+      stepUpCodeOffer = nil
       guard generation == accountGeneration else { return }
       identities = left
     } catch is SignInCanceled {
       return
     } catch is CancellationError {
       return
+    } catch is PasskeySheetFailed {
+      accountSettingsFailure = SignInCopy.passkeySheetFailed
     } catch {
       guard generation == accountGeneration else { return }
       let failure = WorkspaceError.from(error)
@@ -362,9 +435,11 @@ extension WorkspaceModel {
   /// only while `accountId` (the account the sheet was opened for) is still the signed-in one: after a
   /// switch to an account whose org has the same name, nothing is sent. It is confirmed it's you first
   /// (a closed sheet sends nothing and shows nothing). A refusal (`shared_org`, `step_up_required`, or
-  /// any other) is one line and changes nothing.
+  /// any other) is one line and changes nothing. With `code`, the operator's enrollment code confirms
+  /// it instead (D-151): the way to delete an account whose only passkey is gone.
   public func deleteAccount(
-    typed: String, accountId: String?, passkey: any PasskeyCeremony, apple: any AppleCeremony
+    typed: String, accountId: String?, passkey: any PasskeyCeremony, apple: any AppleCeremony,
+    code: String? = nil
   ) async {
     guard let accountId, accountId == accountStatus?.account?.id, canDeleteAccount(typed: typed),
       !deleteInFlight
@@ -373,15 +448,19 @@ extension WorkspaceModel {
     defer { deleteInFlight = false }
     deleteFailure = nil
     do {
-      let stepUp = try await confirmIdentity(passkey: passkey, apple: apple)
+      let stepUp = try await stepUp(
+        for: .deleteAccount(accountId: accountId, typed: typed), code: code, passkey: passkey, apple: apple)
       // A switch while the sheet was up: the confirmation is the old account's, so nothing is sent.
       guard accountId == accountStatus?.account?.id else { return }
       let status = try await accountCalls().deleteAccount(stepUp: stepUp)
+      stepUpCodeOffer = nil
       applyAccountStatus(status)
     } catch is SignInCanceled {
       return
     } catch is CancellationError {
       return
+    } catch is PasskeySheetFailed {
+      deleteFailure = SignInCopy.passkeySheetFailed
     } catch {
       let failure = WorkspaceError.from(error)
       if failure.code == .internalError, failure.details?["database"] != nil {
@@ -424,6 +503,9 @@ struct AccountSettingsView: View {
             .foregroundStyle(LLA.Color.danger)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("account.failure")
+        }
+        if let offer = model.stepUpCodeOffer, !offer.isDelete {
+          StepUpCodeRow(model: model)
         }
         Hairline().padding(.top, LLA.Space.s)
         Button(content.delete) {
@@ -584,6 +666,9 @@ struct DeleteAccountSheet: View {
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("account.delete.failure")
       }
+      if model.stepUpCodeOffer?.isDelete == true {
+        StepUpCodeRow(model: model)
+      }
       HStack(spacing: LLA.Space.s) {
         Spacer()
         Button(AccountCopy.cancel) { dismiss() }
@@ -613,5 +698,66 @@ struct DeleteAccountSheet: View {
       // A closed confirmation sheet leaves the account and this sheet as they were.
       if model.deleteFailure == nil, model.accountStatus?.account?.id != accountId { dismiss() }
     }
+  }
+}
+
+extension StepUpChange {
+  var isDelete: Bool {
+    if case .deleteAccount = self { return true }
+    return false
+  }
+}
+
+/// "Can't confirm it's you here?": the operator's enrollment code, for the change whose passkey or
+/// Apple confirmation was closed or could not open (D-151). The typed code is cleared as it is sent.
+struct StepUpCodeRow: View {
+  @Bindable var model: WorkspaceModel
+  @State private var code = ""
+  @Environment(\.webAuthenticationSession) private var webAuthenticationSession
+
+  private var busy: Bool { model.accountSettingsBusy || model.deleteInFlight }
+  private var typed: String { code.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: LLA.Space.s) {
+      Text(AccountCopy.codeOffer).llaMuted().fixedSize(horizontal: false, vertical: true)
+      HStack(spacing: LLA.Space.s) {
+        LLAField(AccountCopy.codePlaceholder, text: $code)
+          .enrollmentCodeInput()
+          .onSubmit(confirm)
+          .accessibilityLabel(AccountCopy.codePlaceholder)
+          .accessibilityIdentifier("account.stepUpCode.field")
+        Button(AccountCopy.confirmCode, action: confirm)
+          .buttonStyle(.llaSecondary)
+          .disabled(typed.isEmpty || busy)
+          .accessibilityIdentifier("account.stepUpCode.confirm")
+        Button(AccountCopy.cancel) { model.dismissCodeOffer() }
+          .buttonStyle(.llaSecondary)
+          .disabled(busy)
+      }
+    }
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("account.stepUpCode")
+  }
+
+  private func confirm() {
+    guard !typed.isEmpty, !busy else { return }
+    let sent = typed
+    code = ""
+    Task {
+      await model.confirmWithCode(
+        sent, passkey: SystemPasskeyCeremony(), apple: SystemAppleCeremony(session: webAuthenticationSession))
+    }
+  }
+}
+
+extension View {
+  /// An enrollment code: no autocorrection, and capitals on the phone's keyboard.
+  fileprivate func enrollmentCodeInput() -> some View {
+    #if os(iOS)
+      self.autocorrectionDisabled().textInputAutocapitalization(.characters)
+    #else
+      self.autocorrectionDisabled()
+    #endif
   }
 }

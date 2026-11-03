@@ -182,6 +182,10 @@
             "callbackScheme": {
               "type": "string",
               "enum": ["", "b4app", "b4app-beta", "b4app-local"]
+            },
+            "callbackUrl": {
+              "type": "string",
+              "pattern": "^(|https://[a-z0-9.-]+/[^?#]+)$"
             }
           }
         },

@@ -6,12 +6,13 @@
 //! `POST /v1/me/apple/handoff`).
 //!
 //! Every route answers `not_found` unless `B4HUB_APPLE_*` configures Sign in with Apple; the web
-//! flow also needs `B4HUB_APPLE_SERVICES_ID`, `B4HUB_APPLE_CALLBACK_SCHEME`, and
-//! `B4HUB_PUBLIC_URL`. A ceremony holds a random nonce; Apple is handed its SHA-256 in hex, and
-//! the identity token must carry exactly that. A web ceremony also holds the SHA-256 of a
-//! verifier the app keeps. The callback redirects only to the hub's one configured scheme, its
-//! flavour's: begin refuses any other, so no caller can have a handoff sent to an app the
-//! person did not start from (D-114, D-140). The handoff is redeemed only with the verifier.
+//! flow also needs `B4HUB_APPLE_SERVICES_ID`, one of `B4HUB_APPLE_CALLBACK_SCHEME` and
+//! `B4HUB_APPLE_CALLBACK_URL`, and `B4HUB_PUBLIC_URL`. A ceremony holds a random nonce; Apple is
+//! handed its SHA-256 in hex, and the identity token must carry exactly that. A web ceremony also
+//! holds the SHA-256 of a verifier the app keeps. The callback redirects only to the hub's one
+//! configured place, its flavour's scheme or an https URL on its site: begin refuses an app that
+//! asks for another, so no caller can have a handoff sent to an app the person did not start
+//! from (D-114, D-140, D-160). The handoff is redeemed only with the verifier.
 //! The callback changes no account and exchanges no code: it records the verified result,
 //! sealed to the handoff, and everything happens at the redemption (for a link, only from a
 //! device of the account that began it). An account links at most one Apple ID
@@ -49,7 +50,7 @@ use crate::apple::{
 };
 use crate::auth::AuthedDevice;
 use crate::auth_limits::{BeginAllowed, FinishAllowed};
-use crate::config::Signup;
+use crate::config::{AppleCallback, Signup};
 use crate::error::{ApiError, ApiJson, OptionalJson};
 use crate::maintenance::WritesAllowed;
 use crate::routes::auth::{answer, AuthSession, DeviceRequest};
@@ -72,7 +73,7 @@ pub const APPLE_STEP_UP_CEREMONY: &str = "apple_step_up";
 const WEB_KINDS: [&str; 3] = [APPLE_CEREMONY, APPLE_LINK_CEREMONY, APPLE_STEP_UP_CEREMONY];
 
 /// The app URL schemes, one per build flavour; `B4HUB_APPLE_CALLBACK_SCHEME` names the one a hub
-/// hands web results back to.
+/// hands web results back to, unless `B4HUB_APPLE_CALLBACK_URL` names an https URL instead.
 pub const SCHEMES: [&str; 3] = ["b4app", "b4app-beta", "b4app-local"];
 
 /// The longest identity token and authorization code accepted, in bytes.
@@ -88,17 +89,22 @@ const CALLBACK_PATH: &str = "/v1/auth/apple/callback";
 // ---- Wire types ----
 
 /// `POST /v1/auth/apple/begin`'s and `POST /v1/me/apple`'s body, which may be empty. The web
-/// flow sends both fields; the native flow neither.
+/// flow sends `verifierHash` and `scheme`, and `httpsCallback` when the app can take the result
+/// back from an https URL; the native flow sends none of them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AppleBeginRequest {
     /// The lowercase hex SHA-256 of a random verifier the app keeps for `POST /v1/auth/handoff`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verifier_hash: Option<String>,
-    /// The app's URL scheme, one of [`SCHEMES`]; it must be the hub's
-    /// `B4HUB_APPLE_CALLBACK_SCHEME`.
+    /// The app's URL scheme, one of [`SCHEMES`]; on a hub with `B4HUB_APPLE_CALLBACK_SCHEME`, it
+    /// must be that one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheme: Option<String>,
+    /// True when the app can take the result back from an https URL on its site; a hub with
+    /// `B4HUB_APPLE_CALLBACK_URL` refuses an app that cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub https_callback: Option<bool>,
 }
 
 /// The begin routes' answer. The native app passes `sha256_hex(nonce)` to Apple.
@@ -107,6 +113,10 @@ pub struct AppleBeginRequest {
 pub struct AppleBeginResponse {
     pub ceremony_id: Uuid,
     pub nonce: String,
+    /// For the web flow, where the result comes back: `<scheme>://auth` or the hub's https URL,
+    /// with `?handoff=` or `?error=` appended. The app waits for exactly that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback: Option<String>,
 }
 
 /// `POST /v1/auth/apple/native`'s body. `fullName` is what Apple gave the app on the first
@@ -261,7 +271,7 @@ impl FromRequestParts<AppState> for Apple {
 pub fn callback_url(state: &AppState) -> Option<String> {
     let apple = state.apple.as_ref()?;
     apple.services_id()?;
-    app_scheme(state)?;
+    app_callback(state)?;
     let public = state.config.public_url.as_ref()?;
     Some(format!(
         "{}{CALLBACK_PATH}",
@@ -269,15 +279,16 @@ pub fn callback_url(state: &AppState) -> Option<String> {
     ))
 }
 
-/// `B4HUB_APPLE_CALLBACK_SCHEME`: the one app URL scheme the web flow hands results back to.
-fn app_scheme(state: &AppState) -> Option<&str> {
-    state.config.apple.as_ref()?.callback_scheme.as_deref()
+/// `B4HUB_APPLE_CALLBACK_SCHEME` or `B4HUB_APPLE_CALLBACK_URL`: the one place the web flow hands
+/// results back to.
+fn app_callback(state: &AppState) -> Option<&AppleCallback> {
+    state.config.apple.as_ref()?.callback.as_ref()
 }
 
 /// The web flow a begin body asks for, validated; `None` for the native flow.
 fn web_flow(state: &AppState, request: AppleBeginRequest) -> Result<Option<WebFlow>, ApiError> {
     match (request.verifier_hash, request.scheme) {
-        (None, None) => Ok(None),
+        (None, None) if request.https_callback.is_none() => Ok(None),
         (Some(verifier_hash), Some(scheme)) => {
             if verifier_hash.len() != 64
                 || !verifier_hash
@@ -293,23 +304,36 @@ fn web_flow(state: &AppState, request: AppleBeginRequest) -> Result<Option<WebFl
                     "scheme must be one of b4app, b4app-beta, b4app-local",
                 ));
             }
-            let (Some(_), Some(pinned)) = (callback_url(state), app_scheme(state)) else {
+            let (Some(_), Some(pinned)) = (callback_url(state), app_callback(state)) else {
                 // This hub offers only the native flow (`apple.web` is false).
                 return Err(ApiError::not_found());
             };
-            if scheme != pinned {
-                tracing::info!(
-                    scheme = %scheme,
-                    "refused an Apple web begin for another flavour's scheme"
-                );
-                return Err(ApiError::invalid_request(format!(
-                    "this hub hands Sign in with Apple back only to the {pinned} app, not {scheme}"
-                )));
+            match pinned {
+                AppleCallback::Scheme(pinned) if scheme != *pinned => {
+                    tracing::info!(
+                        scheme = %scheme,
+                        "refused an Apple web begin for another flavour's scheme"
+                    );
+                    return Err(ApiError::invalid_request(format!(
+                        "this hub hands Sign in with Apple back only to the {pinned} app, not \
+                         {scheme}"
+                    )));
+                }
+                AppleCallback::Url(url) if request.https_callback != Some(true) => {
+                    tracing::info!(
+                        "refused an Apple web begin from an app without https callbacks"
+                    );
+                    return Err(ApiError::invalid_request(format!(
+                        "this hub hands Sign in with Apple back to {url}, which this app cannot \
+                         take back; update the app"
+                    )));
+                }
+                _ => {}
             }
             Ok(Some(WebFlow { verifier_hash }))
         }
         _ => Err(ApiError::invalid_request(
-            "send verifierHash and scheme together, or neither",
+            "send verifierHash and scheme together (with httpsCallback or not), or none of them",
         )),
     }
 }
@@ -322,6 +346,7 @@ async fn create_ceremony(
     device_id: Option<Uuid>,
 ) -> Result<Json<AppleBeginResponse>, ApiError> {
     let nonce = new_token();
+    let has_web = web.is_some();
     let stored = serde_json::to_value(AppleCeremony {
         nonce: nonce.clone(),
         web,
@@ -333,7 +358,15 @@ async fn create_ceremony(
         ApiError::internal()
     })?;
     let ceremony_id = ceremonies::create(&state.db, kind, stored).await?;
-    Ok(Json(AppleBeginResponse { ceremony_id, nonce }))
+    // `web_flow` made a web ceremony only with a callback configured.
+    let callback = has_web
+        .then(|| app_callback(state).map(AppleCallback::base))
+        .flatten();
+    Ok(Json(AppleBeginResponse {
+        ceremony_id,
+        nonce,
+        callback,
+    }))
 }
 
 /// `POST /v1/auth/apple/begin`.
@@ -668,10 +701,10 @@ impl CallbackForm {
 }
 
 /// `POST /v1/auth/apple/callback`: Apple's form post. Once the ceremony is known, every outcome
-/// is a 302 to the hub's one scheme (`B4HUB_APPLE_CALLBACK_SCHEME`):
-/// `<scheme>://auth?handoff=<code>` on success, or `<scheme>://auth?error=<code>` (`cancelled`
-/// when the person cancelled on Apple's page). A post whose ceremony is unknown, spent, or not a
-/// web one answers JSON, having nowhere to go.
+/// is a 302 to the hub's one callback (`<scheme>://auth`, or `B4HUB_APPLE_CALLBACK_URL`):
+/// `<callback>?handoff=<code>` on success, or `<callback>?error=<code>` (`cancelled` when the
+/// person cancelled on Apple's page). A post whose ceremony is unknown, spent, or not a web one
+/// answers JSON, having nowhere to go.
 pub async fn callback(
     State(state): State<AppState>,
     Apple(apple): Apple,
@@ -681,7 +714,7 @@ pub async fn callback(
 ) -> Result<Response, ApiError> {
     let form = CallbackForm::parse(&body)?;
     callback_url(&state).ok_or_else(ApiError::not_found)?;
-    let scheme = app_scheme(&state).ok_or_else(ApiError::not_found)?;
+    let back = app_callback(&state).ok_or_else(ApiError::not_found)?.base();
     let ceremony_id = form
         .state
         .as_deref()
@@ -714,8 +747,8 @@ pub async fn callback(
             .map_err(|error| error.code),
     };
     Ok(match outcome {
-        Ok(handoff) => redirect(&format!("{scheme}://auth?handoff={handoff}")),
-        Err(code) => redirect(&format!("{scheme}://auth?error={code}")),
+        Ok(handoff) => redirect(&format!("{back}?handoff={handoff}")),
+        Err(code) => redirect(&format!("{back}?error={code}")),
     })
 }
 

@@ -468,7 +468,7 @@ final class TokenSequence: @unchecked Sendable {
     case "POST /v1/me/step-up/passkey/begin":
       return .json(200, #"{"ceremonyId":"c5","authentication":{"publicKey":{"challenge":"z"}}}"#)
     case "POST /v1/me/step-up/passkey/finish", "POST /v1/me/step-up/apple/native",
-      "POST /v1/me/step-up/apple/handoff":
+      "POST /v1/me/step-up/apple/handoff", "POST /v1/me/step-up/code":
       return .json(200, #"{"stepUp":"g1","expiresAt":"2026-11-02T12:02:00.000000Z"}"#)
     case "DELETE /v1/me/identities/i2", "DELETE /v1/sessions/self", "DELETE /v1/me":
       return StubProtocol.Reply(status: 204, body: Data())
@@ -643,6 +643,7 @@ final class TokenSequence: @unchecked Sendable {
     _ = try await api.stepUpAppleBegin(AppleBeginRequest())
     _ = try await api.stepUpAppleNative(StepUpAppleNativeRequest(ceremonyId: "c4", identityToken: "jwt"))
     _ = try await api.stepUpAppleHandoff(AppleLinkHandoffRequest(handoff: "h", verifier: "v"))
+    _ = try await api.stepUpCode(StepUpCodeRequest(code: "K7QX2M9P"))
 
     let seen = recorder.all.map { "\($0.request.httpMethod ?? "") \($0.request.url?.path ?? "")" }
     #expect(
@@ -650,6 +651,7 @@ final class TokenSequence: @unchecked Sendable {
         "POST /v1/me/step-up/passkey/begin", "POST /v1/me/step-up/passkey/finish",
         "POST /v1/me/step-up/apple",
         "POST /v1/me/step-up/apple/native", "POST /v1/me/step-up/apple/handoff",
+        "POST /v1/me/step-up/code",
       ])
     for captured in recorder.all {
       #expect(captured.request.value(forHTTPHeaderField: "Authorization") == "Bearer t0k")
@@ -660,7 +662,7 @@ final class TokenSequence: @unchecked Sendable {
     #expect(
       bodies == [
         ["ceremonyId": "c5", "assertion": ["id": "a"]], [:], ["ceremonyId": "c4", "identityToken": "jwt"],
-        ["handoff": "h", "verifier": "v"],
+        ["handoff": "h", "verifier": "v"], ["code": "K7QX2M9P"],
       ])
     #expect(!passkey.description.contains("g1"))
   }

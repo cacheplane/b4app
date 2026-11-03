@@ -68,6 +68,8 @@ hub:
     servicesId: ""
     # -- The one app URL scheme web sign-in hands back to (`B4HUB_APPLE_CALLBACK_SCHEME`): `b4app`, `b4app-beta`, or `b4app-local`, the flavour this hub serves. Required with `servicesId` (the hub exits 2 without it) and refused without it; rendered only when set.
     callbackScheme: ""
+    # -- An https URL on the flavour's site that web sign-in hands back to instead of a scheme (`B4HUB_APPLE_CALLBACK_URL`), for example `https://b4.run/app/auth/apple`; only the app the site's `webcredentials` names can take it back. Set this or `callbackScheme` with `servicesId`, not both; rendered only when set.
+    callbackUrl: ""
   # -- Extra `EnvVar` entries appended verbatim to the hub container. For OTLP use `otel.endpoint`, `otel.protocol`, and `otel.extraEnv` instead.
   extraEnv: []
 

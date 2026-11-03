@@ -11,12 +11,38 @@ import WorkspaceProtocol
 ///   asking for the full name and the email, with the SHA-256 hex of the hub's `nonce` as the request's
 ///   nonce (`Hub/API.md`'s nonce rule). It answers the identity token, the authorization code, and the
 ///   formatted name (Apple gives it the first time only).
-/// - `webSignIn(url:callbackScheme:)` is the Mac's: the hub's start page in an
+/// - `webSignIn(url:callback:)` is the Mac's: the hub's start page in an
 ///   `ASWebAuthenticationSession`, answering the URL it was called back with. A Developer ID app cannot
 ///   use the native flow, and this way the device token never enters the app.
 public protocol AppleCeremony {
   func nativeSignIn(nonce: String) async throws -> AppleCredential?
-  func webSignIn(url: URL, callbackScheme: String) async throws -> URL?
+  func webSignIn(url: URL, callback: AppleWebCallback) async throws -> URL?
+}
+
+/// What the web flow's session waits for: the hub's `callback` (D-160). A custom scheme
+/// (`<scheme>://auth`) is claimed by whichever app registers it; an https URL is taken back only by the
+/// app the site's `webcredentials` names, which is why a hub can prefer it.
+public enum AppleWebCallback: Equatable, Sendable {
+  case scheme(String)
+  case https(host: String, path: String)
+
+  /// `b4app-beta://auth` or `https://test.b4.run/app/auth/apple`; nil for anything else.
+  public init?(_ text: String) {
+    guard let url = URL(string: text), let scheme = url.scheme?.lowercased() else { return nil }
+    if scheme == "https" {
+      guard let host = url.host(), url.path().count > 1 else { return nil }
+      self = .https(host: host, path: url.path())
+    } else {
+      self = .scheme(scheme)
+    }
+  }
+
+  var session: ASWebAuthenticationSession.Callback {
+    switch self {
+    case .scheme(let scheme): .customScheme(scheme)
+    case .https(let host, let path): .https(host: host, path: path)
+    }
+  }
 }
 
 /// `<scheme>://auth?handoff=…` or `?error=…`: the hub's redirect at the end of Apple's web flow. A
@@ -69,14 +95,14 @@ public struct SystemAppleCeremony: AppleCeremony {
       identityToken: token, authorizationCode: code, fullName: Self.formatted(credential.fullName))
   }
 
-  public func webSignIn(url: URL, callbackScheme: String) async throws -> URL? {
+  public func webSignIn(url: URL, callback: AppleWebCallback) async throws -> URL? {
     guard let session else {
       throw WorkspaceError(.internalError, "There is no browser session to show Apple's page in.")
     }
     do {
       // An ephemeral session: Apple's page keeps no cookie in the shared browser.
       return try await session.authenticate(
-        using: url, callback: .customScheme(callbackScheme), preferredBrowserSession: .ephemeral,
+        using: url, callback: callback.session, preferredBrowserSession: .ephemeral,
         additionalHeaderFields: [:])
     } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
       return nil

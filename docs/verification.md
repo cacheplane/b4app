@@ -18,6 +18,39 @@ Environmental, not this flake:
 - `#[sqlx::test]` names each test's database by hashing its path. Two processes running the same test on one server drop each other's database ("database … does not exist", or a failed `Db::connect`).
 - `test-db.sh --stop` from another worktree ends every run on port 54329.
 - These runs used private clusters on other ports.
+## 2026-11-03: Apple's web flow through an https callback (D-160)
+
+Fixture gates only. Nothing deployed; the hosted hubs keep `B4HUB_APPLE_CALLBACK_SCHEME` until a Mac build with this ships.
+
+| Gate | Result |
+| --- | --- |
+| `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo test --workspace --locked` (throwaway PostgreSQL) | 462 pass. New: `config.rs` `the_web_flow_can_hand_back_to_an_https_url_instead`; `apple.rs` `a_hub_with_a_callback_url_hands_back_there`; `begin_web` now checks every web begin's `callback`; `auth_fixture` checks `httpsCallback` and `callback` |
+| `swift format lint --strict`, `swift build` | Pass |
+| `swift test` | 1294 tests; 1 failed in the full run, `SessionTests.reconcileSettlesATurnThatFinishedWhileTheCoordinatorWasDown`, which this change does not touch and which passed 3 of 3 alone (it failed the same way in the D-140 run). New: `AccountCommandTests.appleStartsTakeTheHubsHttpsCallbackOnlyOnTheirSite`, `AppleSignInTests.theCallbackBecomesTheSessionsWait`; `AuthWireTests` round-trips both new fields |
+| `helm unittest Hub/chart/b4hub`, `helm lint` with the CI values | 57 pass; lint clean; the schema refuses a `callbackUrl` with a query |
+
+Open (live): Continue with Apple through `.https(host:path:)` with a Mac build that has this, against the test hub set to `B4HUB_APPLE_CALLBACK_URL=https://test.b4.run/app/auth/apple`. Whether `ASWebAuthenticationSession` takes the result back through the app's `webcredentials:test.b4.run` association can only be shown there.
+
+## 2026-11-02: Step-up by enrollment code (D-151), Codex "no rollout found" (D-152), and the 1004 line
+
+Branch `blove/step-up-code`, from main at `5882a60`. Fixture gates only; nothing here has run live.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Swift format | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass (exit 0) |
+| Build | `swift build` | Pass |
+| Swift tests | `swift test` (PostgreSQL from the main checkout's `.build/postgres`) | 1300 tests in 161 suites; the new and changed tests pass (`AccountCommandTests.anEnrollmentCodeConfirmsADelete`, `MirrorAccountTests.anEnrollmentCodeConfirmsAChange`, `AccountSettingsTests.aClosedConfirmationOffersAnEnrollmentCode`, `anEnrollmentCodeConfirmsRemovingAndAdding`, `aPasskeySheetThatCannotOpenIsOneLine`, `SignInTests.aPasskeySheetThatCannotOpenSaysWhy`, `everySystemCancelOfAnAssertionMeansNoPasskey`, `AuthWireTests.stepUpCodeRoundTripsAndNeverDescribesTheCode`, `HTTPHubAPITests.stepUpCallsSendTheBearerAndTheirBodies`, `CodexDeleteTests.noRolloutFoundIsAlreadyGone`). The full run had 2 issues, both in `HubSyncTests.joinPushesTheBacklogAndMarksItSynced` (the timing flake the sign-in gate recorded); it passed three times alone |
+| Rust format | `cd Hub && cargo fmt --all -- --check` | Pass |
+| Rust lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| Rust tests | `source <(./scripts/test-db.sh) && cargo test --workspace --locked --no-fail-fast`, then `./scripts/test-db.sh --stop` | Pass: 464 tests against PostgreSQL 17.11, 0 failed. New: `accounts.rs` `an_operator_code_steps_up_once_on_its_own_device`, `a_step_up_code_is_the_callers_own_operator_code`, `step_up_codes_count_with_the_sign_in_finishes`; `auth_fixture.rs` decodes `stepUpCode` and sends it to the route; `b4hub-db` `an_operator_code_is_taken_once_by_its_own_user`, `migrate.rs` expects 15 migrations; `maintenance_pauses_sign_in_and_account_writes` and `no_secret_in_logs` cover the new route |
+| Apps | `xcodebuild build … -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'` and `-scheme B4App-macOS -destination 'platform=macOS'`, `CODE_SIGNING_ALLOWED=NO` | Two `** BUILD SUCCEEDED **` (the code field's iPhone keyboard modifier compiles only there) |
+
+Not run live: a code step-up against a running hub, and Settings → Account's code row on screen. The Codex fix matches what codex-cli 0.166.0 answered live during the thread cleanup (four `thread/delete` calls, each `-32600 no rollout found for thread id …`; none of the ids among Codex's 383 threads).
+
+## 2026-11-02: The attention burst test waits out a slow runner
+
+`AttentionModelTests.aBurstOfDeltasSendsNoReadAndTurnEventsCoalesce` failed CI once on main (`7c38573`): three `thread.read` calls where it expected two. The model reads the test's 56 events on its own task, and a slow runner took longer than the 200 ms refetch window to get through them, so a second window rightly opened. `WorkspaceModel.refetchDelay` is now per model (as `draftSaveDelay` is), so the test widens its own window to 1 s without changing the others'; the app keeps 200 ms. Local: the test 5 of 5 alone, `WorkspaceUITests` 284 pass, `swift format lint --strict` clean.
 
 ## 2026-11-03: M8f APNs on a real iPhone (live gate 2) and the cancelled-BEGIN fix (D-153)
 

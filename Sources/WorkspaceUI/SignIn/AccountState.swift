@@ -165,6 +165,12 @@ public enum SignInCopy {
   public static let passkeyAlreadyOnDevice =
     "This device already has a passkey for this account."
 
+  /// The system's passkey sheet failed before showing anything (`ASAuthorizationError.failed`): most
+  /// often another passkey request of this app is still open, else the app isn't associated with the
+  /// passkey domain yet. The code is the same for both, so the line names the one the person can fix.
+  public static let passkeySheetFailed =
+    "The passkey sheet couldn't open. If another passkey request is still on screen, close it, then try again."
+
   /// The coordinator could not be reached for a log-out; nothing changed.
   static let coordinatorUnreachable = "Can't reach the coordinator. Try again in a moment."
 
@@ -191,6 +197,11 @@ public struct PasskeysNotSetUp: Error, Sendable, Equatable {
 /// Raised by a ceremony when the device already holds a passkey for this account (the hub's
 /// `excludeCredentials` matched): nothing was made, so nothing is reported as an orphan.
 public struct PasskeyAlreadyOnDevice: Error, Sendable, Equatable {
+  public init() {}
+}
+
+/// Raised by a ceremony when the system's passkey sheet failed to run at all (`.failed`, 1004).
+public struct PasskeySheetFailed: Error, Sendable, Equatable {
   public init() {}
 }
 
@@ -361,6 +372,10 @@ extension WorkspaceModel {
       signInProgress = SignInProgress(failure: SignInCopy.passkeyAlreadyOnDevice)
       return
     }
+    if error is PasskeySheetFailed {
+      signInProgress = SignInProgress(failure: SignInCopy.passkeySheetFailed)
+      return
+    }
     signInProgress = SignInProgress(failure: SignInCopy.failure(for: WorkspaceError.from(error)))
   }
 
@@ -515,8 +530,7 @@ extension WorkspaceModel {
         status = try await host.signIn(apple: credential, ceremonyId: begun.ceremonyId)
       case .coordinator(let client):
         let start = try await client.request(AccountAppleStart.self, EmptyParams(), options: Self.signInCall)
-        let handoff = try await Self.webHandoff(
-          ceremony, url: start.url, callbackScheme: start.callbackScheme)
+        let handoff = try await Self.webHandoff(ceremony, url: start.url, callback: start.callback)
         status = try await client.request(
           AccountAppleFinish.self, AccountAppleFinish.Params(handoff: handoff), options: Self.signInMutation()
         )
@@ -533,12 +547,12 @@ extension WorkspaceModel {
   /// of it. A closed session or `?error=cancelled` (Cancel on Apple's page) is `SignInCanceled`; any
   /// other `?error=` is that code.
   static func webHandoff(
-    _ ceremony: any AppleCeremony, url text: String, callbackScheme: String
+    _ ceremony: any AppleCeremony, url text: String, callback back: String
   ) async throws -> String {
-    guard let url = URL(string: text) else {
+    guard let url = URL(string: text), let back = AppleWebCallback(back) else {
       throw WorkspaceError(.protocolInvalid, "The sign-in address is not a URL.")
     }
-    guard let callback = try await ceremony.webSignIn(url: url, callbackScheme: callbackScheme) else {
+    guard let callback = try await ceremony.webSignIn(url: url, callback: back) else {
       throw SignInCanceled()
     }
     let query = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems ?? []

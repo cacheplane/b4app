@@ -221,7 +221,7 @@ pub struct StepUpGrant {
     pub expires_at: String,
 }
 
-/// Records that `principal` just finished a step-up assertion of `method` (`passkey` or `apple`) on
+/// Records that `principal` just finished a step-up of `method` (`passkey`, `apple`, or `code`) on
 /// the device `device_id`, and returns the grant. Only the token's hash is stored.
 pub async fn create_step_up(
     db: &Db,

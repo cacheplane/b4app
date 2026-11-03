@@ -3,6 +3,8 @@
 //! device earns a grant here with a passkey (`POST /v1/me/step-up/passkey/begin`, then `/finish`)
 //! or in [`crate::routes::apple`] with an Apple ID (`POST /v1/me/step-up/apple`, then `/native` or
 //! `/handoff`), and sends it once, within two minutes, in the [`STEP_UP_HEADER`] of the change.
+//! An account that can no longer assert (its only passkey gone from the keychain) earns one with an
+//! operator's enrollment code instead (`POST /v1/me/step-up/code`); a pairing code never counts.
 //!
 //! A grant is bound to the user and the device whose token earned it, stored only as its hash, and
 //! taken once. A missing, unknown, expired, spent, or another device's grant is `403
@@ -17,7 +19,7 @@ use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
 use axum::Json;
 use b4hub_db::accounts::{self, Principal};
-use b4hub_db::ceremonies;
+use b4hub_db::{ceremonies, devices};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -64,6 +66,21 @@ impl fmt::Debug for StepUpFinishRequest {
         f.debug_struct("StepUpFinishRequest")
             .field("ceremony_id", &self.ceremony_id)
             .field("assertion", &"<redacted>")
+            .finish()
+    }
+}
+
+/// `POST /v1/me/step-up/code`'s body: an operator's enrollment code. `Debug` leaves out the code.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct StepUpCodeRequest {
+    pub code: String,
+}
+
+impl fmt::Debug for StepUpCodeRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StepUpCodeRequest")
+            .field("code", &"<redacted>")
             .finish()
     }
 }
@@ -287,4 +304,29 @@ pub async fn passkey_finish(
     };
     accounts::record_passkey_use(&state.db, stored.identity_id, updated.as_ref()).await?;
     grant(&state, &device, "passkey").await
+}
+
+// ---- The operator's code ----
+
+/// `POST /v1/me/step-up/code`: takes, once, an operator's enrollment code (`b4hub enroll`) issued
+/// for the caller's own user, and answers the grant. For an account that can no longer assert: its
+/// only passkey gone from the keychain. A pairing code (one a Mac minted) never counts, nor does an
+/// unknown, expired, used, or another user's code: each is `401 invalid_code` and changes nothing.
+pub async fn code(
+    State(state): State<AppState>,
+    _allowed: FinishAllowed,
+    device: AuthedDevice,
+    _writes: WritesAllowed,
+    ApiJson(request): ApiJson<StepUpCodeRequest>,
+) -> Result<Json<StepUpResponse>, ApiError> {
+    let principal = Principal::from(*device);
+    if !devices::take_operator_code(&state.db, &request.code, principal).await? {
+        tracing::info!(
+            user_id = %principal.user_id,
+            device_id = %device.device_id,
+            "a step-up code was refused"
+        );
+        return Err(ApiError::invalid_code());
+    }
+    grant(&state, &device, "code").await
 }

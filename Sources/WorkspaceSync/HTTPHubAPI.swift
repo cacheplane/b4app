@@ -179,6 +179,10 @@ public final class HTTPHubAPI: HubAPI {
     try await send(.post, "v1/me/step-up/apple/handoff", body: request)
   }
 
+  public func stepUpCode(_ request: StepUpCodeRequest) async throws -> StepUpResponse {
+    try await send(.post, "v1/me/step-up/code", body: request)
+  }
+
   // MARK: - Plumbing
 
   private struct PushTokenBody: Encodable {
