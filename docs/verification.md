@@ -11,7 +11,7 @@ Built on `blove/xenodochial-morse-e3bed8`.
 - Swift: `swift build`, `swift test`, and `swift format lint --strict` pass. New or changed: `stepUpTypesRoundTrip` (`AuthWireTests`), `stepUpCallsSendTheBearerAndTheirBodies`, `aStepUpRefusalCarriesTheMethods`, and the `B4-Step-Up` header checks (`HTTPHubAPITests`), `anAppleStepUpRedeemsItsHandoffWithTheKeptVerifier` and the passkey step-up in the identities test (`AccountCommandTests`), `anAppleOnlyAccountConfirmsWithAppleNatively` (`MirrorAccountTests`), `aClosedConfirmationSendsNothingAndAStepUpRefusalSaysSo` and `addAPasskey` (`AccountSettingsTests`), and the Connect Apple ID tests (`AppleSignInTests`).
 - Seen once under load and not since (three clean reruns): `presence_is_sent_when_the_queue_has_room_again` (`tests/relay.rs`), unrelated to this change.
 
-**Live gate: pending (the owner's Touch ID).** Not run: the real passkey and Apple sheets need the owner. On a hub built from this branch (migration 12 applied) and the Local app and phone built from it:
+**Live gate: pending (the owner's Touch ID).** Not run: the real passkey and Apple sheets need the owner. On a hub built from this branch (migration 13 applied) and the Local app and phone built from it:
 
 1. Settings → Account on the Mac, with a passkey account: **Add a passkey** shows the system passkey sheet first, offering only this account's passkey (and a nearby iPhone or security key), then the registration sheet; the new passkey is listed.
 2. **Cancel** the confirmation sheet for Add a passkey, Remove, and Delete account…: nothing changes and no line shows; the Delete sheet stays open.
