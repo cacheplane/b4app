@@ -114,26 +114,39 @@ impl PausedClock {
 
 /// Fills `device_id`'s outbound queue and keeps it full: queues 16 KiB `event` frames until the
 /// device's socket stops taking them (the device is not reading) and the queue stays full across
-/// two pauses of real time. The device later reads them as `event` frames.
-pub async fn fill_queue(relay: &Relay, device_id: Uuid) {
+/// two pauses of real time. The device later reads them as `event` frames; returns how many were
+/// queued, so a test can read the whole backlog rather than stop at a pause.
+pub async fn fill_queue(relay: &Relay, device_id: Uuid) -> usize {
     let frame = RelayMessage::Event {
         event: serde_json::json!({ "kind": "padding", "pad": "x".repeat(16 * 1024) }),
     };
-    let still_full = || relay.send(device_id, frame.clone()) == Err(SendError::Full);
+    let mut queued = 0;
     assert!(relay.online(device_id), "the device has no link");
     for _ in 0..200 {
         // Fill the queue in one go (the link task cannot run meanwhile), then give the link a
         // moment: if it could not drain a single frame, twice, its socket is blocked.
-        while relay.send(device_id, frame.clone()).is_ok() {}
+        while queue_one(relay, device_id, &frame, &mut queued) {}
         real_sleep(Duration::from_millis(200)).await;
-        if still_full() {
+        if !queue_one(relay, device_id, &frame, &mut queued) {
             real_sleep(Duration::from_millis(200)).await;
-            if still_full() {
-                return;
+            if !queue_one(relay, device_id, &frame, &mut queued) {
+                return queued;
             }
         }
     }
     panic!("the queue never stayed full");
+}
+
+/// Queues `frame` for `device_id` and counts it in `queued`; false when the queue is full.
+fn queue_one(relay: &Relay, device_id: Uuid, frame: &RelayMessage, queued: &mut usize) -> bool {
+    match relay.send(device_id, frame.clone()) {
+        Ok(()) => {
+            *queued += 1;
+            true
+        }
+        Err(SendError::Full) => false,
+        Err(SendError::Offline) => panic!("the device's link ended while its queue was filled"),
+    }
 }
 
 // ---- the hub ---------------------------------------------------------------------------------
