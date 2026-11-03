@@ -19,6 +19,17 @@ Run on the owner's MacBook Pro by the build session alone (no Touch ID; the owne
 | Swift tests | `swift test --filter "StorageResourcesTests\|MigratorTests\|AccountRegistryTests"` (and the full suite in CI) | Pass: 12 tests in 2 suites, including the new `StorageResourcesTests` (the bundle is found from a coordinator in `Contents/Helpers/B4AppCoordinator.app` of a packaged layout, and not outside an app) |
 | Package | `B4APP_FLAVOR=local B4APP_SKIP_NOTARIZE=1 B4APP_SIGN_IDENTITY=… ./Scripts/package.sh` | Pass, including the new check that the app carries the migrations |
 
+## 2026-11-03: One hub test cluster per checkout
+
+`Hub/scripts/test-db.sh` used to give every checkout on the Mac one shared cluster on port 54329. That caused the environmental failures in the next entry: another worktree's `--stop` ended runs mid-test, and two runs of the same `#[sqlx::test]` dropped each other's database. Now each checkout has its own cluster. The data is in `$TMPDIR/b4hub-test-<checksum of the checkout path>`, on a port from the same checksum (54400 to 55399), recorded in the data directory. A port held by something else moves the cluster to the next free one. CI is unchanged; its `hub` job uses a PostgreSQL service container.
+
+- **A second checkout** (a scratch copy of the script) got its own cluster. Its recorded port was seeded with this checkout's port, and it moved to the next one. Its `--stop` left this checkout's cluster running.
+- **Two `cargo test --workspace --locked` runs at once**, one against each cluster, both passed. On one shared cluster, the same tests would have dropped each other's databases.
+- `shellcheck` is clean.
+- A shared cluster started by the old script keeps running until it is stopped. `pg_ctl -D "$TMPDIR/b4hub-test/data" stop` stops it.
+
+Also in this PR: **`AccountCommandTests.logoutIsBoundedWhenTheRuntimeAndTheHubIgnoreCancellation`** failed on a loaded runner (CI run 41717884580). It took 5.43 s against a bound of `short.total` (4.3 s) + 1 s. That test and `logoutBoundedWhenHubDown` now allow 3 s of slack (`logoutSlack`). A regression still fails: `work` or `push` at its standard 9.5 s adds at least 7.5 s, and a step without a bound never ends. The 1 s slack never caught `close` or the floor at their standard values either (they add 0.5 s and 0.2 s). Both tests passed 5 runs locally.
+
 ## 2026-11-03: M8f APNs on prod (`hub.b4.run`)
 
 Target: the prod hub at hub-v0.3.0 (released from `main` at `b023ded`; the production deploy ran migrations to 15 applied, 0 pending, and rolled the service to task definition `b4hub-prod-hub:5`), with the three APNs secrets set per runbook 3a and `INCLUDE_APNS_SECRETS=1`. The prod Mac app was rebuilt from `main` at `d6f8181` (`./Scripts/package.sh`, Developer ID, notarized and stapled), because the one on the build Mac predated sign-in; it found its existing prod enrollment (`blove@cacheplane`) and got a Claude Code connection through its bundled `agent-workspace`. Brian's iPhone ran the prod TestFlight build 0.1.0 (2611031947, `main` at `2338c2e`) and paired by scanning the Mac's QR code. Evidence is the prod hub's CloudWatch log, never a token or payload.
