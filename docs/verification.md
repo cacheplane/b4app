@@ -16,6 +16,18 @@ Fixture gates only. Nothing deployed; the hosted hubs keep `B4HUB_APPLE_CALLBACK
 
 Open (live): Continue with Apple through `.https(host:path:)` with a Mac build that has this, against the test hub set to `B4HUB_APPLE_CALLBACK_URL=https://test.b4.run/app/auth/apple`. Whether `ASWebAuthenticationSession` takes the result back through the app's `webcredentials:test.b4.run` association can only be shown there.
 
+## 2026-11-03: M8f APNs on a real iPhone (live gate 2) and the cancelled-BEGIN fix (D-153)
+
+Target: Brian's iPhone with the beta TestFlight build 0.1.0 (2611030437, uploaded from `main` at `5882a60` with `Scripts/upload-ios.sh`, beta flavour), signed in to `hub.test.b4.run`; the test hub at task definition revision 16 (`B4HUB_PUSH_SENDER=apns`, the three APNs secrets set per runbook 3a, `INCLUDE_APNS_SECRETS=1` from #76); the Mac side was the packaged beta Mac app on the build Mac, driven in the background, with a Claude Code connection added through its bundled `agent-workspace` (its Codex follows `~/.codex/config.toml`, `approval_policy = "never"`, so Codex never asks). Evidence is the test hub's CloudWatch log (`APNs accepted`, kind, key, status 200, `apns-id`), never a token or payload.
+
+- The new build registered its token on first launch (05:45:44 UTC). A notification the earlier build had left behind (an approval answered while that build had no withdrawal code) was removed by the new build's backstop when it opened.
+- An approval from the Mac (`curl -sI https://example.org` under Claude Code's default permission mode) reached the locked iPhone's lock screen through `api.push.apple.com` (alert accepted 05:46:01). Answering it on the Mac withdrew it (background push accepted 05:46:29, the phone woke and pulled), and it left the lock screen; the badge matched the list (1: an unread reply, nothing waiting).
+- "Replied" arrived (05:46:30); tapping it opened the thread in the app, and the phone's read withdrew it (accepted 05:48:55, after the retry below). Earlier, a Codex turn's "Replied" was withdrawn by the Mac reading it (05:34:22 alert, 05:34:31 withdrawal).
+- With the earlier build (2611022211) installed, the same pushes arrived and woke the app, but its approval stayed: that build has no withdrawal code. Recorded so the cause is not mistaken for a delivery failure.
+- Found during the gate: at 05:46:37 the test hub's pool kept a connection inside a read-only transaction that sqlx did not know about (D-153), and the phone's read failed with "current transaction is aborted" until a retry reached a good connection. Restarting the test service (`aws ecs update-service --force-new-deployment`) cleared it; no error in the minute after. Prod's log has none in two days.
+- The fix, at this branch's head: `cargo test --workspace --locked` 464 passed, 0 failed (the new `tests/cancel.rs`: 4, and its three cancellation tests failed on `main` before the change, 3 of 3; 5 repeated runs passed); `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo fmt --all -- --check` clean.
+- Not exercised: Low Power Mode, an app swiped away in the switcher (the backstop then clears notifications at the next launch, D-146), prod (`hub.b4.run` runs hub-v0.1.0, which predates the APNs code; it sends through Apple after the next release).
+
 ## 2026-11-02: Sign-in polish, live (D-132, D-133)
 
 Run on the owner's MacBook Pro from main `8e7a4ca` (#68 merged), with the owner at Touch ID for the passkey step and the build session driving the apps.
@@ -123,7 +135,7 @@ Screenshots (kept with the session; not committed): the approval with badge 1, t
 
 ### Not exercised, and blocked
 
-- The iPhone gate (live gate 2): the owner's secrets step (`Infra/README.md`, runbook 3a) and the follow-up that sets `INCLUDE_APNS_SECRETS=1` are done (2026-11-03); `blocked` on a beta TestFlight build signed in to `hub.test.b4.run`. It covers what the Simulator cannot: a withdrawal push waking the app on a device, a `production` token from a TestFlight build and `api.push.apple.com`, a tap on the lock screen, Low Power Mode, and the badge on a real icon.
+- The iPhone gate (live gate 2): passed 2026-11-03 (see that entry). It covers what the Simulator cannot: a withdrawal push waking the app on a device, a `production` token from a TestFlight build and `api.push.apple.com`, a tap on the lock screen, Low Power Mode, and the badge on a real icon.
 - `api.push.apple.com` (production) and a 410/400 from the real Apple (dead-token deletion is fixture-tested against a fake APNs only); a provider-token expiry in the field (re-mint is fixture-tested with a fixed clock).
 - The >1000-change catch-up case (D-146) and an overtaken suspend's owed reconcile (D-147), both parked and unreproduced.
 - The hosted hubs: nothing applied to either AWS account.
