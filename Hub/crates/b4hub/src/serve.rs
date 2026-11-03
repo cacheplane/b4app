@@ -238,7 +238,7 @@ pub async fn run(
         state.db.clone(),
         state.notifier.clone(),
         state.relay.clone(),
-        state.instances.id(),
+        state.instances.clone(),
         state.shutdown.clone(),
     )));
     let (db, instance) = (state.db.clone(), state.instances.clone());

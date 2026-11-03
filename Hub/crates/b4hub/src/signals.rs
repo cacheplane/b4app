@@ -1,8 +1,8 @@
 //! This instance's side of the signals between instances (`b4hub_db::signals`): it wakes the
-//! long-polls of an org another instance took a push for, and looks the sessions of a user's
-//! links up again when another instance ended one (D-161, D-162). The same check runs here for
-//! the change this instance made, and once a minute on every link (`relay::link`), so a missed
-//! signal costs a link at most a minute.
+//! long-polls of an org another instance took a push for (D-161), looks the sessions of a user's
+//! links up again when another instance ended one (D-162), and replaces a listener that has gone
+//! quiet (D-164). The session check runs here for the change this instance made, and once a minute
+//! on every link (`relay::link`), so a missed signal costs a link at most a minute.
 
 use std::time::Duration;
 
@@ -10,8 +10,10 @@ use b4hub_core::relay::Role;
 use b4hub_db::devices::authenticate_session;
 use b4hub_db::signals::{self, Listener, Signal};
 use b4hub_db::Db;
+use tokio::time::Instant;
 use uuid::Uuid;
 
+use crate::instances::InstancesState;
 use crate::notify::Notifier;
 use crate::relay::{Close, LinkHandle, Relay};
 use crate::serve::{AppState, Shutdown};
@@ -19,52 +21,96 @@ use crate::serve::{AppState, Shutdown};
 /// How long [`listen_loop`] waits before trying again after the database refused it.
 const RETRY: Duration = Duration::from_secs(1);
 
-/// Acts on every signal another instance sends, until `shutdown`; its own (`instance`) are
-/// skipped, since it acted on them already.
+/// Acts on every signal another instance sends, until `shutdown`; its own are skipped, since it
+/// acted on them already.
 ///
 /// Whenever the listener is (re)established, every long-poll is woken, since wake-ups sent while
 /// nobody listened are lost (a poll woken for nothing queries once more and answers what it
-/// finds); after a dropped connection every link here is checked again too. While the database
-/// refuses, the loop retries every [`RETRY`].
+/// finds); after any reconnect, every link here is checked again too. A listener that hears
+/// nothing, not even a heartbeat echo, for the liveness window is presumed cut off and replaced
+/// (D-164). While the database refuses, the loop retries every [`RETRY`].
 pub async fn listen_loop(
     db: Db,
     notifier: Notifier,
     relay: Relay,
-    instance: Uuid,
+    instances: InstancesState,
     shutdown: Shutdown,
 ) {
+    let instance = instances.id();
+    let silence = instances.alive_within();
     let mut stopping = shutdown.subscribe();
     let mut listener: Option<Listener> = None;
+    let mut heard_at = Instant::now();
+    // A reconnect after a failure, rather than the first connect: links get checked again.
+    let mut recovering = false;
     loop {
-        let heard = async {
-            let listening = match &mut listener {
-                Some(listening) => listening,
-                None => {
-                    let listening = listener.insert(Listener::connect(&db).await?);
-                    notifier.wake_all();
-                    listening
+        let listening = match &mut listener {
+            Some(listening) => listening,
+            None => {
+                let connected = tokio::select! {
+                    connected = Listener::connect(&db) => connected,
+                    _ = stopping.wait_for(|down| *down) => return,
+                };
+                match connected {
+                    Ok(connected) => {
+                        heard_at = Instant::now();
+                        notifier.wake_all();
+                        if std::mem::take(&mut recovering) {
+                            recheck_everyone(&relay, &db);
+                        }
+                        listener.insert(connected)
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "the signal listener cannot connect; retrying");
+                        recovering = true;
+                        tokio::select! {
+                            () = tokio::time::sleep(RETRY) => {}
+                            _ = stopping.wait_for(|down| *down) => return,
+                        }
+                        continue;
+                    }
                 }
-            };
-            listening.next().await
+            }
         };
         let heard = tokio::select! {
-            heard = heard => heard,
+            heard = tokio::time::timeout_at(heard_at + silence, listening.next()) => heard,
             _ = stopping.wait_for(|down| *down) => return,
         };
-        match heard {
-            Ok(Signal::Changes {
+        let signal = match heard {
+            // Abandoning the read loses nothing: the connection is dropped with it.
+            Err(_) => {
+                tracing::warn!(
+                    silence_ms = silence.as_millis() as u64,
+                    "the signal listener heard nothing, not even an echo; reconnecting"
+                );
+                listener = None;
+                recovering = true;
+                continue;
+            }
+            Ok(Err(error)) => {
+                tracing::error!(%error, "the signal listener failed; reconnecting");
+                listener = None;
+                recovering = true;
+                continue;
+            }
+            Ok(Ok(_)) if instances.deaf() => continue,
+            Ok(Ok(signal)) => signal,
+        };
+        heard_at = Instant::now();
+        match signal {
+            Signal::Changes {
                 org,
                 instance: from,
-            }) => {
+            } => {
                 if from != instance {
                     notifier.wake(org);
                 }
             }
-            Ok(Signal::Recheck {
+            Signal::Recheck {
                 org,
                 user,
                 instance: from,
-            }) => {
+            } => {
                 if from != instance {
                     let (relay, db) = (relay.clone(), db.clone());
                     tokio::spawn(async move {
@@ -77,27 +123,25 @@ pub async fn listen_loop(
                     });
                 }
             }
+            Signal::Echo { .. } => {}
             // sqlx has already listened again on a new connection.
-            Ok(Signal::Lost) => {
+            Signal::Lost => {
                 tracing::warn!("the signal listener reconnected; waking every pull and link");
                 notifier.wake_all();
-                let (relay, db) = (relay.clone(), db.clone());
-                tokio::spawn(async move {
-                    for user in relay.users() {
-                        recheck_user(&relay, &db, user).await;
-                    }
-                });
-            }
-            Err(error) => {
-                tracing::error!(%error, "the signal listener failed; retrying");
-                listener = None;
-                tokio::select! {
-                    () = tokio::time::sleep(RETRY) => {}
-                    _ = stopping.wait_for(|down| *down) => return,
-                }
+                recheck_everyone(&relay, &db);
             }
         }
     }
+}
+
+/// Checks every link here again, on a task of its own.
+fn recheck_everyone(relay: &Relay, db: &Db) {
+    let (relay, db) = (relay.clone(), db.clone());
+    tokio::spawn(async move {
+        for user in relay.users() {
+            recheck_user(&relay, &db, user).await;
+        }
+    });
 }
 
 /// After a change that may have ended sessions of `user` (a log-out, a revocation, an account

@@ -1702,13 +1702,17 @@ async fn watching_tells_the_mac_the_full_set(pool: PgPool) {
     phone.unwatch("thread-1").await;
     assert_eq!(mac.expect_watching().await, ["thread-2"]);
 
-    // A second watcher of a thread already in the set changes nothing, so nothing is sent; nor
-    // does the first one letting go of it. A link handles its frames in order, so the `pong` after
-    // a `watch` means the watch (and its lookup) is done; without it the phone's `unwatch`, on
-    // another link, could land first and empty the set.
+    // A second watcher of a thread already in the set leaves the set as it was, and the Mac is
+    // told so with the thread in `refresh`, to catch the new watcher up. The first one letting go
+    // of it sends nothing. A link handles its frames in order, so the `pong` after a `watch` means
+    // the watch (and its lookup) is done; without it the phone's `unwatch`, on another link, could
+    // land first and empty the set.
     ipad.watch("thread-2").await;
     ipad.ping().await;
-    mac.expect_no_frame(QUIET).await;
+    assert_eq!(
+        mac.expect_watching_refresh().await,
+        (vec!["thread-2".to_string()], vec!["thread-2".to_string()])
+    );
     phone.unwatch("thread-2").await;
     phone.ping().await;
     mac.expect_no_frame(QUIET).await;
@@ -2226,6 +2230,7 @@ async fn frames_from_the_wrong_end_are_invalid(pool: PgPool) {
     phone
         .send(&RelayMessage::Watching {
             thread_ids: vec!["thread-1".into()],
+            refresh: vec![],
         })
         .await;
     assert_eq!(phone.expect_error().await.0, "invalid_request");
@@ -2382,4 +2387,53 @@ async fn logging_out_closes_the_link_opened_with_that_token(pool: PgPool) {
     assert_eq!(phone.expect_close().await, close_code::REVOKED);
     // The Mac's session is its own.
     mac.expect_quiet(QUIET).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_link_runs_a_bounded_number_of_commands_at_once(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    world.hub.state.relay.set_commands_in_flight_max(2);
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+    let interrupt = params_for(RelayMethod::TurnInterrupt);
+
+    // Two commands wait on the Mac, which has not answered: the link's budget is spent.
+    for id in ["c-1", "c-2"] {
+        phone
+            .command(id, RelayMethod::TurnInterrupt, interrupt.clone())
+            .await;
+        assert_eq!(mac.expect_command().await.0, id);
+    }
+    // A third is refused at once, without running.
+    phone
+        .command("c-3", RelayMethod::TurnInterrupt, interrupt.clone())
+        .await;
+    let (id, error) = phone.expect_refusal().await;
+    assert_eq!((id.as_str(), error.code.as_str()), ("c-3", "rate_limited"));
+    // A resend of one still running attaches to it, as always: no second answer.
+    phone
+        .command("c-1", RelayMethod::TurnInterrupt, interrupt.clone())
+        .await;
+    phone.expect_quiet(QUIET).await;
+
+    // Once the Mac answers, the room is back.
+    mac.reply("c-1", json!({})).await;
+    assert_eq!(phone.expect_reply().await.0, "c-1");
+    phone
+        .command("c-4", RelayMethod::TurnInterrupt, interrupt)
+        .await;
+    assert_eq!(mac.expect_command().await.0, "c-4");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_refused_watch_names_its_thread(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mut phone = world.phone().await;
+    phone.watch("no-such-thread").await;
+    let (code, details) = phone.expect_error_details().await;
+    assert_eq!(code, "not_found");
+    assert_eq!(
+        details.and_then(|d| d.get("threadId").cloned()),
+        Some(json!("no-such-thread"))
+    );
 }

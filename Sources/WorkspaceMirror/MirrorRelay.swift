@@ -12,7 +12,9 @@ import WorkspaceSync
 ///   dropped first) is `relay_timeout` "Not confirmed…", never retried here: a caller may resend the
 ///   same id while the Mac's idempotency covers it.
 /// - Watching: the watched set survives reconnects and `stop()`/`start()`; every new link sends it again
-///   (the hub forgets a link's watches when it closes).
+///   (the hub forgets a link's watches when it closes). A watch the hub refuses (an `error` frame naming
+///   its `threadId`) is a gap for that thread; one refused for a reason that may pass is sent again after
+///   a pause, a few times.
 /// - Updates: link changes, presence (with `lastSeenAt` moved onto this device's clock), relayed events,
 ///   and gaps (a `stream_gap`, or the link dropping while threads were watched), in the order they
 ///   happened. Each subscriber first gets the current link state and, while connected, the latest
@@ -67,6 +69,9 @@ public actor MirrorRelay {
   private var pump: Task<Void, Never>?
   private var pending: [String: [Waiter]] = [:]
   private var nextToken = 0
+  /// How many times each watched thread has been watched again after a refusal, since it was last
+  /// watched afresh.
+  private var watchRetries: [String: Int] = [:]
   /// The subscribers, with the link state and presence a new one starts from, behind a lock so that
   /// `updates()` can subscribe without suspending.
   private struct Fanout {
@@ -178,6 +183,7 @@ public actor MirrorRelay {
   public func watch(_ threadId: String) async {
     guard !watched.contains(threadId) else { return }
     watched.append(threadId)
+    watchRetries[threadId] = nil
     try? await sendIfConnected(.watch(threadId: threadId))
   }
 
@@ -282,6 +288,7 @@ public actor MirrorRelay {
     linkState = state
     broadcast(.link(state))
     if case .connected = state {
+      watchRetries = [:]
       for threadId in watched { try? await link.send(.watch(threadId: threadId)) }
     } else if wasConnected {
       for id in Array(pending.keys) {
@@ -317,11 +324,42 @@ public actor MirrorRelay {
         return local
       }
       broadcast(.presence(hosts))
-    case .hello, .ping, .pong, .command, .watch, .unwatch, .watching, .error:
-      // `error` frames concern the link or a watch (a watch miss names no thread); the link handles
+    case .error(let code, _, let details):
+      // A refused watch names its thread; the other `error` frames concern the link, which handles
       // the ones that end it.
+      guard case .object(let object)? = details, case .string(let threadId)? = object["threadId"],
+        watched.contains(threadId)
+      else { break }
+      watchRefused(threadId, code: code)
+    case .hello, .ping, .pong, .command, .watch, .unwatch, .watching:
       break
     }
+  }
+
+  /// The refusals a later watch may get past: a passing failure, or a thread the hub has not seen yet
+  /// (just started on the Mac, not yet synced).
+  private static let retriedWatchRefusals: Set<String> = ["internal_error", ErrorCode.notFound.rawValue]
+  private static let watchRetryLimit = 3
+  private static let watchRetryPause: Duration = .seconds(2)
+
+  /// The hub refused the watch of `threadId`: its live events are not coming, so subscribers hear a gap
+  /// (and wait for sync); a refusal that may pass is retried after `watchRetryPause` times the attempt.
+  private func watchRefused(_ threadId: String, code: String) {
+    broadcast(.gap(threadId: threadId))
+    guard Self.retriedWatchRefusals.contains(code) else { return }
+    let attempt = watchRetries[threadId, default: 0] + 1
+    guard attempt <= Self.watchRetryLimit else { return }
+    watchRetries[threadId] = attempt
+    let clock = clock
+    Task { [weak self] in
+      do { try await clock.sleep(for: Self.watchRetryPause * attempt) } catch { return }
+      await self?.watchAgain(threadId)
+    }
+  }
+
+  private func watchAgain(_ threadId: String) async {
+    guard watched.contains(threadId) else { return }
+    try? await sendIfConnected(.watch(threadId: threadId))
   }
 
   private static func parse(_ text: String) -> Date? {

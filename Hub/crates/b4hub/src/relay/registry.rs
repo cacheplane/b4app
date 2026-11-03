@@ -6,7 +6,7 @@
 //! whether it is still the current one when it comes to clean up.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 
@@ -18,7 +18,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 use uuid::Uuid;
 
-use super::limits::SlidingWindow;
+use super::limits::{SlidingWindow, COMMANDS_IN_FLIGHT};
 use super::route::Commands;
 use super::{close_code, link_replaced, WallClock, MIN_CLIENT_PROTOCOL};
 use crate::error::relay_code;
@@ -234,6 +234,9 @@ struct Watchers {
     /// client device -> thread -> the host that owns it. A client's watches belong to its current
     /// link and are dropped with it.
     by_client: HashMap<Uuid, HashMap<String, Uuid>>,
+    /// host device -> its watched threads that gained a client since the host was last told
+    /// ([`Relay::take_watching`]). Only watched threads are kept, so it stays bounded.
+    refresh: HashMap<Uuid, BTreeSet<String>>,
 }
 
 impl Watchers {
@@ -252,6 +255,12 @@ impl Watchers {
                 clients.remove(&client);
                 if clients.is_empty() {
                     threads.remove(thread_id);
+                    if let Some(refresh) = self.refresh.get_mut(&host) {
+                        refresh.remove(thread_id);
+                        if refresh.is_empty() {
+                            self.refresh.remove(&host);
+                        }
+                    }
                 }
             }
             if threads.is_empty() {
@@ -350,6 +359,8 @@ struct Inner {
     links: Mutex<HashMap<Uuid, Entry>>,
     next_generation: AtomicU64,
     min_client_protocol: AtomicU32,
+    /// How many commands a link opened from now on may have running at once.
+    commands_in_flight_max: AtomicUsize,
     clock: WallClock,
     gate: Mutex<Option<Arc<RegistrationGate>>>,
     upgrades: SlidingWindow,
@@ -391,6 +402,7 @@ impl Relay {
             links: Mutex::default(),
             next_generation: AtomicU64::new(0),
             min_client_protocol: AtomicU32::new(MIN_CLIENT_PROTOCOL),
+            commands_in_flight_max: AtomicUsize::new(COMMANDS_IN_FLIGHT),
             clock,
             gate: Mutex::new(None),
             upgrades: SlidingWindow::upgrades(),
@@ -676,6 +688,11 @@ impl Relay {
                 .entry(thread_id.to_string())
                 .or_default()
                 .insert(client.device_id);
+            watchers
+                .refresh
+                .entry(host)
+                .or_default()
+                .insert(thread_id.to_string());
         }
         self.bump_watches();
         Ok(())
@@ -708,6 +725,18 @@ impl Relay {
             .unwrap_or_default();
         threads.sort();
         threads
+    }
+
+    /// What `host` is to be told in `watching`: [`Relay::watched_by`], and the threads of it that
+    /// gained a client since the last call (which this call clears), sorted.
+    pub fn take_watching(&self, host: Uuid) -> (Vec<String>, Vec<String>) {
+        let refresh = self
+            .watchers()
+            .refresh
+            .remove(&host)
+            .map(|threads| threads.into_iter().collect())
+            .unwrap_or_default();
+        (self.watched_by(host), refresh)
     }
 
     /// Sends `event` to every client link watching `thread_id` of `host`. A link whose queue is
@@ -788,6 +817,17 @@ impl Relay {
         self.0
             .min_client_protocol
             .store(protocol, Ordering::Relaxed);
+    }
+
+    /// How many commands a link may have running at once ([`COMMANDS_IN_FLIGHT`]).
+    pub fn commands_in_flight_max(&self) -> usize {
+        self.0.commands_in_flight_max.load(Ordering::Relaxed)
+    }
+
+    /// Sets [`Relay::commands_in_flight_max`] for links opened from now on. A test seam: nothing in
+    /// the hub changes it.
+    pub fn set_commands_in_flight_max(&self, max: usize) {
+        self.0.commands_in_flight_max.store(max, Ordering::Relaxed);
     }
 
     /// Counts one link upgrade attempt by `device_id`. `Err` is how long until it may try again.
