@@ -628,7 +628,7 @@ final class TokenSequence: @unchecked Sendable {
       ])
   }
 
-  /// D-135: the step-up routes carry the bearer and their bodies, and answer the grant.
+  /// D-150: the step-up routes carry the bearer and their bodies, and answer the grant.
   @Test func stepUpCallsSendTheBearerAndTheirBodies() async throws {
     let recorder = Recorder()
     let api = make(host: "step-up.test") { captured in

@@ -406,7 +406,7 @@ async fn add_second_passkey_then_sign_in_with_either(pool: PgPool) {
         StatusCode::UNAUTHORIZED
     );
 
-    // An account with a sign-in method adds another only after stepping up (D-135).
+    // An account with a sign-in method adds another only after stepping up (D-150).
     let refused = call(hub, "POST", ADD_BEGIN, None, t).await;
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
     assert_eq!(refused.code(), "step_up_required");

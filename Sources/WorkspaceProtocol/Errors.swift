@@ -37,7 +37,7 @@ public enum ErrorCode: String, Codable, Sendable, CaseIterable {
   case appleLinked = "apple_linked"
   /// The account belongs to a shared org, which cannot be deleted from here.
   case sharedOrg = "shared_org"
-  /// The change needs a fresh passkey or Apple confirmation first (D-135). `details.methods` lists
+  /// The change needs a fresh passkey or Apple confirmation first (D-150). `details.methods` lists
   /// what the account can confirm with.
   case stepUpRequired = "step_up_required"
   /// The device's session ended, so it has to sign in again.

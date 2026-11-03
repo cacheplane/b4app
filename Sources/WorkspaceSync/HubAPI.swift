@@ -69,7 +69,7 @@ public protocol HubAPI: Sendable {
   /// grant.
   func deleteAccount(stepUp: String?) async throws
 
-  // MARK: Step-up (bearer, D-135)
+  // MARK: Step-up (bearer, D-150)
 
   /// `POST /v1/me/step-up/passkey/begin`: assertion options for the account's own passkeys.
   func stepUpPasskeyBegin() async throws -> StepUpBeginResponse

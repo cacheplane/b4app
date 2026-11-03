@@ -1,4 +1,4 @@
-//! Step-up (D-135): adding or removing a sign-in method and deleting the account need proof that
+//! Step-up (D-150): adding or removing a sign-in method and deleting the account need proof that
 //! the signed-in user just finished an assertion on the device that asks, not only its token. The
 //! device earns a grant here with a passkey (`POST /v1/me/step-up/passkey/begin`, then `/finish`)
 //! or in [`crate::routes::apple`] with an Apple ID (`POST /v1/me/step-up/apple`, then `/native` or

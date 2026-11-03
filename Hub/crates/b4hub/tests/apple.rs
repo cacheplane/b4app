@@ -2007,7 +2007,7 @@ async fn a_second_apple_id_on_one_account_is_refused(pool: PgPool) {
     assert_eq!(setup.fake.calls(|c| c.exchanges.len()), 2);
 }
 
-// ---- Step-up with the account's Apple ID (D-135) ----
+// ---- Step-up with the account's Apple ID (D-150) ----
 
 /// A native Apple step-up for the device of `token`, as the Apple ID `sub`; answers the finish.
 async fn native_step_up(setup: &Setup, token: &str, sub: &str) -> Answer {

@@ -315,7 +315,7 @@ impl Hub {
         self.http_stepped(method, path, token, body, None).await
     }
 
-    /// [`Hub::http_with`] carrying a step-up grant (D-135) when given.
+    /// [`Hub::http_with`] carrying a step-up grant (D-150) when given.
     pub async fn http_stepped(
         &self,
         method: &str,

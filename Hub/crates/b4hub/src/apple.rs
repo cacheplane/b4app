@@ -668,7 +668,7 @@ pub struct PendingApple {
     pub name: Option<String>,
     pub client_id: String,
     pub code: String,
-    /// For a step-up: the device that began it, which alone may redeem it (D-135).
+    /// For a step-up: the device that began it, which alone may redeem it (D-150).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<uuid::Uuid>,
 }

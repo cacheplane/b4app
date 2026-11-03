@@ -451,7 +451,7 @@ private func sha256Hex(_ text: String) -> String {
     await model.refreshIdentities()
     #expect(AccountSettingsContent(model: model).connectApple == "Connect Apple ID")
 
-    // Each try is confirmed with the account's passkey first (D-135).
+    // Each try is confirmed with the account's passkey first (D-150).
     let passkeys = FakePasskeys()
     let confirm: ScriptedTransport.Reply = .result([
       "ceremonyId": "s1", "authentication": ["publicKey": ["challenge": "c3RlcA", "rpId": "test.b4.run"]],

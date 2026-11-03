@@ -64,7 +64,7 @@ pub const APPLE_CEREMONY: &str = "apple";
 /// cannot finish a link, nor a link's a sign-in.
 pub const APPLE_LINK_CEREMONY: &str = "apple_link";
 
-/// The ceremony kind a step-up with the account's Apple ID stores (D-135); it finishes neither a
+/// The ceremony kind a step-up with the account's Apple ID stores (D-150); it finishes neither a
 /// sign-in nor a link.
 pub const APPLE_STEP_UP_CEREMONY: &str = "apple_step_up";
 

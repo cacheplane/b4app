@@ -317,7 +317,7 @@ import os
     try await authed("list your sign-in methods") { try await $0.identities() }.map(Self.identity)
   }
 
-  // MARK: Step-up (D-135)
+  // MARK: Step-up (D-150)
 
   /// Begin confirming with a passkey: options for the account's own passkeys.
   public func stepUpPasskeyBegin() async throws -> AccountStepUpBegin.Result {

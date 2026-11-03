@@ -613,7 +613,9 @@ private struct SlowDeleteHub: HubAPI {
     let rig = try Rig(fake: fake, makeAPI: { _, _ in SlowDeleteHub(fake: fake, refusal: refusal) })
     await rig.account.suspendSync()
     try await rig.signIn()
-    let refused = await #expect(throws: WorkspaceError.self) { _ = try await rig.account.deleteAccount() }
+    let refused = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.account.deleteAccount(stepUp: nil)
+    }
     #expect(refused?.code == .sharedOrg)
     #expect(rig.account.sync != nil)
     try await Task.sleep(for: .milliseconds(300))

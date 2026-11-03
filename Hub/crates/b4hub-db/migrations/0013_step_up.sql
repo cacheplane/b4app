@@ -1,4 +1,4 @@
--- Step-up grants (D-135): proof that the signed-in user just finished a passkey or Apple assertion
+-- Step-up grants (D-150): proof that the signed-in user just finished a passkey or Apple assertion
 -- on this device, which adding or removing a sign-in method and deleting the account require.
 --
 -- A grant is a 256-bit random token handed to the device once; only its SHA-256 is kept, as for a

@@ -416,7 +416,7 @@ private let minted = HubPair.Result(
     #expect(model.accountState == .signedOut(reason: nil))
   }
 
-  /// D-135: a change is confirmed with the account's passkey first. Closing that sheet sends nothing
+  /// D-150: a change is confirmed with the account's passkey first. Closing that sheet sends nothing
   /// and shows nothing; the hub asking for a step-up anyway reads the methods again and says so.
   @Test func aClosedConfirmationSendsNothingAndAStepUpRefusalSaysSo() async throws {
     let transport = ScriptedTransport()

@@ -279,7 +279,7 @@ extension WorkspaceModel {
     }
   }
 
-  /// Confirm it's you before a change that needs it (D-135), and answer the confirmation the change
+  /// Confirm it's you before a change that needs it (D-150), and answer the confirmation the change
   /// carries: with a passkey when the account has one, else with its Apple ID (Apple's web flow through
   /// the coordinator on the Mac, the native sheet on the phone). `nil` for an account with no sign-in
   /// method, which has nothing to confirm with and needs none. A closed sheet is `SignInCanceled`.

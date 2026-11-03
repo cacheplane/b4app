@@ -25,7 +25,7 @@ public protocol AccountHost: AnyObject {
   func logOut() async -> AccountStatus.Result
 
   func identities() async throws -> [AccountIdentity]
-  /// Begin confirming it's you with a passkey (D-135): options for the account's own passkeys.
+  /// Begin confirming it's you with a passkey (D-150): options for the account's own passkeys.
   func stepUpPasskeyBegin() async throws -> AccountStepUpBegin.Result
   /// Begin confirming it's you with the account's Apple ID, on the native sheet.
   func stepUpAppleBegin() async throws -> AppleNativeCeremony

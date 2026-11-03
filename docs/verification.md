@@ -2,7 +2,7 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
-## 2026-11-02: Step-up for account changes (D-135, resolves D-113)
+## 2026-11-02: Step-up for account changes (D-150, resolves D-113)
 
 Built on `blove/xenodochial-morse-e3bed8`.
 

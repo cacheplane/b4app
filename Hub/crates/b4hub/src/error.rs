@@ -217,7 +217,7 @@ impl ApiError {
         )
     }
 
-    /// A change that needs a fresh assertion (D-135) arrived without a live step-up grant of this
+    /// A change that needs a fresh assertion (D-150) arrived without a live step-up grant of this
     /// user and device. [`crate::routes::step_up::step_up_required`] adds `details.methods`.
     pub fn step_up_required() -> ApiError {
         ApiError::request(

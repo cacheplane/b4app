@@ -213,7 +213,7 @@ impl Hub {
     }
 }
 
-/// The step-up routes (D-135) and the header a gated change carries its grant in.
+/// The step-up routes (D-150) and the header a gated change carries its grant in.
 pub const STEP_UP_BEGIN: &str = "/v1/me/step-up/passkey/begin";
 pub const STEP_UP_FINISH: &str = "/v1/me/step-up/passkey/finish";
 pub const STEP_UP_HEADER: &str = "b4-step-up";

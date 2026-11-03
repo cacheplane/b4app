@@ -17,7 +17,7 @@ public protocol PasskeyCeremony {
   /// person wants to use (none on the device, or the sheet closed: the system does not tell them apart).
   func assert(_ options: JSONValue) async throws -> JSONValue?
   /// Confirm it's you with one of the account's own passkeys (the options' `allowCredentials`), on this
-  /// device or another (a phone's or a security key), before a change that needs it (D-135).
+  /// device or another (a phone's or a security key), before a change that needs it (D-150).
   /// `SignInCanceled` when the person closed the sheet.
   func confirm(_ options: JSONValue) async throws -> JSONValue
   /// Make a new passkey. `SignInCanceled` when the person closed the sheet, `PasskeysNotSetUp` when

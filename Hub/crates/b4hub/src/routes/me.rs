@@ -6,7 +6,7 @@
 //! (`DELETE /v1/sessions/self`), and deleting the account (`DELETE /v1/me`).
 //!
 //! Adding a passkey (at its begin), unlinking a sign-in method, and deleting the account also need
-//! a step-up grant ([`crate::routes::step_up`], D-135); every refusal that needs none comes first.
+//! a step-up grant ([`crate::routes::step_up`], D-150); every refusal that needs none comes first.
 //!
 //! The principal is always the token's; nothing in a body names a user. An identity is listed
 //! with its id, kind, name, and timestamps only: never a credential id, a passkey's stored

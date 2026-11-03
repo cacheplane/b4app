@@ -10,7 +10,7 @@ import WorkspaceSync
 /// account's sign-in methods, log-out, and deletion. The app runs only the ceremony UI; the token never
 /// leaves the coordinator. A WebAuthn response or an Apple handoff arrives once over the socket and goes
 /// to the hub; the Apple flow's verifier is made and kept here. None of them is logged, stored, or put
-/// in an error. A change that needs a step-up (D-135) brings its assertion or handoff in its own
+/// in an error. A change that needs a step-up (D-150) brings its assertion or handoff in its own
 /// params; the coordinator finishes the step-up and makes the change in the same command, so the grant
 /// the hub answers never leaves it.
 extension AccountManager {
@@ -185,7 +185,7 @@ extension AccountManager {
     return AccountAppleLinkFinish.Result(identity: Self.identity(added))
   }
 
-  // MARK: - Step-up (D-135)
+  // MARK: - Step-up (D-150)
 
   /// Begin confirming with a passkey: options for the account's own passkeys.
   public func stepUpBegin() async throws -> AccountStepUpBegin.Result {

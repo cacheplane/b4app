@@ -162,7 +162,7 @@ import WorkspaceProtocol
     #expect(body.error.details?.reason == HubError.unknownCredential)
   }
 
-  /// D-135's routes: the passkey step-up's begin and finish, the native Apple step-up, the grant, and
+  /// D-150's routes: the passkey step-up's begin and finish, the native Apple step-up, the grant, and
   /// the refusal of a change that lacks one.
   @Test func stepUpTypesRoundTrip() throws {
     let begun = try roundTrips(StepUpBeginResponse.self, "stepUpBegin")

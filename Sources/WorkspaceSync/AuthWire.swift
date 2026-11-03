@@ -217,7 +217,7 @@ public struct AddPasskeyFinishRequest: Codable, Sendable, Equatable, CustomStrin
   public var debugDescription: String { description }
 }
 
-// MARK: - Step-up (D-135)
+// MARK: - Step-up (D-150)
 //
 // Adding or removing a sign-in method and deleting the account carry a step-up grant, earned by a
 // passkey or Apple assertion on this device moments before, in the `B4-Step-Up` header.

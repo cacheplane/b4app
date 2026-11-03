@@ -690,7 +690,7 @@ rate_limited` (a finish).
 Adding a sign-in method (`POST /v1/me/passkeys/begin`, `POST /v1/me/apple`), removing one
 (`DELETE /v1/me/identities/{id}`), and deleting the account (`DELETE /v1/me`) need more than the
 device token: a **step-up grant**, proof that the signed-in user finished a passkey or Apple
-assertion on this device moments before (D-135). The change carries it in a header:
+assertion on this device moments before (D-150). The change carries it in a header:
 
 ```
 Authorization: Bearer <device token>

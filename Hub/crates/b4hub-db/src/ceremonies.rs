@@ -7,7 +7,7 @@
 //! that began it for two minutes; it is redeemed with the code from the redirect and the verifier
 //! the app kept. Neither table has row-level security: both are read before the org is known.
 //! A step-up grant proves, for two minutes and once, that the signed-in user just finished a
-//! passkey or Apple assertion on one device (D-135); only its hash is stored.
+//! passkey or Apple assertion on one device (D-150); only its hash is stored.
 //!
 //! Taking any of them is one conditional `UPDATE`: of two concurrent takes the second waits on the row
 //! lock, then finds `used_at` set and matches nothing, so exactly one succeeds.

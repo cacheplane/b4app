@@ -925,7 +925,7 @@ private func sha256Hex(_ text: String) -> String {
     try await rig.signIn(ann)
     rig.hub.fail("appleLinkBegin", with: refusal)
     let link = await #expect(throws: WorkspaceError.self) {
-      _ = try await rig.client.request(AccountAppleLinkStart.self, EmptyParams())
+      _ = try await rig.client.request(AccountAppleLinkStart.self, AccountStepUpParams())
     }
     #expect(link?.code == .protocolInvalid)
     #expect(link?.message.contains(message) == true)
@@ -1009,7 +1009,7 @@ private func sha256Hex(_ text: String) -> String {
     #expect(refused?.code == .appleLinked)
   }
 
-  /// D-135 on the Mac: an Apple-only account confirms on Apple's web flow. The coordinator begins the
+  /// D-150 on the Mac: an Apple-only account confirms on Apple's web flow. The coordinator begins the
   /// step-up with its own verifier's hash and redeems the handoff the change brings with that verifier,
   /// once.
   @Test func anAppleStepUpRedeemsItsHandoffWithTheKeptVerifier() async throws {
