@@ -195,7 +195,7 @@ private struct HubHarness {
   }
 }
 
-@Suite(BlockingDatabaseWork()) struct SyncFilterTests {
+@Suite struct SyncFilterTests {
   @Test func filterBlanksConnectionSecretsAndPathsAndTruncatesBigItems() throws {
     let connection = try record(
       1, "connections", "insert", rowId: "c1",
@@ -340,7 +340,7 @@ private struct HubHarness {
   }
 }
 
-@Suite(BlockingDatabaseWork(), .serialized) struct HubSyncTests {
+@Suite(.serialized) struct HubSyncTests {
   @Test func connectionProjectIdIsUploaded() async throws {
     let h = try await HubHarness.start()
     defer { Task { await h.close() } }

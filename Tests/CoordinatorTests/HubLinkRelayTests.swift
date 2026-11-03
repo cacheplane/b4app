@@ -309,7 +309,7 @@ private struct JoinedHarness {
 
 // MARK: - Tests
 
-@Suite(BlockingDatabaseWork(), .serialized, .timeLimit(.minutes(2))) struct HubLinkRelayTests {
+@Suite(.serialized, .timeLimit(.minutes(2))) struct HubLinkRelayTests {
   @Test func commandFromTheHubRunsAndReplies() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }

@@ -227,7 +227,7 @@ private func failure(
   return error
 }
 
-@Suite(BlockingDatabaseWork(), .serialized) struct RelayExecutorTests {
+@Suite(.serialized) struct RelayExecutorTests {
   // MARK: - turn.send
 
   @Test func relayedSendRunsATurn() async throws {

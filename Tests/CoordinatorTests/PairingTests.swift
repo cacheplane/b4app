@@ -125,7 +125,7 @@ struct GatedMintAPI: HubAPI {
 
 private func mac() -> DeviceInfo { DeviceInfo(id: "dev-mac", name: "Test Mac", platform: "macos") }
 
-@Suite(BlockingDatabaseWork(), .serialized) struct PairingTests {
+@Suite(.serialized) struct PairingTests {
   private func code(
     _ code: String = "WXYZ2345", expires: String = "2026-11-01T12:05:00.000000Z", hubURL: String? = nil
   ) -> PairingCodeResponse {
@@ -423,7 +423,7 @@ struct SocketRig {
   }
 }
 
-@Suite(BlockingDatabaseWork(), .serialized) struct PairingSocketTests {
+@Suite(.serialized) struct PairingSocketTests {
   @Test func pairIsRoutedAndNeverReplayedFromTheOperationCache() async throws {
     let rig = try await SocketRig.start()
     defer { Task { await rig.close() } }

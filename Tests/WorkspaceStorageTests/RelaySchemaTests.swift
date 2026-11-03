@@ -5,7 +5,7 @@ import WorkspaceTestSupport
 
 @testable import WorkspaceStorage
 
-@Suite(BlockingDatabaseWork()) struct RelaySchemaTests {
+@Suite struct RelaySchemaTests {
   @Test func settingsRoundTripAndAreNeverInTheChangeLog() throws {
     let db = try WorkspaceDatabase.temporary()
     #expect(try db.settings(key: "keepAwake") == nil)

@@ -53,7 +53,7 @@ private struct TemporaryHome {
   }
 }
 
-@Suite(BlockingDatabaseWork()) struct LegacyAdoptionTests {
+@Suite struct LegacyAdoptionTests {
   private func run(
     _ fixture: TemporaryHome, flavor: Flavor = .local, link: String? = "http://localhost:8080",
     readFails: Bool = false, bootOutFails: Bool = false, calls: Calls = Calls()
@@ -486,7 +486,7 @@ private struct ForgetfulSecretStore: SecretStore {
   func remove(_ ref: SecretRef) async throws -> Bool { false }
 }
 
-@Suite(BlockingDatabaseWork()) struct LegacyAdoptionGateTests {
+@Suite struct LegacyAdoptionGateTests {
   private func plan(
     flavor: Flavor = .local, source: Flavor.Source = .environment, environment: [String: String] = [:]
   ) -> LegacyAdoption.Plan? {

@@ -16,7 +16,7 @@ private func seedThread(_ db: WorkspaceDatabase, _ id: String) throws {
     ConversationThread(id: id, connectionId: "c1", nativeThreadId: "n-\(id)", title: id, context: "/tmp/p"))
 }
 
-@Suite(BlockingDatabaseWork()) struct ProjectStoreTests {
+@Suite struct ProjectStoreTests {
   @Test func displayNameFallsBackToTheFolder() throws {
     let db = try WorkspaceDatabase.temporary()
     let created = try db.insertProject(Project(id: "p1", name: ""), folders: ["/x/b4app"])

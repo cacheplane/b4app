@@ -1,0 +1,11 @@
+{
+  "version": 3,
+  "frozen_at": "2026-11-03T21:15:33.131180+00:00",
+  "parent": "manifest-v2-hosted.json",
+  "reason": "Use the third reserved diagnostic attempt as a matched hosted control before first final candidate outcome. It tests the observed scheduling mechanism with identical new1170-test inputs rather than comparing mismatched earlier1166-test cohorts.",
+  "budget": "Still at most3new full attempts: finalcandidate1,matchedcontrol1,finalcandidate2. Standard existing runners/cache/permissions; no spending-class change.",
+  "control": "Parent8af2364574ef2100a8d69fe8fc1e8fddc360bcf0; remove only53BlockingDatabaseWork suite annotations across30testfiles. Keep test support dependency/module, every test/assertion/deadline, new product fixes, all20Python/48Bats/Rust/native obligations and exact workflow. Never promote this negative control.",
+  "expected": "Control may reproduce existing timing failures. Preserve its conclusion and full/partial test population, not waive it as green. Candidate requires two full all-job passes on unchanged8af source.",
+  "interpretation": "One hosted control and two candidate attempts provide observed timings, not reliable percentiles or performance probability; cache/image/allocation conditions retained. Failed local all-four-green requirement remains failed and is not retrospectively relabeled. This is a separately frozen hosted diagnostic, not acceptance of that failed local comparison.",
+  "safety": "Explicit approval covers public source-only CI pushes. Add minimal control manifest only; no new evidence archives or private diagnostic ancestry; no main/PR/tag/release, publication or deployment."
+}

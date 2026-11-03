@@ -40,7 +40,7 @@ private func connect(_ coordinator: RunningCoordinator) async throws -> Workspac
   try await UnixSocketTransport.client(path: coordinator.paths.socketPath)
 }
 
-@Suite(BlockingDatabaseWork(), .serialized) struct CoordinatorSocketTests {
+@Suite(.serialized) struct CoordinatorSocketTests {
   @Test func answersPingWithItsEpochAndRejectsUnknownMethods() async throws {
     let coordinator = try await startIsolated()
     defer { Task { await coordinator.close() } }
@@ -177,7 +177,7 @@ private func connect(_ coordinator: RunningCoordinator) async throws -> Workspac
   }
 }
 
-@Suite(BlockingDatabaseWork()) struct EventLogTests {
+@Suite struct EventLogTests {
   @Test func demandsSnapshotOnceBufferRolledPastRequestedPosition() async {
     let log = EventLog(epoch: "e", bufferSize: 2)
     let event = AdapterEvent(kind: .sessionCreated, connectionId: "c", payload: ["nativeSessionId": "s"])
@@ -219,7 +219,7 @@ private final class RetireCount: Sendable {
 /// The pre-flavour adoption runs inside `Coordinator.start`, under the singleton lock and before the
 /// data directory exists (sign-in plan, Task 3 fix round 1). Plans here use fake closures and a
 /// temporary home.
-@Suite(BlockingDatabaseWork(), .serialized) struct CoordinatorAdoptionOrderTests {
+@Suite(.serialized) struct CoordinatorAdoptionOrderTests {
   private func plan(
     _ probe: AdoptionProbe, paths: PlatformPaths, fails: Bool = false
   ) -> LegacyAdoption.Plan {
@@ -333,7 +333,7 @@ private final class RetireCount: Sendable {
   }
 }
 
-@Suite(BlockingDatabaseWork(), .serialized, .timeLimit(.minutes(1))) struct SocketShutdownTests {
+@Suite(.serialized, .timeLimit(.minutes(1))) struct SocketShutdownTests {
   @Test func closingTheTransportTwiceIsSafe() async throws {
     let start = ContinuousClock.now
     func phase(_ name: String) {

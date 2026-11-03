@@ -9,7 +9,7 @@ import WorkspaceTestSupport
 
 @testable import Coordinator
 
-@Suite(BlockingDatabaseWork(), .serialized) struct KeepAwakeTests {
+@Suite(.serialized) struct KeepAwakeTests {
   @Test func assertionHeldOnlyWhenEnabledAndJoined() {
     let fake = FakePowerAssertions()
     let awake = KeepAwake(assertions: fake)

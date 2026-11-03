@@ -104,7 +104,7 @@ struct ServerHarness {
   }
 }
 
-@Suite(BlockingDatabaseWork(), .serialized) struct LocalServerRegistryTests {
+@Suite(.serialized) struct LocalServerRegistryTests {
   @Test func addsAProjectAndInspectsItsRoutes() async throws {
     let h = try await ServerHarness.start()
     defer { Task { await h.close() } }
@@ -187,7 +187,7 @@ struct ServerHarness {
 }
 
 /// Owned-server lifecycle against the fake project CLI.
-@Suite(BlockingDatabaseWork(), .serialized) struct LocalServerLifecycleTests {
+@Suite(.serialized) struct LocalServerLifecycleTests {
   /// The server's row once a `server.changed` event has moved it from the health it had in `server` to
   /// `health` (every change to a managed server is published). Events are ordered, so a match after
   /// the one that reported `server.health` is the change the caller waits for, not an older one.
@@ -453,7 +453,7 @@ struct ServerHarness {
   }
 }
 
-@Suite(BlockingDatabaseWork(), .serialized) struct LocalServerLogTests {
+@Suite(.serialized) struct LocalServerLogTests {
   @Test func logsAreTailedRedactedAndFollowable() async throws {
     let h = try await ServerHarness.start()
     defer { Task { await h.close() } }
@@ -496,7 +496,7 @@ struct ServerHarness {
   }
 }
 
-@Suite(BlockingDatabaseWork(), .serialized) struct ManagedConnectionTests {
+@Suite(.serialized) struct ManagedConnectionTests {
   private func connect(
     _ h: ServerHarness, _ server: LocalServer, route: String = "/chat#agent"
   ) async throws -> ConnectionAdd.Result {

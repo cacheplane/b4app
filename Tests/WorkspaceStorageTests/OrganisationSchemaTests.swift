@@ -28,7 +28,7 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
   }
 }
 
-@Suite(BlockingDatabaseWork()) struct OrganisationSchemaTests {
+@Suite struct OrganisationSchemaTests {
   @Test func everyChangeCarriesAClockAndOneTransactionSharesIt() throws {
     let db = try WorkspaceDatabase.temporary()
     _ = try db.write { c in

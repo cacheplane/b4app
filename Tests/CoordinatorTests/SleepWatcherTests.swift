@@ -4,7 +4,7 @@ import WorkspaceTestSupport
 
 @testable import Coordinator
 
-@Suite(BlockingDatabaseWork()) struct SleepWatcherTests {
+@Suite struct SleepWatcherTests {
   @Test func gapIsTheTimeAsleepPastTheThreshold() {
     #expect(
       SleepWatcher.gap(

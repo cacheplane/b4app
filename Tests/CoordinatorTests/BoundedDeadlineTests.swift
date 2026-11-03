@@ -5,7 +5,7 @@ import WorkspaceTestSupport
 
 @testable import Coordinator
 
-@Suite(BlockingDatabaseWork()) struct BoundedDeadlineTests {
+@Suite struct BoundedDeadlineTests {
   @Test func expiredBudgetsCannotReportSuccess() async {
     let started = Mutex(0)
     let (starts, continuation) = AsyncStream<Void>.makeStream()

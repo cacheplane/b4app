@@ -7,7 +7,7 @@ import WorkspaceTestSupport
 /// The sweep that removes test clusters left by exited runs. Every case runs on fake directories under
 /// a private root with injected liveness, so no real process is signalled and the real temporary
 /// directory is untouched.
-@Suite(BlockingDatabaseWork()) struct ScratchSweepTests {
+@Suite struct ScratchSweepTests {
   @Test func ownersComeFromTheName() {
     #expect(EphemeralPostgres.scratchOwner("b4pg-shared-4242") == .process(4242))
     #expect(EphemeralPostgres.scratchOwner("b4pgs-4242") == .process(4242))

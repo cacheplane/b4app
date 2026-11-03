@@ -62,7 +62,7 @@ private func turn(
     outcome: outcome, createdAt: created, updatedAt: updated ?? created)
 }
 
-@Suite(BlockingDatabaseWork()) struct ActivityQueryTests {
+@Suite struct ActivityQueryTests {
   @Test func activityMatchesTheSharedFixture() throws {
     let fixture = try AttentionRows.load()
     let db = try fixture.store()

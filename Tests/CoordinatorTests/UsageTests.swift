@@ -42,7 +42,7 @@ actor RefusingRemoveStore: SecretStore {
   }
 }
 
-@Suite(BlockingDatabaseWork(), .serialized) struct UsageTests {
+@Suite(.serialized) struct UsageTests {
   @Test func tokenBoundariesAreLocalMidnightAndMonday() throws {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = try #require(TimeZone(identifier: "America/Denver"))

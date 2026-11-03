@@ -14,7 +14,7 @@ private func seeded() throws -> WorkspaceDatabase {
   return db
 }
 
-@Suite(BlockingDatabaseWork()) struct ConversationStorageTests {
+@Suite struct ConversationStorageTests {
   @Test func upsertReplacesByNativeIdAndKeepsSequence() throws {
     let db = try seeded()
     _ = try db.insertTurn(Turn(id: "turn_a", threadId: "t1", operationId: "op-a"))
@@ -87,7 +87,7 @@ private func seeded() throws -> WorkspaceDatabase {
   }
 }
 
-@Suite(BlockingDatabaseWork()) struct SnapshotMergeTests {
+@Suite struct SnapshotMergeTests {
   private func snapshot(_ id: String?, _ role: String, _ text: String) -> SnapshotItem {
     SnapshotItem(
       nativeItemId: id, role: role, type: role == "user" ? "userMessage" : "agentMessage",

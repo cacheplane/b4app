@@ -255,7 +255,7 @@ actor EventCollector {
   }
 }
 
-@Suite(BlockingDatabaseWork(), .serialized) struct SessionServiceTests {
+@Suite(.serialized) struct SessionServiceTests {
   @Test func runsAWholeConversationOverTheSocket() async throws {
     let h = try await Harness.start()
     let connection = try await h.addCodex()
@@ -502,7 +502,7 @@ actor EventCollector {
   }
 }
 
-@Suite(BlockingDatabaseWork(), .serialized) struct ClaudeSessionServiceTests {
+@Suite(.serialized) struct ClaudeSessionServiceTests {
   @Test func runsAClaudeConversationBesideACodexThread() async throws {
     let h = try await Harness.start()
     let codex = try await h.addCodex()
@@ -585,7 +585,7 @@ actor EventCollector {
   }
 }
 
-@Suite(BlockingDatabaseWork(), .serialized) struct B4SessionServiceTests {
+@Suite(.serialized) struct B4SessionServiceTests {
   @Test func runsAB4ConversationBesideCodex() async throws {
     let server = try await FakeB4.start()
     let h = try await Harness.start()
@@ -791,7 +791,7 @@ actor EventCollector {
 
 // MARK: - M5
 
-@Suite(BlockingDatabaseWork(), .serialized) struct ThreadOrganizationTests {
+@Suite(.serialized) struct ThreadOrganizationTests {
   /// Spec A05: rename, pin, archive/unarchive, title search, and draft state survive a restart.
   @Test func organizationAndDraftsSurviveACoordinatorRestart() async throws {
     let h = try await Harness.start()
@@ -859,7 +859,7 @@ actor EventCollector {
   }
 }
 
-@Suite(BlockingDatabaseWork(), .serialized) struct ContinuityTests {
+@Suite(.serialized) struct ContinuityTests {
   private let mutation = { RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)) }
 
   /// A13 and A11: after a restart with the display cache gone, reconciliation rebuilds history from
@@ -987,7 +987,7 @@ actor EventCollector {
   }
 }
 
-@Suite(BlockingDatabaseWork(), .serialized) struct RecoveryTests {
+@Suite(.serialized) struct RecoveryTests {
   private let mutation = { RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)) }
 
   private func expectRefusal(
@@ -1113,7 +1113,7 @@ actor EventCollector {
   }
 }
 
-@Suite(BlockingDatabaseWork(), .serialized) struct FailureTests {
+@Suite(.serialized) struct FailureTests {
   /// A15: an expired login during a turn is actionable: the turn fails with `auth_required`, the
   /// connection reports `required`, viewers get `connection.changed`, and nothing is re-sent.
   @Test func expiredLoginFlipsTheConnectionToAuthRequired() async throws {
@@ -1160,7 +1160,7 @@ actor EventCollector {
   }
 }
 
-@Suite(BlockingDatabaseWork(), .serialized) struct LifecycleTests {
+@Suite(.serialized) struct LifecycleTests {
   private let mutation = { RequestOptions(operationId: UUID().uuidString, timeout: .seconds(120)) }
 
   /// Spec 10.3 Quit: local work is named and can be stopped; attached and remote runs are detached,
@@ -1234,7 +1234,7 @@ actor EventCollector {
   }
 }
 
-@Suite(BlockingDatabaseWork(), .serialized) struct RedactionTests {
+@Suite(.serialized) struct RedactionTests {
   /// A16 and spec 12: runtime error text with credential shapes is masked before it reaches an event,
   /// a thread read, or `doctor`.
   @Test func runtimeErrorsAreRedactedBeforeTheyLeaveTheCoordinator() async throws {

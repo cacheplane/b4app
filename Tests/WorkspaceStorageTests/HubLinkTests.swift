@@ -5,7 +5,7 @@ import WorkspaceTestSupport
 
 @testable import WorkspaceStorage
 
-@Suite(BlockingDatabaseWork()) struct HubLinkTests {
+@Suite struct HubLinkTests {
   @Test func hubLinkRoundTripsAndClearResetsSyncedFlags() throws {
     let db = try WorkspaceDatabase.temporary()
     #expect(try db.hubLink() == nil)
@@ -56,7 +56,7 @@ import WorkspaceTestSupport
   }
 }
 
-@Suite(BlockingDatabaseWork()) struct LegacyHubURLTests {
+@Suite struct LegacyHubURLTests {
   @Test func readsTheLinkedURLWithoutMigratingOrWriting() throws {
     let db = try WorkspaceDatabase.temporary()
     #expect(try WorkspaceDatabase.linkedHubURL(endpoint: db.endpoint, binDir: db.endpoint.binDir!) == nil)

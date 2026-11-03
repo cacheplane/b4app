@@ -155,7 +155,7 @@ private actor EventRecorder {
   }
 }
 
-@Suite(BlockingDatabaseWork(), .serialized) struct HubPullTests {
+@Suite(.serialized) struct HubPullTests {
   @Test func pullAppliesPhoneEditsAndPublishes() async throws {
     try await PullHarness.with { h in
       let recorder = await EventRecorder(h.events, signal: h.signal)
