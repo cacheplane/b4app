@@ -25,6 +25,11 @@ locals {
 
   # hub.b4.run -> b4.run, hub.test.b4.run -> test.b4.run
   webauthn_rp_id = trimprefix(var.hostname, "hub.")
+
+  # The one app URL scheme the Apple web flow hands back to (D-140): the
+  # flavour each hub serves, prod's app on prod and the beta app on test.
+  # Infra/scripts/deploy.sh sets the same per environment.
+  apple_callback_scheme = var.environment == "prod" ? "b4app" : "b4app-beta"
 }
 
 resource "aws_cloudwatch_log_group" "hub" {
@@ -73,6 +78,7 @@ resource "aws_ecs_task_definition" "hub" {
     environment_name      = var.environment
     public_url            = "https://${var.hostname}"
     rp_id                 = local.webauthn_rp_id
+    apple_callback_scheme = local.apple_callback_scheme
     db_url_secret_arn     = aws_secretsmanager_secret.this["database-url"].arn
     secret_key_arn        = aws_secretsmanager_secret.this["secret-key"].arn
     apple_team_id_arn     = aws_secretsmanager_secret.this["apple-team-id"].arn

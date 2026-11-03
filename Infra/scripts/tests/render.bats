@@ -27,6 +27,7 @@ render_hub() { # $1 = include_signin_secrets, extra args follow
     --task-role arn:aws:iam::123456789012:role/b4hub-test-task \
     --include-signin-secrets "$signin" \
     --var "db_url_secret_arn=${DB_URL_ARN:-$(arn database-url)}" \
+    --var apple_callback_scheme=b4app-beta \
     --var "secret_key_arn=$(arn secret-key)" \
     --var "apple_team_id_arn=$(arn apple-team-id)" \
     --var "apple_key_id_arn=$(arn apple-key-id)" \
@@ -56,7 +57,7 @@ render_hub() { # $1 = include_signin_secrets, extra args follow
   grep -q 'unknown_thing' "$tpl"
   run "$render" "$tpl" "$out" --family f --image i --region r --log-group g --env-name e \
     --public-url u --rp-id p --exec-role x --task-role t --include-signin-secrets 0 \
-    --var db_url_secret_arn=a
+    --var db_url_secret_arn=a --var apple_callback_scheme=b4app-beta
   [ "$status" -eq 2 ]
   output_has "unknown_thing"
   [ ! -e "$out" ]
@@ -68,7 +69,7 @@ render_hub() { # $1 = include_signin_secrets, extra args follow
   run "$render" "$tpl" "$out" --family f --image i --region r --log-group g --env-name e \
     --public-url u --rp-id p --exec-role x --task-role t --include-signin-secrets 1 \
     --var db_url_secret_arn=a --var secret_key_arn=a --var apple_team_id_arn=a \
-    --var apple_key_id_arn=a --var apple_private_key_arn=a
+    --var apple_key_id_arn=a --var apple_private_key_arn=a --var apple_callback_scheme=b4app-beta
   [ "$status" -eq 2 ]
 }
 
@@ -93,6 +94,7 @@ render_hub() { # $1 = include_signin_secrets, extra args follow
   [ "$(jq -r .executionRoleArn "$out")" = arn:aws:iam::123456789012:role/b4hub-test-task-exec ]
   [ "$(jq -r .taskRoleArn "$out")" = arn:aws:iam::123456789012:role/b4hub-test-task ]
   [ "$(jq -r '.containerDefinitions[0].environment[] | select(.name == "B4HUB_APPLE_SERVICES_ID") | .value' "$out")" = com.cacheplane.b4app.signin ]
+  [ "$(jq -r '.containerDefinitions[0].environment[] | select(.name == "B4HUB_APPLE_CALLBACK_SCHEME") | .value' "$out")" = b4app-beta ]
   [ "$(jq -r '.containerDefinitions[0].environment[] | select(.name == "B4HUB_PUBLIC_URL") | .value' "$out")" = https://hub.test.b4.run ]
   [ "$(jq -r '.containerDefinitions[0].image' "$out")" = 123456789012.dkr.ecr.us-east-2.amazonaws.com/b4hub@sha256:0123 ]
   [ "$(jq -r '.containerDefinitions[0].dockerLabels."b4hub.environment"' "$out")" = test ]

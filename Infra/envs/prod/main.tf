@@ -51,7 +51,7 @@ module "hub" {
   # not pushed yet. After the first deploy succeeds (Infra/README.md, "First
   # deploy"), change this to 1 and apply again; that also enables the
   # running-tasks alarm.
-  desired_count = 0
+  desired_count = 1
 }
 
 output "alb_dns_name" {

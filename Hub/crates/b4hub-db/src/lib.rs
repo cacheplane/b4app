@@ -14,6 +14,7 @@ pub mod instances;
 pub mod migrate;
 pub mod orgs;
 pub mod prune;
+pub mod push;
 pub mod relay;
 pub mod settings;
 pub mod snapshot;

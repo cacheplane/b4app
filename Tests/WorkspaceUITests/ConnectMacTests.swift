@@ -56,6 +56,20 @@ private func poll(_ what: String, _ condition: @MainActor () -> Bool) async {
     #expect(ConnectMacCopy.help == "Help")
   }
 
+  /// Live gate: after Pair, the "Use an enrollment code" form showed for a moment before the sheet
+  /// closed. The pairing that signed the phone in keeps its confirmation until the sheet is gone.
+  @Test func theEnrollmentSheetKeepsItsConfirmationWhileClosing() {
+    // Signed out, a link on screen: the question.
+    #expect(EnrollSheetFace.face(offering: true, paired: false, openedSignedIn: false) == .confirmation)
+    // Pair signed the phone in and cleared the offer: still the question, never the typed form.
+    #expect(EnrollSheetFace.face(offering: false, paired: true, openedSignedIn: false) == .confirmation)
+    #expect(EnrollSheetFace.face(offering: false, paired: true, openedSignedIn: true) == .confirmation)
+    // Cancel or a refused code, with nothing paired: the form for a signed-out phone, the result line
+    // for a signed-in one.
+    #expect(EnrollSheetFace.face(offering: false, paired: false, openedSignedIn: false) == .typedEntry)
+    #expect(EnrollSheetFace.face(offering: false, paired: false, openedSignedIn: true) == .signedInResult)
+  }
+
   @Test func connectMacShownWithoutMacosDevice() async throws {
     let store = try MirrorStore.inMemory()
     let fake = FakeHubAPI()

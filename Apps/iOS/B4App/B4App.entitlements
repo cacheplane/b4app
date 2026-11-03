@@ -12,5 +12,13 @@
   <array>
     <string>Default</string>
   </array>
+  <!-- Attention (M8f): notifications, and the flavour's App Group the widget reads the mirror from
+       (B4APP_APP_GROUP: group.com.cacheplane.b4app or group.com.cacheplane.b4app.beta, D-125). -->
+  <key>aps-environment</key>
+  <string>development</string>
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>$(B4APP_APP_GROUP)</string>
+  </array>
 </dict>
 </plist>

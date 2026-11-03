@@ -1,12 +1,15 @@
 import Foundation
 import Observation
 import UIKit
+import UserNotifications
+import WidgetKit
 import WorkspaceClient
 import WorkspaceMirror
 import WorkspaceProtocol
 import WorkspaceSecrets
 import WorkspaceSync
 import WorkspaceUI
+import os
 
 /// The phone's account is the shared model's host (sign-in plan, Task 14): the model signs in,
 /// onboards, logs out, and runs Settings → Account through it, exactly as the Mac's model does through
@@ -25,7 +28,14 @@ extension MirrorAccount: @retroactive AccountHost {}
 /// Store build on one phone never share a mirror or a token meant for another hub.
 ///
 /// The relay's link is held only while the app is active (`RelayLifecycle`): background closes it, and
-/// the next active opens it again with the same watched threads.
+/// the next active opens it again with the same watched threads. The pull loop is paused between turns
+/// (`MirrorAccount.suspendSync`) before the app is suspended, since iOS kills an app that is suspended
+/// holding a lock on a file in the App Group container, and resumed on the next active.
+///
+/// Attention (M8f): the mirror lives in the flavour's App Group so the widget reads it (D-125), every
+/// batch that touched threads or projects and every sign-in or sign-out reloads the widget's
+/// timelines, the APNs token goes to the hub while signed in (D-122), and a thread link (a notification
+/// tap, a widget row) opens its thread (D-124).
 @MainActor @Observable final class MirrorHost {
   static let shared = MirrorHost()
   static let flavor = PhoneFlavor.current
@@ -57,6 +67,9 @@ extension MirrorAccount: @retroactive AccountHost {}
   @ObservationIgnored private var relay: MirrorRelay?
   /// The token reference of the link the relay was made for.
   @ObservationIgnored private var relayTokenRef: String?
+  /// The token reference of the link notifications were last set up for (the push token registered,
+  /// the widget reloaded).
+  @ObservationIgnored private var pushTokenRef: String?
   /// Whether the relay should be running, from the scene phase and the sign-in.
   @ObservationIgnored private var lifecycle = RelayLifecycle(enrolled: false)
   /// The relay's start and stop calls, chained so they reach it in the order they were decided.
@@ -67,6 +80,24 @@ extension MirrorAccount: @retroactive AccountHost {}
   static let relayRefusedMessage = "The hub no longer accepts this iPhone. Log out, then sign in again."
   /// The shell's model, once made.
   @ObservationIgnored private weak var model: WorkspaceModel?
+  /// The sync's suspend and resume calls, chained (as the relay's are) so they reach it in the order
+  /// the scene phases and background wakes decided them.
+  @ObservationIgnored private var syncControl: Task<Void, Never>?
+  /// This phone's APNs token, hex-encoded. Kept in memory only and never logged (D-122).
+  @ObservationIgnored private(set) var pushToken: String?
+  /// A thread a link asked for before `makeModel` made the model (a cold launch from a tap).
+  @ObservationIgnored private var pendingOpen: String?
+  /// `backgroundRefresh` calls waiting for the next batch, each with the timer that gives up on it.
+  @ObservationIgnored private var batchWaiters: [UUID: BatchWaiter] = [:]
+
+  private struct BatchWaiter {
+    var continuation: CheckedContinuation<Bool, Never>
+    var timeout: Task<Void, Never>
+  }
+
+  private static let logger = Logger(subsystem: "com.cacheplane.b4app", category: "attention")
+  /// How long a background wake waits for the pull it nudged.
+  private static let backgroundWait: Duration = .seconds(8)
 
   private static var version: String {
     Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
@@ -87,7 +118,7 @@ extension MirrorAccount: @retroactive AccountHost {}
     do {
       let folder = try Self.directory()
       directory = folder
-      let path = folder.appendingPathComponent("mirror.sqlite").path
+      let path = folder.appendingPathComponent(MirrorLocation.fileName).path
       do {
         opened = try MirrorStore(path: path)
       } catch MirrorStoreError.needsRebuild(outboxEmpty: true) {
@@ -126,11 +157,20 @@ extension MirrorAccount: @retroactive AccountHost {}
     }
     account?.onChange = { status in MirrorHost.shared.accountChanged(status) }
     account?.onDevices = { MirrorHost.shared.refreshHostState() }
+    // Launched in the background (a push's wake): no `.background` phase will come to pause the loop,
+    // and a suspend queued after `startSync` would let the first turn run first. Mark the account
+    // suspended before it starts, so the loop begins parked.
+    let launchedInBackground = UIApplication.shared.applicationState == .background
+    if launchedInBackground { account?.prepareSuspended() }
     if let account, let link = account.link {
       makeRelay(link)
       account.startSync(fromSnapshot: fromSnapshot)
     }
     lifecycle = RelayLifecycle(enrolled: relay != nil, hasRelay: relay != nil)
+    pushTokenRef = account?.link?.tokenRef
+    // The suspend is also queued, ordered and under a background task as a `.background` phase's is,
+    // so the app is not suspended before the parked loop reports idle.
+    if launchedInBackground { controlSync(.suspend) }
   }
 
   /// The shared shell's model, with the phone's account as its host and the flavour's sign-in screen.
@@ -141,15 +181,60 @@ extension MirrorAccount: @retroactive AccountHost {}
     model.accountHost = account
     self.model = model
     refreshHostState()
+    if let id = pendingOpen {
+      pendingOpen = nil
+      model.requestOpenThread(id)
+    }
+    if isSignedIn { requestNotifications() }
     return model
   }
 
-  /// `<Application Support>/<flavour's folder>`, readable once the device has been unlocked after boot
-  /// so the pull loop keeps working while the screen is locked.
+  /// `<the flavour's App Group container>/<flavour's folder>` (D-125), after moving a mirror (and the
+  /// remembered devices) left in `<Application Support>/<flavour's folder>` by an earlier build; that
+  /// old directory when the App Group is not available. Either is readable once the device has been
+  /// unlocked after boot, so the pull loop and the widget work while the screen is locked.
   private static func directory() throws -> URL {
-    let base = try FileManager.default.url(
-      for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-    let directory = base.appendingPathComponent(flavor.directoryName, isDirectory: true)
+    let old = try FileManager.default.url(
+      for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+    ).appendingPathComponent(flavor.directoryName, isDirectory: true)
+    guard let appGroup = AppInfo.appGroup,
+      let group = MirrorLocation.groupDirectory(appGroup: appGroup, folder: flavor.directoryName)
+    else {
+      logger.warning("the App Group container is unavailable; the mirror stays in Application Support")
+      return try prepare(old)
+    }
+    do {
+      switch try MirrorLocation.move(from: old, to: group) {
+      case .nothingToMove: break
+      case .moved: logger.notice("moved the mirror into the App Group")
+      case .keptGroupCopy:
+        logger.notice("kept the App Group's mirror; the older copy stays in Application Support")
+      }
+    } catch {
+      // The main file moves last, and a failed move puts the side files it moved back, so while the main
+      // file is still in the old directory that copy is the whole one.
+      logger.error("the mirror could not move into the App Group: \(describe(error), privacy: .public)")
+      let moved = group.appendingPathComponent(MirrorLocation.fileName).path
+      let stayed = old.appendingPathComponent(MirrorLocation.fileName).path
+      if !FileManager.default.fileExists(atPath: moved), FileManager.default.fileExists(atPath: stayed) {
+        return try prepare(old)
+      }
+    }
+    // The devices this phone had at each hub (`MirrorDeviceMemory`) follow the mirror, unless the
+    // group already has its own; a failure only costs the hub reusing a device at the next sign-in.
+    let memory = "device.json"
+    let oldMemory = old.appendingPathComponent(memory)
+    let newMemory = group.appendingPathComponent(memory)
+    if FileManager.default.fileExists(atPath: oldMemory.path),
+      !FileManager.default.fileExists(atPath: newMemory.path)
+    {
+      try? FileManager.default.moveItem(at: oldMemory, to: newMemory)
+    }
+    return try prepare(group)
+  }
+
+  /// Creates `directory` when missing and sets its protection to `completeUntilFirstUserAuthentication`.
+  private static func prepare(_ directory: URL) throws -> URL {
     let protection: [FileAttributeKey: Any] = [
       .protectionKey: FileProtectionType.completeUntilFirstUserAuthentication
     ]
@@ -191,9 +276,27 @@ extension MirrorAccount: @retroactive AccountHost {}
         control(lifecycle.setEnrolled(true, hasRelay: relay != nil))
       }
     }
-    if status.state == .signedOut { syncStatus = MirrorSyncStatus() }
+    if status.state == .signedOut {
+      syncStatus = MirrorSyncStatus()
+      pendingOpen = nil
+    }
     refreshHostState()
     model?.applyHostAccount(status)
+    if link?.tokenRef != pushTokenRef {
+      // A new sign-in asks for notifications (whose token then goes to its hub); a sign-out empties
+      // the mirror, so the widget shows the unlinked glance.
+      pushTokenRef = link?.tokenRef
+      if link != nil {
+        requestNotifications()
+        registerPushToken()
+      } else {
+        // A phone whose log-out never reached the hub is still on its push list there; stop APNs
+        // delivering (a title on the lock screen) to a phone nobody is signed in on. The next
+        // sign-in's `requestNotifications()` registers again, after this call.
+        UIApplication.shared.unregisterForRemoteNotifications()
+      }
+      WidgetCenter.shared.reloadAllTimelines()
+    }
   }
 
   /// Join a hub with a typed one-time enrollment code (an operator's hub): validates the URL before
@@ -227,11 +330,143 @@ extension MirrorAccount: @retroactive AccountHost {}
     model?.accountHasNoMac = account?.hasNoMac ?? false
   }
 
+  // MARK: - Attention (M8f)
+
+  /// Asks to show notifications, then registers for remote ones whatever the answer: a background
+  /// push still refreshes the mirror and the widget when alerts are off.
+  func requestNotifications() {
+    Task {
+      do {
+        _ = try await UNUserNotificationCenter.current().requestAuthorization(options: [
+          .alert, .sound, .badge,
+        ])
+      } catch {
+        Self.logger.error("notification authorization failed: \(Self.describe(error), privacy: .public)")
+      }
+      UIApplication.shared.registerForRemoteNotifications()
+    }
+  }
+
+  /// APNs gave this phone a token: keep it (hex, in memory) and send it to the hub while signed in.
+  func received(pushToken token: Data) {
+    pushToken = token.map { String(format: "%02x", $0) }.joined()
+    registerPushToken()
+  }
+
+  /// Sends the token to the hub when there is one and the phone is signed in. A failure is logged
+  /// without the token; the next registration (the next launch, or the next sign-in) tries again.
+  private func registerPushToken() {
+    guard let token = pushToken, let link = account?.link,
+      let base = try? HubURL.validate(link.hubURL), let ref = SecretRef(rawValue: link.tokenRef),
+      let bundleId = Bundle.main.bundleIdentifier
+    else { return }
+    let api = HTTPHubAPI(baseURL: base, token: { [secrets] in try await secrets.read(ref) })
+    #if DEBUG
+      let environment = "sandbox"
+    #else
+      let environment = "production"
+    #endif
+    Task {
+      do {
+        try await api.registerPushToken(token, environment: environment, bundleId: bundleId)
+      } catch {
+        Self.logger.error("push token registration failed: \(Self.describe(error), privacy: .public)")
+      }
+    }
+  }
+
+  /// A thread link from a notification tap, a widget row, or `onOpenURL`. True when `url` is one (it
+  /// is then handled here and never reaches pairing or sign-in); while signed out it is taken and
+  /// does nothing.
+  func handle(url: URL) -> Bool {
+    guard let id = ThreadLink.threadId(from: url, scheme: AppInfo.urlScheme) else { return false }
+    if isSignedIn { open(threadId: id) }
+    return true
+  }
+
+  /// Opens a thread now, or once `makeModel` has made the model.
+  func open(threadId: String) {
+    if let model {
+      model.requestOpenThread(threadId)
+    } else {
+      pendingOpen = threadId
+    }
+  }
+
+  /// Whether the thread is open and in front of the owner, so a foreground notification for it is
+  /// not shown.
+  func isOnScreen(threadId: String) -> Bool {
+    guard let model else { return false }
+    return model.isDetailOnScreen && model.selectedThreadId == threadId
+  }
+
+  /// A `content-available` push woke the app: let the sync loop run, nudge it, wait up to eight seconds
+  /// for the batch it pulls, and reload the widget. Unless the app is active by then, the loop is
+  /// paused at an idle point before this returns, so the caller's completion handler (after which iOS
+  /// may suspend the app) never runs while the loop holds the mirror. True when a batch arrived.
+  func backgroundRefresh() async -> Bool {
+    guard let sync = account?.sync else { return false }
+    let assertion = BackgroundAssertion(name: "Refresh the mirror")
+    defer { assertion.end() }
+    await controlSync(.resume)?.value
+    let arrived = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+      let id = UUID()
+      let timeout = Task {
+        try? await Task.sleep(for: Self.backgroundWait)
+        MirrorHost.shared.resumeWaiter(id, arrived: false)
+      }
+      batchWaiters[id] = BatchWaiter(continuation: continuation, timeout: timeout)
+      Task { await sync.nudge() }
+    }
+    WidgetCenter.shared.reloadAllTimelines()
+    if UIApplication.shared.applicationState != .active {
+      await controlSync(.suspend)?.value
+    }
+    return arrived
+  }
+
+  /// Resumes one waiter, once: it is removed before it is resumed, so the later of the batch and the
+  /// timer finds nothing.
+  private func resumeWaiter(_ id: UUID, arrived: Bool) {
+    guard let waiter = batchWaiters.removeValue(forKey: id) else { return }
+    waiter.timeout.cancel()
+    waiter.continuation.resume(returning: arrived)
+  }
+
+  private enum SyncControl { case suspend, resume }
+
+  /// Queues a suspend or resume behind the ones before it; the returned task ends once it has reached
+  /// the loop (for a suspend, once the loop is idle). A suspend holds a background task from now until
+  /// then. The account keeps the choice, so a sync it starts meanwhile (a sign-in, a sign-out's
+  /// restart) begins parked or running to match.
+  @discardableResult private func controlSync(_ action: SyncControl) -> Task<Void, Never>? {
+    guard let account else { return nil }
+    let assertion = action == .suspend ? BackgroundAssertion(name: "Pause the mirror sync") : nil
+    let previous = syncControl
+    let task = Task {
+      await previous?.value
+      switch action {
+      case .suspend: await account.suspendSync()
+      case .resume: await account.resumeSync()
+      }
+      assertion?.end()
+    }
+    syncControl = task
+    return task
+  }
+
   // MARK: - The relay's link (M8c)
 
   /// The scene's phase changed: active holds the link, background closes it, inactive changes nothing.
+  /// Background also pauses the pull loop at an idle point (under a background task, so the app is not
+  /// suspended before it gets there), and active lets it go again.
   func enter(_ phase: RelayLifecycle.Phase) {
     control(lifecycle.enter(phase))
+    switch phase {
+    case .background: controlSync(.suspend)
+    case .active: controlSync(.resume)
+    case .inactive: break
+    }
   }
 
   /// What a link opened on this phone, or a scanned QR code, may do. Deciding sends nothing.
@@ -303,6 +538,10 @@ extension MirrorAccount: @retroactive AccountHost {}
   private func publish(_ batch: AppliedBatch) {
     transport?.publish(batch)
     refreshHostState()
+    if !batch.touchedThreadIds.isEmpty || !batch.touchedProjectIds.isEmpty {
+      WidgetCenter.shared.reloadAllTimelines()
+    }
+    for id in Array(batchWaiters.keys) { resumeWaiter(id, arrived: true) }
   }
 
   /// While pulls succeed only the time moves, so nothing is redrawn until a pull fails or recovers.
@@ -320,5 +559,23 @@ extension MirrorAccount: @retroactive AccountHost {}
     if let error = error as? WorkspaceError { return error.message }
     if let error = error as? KeychainError { return error.description }
     return error.localizedDescription
+  }
+}
+
+/// A `UIApplication` background task: asks iOS for time to finish before the app is suspended, ended
+/// by `end()` or, when that time runs out, by the expiration handler. Ending twice is harmless.
+@MainActor final class BackgroundAssertion {
+  private var id: UIBackgroundTaskIdentifier = .invalid
+
+  init(name: String) {
+    id = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+      MainActor.assumeIsolated { self?.end() }
+    }
+  }
+
+  func end() {
+    guard id != .invalid else { return }
+    UIApplication.shared.endBackgroundTask(id)
+    id = .invalid
   }
 }
