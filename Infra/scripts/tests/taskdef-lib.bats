@@ -20,10 +20,10 @@ lib() {
   prog=test taskdefs="$fakedefs" bash -c ". '$root/Infra/scripts/taskdef-lib.sh'; $2"
 }
 
-@test "the checked-in features.env turns the APNs secrets off for now" {
+@test "the checked-in features.env turns the APNs secrets on" {
   run bash -c "prog=test taskdefs='$root/Infra/taskdefs'; . '$root/Infra/scripts/taskdef-lib.sh'; apns_flag"
   [ "$status" -eq 0 ]
-  [ "$output" = 0 ]
+  [ "$output" = 1 ]
 }
 
 @test "apns_flag reads INCLUDE_APNS_SECRETS, 0 or 1" {

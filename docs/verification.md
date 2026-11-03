@@ -80,7 +80,7 @@ Screenshots (kept with the session; not committed): the approval with badge 1, t
 
 ### Not exercised, and blocked
 
-- The iPhone gate (live gate 2): `blocked` on the owner's secrets step (`Infra/README.md`, runbook 3a), then the one-line follow-up that sets `INCLUDE_APNS_SECRETS=1` (test hub first), then a beta TestFlight build signed in to `hub.test.b4.run`. It covers what the Simulator cannot: a withdrawal push waking the app on a device, a `production` token from a TestFlight build and `api.push.apple.com`, a tap on the lock screen, Low Power Mode, and the badge on a real icon.
+- The iPhone gate (live gate 2): the owner's secrets step (`Infra/README.md`, runbook 3a) and the follow-up that sets `INCLUDE_APNS_SECRETS=1` are done (2026-11-03); `blocked` on a beta TestFlight build signed in to `hub.test.b4.run`. It covers what the Simulator cannot: a withdrawal push waking the app on a device, a `production` token from a TestFlight build and `api.push.apple.com`, a tap on the lock screen, Low Power Mode, and the badge on a real icon.
 - `api.push.apple.com` (production) and a 410/400 from the real Apple (dead-token deletion is fixture-tested against a fake APNs only); a provider-token expiry in the field (re-mint is fixture-tested with a fixed clock).
 - The >1000-change catch-up case (D-146) and an overtaken suspend's owed reconcile (D-147), both parked and unreproduced.
 - The hosted hubs: nothing applied to either AWS account.
