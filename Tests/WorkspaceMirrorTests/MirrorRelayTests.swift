@@ -387,7 +387,7 @@ struct MirrorRelayTests {
   @Test func aRefusedWatchIsAGapAndIsRetried() async throws {
     let h = RelayHarness()
     await h.relay.watch("thread-1")
-    let socket = await h.connect()
+    let socket = try await h.connect()
     #expect(try await RelayHarness.nextFrame(socket) == .watch(threadId: "thread-1"))
     var updates = h.relay.updates().makeAsyncIterator()
     let named: JSONValue = .object(["threadId": .string("thread-1")])
