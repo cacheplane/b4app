@@ -233,7 +233,7 @@ private struct LinkHarness {
   /// Starts the link and answers its first open with `hello`.
   func connect() async throws -> FakeHubLinkSocket {
     await link.start()
-    let socket = await connection.nextSocket()
+    let socket = try await connection.nextSocket()
     socket.deliver(hello())
     await waitUntil("connected") { await link.status().state == .connected }
     return socket
@@ -297,7 +297,7 @@ private struct JoinedHarness {
   func join() async throws -> FakeHubLinkSocket {
     _ = try await coordinator.accounts.join(
       url: "http://localhost:8080", code: enrollCode, deviceName: "Test Mac")
-    let socket = await connection.nextSocket()
+    let socket = try await connection.nextSocket()
     socket.deliver(hello())
     await waitUntil("connected") { (try? await coordinator.hub.status().link?.state) == .connected }
     return socket
@@ -580,7 +580,7 @@ private struct JoinedHarness {
     #expect(live?.payload["delta"]?.stringValue == "Hi")
     #expect(live?.payload["catchUp"] == nil)
     await h.link.reconnectNow()
-    let again = await h.connection.nextSocket()
+    let again = try await h.connection.nextSocket()
     again.deliver(hello())
     again.deliver(.watching(threadIds: ["t1"]))
     let first = event(try await nextFrame(again))
@@ -600,7 +600,7 @@ private struct JoinedHarness {
     let gap = await h.coordinator.sleepWatcher.tick(
       continuous: .now + .seconds(120), suspending: .now)
     #expect(gap != nil)
-    let again = await h.connection.nextSocket()
+    let again = try await h.connection.nextSocket()
     #expect(socket.deviceClosedCode != nil)
     #expect(h.connection.openCount == 2)
     again.deliver(hello())
@@ -613,7 +613,7 @@ private struct JoinedHarness {
     let socket = try await h.connect()
     #expect(h.paths.started)
     await h.paths.becomeSatisfied()
-    let again = await h.connection.nextSocket()
+    let again = try await h.connection.nextSocket()
     #expect(socket.deviceClosedCode != nil)
     #expect(h.clock.now.offset == .zero)
     again.deliver(hello())
@@ -668,7 +668,7 @@ private struct JoinedHarness {
     #expect(connecting.lastError == "hub unreachable")
     #expect(connecting.since.flatMap(Timestamp.date(from:)) != nil)
     h.clock.advance(by: .seconds(1))
-    let socket = await h.connection.nextSocket()
+    let socket = try await h.connection.nextSocket()
     socket.deliver(hello())
     await waitUntil("connected") { await h.link.status().state == .connected }
     let connected = await h.link.status()
@@ -702,7 +702,7 @@ private struct JoinedHarness {
     defer { Task { await h.close() } }
     let thread = try await h.newThread(try await h.addCodex())
     await h.link.start()
-    let socket = await h.connection.nextSocket()
+    let socket = try await h.connection.nextSocket()
     let params = try JSONValue(encoding: TurnLookup.Params(operationId: "op-1", threadId: thread.id))
 
     /// Sets the hub's clock to the Mac's plus `skew` (a repeated hello moves the offset), then sends a

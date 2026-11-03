@@ -14,6 +14,15 @@ Branch `blove/passkey-device-names`, from main at `b8f1202`. Hub and docs only; 
 
 Not run live: a passkey made on a device and listed under its name in Settings → Account.
 
+## 2026-11-03: A timed-out relay test no longer crashes the test process
+
+Branch `blove/next-socket-cancel`. While verifying #92, a full `swift test` under 10 CPU burners crashed with signal 5. `HubLinkRelayTests.expiredOrUndatedCommandIsRefused` hit its 120 s limit, and swift-testing cancelled it while it waited in `FakeHubLinkConnection.nextSocket()`. That wait ended in `preconditionFailure`, so every test still to run was lost.
+
+- **The fix.** `nextSocket()` now `throws`, passing on the `CancellationError`, so only the test that ran out of time fails. Its callers, and the harness helpers that wrap it (`LinkHarness.connect`, `RelayHarness.connect` and `answerNextOpen`), now `try`.
+- **The other fakes.** In `Sources/WorkspaceSync` and the test helpers, this was the only `preconditionFailure`, `fatalError` or `try!` on a cancellable wait. `FakeChannel.next()` already throws on cancellation, and so does `FakeHubLinkSocket.nextSent()`. `SignedInCoordinator`'s `preconditionFailure("nobody is signed in")` is not about cancellation. The polling `waitUntil` helpers don't crash when cancelled, but they spin until their deadline (`try? Task.sleep` comes back at once) before they record their issue.
+- **The test.** `RelayLinkTests.aCancelledNextSocketThrowsAndTheFakeStillWorks` cancels a wait that has registered and one cancelled before it registers. Both must throw `CancellationError`, and the fake must still hand out the next socket. With the old `preconditionFailure` body put back, the same test crashed the run ("Fatal error: nextSocket was cancelled"). With the fix, it passes.
+- **Suite, lint.** A full `swift test` ran 1304 tests in 161 suites. The only failures were 5 tests in `PostgresServerTests`: the run used `B4APP_POSTGRES_BIN`, but they look for `.build/postgres` in the worktree itself. With that directory linked in, they passed when re-run (5 tests). `swift format lint --strict --recursive Sources Tests Apps Package.swift` is clean.
+
 ## 2026-11-03: One hub test cluster per checkout
 
 `Hub/scripts/test-db.sh` used to give every checkout on the Mac one shared cluster on port 54329. That caused the environmental failures in the next entry: another worktree's `--stop` ended runs mid-test, and two runs of the same `#[sqlx::test]` dropped each other's database. Now each checkout has its own cluster. The data is in `$TMPDIR/b4hub-test-<checksum of the checkout path>`, on a port from the same checksum (54400 to 55399), recorded in the data directory. A port held by something else moves the cluster to the next free one. CI is unchanged; its `hub` job uses a PostgreSQL service container.
@@ -53,7 +62,7 @@ Runs (10 CPU burners throughout, test bundle run 4 at a time through `swiftpm-te
 
 Under that load, the full runs failed in places that this fixture change does not touch (open, not fixed here):
 - **`B4AdapterSessionTests.aDroppedStreamReattachesWithoutResubmitting`** (line 241, `deltas != "Part one. Part two."`). The "drop" run emits "Part two." 1 s after the drop. A reattach to a live run gets only frames emitted after it attaches, and a reattach after `done` gets none. The test therefore assumes the adapter reattaches within 1 s, and its backoff (250, 500, 750 ms) under load does not promise that.
-- **`FakeHubLinkConnection.nextSocket()`** calls `preconditionFailure` when it is cancelled. When a test passes its 120 s limit (`HubLinkRelayTests.expiredOrUndatedCommandIsRefused`), swift-testing cancels it and the whole test process crashes (`HubLinkConnection.swift:317`). That was an earlier run with the single runs going through `swift test` too.
+- **`FakeHubLinkConnection.nextSocket()`** calls `preconditionFailure` when it is cancelled. When a test passes its 120 s limit (`HubLinkRelayTests.expiredOrUndatedCommandIsRefused`), swift-testing cancels it and the whole test process crashes (`HubLinkConnection.swift:317`). That was an earlier run with the single runs going through `swift test` too. Fixed since: the entry above.
 - Load timeouts in `MirrorSyncTests` (six), `PairLinkTests.aSwitchKeepsTheNewSignInBeforeEndingTheOldSession`, and `PairingTests.pairIsRoutedAndNeverReplayedFromTheOperationCache` (15 s `diagnostics.read`).
 
 ## 2026-11-03: Apple's web flow through an https callback, live (D-160)
