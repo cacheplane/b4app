@@ -371,7 +371,8 @@ async fn me_lists_identities(pool: PgPool) {
             .is_some_and(|s| s.ends_with('Z')));
     }
     assert_eq!(identities[0]["kind"], "passkey");
-    assert_eq!(identities[0]["name"], "Agent Workspace account");
+    // Named after the device it was made on (D-169).
+    assert_eq!(identities[0]["name"], "Brian's Mac");
     assert_eq!(identities[1]["kind"], "apple");
     assert_eq!(identities[1]["name"], "001.me@privaterelay.appleid.com");
     assert_eq!(identities[1]["lastUsedAt"], Value::Null);
@@ -520,6 +521,44 @@ async fn add_second_passkey_then_sign_in_with_either(pool: PgPool) {
     assert_eq!(as_blove.status, StatusCode::OK, "{}", as_blove.body);
     assert_eq!(as_blove.body["user"]["username"], "blove");
     assert_eq!(as_blove.body["org"]["slug"], "cacheplane");
+}
+
+/// D-169: each passkey is listed under the device it was made on: the sign-up device's name, and
+/// for one added later the name of the device that added it, never the placeholder.
+#[sqlx::test(migrations = false)]
+async fn passkeys_are_named_after_their_device(pool: PgPool) {
+    let setup = setup(&pool).await;
+    let hub = &setup.hub;
+    let mut first = Authenticator::new(ORIGIN);
+    let mac = sign_up(hub, &mut first, device("Brian's Mac", "macos")).await;
+    let phone = sign_in(hub, &mut first, 0, device("Brian's iPhone", "ios")).await;
+    assert_eq!(phone.status, StatusCode::OK, "{}", phone.body);
+    let p = token(&phone.body);
+
+    let grant = hub.step_up(&mut first, 0, p).await;
+    let begun = hub.stepped("POST", ADD_BEGIN, None, p, Some(&grant)).await;
+    assert_eq!(begun.status, StatusCode::OK, "{}", begun.body);
+    let mut second = Authenticator::new(ORIGIN);
+    let attestation = second.register(&begun.body["registration"]);
+    let added = call(
+        hub,
+        "POST",
+        ADD_FINISH,
+        Some(&json!({"ceremonyId": begun.body["ceremonyId"], "attestation": attestation})),
+        p,
+    )
+    .await;
+    assert_eq!(added.status, StatusCode::OK, "{}", added.body);
+    assert_eq!(added.body["name"], "Brian's iPhone");
+
+    let me = hub.get("/v1/me", Some(token(&mac))).await;
+    let names: Vec<&str> = me.body["identities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|identity| identity["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Brian's Mac", "Brian's iPhone"]);
 }
 
 #[sqlx::test(migrations = false)]
