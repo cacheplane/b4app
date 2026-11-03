@@ -2,6 +2,12 @@
 
 Material implementation decisions, newest first. The spec (`docs/roadmaps/Personal_Agent_Workspace_Technical_Spec_and_Roadmap.md`) is the requirement source; this log records deviations and choices the spec left open.
 
+## 2026-11-02 (M8c loose ends)
+
+Numbered D-151: D-150 was main's highest, on every branch and worktree, when this was written.
+
+- **D-151 The phone says nothing when another surface answered a runtime request first; "Already answered" is dropped.** Amends the M8c design's "Stop and approvals" (`docs/superpowers/specs/2026-11-01-m8c-relay-design.md`), which read `stale_runtime_request` as "Already answered". Live (`docs/verification.md`, "Answer from both"), the copy can never show: the Mac's `runtime_request.resolved` event reaches the phone before the hub's refusal of the phone's answer, on the same ordered link, and the card is gone first. A "Your Mac answered first" notice was considered and declined by the owner: the card also disappears before the reply when the phone's own answer wins, so such a notice would have to wait for the refusal and then show for a card already gone, and the outcome is in the transcript anyway. So `ControlState.alreadyAnswered` and `RelayCopy.alreadyAnswered` are removed, and `relayRespond` (`Sources/WorkspaceUI/SendState.swift`) clears the request's answer state on `stale_runtime_request` without setting an error. If the card is somehow still there (the event was lost), its buttons come back until sync resolves it. Tests: `SendStateTests.aStaleAnswerClearsQuietly`, `MirrorModelTests.theMacAnsweringFirstTakesTheCardAwayQuietly` (the real model over a mirror and a relay: answer out, resolved event, card gone while waiting, refusal, nothing shown). The hub and the coordinator are unchanged: the second answer still never reaches the runtime.
+
 ## 2026-11-02 (step-up for account changes)
 
 Closes D-113. Built on `blove/xenodochial-morse-e3bed8`. Numbered D-150: D-121 to D-140 are taken and D-141 onward is reserved for the APNs slice.

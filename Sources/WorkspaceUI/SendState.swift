@@ -79,14 +79,13 @@ public struct PendingSend: Sendable, Equatable, Identifiable {
 
 /// Stop and an approval's answer from the phone (spec "Stop and approvals"). Never retried.
 public enum ControlState: Sendable, Equatable {
-  case waiting, notConfirmed, alreadyAnswered
+  case waiting, notConfirmed
   case failed(String)
 
   public var label: String {
     switch self {
     case .waiting: return RelayCopy.waiting
     case .notConfirmed: return RelayCopy.notConfirmed
-    case .alreadyAnswered: return RelayCopy.alreadyAnswered
     case .failed(let reason): return reason
     }
   }
@@ -104,7 +103,6 @@ public enum RelayCopy {
   public static let didNotReach = "Didn't reach your Mac"
   public static let offlineTurn = "Not confirmed while your Mac is offline"
   public static let waiting = "Waiting for your Mac…"
-  public static let alreadyAnswered = "Already answered"
   public static let connecting = "Connecting to the hub…"
   public static let reconnecting = "Reconnecting to your Mac…"
   public static let leftHub = "Your Mac has left the hub. Its threads come back when it joins again."
@@ -162,7 +160,6 @@ enum SendRules {
   }
 
   static func control(_ error: WorkspaceError, now: Date) -> ControlState {
-    if error.code == .staleRuntimeRequest { return .alreadyAnswered }
     if mayHaveArrived(error) { return .notConfirmed }
     return .failed(reason(error, now: now))
   }
@@ -567,7 +564,9 @@ extension WorkspaceModel {
     }
   }
 
-  /// The phone's answer to a runtime request; "Already answered" when another surface was first.
+  /// The phone's answer to a runtime request. Another surface answering first says nothing (D-151):
+  /// its "resolved" event reaches the phone before the refusal, on the same ordered link, and has
+  /// already taken the card away.
   func relayRespond(_ params: RequestRespond.Params) async {
     let id = params.requestId
     guard answerStates[id] != .waiting, let client else { return }
@@ -580,7 +579,8 @@ extension WorkspaceModel {
           operationId: UUID().uuidString.lowercased(), timeout: Self.relayTimeout(for: .requestRespond)))
       answerStates[id] = nil
     } catch {
-      answerStates[id] = SendRules.control(WorkspaceError.from(error), now: now())
+      let error = WorkspaceError.from(error)
+      answerStates[id] = error.code == .staleRuntimeRequest ? nil : SendRules.control(error, now: now())
     }
   }
 }
