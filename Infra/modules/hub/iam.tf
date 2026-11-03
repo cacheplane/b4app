@@ -15,7 +15,7 @@ locals {
     }]
   })
 
-  # What the execution role may read: the six hub secrets and the RDS-managed
+  # What the execution role may read: the nine hub secrets and the RDS-managed
   # master secret (the admin task's psql container only).
   task_secret_arns = concat(
     [for k in local.secret_names : aws_secretsmanager_secret.this[k].arn],

@@ -108,8 +108,9 @@ extension MirrorAccount: @retroactive AccountHost {}
   @ObservationIgnored private var notificationWork: Task<Void, Never>?
   /// The throttled backstop's pending run, and when the last one began.
   @ObservationIgnored private var reconcileScheduled: Task<Void, Never>?
-  /// A backstop was asked for and has not begun: a suspend that cancelled the pending run, or a run
-  /// that found the loop parked, leaves it owed for the suspend (or the next resume) to run.
+  /// A backstop was asked for and has not begun yet. Every request sets it and the run clears it as
+  /// it begins, so it stays set while a throttled run is pending, after a suspend cancelled that run,
+  /// or when the run found the loop parked; the suspend (or the next resume) then runs what is owed.
   @ObservationIgnored private var reconcileOwed = false
   @ObservationIgnored private var lastReconcileAt: ContinuousClock.Instant?
   /// The badge last set, so only a change is logged.
@@ -525,11 +526,15 @@ extension MirrorAccount: @retroactive AccountHost {}
           }
         }
         // Before the background task ends: the owed backstop, or the one already running, so the
-        // badge and the notifications settle and nothing reads the mirror once the app may sleep.
-        if reconcileOwed {
-          await reconcileNotifications()
-        } else {
-          await notificationWork?.value
+        // badge and the notifications settle and nothing reads the mirror once the app may sleep. A
+        // suspend a later resume has overtaken or is queued behind skips it: the resume (and the wake
+        // that sent it) covers that period, and its background task may have expired meanwhile.
+        if lastResumeSerial < serial {
+          if reconcileOwed {
+            await reconcileNotifications()
+          } else {
+            await notificationWork?.value
+          }
         }
       case .resume:
         let at = Date()

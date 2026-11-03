@@ -656,7 +656,7 @@ run "exec_role_reads_only_known_secrets" {
 
   assert {
     condition     = toset(one([for s in jsondecode(aws_iam_role_policy.task_exec.policy).Statement : s if s.Sid == "ReadSecrets"]).Resource) == toset(concat(values(aws_secretsmanager_secret.this)[*].arn, [aws_db_instance.hub.master_user_secret[0].secret_arn]))
-    error_message = "the execution role reads the six hub secrets and the master secret, nothing else"
+    error_message = "the execution role reads the nine hub secrets and the master secret, nothing else"
   }
 
   assert {

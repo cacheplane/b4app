@@ -9,8 +9,9 @@ extension MirrorStore {
   /// - `turn:<id>`: the turn exists, its thread is not deleted, and the thread's `readTurnId` is nil
   ///   or names a turn created before it (`createdAt`, then `id`, bytewise, as the hub compares).
   ///   A read turn the mirror does not hold cannot be compared and leaves the notification up.
-  /// - Archiving a thread ends neither kind of notification (the hub withdraws only on answer, read, or
-  ///   delete); it only takes the thread out of the badge and the list.
+  /// - Archiving a thread ends neither kind of notification (the hub withdraws only when a request is
+  ///   answered or expires, when a turn is read, or when the thread or request is deleted); it only
+  ///   takes the thread out of the badge and the list.
   /// - Anything else (an unknown id, another prefix, a malformed key) is not outstanding.
   public func stillOutstanding(keys: [String]) throws -> Set<String> {
     try locked {

@@ -793,6 +793,41 @@ async fn read_withdraws_earlier_turns_once(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn outcome_after_the_read_is_silent(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Ship it").await;
+    let now = stamp(&w.app, &w.mac, "0 seconds").await;
+
+    // The turn lands terminal with its outcome still in flight; nothing notifies yet.
+    let arrived = push_batch(&w, &[turn(3, "turn-1", "terminal", None, &now)]).await;
+    assert!(arrived.notifications.is_empty());
+
+    // The Mac reads the turn before its outcome column reaches the hub.
+    let read = push_batch(
+        &w,
+        &[update(
+            4,
+            "threads",
+            "thread-1",
+            "readTurnId",
+            json!("turn-1"),
+        )],
+    )
+    .await;
+    assert!(read.withdrawals.is_empty());
+
+    // The outcome lands: the turn is already read, so it is neither sent nor withdrawn.
+    let finished = push_batch(
+        &w,
+        &[update(5, "turns", "turn-1", "outcome", json!("completed"))],
+    )
+    .await;
+    assert!(finished.notifications.is_empty());
+    assert!(finished.withdrawals.is_empty());
+    assert_eq!(withdrawn_in_ledger(&w).await, ["turn:turn-1"]);
+}
+
+#[sqlx::test(migrations = false)]
 async fn withdrawal_reaches_the_reader_too(pool: PgPool) {
     let w = world(&pool).await;
     with_thread(&w, "Ship it").await;

@@ -95,6 +95,10 @@ pub enum Sent {
 pub enum PushError {
     #[error("spool write failed: {0}")]
     Io(#[from] std::io::Error),
+    /// The payload could not be serialized. It never holds the token, and the error's text is
+    /// not shown.
+    #[error("the push payload could not be serialized")]
+    Encode,
     #[error("the APNs private key is not a P-256 private key")]
     BadKey,
     #[error("the APNs HTTP client could not be built")]
@@ -164,7 +168,7 @@ impl PushSender for SpoolSender {
                 ),
                 Message::Withdraw(w) => spool_withdrawal_payload(&w.keys, &w.bundle_id),
             };
-            let bytes = serde_json::to_vec_pretty(&payload).map_err(std::io::Error::from)?;
+            let bytes = serde_json::to_vec_pretty(&payload).map_err(|_| PushError::Encode)?;
             let dir = self.dir.clone();
             tokio::task::spawn_blocking(move || write_spool_file(&dir, &bytes))
                 .await
@@ -264,7 +268,8 @@ impl Endpoint {
             .timeout(REQUEST_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
             .http2_keep_alive_interval(Duration::from_secs(60))
-            .http2_keep_alive_while_idle(true);
+            .http2_keep_alive_while_idle(true)
+            .pool_idle_timeout(None);
         if url.scheme() == "http" {
             builder = builder.http2_prior_knowledge();
         }
@@ -510,7 +515,7 @@ impl PushSender for ApnsSender {
                 Message::Alert(n) => payload(&n.thread_id, &n.title, n.reason, &n.key, n.badge),
                 Message::Withdraw(w) => withdrawal_payload(&w.keys),
             };
-            let body = serde_json::to_vec(&body).map_err(std::io::Error::from)?;
+            let body = serde_json::to_vec(&body).map_err(|_| PushError::Encode)?;
             let mut jwt = self.provider_token(None)?;
             let (mut reminted, mut retried) = (false, false);
             loop {

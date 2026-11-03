@@ -757,7 +757,8 @@ has an open link (see *Link*), the hub closes it with code 4001. Errors: `401 un
 ### `POST /v1/devices/self/push-token`
 
 A phone registers the APNs token the hub notifies it at. One row per device, replaced on every
-call. The phone sends it each time the system hands it a token while it is signed in, and after each
+call. Registering a token removes it from any other device of the org that still holds it (a phone
+that enrolled again while the hub kept its old device), so no phone is told twice. The phone sends it each time the system hands it a token while it is signed in, and after each
 sign-in.
 
 Request (all three fields required, no other field allowed):
@@ -767,7 +768,8 @@ Request (all three fields required, no other field allowed):
 ```
 
 - `token`: 32 to 512 hexadecimal characters.
-- `environment`: `sandbox` (a Debug build) or `production`.
+- `environment`: `sandbox` from the Simulator and from device builds signed with a development
+  profile, `production` from TestFlight and App Store builds.
 - `bundleId`: the app's bundle identifier, `^[A-Za-z0-9][A-Za-z0-9.-]{0,154}$`. It comes from the
   phone, so the hub needs no per-flavour configuration.
 

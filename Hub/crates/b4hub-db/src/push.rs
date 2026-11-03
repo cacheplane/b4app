@@ -209,18 +209,26 @@ async fn phones(
 
 /// Everything a push's applied changes decide, in its transaction: the notifications for the
 /// rows in `touched` (turns and runtime requests, in batch order and without repeats) and the
-/// withdrawals for what those rows and the `threads` rows the push changed have ended. A
-/// notification whose subject also ended in this push is neither sent nor withdrawn (its ledger
-/// row is written and withdrawn at once). Every notification carries the badge as it stands
-/// after the whole batch.
+/// withdrawals for what those rows and the `threads` rows the push changed have ended. The read
+/// rule also runs for the thread of every touched turn that notifies: a turn's columns can land
+/// in a later batch than the `readTurnId` that already covers it, and that turn is over the
+/// moment it notifies. A notification whose subject also ended in this push is neither sent nor
+/// withdrawn (its ledger row is written and withdrawn at once). Every notification carries the
+/// badge as it stands after the whole batch.
 pub(crate) async fn decide(
     tx: &mut Transaction<'_, Postgres>,
     auth: &AuthedDevice,
     touched: &[(Kind, String)],
     threads: &[String],
 ) -> Result<(Vec<Notification>, Vec<Withdrawal>)> {
-    let (mut notifications, fresh) = detect(tx, auth, touched).await?;
-    let ended = withdraw(tx, auth, touched, threads).await?;
+    let (mut notifications, fresh, turn_threads) = detect(tx, auth, touched).await?;
+    let mut read_threads = threads.to_vec();
+    for thread in turn_threads {
+        if !read_threads.contains(&thread) {
+            read_threads.push(thread);
+        }
+    }
+    let ended = withdraw(tx, auth, touched, threads, &read_threads).await?;
     notifications.retain(|n| !ended.contains(&n.key));
     let keys: Vec<String> = ended.into_iter().filter(|k| !fresh.contains(k)).collect();
 
@@ -251,13 +259,14 @@ pub(crate) async fn decide(
 /// Marks withdrawn every outstanding ledger row of the user that is over, and returns their keys,
 /// sorted: a touched request that is no longer pending (or is deleted or gone); in a touched
 /// thread that is deleted (D-089's `deleted_at` or the owner's `userDeletedAt`), every row; in a
-/// touched thread whose `readTurnId` names one of its turns, every turn created at or before
-/// that turn (ties by id).
+/// thread of `read_threads` (the touched threads and those of the notifying turns) whose
+/// `readTurnId` names one of its turns, every turn created at or before that turn (ties by id).
 async fn withdraw(
     tx: &mut Transaction<'_, Postgres>,
     auth: &AuthedDevice,
     touched: &[(Kind, String)],
     threads: &[String],
+    read_threads: &[String],
 ) -> Result<Vec<String>> {
     let requests: Vec<&str> = touched
         .iter()
@@ -301,6 +310,8 @@ async fn withdraw(
             .fetch_all(&mut **tx)
             .await?,
         );
+    }
+    if !read_threads.is_empty() {
         ended.extend(
             sqlx::query_as::<_, (String, String)>(
                 "UPDATE notifications_sent n SET withdrawn_at = now() \
@@ -322,7 +333,7 @@ async fn withdraw(
             )
             .bind(auth.org_id)
             .bind(auth.user_id)
-            .bind(threads)
+            .bind(read_threads)
             .fetch_all(&mut **tx)
             .await?,
         );
@@ -411,16 +422,17 @@ struct Subject {
 /// Decides, for each row a push applied (`touched`, in batch order and without repeats), whether
 /// it notifies, records the decision in the ledger, and returns one [`Notification`] per
 /// registered phone of the user (other than the pusher's own device) for every row the ledger
-/// had not seen (its badge still 0), with the keys of those new ledger rows. Runs in the push's
-/// transaction. A row whose time cannot be read is treated as not recent rather than failing the
-/// batch.
+/// had not seen (its badge still 0), with the keys of those new ledger rows and the threads of
+/// the turns the rules say notify (without repeats). Runs in the push's transaction. A row whose
+/// time cannot be read is treated as not recent rather than failing the batch.
 async fn detect(
     tx: &mut Transaction<'_, Postgres>,
     auth: &AuthedDevice,
     touched: &[(Kind, String)],
-) -> Result<(Vec<Notification>, Vec<String>)> {
+) -> Result<(Vec<Notification>, Vec<String>, Vec<String>)> {
     let mut notifications = Vec::new();
     let mut fresh_keys = Vec::new();
+    let mut turn_threads: Vec<String> = Vec::new();
     let mut told: Option<Vec<Phone>> = None;
     for (kind, row_id) in touched {
         // A savepoint per row, so a timestamp the cast refuses costs that row only.
@@ -435,6 +447,9 @@ async fn detect(
         };
         savepoint.commit().await?;
         let Some(subject) = subject else { continue };
+        if *kind == Kind::Turn && !turn_threads.contains(&subject.thread_id) {
+            turn_threads.push(subject.thread_id.clone());
+        }
 
         let fresh: Option<i32> = sqlx::query_scalar(
             "INSERT INTO notifications_sent (org_id, kind, row_id, user_id, thread_id, reason) \
@@ -473,7 +488,7 @@ async fn detect(
             });
         }
     }
-    Ok((notifications, fresh_keys))
+    Ok((notifications, fresh_keys, turn_threads))
 }
 
 /// Reads the row (scoped to the org and the pushing user) with its thread's title and applies
