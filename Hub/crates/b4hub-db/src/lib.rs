@@ -19,6 +19,7 @@ pub mod relay;
 pub mod settings;
 pub mod snapshot;
 mod tenant;
+pub mod wakes;
 
 /// Everything that can go wrong in this crate. Messages never include a connection URL.
 #[derive(Debug, thiserror::Error)]

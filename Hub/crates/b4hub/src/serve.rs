@@ -21,7 +21,7 @@ use crate::config::Config;
 use crate::error::ApiError;
 use crate::instances::{self, InstancesState};
 use crate::maintenance::MaintenanceState;
-use crate::notify::Notifier;
+use crate::notify::{self, Notifier};
 use crate::push::PushSender;
 use crate::relay::{link, Relay};
 use crate::request_log;
@@ -52,7 +52,7 @@ pub struct AppState {
     pub shutdown: Shutdown,
     /// When each device last had `last_seen_at` written (throttle: once a minute).
     pub last_touched: LastTouched,
-    /// Wakes long-polling pulls when a push commits (single replica in M8a).
+    /// Wakes long-polling pulls when a push commits, here or (over `LISTEN`) on another instance.
     pub notifier: Notifier,
     /// The sign-in configuration `serve` read at start.
     pub config: Arc<Config>,
@@ -196,7 +196,8 @@ pub fn router(state: AppState) -> Router {
 /// grace and then closes, and in-flight requests drain.
 ///
 /// Around that, the instance: it registers before serving and heartbeats while it serves
-/// (`instances::heartbeat_loop`); when the signal arrives, commands held for offline Macs are
+/// (`instances::heartbeat_loop`), and listens for the other instances' pushes
+/// (`notify::listen_loop`); when the signal arrives, commands held for offline Macs are
 /// answered `device_offline` first (so the answers go out before the links close), and once the
 /// links are closed the instance releases its claims, so its users are claimed at once by the
 /// instance they reconnect to.
@@ -227,6 +228,12 @@ pub async fn run(
         state.instances.clone(),
         state.relay.clone(),
         public_url,
+        state.shutdown.clone(),
+    )));
+    let listening = AbortOnDrop(tokio::spawn(notify::listen_loop(
+        state.db.clone(),
+        state.notifier.clone(),
+        state.instances.id(),
         state.shutdown.clone(),
     )));
     let (db, instance) = (state.db.clone(), state.instances.clone());
@@ -271,6 +278,7 @@ pub async fn run(
         }
     };
     drop(heartbeat);
+    drop(listening);
     let left = signalled_at
         .lock()
         .unwrap_or_else(|p| p.into_inner())
