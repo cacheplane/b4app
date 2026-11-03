@@ -111,6 +111,16 @@ extension MirrorStore {
 
   // MARK: - Schema
 
+  /// The read-only counterpart of `prepare`: sets the two pragmas that do not write, then insists the
+  /// file is already at this build's schema version. Nothing is created, migrated, or changed.
+  static func prepareReadOnly(_ db: OpaquePointer) throws {
+    try execute(db, "PRAGMA busy_timeout = 5000")
+    try execute(db, "PRAGMA query_only = 1")
+    guard try integer(db, "PRAGMA user_version") == MirrorSchema.version else {
+      throw MirrorStoreError.needsRebuild(outboxEmpty: true)
+    }
+  }
+
   /// Before anything else touches the file: refuses a schema newer than this build's, then sets the
   /// pragmas and runs the migrations after the file's `user_version`, all in one transaction. A
   /// migration that fails is rolled back, so the file is as it was.

@@ -25,6 +25,9 @@ xcuserdata/
 !.vscode/settings.json
 !.vscode/extensions.json
 
+# the hub's Simulator notification spool
+Hub/push-spool/
+
 # secrets (never committed)
 .env
 .env.*
