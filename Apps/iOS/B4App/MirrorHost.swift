@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import Synchronization
 import UIKit
 import UserNotifications
 import WidgetKit
@@ -90,6 +91,27 @@ extension MirrorAccount: @retroactive AccountHost {}
   /// `backgroundRefresh` calls waiting for the next batch, each with the timer that gives up on it.
   @ObservationIgnored private var batchWaiters: [UUID: BatchWaiter] = [:]
 
+  /// Numbers the sync's control calls in the order they were queued, and the last resume among them, so
+  /// a suspend that a later resume has overtaken (a wake that stopped waiting for it) does nothing.
+  @ObservationIgnored private var syncControlSerial = 0
+  @ObservationIgnored private var lastResumeSerial = 0
+  /// Set once a suspend has parked the loop, and cleared by the resume that lets it go again.
+  @ObservationIgnored private var syncParked = false
+  /// A moment the sync loop's next turn is known to begin after: its last report, or when it was let
+  /// go after being parked. Nil until known.
+  @ObservationIgnored private var turnStartsAfter: Date?
+  /// The backstop judges only notifications delivered before this: a pull that began later has been
+  /// applied since, so a request or turn the notification names is in the mirror if it exists at all.
+  /// A younger notification may name a row the mirror has not pulled yet, which would read as ended.
+  @ObservationIgnored private var judgedThrough = Date.distantPast
+  /// The backstop and the sign-out clearing, chained so they reach the notification center in order.
+  @ObservationIgnored private var notificationWork: Task<Void, Never>?
+  /// The throttled backstop's pending run, and when the last one began.
+  @ObservationIgnored private var reconcileScheduled: Task<Void, Never>?
+  @ObservationIgnored private var lastReconcileAt: ContinuousClock.Instant?
+  /// The badge last set, so only a change is logged.
+  @ObservationIgnored private var lastBadge: Int?
+
   private struct BatchWaiter {
     var continuation: CheckedContinuation<Bool, Never>
     var timeout: Task<Void, Never>
@@ -98,6 +120,24 @@ extension MirrorAccount: @retroactive AccountHost {}
   private static let logger = Logger(subsystem: "com.cacheplane.b4app", category: "attention")
   /// How long a background wake waits for the pull it nudged.
   private static let backgroundWait: Duration = .seconds(8)
+  /// How long a background wake waits for a queued suspend of the sync before resuming it anyway.
+  private static let queuedSuspendWait: Duration = .seconds(3)
+  /// The backstop runs at most once in this interval (streaming sends batches in bursts).
+  private static let reconcileInterval: Duration = .seconds(1)
+
+  /// Which APNs endpoint this build's token belongs to (M8f APNs design, "The phone"): the Simulator
+  /// is `sandbox`; on a device, the embedded provisioning profile's `aps-environment`, or `production`
+  /// when Apple stripped the profile (TestFlight, the App Store).
+  private static var pushEnvironment: String {
+    #if targetEnvironment(simulator)
+      let isSimulator = true
+    #else
+      let isSimulator = false
+    #endif
+    let profile = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision")
+      .flatMap { try? Data(contentsOf: $0) }
+    return PushEnvironment.resolve(isSimulator: isSimulator, profile: profile)
+  }
 
   private static var version: String {
     Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
@@ -164,6 +204,8 @@ extension MirrorAccount: @retroactive AccountHost {}
     if launchedInBackground { account?.prepareSuspended() }
     if let account, let link = account.link {
       makeRelay(link)
+      // The loop's first turn begins after this.
+      turnStartsAfter = Date()
       account.startSync(fromSnapshot: fromSnapshot)
     }
     lifecycle = RelayLifecycle(enrolled: relay != nil, hasRelay: relay != nil)
@@ -286,6 +328,9 @@ extension MirrorAccount: @retroactive AccountHost {}
       // A new sign-in asks for notifications (whose token then goes to its hub); a sign-out empties
       // the mirror, so the widget shows the unlinked glance.
       pushTokenRef = link?.tokenRef
+      // Another sync's turns: the backstop waits for its reports before judging anything.
+      turnStartsAfter = nil
+      judgedThrough = .distantPast
       if link != nil {
         requestNotifications()
         registerPushToken()
@@ -294,6 +339,7 @@ extension MirrorAccount: @retroactive AccountHost {}
         // delivering (a title on the lock screen) to a phone nobody is signed in on. The next
         // sign-in's `requestNotifications()` registers again, after this call.
         UIApplication.shared.unregisterForRemoteNotifications()
+        clearNotifications()
       }
       WidgetCenter.shared.reloadAllTimelines()
     }
@@ -361,11 +407,7 @@ extension MirrorAccount: @retroactive AccountHost {}
       let bundleId = Bundle.main.bundleIdentifier
     else { return }
     let api = HTTPHubAPI(baseURL: base, token: { [secrets] in try await secrets.read(ref) })
-    #if DEBUG
-      let environment = "sandbox"
-    #else
-      let environment = "production"
-    #endif
+    let environment = Self.pushEnvironment
     Task {
       do {
         try await api.registerPushToken(token, environment: environment, bundleId: bundleId)
@@ -400,15 +442,17 @@ extension MirrorAccount: @retroactive AccountHost {}
     return model.isDetailOnScreen && model.selectedThreadId == threadId
   }
 
-  /// A `content-available` push woke the app: let the sync loop run, nudge it, wait up to eight seconds
-  /// for the batch it pulls, and reload the widget. Unless the app is active by then, the loop is
-  /// paused at an idle point before this returns, so the caller's completion handler (after which iOS
-  /// may suspend the app) never runs while the loop holds the mirror. True when a batch arrived.
+  /// A `content-available` push woke the app: let the sync loop run (after waiting at most three
+  /// seconds for a suspend queued before it), nudge it, wait up to eight seconds for the batch it pulls,
+  /// reload the widget, and run the notification backstop and badge. Unless the app is active by then,
+  /// the loop is paused at an idle point before this returns, so the caller's completion handler (after
+  /// which iOS may suspend the app) never runs while the loop holds the mirror. True when a batch
+  /// arrived.
   func backgroundRefresh() async -> Bool {
     guard let sync = account?.sync else { return false }
     let assertion = BackgroundAssertion(name: "Refresh the mirror")
     defer { assertion.end() }
-    await controlSync(.resume)?.value
+    await controlSync(.resume, waitingAtMost: Self.queuedSuspendWait)?.value
     let arrived = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
       let id = UUID()
       let timeout = Task {
@@ -419,6 +463,7 @@ extension MirrorAccount: @retroactive AccountHost {}
       Task { await sync.nudge() }
     }
     WidgetCenter.shared.reloadAllTimelines()
+    await reconcileNotifications()
     if UIApplication.shared.applicationState != .active {
       await controlSync(.suspend)?.value
     }
@@ -439,20 +484,176 @@ extension MirrorAccount: @retroactive AccountHost {}
   /// the loop (for a suspend, once the loop is idle). A suspend holds a background task from now until
   /// then. The account keeps the choice, so a sync it starts meanwhile (a sign-in, a sign-out's
   /// restart) begins parked or running to match.
-  @discardableResult private func controlSync(_ action: SyncControl) -> Task<Void, Never>? {
+  ///
+  /// With `waitingAtMost`, the call waits for the one before it only that long (a background wake must
+  /// finish inside iOS's budget); the earlier call is not cancelled, and a suspend that a later resume
+  /// has overtaken this way does nothing when its turn comes, so the last decision still wins.
+  @discardableResult private func controlSync(
+    _ action: SyncControl, waitingAtMost limit: Duration? = nil
+  ) -> Task<Void, Never>? {
     guard let account else { return nil }
     let assertion = action == .suspend ? BackgroundAssertion(name: "Pause the mirror sync") : nil
     let previous = syncControl
+    syncControlSerial += 1
+    let serial = syncControlSerial
+    if action == .resume { lastResumeSerial = serial }
     let task = Task {
-      await previous?.value
+      if let previous, let limit {
+        if await !Self.wait(for: previous, atMost: limit) {
+          Self.logger.notice("a queued pause of the mirror sync is still running; the wake goes ahead")
+        }
+      } else {
+        await previous?.value
+      }
       switch action {
-      case .suspend: await account.suspendSync()
-      case .resume: await account.resumeSync()
+      case .suspend:
+        if lastResumeSerial < serial {
+          await account.suspendSync()
+          // Parked, unless a resume overtook it while it waited for the loop.
+          if lastResumeSerial < serial {
+            syncParked = true
+            turnStartsAfter = Date()
+          }
+        }
+      case .resume:
+        let at = Date()
+        await account.resumeSync()
+        if syncParked {
+          syncParked = false
+          turnStartsAfter = max(turnStartsAfter ?? at, at)
+        }
       }
       assertion?.end()
     }
     syncControl = task
     return task
+  }
+
+  /// Waits for `task` at most `limit`; true when it finished first. `task` is not cancelled either way.
+  private nonisolated static func wait(for task: Task<Void, Never>, atMost limit: Duration) async -> Bool {
+    let pending = Mutex<CheckedContinuation<Bool, Never>?>(nil)
+    let finish: @Sendable (Bool) -> Void = { finished in
+      pending.withLock { continuation in
+        defer { continuation = nil }
+        return continuation
+      }?.resume(returning: finished)
+    }
+    return await withCheckedContinuation { continuation in
+      pending.withLock { $0 = continuation }
+      Task {
+        await task.value
+        finish(true)
+      }
+      Task {
+        try? await Task.sleep(for: limit)
+        finish(false)
+      }
+    }
+  }
+
+  // MARK: - Delivered notifications and the badge (M8f APNs)
+
+  /// A delivered notification as the backstop reads it.
+  private struct Delivered: Sendable {
+    var identifier: String
+    var key: String?
+    var date: Date
+  }
+
+  /// A withdrawal push named these keys (`request:<id>`, `turn:<id>`): remove the delivered
+  /// notifications that carry one of them.
+  func withdraw(keys: [String]) async {
+    let wanted = Set(keys)
+    let identifiers = await Self.deliveredNotifications().filter { $0.key.map(wanted.contains) ?? false }
+      .map(\.identifier)
+    guard !identifiers.isEmpty else { return }
+    UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: identifiers)
+    Self.logger.notice("withdrew \(identifiers.count, privacy: .public) notifications")
+  }
+
+  /// The backstop, at most once a second: a burst of batches (a streaming reply) runs it once at the
+  /// end of the interval rather than for each.
+  private func scheduleReconcile() {
+    guard reconcileScheduled == nil else { return }
+    let elapsed = lastReconcileAt.map { $0.duration(to: .now) } ?? Self.reconcileInterval
+    let delay = Self.reconcileInterval - elapsed
+    reconcileScheduled = Task {
+      if delay > .zero { try? await Task.sleep(for: delay) }
+      // Cancelled by a sign-out, which has already let go of it.
+      guard !Task.isCancelled else { return }
+      reconcileScheduled = nil
+      await reconcileNotifications()
+    }
+  }
+
+  /// The backstop for a withdrawal push that never arrived, then the badge: removes each delivered
+  /// notification (old enough to judge, `judgedThrough`) whose request is no longer pending or whose
+  /// turn has been read in the mirror, and sets the app icon's badge to the threads that need the owner.
+  /// Does nothing while the mirror is unavailable or nobody is signed in.
+  func reconcileNotifications() async {
+    let previous = notificationWork
+    let task = Task {
+      await previous?.value
+      await runReconcile()
+    }
+    notificationWork = task
+    await task.value
+  }
+
+  private func runReconcile() async {
+    lastReconcileAt = .now
+    guard let store, let session = account?.link?.tokenRef else { return }
+    let delivered = await Self.deliveredNotifications()
+    // Signed out (or in as someone else) meanwhile: what was read belongs to the old session.
+    guard account?.link?.tokenRef == session else { return }
+    let judged = delivered.filter { $0.date <= judgedThrough }.compactMap { notification in
+      notification.key.map { (identifier: notification.identifier, key: $0) }
+    }
+    let center = UNUserNotificationCenter.current()
+    do {
+      if !judged.isEmpty {
+        let outstanding = try store.stillOutstanding(keys: judged.map(\.key))
+        let ended = judged.filter { !outstanding.contains($0.key) }.map(\.identifier)
+        if !ended.isEmpty {
+          center.removeDeliveredNotifications(withIdentifiers: ended)
+          Self.logger.notice("removed \(ended.count, privacy: .public) notifications that have ended")
+        }
+      }
+      let badge = try store.needsYouCount()
+      try await center.setBadgeCount(badge)
+      if badge != lastBadge {
+        lastBadge = badge
+        Self.logger.notice("badge \(badge, privacy: .public)")
+      }
+    } catch {
+      Self.logger.error("the notification backstop failed: \(Self.describe(error), privacy: .public)")
+    }
+  }
+
+  /// Signed out: this app's delivered notifications and its badge belong to the old session.
+  private func clearNotifications() {
+    reconcileScheduled?.cancel()
+    reconcileScheduled = nil
+    let previous = notificationWork
+    notificationWork = Task {
+      await previous?.value
+      let center = UNUserNotificationCenter.current()
+      center.removeAllDeliveredNotifications()
+      lastBadge = 0
+      do {
+        try await center.setBadgeCount(0)
+      } catch {
+        Self.logger.error("the badge could not be cleared: \(Self.describe(error), privacy: .public)")
+      }
+    }
+  }
+
+  private nonisolated static func deliveredNotifications() async -> [Delivered] {
+    await UNUserNotificationCenter.current().deliveredNotifications().map { notification in
+      Delivered(
+        identifier: notification.request.identifier,
+        key: ThreadLink.key(fromNotification: notification.request.content.userInfo), date: notification.date)
+    }
   }
 
   // MARK: - The relay's link (M8c)
@@ -541,11 +742,21 @@ extension MirrorAccount: @retroactive AccountHost {}
     if !batch.touchedThreadIds.isEmpty || !batch.touchedProjectIds.isEmpty {
       WidgetCenter.shared.reloadAllTimelines()
     }
+    scheduleReconcile()
     for id in Array(batchWaiters.keys) { resumeWaiter(id, arrived: true) }
   }
 
   /// While pulls succeed only the time moves, so nothing is redrawn until a pull fails or recovers.
   private func update(_ status: MirrorSyncStatus) {
+    // Each report ends one turn of the loop; the next begins after it. A successful one applied a
+    // pull that began after the previous report, so notifications delivered before then can be judged,
+    // and the backstop runs (a turn with nothing new publishes no batch).
+    let now = Date()
+    if status.lastError == nil, let start = turnStartsAfter {
+      judgedThrough = max(judgedThrough, start)
+      scheduleReconcile()
+    }
+    turnStartsAfter = now
     // Each cycle may have refreshed the devices list, whether or not the status changed.
     refreshHostState()
     guard status.lastError != nil || syncStatus.lastError != nil, status != syncStatus else { return }

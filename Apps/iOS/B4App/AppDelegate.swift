@@ -30,12 +30,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
       "remote notification registration failed: \(MirrorHost.describe(error), privacy: .public)")
   }
 
-  /// A push woke the app (in the background or not): pull what changed before the owner looks.
+  /// A push woke the app (in the background or not): remove the notifications a withdrawal push names
+  /// (a request answered, a reply read), then pull what changed before the owner looks.
   func application(
     _ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any],
     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
   ) {
-    refresh(then: completionHandler)
+    refresh(withdrawing: ThreadLink.withdrawKeys(fromNotification: userInfo), then: completionHandler)
   }
 
   /// A background-fetch wake: how the Simulator's `simctl push` delivers a content-available payload.
@@ -48,10 +49,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     refresh(then: completionHandler)
   }
 
-  /// Refreshes the mirror and the widget, then calls `completion` once, on the main actor, after the
-  /// sync loop is idle again (`MirrorHost.backgroundRefresh`).
-  private func refresh(then completion: @escaping (UIBackgroundFetchResult) -> Void) {
+  /// Removes the delivered notifications `withdrawing` names, refreshes the mirror, the widget, and the
+  /// badge, then calls `completion` once, on the main actor, after the sync loop is idle again
+  /// (`MirrorHost.backgroundRefresh`).
+  private func refresh(
+    withdrawing keys: [String] = [], then completion: @escaping (UIBackgroundFetchResult) -> Void
+  ) {
     Task { @MainActor in
+      if !keys.isEmpty { await MirrorHost.shared.withdraw(keys: keys) }
       completion(await MirrorHost.shared.backgroundRefresh() ? .newData : .noData)
     }
   }
