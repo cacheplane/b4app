@@ -29,6 +29,7 @@ const BEGIN: &str = "/v1/auth/passkey/begin";
 const FINISH: &str = "/v1/auth/passkey/finish";
 const ADD_BEGIN: &str = "/v1/me/passkeys/begin";
 const ADD_FINISH: &str = "/v1/me/passkeys/finish";
+const STEP_UP_CODE: &str = "/v1/me/step-up/code";
 const TEN_MINUTES: Duration = Duration::from_secs(600);
 
 /// A revoker that records every refresh token it is handed, and fails each call when `fail`.
@@ -630,6 +631,171 @@ async fn a_step_up_needs_one_of_the_accounts_own_passkeys(pool: PgPool) {
         .stepped("POST", common::STEP_UP_BEGIN, None, token(&blove), None)
         .await;
     assert_eq!(none.status, StatusCode::NOT_FOUND, "{}", none.body);
+}
+
+/// Steps up the device of `token` with the enrollment code `code`.
+async fn step_up_code(hub: &Hub, code: &str, token: &str) -> Answer {
+    let body = json!({ "code": code });
+    hub.stepped("POST", STEP_UP_CODE, Some(&body), token, None)
+        .await
+}
+
+/// An operator's code for `who`, redeemable for ten minutes.
+async fn operator_code(setup: &Setup, who: Principal) -> String {
+    devices::create_enrollment_code(&setup.admin, who.org_id, who.user_id, TEN_MINUTES)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn an_operator_code_steps_up_once_on_its_own_device(pool: PgPool) {
+    let setup = setup(&pool).await;
+    let hub = &setup.hub;
+    let mut keys = Authenticator::new(ORIGIN);
+    let mac = sign_up(hub, &mut keys, device("Brian's Mac", "macos")).await;
+    let phone = sign_in(hub, &mut keys, 0, device("iPhone", "ios")).await;
+    assert_eq!(phone.status, StatusCode::OK, "{}", phone.body);
+    let (mac, phone) = (token(&mac), token(&phone.body));
+    let who = principal(hub, mac).await;
+
+    // Typed in any case, the operator's code earns a grant, once.
+    let code = operator_code(&setup, who).await;
+    let granted = step_up_code(hub, &code.to_lowercase(), mac).await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.body);
+    let grant = granted.body["stepUp"].as_str().unwrap().to_string();
+    assert_eq!(grant.len(), 43);
+    assert!(granted.body["expiresAt"].as_str().unwrap().ends_with('Z'));
+    let method: String = sqlx::query_scalar("SELECT method FROM step_up_grants")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(method, "code");
+    let spent = step_up_code(hub, &code, mac).await;
+    assert_eq!(spent.status, StatusCode::UNAUTHORIZED, "{}", spent.body);
+    assert_eq!(spent.code(), "invalid_code");
+
+    // The grant serves the Mac that earned it, not the phone, and one change only.
+    let borrowed = hub
+        .stepped("POST", ADD_BEGIN, None, phone, Some(&grant))
+        .await;
+    assert_eq!(borrowed.code(), "step_up_required", "{}", borrowed.body);
+    let begun = hub
+        .stepped("POST", ADD_BEGIN, None, mac, Some(&grant))
+        .await;
+    assert_eq!(begun.status, StatusCode::OK, "{}", begun.body);
+    let again = hub
+        .stepped("POST", ADD_BEGIN, None, mac, Some(&grant))
+        .await;
+    assert_eq!(again.code(), "step_up_required");
+
+    // A fresh code confirms deleting the account.
+    let refused = call(hub, "DELETE", "/v1/me", None, mac).await;
+    assert_eq!(refused.code(), "step_up_required");
+    let code = operator_code(&setup, who).await;
+    let granted = step_up_code(hub, &code, mac).await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.body);
+    let grant = granted.body["stepUp"].as_str().unwrap();
+    let deleted = hub
+        .stepped("DELETE", "/v1/me", None, mac, Some(grant))
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
+    assert!(!exists(&pool, "users", who.user_id).await);
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_step_up_code_is_the_callers_own_operator_code(pool: PgPool) {
+    let setup = setup(&pool).await;
+    let hub = &setup.hub;
+    let mut keys = Authenticator::new(ORIGIN);
+    let mac = sign_up(hub, &mut keys, device("Brian's Mac", "macos")).await;
+    let mac = token(&mac);
+    let who = principal(hub, mac).await;
+    let (seeded, _) = enrolled_blove(&setup).await;
+
+    // Another user's code earns nothing and stays redeemable by its own user.
+    let theirs = mint_code(&setup, &seeded).await;
+    let refused = step_up_code(hub, &theirs, mac).await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{}", refused.body);
+    assert_eq!(refused.code(), "invalid_code");
+    let enrolled = hub
+        .post(
+            "/v1/enroll",
+            Some(&json!({"code": theirs, "deviceName": "Brian's iPad", "platform": "ios"})),
+        )
+        .await;
+    assert_eq!(enrolled.status, StatusCode::OK, "{}", enrolled.body);
+    assert_eq!(enrolled.body["user"]["username"], "blove");
+
+    // A pairing code of the caller's own (one their Mac minted) earns nothing and still pairs.
+    let minted = call(hub, "POST", "/v1/pairing-codes", None, mac).await;
+    assert_eq!(minted.status, StatusCode::OK, "{}", minted.body);
+    let pairing = minted.body["code"].as_str().unwrap();
+    let refused = step_up_code(hub, pairing, mac).await;
+    assert_eq!(refused.code(), "invalid_code", "{}", refused.body);
+    let paired = hub
+        .post(
+            "/v1/enroll",
+            Some(&json!({"code": pairing, "deviceName": "iPhone", "platform": "ios"})),
+        )
+        .await;
+    assert_eq!(paired.status, StatusCode::OK, "{}", paired.body);
+
+    // An expired code, and one nobody minted, earn nothing.
+    let expired =
+        devices::create_enrollment_code(&setup.admin, who.org_id, who.user_id, Duration::ZERO)
+            .await
+            .unwrap();
+    assert_eq!(
+        step_up_code(hub, &expired, mac).await.code(),
+        "invalid_code"
+    );
+    assert_eq!(
+        step_up_code(hub, "BCDFGHJK", mac).await.code(),
+        "invalid_code"
+    );
+
+    // A body with an unknown field is refused before the code is read, so the code survives.
+    let code = operator_code(&setup, who).await;
+    let body = json!({"code": code, "deviceName": "Mac"});
+    let malformed = hub
+        .stepped("POST", STEP_UP_CODE, Some(&body), mac, None)
+        .await;
+    assert_eq!(
+        malformed.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        malformed.body
+    );
+    assert_eq!(malformed.code(), "invalid_request");
+    let grants: i64 = sqlx::query_scalar("SELECT count(*) FROM step_up_grants")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(grants, 0, "no refusal recorded a grant");
+    let granted = step_up_code(hub, &code, mac).await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.body);
+
+    // Without a device token there is no step-up.
+    let anonymous = hub.post(STEP_UP_CODE, Some(&json!({"code": code}))).await;
+    assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(anonymous.code(), "unauthorized");
+}
+
+#[sqlx::test(migrations = false)]
+async fn step_up_codes_count_with_the_sign_in_finishes(pool: PgPool) {
+    let setup = setup(&pool).await;
+    let hub = &setup.hub;
+    let (_, blove) = enrolled_blove(&setup).await;
+    let t = token(&blove);
+    for _ in 0..10 {
+        let answer = step_up_code(hub, "BCDFGHJK", t).await;
+        assert_eq!(answer.code(), "invalid_code", "{}", answer.body);
+    }
+    let over = step_up_code(hub, "BCDFGHJK", t).await;
+    assert_eq!(over.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(over.code(), "rate_limited");
+    let over = call(hub, "POST", ADD_FINISH, Some(&json!({})), t).await;
+    assert_eq!(over.code(), "rate_limited");
 }
 
 #[sqlx::test(migrations = false)]
@@ -1392,8 +1558,31 @@ async fn no_secret_in_logs(pool: PgPool) {
         StatusCode::NO_CONTENT
     );
 
+    // Step up with an operator's code: neither the code (taken or refused) nor the grant is logged.
+    let blove_who = Principal {
+        org_id: seeded.org_id,
+        user_id: seeded.user_id,
+    };
+    let code = operator_code(&setup, blove_who).await;
+    secrets.push(code.clone());
+    let wrong = devices::create_enrollment_code(
+        &setup.admin,
+        blove_who.org_id,
+        blove_who.user_id,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    secrets.push(wrong.clone());
+    let refused = step_up_code(hub, &wrong, token(&blove)).await;
+    assert_eq!(refused.code(), "invalid_code");
+    let granted = step_up_code(hub, &code, token(&blove)).await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.body);
+    secrets.push(granted.body["stepUp"].as_str().unwrap().into());
+
     let text = captured.text();
     for line in [
+        "a step-up code was refused",
         "added a passkey",
         "stepped up",
         "merged a phone-only account while pairing",
@@ -1443,6 +1632,14 @@ async fn maintenance_pauses_sign_in_and_account_writes(pool: PgPool) {
             "POST",
             common::STEP_UP_FINISH,
             Some(&json!({"ceremonyId": Uuid::nil(), "assertion": {}})),
+            token,
+        )
+        .await,
+        call(
+            &hub,
+            "POST",
+            STEP_UP_CODE,
+            Some(&json!({"code": "BCDFGHJK"})),
             token,
         )
         .await,

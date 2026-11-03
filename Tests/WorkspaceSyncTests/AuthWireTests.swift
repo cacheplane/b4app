@@ -188,6 +188,19 @@ import WorkspaceProtocol
     #expect(refused.error.details?.methods == ["passkey"])
   }
 
+  /// D-151: an operator's enrollment code confirms it's you. Neither the wire body nor the protocol's
+  /// confirmation ever describes the code.
+  @Test func stepUpCodeRoundTripsAndNeverDescribesTheCode() throws {
+    let request = try roundTrips(StepUpCodeRequest.self, "stepUpCode")
+    #expect(!request.code.isEmpty)
+    #expect(!request.description.contains(request.code))
+    #expect(!String(reflecting: request).contains(request.code))
+    let proof = AccountStepUp.enrollmentCode(" \(request.code)\n")
+    #expect(proof.enrollmentCode == request.code)
+    #expect(proof.description == "AccountStepUp(enrollmentCode, <redacted>)")
+    #expect(!String(reflecting: proof).contains(request.code))
+  }
+
   @Test func deviceSpecLeavesOutAbsentCandidates() throws {
     let spec = DeviceSpec(deviceName: "Mac", platform: "macos", deviceId: "d")
     let encoded = try JSONCoding.decoder.decode(JSONValue.self, from: JSONCoding.encoder.encode(spec))

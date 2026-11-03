@@ -82,6 +82,9 @@ public protocol HubAPI: Sendable {
   func stepUpAppleNative(_ request: StepUpAppleNativeRequest) async throws -> StepUpResponse
   /// `POST /v1/me/step-up/apple/handoff`: the web flow's handoff and verifier; answers the grant.
   func stepUpAppleHandoff(_ request: AppleLinkHandoffRequest) async throws -> StepUpResponse
+  /// `POST /v1/me/step-up/code`: spends an operator's enrollment code for this user and answers the
+  /// grant; `invalid_code` for any other code (D-151).
+  func stepUpCode(_ request: StepUpCodeRequest) async throws -> StepUpResponse
 }
 
 extension HubAPI {
@@ -147,6 +150,9 @@ extension HubAPI {
   }
   public func stepUpAppleHandoff(_ request: AppleLinkHandoffRequest) async throws -> StepUpResponse {
     throw HubError.unsupported("stepUpAppleHandoff")
+  }
+  public func stepUpCode(_ request: StepUpCodeRequest) async throws -> StepUpResponse {
+    throw HubError.unsupported("stepUpCode")
   }
 }
 

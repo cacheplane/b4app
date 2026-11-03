@@ -20,7 +20,9 @@ use b4hub::routes::auth::{
 };
 use b4hub::routes::enroll::EnrollRequest;
 use b4hub::routes::me::{AddPasskeyBeginResponse, AddPasskeyFinishRequest, ProfileRequest};
-use b4hub::routes::step_up::{StepUpBeginResponse, StepUpFinishRequest, StepUpResponse};
+use b4hub::routes::step_up::{
+    StepUpBeginResponse, StepUpCodeRequest, StepUpFinishRequest, StepUpResponse,
+};
 use b4hub_db::accounts::{self, Identity, Principal};
 use b4hub_db::{devices, orgs};
 use common::authenticator::Authenticator;
@@ -186,6 +188,14 @@ fn step_up_types_match_the_hub_types() {
 
     let native: AppleStepUpNativeRequest = round_trips("stepUpAppleNative");
     assert!(!format!("{native:?}").contains(&native.identity_token));
+
+    let code: StepUpCodeRequest = round_trips("stepUpCode");
+    assert_eq!(code.code.len(), b4hub_core::tokens::CODE_LENGTH);
+    assert!(code
+        .code
+        .bytes()
+        .all(|b| b4hub_core::tokens::CODE_ALPHABET.contains(&b)));
+    assert!(!format!("{code:?}").contains(&code.code));
 
     let answer: StepUpResponse = round_trips("stepUpResponse");
     assert!(!format!("{answer:?}").contains(&answer.step_up));
@@ -364,6 +374,22 @@ async fn routes_answer_the_shapes_the_fixture_holds(pool: PgPool) {
         .await;
     assert_eq!(identity.status, StatusCode::OK, "{}", identity.body);
     same_shape("identity", &identity.body, &example("identity"));
+
+    // A step-up with an operator's code: the request's shape, and the grant it answers.
+    let mut code = example("stepUpCode");
+    code["code"] = json!(devices::create_enrollment_code(
+        &admin,
+        principal.org_id,
+        principal.user_id,
+        std::time::Duration::from_secs(600),
+    )
+    .await
+    .unwrap());
+    let granted = hub
+        .send("POST", "/v1/me/step-up/code", Some(&code), &headers)
+        .await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.body);
+    same_shape("stepUpResponse", &granted.body, &example("stepUpResponse"));
 
     // Enrollment: an operator-minted code, the request, and the answer.
     let seeded = orgs::seed(

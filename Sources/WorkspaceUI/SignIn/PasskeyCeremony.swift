@@ -82,6 +82,8 @@ public final class SystemPasskeyCeremony: NSObject, PasskeyCeremony {
         userID: credential.userID)
     } catch  where Self.meansNoCredential(error) {
       return nil
+    } catch let error as ASAuthorizationError where error.code == .failed {
+      throw PasskeySheetFailed()
     }
   }
 
@@ -111,6 +113,8 @@ public final class SystemPasskeyCeremony: NSObject, PasskeyCeremony {
         userID: credential.userID)
     } catch let error as ASAuthorizationError where error.code == .canceled {
       throw SignInCanceled()
+    } catch let error as ASAuthorizationError where error.code == .failed {
+      throw PasskeySheetFailed()
     }
   }
 
@@ -159,6 +163,7 @@ public final class SystemPasskeyCeremony: NSObject, PasskeyCeremony {
     case .canceled: return SignInCanceled()
     case .deviceNotConfiguredForPasskeyCreation: return PasskeysNotSetUp()
     case .matchedExcludedCredential: return PasskeyAlreadyOnDevice()
+    case .failed: return PasskeySheetFailed()
     default: return error
     }
   }

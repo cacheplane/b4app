@@ -297,6 +297,30 @@ async fn redeem_in(
     })
 }
 
+/// Takes `code` as a step-up's proof (D-151) for `principal`, who is already signed in: marks it
+/// used, once, when it is unused, unexpired, issued for `principal`'s own org and user, and an
+/// operator's (minted by `b4hub enroll`, so `created_by_device_id` is unset); whether it was. The
+/// code is compared as [`redeem`] compares it (its hash, ignoring case).
+///
+/// A pairing code never counts: a Mac's token mints one (`POST /v1/pairing-codes`), so a stolen
+/// token could otherwise step itself up. An unknown, expired, used, pairing, or another user's code
+/// is `false`, indistinguishably, and changes nothing (another user's code stays redeemable). One
+/// conditional `UPDATE` is the whole single-use guarantee, as in [`redeem`].
+pub async fn take_operator_code(db: &Db, code: &str, principal: Principal) -> Result<bool> {
+    let taken = sqlx::query(
+        "UPDATE enrollment_codes SET used_at = now() \
+         WHERE code_hash = $1 AND org_id = $2 AND user_id = $3 \
+           AND used_at IS NULL AND expires_at > now() AND created_by_device_id IS NULL",
+    )
+    .bind(&hash_code(code)[..])
+    .bind(principal.org_id)
+    .bind(principal.user_id)
+    .execute(&db.pool)
+    .await?
+    .rows_affected();
+    Ok(taken == 1)
+}
+
 /// Resolves a presented token to its device. `None` when the token is unknown, or when the token
 /// or its device has been revoked; the caller cannot tell those apart.
 pub async fn authenticate(db: &Db, token: &str) -> Result<Option<AuthedDevice>> {

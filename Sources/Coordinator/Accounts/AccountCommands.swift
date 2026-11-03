@@ -228,8 +228,8 @@ extension AccountManager {
   /// The grant `proof` earns for `scope`'s account (`nil` for no proof: an account with no sign-in
   /// method needs none, and the hub refuses any other with `step_up_required`). A passkey assertion
   /// goes to the hub once; an Apple handoff is redeemed with the verifier `account.stepUpAppleStart`
-  /// kept, which is used up whatever the hub answers. The grant is answered only to the caller, which
-  /// sends it with the change at once.
+  /// kept, which is used up whatever the hub answers; an operator's enrollment code is spent at the hub
+  /// (D-151). The grant is answered only to the caller, which sends it with the change at once.
   func stepUpGrant(_ proof: AccountStepUp?, in scope: AccountScope) async throws -> String? {
     guard let proof else { return nil }
     if let ceremonyId = proof.ceremonyId, let assertion = proof.assertion, proof.handoff == nil {
@@ -251,8 +251,16 @@ extension AccountManager {
         try await scope.hub.client().stepUpAppleHandoff(request)
       }.stepUp
     }
+    if let code = proof.enrollmentCode, proof.assertion == nil, proof.handoff == nil, proof.ceremonyId == nil
+    {
+      let request = StepUpCodeRequest(code: code)
+      return try await Self.hubCall("confirm it's you") {
+        try await scope.hub.client().stepUpCode(request)
+      }.stepUp
+    }
     throw WorkspaceError(
-      .protocolInvalid, "Confirm with a passkey assertion and its ceremony, or an Apple handoff.")
+      .protocolInvalid,
+      "Confirm with a passkey assertion and its ceremony, an Apple handoff, or an enrollment code.")
   }
 
   /// Where the web flow's result comes back (D-160): the hub's `callback`, taken only as this flavour's
@@ -606,7 +614,7 @@ extension AccountManager {
   static func accountError(_ error: HubError, doing action: String) -> WorkspaceError {
     let known: Set<ErrorCode> = [
       .signupClosed, .ceremonyExpired, .credentialRejected, .lastIdentity, .mergeRefused, .appleLinked,
-      .sharedOrg, .rateLimited, .notFound, .stepUpRequired,
+      .sharedOrg, .rateLimited, .notFound, .stepUpRequired, .invalidCode,
     ]
     guard let code = ErrorCode(rawValue: error.code), known.contains(code) else {
       return HubSync.workspaceError(error, doing: action)

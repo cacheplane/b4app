@@ -645,6 +645,103 @@ private let minted = HubPair.Result(
         is PasskeyAlreadyOnDevice)
   }
 
+  /// D-151: a confirmation that was closed (no passkey on this device: the system offered only a QR
+  /// code) offers an operator's enrollment code for that change. "Confirm" runs the same change again
+  /// with the code; a refused code is one line and keeps the offer; a delete that goes through ends it.
+  @Test func aClosedConfirmationOffersAnEnrollmentCode() async throws {
+    let transport = ScriptedTransport()
+    let model = try await connected(transport: transport)
+    transport.script(.accountIdentities, [try reply(AccountIdentities.Result(identities: [identity("i1")]))])
+    await model.refreshIdentities()
+    let closed = FakeCeremony()
+    closed.confirmError = SignInCanceled()
+    transport.script(.accountStepUpBegin, [try stepUpBegun()])
+    await model.deleteAccount(
+      typed: "Brian's Org", accountId: theAccount.id, passkey: closed, apple: FakeAppleSheet())
+    #expect(transport.calls(.accountDelete).isEmpty)
+    #expect(model.deleteFailure == nil)
+    #expect(model.stepUpCodeOffer == .deleteAccount(accountId: theAccount.id, typed: "Brian's Org"))
+
+    // A code the hub does not take: one line, and the offer stays for another.
+    transport.script(.accountDelete, [.failure(WorkspaceError(.invalidCode, "hub detail"))])
+    await model.confirmWithCode(" wrong123 ", passkey: closed, apple: FakeAppleSheet())
+    #expect(transport.calls(.accountDelete) == [["stepUp": ["enrollmentCode": "wrong123"]]])
+    #expect(model.deleteFailure == AccountCopy.invalidCode)
+    #expect(model.stepUpCodeOffer == .deleteAccount(accountId: theAccount.id, typed: "Brian's Org"))
+    // No passkey sheet was shown again for the code.
+    #expect(closed.confirmed.count == 1)
+
+    transport.script(.accountDelete, [try status(signedOut)])
+    await model.confirmWithCode("K7QX2M9P", passkey: closed, apple: FakeAppleSheet())
+    #expect(transport.calls(.accountDelete).last == ["stepUp": ["enrollmentCode": "K7QX2M9P"]])
+    #expect(model.accountState == .signedOut(reason: nil))
+    #expect(model.stepUpCodeOffer == nil)
+  }
+
+  @Test func anEnrollmentCodeConfirmsRemovingAndAdding() async throws {
+    let transport = ScriptedTransport()
+    let model = try await connected(transport: transport)
+    let two = AccountIdentities.Result(identities: [identity("i1"), identity("i2")])
+    transport.script(.accountIdentities, [try reply(two)])
+    await model.refreshIdentities()
+    let closed = FakeCeremony()
+    closed.confirmError = SignInCanceled()
+
+    transport.script(.accountStepUpBegin, [try stepUpBegun()])
+    await model.removeIdentity(id: "i2", passkey: closed, apple: FakeAppleSheet())
+    #expect(model.stepUpCodeOffer == .removeIdentity(id: "i2"))
+    #expect(AccountCopy.codeOffer.contains("enrollment code"))
+    transport.script(
+      .accountRemoveIdentity, [try reply(AccountIdentities.Result(identities: [identity("i1")]))])
+    await model.confirmWithCode("K7QX2M9P", passkey: closed, apple: FakeAppleSheet())
+    let removed = try #require(transport.calls(.accountRemoveIdentity).first)
+    #expect(removed["stepUp"] == ["enrollmentCode": "K7QX2M9P"])
+    #expect(model.identities?.map(\.id) == ["i1"])
+    #expect(model.stepUpCodeOffer == nil)
+
+    // A sheet that could not open at all offers the code too, with its own line.
+    let failing = FakeCeremony()
+    failing.confirmError = PasskeySheetFailed()
+    transport.script(.accountStepUpBegin, [try stepUpBegun()])
+    await model.addPasskey(using: failing, apple: FakeAppleSheet())
+    #expect(model.accountSettingsFailure == SignInCopy.passkeySheetFailed)
+    #expect(model.stepUpCodeOffer == .addPasskey)
+    // Cancel ends the offer, sending nothing.
+    model.dismissCodeOffer()
+    #expect(model.stepUpCodeOffer == nil)
+    await model.confirmWithCode("K7QX2M9P", passkey: failing, apple: FakeAppleSheet())
+    #expect(transport.calls(.accountAddPasskeyBegin).isEmpty)
+
+    // Confirmed by a code, the add goes on to the system's sheet as usual.
+    transport.script(.accountStepUpBegin, [try stepUpBegun()])
+    await model.addPasskey(using: failing, apple: FakeAppleSheet())
+    let begun = AccountAddPasskeyBegin.Result(ceremonyId: "c9", registration: registrationOptions)
+    transport.script(.accountAddPasskeyBegin, [try reply(begun)])
+    transport.script(
+      .accountAddPasskeyFinish, [try reply(AccountAddPasskeyFinish.Result(identity: identity("i3")))])
+    await model.confirmWithCode("K7QX2M9P", passkey: failing, apple: FakeAppleSheet())
+    #expect(transport.calls(.accountAddPasskeyBegin) == [["stepUp": ["enrollmentCode": "K7QX2M9P"]]])
+    #expect(failing.registered == [registrationOptions])
+    #expect(model.identities?.map(\.id) == ["i1", "i3"])
+    #expect(model.stepUpCodeOffer == nil)
+  }
+
+  @Test func aPasskeySheetThatCannotOpenIsOneLine() async throws {
+    let transport = ScriptedTransport()
+    let model = try await connected(transport: transport)
+    let begun = AccountAddPasskeyBegin.Result(ceremonyId: "c9", registration: registrationOptions)
+    transport.script(.accountAddPasskeyBegin, [try reply(begun)])
+    let ceremony = FakeCeremony()
+    ceremony.registerError = PasskeySheetFailed()
+    await model.addPasskey(using: ceremony, apple: FakeAppleSheet())
+    #expect(
+      model.accountSettingsFailure
+        == "The passkey sheet couldn't open. If another passkey request is still on screen, close it, then try again."
+    )
+    #expect(transport.calls(.accountAddPasskeyFinish).isEmpty)
+    #expect(ceremony.reportedUnknown.isEmpty)
+  }
+
   @Test func aPasskeyAlreadyOnTheDeviceIsOneLineAndNoOrphan() async throws {
     let transport = ScriptedTransport()
     let model = try await connected(transport: transport)

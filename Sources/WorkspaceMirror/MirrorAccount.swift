@@ -334,7 +334,8 @@ import os
   }
 
   /// The grant `proof` earns, inside the same call as the change it is for (`nil` for none: an account
-  /// with no sign-in method needs none). The grant goes no further than `api`'s next request.
+  /// with no sign-in method needs none): a passkey assertion, Apple's native sheet, or an operator's
+  /// enrollment code (D-151). The grant goes no further than `api`'s next request.
   private static func grant(_ proof: AccountStepUp?, on api: any HubAPI) async throws -> String? {
     guard let proof else { return nil }
     if let ceremonyId = proof.ceremonyId, let assertion = proof.assertion {
@@ -349,8 +350,12 @@ import os
       )
       .stepUp
     }
+    if let code = proof.enrollmentCode, proof.ceremonyId == nil {
+      return try await api.stepUpCode(StepUpCodeRequest(code: code)).stepUp
+    }
     throw WorkspaceError(
-      .protocolInvalid, "Confirm with a passkey assertion or Apple's sheet, each with its ceremony.")
+      .protocolInvalid,
+      "Confirm with a passkey assertion or Apple's sheet, each with its ceremony, or an enrollment code.")
   }
 
   public func addPasskeyBegin(stepUp: AccountStepUp?) async throws -> AccountAddPasskeyBegin.Result {
@@ -639,7 +644,7 @@ import os
   static func accountError(_ error: HubError, doing action: String) -> WorkspaceError {
     let known: Set<ErrorCode> = [
       .signupClosed, .ceremonyExpired, .credentialRejected, .lastIdentity, .mergeRefused, .appleLinked,
-      .sharedOrg, .rateLimited, .notFound, .stepUpRequired,
+      .sharedOrg, .rateLimited, .notFound, .stepUpRequired, .invalidCode,
     ]
     let code: ErrorCode
     if let own = ErrorCode(rawValue: error.code), known.contains(own) {
