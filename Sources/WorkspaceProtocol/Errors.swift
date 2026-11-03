@@ -40,6 +40,9 @@ public enum ErrorCode: String, Codable, Sendable, CaseIterable {
   /// The change needs a fresh passkey or Apple confirmation first (D-150). `details.methods` lists
   /// what the account can confirm with.
   case stepUpRequired = "step_up_required"
+  /// An enrollment code is unknown, expired, already used, a pairing code, or another account's
+  /// (D-151: a code offered to confirm it's you).
+  case invalidCode = "invalid_code"
   /// The device's session ended, so it has to sign in again.
   case signedOut = "signed_out"
   /// Signing out would interrupt work that is still running.

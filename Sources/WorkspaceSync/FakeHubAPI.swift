@@ -46,7 +46,10 @@ public actor FakeHubAPI: HubAPI {
   public private(set) var stepUpAppleBegins: [AppleBeginRequest] = []
   public private(set) var stepUpAppleNatives: [StepUpAppleNativeRequest] = []
   public private(set) var stepUpAppleHandoffs: [AppleLinkHandoffRequest] = []
+  public private(set) var stepUpCodeRequests: [StepUpCodeRequest] = []
   public private(set) var presentedStepUps: [String?] = []
+  /// Operator codes that confirm it's you (D-151), each spent once; any other is `invalid_code`.
+  private var stepUpCodes: Set<String> = []
   /// Grants minted and not yet used. Like the hub, a change of an account with any sign-in method
   /// needs one, used once.
   private var liveGrants: Set<String> = []
@@ -470,6 +473,18 @@ public actor FakeHubAPI: HubAPI {
     stepUpAppleHandoffs.append(request)
     return mintGrant()
   }
+
+  public func stepUpCode(_ request: StepUpCodeRequest) async throws -> StepUpResponse {
+    try authorize()
+    stepUpCodeRequests.append(request)
+    guard stepUpCodes.remove(request.code.uppercased()) != nil else {
+      throw Self.error("invalid_code", "The enrollment code is not valid.", status: 401)
+    }
+    return mintGrant()
+  }
+
+  /// An operator code that `stepUpCode` takes once, matched in any case.
+  public func addStepUpCode(_ code: String) { stepUpCodes.insert(code.uppercased()) }
 
   private func mintGrant() -> StepUpResponse {
     mintedGrants += 1
