@@ -217,7 +217,7 @@ Design: `docs/superpowers/specs/2026-11-01-m8c-relay-design.md`. Plan: `docs/sup
 
 Known limitations (the ones a person could notice; the full list is in the build's review notes):
 
-- The hub's link registry, presence, holds, and limits are in memory and are lost on a hub restart (phones and Macs reconnect and carry on). Since M8e Part B the hub can run several instances, each serving whole users (D-085); limits stay per instance. A push wakes long-polls on every instance over `LISTEN` / `NOTIFY` (D-161), and a link closes when its session ends wherever it is served (D-162); the heartbeat has its own connection (D-163). Fixture-tested; not yet live-tested on two tasks.
+- The hub's link registry, presence, holds, and limits are in memory and are lost on a hub restart (phones and Macs reconnect and carry on). Since M8e Part B the hub can run several instances, each serving whole users (D-085); limits stay per instance. A push wakes long-polls on every instance over `LISTEN` / `NOTIFY` (D-161), and a link closes when its session ends wherever it is served (D-162); the heartbeat has its own connection (D-163); a quiet listener is replaced (D-164), a draining instance frees each user as their links close (D-165), and a link runs at most 40 commands at once (D-166); a refused watch names its thread and the phone retries it (D-167), and a second watcher gets the Mac's catch-up (D-168). Fixture-tested; not yet live-tested on two tasks.
 - A phone the hub refused (revoked) stays closed until it logs out and pairs again, but that refusal is not kept across an app relaunch: the first launch afterwards makes one more attempt before it stops again.
 - A Mac revoked while its token is refused keeps its keep-awake assertion until `hub leave`.
 

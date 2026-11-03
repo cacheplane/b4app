@@ -91,8 +91,10 @@ public enum RelayMessage: Codable, Sendable, Equatable {
   case reply(id: String, result: JSONValue? = nil, error: RelayWireError? = nil)
   case watch(threadId: String)
   case unwatch(threadId: String)
-  /// Hub to host: the full set of its threads that some client watches.
-  case watching(threadIds: [String])
+  /// Hub to host: the full set of its threads that some client watches, and those of them another
+  /// client started watching since the host was last told (`refresh`), whose catch-up the host sends
+  /// again. `refresh` is omitted on the wire when empty.
+  case watching(threadIds: [String], refresh: [String] = [])
   case event(AdapterEvent)
   /// Hub to client: events for this thread were dropped.
   case streamGap(threadId: String)
@@ -103,7 +105,7 @@ public enum RelayMessage: Codable, Sendable, Equatable {
 
   private enum CodingKeys: String, CodingKey {
     case type, `protocol`, minClientProtocol, deviceId, role, heartbeatSeconds, hubTime, id, method, params
-    case deadline, from, result, error, threadId, threadIds, event, hosts, code, message, details
+    case deadline, from, result, error, threadId, threadIds, refresh, event, hosts, code, message, details
   }
 
   private enum Kind: String {
@@ -149,7 +151,9 @@ public enum RelayMessage: Codable, Sendable, Equatable {
     case .unwatch:
       self = .unwatch(threadId: try c.decode(String.self, forKey: .threadId))
     case .watching:
-      self = .watching(threadIds: try c.decode([String].self, forKey: .threadIds))
+      self = .watching(
+        threadIds: try c.decode([String].self, forKey: .threadIds),
+        refresh: try c.decodeIfPresent([String].self, forKey: .refresh) ?? [])
     case .event:
       self = .event(try c.decode(AdapterEvent.self, forKey: .event))
     case .streamGap:
@@ -198,9 +202,10 @@ public enum RelayMessage: Codable, Sendable, Equatable {
     case .unwatch(let threadId):
       try c.encode(Kind.unwatch.rawValue, forKey: .type)
       try c.encode(threadId, forKey: .threadId)
-    case .watching(let threadIds):
+    case .watching(let threadIds, let refresh):
       try c.encode(Kind.watching.rawValue, forKey: .type)
       try c.encode(threadIds, forKey: .threadIds)
+      if !refresh.isEmpty { try c.encode(refresh, forKey: .refresh) }
     case .event(let event):
       try c.encode(Kind.event.rawValue, forKey: .type)
       try c.encode(event, forKey: .event)

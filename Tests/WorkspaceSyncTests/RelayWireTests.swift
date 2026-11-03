@@ -15,7 +15,7 @@ import WorkspaceProtocol
   @Test func relayFixtureRoundTrips() throws {
     let data = try Data(contentsOf: fixtureURL("relay.json"))
     let elements = try JSONCoding.decoder.decode([JSONValue].self, from: data)
-    #expect(elements.count == 17)
+    #expect(elements.count == 18)
     for element in elements {
       let elementData = try JSONCoding.encoder.encode(element)
       let message = try JSONCoding.decoder.decode(RelayMessage.self, from: elementData)
