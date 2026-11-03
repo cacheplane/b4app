@@ -8,6 +8,7 @@ mod relay_support;
 use std::time::Duration;
 
 use axum::http::StatusCode;
+use b4hub::instances::DEFAULT_HEARTBEAT;
 use b4hub::relay::close_code;
 use b4hub_core::relay::RelayMethod;
 use b4hub_db::instances;
@@ -272,7 +273,9 @@ async fn a_draining_instance_answers_holds_and_releases_its_claims(pool: PgPool)
 async fn the_probe_passes_on_a_healthy_instance_and_fails_when_the_relay_cannot_serve(
     pool: PgPool,
 ) {
-    let hub = spawn_instance(&pool, BEAT).await;
+    // The default heartbeat: this test is about the relay, and with the short test heartbeat a
+    // loaded runner could stall the writes long enough to report the instance stale as well.
+    let hub = spawn_instance(&pool, DEFAULT_HEARTBEAT).await;
     let blove = user(&hub).await;
     let (mut phone, _) = link(&hub, &blove.phone_token, None).await;
     phone.next().await; // presence
@@ -304,8 +307,12 @@ async fn the_probe_passes_on_a_healthy_instance_and_fails_when_the_relay_cannot_
 #[sqlx::test(migrations = false)]
 async fn readiness_reports_a_stale_heartbeat(pool: PgPool) {
     let hub = spawn_instance(&pool, BEAT).await;
-    let (status, _) = hub.http("GET", "/readyz", None).await;
-    assert_eq!(status, StatusCode::OK);
+    // Ready once a heartbeat has landed within the window. A loaded runner can stall the writes for
+    // longer than this test's short window, so wait for a fresh one rather than assume it.
+    eventually("the heartbeat to be fresh", || async {
+        (hub.http("GET", "/readyz", None).await.0 == StatusCode::OK).then_some(())
+    })
+    .await;
 
     hub.state.instances.pause_heartbeat(true);
     // A write already past the pause check may still land; once it has, the last write is behind

@@ -4,6 +4,7 @@ fixture tests. Endpoint shapes follow docs/research/2026-10-30-b4-runtime.md and
 Behavior is scripted by the user text: "tool" runs a tool call, "approve" parks on a command
 permission, "hang" waits for POST /cancel, "fail" ends with an error, "drop" closes the response
 mid-run while the run continues (reattach with GET /runs/stream), "slow" streams for three seconds,
+"held" waits for POST /threads/<id>/release (a fixture control, not a B4 endpoint) and then completes,
 "plan" emits a capability event, "reason" streams reasoning first. Env: FAKE_B4_ROUTE (default
 /chat#agent), FAKE_B4_TOKEN (bearer required on middleware paths), FAKE_B4_STATE (JSON file that
 persists threads across restarts). Never a substitute for the real server in anything the docs call
@@ -73,6 +74,7 @@ class Run:
         self.cond = threading.Condition()
         self.done = False
         self.cancel = threading.Event()
+        self.release = threading.Event()
         self.started_at = now()
 
     def emit(self, event, data):
@@ -155,6 +157,14 @@ def execute(run):
             say("Working...")
             if run.wait_cancel(20):
                 return finish("stopped", cancelled=True)
+            return finish("done")
+        if "held" in text:
+            say("Working...")
+            while not run.release.wait(0.1):
+                if run.cancel.is_set():
+                    return finish("stopped", cancelled=True)
+            say("Released.")
+            run.emit("message_end", {"messageId": next_id("m")})
             return finish("done")
         if "slow" in text:
             for i in range(6):
@@ -447,6 +457,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(404, error_body("Thread not found", "thread_not_found"))
                 return self.send_json(409, error_body("No run in flight for thread \"%s\"" % thread_id,
                                                       "no_run_in_flight"))
+        if tail == "release":
+            with LOCK:
+                run = LIVE.get(thread_id)
+                if run is None or run.done:
+                    return self.send_json(409, error_body("No run in flight for thread \"%s\"" % thread_id,
+                                                          "no_run_in_flight"))
+                run.release.set()
+                return self.send_json(200, {"thread_id": thread_id})
         if tail == "runs/stream":
             body = self.read_body()
             if body is None or not isinstance(body.get("route"), str):
