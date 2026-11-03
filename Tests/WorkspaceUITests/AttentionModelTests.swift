@@ -749,6 +749,9 @@ private struct AttentionDocument: Decodable {
     transport.set(threads: [t])
     transport.setRead(read(t, turns: [turn("u1", in: "t1", status: .running, at: 2)]))
     let model = try await connected(transport)
+    // The model reads the 56 events on its own task; a slow runner can take longer than the
+    // default 200 ms window to get through them, which would rightly start a second window.
+    model.refetchDelay = .seconds(1)
     await model.openThread(id: "t1")
     let baseline = transport.calls(.threadRead).count
 

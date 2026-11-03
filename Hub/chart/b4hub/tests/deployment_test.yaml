@@ -154,7 +154,25 @@ tests:
           any: true
       - notContains:
           path: spec.template.spec.containers[0].env
+          content: {name: B4HUB_APPLE_CALLBACK_URL}
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
           content: {name: B4HUB_TRUST_X_FORWARDED_FOR}
+          any: true
+
+  - it: renders an https callback URL instead of a scheme
+    set:
+      hub.apple.audiences: [com.example.ios, com.example.signin]
+      hub.apple.servicesId: com.example.signin
+      hub.apple.callbackUrl: https://example.com/app/auth/apple
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: B4HUB_APPLE_CALLBACK_URL, value: https://example.com/app/auth/apple}
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content: {name: B4HUB_APPLE_CALLBACK_SCHEME}
           any: true
 
   - it: fails without the required hub settings

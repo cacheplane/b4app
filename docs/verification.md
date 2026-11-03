@@ -2,6 +2,68 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-11-03: Two more flaky tests now wait for what they depend on
+
+Test-only changes. No assertion is weaker.
+
+- **Rust `instances::readiness_reports_a_stale_heartbeat`.** The `settle()` fix above covered the pause. CI then failed the test's *first* `/readyz` (503 where 200 was expected, run 41553837650). With the test's 200 ms beat, the liveness window is 800 ms. A loaded runner can stall the heartbeat writes for longer than that, so the instance already reports `"instances": "stale"` before anything is paused. Reproduced locally (`"instances":"stale"`, 1 run in 15 of the `instances` binary under 30 CPU burners). The test now waits (`eventually`) for a fresh heartbeat before it pauses, as its last step already did. The probe test in the same file (`the_probe_passes_…`) asserts `"instances": "ok"` with the same window, so it now runs on the default 5 s heartbeat; it is about the relay, not the heartbeat.
+- **`LifecycleTests.reconcileSettlesATurnThatFinishedWhileTheCoordinatorWasDown`.** The fake B4 "slow" run ends on its own after 3 s. The test needs that end to happen after `h.stop()`. Under load, the stop took longer (the CI run took 44 s), so the first coordinator saw the run finish and marked the turn `terminal` (`SessionTests.swift:1216`, run 41561882799). A 4 s pause before `h.stop()` reproduced it every time. `fake-b4.py` has a new "held" run that ends only on `POST /threads/<id>/release`, a fixture control. The test releases the run once the coordinator is down, and still passes with that 4 s pause.
+
+Runs:
+- **Rust:** 15 alone. 25 of the whole `instances` binary under 30 CPU burners. 10 alongside a parallel `cargo test --workspace`, which passed.
+- **Swift:** 10 alone. 10 inside `swift test --filter CoordinatorTests` (297 tests each, all passing), 5 of them with 12 CPU burners.
+- **Gates:** `swift format lint --strict`, `cargo fmt --check` and `cargo clippy -D warnings` are clean.
+
+Environmental, not this flake:
+- `#[sqlx::test]` names each test's database by hashing its path. Two processes running the same test on one server drop each other's database ("database … does not exist", or a failed `Db::connect`).
+- `test-db.sh --stop` from another worktree ends every run on port 54329.
+- These runs used private clusters on other ports.
+## 2026-11-03: Apple's web flow through an https callback (D-160)
+
+Fixture gates only. Nothing deployed; the hosted hubs keep `B4HUB_APPLE_CALLBACK_SCHEME` until a Mac build with this ships.
+
+| Gate | Result |
+| --- | --- |
+| `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo test --workspace --locked` (throwaway PostgreSQL) | 462 pass. New: `config.rs` `the_web_flow_can_hand_back_to_an_https_url_instead`; `apple.rs` `a_hub_with_a_callback_url_hands_back_there`; `begin_web` now checks every web begin's `callback`; `auth_fixture` checks `httpsCallback` and `callback` |
+| `swift format lint --strict`, `swift build` | Pass |
+| `swift test` | 1294 tests; 1 failed in the full run, `SessionTests.reconcileSettlesATurnThatFinishedWhileTheCoordinatorWasDown`, which this change does not touch and which passed 3 of 3 alone (it failed the same way in the D-140 run). New: `AccountCommandTests.appleStartsTakeTheHubsHttpsCallbackOnlyOnTheirSite`, `AppleSignInTests.theCallbackBecomesTheSessionsWait`; `AuthWireTests` round-trips both new fields |
+| `helm unittest Hub/chart/b4hub`, `helm lint` with the CI values | 57 pass; lint clean; the schema refuses a `callbackUrl` with a query |
+
+Open (live): Continue with Apple through `.https(host:path:)` with a Mac build that has this, against the test hub set to `B4HUB_APPLE_CALLBACK_URL=https://test.b4.run/app/auth/apple`. Whether `ASWebAuthenticationSession` takes the result back through the app's `webcredentials:test.b4.run` association can only be shown there.
+
+## 2026-11-02: Step-up by enrollment code (D-151), Codex "no rollout found" (D-152), and the 1004 line
+
+Branch `blove/step-up-code`, from main at `5882a60`. Fixture gates only; nothing here has run live.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Swift format | `swift format lint --strict --recursive Sources Tests Apps Package.swift` | Pass (exit 0) |
+| Build | `swift build` | Pass |
+| Swift tests | `swift test` (PostgreSQL from the main checkout's `.build/postgres`) | 1300 tests in 161 suites; the new and changed tests pass (`AccountCommandTests.anEnrollmentCodeConfirmsADelete`, `MirrorAccountTests.anEnrollmentCodeConfirmsAChange`, `AccountSettingsTests.aClosedConfirmationOffersAnEnrollmentCode`, `anEnrollmentCodeConfirmsRemovingAndAdding`, `aPasskeySheetThatCannotOpenIsOneLine`, `SignInTests.aPasskeySheetThatCannotOpenSaysWhy`, `everySystemCancelOfAnAssertionMeansNoPasskey`, `AuthWireTests.stepUpCodeRoundTripsAndNeverDescribesTheCode`, `HTTPHubAPITests.stepUpCallsSendTheBearerAndTheirBodies`, `CodexDeleteTests.noRolloutFoundIsAlreadyGone`). The full run had 2 issues, both in `HubSyncTests.joinPushesTheBacklogAndMarksItSynced` (the timing flake the sign-in gate recorded); it passed three times alone |
+| Rust format | `cd Hub && cargo fmt --all -- --check` | Pass |
+| Rust lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| Rust tests | `source <(./scripts/test-db.sh) && cargo test --workspace --locked --no-fail-fast`, then `./scripts/test-db.sh --stop` | Pass: 464 tests against PostgreSQL 17.11, 0 failed. New: `accounts.rs` `an_operator_code_steps_up_once_on_its_own_device`, `a_step_up_code_is_the_callers_own_operator_code`, `step_up_codes_count_with_the_sign_in_finishes`; `auth_fixture.rs` decodes `stepUpCode` and sends it to the route; `b4hub-db` `an_operator_code_is_taken_once_by_its_own_user`, `migrate.rs` expects 15 migrations; `maintenance_pauses_sign_in_and_account_writes` and `no_secret_in_logs` cover the new route |
+| Apps | `xcodebuild build … -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'` and `-scheme B4App-macOS -destination 'platform=macOS'`, `CODE_SIGNING_ALLOWED=NO` | Two `** BUILD SUCCEEDED **` (the code field's iPhone keyboard modifier compiles only there) |
+
+Not run live: a code step-up against a running hub, and Settings → Account's code row on screen. The Codex fix matches what codex-cli 0.166.0 answered live during the thread cleanup (four `thread/delete` calls, each `-32600 no rollout found for thread id …`; none of the ids among Codex's 383 threads).
+
+## 2026-11-02: The attention burst test waits out a slow runner
+
+`AttentionModelTests.aBurstOfDeltasSendsNoReadAndTurnEventsCoalesce` failed CI once on main (`7c38573`): three `thread.read` calls where it expected two. The model reads the test's 56 events on its own task, and a slow runner took longer than the 200 ms refetch window to get through them, so a second window rightly opened. `WorkspaceModel.refetchDelay` is now per model (as `draftSaveDelay` is), so the test widens its own window to 1 s without changing the others'; the app keeps 200 ms. Local: the test 5 of 5 alone, `WorkspaceUITests` 284 pass, `swift format lint --strict` clean.
+
+## 2026-11-03: M8f APNs on a real iPhone (live gate 2) and the cancelled-BEGIN fix (D-153)
+
+Target: Brian's iPhone with the beta TestFlight build 0.1.0 (2611030437, uploaded from `main` at `5882a60` with `Scripts/upload-ios.sh`, beta flavour), signed in to `hub.test.b4.run`; the test hub at task definition revision 16 (`B4HUB_PUSH_SENDER=apns`, the three APNs secrets set per runbook 3a, `INCLUDE_APNS_SECRETS=1` from #76); the Mac side was the packaged beta Mac app on the build Mac, driven in the background, with a Claude Code connection added through its bundled `agent-workspace` (its Codex follows `~/.codex/config.toml`, `approval_policy = "never"`, so Codex never asks). Evidence is the test hub's CloudWatch log (`APNs accepted`, kind, key, status 200, `apns-id`), never a token or payload.
+
+- The new build registered its token on first launch (05:45:44 UTC). A notification the earlier build had left behind (an approval answered while that build had no withdrawal code) was removed by the new build's backstop when it opened.
+- An approval from the Mac (`curl -sI https://example.org` under Claude Code's default permission mode) reached the locked iPhone's lock screen through `api.push.apple.com` (alert accepted 05:46:01). Answering it on the Mac withdrew it (background push accepted 05:46:29, the phone woke and pulled), and it left the lock screen; the badge matched the list (1: an unread reply, nothing waiting).
+- "Replied" arrived (05:46:30); tapping it opened the thread in the app, and the phone's read withdrew it (accepted 05:48:55, after the retry below). Earlier, a Codex turn's "Replied" was withdrawn by the Mac reading it (05:34:22 alert, 05:34:31 withdrawal).
+- With the earlier build (2611022211) installed, the same pushes arrived and woke the app, but its approval stayed: that build has no withdrawal code. Recorded so the cause is not mistaken for a delivery failure.
+- Found during the gate: at 05:46:37 the test hub's pool kept a connection inside a read-only transaction that sqlx did not know about (D-153), and the phone's read failed with "current transaction is aborted" until a retry reached a good connection. Restarting the test service (`aws ecs update-service --force-new-deployment`) cleared it; no error in the minute after. Prod's log has none in two days.
+- The fix, at this branch's head: `cargo test --workspace --locked` 464 passed, 0 failed (the new `tests/cancel.rs`: 4, and its three cancellation tests failed on `main` before the change, 3 of 3; 5 repeated runs passed); `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo fmt --all -- --check` clean.
+- Not exercised: Low Power Mode, an app swiped away in the switcher (the backstop then clears notifications at the next launch, D-146), prod (`hub.b4.run` runs hub-v0.1.0, which predates the APNs code; it sends through Apple after the next release).
+
 ## 2026-11-02: Sign-in polish, live (D-132, D-133)
 
 Run on the owner's MacBook Pro from main `8e7a4ca` (#68 merged), with the owner at Touch ID for the passkey step and the build session driving the apps.
@@ -109,7 +171,7 @@ Screenshots (kept with the session; not committed): the approval with badge 1, t
 
 ### Not exercised, and blocked
 
-- The iPhone gate (live gate 2): the owner's secrets step (`Infra/README.md`, runbook 3a) and the follow-up that sets `INCLUDE_APNS_SECRETS=1` are done (2026-11-03); `blocked` on a beta TestFlight build signed in to `hub.test.b4.run`. It covers what the Simulator cannot: a withdrawal push waking the app on a device, a `production` token from a TestFlight build and `api.push.apple.com`, a tap on the lock screen, Low Power Mode, and the badge on a real icon.
+- The iPhone gate (live gate 2): passed 2026-11-03 (see that entry). It covers what the Simulator cannot: a withdrawal push waking the app on a device, a `production` token from a TestFlight build and `api.push.apple.com`, a tap on the lock screen, Low Power Mode, and the badge on a real icon.
 - `api.push.apple.com` (production) and a 410/400 from the real Apple (dead-token deletion is fixture-tested against a fake APNs only); a provider-token expiry in the field (re-mint is fixture-tested with a fixed clock).
 - The >1000-change catch-up case (D-146) and an overtaken suspend's owed reconcile (D-147), both parked and unreproduced.
 - The hosted hubs: nothing applied to either AWS account.

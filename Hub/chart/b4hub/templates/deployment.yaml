@@ -74,6 +74,10 @@ spec:
             - name: B4HUB_APPLE_CALLBACK_SCHEME
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.hub.apple.callbackUrl }}
+            - name: B4HUB_APPLE_CALLBACK_URL
+              value: {{ . | quote }}
+            {{- end }}
             {{- if $hubSecret }}
             {{- range splitList " " (include "b4hub.secrets.keys" .) }}
             {{- if $.Values.secrets.useFileVars }}

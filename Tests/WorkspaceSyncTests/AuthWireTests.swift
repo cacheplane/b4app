@@ -137,8 +137,10 @@ import WorkspaceProtocol
   @Test func appleRoundTrips() throws {
     let begin = try roundTrips(AppleBeginRequest.self, "appleBeginRequest")
     #expect(begin.scheme == "b4app-local" && begin.verifierHash?.count == 64)
+    #expect(begin.httpsCallback == true)
     let begun = try roundTrips(AppleBeginResponse.self, "appleBeginResponse")
     #expect(begun.ceremonyId == "5b0f1f3e-2d0c-4f6a-9a51-6c2d8e7f4b10")
+    #expect(begun.callback == "https://local.b4.run/app/auth/apple")
     let native = try roundTrips(AppleNativeRequest.self, "appleNativeRequest")
     #expect(native.fullName == "Brian Love" && native.device.platform == "ios")
     let link = try roundTrips(AppleLinkNativeRequest.self, "appleLinkNativeRequest")
@@ -184,6 +186,19 @@ import WorkspaceProtocol
     let refused = try roundTrips(HubErrorBody.self, "stepUpRequired")
     #expect(refused.error.details?.code == "step_up_required")
     #expect(refused.error.details?.methods == ["passkey"])
+  }
+
+  /// D-151: an operator's enrollment code confirms it's you. Neither the wire body nor the protocol's
+  /// confirmation ever describes the code.
+  @Test func stepUpCodeRoundTripsAndNeverDescribesTheCode() throws {
+    let request = try roundTrips(StepUpCodeRequest.self, "stepUpCode")
+    #expect(!request.code.isEmpty)
+    #expect(!request.description.contains(request.code))
+    #expect(!String(reflecting: request).contains(request.code))
+    let proof = AccountStepUp.enrollmentCode(" \(request.code)\n")
+    #expect(proof.enrollmentCode == request.code)
+    #expect(proof.description == "AccountStepUp(enrollmentCode, <redacted>)")
+    #expect(!String(reflecting: proof).contains(request.code))
   }
 
   @Test func deviceSpecLeavesOutAbsentCandidates() throws {

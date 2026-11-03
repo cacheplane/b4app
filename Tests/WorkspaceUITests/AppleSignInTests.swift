@@ -45,7 +45,7 @@ private func reply<T: Encodable>(_ value: T) throws -> ScriptedTransport.Reply {
 private func start(_ ceremony: String) -> ScriptedTransport.Reply {
   .result([
     "url": .string("https://hub.test.b4.run/v1/auth/apple/start?ceremony=\(ceremony)"),
-    "callbackScheme": "b4app-beta",
+    "callback": "b4app-beta://auth",
   ])
 }
 
@@ -132,7 +132,7 @@ private final class FakeApple: AppleCeremony {
   )
   var web: Result<URL?, any Error> = .success(URL(string: "b4app-beta://auth?handoff=H-one-time")!)
   private(set) var nonces: [String] = []
-  private(set) var opened: [(url: URL, scheme: String)] = []
+  private(set) var opened: [(url: URL, callback: AppleWebCallback)] = []
   /// Runs inside the web sheet, before it answers: while the ceremony is in flight.
   var whileOpen: (() -> Void)?
 
@@ -141,8 +141,8 @@ private final class FakeApple: AppleCeremony {
     return try native.get()
   }
 
-  func webSignIn(url: URL, callbackScheme: String) async throws -> URL? {
-    opened.append((url, callbackScheme))
+  func webSignIn(url: URL, callback: AppleWebCallback) async throws -> URL? {
+    opened.append((url, callback))
     whileOpen?()
     return try web.get()
   }
@@ -216,7 +216,7 @@ private func sha256Hex(_ text: String) -> String {
     await model.signInWithApple(using: apple)
     #expect(
       apple.opened.map(\.url.absoluteString) == ["https://hub.test.b4.run/v1/auth/apple/start?ceremony=x"])
-    #expect(apple.opened.map(\.scheme) == ["b4app-beta"])
+    #expect(apple.opened.map(\.callback) == [.scheme("b4app-beta")])
     // Only the handoff goes on, and nothing else of the URL.
     #expect(transport.calls(.accountAppleFinish) == [["handoff": "X"]])
     // The Mac never runs the native sheet: its token would enter the app.
@@ -226,6 +226,18 @@ private func sha256Hex(_ text: String) -> String {
   }
 
   // MARK: The iPhone's native flow
+
+  /// D-160: the coordinator's `callback` becomes what the session waits for, a custom scheme or an https
+  /// host and path; anything else is no callback at all.
+  @Test func theCallbackBecomesTheSessionsWait() {
+    #expect(AppleWebCallback("b4app-beta://auth") == .scheme("b4app-beta"))
+    #expect(
+      AppleWebCallback("https://test.b4.run/app/auth/apple")
+        == .https(host: "test.b4.run", path: "/app/auth/apple"))
+    #expect(AppleWebCallback("https://test.b4.run") == nil)
+    #expect(AppleWebCallback("https://test.b4.run/") == nil)
+    #expect(AppleWebCallback("not a url") == nil)
+  }
 
   @Test func iosNativeSendsTokenAndName() async throws {
     let phone = try await Phone()

@@ -104,11 +104,13 @@ extension AccountManager {
     defer { appleStarts.unlock() }
     let verifier = Self.newVerifier()
     let api = signInAPI()
-    let request = AppleBeginRequest(verifierHash: Self.sha256Hex(verifier), scheme: flavor.urlScheme)
+    let request = AppleBeginRequest(
+      verifierHash: Self.sha256Hex(verifier), scheme: flavor.urlScheme, httpsCallback: true)
     let begun = try await Self.hubCall("begin Sign in with Apple") { try await api.appleBegin(request) }
     let url = try appleStartURL(ceremony: begun.ceremonyId)
+    let callback = try appleCallback(begun.callback)
     appleCeremony = AppleCeremony(id: begun.ceremonyId, verifier: verifier)
-    return AccountAppleStart.Result(url: url.absoluteString, callbackScheme: flavor.urlScheme)
+    return AccountAppleStart.Result(url: url.absoluteString, callback: callback)
   }
 
   /// Redeem the redirect's handoff with the kept verifier, once, and sign in. With no ceremony in
@@ -138,7 +140,7 @@ extension AccountManager {
   }
 
   /// Begin linking an Apple ID to the signed-in account (`POST /v1/me/apple` with a fresh verifier's
-  /// hash and this flavour's scheme, and the step-up `params` carries), keep the verifier, and answer
+  /// hash, this flavour's scheme, and the step-up `params` carries), keep the verifier, and answer
   /// the start URL. A start replaces a link already in flight. `apple_linked` when the account has one.
   public func appleLinkStart(
     _ params: AccountAppleLinkStart.Params = AccountStepUpParams()
@@ -148,7 +150,8 @@ extension AccountManager {
     await appleStarts.lock()
     defer { appleStarts.unlock() }
     let verifier = Self.newVerifier()
-    let request = AppleBeginRequest(verifierHash: Self.sha256Hex(verifier), scheme: flavor.urlScheme)
+    let request = AppleBeginRequest(
+      verifierHash: Self.sha256Hex(verifier), scheme: flavor.urlScheme, httpsCallback: true)
     let begun = try await Self.inScope(scope) {
       let grant = try await stepUpGrant(params.stepUp, in: scope)
       return try await Self.hubCall("begin connecting an Apple ID") {
@@ -156,9 +159,10 @@ extension AccountManager {
       }
     }
     let url = try appleStartURL(ceremony: begun.ceremonyId)
+    let callback = try appleCallback(begun.callback)
     appleLinkCeremony = AppleLinkCeremony(
       id: begun.ceremonyId, verifier: verifier, accountId: scope.account.id)
-    return AccountAppleLinkStart.Result(url: url.absoluteString, callbackScheme: flavor.urlScheme)
+    return AccountAppleLinkStart.Result(url: url.absoluteString, callback: callback)
   }
 
   /// Redeem a link's handoff with the kept verifier, once, for the account that began it. With no link
@@ -207,23 +211,25 @@ extension AccountManager {
     await appleStarts.lock()
     defer { appleStarts.unlock() }
     let verifier = Self.newVerifier()
-    let request = AppleBeginRequest(verifierHash: Self.sha256Hex(verifier), scheme: flavor.urlScheme)
+    let request = AppleBeginRequest(
+      verifierHash: Self.sha256Hex(verifier), scheme: flavor.urlScheme, httpsCallback: true)
     let begun = try await Self.inScope(scope) {
       try await Self.hubCall("begin confirming it's you") {
         try await scope.hub.client().stepUpAppleBegin(request)
       }
     }
     let url = try appleStartURL(ceremony: begun.ceremonyId)
+    let callback = try appleCallback(begun.callback)
     stepUpAppleCeremony = AppleLinkCeremony(
       id: begun.ceremonyId, verifier: verifier, accountId: scope.account.id)
-    return AccountStepUpAppleStart.Result(url: url.absoluteString, callbackScheme: flavor.urlScheme)
+    return AccountStepUpAppleStart.Result(url: url.absoluteString, callback: callback)
   }
 
   /// The grant `proof` earns for `scope`'s account (`nil` for no proof: an account with no sign-in
   /// method needs none, and the hub refuses any other with `step_up_required`). A passkey assertion
   /// goes to the hub once; an Apple handoff is redeemed with the verifier `account.stepUpAppleStart`
-  /// kept, which is used up whatever the hub answers. The grant is answered only to the caller, which
-  /// sends it with the change at once.
+  /// kept, which is used up whatever the hub answers; an operator's enrollment code is spent at the hub
+  /// (D-151). The grant is answered only to the caller, which sends it with the change at once.
   func stepUpGrant(_ proof: AccountStepUp?, in scope: AccountScope) async throws -> String? {
     guard let proof else { return nil }
     if let ceremonyId = proof.ceremonyId, let assertion = proof.assertion, proof.handoff == nil {
@@ -245,8 +251,32 @@ extension AccountManager {
         try await scope.hub.client().stepUpAppleHandoff(request)
       }.stepUp
     }
+    if let code = proof.enrollmentCode, proof.assertion == nil, proof.handoff == nil, proof.ceremonyId == nil
+    {
+      let request = StepUpCodeRequest(code: code)
+      return try await Self.hubCall("confirm it's you") {
+        try await scope.hub.client().stepUpCode(request)
+      }.stepUp
+    }
     throw WorkspaceError(
-      .protocolInvalid, "Confirm with a passkey assertion and its ceremony, or an Apple handoff.")
+      .protocolInvalid,
+      "Confirm with a passkey assertion and its ceremony, an Apple handoff, or an enrollment code.")
+  }
+
+  /// Where the web flow's result comes back (D-160): the hub's `callback`, taken only as this flavour's
+  /// `<scheme>://auth` or an https URL with a path on its site domain, so no answer can point the
+  /// session anywhere else. A hub older than D-160 names none, which means the scheme.
+  func appleCallback(_ named: String?) throws -> String {
+    let scheme = "\(flavor.urlScheme)://auth"
+    guard let named, named != scheme else { return scheme }
+    if let url = URL(string: named), url.scheme == "https", url.host()?.lowercased() == flavor.siteDomain,
+      url.port == nil, url.user() == nil, url.query() == nil, url.fragment() == nil,
+      url.path().count > 1
+    {
+      return named
+    }
+    throw WorkspaceError(
+      .protocolInvalid, "The hub named a place to finish Sign in with Apple that this app does not use.")
   }
 
   /// `<hub>/v1/auth/apple/start?ceremony=<id>`, which the browser session opens.
@@ -584,7 +614,7 @@ extension AccountManager {
   static func accountError(_ error: HubError, doing action: String) -> WorkspaceError {
     let known: Set<ErrorCode> = [
       .signupClosed, .ceremonyExpired, .credentialRejected, .lastIdentity, .mergeRefused, .appleLinked,
-      .sharedOrg, .rateLimited, .notFound, .stepUpRequired,
+      .sharedOrg, .rateLimited, .notFound, .stepUpRequired, .invalidCode,
     ]
     guard let code = ErrorCode(rawValue: error.code), known.contains(code) else {
       return HubSync.workspaceError(error, doing: action)
