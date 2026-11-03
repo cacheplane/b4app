@@ -11,6 +11,8 @@ Gate results and unresolved checks, newest first. Each entry names what was exer
 - `shellcheck` is clean.
 - A shared cluster started by the old script keeps running until it is stopped. `pg_ctl -D "$TMPDIR/b4hub-test/data" stop` stops it.
 
+Also in this PR: **`AccountCommandTests.logoutIsBoundedWhenTheRuntimeAndTheHubIgnoreCancellation`** failed on a loaded runner (CI run 41717884580). It took 5.43 s against a bound of `short.total` (4.3 s) + 1 s. That test and `logoutBoundedWhenHubDown` now allow 3 s of slack (`logoutSlack`). A regression still fails: `work` or `push` at its standard 9.5 s adds at least 7.5 s, and a step without a bound never ends. The 1 s slack never caught `close` or the floor at their standard values either (they add 0.5 s and 0.2 s). Both tests passed 5 runs locally.
+
 ## 2026-11-03: A parked B4 prompt is saved before the fixture discloses it
 
 A fixture-only change. No test or assertion changed.
