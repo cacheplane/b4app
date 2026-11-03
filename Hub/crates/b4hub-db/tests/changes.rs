@@ -855,7 +855,8 @@ async fn clearing_the_delete_mark_is_refused(pool: PgPool) {
                 rejected: vec![Rejected {
                     device_seq: seq,
                     code: changes::CANNOT_CLEAR
-                }]
+                }],
+                notifications: vec![]
             }
         );
     }
