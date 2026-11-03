@@ -19,6 +19,7 @@ use url::Url;
 use webauthn_rs::prelude::{Webauthn, WebauthnBuilder};
 
 use crate::cli::{ConfigError, Settings};
+use crate::routes::apple::SCHEMES;
 
 /// Where Apple's endpoints live unless `B4HUB_APPLE_BASE_URL` (tests only) says otherwise.
 pub const DEFAULT_APPLE_BASE_URL: &str = "https://appleid.apple.com";
@@ -88,6 +89,10 @@ pub struct AppleConfig {
     /// signs in with. Without it (or without `B4HUB_PUBLIC_URL`) the hub offers only the
     /// native flow.
     pub services_id: Option<String>,
+    /// `B4HUB_APPLE_CALLBACK_SCHEME` (with `services_id`, and only with it): the one app URL
+    /// scheme the web flow hands a result back to, the flavour this hub serves (one of
+    /// [`SCHEMES`]). Begin refuses any other (D-140).
+    pub callback_scheme: Option<String>,
     /// `B4HUB_APPLE_BASE_URL`, tests only.
     pub base_url: Url,
 }
@@ -100,6 +105,7 @@ impl fmt::Debug for AppleConfig {
             .field("private_key_pem", &"<redacted>")
             .field("audiences", &self.audiences)
             .field("services_id", &self.services_id)
+            .field("callback_scheme", &self.callback_scheme)
             .field("base_url", &self.base_url.as_str())
             .finish()
     }
@@ -215,7 +221,11 @@ fn apple(settings: &Settings) -> Result<Option<AppleConfig>, ConfigError> {
         })
         .collect();
     if set.is_empty() {
-        for name in ["B4HUB_APPLE_BASE_URL", "B4HUB_APPLE_SERVICES_ID"] {
+        for name in [
+            "B4HUB_APPLE_BASE_URL",
+            "B4HUB_APPLE_SERVICES_ID",
+            "B4HUB_APPLE_CALLBACK_SCHEME",
+        ] {
             if settings.var(name).is_some() {
                 return Err(ConfigError::new(
                     name,
@@ -291,6 +301,8 @@ fn apple(settings: &Settings) -> Result<Option<AppleConfig>, ConfigError> {
         }
     };
 
+    let callback_scheme = callback_scheme(settings, services_id.is_some())?;
+
     let base_url = match settings.var("B4HUB_APPLE_BASE_URL") {
         None => Url::parse(DEFAULT_APPLE_BASE_URL).expect("the default is a URL"),
         Some(raw) => match Url::parse(raw) {
@@ -310,8 +322,32 @@ fn apple(settings: &Settings) -> Result<Option<AppleConfig>, ConfigError> {
         private_key_pem,
         audiences,
         services_id,
+        callback_scheme,
         base_url,
     }))
+}
+
+/// `B4HUB_APPLE_CALLBACK_SCHEME`: required with the web flow's Services ID and refused without
+/// it, so a hub that offers the web flow always names the one scheme it hands back to.
+fn callback_scheme(settings: &Settings, web: bool) -> Result<Option<String>, ConfigError> {
+    const NAME: &str = "B4HUB_APPLE_CALLBACK_SCHEME";
+    match (settings.var(NAME).map(str::trim), web) {
+        (None, false) => Ok(None),
+        (Some(scheme), true) if SCHEMES.contains(&scheme) => Ok(Some(scheme.to_string())),
+        (Some(_), true) => Err(ConfigError::new(
+            NAME,
+            "must be one of b4app, b4app-beta, b4app-local: the app flavour this hub serves",
+        )),
+        (None, true) => Err(ConfigError::new(
+            NAME,
+            "is not set; the web flow (B4HUB_APPLE_SERVICES_ID) needs the one app URL scheme it \
+             hands back to: b4app, b4app-beta, or b4app-local",
+        )),
+        (Some(_), false) => Err(ConfigError::new(
+            NAME,
+            "is set without B4HUB_APPLE_SERVICES_ID; only the web flow uses it",
+        )),
+    }
 }
 
 /// Whether `pem` is one PKCS #8 `PRIVATE KEY` block whose body is base64 DER (a `SEQUENCE`), the
@@ -476,6 +512,7 @@ kZXiwkEnZYzZPc5fQx0VfT+fhjzYhYLgQ+KXi00zbyOb46KPzL6yEFza
     fn the_services_id_is_one_of_the_audiences() {
         let mut pairs = apple_pairs();
         pairs.push(("B4HUB_APPLE_SERVICES_ID", "com.cacheplane.b4app.signin"));
+        pairs.push(("B4HUB_APPLE_CALLBACK_SCHEME", "b4app"));
         let apple = Config::from_settings(&settings(&pairs))
             .unwrap()
             .apple
@@ -487,6 +524,7 @@ kZXiwkEnZYzZPc5fQx0VfT+fhjzYhYLgQ+KXi00zbyOb46KPzL6yEFza
 
         let mut pairs = apple_pairs();
         pairs.push(("B4HUB_APPLE_SERVICES_ID", "com.example.other"));
+        pairs.push(("B4HUB_APPLE_CALLBACK_SCHEME", "b4app"));
         let error = Config::from_settings(&settings(&pairs)).unwrap_err();
         assert_eq!(error.name, "B4HUB_APPLE_SERVICES_ID");
 
@@ -496,6 +534,56 @@ kZXiwkEnZYzZPc5fQx0VfT+fhjzYhYLgQ+KXi00zbyOb46KPzL6yEFza
         )]))
         .unwrap_err();
         assert_eq!(error.name, "B4HUB_APPLE_SERVICES_ID");
+    }
+
+    #[test]
+    fn the_web_flow_names_its_one_callback_scheme() {
+        let web = |scheme: Option<&'static str>| {
+            let mut pairs = apple_pairs();
+            pairs.push(("B4HUB_APPLE_SERVICES_ID", "com.cacheplane.b4app.signin"));
+            if let Some(scheme) = scheme {
+                pairs.push(("B4HUB_APPLE_CALLBACK_SCHEME", scheme));
+            }
+            Config::from_settings(&settings(&pairs))
+        };
+        for scheme in SCHEMES {
+            let apple = web(Some(scheme)).unwrap().apple.unwrap();
+            assert_eq!(apple.callback_scheme.as_deref(), Some(scheme));
+        }
+
+        // The web flow without a scheme, or with one no flavour claims, does not start.
+        for scheme in [
+            None,
+            Some(""),
+            Some("https"),
+            Some("B4APP"),
+            Some("b4app,b4app-beta"),
+        ] {
+            let error = web(scheme).unwrap_err();
+            assert_eq!(error.name, "B4HUB_APPLE_CALLBACK_SCHEME", "{scheme:?}");
+        }
+
+        // Only the web flow uses it: without the Services ID, or without Apple, it is refused.
+        let mut native = apple_pairs();
+        native.push(("B4HUB_APPLE_CALLBACK_SCHEME", "b4app"));
+        assert_eq!(
+            Config::from_settings(&settings(&native)).unwrap_err().name,
+            "B4HUB_APPLE_CALLBACK_SCHEME"
+        );
+        assert_eq!(
+            Config::from_settings(&settings(&[("B4HUB_APPLE_CALLBACK_SCHEME", "b4app")]))
+                .unwrap_err()
+                .name,
+            "B4HUB_APPLE_CALLBACK_SCHEME"
+        );
+        assert_eq!(
+            Config::from_settings(&settings(&apple_pairs()))
+                .unwrap()
+                .apple
+                .unwrap()
+                .callback_scheme,
+            None
+        );
     }
 
     #[test]
