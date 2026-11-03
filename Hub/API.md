@@ -756,10 +756,10 @@ has an open link (see *Link*), the hub closes it with code 4001. Errors: `401 un
 
 ### `POST /v1/devices/self/push-token`
 
-A phone registers the APNs token the hub notifies it at. One row per device, replaced on every
-call. Registering a token removes it from any other device of the org that still holds it (a phone
-that enrolled again while the hub kept its old device), so no phone is told twice. The phone sends it each time the system hands it a token while it is signed in, and after each
-sign-in.
+A phone registers the APNs token the hub notifies it at. One row per device, replaced on every call.
+Registering a token removes it from any other device of the org that still holds it (a phone that
+enrolled again while the hub kept its old device), so no phone is told twice. The phone sends it
+each time the system hands it a token while it is signed in, and after each sign-in.
 
 Request (all three fields required, no other field allowed):
 
