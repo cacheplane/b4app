@@ -618,13 +618,17 @@
       "body": "Waiting for your approval"
      },
      "sound": "default",
+     "badge": 3,
      "content-available": 1,
      "thread-id": "thread-1"
     },
     "threadId": "thread-1",
     "reason": "approval",
+    "key": "request:req-1",
     "Simulator Target Bundle": "com.cacheplane.b4app.dev"
-   }
+   },
+   "key": "request:req-1",
+   "badge": 3
   },
   {
    "threadId": "thread-2",
@@ -638,13 +642,17 @@
       "body": "Has a question for you"
      },
      "sound": "default",
+     "badge": 1,
      "content-available": 1,
      "thread-id": "thread-2"
     },
     "threadId": "thread-2",
     "reason": "question",
+    "key": "request:req-2",
     "Simulator Target Bundle": "com.cacheplane.b4app.dev"
-   }
+   },
+   "key": "request:req-2",
+   "badge": 1
   },
   {
    "threadId": "thread-3",
@@ -658,13 +666,17 @@
       "body": "Replied"
      },
      "sound": "default",
+     "badge": 0,
      "content-available": 1,
      "thread-id": "thread-3"
     },
     "threadId": "thread-3",
     "reason": "replied",
+    "key": "turn:turn-3",
     "Simulator Target Bundle": "com.cacheplane.b4app.dev"
-   }
+   },
+   "key": "turn:turn-3",
+   "badge": 0
   },
   {
    "threadId": "thread-4",
@@ -678,12 +690,69 @@
       "body": "Turn failed"
      },
      "sound": "default",
+     "badge": 12,
      "content-available": 1,
      "thread-id": "thread-4"
     },
     "threadId": "thread-4",
     "reason": "failed",
+    "key": "turn:turn-4",
     "Simulator Target Bundle": "com.cacheplane.b4app.dev"
+   },
+   "key": "turn:turn-4",
+   "badge": 12
+  }
+ ],
+ "withdrawals": [
+  {
+   "keys": [
+    "request:req-1"
+   ],
+   "bundleId": "com.cacheplane.b4app.dev",
+   "expected": {
+    "aps": {
+     "content-available": 1
+    },
+    "withdraw": [
+     "request:req-1"
+    ],
+    "Simulator Target Bundle": "com.cacheplane.b4app.dev"
+   }
+  },
+  {
+   "keys": [
+    "request:req-2",
+    "turn:turn-3"
+   ],
+   "bundleId": "com.cacheplane.b4app.dev",
+   "expected": {
+    "aps": {
+     "content-available": 1
+    },
+    "withdraw": [
+     "request:req-2",
+     "turn:turn-3"
+    ],
+    "Simulator Target Bundle": "com.cacheplane.b4app.dev"
+   }
+  },
+  {
+   "keys": [
+    "turn:turn-4",
+    "request:req-1",
+    "turn:turn-5"
+   ],
+   "bundleId": "com.cacheplane.b4app.ios",
+   "expected": {
+    "aps": {
+     "content-available": 1
+    },
+    "withdraw": [
+     "turn:turn-4",
+     "request:req-1",
+     "turn:turn-5"
+    ],
+    "Simulator Target Bundle": "com.cacheplane.b4app.ios"
    }
   }
  ]

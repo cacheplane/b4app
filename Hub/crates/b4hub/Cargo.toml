@@ -37,6 +37,8 @@ webauthn-rs.workspace = true
 webauthn-rs-proto.workspace = true
 
 [dev-dependencies]
+# `http2` for the fake APNs in the push tests (HTTP/2 without TLS).
+axum = { workspace = true, features = ["http2"] }
 futures-util.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true

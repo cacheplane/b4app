@@ -75,8 +75,8 @@ pub struct AppState {
     pub maintenance: MaintenanceState,
     /// This instance's id and heartbeat health; the link upgrade claims users for it.
     pub instances: InstancesState,
-    /// Delivers the notifications a push decides on; `None` sends nothing (the ledger still
-    /// records them, so delivery stays at most once).
+    /// Delivers the alerts and withdrawals a push decides on; `None` sends nothing (the ledger
+    /// still records them, so delivery stays at most once).
     pub push: Option<Arc<dyn PushSender>>,
 }
 

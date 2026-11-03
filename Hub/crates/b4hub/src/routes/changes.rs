@@ -16,7 +16,7 @@ use crate::auth::AuthedDevice;
 use crate::error::{ApiError, ApiJson};
 use crate::maintenance::WritesAllowed;
 use crate::notify::Notifier;
-use crate::push;
+use crate::push::{self, Message};
 use crate::serve::{AppState, Shutdown};
 
 /// The longest a pull waits for a change, in seconds, whatever `wait` asks for.
@@ -58,9 +58,17 @@ async fn push(
     // After the commit, so a woken pull finds the changes.
     state.notifier.wake(device.org_id);
     // Also after the commit, and on a task of its own: the response never waits on a sender.
-    let notifications = std::mem::take(&mut outcome.notifications);
+    let messages: Vec<Message> = std::mem::take(&mut outcome.notifications)
+        .into_iter()
+        .map(Message::Alert)
+        .chain(
+            std::mem::take(&mut outcome.withdrawals)
+                .into_iter()
+                .map(Message::Withdraw),
+        )
+        .collect();
     if let Some(sender) = &state.push {
-        push::deliver(sender.clone(), notifications);
+        push::deliver(sender.clone(), state.db.clone(), device.org_id, messages);
     }
     let mut body = json!({ "acceptedThrough": outcome.accepted_through });
     if !outcome.rejected.is_empty() {

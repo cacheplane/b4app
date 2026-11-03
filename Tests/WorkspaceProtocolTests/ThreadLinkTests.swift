@@ -92,4 +92,47 @@ struct ThreadLinkTests {
       #expect(ThreadLink.reason(fromNotification: userInfo)?.rawValue == entry["reason"] as? String)
     }
   }
+
+  @Test func readsTheKeyFromANotification() {
+    #expect(ThreadLink.key(fromNotification: ["key": "request:r-1"]) == "request:r-1")
+    #expect(ThreadLink.key(fromNotification: ["key": "turn:u-1"]) == "turn:u-1")
+    #expect(ThreadLink.key(fromNotification: [:]) == nil)
+    #expect(ThreadLink.key(fromNotification: ["key": ""]) == nil)
+    #expect(ThreadLink.key(fromNotification: ["key": 3]) == nil)
+  }
+
+  @Test func readsTheWithdrawnKeysFromANotification() {
+    #expect(
+      ThreadLink.withdrawKeys(fromNotification: ["withdraw": ["request:a", "turn:b"]]) == [
+        "request:a", "turn:b",
+      ])
+    #expect(
+      ThreadLink.withdrawKeys(fromNotification: ["withdraw": ["request:a", 4, "turn:b"] as [Any]]) == [
+        "request:a", "turn:b",
+      ])
+    #expect(ThreadLink.withdrawKeys(fromNotification: [:]).isEmpty)
+    #expect(ThreadLink.withdrawKeys(fromNotification: ["withdraw": "request:a"]).isEmpty)
+  }
+
+  @Test func everyFixtureEntryYieldsItsKeysInOrder() throws {
+    let url = URL(fileURLWithPath: "\(#filePath)")
+      .deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Fixtures/sync/push.json")
+    let document = try #require(
+      try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    let payloads = try #require(document["payloads"] as? [[String: Any]])
+    for entry in payloads {
+      let userInfo = try #require(entry["expected"] as? [AnyHashable: Any])
+      #expect(ThreadLink.key(fromNotification: userInfo) == entry["key"] as? String)
+      #expect(ThreadLink.key(fromNotification: userInfo) != nil)
+      #expect(ThreadLink.withdrawKeys(fromNotification: userInfo).isEmpty)
+    }
+    let withdrawals = try #require(document["withdrawals"] as? [[String: Any]])
+    #expect(!withdrawals.isEmpty)
+    for entry in withdrawals {
+      let userInfo = try #require(entry["expected"] as? [AnyHashable: Any])
+      #expect(ThreadLink.withdrawKeys(fromNotification: userInfo) == entry["keys"] as? [String])
+      #expect(ThreadLink.key(fromNotification: userInfo) == nil)
+    }
+  }
 }

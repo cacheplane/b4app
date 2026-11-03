@@ -21,10 +21,10 @@ use b4hub_db::orgs::{self, OrgChoice};
 use b4hub_db::settings::Maintenance;
 use b4hub_db::{devices, Db};
 
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::instances::InstancesState;
 use crate::maintenance;
-use crate::push::{ApnsSender, PushError, PushSender, SpoolSender};
+use crate::push::{ApnsConfig, ApnsSender, PushError, PushSender, SpoolSender};
 use crate::serve::{self, AppState};
 
 const DEFAULT_PORT: u16 = 8080;
@@ -213,7 +213,8 @@ pub enum LogFormat {
 pub enum PushChoice {
     None,
     Spool(PathBuf),
-    Apns,
+    /// `Debug` leaves out the private key.
+    Apns(ApnsConfig),
 }
 
 /// A snapshot of the environment, so settings parse the same way in tests as in production.
@@ -387,7 +388,9 @@ impl Settings {
     }
 
     /// `B4HUB_PUSH_SENDER`: `none` (the default), `spool` (writes `.apns` files into
-    /// `B4HUB_PUSH_SPOOL_DIR`), or `apns`.
+    /// `B4HUB_PUSH_SPOOL_DIR`), or `apns` (needs `B4HUB_APNS_KEY_ID`, `B4HUB_APNS_TEAM_ID`, and
+    /// `B4HUB_APNS_PRIVATE_KEY`, each also as `NAME_FILE`, the same rule as the sign-in secrets).
+    /// The key's shape is checked here; whether it signs, when the sender is built.
     pub fn push_sender(&self) -> Result<PushChoice, ConfigError> {
         match self.var("B4HUB_PUSH_SENDER") {
             None | Some("none") => Ok(PushChoice::None),
@@ -398,7 +401,31 @@ impl Settings {
                     "is required when B4HUB_PUSH_SENDER is spool",
                 )),
             },
-            Some("apns") => Ok(PushChoice::Apns),
+            Some("apns") => {
+                let required = |name: &str| {
+                    self.secret_value(name)?.ok_or_else(|| {
+                        ConfigError::new(
+                            name,
+                            format!(
+                                "is required when B4HUB_PUSH_SENDER is apns \
+                                 (set {name} or {name}_FILE)"
+                            ),
+                        )
+                    })
+                };
+                let key_id = config::apple_id("B4HUB_APNS_KEY_ID", required("B4HUB_APNS_KEY_ID")?)?;
+                let team_id =
+                    config::apple_id("B4HUB_APNS_TEAM_ID", required("B4HUB_APNS_TEAM_ID")?)?;
+                let private_key_pem = config::p8_pem(
+                    "B4HUB_APNS_PRIVATE_KEY",
+                    &required("B4HUB_APNS_PRIVATE_KEY")?,
+                )?;
+                Ok(PushChoice::Apns(ApnsConfig {
+                    key_id,
+                    team_id,
+                    private_key_pem,
+                }))
+            }
             Some(_) => Err(ConfigError::new(
                 "B4HUB_PUSH_SENDER",
                 "must be none, spool, or apns",
@@ -537,7 +564,15 @@ async fn serve_command(bind: Option<SocketAddr>, settings: &Settings) -> Result<
     let push: Option<Arc<dyn PushSender>> = match settings.push_sender()? {
         PushChoice::None => None,
         PushChoice::Spool(dir) => Some(Arc::new(SpoolSender::new(dir)?)),
-        PushChoice::Apns => Some(Arc::new(ApnsSender::new()?)),
+        PushChoice::Apns(apns) => Some(Arc::new(ApnsSender::new(apns).map_err(
+            |error| match error {
+                PushError::BadKey => CliError::from(ConfigError::new(
+                    "B4HUB_APNS_PRIVATE_KEY",
+                    "is not a P-256 private key (the .p8 file's PEM contents)",
+                )),
+                other => CliError::from(other),
+            },
+        )?)),
     };
     tracing::info!(
         sender = push.as_ref().map_or("none", |p| p.name()),
@@ -756,8 +791,9 @@ mod tests {
         assert_eq!(
             settings(&[("B4HUB_PUSH_SENDER", "apns")])
                 .push_sender()
-                .unwrap(),
-            PushChoice::Apns
+                .unwrap_err()
+                .name,
+            "B4HUB_APNS_KEY_ID"
         );
         assert_eq!(
             settings(&[("B4HUB_PUSH_SENDER", "fcm")])
@@ -766,6 +802,118 @@ mod tests {
                 .name,
             "B4HUB_PUSH_SENDER"
         );
+    }
+
+    /// The DER of a PKCS #8 `PrivateKeyInfo` for a P-256 key, up to the 32-byte scalar, as an
+    /// Apple `.p8` file holds it.
+    const P8_PREFIX: [u8; 35] = [
+        0x30, 0x41, 0x02, 0x01, 0x00, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02,
+        0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x04, 0x27, 0x30, 0x25,
+        0x02, 0x01, 0x01, 0x04, 0x20,
+    ];
+
+    /// `scalar` as a `.p8` PEM.
+    fn p8(scalar: [u8; 32]) -> String {
+        use base64::Engine;
+        let mut der = P8_PREFIX.to_vec();
+        der.extend_from_slice(&scalar);
+        format!(
+            "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----",
+            base64::engine::general_purpose::STANDARD.encode(der)
+        )
+    }
+
+    /// A fresh P-256 key in Apple's `.p8` layout, generated per test (never a real key).
+    fn p8_pem() -> String {
+        let mut scalar = [0u8; 32];
+        getrandom::fill(&mut scalar).expect("randomness");
+        p256::ecdsa::SigningKey::from_bytes(&scalar.into()).expect("a valid scalar");
+        p8(scalar)
+    }
+
+    #[test]
+    fn apns_config_names_missing_values() {
+        let pem = p8_pem();
+        let all = [
+            ("B4HUB_PUSH_SENDER", "apns"),
+            ("B4HUB_APNS_KEY_ID", "KEY1234567"),
+            ("B4HUB_APNS_TEAM_ID", "TEAM123456"),
+            ("B4HUB_APNS_PRIVATE_KEY", pem.as_str()),
+        ];
+        match settings(&all).push_sender().unwrap() {
+            PushChoice::Apns(config) => {
+                assert_eq!(config.key_id, "KEY1234567");
+                assert_eq!(config.team_id, "TEAM123456");
+                assert_eq!(config.private_key_pem, pem);
+                assert!(!format!("{config:?}").contains("PRIVATE KEY"));
+            }
+            other => panic!("expected apns, got {other:?}"),
+        }
+        // Each one missing (or empty) is named.
+        for missing in 1..all.len() {
+            let mut pairs = all.to_vec();
+            pairs[missing].1 = "";
+            let error = settings(&pairs).push_sender().unwrap_err();
+            assert_eq!(error.name, all[missing].0);
+            assert!(
+                error.reason.contains("B4HUB_PUSH_SENDER is apns"),
+                "{error}"
+            );
+            pairs.remove(missing);
+            assert_eq!(
+                settings(&pairs).push_sender().unwrap_err().name,
+                all[missing].0
+            );
+        }
+        // A malformed id is named and not echoed.
+        let mut pairs = all.to_vec();
+        pairs[1].1 = "key-1234";
+        let error = settings(&pairs).push_sender().unwrap_err();
+        assert_eq!(error.name, "B4HUB_APNS_KEY_ID");
+        assert!(!error.to_string().contains("key-1234"));
+        // The `_FILE` forms are read, as for the sign-in secrets.
+        let dir = std::env::temp_dir().join(format!("b4hub-cli-{}", b4hub_core::ids::new_uuid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("AuthKey.p8");
+        std::fs::write(&path, format!("{pem}\n")).unwrap();
+        let from_file = settings(&[
+            ("B4HUB_PUSH_SENDER", "apns"),
+            ("B4HUB_APNS_KEY_ID", "KEY1234567"),
+            ("B4HUB_APNS_TEAM_ID", "TEAM123456"),
+            ("B4HUB_APNS_PRIVATE_KEY_FILE", path.to_str().unwrap()),
+        ]);
+        match from_file.push_sender().unwrap() {
+            PushChoice::Apns(config) => assert_eq!(config.private_key_pem, pem),
+            other => panic!("expected apns, got {other:?}"),
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn bad_key_refuses_to_start() {
+        use base64::Engine;
+        let secret_key = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
+        // PEM-shaped, but not a P-256 key: the scalar is zero.
+        let zero = p8([0; 32]);
+        for key in [zero.as_str(), "/etc/AuthKey_ABC.p8", "not a key"] {
+            let cli = Cli::try_parse_from(["b4hub", "serve", "--bind", "127.0.0.1:0"]).unwrap();
+            let settings = settings(&[
+                ("DATABASE_URL", "postgres://b4hub_app:pw@127.0.0.1:1/none"),
+                ("B4HUB_WEBAUTHN_RP_ID", "local.b4.run"),
+                ("B4HUB_SECRET_KEY", secret_key.as_str()),
+                ("B4HUB_PUSH_SENDER", "apns"),
+                ("B4HUB_APNS_KEY_ID", "KEY1234567"),
+                ("B4HUB_APNS_TEAM_ID", "TEAM123456"),
+                ("B4HUB_APNS_PRIVATE_KEY", key),
+            ]);
+            let error = run(cli, &settings).await.unwrap_err();
+            match &error {
+                CliError::Config(e) => assert_eq!(e.name, "B4HUB_APNS_PRIVATE_KEY", "{key}"),
+                other => panic!("expected a configuration error, got {other}"),
+            }
+            assert_eq!(error.exit_code(), 2);
+            assert!(!error.to_string().contains(key), "{error}");
+        }
     }
 
     #[test]

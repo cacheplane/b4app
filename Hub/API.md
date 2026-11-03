@@ -852,9 +852,10 @@ has an open link (see *Link*), the hub closes it with code 4001. Errors: `401 un
 
 ### `POST /v1/devices/self/push-token`
 
-A phone registers the APNs token the hub notifies it at. One row per device, replaced on every
-call. The phone sends it each time the system hands it a token while it is signed in, and after each
-sign-in.
+A phone registers the APNs token the hub notifies it at. One row per device, replaced on every call.
+Registering a token removes it from any other device of the org that still holds it (a phone that
+enrolled again while the hub kept its old device), so no phone is told twice. The phone sends it
+each time the system hands it a token while it is signed in, and after each sign-in.
 
 Request (all three fields required, no other field allowed):
 
@@ -863,7 +864,8 @@ Request (all three fields required, no other field allowed):
 ```
 
 - `token`: 32 to 512 hexadecimal characters.
-- `environment`: `sandbox` (a Debug build) or `production`.
+- `environment`: `sandbox` from the Simulator and from device builds signed with a development
+  profile, `production` from TestFlight and App Store builds.
 - `bundleId`: the app's bundle identifier, `^[A-Za-z0-9][A-Za-z0-9.-]{0,154}$`. It comes from the
   phone, so the hub needs no per-flavour configuration.
 
@@ -890,9 +892,14 @@ have a push token, and are not the one whose push caused the change:
   same transaction, whether or not a sender is configured or the phone has a token, so a retried
   batch or a later update to the same row notifies nobody twice, and delivery is at most once.
 
-The notification is sent after the commit, on a task of its own: the push response never waits on
-delivery, and a failed delivery is logged (device id and reason, never the token or the title) and
-not retried.
+The same transaction withdraws what is over: a notified request that is no longer `pending`
+(answered or expired), a notified turn that its thread's `readTurnId` now covers, and everything
+notified in a thread that was deleted. Each is withdrawn once (the ledger's `withdrawn_at`), to the
+same phones as the alert, the one whose push caused it included.
+
+Alerts and withdrawals are sent after the commit, on a task of their own: the push response never
+waits on delivery, and a failed delivery is logged (device id, notification keys, and APNs's
+status, `reason`, and `apns-id`; never the token, the title, or the provider token) and dropped.
 
 #### Push payload
 
@@ -901,11 +908,13 @@ not retried.
   "aps": {
     "alert": {"title": "Fix the build", "body": "Waiting for your approval"},
     "sound": "default",
+    "badge": 2,
     "content-available": 1,
     "thread-id": "thread-1"
   },
   "threadId": "thread-1",
-  "reason": "approval"
+  "reason": "approval",
+  "key": "request:request-1"
 }
 ```
 
@@ -913,21 +922,43 @@ not retried.
 `body` is exactly one of `Waiting for your approval`, `Has a question for you`, `Replied`, or
 `Turn failed`; it never carries transcript, command text, or paths. `reason` is `approval`,
 `question`, `replied`, or `failed`. The payload carries no URL: the app builds
-`<its scheme>://thread/<threadId>` itself.
+`<its scheme>://thread/<threadId>` itself. `key` is `request:<id>` or `turn:<id>`, the name a
+withdrawal uses. `badge` is the number of the user's threads that need them (not archived or
+deleted, in the needs-input or unread band), computed after the whole push.
+
+A withdrawal is a background push naming the keys to remove, with no alert, sound, or badge:
+
+```json
+{"aps": {"content-available": 1}, "withdraw": ["request:request-1", "turn:turn-7"]}
+```
 
 #### Senders
 
 `B4HUB_PUSH_SENDER` chooses how `serve` delivers:
 
 - `none` (the default, also when unset): nothing is sent.
-- `spool`: each notification is written to `B4HUB_PUSH_SPOOL_DIR` (required; created if missing)
-  as `<unix ms>-<uuid>.apns`, the payload above plus the `Simulator Target Bundle` key set to the
+- `spool`: each alert and withdrawal is written to `B4HUB_PUSH_SPOOL_DIR` (required; created if missing)
+  as `<unix ms>-<uuid>.apns`, the payload above (or the withdrawal) plus the `Simulator Target Bundle` key set to the
   phone's `bundleId`, which is what `xcrun simctl push booted - < file` reads. The file is written
   under a hidden `.tmp` name and renamed when complete, so a watcher never reads half a file.
   The Compose file sets this up and mounts the directory at `B4HUB_PUSH_SPOOL_HOST_DIR` (default
   `Hub/push-spool/`).
-- `apns`: not built yet. `serve` refuses to start with "APNs delivery is not built yet (the
-  deploy slice)" rather than pretend to send.
+- `apns`: Apple Push Notification service over HTTP/2 and TLS. Needs `B4HUB_APNS_KEY_ID`,
+  `B4HUB_APNS_TEAM_ID` (each 10 uppercase letters and digits), and `B4HUB_APNS_PRIVATE_KEY` (the
+  `.p8` file's PEM contents), each also as `NAME_FILE`; `serve` refuses to start (exit 2, naming
+  the variable, never echoing the key) when one is missing or the key does not sign.
+  - A `sandbox` token is sent to `api.sandbox.push.apple.com`, a `production` token to
+    `api.push.apple.com`, as `POST /3/device/<token>` on one kept-open connection per endpoint.
+  - Authentication is a provider token: an ES256 JWT with `kid` the key id, `iss` the team id,
+    and `iat`, reused for 50 minutes.
+  - Headers: `apns-topic` is the token's `bundleId`; an alert is `apns-push-type: alert`,
+    `apns-priority: 10`, `apns-collapse-id` its `key`, expiring after 4 hours; a withdrawal is
+    `background`, priority `5`, expiring after 15 minutes.
+  - Apple's answers: `410`, `400 BadDeviceToken`, and `400 DeviceTokenNotForTopic` delete the
+    phone's push token (unless it registered a newer one meanwhile), so it is told nothing until it
+    registers again. `403 ExpiredProviderToken` or `InvalidProviderToken` re-mints the JWT and
+    tries once more; `429`, a `5xx`, or no answer (10 s to connect, 15 s per request) tries once
+    more after 500 ms. Anything else is logged and dropped.
 
 ### `GET /v1/devices/self/link`
 

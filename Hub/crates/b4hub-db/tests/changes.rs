@@ -746,7 +746,8 @@ async fn phone_title_edit_applies_and_later_mac_edit_wins(pool: PgPool) {
         PushOutcome {
             accepted_through: 1,
             rejected: vec![],
-            notifications: vec![]
+            notifications: vec![],
+            withdrawals: vec![]
         }
     );
     assert_eq!(title(&app, &mac).await, "Phone title");
@@ -795,7 +796,8 @@ async fn a_phone_marks_a_thread_deleted_and_the_row_stays(pool: PgPool) {
         PushOutcome {
             accepted_through: 1,
             rejected: vec![],
-            notifications: vec![]
+            notifications: vec![],
+            withdrawals: vec![]
         }
     );
     let thread = row(&app, &mac, "threads", "id", "thread-1").await.unwrap();
@@ -856,7 +858,8 @@ async fn clearing_the_delete_mark_is_refused(pool: PgPool) {
                     device_seq: seq,
                     code: changes::CANNOT_CLEAR
                 }],
-                notifications: vec![]
+                notifications: vec![],
+                withdrawals: vec![]
             }
         );
     }
@@ -904,7 +907,8 @@ async fn stale_phone_edit_loses(pool: PgPool) {
         PushOutcome {
             accepted_through: 1,
             rejected: vec![],
-            notifications: vec![]
+            notifications: vec![],
+            withdrawals: vec![]
         }
     );
     assert_eq!(title(&app, &mac).await, "Mac title");
