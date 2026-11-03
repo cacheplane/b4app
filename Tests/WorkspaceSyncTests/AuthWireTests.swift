@@ -201,6 +201,17 @@ import WorkspaceProtocol
     #expect(!String(reflecting: proof).contains(request.code))
   }
 
+  /// D-170: a paired phone asks whether a pairing link's code is its own account's before offering to
+  /// pair. The request never describes the code.
+  @Test func pairingCodeCheckRoundTripsAndNeverDescribesTheCode() throws {
+    let request = try roundTrips(PairingCodeCheckRequest.self, "pairingCodeCheck")
+    #expect(request.code.count == 8)
+    #expect(!request.description.contains(request.code))
+    #expect(!String(reflecting: request).contains(request.code))
+    let answer = try roundTrips(PairingCodeCheckResponse.self, "pairingCodeCheckResponse")
+    #expect(answer.sameAccount)
+  }
+
   @Test func deviceSpecLeavesOutAbsentCandidates() throws {
     let spec = DeviceSpec(deviceName: "Mac", platform: "macos", deviceId: "d")
     let encoded = try JSONCoding.decoder.decode(JSONValue.self, from: JSONCoding.encoder.encode(spec))

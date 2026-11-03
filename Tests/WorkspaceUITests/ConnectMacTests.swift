@@ -70,6 +70,28 @@ private func poll(_ what: String, _ condition: @MainActor () -> Bool) async {
     #expect(EnrollSheetFace.face(offering: false, paired: false, openedSignedIn: true) == .signedInResult)
   }
 
+  /// Live gate (2026-11-03): a paired iPhone scanned its own Mac's code, was asked to pair, and heard
+  /// "already paired" only after the tap. Now a signed-in phone's offer checks first (D-170): never the
+  /// question while it checks, and "already paired" instead of the question for its own account.
+  @Test func aPairedPhoneHearsAlreadyPairedBeforeAnyQuestion() {
+    // Checking: neither the question nor the form.
+    #expect(
+      EnrollSheetFace.face(offering: true, paired: false, openedSignedIn: true, checking: true) == .checking)
+    // The check said "another account" (or failed): the question, as before.
+    #expect(
+      EnrollSheetFace.face(offering: true, paired: false, openedSignedIn: true, checking: false)
+        == .confirmation)
+    // The check said "your own account": the offer is dropped and the line shows, signed in or not when
+    // the sheet opened, and whether the check or Pair found it.
+    for openedSignedIn in [true, false] {
+      #expect(
+        EnrollSheetFace.face(
+          offering: false, paired: false, openedSignedIn: openedSignedIn, alreadyPaired: true)
+          == .alreadyPaired)
+    }
+    #expect(PairingCopy.alreadyPaired == "This iPhone is already paired")
+  }
+
   @Test func connectMacShownWithoutMacosDevice() async throws {
     let store = try MirrorStore.inMemory()
     let fake = FakeHubAPI()

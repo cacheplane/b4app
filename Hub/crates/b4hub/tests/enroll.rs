@@ -3,9 +3,11 @@
 
 mod common;
 
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use axum::body::{to_bytes, Body};
+use axum::extract::ConnectInfo;
 use axum::http::{header, Request, StatusCode};
 use axum::routing::post;
 use axum::Router;
@@ -69,6 +71,7 @@ async fn seed_blove(admin: &Db) -> orgs::SeedOutcome {
 
 /// Sends one request through `router` and returns the status and the JSON body (`Null` when the
 /// body is empty). A non-empty body that is not JSON fails the test: every answer must be JSON.
+/// Every request comes from one peer address, as `serve::run` would hand the rate limits.
 async fn send_to(
     router: Router,
     method: &str,
@@ -87,6 +90,10 @@ async fn send_to(
         None => request.body(Body::empty()),
     }
     .unwrap();
+    let mut request = request;
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([192, 0, 2, 7], 50_000))));
     let response = router.oneshot(request).await.unwrap();
     let status = response.status();
     let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
@@ -990,6 +997,120 @@ async fn a_revoked_macs_unused_pairing_code_cannot_be_redeemed(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+// ---- Checking a pairing code (D-170) ----
+
+async fn check(state: &AppState, token: Option<&str>, code: &str) -> (StatusCode, Value) {
+    let body = json!({ "code": code }).to_string();
+    send(state, "POST", "/v1/pairing-codes/check", token, Some(&body)).await
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_phone_checks_a_pairing_code_without_spending_it(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let seeded = seed_blove(&admin).await;
+    let (mac_token, _) = enroll_as(&admin, &state, &seeded, "macos").await;
+    let (phone_token, _) = enroll_as(&admin, &state, &seeded, "ios").await;
+    let other = orgs::seed(&admin, "acme", "Acme", "wile", "Wile E.", "w@example.test")
+        .await
+        .unwrap();
+    let (stranger_token, _) = enroll_as(&admin, &state, &other, "ios").await;
+    let (_, body) = mint(&state, &mac_token).await;
+    let code = body["code"].as_str().unwrap().to_string();
+
+    // The Mac's own phone: its account, however often it asks, and in any case.
+    for asked in [code.clone(), code.clone(), code.to_lowercase()] {
+        let (status, body) = check(&state, Some(&phone_token), &asked).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body, json!({ "sameAccount": true }));
+    }
+    // Another account's phone: not its account.
+    let (status, body) = check(&state, Some(&stranger_token), &code).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({ "sameAccount": false }));
+    // An operator's code for that account counts as any code an iPhone could redeem.
+    let operator =
+        devices::create_enrollment_code(&admin, other.org_id, other.user_id, TEN_MINUTES)
+            .await
+            .unwrap();
+    let (_, body) = check(&state, Some(&stranger_token), &operator).await;
+    assert_eq!(body, json!({ "sameAccount": true }));
+
+    // Nothing was spent: the code still pairs a phone, once.
+    let (unused,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM enrollment_codes WHERE used_at IS NULL")
+            .fetch_one(&admin.pool)
+            .await
+            .unwrap();
+    assert_eq!(unused, 2);
+    let (status, body) = send(
+        &state,
+        "POST",
+        "/v1/enroll",
+        None,
+        Some(&phone_enroll_body(&code)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // A used, an unknown, or an expired code is refused as enroll refuses it.
+    let (status, body) = check(&state, Some(&phone_token), &code).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(error_code(&body), "invalid_code");
+    let (status, body) = check(&state, Some(&phone_token), "BCDFGHJK").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(error_code(&body), "invalid_code");
+    let (_, body) = mint(&state, &mac_token).await;
+    let expiring = body["code"].as_str().unwrap().to_string();
+    sqlx::query("UPDATE enrollment_codes SET expires_at = now() - interval '1 second'")
+        .execute(&admin.pool)
+        .await
+        .unwrap();
+    let (status, body) = check(&state, Some(&phone_token), &expiring).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(error_code(&body), "invalid_code");
+}
+
+#[sqlx::test(migrations = false)]
+async fn only_a_signed_in_phone_checks(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let seeded = seed_blove(&admin).await;
+    let (mac_token, _) = enroll_as(&admin, &state, &seeded, "macos").await;
+    let (_, body) = mint(&state, &mac_token).await;
+    let code = body["code"].as_str().unwrap().to_string();
+
+    let (status, body) = check(&state, None, &code).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(error_code(&body), "unauthorized");
+    let (status, body) = check(&state, Some(&mac_token), &code).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, body) = send(
+        &state,
+        "POST",
+        "/v1/pairing-codes/check",
+        Some(&mac_token),
+        Some(r#"{"code": "X", "extra": 1}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn checks_are_limited_per_client(pool: PgPool) {
+    let (admin, state) = migrated(&pool).await;
+    let seeded = seed_blove(&admin).await;
+    let (phone_token, _) = enroll_as(&admin, &state, &seeded, "ios").await;
+    for attempt in 0..b4hub::auth_limits::FINISH_PER_MINUTE {
+        let (status, body) = check(&state, Some(&phone_token), "BCDFGHJK").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{attempt}: {body}");
+    }
+    // Past the limit, refused before the token or the code is looked at.
+    let (status, body) = check(&state, Some(&phone_token), "BCDFGHJK").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(error_code(&body), "rate_limited");
+    let (status, _) = check(&state, None, "BCDFGHJK").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
 }
 
 // ---- Reusing this device (D-096, X3) ----

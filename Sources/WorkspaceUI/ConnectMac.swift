@@ -22,21 +22,34 @@ public enum ConnectMacCopy {
   public static let help = "Help"
 }
 
-/// Which of its three faces the iPhone's enrollment sheet ("Use an enrollment code", and every pairing
-/// link) shows. A pairing that signed the phone in keeps the confirmation it answered on screen while
-/// the sheet slides away: the offer (and its code) is cleared as the request returns, and showing the
-/// face that would follow (the typed entry, for a phone that opened the sheet signed out) would flash
-/// it for the length of the dismissal.
+/// Which of its faces the iPhone's enrollment sheet ("Use an enrollment code", and every pairing link)
+/// shows. A pairing that signed the phone in keeps the confirmation it answered on screen while the
+/// sheet slides away: the offer (and its code) is cleared as the request returns, and showing the face
+/// that would follow (the typed entry, for a phone that opened the sheet signed out) would flash it for
+/// the length of the dismissal.
+///
+/// A signed-in phone checks a link's code with the hub before it asks anything (D-170): while it
+/// checks, the sheet says so rather than showing a question it may take back, and a code for the
+/// phone's own account is "already paired", never the question.
 public enum EnrollSheetFace: Equatable, Sendable {
   /// "Pair this iPhone with the hub at <host>?", for an offer, or for the one that just paired.
   case confirmation
+  /// A signed-in phone's offer while the hub says whether the code is its own account's.
+  case checking
+  /// "This iPhone is already paired": the code is for the account the phone is signed in to, found by
+  /// the check or (when the check could not answer) by Pair. Done closes.
+  case alreadyPaired
   /// A signed-in phone whose pairing ended without one: the line, and Done.
   case signedInResult
   /// The hub URL and the code, typed.
   case typedEntry
 
-  public static func face(offering: Bool, paired: Bool, openedSignedIn: Bool) -> EnrollSheetFace {
-    if offering || paired { return .confirmation }
+  public static func face(
+    offering: Bool, paired: Bool, openedSignedIn: Bool, checking: Bool = false, alreadyPaired: Bool = false
+  ) -> EnrollSheetFace {
+    if alreadyPaired { return .alreadyPaired }
+    if paired { return .confirmation }
+    if offering { return checking ? .checking : .confirmation }
     return openedSignedIn ? .signedInResult : .typedEntry
   }
 }
