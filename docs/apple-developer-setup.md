@@ -75,8 +75,8 @@ Keep the `.p8` in your password manager, never in the repository. The hosted hub
 | `B4HUB_APPLE_PRIVATE_KEY` | the full text of the `.p8`, including the `-----BEGIN PRIVATE KEY-----` and `-----END PRIVATE KEY-----` lines |
 | `B4HUB_APPLE_AUDIENCES` | `com.cacheplane.b4app.ios,com.cacheplane.b4app.signin` |
 | `B4HUB_APPLE_SERVICES_ID` | `com.cacheplane.b4app.signin` |
-| `B4HUB_APPLE_CALLBACK_SCHEME` | `b4app-beta` on the test hub, `b4app` on prod: the one app the web flow hands back to (D-140) |
-| `B4HUB_APPLE_CALLBACK_URL` | later, in place of the scheme: `https://test.b4.run/app/auth/apple` on the test hub, `https://b4.run/app/auth/apple` on prod, once a Mac build with D-160 is out |
+| `B4HUB_APPLE_CALLBACK_SCHEME` | `b4app` on prod: the one app the web flow hands back to (D-140) |
+| `B4HUB_APPLE_CALLBACK_URL` | `https://test.b4.run/app/auth/apple` on the test hub since 2026-11-03 (D-160), in place of the scheme; `https://b4.run/app/auth/apple` on prod once a prod Mac build with D-160 is out |
 
 The local hub (Compose) needs none of these: the local flavour signs in with passkeys only.
 

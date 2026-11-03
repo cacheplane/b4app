@@ -103,8 +103,10 @@ line_of() { grep -n -m1 -- "$1" "$STUB_LOG" | cut -d: -f1; }
   logged 'b4hub/apns-private-key'
   logged 'aws ecs run-task --cluster b4hub-test --task-definition arn:aws:ecs:us-east-2:123456789012:task-definition/b4hub-test-hub-migrate:7'
   logged 'securityGroups=\[sg-admin\]'
-  # The test hub hands Apple's web flow back to the beta app only (D-140).
-  [ "$(jq -r '.containerDefinitions[0].environment[] | select(.name == "B4HUB_APPLE_CALLBACK_SCHEME") | .value' "$BATS_TEST_TMPDIR/registered-b4hub-test-hub.json")" = b4app-beta ]
+  # The test hub hands Apple's web flow back to an https URL on the beta site,
+  # which only the Beta Mac app takes back (D-160), and names no scheme.
+  [ "$(jq -r '.containerDefinitions[0].environment[] | select(.name == "B4HUB_APPLE_CALLBACK_URL") | .value' "$BATS_TEST_TMPDIR/registered-b4hub-test-hub.json")" = https://test.b4.run/app/auth/apple ]
+  [ "$(jq '[.containerDefinitions[0].environment[] | select(.name == "B4HUB_APPLE_CALLBACK_SCHEME")] | length' "$BATS_TEST_TMPDIR/registered-b4hub-test-hub.json")" -eq 0 ]
 }
 
 @test "an image already in ECR at the same digest is not pushed again" {
@@ -149,6 +151,7 @@ line_of() { grep -n -m1 -- "$1" "$STUB_LOG" | cut -d: -f1; }
   logged 'curl .*https://hub.b4.run/readyz'
   logged 'describe-task-definition --task-definition b4hub-prod-hub-migrate'
   [ "$(jq -r '.containerDefinitions[0].environment[] | select(.name == "B4HUB_APPLE_CALLBACK_SCHEME") | .value' "$BATS_TEST_TMPDIR/registered-b4hub-prod-hub.json")" = b4app ]
+  [ "$(jq '[.containerDefinitions[0].environment[] | select(.name == "B4HUB_APPLE_CALLBACK_URL")] | length' "$BATS_TEST_TMPDIR/registered-b4hub-prod-hub.json")" -eq 0 ]
 }
 
 @test "a malformed digest or environment is refused before any call" {
