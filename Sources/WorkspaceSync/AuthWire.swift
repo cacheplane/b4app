@@ -304,17 +304,22 @@ public struct StepUpResponse: Codable, Sendable, Equatable, CustomStringConverti
 //
 // `Hub/API.md`'s Apple routes (`routes/apple.rs`): `auth.json` holds one example of each.
 
-/// `POST /v1/auth/apple/begin`'s (and `POST /v1/me/apple`'s) body. The web flow sends both fields: the
-/// lowercase hex SHA-256 of a random verifier the client keeps for `POST /v1/auth/handoff`, and its URL
-/// scheme (`b4app`, `b4app-beta`, or `b4app-local`), the only place the hub's callback redirects to.
-/// The native flow sends neither, which encodes as `{}`.
+/// `POST /v1/auth/apple/begin`'s (and `POST /v1/me/apple`'s) body. The web flow sends the lowercase hex
+/// SHA-256 of a random verifier the client keeps for `POST /v1/auth/handoff`, its URL scheme (`b4app`,
+/// `b4app-beta`, or `b4app-local`), and `httpsCallback` when it can take the result back from an https
+/// URL; the answer's `callback` says which the hub uses. The native flow sends none, which encodes as
+/// `{}`.
 public struct AppleBeginRequest: Codable, Sendable, Equatable {
   public var verifierHash: String?
   public var scheme: String?
+  /// True when the app can take the result back from an https URL on its site (D-160); a hub that
+  /// hands back there refuses an app that cannot.
+  public var httpsCallback: Bool?
 
-  public init(verifierHash: String? = nil, scheme: String? = nil) {
+  public init(verifierHash: String? = nil, scheme: String? = nil, httpsCallback: Bool? = nil) {
     self.verifierHash = verifierHash
     self.scheme = scheme
+    self.httpsCallback = httpsCallback
   }
 }
 
@@ -324,10 +329,14 @@ public struct AppleBeginRequest: Codable, Sendable, Equatable {
 public struct AppleBeginResponse: Codable, Sendable, Equatable {
   public var ceremonyId: String
   public var nonce: String
+  /// For the web flow, where the result comes back: `<scheme>://auth` or an https URL on the
+  /// flavour's site, with `?handoff=` or `?error=` appended. Absent from a hub older than D-160.
+  public var callback: String?
 
-  public init(ceremonyId: String, nonce: String) {
+  public init(ceremonyId: String, nonce: String, callback: String? = nil) {
     self.ceremonyId = ceremonyId
     self.nonce = nonce
+    self.callback = callback
   }
 }
 

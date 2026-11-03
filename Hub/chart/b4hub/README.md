@@ -1,6 +1,6 @@
 # b4hub
 
-![Version: 0.3.0](https://img.shields.io/badge/Version-0.3.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.1.0](https://img.shields.io/badge/AppVersion-0.1.0-informational?style=flat-square)
+![Version: 0.4.0](https://img.shields.io/badge/Version-0.4.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.1.0](https://img.shields.io/badge/AppVersion-0.1.0-informational?style=flat-square)
 
 The b4 hub, the sync and relay service for the b4 Personal Agent Workspace, with an external PostgreSQL and a pre-upgrade migration Job.
 
@@ -142,6 +142,7 @@ Kubernetes: `>=1.29.0`
 | httpRoute.timeouts | string | `nil` | Optional `{request, backendRequest}` rule timeouts. Leave unset (`null`): the hub holds WebSockets and 25 s long-polls open, so the route must not add a default timeout. |
 | hub.apple.audiences | list | `[]` | Apple token audiences (`B4HUB_APPLE_AUDIENCES`, joined with commas); rendered only when set. |
 | hub.apple.callbackScheme | string | `""` | The one app URL scheme web sign-in hands back to (`B4HUB_APPLE_CALLBACK_SCHEME`): `b4app`, `b4app-beta`, or `b4app-local`, the flavour this hub serves. Required with `servicesId` (the hub exits 2 without it) and refused without it; rendered only when set. |
+| hub.apple.callbackUrl | string | `""` | An https URL on the flavour's site that web sign-in hands back to instead of a scheme (`B4HUB_APPLE_CALLBACK_URL`), for example `https://b4.run/app/auth/apple`; only the app the site's `webcredentials` names can take it back. Set this or `callbackScheme` with `servicesId`, not both; rendered only when set. |
 | hub.apple.servicesId | string | `""` | Apple Services ID for web sign-in (`B4HUB_APPLE_SERVICES_ID`); rendered only when set. |
 | hub.extraEnv | list | `[]` | Extra `EnvVar` entries appended verbatim to the hub container. For OTLP use `otel.endpoint`, `otel.protocol`, and `otel.extraEnv` instead. |
 | hub.log | string | `"info"` | Tracing filter (`B4HUB_LOG`). |

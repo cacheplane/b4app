@@ -291,8 +291,7 @@ extension WorkspaceModel {
         let start = try await client.request(
           AccountAppleLinkStart.self, AccountStepUpParams(stepUp: stepUp), options: Self.signInCall)
         stepUpCodeOffer = nil
-        let handoff = try await Self.webHandoff(
-          ceremony, url: start.url, callbackScheme: start.callbackScheme)
+        let handoff = try await Self.webHandoff(ceremony, url: start.url, callback: start.callback)
         linked = try await client.request(
           AccountAppleLinkFinish.self, AccountAppleLinkFinish.Params(handoff: handoff),
           options: Self.accountCall()
@@ -335,7 +334,7 @@ extension WorkspaceModel {
       let start = try await client.request(
         AccountStepUpAppleStart.self, EmptyParams(), options: Self.signInCall)
       return .appleWeb(
-        handoff: try await Self.webHandoff(apple, url: start.url, callbackScheme: start.callbackScheme))
+        handoff: try await Self.webHandoff(apple, url: start.url, callback: start.callback))
     }
   }
 
