@@ -18,7 +18,7 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(status.pending, 0);
-    assert_eq!(status.applied, (1..=15).collect::<Vec<i64>>());
+    assert_eq!(status.applied, (1..=16).collect::<Vec<i64>>());
 
     let app = Db::connect(&app_url).await.unwrap();
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM orgs")
@@ -30,7 +30,7 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
         .fetch_one(&app.pool)
         .await
         .unwrap();
-    assert_eq!(migrations, 15);
+    assert_eq!(migrations, 16);
     app.pool.close().await;
 
     let row =
@@ -392,4 +392,65 @@ async fn serve_refuses_a_role_that_inherits_superuser(pool: PgPool) {
             .await
             .unwrap();
     }
+}
+
+/// `0016_passkey_names.sql` (D-169) clears only the old placeholder name of passkeys: a passkey
+/// named after its device keeps its name, and an Apple ID's name is never touched.
+#[sqlx::test(migrations = false)]
+async fn the_passkey_placeholder_name_is_cleared(pool: PgPool) {
+    let admin_url = admin_url(&pool);
+    b4hub_db::migrate::run(&admin_url, &app_url(&pool, "pw-test"))
+        .await
+        .unwrap();
+    let seeded = orgs::seed(
+        &Db { pool: pool.clone() },
+        "acme",
+        "Acme",
+        "ann",
+        "Ann",
+        "ann@example.test",
+    )
+    .await
+    .unwrap();
+    for (kind, name, credential) in [
+        ("passkey", "Agent Workspace account", Some(vec![1u8; 16])),
+        ("passkey", "Ann's Mac", Some(vec![2u8; 16])),
+        ("apple", "Agent Workspace account", None),
+    ] {
+        sqlx::query(
+            "INSERT INTO user_identities \
+             (id, org_id, user_id, kind, name, credential_id, passkey, user_handle, apple_sub) \
+             VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, \
+                     CASE WHEN $5 IS NULL THEN NULL ELSE '{}'::jsonb END, $5, $6)",
+        )
+        .bind(seeded.org_id)
+        .bind(seeded.user_id)
+        .bind(kind)
+        .bind(name)
+        .bind(credential)
+        .bind((kind == "apple").then_some("001.ann"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sqlx::raw_sql(include_str!("../migrations/0016_passkey_names.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let names: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT kind, name FROM user_identities ORDER BY kind, name NULLS FIRST")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        names,
+        [
+            (
+                "apple".to_string(),
+                Some("Agent Workspace account".to_string())
+            ),
+            ("passkey".to_string(), None),
+            ("passkey".to_string(), Some("Ann's Mac".to_string())),
+        ]
+    );
 }

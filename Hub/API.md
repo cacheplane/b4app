@@ -572,7 +572,7 @@ The authenticated device, the org and user it belongs to, and the account's sign
   "createdAt": "2026-10-31T12:00:00.000000Z",
   "onboarded": true,
   "identities": [
-    {"id": "0199...", "kind": "passkey", "name": "Agent Workspace account",
+    {"id": "0199...", "kind": "passkey", "name": "Brian's MacBook Pro",
      "createdAt": "2026-11-01T09:00:00.000000Z", "lastUsedAt": "2026-11-01T10:00:00.000000Z"},
     {"id": "019a...", "kind": "apple", "name": "x7k2@privaterelay.appleid.com",
      "createdAt": "2026-11-01T11:00:00.000000Z", "lastUsedAt": null}
@@ -586,7 +586,9 @@ The authenticated device, the org and user it belongs to, and the account's sign
 - `user.fullName` is the name given at onboarding, `null` until then. `onboarded` is false until
   `PUT /v1/me/profile` has been called once (an operator-seeded user counts as onboarded).
 - `identities` is every sign-in method of the user, oldest first: `kind` is `passkey` or `apple`;
-  `name` is a passkey's name or an Apple ID's (often relay) email, or `null`; `lastUsedAt` is
+  `name` is, for a passkey, the name of the device it was made on (the sign-up's or Add a
+  passkey's, D-169; `null` for a passkey made before that was recorded), and for an Apple ID its
+  (often relay) email, or `null`; `lastUsedAt` is
   `null` for one never used to sign in. An operator-enrolled user may have none. No credential
   id, stored passkey, Apple `sub`, or refresh token is ever included.
 
@@ -645,7 +647,7 @@ then on either passkey signs in to it. `200` with the new identity, in `GET /v1/
 `identities` shape:
 
 ```json
-{"id": "019b...", "kind": "passkey", "name": "Agent Workspace account",
+{"id": "019b...", "kind": "passkey", "name": "Brian's iPhone",
  "createdAt": "2026-11-01T12:00:00.000000Z", "lastUsedAt": null}
 ```
 

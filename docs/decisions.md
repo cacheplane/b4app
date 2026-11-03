@@ -2,6 +2,10 @@
 
 Material implementation decisions, newest first. The spec (`docs/roadmaps/Personal_Agent_Workspace_Technical_Spec_and_Roadmap.md`) is the requirement source; this log records deviations and choices the spec left open.
 
+## 2026-11-03 (passkeys named after their device)
+
+- **D-169 A passkey's identity is named after the device it was made on.** Amends D-132, which left every passkey listed in Settings → Account as "Agent Workspace account". The hub stores the device's name as the identity's name: at sign-up the `device.name` of the sign-up, at `POST /v1/me/passkeys/finish` the name of the device whose token adds it (`routes::auth::passkey_name`; a blank name falls back to the placeholder). So Settings → Account lists "Passkey · Brian's MacBook Pro · added …" and "Passkey · Brian's iPhone · added …", which tell an account's passkeys apart, while the password manager's entry still takes the account's name (D-132): the password manager names by user handle, which all of an account's passkeys share, and the hub names by identity. The registration options' `user.name` stays "Agent Workspace account", the name the password manager shows until the client renames it. Migration `0016_passkey_names.sql` clears the placeholder from existing passkeys (the device they were made on was never recorded), so they are listed by their date alone; nothing reads the name but the list.
+
 ## 2026-11-03 (M8c loose ends)
 
 Numbered D-154: main's highest was D-153, PR #81 holds D-151, and PR #83 holds D-160.
