@@ -33,17 +33,16 @@ case "$1" in
   test)
     env_name="test"
     hostname=hub.test.b4.run
-    # Apple's web flow hands back to an https URL on the beta site (D-160),
-    # which only the Beta Mac app (webcredentials:test.b4.run) takes back.
+    # Apple's web flow hands back to an https URL on the flavour's site (D-160),
+    # which only that flavour's Mac app (webcredentials:<site>) takes back.
     apple_callback_name=B4HUB_APPLE_CALLBACK_URL
     apple_callback_value=https://test.b4.run/app/auth/apple
     ;;
   production | prod)
     env_name="prod"
     hostname=hub.b4.run
-    # The prod app's scheme (D-140) until a prod Mac build with D-160 ships.
-    apple_callback_name=B4HUB_APPLE_CALLBACK_SCHEME
-    apple_callback_value=b4app
+    apple_callback_name=B4HUB_APPLE_CALLBACK_URL
+    apple_callback_value=https://b4.run/app/auth/apple
     ;;
   *) die "environment must be test or production, not '$1'" ;;
 esac

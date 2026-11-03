@@ -150,8 +150,9 @@ line_of() { grep -n -m1 -- "$1" "$STUB_LOG" | cut -d: -f1; }
   logged 'update-service --cluster b4hub-prod --service b4hub-prod-hub'
   logged 'curl .*https://hub.b4.run/readyz'
   logged 'describe-task-definition --task-definition b4hub-prod-hub-migrate'
-  [ "$(jq -r '.containerDefinitions[0].environment[] | select(.name == "B4HUB_APPLE_CALLBACK_SCHEME") | .value' "$BATS_TEST_TMPDIR/registered-b4hub-prod-hub.json")" = b4app ]
-  [ "$(jq '[.containerDefinitions[0].environment[] | select(.name == "B4HUB_APPLE_CALLBACK_URL")] | length' "$BATS_TEST_TMPDIR/registered-b4hub-prod-hub.json")" -eq 0 ]
+  # Prod hands Apple's web flow back to an https URL on b4.run (D-160), and names no scheme.
+  [ "$(jq -r '.containerDefinitions[0].environment[] | select(.name == "B4HUB_APPLE_CALLBACK_URL") | .value' "$BATS_TEST_TMPDIR/registered-b4hub-prod-hub.json")" = https://b4.run/app/auth/apple ]
+  [ "$(jq '[.containerDefinitions[0].environment[] | select(.name == "B4HUB_APPLE_CALLBACK_SCHEME")] | length' "$BATS_TEST_TMPDIR/registered-b4hub-prod-hub.json")" -eq 0 ]
 }
 
 @test "a malformed digest or environment is refused before any call" {

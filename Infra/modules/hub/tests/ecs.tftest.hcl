@@ -285,8 +285,8 @@ run "prod_rp_id" {
   }
 
   assert {
-    condition     = one([for e in jsondecode(aws_ecs_task_definition.hub.container_definitions)[0].environment : e.value if e.name == "B4HUB_APPLE_CALLBACK_SCHEME"]) == "b4app"
-    error_message = "the prod hub hands Apple's web flow back to the prod app only"
+    condition     = one([for e in jsondecode(aws_ecs_task_definition.hub.container_definitions)[0].environment : e.value if e.name == "B4HUB_APPLE_CALLBACK_URL"]) == "https://b4.run/app/auth/apple"
+    error_message = "the prod hub hands Apple's web flow back to an https URL on b4.run"
   }
 }
 

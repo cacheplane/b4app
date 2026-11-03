@@ -4,7 +4,7 @@ Gate results and unresolved checks, newest first. Each entry names what was exer
 
 ## 2026-11-03: A dropped B4 stream's second part waits for the reattach
 
-A fixture-only change. No test or assertion changed. It fixes the first flake the next entry leaves open.
+A fixture-only change. No test or assertion changed. It fixes the first flake that "A parked B4 prompt is saved before the fixture discloses it" (below) leaves open.
 
 - **`B4AdapterSessionTests.aDroppedStreamReattachesWithoutResubmitting`.** Under 10 CPU burners it failed at line 241 (`deltas(turnId: "turn-1") != "Part one. Part two."`), and in CI it timed out. `fake-b4.py`'s "drop" run closed the response and emitted "Part two." 1 s later. A reattach to a live run gets only frames emitted after it attaches, and a reattach after `done` gets `live: false` and none, so the test assumed the adapter's reattach (backoff 250, 500, 750 ms) landed within 1 s. Adding 1.5 s to that backoff reproduced it every time, at line 241. The real server behaves the same way: `RunControl::subscribe` (`crates/b4-http/src/control.rs`) hands a live attach a `state` cut and only later frames, and `attachment.rs` answers a finished run with `live: false` and `done { output: null }`. So the replay rules stay as they are, and the "drop" run now holds "Part two." until a reattach subscribes (20 s cap) instead of sleeping 1 s. With the same 1.5 s added, the test passes.
 
@@ -13,6 +13,21 @@ Runs (10 CPU burners, test bundle run 4 at a time through `swiftpm-testing-helpe
 - **New fixture:** 0 failures in 200 (0.9 to 3.4 s each).
 - **Suites:** `swift test --filter "B4AdapterTests|CoordinatorTests"` (346 tests) passed. An earlier pass failed `AccountManagerTests.hub401SignsOut` once with "The store is closed." (`AccountManagerTests.swift:410`). That test uses no fake B4 server, and it passed 3 times alone (open, not fixed here).
 - **Gates:** `swift format lint --strict` is clean.
+
+## 2026-11-03: M8f APNs on prod (`hub.b4.run`)
+
+Target: the prod hub at hub-v0.3.0 (released from `main` at `b023ded`; the production deploy ran migrations to 15 applied, 0 pending, and rolled the service to task definition `b4hub-prod-hub:5`), with the three APNs secrets set per runbook 3a and `INCLUDE_APNS_SECRETS=1`. The prod Mac app was rebuilt from `main` at `d6f8181` (`./Scripts/package.sh`, Developer ID, notarized and stapled), because the one on the build Mac predated sign-in; it found its existing prod enrollment (`blove@cacheplane`) and got a Claude Code connection through its bundled `agent-workspace`. Brian's iPhone ran the prod TestFlight build 0.1.0 (2611031947, `main` at `2338c2e`) and paired by scanning the Mac's QR code. Evidence is the prod hub's CloudWatch log, never a token or payload.
+
+| Time (UTC) | Event |
+| --- | --- |
+| 16:36:37 | The hub starts with `push sender: apns` |
+| 20:33:15 | The iPhone registers its token (`POST /v1/devices/self/push-token`, 204) |
+| 20:33:54 | Claude Code asks to run `curl -sI https://example.com`; the approval alert is accepted by Apple (200) and reaches the locked iPhone |
+| 20:43:55 | Brian taps the notification, which opens the thread, and answers it there; the turn runs on the Mac and the withdrawal is accepted (200); the notification leaves the lock screen |
+
+- No "Replied" was sent: the thread was open on the Mac, so the reply was read in the same push that finished it, and a notification that would end in the push that sends it is neither sent nor withdrawn (D-143).
+- No error in the prod log over the gate.
+- Afterwards Brian connected his Apple ID to the prod account (it had no sign-in method, having been enrolled with a code), and the gate's thread was deleted.
 
 ## 2026-11-03: A parked B4 prompt is saved before the fixture discloses it
 
