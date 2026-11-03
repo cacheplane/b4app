@@ -8,4 +8,5 @@ pub mod enroll;
 pub mod health;
 pub mod me;
 pub mod pairing;
+pub mod push_token;
 pub mod snapshot;

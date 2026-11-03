@@ -178,6 +178,10 @@
             },
             "servicesId": {
               "type": "string"
+            },
+            "callbackScheme": {
+              "type": "string",
+              "enum": ["", "b4app", "b4app-beta", "b4app-local"]
             }
           }
         },

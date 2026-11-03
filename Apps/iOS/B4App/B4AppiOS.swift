@@ -19,9 +19,12 @@ import WorkspaceUI
 /// Pairing (D-066): the Mac's QR code is `https://<site>/pair#c=<code>`. The system Camera opens it as
 /// a universal link (`onContinueUserActivity`), the in-app scanner reads it, and any other route
 /// arrives through `onOpenURL`; all three take one path, `MirrorHost.pairLinkDecision`, then the
-/// enrollment sheet's one confirmation. A stray `b4app*://auth` callback is dropped.
+/// enrollment sheet's one confirmation. A stray `b4app*://auth` callback is dropped. A
+/// `<scheme>://thread/<id>` link (a notification tap or a widget row, M8f) opens that thread, and is
+/// taken before any of these.
 @main
 struct B4AppiOS: App {
+  @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   @State private var host = MirrorHost.shared
   @State private var model = MirrorHost.shared.makeModel()
   /// A pairing link waiting for the enrollment sheet to take it (it holds the code: view state only).
@@ -92,6 +95,8 @@ struct B4AppiOS: App {
   }
 
   private func open(_ url: URL) {
+    // A thread link never reaches sign-in or pairing, signed in or not.
+    if host.handle(url: url) { return }
     // A sign-in callback opened from outside a ceremony belongs to none: dropped, never redeemed.
     if model.openURL(url) { return }
     // The same link again within moments is the same arrival (`onContinueUserActivity` and

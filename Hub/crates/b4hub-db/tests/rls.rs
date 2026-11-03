@@ -306,3 +306,42 @@ async fn relay_lookups_respect_rls(pool: PgPool) {
         .unwrap()
         .is_none());
 }
+
+#[sqlx::test(migrations = false)]
+async fn push_tables_isolate_by_org(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let phone = common::enrolled_as(&admin, &app, "blove", "ios").await;
+    let stranger = common::enrolled_in(&admin, &app, "elsewhere", "eve").await;
+    b4hub_db::push::save_token(&app, &phone, "token", "sandbox", "com.example.app")
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO notifications_sent (org_id, kind, row_id, user_id, thread_id, reason) \
+         VALUES ($1, 'request', 'request-1', $2, 'thread-1', 'approval')",
+    )
+    .bind(phone.org_id)
+    .bind(phone.user_id)
+    .execute(&admin.pool)
+    .await
+    .unwrap();
+
+    for (who, expected) in [(&phone, 1_i64), (&stranger, 0)] {
+        let mut tx = app.tenant_tx(who.org_id).await.unwrap();
+        for table in ["push_tokens", "notifications_sent"] {
+            let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            assert_eq!(n, expected, "{table}");
+        }
+        tx.rollback().await.unwrap();
+    }
+    // Without a tenant context, nothing, and no insert for another org.
+    for table in ["push_tokens", "notifications_sent"] {
+        let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+            .fetch_one(&app.pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "{table}");
+    }
+}

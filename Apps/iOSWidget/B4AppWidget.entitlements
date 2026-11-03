@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Every flavour: the App Group its app keeps the mirror in (B4APP_APP_GROUP, D-125). -->
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>$(B4APP_APP_GROUP)</string>
+  </array>
+</dict>
+</plist>

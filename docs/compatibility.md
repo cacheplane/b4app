@@ -1,6 +1,6 @@
 # Compatibility manifest
 
-Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M8a on 2026-10-31, M8b on 2026-11-01, hosted-hub tooling, M8c, and sign-in on 2026-11-02). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
+Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M8a on 2026-10-31, M8b on 2026-11-01, hosted-hub tooling, M8c, sign-in, and M8f on 2026-11-02). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
 
 ## Target machine
 
@@ -17,6 +17,7 @@ Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M
 | Rust | 1.93.1 (`Hub/rust-toolchain.toml`, `profile = "minimal"` with `rustfmt` and `clippy`; `rust-version` 1.93.1 in the workspace manifest); used by the hub only |
 | Docker | 27.4.0 (Docker Desktop) on the build Mac; builds ran `linux/arm64` only (`linux/amd64` unverified); the Mac's `docker-credential-desktop` hangs, so builds and Compose runs used a throwaway `DOCKER_CONFIG` containing `{}` |
 | iOS Simulator | iOS 26.5, iPhone 17 Pro; the data-protection Keychain needs a signed build (`CODE_SIGNING_ALLOWED=NO` fails with -34018), so the Simulator run used Xcode's ad hoc "Sign to Run Locally" |
+| Simulator notifications (M8f) | `xcrun simctl push <device> <file>` from Xcode 26.6 delivers a `.apns` file carrying `Simulator Target Bundle`; with `content-available` it wakes the app as a background fetch, so Debug builds declare the `fetch` background mode beside `remote-notification` (D-128; Release declares only `remote-notification`). The Simulator registers an 80-byte (160 hex) device token. WidgetKit extensions and App Group containers work with ad hoc "Sign to Run Locally" Simulator builds |
 | PostgreSQL | 17.11 (zonky `embedded-postgres-binaries-darwin-arm64v8` 17.11.0, SHA-256 pinned in `Scripts/fetch-postgres.sh`; server, initdb, pg_ctl, libpq, PL/pgSQL, dict_snowball; 62 MB after thinning); the cluster listens only on a Unix socket in the runtime directory |
 
 Xcode 27 (Swift 6.4) requires macOS 26.6; the package uses `swift-tools-version: 6.2` so either toolchain builds it.
@@ -179,6 +180,7 @@ New crates, pinned exactly like the rest:
 | Item | Value |
 | --- | --- |
 | Hub environment | New: `B4HUB_APPLE_SERVICES_ID` (optional; must be one of `B4HUB_APPLE_AUDIENCES`; set without the other `B4HUB_APPLE_*` it exits 2): the web flow's client id. `apple.web` needs it and `B4HUB_PUBLIC_URL`. `B4HUB_APPLE_BASE_URL` stays tests-only. A `B4HUB_APPLE_PRIVATE_KEY` that does not sign exits 2. The hosted hubs set `B4HUB_APPLE_SERVICES_ID=com.cacheplane.b4app.signin` |
+| Hub environment (D-140) | New: `B4HUB_APPLE_CALLBACK_SCHEME`, `b4app`, `b4app-beta`, or `b4app-local`: the one app scheme the web flow hands back to. Required with `B4HUB_APPLE_SERVICES_ID` and refused without it (either alone, or a value off the list, exits 2), so a hub release with it must ship with the variable set wherever the web flow is on. Begin refuses any other scheme (`400 invalid_request`). The hosted hubs set `b4app-beta` (test) and `b4app` (prod); chart 0.3.0 adds `hub.apple.callbackScheme` |
 | Routes | `POST /v1/auth/apple/begin`, `POST /v1/auth/apple/native`, `GET /v1/auth/apple/start`, `POST /v1/auth/apple/callback`, `POST /v1/auth/handoff`, `POST /v1/me/apple`, `POST /v1/me/apple/native`, `POST /v1/me/apple/handoff`; all `404 not_found` without Apple configured. New error `apple_linked` (409), also Swift's `ErrorCode.appleLinked` |
 | Hub migration | `0007_apple_handoffs.sql`: `auth_handoffs.org_id` and `user_id` become nullable (a sign-in's handoff names no account until it is redeemed) and `pending bytea` holds the callback's verified result, sealed to the handoff's code hash. Additive; run `migrate` before a new `serve` |
 | Outbound | `https://appleid.apple.com` only, 10 s per call, no redirects followed |

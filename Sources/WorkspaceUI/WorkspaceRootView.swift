@@ -86,6 +86,11 @@ struct WorkspaceShell: View {
     }
     .environment(\.showDetail, showDetail)
     .onChange(of: detailOnScreen, initial: true) { _, onScreen in model.isDetailOnScreen = onScreen }
+    // `initial` so a request made before this view mounted (a cold launch from a notification tap)
+    // still moves the iPhone to the thread column.
+    .onChange(of: model.detailRequest, initial: true) { _, count in
+      if count > 0 { compactColumn = .detail }
+    }
     // The open thread was deleted (here or on another device): the iPhone goes back to the list.
     .onChange(of: model.selectedThreadId) { _, id in if id == nil { compactColumn = .sidebar } }
     .onDisappear { model.isDetailOnScreen = false }

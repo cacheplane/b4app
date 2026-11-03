@@ -1,0 +1,92 @@
+import Foundation
+
+/// Where the phone's mirror file lives. The app and the widget extension share it through the App Group
+/// container, so the widget reads what the app wrote (D-125). Foundation only: the app and the widget
+/// each pass their own App Group id, read from their Info.plist, and the flavour's folder name
+/// (`PhoneFlavor.directoryName`: `b4app`, `b4app-beta`, `b4app-local`). The group is already the
+/// flavour's (`B4APP_APP_GROUP`); the folder keeps the name the mirror had in Application Support.
+public enum MirrorLocation {
+  public static let fileName = "mirror.sqlite"
+  /// The folder inside the group when none is named: prod's.
+  public static let defaultFolder = "b4app"
+
+  /// What `move(from:to:)` did.
+  public enum Move: Equatable, Sendable {
+    /// The old directory holds no `mirror.sqlite`; nothing changed.
+    case nothingToMove
+    /// The old files now live in the new directory.
+    case moved
+    /// The new directory already had a `mirror.sqlite`, so it wins and the old files stay where they were.
+    case keptGroupCopy
+  }
+
+  /// `<group container>/<folder>`, created when missing with `completeUntilFirstUserAuthentication`
+  /// (the widget must read it while the phone is locked, after the first unlock). Nil when the group
+  /// container is unavailable.
+  public static func groupDirectory(appGroup: String, folder: String = defaultFolder) -> URL? {
+    let resolved = storeDirectory(appGroup: appGroup, folder: folder, fallback: URL(fileURLWithPath: "/"))
+    guard resolved.inGroup else { return nil }
+    do {
+      try FileManager.default.createDirectory(
+        at: resolved.directory, withIntermediateDirectories: true,
+        attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
+      return resolved.directory
+    } catch {
+      return nil
+    }
+  }
+
+  /// The directory the mirror lives in: `<resolved container>/<folder>` (and `inGroup` true) when
+  /// `appGroup` is set and `resolve` finds its container, else `fallback`. Creates nothing.
+  public static func storeDirectory(
+    appGroup: String?, folder: String = defaultFolder, fallback: URL,
+    resolve: (String) -> URL? = {
+      FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0)
+    }
+  ) -> (directory: URL, inGroup: Bool) {
+    guard let appGroup, let container = resolve(appGroup) else { return (fallback, false) }
+    return (container.appendingPathComponent(folder, isDirectory: true), true)
+  }
+
+  /// Moves `mirror.sqlite` and its `-wal` and `-shm` (each only if it exists) from `old` to `new`,
+  /// creating `new` when missing. Nothing is touched when the new directory already has a
+  /// `mirror.sqlite` (`.keptGroupCopy`, the old files stay) or the old directory has none
+  /// (`.nothingToMove`, side files without a main file are left alone). The only thing it deletes is a
+  /// stray `-wal` or `-shm` already in `new` beside no main file, which would block the rename. Each file
+  /// moves by rename (the app container and the group container share a volume), side files first and
+  /// the main file last; call it before the store is opened. When a rename fails, the side files already
+  /// moved are moved back to `old` (as far as they can be) before the error is rethrown, so the old
+  /// directory again holds the whole copy. A crash between two renames can still strand a `-wal` apart
+  /// from its main file, which loses only what that log held, so run it once per launch.
+  public static func move(from old: URL, to new: URL) throws -> Move {
+    try move(from: old, to: new, moveItem: { try FileManager.default.moveItem(at: $0, to: $1) })
+  }
+
+  /// `move(from:to:)` with the rename injected, so a test can make one fail.
+  static func move(from old: URL, to new: URL, moveItem: (URL, URL) throws -> Void) throws -> Move {
+    let manager = FileManager.default
+    let oldMain = old.appendingPathComponent(fileName)
+    guard manager.fileExists(atPath: oldMain.path) else { return .nothingToMove }
+    guard !manager.fileExists(atPath: new.appendingPathComponent(fileName).path) else {
+      return .keptGroupCopy
+    }
+    try manager.createDirectory(at: new, withIntermediateDirectories: true)
+    var moved: [(source: URL, target: URL)] = []
+    do {
+      for suffix in ["-wal", "-shm", ""] {
+        let source = old.appendingPathComponent(fileName + suffix)
+        guard manager.fileExists(atPath: source.path) else { continue }
+        let target = new.appendingPathComponent(fileName + suffix)
+        // A stray side file at the destination (no main file there) would block the move.
+        if manager.fileExists(atPath: target.path) { try manager.removeItem(at: target) }
+        try moveItem(source, target)
+        moved.append((source, target))
+      }
+    } catch {
+      // Undo in reverse; a rename back that fails too leaves that file where it is.
+      for file in moved.reversed() { try? moveItem(file.target, file.source) }
+      throw error
+    }
+    return .moved
+  }
+}

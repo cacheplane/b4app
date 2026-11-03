@@ -16,6 +16,7 @@ use crate::auth::AuthedDevice;
 use crate::error::{ApiError, ApiJson};
 use crate::maintenance::WritesAllowed;
 use crate::notify::Notifier;
+use crate::push;
 use crate::serve::{AppState, Shutdown};
 
 /// The longest a pull waits for a change, in seconds, whatever `wait` asks for.
@@ -53,9 +54,14 @@ async fn push(
     }
     // A value over the size limit and a malformed clock are not refused here: `changes::push`
     // rejects each on its own, so the rest of the batch still lands and the client's queue moves.
-    let outcome = changes::push(&state.db, &device, &request.changes).await?;
+    let mut outcome = changes::push(&state.db, &device, &request.changes).await?;
     // After the commit, so a woken pull finds the changes.
     state.notifier.wake(device.org_id);
+    // Also after the commit, and on a task of its own: the response never waits on a sender.
+    let notifications = std::mem::take(&mut outcome.notifications);
+    if let Some(sender) = &state.push {
+        push::deliver(sender.clone(), notifications);
+    }
     let mut body = json!({ "acceptedThrough": outcome.accepted_through });
     if !outcome.rejected.is_empty() {
         body["rejected"] = outcome
