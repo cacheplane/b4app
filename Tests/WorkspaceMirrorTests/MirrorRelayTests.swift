@@ -117,13 +117,13 @@ struct RelayHarness {
   }
 
   /// Starts the relay and answers its next open with a `hello`, returning the hub's side.
-  func connect(hubTime: Date = Date()) async -> FakeHubLinkSocket {
+  func connect(hubTime: Date = Date()) async throws -> FakeHubLinkSocket {
     await relay.start()
-    return await answerNextOpen(hubTime: hubTime)
+    return try await answerNextOpen(hubTime: hubTime)
   }
 
-  func answerNextOpen(hubTime: Date = Date()) async -> FakeHubLinkSocket {
-    let socket = await connection.nextSocket()
+  func answerNextOpen(hubTime: Date = Date()) async throws -> FakeHubLinkSocket {
+    let socket = try await connection.nextSocket()
     socket.deliver(relayHello(hubTime: hubTime))
     await waitUntil("connected") { await relay.isConnected }
     return socket
@@ -184,7 +184,7 @@ struct MirrorRelayTests {
     let store = try MirrorStore.inMemory()
     _ = try store.apply(try fixtureAsStored())
     let h = RelayHarness()
-    let socket = await h.connect()
+    let socket = try await h.connect()
     let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay))
     _ = try await client.ready()
 
@@ -247,7 +247,7 @@ struct MirrorRelayTests {
     let store = try MirrorStore.inMemory()
     _ = try store.apply(try fixtureAsStored())
     let h = RelayHarness()
-    let socket = await h.connect()
+    let socket = try await h.connect()
     let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay))
     _ = try await client.ready()
 
@@ -305,7 +305,7 @@ struct MirrorRelayTests {
   ])
   func aCommandWithNoReplyIsNotConfirmedAfterThePhonesWait(method: RelayMethod, seconds: Int) async throws {
     let h = RelayHarness()
-    let socket = await h.connect()
+    let socket = try await h.connect()
     #expect(MirrorRelay.wait(for: method) == .seconds(seconds))
     let task = Task { await h.relay.command(id: "c1", method: method, params: ["threadId": "thread-1"]) }
     _ = try await RelayHarness.nextFrame(socket)
@@ -327,7 +327,7 @@ struct MirrorRelayTests {
 
   @Test func aDroppedLinkLeavesAPendingCommandNotConfirmed() async throws {
     let h = RelayHarness()
-    let socket = await h.connect()
+    let socket = try await h.connect()
     let task = Task {
       await h.relay.command(id: "c1", method: .turnSend, params: ["threadId": "t", "text": "x"])
     }
@@ -356,7 +356,7 @@ struct MirrorRelayTests {
   @Test func watchesAreResentAfterReconnect() async throws {
     let h = RelayHarness()
     await h.relay.watch("thread-1")
-    let first = await h.connect()
+    let first = try await h.connect()
     #expect(try await RelayHarness.nextFrame(first) == .watch(threadId: "thread-1"))
     await h.relay.watch("thread-2")
     #expect(try await RelayHarness.nextFrame(first) == .watch(threadId: "thread-2"))
@@ -370,12 +370,12 @@ struct MirrorRelayTests {
     first.closeFromHub(code: 1001)
     await waitUntil("the backoff") { !(await h.relay.isConnected) && h.clock.hasSleeper(dueIn: .seconds(1)) }
     h.clock.advance(by: .seconds(1))
-    let second = await h.answerNextOpen()
+    let second = try await h.answerNextOpen()
     #expect(try await RelayHarness.nextFrame(second) == .watch(threadId: "thread-3"))
 
     // Going to the background stops the link (the hub forgets its watches); the next start re-sends.
     await h.relay.stop()
-    let third = await h.connect()
+    let third = try await h.connect()
     #expect(try await RelayHarness.nextFrame(third) == .watch(threadId: "thread-3"))
     #expect(await h.relay.watched == ["thread-3"])
     await h.relay.stop()
@@ -387,7 +387,7 @@ struct MirrorRelayTests {
   @Test func aRefusedWatchIsAGapAndIsRetried() async throws {
     let h = RelayHarness()
     await h.relay.watch("thread-1")
-    let socket = await h.connect()
+    let socket = try await h.connect()
     #expect(try await RelayHarness.nextFrame(socket) == .watch(threadId: "thread-1"))
     var updates = h.relay.updates().makeAsyncIterator()
     let named: JSONValue = .object(["threadId": .string("thread-1")])
@@ -410,7 +410,7 @@ struct MirrorRelayTests {
     let store = try MirrorStore.inMemory()
     let h = RelayHarness()
     // The hub's clock runs 120 s ahead of the phone's.
-    let socket = await h.connect(hubTime: Date().addingTimeInterval(120))
+    let socket = try await h.connect(hubTime: Date().addingTimeInterval(120))
     let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay))
     _ = try await client.ready()
     let events = await client.events()

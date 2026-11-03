@@ -249,6 +249,24 @@ import os
     }
   }
 
+  /// What a pairing link shows before anything is asked (D-170). A phone signed in at the link's hub
+  /// asks the hub, without spending the code, whether the code is its own account's: then it is already
+  /// paired, and there is nothing to ask. Signed out, signed in at another hub (the token means nothing
+  /// there, so it is never sent), or when the check fails for any reason (an older hub, a refused or
+  /// expired code, no network), it asks as before, and `pair` meets whatever the hub says after the
+  /// tap. Only `pair` and `switchAndPair` ever redeem a code. Neither the code nor the token is logged.
+  public func offer(for pairLink: PairLink) async -> PairOffer {
+    guard let current = link, Self.canonical(pairLink.hub) == current.hubURL else { return .ask }
+    let request = PairingCodeCheckRequest(code: pairLink.code)
+    do {
+      let answer = try await authed("check the pairing code") { try await $0.checkPairingCode(request) }
+      return answer.sameAccount ? .alreadyPaired : .ask
+    } catch {
+      Self.logger.notice("the pairing code could not be checked; asking to pair as before")
+      return .ask
+    }
+  }
+
   /// The switch question was confirmed. The code is redeemed first, with no token; only once that
   /// succeeds is the old session ended at the hub (bounded), its token forgotten, and the mirror
   /// emptied for the new account. A refused code (expired while the question was up, already used)

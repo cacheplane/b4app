@@ -10,9 +10,11 @@ import WorkspaceUI
 /// hub with sign-up closed (the code typed, from `b4hub enroll`), and shown at once, signed in or not,
 /// when a pairing link arrives: the Mac's `https://<site>/pair#c=<code>` from the system Camera, the
 /// in-app scanner, or any link. A link fills the sheet and asks one question, "Pair this iPhone with
-/// the hub at <host>?"; nothing is sent without that tap. Then `MirrorHost.pair` signs a signed-out
-/// phone in, or (signed in) tries the merge: it merges a phone-only account, says "This iPhone is
-/// already paired" for the code's own account, and otherwise asks once more before switching, which
+/// the hub at <host>?"; no code is redeemed without that tap. A signed-in phone first asks the hub,
+/// without spending the code, whether it is its own account's (D-170): then it says "This iPhone is
+/// already paired" and asks nothing. Then `MirrorHost.pair` signs a signed-out phone in, or (signed
+/// in) tries the merge: it merges a phone-only account, says "already paired" for the code's own
+/// account (when the check could not tell), and otherwise asks once more before switching, which
 /// redeems the code before it ends the old session. A signed-in phone never sees the typed-code entry:
 /// a typed code would replace its account without asking. The code lives in this view's state only
 /// until the request returns, then it is cleared; nothing logs it.
@@ -35,7 +37,10 @@ struct EnrollView: View {
   /// The switch question, after "Pair" on a phone signed in to another account: the org it leaves. The
   /// offer keeps the code until it is answered.
   @State private var switchFrom: String?
-  /// "This iPhone is already paired", after "Pair" with a code for the org the phone is in.
+  /// The hub is checking whether the offer's code is this phone's own account's; the question waits.
+  @State private var checking = false
+  /// "This iPhone is already paired": the code is for the org the phone is in, found by the check or
+  /// after "Pair".
   @State private var alreadyPaired = false
   /// Signed in when the sheet opened (and still): the typed entry never shows, and Cancel closes.
   @State private var openedSignedIn = false
@@ -56,9 +61,12 @@ struct EnrollView: View {
       ScrollView {
         VStack(alignment: .leading, spacing: LLA.Space.l) {
           switch EnrollSheetFace.face(
-            offering: offer != nil, paired: paired != nil, openedSignedIn: openedSignedIn)
+            offering: offer != nil, paired: paired != nil, openedSignedIn: openedSignedIn,
+            checking: checking, alreadyPaired: alreadyPaired)
           {
           case .confirmation: confirmation(offer?.prompt ?? paired ?? "")
+          case .checking: checkingFace
+          case .alreadyPaired: alreadyPairedFace
           case .signedInResult: signedInResult
           case .typedEntry: typedEntry
           }
@@ -92,9 +100,6 @@ struct EnrollView: View {
         cancelOffer()
       }
     }
-    .alert(PairingCopy.alreadyPaired, isPresented: $alreadyPaired) {
-      Button("OK", role: .cancel) { dismiss() }
-    }
     .onChange(of: incoming, initial: true) { _, arrival in
       guard let arrival else { return }
       incoming = nil
@@ -108,6 +113,22 @@ struct EnrollView: View {
   }
 
   // MARK: Signed in
+
+  /// The check, which is quick; the question would only be taken back.
+  @ViewBuilder private var checkingFace: some View {
+    HStack(spacing: LLA.Space.m) {
+      ProgressView()
+      Text("Checking the pairing code…").llaSmallMuted()
+    }
+    .accessibilityIdentifier("pair.checking")
+  }
+
+  @ViewBuilder private var alreadyPairedFace: some View {
+    LLASectionHead(PairingCopy.alreadyPaired, intro: PairingCopy.alreadyPairedDetail)
+    Button("Done") { dismiss() }
+      .buttonStyle(.llaSecondary)
+      .accessibilityIdentifier("pair.alreadyPaired")
+  }
 
   /// A signed-in phone whose pairing ended without a sign-in (a refused code, a link it will not take):
   /// the one line, and a way out. Never the typed entry.
@@ -189,6 +210,7 @@ struct EnrollView: View {
   /// closes; a signed-out one goes back to the typed entry.
   private func cancelOffer() {
     offer = nil
+    checking = false
     error = nil
     if openedSignedIn { dismiss() }
   }
@@ -203,13 +225,31 @@ struct EnrollView: View {
       error = PairArrival.ignoredWhileOffering
       return
     }
+    // A new link replaces an "already paired" answer for the last one.
+    alreadyPaired = false
     switch arrival {
     case .offer(let link):
       offer = link
       error = nil
+      if host.isSignedIn {
+        checking = true
+        Task { await check(link) }
+      }
     case .invalid(let message):
       offer = nil
       error = message
+    }
+  }
+
+  /// Asks the hub whether `link`'s code is this phone's own account's, spending nothing. Any answer but
+  /// "yes" (a failure included) leaves the question to ask. Dropped if the offer changed meanwhile.
+  private func check(_ link: PairLink) async {
+    let answer = await host.offer(for: link)
+    guard checking, offer == link else { return }
+    checking = false
+    if answer == .alreadyPaired {
+      offer = nil
+      alreadyPaired = true
     }
   }
 
