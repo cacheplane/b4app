@@ -42,6 +42,8 @@ struct Inner {
     last_ok: Mutex<Instant>,
     /// A test seam: while set, the heartbeat loop writes nothing, as if the database refused it.
     paused: AtomicBool,
+    /// A test seam: while set, the signal listener drops what it hears.
+    deaf: AtomicBool,
     /// Held by the heartbeat loop from its pause check until its write is recorded, so
     /// [`InstancesState::settle`] can wait out a write that was already on its way.
     beat: tokio::sync::Mutex<()>,
@@ -73,6 +75,7 @@ impl InstancesState {
             heartbeat,
             last_ok: Mutex::new(Instant::now()),
             paused: AtomicBool::new(false),
+            deaf: AtomicBool::new(false),
             beat: tokio::sync::Mutex::new(()),
         }))
     }
@@ -123,6 +126,16 @@ impl InstancesState {
     /// alone. A test seam; nothing in the hub calls it.
     pub async fn settle(&self) {
         drop(self.0.beat.lock().await);
+    }
+
+    /// Makes (or stops making) the signal listener drop everything it hears, as if its connection
+    /// had gone quiet without failing. A test seam; nothing in the hub calls it.
+    pub fn deafen_listener(&self, deaf: bool) {
+        self.0.deaf.store(deaf, Ordering::SeqCst);
+    }
+
+    pub(crate) fn deaf(&self) -> bool {
+        self.0.deaf.load(Ordering::SeqCst)
     }
 
     fn paused(&self) -> bool {
@@ -176,7 +189,13 @@ pub async fn heartbeat_loop(
         }
         let sent = Instant::now();
         match b4hub_db::instances::heartbeat(&db, instances.id()).await {
-            Ok(true) => instances.record_ok(sent),
+            Ok(true) => {
+                instances.record_ok(sent);
+                // Every listener, this instance's included, hears it (see `signals::listen_loop`).
+                if let Err(error) = b4hub_db::signals::echo(&db, instances.id()).await {
+                    tracing::warn!(%error, "could not send the heartbeat echo");
+                }
+            }
             Ok(false) => register(&db, &instances, public_url.as_deref()).await,
             Err(error) => {
                 tracing::warn!(%error, "could not write the instance heartbeat");
