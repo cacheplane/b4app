@@ -225,6 +225,8 @@ struct EnrollView: View {
       error = PairArrival.ignoredWhileOffering
       return
     }
+    // A new link replaces an "already paired" answer for the last one.
+    alreadyPaired = false
     switch arrival {
     case .offer(let link):
       offer = link
