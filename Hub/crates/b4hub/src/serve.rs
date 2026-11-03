@@ -26,7 +26,7 @@ use crate::push::PushSender;
 use crate::relay::{link, Relay};
 use crate::request_log;
 use crate::routes::{
-    apple, auth, changes, devices, enroll, health, me, pairing, push_token, snapshot,
+    apple, auth, changes, devices, enroll, health, me, pairing, push_token, snapshot, step_up,
 };
 
 /// How long the listener stays open, answering `/readyz` 503, after shutdown begins, so a load
@@ -75,8 +75,8 @@ pub struct AppState {
     pub maintenance: MaintenanceState,
     /// This instance's id and heartbeat health; the link upgrade claims users for it.
     pub instances: InstancesState,
-    /// Delivers the notifications a push decides on; `None` sends nothing (the ledger still
-    /// records them, so delivery stays at most once).
+    /// Delivers the alerts and withdrawals a push decides on; `None` sends nothing (the ledger
+    /// still records them, so delivery stays at most once).
     pub push: Option<Arc<dyn PushSender>>,
 }
 
@@ -161,6 +161,14 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/me/apple/native", post(apple::link_native))
         .route("/v1/me/apple/handoff", post(apple::link_handoff))
         .route("/v1/me/identities/{id}", delete(me::remove_identity))
+        .route("/v1/me/step-up/passkey/begin", post(step_up::passkey_begin))
+        .route(
+            "/v1/me/step-up/passkey/finish",
+            post(step_up::passkey_finish),
+        )
+        .route("/v1/me/step-up/apple", post(apple::step_up_begin))
+        .route("/v1/me/step-up/apple/native", post(apple::step_up_native))
+        .route("/v1/me/step-up/apple/handoff", post(apple::step_up_handoff))
         .route("/v1/sessions/self", delete(me::end_session))
         .route("/v1/devices", get(devices::list))
         .route("/v1/snapshot", get(snapshot::get))

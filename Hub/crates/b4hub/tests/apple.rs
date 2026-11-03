@@ -25,8 +25,8 @@ use axum::{Json, Router};
 use b4hub::apple::{open_refresh_token, sha256_hex};
 use b4hub::cli::Settings;
 use b4hub::config::{AppleConfig, Config, Signup};
-use b4hub_db::accounts::{self, Identity};
-use b4hub_db::Db;
+use b4hub_db::accounts::{self, Identity, Principal};
+use b4hub_db::{ceremonies, devices, Db};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use common::authenticator::Authenticator;
@@ -55,6 +55,9 @@ const HANDOFF: &str = "/v1/auth/handoff";
 const LINK: &str = "/v1/me/apple";
 const LINK_NATIVE: &str = "/v1/me/apple/native";
 const LINK_HANDOFF: &str = "/v1/me/apple/handoff";
+const STEP_UP: &str = "/v1/me/step-up/apple";
+const STEP_UP_NATIVE: &str = "/v1/me/step-up/apple/native";
+const STEP_UP_HANDOFF: &str = "/v1/me/step-up/apple/handoff";
 
 /// The EC key's id in the fake's key set, and the RSA key's.
 const EC_KID: &str = "ec-1";
@@ -467,6 +470,30 @@ async fn authed(hub: &Hub, method: &str, path: &str, body: Option<&Value>, token
         .await
 }
 
+/// A step-up grant for the device of `token`, written straight to the store: these tests are about
+/// Apple, and `accounts.rs` covers how a passkey earns one (an Apple step-up is tested below).
+async fn grant(hub: &Hub, token: &str) -> String {
+    let device = devices::authenticate(&hub.state.db, token)
+        .await
+        .unwrap()
+        .expect("the token authenticates");
+    ceremonies::create_step_up(
+        &hub.state.db,
+        Principal::from(device),
+        device.device_id,
+        "passkey",
+    )
+    .await
+    .unwrap()
+    .token
+}
+
+/// `authed`, with a fresh step-up grant for a change that needs one.
+async fn stepped(hub: &Hub, method: &str, path: &str, body: Option<&Value>, token: &str) -> Answer {
+    let grant = grant(hub, token).await;
+    hub.stepped(method, path, body, token, Some(&grant)).await
+}
+
 fn token_of(session: &Value) -> &str {
     session["token"].as_str().expect("a session has a token")
 }
@@ -542,7 +569,7 @@ async fn begin_web(
 ) -> (String, String) {
     let body = json!({"verifierHash": verifier_hash, "scheme": scheme});
     let begun = match token {
-        Some(token) => authed(hub, "POST", begin_path, Some(&body), token).await,
+        Some(token) => stepped(hub, "POST", begin_path, Some(&body), token).await,
         None => hub.post(begin_path, Some(&body)).await,
     };
     assert_eq!(begun.status, StatusCode::OK, "{}", begun.body);
@@ -1486,7 +1513,7 @@ async fn delete_revokes_at_apple(pool: PgPool) {
 
     // Apple refuses: nothing is deleted.
     setup.fake.state.lock().unwrap().fail_revoke = true;
-    let failed = authed(hub, "DELETE", "/v1/me", None, &phone).await;
+    let failed = stepped(hub, "DELETE", "/v1/me", None, &phone).await;
     assert_eq!(failed.code(), "internal_error", "{}", failed.body);
     assert_eq!(hub.get("/v1/me", Some(&phone)).await.status, StatusCode::OK);
     assert_eq!(count(&pool, "SELECT count(*) FROM users").await, 2);
@@ -1494,7 +1521,7 @@ async fn delete_revokes_at_apple(pool: PgPool) {
     setup.fake.state.lock().unwrap().fail_revoke = false;
     setup.fake.state.lock().unwrap().calls.revoked.clear();
     for token in [&phone, &mac] {
-        let deleted = authed(hub, "DELETE", "/v1/me", None, token).await;
+        let deleted = stepped(hub, "DELETE", "/v1/me", None, token).await;
         assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
         assert_eq!(
             hub.get("/v1/me", Some(token)).await.status,
@@ -1538,7 +1565,7 @@ async fn delete_with_a_token_that_does_not_open_revokes_nothing(pool: PgPool) {
     .await
     .unwrap();
 
-    let failed = authed(&setup.hub, "DELETE", "/v1/me", None, &token).await;
+    let failed = stepped(&setup.hub, "DELETE", "/v1/me", None, &token).await;
     assert_eq!(failed.code(), "internal_error", "{}", failed.body);
     // The good token was not revoked either.
     assert!(setup.fake.calls(|c| c.revoked.is_empty()));
@@ -1554,7 +1581,7 @@ async fn delete_on_a_hub_without_apple_cannot_revoke_and_deletes_nothing(pool: P
     let mut config = common::config(Signup::Open);
     config.secret_key = setup.hub.state.config.secret_key;
     let bare = Hub::start(setup.hub.state.db.clone(), config).await;
-    let failed = authed(&bare, "DELETE", "/v1/me", None, &token).await;
+    let failed = stepped(&bare, "DELETE", "/v1/me", None, &token).await;
     assert_eq!(failed.code(), "internal_error", "{}", failed.body);
     assert_eq!(count(&pool, "SELECT count(*) FROM users").await, 1);
     assert!(setup.fake.calls(|c| c.revoked.is_empty()));
@@ -1566,7 +1593,7 @@ async fn delete_on_a_hub_without_apple_cannot_revoke_and_deletes_nothing(pool: P
 /// identity's id.
 async fn native_link(setup: &Setup, token: &str, sub: &str) -> String {
     let hub = &setup.hub;
-    let begun = authed(hub, "POST", LINK, Some(&json!({})), token).await;
+    let begun = stepped(hub, "POST", LINK, Some(&json!({})), token).await;
     assert_eq!(begun.status, StatusCode::OK, "{}", begun.body);
     let nonce = begun.body["nonce"].as_str().unwrap();
     let body = json!({
@@ -1594,14 +1621,14 @@ async fn unlinking_an_apple_id_revokes_it_at_apple_first(pool: PgPool) {
 
     // Apple refuses: the Apple ID stays linked, and the request can be retried.
     setup.fake.state.lock().unwrap().fail_revoke = true;
-    let failed = authed(hub, "DELETE", &unlink_path(&apple_id), None, &token).await;
+    let failed = stepped(hub, "DELETE", &unlink_path(&apple_id), None, &token).await;
     assert_eq!(failed.code(), "internal_error", "{}", failed.body);
     assert_eq!(kinds(hub, &token).await, ["passkey", "apple"]);
     assert_eq!(stored_refresh(&setup.admin).await.len(), 1);
 
     setup.fake.state.lock().unwrap().fail_revoke = false;
     setup.fake.state.lock().unwrap().calls.revoked.clear();
-    let removed = authed(hub, "DELETE", &unlink_path(&apple_id), None, &token).await;
+    let removed = stepped(hub, "DELETE", &unlink_path(&apple_id), None, &token).await;
     assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.body);
     assert_eq!(kinds(hub, &token).await, ["passkey"]);
     // Revoked once, as the client id it was issued to, before the row (and the token) went.
@@ -1613,7 +1640,7 @@ async fn unlinking_an_apple_id_revokes_it_at_apple_first(pool: PgPool) {
     assert!(stored_refresh(&setup.admin).await.is_empty());
 
     // Deleting the account afterwards has nothing left to revoke, and nothing was lost to it.
-    let deleted = authed(hub, "DELETE", "/v1/me", None, &token).await;
+    let deleted = stepped(hub, "DELETE", "/v1/me", None, &token).await;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
     assert_eq!(setup.fake.calls(|c| c.revoked.len()), 1);
 }
@@ -1627,11 +1654,11 @@ async fn unlinking_checks_ownership_and_the_last_identity_before_revoking(pool: 
     let only_token = token_of(&up.body).to_string();
     let me = hub.get("/v1/me", Some(&only_token)).await;
     let only = me.body["identities"][0]["id"].as_str().unwrap().to_string();
-    let refused = authed(hub, "DELETE", &unlink_path(&only), None, &only_token).await;
+    let refused = stepped(hub, "DELETE", &unlink_path(&only), None, &only_token).await;
     assert_eq!(refused.code(), "last_identity", "{}", refused.body);
     // Another account cannot unlink it either.
     let stranger = token_of(&passkey_account(hub).await).to_string();
-    let refused = authed(hub, "DELETE", &unlink_path(&only), None, &stranger).await;
+    let refused = stepped(hub, "DELETE", &unlink_path(&only), None, &stranger).await;
     assert_eq!(refused.code(), "not_found", "{}", refused.body);
     assert!(setup.fake.calls(|c| c.revoked.is_empty()));
     assert_eq!(stored_refresh(&setup.admin).await.len(), 1);
@@ -1661,7 +1688,7 @@ async fn unlinking_with_a_token_that_does_not_open_revokes_and_removes_nothing(p
         .await
         .unwrap();
 
-    let failed = authed(hub, "DELETE", &unlink_path(&apple_id), None, &token).await;
+    let failed = stepped(hub, "DELETE", &unlink_path(&apple_id), None, &token).await;
     assert_eq!(failed.code(), "internal_error", "{}", failed.body);
     assert!(setup.fake.calls(|c| c.revoked.is_empty()));
     assert_eq!(kinds(hub, &token).await, ["passkey", "apple"]);
@@ -1677,7 +1704,7 @@ async fn unlinking_on_a_hub_without_apple_cannot_revoke_and_removes_nothing(pool
     let mut config = common::config(Signup::Open);
     config.secret_key = setup.hub.state.config.secret_key;
     let bare = Hub::start(setup.hub.state.db.clone(), config).await;
-    let failed = authed(&bare, "DELETE", &unlink_path(&apple_id), None, &token).await;
+    let failed = stepped(&bare, "DELETE", &unlink_path(&apple_id), None, &token).await;
     assert_eq!(failed.code(), "internal_error", "{}", failed.body);
     assert_eq!(kinds(&bare, &token).await, ["passkey", "apple"]);
     assert!(setup.fake.calls(|c| c.revoked.is_empty()));
@@ -1782,8 +1809,13 @@ async fn link_natively_and_its_refusals(pool: PgPool) {
     let hub = &setup.hub;
     let token = token_of(&passkey_account(hub).await).to_string();
 
+    // Linking an Apple ID adds a sign-in method, so it needs a step-up, asked for at the begin.
+    let refused = authed(hub, "POST", LINK, Some(&json!({})), &token).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert_eq!(refused.code(), "step_up_required");
+
     // The iPhone links natively; the answer is the new identity.
-    let begun = authed(hub, "POST", LINK, Some(&json!({})), &token).await;
+    let begun = stepped(hub, "POST", LINK, Some(&json!({})), &token).await;
     assert_eq!(begun.status, StatusCode::OK, "{}", begun.body);
     let nonce = begun.body["nonce"].as_str().unwrap();
     let body = json!({
@@ -1799,7 +1831,7 @@ async fn link_natively_and_its_refusals(pool: PgPool) {
     // Another account cannot take an Apple ID that is already linked, and a sign-in ceremony
     // cannot finish a link (nor a link ceremony a sign-in).
     let other_token = token_of(&passkey_account(hub).await).to_string();
-    let begun = authed(hub, "POST", LINK, None, &other_token).await;
+    let begun = stepped(hub, "POST", LINK, None, &other_token).await;
     let nonce = begun.body["nonce"].as_str().unwrap();
     let steal = json!({
         "ceremonyId": begun.body["ceremonyId"],
@@ -1818,7 +1850,7 @@ async fn link_natively_and_its_refusals(pool: PgPool) {
     let refused = authed(hub, "POST", LINK_NATIVE, Some(&crossed), &other_token).await;
     assert_eq!(refused.code(), "ceremony_expired", "{}", refused.body);
 
-    let begun = authed(hub, "POST", LINK, None, &other_token).await;
+    let begun = stepped(hub, "POST", LINK, None, &other_token).await;
     let nonce = begun.body["nonce"].as_str().unwrap();
     let crossed = json!({
         "ceremonyId": begun.body["ceremonyId"],
@@ -1909,7 +1941,7 @@ async fn a_victim_completing_an_attackers_link_links_nothing(pool: PgPool) {
     // Attacker A, signed in, begins a web link and keeps the verifier.
     let attacker = token_of(&passkey_account(hub).await).to_string();
     let (_verifier, hash) = new_verifier();
-    let begun = authed(
+    let begun = stepped(
         hub,
         "POST",
         LINK,
@@ -1957,7 +1989,7 @@ async fn a_second_apple_id_on_one_account_is_refused(pool: PgPool) {
     // A link begun before the first Apple ID arrived is refused at its finish too.
     let account = passkey_account(hub).await;
     let token = token_of(&account).to_string();
-    let native_begun = authed(hub, "POST", LINK, None, &token).await;
+    let native_begun = stepped(hub, "POST", LINK, None, &token).await;
     let (handoff, verifier) = web_link_handoff(&setup, &token, "001.web").await;
     let nonce = native_begun.body["nonce"].as_str().unwrap();
     let body = json!({
@@ -1973,6 +2005,163 @@ async fn a_second_apple_id_on_one_account_is_refused(pool: PgPool) {
     assert_eq!(kinds(hub, &token).await, ["passkey", "apple"]);
     // The refused one's code was never exchanged.
     assert_eq!(setup.fake.calls(|c| c.exchanges.len()), 2);
+}
+
+// ---- Step-up with the account's Apple ID (D-150) ----
+
+/// A native Apple step-up for the device of `token`, as the Apple ID `sub`; answers the finish.
+async fn native_step_up(setup: &Setup, token: &str, sub: &str) -> Answer {
+    let hub = &setup.hub;
+    let begun = authed(hub, "POST", STEP_UP, Some(&json!({})), token).await;
+    assert_eq!(begun.status, StatusCode::OK, "{}", begun.body);
+    let nonce = begun.body["nonce"].as_str().unwrap();
+    let body = json!({
+        "ceremonyId": begun.body["ceremonyId"],
+        "identityToken": setup.fake.token(sub, BUNDLE_ID, Some(&sha256_hex(nonce))),
+    });
+    authed(hub, "POST", STEP_UP_NATIVE, Some(&body), token).await
+}
+
+#[sqlx::test(migrations = false)]
+async fn an_apple_only_account_steps_up_with_its_apple_id(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let hub = &setup.hub;
+    let up = native(&setup, "001.mine", EC_KID, None).await;
+    let token = token_of(&up.body).to_string();
+    let exchanges = setup.fake.calls(|c| c.exchanges.len());
+
+    // Adding its first passkey needs a step-up, which only its Apple ID can give.
+    let refused = authed(hub, "POST", "/v1/me/passkeys/begin", None, &token).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert_eq!(
+        refused.body["error"]["details"]["methods"],
+        json!(["apple"])
+    );
+    let no_passkey = authed(hub, "POST", "/v1/me/step-up/passkey/begin", None, &token).await;
+    assert_eq!(no_passkey.code(), "not_found");
+
+    // Another Apple ID earns nothing, even a valid one.
+    let other = native_step_up(&setup, &token, "001.someone-else").await;
+    assert_eq!(other.code(), "credential_rejected", "{}", other.body);
+
+    let stepped_up = native_step_up(&setup, &token, "001.mine").await;
+    assert_eq!(stepped_up.status, StatusCode::OK, "{}", stepped_up.body);
+    let grant = stepped_up.body["stepUp"].as_str().unwrap().to_string();
+    assert!(stepped_up.body["expiresAt"]
+        .as_str()
+        .unwrap()
+        .ends_with('Z'));
+    // No code is exchanged for a step-up: Apple keeps no new grant.
+    assert_eq!(setup.fake.calls(|c| c.exchanges.len()), exchanges);
+    let begun = hub
+        .stepped("POST", "/v1/me/passkeys/begin", None, &token, Some(&grant))
+        .await;
+    assert_eq!(begun.status, StatusCode::OK, "{}", begun.body);
+
+    // A passkey-only account has no Apple step-up.
+    let passkey_only = token_of(&passkey_account(hub).await).to_string();
+    let none = authed(hub, "POST", STEP_UP, Some(&json!({})), &passkey_only).await;
+    assert_eq!(none.status, StatusCode::NOT_FOUND, "{}", none.body);
+}
+
+#[sqlx::test(migrations = false)]
+async fn an_apple_step_up_belongs_to_its_device_and_its_kind(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let hub = &setup.hub;
+    let phone = native(&setup, "001.mine", EC_KID, None).await;
+    let phone = token_of(&phone.body).to_string();
+    let mac = native_on(&setup, "001.mine", EC_KID, None, device("Mac", "macos")).await;
+    let mac = token_of(&mac.body).to_string();
+
+    // Begun on the phone, finished from the Mac: refused.
+    let begun = authed(hub, "POST", STEP_UP, Some(&json!({})), &phone).await;
+    let nonce = begun.body["nonce"].as_str().unwrap();
+    let body = json!({
+        "ceremonyId": begun.body["ceremonyId"],
+        "identityToken": setup.fake.token("001.mine", BUNDLE_ID, Some(&sha256_hex(nonce))),
+    });
+    let crossed = authed(hub, "POST", STEP_UP_NATIVE, Some(&body), &mac).await;
+    assert_eq!(crossed.code(), "ceremony_expired", "{}", crossed.body);
+
+    // A link ceremony does not finish a step-up, nor a step-up ceremony a link.
+    let linker = token_of(&passkey_account(hub).await).to_string();
+    let begun = stepped(hub, "POST", LINK, Some(&json!({})), &linker).await;
+    assert_eq!(begun.status, StatusCode::OK, "{}", begun.body);
+    let nonce = begun.body["nonce"].as_str().unwrap();
+    let body = json!({
+        "ceremonyId": begun.body["ceremonyId"],
+        "identityToken": setup.fake.token("001.mine", BUNDLE_ID, Some(&sha256_hex(nonce))),
+    });
+    let crossed = authed(hub, "POST", STEP_UP_NATIVE, Some(&body), &linker).await;
+    assert_eq!(crossed.code(), "ceremony_expired", "{}", crossed.body);
+    let step = authed(hub, "POST", STEP_UP, Some(&json!({})), &phone).await;
+    let nonce = step.body["nonce"].as_str().unwrap();
+    let body = json!({
+        "ceremonyId": step.body["ceremonyId"],
+        "identityToken": setup.fake.token("001.mine", BUNDLE_ID, Some(&sha256_hex(nonce))),
+        "authorizationCode": setup.fake.code("001.mine", BUNDLE_ID, None),
+    });
+    let crossed = authed(hub, "POST", LINK_NATIVE, Some(&body), &phone).await;
+    assert_eq!(crossed.code(), "ceremony_expired", "{}", crossed.body);
+
+    // A web step-up's handoff is redeemed only at its own route, by the device that began it.
+    let (verifier, hash) = new_verifier();
+    let (ceremony, nonce_claim) = begin_web(hub, STEP_UP, Some(&mac), &hash, "b4app").await;
+    let target = location(&apple_posts(&setup, &ceremony, &nonce_claim, "001.mine", None).await);
+    let handoff = handoff_in(&target, "b4app");
+    let body = json!({"handoff": handoff, "verifier": verifier});
+    let as_link = authed(hub, "POST", LINK_HANDOFF, Some(&body), &mac).await;
+    assert_eq!(as_link.code(), "credential_rejected", "{}", as_link.body);
+    let from_phone = authed(hub, "POST", STEP_UP_HANDOFF, Some(&body), &phone).await;
+    assert_eq!(
+        from_phone.code(),
+        "credential_rejected",
+        "{}",
+        from_phone.body
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_web_apple_step_up_removes_a_passkey(pool: PgPool) {
+    let setup = setup(&pool, Signup::Open).await;
+    let hub = &setup.hub;
+    let token = token_of(&passkey_account(hub).await).to_string();
+    let apple_id = native_link(&setup, &token, "001.both").await;
+    let exchanges = setup.fake.calls(|c| c.exchanges.len());
+    let me = hub.get("/v1/me", Some(&token)).await;
+    let passkey_id = me.body["identities"][0]["id"].as_str().unwrap().to_string();
+    assert_ne!(passkey_id, apple_id);
+
+    // Apple's page completed by another Apple ID: the callback redirects with the refusal.
+    let (_, hash) = new_verifier();
+    let (ceremony, nonce_claim) = begin_web(hub, STEP_UP, Some(&token), &hash, "b4app").await;
+    let target =
+        location(&apple_posts(&setup, &ceremony, &nonce_claim, "001.stranger", None).await);
+    assert_eq!(target, "b4app://auth?error=credential_rejected");
+
+    let (verifier, hash) = new_verifier();
+    let (ceremony, nonce_claim) = begin_web(hub, STEP_UP, Some(&token), &hash, "b4app").await;
+    let target = location(&apple_posts(&setup, &ceremony, &nonce_claim, "001.both", None).await);
+    let handoff = handoff_in(&target, "b4app");
+    let body = json!({"handoff": handoff, "verifier": verifier});
+    let finished = authed(hub, "POST", STEP_UP_HANDOFF, Some(&body), &token).await;
+    assert_eq!(finished.status, StatusCode::OK, "{}", finished.body);
+    let grant = finished.body["stepUp"].as_str().unwrap().to_string();
+    let again = authed(hub, "POST", STEP_UP_HANDOFF, Some(&body), &token).await;
+    assert_eq!(again.code(), "ceremony_expired", "{}", again.body);
+    assert_eq!(setup.fake.calls(|c| c.exchanges.len()), exchanges);
+
+    let removed = hub
+        .stepped(
+            "DELETE",
+            &unlink_path(&passkey_id),
+            None,
+            &token,
+            Some(&grant),
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.body);
+    assert_eq!(kinds(hub, &token).await, ["apple"]);
 }
 
 // ---- Configuration and limits ----
@@ -2017,6 +2206,9 @@ async fn routes_404_without_apple_config(pool: PgPool) {
         authed(&hub, "POST", LINK, Some(&json!({})), &token).await,
         authed(&hub, "POST", LINK_NATIVE, Some(&json!({})), &token).await,
         authed(&hub, "POST", LINK_HANDOFF, Some(&json!({})), &token).await,
+        authed(&hub, "POST", STEP_UP, Some(&json!({})), &token).await,
+        authed(&hub, "POST", STEP_UP_NATIVE, Some(&json!({})), &token).await,
+        authed(&hub, "POST", STEP_UP_HANDOFF, Some(&json!({})), &token).await,
     ];
     for answer in answers {
         assert_eq!(answer.status, StatusCode::NOT_FOUND, "{}", answer.body);
@@ -2260,14 +2452,14 @@ async fn no_secret_in_logs(pool: PgPool) {
         .unwrap()
         .to_string();
     setup.fake.state.lock().unwrap().fail_revoke = true;
-    let failed = authed(hub, "DELETE", &unlink_path(&linked), None, &linker).await;
+    let failed = stepped(hub, "DELETE", &unlink_path(&linked), None, &linker).await;
     assert_eq!(failed.code(), "internal_error", "{}", failed.body);
     setup.fake.state.lock().unwrap().fail_revoke = false;
     setup.fake.state.lock().unwrap().calls.revoked.clear();
-    let unlinked = authed(hub, "DELETE", &unlink_path(&linked), None, &linker).await;
+    let unlinked = stepped(hub, "DELETE", &unlink_path(&linked), None, &linker).await;
     assert_eq!(unlinked.status, StatusCode::NO_CONTENT, "{}", unlinked.body);
 
-    let deleted = authed(hub, "DELETE", "/v1/me", None, &token).await;
+    let deleted = stepped(hub, "DELETE", "/v1/me", None, &token).await;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
     assert_eq!(setup.fake.calls(|c| c.revoked.len()), 2);
     secrets.extend(setup.fake.calls(|c| c.refresh_tokens.clone()));

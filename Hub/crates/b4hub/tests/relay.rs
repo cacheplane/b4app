@@ -396,7 +396,27 @@ async fn deleting_the_account_closes_its_links(pool: PgPool) {
     let (mut phone, _) = FakeDevice::ready(hub.addr, &phone_token).await;
     let (mut other, _) = FakeDevice::ready(hub.addr, &other_token).await;
 
-    let (status, body) = hub.http("DELETE", "/v1/me", Some(&mac_token)).await;
+    let device = devices::authenticate(&hub.state.db, &mac_token)
+        .await
+        .unwrap()
+        .unwrap();
+    let grant = b4hub_db::ceremonies::create_step_up(
+        &hub.state.db,
+        Principal::from(device),
+        device.device_id,
+        "passkey",
+    )
+    .await
+    .unwrap();
+    let (status, body) = hub
+        .http_stepped(
+            "DELETE",
+            "/v1/me",
+            Some(&mac_token),
+            None,
+            Some(&grant.token),
+        )
+        .await;
     assert_eq!(status, 204, "{body}");
     // Both of the account's links end at once, as revoked, not at their next heartbeat.
     assert_eq!(mac.expect_close().await, close_code::REVOKED);

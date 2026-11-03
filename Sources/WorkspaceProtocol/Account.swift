@@ -236,9 +236,90 @@ public enum AccountIdentities: WorkspaceCommand {
   public static let method = Method.accountIdentities
 }
 
-/// Begin adding a passkey to the signed-in account: registration options that exclude its passkeys.
-public enum AccountAddPasskeyBegin: WorkspaceCommand {
+// MARK: - Confirming it's you (D-150)
+
+/// A fresh confirmation that the signed-in person is at this device, for one change that needs it
+/// (adding a passkey, connecting an Apple ID, removing a sign-in method, deleting the account): a
+/// passkey assertion against `account.stepUpBegin`'s ceremony (`ceremonyId` and `assertion`), the
+/// Mac's Apple web flow (`handoff`, against `account.stepUpAppleStart`, whose verifier the coordinator
+/// keeps), or, on the phone only, Apple's native sheet (`ceremonyId` and `identityToken`). It crosses
+/// once into whoever makes the change, which finishes it at the hub and makes the change with the
+/// grant it earns; neither is kept. An account with no sign-in method sends none.
+public struct AccountStepUp: Codable, Sendable, Equatable, CustomStringConvertible,
+  CustomDebugStringConvertible
+{
+  public var ceremonyId: String?
+  public var assertion: JSONValue?
+  public var handoff: String?
+  public var identityToken: String?
+
+  public init(
+    ceremonyId: String? = nil, assertion: JSONValue? = nil, handoff: String? = nil,
+    identityToken: String? = nil
+  ) {
+    self.ceremonyId = ceremonyId
+    self.assertion = assertion
+    self.handoff = handoff
+    self.identityToken = identityToken
+  }
+
+  public static func passkey(ceremonyId: String, assertion: JSONValue) -> AccountStepUp {
+    AccountStepUp(ceremonyId: ceremonyId, assertion: assertion)
+  }
+
+  public static func appleWeb(handoff: String) -> AccountStepUp { AccountStepUp(handoff: handoff) }
+
+  public static func appleNative(ceremonyId: String, identityToken: String) -> AccountStepUp {
+    AccountStepUp(ceremonyId: ceremonyId, identityToken: identityToken)
+  }
+
+  public var description: String {
+    let kind =
+      assertion != nil
+      ? "passkey" : handoff != nil ? "appleWeb" : identityToken != nil ? "appleNative" : "none"
+    return "AccountStepUp(\(kind), <redacted>)"
+  }
+  public var debugDescription: String { description }
+}
+
+/// Begin confirming with a passkey: assertion options whose `allowCredentials` are the account's own
+/// passkeys. Hand `authentication` to the platform as it is, then send the assertion as an
+/// `AccountStepUp` with the change. `not_found` for an account with no passkey.
+public enum AccountStepUpBegin: WorkspaceCommand {
   public typealias Params = EmptyParams
+  public struct Result: Codable, Sendable, Equatable {
+    public var ceremonyId: String
+    public var authentication: JSONValue
+    public init(ceremonyId: String, authentication: JSONValue) {
+      self.ceremonyId = ceremonyId
+      self.authentication = authentication
+    }
+  }
+  public static let method = Method.accountStepUpBegin
+}
+
+/// Begin confirming with the account's Apple ID on the Mac's web flow, as `account.appleLinkStart`
+/// begins a link: open `url` in an `ASWebAuthenticationSession` waiting for `callbackScheme`, then send
+/// the redirect's `handoff` as an `AccountStepUp` with the change. The coordinator keeps the verifier;
+/// one step-up is in flight at a time. `not_found` for an account with no Apple ID,
+/// `unsupported_capability` on the local flavour.
+public enum AccountStepUpAppleStart: WorkspaceCommand {
+  public typealias Params = EmptyParams
+  public typealias Result = AccountAppleStart.Result
+  public static let method = Method.accountStepUpAppleStart
+}
+
+/// The params of a change that needs confirming: `stepUp` is absent only for an account with no
+/// sign-in method. A change without a live one is `step_up_required`.
+public struct AccountStepUpParams: Codable, Sendable, Equatable {
+  public var stepUp: AccountStepUp?
+  public init(stepUp: AccountStepUp? = nil) { self.stepUp = stepUp }
+}
+
+/// Begin adding a passkey to the signed-in account: registration options that exclude its passkeys.
+/// Needs confirming (`stepUp`).
+public enum AccountAddPasskeyBegin: WorkspaceCommand {
+  public typealias Params = AccountStepUpParams
   public struct Result: Codable, Sendable, Equatable {
     public var ceremonyId: String
     public var registration: JSONValue
@@ -271,10 +352,15 @@ public enum AccountAddPasskeyFinish: WorkspaceCommand {
 }
 
 /// Unlink one sign-in method; the account's last one is `last_identity`. Answers the methods left.
+/// Needs confirming (`stepUp`).
 public enum AccountRemoveIdentity: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
     public var identityId: String
-    public init(identityId: String) { self.identityId = identityId }
+    public var stepUp: AccountStepUp?
+    public init(identityId: String, stepUp: AccountStepUp? = nil) {
+      self.identityId = identityId
+      self.stepUp = stepUp
+    }
   }
   public typealias Result = AccountIdentities.Result
   public static let method = Method.accountRemoveIdentity
@@ -289,9 +375,10 @@ public enum AccountDismissNotice: WorkspaceCommand {
 }
 
 /// Delete the signed-in account at the hub, then sign out and drop its database and registry row on
-/// this Mac. A refusal (`shared_org`, or any hub error) changes nothing here.
+/// this Mac. A refusal (`shared_org`, `step_up_required`, or any hub error) changes nothing here.
+/// Needs confirming (`stepUp`).
 public enum AccountDelete: WorkspaceCommand {
-  public typealias Params = EmptyParams
+  public typealias Params = AccountStepUpParams
   public typealias Result = AccountStatus.Result
   public static let method = Method.accountDelete
 }
@@ -302,9 +389,10 @@ public enum AccountDelete: WorkspaceCommand {
 /// Account → Connect Apple ID): open `url` in an `ASWebAuthenticationSession` that waits for
 /// `callbackScheme`, then hand the redirect's `handoff` to `account.appleLinkFinish`. The coordinator
 /// keeps the verifier, as for `account.appleStart`; one link is in flight at a time. `apple_linked`
-/// when the account has one already, `unsupported_capability` on the local flavour.
+/// when the account has one already, `unsupported_capability` on the local flavour. Needs confirming
+/// (`stepUp`, a passkey's: an account with an Apple ID has nothing to link).
 public enum AccountAppleLinkStart: WorkspaceCommand {
-  public typealias Params = EmptyParams
+  public typealias Params = AccountStepUpParams
   public typealias Result = AccountAppleStart.Result
   public static let method = Method.accountAppleLinkStart
 }

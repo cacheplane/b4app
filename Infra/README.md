@@ -298,6 +298,28 @@ Do this before the first deploy. The sign-in hub is on `main` and `Infra/taskdef
 3. Do both accounts (`ENV=test`, then `ENV=prod`; set `AWS_PROFILE=b4hub-$ENV` first). The Apple values are the same in both; `secret-key` is not: generate one per account.
 4. Nothing else is needed here: the pull request that merged the sign-in hub set `INCLUDE_SIGNIN_SECRETS=1`, gave the Compose profile its `secret_key` file (`B4HUB_SECRET_KEY_FILE`, which `Hub/deploy/compose/test.sh` generates), and made the chart's kind install generate its key. Both task definitions already set `B4HUB_WEBAUTHN_RP_ID`.
 
+### 3a. Set the APNs secrets
+
+The hub sends push notifications through Apple when `B4HUB_PUSH_SENDER=apns`. The three secrets exist in Secrets Manager (`b4hub/apns-key-id`, `b4hub/apns-team-id`, `b4hub/apns-private-key`, created empty by `terraform apply`), but `Infra/taskdefs/features.env` ships `INCLUDE_APNS_SECRETS=0`, so no deploy references them yet and the hub runs with no push sender. ECS will not start a task whose secret is empty, so this is two steps: fill both accounts first, then flip the flag.
+
+1. `terraform apply` each environment root (the secrets are new in the module), so the three empty secrets exist.
+2. Put the values in. The Team ID is not secret but lives in Secrets Manager with the others; the key is the APNs `.p8` (team-scoped, Sandbox and Production) that you keep at `~/.b4app/signing/AuthKey_<key id>.p8` with mode 600. As in runbook 3 the PEM goes in through `file://`, never pasted into a command:
+
+   ```bash
+   umask 077; tmp=$(mktemp -d)
+   printf %s 'GJJKL34HCT' > "$tmp/team"      # the Team ID
+   printf %s '<key id>' > "$tmp/keyid"       # the APNs key's 10-character Key ID
+   cp ~/.b4app/signing/AuthKey_<key id>.p8 "$tmp/p8"
+   aws secretsmanager put-secret-value --secret-id b4hub/apns-team-id     --secret-string file://$tmp/team  > /dev/null
+   aws secretsmanager put-secret-value --secret-id b4hub/apns-key-id      --secret-string file://$tmp/keyid > /dev/null
+   aws secretsmanager put-secret-value --secret-id b4hub/apns-private-key --secret-string file://$tmp/p8    > /dev/null
+   rm -P "$tmp/team" "$tmp/keyid" "$tmp/p8"; rmdir "$tmp"      # the original stays in ~/.b4app/signing
+   ```
+
+3. Do both accounts (`ENV=test`, then `ENV=prod`; set `AWS_PROFILE=b4hub-$ENV` first). The three values are the same in both: the APNs key is team-wide, and the hub picks sandbox or production per device token.
+4. Check each account holds a value without printing it: `aws secretsmanager get-secret-value --secret-id b4hub/apns-key-id --query 'length(SecretString)'` (and the same for the other two) prints a number above 0; do not print the string.
+5. Open a follow-up pull request that changes `INCLUDE_APNS_SECRETS=0` to `1` in `Infra/taskdefs/features.env` once both accounts hold values. The next deploy then adds the three secrets and `B4HUB_PUSH_SENDER=apns` to the serving task (not the migrate or admin tasks); the test deploy runs first, so watch it before production. If the hub fails to start, `serve` names the variable that is missing or malformed (never its value): fix the secret ([runbook 7](#7-set-or-rotate-a-secret)) and redeploy, or set the flag back to `0`.
+
 ### 4. First deploy
 
 1. Runbooks 2 and 3 are done for `test`.
@@ -393,7 +415,7 @@ Until the sign-in hub is deployed, a Mac joins a hosted hub with a one-time code
    rm -P "$tmp/value"; rmdir "$tmp"
    ```
 
-   `<name>` is one of `database-admin-url`, `database-url`, `secret-key`, `apple-team-id`, `apple-key-id`, `apple-private-key`.
+   `<name>` is one of `database-admin-url`, `database-url`, `secret-key`, `apple-team-id`, `apple-key-id`, `apple-private-key`, `apns-key-id`, `apns-team-id`, `apns-private-key`.
 2. Tasks read secrets at start, so roll the service:
 
    ```bash

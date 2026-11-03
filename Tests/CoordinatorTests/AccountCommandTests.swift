@@ -181,21 +181,37 @@ private struct ForwardingAPI: HubAPI {
     try await hub.enter("identities")
     return try await fake.identities()
   }
-  func addPasskeyBegin() async throws -> AddPasskeyBeginResponse {
+  func addPasskeyBegin(stepUp: String?) async throws -> AddPasskeyBeginResponse {
     try await hub.enter("addPasskeyBegin")
-    return try await fake.addPasskeyBegin()
+    return try await fake.addPasskeyBegin(stepUp: stepUp)
   }
   func addPasskeyFinish(_ request: AddPasskeyFinishRequest) async throws -> Identity {
     try await hub.enter("addPasskeyFinish")
     return try await fake.addPasskeyFinish(request)
   }
-  func removeIdentity(_ id: String) async throws {
+  func removeIdentity(_ id: String, stepUp: String?) async throws {
     try await hub.enter("removeIdentity")
-    try await fake.removeIdentity(id)
+    try await fake.removeIdentity(id, stepUp: stepUp)
   }
-  func appleLinkBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse {
+  func appleLinkBegin(_ request: AppleBeginRequest, stepUp: String?) async throws -> AppleBeginResponse {
     try await hub.enter("appleLinkBegin")
-    return try await fake.appleLinkBegin(request)
+    return try await fake.appleLinkBegin(request, stepUp: stepUp)
+  }
+  func stepUpPasskeyBegin() async throws -> StepUpBeginResponse {
+    try await hub.enter("stepUpPasskeyBegin")
+    return try await fake.stepUpPasskeyBegin()
+  }
+  func stepUpPasskeyFinish(_ request: StepUpFinishRequest) async throws -> StepUpResponse {
+    try await hub.enter("stepUpPasskeyFinish")
+    return try await fake.stepUpPasskeyFinish(request)
+  }
+  func stepUpAppleBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse {
+    try await hub.enter("stepUpAppleBegin")
+    return hub.numberedAppleBegin(try await fake.stepUpAppleBegin(request))
+  }
+  func stepUpAppleHandoff(_ request: AppleLinkHandoffRequest) async throws -> StepUpResponse {
+    try await hub.enter("stepUpAppleHandoff")
+    return try await fake.stepUpAppleHandoff(request)
   }
   func appleLinkNative(_ request: AppleLinkNativeRequest) async throws -> Identity {
     try await hub.enter("appleLinkNative")
@@ -209,9 +225,9 @@ private struct ForwardingAPI: HubAPI {
     try await hub.enter("endSession")
     try await fake.endSession()
   }
-  func deleteAccount() async throws {
+  func deleteAccount(stepUp: String?) async throws {
     try await hub.enter("deleteAccount")
-    try await fake.deleteAccount()
+    try await fake.deleteAccount(stepUp: stepUp)
   }
 }
 
@@ -807,7 +823,7 @@ private func sha256Hex(_ text: String) -> String {
     try rig.addThread("bob-thread")
 
     let status = try await rig.client.request(
-      AccountDelete.self, EmptyParams(), options: CommandRig.mutation())
+      AccountDelete.self, AccountStepUpParams(), options: CommandRig.mutation())
     #expect(status.state == .signedOut)
     #expect(await rig.hub.fake.deleteAccountCalls == 1)
     #expect(!(try rig.databaseExists(bobRow.database)))
@@ -827,7 +843,8 @@ private func sha256Hex(_ text: String) -> String {
     rig.hub.fail("deleteAccount", with: hubError("shared_org", status: 409))
 
     let error = await #expect(throws: WorkspaceError.self) {
-      _ = try await rig.client.request(AccountDelete.self, EmptyParams(), options: CommandRig.mutation())
+      _ = try await rig.client.request(
+        AccountDelete.self, AccountStepUpParams(), options: CommandRig.mutation())
     }
     #expect(error?.code == .sharedOrg)
     #expect(await rig.accounts.status().state == .signedIn)
@@ -908,7 +925,7 @@ private func sha256Hex(_ text: String) -> String {
     try await rig.signIn(ann)
     rig.hub.fail("appleLinkBegin", with: refusal)
     let link = await #expect(throws: WorkspaceError.self) {
-      _ = try await rig.client.request(AccountAppleLinkStart.self, EmptyParams())
+      _ = try await rig.client.request(AccountAppleLinkStart.self, AccountStepUpParams())
     }
     #expect(link?.code == .protocolInvalid)
     #expect(link?.message.contains(message) == true)
@@ -956,7 +973,7 @@ private func sha256Hex(_ text: String) -> String {
     defer { Task { await rig.close() } }
     try await rig.signIn(ann)
     await rig.hub.fake.setAppleBegin(AppleBeginResponse(ceremonyId: "link-1", nonce: "n1"))
-    let started = try await rig.client.request(AccountAppleLinkStart.self, EmptyParams())
+    let started = try await rig.client.request(AccountAppleLinkStart.self, AccountStepUpParams())
     #expect(started.callbackScheme == "b4app-beta")
     #expect(started.url == "https://hub.test.b4.run/v1/auth/apple/start?ceremony=link-1")
     let begin = try #require(await rig.hub.fake.appleLinkBegins.last)
@@ -987,23 +1004,59 @@ private func sha256Hex(_ text: String) -> String {
 
     // The account has an Apple ID now: the hub refuses another, and the refusal keeps its code.
     let refused = await #expect(throws: WorkspaceError.self) {
-      _ = try await rig.client.request(AccountAppleLinkStart.self, EmptyParams())
+      _ = try await rig.client.request(AccountAppleLinkStart.self, AccountStepUpParams())
     }
     #expect(refused?.code == .appleLinked)
+  }
+
+  /// D-150 on the Mac: an Apple-only account confirms on Apple's web flow. The coordinator begins the
+  /// step-up with its own verifier's hash and redeems the handoff the change brings with that verifier,
+  /// once.
+  @Test func anAppleStepUpRedeemsItsHandoffWithTheKeptVerifier() async throws {
+    let rig = try await CommandRig.start(flavor: .beta)
+    defer { Task { await rig.close() } }
+    try await rig.signIn(ann)
+    await rig.hub.fake.setIdentities([
+      Identity(id: "a1", kind: "apple", name: "x7k2@privaterelay.appleid.com", createdAt: "2026-11-01")
+    ])
+    await rig.hub.fake.setAppleBegin(AppleBeginResponse(ceremonyId: "step-1", nonce: "n1"))
+    let started = try await rig.client.request(AccountStepUpAppleStart.self, EmptyParams())
+    #expect(started.callbackScheme == "b4app-beta")
+    #expect(started.url == "https://hub.test.b4.run/v1/auth/apple/start?ceremony=step-1")
+    let begin = try #require(await rig.hub.fake.stepUpAppleBegins.last)
+    #expect(begin.scheme == "b4app-beta")
+    let hash = try #require(begin.verifierHash)
+    #expect(await rig.hub.fake.appleLinkBegins.isEmpty)
+
+    let confirmed = AccountStepUp.appleWeb(handoff: "step-handoff-7")
+    let begun = try await rig.client.request(
+      AccountAddPasskeyBegin.self, AccountStepUpParams(stepUp: confirmed))
+    #expect(begun.ceremonyId == "fake-add-ceremony")
+    let sent = try #require(await rig.hub.fake.stepUpAppleHandoffs.last)
+    #expect(sent.handoff == "step-handoff-7")
+    #expect(sha256Hex(sent.verifier) == hash)
+
+    // Single use: the same handoff again is dropped without asking the hub.
+    let again = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.client.request(AccountAddPasskeyBegin.self, AccountStepUpParams(stepUp: confirmed))
+    }
+    #expect(again?.code == .ceremonyExpired)
+    #expect(again?.message.contains("step-handoff-7") == false)
+    #expect(await rig.hub.fake.stepUpAppleHandoffs.count == 1)
   }
 
   @Test func appleLinkNeedsAnAccountAndApple() async throws {
     let rig = try await CommandRig.start(flavor: .beta)
     defer { Task { await rig.close() } }
     let signedOut = await #expect(throws: WorkspaceError.self) {
-      _ = try await rig.client.request(AccountAppleLinkStart.self, EmptyParams())
+      _ = try await rig.client.request(AccountAppleLinkStart.self, AccountStepUpParams())
     }
     #expect(signedOut?.code == .signedOut)
     let local = try await CommandRig.start(flavor: .local)
     defer { Task { await local.close() } }
     try await local.signIn(ann)
     let unsupported = await #expect(throws: WorkspaceError.self) {
-      _ = try await local.client.request(AccountAppleLinkStart.self, EmptyParams())
+      _ = try await local.client.request(AccountAppleLinkStart.self, AccountStepUpParams())
     }
     #expect(unsupported?.code == .unsupportedCapability)
     #expect(await local.hub.fake.appleLinkBegins.isEmpty)
@@ -1133,15 +1186,31 @@ private func sha256Hex(_ text: String) -> String {
     let rig = try await CommandRig.start()
     defer { Task { await rig.close() } }
     try await rig.signIn(ann)
-    let first = Identity(
-      id: "i1", kind: "apple", name: "x7k2@privaterelay.appleid.com", createdAt: "2026-11-01")
+    let first = Identity(id: "i1", kind: "passkey", name: "Ann", createdAt: "2026-11-01")
     await rig.hub.fake.setIdentities([first])
 
     let listed = try await rig.client.request(AccountIdentities.self, EmptyParams())
     #expect(listed.identities.map(\.id) == ["i1"])
-    #expect(listed.identities.first?.kind == "apple")
-    let begun = try await rig.client.request(AccountAddPasskeyBegin.self, EmptyParams())
+    #expect(listed.identities.first?.kind == "passkey")
+    // Unconfirmed, the hub asks for a step-up, and the code and the methods come through.
+    let unconfirmed = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.client.request(AccountAddPasskeyBegin.self, AccountStepUpParams())
+    }
+    #expect(unconfirmed?.code == .stepUpRequired)
+    #expect(unconfirmed?.details?["methods"] == ["passkey"])
+    // The app confirms with a passkey; the coordinator finishes the step-up and makes the change in
+    // one command, so the grant never reaches the app.
+    let options = try await rig.client.request(AccountStepUpBegin.self, EmptyParams())
+    #expect(options.ceremonyId == "fake-step-up-ceremony")
+    let confirmed = AccountStepUp.passkey(ceremonyId: options.ceremonyId, assertion: ["id": "i1"])
+    let begun = try await rig.client.request(
+      AccountAddPasskeyBegin.self, AccountStepUpParams(stepUp: confirmed))
     #expect(begun.ceremonyId == "fake-add-ceremony")
+    #expect(await rig.hub.fake.presentedStepUps == [nil, "fake-step-up-1"])
+    #expect(
+      await rig.hub.fake.stepUpFinishes == [
+        StepUpFinishRequest(ceremonyId: options.ceremonyId, assertion: ["id": "i1"])
+      ])
     let added = try await rig.client.request(
       AccountAddPasskeyFinish.self,
       AccountAddPasskeyFinish.Params(ceremonyId: begun.ceremonyId, attestation: ["id": "new"]),
@@ -1149,7 +1218,7 @@ private func sha256Hex(_ text: String) -> String {
     ).identity
     #expect(added.kind == "passkey")
     let left = try await rig.client.request(
-      AccountRemoveIdentity.self, AccountRemoveIdentity.Params(identityId: added.id),
+      AccountRemoveIdentity.self, AccountRemoveIdentity.Params(identityId: added.id, stepUp: confirmed),
       options: CommandRig.mutation())
     #expect(left.identities.map(\.id) == ["i1"])
     let error = await #expect(throws: WorkspaceError.self) {

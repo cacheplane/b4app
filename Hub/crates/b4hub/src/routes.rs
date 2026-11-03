@@ -10,3 +10,4 @@ pub mod me;
 pub mod pairing;
 pub mod push_token;
 pub mod snapshot;
+pub mod step_up;

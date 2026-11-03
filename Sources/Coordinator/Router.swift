@@ -88,7 +88,7 @@ public actor Router {
       .accountPasskeyBegin, .accountPasskeyFinish, .accountAppleStart, .accountAppleFinish,
       .accountCompleteProfile, .accountLogout, .accountIdentities, .accountAddPasskeyBegin,
       .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice,
-      .accountAppleLinkStart, .accountAppleLinkFinish:
+      .accountAppleLinkStart, .accountAppleLinkFinish, .accountStepUpBegin, .accountStepUpAppleStart:
       return false
     case .connectionList, .threadList, .draftRead, .draftSave, .eventsSnapshot, .connectionAdd,
       .connectionInspect, .connectionLogin, .threadCreate, .threadRead, .threadUpdate, .threadReconcile,
@@ -163,7 +163,9 @@ public actor Router {
     case .accountIdentities:
       return try JSONValue(encoding: try await context.accounts.identities())
     case .accountAddPasskeyBegin:
-      return try JSONValue(encoding: try await context.accounts.addPasskeyBegin())
+      return try JSONValue(
+        encoding: try await context.accounts.addPasskeyBegin(
+          try command.params(for: AccountAddPasskeyBegin.self)))
     case .accountAddPasskeyFinish:
       return try JSONValue(
         encoding: try await context.accounts.addPasskeyFinish(
@@ -173,11 +175,18 @@ public actor Router {
         encoding: try await context.accounts.removeIdentity(
           try command.params(for: AccountRemoveIdentity.self)))
     case .accountDelete:
-      return try JSONValue(encoding: try await context.accounts.deleteAccount())
+      return try JSONValue(
+        encoding: try await context.accounts.deleteAccount(try command.params(for: AccountDelete.self)))
     case .accountDismissNotice:
       return try JSONValue(encoding: try await context.accounts.dismissNotice())
     case .accountAppleLinkStart:
-      return try JSONValue(encoding: try await context.accounts.appleLinkStart())
+      return try JSONValue(
+        encoding: try await context.accounts.appleLinkStart(
+          try command.params(for: AccountAppleLinkStart.self)))
+    case .accountStepUpBegin:
+      return try JSONValue(encoding: try await context.accounts.stepUpBegin())
+    case .accountStepUpAppleStart:
+      return try JSONValue(encoding: try await context.accounts.stepUpAppleStart())
     case .accountAppleLinkFinish:
       return try JSONValue(
         encoding: try await context.accounts.appleLinkFinish(
@@ -198,7 +207,7 @@ public actor Router {
       .accountPasskeyBegin, .accountPasskeyFinish, .accountAppleStart, .accountAppleFinish,
       .accountCompleteProfile, .accountLogout, .accountIdentities, .accountAddPasskeyBegin,
       .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice,
-      .accountAppleLinkStart, .accountAppleLinkFinish:
+      .accountAppleLinkStart, .accountAppleLinkFinish, .accountStepUpBegin, .accountStepUpAppleStart:
       throw WorkspaceError(.internalError, "\(command.method.rawValue) needs no account.")
     case .connectionList:
       let params = try command.params(for: ConnectionList.self)

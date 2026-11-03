@@ -4,7 +4,7 @@
 #
 # usage: render-taskdef.sh <template> <out.json>
 #          --family F --exec-role ARN --task-role ARN --include-signin-secrets 0|1
-#          [--image REF] [--region R] [--log-group G] [--env-name E]
+#          [--include-apns-secrets 0|1] [--image REF] [--region R] [--log-group G] [--env-name E]
 #          [--public-url U] [--rp-id ID] [--var name=value ...]
 #
 # The named flags fill the placeholders of the same meaning (image, region,
@@ -14,8 +14,9 @@
 # document is written to <out.json>, never printed.
 #
 # The template is processed the way Terraform's templatefile does for the
-# subset these templates use: the `%{ if include_signin_secrets ~}` ...
-# `%{ endif ~}` lines are kept or dropped, and each `${name}` is replaced by
+# subset these templates use: the `%{ if include_signin_secrets ~}` and
+# `%{ if include_apns_secrets ~}` ... `%{ endif ~}` lines (not nested) are kept
+# or dropped, and each `${name}` is replaced by
 # its value (JSON-escaped, since placeholders sit only inside JSON strings,
 # and substituted literally, never as a regex). Anything left over exits 2.
 #
@@ -44,6 +45,7 @@ family=""
 exec_role=""
 task_role=""
 signin=""
+apns=0
 names=()
 values=()
 
@@ -69,6 +71,7 @@ while [ "$#" -gt 0 ]; do
     --exec-role) exec_role="$value" ;;
     --task-role) task_role="$value" ;;
     --include-signin-secrets) signin="$value" ;;
+    --include-apns-secrets) apns="$value" ;;
     --image) add_var image "$value" ;;
     --region) add_var region "$value" ;;
     --log-group) add_var log_group "$value" ;;
@@ -92,18 +95,23 @@ case "$signin" in
   0 | 1) ;;
   *) die "--include-signin-secrets must be 0 or 1" ;;
 esac
+case "$apns" in
+  0 | 1) ;;
+  *) die "--include-apns-secrets must be 0 or 1" ;;
+esac
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# 1. The one conditional block.
-if ! awk -v keep="$signin" '
-  /^[[:space:]]*%\{ if include_signin_secrets ~\}[[:space:]]*$/ { if (inblock) bad = 1; inblock = 1; next }
+# 1. The conditional blocks: one per feature flag, never nested.
+if ! awk -v signin="$signin" -v apns="$apns" '
+  /^[[:space:]]*%\{ if include_signin_secrets ~\}[[:space:]]*$/ { if (inblock) bad = 1; inblock = 1; keep = signin; next }
+  /^[[:space:]]*%\{ if include_apns_secrets ~\}[[:space:]]*$/ { if (inblock) bad = 1; inblock = 1; keep = apns; next }
   /^[[:space:]]*%\{ endif ~\}[[:space:]]*$/ { if (!inblock) bad = 1; inblock = 0; next }
   { if (!inblock || keep == 1) print }
   END { if (inblock || bad) exit 3 }
 ' "$template" > "$work/stage"; then
-  die "unbalanced %{ if include_signin_secrets ~} block in $template"
+  die "unbalanced %{ if include_signin_secrets ~} or %{ if include_apns_secrets ~} block in $template"
 fi
 
 # 2. Placeholders, one literal pass per value.

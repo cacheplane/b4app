@@ -63,6 +63,7 @@ in whole seconds.
 | 401 | `credential_rejected` | request | A sign-in credential failed verification: a malformed WebAuthn response, a wrong origin or relying party, a bad signature, a passkey no account has, a user handle that is not the passkey's, a counter that went backwards, or a new passkey that already belongs to an account; any failed Apple check (see *Sign in with Apple*); a link's handoff at `POST /v1/auth/handoff`, or one presented by another account's device. Deliberately vague, except that a passkey sign-in whose credential no account has says `details.reason: "unknown_credential"` (see `POST /v1/auth/passkey/finish`). |
 | 403 | `forbidden` | request | The device is authenticated but may not do this: `POST /v1/devices/self/push-token` from a device that is not `ios`. |
 | 403 | `signup_closed` | request | A sign-up (a passkey `attestation`, or an Apple ID no account has) while the hub's sign-up policy is `closed`. |
+| 403 | `step_up_required` | request | A change that needs a step-up (`POST /v1/me/passkeys/begin`, `POST /v1/me/apple`, `DELETE /v1/me/identities/{id}`, `DELETE /v1/me`) without a live grant in `B4-Step-Up`: none, unknown, expired, already used, or earned by another device or user (indistinguishable). `details.methods` lists the kinds of sign-in method the account can step up with, `passkey` before `apple`. See *Step-up*. |
 | 404 | `not_found` | request | No such route, or a resource that does not exist or is not yours (including another account's identity id). |
 | 405 | `method_not_allowed` | request | The route exists but not for that method. |
 | 409 | `last_identity` | request | `DELETE /v1/me/identities/{id}` of the account's only sign-in method, which would leave it unable to sign in. Add another first. |
@@ -597,7 +598,7 @@ Errors: `400 invalid_request`, `401 unauthorized`.
 ### `POST /v1/me/passkeys/begin`
 
 Begins adding a passkey to the signed-in user (Settings → Account → Add a passkey; also how an
-operator-enrolled user gets their first one). No body. `200`:
+operator-enrolled user gets their first one). No body; needs a step-up grant (see *Step-up*). `200`:
 
 ```json
 {
@@ -615,9 +616,9 @@ operator-enrolled user gets their first one). No body. `200`:
 The options are the sign-up's (see `POST /v1/auth/passkey/begin`), for the user handle of the
 user's existing passkeys (a fresh one when they have none), with `excludeCredentials` listing
 every passkey the user already has (absent when none), so an authenticator holding one of them
-refuses instead of making a duplicate. The ceremony is bound to the calling user, is valid for 5
-minutes, and is finished once. Errors: `401 unauthorized`, `429 rate_limited` (counted with the
-sign-in begins).
+refuses instead of making a duplicate. The ceremony is bound to the calling user and device, is
+valid for 5 minutes, and is finished once. Errors: `401 unauthorized`, `403 step_up_required`,
+`429 rate_limited` (counted with the sign-in begins).
 
 ### `POST /v1/me/passkeys/finish`
 
@@ -636,8 +637,8 @@ then on either passkey signs in to it. `200` with the new identity, in `GET /v1/
  "createdAt": "2026-11-01T12:00:00.000000Z", "lastUsedAt": null}
 ```
 
-A ceremony that another user began, that a sign-in began (`POST /v1/auth/passkey/begin`), or that
-is unknown, expired, or used is `400 ceremony_expired`. A malformed or unverifiable attestation,
+A ceremony that another user or device began, that a sign-in began (`POST /v1/auth/passkey/begin`),
+or that is unknown, expired, or used is `400 ceremony_expired`. A malformed or unverifiable attestation,
 or a passkey that already belongs to an account, is `401 credential_rejected`. Errors also: `400
 invalid_request`, `401 unauthorized`, `429 rate_limited` (counted with the sign-in finishes).
 
@@ -649,8 +650,9 @@ the Mac's web flow; so is the answer, `{"ceremonyId", "nonce"}`. The ceremony re
 and can finish only a link. On the web the Mac then opens `GET /v1/auth/apple/start`, Apple posts
 to the callback, and the Mac redeems the handoff at `POST /v1/me/apple/handoff`. An account links
 at most one Apple ID ("Connect Apple ID" shows only when there is none): with one already, this is
-`409 apple_linked`. (Merging a phone-only account on pairing moves its identities without that
-check.) Errors: as the begin, plus `401 unauthorized` and `409 apple_linked`.
+`409 apple_linked`, checked before the step-up grant this route needs (see *Step-up*). (Merging a
+phone-only account on pairing moves its identities without that check.) Errors: as the begin,
+plus `401 unauthorized`, `403 step_up_required`, and `409 apple_linked`.
 
 ### `POST /v1/me/apple/handoff`
 
@@ -683,13 +685,105 @@ other while the account has one is `409 apple_linked`, both before the code is e
 ceremony, a sign-in ceremony, or a web one), `401 unauthorized`, `404 not_found`, `429
 rate_limited` (a finish).
 
+### Step-up
+
+Adding a sign-in method (`POST /v1/me/passkeys/begin`, `POST /v1/me/apple`), removing one
+(`DELETE /v1/me/identities/{id}`), and deleting the account (`DELETE /v1/me`) need more than the
+device token: a **step-up grant**, proof that the signed-in user finished a passkey or Apple
+assertion on this device moments before (D-150). The change carries it in a header:
+
+```
+Authorization: Bearer <device token>
+B4-Step-Up: <grant>
+```
+
+A grant is earned from one of the routes below and answers, from every finish:
+
+```json
+{"stepUp": "<43 characters>", "expiresAt": "2026-11-02T12:02:00.000000Z"}
+```
+
+- It is valid for **2 minutes**, for **one** change: the first change that presents it takes it,
+  whether the change then succeeds or fails (a failed Apple revoke, `500`, needs a new one).
+- It is bound to the user and the **device** whose token earned it; another device's token,
+  another user's, or no grant at all is `403 step_up_required`. The hub stores only its SHA-256,
+  and never logs it.
+- Each change's refusals that need no grant come first and spend none: `apple_linked` at `POST
+  /v1/me/apple`, `not_found` and `last_identity` at `DELETE /v1/me/identities/{id}`, `shared_org`
+  at `DELETE /v1/me`.
+- An add is gated at its begin: the finish (`POST /v1/me/passkeys/finish`, `POST
+  /v1/me/apple/native`, `/handoff`) needs the begin's ceremony, which records the device and is
+  `ceremony_expired` from any other.
+- An account with **no** sign-in method (operator-enrolled, never signed in) has nothing to step
+  up with and makes these changes on its token alone.
+
+The step-up routes need the device token, count as sign-in begins and finishes for the rate
+limits, and are paused in maintenance.
+
+#### `POST /v1/me/step-up/passkey/begin`
+
+No body. `200`:
+
+```json
+{"ceremonyId": "0335...", "authentication": {"publicKey": {"allowCredentials": [{"id": "...",
+ "type": "public-key"}], "challenge": "...", "rpId": "b4.run", "timeout": 300000,
+ "userVerification": "required"}}}
+```
+
+Assertion options for the caller's own passkeys (`allowCredentials` lists every one; user
+verification required). The ceremony records the user and the device, lives 5 minutes, and is
+finished once. An account with no passkey is `404 not_found`. Errors also: `401 unauthorized`,
+`429 rate_limited`.
+
+#### `POST /v1/me/step-up/passkey/finish`
+
+```json
+{"ceremonyId": "0335...", "assertion": { <PublicKeyCredential> }}
+```
+
+Verifies the assertion against a step-up this device began, with one of the caller's passkeys,
+updates its counter, and answers the grant. Another user's or device's ceremony, a sign-in
+ceremony, or an unknown, expired, or used one is `400 ceremony_expired`; a malformed or
+unverifiable assertion, or another account's passkey, is `401 credential_rejected`. Errors also:
+`400 invalid_request`, `401 unauthorized`, `429 rate_limited`.
+
+#### `POST /v1/me/step-up/apple`
+
+Begins a step-up with the caller's own Apple ID. The body and the answer are `POST
+/v1/auth/apple/begin`'s: empty for the iPhone's native flow, `verifierHash` and `scheme` for the
+Mac's web flow, which then opens `GET /v1/auth/apple/start` and hands back through the callback as
+a link does. An account with no Apple ID, or a hub without Sign in with Apple, is `404 not_found`.
+
+#### `POST /v1/me/step-up/apple/native`
+
+```json
+{"ceremonyId": "6d4c...", "identityToken": "<Apple's JWT>"}
+```
+
+Verifies the identity token against a native step-up this device began, as the native sign-in
+does, and that its Apple ID is the caller's own; answers the grant. No authorization code is sent or
+exchanged, so Apple keeps no new grant. Another user's or device's ceremony, or a web one, is `400
+ceremony_expired`; another Apple ID, or any failed Apple check, is `401 credential_rejected`.
+
+#### `POST /v1/me/step-up/apple/handoff`
+
+```json
+{"handoff": "<the code>", "verifier": "<the verifier>"}
+```
+
+Redeems a web step-up's handoff, once, from the device that began it, and answers the grant. The
+callback already refused (`?error=credential_rejected`) an Apple ID that is not the caller's, and
+the redemption checks it again. A handoff of a sign-in or a link, or presented by another device or
+account, is `401 credential_rejected`; a wrong verifier, or an unknown, expired, or spent code, is
+`400 ceremony_expired`. The code is not exchanged.
+
 ### `DELETE /v1/me/identities/{id}`
 
-Unlinks one of the caller's sign-in methods, by its `id` from `GET /v1/me`. `204` with no body.
-An id that is not one of the caller's identities (another account's, an unknown one, or not a
-UUID) is `404 not_found`. The account's only remaining identity is `409 last_identity`; of two
-removals racing, at most one succeeds when they would together remove the last. Both are checked
-before anything is revoked.
+Unlinks one of the caller's sign-in methods, by its `id` from `GET /v1/me`, with a step-up grant
+(see *Step-up*). `204` with no body. An id that is not one of the caller's identities (another
+account's, an unknown one, or not a UUID) is `404 not_found`. The account's only remaining identity
+is `409 last_identity`; of two removals racing, at most one succeeds when they would together
+remove the last. Both are checked before the grant is taken and before anything is revoked.
 
 An Apple ID whose refresh token the hub stores is revoked at Apple first, as `DELETE /v1/me`
 revokes one (decrypted, then `<base>/auth/revoke` as the client id it was issued to), and only
@@ -697,7 +791,7 @@ then is the identity deleted, so unlinking never leaves a grant at Apple that th
 revoke. A token that does not open, or a revoke that fails, removes nothing: the request fails with
 `500 internal_error`; retry it. A hub without Sign in with Apple cannot revoke, so unlinking an
 Apple ID that holds a token fails the same way. A sign-in that replaces the token meanwhile has the
-new one revoked too before the delete. Errors also: `401 unauthorized`.
+new one revoked too before the delete. Errors also: `401 unauthorized`, `403 step_up_required`.
 
 ### `DELETE /v1/sessions/self`
 
@@ -710,9 +804,11 @@ unauthorized`.
 
 ### `DELETE /v1/me`
 
-Deletes the account (App Store guideline 5.1.1(v)). `204` with no body. In order:
+Deletes the account (App Store guideline 5.1.1(v)), with a step-up grant (see *Step-up*). `204`
+with no body. In order:
 
-1. An account in a shared org is refused, `409 shared_org`, before anything else.
+1. An account in a shared org is refused, `409 shared_org`, before anything else; then the grant
+   is taken (`403 step_up_required` without a live one).
 2. Every Apple refresh token the account stores is decrypted first; only if all of them open is
    each revoked at Apple (`<base>/auth/revoke`, as the client id it was issued to, with a fresh
    client secret). A token that does not open revokes nothing, and a failed revoke deletes
@@ -726,7 +822,7 @@ Deletes the account (App Store guideline 5.1.1(v)). `204` with no body. In order
 The same transaction deletes the user's relay link claim (`user_links`). Once it commits, every
 token of the account is `401 unauthorized`, and every relay link of the account on the instance
 that served the request is closed with code 4001 (device revoked) at once; its passkeys and Apple
-IDs can sign up afresh. Errors also: `401 unauthorized`.
+IDs can sign up afresh. Errors also: `401 unauthorized`, `403 step_up_required`.
 
 ### `GET /v1/devices`
 
@@ -756,9 +852,10 @@ has an open link (see *Link*), the hub closes it with code 4001. Errors: `401 un
 
 ### `POST /v1/devices/self/push-token`
 
-A phone registers the APNs token the hub notifies it at. One row per device, replaced on every
-call. The phone sends it each time the system hands it a token while it is signed in, and after each
-sign-in.
+A phone registers the APNs token the hub notifies it at. One row per device, replaced on every call.
+Registering a token removes it from any other device of the org that still holds it (a phone that
+enrolled again while the hub kept its old device), so no phone is told twice. The phone sends it
+each time the system hands it a token while it is signed in, and after each sign-in.
 
 Request (all three fields required, no other field allowed):
 
@@ -767,7 +864,8 @@ Request (all three fields required, no other field allowed):
 ```
 
 - `token`: 32 to 512 hexadecimal characters.
-- `environment`: `sandbox` (a Debug build) or `production`.
+- `environment`: `sandbox` from the Simulator and from device builds signed with a development
+  profile, `production` from TestFlight and App Store builds.
 - `bundleId`: the app's bundle identifier, `^[A-Za-z0-9][A-Za-z0-9.-]{0,154}$`. It comes from the
   phone, so the hub needs no per-flavour configuration.
 
@@ -794,9 +892,14 @@ have a push token, and are not the one whose push caused the change:
   same transaction, whether or not a sender is configured or the phone has a token, so a retried
   batch or a later update to the same row notifies nobody twice, and delivery is at most once.
 
-The notification is sent after the commit, on a task of its own: the push response never waits on
-delivery, and a failed delivery is logged (device id and reason, never the token or the title) and
-not retried.
+The same transaction withdraws what is over: a notified request that is no longer `pending`
+(answered or expired), a notified turn that its thread's `readTurnId` now covers, and everything
+notified in a thread that was deleted. Each is withdrawn once (the ledger's `withdrawn_at`), to the
+same phones as the alert, the one whose push caused it included.
+
+Alerts and withdrawals are sent after the commit, on a task of their own: the push response never
+waits on delivery, and a failed delivery is logged (device id, notification keys, and APNs's
+status, `reason`, and `apns-id`; never the token, the title, or the provider token) and dropped.
 
 #### Push payload
 
@@ -805,11 +908,13 @@ not retried.
   "aps": {
     "alert": {"title": "Fix the build", "body": "Waiting for your approval"},
     "sound": "default",
+    "badge": 2,
     "content-available": 1,
     "thread-id": "thread-1"
   },
   "threadId": "thread-1",
-  "reason": "approval"
+  "reason": "approval",
+  "key": "request:request-1"
 }
 ```
 
@@ -817,21 +922,43 @@ not retried.
 `body` is exactly one of `Waiting for your approval`, `Has a question for you`, `Replied`, or
 `Turn failed`; it never carries transcript, command text, or paths. `reason` is `approval`,
 `question`, `replied`, or `failed`. The payload carries no URL: the app builds
-`<its scheme>://thread/<threadId>` itself.
+`<its scheme>://thread/<threadId>` itself. `key` is `request:<id>` or `turn:<id>`, the name a
+withdrawal uses. `badge` is the number of the user's threads that need them (not archived or
+deleted, in the needs-input or unread band), computed after the whole push.
+
+A withdrawal is a background push naming the keys to remove, with no alert, sound, or badge:
+
+```json
+{"aps": {"content-available": 1}, "withdraw": ["request:request-1", "turn:turn-7"]}
+```
 
 #### Senders
 
 `B4HUB_PUSH_SENDER` chooses how `serve` delivers:
 
 - `none` (the default, also when unset): nothing is sent.
-- `spool`: each notification is written to `B4HUB_PUSH_SPOOL_DIR` (required; created if missing)
-  as `<unix ms>-<uuid>.apns`, the payload above plus the `Simulator Target Bundle` key set to the
+- `spool`: each alert and withdrawal is written to `B4HUB_PUSH_SPOOL_DIR` (required; created if missing)
+  as `<unix ms>-<uuid>.apns`, the payload above (or the withdrawal) plus the `Simulator Target Bundle` key set to the
   phone's `bundleId`, which is what `xcrun simctl push booted - < file` reads. The file is written
   under a hidden `.tmp` name and renamed when complete, so a watcher never reads half a file.
   The Compose file sets this up and mounts the directory at `B4HUB_PUSH_SPOOL_HOST_DIR` (default
   `Hub/push-spool/`).
-- `apns`: not built yet. `serve` refuses to start with "APNs delivery is not built yet (the
-  deploy slice)" rather than pretend to send.
+- `apns`: Apple Push Notification service over HTTP/2 and TLS. Needs `B4HUB_APNS_KEY_ID`,
+  `B4HUB_APNS_TEAM_ID` (each 10 uppercase letters and digits), and `B4HUB_APNS_PRIVATE_KEY` (the
+  `.p8` file's PEM contents), each also as `NAME_FILE`; `serve` refuses to start (exit 2, naming
+  the variable, never echoing the key) when one is missing or the key does not sign.
+  - A `sandbox` token is sent to `api.sandbox.push.apple.com`, a `production` token to
+    `api.push.apple.com`, as `POST /3/device/<token>` on one kept-open connection per endpoint.
+  - Authentication is a provider token: an ES256 JWT with `kid` the key id, `iss` the team id,
+    and `iat`, reused for 50 minutes.
+  - Headers: `apns-topic` is the token's `bundleId`; an alert is `apns-push-type: alert`,
+    `apns-priority: 10`, `apns-collapse-id` its `key`, expiring after 4 hours; a withdrawal is
+    `background`, priority `5`, expiring after 15 minutes.
+  - Apple's answers: `410`, `400 BadDeviceToken`, and `400 DeviceTokenNotForTopic` delete the
+    phone's push token (unless it registered a newer one meanwhile), so it is told nothing until it
+    registers again. `403 ExpiredProviderToken` or `InvalidProviderToken` re-mints the JWT and
+    tries once more; `429`, a `5xx`, or no answer (10 s to connect, 15 s per request) tries once
+    more after 500 ms. Anything else is logged and dropped.
 
 ### `GET /v1/devices/self/link`
 
@@ -1421,7 +1548,8 @@ While on, the client writes are refused: `POST /v1/enroll`, `POST /v1/pairing-co
 /v1/changes`, `POST /v1/devices/self/push-token`, `DELETE /v1/devices/self`, and the sign-in and account writes `POST /v1/auth/passkey/begin` and
 `/finish`, `POST /v1/auth/apple/begin`, `/native`, and `/callback`, `POST /v1/auth/handoff`, `PUT
 /v1/me/profile`, `POST /v1/me/passkeys/begin` and `/finish`, `POST /v1/me/apple`, `/native`, and
-`/handoff`, `DELETE /v1/me/identities/{id}`, `DELETE /v1/sessions/self`, and `DELETE /v1/me`. (A
+`/handoff`, `POST /v1/me/step-up/passkey/begin` and `/finish`, `POST /v1/me/step-up/apple`,
+`/native`, and `/handoff`, `DELETE /v1/me/identities/{id}`, `DELETE /v1/sessions/self`, and `DELETE /v1/me`. (A
 sign-in begin writes a ceremony, so it is refused too; `GET /v1/auth/config` and `GET
 /v1/auth/apple/start` are reads.) Each answers `503` with `Retry-After: 30` and
 

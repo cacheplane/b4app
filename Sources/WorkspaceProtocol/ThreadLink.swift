@@ -64,4 +64,17 @@ public enum ThreadLink {
   public static func reason(fromNotification userInfo: [AnyHashable: Any]) -> PushReason? {
     (userInfo["reason"] as? String).flatMap(PushReason.init(rawValue:))
   }
+
+  /// The notification's top-level `key` (`request:<id>` or `turn:<id>`), or nil when it is missing, not
+  /// a string, or empty. The app uses it to find and withdraw a delivered notification.
+  public static func key(fromNotification userInfo: [AnyHashable: Any]) -> String? {
+    guard let key = userInfo["key"] as? String, !key.isEmpty else { return nil }
+    return key
+  }
+
+  /// The keys a withdrawal push lists in its top-level `withdraw`: the strings in it, in order, and
+  /// empty when it is missing or not an array.
+  public static func withdrawKeys(fromNotification userInfo: [AnyHashable: Any]) -> [String] {
+    (userInfo["withdraw"] as? [Any])?.compactMap { $0 as? String } ?? []
+  }
 }

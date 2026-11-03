@@ -17,6 +17,9 @@
       { "name": "B4HUB_APPLE_CALLBACK_SCHEME", "value": "${apple_callback_scheme}" },
       { "name": "B4HUB_TRUST_X_FORWARDED_FOR", "value": "1" },
       { "name": "B4HUB_RETENTION_DAYS", "value": "30" },
+%{ if include_apns_secrets ~}
+      { "name": "B4HUB_PUSH_SENDER", "value": "apns" },
+%{ endif ~}
       { "name": "B4HUB_LOG", "value": "info" }
     ],
     "secrets": [
@@ -25,6 +28,11 @@
       { "name": "B4HUB_APPLE_TEAM_ID", "valueFrom": "${apple_team_id_arn}" },
       { "name": "B4HUB_APPLE_KEY_ID", "valueFrom": "${apple_key_id_arn}" },
       { "name": "B4HUB_APPLE_PRIVATE_KEY", "valueFrom": "${apple_private_key_arn}" },
+%{ endif ~}
+%{ if include_apns_secrets ~}
+      { "name": "B4HUB_APNS_KEY_ID", "valueFrom": "${apns_key_id_arn}" },
+      { "name": "B4HUB_APNS_TEAM_ID", "valueFrom": "${apns_team_id_arn}" },
+      { "name": "B4HUB_APNS_PRIVATE_KEY", "valueFrom": "${apns_private_key_arn}" },
 %{ endif ~}
       { "name": "DATABASE_URL", "valueFrom": "${db_url_secret_arn}" }
     ],

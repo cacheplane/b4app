@@ -41,6 +41,16 @@ public actor FakeHubAPI: HubAPI {
   public private(set) var appleLinkHandoffs: [AppleLinkHandoffRequest] = []
   public private(set) var profiles: [ProfileRequest] = []
   public private(set) var removedIdentities: [String] = []
+  /// Every step-up finish, in order, and the grant each change presented (`nil` for none).
+  public private(set) var stepUpFinishes: [StepUpFinishRequest] = []
+  public private(set) var stepUpAppleBegins: [AppleBeginRequest] = []
+  public private(set) var stepUpAppleNatives: [StepUpAppleNativeRequest] = []
+  public private(set) var stepUpAppleHandoffs: [AppleLinkHandoffRequest] = []
+  public private(set) var presentedStepUps: [String?] = []
+  /// Grants minted and not yet used. Like the hub, a change of an account with any sign-in method
+  /// needs one, used once.
+  private var liveGrants: Set<String> = []
+  private var mintedGrants = 0
   /// The token each `enroll` call was asked to merge from (`nil` for none), oldest first.
   public private(set) var enrollTokens: [String?] = []
   /// What each `enroll` call was sent, oldest first.
@@ -347,8 +357,9 @@ public actor FakeHubAPI: HubAPI {
     return identityList
   }
 
-  public func addPasskeyBegin() async throws -> AddPasskeyBeginResponse {
+  public func addPasskeyBegin(stepUp: String?) async throws -> AddPasskeyBeginResponse {
     try authorize()
+    try requireStepUp(stepUp)
     return addPasskeyBeginAnswer
   }
 
@@ -362,7 +373,7 @@ public actor FakeHubAPI: HubAPI {
     return identity
   }
 
-  public func removeIdentity(_ id: String) async throws {
+  public func removeIdentity(_ id: String, stepUp: String?) async throws {
     try authorize()
     removedIdentities.append(id)
     guard let index = identityList.firstIndex(where: { $0.id == id }) else {
@@ -371,15 +382,18 @@ public actor FakeHubAPI: HubAPI {
     guard identityList.count > 1 else {
       throw Self.error("last_identity", "That is the only way to sign in.", status: 409)
     }
+    try requireStepUp(stepUp)
     identityList.remove(at: index)
   }
 
-  public func appleLinkBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse {
+  public func appleLinkBegin(_ request: AppleBeginRequest, stepUp: String?) async throws -> AppleBeginResponse
+  {
     try authorize()
     appleLinkBegins.append(request)
     if identityList.contains(where: { $0.kind == "apple" }) {
       throw Self.error("apple_linked", "This account already has an Apple ID.", status: 409)
     }
+    try requireStepUp(stepUp)
     return appleBeginAnswer
   }
 
@@ -411,10 +425,69 @@ public actor FakeHubAPI: HubAPI {
     revoked = true
   }
 
-  public func deleteAccount() async throws {
+  public func deleteAccount(stepUp: String?) async throws {
     try authorize()
+    try requireStepUp(stepUp)
     deleteAccountCalls += 1
     revoked = true
+  }
+
+  // MARK: - Step-up
+
+  public func stepUpPasskeyBegin() async throws -> StepUpBeginResponse {
+    try authorize()
+    guard identityList.contains(where: { $0.kind == "passkey" }) else {
+      throw Self.error("not_found", "not found", status: 404)
+    }
+    return StepUpBeginResponse(
+      ceremonyId: "fake-step-up-ceremony",
+      authentication: ["publicKey": ["challenge": "c3RlcC11cA", "rpId": "local.b4.run"]])
+  }
+
+  public func stepUpPasskeyFinish(_ request: StepUpFinishRequest) async throws -> StepUpResponse {
+    try authorize()
+    stepUpFinishes.append(request)
+    return mintGrant()
+  }
+
+  public func stepUpAppleBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse {
+    try authorize()
+    stepUpAppleBegins.append(request)
+    guard identityList.contains(where: { $0.kind == "apple" }) else {
+      throw Self.error("not_found", "not found", status: 404)
+    }
+    return appleBeginAnswer
+  }
+
+  public func stepUpAppleNative(_ request: StepUpAppleNativeRequest) async throws -> StepUpResponse {
+    try authorize()
+    stepUpAppleNatives.append(request)
+    return mintGrant()
+  }
+
+  public func stepUpAppleHandoff(_ request: AppleLinkHandoffRequest) async throws -> StepUpResponse {
+    try authorize()
+    stepUpAppleHandoffs.append(request)
+    return mintGrant()
+  }
+
+  private func mintGrant() -> StepUpResponse {
+    mintedGrants += 1
+    let grant = "fake-step-up-\(mintedGrants)"
+    liveGrants.insert(grant)
+    return StepUpResponse(stepUp: grant, expiresAt: "2026-11-02T12:02:00.000000Z")
+  }
+
+  /// As the hub: an account with no sign-in method needs no grant; otherwise a live one, used once.
+  private func requireStepUp(_ grant: String?) throws {
+    presentedStepUps.append(grant)
+    guard !identityList.isEmpty else { return }
+    if let grant, liveGrants.remove(grant) != nil { return }
+    let methods = ["passkey", "apple"].filter { kind in identityList.contains { $0.kind == kind } }
+    throw HubError(
+      kind: "request_error", code: "step_up_required",
+      message: "confirm it is you with a passkey or your Apple ID, then try again", status: 403,
+      methods: methods)
   }
 
   // MARK: - Helpers

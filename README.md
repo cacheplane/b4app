@@ -276,6 +276,17 @@ Join the phone with "Use an enrollment code" on its sign-in screen: the same hub
 
 To pair the Simulator from a script, open the link with `xcrun simctl openurl <device> <link>`. The Mac's `https://local.b4.run/pair#c=<code>` link opens the app only once iOS has fetched `local.b4.run`'s association file. That fetch can time out after an install, and iOS then sends the link to Safari's pairing page until it retries. The local flavour also reads `b4app-local://pair?hub=http%3A%2F%2Flocalhost%3A8080&code=<code>`, under its own scheme, which opens the app whatever the association's state. It is for a hub on this machine only, and the app still asks before pairing.
 
+Notifications from the local hub: by default Compose runs the hub with `B4HUB_PUSH_SENDER=spool`, which writes each notification as a `.apns` file into `Hub/push-spool` (or `B4HUB_PUSH_SPOOL_HOST_DIR`); `Scripts/sim-push.sh` feeds them to the booted Simulator, so no Apple account is needed. To send through Apple instead (the Simulator registers a sandbox token, a device a production one; the hub sends each token to the matching APNs host), put these in `Hub/.env` and recreate the hub with `docker compose up -d hub`:
+
+```
+B4HUB_PUSH_SENDER=apns
+B4HUB_APNS_KEY_ID=<the key's 10-character id>
+B4HUB_APNS_TEAM_ID=<your 10-character team id>
+B4HUB_APNS_KEY_HOST_PATH=/Users/<you>/.b4app/signing/AuthKey_<key id>.p8
+```
+
+Compose mounts that `.p8` read-only at `/run/secrets/apns.p8` and passes it as `B4HUB_APNS_PRIVATE_KEY_FILE`; the key never goes in `.env` or an argument. The hub refuses to start on a missing id, a missing file, or a key that is not a P-256 PEM, and names the variable. With `spool` (the default) the three `B4HUB_APNS_*` values are ignored, so leaving them empty is fine. Switch back by setting `B4HUB_PUSH_SENDER=spool`.
+
 ```bash
 .build/debug/agent-workspace hub status
 ```

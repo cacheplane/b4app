@@ -115,7 +115,7 @@ public struct Remediation: Equatable, Sendable {
       return Remediation(message: error.message, action: .none)
     case .protocolInvalid, .methodUnknown, .snapshotRequired, .notFound, .internalError,
       .signupClosed, .ceremonyExpired, .credentialRejected, .lastIdentity, .mergeRefused, .appleLinked,
-      .sharedOrg,
+      .sharedOrg, .stepUpRequired,
       .rateLimited, .signedOut, .workRunning:
       return Remediation(message: error.message, action: .none)
     // The relay's codes reach the user as their own message; the phone's views word them (M8c).

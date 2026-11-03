@@ -117,15 +117,15 @@ public final class HTTPHubAPI: HubAPI {
     try await me().identities
   }
 
-  public func addPasskeyBegin() async throws -> AddPasskeyBeginResponse {
-    try await send(.post, "v1/me/passkeys/begin")
+  public func addPasskeyBegin(stepUp: String?) async throws -> AddPasskeyBeginResponse {
+    try await send(.post, "v1/me/passkeys/begin", stepUp: stepUp)
   }
 
   public func addPasskeyFinish(_ request: AddPasskeyFinishRequest) async throws -> Identity {
     try await send(.post, "v1/me/passkeys/finish", body: request)
   }
 
-  public func removeIdentity(_ id: String) async throws {
+  public func removeIdentity(_ id: String, stepUp: String?) async throws {
     // An identity id is a UUID; anything that could change which route is called is refused here.
     let allowed = CharacterSet(
       charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
@@ -133,11 +133,12 @@ public final class HTTPHubAPI: HubAPI {
       throw HubError(
         kind: "request_error", code: "invalid_request", message: "That is not an identity id.", status: 0)
     }
-    _ = try await perform(.delete, "v1/me/identities/\(id)")
+    _ = try await perform(.delete, "v1/me/identities/\(id)", stepUp: stepUp)
   }
 
-  public func appleLinkBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse {
-    try await send(.post, "v1/me/apple", body: request)
+  public func appleLinkBegin(_ request: AppleBeginRequest, stepUp: String?) async throws -> AppleBeginResponse
+  {
+    try await send(.post, "v1/me/apple", body: request, stepUp: stepUp)
   }
 
   public func appleLinkNative(_ request: AppleLinkNativeRequest) async throws -> Identity {
@@ -152,8 +153,30 @@ public final class HTTPHubAPI: HubAPI {
     _ = try await perform(.delete, "v1/sessions/self")
   }
 
-  public func deleteAccount() async throws {
-    _ = try await perform(.delete, "v1/me")
+  public func deleteAccount(stepUp: String?) async throws {
+    _ = try await perform(.delete, "v1/me", stepUp: stepUp)
+  }
+
+  // MARK: - Step-up
+
+  public func stepUpPasskeyBegin() async throws -> StepUpBeginResponse {
+    try await send(.post, "v1/me/step-up/passkey/begin")
+  }
+
+  public func stepUpPasskeyFinish(_ request: StepUpFinishRequest) async throws -> StepUpResponse {
+    try await send(.post, "v1/me/step-up/passkey/finish", body: request)
+  }
+
+  public func stepUpAppleBegin(_ request: AppleBeginRequest) async throws -> AppleBeginResponse {
+    try await send(.post, "v1/me/step-up/apple", body: request)
+  }
+
+  public func stepUpAppleNative(_ request: StepUpAppleNativeRequest) async throws -> StepUpResponse {
+    try await send(.post, "v1/me/step-up/apple/native", body: request)
+  }
+
+  public func stepUpAppleHandoff(_ request: AppleLinkHandoffRequest) async throws -> StepUpResponse {
+    try await send(.post, "v1/me/step-up/apple/handoff", body: request)
   }
 
   // MARK: - Plumbing
@@ -179,15 +202,17 @@ public final class HTTPHubAPI: HubAPI {
 
   private func send<Response: Decodable>(
     _ method: Method, _ path: String, query: [URLQueryItem] = [], timeout: TimeInterval = 30,
-    authenticated: Bool = true, bearer: String? = nil
+    authenticated: Bool = true, bearer: String? = nil, stepUp: String? = nil
   ) async throws -> Response {
     let (data, status) = try await perform(
-      method, path, query: query, timeout: timeout, authenticated: authenticated, bearer: bearer)
+      method, path, query: query, timeout: timeout, authenticated: authenticated, bearer: bearer,
+      stepUp: stepUp)
     return try decode(data, status: status)
   }
 
   private func send<Response: Decodable, Body: Encodable>(
-    _ method: Method, _ path: String, body: Body, authenticated: Bool = true, bearer: String? = nil
+    _ method: Method, _ path: String, body: Body, authenticated: Bool = true, bearer: String? = nil,
+    stepUp: String? = nil
   ) async throws -> Response {
     let encoded: Data
     do {
@@ -197,7 +222,7 @@ public final class HTTPHubAPI: HubAPI {
         kind: "execution_error", code: "transport", message: "The request could not be encoded.", status: 0)
     }
     let (data, status) = try await perform(
-      method, path, body: encoded, authenticated: authenticated, bearer: bearer)
+      method, path, body: encoded, authenticated: authenticated, bearer: bearer, stepUp: stepUp)
     return try decode(data, status: status)
   }
 
@@ -227,10 +252,14 @@ public final class HTTPHubAPI: HubAPI {
     return url
   }
 
+  /// The header a change that needs a step-up carries its grant in (`Hub/API.md`, *Step-up*).
+  static let stepUpHeader = "B4-Step-Up"
+
   /// Sends one request and returns the body and status of a 2xx answer; any other answer throws.
+  /// `stepUp` is a step-up grant, sent in `B4-Step-Up` when given.
   private func perform(
     _ method: Method, _ path: String, query: [URLQueryItem] = [], body: Data? = nil,
-    timeout: TimeInterval = 30, authenticated: Bool = true, bearer: String? = nil
+    timeout: TimeInterval = 30, authenticated: Bool = true, bearer: String? = nil, stepUp: String? = nil
   ) async throws -> (Data, Int) {
     var request = URLRequest(url: try url(path, query: query), timeoutInterval: timeout)
     request.httpMethod = method.rawValue
@@ -246,6 +275,7 @@ public final class HTTPHubAPI: HubAPI {
     } else if authenticated, let token = try await token() {
       request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     }
+    if let stepUp { request.setValue(stepUp, forHTTPHeaderField: Self.stepUpHeader) }
 
     let data: Data
     let response: URLResponse
@@ -274,7 +304,7 @@ public final class HTTPHubAPI: HubAPI {
       return HubError(
         kind: envelope.error.kind, code: envelope.error.details?.code ?? "http_\(status)",
         message: envelope.error.message, status: status, retryAfterMs: envelope.error.details?.retryAfterMs,
-        reason: envelope.error.details?.reason)
+        reason: envelope.error.details?.reason, methods: envelope.error.details?.methods)
     }
     return HubError(
       kind: status >= 500 ? "execution_error" : "request_error", code: "http_\(status)",

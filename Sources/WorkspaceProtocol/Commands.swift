@@ -76,6 +76,8 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case accountDismissNotice = "account.dismissNotice"
   case accountAppleLinkStart = "account.appleLinkStart"
   case accountAppleLinkFinish = "account.appleLinkFinish"
+  case accountStepUpBegin = "account.stepUpBegin"
+  case accountStepUpAppleStart = "account.stepUpAppleStart"
 
   public var isMutation: Bool {
     switch self {
@@ -95,7 +97,7 @@ public enum Method: String, Codable, Sendable, CaseIterable {
       .eventsReplay, .threadRead, .serverList, .serverStatus, .serverLogs, .workspaceActiveWork,
       .databaseStatus, .hubStatus, .projectList, .turnLookup, .hubPair, .hubPairStatus, .settingsRead,
       .usageRead, .accountStatus, .accountPasskeyBegin, .accountAppleStart, .accountIdentities,
-      .accountAddPasskeyBegin, .accountAppleLinkStart:
+      .accountAddPasskeyBegin, .accountAppleLinkStart, .accountStepUpBegin, .accountStepUpAppleStart:
       return false
     }
   }
