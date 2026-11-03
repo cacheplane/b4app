@@ -25,7 +25,7 @@ use b4hub_core::change::{
 };
 pub use b4hub_core::change::{Page, StoredChange};
 use b4hub_core::hlc::Hlc;
-use b4hub_core::writable::{is_clocked, is_phone_writable};
+use b4hub_core::writable::{is_clocked, is_never_cleared, is_phone_writable};
 use serde_json::Value;
 use sqlx::postgres::PgConnection;
 use sqlx::types::Uuid;
@@ -49,6 +49,9 @@ pub const COLUMN_NOT_WRITABLE: &str = "column_not_writable";
 /// A change carries an `hlc` that is not in the clock form. A change with none is fine: it gets
 /// one derived from its `wall`.
 pub const INVALID_CLOCK: &str = "invalid_clock";
+
+/// A change sets a column that is never cleared (`threads.userDeletedAt`) to null.
+pub const CANNOT_CLEAR: &str = "cannot_clear";
 
 /// A change's `value` is over [`MAX_PAYLOAD_BYTES`].
 pub const PAYLOAD_TOO_LARGE: &str = "payload_too_large";
@@ -85,6 +88,15 @@ fn refusal(auth: &AuthedDevice, change: &Change) -> Option<&'static str> {
     };
     if auth.platform != Platform::Macos && !phone_allowed {
         return Some(COLUMN_NOT_WRITABLE);
+    }
+    if change.op == ChangeOp::Update
+        && change
+            .column
+            .as_deref()
+            .is_some_and(|column| is_never_cleared(&change.table, column))
+        && change.value.as_ref().is_none_or(Value::is_null)
+    {
+        return Some(CANNOT_CLEAR);
     }
     if change.value_bytes() > MAX_PAYLOAD_BYTES {
         return Some(PAYLOAD_TOO_LARGE);
@@ -521,13 +533,17 @@ async fn insert(
     // The columns the row carries, minus the key (that is the change's rowId) and anything that
     // is not a Mac column: ownership columns can only come from the token. The scrubbed columns
     // are always written, as NULL. A clocked column is written only if this insert's clock beats
-    // the clock of the change that last set it; it counts as set at that clock either way.
+    // the clock of the change that last set it; it counts as set at that clock either way. A null
+    // for a column that is never cleared is not carried, so it cannot clear a set one.
     let mut provided: Vec<&str> = Vec::new();
     for column in spec.columns.iter().copied() {
         if column == spec.key {
             continue;
         }
-        let carried = is_scrubbed(spec.name, column) || row.contains_key(column);
+        let carried = is_scrubbed(spec.name, column)
+            || row
+                .get(column)
+                .is_some_and(|value| !(value.is_null() && is_never_cleared(spec.name, column)));
         if carried
             && (!is_clocked(spec.name, column)
                 || claim_clock(conn, auth, spec.name, &change.row_id, column, hlc, reviving)

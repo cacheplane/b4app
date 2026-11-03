@@ -52,6 +52,33 @@ private struct DeleteRig {
     #expect(rig.exists("p1/s2.jsonl"))
   }
 
+  @Test func removesTheSessionFromEveryProjectFolder() async throws {
+    let rig = try DeleteRig()
+    let fm = FileManager.default
+    try fm.createDirectory(atPath: rig.projects + "/p2/s1", withIntermediateDirectories: true)
+    for file in ["p2/s1.jsonl", "p2/s1/sub.jsonl"] {
+      try Data("{}\n".utf8).write(to: URL(fileURLWithPath: rig.projects + "/" + file))
+    }
+    #expect(try await rig.adapter.deleteSession(rig.ref("s1")) == .deleted)
+    for gone in ["p1/s1.jsonl", "p1/s1", "p2/s1.jsonl", "p2/s1"] { #expect(!rig.exists(gone), "\(gone)") }
+    #expect(rig.exists("p1/s2.jsonl"))
+    #expect(rig.exists("p2/other.txt"))
+  }
+
+  @Test func anUnreadableRootIsNotAlreadyGone() async throws {
+    let rig = try DeleteRig()
+    let fm = FileManager.default
+    try fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: rig.projects)
+    defer { try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: rig.projects) }
+    await #expect(throws: WorkspaceError.self) { try await rig.adapter.deleteSession(rig.ref("s9")) }
+  }
+
+  @Test func aMissingRootIsNotAlreadyGone() async throws {
+    let rig = try DeleteRig()
+    try FileManager.default.removeItem(atPath: rig.projects)
+    await #expect(throws: WorkspaceError.self) { try await rig.adapter.deleteSession(rig.ref("s9")) }
+  }
+
   @Test func anUnsafeSessionIdIsRefused() async throws {
     let rig = try DeleteRig()
     for id in ["../x", "a/b", "", ".", "s1.jsonl"] {

@@ -10,6 +10,11 @@ extension SessionService {
   /// The longest wait between tries at deleting a runtime copy that could not be reached.
   static let threadDeleteBackoffCap: TimeInterval = 3600
 
+  /// The wait before the next try after `attempts` earlier tries: 30 seconds, doubling, at most an hour.
+  static func threadDeleteBackoff(attempts: Int) -> TimeInterval {
+    min(30 * pow(2, Double(attempts)), threadDeleteBackoffCap)
+  }
+
   /// Delete a thread: it is marked and announced at once, and answers then. Its running turn is
   /// stopped and the runtime's copy deleted right after, in the background (the same step the sweep
   /// runs for a delete pulled from the phone). Deleting a thread already deleted returns it unchanged.
@@ -78,10 +83,14 @@ extension SessionService {
       logger.error("thread delete sweep failed: \(String(describing: error), privacy: .public)")
       return
     }
-    for thread in due where threadId == nil || thread.id == threadId {
-      guard deletingThreads.insert(thread.id).inserted else { continue }
+    for listed in due where threadId == nil || listed.id == threadId {
+      guard deletingThreads.insert(listed.id).inserted else { continue }
+      defer { deletingThreads.remove(listed.id) }
+      // The list may be stale: another sweep may have finished this thread since it was read.
+      guard
+        let thread = try? db.threadAwaitingRuntimeDelete(id: listed.id, now: Timestamp.string(from: now))
+      else { continue }
       await deleteRuntimeCopy(thread, now: now)
-      deletingThreads.remove(thread.id)
     }
   }
 
@@ -108,7 +117,7 @@ extension SessionService {
         let attempts = try db.threadDeleteAttempts(threadId: thread.id)
         // Counted from when this try failed (a request can hang until its timeout), or from the sweep's
         // clock when that is later.
-        let wait = min(30 * pow(2, Double(attempts)), Self.threadDeleteBackoffCap)
+        let wait = Self.threadDeleteBackoff(attempts: attempts)
         try db.recordThreadDelete(
           threadId: thread.id, outcome: .waiting,
           error: LogRedactor.redact(WorkspaceError.from(error).message),

@@ -80,6 +80,22 @@ private func runningTurn(threadId: String) -> Turn {
     )
   }
 
+  @Test func confirmationCopyLeavesOutARuntimeSignedInAsSomeoneElse() {
+    let model = offlineModel()
+    var connection = Connection(id: "c1", kind: .codex, label: "Codex", target: "/x")
+    connection.nativeScope = "now@example.com"
+    model.merge(connection)
+    var other = thread()
+    other.nativeScope = "then@example.com"
+    #expect(
+      model.deleteConfirmation(for: other).message == "It's removed from this app. You can't undo this.")
+    var same = thread()
+    same.nativeScope = "now@example.com"
+    #expect(
+      model.deleteConfirmation(for: same).message
+        == "It's removed from this app and from Codex. You can't undo this.")
+  }
+
   @Test func aLateTurnEventForADeletedThreadKeepsItGone() throws {
     let model = offlineModel()
     model.store(thread())
