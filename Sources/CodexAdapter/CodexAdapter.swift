@@ -320,8 +320,9 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
   }
 
   /// `thread/delete` (codex-cli 0.166.0). Method-not-found means this Codex has no delete; an error
-  /// whose message says the thread is not found means it is already gone. Any other error, an invalid
-  /// params included, is thrown and the delete is tried again.
+  /// whose message says the thread is not found, or that Codex has no rollout of it (`no rollout found
+  /// for thread id …`, its answer for a thread it keeps nothing of), means it is already gone. Any
+  /// other error, an invalid params included, is thrown and the delete is tried again.
   public func deleteSession(_ ref: NativeSessionRef) async throws -> SessionDeletion {
     let server = try await ensureStarted()
     defer { loadedThreads.remove(ref.nativeSessionId) }
@@ -332,9 +333,15 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
       let failure = WorkspaceError.from(error)
       guard let code = failure.details?["rpcCode"]?.numberValue else { throw failure }
       if code == -32601 { return .unsupported }
-      if failure.message.localizedCaseInsensitiveContains("not found") { return .alreadyGone }
+      if Self.saysAlreadyGone(failure.message) { return .alreadyGone }
       throw failure
     }
+  }
+
+  /// Codex's words for a thread it has nothing of: "… not found", or "no rollout found for thread id …".
+  static func saysAlreadyGone(_ message: String) -> Bool {
+    message.localizedCaseInsensitiveContains("not found")
+      || message.localizedCaseInsensitiveContains("no rollout found")
   }
 
   public func interrupt(_ ref: NativeSessionRef, turn: ActiveTurnRef) async throws -> StopReceipt {

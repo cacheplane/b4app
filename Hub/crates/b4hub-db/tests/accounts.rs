@@ -535,6 +535,97 @@ async fn a_step_up_grant_is_taken_once_by_its_own_user_and_device(pool: PgPool) 
 }
 
 #[sqlx::test(migrations = false)]
+async fn an_operator_code_is_taken_once_by_its_own_user(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let created = accounts::create_personal(&app, passkey(b"c"), device("Mac", Platform::Macos))
+        .await
+        .unwrap();
+    let principal = Principal {
+        org_id: created.org_id,
+        user_id: created.user_id,
+    };
+    let other = accounts::create_personal(&app, passkey(b"d"), device("Mac", Platform::Macos))
+        .await
+        .unwrap();
+    let other = Principal {
+        org_id: other.org_id,
+        user_id: other.user_id,
+    };
+    let ten_minutes = Duration::from_secs(600);
+    let code =
+        devices::create_enrollment_code(&admin, principal.org_id, principal.user_id, ten_minutes)
+            .await
+            .unwrap();
+    let (pairing, _) =
+        devices::create_pairing_code(&app, principal.org_id, principal.user_id, created.device_id)
+            .await
+            .unwrap();
+    let expired = devices::create_enrollment_code(
+        &admin,
+        principal.org_id,
+        principal.user_id,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    let theirs = devices::create_enrollment_code(&admin, other.org_id, other.user_id, ten_minutes)
+        .await
+        .unwrap();
+
+    // Another user, a pairing code, an expired code, another user's code, and an unknown one take
+    // nothing.
+    for (code, who) in [
+        (code.as_str(), other),
+        (pairing.as_str(), principal),
+        (expired.as_str(), principal),
+        (theirs.as_str(), principal),
+        ("BCDFGHJK", principal),
+    ] {
+        assert!(!devices::take_operator_code(&app, code, who).await.unwrap());
+    }
+    let unused: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM enrollment_codes WHERE used_at IS NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(unused, 4, "every refusal left its code as it was");
+
+    // The operator's code of the user's own is taken, in any case, once.
+    assert!(
+        devices::take_operator_code(&app, &code.to_lowercase(), principal)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !devices::take_operator_code(&app, &code, principal)
+            .await
+            .unwrap(),
+        "a code is used once"
+    );
+    assert!(matches!(
+        devices::redeem(&app, &code, "iPhone", "ios").await,
+        Err(Error::InvalidCode)
+    ));
+    // The others stay redeemable.
+    devices::redeem(&app, &theirs, "iPhone", "ios")
+        .await
+        .unwrap();
+    devices::redeem(&app, &pairing, "iPhone", "ios")
+        .await
+        .unwrap();
+
+    // The grant a code earns is recorded as one.
+    let grant = ceremonies::create_step_up(&app, principal, created.device_id, "code")
+        .await
+        .unwrap();
+    assert!(
+        ceremonies::take_step_up(&app, &grant.token, principal, created.device_id)
+            .await
+            .unwrap()
+    );
+}
+
+#[sqlx::test(migrations = false)]
 async fn issue_session_reuses_own_device(pool: PgPool) {
     let (_admin, app) = common::migrated(&pool).await;
     let created = accounts::create_personal(&app, passkey(b"c"), device("iPhone", Platform::Ios))

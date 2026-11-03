@@ -242,7 +242,9 @@ public enum AccountIdentities: WorkspaceCommand {
 /// (adding a passkey, connecting an Apple ID, removing a sign-in method, deleting the account): a
 /// passkey assertion against `account.stepUpBegin`'s ceremony (`ceremonyId` and `assertion`), the
 /// Mac's Apple web flow (`handoff`, against `account.stepUpAppleStart`, whose verifier the coordinator
-/// keeps), or, on the phone only, Apple's native sheet (`ceremonyId` and `identityToken`). It crosses
+/// keeps), or, on the phone only, Apple's native sheet (`ceremonyId` and `identityToken`), or, where
+/// none of those can be used, an enrollment code the hub's operator minted for this user
+/// (`enrollmentCode`, D-151). It crosses
 /// once into whoever makes the change, which finishes it at the hub and makes the change with the
 /// grant it earns; neither is kept. An account with no sign-in method sends none.
 public struct AccountStepUp: Codable, Sendable, Equatable, CustomStringConvertible,
@@ -252,15 +254,17 @@ public struct AccountStepUp: Codable, Sendable, Equatable, CustomStringConvertib
   public var assertion: JSONValue?
   public var handoff: String?
   public var identityToken: String?
+  public var enrollmentCode: String?
 
   public init(
     ceremonyId: String? = nil, assertion: JSONValue? = nil, handoff: String? = nil,
-    identityToken: String? = nil
+    identityToken: String? = nil, enrollmentCode: String? = nil
   ) {
     self.ceremonyId = ceremonyId
     self.assertion = assertion
     self.handoff = handoff
     self.identityToken = identityToken
+    self.enrollmentCode = enrollmentCode
   }
 
   public static func passkey(ceremonyId: String, assertion: JSONValue) -> AccountStepUp {
@@ -273,10 +277,18 @@ public struct AccountStepUp: Codable, Sendable, Equatable, CustomStringConvertib
     AccountStepUp(ceremonyId: ceremonyId, identityToken: identityToken)
   }
 
+  /// An operator's enrollment code, trimmed; the hub matches it in any case.
+  public static func enrollmentCode(_ code: String) -> AccountStepUp {
+    AccountStepUp(enrollmentCode: code.trimmingCharacters(in: .whitespacesAndNewlines))
+  }
+
   public var description: String {
     let kind =
       assertion != nil
-      ? "passkey" : handoff != nil ? "appleWeb" : identityToken != nil ? "appleNative" : "none"
+      ? "passkey"
+      : handoff != nil
+        ? "appleWeb"
+        : identityToken != nil ? "appleNative" : enrollmentCode != nil ? "enrollmentCode" : "none"
     return "AccountStepUp(\(kind), <redacted>)"
   }
   public var debugDescription: String { description }

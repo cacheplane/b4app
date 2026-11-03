@@ -268,6 +268,20 @@ public struct StepUpAppleNativeRequest: Codable, Sendable, Equatable, CustomStri
   public var debugDescription: String { description }
 }
 
+/// `POST /v1/me/step-up/code`'s body: an enrollment code the hub's operator minted for this user
+/// (`b4hub enroll`), which confirms it's you when no passkey or Apple ID can (D-151). The code is a
+/// secret until it is spent: never logged or described.
+public struct StepUpCodeRequest: Codable, Sendable, Equatable, CustomStringConvertible,
+  CustomDebugStringConvertible
+{
+  public var code: String
+
+  public init(code: String) { self.code = code }
+
+  public var description: String { "StepUpCodeRequest(code: <redacted>)" }
+  public var debugDescription: String { description }
+}
+
 /// What every step-up finish answers: the grant, for the one change that follows, and when it
 /// expires (two minutes on). The grant is a secret: it is sent once, in the change's header, and
 /// never logged, stored, or handed on.
