@@ -1,0 +1,12 @@
+{
+  "version": 5,
+  "frozen_at": "2026-11-03T23:18:03.606137+00:00",
+  "parent": "../manifest-v4-independent-holdout.json",
+  "decision": "Reject the shared test execution annotation optimization: the declared two-complete-pass hosted gate failed. Control6ec passed all1170/148 and all4jobs; candidate8af request1 cancelled with unavailable log, request2 remains nonterminal after declared45minute interval. Cause is unknown; do not infer executor causality or accepted speed.",
+  "scope": "Correctness-only final rollback: retain absolute-deadline, individual hello cancellation and coalescing fixture fixes/regressions; remove53suite annotations, their30imports, test-support module and2test dependencies. No new performance optimization.",
+  "budget_amendment": "Original3request scheduling experiment exhausted and remains failed. Allow exactly1additional full source-only CI request to verify the smaller rollback endpoint, plus1warm full and1isolated cold full local check; no additional optimization iterations or green-until-pass reruns.",
+  "required": "All1170tests/148suites, strictNIO, unchanged original assertions/deadlines, existing20Python/48Bats/fullRust/all4native CI builds. Final rollback CI must pass all4jobs and named required steps. Earlier6unsigned native builds reusable only after byte-identical shipped inputs and unchanged product graph verified; fresh cold regeneration required.",
+  "performance": "No new scheduling gain retained or certified. Preserve failed original local all-four-green condition and hosted2pass condition. Keep earlier1166cohort separate. Final correctness evidence does not relabel failed optimization as accepted.",
+  "exclusions": "No release/package publication/deployment/main/tag/PR action. Public approval covers source-only CI refs and minimal manifest; full evidence remains local. Existing first/control/holdout requests not cancelled or hidden.",
+  "rollback": "Frozen8af and6ec remain available as source-only refs; final code removes experiment support and keeps four new regression cases."
+}

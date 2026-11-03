@@ -334,11 +334,21 @@ private final class RetireCount: Sendable {
 
 @Suite(.serialized, .timeLimit(.minutes(1))) struct SocketShutdownTests {
   @Test func closingTheTransportTwiceIsSafe() async throws {
+    let start = ContinuousClock.now
+    func phase(_ name: String) {
+      print("CI_PHASE double-close \(name) elapsed=\(start.duration(to: .now))")
+    }
+    phase("startup-begin")
     let coordinator = try await startIsolated()
+    phase("startup-end")
     let transport = try await UnixSocketTransport.connect(path: coordinator.paths.socketPath)
+    phase("connected")
     await transport.close()
+    phase("first-close-end")
     await transport.close()
+    phase("second-close-end")
     await coordinator.close()
+    phase("coordinator-close-end")
   }
 
   @Test func concurrentTransportClosesAndALateSendAreSafe() async throws {

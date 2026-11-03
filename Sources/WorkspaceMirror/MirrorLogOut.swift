@@ -53,19 +53,20 @@ enum Bounded {
   /// left to end on its own; its answer is ignored.
   static func run(within timeout: Duration, _ work: @escaping @Sendable () async throws -> Void) async -> Bool
   {
+    let deadline = ContinuousClock.now + timeout
     let once = Once()
     return await withCheckedContinuation { continuation in
       once.set(continuation)
       let job = Task {
         do {
           try await work()
-          once.finish(true)
+          once.finish(ContinuousClock.now < deadline)
         } catch {
           once.finish(false)
         }
       }
       let timer = Task {
-        try? await Task.sleep(for: timeout)
+        try? await Task.sleep(until: deadline, clock: .continuous)
         once.finish(false)
         job.cancel()
       }

@@ -133,7 +133,8 @@ let package = Package(
     .testTarget(
       name: "WorkspacePlatformTests", dependencies: ["WorkspacePlatform"], swiftSettings: concurrency),
     .testTarget(
-      name: "WorkspaceStorageTests", dependencies: ["WorkspaceStorage"], swiftSettings: concurrency),
+      name: "WorkspaceStorageTests", dependencies: ["WorkspaceStorage"],
+      swiftSettings: concurrency),
     .testTarget(
       name: "CodexAdapterTests", dependencies: ["CodexAdapter"], exclude: ["Fixtures"],
       swiftSettings: concurrency),
@@ -143,7 +144,8 @@ let package = Package(
     .testTarget(
       name: "B4AdapterTests", dependencies: ["B4Adapter"], exclude: ["Fixtures"], swiftSettings: concurrency),
     .testTarget(
-      name: "CoordinatorTests", dependencies: ["Coordinator", "NIOTransport"], swiftSettings: concurrency),
+      name: "CoordinatorTests", dependencies: ["Coordinator", "NIOTransport"],
+      swiftSettings: concurrency),
     // Model-level tests of the shared UI against a real in-process coordinator (macOS only).
     .testTarget(
       name: "WorkspaceUITests",

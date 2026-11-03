@@ -21,7 +21,7 @@ public actor WorkspaceClient {
   private var pending: [String: CheckedContinuation<ResponseEnvelope, any Error>] = [:]
   private var cursor = EventCursor()
   private var counter = 0
-  private var helloContinuations: [CheckedContinuation<HelloEnvelope, any Error>] = []
+  private var helloContinuations: [UUID: CheckedContinuation<HelloEnvelope, any Error>] = [:]
   private var hello: HelloEnvelope?
   private var closed = false
   private var closeError: WorkspaceError?
@@ -46,11 +46,27 @@ public actor WorkspaceClient {
 
   /// Resolves once the coordinator's hello has been received.
   public func ready() async throws -> HelloEnvelope {
+    try Task.checkCancellation()
     if let hello { return hello }
     if let closeError { throw closeError }
-    return try await withCheckedThrowingContinuation { continuation in
-      helloContinuations.append(continuation)
+    let id = UUID()
+    let received: HelloEnvelope = try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        if Task.isCancelled {
+          continuation.resume(throwing: CancellationError())
+        } else {
+          helloContinuations[id] = continuation
+        }
+      }
+    } onCancel: {
+      Task { await self.cancelHelloWait(id) }
     }
+    try Task.checkCancellation()
+    return received
+  }
+
+  private func cancelHelloWait(_ id: UUID) {
+    helloContinuations.removeValue(forKey: id)?.resume(throwing: CancellationError())
   }
 
   public var currentCursor: EventCursor { cursor }
@@ -147,8 +163,8 @@ public actor WorkspaceClient {
       self.hello = hello
       cursor.reset(epoch: hello.epoch, sequence: hello.sequence)
       let waiting = helloContinuations
-      helloContinuations = []
-      for continuation in waiting { continuation.resume(returning: hello) }
+      helloContinuations = [:]
+      for continuation in waiting.values { continuation.resume(returning: hello) }
     case .response(let response):
       if let continuation = pending.removeValue(forKey: response.requestId) {
         continuation.resume(returning: response)
@@ -176,8 +192,8 @@ public actor WorkspaceClient {
     closeError = failure
     for continuation in pending.values { continuation.resume(throwing: failure) }
     pending = [:]
-    for continuation in helloContinuations { continuation.resume(throwing: failure) }
-    helloContinuations = []
+    for continuation in helloContinuations.values { continuation.resume(throwing: failure) }
+    helloContinuations = [:]
     for continuation in eventContinuations.values { continuation.finish() }
     for continuation in desyncContinuations.values { continuation.finish() }
     eventContinuations = [:]
