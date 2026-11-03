@@ -1,6 +1,6 @@
 # Compatibility manifest
 
-Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M8a on 2026-10-31, M8b on 2026-11-01, hosted-hub tooling, M8c, sign-in, and M8f on 2026-11-02). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
+Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M8a on 2026-10-31, M8b on 2026-11-01, hosted-hub tooling, M8c, sign-in, M8f, and M8f APNs on 2026-11-02). Update whenever a pinned version, a verified behavior, or a known limit changes. "Verified" means exercised on the target Mac or against the real published artifact; "reviewed" means read in source or docs only.
 
 ## Target machine
 
@@ -203,6 +203,22 @@ New crates, pinned exactly like the rest:
 | Test database | Unchanged. Rust suite: 379 tests on the sign-in head; Swift suite: 1113 tests in 142 suites |
 
 **Upgrade order for sign-in: the hub first, then the Macs, then the phones.** A Mac or phone on this build against an older hub cannot sign in at all (the `/v1/auth/` routes are `404`), and one that knows several devices there is refused for `candidateDeviceIds`. An older Mac against this hub keeps syncing with its enrollment token, and an older phone keeps its mirror; neither can sign in or out the new way. The owner's local hub is rebuilt from this branch before the apps at the live gate.
+
+### Hub push through APNs (M8f APNs)
+
+No new crate. `reqwest` 0.12.28 gains the `http2` feature (`default-features = false`, `rustls-tls`, `http2`), which brings `h2` 0.4.20, `fnv` 1.0.7, and `tokio-util` 0.7.20 into `Hub/Cargo.lock`; `jsonwebtoken` 11.1.0 (above) signs the provider token. `cargo tree -e normal -i openssl-sys` still matches nothing.
+
+| Item | Value |
+| --- | --- |
+| Outbound | `https://api.sandbox.push.apple.com` for `sandbox` tokens and `https://api.push.apple.com` for `production` tokens, port 443, HTTP/2 over TLS (ALPN `h2`), 10 s connect and 15 s request timeouts, no redirects, HTTP/2 pings every 60 s. The sandbox host was exercised live from the Compose hub (status 200 with an `apns-id`); the production host was not (iPhone gate pending) |
+| Provider token | ES256 JWT (`kid` key id, `iss` team id, `iat`) from the team-scoped `.p8` APNs key `34GWB4MSB5`, reused 50 minutes (Apple refuses one older than an hour and rate-limits minting more often than every 20 minutes) |
+| Request headers | `apns-topic` the token's bundle id; `apns-push-type` `alert` (priority 10, expires in 4 hours) or `background` (priority 5, expires in 15 minutes); `apns-collapse-id` the notification key on alerts (Apple allows 64 bytes; a longer key is sent without one) |
+| Answers handled | 200 delivered; 410, 400 `BadDeviceToken`, and 400 `DeviceTokenNotForTopic` delete the token; 403 `ExpiredProviderToken` and `InvalidProviderToken` re-mint and retry once; 429, 5xx, and a transport failure retry once after 500 ms. These come from Apple's documentation and a fake APNs; only 200 was seen live |
+| Hub environment | `B4HUB_PUSH_SENDER=apns` needs `B4HUB_APNS_KEY_ID`, `B4HUB_APNS_TEAM_ID`, and `B4HUB_APNS_PRIVATE_KEY` (each also `_FILE`); `serve` exits 2 naming the variable on a missing or bad value. Compose: `B4HUB_APNS_KEY_HOST_PATH` is mounted at `/run/secrets/apns.p8` |
+| Hub migration | `0013_push_withdrawal.sql`: `notifications_sent.withdrawn_at`, a partial index of outstanding notifications per thread, and `(org_id, user_id, "threadId")` indexes on `turns` and `runtimeRequests`. Additive; run `migrate` before a new `serve` |
+| Payload limit | APNs refuses a payload over 4 KB: a withdrawal naming about 90 or more keys would be refused, and the phone's backstop covers it |
+| Simulator | Xcode 26.6 (17F113), iOS 26.5 (23F77) runtime, "M8f iPhone 17 Pro". Apple's push to a Simulator is delivered (the registered token is 80 bytes and accepted by the sandbox host), but SpringBoard drops `content-available` ("only supported on-device"), so a Simulator app is never woken by a real APNs push; only `xcrun simctl push` wakes it (D-128, D-148) |
+| iPhone | `embedded.mobileprovision` is present in development and ad hoc builds and stripped from TestFlight and App Store builds; the app reads its `aps-environment` (`development` is sent as `sandbox`) and sends `production` when there is none (D-145). Not yet verified on a device |
 
 ## Sign-in on the Mac and iPhone
 
