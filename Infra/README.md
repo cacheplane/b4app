@@ -339,7 +339,7 @@ The hub sends push notifications through Apple when `B4HUB_PUSH_SENDER=apns`. Th
    curl -fsS https://hub.test.b4.run/readyz
    ```
 
-4. Edit `desired_count = 0` to `1` in `envs/test/main.tf` and merge, so Terraform agrees (that apply also creates the `RunningTaskCount` alarm).
+4. Edit `desired_count = 0` to `1` in `envs/test/main.tf` and merge, so Terraform agrees. The service ignores `desired_count` drift by design (CI deploys and operators scale it, and a later apply must not roll that back), so this apply changes nothing on the service: it creates the `RunningTaskCount` and `UnHealthyHostCount` alarms, which only exist while `desired_count > 0`. Step 3's `update-service` is what starts the task.
 5. Production: runbook 2 for `prod`, then the first `hub-v*` release (or a dispatch from `main`, [runbook 5](#5-deploy-a-given-digest-or-roll-back)) with the `production` reviewer's approval; repeat 3 and 4 with `b4hub-prod`, `hub.b4.run`, and `envs/prod/main.tf`.
 
 ### 5. Deploy a given digest, or roll back
@@ -401,7 +401,7 @@ Until the sign-in hub is deployed, a Mac joins a hosted hub with a one-time code
    b4hub enroll --user brian
    ```
 
-   (`--org <slug>` when more than one org exists.) Enter it on the Mac with `agent-workspace hub join` and the hub's URL, within the code's lifetime.
+   (`--org <slug>` when more than one org exists.) Enter it on the Mac with `agent-workspace hub join` and the hub's URL, within the code's lifetime. A Mac is joined to one hub at a time: if it is on another hub (the test hub, a Compose hub), run `agent-workspace hub leave` there first, which revokes that device and leaves its uploaded history in place.
 4. `exit`. The script stops the task.
 
 ### 7. Set or rotate a secret
