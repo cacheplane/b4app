@@ -428,7 +428,7 @@ Until the sign-in hub is deployed, a Mac joins a hosted hub with a one-time code
 
 ### 8. Restore drill (monthly)
 
-Prove a backup restores and holds the data. Two parts: a full drill in the test account from its own backups, and a restorability check of production's cross-region copy. Record the date in `docs/verification.md`.
+Prove a backup restores and holds the data. Two parts: a full drill in the test account from its own backups, and a restorability check of production's cross-region copy. Record the date in a `docs/verification/` record.
 
 **A. Full drill in the test account** (the scratch instance is `b4hub-test-drill`, in the test VPC):
 
@@ -650,7 +650,7 @@ The hub serves every link of one user on one instance (D-085), so production can
 What a rolling deploy looks like afterwards. ECS starts the new tasks first; each registers its instance, passes `/readyz`, and joins the target group. For each old task, in order:
 
 1. The ALB deregisters it: no new connection reaches it, and its open links stay up for `deregistration_delay` (5 s with `task_count > 1`, set short on purpose; 60 s with one task).
-2. When the delay ends the ALB cuts those links (the devices see the connection drop, with no close code). The task is still alive and heartbeating: on the test hub ECS sent SIGTERM about 16 s later (`docs/verification.md`, "The test hub on two tasks, live"). As each user's last link on it ends, the task releases that user's claim (D-172), so the devices' reconnects reach a new task and are claimed there at once. A device of one of its users that re-links during the 5 s is refused `409 relocated`, retries at once three times, then backs off (1 s, 2 s, ...).
+2. When the delay ends the ALB cuts those links (the devices see the connection drop, with no close code). The task is still alive and heartbeating: on the test hub ECS sent SIGTERM about 16 s later (`docs/verification/2026-11-03-the-test-hub-on-two-tasks-live.md`). As each user's last link on it ends, the task releases that user's claim (D-172), so the devices' reconnects reach a new task and are claimed there at once. A device of one of its users that re-links during the 5 s is refused `409 relocated`, retries at once three times, then backs off (1 s, 2 s, ...).
 3. On SIGTERM the hub fails `/readyz`, answers every command it was holding for an offline Mac `device_offline`, closes any link still open with 1001 (releasing each user's claim as their last link closes), and then deletes the claims left and its instance row.
 4. The devices reconnect (their cookie names a deregistered target, so the ALB picks a live one), reach a new task, and are claimed there at once.
 

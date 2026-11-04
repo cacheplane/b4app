@@ -4,9 +4,9 @@ Date: 2026-11-02. Owner: Brian Love. Status: approved by the owner 2026-11-02 (D
 
 This document is the architecture for running the b4 hub (`Hub/`) as a hosted service at `hub.b4.run` and `hub.test.b4.run`, and for shipping the same image to customers who run it themselves with Docker Compose or Helm. It replaces the generalized reference-platform notes that first occupied this file (summarised in the appendix). It builds on `docs/superpowers/specs/2026-10-31-m8-hub-design.md` (the hub, tenancy, one image for cloud and on-prem), `2026-11-01-m8c-relay-design.md` (D-054 to D-059, the relay and its one-replica constraint), and the sign-in design (`2026-11-01-sign-in-design.md`, D-061 to D-067, whose section "The hosted hubs (a separate project)" is the contract between that project and this one). Research: `docs/research/reports/Managed hosting for the b4 hub.md`, cited below as "the research"; every price and vendor limit in this document comes from it and carries its date (2026-11-01).
 
-Status (2026-11-02): implementation is on the branch `blove/cloud-hub-deployment-arch-4b6348`; nothing has been applied to AWS, because the owner has not yet created the Organization and accounts. The gates are recorded in `docs/verification.md` ("Hosted hubs").
+Status (2026-11-02): implementation is on the branch `blove/cloud-hub-deployment-arch-4b6348`; nothing has been applied to AWS, because the owner has not yet created the Organization and accounts. The gates are recorded in `docs/verification/2026-11-02-hosted-hubs.md`.
 
-Like the document it replaces, this one separates what is **designed** from what has been **verified live**. Nothing below is deployed yet. `docs/verification.md` records each gate as it is passed.
+Like the document it replaces, this one separates what is **designed** from what has been **verified live**. Nothing below is deployed yet. `docs/verification/` records each gate as it is passed.
 
 ## Intent
 
@@ -224,7 +224,7 @@ Terraform makes each tier a change to the `envs/prod/main.tf` inputs (`task_coun
 
 ## Runbooks
 
-Each lives in `Infra/README.md` and is exercised before it is relied on; `docs/verification.md` records the date each was last run:
+Each lives in `Infra/README.md` and is exercised before it is relied on; `docs/verification/` records the date each was last run:
 
 1. **Bootstrap an account** (above).
 2. **Set or rotate a secret**: `aws secretsmanager put-secret-value`, then `aws ecs update-service --force-new-deployment`; for the Apple key, also the Apple developer portal steps from the sign-in design.
@@ -296,7 +296,7 @@ The test environment could drop WAF and use a smaller log retention to shave abo
 
 ## Verification gates
 
-Recorded in `docs/verification.md` (section "Hosted hubs (D-068 to D-072)") as each is passed:
+Recorded in `docs/verification/2026-11-02-hosted-hubs.md` as each is passed:
 
 1. Both accounts bootstrapped; `terraform plan` from a PR is clean and read-only; `apply` from `main` reaches test with no human step.
 2. A merge to `main` produces a multi-arch image on GHCR with attestations, and the test hub serves that digest within 15 minutes; the migration task's log shows the migration list.
@@ -309,7 +309,7 @@ Recorded in `docs/verification.md` (section "Hosted hubs (D-068 to D-072)") as e
 
 ## Decisions to record
 
-Recorded in `docs/decisions.md` under the 2026-11-02 heading as D-068 to D-072 (`main`'s highest at commit was D-067, from the merged sign-in design):
+Recorded in `docs/decisions/` as D-068 to D-072, under the 2026-11-02 heading (`main`'s highest at commit was D-067, from the merged sign-in design):
 
 - The hosted hubs run on AWS from day one, as ECS on Fargate behind an ALB with RDS for PostgreSQL, one account per environment under an Organization, in `us-east-2`; no Kubernetes is operated for them (the owner's decision after research that recommended Fly.io and Neon for cost; the reasons AWS won are the closed later-tier path on Neon and the one-time cost of a migration).
 - Infrastructure is Terraform in `Infra/`, applied by GitHub Actions over OIDC; test applies on merge, production on merge with the owner's approval; secret values are never in Terraform or GitHub.

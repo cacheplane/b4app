@@ -1,0 +1,11 @@
+## 2026-11-02: The hub's relay tests await events
+
+Branch `blove/happy-rosalind-d60dae`. Three relay tests (`b4hub --test relay`) failed one or two per run, a different one each time. Each now waits for the event it depends on; no assertion is weaker:
+
+- **`presence_is_sent_when_the_queue_has_room_again`.** It read the phone's backlog until 300 ms passed with no frame. On a loaded runner the drain paused longer than that, the read stopped before the presence, and the test saw none (`[]`). It reproduced 3 runs in 4 under CPU load. `fill_queue` now returns how many frames it queued. The test reads that many events and the presence, each with the usual 2 s frame wait, and only then checks that nothing but a second presence follows.
+- **`interrupt_is_held_and_delivered_on_reconnect`.** The phone's command needs two database lookups before it is held. The test gave it `settle()`'s 100 ms of real time and then moved the paused clock 20 s. A slow lookup could straddle that jump, firing the pool's 5 s acquire timeout, or `held` could still read 0. The test now waits until the command is held (`World::await_held`) before moving the clock. `held_answer_expires_after_sixty_seconds` has the same pattern and gets the same wait.
+- **`watching_tells_the_mac_the_full_set`.** It checked that the iPad's second `watch` sent the Mac nothing by waiting 300 ms. The phone's `unwatch` that followed runs on another link, so if the iPad's lookup was slower than 300 ms, the unwatch emptied the set first and the Mac was sent `watching []`. A link handles its frames in order, so each `watch` or `unwatch` is now followed by a `ping`. The silence check starts only after the `pong`.
+
+The relay suite (62 tests) passed 7 runs in a row: 2 alone, 2 alongside `cargo test --workspace` (which also passed), and 3 under CPU load (20 `yes` processes on 10 cores). Before the change, the same load failed the presence test 3 times in 4. `cargo fmt --check` and `cargo clippy --workspace --all-targets -D warnings` are clean.
+
+Not changed: `a_mac_whose_queue_stays_full_is_relay_timeout_not_offline` sends a command and moves the clock 4.9 s with no event to await before the jump, because the hub does not expose when the command reaches `send_wait`. It did not fail here.

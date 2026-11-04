@@ -1,0 +1,3 @@
+## 2026-11-02 (M8f, attention on the phone)
+
+- **D-126 The widget.** `B4App-iOSWidget`, small and medium. The top three non-archived threads by `Attention.ordered` (pinned first), each with `AttentionDot`, its title, and its project name (none for a thread without a project). Small has one tap target, the first thread; medium makes each row a link. The data's age is the link's `lastSyncAt`; from five minutes old it shows "as of <short time>" in the device's own format. The timeline holds an entry now and one at the moment the data turns stale, and asks to be reloaded 15 minutes later; the app reloads it after every batch that touched threads or projects, and after every sign-in and sign-out (a log-out, a deleted account, a refused token).

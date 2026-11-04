@@ -1,0 +1,3 @@
+## 2026-10-30
+
+- **D-010 Codex protocol types are hand-written from the generated schema, not generated code.** Resolved in M1. `codex app-server generate-json-schema` (codex-cli 0.166.0) produces 677 definitions and 4.5 MB of JSON; the app reads a few dozen fields. `Sources/CodexAdapter/CodexProtocol.swift` types exactly those fields and keeps the rest as `JSONValue`, so a newer server adds fields without breaking decoding. The generator's output is not committed; the pinned version and command are in `docs/compatibility.md`, and the schema is regenerated and re-diffed on every Codex upgrade.

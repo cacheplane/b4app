@@ -1,5 +1,5 @@
 -- The web Apple flow changes no account until the app redeems its handoff with the verifier
--- (docs/decisions.md, "One nonce rule"). Apple's callback only verifies the identity token and
+-- (docs/decisions/D-092-one-nonce-rule-apples-callback-changes-nothing.md). Apple's callback only verifies the identity token and
 -- records a handoff carrying
 -- what the redemption needs: the verified Apple ID, its email and name, the client id, and the
 -- authorization code, sealed with `B4HUB_SECRET_KEY` and bound to the handoff's code hash, so

@@ -51,7 +51,13 @@ module "hub" {
   # not pushed yet. After the first deploy succeeds (Infra/README.md, "First
   # deploy"), change this to 1 and apply again; that also enables the
   # running-tasks alarm.
-  desired_count = 1
+  desired_count = 2
+
+  # Two tasks (runbook 13, D-085, D-172): rolling deploys and the load
+  # balancer's application-cookie stickiness on `b4hub-instance`. Live-tested on
+  # the test hub first (docs/verification.md). The tasks stay in public subnets;
+  # `private_tasks` (the "next" tier's NAT) is a separate decision.
+  task_count = 2
 }
 
 output "alb_dns_name" {
