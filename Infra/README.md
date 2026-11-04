@@ -441,7 +441,9 @@ Prove a backup restores and holds the data. Two parts: a full drill in the test 
    umask 077; tmp=$(mktemp -d)
    aws backup get-recovery-point-restore-metadata --backup-vault-name b4hub-test \
      --recovery-point-arn "$RP" --query RestoreMetadata > "$tmp/meta.json"
-   jq '.DBInstanceIdentifier = "b4hub-test-drill" | .PubliclyAccessible = "false"' "$tmp/meta.json" > "$tmp/drill.json"
+   # The metadata AWS returns includes DBSnapshotIdentifier, which start-restore-job refuses
+   # ("should not be specified as metadata"); drop it.
+   jq '.DBInstanceIdentifier = "b4hub-test-drill" | .PubliclyAccessible = "false" | del(.DBSnapshotIdentifier)' "$tmp/meta.json" > "$tmp/drill.json"
    ```
 
 2. Restore and wait (about 15 minutes):
