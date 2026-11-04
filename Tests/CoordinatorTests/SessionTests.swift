@@ -705,6 +705,150 @@ actor EventCollector {
   }
 }
 
+/// `thread.start` from the Mac's own app, over the local socket: no project is required, and the thread
+/// starts with the model, permission, and title it was given.
+@Suite(.serialized) struct LocalThreadStartTests {
+  private func start(
+    _ h: Harness, _ params: ThreadStart.Params, operationId: String = UUID().uuidString
+  ) async throws -> ThreadStart.Result {
+    try await h.client.request(
+      ThreadStart.self, params, options: RequestOptions(operationId: operationId, timeout: .seconds(30)))
+  }
+
+  @Test func localThreadStartCreatesThreadAndTurn() async throws {
+    let base = NSTemporaryDirectory() + "b4t-\(UUID().uuidString.prefix(8))"
+    try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+    let log = base + "/fake-claude.log"
+    let h = try await Harness.start(extraEnvironment: ["FAKE_CLAUDE_LOG": log])
+    let claude = try await h.addClaude()
+    let project = try await h.client.request(
+      ProjectCreate.self, ProjectCreate.Params(name: "App", folders: [h.workDir]),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30))
+    ).project
+    let threadId = UUID().uuidString.lowercased()
+    let started = try await start(
+      h,
+      ThreadStart.Params(
+        threadId: threadId, projectId: project.id, connectionId: claude.id, folder: h.workDir,
+        text: "Fix the login bug\nIt fails after a restart.", model: "sonnet", permission: "plan"))
+    #expect(started.thread.id == threadId)
+    #expect(started.thread.projectId == project.id)
+    #expect(started.thread.model == "sonnet" && started.thread.permission == "plan")
+    #expect(started.thread.title == "Fix the login bug")
+    #expect(started.turn.threadId == threadId)
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == started.turn.id }
+    let read = try await h.read(started.thread)
+    #expect(read.thread.model == "sonnet" && read.thread.permission == "plan")
+    #expect(read.turns.map(\.id) == [started.turn.id])
+
+    // Claude launched with the choices, so no control request had to correct them.
+    let lines = try String(contentsOfFile: log, encoding: .utf8).split(separator: "\n").map {
+      try JSONDecoder().decode([String: JSONValue].self, from: Data($0.utf8))
+    }
+    let launches = lines.compactMap { $0["argv"]?.arrayValue?.compactMap(\.stringValue) }
+    #expect(launches.count == 1)
+    let argv = try #require(launches.first)
+    #expect(argv.contains("--model=sonnet"))
+    #expect(zip(argv, argv.dropFirst()).contains { $0 == "--permission-mode" && $1 == "plan" })
+    let controls = lines.compactMap { $0["control"]?.stringValue }
+    #expect(!controls.contains("set_model") && !controls.contains("set_permission_mode"))
+    await h.stop()
+  }
+
+  @Test func localThreadStartIsIdempotentPerOperation() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let operationId = UUID().uuidString
+    let params = ThreadStart.Params(
+      threadId: UUID().uuidString.lowercased(), connectionId: codex.id, folder: h.workDir, text: "hi")
+    let first = try await start(h, params, operationId: operationId)
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == first.turn.id }
+    let again = try await start(h, params, operationId: operationId)
+    // Past the router's own replay: the service finds the turn this operation already made.
+    let direct = try await h.coordinator.sessions.threadStart(
+      params, operationId: operationId, requireProject: false)
+    for result in [again, direct] {
+      #expect(result.thread.id == first.thread.id)
+      #expect(result.turn.id == first.turn.id)
+    }
+    let db = h.coordinator.database
+    #expect(try db.listThreads(ThreadFilter(includeArchived: true)).map(\.id) == [first.thread.id])
+    #expect(try db.turns(threadId: first.thread.id).count == 1)
+    await h.stop()
+  }
+
+  @Test func aChosenFolderWithoutAProjectGetsAnAutomaticProject() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let fresh = h.workDir + "/fresh"
+    try FileManager.default.createDirectory(atPath: fresh, withIntermediateDirectories: true)
+    let db = h.coordinator.database
+    #expect(try db.project(folderPath: SessionService.canonicalDirectory(fresh)) == nil)
+    let started = try await start(
+      h,
+      ThreadStart.Params(
+        threadId: UUID().uuidString.lowercased(), connectionId: codex.id, folder: fresh, text: "hi"))
+    let project = try #require(try db.project(folderPath: SessionService.canonicalDirectory(fresh)))
+    #expect(started.thread.projectId == project.id)
+    #expect(!project.manual)
+    #expect(project.folders.map(\.path) == [SessionService.canonicalDirectory(fresh)])
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == started.turn.id }
+    await h.stop()
+  }
+
+  @Test func localThreadStartMayUseRemoteB4() async throws {
+    let server = try await FakeB4.start()
+    let h = try await Harness.start()
+    // Remote as far as the thread rules go; the fixture itself listens on loopback.
+    let remote = try h.coordinator.database.insertConnection(
+      Connection(
+        id: "c-remote", kind: .b4, label: "Remote", target: server.baseURL, routeKey: "/chat#agent",
+        b4Mode: .remote, status: .ready))
+    let started = try await start(
+      h,
+      ThreadStart.Params(threadId: UUID().uuidString.lowercased(), connectionId: remote.id, text: "hello b4"))
+    #expect(started.thread.connectionId == remote.id)
+    #expect(started.thread.context == "/chat#agent")
+    #expect(started.thread.title == "hello b4")
+    let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == started.turn.id }
+    #expect(finished.payload["outcome"]?.stringValue == "completed")
+    await h.stop()
+    await server.stop()
+  }
+
+  @Test func localThreadStartRefusesAnotherRuntimesPermissionAndB4Choices() async throws {
+    let server = try await FakeB4.start()
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let b4 = try await h.addB4(server).connection
+    let refused: [(ThreadStart.Params, String)] = [
+      (
+        ThreadStart.Params(
+          threadId: UUID().uuidString.lowercased(), connectionId: codex.id, folder: h.workDir, text: "hi",
+          permission: "plan"),
+        "unknown_permission"
+      ),
+      (
+        ThreadStart.Params(
+          threadId: UUID().uuidString.lowercased(), connectionId: b4.id, text: "hi", model: "opus"),
+        "not_supported_for_b4"
+      ),
+    ]
+    for (params, reason) in refused {
+      do {
+        _ = try await start(h, params)
+        Issue.record("expected \(reason)")
+      } catch let error as WorkspaceError {
+        #expect(error.code == .protocolInvalid)
+        #expect(error.details?["reason"]?.stringValue == reason)
+      }
+      #expect(try h.coordinator.database.thread(id: params.threadId) == nil)
+    }
+    await h.stop()
+    await server.stop()
+  }
+}
+
 @Suite(.serialized) struct B4SessionServiceTests {
   @Test func runsAB4ConversationBesideCodex() async throws {
     let server = try await FakeB4.start()

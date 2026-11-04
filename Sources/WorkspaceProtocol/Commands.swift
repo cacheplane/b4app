@@ -338,8 +338,8 @@ public enum ThreadCreate: WorkspaceCommand {
     public var connectionId: String
     public var workingDirectory: String?
     public var title: String?
-    /// The new thread's id, minted by the phone for `thread.start`; nil mints one here. Only the relay
-    /// sets it (`Router` drops it from a local `thread.create`).
+    /// The new thread's id, minted by the caller of `thread.start`; nil mints one here. Only
+    /// `thread.start` sets it (`Router` drops it from a local `thread.create`).
     public var threadId: String?
     public init(
       connectionId: String, workingDirectory: String? = nil, title: String? = nil, threadId: String? = nil

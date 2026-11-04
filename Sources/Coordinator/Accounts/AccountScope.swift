@@ -211,7 +211,7 @@ public final class AccountScope: Sendable {
     await sessions.start()
     await servers.startAll()
     let relay = RelayExecutor(
-      sessions: sessions, projects: projects, database: database, diagnostics: context.diagnostics,
+      sessions: sessions, database: database, diagnostics: context.diagnostics,
       gate: gate)
     let linkConnection = context.hubLinkConnection ?? URLSessionHubLinkConnection()
     let makeLink: HubSync.LinkFactory = { url, token in

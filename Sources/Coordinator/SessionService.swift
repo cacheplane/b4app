@@ -339,6 +339,14 @@ public actor SessionService {
   // MARK: - Threads
 
   public func threadCreate(_ params: ThreadCreate.Params) async throws -> ThreadCreate.Result {
+    try await threadCreate(params, model: nil, permission: nil)
+  }
+
+  /// `threadCreate` with the thread's runtime choices, already validated (`threadStart`): they are stored
+  /// on the new thread and the runtime's session starts with them.
+  func threadCreate(
+    _ params: ThreadCreate.Params, model: String?, permission: String?
+  ) async throws -> ThreadCreate.Result {
     let (connection, adapter) = try connectionAndAdapter(id: params.connectionId)
     if let outage = await managedServerOutage(connection) { throw outage }
     let input: NewSessionInput
@@ -363,11 +371,12 @@ public actor SessionService {
           .protocolInvalid, "Working directory \(requested) does not exist.",
           details: ["workingDirectory": .string(requested)])
       }
-      // The thread does not exist yet, so it has no model or permission of its own; the project that
-      // owns its folder may already list other folders for the runtime to reach.
+      // The project that owns its folder may already list other folders for the runtime to reach.
       let canonical = Self.canonicalDirectory(directory)
       let others = try db.project(folderPath: canonical)?.folders.map(\.path).filter { $0 != canonical }
-      input = NewSessionInput(workingDirectory: directory, additionalDirectories: others ?? [])
+      input = NewSessionInput(
+        workingDirectory: directory, model: model, permission: permission,
+        additionalDirectories: others ?? [])
       threadContext = directory
       defaultTitle = (directory as NSString).lastPathComponent
     }
@@ -380,7 +389,7 @@ public actor SessionService {
       id: params.threadId ?? UUID().uuidString.lowercased(), connectionId: connection.id,
       nativeThreadId: ref.nativeSessionId,
       nativeScope: ref.nativeScope, title: (title?.isEmpty == false ? title : nil) ?? defaultTitle,
-      context: threadContext)
+      context: threadContext, model: model, permission: permission)
     // The thread joins the project of its folder (created on first use) in one step with its insert, so
     // no project edit can land in between; `context` stays as given.
     let thread = try await context.projects.insertThread(newThread, connection: connection)
@@ -540,18 +549,7 @@ public actor SessionService {
       guard let kind = try db.connection(id: existing.connectionId)?.kind else {
         throw WorkspaceError(.notFound, "Connection \(existing.connectionId) does not exist.")
       }
-      if kind == .b4 {
-        throw WorkspaceError(
-          .protocolInvalid, "A B4 thread has no model or permission to set.",
-          details: ["reason": "not_supported_for_b4"])
-      }
-      if let permission = params.permission,
-        !RuntimeOptions.permissions(for: kind).contains(where: { $0.id == permission })
-      {
-        throw WorkspaceError(
-          .protocolInvalid, "\(permission) is not a permission option of this thread's runtime.",
-          details: ["reason": "unknown_permission", "permission": .string(permission)])
-      }
+      try Self.validateRuntimeChoice(model: params.model, permission: params.permission, kind: kind)
     }
     guard
       let thread = try db.updateThread(
@@ -566,6 +564,162 @@ public actor SessionService {
     else { throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.") }
     await context.eventLog.publish(try AdapterEvent.threadUpdated(thread))
     return ThreadCreate.Result(thread: thread)
+  }
+
+  /// A model or permission chosen for a thread of `kind`: none on B4 (`not_supported_for_b4`), and a
+  /// permission must be one of the runtime's (`unknown_permission`). Any model id is taken; the runtime
+  /// judges it.
+  static func validateRuntimeChoice(model: String?, permission: String?, kind: ConnectionKind) throws {
+    guard model != nil || permission != nil else { return }
+    if kind == .b4 {
+      throw WorkspaceError(
+        .protocolInvalid, "A B4 thread has no model or permission to set.",
+        details: ["reason": "not_supported_for_b4"])
+    }
+    if let permission, !RuntimeOptions.permissions(for: kind).contains(where: { $0.id == permission }) {
+      throw WorkspaceError(
+        .protocolInvalid, "\(permission) is not a permission option of this thread's runtime.",
+        details: ["reason": "unknown_permission", "permission": .string(permission)])
+    }
+  }
+
+  // MARK: - thread.start
+
+  /// Create the thread (or reuse the one this id already names) and send its first turn, so a retry
+  /// lands on the same thread and the same turn. The relay calls it with `requireProject` (the phone
+  /// always names a project), the Mac's own app without.
+  ///
+  /// Refuses with `protocol_invalid` anything the Mac would not start itself: a text it cannot store
+  /// (`invalid_text`), a thread id that is not a lowercase UUID (`invalid_thread_id`), no project when
+  /// one is required or an unknown one, an unknown connection, a Codex or Claude start with no folder or
+  /// (given a project) one outside the project's folders, a B4 start with a folder, a remote B4
+  /// connection when a project is required, a local B4 connection that does not serve the given
+  /// project, a connection not ready for a conversation, a model or permission the runtime does not
+  /// take (`validateRuntimeChoice`), or a thread id already used with another connection or folder.
+  /// What `turnSend` refuses before inserting a turn (`assertCanStart`) is refused before the thread
+  /// is made. A Codex or Claude thread with no project given joins its folder's project (made when none
+  /// owns it) as it is inserted (D-048).
+  public func threadStart(
+    _ params: ThreadStart.Params, operationId: String, requireProject: Bool
+  ) async throws -> ThreadStart.Result {
+    try Self.requireStorableText(params.text)
+    // The caller mints the id; the thread row keeps it, so only the form this Mac mints is taken.
+    guard Self.isLowercaseUUID(params.threadId) else {
+      throw Self.refusal("The new thread's id is not valid.", reason: "invalid_thread_id")
+    }
+    // A retry of a start that already made its turn gets that answer, whatever changed since (the
+    // connection may have gone offline): refusing it now would tell the caller the send never happened.
+    if let turn = try db.turn(operationId: operationId) {
+      guard turn.threadId == params.threadId, let thread = try db.thread(id: turn.threadId) else {
+        throw Self.refusal(
+          "This command already started a turn on another thread.", reason: "operation_reused")
+      }
+      return ThreadStart.Result(thread: thread, turn: turn)
+    }
+    guard !params.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      throw WorkspaceError(.protocolInvalid, "Turn text must not be empty.")
+    }
+    let project: Project?
+    if let projectId = params.projectId {
+      guard let found = try db.project(id: projectId) else {
+        throw Self.refusal("This project is not on this Mac.", reason: "project_missing")
+      }
+      project = found
+    } else if requireProject {
+      throw Self.refusal("A new thread from another device needs a project.", reason: "project_missing")
+    } else {
+      project = nil
+    }
+    guard let connection = try db.connection(id: params.connectionId) else {
+      throw Self.refusal("This connection is not on this Mac.", reason: "connection_missing")
+    }
+    let projectFolders = Set(project?.folders.map(\.path) ?? [])
+    let requested = params.folder.flatMap { $0.isEmpty ? nil : $0 }
+    let folder: String?
+    switch connection.kind {
+    case .codex, .claude:
+      guard let requested else {
+        throw Self.refusal(
+          "A \(connection.kind.rawValue) thread needs one of the project's folders.", reason: "folder_missing"
+        )
+      }
+      let canonical = Self.canonicalDirectory(requested)
+      guard project == nil || projectFolders.contains(canonical) else {
+        throw Self.refusal(
+          "That folder is not one of this project's folders.", reason: "folder_outside_project")
+      }
+      folder = canonical
+    case .b4:
+      let remote = connection.b4Mode == .remote
+      if remote, requireProject {
+        throw Self.refusal(
+          "A remote B4 connection cannot start a thread from another device.", reason: "remote_b4")
+      }
+      guard requested == nil else {
+        throw Self.refusal(
+          "A B4 thread is bound to its route and takes no folder.", reason: "folder_not_allowed")
+      }
+      // A local connection's synced project and the coordinator's own resolution (its managed
+      // server's folder) must both name the given project. A remote thread has no project (D-048).
+      if let project, !remote {
+        guard connection.localServerId != nil, connection.projectId == project.id,
+          let serverFolder = try await context.projects.serverFolder(of: connection),
+          projectFolders.contains(serverFolder)
+        else {
+          throw Self.refusal(
+            "Connection \(connection.label) does not serve this project.",
+            reason: "connection_outside_project")
+        }
+      }
+      folder = nil
+    }
+    guard connection.enabled, connection.status == .ready else {
+      throw Self.refusal(
+        "Connection \(connection.label) is not ready for a conversation.", reason: "connection_not_ready")
+    }
+    try Self.validateRuntimeChoice(model: params.model, permission: params.permission, kind: connection.kind)
+    // What `turnSend` would refuse before inserting the turn is refused before the thread is made, so a
+    // refused start (and each retry) leaves no empty thread behind.
+    try await assertCanStart(connection: connection.id)
+    let thread: ConversationThread
+    if let existing = try db.thread(id: params.threadId) {
+      let sameFolder = folder == nil || existing.context.map(Self.canonicalDirectory) == folder
+      guard existing.connectionId == connection.id, sameFolder else {
+        throw Self.refusal(
+          "Thread \(params.threadId) already exists with another connection or folder.",
+          reason: "thread_mismatch")
+      }
+      thread = existing
+    } else {
+      thread = try await threadCreate(
+        ThreadCreate.Params(
+          connectionId: connection.id, workingDirectory: folder,
+          title: ThreadTitle.fromFirstMessage(params.text), threadId: params.threadId),
+        model: params.model, permission: params.permission
+      ).thread
+    }
+    let turn = try await turnSend(
+      TurnSend.Params(threadId: thread.id, text: params.text), operationId: operationId
+    ).turn
+    return ThreadStart.Result(thread: try db.thread(id: thread.id) ?? thread, turn: turn)
+  }
+
+  static func isLowercaseUUID(_ text: String) -> Bool {
+    text.count == 36 && UUID(uuidString: text) != nil && text == text.lowercased()
+  }
+
+  /// A NUL cannot be stored, and the store refuses it only after the turn row exists, which would leave
+  /// that turn `submitting` (see the Task 8 report); a text with one is refused before anything.
+  static func requireStorableText(_ text: String) throws {
+    guard !text.unicodeScalars.contains("\0") else {
+      throw WorkspaceError(
+        .protocolInvalid, "The message contains a character that cannot be sent.",
+        details: ["reason": "invalid_text"])
+    }
+  }
+
+  private static func refusal(_ message: String, reason: String) -> WorkspaceError {
+    WorkspaceError(.protocolInvalid, message, details: ["reason": .string(reason)])
   }
 
   // MARK: - Turns

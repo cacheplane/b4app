@@ -43,7 +43,7 @@ private struct RelayHarness {
     let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
     let executor = RelayExecutor(
-      sessions: coordinator.sessions, projects: coordinator.projects, database: coordinator.database,
+      sessions: coordinator.sessions, database: coordinator.database,
       diagnostics: coordinator.diagnostics)
     return RelayHarness(
       coordinator: coordinator, client: client, events: EventCollector(await client.events()),
@@ -384,7 +384,7 @@ private func failure(
     #expect(connection.status == .ready)
     let projectId = try #require(connection.projectId)
     let executor = RelayExecutor(
-      sessions: h.coordinator.sessions, projects: h.coordinator.projects, database: h.coordinator.database,
+      sessions: h.coordinator.sessions, database: h.coordinator.database,
       diagnostics: h.coordinator.diagnostics)
 
     // A folder is not part of a B4 thread.
@@ -457,7 +457,7 @@ private func failure(
     ).project
     #expect(other.id != own)
     let executor = RelayExecutor(
-      sessions: h.coordinator.sessions, projects: h.coordinator.projects, database: h.coordinator.database,
+      sessions: h.coordinator.sessions, database: h.coordinator.database,
       diagnostics: h.coordinator.diagnostics)
     let threadId = UUID().uuidString.lowercased()
     let reply = try await run(
@@ -521,26 +521,29 @@ private func failure(
     #expect(try h.db.listThreads(ThreadFilter(includeArchived: true)).map(\.id) == [threadId])
   }
 
-  /// R4: the relay-only methods are refused over the local socket, and a local `thread.create` cannot
-  /// choose its thread's id.
-  @Test func localSocketRefusesRelayOnlyMethods() async throws {
+  /// The phone always names a project: a relayed start without one is refused before anything is made.
+  @Test func relayedStartStillRequiresAProject() async throws {
+    let h = try await RelayHarness.start()
+    defer { Task { await h.close() } }
+    let connection = try await h.addCodex()
+    let threadId = UUID().uuidString.lowercased()
+    let reply = try await run(
+      h.executor, .threadStart,
+      ThreadStart.Params(
+        threadId: threadId, connectionId: connection.id, folder: try h.folder("app"), text: "hi"))
+    let error = try #require(failure(reply))
+    #expect(error.code == ErrorCode.protocolInvalid.rawValue)
+    #expect(error.details?["reason"]?.stringValue == "project_missing")
+    #expect(try h.db.thread(id: threadId) == nil)
+  }
+
+  /// R4: `turn.lookup` is refused over the local socket (`thread.start` is local too now), and a local
+  /// `thread.create` cannot choose its thread's id.
+  @Test func localSocketRefusesTurnLookupAndAChosenThreadId() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let app = try h.folder("app")
-    let project = try await h.project("App", [app])
-    let options = RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30))
-    do {
-      _ = try await h.client.request(
-        ThreadStart.self,
-        ThreadStart.Params(
-          threadId: "t-local", projectId: project.id, connectionId: connection.id, folder: app, text: "hi"),
-        options: options)
-      Issue.record("thread.start must be refused locally")
-    } catch let error as WorkspaceError {
-      #expect(error.code == .unsupportedCapability)
-      #expect(error.message == "Only relayed from the hub.")
-    }
     do {
       _ = try await h.client.request(TurnLookup.self, TurnLookup.Params(operationId: "op", threadId: "t"))
       Issue.record("turn.lookup must be refused locally")
@@ -552,7 +555,6 @@ private func failure(
       ThreadCreate.Params(connectionId: connection.id, workingDirectory: app, threadId: "t-chosen"),
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
     #expect(created.thread.id != "t-chosen")
-    #expect(try h.db.thread(id: "t-local") == nil)
   }
 
   @Test func threadStartRetryReusesThreadAndTurn() async throws {

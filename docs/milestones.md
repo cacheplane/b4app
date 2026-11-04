@@ -202,6 +202,10 @@ Exit gate status: the fixture gates pass (design exit items 4 to 6, locally: a c
 - [x] Delete the runtime's copy: Codex `thread/delete`, B4 `DELETE /threads/:id`, Claude Code's transcript files; done, unsupported, or waiting with backoff; Diagnostics counts. `implemented` and `fixture-tested` against `fake-codex.py`, `fake-b4.py`, and a scratch Claude config folder. `live-tested` on 2026-11-02 against real Codex 0.166.0 and Claude Code 2.1.282 threads with a turn each, and a B4 0.15.8 server: each runtime's copy was gone afterwards (`docs/verification/`).
 - [x] On screen: the Mac's toolbar Delete… and alert, and the iPhone's swipe and alert in the Simulator, on the owner's rebuilt hub (`docs/verification/`). The Mac's right-click menu was not opened on screen.
 
+## New-thread composer (D-179, D-180)
+
+- [x] A thread's model and permission: chosen when it starts (`thread.start`, now local as well as relayed) or changed later (`thread.update`), stored and synced, and handed to the runtime each turn (Codex `turn/start` `model`, `approvalPolicy`, `sandboxPolicy`; Claude `--model`, `--permission-mode`, `set_model`, `set_permission_mode`); the project's other folders reach every turn; the thread is titled from its first message. `implemented` and `fixture-tested` (`ThreadTitleTests`, `LocalThreadStartTests`, `ClaudeTurnOptionsTests`, `RelayExecutorTests`, adapter tests). `live-tested`: pending.
+
 ## M8c: relay (D-054 to D-059, D-075 to D-080)
 
 Design: `docs/superpowers/specs/2026-11-01-m8c-relay-design.md`. Plan: `docs/superpowers/plans/2026-11-01-m8c-relay.md`. Roadmap block: M8 in `docs/roadmaps/Personal_Agent_Workspace_Technical_Spec_and_Roadmap.md`. Every item below is `implemented` and `fixture-tested` (the test names are mapped to the live-gate items in `docs/verification/`, "M8c relay"). They are also `live-tested`: the live gate (Simulator, Compose hub, packaged Mac app) ran on 2026-11-02, items 1 to 7, recorded in `docs/verification/`.
