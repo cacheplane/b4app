@@ -605,6 +605,112 @@ actor EventCollector {
   }
 }
 
+/// A Claude thread beside folders of its project: the fake's log shows what each turn handed it.
+@Suite(.serialized) struct ClaudeTurnOptionsTests {
+  private struct Rig {
+    let h: Harness
+    let claude: Connection
+    let thread: ConversationThread
+    let log: String
+    let folderB: String
+
+    static func start() async throws -> Rig {
+      let base = NSTemporaryDirectory() + "b4t-\(UUID().uuidString.prefix(8))"
+      try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+      let log = base + "/fake-claude.log"
+      let h = try await Harness.start(extraEnvironment: ["FAKE_CLAUDE_LOG": log])
+      let claude = try await h.addClaude()
+      let thread = try await h.newThread(claude)
+      let rig = Rig(h: h, claude: claude, thread: thread, log: log, folderB: try folder(base, "b"))
+      // B joins the thread's project (automatic until it gains a folder).
+      try await rig.addFolder(rig.folderB)
+      return rig
+    }
+
+    static func folder(_ base: String, _ name: String) throws -> String {
+      let path = base + "/" + name
+      try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+      return path
+    }
+
+    func addFolder(_ path: String) async throws {
+      _ = try await h.client.request(
+        ProjectUpdate.self,
+        ProjectUpdate.Params(projectId: try #require(thread.projectId), addFolders: [path]),
+        options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    }
+
+    func finishedTurn(_ text: String) async throws {
+      let turn = try await h.send(thread, text)
+      try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    }
+
+    /// The fake's log, one JSON object per line.
+    func lines() throws -> [[String: JSONValue]] {
+      let text = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
+      return try text.split(separator: "\n").map {
+        try JSONDecoder().decode([String: JSONValue].self, from: Data($0.utf8))
+      }
+    }
+
+    func launches() throws -> [[String]] {
+      try lines().compactMap { $0["argv"]?.arrayValue?.compactMap(\.stringValue) }
+    }
+
+    func addDirs(_ argv: [String]) -> [String] {
+      argv.indices.dropLast().filter { argv[$0] == "--add-dir" }.map { argv[$0 + 1] }
+    }
+  }
+
+  @Test func turnsAttachTheProjectsOtherFolders() async throws {
+    let rig = try await Rig.start()
+    try await rig.finishedTurn("hello")
+    let launches = try rig.launches()
+    let argv = try #require(launches.last)
+    #expect(rig.addDirs(argv) == [SessionService.canonicalDirectory(rig.folderB)])
+    #expect(!rig.addDirs(argv).contains(SessionService.canonicalDirectory(rig.h.workDir)))
+    await rig.h.stop()
+  }
+
+  @Test func aFolderAddedLaterReachesTheNextTurn() async throws {
+    let rig = try await Rig.start()
+    try await rig.finishedTurn("hello")
+    let folderC = try Rig.folder((rig.folderB as NSString).deletingLastPathComponent, "c")
+    try await rig.addFolder(folderC)
+    try await rig.finishedTurn("hello again")
+    let launches = try rig.launches()
+    // The session's own launch, then a restart for each change of the directory set.
+    #expect(launches.count == 3)
+    #expect(rig.addDirs(launches[0]).isEmpty)
+    #expect(rig.addDirs(launches[1]) == [SessionService.canonicalDirectory(rig.folderB)])
+    #expect(
+      rig.addDirs(try #require(launches.last))
+        == [rig.folderB, folderC].map(SessionService.canonicalDirectory))
+    await rig.h.stop()
+  }
+
+  @Test func aChangeDuringATurnAppliesToTheNextTurn() async throws {
+    let rig = try await Rig.start()
+    let held = try await rig.h.send(rig.thread, "hang around")
+    _ = try await rig.h.client.request(
+      ThreadUpdate.self, ThreadUpdate.Params(threadId: rig.thread.id, permission: "plan"),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    _ = try await rig.h.client.request(
+      TurnInterrupt.self, TurnInterrupt.Params(threadId: rig.thread.id),
+      options: RequestOptions(operationId: UUID().uuidString))
+    try await rig.h.events.waitFor { $0.kind == .turnFinished && $0.turnId == held.id }
+    #expect(try rig.lines().allSatisfy { $0["control"]?.stringValue != "set_permission_mode" })
+
+    try await rig.finishedTurn("next")
+    let order = try rig.lines().compactMap { line -> String? in
+      if let control = line["control"]?.stringValue { return control }
+      return line["user"]?.stringValue
+    }
+    #expect(order.suffix(2) == ["set_permission_mode", "next"])
+    await rig.h.stop()
+  }
+}
+
 @Suite(.serialized) struct B4SessionServiceTests {
   @Test func runsAB4ConversationBesideCodex() async throws {
     let server = try await FakeB4.start()

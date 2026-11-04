@@ -363,7 +363,11 @@ public actor SessionService {
           .protocolInvalid, "Working directory \(requested) does not exist.",
           details: ["workingDirectory": .string(requested)])
       }
-      input = NewSessionInput(workingDirectory: directory)
+      // The thread does not exist yet, so it has no model or permission of its own; the project that
+      // owns its folder may already list other folders for the runtime to reach.
+      let canonical = Self.canonicalDirectory(directory)
+      let others = try db.project(folderPath: canonical)?.folders.map(\.path).filter { $0 != canonical }
+      input = NewSessionInput(workingDirectory: directory, additionalDirectories: others ?? [])
       threadContext = directory
       defaultTitle = (directory as NSString).lastPathComponent
     }
@@ -597,7 +601,11 @@ public actor SessionService {
     let ref = NativeSessionRef(nativeSessionId: thread.nativeThreadId, nativeScope: thread.nativeScope)
     do {
       let receipt = try await adapter.sendTurn(
-        ref, input: TurnInput(operationId: operationId, text: text, workingDirectory: thread.context))
+        ref,
+        input: TurnInput(
+          operationId: operationId, text: text, workingDirectory: thread.context, model: thread.model,
+          permission: thread.permission,
+          additionalDirectories: try additionalDirectories(for: thread)))
       turn =
         try db.updateTurn(id: turn.id) {
           if $0.nativeTurnId == nil { $0.nativeTurnId = receipt.nativeTurnId }
@@ -730,6 +738,17 @@ public actor SessionService {
           "status": .string(entry.turn.status.rawValue), "directory": .string(canonical),
         ])
     }
+  }
+
+  /// The project's other folders, for the runtime to reach beside the thread's own: the canonical paths
+  /// of its project's folders, oldest first, without the thread's working directory. Empty for a thread
+  /// with no project or no directory (B4).
+  func additionalDirectories(for thread: ConversationThread) throws -> [String] {
+    guard let projectId = thread.projectId, let context = thread.context, !context.isEmpty,
+      try db.connection(id: thread.connectionId)?.kind != .b4, let project = try db.project(id: projectId)
+    else { return [] }
+    let own = Self.canonicalDirectory(context)
+    return project.folders.map(\.path).filter { $0 != own }
   }
 
   /// Symlinks resolved, `..` collapsed, no trailing slash: the identity of a working directory.
