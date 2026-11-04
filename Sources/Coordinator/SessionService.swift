@@ -310,6 +310,7 @@ public actor SessionService {
         $0.status = inspection.status
         $0.authStatus = inspection.authStatus
         $0.capabilities = inspection.capabilities
+        $0.models = inspection.models
         if let path = inspection.executablePath, $0.target.isEmpty { $0.target = path }
         // The identity the runtime presents now; nil (signed out, unreachable) keeps the last known one.
         if let scope = inspection.nativeScope, !scope.isEmpty { $0.nativeScope = scope }
