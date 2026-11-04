@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "scope": "Source-only SwiftPM cache validation; no release or deployment",
+  "baseline_source": "e141e8c995206c053630971f973708f7912b62cb",
+  "control_run": 41752794336,
+  "prior_test_seconds": 321,
+  "fresh_control_test_seconds": 259,
+  "preserved": {
+    "swift_methods": 1170,
+    "unique_suite_ids": 148,
+    "inventory_sha256": "dc408e66b882a34bb944dda6b06cca54e3a2f14059d9aedf6f89f6b2dd352455",
+    "test_bodies_assertions_deadlines": "unchanged",
+    "helper": "Scripts/test-swift.py unchanged",
+    "jobs": 4,
+    "job_timeout_minutes": 45,
+    "helper_budget_minutes": 35,
+    "SWIFTNIO_STRICT": "1"
+  },
+  "experiment": [
+    "fresh unchanged control",
+    "superseded8e fill",
+    "supersededB5 fill/fullrepeat/holdout",
+    "final source fill",
+    "final unchanged full same-ref repeat after save",
+    "final identical-source new-ref unavailable-cache holdout"
+  ],
+  "acceptance": "All checks pass; warm Test at least 10% faster than both 321s and fresh control; whole package job improves including cache overhead. First-fill and unavailable-cache checks pass without moving compilation outside accounting. All attempts retained; no statistical-confidence claim.",
+  "cache": "Verify root, context, tracked source bytes/modes, pinned Git dependency bytes, generated/compiled artifact bytes before restoring verified mtimes. Incompatible/absent metadata regenerates only job-local compiler state. No test results reused.",
+  "public_payload": "Only workflow, cache helper, fixture tests, this minimal metadata; evidence archives remain local",
+  "frozen_at": "2026-11-04T02:38:58.098815+00:00",
+  "prior_variant": "8e89868c5d506d8146f0a31c0cbb1ed57fa34770",
+  "amendment": "Final recovery audit: unlink rejected workspace-state links before SwiftPM regeneration; reject repository/Git metadata aliases and external object alternates. Actual tiny-package outside-write regression reproduced and fixed;44toolingchecks pass. No Swift/testbody/deadline/runner change.",
+  "prior_variants": [
+    "8e89868c5d506d8146f0a31c0cbb1ed57fa34770",
+    "b5fa9e009158d8dbd92b34d11c56feaf0d284e6f"
+  ],
+  "budget": "Eight full hosted attempts total, sixworkflowIDs, all costs retained; necessary correctness repairs within same cache hypothesis; no until-green retries"
+}
