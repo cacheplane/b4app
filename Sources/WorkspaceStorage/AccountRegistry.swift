@@ -237,7 +237,7 @@ public final class AccountRegistry: Sendable {
 
   private static func files() throws -> [(name: String, sql: String)] {
     guard
-      let urls = Bundle.module.urls(forResourcesWithExtension: "sql", subdirectory: "SQL/registry"),
+      let urls = StorageResources.bundle.urls(forResourcesWithExtension: "sql", subdirectory: "SQL/registry"),
       !urls.isEmpty
     else {
       throw WorkspaceError(.internalError, "No registry migrations are bundled with WorkspaceStorage.")
