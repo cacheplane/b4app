@@ -528,8 +528,25 @@ public actor SessionService {
   }
 
   public func threadUpdate(_ params: ThreadUpdate.Params) async throws -> ThreadCreate.Result {
-    guard try db.thread(id: params.threadId)?.userDeletedAt == nil else {
+    guard let existing = try db.thread(id: params.threadId), existing.userDeletedAt == nil else {
       throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.")
+    }
+    if params.model != nil || params.permission != nil {
+      guard let kind = try db.connection(id: existing.connectionId)?.kind else {
+        throw WorkspaceError(.notFound, "Connection \(existing.connectionId) does not exist.")
+      }
+      if kind == .b4 {
+        throw WorkspaceError(
+          .protocolInvalid, "A B4 thread has no model or permission to set.",
+          details: ["reason": "not_supported_for_b4"])
+      }
+      if let permission = params.permission,
+        !RuntimeOptions.permissions(for: kind).contains(where: { $0.id == permission })
+      {
+        throw WorkspaceError(
+          .protocolInvalid, "\(permission) is not a permission option of this thread's runtime.",
+          details: ["reason": "unknown_permission", "permission": .string(permission)])
+      }
     }
     guard
       let thread = try db.updateThread(
@@ -538,6 +555,8 @@ public actor SessionService {
           if let title = params.title { $0.title = title }
           if let pinned = params.pinned { $0.pinned = pinned }
           if let archived = params.archived { $0.archived = archived }
+          if let model = params.model { $0.model = model }
+          if let permission = params.permission { $0.permission = permission }
         })
     else { throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.") }
     await context.eventLog.publish(try AdapterEvent.threadUpdated(thread))

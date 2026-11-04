@@ -639,6 +639,29 @@ actor EventCollector {
     await server.stop()
   }
 
+  @Test func threadUpdateRefusesAModelOrPermissionOnAB4Thread() async throws {
+    let server = try await FakeB4.start()
+    let h = try await Harness.start()
+    let b4 = try await h.addB4(server).connection
+    let thread = try await h.newB4Thread(b4)
+    for params in [
+      ThreadUpdate.Params(threadId: thread.id, model: "opus"),
+      ThreadUpdate.Params(threadId: thread.id, permission: "plan"),
+    ] {
+      do {
+        _ = try await h.client.request(
+          ThreadUpdate.self, params,
+          options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+        Issue.record("expected a refusal")
+      } catch let error as WorkspaceError {
+        #expect(error.code == .protocolInvalid)
+        #expect(error.details?["reason"]?.stringValue == "not_supported_for_b4")
+      }
+    }
+    await h.stop()
+    await server.stop()
+  }
+
   @Test func answersAB4PermissionThroughTheCoordinator() async throws {
     let server = try await FakeB4.start()
     let h = try await Harness.start()
@@ -845,6 +868,38 @@ actor EventCollector {
     #expect(Set(again.threads.map(\.id)) == [first.id, second.id])
     await client.close()
     await restarted.close()
+  }
+
+  @Test func threadUpdateStoresModelAndPermission() async throws {
+    let h = try await Harness.start()
+    let claude = try await h.addClaude()
+    let thread = try await h.newThread(claude)
+    #expect(thread.model == nil && thread.permission == nil)
+    let updated = try await h.client.request(
+      ThreadUpdate.self, ThreadUpdate.Params(threadId: thread.id, model: "opus", permission: "plan"),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30))
+    ).thread
+    #expect(updated.model == "opus" && updated.permission == "plan")
+    let read = try await h.read(thread).thread
+    #expect(read.model == "opus" && read.permission == "plan")
+    await h.stop()
+  }
+
+  @Test func threadUpdateRefusesAnotherRuntimesPermission() async throws {
+    let h = try await Harness.start()
+    let claude = try await h.addClaude()
+    let thread = try await h.newThread(claude)
+    do {
+      _ = try await h.client.request(
+        ThreadUpdate.self, ThreadUpdate.Params(threadId: thread.id, permission: "full-access"),
+        options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+      Issue.record("expected a refusal")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .protocolInvalid)
+      #expect(error.details?["reason"]?.stringValue == "unknown_permission")
+    }
+    #expect(try await h.read(thread).thread.permission == nil)
+    await h.stop()
   }
 
   /// The snapshot carries non-terminal turns so a fresh viewer can show per-thread state (spec 3.1).
