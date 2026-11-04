@@ -1,0 +1,3 @@
+## 2026-10-31 (M5)
+
+- **D-033 The directory lock is derived from stored turns, not a lock table.** Before dispatch on a Codex or Claude connection the coordinator canonicalizes the thread's working directory (symlinks resolved, no trailing slash) and refuses `protocol_invalid` / `directory_locked` while any other harness thread, on any connection, has a non-terminal turn there. Because the state is the turns themselves, the lock survives restarts and holds through `waiting_for_user`, `stopping`, and `reconciling` (spec 10.1.5); `turn.abandon` releases it deliberately. B4 routes are not directories.

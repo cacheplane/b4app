@@ -1,0 +1,6 @@
+## 2026-11-02 (M8e Part B)
+
+- **D-086 `/readyz` exercises the relay through an in-process probe principal and reports a stale heartbeat.** `Hub/crates/b4hub/src/relay/link.rs` (`probe`), `routes/health.rs`.
+  - **Probe.** The link task is generic over a `LinkSocket`; the probe runs it over an in-memory socket pair as `Identity::probe()` (a client with nil ids), which `Relay::register` hands a handle without entering it in the registry, so it is never online, never in a `presence` frame, never watches, and writes no `last_seen_at`. It expects `hello`, `presence`, and a `pong` to a `ping` within 2 s. No device token is minted and no row is written. `"relay": "ok" | "failed"`; failure is `503 not_ready` with `details.relay` and a warning line. The fixture's failure case raises the relay's minimum client protocol above the hub's own, which makes the link refuse the probe.
+  - **Heartbeat.** `"instances": "stale"` and `503` once the instance row has not been written for the liveness window, because the other instances already count this one dead; a hub that cannot hold its users should not receive traffic.
+  - **Why.** A probe through the real upgrade would need a device and a token, and the `AuthedDevice` extractor runs before any handler code; an in-process principal tests the code that serves links without a credential.

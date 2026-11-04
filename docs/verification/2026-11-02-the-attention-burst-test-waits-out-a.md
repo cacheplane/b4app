@@ -1,0 +1,3 @@
+## 2026-11-02: The attention burst test waits out a slow runner
+
+`AttentionModelTests.aBurstOfDeltasSendsNoReadAndTurnEventsCoalesce` failed CI once on main (`7c38573`): three `thread.read` calls where it expected two. The model reads the test's 56 events on its own task, and a slow runner took longer than the 200 ms refetch window to get through them, so a second window rightly opened. `WorkspaceModel.refetchDelay` is now per model (as `draftSaveDelay` is), so the test widens its own window to 1 s without changing the others'; the app keeps 200 ms. Local: the test 5 of 5 alone, `WorkspaceUITests` 284 pass, `swift format lint --strict` clean.

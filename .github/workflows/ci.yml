@@ -43,7 +43,11 @@ jobs:
       - name: shellcheck
         run: |
           shopt -s nullglob
-          shellcheck .github/scripts/*.sh Hub/scripts/*.sh Hub/chart/scripts/*.sh Infra/scripts/*.sh Infra/scripts/tests/stubs/* Infra/scripts/tests/helpers.bash
+          shellcheck .github/scripts/*.sh Hub/scripts/*.sh Hub/chart/scripts/*.sh Infra/scripts/*.sh Infra/scripts/tests/stubs/* Infra/scripts/tests/helpers.bash Scripts/docs-index.sh
+      - name: Fetch main for the decision-number check
+        run: git fetch --no-tags --depth=1 origin main
+      - name: Decision and verification records
+        run: Scripts/docs-index.sh --check
       - name: Release tag guard test
         run: .github/scripts/test-tag-guard.sh
       - name: Deploy script tests
