@@ -116,10 +116,12 @@ struct URLSessionLinkTests {
     }
   }
 
-  @Test func aRateLimitedUpgradeIsRefusedWithItsStatus() async throws {
+  /// A 429 arrives as `rateLimited`, carrying its `Retry-After` (the loopback hub says 2 seconds, as the
+  /// hub does in whole seconds).
+  @Test func aRateLimitedUpgradeCarriesItsRetryAfter() async throws {
     let server = try await LoopbackHub.start(.refuse(429))
     defer { server.stop() }
-    await #expect(throws: HubLinkError.refused(status: 429)) {
+    await #expect(throws: HubLinkError.rateLimited(retryAfter: .seconds(2))) {
       _ = try await URLSessionHubLinkConnection().open(url: server.url, token: "t", protocolVersion: 1)
     }
   }
@@ -323,6 +325,7 @@ private final class LoopbackRefusalHandler: ChannelInboundHandler, RemovableChan
     var headers = HTTPHeaders()
     headers.add(name: "content-length", value: "0")
     headers.add(name: "connection", value: "close")
+    if status == 429 { headers.add(name: "retry-after", value: "2") }
     let head = HTTPResponseHead(
       version: .http1_1, status: HTTPResponseStatus(statusCode: status), headers: headers)
     context.write(wrapOutboundOut(.head(head)), promise: nil)

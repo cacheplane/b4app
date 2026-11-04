@@ -1582,7 +1582,9 @@ replies and errors wait for room, and presence is kept as described under *Prese
 | 4003 | no frame for 30 seconds | reconnect with backoff |
 
 Reconnect backoff is 1 second doubling to 30 (15 on the phone) with full jitter, reset after a
-link has stayed up for 60 seconds.
+link has stayed up for 60 seconds. An upgrade refused `429 rate_limited` waits at least its
+`Retry-After` (whole seconds, capped at 120) before the next attempt, even when the backoff is
+shorter.
 
 ### Frame size
 
