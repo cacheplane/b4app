@@ -308,6 +308,14 @@ fi
 # The coordinator starts and stops the cluster itself; there is no second LaunchAgent.
 mkdir -p "$APP/Contents/SharedSupport"
 ditto .build/postgres "$APP/Contents/SharedSupport/postgres"
+# The coordinator reads its migrations from the resource bundle in the app's own Contents/Resources
+# (StorageResources, D-171), never from this build tree, which a user's Mac does not have.
+for sql in SQL/0001_init.sql SQL/registry/0001_registry.sql; do
+  if [ ! -f "$APP/Contents/Resources/b4app_WorkspaceStorage.bundle/Contents/Resources/$sql" ]; then
+    echo "$APP has no $sql in Contents/Resources/b4app_WorkspaceStorage.bundle; the coordinator could not migrate." >&2
+    exit 1
+  fi
+done
 
 echo "==> Signing with identity: $IDENTITY"
 if [ "$IDENTITY" = "-" ]; then

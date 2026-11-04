@@ -79,8 +79,8 @@ public struct StoreCluster: Sendable {
   public static func start(paths: PlatformPaths, environment: [String: String]) async throws -> StoreCluster {
     guard
       let binDir = paths.postgres.binDir
-        ?? PostgresLocator.binDir(environment: environment, anchors: [Bundle.module.bundleURL])
-        ?? PostgresLocator.binDir(anchors: [Bundle.module.bundleURL])
+        ?? PostgresLocator.binDir(environment: environment, anchors: [StorageResources.bundle.bundleURL])
+        ?? PostgresLocator.binDir(anchors: [StorageResources.bundle.bundleURL])
     else {
       throw WorkspaceError(
         .missingExecutable,

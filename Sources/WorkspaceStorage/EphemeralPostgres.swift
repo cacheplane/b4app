@@ -41,7 +41,7 @@ public enum EphemeralPostgres {
     startLock.lock()
     defer { startLock.unlock() }
     if let existing = state.withLock({ $0 }) { return existing }
-    guard let binDir = PostgresLocator.binDir(anchors: [Bundle.module.bundleURL]) else {
+    guard let binDir = PostgresLocator.binDir(anchors: [StorageResources.bundle.bundleURL]) else {
       throw WorkspaceError(
         .missingExecutable,
         "No PostgreSQL binaries: run ./Scripts/fetch-postgres.sh (or set \(PostgresLocator.environmentVariable))."
