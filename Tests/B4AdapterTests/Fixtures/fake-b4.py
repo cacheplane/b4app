@@ -3,12 +3,13 @@
 fixture tests. Endpoint shapes follow docs/research/2026-10-30-b4-runtime.md and the M3 design.
 Behavior is scripted by the user text: "tool" runs a tool call, "approve" parks on a command
 permission, "hang" waits for POST /cancel, "fail" ends with an error, "drop" closes the response
-mid-run while the run continues (reattach with GET /runs/stream), "slow" streams for three seconds,
-"held" waits for POST /threads/<id>/release (a fixture control, not a B4 endpoint) and then completes,
-"plan" emits a capability event, "reason" streams reasoning first. Env: FAKE_B4_ROUTE (default
-/chat#agent), FAKE_B4_TOKEN (bearer required on middleware paths), FAKE_B4_STATE (JSON file that
-persists threads across restarts). Never a substitute for the real server in anything the docs call
-live-tested."""
+mid-run while the run continues (reattach with GET /runs/stream; the rest is held until a reattach
+subscribes, since a live attach gets only later frames, as in b4-http), "slow" streams for three
+seconds, "held" waits for POST /threads/<id>/release (a fixture control, not a B4 endpoint) and then
+completes, "plan" emits a capability event, "reason" streams reasoning first. Env: FAKE_B4_ROUTE
+(default /chat#agent), FAKE_B4_TOKEN (bearer required on middleware paths), FAKE_B4_STATE (JSON file
+that persists threads across restarts). Never a substitute for the real server in anything the docs
+call live-tested."""
 import argparse
 import json
 import os
@@ -75,6 +76,7 @@ class Run:
         self.done = False
         self.cancel = threading.Event()
         self.release = threading.Event()
+        self.attached = threading.Event()
         self.started_at = now()
 
     def emit(self, event, data):
@@ -177,7 +179,8 @@ def execute(run):
         if "drop" in text:
             say("Part one. ")
             run.emit("__drop__", None)
-            time.sleep(1.0)
+            # A live attach sees only frames after it subscribes, so wait for one rather than a timer.
+            run.attached.wait(20.0)
             say("Part two.")
             run.emit("message_end", {"messageId": next_id("m")})
             return finish("done")
@@ -398,6 +401,7 @@ class Handler(BaseHTTPRequestHandler):
         if run is not None and not run.done:
             with run.cond:
                 index = len(run.frames)
+            run.attached.set()
             self.write_frame("state", {"status": "busy", "live": True, "anchor": "cp_1", "input": None,
                                        "resume": run.resume is not None, "run_started_at": run.started_at,
                                        "turn": None, "values": None})
