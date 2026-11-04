@@ -1,0 +1,39 @@
+{
+  "version": 4,
+  "scope": "Source-only SwiftPM cache validation; no release or deployment",
+  "baseline_source": "e141e8c995206c053630971f973708f7912b62cb",
+  "control_run": 41752794336,
+  "prior_test_seconds": 321,
+  "fresh_control_test_seconds": 259,
+  "preserved": {
+    "swift_methods": 1170,
+    "unique_suite_ids": 148,
+    "inventory_sha256": "dc408e66b882a34bb944dda6b06cca54e3a2f14059d9aedf6f89f6b2dd352455",
+    "test_bodies_assertions_deadlines": "unchanged",
+    "helper": "Six disjoint/exhaustive process groups:4/4/26/25/19/1092. Total1170/148sameinventory; originalassertions/deadlines/within-testandintrasuiteconcurrency unchanged. Cross-suite context amendment explicit.",
+    "jobs": 4,
+    "job_timeout_minutes": 45,
+    "helper_budget_minutes": 35,
+    "SWIFTNIO_STRICT": "1"
+  },
+  "experiment": [
+    "fresh unchanged control",
+    "superseded8e fill",
+    "supersededB5 fill/fullrepeat/holdout",
+    "superseded58a fill/fullrepeat; localcold failed; holdoutnotdispatched",
+    "final combined-cache/grouping warm/freshcold local gates",
+    "final combined-source fill/fullrepeat/cache-unavailableholdout"
+  ],
+  "acceptance": "All checks pass; warm Test at least 10% faster than both 321s and fresh control; whole package job improves including cache overhead. First-fill and unavailable-cache checks pass without moving compilation outside accounting. All attempts retained; no statistical-confidence claim.",
+  "cache": "Verify root, context, tracked source bytes/modes, pinned Git dependency bytes, generated/compiled artifact bytes before restoring verified mtimes. Incompatible/absent metadata regenerates only job-local compiler state. No test results reused.",
+  "public_payload": "Only workflow, cache helper, fixture tests, this minimal metadata; evidence archives remain local",
+  "frozen_at": "2026-11-04T02:59:44.883706+00:00",
+  "prior_variant": "8e89868c5d506d8146f0a31c0cbb1ed57fa34770",
+  "amendment": "One final bounded fixture-context repair: cold58a run failed two3shello checks in remaining1111; original19methods in HubSyncTests/LegacySecretCopyTests pass together without background suites. Add one processgroup for those2serializedsuites, retain their mutual concurrency, original4groups andalltestbodies/deadlines. Failedcold/diagnostics preserved; no until-green reruns.",
+  "prior_variants": [
+    "8e89868c5d506d8146f0a31c0cbb1ed57fa34770",
+    "b5fa9e009158d8dbd92b34d11c56feaf0d284e6f",
+    "58a42c2f8dd12df012a2bab7ea916333a389dba8"
+  ],
+  "budget": "At most10fullhostedattempts;7alreadyrequested, old58a holdoutnotdispatched afterlocalgatefailed; finaltrial fill/fullrepeat/holdout are8/9/10. No further optimizationvariants. Fullwarm/freshcoldtrial mustpassbeforepush."
+}

@@ -33,10 +33,22 @@ class SwiftPartitionsTests(unittest.TestCase):
     def test_exact_boundaries_and_complete_disjoint_inventory(self):
         ids = self.inventory()
         plan = self.module.make_plan(ids)
-        self.assertEqual(len(plan), 5)
-        self.assertEqual([len(p['ids']) for p in plan], [1, 1, 1, 1, 2])
+        self.assertEqual(len(plan), 6)
+        self.assertEqual([len(p['ids']) for p in plan], [1, 1, 1, 1, 2, 2])
         self.assertIn(ids[-1], plan[-1]['ids'])
         self.assertEqual(sorted(x for p in plan for x in p['ids']), sorted(ids))
+
+    def test_coordinator_hello_suites_share_one_exact_group(self):
+        expected = ['CoordinatorTests.HubSyncTests/example()',
+                    'CoordinatorTests.LegacySecretCopyTests/example()']
+        ids = self.inventory()
+        ids += [x for x in expected if x not in ids]
+        extra = 'CoordinatorTests.HubSyncTestsExtra/staysInRemainder()'
+        ids.append(extra)
+        plan = self.module.make_plan(ids)
+        groups = [p for p in plan if p['name'] == 'coordinator-hello']
+        self.assertEqual([sorted(p['ids']) for p in groups], [sorted(expected)])
+        self.assertIn(extra, plan[-1]['ids'])
 
     def test_plan_rejects_overlap_omission_empty_and_selector_mismatch(self):
         ids = self.inventory()
@@ -98,7 +110,7 @@ class SwiftPartitionsTests(unittest.TestCase):
         for bad in ['exit', 'report-failed']:
             result, calls, summary = self.pipeline(bad)
             self.assertEqual(result, 1)
-            self.assertEqual(len(calls), 6)
+            self.assertEqual(len(calls), 7)
             self.assertEqual(summary['reported_tests'], len(self.inventory()))
             self.assertEqual(summary['missing_report_partitions'], 0)
 
@@ -106,13 +118,13 @@ class SwiftPartitionsTests(unittest.TestCase):
         for bad in ['missing', 'count']:
             result, calls, _ = self.pipeline(bad)
             self.assertEqual(result, 1)
-            self.assertEqual(len(calls), 6)
+            self.assertEqual(len(calls), 7)
 
     def test_identical_build_flags_and_dynamic_new_tests_are_preserved(self):
         flags = ['--scratch-path', '/tmp/example', '--jobs', '2']
         result, calls, _ = self.pipeline(args=flags)
         self.assertEqual(result, 0)
-        self.assertEqual(len(calls), 6)
+        self.assertEqual(len(calls), 7)
         for command in calls:
             self.assertEqual(command[:2 + len(flags)], ['swift', 'test', *flags])
         self.assertEqual(calls[0][-1], 'list')
