@@ -26,10 +26,7 @@ struct ComposerView: View {
       if let error = model.lastError { errorBanner(error) }
       relayLines
       if let turn = activeTurn { turnRow(turn) }
-      ComposerField(
-        text: $model.composerText, placeholder: placeholder, focused: $focused,
-        onSubmit: { if canSend { Task { await model.send() } } }
-      ) {
+      ComposerField(text: $model.composerText, placeholder: placeholder, focused: $focused) {
         sendOrStop
       }
       .disabled(unreachable != nil)

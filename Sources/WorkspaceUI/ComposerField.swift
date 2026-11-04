@@ -13,9 +13,10 @@ struct ComposerField<Trailing: View>: View {
   @Binding var text: String
   let placeholder: String
   var focused: FocusState<Bool>.Binding
-  /// Return in the editor where it can submit: the phone's text field. The Mac's `TextEditor` takes
-  /// Return as its own, so there the caller's control owns the shortcut.
-  let onSubmit: () -> Void
+  /// Opt-in: what Return does in the phone's text field. Without it Return adds a line and only the
+  /// trailing control sends, as in the thread composer. The Mac's `TextEditor` has no submit, so
+  /// there the caller's control owns the shortcut either way.
+  let onSubmit: (() -> Void)?
   let trailing: Trailing
   @Environment(\.dynamicTypeSize) private var typeSize
   #if os(iOS)
@@ -35,7 +36,7 @@ struct ComposerField<Trailing: View>: View {
 
   init(
     text: Binding<String>, placeholder: String, focused: FocusState<Bool>.Binding,
-    onSubmit: @escaping () -> Void, @ViewBuilder trailing: () -> Trailing
+    onSubmit: (() -> Void)? = nil, @ViewBuilder trailing: () -> Trailing
   ) {
     _text = text
     self.placeholder = placeholder
@@ -142,7 +143,8 @@ struct ComposerField<Trailing: View>: View {
 
   #if os(iOS)
     /// A vertical text field: it grows a line at a time to three, then scrolls, with no inner inset,
-    /// so its text sits exactly at the padding above. Return adds a line; the control sends.
+    /// so its text sits exactly at the padding above. Return adds a line and the control sends,
+    /// unless the caller gave `onSubmit`.
     private var editor: some View {
       TextField(
         "", text: $text,
@@ -153,7 +155,7 @@ struct ComposerField<Trailing: View>: View {
       .foregroundStyle(LLA.Color.ink)
       .lineLimit(1...3)
       .focused(focused)
-      .onSubmit(onSubmit)
+      .submitting(onSubmit)
       .frame(maxWidth: .infinity, alignment: .leading)
       .accessibilityLabel(placeholder)
       .accessibilityIdentifier("composer")
@@ -194,3 +196,12 @@ struct ComposerField<Trailing: View>: View {
     }
   #endif
 }
+
+#if os(iOS)
+  extension View {
+    /// `.onSubmit` only when there is an action, so a field without one is untouched by it.
+    @ViewBuilder fileprivate func submitting(_ action: (() -> Void)?) -> some View {
+      if let action { onSubmit(action) } else { self }
+    }
+  }
+#endif
