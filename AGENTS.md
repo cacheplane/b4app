@@ -1,6 +1,6 @@
 # Repository instructions
 
-This repository is the Personal Agent Workspace: a native Swift macOS app, an iOS companion, a coordinator service, and the `agent-workspace` CLI for Codex, Claude Code, and B4 conversations. The requirement source is `docs/roadmaps/Personal_Agent_Workspace_Technical_Spec_and_Roadmap.md`. Read it and `docs/decisions.md` before changing architecture. The spec says Electron; decision D-001 replaced that with Swift at the owner's direction.
+This repository is the Personal Agent Workspace: a native Swift macOS app, an iOS companion, a coordinator service, and the `agent-workspace` CLI for Codex, Claude Code, and B4 conversations. The requirement source is `docs/roadmaps/Personal_Agent_Workspace_Technical_Spec_and_Roadmap.md`. Read it and the decision log (`docs/decisions/`, one file per decision; `docs/decisions.md` describes the layout) before changing architecture. The spec says Electron; decision D-001 replaced that with Swift at the owner's direction.
 
 ## Commands
 
@@ -35,11 +35,18 @@ This repository is the Personal Agent Workspace: a native Swift macOS app, an iO
 - Fake runtimes for tests live under `Tests/<Adapter>Tests/Fixtures/` (`fake-codex.py`, `fake-claude.py`, `fake-b4.py`, plus `fake-b4-cli.py` and `fake-node.sh` for managed servers: `Tests/CoordinatorTests/FakeB4Project.swift` builds a scratch project whose `node_modules/@b4run/cli/dist/index.js` is the fake CLI and sets `B4APP_NODE_PATH` to the shim); the coordinator tests reuse them by path. Live tests are gated by `B4APP_LIVE_CODEX`, `B4APP_LIVE_CLAUDE`, `B4APP_LIVE_B4_URL`, and `B4APP_LIVE_LAUNCHCTL` (the legacy LaunchAgent boot-out against the real `launchctl`, with a throwaway job label).
 - `Sources/Coordinator/SessionService.swift` is the only writer of turns, display items, and runtime requests; adapters emit `AdapterEvent`s with native ids and the session service maps them to app ids. `Sources/Coordinator/LocalServerService.swift` is the only owner of managed server processes (`ManagedProcess` in `WorkspacePlatform`); it never signals a process whose identity it has not verified.
 
+## Decisions and gate records
+
+- A decision is one file, `docs/decisions/D-NNN-<slug>.md`: its first line is the dated topic heading `## YYYY-MM-DD (topic)`, then a blank line, then the entry as one `- **D-NNN Title.** ...` bullet with its nested lines (the log's style; read a recent file first). A gate record is one file, `docs/verification/YYYY-MM-DD-<slug>.md`, whose first line is `## YYYY-MM-DD: <title>`. Slugs are lowercase a-z, 0-9 and hyphens. Never add an entry to `docs/decisions.md` or `docs/verification.md`; they describe the layout, and `Scripts/docs-index.sh --check` fails when an entry is there.
+- Take the number when you open the pull request, not when the branch starts: `Scripts/docs-index.sh --next` prints the first number after the highest on `origin/main`, in your tree, and in open pull requests (through `gh`, when it is signed in). If main takes your number before you merge, rename the file (and the number inside it) and push; never renumber an entry that is on main.
+- Amend an earlier decision from the new decision's file ("amends D-NNN"); do not edit the earlier file.
+- `Scripts/docs-index.sh --check` must pass (CI's "Workflow and shell lint" job runs it). Plain `Scripts/docs-index.sh` writes the newest-first indexes `docs/decisions/index.md` and `docs/verification/index.md`, which are gitignored: a committed index would conflict between pull requests as the two logs did (D-174).
+
 ## Rules
 
 - Never represent a mocked response as a working integration. Unimplemented adapter behavior throws `WorkspaceError(.unsupportedCapability)` naming the milestone.
 - The UI never touches processes, sockets, files, or secrets directly.
 - Secrets never appear in arguments, JSON results, logs, or UI state. Use `SecretStore` references.
 - Ordinary tests use fixtures and fake executables. Live provider tests are opt-in and never run in CI.
-- Record material decisions in `docs/decisions.md`, versions in `docs/compatibility.md`, gate results in `docs/verification.md`, and keep `docs/milestones.md` current with implemented, fixture-tested, live-tested, or blocked.
+- Record material decisions as `docs/decisions/D-NNN-<slug>.md` and gate results as `docs/verification/YYYY-MM-DD-<slug>.md` ("Decisions and gate records" above), versions in `docs/compatibility.md`, and keep `docs/milestones.md` current with implemented, fixture-tested, live-tested, or blocked.
 - Do not reformat `docs/roadmaps/*.md`; it is the owner's document.

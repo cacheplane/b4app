@@ -1,0 +1,11 @@
+## 2026-11-02 (M8f, attention on the phone)
+
+Design: `docs/superpowers/specs/2026-10-31-m8b-remote-workspace-design.md` ("M8f, attention on the phone" and "Constraints"). Plan: `docs/superpowers/plans/2026-11-02-m8f-attention.md`. Built on `blove/m8f-attention`.
+
+- **D-121 Which changes notify, and only once.** `Hub/crates/b4hub-core/src/push.rs` (the rules), `Hub/crates/b4hub-db/src/push.rs` (detection), `Tests/Fixtures/sync/push.json` (the cases).
+  - **Requests.** A `runtimeRequests` row whose `state` is `pending` after a push notifies. `command_approval`, `file_change_approval`, `tool_permission`, `unknown`, and any kind this hub does not know say "Waiting for your approval"; `user_question` and `elicitation` say "Has a question for you".
+  - **Turns.** A `turns` row whose `status` is `terminal` notifies when its `outcome` is `completed` ("Replied") or `failed` ("Turn failed"). `cancelled` never notifies, because Brian stopped it himself. A terminal turn whose outcome has not arrived yet waits for the push that sets it, so the two columns may land in different batches.
+  - **Age.** A turn notifies only when its `updatedAt` is within 10 minutes of the hub's clock, so a Mac's first join, a rejoin, or a resync that uploads history does not send a "Replied" for every old turn. A pending request has no age limit: it is still waiting for Brian.
+  - **Once.** Detection runs inside the push transaction, after the batch is applied and under the org's push lock, and records `(org, kind, row id)` in `notifications_sent`; a row already there sends nothing, so a retried batch or a later update to the same turn never notifies twice. The row is written whether or not a sender is configured or any phone has a token, which makes delivery at most once. Ledger rows older than the retention window are pruned with the change log; a request still pending after that could notify a second time.
+  - **Who.** The user's `ios` devices that are not revoked, hold a session (an unrevoked device token; a log-out under D-108 ends it and keeps the device), have a push token, and are not the device that pushed.
+  - **Why.** The lock screen is public, so the body is a fixed phrase and the title is the thread's title only (cut to 100 characters; `Untitled thread` when empty), never transcript text, command text, or paths.

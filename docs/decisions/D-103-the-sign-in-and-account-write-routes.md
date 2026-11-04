@@ -1,0 +1,3 @@
+## 2026-11-02 (sign-in build)
+
+- **D-103 The sign-in and account write routes are under maintenance mode (D-074).** Every route that writes a ceremony, handoff, identity, session, profile, or account takes `WritesAllowed`: the passkey and Apple begins and finishes, the callback, both handoffs, `PUT /v1/me/profile`, the `/v1/me/passkeys` and `/v1/me/apple` routes, `DELETE /v1/me/identities/{id}`, `DELETE /v1/sessions/self`, and `DELETE /v1/me` (`Hub/API.md`, "Maintenance mode"). `GET /v1/auth/config`, `GET /v1/me`, and `GET /v1/auth/apple/start` stay readable. A callback that arrives during maintenance answers JSON `503`, not a redirect, so the Mac's browser sheet stays open until it is cancelled (accepted; rare).

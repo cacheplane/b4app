@@ -1,0 +1,3 @@
+## 2026-10-31 (M5)
+
+- **D-035 The coordinator is the redaction boundary.** Every adapter event's `message`, `stderr`, and `error.message`, every failed turn's message, and every `recentErrors` entry are passed through `LogRedactor` before they are stored or published; adapters forward runtime text as they receive it. The redactor also masks whole `Authorization:` header lines and sensitive URL query parameters (`code`, `state`, `token`, `access_token`, …). The CLI-spawned coordinator's stdout log is bounded like server logs. Redaction masks known shapes; it is not proof that arbitrary runtime output holds no secret (spec 12).
