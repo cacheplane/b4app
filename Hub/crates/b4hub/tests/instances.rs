@@ -563,3 +563,47 @@ async fn a_listener_that_goes_quiet_reconnects_and_wakes_its_polls(pool: PgPool)
         started.elapsed()
     );
 }
+
+#[sqlx::test(migrations = false)]
+async fn a_user_whose_last_link_here_ends_is_free_to_move_at_once(pool: PgPool) {
+    let a = spawn_instance(&pool, BEAT).await;
+    let b = spawn_instance(&pool, BEAT).await;
+    let blove = user(&a).await;
+    let (mac, _) = link(&a, &blove.mac_token, None).await;
+    let (phone, _) = link(&a, &blove.phone_token, None).await;
+
+    // The Mac's link ends while `a` is alive and not draining (as when the load balancer cuts the
+    // links of a deregistered target, long before ECS stops it). The phone is still here, so `a`
+    // keeps the user.
+    mac.close().await;
+    eventually("the Mac to go offline", || async {
+        (!a.state.relay.online(blove.mac_id)).then_some(())
+    })
+    .await;
+    assert_eq!(
+        instances::owner_of(&a.state.db, blove.who.user_id)
+            .await
+            .unwrap(),
+        Some(a.state.instances.id())
+    );
+
+    // With the phone gone too, nothing of the user is served here: the claim goes at once, and the
+    // devices are served wherever they reconnect, with no `409 relocated` to wait out.
+    phone.close().await;
+    eventually("the claim to be released", || async {
+        instances::owner_of(&a.state.db, blove.who.user_id)
+            .await
+            .unwrap()
+            .is_none()
+            .then_some(())
+    })
+    .await;
+    assert!(a.state.instances.id() != b.state.instances.id() && !a.server.is_finished());
+    let (_mac, set_cookie) = link(&b, &blove.mac_token, None).await;
+    assert_eq!(set_cookie.as_deref(), Some(cookie_for(&b).as_str()));
+    let refused = FakeDevice::try_connect(a.addr, Some(&blove.phone_token), None)
+        .await
+        .err()
+        .expect("`a` no longer serves the user");
+    assert_eq!(refused.code(), "relocated");
+}
