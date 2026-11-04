@@ -297,6 +297,15 @@ struct SnapshotShell: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(LLA.Color.bg)
     }
+    // A long model id at a narrow width: the place and then the runtime truncate; nothing overflows.
+    thread.model = "claude-opus-5-20261101-with-a-very-long-suffix"
+    thread.permission = "bypassPermissions"
+    try await render("threadPickerRowNarrow", size: CGSize(width: 380, height: 120)) {
+      ComposerPickerRow(model: model, .thread(thread))
+        .padding(LLA.Space.l)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(LLA.Color.bg)
+    }
   }
 
   @Test func macSidebarGroupsByProject() async throws {

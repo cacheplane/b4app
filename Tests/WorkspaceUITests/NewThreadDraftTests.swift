@@ -1035,4 +1035,99 @@ private enum Phone {
     #expect(transport.recorded(.threadUpdate).count == 1)
     await model.disconnect()
   }
+
+  // MARK: The picker menus
+
+  private static let claude = Connection(
+    id: "claude-1", kind: .claude, label: "Claude Code", target: "", models: RuntimeOptions.claudeModels,
+    status: .ready)
+
+  @Test func aDraftAlwaysOffersAsConfiguredAndDefault() {
+    // A new thread can always go back to the runtime's own configuration and default model.
+    let permissions = PickerMenus.permissions(kind: .claude, chosen: "plan", forThread: false)
+    #expect(
+      permissions.map(\.title) == [
+        "As configured", "Ask permissions", "Accept edits", "Plan mode", "Bypass permissions",
+      ])
+    #expect(permissions.first == PickerChoice(title: "As configured", value: nil, selected: false))
+    #expect(permissions.filter(\.selected).map(\.value) == ["plan"])
+    #expect(
+      PickerMenus.permissions(kind: .codex, chosen: nil, forThread: false).map(\.title) == [
+        "As configured", "Read only", "Auto", "Full access",
+      ])
+
+    let chosen = PickerMenus.models(Self.claude, chosen: "opus", isChosenConnection: true, forThread: false)
+    #expect(chosen.map(\.title) == ["Default", "Opus", "Sonnet", "Haiku"])
+    #expect(chosen.filter(\.selected).map(\.value) == ["opus"])
+    // Another connection: Default and its models, nothing checked; one with no catalog still has
+    // Default, so it can be chosen.
+    let other = PickerMenus.models(Self.claude, chosen: "opus", isChosenConnection: false, forThread: false)
+    #expect(other.map(\.title) == ["Default", "Opus", "Sonnet", "Haiku"])
+    #expect(other.filter(\.selected).isEmpty)
+    let codex = Connection(id: "codex-1", kind: .codex, label: "Codex", target: "", status: .ready)
+    #expect(
+      PickerMenus.models(codex, chosen: nil, isChosenConnection: false, forThread: false) == [
+        PickerChoice(title: "Default", value: nil, selected: false)
+      ])
+  }
+
+  @Test func aThreadDropsTheDefaultsOnceOverridden() {
+    // No override yet: the defaults are listed and checked.
+    let unset = PickerMenus.permissions(kind: .claude, chosen: nil, forThread: true)
+    #expect(unset.first == PickerChoice(title: "As configured", value: nil, selected: true))
+    let unsetModels = PickerMenus.models(Self.claude, chosen: nil, isChosenConnection: true, forThread: true)
+    #expect(unsetModels.first == PickerChoice(title: "Default", value: nil, selected: true))
+    // An override cannot be cleared (Codex keeps it for later turns), so the defaults go.
+    let set = PickerMenus.permissions(kind: .codex, chosen: "auto", forThread: true)
+    #expect(set.map(\.title) == ["Read only", "Auto", "Full access"])
+    #expect(set.filter(\.selected).map(\.value) == ["auto"])
+    let setModels = PickerMenus.models(
+      Self.claude, chosen: "haiku", isChosenConnection: true, forThread: true)
+    #expect(setModels.map(\.title) == ["Opus", "Sonnet", "Haiku"])
+    #expect(setModels.filter(\.selected).map(\.value) == ["haiku"])
+  }
+
+  @Test func aThreadsModelOutsideTheCatalogIsListedChecked() {
+    // A model the connection does not list (or no catalog at all) still shows, by its id.
+    let bare = Connection(id: "codex-1", kind: .codex, label: "Codex", target: "", status: .ready)
+    #expect(
+      PickerMenus.models(bare, chosen: "gpt-5.5-codex", isChosenConnection: true, forThread: true) == [
+        PickerChoice(title: "gpt-5.5-codex", value: "gpt-5.5-codex", selected: true)
+      ])
+    let listed = PickerMenus.models(
+      Self.claude, chosen: "claude-opus-5", isChosenConnection: true, forThread: true)
+    #expect(listed.map(\.title) == ["Opus", "Sonnet", "Haiku", "claude-opus-5"])
+    #expect(listed.filter(\.selected).map(\.value) == ["claude-opus-5"])
+  }
+
+  @Test func b4HasNoPermissionOrModelItems() {
+    let agent = Connection(
+      id: "b4-p1", kind: .b4, label: "research", target: "", routeKey: "/research#agent",
+      b4Mode: .managedLocal, status: .ready)
+    #expect(PickerMenus.permissions(kind: .b4, chosen: nil, forThread: false).isEmpty)
+    #expect(PickerMenus.permissions(kind: .b4, chosen: nil, forThread: true).isEmpty)
+    #expect(PickerMenus.models(agent, chosen: nil, isChosenConnection: true, forThread: false).isEmpty)
+  }
+
+  @Test func runtimeSectionsPutClaudeFirstAndRemoteB4OnTheMacOnly() async throws {
+    let mac = try await Phone.macModel(ScriptedTransport())
+    let draft = NewThreadDraft(model: mac, projectId: "p1")
+    var sections = PickerMenus.runtimeSections(draft.connections)
+    #expect(sections.harness.map(\.id) == ["claude-1", "claude-2", "codex-1"])
+    #expect(sections.local.map(\.id) == ["b4-p1"])
+    #expect(sections.remote.map(\.id) == ["b4-remote"])
+    // With a remote B4 chosen there is no project, so no local agent is offered.
+    draft.selectRuntime(connectionId: "b4-remote", model: nil)
+    sections = PickerMenus.runtimeSections(draft.connections)
+    #expect(sections.local.isEmpty)
+    #expect(sections.remote.map(\.id) == ["b4-remote"])
+    await mac.disconnect()
+
+    let phone = try await Phone.model(ScriptedTransport(), clock: TestClock())
+    let phoneSections = PickerMenus.runtimeSections(NewThreadDraft(model: phone, projectId: "p1").connections)
+    #expect(phoneSections.harness.map(\.id) == ["claude-1", "codex-1"])
+    #expect(phoneSections.local.map(\.id) == ["b4-p1"])
+    #expect(phoneSections.remote.isEmpty)
+    await phone.disconnect()
+  }
 }
