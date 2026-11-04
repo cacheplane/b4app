@@ -447,7 +447,8 @@ Prove a backup restores and holds the data. Two parts: a full drill in the test 
    # instance in the VPC's default group where the hub cannot reach it.
    SG=$(aws rds describe-db-instances --db-instance-identifier b4hub-$ENV \
      --query 'DBInstances[0].VpcSecurityGroups[0].VpcSecurityGroupId' --output text)
-   jq --arg sg "$SG" '.DBInstanceIdentifier = "b4hub-test-drill" | .PubliclyAccessible = "false"
+   # VpcSecurityGroupIds is a JSON array inside a string, as every metadata value is a string.
+   jq --arg sg "[\"$SG\"]" '.DBInstanceIdentifier = "b4hub-test-drill" | .PubliclyAccessible = "false"
      | .Port = "5432" | .VpcSecurityGroupIds = $sg | del(.DBSnapshotIdentifier, .IOPS)' \
      "$tmp/meta.json" > "$tmp/drill.json"
    ```
