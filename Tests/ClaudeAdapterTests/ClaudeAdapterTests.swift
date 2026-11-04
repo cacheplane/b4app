@@ -64,6 +64,8 @@ private let clean = ["PATH": "/usr/bin"]
     #expect(args.firstIndex(of: "--resume").map { args[$0 + 1] } == "sess_1")
     #expect(!args.contains("--bare"))
     #expect(!args.contains("-p"))
+    // No permission mode: Claude Code's own settings choose it.
+    #expect(!args.contains("--permission-mode"))
   }
 
   @Test func childEnvironmentDropsApiCredentials() {
@@ -86,6 +88,12 @@ private let clean = ["PATH": "/usr/bin"]
     #expect(user["type"]?.stringValue == "user")
     #expect(user["message"]?["content"]?.arrayValue?.first?["text"]?.stringValue == "hi")
     #expect(user["parent_tool_use_id"]?.isNull == true)
+    let setModel = String(
+      decoding: try ClaudeStream.setModelRequest(requestId: "r2", model: "opus"), as: UTF8.self)
+    #expect(
+      setModel
+        == "{\"request\":{\"model\":\"opus\",\"subtype\":\"set_model\"},\"request_id\":\"r2\",\"type\":\"control_request\"}\n"
+    )
   }
 
   @Test func decodesCanUseToolAndEncodesDecisions() throws {

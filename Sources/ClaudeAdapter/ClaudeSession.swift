@@ -13,6 +13,10 @@ actor ClaudeSession {
     var sessionId: String
     var resume: Bool
     var clientVersion: String
+    var model: String?
+    /// Nil leaves the mode to Claude Code's own settings.
+    var permissionMode: String?
+    var addDirectories: [String] = []
     var handshakeTimeout: Duration = .seconds(30)
   }
 
@@ -49,6 +53,9 @@ actor ClaudeSession {
     } else {
       launch.sessionId = options.sessionId
     }
+    launch.model = options.model
+    launch.permissionMode = options.permissionMode
+    launch.addDirectories = options.addDirectories
     let child = try StreamingProcess.start(
       executable: options.executablePath, arguments: launch.arguments,
       environment: ClaudeStream.childEnvironment(
@@ -161,6 +168,16 @@ actor ClaudeSession {
       throwing: WorkspaceError(
         .endpointUnavailable, "Claude Code did not answer \"\(subtype)\" within \(timeout).",
         details: ["reason": "timeout", "subtype": .string(subtype)]))
+  }
+
+  /// Switch the running session's model (`set_model`); throws when Claude Code refuses it.
+  func setModel(_ model: String) async throws {
+    _ = try await control("set_model", ["model": .string(model)])
+  }
+
+  /// Switch the running session's permission mode (`set_permission_mode`); throws when refused.
+  func setPermissionMode(_ mode: String) async throws {
+    _ = try await control("set_permission_mode", ["mode": .string(mode)])
   }
 
   /// Write a pre-encoded line (a `user` message or a `control_response`).

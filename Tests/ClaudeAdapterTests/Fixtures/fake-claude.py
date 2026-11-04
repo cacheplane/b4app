@@ -6,7 +6,9 @@ recorded from Claude Code 2.1.282 (docs/research/2026-10-30-claude-cli-stream-pr
 interrupt, "crash" exits mid-turn, "fail" returns an error result. Resuming session "missing" fails as
 the real CLI does; "missing-late" fails the same way, but its stderr line is written by a grandchild
 300 ms after the fake has exited (stderr ends only then). Never a substitute for the real CLI in
-anything the docs call live-tested."""
+anything the docs call live-tested. FAKE_CLAUDE_LOG=<file> appends one JSON line for the argv at
+start, one per control request and one per user message, in order; FAKE_CLAUDE_REJECT_CONTROL=<subtype>
+answers that control request with an error."""
 import json
 import os
 import sys
@@ -56,7 +58,15 @@ def log(text):
     sys.stderr.flush()
 
 
+def record_log(obj):
+    path = os.environ.get("FAKE_CLAUDE_LOG")
+    if path:
+        with open(path, "a") as f:
+            f.write(json.dumps(obj) + "\n")
+
+
 log("argv %r" % args)
+record_log({"argv": args})
 if resumed and session_id == "missing-late":
     import subprocess
     # Only stderr is inherited: stdout reaches EOF when this process exits, stderr 300 ms later.
@@ -92,6 +102,10 @@ def read():
         sys.exit(0)
     msg = json.loads(line)
     log("<- " + line.strip()[:300])
+    if msg.get("type") == "control_request":
+        record_log({"control": msg["request"].get("subtype"), "request": msg["request"]})
+    elif msg.get("type") == "user":
+        record_log({"user": msg["message"]["content"][0]["text"]})
     return msg
 
 
@@ -165,6 +179,9 @@ while True:
                 "commands": [], "agents": [], "models": [], "account": {"email": "owner@example.com", "organization": "Owner",
                                                                         "subscriptionType": "max", "apiProvider": "firstParty"},
                 "current_permission_mode": "default", "session_state": "idle", "pid": os.getpid()}}})
+        elif request.get("subtype") == os.environ.get("FAKE_CLAUDE_REJECT_CONTROL"):
+            send({"type": "control_response", "response": {"subtype": "error", "request_id": msg["request_id"],
+                                                           "error": "Unsupported control request: " + request["subtype"]}})
         elif request.get("subtype") == "interrupt":
             send({"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"],
                                                            "response": {"still_queued": 0, "cancelled": False}}})

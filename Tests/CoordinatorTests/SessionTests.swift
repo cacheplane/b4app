@@ -510,6 +510,19 @@ actor EventCollector {
 }
 
 @Suite(.serialized) struct ClaudeSessionServiceTests {
+  @Test func inspectionModelsReachTheConnection() async throws {
+    let h = try await Harness.start()
+    let claude = try await h.addClaude()
+    let inspected = try await h.client.request(
+      ConnectionInspect.self, ConnectionInspect.Params(connectionId: claude.id),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    #expect(inspected.connection.models?.map(\.id) == ["opus", "sonnet", "haiku"])
+    let listed = try await h.client.request(ConnectionList.self, ConnectionList.Params())
+    #expect(
+      listed.connections.first { $0.id == claude.id }?.models?.map(\.id) == ["opus", "sonnet", "haiku"])
+    await h.stop()
+  }
+
   @Test func runsAClaudeConversationBesideACodexThread() async throws {
     let h = try await Harness.start()
     let codex = try await h.addCodex()

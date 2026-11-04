@@ -21,10 +21,19 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable {
 
   private enum Ack: Sendable { case acknowledged, exited(String), timedOut }
 
+  /// The model, permission mode, and extra directories a session's process runs with.
+  private struct Settings: Equatable {
+    var model: String?
+    var permission: String?
+    var directories: [String]
+  }
+
   private let executablePath: String?
   private let environment: [String: String]
   private let clientVersion: String
   private var sessions: [String: ClaudeSession] = [:]
+  /// Per live session, what its process was launched with or last switched to.
+  private var applied: [String: Settings] = [:]
   /// Set by `dispose()`, for good: no `claude` process is started after it.
   private var disposed = false
   private var trackers: [String: ClaudeTurnTracker] = [:]
@@ -91,6 +100,7 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable {
     if inspection.status == .ready, inspection.authStatus == .authenticated {
       scope = inspection.nativeScope
       inspection.capabilities = Self.capabilities
+      inspection.models = RuntimeOptions.claudeModels
     } else {
       scope = nil
     }
@@ -105,14 +115,25 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable {
 
   // MARK: - Sessions
 
-  private func startSession(id: String, workingDirectory: String, resume: Bool) async throws -> ClaudeSession
-  {
+  /// A permission id Claude Code knows, else nil: a value synced from another device reaches the
+  /// adapter unvalidated, and an unknown one leaves Claude Code's own setting in place.
+  static func permissionMode(_ id: String?) -> String? {
+    guard let id, RuntimeOptions.permissions(for: .claude).contains(where: { $0.id == id }) else {
+      return nil
+    }
+    return id
+  }
+
+  private func startSession(
+    id: String, workingDirectory: String, resume: Bool, settings: Settings
+  ) async throws -> ClaudeSession {
     let path = try locate()
     generation += 1
     let session = ClaudeSession(
       options: ClaudeSession.Options(
         executablePath: path, environment: environment, workingDirectory: workingDirectory, sessionId: id,
-        resume: resume, clientVersion: clientVersion))
+        resume: resume, clientVersion: clientVersion, model: settings.model,
+        permissionMode: settings.permission, addDirectories: settings.directories))
     do {
       try await session.start()
     } catch {
@@ -132,6 +153,7 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable {
       throw Self.disposedError
     }
     sessions[id] = session
+    applied[id] = settings
     trackers[id] = ClaudeTurnTracker(connectionId: connectionId, sessionId: id, generation: generation)
     pumps[id] = Task { [weak self] in
       for await inbound in session.inbound {
@@ -172,8 +194,39 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable {
       ackWaiters.removeValue(forKey: id)?.resume(returning: .exited(tail))
       pendingRequests = pendingRequests.filter { $0.value.sessionId != id }
       sessions[id] = nil
+      applied[id] = nil
       trackers[id] = nil
       pumps[id] = nil
+    }
+  }
+
+  /// Stop the session's process and start it again on the same conversation (`--resume`) with new
+  /// launch flags. A deliberate stop between turns: its exit is not reported as the runtime exiting.
+  private func restart(id: String, workingDirectory: String, settings: Settings) async throws -> ClaudeSession
+  {
+    let old = sessions.removeValue(forKey: id)
+    let pump = pumps.removeValue(forKey: id)
+    trackers[id] = nil
+    applied[id] = nil
+    pendingRequests = pendingRequests.filter { $0.value.sessionId != id }
+    await old?.close()
+    // The old process's last frames and its exit are handled (and dropped) before the new one registers.
+    await pump?.value
+    return try await startSession(
+      id: id, workingDirectory: workingDirectory, resume: true, settings: settings)
+  }
+
+  /// Run a control request that changes a live session; Claude Code refusing it fails the turn.
+  private func change(_ control: String, _ request: () async throws -> Void) async throws {
+    do {
+      try await request()
+    } catch {
+      let failure = WorkspaceError.from(error)
+      // A refusal (`control_response` error); a timeout or an exit keeps its own code.
+      guard failure.code == .internalError else { throw failure }
+      throw WorkspaceError(
+        .unsupportedCapability, "Claude Code refused \(control): \(failure.message)",
+        details: ["control": .string(control)])
     }
   }
 
@@ -209,18 +262,40 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable {
     let scope = try await ensureAccount()
     let directory = input.workingDirectory ?? NSHomeDirectory()
     let id = UUID().uuidString.lowercased()
-    _ = try await startSession(id: id, workingDirectory: directory, resume: false)
+    let settings = Settings(
+      model: input.model, permission: Self.permissionMode(input.permission),
+      directories: input.additionalDirectories)
+    _ = try await startSession(id: id, workingDirectory: directory, resume: false, settings: settings)
     return NativeSessionRef(nativeSessionId: id, nativeScope: scope)
   }
 
   public func sendTurn(_ ref: NativeSessionRef, input: TurnInput) async throws -> SubmissionReceipt {
     let id = ref.nativeSessionId
+    let directory = input.workingDirectory ?? NSHomeDirectory()
+    let wanted = Settings(
+      model: input.model, permission: Self.permissionMode(input.permission),
+      directories: input.additionalDirectories)
     let session: ClaudeSession
-    if let live = sessions[id], await live.isRunning {
-      session = live
+    if let live = sessions[id], await live.isRunning, let current = applied[id] {
+      // An unset model or permission keeps what the process runs with: the app never clears an override.
+      let next = Settings(
+        model: wanted.model ?? current.model, permission: wanted.permission ?? current.permission,
+        directories: wanted.directories)
+      if Set(next.directories) != Set(current.directories) {
+        session = try await restart(id: id, workingDirectory: directory, settings: next)
+      } else {
+        if let model = next.model, model != current.model {
+          try await change("set_model") { try await live.setModel(model) }
+          applied[id]?.model = model
+        }
+        if let mode = next.permission, mode != current.permission {
+          try await change("set_permission_mode") { try await live.setPermissionMode(mode) }
+          applied[id]?.permission = mode
+        }
+        session = live
+      }
     } else {
-      session = try await startSession(
-        id: id, workingDirectory: input.workingDirectory ?? NSHomeDirectory(), resume: true)
+      session = try await startSession(id: id, workingDirectory: directory, resume: true, settings: wanted)
     }
     let turnUuid = UUID().uuidString.lowercased()
     trackers[id]?.beginTurn(uuid: turnUuid)

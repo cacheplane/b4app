@@ -57,25 +57,71 @@ struct Rig {
   let collector: EventCollector
   let workDir: String
   let projects: String
+  /// The fake's `FAKE_CLAUDE_LOG`: its argv, control requests, and user messages, one JSON line each.
+  let log: String
 
-  init() throws {
+  init(environment extra: [String: String] = [:]) throws {
     let base = NSTemporaryDirectory() + "b4claude-\(UUID().uuidString.prefix(8))"
     workDir = base + "/work"
     projects = base + "/projects"
+    log = base + "/fake-claude.log"
     try FileManager.default.createDirectory(atPath: workDir, withIntermediateDirectories: true)
     try FileManager.default.createDirectory(atPath: projects, withIntermediateDirectories: true)
     var env = ProcessInfo.processInfo.environment
     env["FAKE_CLAUDE_PROJECTS"] = projects
     env["ANTHROPIC_API_KEY"] = nil
+    env["FAKE_CLAUDE_LOG"] = log
+    for (key, value) in extra { env[key] = value }
     adapter = ClaudeAdapter(
       connectionId: "c1", executablePath: fakeClaudePath(), environment: env, clientVersion: "test")
     collector = EventCollector(adapter.events())
   }
 
-  func turn(_ ref: NativeSessionRef, _ text: String) async throws -> SubmissionReceipt {
+  func turn(
+    _ ref: NativeSessionRef, _ text: String, model: String? = nil, permission: String? = nil,
+    additionalDirectories: [String] = []
+  ) async throws -> SubmissionReceipt {
     try await adapter.sendTurn(
-      ref, input: TurnInput(operationId: UUID().uuidString, text: text, workingDirectory: workDir))
+      ref,
+      input: TurnInput(
+        operationId: UUID().uuidString, text: text, workingDirectory: workDir, model: model,
+        permission: permission, additionalDirectories: additionalDirectories))
   }
+
+  /// A turn that runs to its end.
+  func completedTurn(
+    _ ref: NativeSessionRef, _ text: String, model: String? = nil, permission: String? = nil,
+    additionalDirectories: [String] = []
+  ) async throws {
+    let receipt = try await turn(
+      ref, text, model: model, permission: permission, additionalDirectories: additionalDirectories)
+    let finished = try await collector.waitFor {
+      $0.kind == .turnFinished && $0.nativeIds["turnId"] == receipt.nativeTurnId
+    }
+    #expect(finished.payload["outcome"]?.stringValue == "completed")
+  }
+
+  func logLines() throws -> [JSONValue] {
+    let text = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
+    return try text.split(separator: "\n").map {
+      try JSONDecoder().decode(JSONValue.self, from: Data($0.utf8))
+    }
+  }
+
+  /// Each launch's arguments, in order.
+  func launches() throws -> [[String]] {
+    try logLines().compactMap { $0["argv"]?.arrayValue?.compactMap(\.stringValue) }
+  }
+
+  /// The log entries for control requests of `subtype`.
+  func controls(_ subtype: String) throws -> [JSONValue] {
+    try logLines().filter { $0["control"]?.stringValue == subtype }
+  }
+}
+
+/// The values that follow each occurrence of `flag`.
+func values(of flag: String, in argv: [String]) -> [String] {
+  argv.indices.filter { argv[$0] == flag && $0 + 1 < argv.count }.map { argv[$0 + 1] }
 }
 
 @Suite(.serialized) struct ClaudeSessionTests {
@@ -100,6 +146,7 @@ struct Rig {
     #expect(inspection.nativeScope == "owner@example.com")
     #expect(inspection.version == "2.1.282")
     #expect(inspection.capabilities[.permissionDecisions] == .supported)
+    #expect(inspection.models?.map(\.id) == ["opus", "sonnet", "haiku"])
     let login = try await rig.adapter.startLogin()
     #expect(login.authUrl.hasPrefix("https://claude.ai/oauth/authorize"))
     try await rig.collector.waitFor {
@@ -280,6 +327,100 @@ struct Rig {
     } catch let error as WorkspaceError {
       #expect(error.code == .nativeSessionMissing)
     }
+    await rig.adapter.dispose()
+  }
+  @Test func launchPassesModelPermissionAndDirectories() async throws {
+    let rig = try Rig()
+    _ = try await rig.adapter.createSession(
+      NewSessionInput(
+        workingDirectory: rig.workDir, model: "opus", permission: "plan", additionalDirectories: ["/x", "/z"])
+    )
+    let argv = try #require(try rig.launches().first)
+    #expect(values(of: "--model", in: argv) == ["opus"])
+    #expect(values(of: "--permission-mode", in: argv) == ["plan"])
+    #expect(values(of: "--add-dir", in: argv) == ["/x", "/z"])
+    await rig.adapter.dispose()
+  }
+
+  /// No permission ("As configured"), or one Claude Code does not know, leaves Claude Code's settings.
+  @Test func asConfiguredOmitsPermissionMode() async throws {
+    let rig = try Rig()
+    _ = try await rig.adapter.createSession(NewSessionInput(workingDirectory: rig.workDir))
+    _ = try await rig.adapter.createSession(
+      NewSessionInput(workingDirectory: rig.workDir, permission: "yolo"))
+    let launches = try rig.launches()
+    #expect(launches.count == 2)
+    for argv in launches {
+      #expect(!argv.contains("--permission-mode"))
+      #expect(!argv.contains("--model"))
+      #expect(!argv.contains("--add-dir"))
+    }
+    await rig.adapter.dispose()
+  }
+
+  @Test func aChangedPermissionIsSentAsAControlRequest() async throws {
+    let rig = try Rig()
+    let ref = try await rig.adapter.createSession(NewSessionInput(workingDirectory: rig.workDir))
+    try await rig.completedTurn(ref, "hello")
+    try await rig.completedTurn(ref, "hello again", permission: "acceptEdits")
+    let sent = try rig.controls("set_permission_mode")
+    #expect(sent.map { $0["request"]?["mode"]?.stringValue } == ["acceptEdits"])
+    // Sent before the turn's user message, on the same process.
+    let order = try rig.logLines().compactMap { $0["control"]?.stringValue ?? $0["user"]?.stringValue }
+    #expect(order.suffix(2) == ["set_permission_mode", "hello again"])
+    #expect(try rig.launches().count == 1)
+    // Unchanged, or unset (the override stays), sends nothing more.
+    try await rig.completedTurn(ref, "third", permission: "acceptEdits")
+    try await rig.completedTurn(ref, "fourth")
+    #expect(try rig.controls("set_permission_mode").count == 1)
+    await rig.adapter.dispose()
+  }
+
+  @Test func aChangedModelIsSentAsAControlRequest() async throws {
+    let rig = try Rig()
+    let ref = try await rig.adapter.createSession(
+      NewSessionInput(workingDirectory: rig.workDir, model: "opus"))
+    try await rig.completedTurn(ref, "hello", model: "opus")
+    #expect(try rig.controls("set_model").isEmpty)
+    try await rig.completedTurn(ref, "hello again", model: "sonnet")
+    #expect(try rig.controls("set_model").map { $0["request"]?["model"]?.stringValue } == ["sonnet"])
+    #expect(try rig.launches().count == 1)
+    await rig.adapter.dispose()
+  }
+
+  @Test func aRefusedControlRequestFailsTheTurn() async throws {
+    let rig = try Rig(environment: ["FAKE_CLAUDE_REJECT_CONTROL": "set_model"])
+    let ref = try await rig.adapter.createSession(NewSessionInput(workingDirectory: rig.workDir))
+    try await rig.completedTurn(ref, "hello")
+    let refused = await #expect(throws: WorkspaceError.self) {
+      _ = try await rig.turn(ref, "hello again", model: "sonnet")
+    }
+    #expect(refused?.code == .unsupportedCapability)
+    #expect(refused?.message.contains("set_model") == true)
+    // The turn's message never reached Claude Code.
+    #expect(try rig.logLines().compactMap { $0["user"]?.stringValue } == ["hello"])
+    await rig.adapter.dispose()
+  }
+
+  /// `--add-dir` is a launch flag: a new directory set restarts the process on the same conversation.
+  @Test func changedDirectoriesRestartWithResume() async throws {
+    let rig = try Rig()
+    let ref = try await rig.adapter.createSession(
+      NewSessionInput(workingDirectory: rig.workDir, permission: "plan", additionalDirectories: ["/x"]))
+    try await rig.completedTurn(ref, "hello", permission: "plan", additionalDirectories: ["/x"])
+    try await rig.completedTurn(ref, "hello again", additionalDirectories: ["/y"])
+    let launches = try rig.launches()
+    #expect(launches.count == 2)
+    let restarted = try #require(launches.last)
+    #expect(values(of: "--resume", in: restarted) == [ref.nativeSessionId])
+    #expect(values(of: "--add-dir", in: restarted) == ["/y"])
+    // The permission the thread already had carries over.
+    #expect(values(of: "--permission-mode", in: restarted) == ["plan"])
+    // A deliberate restart is not reported as the runtime exiting.
+    let exits = await rig.collector.events.filter {
+      $0.kind == .connectionChanged && $0.payload["transport"]?.stringValue == "disconnected"
+    }
+    #expect(exits.isEmpty)
     await rig.adapter.dispose()
   }
 }
