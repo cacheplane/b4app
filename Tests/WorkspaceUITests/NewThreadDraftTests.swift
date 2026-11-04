@@ -960,4 +960,79 @@ private enum Phone {
     #expect(memory.lastRuntime == RuntimeChoice(connectionId: "codex-1", model: nil, permission: nil))
     await model.disconnect()
   }
+
+  // MARK: The composer
+
+  @Test func startRefusedKeepsTheText() async throws {
+    let transport = ScriptedTransport()
+    let existing = PhoneFixture.thread("t-old", owner: nil)
+    let model = try await Phone.macModel(transport, threads: [existing])
+    try await waitUntil("threads") { model.threads.count == 1 }
+    let draft = model.newThreadDraft
+    draft.selectFolder("/work/atlas", in: "p1")
+    draft.text = "Find the flaky test"
+    transport.script(
+      .threadStart, [.failure(WorkspaceError(.protocolInvalid, "That folder is not in this project."))])
+    await draft.send()
+    #expect(draft.text == "Find the flaky test")
+    #expect(draft.status == "That folder is not in this project.")
+    #expect(draft.statusIsFailure)
+    #expect(model.threads.map(\.id) == ["t-old"])
+    #expect(model.selectedThreadId == nil)
+    await model.disconnect()
+  }
+
+  @Test func secondSendWhileStartingIsIgnored() async throws {
+    let transport = ScriptedTransport()
+    let model = try await Phone.macModel(transport)
+    let draft = model.newThreadDraft
+    draft.selectFolder("/work/atlas", in: "p1")
+    draft.text = "Once"
+    transport.script(.threadStart, [.hold])
+    let first = Task { await draft.send() }
+    try await waitUntil("starting") { transport.heldCount(.threadStart) == 1 }
+    // A second Send (a double click, Return pressed twice) while the first is out does nothing at
+    // all: no second start, and no refusal left behind to show once the first one settles.
+    await draft.send()
+    #expect(transport.recorded(.threadStart).count == 1)
+    #expect(draft.refusal == nil)
+    #expect(draft.status == RelayCopy.starting)
+
+    let pending = try #require(model.pendingSends.values.first)
+    var thread = PhoneFixture.thread(pending.threadId, owner: nil)
+    thread.projectId = "p1"
+    thread.context = "/work/atlas"
+    transport.setRead(ThreadRead.Result(thread: thread, turns: [], items: [], requests: []))
+    transport.release(.threadStart, with: Phone.started(thread, pending.id))
+    await first.value
+    #expect(draft.finished)
+    #expect(draft.refusal == nil)
+    #expect(transport.recorded(.threadStart).count == 1)
+    await model.disconnect()
+  }
+
+  @Test func aThreadsRuntimeChangeIsSent() async throws {
+    let transport = ScriptedTransport()
+    var thread = PhoneFixture.thread("t1", owner: nil)
+    thread.connectionId = "claude-1"
+    let model = try await Phone.macModel(transport, threads: [thread])
+    try await waitUntil("threads") { model.threads.count == 1 }
+    var changed = thread
+    changed.permission = "plan"
+    transport.script(.threadUpdate, [.result(try JSONValue(encoding: ThreadUpdate.Result(thread: changed)))])
+    await model.setThreadRuntime(threadId: "t1", model: nil, permission: "plan")
+    let calls = transport.recorded(.threadUpdate)
+    #expect(calls.count == 1)
+    #expect(calls.first?.params["threadId"] == "t1")
+    #expect(calls.first?.params["permission"] == "plan")
+    #expect(calls.first?.params["model"] == nil || calls.first?.params["model"] == .null)
+    // The reply is the thread as stored: the row and the picker show the choice at once.
+    #expect(model.threads.first?.permission == "plan")
+    #expect(model.lastError == nil)
+
+    // Nothing to change sends nothing.
+    await model.setThreadRuntime(threadId: "t1", model: nil, permission: nil)
+    #expect(transport.recorded(.threadUpdate).count == 1)
+    await model.disconnect()
+  }
 }

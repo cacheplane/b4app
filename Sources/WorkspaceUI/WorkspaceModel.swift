@@ -157,6 +157,9 @@ public final class WorkspaceModel {
   public private(set) var pendingThreadOpen: String?
   /// Counts every `requestOpenThread`; the root view moves the iPhone to the thread column on a change.
   public private(set) var detailRequest = 0
+  /// Counts each request to put the cursor in the new-thread composer; `NewThreadView` focuses its
+  /// field on a change, as it does when it appears.
+  public internal(set) var newThreadFocusRequest = 0
   /// The iPhone's Settings sheet.
   public var showSettingsSheet = false
   /// Set by the Settings views while they are on screen.

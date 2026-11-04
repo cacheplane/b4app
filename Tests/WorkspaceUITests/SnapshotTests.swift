@@ -280,6 +280,25 @@ struct SnapshotShell: View {
     }
   }
 
+  /// The blank new-thread composer, and the picker row under a thread's composer: the place fixed,
+  /// its permission and model live.
+  @Test func newThreadComposer() async throws {
+    let model = try await ListFixture.model()
+    model.preferences = InMemoryPreferences()
+    try await render("newThreadComposer", size: CGSize(width: 760, height: 420)) {
+      NewThreadView(model: model)
+    }
+    var thread = try #require(model.threads.first { $0.id == "busy" })
+    thread.model = "sonnet"
+    thread.permission = "plan"
+    try await render("threadPickerRow", size: CGSize(width: 560, height: 120)) {
+      ComposerPickerRow(model: model, .thread(thread))
+        .padding(LLA.Space.l)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(LLA.Color.bg)
+    }
+  }
+
   @Test func macSidebarGroupsByProject() async throws {
     let model = try await ListFixture.model()
     try await render("macSidebarGroupsByProject", size: CGSize(width: 290, height: 800)) {

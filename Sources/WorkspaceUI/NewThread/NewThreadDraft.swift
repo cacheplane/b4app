@@ -280,8 +280,10 @@ final class NewThreadDraft {
   }
 
   /// Send: create the thread and start its first turn in one command. The text and the choices stay
-  /// until the Mac accepts (then the model clears the text and remembers the choices).
+  /// until the Mac accepts (then the model clears the text and remembers the choices). A second Send
+  /// while this draft's start is out does nothing, so no refusal is left to show once it settles.
   func send() async {
+    guard !submitting else { return }
     guard canSend, let connection else {
       refusal = blockedReason ?? RelayCopy.startRefused
       return

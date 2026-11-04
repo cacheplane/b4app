@@ -30,6 +30,8 @@ struct ComposerView: View {
         sendOrStop
       }
       .disabled(unreachable != nil)
+      // Where the thread runs, and the permission and model its next turn uses.
+      ComposerPickerRow(model: model, .thread(detail.thread))
     }
     .padding(.horizontal, LLA.Metrics.margin)
     .padding(.top, LLA.Space.s)
