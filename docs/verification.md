@@ -2,6 +2,15 @@
 
 Gate results and unresolved checks, newest first. Each entry names what was exercised, how, and what remains open. Live checks are only those run on the target Mac against real runtimes.
 
+## 2026-11-04: Rolling deploys on two tasks after D-172, live
+
+Rerun of the two-task live check ("The test hub on two tasks, live", below) once D-172 (#103, `d0a7116`) reached `hub.test.b4.run` (task definition 30). The same script and the same throwaway `livecheck` user were used, with three fresh codes minted through `admin-shell.sh test hub` and never printed. **22 of 22 passed**:
+
+- Everything that passed before passed again: routing and `409 relocated`; long-poll wake-ups across instances (1.21 to 1.25 s, of which 1 s is the script's own delay); `refresh` and named watch refusals; and log-out and revocation through the other instance (4001, 0.28 s and 0.50 s).
+- **A forced rolling deploy.** The load balancer cut both links with no close code, as before. The iPhone relinked to a new task in 0.26 s (one attempt), and the Mac in 0.85 s (three attempts: two `409 relocated` while a sibling's claim moved, then served). Before D-172 the figures were 16.8 s and 25.0 s. Both ended on the same new instance.
+- **Another Mac on the test hub (`01a19ee2…`) shows the same thing in the hub's logs.** Through #103's own rollout (01:15 UTC), whose old tasks still ran the code without D-172, it was cut, refused `relocated` seven times, and relinked after SIGTERM: 22 s offline. Through the forced deploy on the new code (01:20 UTC) it was cut at 01:20:13.006 and relinked at 01:20:13.651, 0.65 s later, while SIGTERM came at 01:20:32.
+- The `livecheck` devices are revoked again; the org and user remain.
+
 ## 2026-11-03: The LaunchAgent boot-out against the real launchctl (D-133)
 
 Branch `blove/launchctl-live-test`, from main at `4c8a88c`. A new opt-in suite, `Tests/CoordinatorTests/LegacyAdoptionLiveTests.swift`, runs `LegacyAdoption.bootOutLegacyJob` against the real `launchctl` with `B4APP_LIVE_LAUNCHCTL=1`. Each test bootstraps a throwaway job (`/bin/sleep 600` under `com.cacheplane.b4app.test.legacy-bootout.<random>`, never the legacy label) into this user's GUI domain and boots it out at the end. The legacy plist the identity rule reads is written in a temporary home. Run on the owner's MacBook Pro; no other job was touched, and `launchctl list` showed no test job left afterwards.
