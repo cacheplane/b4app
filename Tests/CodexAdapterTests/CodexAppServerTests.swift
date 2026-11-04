@@ -57,8 +57,26 @@ actor EventCollector {
   func kinds() -> [EventKind] { events.map(\.kind) }
 }
 
-private func makeAdapter() -> CodexAdapter {
-  CodexAdapter(connectionId: "c1", executablePath: fakeCodexPath(), clientVersion: "test")
+private func makeAdapter(_ environment: [String: String]? = nil) -> CodexAdapter {
+  guard let environment else {
+    return CodexAdapter(connectionId: "c1", executablePath: fakeCodexPath(), clientVersion: "test")
+  }
+  return CodexAdapter(
+    connectionId: "c1", executablePath: fakeCodexPath(),
+    environment: ProcessInfo.processInfo.environment.merging(environment) { $1 }, clientVersion: "test")
+}
+
+/// The requests the fake received for one method, as `FAKE_CODEX_PARAMS` recorded them.
+private func recordedParams(_ method: String, in file: URL) throws -> [JSONValue] {
+  try String(contentsOf: file, encoding: .utf8).split(separator: "\n").compactMap { line in
+    let entry = try JSONDecoder().decode(JSONValue.self, from: Data(line.utf8))
+    return entry["method"]?.stringValue == method ? entry["params"] : nil
+  }
+}
+
+private func paramsFile() -> URL {
+  FileManager.default.temporaryDirectory.appendingPathComponent(
+    "fake-codex-params-\(UUID().uuidString).jsonl")
 }
 
 @Suite(.serialized) struct CodexAppServerTests {
@@ -90,6 +108,64 @@ private func makeAdapter() -> CodexAdapter {
     let login = try await adapter.startLogin()
     #expect(login.authUrl.hasPrefix("https://auth.example/login"))
     await adapter.dispose()
+  }
+
+  @Test func inspectionListsModels() async throws {
+    let adapter = makeAdapter()
+    let inspection = try await adapter.inspectConnection()
+    #expect(inspection.models == [RuntimeModel(id: "gpt-fake", label: "GPT Fake")])
+    await adapter.dispose()
+  }
+
+  @Test func aRuntimeWithoutAModelListStillInspectsReady() async throws {
+    let adapter = makeAdapter(["FAKE_CODEX_NO_MODEL_LIST": "1"])
+    let inspection = try await adapter.inspectConnection()
+    #expect(inspection.status == .ready)
+    #expect(inspection.authStatus == .authenticated)
+    #expect(inspection.models == nil)
+    await adapter.dispose()
+  }
+
+  @Test func turnCarriesModelAndAutoWithWritableRoots() async throws {
+    let file = paramsFile()
+    defer { try? FileManager.default.removeItem(at: file) }
+    let adapter = makeAdapter(["FAKE_CODEX_PARAMS": file.path])
+    let ref = try await adapter.createSession(
+      NewSessionInput(workingDirectory: "/tmp/work", model: "gpt-fake"))
+    _ = try await adapter.sendTurn(
+      ref,
+      input: TurnInput(
+        operationId: "op1", text: "hello", workingDirectory: "/tmp/work", model: "gpt-fake",
+        permission: "auto",
+        additionalDirectories: ["/x"]))
+    await adapter.dispose()
+    let thread = try #require(try recordedParams("thread/start", in: file).first)
+    #expect(thread["model"]?.stringValue == "gpt-fake")
+    let turn = try #require(try recordedParams("turn/start", in: file).first)
+    #expect(turn["model"]?.stringValue == "gpt-fake")
+    #expect(turn["approvalPolicy"]?.stringValue == "on-request")
+    #expect(turn["sandboxPolicy"] == ["type": "workspaceWrite", "writableRoots": ["/x"]])
+  }
+
+  @Test func asConfiguredSendsNoPolicy() async throws {
+    let file = paramsFile()
+    defer { try? FileManager.default.removeItem(at: file) }
+    let adapter = makeAdapter(["FAKE_CODEX_PARAMS": file.path])
+    let ref = try await adapter.createSession(NewSessionInput(workingDirectory: "/tmp/work"))
+    _ = try await adapter.sendTurn(ref, input: TurnInput(operationId: "op1", text: "hello"))
+    // A permission id Codex does not define (a phone-synced value) is treated as none.
+    _ = try await adapter.sendTurn(
+      ref, input: TurnInput(operationId: "op2", text: "hello", permission: "bypassPermissions"))
+    await adapter.dispose()
+    let thread = try #require(try recordedParams("thread/start", in: file).first)
+    #expect(thread["model"] == nil)
+    let turns = try recordedParams("turn/start", in: file)
+    #expect(turns.count == 2)
+    for turn in turns {
+      #expect(turn["model"] == nil)
+      #expect(turn["approvalPolicy"] == nil)
+      #expect(turn["sandboxPolicy"] == nil)
+    }
   }
 
   @Test func createsAThreadAndStreamsATurn() async throws {
