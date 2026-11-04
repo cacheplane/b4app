@@ -441,9 +441,15 @@ Prove a backup restores and holds the data. Two parts: a full drill in the test 
    umask 077; tmp=$(mktemp -d)
    aws backup get-recovery-point-restore-metadata --backup-vault-name b4hub-test \
      --recovery-point-arn "$RP" --query RestoreMetadata > "$tmp/meta.json"
-   # The metadata AWS returns includes DBSnapshotIdentifier, which start-restore-job refuses
-   # ("should not be specified as metadata"); drop it.
-   jq '.DBInstanceIdentifier = "b4hub-test-drill" | .PubliclyAccessible = "false" | del(.DBSnapshotIdentifier)' "$tmp/meta.json" > "$tmp/drill.json"
+   # The metadata AWS returns is not restorable as is (seen 2026-11-04): it carries
+   # DBSnapshotIdentifier, which start-restore-job refuses; Port 0; an IOPS value a
+   # 20 GiB gp3 volume cannot take; and no security group, which would put the scratch
+   # instance in the VPC's default group where the hub cannot reach it.
+   SG=$(aws rds describe-db-instances --db-instance-identifier b4hub-$ENV \
+     --query 'DBInstances[0].VpcSecurityGroups[0].VpcSecurityGroupId' --output text)
+   jq --arg sg "$SG" '.DBInstanceIdentifier = "b4hub-test-drill" | .PubliclyAccessible = "false"
+     | .Port = "5432" | .VpcSecurityGroupIds = $sg | del(.DBSnapshotIdentifier, .IOPS)' \
+     "$tmp/meta.json" > "$tmp/drill.json"
    ```
 
 2. Restore and wait (about 15 minutes):
