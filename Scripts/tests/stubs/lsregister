@@ -1,0 +1,35 @@
+#!/bin/bash
+# Stands in for lsregister: `-dump` prints the fixture at $STUB_DUMP, leaving out every record whose
+# path a `-u` call removed; `-u <path>` and `-f <path>` are logged to $STUB_LOG.
+set -euo pipefail
+case "$1" in
+  -dump)
+    python3 -I - "$STUB_DUMP" "$STUB_LOG" <<'PY'
+import re, sys
+dump, log = sys.argv[1], sys.argv[2]
+removed = set()
+try:
+    with open(log) as f:
+        for line in f:
+            if line.startswith("-u "):
+                removed.add(line[3:].rstrip("\n"))
+except FileNotFoundError:
+    pass
+with open(dump) as f:
+    text = f.read()
+separator = "-" * 80 + "\n"
+for record in text.split(separator):
+    match = re.search(r"^path:\s+(.*?) \(0x[0-9a-f]+\)$", record, re.M)
+    if match and match.group(1) in removed:
+        continue
+    sys.stdout.write(separator + record)
+PY
+    ;;
+  -u | -f)
+    echo "$1 $2" >> "$STUB_LOG"
+    ;;
+  *)
+    echo "stub lsregister: unexpected arguments: $*" >&2
+    exit 1
+    ;;
+esac

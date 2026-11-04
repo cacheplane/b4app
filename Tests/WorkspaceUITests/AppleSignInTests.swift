@@ -153,6 +153,8 @@ private final class FakeApple: AppleCeremony {
 @MainActor
 private final class FakePasskeys: PasskeyCeremony {
   var hasPasskey = true
+  /// What the sheet fails with, when it does.
+  var assertError: (any Error)?
   private(set) var renamed: [(relyingParty: String, userHandle: Data, name: String)] = []
   private(set) var reportedUnknown: [(relyingParty: String, credentialID: Data)] = []
 
@@ -161,7 +163,8 @@ private final class FakePasskeys: PasskeyCeremony {
   }
 
   func assert(_ options: JSONValue) async throws -> JSONValue? {
-    hasPasskey ? ["id": "cred", "rawId": "cred", "type": "public-key"] : nil
+    if let assertError { throw assertError }
+    return hasPasskey ? ["id": "cred", "rawId": "cred", "type": "public-key"] : nil
   }
 
   func register(_ options: JSONValue) async throws -> JSONValue {
@@ -295,6 +298,56 @@ private func sha256Hex(_ text: String) -> String {
     #expect(model.signInProgress == SignInProgress())
     #expect(transport.calls(.accountAppleFinish).isEmpty)
     #expect(!SignInContent(model: model).elements.contains { $0.id == "signIn.failure" })
+  }
+
+  @Test func otherRegisteredCopiesAreNamedNotSwallowed() async throws {
+    // The Mac: an https callback the system refuses ends the session like a closed window; with
+    // other copies of the bundle id registered the ceremony raises `AppRegisteredElsewhere` (D-173),
+    // and the screen names the count and the script, instead of showing nothing.
+    let transport = ScriptedTransport()
+    let model = try await mac(signedOut, transport: transport)
+    transport.script(.accountAppleStart, [start("a"), start("b")])
+    let web = FakeApple()
+    web.web = .failure(AppRegisteredElsewhere(count: 3))
+    await model.signInWithApple(using: web)
+    #expect(transport.calls(.accountAppleFinish).isEmpty)
+    let line = try #require(model.signInProgress.failure)
+    #expect(line == SignInCopy.appRegisteredElsewhere(count: 3))
+    #expect(line.contains("3 other copies"))
+    #expect(line.contains("Scripts/fix-app-registrations.sh --apply"))
+    let shown = SignInContent(model: model).elements.first { $0.id == "signIn.failure" }
+    #expect(shown?.text == line)
+    #expect(SignInCopy.appRegisteredElsewhere(count: 1).contains("1 other copy of"))
+    #expect(model.accountState == .signedOut(reason: nil))
+
+    // The same line for a passkey sheet that failed for that reason.
+    transport.script(
+      .accountPasskeyBegin,
+      [
+        try reply(
+          AccountPasskeyBegin.Result(
+            ceremonyId: "c1", authentication: assertionOptions, registration: registrationOptions))
+      ])
+    let passkeys = FakePasskeys()
+    passkeys.assertError = AppRegisteredElsewhere(count: 1)
+    await model.signInWithPasskey(using: passkeys)
+    #expect(transport.calls(.accountPasskeyFinish).isEmpty)
+    #expect(model.signInProgress.failure == SignInCopy.appRegisteredElsewhere(count: 1))
+  }
+
+  @Test func otherCopiesAreTheRegisteredPathsBesidesThisOne() {
+    let own = URL(fileURLWithPath: "/Users/me/repos/b4app/dist/Agent Workspace.app/")
+    let intermediate = URL(fileURLWithPath: "/Users/me/repos/b4app/.build/DerivedData/Agent Workspace.app")
+    let scratch = URL(fileURLWithPath: "/private/tmp/evidence/Agent Workspace.app")
+    // The same copy twice, with and without the trailing slash, counts once; the app's own path
+    // never counts.
+    let registered = [
+      own, intermediate, URL(fileURLWithPath: "/Users/me/repos/b4app/dist/Agent Workspace.app"), scratch,
+      intermediate,
+    ]
+    #expect(AppRegistrations.others(registered: registered, own: own) == [intermediate, scratch])
+    #expect(AppRegistrations.others(registered: [own], own: own).isEmpty)
+    #expect(AppRegistrations.others(registered: [], own: own).isEmpty)
   }
 
   @Test func aRefusedNativeSignInIsOneLine() async throws {

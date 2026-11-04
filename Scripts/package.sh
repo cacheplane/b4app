@@ -78,6 +78,7 @@ DIST=dist
 APP="$DIST/Agent Workspace$NAME_SUFFIX.app"
 ZIP="$DIST/Agent-Workspace$ZIP_SUFFIX-$VERSION.zip"
 WRAPPER="$APP/Contents/Helpers/B4AppCoordinator.app"
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/b4app-package.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
@@ -252,6 +253,12 @@ echo "==> Assembling $APP"
 rm -rf "$DIST"
 mkdir -p "$DIST"
 ditto "$DERIVED/Build/Products/$XCODE_CONFIG/Agent Workspace.app" "$APP"
+# Xcode registered the build product with Launch Services (its LSRegisterURL step, which no build
+# setting skips). The daemon that checks associated domains looks the bundle id up and can pick any
+# registered copy, and this one carries no webcredentials entitlement, so left registered it makes
+# "Continue with Apple" and passkeys fail silently in the packaged app (D-173). The packaged app is
+# registered once it is signed, at the end.
+"$LSREGISTER" -u "$PWD/$DERIVED/Build/Products/$XCODE_CONFIG/Agent Workspace.app" >/dev/null 2>&1 || true
 mkdir -p "$APP/Contents/Helpers" "$APP/Contents/Library/LaunchAgents" "$WRAPPER/Contents/MacOS"
 cp "$BIN/agent-workspace" "$APP/Contents/Helpers/"
 # The coordinator is a background-only app bundle so it can hold its own provisioning profile; the
@@ -412,6 +419,11 @@ if [ "$DEVELOPER_ID" = 1 ]; then
     syspolicy_check distribution "$APP"
   fi
 fi
+echo "==> Registering $APP with Launch Services"
+"$LSREGISTER" -f "$PWD/$APP"
+# Other copies of the bundle id (other checkouts' dist/, Xcode's Debug builds, scratch copies) are
+# listed, not touched: ./Scripts/fix-app-registrations.sh --apply unregisters them.
+./Scripts/fix-app-registrations.sh --dist "$PWD/$DIST"
 du -sh "$APP" "$ZIP"
 if [ "$IDENTITY" = "-" ]; then
   echo "Ad hoc signature: this build runs on this Mac. Set B4APP_SIGN_IDENTITY to a Developer ID Application identity for a notarized build (D-039)."
