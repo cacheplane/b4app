@@ -14,19 +14,25 @@ struct ThreadsView: View {
         "Threads",
         text: model.connections.isEmpty
           ? "Add a connection to start a conversation with Codex, Claude Code, or a B4 agent."
-          : "Select a thread in the sidebar, or start a new one."
+          : "Add a ready connection to start a conversation with Codex, Claude Code, or a B4 agent."
       ) {
         Button("Add connection") { model.openSettings(.connections) }
           .buttonStyle(.llaPrimary)
           .accessibilityIdentifier("add-connection")
       }
       .navigationTitle("Threads")
-    } else if model.selectedThreadId == nil {
+    } else if model.selectedThreadId == nil || !openingSelection {
       NewThreadView(model: model)
     } else {
       // A thread is being opened that the list has not shown yet: a blank pane, not the composer.
       LLA.Color.bg.frame(maxWidth: .infinity, maxHeight: .infinity).accessibilityHidden(true)
     }
+  }
+
+  /// The selected thread's open is still out. Once it settles an unlisted id is gone (the model drops
+  /// a not-found one), so the pane is the composer again.
+  private var openingSelection: Bool {
+    model.detailLoading || model.pendingThreadOpen == model.selectedThreadId
   }
 }
 

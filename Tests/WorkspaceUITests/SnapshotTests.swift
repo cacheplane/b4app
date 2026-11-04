@@ -443,8 +443,7 @@ struct SnapshotShell: View {
     Project(id: docs, name: "Docs", manual: true),
   ]
 
-  static func model() async throws -> WorkspaceModel {
-    let transport = ScriptedTransport()
+  static func model(_ transport: ScriptedTransport = ScriptedTransport()) async throws -> WorkspaceModel {
     transport.set(
       connections: [
         Connection(id: "c1", kind: .codex, label: "Codex", target: "codex", status: .ready),

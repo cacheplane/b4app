@@ -42,7 +42,7 @@ struct SidebarView: View {
         // Selected while the pane is the new-thread composer, as a thread row is while it is open.
         SidebarActionRow(
           title: "New thread", systemImage: "square.and.pencil", shortcut: shortcut("⌘N"),
-          selected: model.selectedThreadId == nil
+          selected: model.selectedThreadId == nil && model.newThreadEntryReason == nil
         ) {
           Task { await model.openNewThread() }
         }

@@ -158,8 +158,9 @@ public final class WorkspaceModel {
   /// Counts every `requestOpenThread` and `openNewThread`; the root view moves the iPhone to the
   /// detail column on a change.
   public private(set) var detailRequest = 0
-  /// Counts each time the open thread went away (deleted, or the account ended); the root view moves
-  /// the iPhone back to the list on a change. A selection cleared for a new thread asks for nothing.
+  /// Counts each time the open thread went away (deleted, gone from the list, or the account ended);
+  /// the root view moves the iPhone back to the list on a change. A selection cleared for a new thread
+  /// asks for nothing.
   public private(set) var sidebarRequest = 0
   /// Counts each request to put the cursor in the new-thread composer; `NewThreadView` focuses its
   /// field on a change, as it does when it appears.
@@ -652,6 +653,11 @@ public final class WorkspaceModel {
     // Progress from before the snapshot may never see its closing event.
     checks = [:]
     threads = snapshot.threads
+    // The open thread went while the link was down: nothing stays selected. A start still settling
+    // is kept; its thread may not be in the list yet.
+    if let id = selectedThreadId, !threads.contains(where: { $0.id == id }), pendingSends[id] == nil {
+      dropSelection(of: id)
+    }
     activeTurns = Dictionary(
       snapshot.activeTurns.map { ($0.threadId, $0) }, uniquingKeysWith: { _, new in new })
     resolvePendingSends(with: snapshot.activeTurns)
@@ -850,12 +856,14 @@ public final class WorkspaceModel {
 
   /// The empty pane is the new-thread composer: keep the open thread's unsent text, select nothing,
   /// start in `projectId` when given, and put the cursor in the composer's field.
+  /// The pane changes first; the text is saved after, so the phone does not wait on the relay to move.
   public func openNewThread(projectId: String? = nil) async {
-    if let current = detail { await saveDraft(threadId: current.thread.id) }
+    let open = detail.map { (threadId: $0.thread.id, text: composerText) }
     selectedThreadId = nil
     if let projectId { newThreadDraft.selectProject(projectId) }
     newThreadFocusRequest += 1
     detailRequest += 1
+    if let open { await saveDraft(threadId: open.threadId, text: open.text) }
   }
 
   public func openThread(id: String) async {
@@ -908,13 +916,18 @@ public final class WorkspaceModel {
     } catch {
       guard generation == accountGeneration else { return }
       if startedThreadMissing(threadId: id, error: error) || deletedThreadIds.contains(id) { return }
+      // Gone (a notification or widget row for a thread deleted since): nothing stays selected.
+      if WorkspaceError.from(error).code == .notFound { dropSelection(of: id) }
       lastError = Self.describe(error)
     }
   }
 
   public func saveDraft(threadId: String) async {
+    await saveDraft(threadId: threadId, text: composerText)
+  }
+
+  func saveDraft(threadId: String, text: String) async {
     guard let client else { return }
-    let text = composerText
     _ = try? await client.request(
       DraftSave.self, DraftSave.Params(threadId: threadId, text: text), options: Self.mutation())
   }
@@ -1129,10 +1142,14 @@ public final class WorkspaceModel {
       composerText = ""
       restoringDraft = false
     }
-    if selectedThreadId == threadId {
-      selectedThreadId = nil
-      sidebarRequest += 1
-    }
+    dropSelection(of: threadId)
+  }
+
+  /// The selected thread is gone: select nothing, and send the iPhone back to the list.
+  private func dropSelection(of threadId: String) {
+    guard selectedThreadId == threadId else { return }
+    selectedThreadId = nil
+    sidebarRequest += 1
   }
 
   // MARK: - Keeping rows current

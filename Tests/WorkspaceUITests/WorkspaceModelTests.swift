@@ -236,6 +236,8 @@ func waitUntil(
     #expect(model.selectedThreadId == nil)
     #expect(model.newThreadFocusRequest == focus + 1)
     #expect(model.detailRequest == detail + 1)
+    // A new thread keeps the iPhone on the detail column.
+    #expect(model.sidebarRequest == 0)
     let store = try #require(h.coordinator.accounts.current).database
     #expect(try store.draft(threadId: thread.id)?.text == "an unsent thought")
     await h.stop()
@@ -253,6 +255,25 @@ func waitUntil(
     // Without a project the draft keeps its choice.
     await model.openNewThread()
     #expect(model.newThreadDraft.projectId == ListFixture.marketing)
+  }
+
+  /// A snapshot without the open thread (deleted while the link was down) leaves nothing selected.
+  @Test func aSnapshotWithoutTheOpenThreadClearsTheSelection() async throws {
+    let transport = ScriptedTransport()
+    let model = try await ListFixture.model(transport)
+    model.selectedThreadId = "asks"
+    transport.set(threads: ListFixture.threads.filter { $0.id != "asks" })
+    try await model.refreshSnapshot()
+    #expect(model.selectedThreadId == nil)
+    #expect(model.sidebarRequest == 1)
+  }
+
+  /// Opening a thread that no longer exists (a stale notification or widget row) selects nothing.
+  @Test func openingAThreadThatIsGoneClearsTheSelection() async throws {
+    let model = try await ListFixture.model()
+    await model.openThread(id: "deleted-since")
+    #expect(model.selectedThreadId == nil)
+    #expect(model.sidebarRequest == 1)
   }
 
   @Test func remediationNewThreadOpensTheComposer() async throws {
