@@ -279,10 +279,14 @@ public final class WorkspaceModel {
 
   // MARK: The phone's relay (M8c; the logic is in SendState.swift and HostNotice.swift)
 
-  /// The phone's sends by thread id, one per thread, until settled and shown.
+  /// The phone's sends, and the Mac's thread starts, by thread id, one per thread, until settled and
+  /// shown.
   public internal(set) var pendingSends: [String: PendingSend] = [:]
-  /// A `thread.start` is out: a second tap starts nothing until its call returns.
+  /// A `thread.start` is out, from the Mac or the phone: a second tap starts nothing until its call
+  /// returns.
   public internal(set) var isStartingThread = false
+  /// The new-thread composer's draft, once made (`newThreadDraft`).
+  @ObservationIgnored var newThreadDraftStorage: NewThreadDraft?
   /// The phone's Stop by thread id, and its answers by request id, while they wait or after they failed.
   public internal(set) var stopStates: [String: ControlState] = [:]
   public internal(set) var answerStates: [String: ControlState] = [:]
@@ -1455,6 +1459,7 @@ public final class WorkspaceModel {
     unreadHold = []
     endRelayState()
     isStartingThread = false
+    forgetNewThreadDraft()
     projectFilter = .all
     connectionFilter = nil
     showArchived = false

@@ -2,8 +2,9 @@ import Foundation
 import WorkspaceClient
 import WorkspaceProtocol
 
-/// Where one of the phone's sends stands (M8c spec, "Sending and its states"). Only the phone keeps
-/// these: the Mac sends over its own socket and shows the turn as it always has.
+/// Where one of the phone's sends stands (M8c spec, "Sending and its states"). The Mac keeps these
+/// only for a new thread's start (settled by its coordinator's reply, never "not confirmed"); its
+/// other sends go over its own socket and show the turn as they always have.
 public enum SendState: Sendable, Equatable {
   /// Sent, no answer yet. The draft stays.
   case sending
@@ -38,8 +39,8 @@ public enum SendState: Sendable, Equatable {
 }
 
 /// One send from the phone: a turn on an existing thread, or `thread.start` (when `start` is set,
-/// `threadId` is the thread the phone minted). `id` is the operationId and the relay id, the same on
-/// every retry, so the Mac makes at most one turn.
+/// `threadId` is the thread the phone, or the Mac, minted). `id` is the operationId and the relay id,
+/// the same on every retry, so the Mac makes at most one turn.
 public struct PendingSend: Sendable, Equatable, Identifiable {
   public let id: String
   public let threadId: String
@@ -139,6 +140,20 @@ enum SendRules {
       if notSent(error) { return retry ? (.notConfirmed, true) : (.refused(error), false) }
       if mayHaveArrived(error) { return (.notConfirmed, linkLost(error)) }
       return retry ? (.notConfirmed, false) : (.refused(error), false)
+    }
+  }
+
+  /// The state the Mac's own coordinator leaves a start in, answering over its socket: a failure with
+  /// no turn is final, since no lookup could settle it later.
+  static func settleLocal(_ result: Result<String, WorkspaceError>) -> (SendState, retryable: Bool) {
+    switch result {
+    case .success(let turnId):
+      return (.accepted(turnId: turnId), false)
+    case .failure(let error):
+      if let turnId = error.details?["turnId"]?.stringValue {
+        return (.acceptedWithError(turnId: turnId, error), false)
+      }
+      return (.refused(error), false)
     }
   }
 
@@ -269,28 +284,34 @@ extension WorkspaceModel {
     await attempt(threadId: threadId, id: send.id)
   }
 
-  /// Start a thread in a project from the phone (`thread.start`): the phone mints the thread id and
-  /// tracks the send on it, with `turn.lookup` on that id. Accepted at once, the thread is listed and
-  /// opened. Returns the send as its reply left it (nil when nothing was sent).
+  /// Start a thread and its first turn (`thread.start`), from the Mac over its socket or from the phone
+  /// through the hub: the client mints the thread id and tracks the send on it (on the phone with
+  /// `turn.lookup` on that id). Accepted at once, the thread is listed and opened. Returns the send as
+  /// its reply left it (nil when nothing was sent).
   ///
-  /// The project's own Mac decides whether it can start, not the primary Mac, and only a connection
-  /// that `startConnections(for:)` offers is sent. While one start is out, another is refused, so a
-  /// second tap never mints a second thread. A folder is sent only for Codex and Claude: the one the
-  /// caller chose, or the project's only folder.
+  /// Only a connection the place offers is sent: in a project, one that `startConnections(for:)`
+  /// offers, and the project's own Mac decides whether it can start, not the primary Mac; with no
+  /// project (the Mac only), a Codex or Claude connection in a chosen folder, or a remote B4. While one
+  /// start is out, another is refused, so a second tap never mints a second thread. A folder, model,
+  /// and permission are sent only for Codex and Claude: the folder the caller chose, or the project's
+  /// only folder.
   @discardableResult
   public func startThread(
-    projectId: String, connectionId: String, folder: String?, text: String
+    projectId: String?, connectionId: String, folder: String?, model: String? = nil,
+    permission: String? = nil, text: String
   ) async
     -> PendingSend?
   {
     let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !text.isEmpty, client != nil, !isStartingThread, unsettledStartReason == nil,
-      let project = projects.first(where: { $0.id == projectId }), startBlockedReason(for: project) == nil,
-      let connection = startConnections(for: project).first(where: { $0.id == connectionId })
-    else { return nil }
+    guard !text.isEmpty, client != nil, !isStartingThread, unsettledStartReason == nil else { return nil }
+    let project = projectId.flatMap { id in projects.first { $0.id == id } }
+    if projectId != nil, project == nil { return nil }
+    if let project, startBlockedReason(for: project) != nil { return nil }
+    let offered = project.map { startConnections(for: $0) } ?? startConnectionsWithoutProject
+    guard let connection = offered.first(where: { $0.id == connectionId }) else { return nil }
     var chosen: String?
     if connection.kind != .b4 {
-      chosen = folder ?? (project.folders.count == 1 ? project.folders.first?.path : nil)
+      chosen = folder ?? (project?.folders.count == 1 ? project?.folders.first?.path : nil)
       guard chosen != nil else { return nil }
     }
     isStartingThread = true
@@ -304,8 +325,10 @@ extension WorkspaceModel {
       }
     }
     let threadId = UUID().uuidString.lowercased()
+    let b4 = connection.kind == .b4
     let params = ThreadStart.Params(
-      threadId: threadId, projectId: projectId, connectionId: connectionId, folder: chosen, text: text)
+      threadId: threadId, projectId: project?.id, connectionId: connectionId, folder: chosen, text: text,
+      model: b4 ? nil : model, permission: b4 ? nil : permission)
     let send = PendingSend(
       id: UUID().uuidString.lowercased(), threadId: threadId, text: text, tappedAt: now(), start: params)
     pendingSends[threadId] = send
@@ -332,9 +355,10 @@ extension WorkspaceModel {
     let result: Result<String, WorkspaceError>
     do {
       if let start = send.start {
+        // The Mac's own start makes a runtime session before its turn, as `turn.send` does.
+        let timeout = relaysThroughHub ? Self.relayTimeout(for: .threadStart) : .seconds(90)
         let started = try await client.request(
-          ThreadStart.self, start,
-          options: RequestOptions(operationId: id, timeout: Self.relayTimeout(for: .threadStart)))
+          ThreadStart.self, start, options: RequestOptions(operationId: id, timeout: timeout))
         var thread = started.thread
         // The Mac's reply knows no owner; the thread belongs to the Mac that owns its project.
         if thread.ownerDeviceId == nil {
@@ -356,7 +380,8 @@ extension WorkspaceModel {
     pendingSends[threadId] = current
     // A synced turn may have settled it while the reply was on its way.
     if current.state.turnId != nil { return }
-    let (state, retryable) = SendRules.settle(result, retry: retry)
+    let (state, retryable) =
+      relaysThroughHub ? SendRules.settle(result, retry: retry) : SendRules.settleLocal(result)
     if let turnId = state.turnId {
       accept(threadId: threadId, id: id, as: state, turnId: turnId)
       return
@@ -377,6 +402,7 @@ extension WorkspaceModel {
     send.state = state
     send.retryable = false
     pendingSends[threadId] = send
+    if let start = send.start { newThreadStarted(start, text: send.text) }
     if detail?.thread.id == threadId,
       composerText.trimmingCharacters(in: .whitespacesAndNewlines) == send.text
     {
