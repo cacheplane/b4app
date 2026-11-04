@@ -770,7 +770,7 @@ private final class WriteCounter: Sendable {
       .reply(
         id: "op-r",
         error: RelayWireError(
-          .protocolInvalid, "locked", details: ["reason": "directory_locked", "blockingTurnId": "turn-9"])))
+          .protocolInvalid, "locked", details: ["reason": "turn_active", "blockingTurnId": "turn-9"])))
     await #expect(throws: WorkspaceError.self) { try await first.value }
     // Sent before the refusal is answered, so ahead of the watch of the thread read next.
     _ = try await client.request(ThreadRead.self, .init(threadId: "thread-2"))

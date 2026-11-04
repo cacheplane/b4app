@@ -12,7 +12,6 @@ public struct Remediation: Equatable, Sendable {
     case newThread
     case checkAgain
     case abandonTurn
-    case openThread(threadId: String)
   }
 
   public var message: String
@@ -93,11 +92,6 @@ public struct Remediation: Equatable, Sendable {
         message:
           "That request is no longer pending; the runtime presents its current requests after a reconnect.",
         action: .checkAgain, actionTitle: "Check again")
-    case .protocolInvalid where reason == "directory_locked":
-      let other = error.details?["threadId"]?.stringValue
-      return Remediation(
-        message: error.message, action: other.map { .openThread(threadId: $0) } ?? .none,
-        actionTitle: other == nil ? nil : "Open that thread")
     case .protocolInvalid where reason == "turn_active":
       let status = error.details?["status"]?.stringValue ?? "active"
       return Remediation(

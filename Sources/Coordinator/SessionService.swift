@@ -577,7 +577,6 @@ public actor SessionService {
     let (thread, connection, adapter) = try threadContext(id: params.threadId)
     if let outage = await managedServerOutage(connection) { throw outage }
     try await assertContinuable(thread, connection: connection)
-    try assertDirectoryFree(thread, connection: connection)
     if let active = try db.activeTurn(threadId: thread.id) {
       throw WorkspaceError(
         .protocolInvalid,
@@ -707,37 +706,12 @@ public actor SessionService {
   }
 
   /// The refusals `turnSend` makes before inserting a turn that can be judged before the thread exists:
-  /// the connection's adapter, a managed server that is not ready, and another thread's active turn in
-  /// `folder` (the canonical directory; nil for B4). A remote `thread.start` asks first, so a start
-  /// that would be refused makes no thread. `threadId` (the thread being started, if it already
-  /// exists) is not in its own way; its own active turn is `turnSend`'s to refuse.
-  public func assertCanStart(connection connectionId: String, folder: String?, threadId: String) async throws
-  {
+  /// the connection's adapter and a managed server that is not ready. A remote `thread.start` asks first,
+  /// so a start that would be refused makes no thread. A thread's own active turn is `turnSend`'s to
+  /// refuse.
+  public func assertCanStart(connection connectionId: String) async throws {
     let (connection, _) = try connectionAndAdapter(id: connectionId)
     if let outage = await managedServerOutage(connection) { throw outage }
-    try assertFolderFree(folder, besides: threadId, connection)
-  }
-
-  /// Spec 10.1.5: writable Codex and Claude runs in one canonical directory are serialized through
-  /// this app, across connections, and the lock holds through waiting and unknown states (D-033).
-  private func assertDirectoryFree(_ thread: ConversationThread, connection: Connection) throws {
-    try assertFolderFree(thread.context, besides: thread.id, connection)
-  }
-
-  private func assertFolderFree(_ folder: String?, besides thread: String, _ connection: Connection) throws {
-    guard connection.kind != .b4, let folder else { return }
-    let canonical = Self.canonicalDirectory(folder)
-    for entry in try db.activeHarnessTurns() where entry.thread.id != thread {
-      guard let other = entry.thread.context, Self.canonicalDirectory(other) == canonical else { continue }
-      throw WorkspaceError(
-        .protocolInvalid,
-        "Another thread (\(entry.thread.title.isEmpty ? entry.thread.id : entry.thread.title)) has a turn \(entry.turn.status.rawValue) in \(canonical). Wait for it, stop it, or resolve its outcome first; two agents must not write the same directory at once.",
-        details: [
-          "reason": "directory_locked", "threadId": .string(entry.thread.id),
-          "turnId": .string(entry.turn.id),
-          "status": .string(entry.turn.status.rawValue), "directory": .string(canonical),
-        ])
-    }
   }
 
   /// The project's other folders, for the runtime to reach beside the thread's own: the canonical paths

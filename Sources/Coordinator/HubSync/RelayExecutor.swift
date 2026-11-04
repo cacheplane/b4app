@@ -137,7 +137,7 @@ public actor RelayExecutor {
   }
 
   /// Refusal reasons whose `details.turnId` names the turn in the way, not one this command made.
-  static let blockingReasons: Set<String> = ["turn_active", "directory_locked"]
+  static let blockingReasons: Set<String> = ["turn_active"]
 
   /// The phone reads `details.turnId` as "this send's turn exists, so it was accepted". A refusal made
   /// before this command's turn existed names another turn there (the one in the way); at this boundary
@@ -285,8 +285,7 @@ public actor RelayExecutor {
     }
     // What `turnSend` would refuse before inserting the turn is refused before the thread is made, so a
     // refused start (and each retry) leaves no empty thread behind.
-    try await sessions.assertCanStart(
-      connection: connection.id, folder: folder, threadId: params.threadId)
+    try await sessions.assertCanStart(connection: connection.id)
     let thread: ConversationThread
     if let existing = try db.thread(id: params.threadId) {
       let sameFolder = folder == nil || existing.context.map(SessionService.canonicalDirectory) == folder

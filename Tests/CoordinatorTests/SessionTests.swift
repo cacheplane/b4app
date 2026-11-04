@@ -578,13 +578,7 @@ actor EventCollector {
     let codex = try await h.addCodex()
     let claude = try await h.addClaude()
     let codexThread = try await h.newThread(codex)
-    // A second directory: the directory lock (spec 10.1.5) would otherwise serialize the two turns.
-    let claudeDir = (h.workDir as NSString).deletingLastPathComponent + "/claude-work"
-    try FileManager.default.createDirectory(atPath: claudeDir, withIntermediateDirectories: true)
-    let claudeThread = try await h.client.request(
-      ThreadCreate.self, ThreadCreate.Params(connectionId: claude.id, workingDirectory: claudeDir),
-      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30))
-    ).thread
+    let claudeThread = try await h.newThread(claude)
     let pending = try await h.send(codexThread, "please approve this")
     try await h.events.waitFor { $0.kind == .runtimeRequestOpened && $0.threadId == codexThread.id }
     let crashed = try await h.send(claudeThread, "crash now")
@@ -1189,65 +1183,25 @@ actor EventCollector {
     }
   }
 
-  /// A18 and spec 10.1.5: one writable harness turn per canonical directory through this app, across
-  /// connections, held through an unknown outcome and released by a deliberate abandon.
-  @Test func directoryLockSerializesHarnessTurnsAcrossConnections() async throws {
+  /// The per-directory lock (D-033, spec 10.1.5) is gone: a turn running in a folder does not keep
+  /// another thread there from starting one. Only a thread's own active turn blocks it.
+  @Test func twoThreadsMayRunInOneFolder() async throws {
     let h = try await Harness.start()
-    let codex = try await h.addCodex()
     let claude = try await h.addClaude()
-    let first = try await h.newThread(codex)
-    let second = try await h.newThread(codex)
-    let viaLink = try await h.client.request(
-      ThreadCreate.self,
-      ThreadCreate.Params(connectionId: claude.id, workingDirectory: h.workDir + "/../work/"),
-      options: mutation()
-    ).thread
-    let elsewhere = (h.workDir as NSString).deletingLastPathComponent + "/other"
-    try FileManager.default.createDirectory(atPath: elsewhere, withIntermediateDirectories: true)
-    let other = try await h.client.request(
-      ThreadCreate.self, ThreadCreate.Params(connectionId: codex.id, workingDirectory: elsewhere),
-      options: mutation()
-    ).thread
+    let first = try await h.newThread(claude)
+    let second = try await h.newThread(claude)
 
     let running = try await h.send(first, "hang around")
-    let refused = await expectRefusal(
-      { try await h.send(second, "me too") }, code: .protocolInvalid, reason: "directory_locked")
-    #expect(refused?.details?["threadId"]?.stringValue == first.id)
-    #expect(refused?.details?["turnId"]?.stringValue == running.id)
+    let beside = try await h.send(second, "me too")
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == beside.id }
+    #expect(try h.coordinator.database.turn(id: running.id)?.status != .terminal)
     _ = await expectRefusal(
-      { try await h.send(viaLink, "claude in the same place") }, code: .protocolInvalid,
-      reason: "directory_locked")
-    let free = try await h.send(other, "different directory")
-    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == free.id }
-    #expect(try h.coordinator.database.turns(threadId: second.id).isEmpty)
+      { try await h.send(first, "while it runs") }, code: .protocolInvalid, reason: "turn_active")
 
-    // The lock survives the runtime crashing under the first turn (outcome unknown).
     _ = try await h.client.request(
       TurnInterrupt.self, TurnInterrupt.Params(threadId: first.id), options: mutation())
     try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == running.id }
-    let crashed = try await h.send(first, "crash now")
-    try await h.events.waitFor {
-      $0.kind == .turnStateChanged && $0.turnId == crashed.id
-        && $0.payload["status"]?.stringValue == "reconciling"
-    }
-    _ = await expectRefusal(
-      { try await h.send(second, "still locked?") }, code: .protocolInvalid, reason: "directory_locked")
-    do {
-      _ = try await h.client.request(
-        TurnAbandon.self, TurnInterrupt.Params(threadId: second.id), options: mutation())
-      Issue.record("abandon needs a reconciling turn")
-    } catch let error as WorkspaceError {
-      #expect(error.code == .notFound)
-    }
-    let abandoned = try await h.client.request(
-      TurnAbandon.self, TurnInterrupt.Params(threadId: first.id), options: mutation())
-    #expect(abandoned.turn.status == .terminal)
-    #expect(abandoned.turn.outcome == .failed)
-    let read = try await h.read(first)
-    #expect(read.items.last?.role == .system)
-    #expect(read.items.last?.type == "turnAbandoned")
-    let unlocked = try await h.send(second, "finally")
-    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == unlocked.id }
+    #expect(try h.coordinator.database.turn(id: beside.id)?.outcome == .completed)
     await h.stop()
   }
 

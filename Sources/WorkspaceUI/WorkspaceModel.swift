@@ -1243,7 +1243,6 @@ public final class WorkspaceModel {
     case .newThread: showNewThread = true
     case .checkAgain: if let id = detail?.thread.id { await reconcileThread(id: id) }
     case .abandonTurn: if let id = detail?.thread.id { await abandonTurn(threadId: id) }
-    case .openThread(let threadId): await openThread(id: threadId)
     }
     if case .none = action { return }
     lastError = nil
