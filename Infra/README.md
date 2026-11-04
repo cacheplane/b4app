@@ -339,7 +339,7 @@ The hub sends push notifications through Apple when `B4HUB_PUSH_SENDER=apns`. Th
    curl -fsS https://hub.test.b4.run/readyz
    ```
 
-4. Edit `desired_count = 0` to `1` in `envs/test/main.tf` and merge, so Terraform agrees (that apply also creates the `RunningTaskCount` alarm).
+4. Edit `desired_count = 0` to `1` in `envs/test/main.tf` and merge, so Terraform agrees. The service ignores `desired_count` drift by design (CI deploys and operators scale it, and a later apply must not roll that back), so this apply changes nothing on the service: it creates the `RunningTaskCount` and `UnHealthyHostCount` alarms, which only exist while `desired_count > 0`. Step 3's `update-service` is what starts the task.
 5. Production: runbook 2 for `prod`, then the first `hub-v*` release (or a dispatch from `main`, [runbook 5](#5-deploy-a-given-digest-or-roll-back)) with the `production` reviewer's approval; repeat 3 and 4 with `b4hub-prod`, `hub.b4.run`, and `envs/prod/main.tf`.
 
 ### 5. Deploy a given digest, or roll back
@@ -401,7 +401,7 @@ Until the sign-in hub is deployed, a Mac joins a hosted hub with a one-time code
    b4hub enroll --user brian
    ```
 
-   (`--org <slug>` when more than one org exists.) Enter it on the Mac with `agent-workspace hub join` and the hub's URL, within the code's lifetime.
+   (`--org <slug>` when more than one org exists.) Enter it on the Mac with `agent-workspace hub join` and the hub's URL, within the code's lifetime. A Mac is joined to one hub at a time: if it is on another hub (the test hub, a Compose hub), run `agent-workspace hub leave` there first, which revokes that device and leaves its uploaded history in place.
 4. `exit`. The script stops the task.
 
 ### 7. Set or rotate a secret
@@ -441,7 +441,16 @@ Prove a backup restores and holds the data. Two parts: a full drill in the test 
    umask 077; tmp=$(mktemp -d)
    aws backup get-recovery-point-restore-metadata --backup-vault-name b4hub-test \
      --recovery-point-arn "$RP" --query RestoreMetadata > "$tmp/meta.json"
-   jq '.DBInstanceIdentifier = "b4hub-test-drill" | .PubliclyAccessible = "false"' "$tmp/meta.json" > "$tmp/drill.json"
+   # The metadata AWS returns is not restorable as is (seen 2026-11-04): it carries
+   # DBSnapshotIdentifier, which start-restore-job refuses; Port 0; an IOPS value a
+   # 20 GiB gp3 volume cannot take; and no security group, which would put the scratch
+   # instance in the VPC's default group where the hub cannot reach it.
+   SG=$(aws rds describe-db-instances --db-instance-identifier b4hub-$ENV \
+     --query 'DBInstances[0].VpcSecurityGroups[0].VpcSecurityGroupId' --output text)
+   # VpcSecurityGroupIds is a JSON array inside a string, as every metadata value is a string.
+   jq --arg sg "[\"$SG\"]" '.DBInstanceIdentifier = "b4hub-test-drill" | .PubliclyAccessible = "false"
+     | .Port = "5432" | .VpcSecurityGroupIds = $sg | del(.DBSnapshotIdentifier, .IOPS)' \
+     "$tmp/meta.json" > "$tmp/drill.json"
    ```
 
 2. Restore and wait (about 15 minutes):
@@ -543,6 +552,8 @@ Prove a backup restores and holds the data. Two parts: a full drill in the test 
    ```
 
 **B. Production's cross-region copy** restores in `us-west-2` (run with `AWS_PROFILE=b4hub-prod`):
+
+The Organization's region policy allows only `backup`, `backup-storage`, `kms`, and `rds` in `us-west-2` (added for the copy on 2026-11-02 and 2026-11-04). Step 2's restore needs the region's default VPC, which means `ec2:Describe*` (and the restore's own network calls) there too; until the owner widens the exception, B stops after step 1, which proves the copy exists and is `COMPLETED`.
 
 1. `aws backup list-recovery-points-by-backup-vault --region us-west-2 --backup-vault-name b4hub-prod-copy --by-resource-type RDS --query 'sort_by(RecoveryPoints, &CreationDate)[-1].[RecoveryPointArn,CreationDate,Status]'`. The newest must be under 36 hours old and `COMPLETED`.
 2. Restore it with `aws backup start-restore-job --region us-west-2 ...` as in A.2, with the metadata from `aws backup get-recovery-point-restore-metadata --region us-west-2 --backup-vault-name b4hub-prod-copy --recovery-point-arn <arn>`, `DBInstanceIdentifier` set to `b4hub-prod-drill`, the role `b4hub-prod-backup`, and `DBSubnetGroupName` and `VpcSecurityGroupIds` set to the `default` ones of the region's default VPC (the stack has no network in `us-west-2`). Poll the restore job and read `CreatedResourceArn` as in A.2 (every `aws` call with `--region us-west-2`), wait with `aws rds wait db-instance-available --region us-west-2 --db-instance-identifier "$DRILL_ID"`, then delete it with `aws rds delete-db-instance --region us-west-2 --db-instance-identifier "$DRILL_ID" --skip-final-snapshot`.
