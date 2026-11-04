@@ -1,0 +1,3 @@
+## 2026-11-02 (hosted hub deployment)
+
+- **D-071 Edge protection is the hub's own limits plus a WAF rate rule and IP reputation list; no body-inspecting managed rule group is attached.** The AWS Common Rule Set blocks bodies over 8 KB, and `POST /v1/changes` legitimately carries up to 32 MiB; its injection rules would false-positive on `displayItems` payloads, which are agent transcripts. TLS 1.2 minimum at the load balancer; HSTS and `Cache-Control: no-store` on auth routes are set by the hub so on-prem gets them too. Backups are AWS Backup daily snapshots with a cross-region copy in production, restored in a monthly drill; external uptime probes (Better Stack) page the owner, because an alarm inside an unreachable region cannot.

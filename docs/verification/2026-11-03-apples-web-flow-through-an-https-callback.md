@@ -1,0 +1,9 @@
+## 2026-11-03: Apple's web flow through an https callback, live (D-160)
+
+Run on the owner's MacBook Pro at about 20:25Z, the owner at Apple's page and the build session driving the app.
+
+- **Build.** The Beta Mac app from main `2338c2e` (includes #83), packaged with `B4APP_FLAVOR=beta ./Scripts/package.sh` under the Developer ID identity. Notarized (submission `08828bf6…`, Accepted) and stapled; `codesign --verify --deep --strict` and `spctl` pass for the app and both helpers. Entitlements: `webcredentials:test.b4.run` and the `…b4app.beta.shared` keychain group. It replaced `~/repos/b4app/dist/Agent Workspace (Beta).app` after the app was quit and its LaunchAgent booted out (both of the account's threads idle, no managed servers); the previous bundle was kept aside.
+- **Hub.** #88 deployed the test hub with `B4HUB_APPLE_CALLBACK_URL=https://test.b4.run/app/auth/apple` in place of the scheme. A web begin without `httpsCallback` answers `400 invalid_request` ("…update the app"); with it, `200` and `"callback": "https://test.b4.run/app/auth/apple"`. Prod still refuses `b4app-beta` (`400`), so it stayed on `b4app`.
+- **Sign-in.** `agent-workspace account logout` (the Beta CLI), then Continue with Apple on the app's sign-in screen; the owner completed Apple's page. The sheet closed on its own, and the app came back signed in to the same account (`da2dee0f0ccdd746`, Brian's Org) on the same device (`01a19ee2-…`), with the relay connected. The hub hands back only to the https URL, so the handoff could only reach the app through `ASWebAuthenticationSession`'s `.https(host:path:)` callback and the app's `webcredentials` association: **pass**.
+
+Not run: the same on prod (needs a prod Mac build with D-160, then `B4HUB_APPLE_CALLBACK_URL=https://b4.run/app/auth/apple` in `deploy.sh` and `ecs.tf`).
