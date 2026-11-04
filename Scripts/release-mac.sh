@@ -33,7 +33,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SOURCE_REPO=cacheplane/b4app
-TAP_REPO=cacheplane/homebrew-tap
+TAP_REPO=cacheplane/tap  # not homebrew-tap (D-173): users tap it with its URL
 CASK_TEMPLATE=Packaging/homebrew/agent-workspace.rb
 CASK_PATH=Casks/agent-workspace.rb
 DIST=dist

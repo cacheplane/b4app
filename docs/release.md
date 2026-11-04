@@ -1,6 +1,6 @@
 # Releasing the Mac app
 
-The Mac app ships only as a notarized Developer ID zip on GitHub Releases (`cacheplane/b4app`) and through the Homebrew cask in `cacheplane/homebrew-tap` (D-062). The owner runs the release from the Mac that holds the Developer ID identity and the notary profile (D-039); there is no release workflow in CI.
+The Mac app ships only as a notarized Developer ID zip on GitHub Releases (`cacheplane/b4app`) and through the Homebrew cask in `cacheplane/tap` (D-062, D-173). The owner runs the release from the Mac that holds the Developer ID identity and the notary profile (D-039); there is no release workflow in CI.
 
 ## What a release publishes
 
@@ -19,7 +19,7 @@ Once, outside the script: the identity and the notary profile from `Scripts/pack
 2. Preview: `./Scripts/release-mac.sh <version> --dry-run` (and with `B4APP_FLAVOR=beta`). Read the commands it prints.
 3. Release the beta first if you want a soak: `B4APP_FLAVOR=beta B4APP_SIGN_IDENTITY="Developer ID Application: … (TEAMID)" ./Scripts/release-mac.sh <version>`.
 4. Release prod: `B4APP_SIGN_IDENTITY="Developer ID Application: … (TEAMID)" ./Scripts/release-mac.sh <version>`.
-5. Merge the pull request the prod run opens on `cacheplane/homebrew-tap`. Until it merges, `brew install --cask cacheplane/tap/agent-workspace` still installs the previous version.
+5. Merge the pull request the prod run opens on `cacheplane/tap`. Until it merges, `brew install --cask cacheplane/tap/agent-workspace` still installs the previous version.
 6. Check the install: `brew reinstall --cask cacheplane/tap/agent-workspace`, open the app, and run `agent-workspace doctor --json` from the linked binary.
 7. Check the uninstall: `brew uninstall --cask agent-workspace`, then confirm the app is gone, `launchctl print gui/$(id -u)/com.cacheplane.b4app.coordinator` reports no such service, `pgrep -f b4app-coordinator` finds nothing, and `~/Library/LaunchAgents/com.cacheplane.b4app.coordinator.plist` is deleted. `brew uninstall --zap` should also remove `~/Library/Application Support/b4app`. Do this on a Mac where the coordinator is running, since the point is that it stops.
 
@@ -46,12 +46,12 @@ If `dist/` already holds the zip for that flavour and version, the dry run hashe
 
 ## Creating the tap (once, owner only)
 
-The script clones `cacheplane/homebrew-tap` but does not create it. Creating a public repository is outward-facing, so the owner does it:
+The script clones `cacheplane/tap` but does not create it. Creating a public repository is outward-facing, so the owner does it:
 
-1. Create the public repository `cacheplane/homebrew-tap` (the `homebrew-` prefix is what lets `brew tap cacheplane/tap` find it), with a `main` branch and a README.
+1. Create the public repository `cacheplane/tap` with a `main` branch and a README. Done by the owner on 2026-11-03. The repository has no `homebrew-` prefix, so `brew tap cacheplane/tap` alone looks for `cacheplane/homebrew-tap` and fails: every `brew tap` names the URL (D-173).
 2. Add `Casks/agent-workspace.rb` from `Packaging/homebrew/agent-workspace.rb` in the first commit, with its `version` and `sha256` set to the first prod release's, or leave it out and let the first prod run add it in its pull request.
-3. Check it: `brew tap cacheplane/tap`, `brew audit --cask --online cacheplane/tap/agent-workspace`, `brew style cacheplane/tap`.
+3. Check it: `brew tap cacheplane/tap https://github.com/cacheplane/tap`, `brew audit --cask --online cacheplane/tap/agent-workspace`, `brew style cacheplane/tap`.
 
-Users install with `brew install --cask cacheplane/tap/agent-workspace`. The cask installs `Agent Workspace.app` and links the bundled CLI as `agent-workspace`; it requires macOS 26 (Tahoe). The app writes and bootstraps the coordinator's LaunchAgent plist in `~/Library/LaunchAgents` (D-042), so the cask's `uninstall` stanza unloads the agent (`launchctl`), quits the app, and deletes the plist; without it a plain `brew uninstall` would leave the coordinator running and launchd retrying a deleted binary at every login. `zap` also removes `~/Library/Application Support/b4app` and the plist.
+Users install with two commands, `brew tap cacheplane/tap https://github.com/cacheplane/tap` once and then `brew install --cask cacheplane/tap/agent-workspace`; the first is needed because the repository is not named `homebrew-tap` (D-173). The cask installs `Agent Workspace.app` and links the bundled CLI as `agent-workspace`; it requires macOS 26 (Tahoe). The app writes and bootstraps the coordinator's LaunchAgent plist in `~/Library/LaunchAgents` (D-042), so the cask's `uninstall` stanza unloads the agent (`launchctl`), quits the app, and deletes the plist; without it a plain `brew uninstall` would leave the coordinator running and launchd retrying a deleted binary at every login. `zap` also removes `~/Library/Application Support/b4app` and the plist.
 
 The draft in this repository is the source of truth for the cask's shape. After the tap exists, change both: edit the tap's copy (the script rewrites only `version` and `sha256` there) and this template.

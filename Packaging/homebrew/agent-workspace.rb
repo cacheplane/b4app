@@ -1,5 +1,5 @@
 # The Homebrew cask for the prod Mac app. Scripts/release-mac.sh copies this file into
-# cacheplane/homebrew-tap as Casks/agent-workspace.rb when the tap has none yet, and rewrites the
+# cacheplane/tap as Casks/agent-workspace.rb when the tap has none yet, and rewrites the
 # `version` and `sha256` lines below on every prod release; the zeros are a placeholder, never a real
 # hash. Everything else is edited here and in the tap by hand (docs/release.md).
 cask "agent-workspace" do
