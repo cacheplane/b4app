@@ -6,6 +6,9 @@ import Testing
 @testable import WorkspaceUI
 
 @Suite struct ThemeTests {
+  /// The field's shape rules do not depend on its trailing control.
+  typealias Field = ComposerField<EmptyView>
+
   @Test func parsesIconIntoClosedPath() {
     let path = LLAMark(variant: .icon).path(in: CGRect(x: 0, y: 0, width: 120, height: 120))
     #expect(!path.isEmpty)
@@ -119,8 +122,8 @@ import Testing
     let room: CGFloat = 400 - 16 - 8 - 32 - 6
     func shape(
       wide: Bool = true, ax: Bool = false, draft: String = "Ship it", width: CGFloat
-    ) -> ComposerView.Shape {
-      ComposerView.shape(wide: wide, accessibilitySize: ax, draft: draft, draftWidth: width, fieldWidth: 400)
+    ) -> Field.Shape {
+      Field.shape(wide: wide, accessibilitySize: ax, draft: draft, draftWidth: width, fieldWidth: 400)
     }
     #expect(shape(width: room) == .line)
     #expect(shape(width: room + 1) == .box)
@@ -128,10 +131,10 @@ import Testing
     #expect(shape(ax: true, width: 10) == .box)
     #expect(shape(draft: "two\nlines", width: 10) == .box)
     #expect(
-      ComposerView.shape(wide: true, accessibilitySize: false, draft: "", draftWidth: 50, fieldWidth: 0)
+      Field.shape(wide: true, accessibilitySize: false, draft: "", draftWidth: 50, fieldWidth: 0)
         == .line)
     // The button is concentric with the 44 pt line's corner: equal gaps on every side it touches.
-    #expect(ComposerView.inset * 2 + ComposerView.control == ComposerView.line)
+    #expect(Field.inset * 2 + Field.control == Field.line)
   }
 
   @Test func contrast() {

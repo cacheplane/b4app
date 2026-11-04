@@ -2,30 +2,13 @@ import SwiftUI
 import WorkspaceProtocol
 
 /// Draft text, Send, and Stop. One active turn per thread; the draft is kept locally, never queued
-/// into the provider (spec 3.3).
-///
-/// D-061: one rounded field in two shapes. The box (every iPhone, and any wider screen once the draft
-/// wraps) has the text on top and a tool row underneath, send at its trailing end. The line (iPad and
-/// Mac while the draft fits) is a 44 pt capsule with send inline. The text grows to three lines, then
-/// scrolls. Attachments, when a turn can carry them, go in a row between the text and the tool row,
-/// with attach at the tool row's leading end; neither is drawn until then.
+/// into the provider (spec 3.3). The field itself is `ComposerField` (D-061); this view puts a thread's
+/// banners, relay lines, and turn row around it and supplies send or stop as its trailing control.
 struct ComposerView: View {
   @Bindable var model: WorkspaceModel
   let detail: ThreadDetail
-  @Environment(\.dynamicTypeSize) private var typeSize
-  #if os(iOS)
-    @Environment(\.horizontalSizeClass) private var sizeClass
-  #endif
-  /// One line of draft text, measured, so the box's first line sits where the line's text sits.
-  @State private var lineHeight: CGFloat = 20
-  /// The draft's natural one-line width and the field's own width, for choosing the shape.
-  @State private var draftWidth: CGFloat = 0
-  @State private var fieldWidth: CGFloat = 0
-  #if os(macOS)
-    @State private var editorHeight: CGFloat = 20
-  #endif
-  /// How far Dynamic Type has grown the draft text; the line and the button follow it up to 1.5 times,
-  /// so the button stays a meaningful size beside large text without crowding the field.
+  @FocusState private var focused: Bool
+  /// How far Dynamic Type has grown the draft text; the button follows it like the field does.
   @ScaledMetric(relativeTo: .callout) private var growth: CGFloat = 1
 
   private var activeTurn: Turn? { detail.activeTurn }
@@ -43,7 +26,13 @@ struct ComposerView: View {
       if let error = model.lastError { errorBanner(error) }
       relayLines
       if let turn = activeTurn { turnRow(turn) }
-      field.disabled(unreachable != nil)
+      ComposerField(
+        text: $model.composerText, placeholder: placeholder, focused: $focused,
+        onSubmit: { if canSend { Task { await model.send() } } }
+      ) {
+        sendOrStop
+      }
+      .disabled(unreachable != nil)
     }
     .padding(.horizontal, LLA.Metrics.margin)
     .padding(.top, LLA.Space.s)
@@ -54,152 +43,17 @@ struct ComposerView: View {
 
   // MARK: Metrics
 
-  /// The line's height and the send button's diameter at the default text size. The button sits
-  /// `inset` from the field's edge on every side it touches, so its circle is concentric with the
-  /// field's corner.
-  static let line: CGFloat = 44
-  static let control: CGFloat = 32
-  static let inset: CGFloat = (line - control) / 2
+  static let line = ComposerField<EmptyView>.line
+  static let control = ComposerField<EmptyView>.control
+  static let textLeading = ComposerField<EmptyView>.textLeading
 
-  private var scale: CGFloat { min(max(growth, 1), 1.5) }
-  private var lineSize: CGFloat { Self.line * scale }
+  private var scale: CGFloat { ComposerField<EmptyView>.scale(growth) }
   private var controlSize: CGFloat { Self.control * scale }
-  private var insetSize: CGFloat { Self.inset * scale }
-  /// Text starts 16 pt in from the field's edge in both shapes.
-  static let textLeading: CGFloat = 16
-  /// Between the last line of text and the tool row in the box.
-  static let toolGap: CGFloat = 4
 
   #if os(iOS)
     private static let bottomPadding = LLA.Space.s
   #else
     private static let bottomPadding = LLA.Space.l
-  #endif
-
-  /// Where the first line of text starts in both shapes: centred in a 44 pt line.
-  private var textTop: CGFloat { max((lineSize - lineHeight) / 2, insetSize) }
-
-  enum Shape { case line, box }
-
-  private var shape: Shape {
-    #if os(iOS)
-      let wide = sizeClass == .regular
-    #else
-      let wide = true
-    #endif
-    return Self.shape(
-      wide: wide, accessibilitySize: typeSize.isAccessibilitySize, draft: model.composerText,
-      draftWidth: draftWidth, fieldWidth: fieldWidth, control: controlSize, inset: insetSize)
-  }
-
-  /// The line only where the screen is wide, the text is not at an accessibility size, and the draft
-  /// has no line break and fits on one line beside the button; the box otherwise. Before the field
-  /// has a width, a wide screen starts with the line.
-  static func shape(
-    wide: Bool, accessibilitySize: Bool, draft: String, draftWidth: CGFloat, fieldWidth: CGFloat,
-    control: CGFloat = control, inset: CGFloat = inset
-  ) -> Shape {
-    guard wide, !accessibilitySize, !draft.contains("\n") else { return .box }
-    let room = fieldWidth - textLeading - LLA.Space.s - control - inset
-    return fieldWidth == 0 || draftWidth <= room ? .line : .box
-  }
-
-  // MARK: The field
-
-  private var field: some View {
-    let shape = self.shape
-    let layout =
-      shape == .line
-      ? AnyLayout(HStackLayout(alignment: .center, spacing: LLA.Space.s))
-      : AnyLayout(VStackLayout(alignment: .leading, spacing: Self.toolGap))
-    // One layout whose children keep their identity across both shapes, so the text keeps focus and
-    // the caret when the field changes shape under it.
-    return layout {
-      editor
-        .padding(.leading, Self.textLeading - insetSize)
-        .padding(.trailing, shape == .line ? 0 : Self.textLeading - insetSize)
-        .padding(.top, shape == .line ? 0 : textTop - insetSize)
-      HStack(spacing: LLA.Space.s) {
-        if shape == .box { Spacer(minLength: 0) }
-        sendOrStop
-      }
-    }
-    .padding(insetSize)
-    .frame(minHeight: lineSize)
-    // Circular corners, not continuous: a continuous corner at half the height flattens the line's
-    // ends, and only a circular arc is concentric with the round button inside it.
-    .background(
-      RoundedRectangle(cornerRadius: lineSize / 2, style: .circular).fill(LLA.Color.surface)
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: lineSize / 2, style: .circular).strokeBorder(LLA.Color.rule)
-    )
-    .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { fieldWidth = $0 }
-    .background(alignment: .topLeading) { measurements }
-  }
-
-  /// Hidden copies of one line and of the draft on one line, in the field's font.
-  private var measurements: some View {
-    ZStack(alignment: .topLeading) {
-      Text("Ag").font(LLAFont.composer)
-        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { lineHeight = $0 }
-      Text(model.composerText.isEmpty ? placeholder : model.composerText)
-        .font(LLAFont.composer).lineLimit(1).fixedSize()
-        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { draftWidth = $0 }
-    }
-    .hidden()
-    .accessibilityHidden(true)
-  }
-
-  #if os(iOS)
-    /// A vertical text field: it grows a line at a time to three, then scrolls, with no inner inset,
-    /// so its text sits exactly at the padding above. Return adds a line; the button sends.
-    private var editor: some View {
-      TextField(
-        "", text: $model.composerText,
-        prompt: Text(placeholder).foregroundStyle(LLA.Color.muted), axis: .vertical
-      )
-      .textFieldStyle(.plain)
-      .font(LLAFont.composer)
-      .foregroundStyle(LLA.Color.ink)
-      .lineLimit(1...3)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .accessibilityLabel(placeholder)
-      .accessibilityIdentifier("composer")
-    }
-  #else
-    /// The Mac keeps `TextEditor`, whose Return the Send button's shortcut takes and whose Shift-Return
-    /// adds a line. A hidden copy of the draft sets its height, one line to three. The editor indents
-    /// its text 5 pt (its line fragment padding), which the copy and the placeholder match.
-    private var editor: some View {
-      ZStack(alignment: .topLeading) {
-        Text(model.composerText.isEmpty ? " " : model.composerText + " ")
-          .font(LLAFont.composer)
-          .padding(.horizontal, 5)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .fixedSize(horizontal: false, vertical: true)
-          .hidden()
-          .accessibilityHidden(true)
-          .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { editorHeight = $0 }
-        if model.composerText.isEmpty {
-          Text(placeholder)
-            .font(LLAFont.composer)
-            .foregroundStyle(LLA.Color.muted)
-            .padding(.horizontal, 5)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-        }
-        TextEditor(text: $model.composerText)
-          .font(LLAFont.composer)
-          .foregroundStyle(LLA.Color.ink)
-          .scrollContentBackground(.hidden)
-          .scrollIndicators(.never)
-          .accessibilityLabel(placeholder)
-          .accessibilityIdentifier("composer")
-      }
-      .frame(height: min(max(editorHeight, lineHeight), lineHeight * 3))
-      .padding(.leading, -5)
-    }
   #endif
 
   /// "Message Codex": the connection's label, or plain "Message". On the phone, why it cannot send

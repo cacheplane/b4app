@@ -187,6 +187,9 @@ public final class WorkspaceModel {
   public static var remoteDraftIdle: TimeInterval = 2
   /// The clock for relative times ("Replied 3m ago") and the composer idle rule; tests replace it.
   public var now: @Sendable () -> Date = { Date() }
+  /// This device's small choices (the last model and permission a new thread used); `UserDefaults`
+  /// in the apps, in memory in tests. Never synced.
+  @ObservationIgnored public var preferences: any LocalPreferences = UserDefaults.standard
   /// Set after `connection.login`; the view opens it in the system browser and clears it.
   public var pendingLoginURL: URL?
 
