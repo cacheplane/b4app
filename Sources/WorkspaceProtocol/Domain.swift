@@ -89,6 +89,9 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
   /// phone offers a project only the connections of the Mac that owns that project (M8c).
   public var ownerDeviceId: String?
   public var capabilities: Capabilities
+  /// The models the runtime offers for a new thread, read when the connection is inspected; nil for
+  /// B4 and until the first inspection.
+  public var models: [RuntimeModel]?
   public var status: ConnectionStatus
   public var authStatus: AuthStatus
   public var createdAt: String
@@ -98,7 +101,7 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
     id: String, kind: ConnectionKind, label: String, enabled: Bool = true, profileRevision: Int = 0,
     target: String, routeKey: String? = nil, b4Mode: B4Mode? = nil, localServerId: String? = nil,
     authReference: String? = nil, nativeScope: String? = nil, projectId: String? = nil,
-    ownerDeviceId: String? = nil, capabilities: Capabilities = .unverified,
+    ownerDeviceId: String? = nil, capabilities: Capabilities = .unverified, models: [RuntimeModel]? = nil,
     status: ConnectionStatus = .unconfigured, authStatus: AuthStatus = .unknown,
     createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now()
   ) {
@@ -116,6 +119,7 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
     self.projectId = projectId
     self.ownerDeviceId = ownerDeviceId
     self.capabilities = capabilities
+    self.models = models
     self.status = status
     self.authStatus = authStatus
     self.createdAt = createdAt
@@ -241,6 +245,12 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
   /// When the owner deleted the thread (settings: deleting threads). A deleted thread is kept, never
   /// shown, and never used for personal memory; nil while it is not deleted.
   public var userDeletedAt: String?
+  /// The model chosen for the thread, a `RuntimeModel.id`; nil when none was chosen and the runtime
+  /// picks its default.
+  public var model: String?
+  /// The permission mode chosen for the thread, a `PermissionOption.id`; nil when none was chosen and
+  /// the runtime's own configuration applies.
+  public var permission: String?
 
   public init(
     id: String, connectionId: String, nativeThreadId: String, nativeScope: String = "", title: String = "",
@@ -248,7 +258,8 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
     continuity: ThreadContinuity = .available,
     createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now(),
     projectId: String? = nil, readTurnId: String? = nil, activity: ThreadActivity? = nil,
-    ownerDeviceName: String? = nil, ownerDeviceId: String? = nil, userDeletedAt: String? = nil
+    ownerDeviceName: String? = nil, ownerDeviceId: String? = nil, userDeletedAt: String? = nil,
+    model: String? = nil, permission: String? = nil
   ) {
     self.id = id
     self.connectionId = connectionId
@@ -267,6 +278,8 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
     self.activity = activity
     self.ownerDeviceName = ownerDeviceName
     self.ownerDeviceId = ownerDeviceId
+    self.model = model
+    self.permission = permission
   }
 }
 

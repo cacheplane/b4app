@@ -111,7 +111,7 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     let updates: [String: [String: String]] = [
       "threads": [
         "title": "'x'", "pinned": "true", "archived": "true", "readTurnId": "'u9'", "projectId": "'p1'",
-        "userDeletedAt": "'2026-11-02T12:00:00.000Z'",
+        "userDeletedAt": "'2026-11-02T12:00:00.000Z'", "model": "'opus'", "permission": "'plan'",
       ],
       "projects": ["name": "'Renamed'"],
       "drafts": ["threadId": "'t2'", "text": "'again'", "updatedAt": "'later'"],

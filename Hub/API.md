@@ -1100,8 +1100,8 @@ device with a fast clock cannot win every later conflict; exactly 300 000 ms ahe
 clock the hub keeps is the one it serves back in the feed.
 
 These columns merge last-writer-wins: `threads.title`, `threads.pinned`, `threads.archived`,
-`threads.readTurnId`, `threads.projectId`, `threads.userDeletedAt`, `projects.name`,
-`drafts.threadId`, `drafts.text`, `drafts.updatedAt`. The hub remembers, per row and column, the clock of the change that last set
+`threads.readTurnId`, `threads.projectId`, `threads.userDeletedAt`, `threads.model`,
+`threads.permission`, `projects.name`, `drafts.threadId`, `drafts.text`, `drafts.updatedAt`. The hub remembers, per row and column, the clock of the change that last set
 it (`column_clocks`); an `update` of such a column applies only when its clock is greater, and
 an `insert` counts as setting every such column it carries, at its clock. A change that loses is
 still recorded in the feed (it is history) but writes nothing. Every other column applies
@@ -1109,8 +1109,8 @@ whatever its clock, as in M8a.
 
 A `macos` device may write any column. An `ios` or `cli` device may only `update` these
 columns, and `insert` rows of `drafts`: `threads.title`, `threads.pinned`, `threads.archived`,
-`threads.readTurnId`, `threads.userDeletedAt`, `projects.name`, `drafts.threadId`, `drafts.text`,
-`drafts.updatedAt`. Anything else (including every `delete`) is rejected with
+`threads.readTurnId`, `threads.userDeletedAt`, `threads.model`, `threads.permission`, `projects.name`,
+`drafts.threadId`, `drafts.text`, `drafts.updatedAt`. Anything else (including every `delete`) is rejected with
 `column_not_writable`. A draft is cleared by setting `text` to `""`, never by deleting it. A thread is
 deleted by setting `userDeletedAt` (never cleared), and its row stays.
 

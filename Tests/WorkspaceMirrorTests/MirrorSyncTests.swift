@@ -164,7 +164,7 @@ private let link = MirrorLink(
     try await signal.until("first page") { store.cursor == 8 }
     #expect(try store.items(threadId: "thread-1").count == 4)
     await hub.append(Array(try fixtureAsStored()[8...]))
-    try await signal.until("second page") { store.cursor == 12 }
+    try await signal.until("second page") { store.cursor == 13 }
     #expect(try store.thread(id: "thread-1")?.title == "Renamed")
     try await signal.until("batches") { await recorder.batches.count >= 2 }
     let batches = await recorder.batches
@@ -218,8 +218,8 @@ private let link = MirrorLink(
     try store.setCursor(500)
     let fixture = try fixtureAsStored()
     let fake = FakeHubAPI(stored: fixture)
-    await fake.setSnapshot(SnapshotResponse(changes: fixture, clocks: [], next: 12))
-    let hub = PrunedHub(base: fake, tip: 12)
+    await fake.setSnapshot(SnapshotResponse(changes: fixture, clocks: [], next: 13))
+    let hub = PrunedHub(base: fake, tip: 13)
     let recorder = BatchRecorder()
     let signal = SyncSignal()
     let sync = MirrorSync(
@@ -230,7 +230,7 @@ private let link = MirrorLink(
       })
     let running = Task { await sync.run() }
 
-    try await signal.until("snapshot applied") { store.cursor == 12 }
+    try await signal.until("snapshot applied") { store.cursor == 13 }
     #expect(try store.thread(id: "thread-gone") == nil)
     #expect(try store.items(threadId: "thread-1").count == 4)
     #expect(hub.snapshotCalls == 1)
@@ -247,13 +247,13 @@ private let link = MirrorLink(
     let fixture = try fixtureAsStored()
     let hub = FakeHubAPI(stored: fixture)
     // The snapshot holds less than the feed, so which one was used shows in the rows.
-    await hub.setSnapshot(SnapshotResponse(changes: Array(fixture.prefix(2)), clocks: [], next: 12))
+    await hub.setSnapshot(SnapshotResponse(changes: Array(fixture.prefix(2)), clocks: [], next: 13))
     let signal = SyncSignal()
     let sync = MirrorSync(
       store: store, api: ProbedHub(hub, signal), onBatch: { _ in }, startFromSnapshot: true)
     let running = Task { await sync.run() }
 
-    try await signal.until("snapshot applied") { store.cursor == 12 }
+    try await signal.until("snapshot applied") { store.cursor == 13 }
     #expect(try store.thread(id: "thread-1") != nil)
     #expect(try store.turns(threadId: "thread-1").isEmpty)
     await sync.stop()
@@ -264,7 +264,7 @@ private let link = MirrorLink(
     let store = try MirrorStore.inMemory()
     try store.saveLink(link)
     _ = try store.apply(try fixtureAsStored())
-    try store.setCursor(12)
+    try store.setCursor(13)
     _ = try store.updateThread(id: "thread-1", title: "From phone", pinned: true, archived: nil)
     #expect(store.outboxCount == 2)
     let hub = FakeHubAPI(stored: try fixtureAsStored())
@@ -275,7 +275,7 @@ private let link = MirrorLink(
 
     try await signal.until("outbox drained") { store.outboxCount == 0 }
     // The hub echoes the phone's own changes back; they apply as no-ops and the cursor moves past them.
-    try await signal.until("pulled back") { store.cursor == 14 }
+    try await signal.until("pulled back") { store.cursor == 15 }
     let sent = await hub.pushed.flatMap { $0 }
     #expect(sent.map(\.deviceSeq) == [1, 2])
     #expect(sent.map(\.column) == ["title", "pinned"])
@@ -292,7 +292,7 @@ private let link = MirrorLink(
     let store = try MirrorStore.inMemory()
     try store.saveLink(link)
     _ = try store.apply(try fixtureAsStored())
-    try store.setCursor(12)
+    try store.setCursor(13)
     _ = try store.updateThread(id: "thread-1", title: "From phone", pinned: nil, archived: nil)
     // `threads.projectId` is the Mac's: an ios device's update of it is refused and covered.
     try store.queueRaw(
@@ -315,7 +315,7 @@ private let link = MirrorLink(
     let store = try MirrorStore.inMemory()
     try store.saveLink(link)
     _ = try store.apply(try fixtureAsStored())
-    try store.setCursor(12)
+    try store.setCursor(13)
     _ = try store.updateThread(id: "thread-1", title: "Offline edit", pinned: nil, archived: nil)
     _ = try store.saveDraft(threadId: "thread-1", text: "half a thought")
     let queued = store.outboxCount
@@ -365,7 +365,7 @@ private let link = MirrorLink(
     let store = try MirrorStore.inMemory()
     try store.saveLink(link)
     _ = try store.apply(try fixtureAsStored())
-    try store.setCursor(12)
+    try store.setCursor(13)
     for seq in 1...1100 {
       try store.queueRaw(
         deviceSeq: seq, table: "threads", rowId: "thread-1", column: "title", value: "\"t\(seq)\"")
@@ -386,7 +386,7 @@ private let link = MirrorLink(
     let store = try MirrorStore.inMemory()
     try store.saveLink(link)
     _ = try store.apply(try fixtureAsStored())
-    try store.setCursor(12)
+    try store.setCursor(13)
     // Seven 1.5 MiB titles: 10.5 MiB, each change under the hub's 2 MiB value limit.
     let big = String(repeating: "x", count: 1_572_864)
     for seq in 1...7 {
@@ -462,7 +462,7 @@ private let link = MirrorLink(
     let store = try MirrorStore.inMemory()
     try store.saveLink(link)
     _ = try store.apply(try fixtureAsStored())
-    try store.setCursor(12)
+    try store.setCursor(13)
     let hub = FakeHubAPI(stored: try fixtureAsStored())
     await hub.setPlatform("ios")
     let signal = SyncSignal()
@@ -558,7 +558,7 @@ private let link = MirrorLink(
     let store = try MirrorStore.inMemory()
     try store.saveLink(link)
     _ = try store.apply(try fixtureAsStored())
-    try store.setCursor(12)
+    try store.setCursor(13)
     let hub = FakeHubAPI(stored: try fixtureAsStored())
     await hub.setPlatform("ios")
     let signal = SyncSignal()
@@ -597,7 +597,7 @@ private let link = MirrorLink(
     let store = try MirrorStore.inMemory()
     try store.saveLink(link)
     _ = try store.apply(try fixtureAsStored())
-    try store.setCursor(12)
+    try store.setCursor(13)
     _ = try store.updateThread(id: "thread-1", title: "In flight", pinned: nil, archived: nil)
     let fake = FakeHubAPI(stored: try fixtureAsStored())
     await fake.setPlatform("ios")

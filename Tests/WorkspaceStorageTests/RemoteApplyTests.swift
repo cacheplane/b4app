@@ -105,6 +105,23 @@ private func clock(_ db: WorkspaceDatabase, _ table: String, _ rowId: String, _ 
     #expect(try db.project(id: "p1")?.name == "Renamed")
   }
 
+  @Test func aPhonePermissionChangeIsApplied() throws {
+    let db = try WorkspaceDatabase.temporary()
+    try seed(db)
+    let at = stamp(epochMillis() + 1_000, phone)
+    let applied = try db.applyRemote(
+      [
+        remote(phone, at, "threads", "t1", column: "permission", value: "acceptEdits"),
+        remote(phone, at, "threads", "t1", column: "model", value: "sonnet"),
+      ], ownDeviceId: mac, macDeviceIds: [mac], cursor: 4)
+    #expect(applied.applied == 2 && applied.skipped == 0)
+    #expect(applied.touchedThreadIds == ["t1"])
+    let thread = try #require(try db.thread(id: "t1"))
+    #expect(thread.permission == "acceptEdits")
+    #expect(thread.model == "sonnet")
+    #expect(try db.columnClock(table: "threads", rowId: "t1", column: "permission") == at)
+  }
+
   @Test func aPulledNullNeverClearsTheDeleteMark() throws {
     let db = try WorkspaceDatabase.temporary()
     try seed(db)
