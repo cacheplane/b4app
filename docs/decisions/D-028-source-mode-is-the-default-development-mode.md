@@ -1,0 +1,3 @@
+## 2026-10-31 (M4)
+
+- **D-028 Source mode (`b4 start --host 127.0.0.1 --port N` with a coordinator-built environment parsed from the env file without shell evaluation) is the default; development mode (`b4 dev --port N --env-file P`) is explicit** because hot reload can replace the runtime mid-turn. The child environment is `PATH` (the Node directory plus the system directories), `HOME`, `TMPDIR`, `LANG`, `USER`, `SHELL`, and the env-file pairs; nothing else of the coordinator's environment leaks in, and env-file values exist only in the spawn call. `envFilePath` defaults to `<project>/.env` when present. `start`, `restart`, `add`, and `inspect` block until readiness (`GET /healthz` within 90 s) or discovery finishes; a concurrent start joins the one in flight.

@@ -323,7 +323,7 @@ docs/                       spec, design, decisions, compatibility, verification
 
 - Spec: `docs/roadmaps/Personal_Agent_Workspace_Technical_Spec_and_Roadmap.md`
 - Design: `docs/superpowers/specs/2026-10-30-swift-monorepo-shell-design.md`, `docs/superpowers/specs/2026-10-30-m1-codex-conversation-design.md`, `docs/superpowers/specs/2026-10-31-m2-claude-conversation-design.md`, `docs/superpowers/specs/2026-10-31-m3-b4-conversation-design.md`
-- Decisions: `docs/decisions.md`
+- Decisions: `docs/decisions/`, one file per decision (`docs/decisions.md` describes the layout; `Scripts/docs-index.sh` writes a newest-first index)
 - Compatibility: `docs/compatibility.md`
-- Verification: `docs/verification.md`
+- Verification: `docs/verification/`, one file per gate record (`docs/verification.md` describes the layout)
 - Research notes: `docs/research/`

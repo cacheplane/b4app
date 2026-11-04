@@ -1,0 +1,4 @@
+## 2026-11-01 (sign-in design)
+
+- **D-067 The hosted hubs are a separate project; the b4.run site serves the app's association files and pages under `/app/`.** The owner moved deploying `hub.b4.run` and `hub.test.b4.run` to a separate thread. This design states only what it needs from them. `/privacy` and `/docs` on b4.run already belong to B4, so the app's pages are `/app/download`, `/app/terms`, `/app/privacy`, and `/app/help/iphone`; `/pair` stays at the root to keep the QR link short. Mac zips go to GitHub Releases on `cacheplane/b4app`, and a `cacheplane/homebrew-tap` cask installs the prod build.
+  - *Built:* `cacheplane/b4run#1129` (merged) serves the association file per host on `b4.run`, `test.b4.run`, and `local.b4.run`, `/pair`, and the `/app/` pages; the terms, privacy, and App Store link are placeholders for the owner.

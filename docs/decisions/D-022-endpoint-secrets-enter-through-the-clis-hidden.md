@@ -1,0 +1,3 @@
+## 2026-10-31
+
+- **D-022 Endpoint secrets enter through the CLI's hidden prompt and the local socket into the coordinator's credential store.** `credential add <label>` reads with `readpassphrase` (or one line from a non-TTY stdin), sends `credential.add` over the 0600 socket, and prints only the `secret:<uuid>` reference. The adapter resolves the reference on first use, sends it as `Authorization: Bearer <value>` (verbatim when the value already names a scheme) to the configured origin only, and refuses every redirect. The GUI form collects the reference, never the value. Credential labels are not persisted yet; the reference is the handle.
