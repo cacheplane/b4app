@@ -152,15 +152,17 @@ final class NewThreadDraft {
 
   // MARK: Defaults
 
-  /// The project asked for, else the remembered one, else the newest; the phone prefers one whose Mac
-  /// can take a start now.
+  /// The project asked for, else the remembered one, else the newest. The phone takes the remembered
+  /// or newest only among projects whose Mac can take a start now, as its sheet always has.
   private func defaultProject(_ requested: String?, _ memory: NewThreadMemory) -> Project? {
     let projects = workspace.startProjects
     if let requested, let project = projects.first(where: { $0.id == requested }) { return project }
-    let startable = projects.filter {
-      workspace.startBlockedReason(for: $0) == nil && !workspace.startConnections(for: $0).isEmpty
-    }
-    return startable.first { $0.id == memory.projectId } ?? startable.first ?? projects.first
+    let candidates =
+      workspace.relaysThroughHub
+      ? projects.filter {
+        workspace.startBlockedReason(for: $0) == nil && !workspace.startConnections(for: $0).isEmpty
+      } : projects
+    return candidates.first { $0.id == memory.projectId } ?? candidates.first ?? projects.first
   }
 
   private func place(in project: Project?, _ memory: NewThreadMemory) {
@@ -333,9 +335,16 @@ extension WorkspaceModel {
     newThreadDraftStorage?.started(text: text)
   }
 
-  /// The account ended: its draft goes, and the unsent text with it (it may name the account's work).
+  /// The workspace was forgotten: the draft is made again for whatever loads next. Its remembered
+  /// text stays; only `forgetNewThreadText` (a real sign-out or switch) removes it.
   func forgetNewThreadDraft() {
     newThreadDraftStorage = nil
+  }
+
+  /// The signed-in account ended or changed: its unsent text goes (it may name the account's work).
+  /// Not at a launch that reads "signed out" before anyone was signed in, so a draft survives that.
+  func forgetNewThreadText() {
+    newThreadDraftStorage?.text = ""
     NewThreadMemory.update(preferences) { $0.text = "" }
   }
 }

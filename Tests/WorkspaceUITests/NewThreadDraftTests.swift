@@ -96,9 +96,9 @@ private enum Phone {
   @MainActor
   static func macModel(
     _ transport: ScriptedTransport, preferences: InMemoryPreferences = InMemoryPreferences(),
-    threads: [ConversationThread] = []
+    threads: [ConversationThread] = [], connections: [Connection] = macConnections
   ) async throws -> WorkspaceModel {
-    transport.set(connections: macConnections, threads: threads, projects: macProjects)
+    transport.set(connections: connections, threads: threads, projects: macProjects)
     let model = WorkspaceModel(transportProvider: { transport })
     model.preferences = preferences
     model.connect()
@@ -233,7 +233,7 @@ private enum Phone {
   @Test func startOpensTheThreadOnAccept() async throws {
     let transport = ScriptedTransport()
     let model = try await Phone.model(transport, clock: TestClock())
-    let draft = NewThreadDraft(model: model, projectId: nil)
+    let draft = model.newThreadDraft
     #expect(draft.projectId == "p1")
     #expect(draft.connectionId == "codex-1")
     #expect(draft.folder == "/work/atlas")
@@ -257,6 +257,9 @@ private enum Phone {
     transport.release(.threadStart, with: Phone.started(thread, pending.id))
     await task.value
     #expect(draft.finished)
+    // The accepted text is cleared, so Start cannot send it again while the sheet closes.
+    #expect(draft.text.isEmpty)
+    #expect(!draft.canSend)
     #expect(draft.status == nil)
     #expect(model.selectedThreadId == pending.threadId)
     #expect(model.detail?.thread.id == pending.threadId)
@@ -330,7 +333,7 @@ private enum Phone {
   @Test func aRetryThatLandsClosesTheSheetAndOpensTheThread() async throws {
     let transport = ScriptedTransport()
     let model = try await Phone.model(transport, clock: TestClock())
-    let draft = NewThreadDraft(model: model, projectId: nil)
+    let draft = model.newThreadDraft
     draft.text = "Retry me"
     transport.script(
       .threadStart,
@@ -352,6 +355,9 @@ private enum Phone {
     transport.emit(PhoneFixture.link(.connecting))
     transport.emit(PhoneFixture.link(.connected))
     try await waitUntil("finished") { draft.finished }
+    // Accepted later, by the retry: the text is cleared all the same.
+    #expect(draft.text.isEmpty)
+    #expect(!draft.canSend)
     await draft.openStartedThread()
     #expect(model.detail?.thread.id == pending.threadId)
     #expect(transport.recorded(.threadStart).map(\.operationId) == [pending.id, pending.id])
@@ -743,6 +749,57 @@ private enum Phone {
     #expect(pruned.connectionId == "claude-1")
     #expect(pruned.model == nil)
     #expect(pruned.permission == nil)
+    await model.disconnect()
+  }
+
+  @Test func theMacOpensOnTheLastProjectWithNothingReady() async throws {
+    let preferences = InMemoryPreferences()
+    NewThreadMemory(projectId: "p3", text: "").save(to: preferences)
+    // No connection is ready, so no project has one to offer: the Mac still opens on the last project.
+    let offline = Phone.macConnections.map { connection in
+      var connection = connection
+      connection.status = .offline
+      return connection
+    }
+    let model = try await Phone.macModel(ScriptedTransport(), preferences: preferences, connections: offline)
+    let draft = NewThreadDraft(model: model, projectId: nil)
+    #expect(draft.projectId == "p3")
+    #expect(draft.folder == "/work/cirrus")
+    #expect(draft.connectionId == nil)
+    #expect(draft.blockedReason == "No ready connection can start a thread in this project.")
+    await model.disconnect()
+  }
+
+  @Test func onlyARealSignOutClearsTheDraftText() async throws {
+    let preferences = InMemoryPreferences()
+    NewThreadMemory(text: "Keep me").save(to: preferences)
+    let account = AccountStatus.Account(
+      id: "0123456789abcdef", displayName: "Brian", orgName: "B4", hubURL: "")
+    // A launch that reads "signed out" before anyone was signed in keeps the text.
+    let launching = WorkspaceModel(transportProvider: { throw CancellationError() })
+    launching.preferences = preferences
+    #expect(launching.accountState != .signedIn)
+    launching.applyAccountStatus(AccountStatus.Result(state: .signedOut), loadStore: false)
+    #expect(NewThreadMemory.load(from: preferences).text == "Keep me")
+    #expect(launching.newThreadDraft.text == "Keep me")
+
+    let model = try await Phone.macModel(ScriptedTransport(), preferences: preferences)
+    #expect(model.accountState == .signedIn)
+    #expect(model.newThreadDraft.text == "Keep me")
+    // Signing out of an account clears it.
+    model.newThreadDraft.text = "Theirs"
+    model.applyAccountStatus(AccountStatus.Result(state: .signedOut), loadStore: false)
+    #expect(NewThreadMemory.load(from: preferences).text.isEmpty)
+    #expect(model.newThreadDraft.text.isEmpty)
+
+    // So does switching to another account.
+    model.applyAccountStatus(AccountStatus.Result(state: .signedIn, account: account), loadStore: false)
+    model.newThreadDraft.text = "Also theirs"
+    var other = account
+    other.id = "fedcba9876543210"
+    model.applyAccountStatus(AccountStatus.Result(state: .signedIn, account: other), loadStore: false)
+    #expect(NewThreadMemory.load(from: preferences).text.isEmpty)
+    #expect(model.newThreadDraft.text.isEmpty)
     await model.disconnect()
   }
 

@@ -8,15 +8,15 @@ import WorkspaceProtocol
 /// message. Mounted by the root view on the phone; the Mac keeps `NewThreadSheet`.
 struct PhoneNewThreadSheet: View {
   @Bindable var model: WorkspaceModel
-  @State private var draft: NewThreadDraft
   @Environment(\.dismiss) private var dismiss
   @Environment(\.showDetail) private var showDetail
   @FocusState private var messageFocused: Bool
+  /// A start made from this opening of the sheet was accepted. The draft outlives the sheet (one per
+  /// device), so its `finished` may be an earlier start's.
+  @State private var startedHere = false
 
-  init(model: WorkspaceModel) {
-    self.model = model
-    self._draft = State(initialValue: NewThreadDraft(model: model, projectId: nil))
-  }
+  /// The device's one new-thread draft, so an accepted start clears the text Start would send again.
+  private var draft: NewThreadDraft { model.newThreadDraft }
 
   var body: some View {
     NavigationStack {
@@ -57,8 +57,10 @@ struct PhoneNewThreadSheet: View {
     }
     .tint(LLA.Color.accent)
     .interactiveDismissDisabled(draft.submitting)
+    .onAppear { draft.refreshChoices() }
     .onChange(of: draft.finished) { _, finished in
       guard finished else { return }
+      startedHere = true
       // Move the compact split view to the thread's detail as the sheet closes, the way the search
       // sheet does (select, show the detail, close), then make sure the thread is the open one.
       showDetail()
@@ -67,7 +69,7 @@ struct PhoneNewThreadSheet: View {
     }
     // Once the sheet is gone, move to the detail again: a column change made while the sheet still
     // covers the split view can be lost, and this one cannot.
-    .onDisappear { if draft.finished { showDetail() } }
+    .onDisappear { if startedHere { showDetail() } }
   }
 
   // MARK: Fields
@@ -120,7 +122,7 @@ struct PhoneNewThreadSheet: View {
   private var messageField: some View {
     VStack(alignment: .leading, spacing: LLA.Space.xs) {
       Text("Message").llaSmallMuted()
-      TextField("What should it do?", text: $draft.text, axis: .vertical)
+      TextField("What should it do?", text: Bindable(draft).text, axis: .vertical)
         .textFieldStyle(.plain)
         .focused($messageFocused)
         .lineLimit(4...10)

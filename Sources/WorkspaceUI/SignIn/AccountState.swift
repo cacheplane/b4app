@@ -287,6 +287,7 @@ extension WorkspaceModel {
     if status.state == .signedOut { pendingRename = nil }
     if status.state != .signedIn {
       if wasSignedIn || status.state == .signedOut { forgetWorkspace() }
+      if wasSignedIn { forgetNewThreadText() }
       if wasSignedIn { closeAccountWindows() }
       // The phone's transport carries the relay of the link it was made with: a new one follows.
       if wasSignedIn, loadStore, hostOwnsAccount { reconnect() }
@@ -298,6 +299,7 @@ extension WorkspaceModel {
     let switched = wasSignedIn && previousId != status.account?.id
     if switched {
       forgetWorkspace()
+      forgetNewThreadText()
       closeAccountWindows()
     }
     // The phone's profile button names the account its host signed in to; the Mac's takes the
