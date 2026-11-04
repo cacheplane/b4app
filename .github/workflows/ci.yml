@@ -43,11 +43,13 @@ jobs:
       - name: shellcheck
         run: |
           shopt -s nullglob
-          shellcheck .github/scripts/*.sh Hub/scripts/*.sh Hub/chart/scripts/*.sh Infra/scripts/*.sh Infra/scripts/tests/stubs/* Infra/scripts/tests/helpers.bash
+          shellcheck .github/scripts/*.sh Hub/scripts/*.sh Hub/chart/scripts/*.sh Infra/scripts/*.sh Infra/scripts/tests/stubs/* Infra/scripts/tests/helpers.bash Scripts/fix-app-registrations.sh Scripts/tests/stubs/*
       - name: Release tag guard test
         run: .github/scripts/test-tag-guard.sh
       - name: Deploy script tests
         run: bats Infra/scripts/tests
+      - name: Launch Services script tests
+        run: bats Scripts/tests
 
   package:
     name: Package build and tests

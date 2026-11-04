@@ -242,6 +242,8 @@ extension WorkspaceModel {
       accountSettingsFailure = SignInCopy.passkeyAlreadyOnDevice
     } catch is PasskeySheetFailed {
       accountSettingsFailure = SignInCopy.passkeySheetFailed
+    } catch let error as AppRegisteredElsewhere {
+      accountSettingsFailure = SignInCopy.appRegisteredElsewhere(count: error.count)
     } catch {
       await accountChangeFailed(error, generation: generation)
     }
@@ -305,6 +307,8 @@ extension WorkspaceModel {
       return
     } catch is PasskeySheetFailed {
       accountSettingsFailure = SignInCopy.passkeySheetFailed
+    } catch let error as AppRegisteredElsewhere {
+      accountSettingsFailure = SignInCopy.appRegisteredElsewhere(count: error.count)
     } catch {
       await accountChangeFailed(error, generation: generation)
     }
@@ -416,6 +420,8 @@ extension WorkspaceModel {
       return
     } catch is PasskeySheetFailed {
       accountSettingsFailure = SignInCopy.passkeySheetFailed
+    } catch let error as AppRegisteredElsewhere {
+      accountSettingsFailure = SignInCopy.appRegisteredElsewhere(count: error.count)
     } catch {
       guard generation == accountGeneration else { return }
       let failure = WorkspaceError.from(error)
@@ -461,6 +467,8 @@ extension WorkspaceModel {
       return
     } catch is PasskeySheetFailed {
       deleteFailure = SignInCopy.passkeySheetFailed
+    } catch let error as AppRegisteredElsewhere {
+      deleteFailure = SignInCopy.appRegisteredElsewhere(count: error.count)
     } catch {
       let failure = WorkspaceError.from(error)
       if failure.code == .internalError, failure.details?["database"] != nil {

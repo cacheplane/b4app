@@ -105,6 +105,11 @@ public struct SystemAppleCeremony: AppleCeremony {
         using: url, callback: callback.session, preferredBrowserSession: .ephemeral,
         additionalHeaderFields: [:])
     } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
+      // An https callback the system refuses (the app "is not associated with domain", because
+      // Launch Services holds the bundle id from a copy without the entitlement) ends the session
+      // with this same code, before any page is shown (D-173). Other registered copies turn it into
+      // the line that names the fix; a custom scheme never goes through that check.
+      if case .https = callback, let elsewhere = AppRegistrations.elsewhere() { throw elsewhere }
       return nil
     }
   }

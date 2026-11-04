@@ -171,6 +171,15 @@ public enum SignInCopy {
   public static let passkeySheetFailed =
     "The passkey sheet couldn't open. If another passkey request is still on screen, close it, then try again."
 
+  /// The Mac has the app's bundle id registered from other copies, so the association check can fail
+  /// (`AppRegisteredElsewhere`, D-173): the one line that names the fix, since the screen otherwise
+  /// shows nothing at all.
+  public static func appRegisteredElsewhere(count: Int) -> String {
+    let copies = count == 1 ? "1 other copy" : "\(count) other copies"
+    return
+      "Sign-in couldn't open: macOS has \(copies) of this app registered. Run Scripts/fix-app-registrations.sh --apply, then open the app again."
+  }
+
   /// The coordinator could not be reached for a log-out; nothing changed.
   static let coordinatorUnreachable = "Can't reach the coordinator. Try again in a moment."
 
@@ -374,6 +383,10 @@ extension WorkspaceModel {
     }
     if error is PasskeySheetFailed {
       signInProgress = SignInProgress(failure: SignInCopy.passkeySheetFailed)
+      return
+    }
+    if let elsewhere = error as? AppRegisteredElsewhere {
+      signInProgress = SignInProgress(failure: SignInCopy.appRegisteredElsewhere(count: elsewhere.count))
       return
     }
     signInProgress = SignInProgress(failure: SignInCopy.failure(for: WorkspaceError.from(error)))

@@ -83,8 +83,15 @@ public final class SystemPasskeyCeremony: NSObject, PasskeyCeremony {
     } catch  where Self.meansNoCredential(error) {
       return nil
     } catch let error as ASAuthorizationError where error.code == .failed {
-      throw PasskeySheetFailed()
+      throw Self.sheetFailed()
     }
+  }
+
+  /// What a `.failed` sheet (1004) means: `AppRegisteredElsewhere` when Launch Services has this app's
+  /// bundle id from other copies, which the association check can pick (D-173), else
+  /// `PasskeySheetFailed`.
+  static func sheetFailed() -> any Error {
+    AppRegistrations.elsewhere() ?? PasskeySheetFailed()
   }
 
   /// Confirm with one of the passkeys the options allow. Unlike `assert`, not limited to credentials
@@ -114,7 +121,7 @@ public final class SystemPasskeyCeremony: NSObject, PasskeyCeremony {
     } catch let error as ASAuthorizationError where error.code == .canceled {
       throw SignInCanceled()
     } catch let error as ASAuthorizationError where error.code == .failed {
-      throw PasskeySheetFailed()
+      throw Self.sheetFailed()
     }
   }
 
@@ -153,7 +160,8 @@ public final class SystemPasskeyCeremony: NSObject, PasskeyCeremony {
         credentialID: credential.credentialID, attestationObject: attestationObject,
         clientDataJSON: credential.rawClientDataJSON)
     } catch let error as ASAuthorizationError {
-      throw Self.registrationError(error)
+      let mapped = Self.registrationError(error)
+      throw mapped is PasskeySheetFailed ? Self.sheetFailed() : mapped
     }
   }
 
