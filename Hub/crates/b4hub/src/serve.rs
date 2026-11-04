@@ -255,6 +255,7 @@ pub async fn run(
             *marked.lock().unwrap_or_else(|p| p.into_inner()) = Some(tokio::time::Instant::now());
             let _ = signalled_tx.send(());
             holds.release_holds(hold_release).await;
+            tracing::info!(links = holds.live_links(), "draining: closing the links");
             shutdown.trigger();
             tokio::time::sleep(grace).await;
         })
@@ -263,7 +264,12 @@ pub async fn run(
     // waits for the links, which close themselves (code 1001) as soon as shutdown begins.
     let server = async move {
         let served = server.await;
+        let started = tokio::time::Instant::now();
         relay.drained().await;
+        tracing::info!(
+            waited_ms = started.elapsed().as_millis() as u64,
+            "draining: every link is closed"
+        );
         served
     };
     let deadline = async move {

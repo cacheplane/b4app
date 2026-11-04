@@ -114,6 +114,32 @@ pub enum SendError {
     Full,
 }
 
+/// A frame on a link's outbound queue.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Outbound {
+    /// A frame the link task encodes when it writes it.
+    Message(RelayMessage),
+    /// A live `event`, encoded once by [`Relay::fan_out`] for every link watching its thread. Its
+    /// bytes count toward the link's [`EVENT_BYTES_MAX`] until the link task has written it.
+    Event(Arc<str>),
+}
+
+impl Outbound {
+    /// The frame as a message (an encoded event decoded again); `None` for an encoded event that
+    /// does not decode, which `fan_out` never queues.
+    pub fn message(&self) -> Option<RelayMessage> {
+        match self {
+            Outbound::Message(message) => Some(message.clone()),
+            Outbound::Event(text) => serde_json::from_str(text).ok(),
+        }
+    }
+}
+
+/// The most bytes of encoded live events one link may have waiting in its queue. Past it, events
+/// for a thread are dropped and the thread gets a `stream_gap`, as when the queue is full, so a
+/// phone that stops reading holds a few MiB rather than [`LINK_QUEUE`] events of up to 256 KiB.
+pub const EVENT_BYTES_MAX: usize = 4 * 1024 * 1024;
+
 /// What other tasks may know about a link: who it is and how to queue a frame to it. Cheap to
 /// clone; the link task owns the socket.
 #[derive(Debug, Clone)]
@@ -129,33 +155,58 @@ pub struct LinkHandle {
     /// The session the link was opened with, looked up again to find out whether it still holds;
     /// `None` for the readiness probe.
     pub session: Option<SessionKey>,
-    tx: mpsc::Sender<RelayMessage>,
+    tx: mpsc::Sender<Outbound>,
     /// What a full queue made the link miss; see [`Missed`].
     missed: Arc<Mutex<Missed>>,
+    /// Bytes of encoded events queued and not yet written ([`EVENT_BYTES_MAX`]).
+    event_bytes: Arc<AtomicUsize>,
 }
 
 impl LinkHandle {
     /// Queues `message` for the link without waiting.
     pub fn try_send(&self, message: RelayMessage) -> Result<(), SendError> {
-        self.tx.try_send(message).map_err(|error| match error {
-            mpsc::error::TrySendError::Full(_) => SendError::Full,
-            mpsc::error::TrySendError::Closed(_) => SendError::Offline,
-        })
+        self.tx
+            .try_send(Outbound::Message(message))
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => SendError::Full,
+                mpsc::error::TrySendError::Closed(_) => SendError::Offline,
+            })
     }
 
-    /// Queues a live `event` for `thread_id`, or drops it when the queue is full, in which case
-    /// the thread is marked as having a gap and the link is sent a `stream_gap` as soon as its
-    /// queue has room. Until that `stream_gap` is queued, later events for the thread are dropped
-    /// too, so it always reaches the phone after the hole it reports and before anything newer.
-    pub fn deliver_event(&self, thread_id: &str, event: RelayMessage) {
+    /// Queues a live `event` (encoded) for `thread_id`, or drops it when the queue is full or
+    /// would hold more than [`EVENT_BYTES_MAX`] of events, in which case the thread is marked as
+    /// having a gap and the link is sent a `stream_gap` as soon as its queue has room. Until that
+    /// `stream_gap` is queued, later events for the thread are dropped too, so it always reaches
+    /// the phone after the hole it reports and before anything newer.
+    pub fn deliver_event(&self, thread_id: &str, event: Arc<str>) {
         let mut missed = self.missed();
         missed.flush(&self.tx);
         if missed.gaps.contains(thread_id) {
             return;
         }
-        if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(event) {
-            missed.gaps.insert(thread_id.to_string());
+        let len = event.len();
+        // Counted before the send, so the link task's subtraction can never come first.
+        let queued = self.event_bytes.fetch_add(len, Ordering::SeqCst);
+        let dropped = if queued + len > EVENT_BYTES_MAX {
+            Some("bytes")
+        } else {
+            match self.tx.try_send(Outbound::Event(event)) {
+                Ok(()) => None,
+                Err(mpsc::error::TrySendError::Full(_)) => Some("frames"),
+                Err(mpsc::error::TrySendError::Closed(_)) => Some("closed"),
+            }
+        };
+        if let Some(full) = dropped {
+            self.event_bytes.fetch_sub(len, Ordering::SeqCst);
+            if full != "closed" && missed.gaps.insert(thread_id.to_string()) {
+                tracing::info!(device = %self.device_id, full, "dropping live events: queue full");
+            }
         }
+    }
+
+    /// The link task wrote an encoded event of `len` bytes: room for more.
+    pub fn event_written(&self, len: usize) {
+        self.event_bytes.fetch_sub(len, Ordering::SeqCst);
     }
 
     /// Queues `presence`, or, when the queue is full, keeps it (replacing any older one it was
@@ -198,9 +249,11 @@ struct Missed {
 }
 
 impl Missed {
-    fn flush(&mut self, tx: &mpsc::Sender<RelayMessage>) {
+    fn flush(&mut self, tx: &mpsc::Sender<Outbound>) {
         if let Some(presence) = self.presence.take() {
-            if let Err(mpsc::error::TrySendError::Full(presence)) = tx.try_send(presence) {
+            if let Err(mpsc::error::TrySendError::Full(Outbound::Message(presence))) =
+                tx.try_send(Outbound::Message(presence))
+            {
                 self.presence = Some(presence);
                 return;
             }
@@ -209,7 +262,7 @@ impl Missed {
             let gap = RelayMessage::StreamGap {
                 thread_id: thread_id.clone(),
             };
-            if tx.try_send(gap).is_err() {
+            if tx.try_send(Outbound::Message(gap)).is_err() {
                 return;
             }
             self.gaps.remove(&thread_id);
@@ -320,7 +373,7 @@ impl Identity {
 pub struct Registration {
     pub handle: LinkHandle,
     /// The frames other tasks queued for this link, in order.
-    pub outbound: mpsc::Receiver<RelayMessage>,
+    pub outbound: mpsc::Receiver<Outbound>,
     /// Resolves when something asks this link to close.
     pub closing: oneshot::Receiver<Close>,
     /// True when this link replaced an older one of the same device.
@@ -365,6 +418,8 @@ struct Inner {
     gate: Mutex<Option<Arc<RegistrationGate>>>,
     upgrades: SlidingWindow,
     live: watch::Sender<usize>,
+    /// Held while a broadcast reads who is online and delivers it ([`Relay::broadcast_presence`]).
+    presence_order: Mutex<()>,
     /// Bumped on every registration, so a held command learns its Mac is back.
     registered: watch::Sender<u64>,
     /// The router's in-memory state: commands in flight, held commands, started threads, limits.
@@ -407,6 +462,7 @@ impl Relay {
             gate: Mutex::new(None),
             upgrades: SlidingWindow::upgrades(),
             live: watch::channel(0).0,
+            presence_order: Mutex::new(()),
             registered: watch::channel(0).0,
             commands: Commands::default(),
             watchers: Mutex::default(),
@@ -429,6 +485,7 @@ impl Relay {
             session: who.session,
             tx,
             missed: Arc::default(),
+            event_bytes: Arc::default(),
         };
         if who.probe {
             return Registration {
@@ -468,6 +525,11 @@ impl Relay {
             replaced,
             probe_closer: None,
         }
+    }
+
+    /// How many links are live now (the readiness probe's included while it runs).
+    pub fn live_links(&self) -> usize {
+        *self.0.live.borrow()
     }
 
     /// Counts one link as live until the returned guard is dropped, so shutdown can wait for it
@@ -591,7 +653,7 @@ impl Relay {
         bound: Duration,
     ) -> Result<(), SendError> {
         let until = Instant::now() + bound;
-        let mut message = message;
+        let mut frame = Outbound::Message(message);
         let mut tried = None;
         loop {
             let handle = self.handle(device_id).ok_or(SendError::Offline)?;
@@ -599,10 +661,10 @@ impl Relay {
                 return Err(SendError::Offline);
             }
             tried = Some(handle.generation);
-            match tokio::time::timeout_at(until, handle.tx.send(message)).await {
+            match tokio::time::timeout_at(until, handle.tx.send(frame)).await {
                 Ok(Ok(())) => return Ok(()),
                 // That link is gone; try the device's current one, if it has a newer one.
-                Ok(Err(mpsc::error::SendError(back))) => message = back,
+                Ok(Err(mpsc::error::SendError(back))) => frame = back,
                 Err(_) => return Err(SendError::Full),
             }
         }
@@ -628,7 +690,12 @@ impl Relay {
         user_id: Uuid,
     ) -> Result<RelayMessage, b4hub_db::Error> {
         let hosts = host_devices(db, org_id, user_id).await?;
-        Ok(RelayMessage::Presence {
+        Ok(self.presence_of(hosts))
+    }
+
+    /// The `presence` frame for `hosts` as read from the database, online as of now.
+    fn presence_of(&self, hosts: Vec<(Uuid, String, Option<String>)>) -> RelayMessage {
+        RelayMessage::Presence {
             hosts: hosts
                 .into_iter()
                 .map(|(device_id, name, last_seen_at)| HostPresence {
@@ -638,19 +705,29 @@ impl Relay {
                     last_seen_at,
                 })
                 .collect(),
-        })
+        }
     }
 
     /// Tells every client link of `user_id` the current presence. A client whose queue is full
     /// is sent it once the queue has room (see [`LinkHandle::deliver_presence`]).
+    ///
+    /// Who is online is read and delivered under one lock, so two broadcasts racing on other
+    /// threads (a Mac leaving while another links) reach every phone in the order their snapshots
+    /// were taken, and a phone is never left with the older one.
     pub async fn broadcast_presence(&self, db: &Db, org_id: Uuid, user_id: Uuid) {
-        let message = match self.presence(db, org_id, user_id).await {
-            Ok(message) => message,
+        let hosts = match host_devices(db, org_id, user_id).await {
+            Ok(hosts) => hosts,
             Err(error) => {
                 tracing::warn!(%error, "could not read presence");
                 return;
             }
         };
+        let _ordered = self
+            .0
+            .presence_order
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let message = self.presence_of(hosts);
         for client in self.presence_subscribers(user_id) {
             client.deliver_presence(message.clone());
         }
@@ -749,9 +826,17 @@ impl Relay {
             .and_then(|threads| threads.get(thread_id))
             .map(|clients| clients.iter().copied().collect())
             .unwrap_or_default();
+        if watching.is_empty() {
+            return 0;
+        }
+        // Encoded once for every watcher, not once per link.
+        let Ok(text) = serde_json::to_string(event) else {
+            return 0;
+        };
+        let text: Arc<str> = text.into();
         for client in &watching {
             if let Some(handle) = self.handle(*client) {
-                handle.deliver_event(thread_id, event.clone());
+                handle.deliver_event(thread_id, Arc::clone(&text));
             }
         }
         watching.len()
@@ -960,7 +1045,10 @@ mod tests {
             relay.send(device, RelayMessage::Ping).unwrap();
         }
         assert_eq!(relay.send(device, RelayMessage::Ping), Err(SendError::Full));
-        assert_eq!(link.outbound.try_recv().unwrap(), RelayMessage::Ping);
+        assert_eq!(
+            link.outbound.try_recv().unwrap().message().unwrap(),
+            RelayMessage::Ping
+        );
         relay.send(device, RelayMessage::Ping).unwrap();
     }
 
@@ -1023,17 +1111,63 @@ mod tests {
         }
     }
 
+    /// [`event`] as `fan_out` hands it to a link: encoded once.
+    fn encoded(thread: &str) -> Arc<str> {
+        serde_json::to_string(&event(thread)).unwrap().into()
+    }
+
+    #[test]
+    fn events_past_the_byte_budget_are_a_gap_and_written_ones_give_room_back() {
+        let relay = Relay::new();
+        let mut link = relay.register(identity(2, Role::Client));
+        // 1 MiB events: four fit in the budget, the fifth would pass it.
+        let big = |n: usize| -> Arc<str> {
+            serde_json::to_string(&RelayMessage::Event {
+                event: serde_json::json!({ "threadId": "t1", "text": "x".repeat((1 << 20) - 64 - n) }),
+            })
+            .unwrap()
+            .into()
+        };
+        for n in 0..4 {
+            link.handle.deliver_event("t1", big(n));
+        }
+        link.handle.deliver_event("t1", big(4));
+        let mut queued = Vec::new();
+        while let Ok(frame) = link.outbound.try_recv() {
+            queued.push(frame);
+        }
+        assert_eq!(queued.len(), 4, "the fifth event is over the budget");
+        // The link writes what it took off the queue: the gap goes out, then events flow again.
+        for frame in &queued {
+            if let Outbound::Event(text) = frame {
+                link.handle.event_written(text.len());
+            }
+        }
+        link.handle.flush_missed();
+        assert_eq!(
+            link.outbound.try_recv().unwrap().message().unwrap(),
+            RelayMessage::StreamGap {
+                thread_id: "t1".into()
+            }
+        );
+        link.handle.deliver_event("t1", encoded("t1"));
+        assert_eq!(
+            link.outbound.try_recv().unwrap().message().unwrap(),
+            event("t1")
+        );
+    }
+
     #[test]
     fn a_full_queue_drops_events_and_reports_one_gap_when_there_is_room() {
         let relay = Relay::new();
         let mut link = relay.register(identity(2, Role::Client));
         for _ in 0..LINK_QUEUE {
-            link.handle.deliver_event("t1", event("t1"));
+            link.handle.deliver_event("t1", encoded("t1"));
         }
         // Full: these are dropped, and the thread is marked once, not once per event.
-        link.handle.deliver_event("t1", event("t1"));
-        link.handle.deliver_event("t1", event("t1"));
-        link.handle.deliver_event("t2", event("t2"));
+        link.handle.deliver_event("t1", encoded("t1"));
+        link.handle.deliver_event("t1", encoded("t1"));
+        link.handle.deliver_event("t2", encoded("t2"));
         // No room yet, so nothing more is queued.
         link.handle.flush_missed();
         assert!(link.handle.try_send(RelayMessage::Ping).is_err());
@@ -1044,7 +1178,7 @@ mod tests {
         link.handle.flush_missed();
         let mut rest = Vec::new();
         while let Ok(frame) = link.outbound.try_recv() {
-            rest.push(frame);
+            rest.push(frame.message().unwrap());
         }
         let gaps: Vec<&RelayMessage> = rest
             .iter()
@@ -1067,8 +1201,11 @@ mod tests {
             "the two gaps replaced the two frames read"
         );
         // Live again.
-        link.handle.deliver_event("t1", event("t1"));
-        assert_eq!(link.outbound.try_recv().unwrap(), event("t1"));
+        link.handle.deliver_event("t1", encoded("t1"));
+        assert_eq!(
+            link.outbound.try_recv().unwrap().message().unwrap(),
+            event("t1")
+        );
         assert!(link.outbound.try_recv().is_err());
     }
 
@@ -1093,7 +1230,7 @@ mod tests {
         link.handle.flush_missed();
         let mut frames = Vec::new();
         while let Ok(frame) = link.outbound.try_recv() {
-            frames.push(frame);
+            frames.push(frame.message().unwrap());
         }
         assert_eq!(frames.last(), Some(&presence(true)));
         assert_eq!(

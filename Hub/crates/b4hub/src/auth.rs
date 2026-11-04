@@ -71,23 +71,49 @@ pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 /// minute rather than one per request. In memory: M8a runs a single replica, and losing the map
 /// on restart only means one extra write.
 #[derive(Clone, Debug, Default)]
-pub struct LastTouched(Arc<Mutex<HashMap<Uuid, Instant>>>);
+pub struct LastTouched(Arc<Mutex<Touched>>);
+
+#[derive(Debug, Default)]
+pub struct Touched {
+    by_device: HashMap<Uuid, Instant>,
+    /// When entries older than the interval were last dropped; at most once an interval, so the
+    /// map holds the devices seen in the last two intervals rather than every device ever seen.
+    swept: Option<Instant>,
+}
 
 impl LastTouched {
     /// True when `device` has not been recorded within the interval before `now`, and then
     /// records it as touched at `now`.
     pub fn due(&self, device: Uuid, now: Instant) -> bool {
-        let mut map = self
+        let mut touched = self
             .0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match map.get(&device) {
+        let sweep = touched
+            .swept
+            .is_none_or(|at| now.saturating_duration_since(at) >= LAST_SEEN_INTERVAL);
+        if sweep {
+            touched
+                .by_device
+                .retain(|_, last| now.saturating_duration_since(*last) < LAST_SEEN_INTERVAL);
+            touched.swept = Some(now);
+        }
+        match touched.by_device.get(&device) {
             Some(last) if now.saturating_duration_since(*last) < LAST_SEEN_INTERVAL => false,
             _ => {
-                map.insert(device, now);
+                touched.by_device.insert(device, now);
                 true
             }
         }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .by_device
+            .len()
     }
 }
 
@@ -115,6 +141,21 @@ mod tests {
         assert_eq!(bearer_token(&headers(Some("Bearer "))), None);
         assert_eq!(bearer_token(&headers(Some("Bearer a b"))), None);
         assert_eq!(bearer_token(&headers(Some("abc"))), None);
+    }
+
+    #[test]
+    fn devices_not_seen_for_an_interval_are_forgotten() {
+        let touched = LastTouched::default();
+        let start = Instant::now();
+        for n in 0..50 {
+            assert!(touched.due(Uuid::from_u128(n), start));
+        }
+        assert_eq!(touched.len(), 50);
+        // An interval later the old entries go with the next touch, and their devices are due.
+        let later = start + LAST_SEEN_INTERVAL;
+        assert!(touched.due(Uuid::from_u128(1000), later));
+        assert_eq!(touched.len(), 1);
+        assert!(touched.due(Uuid::from_u128(1), later));
     }
 
     #[test]

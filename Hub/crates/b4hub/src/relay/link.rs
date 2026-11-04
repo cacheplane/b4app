@@ -33,7 +33,7 @@ use tokio::sync::{mpsc, Semaphore};
 use tokio::time::Instant;
 
 use super::limits::IN_FLIGHT_RETRY;
-use super::registry::{Close, Identity, LinkHandle, LiveLink, Registration};
+use super::registry::{Close, Identity, LinkHandle, LiveLink, Outbound, Registration};
 use super::{invalid_frame, route, PROTOCOL};
 use crate::auth::{bearer_token, AuthedDevice};
 use crate::error::ApiError;
@@ -418,7 +418,7 @@ impl Link {
     async fn run<S: LinkSocket>(
         &mut self,
         socket: &mut S,
-        outbound: &mut tokio::sync::mpsc::Receiver<RelayMessage>,
+        outbound: &mut tokio::sync::mpsc::Receiver<Outbound>,
         closing: &mut tokio::sync::oneshot::Receiver<Close>,
     ) -> Option<Close> {
         // `last_seen_at` is written on open, before `hello`, so a device that has heard `hello`
@@ -487,8 +487,8 @@ impl Link {
                 () = hub_stopping(&mut stopping) => {
                     // What is already queued (the drain's answers to held commands, a reply)
                     // goes out before the close, to a device that is still reading.
-                    while let Ok(message) = outbound.try_recv() {
-                        write_within(socket, &message, CLOSE_GRACE).await.ok()?;
+                    while let Ok(frame) = outbound.try_recv() {
+                        self.write_queued(socket, frame, CLOSE_GRACE).await.ok()?;
                     }
                     return Some(Close::shutdown());
                 }
@@ -496,8 +496,8 @@ impl Link {
                 queued = outbound.recv() => {
                     // The registry's handle keeps the sender alive as long as this link is
                     // registered, so `None` is not expected; treat it as the end.
-                    let message = queued?;
-                    write(socket, &message).await.ok()?;
+                    let frame = queued?;
+                    self.write_queued(socket, frame, DEAD_LINK).await.ok()?;
                     // A frame left the queue: room for what a full queue made this link miss.
                     self.handle.flush_missed();
                 }
@@ -660,6 +660,25 @@ impl Link {
                 None
             }
             _ => Some(invalid_frame("this frame is not accepted from a device")),
+        }
+    }
+
+    /// Writes a frame from the queue within `patience`. An event arrives encoded (once, for every
+    /// watcher) and is written as it is; its bytes are given back to the link's budget.
+    async fn write_queued<S: LinkSocket>(
+        &self,
+        socket: &mut S,
+        frame: Outbound,
+        patience: Duration,
+    ) -> Result<(), ()> {
+        match frame {
+            Outbound::Message(message) => write_within(socket, &message, patience).await,
+            Outbound::Event(text) => {
+                let written =
+                    write_message(socket, Message::Text(text.to_string().into()), patience).await;
+                self.handle.event_written(text.len());
+                written
+            }
         }
     }
 

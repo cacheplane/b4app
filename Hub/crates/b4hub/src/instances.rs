@@ -213,10 +213,21 @@ pub async fn heartbeat_loop(
     shutdown: Shutdown,
 ) {
     let mut stopping = shutdown.subscribe();
+    // About once a minute, the instance says how many links and users it serves.
+    let report_every = (60_000 / instances.heartbeat().as_millis().max(1)).max(1);
+    let mut beats: u128 = 0;
     loop {
         tokio::select! {
             () = tokio::time::sleep(instances.heartbeat()) => {}
             _ = stopping.wait_for(|down| *down) => return,
+        }
+        beats += 1;
+        if beats.is_multiple_of(report_every) {
+            tracing::info!(
+                links = relay.live_links(),
+                users = relay.users().len(),
+                "relay load"
+            );
         }
         let beat = instances.0.beat.lock().await;
         if instances.paused() {

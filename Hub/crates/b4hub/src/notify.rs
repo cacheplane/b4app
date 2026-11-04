@@ -23,6 +23,10 @@ impl Notifier {
     /// call returns.
     pub fn notified(&self, org: Uuid) -> OwnedNotified {
         let mut map = self.lock();
+        // An org nobody waits on any more (only the map holds its `Notify`) is dropped, so the
+        // map holds the orgs with a pull waiting rather than every org ever polled. A wake for an
+        // org with no entry is a no-op, which is right: nobody is waiting.
+        map.retain(|_, notify| Arc::strong_count(notify) > 1);
         Arc::clone(map.entry(org).or_default()).notified_owned()
     }
 
@@ -40,6 +44,11 @@ impl Notifier {
         for notify in self.lock().values() {
             notify.notify_waiters();
         }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.lock().len()
     }
 
     fn lock(&self) -> MutexGuard<'_, HashMap<Uuid, Arc<Notify>>> {
@@ -80,6 +89,20 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_millis(50), for_a)
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn orgs_nobody_waits_on_are_forgotten() {
+        let notifier = Notifier::default();
+        for n in 0..100 {
+            drop(notifier.notified(Uuid::from_u128(n)));
+        }
+        let waiting = notifier.notified(Uuid::from_u128(1000));
+        assert_eq!(notifier.len(), 1, "only the org with a waiter is kept");
+        notifier.wake(Uuid::from_u128(1000));
+        tokio::time::timeout(Duration::from_millis(100), waiting)
+            .await
+            .expect("the kept org is still woken");
     }
 
     #[tokio::test]
