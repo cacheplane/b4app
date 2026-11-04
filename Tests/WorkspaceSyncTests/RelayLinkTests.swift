@@ -350,10 +350,33 @@ struct RelayLinkTests {
     h.connection.refuseWith(status: 429)
     await h.link.start()
     await waitUntil("backoff") { h.clock.sleeperCount == 1 }
-    #expect(await h.recorder.last == .connecting(attempt: 2, lastError: "refused (429)"))
+    #expect(await h.recorder.last == .connecting(attempt: 2, lastError: "rate limited"))
     h.clock.advance(by: .seconds(1))
     _ = try await h.connection.nextSocket()
     #expect(h.connection.openCount == 2)
+  }
+
+  /// A 429 that says when to come back is waited out, even when the backoff would be shorter, and the
+  /// wait is capped so a hub cannot park a device for long.
+  @Test func rateLimitedUpgradeWaitsOutItsRetryAfter() async throws {
+    let h = LinkHarness()
+    h.connection.rateLimit(retryAfter: .seconds(7))
+    await h.link.start()
+    await waitUntil("the wait") { h.clock.sleeperCount == 1 }
+    #expect(h.clock.nextWake == .seconds(7))
+    h.clock.advance(by: .seconds(6))
+    #expect(h.connection.openCount == 1)
+    h.clock.advance(by: .seconds(1))
+    _ = try await h.connection.nextSocket()
+    #expect(h.connection.openCount == 2)
+    await h.link.stop()
+
+    let capped = LinkHarness()
+    capped.connection.rateLimit(retryAfter: .seconds(3600))
+    await capped.link.start()
+    await waitUntil("the capped wait") { capped.clock.sleeperCount == 1 }
+    #expect(capped.clock.nextWake == RelayLink.maxRetryAfter)
+    await capped.link.stop()
   }
 
   @Test func relocatedIsRetriedAtOnceThreeTimesThenBacksOff() async throws {

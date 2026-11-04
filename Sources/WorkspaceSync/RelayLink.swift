@@ -20,7 +20,8 @@ public enum RelayLinkState: Sendable, Equatable {
 ///   delay), restarting at 1 s once a link has stayed up 60 s.
 /// - Heartbeat: `ping` every 10 s; 30 s without any frame ends the link and reconnects.
 /// - Stops, with no retry: a 401 at the upgrade (or no token), `link_replaced`/close 4000, close 4001,
-///   `client_too_old`/close 4002. A 429 at the upgrade and every other failure retry.
+///   `client_too_old`/close 4002. A 429 at the upgrade and every other failure retry; a 429's
+///   `Retry-After` is waited out (at most `maxRetryAfter`) when it is longer than the backoff.
 /// - More than one hub instance: the cookies of the last successful upgrade are sent on the next one,
 ///   so the load balancer's stickiness reaches the instance serving this user. A `409 relocated` at the
 ///   upgrade drops them (they point at the wrong instance) and retries at once, at most
@@ -37,6 +38,9 @@ public actor RelayLink {
 
   /// How many `409 relocated` upgrades in a row are retried at once before the backoff applies.
   public static let maxImmediateRelocations = 3
+
+  /// The longest a `429`'s `Retry-After` holds the next attempt back.
+  public static let maxRetryAfter: Duration = .seconds(120)
 
   private enum Outcome {
     case stop(String)
@@ -64,6 +68,8 @@ public actor RelayLink {
   private var reachedStable = false
   private var endReason: String?
   private var skipBackoff = false
+  /// The least the next retry waits: the last `429`'s `Retry-After`.
+  private var retryNotBefore: Duration?
   private var backoffSleeper: Task<Void, Never>?
   private var heartbeat: Task<Void, Never>?
   private var watchdog: Task<Void, Never>?
@@ -179,7 +185,9 @@ public actor RelayLink {
         } else {
           let base = min(maxBackoff, Duration.seconds(1) * (1 << min(failures, 16)))
           failures += 1
-          await wait(base * min(max(jitter(), 0), 1), id)
+          let delay = base * min(max(jitter(), 0), 1)
+          await wait(max(delay, retryNotBefore ?? .zero), id)
+          retryNotBefore = nil
         }
       }
     }
@@ -219,6 +227,9 @@ public actor RelayLink {
         url: url, token: token, protocolVersion: Self.protocolVersion, cookies: cookies)
     } catch HubLinkError.refused(let status) where status == 401 {
       return .stop("unauthorized")
+    } catch HubLinkError.rateLimited(let after) {
+      retryNotBefore = after.map { min($0, Self.maxRetryAfter) }
+      return .retry("rate limited")
     } catch HubLinkError.refused(let status) where status == 409 {
       // The hub's only 409 at the upgrade: another instance serves this user's links.
       cookies = [:]
@@ -311,6 +322,7 @@ public actor RelayLink {
   private static func describe(_ error: any Error) -> String {
     switch error {
     case HubLinkError.refused(let status): return "refused (\(status))"
+    case HubLinkError.rateLimited: return "rate limited"
     case HubLinkError.closed(let code): return "closed (\(code))"
     case HubLinkError.failed(let message): return message
     case is CancellationError: return "cancelled"

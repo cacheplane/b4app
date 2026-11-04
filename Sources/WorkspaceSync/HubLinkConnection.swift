@@ -2,8 +2,11 @@ import Foundation
 
 /// Why a link operation failed. `closed` carries the WebSocket close code the peer (or this end) sent.
 public enum HubLinkError: Error, Equatable, Sendable {
-  /// The upgrade was answered with this HTTP status instead of `101`.
+  /// The upgrade was answered with this HTTP status instead of `101` (other than 429).
   case refused(status: Int)
+  /// The upgrade was answered `429 rate_limited`; `retryAfter` is its `Retry-After` header (whole
+  /// seconds), when it had one.
+  case rateLimited(retryAfter: Duration?)
   /// The socket closed with this code.
   case closed(code: Int)
   /// The connection failed some other way.
@@ -269,8 +272,15 @@ final class URLSessionHubLinkSocket: NSObject, HubLinkSocket, URLSessionWebSocke
 
   func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
     // Before the upgrade this is the refusal: a non-101 answer shows up here with the response attached.
-    if let status = (task.response as? HTTPURLResponse)?.statusCode, status != 101 {
-      finishOpen(.failure(HubLinkError.refused(status: status)))
+    if let response = task.response as? HTTPURLResponse, response.statusCode != 101 {
+      if response.statusCode == 429 {
+        let after = response.value(forHTTPHeaderField: "Retry-After")
+          .flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+          .map { Duration.seconds(max($0, 0)) }
+        finishOpen(.failure(HubLinkError.rateLimited(retryAfter: after)))
+      } else {
+        finishOpen(.failure(HubLinkError.refused(status: response.statusCode)))
+      }
     } else {
       finishOpen(.failure(mapped(error ?? HubLinkError.failed("connection closed"))))
     }
@@ -307,9 +317,16 @@ public final class FakeHubLinkConnection: HubLinkConnection, @unchecked Sendable
   }
 
   /// The next `times` opens are refused with this HTTP status, as an upgrade the hub answers (401 for a bad
-  /// token, 429 over the upgrade limit).
+  /// token, 429 over the upgrade limit, which arrives as `rateLimited` with no `Retry-After`).
   public func refuseWith(status: Int, times: Int = 1) {
-    failNext(HubLinkError.refused(status: status), times: times)
+    let error =
+      status == 429 ? HubLinkError.rateLimited(retryAfter: nil) : HubLinkError.refused(status: status)
+    failNext(error, times: times)
+  }
+
+  /// The next open is refused `429` with this `Retry-After`.
+  public func rateLimit(retryAfter: Duration) {
+    failNext(HubLinkError.rateLimited(retryAfter: retryAfter))
   }
 
   /// The hub's side of the next successfully opened socket, waiting for it. Throws `CancellationError`
