@@ -1229,9 +1229,21 @@ actor EventCollector {
     #expect(reconciled.turns.first { $0.id == unknown.id }?.status == .reconciling)
     _ = await expectRefusal(
       { try await h.send(thread, "again?") }, code: .protocolInvalid, reason: "turn_active")
+    let abandoned = try await h.client.request(
+      TurnAbandon.self, TurnInterrupt.Params(threadId: thread.id), options: mutation())
+    #expect(abandoned.turn.id == unknown.id)
+    #expect(abandoned.turn.status == .terminal)
+    #expect(abandoned.turn.outcome == .failed)
+    let afterAbandon = try await h.read(thread)
+    #expect(afterAbandon.items.last?.role == .system)
+    #expect(afterAbandon.items.last?.type == "turnAbandoned")
+    // With no turn active, there is nothing to abandon.
     do {
       _ = try await h.client.request(
         TurnAbandon.self, TurnInterrupt.Params(threadId: thread.id), options: mutation())
+      Issue.record("abandon needs a reconciling turn")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .notFound)
     }
     let late = try await h.send(thread, "late ack please")
     let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == late.id }
