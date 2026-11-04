@@ -37,6 +37,7 @@ use super::registry::{Close, Identity, LinkHandle, LiveLink, Registration};
 use super::{invalid_frame, route, PROTOCOL};
 use crate::auth::{bearer_token, AuthedDevice};
 use crate::error::ApiError;
+use crate::instances;
 use crate::maintenance;
 use crate::serve::AppState;
 use crate::signals;
@@ -329,6 +330,17 @@ async fn serve_link<S: LinkSocket>(
     // and the registration above, when the check that follows it finds no link to close.
     // Registering first and looking again closes that window: a change after this look finds the
     // registered link.
+    // The upgrade claimed the user, but their last other link here may have released the claim
+    // since (D-172): take it again, or, if another instance has the user now, close this link.
+    if !probe {
+        instances::reclaim(
+            &link.state.db,
+            &relay,
+            &link.state.instances,
+            link.handle.user_id,
+        )
+        .await;
+    }
     let ended = !probe && !signals::check_session(&relay, &link.state.db, &link.handle).await;
     let close = if ended {
         Some(Close::session_ended())
@@ -341,21 +353,18 @@ async fn serve_link<S: LinkSocket>(
     // sees it offline (a command judging how recently it was seen) finds the time already there.
     link.write_last_seen(link.last_frame).await;
     let was_current = relay.unregister(link.handle.device_id, link.handle.generation);
-    // Draining: once the user has no link left here, their claim goes now, before this link's
-    // close is even written, so the instance they reconnect to takes them at once instead of
-    // refusing them `relocated` until the slowest link of any user has closed. No new link of
-    // theirs can arrive meanwhile: a draining instance refuses upgrades.
+    // Once the user has no link left here, their claim goes now, before this link's close is even
+    // written, so the instance they reconnect to takes them at once (D-165, D-172): whether this
+    // instance is draining, or its links were cut while it lives on.
     let draining = link.state.shutdown.is_triggered();
-    if !probe && was_current && draining && relay.links_of(link.handle.user_id).is_empty() {
-        let released = b4hub_db::instances::release_user(
+    if !probe && was_current {
+        instances::release_if_unlinked(
             &link.state.db,
+            &relay,
+            &link.state.instances,
             link.handle.user_id,
-            link.state.instances.id(),
         )
         .await;
-        if let Err(error) = released {
-            tracing::warn!(%error, "could not release a user's claim while draining");
-        }
     }
     // A draining hub gives a device that is not reading the close grace, not a dead link's wait.
     let patience = if draining { CLOSE_GRACE } else { DEAD_LINK };
