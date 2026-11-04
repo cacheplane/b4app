@@ -277,18 +277,19 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable {
       directories: input.additionalDirectories)
     let session: ClaudeSession
     if let live = sessions[id], await live.isRunning, let current = applied[id] {
-      // An unset model or permission keeps what the process runs with: the app never clears an override.
-      let next = Settings(
-        model: wanted.model ?? current.model, permission: wanted.permission ?? current.permission,
-        directories: wanted.directories)
-      if Set(next.directories) != Set(current.directories) {
-        session = try await restart(id: id, workingDirectory: directory, settings: next)
+      // `--add-dir` is a launch flag, and no control request clears a model or permission back to
+      // Claude Code's own setting: either takes a restart, so a live process runs as a fresh launch would.
+      let cleared =
+        (wanted.model == nil && current.model != nil)
+        || (wanted.permission == nil && current.permission != nil)
+      if cleared || Set(wanted.directories) != Set(current.directories) {
+        session = try await restart(id: id, workingDirectory: directory, settings: wanted)
       } else {
-        if let model = next.model, model != current.model {
+        if let model = wanted.model, model != current.model {
           try await change("set_model") { try await live.setModel(model) }
           applied[id]?.model = model
         }
-        if let mode = next.permission, mode != current.permission {
+        if let mode = wanted.permission, mode != current.permission {
           try await change("set_permission_mode") { try await live.setPermissionMode(mode) }
           applied[id]?.permission = mode
         }

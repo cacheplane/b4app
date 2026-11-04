@@ -23,7 +23,8 @@ public enum ClaudeStream {
 
     public var arguments: [String] {
       var args = ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json"]
-      if let model { args += ["--model", model] }
+      // One argument, so a synced id that starts with "-" cannot become a flag.
+      if let model { args.append("--model=\(model)") }
       if let maxTurns { args += ["--max-turns", String(maxTurns)] }
       if answerPermissions { args.append("--permission-prompt-tool=stdio") }
       if let resumeSessionId { args += ["--resume", resumeSessionId] }

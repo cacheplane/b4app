@@ -336,7 +336,7 @@ func values(of flag: String, in argv: [String]) -> [String] {
         workingDirectory: rig.workDir, model: "opus", permission: "plan", additionalDirectories: ["/x", "/z"])
     )
     let argv = try #require(try rig.launches().first)
-    #expect(values(of: "--model", in: argv) == ["opus"])
+    #expect(argv.filter { $0.hasPrefix("--model") } == ["--model=opus"])
     #expect(values(of: "--permission-mode", in: argv) == ["plan"])
     #expect(values(of: "--add-dir", in: argv) == ["/x", "/z"])
     await rig.adapter.dispose()
@@ -352,7 +352,7 @@ func values(of flag: String, in argv: [String]) -> [String] {
     #expect(launches.count == 2)
     for argv in launches {
       #expect(!argv.contains("--permission-mode"))
-      #expect(!argv.contains("--model"))
+      #expect(!argv.contains { $0.hasPrefix("--model") })
       #expect(!argv.contains("--add-dir"))
     }
     await rig.adapter.dispose()
@@ -369,10 +369,18 @@ func values(of flag: String, in argv: [String]) -> [String] {
     let order = try rig.logLines().compactMap { $0["control"]?.stringValue ?? $0["user"]?.stringValue }
     #expect(order.suffix(2) == ["set_permission_mode", "hello again"])
     #expect(try rig.launches().count == 1)
-    // Unchanged, or unset (the override stays), sends nothing more.
+    // Unchanged sends nothing more.
     try await rig.completedTurn(ref, "third", permission: "acceptEdits")
+    #expect(try rig.controls("set_permission_mode").count == 1)
+    #expect(try rig.launches().count == 1)
+    // Unset ("As configured") restarts on the same conversation without the flag, as a fresh launch would.
     try await rig.completedTurn(ref, "fourth")
     #expect(try rig.controls("set_permission_mode").count == 1)
+    let launches = try rig.launches()
+    #expect(launches.count == 2)
+    let restarted = try #require(launches.last)
+    #expect(values(of: "--resume", in: restarted) == [ref.nativeSessionId])
+    #expect(!restarted.contains("--permission-mode"))
     await rig.adapter.dispose()
   }
 
@@ -385,6 +393,14 @@ func values(of flag: String, in argv: [String]) -> [String] {
     try await rig.completedTurn(ref, "hello again", model: "sonnet")
     #expect(try rig.controls("set_model").map { $0["request"]?["model"]?.stringValue } == ["sonnet"])
     #expect(try rig.launches().count == 1)
+    // Unset ("Default") restarts on the same conversation without `--model`.
+    try await rig.completedTurn(ref, "back to default")
+    #expect(try rig.controls("set_model").count == 1)
+    let launches = try rig.launches()
+    #expect(launches.count == 2)
+    let restarted = try #require(launches.last)
+    #expect(values(of: "--resume", in: restarted) == [ref.nativeSessionId])
+    #expect(!restarted.contains { $0.hasPrefix("--model") })
     await rig.adapter.dispose()
   }
 
@@ -408,13 +424,13 @@ func values(of flag: String, in argv: [String]) -> [String] {
     let ref = try await rig.adapter.createSession(
       NewSessionInput(workingDirectory: rig.workDir, permission: "plan", additionalDirectories: ["/x"]))
     try await rig.completedTurn(ref, "hello", permission: "plan", additionalDirectories: ["/x"])
-    try await rig.completedTurn(ref, "hello again", additionalDirectories: ["/y"])
+    try await rig.completedTurn(ref, "hello again", permission: "plan", additionalDirectories: ["/y"])
     let launches = try rig.launches()
     #expect(launches.count == 2)
     let restarted = try #require(launches.last)
     #expect(values(of: "--resume", in: restarted) == [ref.nativeSessionId])
     #expect(values(of: "--add-dir", in: restarted) == ["/y"])
-    // The permission the thread already had carries over.
+    // The thread's permission is a launch flag again.
     #expect(values(of: "--permission-mode", in: restarted) == ["plan"])
     // A deliberate restart is not reported as the runtime exiting.
     let exits = await rig.collector.events.filter {
