@@ -153,6 +153,41 @@ impl InstancesState {
     }
 }
 
+/// Gives up this instance's claim on `user` once it serves no link of theirs (D-172): with nothing
+/// of the user here there is nothing to keep together, and holding on would make every other
+/// instance refuse their reconnects `relocated` for as long as this one lives, which after a load
+/// balancer cuts a deregistered target's links is until ECS stops it, some 16 s later. A link of
+/// the user that registered while the claim was going claims it back ([`reclaim`]).
+pub async fn release_if_unlinked(db: &Db, relay: &Relay, instances: &InstancesState, user: Uuid) {
+    if !relay.links_of(user).is_empty() {
+        return;
+    }
+    if let Err(error) = b4hub_db::instances::release_user(db, user, instances.id()).await {
+        tracing::warn!(%error, "could not release a user's claim");
+        return;
+    }
+    if !relay.links_of(user).is_empty() {
+        reclaim(db, relay, instances, user).await;
+    }
+}
+
+/// Claims `user` for this instance again after a link of theirs registered: the upgrade claimed
+/// them, but [`release_if_unlinked`] for their last other link here may have let the claim go in
+/// between. If another live instance took the user meanwhile, their links here close (1001) and
+/// reconnect to it; otherwise this restores the claim.
+pub async fn reclaim(db: &Db, relay: &Relay, instances: &InstancesState, user: Uuid) {
+    let claim =
+        b4hub_db::instances::claim_user(db, user, instances.id(), instances.alive_within()).await;
+    match claim {
+        Ok(b4hub_db::instances::Claim::Ours) => {}
+        Ok(b4hub_db::instances::Claim::Other(owner)) => {
+            tracing::info!(%owner, "another instance took the user; closing their links here");
+            relay.close_user(user, Close::relocated());
+        }
+        Err(error) => tracing::warn!(%error, "could not confirm a user's claim"),
+    }
+}
+
 /// Registers the instance, recording the write when it succeeds; a failure is logged and the
 /// heartbeat loop keeps trying.
 pub async fn register(db: &Db, instances: &InstancesState, public_url: Option<&str>) {

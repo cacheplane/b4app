@@ -1329,9 +1329,12 @@ events, holds, and presence never cross instances; no frame is ever forwarded be
   ```
 
   with status `409` and no socket, so the device hears no `hello` and the refused link never
-  appears in presence or `watching`. A live owner keeps its claim; a draining instance releases
-  each user's claim as that user's last link on it closes (and any left after its links close),
-  and a dead one's are taken over by the next instance a link of that user reaches. An instance whose heartbeat stalled and recovers closes, with code 1001,
+  appears in presence or `watching`. An instance keeps a user's claim while it serves a link of
+  that user, and releases it as that user's last link on it closes, whether it is draining or its
+  links were cut while it lives on (a draining instance also releases any left after its links
+  close); a dead one's are taken over by the next instance a link of that user reaches. A link
+  that registers just as the user's previous last link released the claim takes it again, or, if
+  another instance took the user in that moment, is closed with 1001 and reconnects to it. An instance whose heartbeat stalled and recovers closes, with code 1001,
   the links of any user another instance took over meanwhile.
 - **The cookie.** Every instance sets `Set-Cookie: b4hub-instance=<its own id>` on its `101`
   upgrade responses and on `/readyz`. With the AWS load balancer's application-cookie stickiness
