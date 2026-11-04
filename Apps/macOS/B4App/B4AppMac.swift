@@ -42,9 +42,9 @@ struct B4AppMac: App {
     .commands {
       // Nothing that needs an account is reachable from the menus while nobody is signed in.
       CommandGroup(replacing: .newItem) {
-        Button("New Thread") { sharedModel.showNewThread = true }
+        Button("New Thread") { Task { await sharedModel.openNewThread() } }
           .keyboardShortcut("n")
-          .disabled(sharedModel.accountState != .signedIn || sharedModel.conversationReadyConnections.isEmpty)
+          .disabled(sharedModel.accountState != .signedIn || sharedModel.newThreadEntryReason != nil)
       }
       CommandGroup(replacing: .appSettings) {
         SettingsLink { Text("Settings…") }

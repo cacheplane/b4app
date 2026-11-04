@@ -82,6 +82,8 @@ import WorkspaceSync
     model.applyAccountStatus(AccountStatus.Result(state: .signedOut), loadStore: false)
     #expect(model.detailRequest == 0)
     #expect(model.pendingThreadOpen == nil)
+    // And asks for the list, since nothing is open.
+    #expect(model.sidebarRequest == 1)
   }
 
   @Test func a_later_pending_request_replaces_an_earlier_one() async throws {

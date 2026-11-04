@@ -91,18 +91,10 @@ struct WorkspaceShell: View {
     .onChange(of: model.detailRequest, initial: true) { _, count in
       if count > 0 { compactColumn = .detail }
     }
-    // The open thread was deleted (here or on another device): the iPhone goes back to the list.
-    .onChange(of: model.selectedThreadId) { _, id in if id == nil { compactColumn = .sidebar } }
+    // The open thread was deleted (here or on another device), or the account ended: the iPhone goes
+    // back to the list. A selection cleared for a new thread keeps the detail column, which shows it.
+    .onChange(of: model.sidebarRequest) { compactColumn = .sidebar }
     .onDisappear { model.isDetailOnScreen = false }
-    .sheet(isPresented: $model.showNewThread) {
-      // The phone starts a thread on the Mac that owns a project, through the hub; the Mac asks its
-      // own coordinator for a connection and a folder.
-      if model.relaysThroughHub {
-        PhoneNewThreadSheet(model: model).environment(\.showDetail, showDetail)
-      } else {
-        NewThreadSheet(model: model).environment(\.showDetail, showDetail)
-      }
-    }
     #if os(macOS)
       // "Add your iPhone", once after a new account's onboarding (sign-in plan, Task 12).
       .sheet(isPresented: $model.showAddPhone) { AddPhoneView(model: model) }

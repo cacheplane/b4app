@@ -215,4 +215,55 @@ func waitUntil(
     #expect(model.draftSaveTask == nil)
     await h.stop()
   }
+
+  /// New thread empties the pane for the composer: the open thread's unsent text is kept, nothing is
+  /// selected, the field is asked for the cursor, and the iPhone moves to the detail column.
+  @Test func openNewThreadClearsTheSelectionAndFocuses() async throws {
+    let h = try await ModelHarness.start()
+    let model = h.model
+    model.preferences = InMemoryPreferences()
+    model.draftSaveDelay = .seconds(60)
+    let connection = try #require(
+      await model.addConnection(kind: .codex, label: "Fake Codex", executablePath: fakeCodex))
+    await model.createThread(connectionId: connection.id, directory: h.workDir, title: "left open")
+    let thread = try #require(model.threads.first)
+    try await waitUntil("detail loaded") { model.detail?.thread.id == thread.id }
+    model.composerText = "an unsent thought"
+    let focus = model.newThreadFocusRequest
+    let detail = model.detailRequest
+
+    await model.openNewThread()
+    #expect(model.selectedThreadId == nil)
+    #expect(model.newThreadFocusRequest == focus + 1)
+    #expect(model.detailRequest == detail + 1)
+    let store = try #require(h.coordinator.accounts.current).database
+    #expect(try store.draft(threadId: thread.id)?.text == "an unsent thought")
+    await h.stop()
+  }
+
+  @Test func openNewThreadWithAProjectPreselectsIt() async throws {
+    let model = try await ListFixture.model()
+    model.preferences = InMemoryPreferences()
+    // The newest project is the default; Marketing site is asked for.
+    #expect(model.newThreadDraft.projectId == ListFixture.b4app)
+    model.selectedThreadId = "asks"
+    await model.openNewThread(projectId: ListFixture.marketing)
+    #expect(model.selectedThreadId == nil)
+    #expect(model.newThreadDraft.projectId == ListFixture.marketing)
+    // Without a project the draft keeps its choice.
+    await model.openNewThread()
+    #expect(model.newThreadDraft.projectId == ListFixture.marketing)
+  }
+
+  @Test func remediationNewThreadOpensTheComposer() async throws {
+    let model = try await ListFixture.model()
+    model.preferences = InMemoryPreferences()
+    model.selectedThreadId = "asks"
+    model.lastError = "The runtime no longer has this thread's native session."
+    let focus = model.newThreadFocusRequest
+    await model.perform(.newThread)
+    #expect(model.selectedThreadId == nil)
+    #expect(model.newThreadFocusRequest == focus + 1)
+    #expect(model.lastError == nil)
+  }
 }

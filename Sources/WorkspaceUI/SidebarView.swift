@@ -39,10 +39,12 @@ struct SidebarView: View {
   #if os(macOS)
     private var actionRows: some View {
       VStack(alignment: .leading, spacing: 2) {
+        // Selected while the pane is the new-thread composer, as a thread row is while it is open.
         SidebarActionRow(
-          title: "New thread", systemImage: "square.and.pencil", shortcut: shortcut("⌘N")
+          title: "New thread", systemImage: "square.and.pencil", shortcut: shortcut("⌘N"),
+          selected: model.selectedThreadId == nil
         ) {
-          model.showNewThread = true
+          Task { await model.openNewThread() }
         }
         .disabled(model.newThreadEntryReason != nil)
         .help(model.newThreadEntryReason ?? "Start a new thread")
@@ -105,7 +107,7 @@ struct SidebarView: View {
       .toolbar {
         ToolbarItemGroup(placement: .topBarTrailing) {
           MoreMenu(model: model, inToolbar: true)
-          Button("New thread", systemImage: "square.and.pencil") { model.showNewThread = true }
+          Button("New thread", systemImage: "square.and.pencil") { Task { await model.openNewThread() } }
             .disabled(model.newThreadEntryReason != nil)
             .accessibilityIdentifier("new-thread-toolbar")
         }

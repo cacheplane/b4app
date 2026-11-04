@@ -95,7 +95,7 @@ private let fakeClaude =
       try await window.capture(to: "\(dir)/host-disconnected-\(suffix).png")
       model.hostDisconnected = false
       model.selectedThreadId = nil
-      try await window.capture(to: "\(dir)/threads-empty-\(suffix).png")
+      try await window.capture(to: "\(dir)/new-thread-\(suffix).png")
       model.selectedThreadId = release.id
       await model.openThread(id: release.id)
       for page in SettingsPage.allCases {

@@ -155,8 +155,12 @@ public final class WorkspaceModel {
   /// A thread a notification tap or widget row asked for before the link was ready; `connect()` opens
   /// it once the first snapshot is in. A later request replaces an earlier one.
   public private(set) var pendingThreadOpen: String?
-  /// Counts every `requestOpenThread`; the root view moves the iPhone to the thread column on a change.
+  /// Counts every `requestOpenThread` and `openNewThread`; the root view moves the iPhone to the
+  /// detail column on a change.
   public private(set) var detailRequest = 0
+  /// Counts each time the open thread went away (deleted, or the account ended); the root view moves
+  /// the iPhone back to the list on a change. A selection cleared for a new thread asks for nothing.
+  public private(set) var sidebarRequest = 0
   /// Counts each request to put the cursor in the new-thread composer; `NewThreadView` focuses its
   /// field on a change, as it does when it appears.
   public internal(set) var newThreadFocusRequest = 0
@@ -174,7 +178,6 @@ public final class WorkspaceModel {
   /// (D-053, amended). Empty shows every thread.
   public var listSearch = ""
   public var showArchived = false
-  public var showNewThread = false
   /// The iPhone's "Other ways to sign in" sheet, over the signed-out screen. On the model, like the
   /// sheets above, so the app holds a pairing link back until it closes.
   public var showSignInOptions = false
@@ -845,6 +848,16 @@ public final class WorkspaceModel {
     }
   }
 
+  /// The empty pane is the new-thread composer: keep the open thread's unsent text, select nothing,
+  /// start in `projectId` when given, and put the cursor in the composer's field.
+  public func openNewThread(projectId: String? = nil) async {
+    if let current = detail { await saveDraft(threadId: current.thread.id) }
+    selectedThreadId = nil
+    if let projectId { newThreadDraft.selectProject(projectId) }
+    newThreadFocusRequest += 1
+    detailRequest += 1
+  }
+
   public func openThread(id: String) async {
     if let current = detail, current.thread.id != id { await saveDraft(threadId: current.thread.id) }
     selectedThreadId = id
@@ -1116,7 +1129,10 @@ public final class WorkspaceModel {
       composerText = ""
       restoringDraft = false
     }
-    if selectedThreadId == threadId { selectedThreadId = nil }
+    if selectedThreadId == threadId {
+      selectedThreadId = nil
+      sidebarRequest += 1
+    }
   }
 
   // MARK: - Keeping rows current
@@ -1250,7 +1266,7 @@ public final class WorkspaceModel {
     case .signIn(let connectionId): await login(connectionId: connectionId)
     case .openConnections: openSettings(.connections)
     case .openServers: openSettings(.servers)
-    case .newThread: showNewThread = true
+    case .newThread: await openNewThread(projectId: detail?.thread.projectId)
     case .checkAgain: if let id = detail?.thread.id { await reconcileThread(id: id) }
     case .abandonTurn: if let id = detail?.thread.id { await abandonTurn(threadId: id) }
     }
@@ -1476,6 +1492,7 @@ public final class WorkspaceModel {
     activeTurns = [:]
     detail = nil
     selectedThreadId = nil
+    sidebarRequest += 1
     // An open request of the account that left must not move the next sign-in to an empty thread
     // column (the root view acts on `detailRequest` when it mounts) or open a thread of the old one.
     detailRequest = 0
@@ -1486,7 +1503,6 @@ public final class WorkspaceModel {
     hubJoined = false
     hubLink = nil
     diagnostics = nil
-    showNewThread = false
     showSearch = false
     showProfileMenu = false
     lastError = nil
