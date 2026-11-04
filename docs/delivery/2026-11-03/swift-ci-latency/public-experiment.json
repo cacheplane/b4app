@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "scope": "Source-only SwiftPM cache validation; no release or deployment",
+  "baseline_source": "e141e8c995206c053630971f973708f7912b62cb",
+  "control_run": 41752794336,
+  "prior_test_seconds": 321,
+  "fresh_control_test_seconds": 259,
+  "preserved": {
+    "swift_methods": 1170,
+    "unique_suite_ids": 148,
+    "inventory_sha256": "dc408e66b882a34bb944dda6b06cca54e3a2f14059d9aedf6f89f6b2dd352455",
+    "test_bodies_assertions_deadlines": "unchanged",
+    "helper": "Scripts/test-swift.py unchanged",
+    "jobs": 4,
+    "job_timeout_minutes": 45,
+    "helper_budget_minutes": 35,
+    "SWIFTNIO_STRICT": "1"
+  },
+  "experiment": [
+    "fresh unchanged control",
+    "superseded first-variant cache fill",
+    "corrected-source cache fill",
+    "corrected unchanged full same-ref repeat after save",
+    "corrected same-source new-ref holdout without new compiled cache"
+  ],
+  "acceptance": "All checks pass; warm Test at least 10% faster than both 321s and fresh control; whole package job improves including cache overhead. First-fill and unavailable-cache checks pass without moving compilation outside accounting. All attempts retained; no statistical-confidence claim.",
+  "cache": "Verify root, context, tracked source bytes/modes, pinned Git dependency bytes, generated/compiled artifact bytes before restoring verified mtimes. Incompatible/absent metadata regenerates only job-local compiler state. No test results reused.",
+  "public_payload": "Only workflow, cache helper, fixture tests, this minimal metadata; evidence archives remain local",
+  "frozen_at": "2026-11-04T01:57:56.885590+00:00",
+  "prior_variant": "8e89868c5d506d8146f0a31c0cbb1ed57fa34770",
+  "amendment": "Final integrity audit: reject metadata links before read; use exclusive temporary metadata write and atomic replacement. Preserve prior all-job passing variant as superseded, not final-source evidence."
+}

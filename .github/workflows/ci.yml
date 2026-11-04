@@ -59,14 +59,22 @@ jobs:
       - uses: actions/checkout@v5
       - name: Select Xcode 26.6
         run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - name: SwiftPM cache identity
+        id: swift-cache-identity
+        run: python3 .github/scripts/swift-cache-inputs.py identity
       - name: Cache SwiftPM
+        id: swift-cache
         uses: actions/cache@v4
         with:
           path: |
             .build
             ~/Library/Caches/org.swift.swiftpm
-          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
-          restore-keys: spm-${{ runner.os }}-
+          key: spm-inputs-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift-cache-identity.outputs.context }}-${{ steps.swift-cache-identity.outputs.inputs }}
+          restore-keys: |
+            spm-inputs-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift-cache-identity.outputs.context }}-
+            spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+      - name: Verify SwiftPM cache inputs
+        run: python3 .github/scripts/swift-cache-inputs.py restore
       - name: Format lint
         run: swift format lint --strict --recursive Sources Tests Apps Package.swift
       - name: B4 fixture bind timings (DNS probe advisory)
@@ -84,6 +92,9 @@ jobs:
         env:
           SWIFTNIO_STRICT: "1"
         run: python3 Scripts/test-swift.py
+      - name: Record successful SwiftPM build inputs
+        if: steps.swift-cache.outputs.cache-hit != 'true'
+        run: python3 .github/scripts/swift-cache-inputs.py capture
 
   apps:
     name: macOS and iOS app builds
