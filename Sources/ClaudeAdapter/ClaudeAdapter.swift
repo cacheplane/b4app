@@ -279,10 +279,12 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable {
     if let live = sessions[id], await live.isRunning, let current = applied[id] {
       // `--add-dir` is a launch flag, and no control request clears a model or permission back to
       // Claude Code's own setting: either takes a restart, so a live process runs as a fresh launch would.
+      // Nor does Claude Code switch a live process into `bypassPermissions` unless it launched in it.
       let cleared =
         (wanted.model == nil && current.model != nil)
         || (wanted.permission == nil && current.permission != nil)
-      if cleared || Set(wanted.directories) != Set(current.directories) {
+      let bypassing = wanted.permission == "bypassPermissions" && current.permission != "bypassPermissions"
+      if cleared || bypassing || Set(wanted.directories) != Set(current.directories) {
         session = try await restart(id: id, workingDirectory: directory, settings: wanted)
       } else {
         if let model = wanted.model, model != current.model {

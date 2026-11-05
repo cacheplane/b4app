@@ -384,6 +384,27 @@ func values(of flag: String, in argv: [String]) -> [String] {
     await rig.adapter.dispose()
   }
 
+  /// Claude Code refuses to switch a live process into `bypassPermissions` unless it launched in it, so
+  /// a change to it restarts on the same conversation with the flag rather than sending a control request.
+  @Test func aChangeToBypassPermissionsRestartsWithTheFlag() async throws {
+    let rig = try Rig()
+    let ref = try await rig.adapter.createSession(
+      NewSessionInput(workingDirectory: rig.workDir, permission: "acceptEdits"))
+    try await rig.completedTurn(ref, "hello", permission: "acceptEdits")
+    try await rig.completedTurn(ref, "hello again", permission: "bypassPermissions")
+    #expect(try rig.controls("set_permission_mode").isEmpty)
+    let launches = try rig.launches()
+    #expect(launches.count == 2)
+    let restarted = try #require(launches.last)
+    #expect(values(of: "--resume", in: restarted) == [ref.nativeSessionId])
+    #expect(values(of: "--permission-mode", in: restarted) == ["bypassPermissions"])
+    // Leaving it is an ordinary control request on the process that launched in it.
+    try await rig.completedTurn(ref, "third", permission: "plan")
+    #expect(try rig.controls("set_permission_mode").map { $0["request"]?["mode"]?.stringValue } == ["plan"])
+    #expect(try rig.launches().count == 2)
+    await rig.adapter.dispose()
+  }
+
   @Test func aChangedModelIsSentAsAControlRequest() async throws {
     let rig = try Rig()
     let ref = try await rig.adapter.createSession(
