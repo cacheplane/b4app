@@ -1,7 +1,7 @@
 {
   "scope": "Nonpublishing corrective validation after genuine socket-shutdown failure; compiler diagnostics only, no optimization.",
-  "case": "repair",
-  "parent": "994b31baee501eca4d9dde4f05657252657ed9fc",
+  "case": "repair-holdout",
+  "parent": "d8f14716a20c33859e8b49f09385da0d5d68dea7",
   "preserve": "All1170originalSwiftIDs/bodies/148suites+oneadditiveregression;45Python48Bats4native/Rust/7groups/allexistingdeadlines. Currentfullcache exceptisolatedholdout.",
   "repair": "Atomically register a cleanup owner before publishing an acceptance notification. Seal late admission, cancel and join all owners before event-loop shutdown.",
   "regression": "Held accept consumer observes owned hello, listener shutdown and EOF understrictNIO; oldsource missingowner+matchingwriterfatal, repairedSocketgroup passes5tests.",
