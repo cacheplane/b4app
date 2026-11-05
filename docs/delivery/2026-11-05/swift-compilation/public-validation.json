@@ -1,7 +1,7 @@
 {
-  "scope": "Nonpublishing retained-cache Swift compiler diagnostics; no optimization or speedup claim.",
-  "base_source": "7ee4a8b3030863bf27d1ccdd5d408bd5a3bf5c77",
-  "preserve": "All1170originalSwiftIDs/148suites/alltestbodies/7groups/35minhelper45minpackage/alldeadlines/currentfullcache/native/Rust unchanged.41Pythoncontrols preserved+4tracecontrols.",
-  "trace": "SwiftPMverbose/driverincremental+lifecycle diagnostics. Helpertestprebuild INSIDE35min then originalstrictnormal skipbuildlist/7groups. Requestedflagsmaynotreachcachedplan; absence notzerowork.",
+  "scope": "Nonpublishing final compiler-trace source without compiledcache",
+  "source": "994b31baee501eca4d9dde4f05657252657ed9fc",
+  "cache": "Run-unique fullcache key/no fallback, actualmiss must be observed; defaultcachepolicy unchanged.",
+  "preserve": "All1170originalSwiftIDs/45Python/48Bats/fournative/Rust/7groups/alldeadlines. No optimization.",
   "publication": "None"
 }
