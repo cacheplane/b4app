@@ -209,10 +209,6 @@ struct SidebarActionRow: View {
 /// archive) and the connection filter.
 struct MoreMenu: View {
   @Bindable var model: WorkspaceModel
-  #if os(iOS)
-    @State private var renaming: Project?
-    @State private var newName = ""
-  #endif
 
   /// The iPhone's navigation bar shows the menu as a filter button rather than a sidebar row.
   let inToolbar: Bool
@@ -239,13 +235,15 @@ struct MoreMenu: View {
           Text("Archived").tag(ProjectFilter.archived)
         }
         .pickerStyle(.inline)
+        // A name alone saves through the change log; folders and Delete go to the project's Mac.
         if let project = selectedProject {
-          Button("Rename \u{201C}\(project.displayName)\u{201D}\u{2026}", systemImage: "pencil") {
-            newName = project.name
-            renaming = project
+          Button("Edit \u{201C}\(project.displayName)\u{201D}\u{2026}", systemImage: "pencil") {
+            model.projectSheet = .edit(projectId: project.id)
           }
-          .accessibilityIdentifier("rename-project")
+          .accessibilityIdentifier("edit-project")
         }
+        Button("New Project\u{2026}", systemImage: "folder.badge.plus") { model.projectSheet = .create }
+          .accessibilityIdentifier("new-project")
         connectionPicker
       #endif
     } label: {
@@ -264,23 +262,6 @@ struct MoreMenu: View {
     .menuIndicator(.hidden)
     .modifier(SidebarMenuStyle(inToolbar: inToolbar))
     .accessibilityIdentifier("sidebar-more")
-    #if os(iOS)
-      .alert(
-        "Rename project",
-        isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } }),
-        presenting: renaming
-      ) { project in
-        TextField("Name", text: $newName)
-        Button("Rename") {
-          Task {
-            await model.renameProject(id: project.id, name: newName.trimmingCharacters(in: .whitespaces))
-          }
-        }
-        Button("Cancel", role: .cancel) {}
-      } message: { _ in
-        Text("Leave it empty to show the first folder's name.")
-      }
-    #endif
   }
 
   @ViewBuilder private var connectionPicker: some View {

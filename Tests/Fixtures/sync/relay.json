@@ -44,6 +44,43 @@
  },
  {
   "type": "command",
+  "id": "4f1e8c2a-6d73-4b9e-a051-8c3d2e7f9a66",
+  "method": "project.create",
+  "params": {
+   "deviceId": "01a194cf-0d12-7418-b3b5-5559dbee2441",
+   "projectId": "9b2c4e6a-1d3f-4a5b-8c7d-0e1f2a3b4c5d",
+   "name": "Work",
+   "folders": [
+    "~/repos/b4app",
+    "/Users/blove/repos/b4"
+   ]
+  }
+ },
+ {
+  "type": "command",
+  "id": "8a6d2f4c-3e15-4c7b-b9a2-1f0e3d5c7b77",
+  "method": "project.update",
+  "params": {
+   "projectId": "project-1",
+   "name": "b4app",
+   "addFolders": [
+    "/Users/blove/repos/b4app/Hub"
+   ],
+   "removeFolders": [
+    "/Users/blove/repos/b4"
+   ]
+  }
+ },
+ {
+  "type": "command",
+  "id": "2c9e7a1b-5f48-4d3c-8e6a-7b2d1c0f9e88",
+  "method": "project.delete",
+  "params": {
+   "projectId": "project-1"
+  }
+ },
+ {
+  "type": "command",
   "id": "a93f6c1d-8e47-4b2a-95c0-2e1d7b6a4f44",
   "method": "turn.interrupt",
   "params": {

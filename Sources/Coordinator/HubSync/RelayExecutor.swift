@@ -16,6 +16,9 @@ import WorkspaceSync
 ///   awaits it and returns its reply; after it ends, `SessionService`'s durable lookup by operationId
 ///   (the command id) answers the resend with the same turn.
 /// - `thread.start`s naming the same thread id run one after another, so only one creates the thread.
+/// - `project.create`, `project.update`, and `project.delete` run through `ProjectService`, exactly as
+///   the Mac's own sheets do, so a folder the phone names is validated here, on the Mac it is on. A
+///   create is idempotent by the phone's `projectId`; an edit is not resent by the phone.
 public actor RelayExecutor {
   /// The message of every error whose own text must stay on this Mac.
   static let couldNotRun = "Your Mac could not run this."
@@ -86,7 +89,7 @@ public actor RelayExecutor {
       inFlight[id] = nil
       if let threadId, threadStarts[threadId] == task { threadStarts[threadId] = nil }
       return reply
-    case .turnInterrupt, .requestRespond, .turnLookup:
+    case .turnInterrupt, .requestRespond, .turnLookup, .projectCreate, .projectUpdate, .projectDelete:
       return await reply(id: id, method: method, params: params)
     }
   }
@@ -190,6 +193,12 @@ public actor RelayExecutor {
         encoding: try await threadStart(try decode(ThreadStart.self, params), operationId: id))
     case .turnLookup:
       return try JSONValue(encoding: try turnLookup(try decode(TurnLookup.self, params)))
+    case .projectCreate:
+      return try JSONValue(encoding: try await projects.create(try decode(ProjectCreate.self, params)))
+    case .projectUpdate:
+      return try JSONValue(encoding: try await projects.update(try decode(ProjectUpdate.self, params)))
+    case .projectDelete:
+      return try JSONValue(encoding: try await projects.delete(try decode(ProjectDelete.self, params)))
     }
   }
 

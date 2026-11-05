@@ -828,6 +828,94 @@ private func failure(
 
   /// The boundary rule itself: code kept, `turnId` kept, the text replaced only where it may carry
   /// store, process, or foreign-error text.
+  // MARK: - Project edits
+
+  @Test func projectCreateValidatesFoldersOnThisMacAndRunsOnce() async throws {
+    let h = try await RelayHarness.start()
+    defer { Task { await h.close() } }
+    let connection = try await h.addCodex()
+    let app = try h.folder("app")
+    // A thread in `app` gives it an automatic project, which the new project takes over.
+    let thread = try await h.newThread(connection, in: app)
+    let automatic = try #require(try h.db.thread(id: thread.id)?.projectId)
+    let projectId = UUID().uuidString.lowercased()
+
+    // A folder that is not on this Mac refuses the whole create, naming it; nothing changes.
+    let missing = h.base + "/not-here"
+    let refused = try await run(
+      h.executor, .projectCreate,
+      ProjectCreate.Params(name: "Work", folders: [app, missing], projectId: projectId, deviceId: "mac"))
+    let error = try #require(failure(refused))
+    #expect(error.code == ErrorCode.protocolInvalid.rawValue)
+    #expect(error.message == "Folder \(missing) does not exist.")
+    #expect(error.details?["folder"] == .string(missing))
+    #expect(try h.db.project(id: projectId) == nil)
+    #expect(try h.db.thread(id: thread.id)?.projectId == automatic)
+
+    let params = ProjectCreate.Params(name: "Work", folders: [app], projectId: projectId, deviceId: "mac")
+    let created = try result(
+      try await run(h.executor, .projectCreate, params), as: ProjectCreate.Result.self
+    ).project
+    #expect(created.id == projectId && created.manual && created.name == "Work")
+    #expect(created.folders.map(\.path) == [SessionService.canonicalDirectory(app)])
+    #expect(try h.db.thread(id: thread.id)?.projectId == projectId)
+    #expect(try h.db.project(id: automatic) == nil)
+
+    // The phone trying again after a lost reply (a new command id) gets the same project.
+    let again = try result(
+      try await run(h.executor, .projectCreate, params), as: ProjectCreate.Result.self
+    ).project
+    #expect(again.id == projectId)
+    #expect(try h.db.listProjects().filter(\.manual).count == 1)
+
+    // An id the phone did not mint as a lowercase UUID is refused before anything.
+    let badId = try await run(
+      h.executor, .projectCreate,
+      ProjectCreate.Params(name: "Odd", folders: [try h.folder("odd")], projectId: "Not-A-UUID"))
+    #expect(failure(badId)?.details?["reason"] == "invalid_project_id")
+  }
+
+  @Test func projectUpdateAndDeleteRunOnTheMac() async throws {
+    let h = try await RelayHarness.start()
+    defer { Task { await h.close() } }
+    let connection = try await h.addCodex()
+    let app = try h.folder("app")
+    let docs = try h.folder("docs")
+    let thread = try await h.newThread(connection, in: app)
+    let project = try await h.project("Work", [app])
+
+    let updated = try result(
+      try await run(
+        h.executor, .projectUpdate,
+        ProjectUpdate.Params(projectId: project.id, name: "Docs", addFolders: [docs], removeFolders: [app])),
+      as: ProjectUpdate.Result.self
+    ).project
+    #expect(updated.name == "Docs")
+    #expect(updated.folders.map(\.path) == [SessionService.canonicalDirectory(docs)])
+    // The thread's folder left the project, so it is back in an automatic one.
+    let moved = try #require(try h.db.thread(id: thread.id)?.projectId)
+    #expect(moved != project.id)
+    #expect(try h.db.project(id: moved)?.manual == false)
+
+    // A folder that is not on this Mac is refused, and the project is left as it was.
+    let refused = try await run(
+      h.executor, .projectUpdate,
+      ProjectUpdate.Params(projectId: project.id, addFolders: [h.base + "/not-here"]))
+    #expect(failure(refused)?.code == ErrorCode.protocolInvalid.rawValue)
+    #expect(try h.db.project(id: project.id)?.folders.count == 1)
+
+    let deleted = try result(
+      try await run(h.executor, .projectDelete, ProjectDelete.Params(projectId: project.id)),
+      as: ProjectDelete.Result.self)
+    #expect(deleted.projectId == project.id)
+    #expect(try h.db.project(id: project.id) == nil)
+    let gone = try await run(h.executor, .projectDelete, ProjectDelete.Params(projectId: project.id))
+    #expect(failure(gone)?.code == ErrorCode.notFound.rawValue)
+    // An automatic project is the Mac's own: it cannot be deleted from anywhere.
+    let automatic = try await run(h.executor, .projectDelete, ProjectDelete.Params(projectId: moved))
+    #expect(failure(automatic)?.code == ErrorCode.protocolInvalid.rawValue)
+  }
+
   @Test func wireErrorKeepsTheCodeAndTurnIdAndReplacesUnsafeText() {
     let row = "PostgreSQL: [23505] duplicate key value DETAIL: Key (id)=(t-1) already exists."
     let internalWithTurn = RelayExecutor.wireError(
