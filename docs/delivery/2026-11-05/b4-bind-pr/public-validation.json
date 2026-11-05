@@ -1,6 +1,7 @@
 {
-  "case": "P1",
+  "case": "F1",
   "base": "90467731755067e64b9e843ae5d5d76ee0fa0aae",
   "intent": "Nonpublishing full current-main CI; preserve every test, native layout check, cache policy and deadline. Candidate changes only fakeB4 startup DNS and additive regression controls.",
-  "evidence": "Full evidence retained locally; no release or deployment requested."
+  "evidence": "Full evidence retained locally; no release or deployment requested.",
+  "correction": "Atomic EventLog-isolated deletion/cursor helper and producer replay guard in existing late-deletion test. All1403 original methods/assertions/deadlines retained; delayedcollector green and inside-helper postdeletion negative controls verified. No delay/probe/injection ships."
 }

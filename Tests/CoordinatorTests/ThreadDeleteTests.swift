@@ -107,6 +107,15 @@ extension Harness {
   }
 }
 
+/// Order the deletion and cursor against publication in one event-log actor turn.
+private func markDeletedAndCaptureCursor(
+  threadId: String, database: WorkspaceDatabase, eventLog: isolated EventLog
+) throws -> Int {
+  let cursor = eventLog.sequence
+  _ = try database.markThreadDeleted(id: threadId, at: Timestamp.now())
+  return cursor
+}
+
 @Suite(.serialized) struct ThreadDeleteTests {
   @Test func deletingAThreadHidesItAndDeletesItInCodex() async throws {
     let calls = RuntimeCalls()
@@ -370,12 +379,18 @@ extension Harness {
       $0.kind == .turnStateChanged && $0.turnId == turn.id && $0.payload["status"]?.stringValue == "running"
     }
     // A phone's delete, pulled while the turn is still streaming.
-    _ = try h.coordinator.database.markThreadDeleted(id: thread.id, at: Timestamp.now())
-    let before = await h.events.events.count
+    // A client may still be collecting older events. Mark deletion and capture the producer
+    // cursor in one actor turn, so a publication after deletion cannot enter the cutoff.
+    let before = try await markDeletedAndCaptureCursor(
+      threadId: thread.id, database: h.coordinator.database, eventLog: h.coordinator.eventLog)
     try await server.waitForRunToEnd(nativeThreadId: thread.nativeThreadId)
     try await h.settled(thread)
-    let late = await h.events.events.dropFirst(before)
+    let late = await h.events.events.filter { $0.sequence > before }
     #expect(!late.contains { $0.event.threadId == thread.id })
+    // Check the producer too, so slow client delivery cannot hide a newly published event.
+    let published = try #require(
+      await h.coordinator.eventLog.replay(epoch: h.coordinator.eventLog.epoch, afterSequence: before))
+    #expect(!published.contains { $0.event.threadId == thread.id })
     #expect(try await h.listedIds().isEmpty)
     await h.stop()
     await server.stop()

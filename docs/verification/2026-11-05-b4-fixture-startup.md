@@ -1,0 +1,7 @@
+## 2026-11-05: B4 fixture startup and deletion-event boundary controls
+
+Both fake B4 entry points bind without reverse DNS. The two additive Python regression methods use real loopback bind/listen, require readiness with `socket.getfqdn` disabled, and require an occupied port to fail before readiness. Both original entry points failed the DNS control; the corrected entries pass. Full HTTP/SSE fixture behavior remains covered by the unchanged Swift suites.
+
+The existing late-deletion test used a client collector index as its cutoff. A local delayed-collector control reproduced failure with only previously published envelopes (sequences 8–11, server cursor 12) and empty server replay. The corrected test synchronously marks deletion and captures the cursor within one event-log actor turn, compares server sequences, and additionally checks server replay. It passes delayed collection, while an event injected inside that actor turn immediately after deletion still fails the producer assertion. All original assertions and deadlines remain; no delay or diagnostic injection is retained. This demonstrates the boundary defect, not the exact unlogged event responsible for the hosted failure.
+
+The full current-main CI matrix, including four unsigned native schemes, iOS layout checks and artifacts, Rust, Bats, documentation checks and all Swift tests remains selected. Hosted run results are recorded in the review evidence; these local controls alone do not establish a whole-workflow speedup. No release, package publication or deployment was requested.
