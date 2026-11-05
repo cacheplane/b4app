@@ -222,7 +222,7 @@ private struct LinkHarness {
     self.coordinator = coordinator
     self.base = base
     let executor = RelayExecutor(
-      sessions: coordinator.sessions, database: coordinator.database,
+      sessions: coordinator.sessions, projects: coordinator.projects, database: coordinator.database,
       diagnostics: coordinator.diagnostics)
     link = HubLink(
       url: URL(string: "http://localhost:8080")!, token: { "tok-link-secret" }, executor: executor,

@@ -6,7 +6,8 @@
 //! 1. the role (only a client link sends commands) and the method (an allowlist; an unknown one
 //!    never decodes, and [`unknown_command`] answers it), then the in-flight check, then the rate
 //!    limits;
-//! 2. the lookup of the thread, the runtime request's thread, or the project, within the caller's
+//! 2. the lookup of the thread, the runtime request's thread, the project, or (for
+//!    `project.create`, which names no row yet) the device named by `deviceId`, within the caller's
 //!    org and user (a thread started moments ago through this hub is found in the pending-thread
 //!    map first); a miss is `not_found`;
 //! 3. the owner: it must be a non-revoked `macos` device of the caller's user, or `not_found`;
@@ -384,7 +385,7 @@ pub fn handle_reply(
 }
 
 /// The answer to a frame that did not decode but is a `command` with an `id`: its method is not
-/// one of the five, so it is `not_found`, as an unknown target would be. `None` for anything else.
+/// on the allowlist, so it is `not_found`, as an unknown target would be. `None` for anything else.
 pub fn unknown_command(text: &str) -> Option<RelayMessage> {
     let frame: Value = serde_json::from_str(text).ok()?;
     if frame.get("type").and_then(Value::as_str) != Some("command") {
@@ -528,9 +529,19 @@ async fn find_owner(
                 _ => Ok(owner),
             }
         }
-        RelayMethod::ThreadStart => {
+        RelayMethod::ThreadStart | RelayMethod::ProjectUpdate | RelayMethod::ProjectDelete => {
             let project_id = param(params, "projectId")?;
             let found = owner_of_project(db, org, user, project_id)
+                .await
+                .map_err(lookup_failed)?;
+            eligible(caller, found.ok_or_else(not_found)?)
+        }
+        // A new project has no row yet: the phone names the Mac whose folders it will list.
+        RelayMethod::ProjectCreate => {
+            let device_id = param(params, "deviceId")?
+                .parse::<Uuid>()
+                .map_err(|_| not_found())?;
+            let found = owner_device(db, org, user, device_id)
                 .await
                 .map_err(lookup_failed)?;
             eligible(caller, found.ok_or_else(not_found)?)

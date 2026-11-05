@@ -95,6 +95,8 @@ struct WorkspaceShell: View {
     // back to the list. A selection cleared for a new thread keeps the detail column, which shows it.
     .onChange(of: model.sidebarRequest) { compactColumn = .sidebar }
     .onDisappear { model.isDetailOnScreen = false }
+    // The phone's New project and Edit project; the Mac's sheets hang off its sidebar.
+    .sheet(item: $model.projectSheet) { PhoneProjectSheet(model: model, request: $0) }
     #if os(macOS)
       // "Add your iPhone", once after a new account's onboarding (sign-in plan, Task 12).
       .sheet(isPresented: $model.showAddPhone) { AddPhoneView(model: model) }

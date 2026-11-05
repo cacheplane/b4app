@@ -724,6 +724,9 @@ fn params_for(method: RelayMethod) -> Value {
             "text": "start here",
         }),
         RelayMethod::TurnLookup => json!({"operationId": "op-1", "threadId": "thread-1"}),
+        RelayMethod::ProjectCreate | RelayMethod::ProjectUpdate | RelayMethod::ProjectDelete => {
+            panic!("a project edit's params come from project_params")
+        }
     }
 }
 
@@ -1064,6 +1067,136 @@ async fn send_is_never_held(pool: PgPool) {
             (id.as_str(), error.code.as_str()),
             (method.as_str(), "device_offline")
         );
+    }
+    assert_eq!(world.hub.state.relay.held(world.mac_id), 0);
+}
+
+/// The project edits, which go to the Mac whose folders the project lists.
+const PROJECT_METHODS: [RelayMethod; 3] = [
+    RelayMethod::ProjectCreate,
+    RelayMethod::ProjectUpdate,
+    RelayMethod::ProjectDelete,
+];
+
+/// Params a phone would send for a project edit: a new project names the Mac `mac_id` (it has no
+/// row yet), an existing one names the seeded project.
+fn project_params(method: RelayMethod, mac_id: Uuid) -> Value {
+    match method {
+        RelayMethod::ProjectCreate => json!({
+            "deviceId": mac_id.to_string(),
+            "projectId": "new-project",
+            "name": "Work",
+            "folders": ["/Users/blove/repos/b4app"],
+        }),
+        RelayMethod::ProjectUpdate => json!({
+            "projectId": "project-1",
+            "addFolders": ["/Users/blove/repos/b4app/Hub"],
+        }),
+        RelayMethod::ProjectDelete => json!({"projectId": "project-1"}),
+        _ => params_for(method),
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn project_edits_reach_the_mac_they_name(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+
+    for method in PROJECT_METHODS {
+        let params = project_params(method, world.mac_id);
+        phone.command(method.as_str(), method, params.clone()).await;
+        let (id, got, forwarded, deadline, from) = mac.expect_command().await;
+        assert_eq!((id.as_str(), got), (method.as_str(), method));
+        assert_eq!(forwarded, params);
+        assert!(deadline.is_some() && from.is_some());
+        mac.reply(&id, json!({"ok": true})).await;
+        assert_eq!(
+            phone.expect_reply().await,
+            (id, Some(json!({"ok": true})), None)
+        );
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_project_edit_naming_no_mac_of_the_users_is_not_found(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let hub = &world.hub;
+    let colleague = hub.user("cacheplane", "colleague").await;
+    let (colleague_mac_token, colleague_mac) = hub.enroll(&colleague, "macos", "Their Mac").await;
+    hub.seed_project(&colleague, colleague_mac, "their-project")
+        .await;
+    let mut their_mac = FakeDevice::ready(hub.addr, &colleague_mac_token).await.0;
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+
+    let create = |device: Value| json!({"deviceId": device, "name": "", "folders": ["/tmp"]});
+    for (n, (method, params)) in [
+        // Another user's Mac, the user's own phone, an id that is not a device, and none at all.
+        (
+            RelayMethod::ProjectCreate,
+            create(json!(colleague_mac.to_string())),
+        ),
+        (
+            RelayMethod::ProjectCreate,
+            create(json!(world.phone_id.to_string())),
+        ),
+        (RelayMethod::ProjectCreate, create(json!("not-a-device"))),
+        (
+            RelayMethod::ProjectCreate,
+            json!({"name": "", "folders": []}),
+        ),
+        (
+            RelayMethod::ProjectUpdate,
+            json!({"projectId": "their-project", "name": "Mine"}),
+        ),
+        (
+            RelayMethod::ProjectDelete,
+            json!({"projectId": "their-project"}),
+        ),
+        (
+            RelayMethod::ProjectDelete,
+            json!({"projectId": "no-such-project"}),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = format!("edit-{n}");
+        phone.command(&id, method, params).await;
+        let (got, error) = phone.expect_refusal().await;
+        assert_eq!(
+            (got.as_str(), error.code.as_str()),
+            (id.as_str(), "not_found")
+        );
+    }
+    mac.expect_quiet(QUIET).await;
+    their_mac.expect_quiet(QUIET).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_project_edit_is_never_held(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    world.mac_flaps().await;
+    let mut phone = world.phone().await;
+
+    // Like a send: the Mac was seen a moment ago, and still the answer is `device_offline` at once,
+    // naming the Mac, so the phone can say when it was last seen. Nothing is queued.
+    for method in PROJECT_METHODS {
+        phone
+            .command(
+                method.as_str(),
+                method,
+                project_params(method, world.mac_id),
+            )
+            .await;
+        let (id, error) = phone.expect_refusal().await;
+        assert_eq!(
+            (id.as_str(), error.code.as_str()),
+            (method.as_str(), "device_offline")
+        );
+        let details = error.details.expect("device_offline carries details");
+        assert_eq!(details["deviceId"], world.mac_id.to_string());
     }
     assert_eq!(world.hub.state.relay.held(world.mac_id), 0);
 }
@@ -2289,15 +2422,22 @@ async fn maintenance_refuses_link_writes_and_keeps_reads(pool: PgPool) {
     })
     .await;
 
-    // The three commands that change something answer `maintenance` with the HTTP guard's message,
+    // The commands that change something answer `maintenance` with the HTTP guard's message,
     // and never reach the Mac.
     for method in [
         RelayMethod::TurnSend,
         RelayMethod::ThreadStart,
         RelayMethod::RequestRespond,
+        RelayMethod::ProjectCreate,
+        RelayMethod::ProjectUpdate,
+        RelayMethod::ProjectDelete,
     ] {
         phone
-            .command(method.as_str(), method, params_for(method))
+            .command(
+                method.as_str(),
+                method,
+                project_params(method, world.mac_id),
+            )
             .await;
         let (id, error) = phone.expect_refusal().await;
         assert_eq!(

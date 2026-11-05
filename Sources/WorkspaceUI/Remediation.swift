@@ -113,7 +113,8 @@ public struct Remediation: Equatable, Sendable {
       .rateLimited, .signedOut, .workRunning:
       return Remediation(message: error.message, action: .none)
     // The relay's codes reach the user as their own message; the phone's views word them (M8c).
-    case .deviceOffline, .commandExpired, .relayTimeout, .rateLimited, .linkReplaced, .clientTooOld,
+    // (`rateLimited`, which the relay also sends, is handled above with the same answer.)
+    case .deviceOffline, .commandExpired, .relayTimeout, .linkReplaced, .clientTooOld,
       .watchLimit, .relocated:
       return Remediation(message: error.message, action: .none)
     }

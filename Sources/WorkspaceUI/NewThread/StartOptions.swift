@@ -94,7 +94,7 @@ extension WorkspaceModel {
     if let reason = offered.lazy.compactMap({ self.startBlockedReason(for: $0) }).first { return reason }
     if let reason = newThreadDisabledReason { return reason }
     return projects.isEmpty
-      ? "No projects yet. Start one on your Mac."
+      ? RelayCopy.noProjects
       : "Add a ready connection on your Mac first"
   }
 }

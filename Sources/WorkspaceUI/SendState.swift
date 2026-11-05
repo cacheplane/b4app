@@ -107,6 +107,11 @@ public enum RelayCopy {
   public static let connecting = "Connecting to the hub…"
   public static let reconnecting = "Reconnecting to your Mac…"
   public static let leftHub = "Your Mac has left the hub. Its threads come back when it joins again."
+  /// A project edit from the phone with no Mac to send it to.
+  public static let noProjects = "No projects yet. Make one with New Project in the filter menu."
+  public static let noMacForProject = "No Mac is linked to this account yet."
+  /// A project the phone made whose row has not synced back yet, so the hub cannot route to it.
+  public static let projectNotSynced = "Your Mac made this project. It hasn't reached this phone yet."
 }
 
 /// The send table's rules, apart from the model so they read as the spec does.

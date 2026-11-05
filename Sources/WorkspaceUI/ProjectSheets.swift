@@ -2,8 +2,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WorkspaceProtocol
 
-/// Create a manual project: a name and the folders whose threads belong to it. The Mac only; the
-/// phone's mirror refuses project writes.
+/// Create a manual project: a name and the folders whose threads belong to it. The Mac's, with its
+/// folder picker; the phone has `PhoneProjectSheet`, which names folders on the Mac by path.
 struct NewProjectSheet: View {
   @Bindable var model: WorkspaceModel
   @Environment(\.dismiss) private var dismiss

@@ -146,7 +146,7 @@ public final class WorkspaceModel {
     }
   }
   /// Every project with its folders, loaded with the threads and refreshed on `project.changed`.
-  public private(set) var projects: [Project] = []
+  public internal(set) var projects: [Project] = []
   public var projectFilter: ProjectFilter = .all
   /// The Settings page to show, and a counter the root view watches to open Settings (a window on the
   /// Mac, a sheet on the iPhone); a counter so asking twice opens it twice.
@@ -181,6 +181,8 @@ public final class WorkspaceModel {
   /// The list's search field is open and focused: the iPhone header's search button sets it.
   public var listSearchPresented = false
   public var showArchived = false
+  /// The phone's project sheet: a new project, or one project's name and folders.
+  public var projectSheet: ProjectSheetRequest?
   /// The iPhone's "Other ways to sign in" sheet, over the signed-out screen. On the model, like the
   /// sheets above, so the app holds a pairing link back until it closes.
   public var showSignInOptions = false
@@ -1041,7 +1043,7 @@ public final class WorkspaceModel {
     if projectFilter == .project(deleted) { projectFilter = .all }
   }
 
-  private func merge(_ project: Project) {
+  func merge(_ project: Project) {
     if let index = projects.firstIndex(where: { $0.id == project.id }) {
       projects[index] = project
     } else {
@@ -1522,6 +1524,7 @@ public final class WorkspaceModel {
     hubJoined = false
     hubLink = nil
     diagnostics = nil
+    projectSheet = nil
     showSearch = false
     listSearch = ""
     listSearchPresented = false

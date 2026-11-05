@@ -161,7 +161,24 @@ public actor ProjectService {
     ProjectList.Result(projects: try db.listProjects())
   }
 
+  /// A create that names its `projectId` (the phone's, over the relay) runs once: when that manual
+  /// project exists already, it is the answer, as it stands, so a resend after a lost reply makes no
+  /// second project.
   public func create(_ params: ProjectCreate.Params) async throws -> ProjectCreate.Result {
+    let id = try params.projectId.map { id in
+      guard SessionService.isLowercaseUUID(id) else {
+        throw WorkspaceError(
+          .protocolInvalid, "The new project's id is not valid.", details: ["reason": "invalid_project_id"])
+      }
+      return id
+    }
+    if let id, let existing = try db.project(id: id) {
+      guard existing.manual else {
+        throw WorkspaceError(
+          .protocolInvalid, "Project \(id) already exists.", details: ["reason": "operation_reused"])
+      }
+      return ProjectCreate.Result(project: existing)
+    }
     let name = params.name.trimmingCharacters(in: .whitespacesAndNewlines)
     let folders = try validatedFolders(params.folders, into: nil)
     guard !folders.isEmpty else {
@@ -170,7 +187,7 @@ public actor ProjectService {
     let threadsByFolder = try threadIdsByFolder()
     let placing = folders.map { FolderPlacement(path: $0, threadIds: threadsByFolder[$0] ?? []) }
     let edit = try db.createManualProject(
-      Project(id: Self.newId(), name: name, manual: true), placing: placing)
+      Project(id: id ?? Self.newId(), name: name, manual: true), placing: placing)
     try await alignConnections()
     await publish(edit, threadIds: placing.flatMap(\.threadIds))
     return ProjectCreate.Result(project: try require(edit.project))
