@@ -182,6 +182,7 @@ enum PhoneFixture {
     _ transport: ScriptedTransport, clock: TestClock, online: Bool? = true, open: String? = "t1"
   ) async throws -> WorkspaceModel {
     let model = WorkspaceModel(transportProvider: { transport })
+    model.preferences = InMemoryPreferences()
     model.accountSource = .host
     model.clock = clock
     model.now = { clock.date }

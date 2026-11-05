@@ -83,6 +83,7 @@ private nonisolated func edited(
     let store = try MirrorStore.inMemory()
     let transport = MirrorTransport(store: store, version: "0.2.0")
     let model = WorkspaceModel(transportProvider: { transport })
+    model.preferences = InMemoryPreferences()
     model.connect()
     let link = await model.settledLink()
     try #require(link == .ready, "the model did not connect: \(model.linkMessage ?? "no message")")
@@ -117,6 +118,7 @@ private nonisolated func edited(
     let store = try MirrorStore.inMemory()
     let transport = MirrorTransport(store: store, version: "0.2.0")
     let live = WorkspaceModel(transportProvider: { transport })
+    live.preferences = InMemoryPreferences()
     live.connect()
     try #require(await live.settledLink() == .ready)
     await live.refreshDiagnostics()
@@ -128,6 +130,7 @@ private nonisolated func edited(
     live.account = WorkspaceAccount(username: "blove", displayName: String(repeating: "Brian ", count: 40))
     // A link that failed with a long message.
     let failed = WorkspaceModel(transportProvider: { throw WorkspaceError(.endpointUnavailable, note) })
+    failed.preferences = InMemoryPreferences()
     failed.connect()
     try #require(await failed.settledLink() == .unavailable)
     failed.hostNote = note
@@ -148,6 +151,7 @@ private nonisolated func edited(
     let store = try MirrorStore.inMemory()
     let transport = MirrorTransport(store: store, version: "0.2.0")
     let model = WorkspaceModel(transportProvider: { transport })
+    model.preferences = InMemoryPreferences()
     model.connect()
     try #require(await model.settledLink() == .ready)
     await model.refreshDiagnostics()

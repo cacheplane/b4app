@@ -40,6 +40,7 @@ struct ModelHarness {
     let model = WorkspaceModel(transportProvider: {
       try await UnixSocketTransport.connect(path: socketPath, timeout: .seconds(5))
     })
+    model.preferences = InMemoryPreferences()
     model.connect()
     guard await model.settledLink() == .ready else {
       throw WorkspaceError(.internalError, "the model did not connect: \(model.linkMessage ?? "no message")")

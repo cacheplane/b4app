@@ -286,7 +286,6 @@ struct SnapshotShell: View {
   /// its permission and model live.
   @Test func newThreadComposer() async throws {
     let model = try await ListFixture.model()
-    model.preferences = InMemoryPreferences()
     try await render("newThreadComposer", size: CGSize(width: 760, height: 420)) {
       NewThreadView(model: model)
     }
@@ -402,6 +401,7 @@ struct SnapshotShell: View {
   /// it, since a compact width cannot reach the new-thread screen that would say why.
   @Test func iosDockBlocked() async throws {
     let model = WorkspaceModel(transportProvider: { throw WorkspaceError(.endpointUnavailable, "offline") })
+    model.preferences = InMemoryPreferences()
     let reason = try #require(model.newThreadEntryReason)
     #expect(reason == "Add a ready Codex connection first")
     try await render("ios-dock-blocked", size: CGSize(width: 390, height: 140)) {
@@ -495,6 +495,7 @@ struct SnapshotShell: View {
         Connection(id: "c2", kind: .claude, label: "Claude Code", target: "claude", status: .ready),
       ], threads: threads, projects: projects)
     let model = WorkspaceModel(transportProvider: { transport })
+    model.preferences = InMemoryPreferences()
     let now = Date(timeIntervalSince1970: base + 60 * 60)
     model.now = { now }
     model.connect()
