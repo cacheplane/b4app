@@ -144,4 +144,41 @@ import WorkspaceProtocol
       #expect(error == gone)
     }
   }
+
+  /// `setFailNextPull` is for the pull alone: another call made first does not take it, and a parked
+  /// pull wakes and answers with it.
+  @Test func failNextPullSkipsOtherCallsAndWakesAParkedPull() async throws {
+    let fake = FakeHubAPI()
+    let unauthorized = HubError(
+      kind: "request_error", code: "unauthorized", message: "Unauthorized.", status: 401)
+    let parked = Task { try await fake.pull(after: 0, limit: 10, wait: 30) }
+    await fake.untilPulling(1)
+    await fake.setFailNextPull(unauthorized)
+    _ = try await fake.devices()
+    do {
+      _ = try await parked.value
+      Issue.record("expected the injected failure")
+    } catch let error as HubError {
+      #expect(error == unauthorized)
+    }
+    // Used once: the next pull answers.
+    _ = try await fake.pull(after: 0, limit: 10, wait: 0)
+  }
+
+  /// `setFailNextPush` is for the push alone and is used once.
+  @Test func failNextPushSkipsOtherCalls() async throws {
+    let fake = FakeHubAPI()
+    let unauthorized = HubError(
+      kind: "request_error", code: "unauthorized", message: "Unauthorized.", status: 401)
+    await fake.setFailNextPush(unauthorized)
+    _ = try await fake.devices()
+    _ = try await fake.pull(after: 0, limit: 10, wait: 0)
+    do {
+      _ = try await fake.push([])
+      Issue.record("expected the injected failure")
+    } catch let error as HubError {
+      #expect(error == unauthorized)
+    }
+    _ = try await fake.push([])
+  }
 }

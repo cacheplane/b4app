@@ -32,6 +32,12 @@ public actor FakeHubAPI: HubAPI {
   private var mintFailure: HubError?
   private var mintResponse: PairingCodeResponse?
   private var failMe: HubError?
+  /// Fails the next `pull` only, once; setting it wakes a parked pull, which answers with it at once.
+  private var failPull: HubError? {
+    didSet { if failPull != nil { wakePulls() } }
+  }
+  /// Fails the next `push` only, once.
+  private var failPush: HubError?
 
   // What the sign-in calls were sent, oldest first. Nothing else about a request is kept.
   public private(set) var passkeyFinishes: [PasskeyFinishRequest] = []
@@ -107,6 +113,10 @@ public actor FakeHubAPI: HubAPI {
   public func setFailNext(_ error: HubError?) { failNext = error }
   /// Fail the next `me()` only, whatever other calls run first.
   public func setFailMe(_ error: HubError?) { failMe = error }
+  /// Fail the next `pull` only, whatever other calls run first: a parked pull answers with it at once.
+  public func setFailNextPull(_ error: HubError?) { failPull = error }
+  /// Fail the next `push` only, whatever other calls run first.
+  public func setFailNextPush(_ error: HubError?) { failPush = error }
 
   /// Sets the platform of the fake's device, which decides what `push` refuses: `macos` may write
   /// anything, `ios` and `cli` only the phone's columns. `enroll` sets it from its request.
@@ -204,6 +214,10 @@ public actor FakeHubAPI: HubAPI {
   }
 
   public func push(_ changes: [SyncChange]) async throws -> PushResponse {
+    if let failure = failPush {
+      failPush = nil
+      throw failure
+    }
     try authorize()
     if let body = try? JSONCoding.encoder.encode(Body(changes: changes)), body.count > Self.maxBodyBytes {
       throw Self.error("payload_too_large", "The request body is too large.", status: 413)
@@ -262,6 +276,7 @@ public actor FakeHubAPI: HubAPI {
   }
 
   public func pull(after: Int, limit: Int, wait: Int) async throws -> PullResponse {
+    try consumePullFailure()
     try authorize()
     let deadline = ContinuousClock.now + .seconds(max(wait, 0))
     while true {
@@ -272,7 +287,15 @@ public actor FakeHubAPI: HubAPI {
           changes: page, next: page.last?.hubSeq ?? after, more: newer.count > page.count)
       }
       try await park(until: deadline)
+      try consumePullFailure()
       try authorize()
+    }
+  }
+
+  private func consumePullFailure() throws {
+    if let failure = failPull {
+      failPull = nil
+      throw failure
     }
   }
 
