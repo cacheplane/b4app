@@ -724,11 +724,23 @@ extension MirrorAccount: @retroactive AccountHost {}
     relayWatch?.cancel()
     relayWatch = Task {
       for await update in relay.updates() {
-        if case .link(.stopped(let reason)) = update {
+        switch update {
+        case .link(.connected):
+          await MirrorHost.shared.relayConnected(relay)
+        case .link(.stopped(let reason)):
           MirrorHost.shared.relayStopped(relay, reason: reason)
+        default:
+          break
         }
       }
     }
+  }
+
+  /// A working relay proves the hub is reachable: wake sync's retry too. Only a successful pull
+  /// clears its failure banner, and a background sync stays parked until the lifecycle resumes it.
+  private func relayConnected(_ connected: MirrorRelay) async {
+    guard connected === relay else { return }
+    await account?.sync?.nudge()
   }
 
   /// Stop a relay whose link has ended, after whatever was decided for it before.
