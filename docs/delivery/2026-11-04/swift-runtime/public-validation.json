@@ -1,0 +1,7 @@
+{
+  "scope": "Nonpublishing full CI validation and Swift test runtime investigation",
+  "case": "baseline",
+  "base": "e141e8c995206c053630971f973708f7912b62cb",
+  "preserve": "All1170 Swift declaration IDs, all original assertions/deadlines, strictNIO, native/Rust/tooling checks. No releases or deployment.",
+  "source_only": true
+}
