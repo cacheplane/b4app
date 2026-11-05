@@ -528,15 +528,25 @@ Prove a backup restores and holds the data. Two parts: a full drill in the test 
 
    ```sh
    unset PGPASSWORD                          # else psql sends the master password
-   psql -h <live host> -U b4hub_owner -d b4hub -c 'select org_id, max(hub_seq) from changes group by 1 order by 1'
-   psql -h <scratch host> -U b4hub_owner -d b4hub -c 'select org_id, max(hub_seq) from changes group by 1 order by 1'
+   # Run once with each host, saving both outputs. -W prompts before stdin is read.
+   psql -X -W -h <live-or-scratch-host> -U b4hub_owner -d b4hub \
+     -v ON_ERROR_STOP=1 -P pager=off <<'SQL'
+   BEGIN READ ONLY;
+   SELECT max(version) AS migration FROM _sqlx_migrations WHERE success;
+   SELECT format('SET LOCAL b4hub.org_id = %L;
+     SELECT current_setting(''b4hub.org_id'') AS org_id,
+       count(*) AS changes, max(hub_seq) FROM changes;', id)
+     FROM orgs ORDER BY id
+   \gexec
+   COMMIT;
+   SQL
    ```
 
    Then `printf '' | pbcopy` (Linux: `xclip`).
 
    The password comes out of the URL as stored. A generated hex password needs no decoding; one with percent-escapes (`%40` and so on) must be decoded before it is pasted at the psql prompt, or psql rejects it: run the clipboard through the same `pbpaste | python3 ... unquote ... | pbcopy` pipe as in [runbook 2](#2-bootstrap-the-database-owner) step 4.
 
-   The restored `max(hub_seq)` per org must be less than or equal to the live one and no older than the backup interval.
+   The explicit tenant context matters: `changes` has forced row-level security, so an owner query without `b4hub.org_id` can report no rows even when data exists. Each restored `max(hub_seq)` must be less than or equal to the live one and the recovery point must be no older than the backup interval. Sequence numbers do not measure elapsed time. For a content comparison, hash the ordered change rows on the scratch instance and the live rows through the scratch instance's maximum sequence; compare those hashes as well as counts. Keep both queries in read-only transactions.
 6. **Put the test account back**, then delete the scratch instance:
 
    ```bash
@@ -557,7 +567,66 @@ The Organization's region policy allows `backup`, `backup-storage`, `kms`, `rds`
 
 1. `aws backup list-recovery-points-by-backup-vault --region us-west-2 --backup-vault-name b4hub-prod-copy --by-resource-type RDS --query 'sort_by(RecoveryPoints, &CreationDate)[-1].[RecoveryPointArn,CreationDate,Status]'`. The newest must be under 36 hours old and `COMPLETED`.
 2. Restore it with `aws backup start-restore-job --region us-west-2 ...` as in A.2, with the metadata from `aws backup get-recovery-point-restore-metadata --region us-west-2 --backup-vault-name b4hub-prod-copy --recovery-point-arn <arn>`, `DBInstanceIdentifier` set to `b4hub-prod-drill`, the role `b4hub-prod-backup`, the same four metadata corrections as A.1 plus `del(.AvailabilityZone)` (the copied metadata names a source-region zone) and `.DeletionProtection = "false"` (production's metadata carries `true`, and a protected scratch instance refuses `delete-db-instance` until `modify-db-instance --no-deletion-protection`), `DBSubnetGroupName` set to `b4hub-prod-drill`, and `VpcSecurityGroupIds` to the default VPC's `default` group (the stack has no network in `us-west-2`). Poll the restore job and read `CreatedResourceArn` as in A.2 (every `aws` call with `--region us-west-2`), wait with `aws rds wait db-instance-available --region us-west-2 --db-instance-identifier "$DRILL_ID"`, then delete it with `aws rds delete-db-instance --region us-west-2 --db-instance-identifier "$DRILL_ID" --skip-final-snapshot`.
-3. Comparing production's data against a restored copy needs the snapshot in an account and region with the hub's network. The copy vault is encrypted with its own customer managed key (`alias/b4hub-prod-copy` in `us-west-2`, since 2026-11-04), so the copied snapshot can be copied back to `us-east-2` (`aws rds copy-db-snapshot --source-region us-west-2 ... --kms-key-id <the account data key>`) and restored into the hub's VPC as in A, then compared with A.5. Until that is scripted, B proves restorability and A proves the data path.
+3. **Copy back and compare the data.** The copy vault uses its own customer managed key (`alias/b4hub-prod-copy` in `us-west-2`, PR #122), so its snapshot can be copied back under `alias/b4hub-prod-data` and restored into the hub's VPC. Run this after B.1, in the production account. Stop if any command fails; keep the resource identifiers for cleanup. The drill reads the live database through the admin task; production's database URLs and running service stay in place.
+
+   ```bash
+   export AWS_PROFILE=b4hub-prod AWS_REGION=us-east-2 AWS_PAGER=""
+   RP=$(aws backup list-recovery-points-by-backup-vault --region us-west-2 \
+     --backup-vault-name b4hub-prod-copy --by-resource-type RDS \
+     --query 'sort_by(RecoveryPoints[?Status==`COMPLETED`], &CreationDate)[-1].RecoveryPointArn' --output text)
+   # Confirm B.1's freshness requirement and that the snapshot uses the copy key.
+   aws rds describe-db-snapshots --region us-west-2 --db-snapshot-identifier "$RP" \
+     --query 'DBSnapshots[0].{Status:Status,Created:SnapshotCreateTime,Key:KmsKeyId}'
+   aws kms describe-key --region us-west-2 --key-id alias/b4hub-prod-copy --query KeyMetadata.Arn
+   STAMP=$(date -u +%Y%m%d%H%M%S)
+   COPY_ID=b4hub-prod-drill-return-$STAMP
+   DRILL_ID=b4hub-prod-drill-$STAMP
+   aws rds copy-db-snapshot --source-region us-west-2 \
+     --source-db-snapshot-identifier "$RP" --target-db-snapshot-identifier "$COPY_ID" \
+     --kms-key-id alias/b4hub-prod-data --tags Key=Purpose,Value=restore-drill
+   aws rds wait db-snapshot-available --db-snapshot-identifier "$COPY_ID"
+   SUBNET=$(aws rds describe-db-instances --db-instance-identifier b4hub-prod \
+     --query 'DBInstances[0].DBSubnetGroup.DBSubnetGroupName' --output text)
+   SG=$(aws rds describe-db-instances --db-instance-identifier b4hub-prod \
+     --query 'DBInstances[0].VpcSecurityGroups[0].VpcSecurityGroupId' --output text)
+   aws rds restore-db-instance-from-db-snapshot --db-instance-identifier "$DRILL_ID" \
+     --db-snapshot-identifier "$COPY_ID" --db-instance-class db.t4g.micro \
+     --db-subnet-group-name "$SUBNET" --vpc-security-group-ids "$SG" \
+     --no-publicly-accessible --no-multi-az --no-deletion-protection \
+     --tags Key=Purpose,Value=restore-drill
+   aws rds wait db-instance-available --db-instance-identifier "$DRILL_ID"
+   SCRATCH=$(aws rds describe-db-instances --db-instance-identifier "$DRILL_ID" \
+     --query 'DBInstances[0].Endpoint.Address' --output text)
+   LIVE=$(aws rds describe-db-instances --db-instance-identifier b4hub-prod \
+     --query 'DBInstances[0].Endpoint.Address' --output text)
+   printf 'live: %s\nscratch: %s\n' "$LIVE" "$SCRATCH"
+   ```
+
+   In `Infra/scripts/admin-shell.sh prod psql`, run A.5's tenant-aware SQL against both hosts with `psql -X -h <host> -d b4hub -v ON_ERROR_STOP=1 -P pager=off`. This uses the container's live master credentials, which also work against the snapshot if that password has not rotated since the backup. Add `SET LOCAL ROLE b4hub_owner;` after `BEGIN READ ONLY;` to exercise the owner's access. If the master password rotated, use the stable `b4hub_owner` password through A.5's prompt procedure instead. Compare migration versions, per-org counts and maximum sequences. A stronger check hashes the ordered changes on the scratch instance and production through the restored maximum sequence for each org:
+
+   ```sql
+   BEGIN READ ONLY;
+   SET LOCAL b4hub.org_id = '<org UUID>';
+   SELECT count(*) AS changes, max(hub_seq),
+     md5(coalesce(string_agg(md5(jsonb_build_array(org_id, hub_seq, device_id,
+       device_seq, user_id, wall, "table", row_id, op, "column", value)::text),
+       '' ORDER BY hub_seq), '')) AS digest
+   FROM changes
+   WHERE hub_seq <= <restored maximum sequence>;
+   COMMIT;
+   ```
+
+   The bounded live count and digest must equal the restored count and digest. Save aggregate results only; no transcripts, credentials, or token rows belong in the verification record. After recording the comparison, exit the admin shell (which stops its task), then delete the scratch instance and the temporary return snapshot, keeping the recovery point in `b4hub-prod-copy`:
+
+   ```bash
+   aws rds delete-db-instance --db-instance-identifier "$DRILL_ID" \
+     --skip-final-snapshot --delete-automated-backups
+   aws rds wait db-instance-deleted --db-instance-identifier "$DRILL_ID"
+   aws rds delete-db-snapshot --db-snapshot-identifier "$COPY_ID"
+   curl -fsS https://hub.b4.run/readyz
+   ```
+
+   Record the recovery point, its age and encryption key, copy and restore identifiers, migration and per-org comparison results, cleanup, and production readiness. Monthly drills now include A, B.1–2, and B.3.
 
 ### 9. Incident basics
 
