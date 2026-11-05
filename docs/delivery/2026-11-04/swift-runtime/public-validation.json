@@ -1,7 +1,6 @@
 {
-  "scope": "Nonpublishing retained correctness validation; unsupported WAL trial reverted",
-  "case": "retained",
-  "base": "e141e8c995206c053630971f973708f7912b62cb",
-  "preserve": "All original1170 Swift declaration IDs, all assertions/deadlines, seven exhaustive groups,34 tooling plusnative/Rustchecks. No speedclaim, release or deployment.",
-  "source_only": true
+  "scope": "Nonpublishing retained correctness CI holdout; WAL experiment rejected",
+  "base": "590410759576dfd6b2a661bdd6c3fb727cce82b1",
+  "case": "Compiled SwiftPM cache unavailable through run-unique branch-scoped key and no restore fallback; all other jobs/checks unchanged.",
+  "preserve": "All original1170 SwiftIDs; all34tooling/48Bats/Rust/fournativechecks; deadlinesunchanged. No publication/deployment."
 }
