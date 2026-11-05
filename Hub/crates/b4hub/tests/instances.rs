@@ -187,6 +187,13 @@ async fn a_dead_heartbeat_lets_the_other_instance_claim_and_the_old_owner_lets_g
             .unwrap(),
         Some(b.state.instances.id())
     );
+    // While it cannot write, `a` does not fence itself off (D-179): the Mac's link stays up and the
+    // user is split between the two instances until `a` can write again. Closing every link while
+    // the database is unreachable would drop all of them in a database-wide outage too, when
+    // nothing could reconnect anyway.
+    assert!(a.state.instances.stale());
+    assert!(a.state.relay.online(blove.mac_id));
+    mac.expect_quiet(BEAT * 2).await;
 
     // `a` recovers, sees that `b` serves the user now, and closes the Mac's link (1001: reconnect),
     // so one user's links are not split. The Mac's reconnect to `a` is relocated to `b`.

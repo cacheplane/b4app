@@ -1562,8 +1562,9 @@ the text it already has, and nothing when it is the same; one whose shown text d
 catch-up (after a `stream_gap` or its own reconnect) clears the item's live text and shows the whole
 catch-up. A phone that ignores the field appends it, as before.
 
-**Backpressure and `stream_gap`.** Each link has an outbound queue of 256 frames. When a client's
-queue is full, an `event` for it is dropped (never blocking the Mac or other phones) and the
+**Backpressure and `stream_gap`.** Each link has an outbound queue of 256 frames, of which the
+`event` frames may total at most 4 MiB of JSON. When a client's queue is full, or the event would
+take its events past 4 MiB, an `event` for it is dropped (never blocking the Mac or other phones) and the
 thread is marked as having a gap for that link. As soon as the queue has room, the hub queues one
 `stream_gap { threadId }` per marked thread, behind everything already queued; events for the
 marked thread are dropped until that is done, so the `stream_gap` always comes after the hole it
@@ -1582,7 +1583,9 @@ replies and errors wait for room, and presence is kept as described under *Prese
 | 4003 | no frame for 30 seconds | reconnect with backoff |
 
 Reconnect backoff is 1 second doubling to 30 (15 on the phone) with full jitter, reset after a
-link has stayed up for 60 seconds.
+link has stayed up for 60 seconds. An upgrade refused `429 rate_limited` waits at least its
+`Retry-After` (whole seconds, capped at 120) before the next attempt, even when the backoff is
+shorter.
 
 ### Frame size
 
@@ -1600,7 +1603,7 @@ are unaffected.
 | Frame from a client | 64 KiB |
 | Frame from a host | 256 KiB |
 | Watched threads per client link | 4 |
-| Outbound queue per link | 256 frames |
+| Outbound queue per link | 256 frames, `event` frames in it at most 4 MiB of JSON together |
 
 ## Shutdown
 
