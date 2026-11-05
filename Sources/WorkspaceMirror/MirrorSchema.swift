@@ -50,7 +50,7 @@ enum MirrorSchema {
 
   /// Columns whose `TEXT` holds a JSON document; they read back inline.
   static let jsonColumns: [String: Set<String>] = [
-    "connections": ["capabilities"], "displayItems": ["payload"], "runtimeRequests": ["payload"],
+    "connections": ["capabilities", "models"], "displayItems": ["payload"], "runtimeRequests": ["payload"],
     "connectionUsage": ["reading", "tokens"],
   ]
 
@@ -60,7 +60,7 @@ enum MirrorSchema {
   /// Ordered migrations keyed by the `user_version` each leaves behind. A file at version `n` runs
   /// every migration after `n`, all in one transaction.
   static let migrations: [(version: Int, statements: [String])] = [
-    (1, version1), (2, version2), (3, version3), (4, version4), (5, version5),
+    (1, version1), (2, version2), (3, version3), (4, version4), (5, version5), (6, version6),
   ]
 
   /// M8a's schema.
@@ -255,5 +255,13 @@ enum MirrorSchema {
   /// Deleting threads: a deleted thread keeps its row, marked by `userDeletedAt`, and is never listed.
   static let version5 = [
     #"ALTER TABLE "threads" ADD COLUMN "userDeletedAt" TEXT"#
+  ]
+
+  /// The new-thread composer: a thread's chosen model and permission mode, and the models a
+  /// connection offers (a JSON list).
+  static let version6 = [
+    #"ALTER TABLE "threads" ADD COLUMN "model" TEXT"#,
+    #"ALTER TABLE "threads" ADD COLUMN "permission" TEXT"#,
+    #"ALTER TABLE "connections" ADD COLUMN "models" TEXT"#,
   ]
 }

@@ -9,6 +9,8 @@ public struct ConnectionInspection: Codable, Sendable, Equatable {
   /// Native identity used to namespace thread ids, e.g. account email or endpoint origin.
   public var nativeScope: String?
   public var capabilities: Capabilities
+  /// The models the runtime offers for a new thread; nil when the adapter did not read them.
+  public var models: [RuntimeModel]?
   public var message: String?
   public var error: WorkspaceError?
 
@@ -16,7 +18,7 @@ public struct ConnectionInspection: Codable, Sendable, Equatable {
     status: ConnectionStatus = .unconfigured, authStatus: AuthStatus = .unknown,
     executablePath: String? = nil,
     version: String? = nil, nativeScope: String? = nil, capabilities: Capabilities = .unverified,
-    message: String? = nil, error: WorkspaceError? = nil
+    models: [RuntimeModel]? = nil, message: String? = nil, error: WorkspaceError? = nil
   ) {
     self.status = status
     self.authStatus = authStatus
@@ -24,6 +26,7 @@ public struct ConnectionInspection: Codable, Sendable, Equatable {
     self.version = version
     self.nativeScope = nativeScope
     self.capabilities = capabilities
+    self.models = models
     self.message = message
     self.error = error
   }
@@ -33,10 +36,18 @@ public struct NewSessionInput: Sendable, Equatable {
   public var workingDirectory: String?
   public var routeKey: String?
   public var model: String?
-  public init(workingDirectory: String? = nil, routeKey: String? = nil, model: String? = nil) {
+  /// A permission mode id from the runtime's catalog (`RuntimeOptions`); nil leaves the runtime's default.
+  public var permission: String?
+  public var additionalDirectories: [String]
+  public init(
+    workingDirectory: String? = nil, routeKey: String? = nil, model: String? = nil,
+    permission: String? = nil, additionalDirectories: [String] = []
+  ) {
     self.workingDirectory = workingDirectory
     self.routeKey = routeKey
     self.model = model
+    self.permission = permission
+    self.additionalDirectories = additionalDirectories
   }
 }
 
@@ -102,10 +113,20 @@ public struct TurnInput: Sendable, Equatable {
   public var operationId: String
   public var text: String
   public var workingDirectory: String?
-  public init(operationId: String, text: String, workingDirectory: String? = nil) {
+  /// The thread's model and permission mode ids; nil leaves the runtime's default.
+  public var model: String?
+  public var permission: String?
+  public var additionalDirectories: [String]
+  public init(
+    operationId: String, text: String, workingDirectory: String? = nil, model: String? = nil,
+    permission: String? = nil, additionalDirectories: [String] = []
+  ) {
     self.operationId = operationId
     self.text = text
     self.workingDirectory = workingDirectory
+    self.model = model
+    self.permission = permission
+    self.additionalDirectories = additionalDirectories
   }
 }
 

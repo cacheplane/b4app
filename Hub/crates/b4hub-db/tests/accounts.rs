@@ -991,32 +991,32 @@ async fn fill_org(admin: &Db, app: &Db, pool: &PgPool, created: &accounts::Creat
     let mut batch = common::filtered_fixture();
     batch.extend([
         insert(
-            13,
+            14,
             "projects",
             "proj-1",
             json!({"id": "proj-1", "name": "b4app", "manual": false}),
         ),
         insert(
-            14,
+            15,
             "projectFolders",
             "folder-1",
             json!({"id": "folder-1", "projectId": "proj-1", "path": "/tmp/b4app"}),
         ),
         insert(
-            15,
+            16,
             "drafts",
             "thread-1",
             json!({"threadId": "thread-1", "text": "hello"}),
         ),
         insert(
-            16,
+            17,
             "connectionUsage",
             "conn-1",
             json!({"connectionId": "conn-1", "reading": null, "tokens": {"today": 5}}),
         ),
     ]);
     let outcome = changes::push(app, &who, &batch).await.unwrap();
-    assert_eq!(outcome.accepted_through, 16);
+    assert_eq!(outcome.accepted_through, 17);
     devices::create_enrollment_code(
         admin,
         created.org_id,

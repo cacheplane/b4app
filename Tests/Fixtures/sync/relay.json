@@ -31,7 +31,9 @@
   "params": {
    "connectionId": "conn-1",
    "text": "Start a new thread",
-   "projectId": "project-1"
+   "projectId": "project-1",
+   "model": "sonnet",
+   "permission": "plan"
   }
  },
  {

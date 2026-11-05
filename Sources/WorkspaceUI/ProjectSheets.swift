@@ -118,27 +118,3 @@ struct RenameProjectSheet: View {
     }
   }
 }
-
-/// Which project a new thread's folder lands in, as far as the app can tell from the project list.
-/// The coordinator decides for real (it canonicalizes the path); this only words the sheet.
-enum NewThreadProject: Equatable {
-  case joins(String)
-  case newProject
-
-  static func describe(directory: String, projects: [Project]) -> NewThreadProject {
-    let wanted = normalized(directory)
-    guard !wanted.isEmpty else { return .newProject }
-    for project in projects where project.folders.contains(where: { normalized($0.path) == wanted }) {
-      return .joins(project.displayName)
-    }
-    return .newProject
-  }
-
-  private static func normalized(_ path: String) -> String {
-    var value = path.trimmingCharacters(in: .whitespaces)
-    guard !value.isEmpty else { return "" }
-    value = (value as NSString).standardizingPath
-    while value.count > 1, value.hasSuffix("/") { value.removeLast() }
-    return value
-  }
-}

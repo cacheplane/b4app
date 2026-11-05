@@ -506,7 +506,7 @@ private let acme = AuthSession(
 
     // Every method that reads or writes the store answers the same, before its params are read.
     let unscoped: Set<WorkspaceProtocol.Method> = [
-      .systemPing, .diagnosticsRead, .eventsReplay, .hubJoin, .threadStart, .turnLookup,
+      .systemPing, .diagnosticsRead, .eventsReplay, .hubJoin, .turnLookup,
     ]
     // `account.*` is routed without an account (Task 10's `AccountCommandTests` cover it).
     for method in WorkspaceProtocol.Method.allCases

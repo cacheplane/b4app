@@ -2252,7 +2252,7 @@ async fn a_refused_thread_start_gives_its_watch_back(pool: PgPool) {
     .await;
     mac.reply_error(
         "start-1",
-        "directory_locked",
+        "turn_active",
         Some(json!({"blockingTurnId": "turn-9"})),
     )
     .await;
@@ -2288,7 +2288,7 @@ async fn a_refused_thread_start_gives_its_watch_back(pool: PgPool) {
             )
             .await;
         assert_eq!(mac.expect_command().await.0, id);
-        mac.reply_error(&id, "directory_locked", None).await;
+        mac.reply_error(&id, "turn_active", None).await;
         assert_eq!(phone.expect_reply().await.0, id);
     }
     settle().await;

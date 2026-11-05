@@ -476,7 +476,8 @@ public final class MirrorTransport: WorkspaceTransport {
       }
       guard
         let thread = try store.updateThread(
-          id: params.threadId, title: params.title, pinned: params.pinned, archived: params.archived)
+          id: params.threadId, title: params.title, pinned: params.pinned, archived: params.archived,
+          model: params.model, permission: params.permission)
       else { throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.") }
       state.wrote = true
       emit([try AdapterEvent.threadUpdated(thread)], state: &state)

@@ -76,6 +76,10 @@ const PINNED: &[(&str, &str)] = &[
         "0016_passkey_names.sql",
         "4123a523b9f512b88a078647bffe51a535f8ebab4e7cdf8632c3a356e7c93851",
     ),
+    (
+        "0017_thread_runtime_choice.sql",
+        "d3960ad53eaba095e540e205641c1d4572090a900028360098c06e3b6d24f2c9",
+    ),
 ];
 
 #[test]

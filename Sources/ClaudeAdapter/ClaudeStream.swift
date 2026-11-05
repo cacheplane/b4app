@@ -6,7 +6,8 @@ import WorkspaceProtocol
 public enum ClaudeStream {
   /// Launch arguments in the order the SDK uses. `cwd` is the spawn working directory, not a flag.
   public struct LaunchOptions: Sendable, Equatable {
-    public var permissionMode: String = "default"
+    /// Nil omits `--permission-mode`, so Claude Code's own settings choose the mode ("As configured").
+    public var permissionMode: String?
     public var settingSources: [String] = ["user", "project", "local"]
     public var includePartialMessages = true
     public var answerPermissions = true
@@ -22,12 +23,13 @@ public enum ClaudeStream {
 
     public var arguments: [String] {
       var args = ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json"]
-      if let model { args += ["--model", model] }
+      // One argument, so a synced id that starts with "-" cannot become a flag.
+      if let model { args.append("--model=\(model)") }
       if let maxTurns { args += ["--max-turns", String(maxTurns)] }
       if answerPermissions { args.append("--permission-prompt-tool=stdio") }
       if let resumeSessionId { args += ["--resume", resumeSessionId] }
       if !settingSources.isEmpty { args += ["--setting-sources", settingSources.joined(separator: ",")] }
-      args += ["--permission-mode", permissionMode]
+      if let permissionMode { args += ["--permission-mode", permissionMode] }
       if includePartialMessages { args.append("--include-partial-messages") }
       if replayUserMessages { args.append("--replay-user-messages") }
       for dir in addDirectories { args += ["--add-dir", dir] }
@@ -76,6 +78,14 @@ public enum ClaudeStream {
       JSONValue.object([
         "type": "control_request", "request_id": .string(requestId),
         "request": ["subtype": "set_permission_mode", "mode": .string(mode)],
+      ]))
+  }
+
+  public static func setModelRequest(requestId: String, model: String) throws -> Data {
+    try NDJSON.encodeLine(
+      JSONValue.object([
+        "type": "control_request", "request_id": .string(requestId),
+        "request": ["subtype": "set_model", "model": .string(model)],
       ]))
   }
 

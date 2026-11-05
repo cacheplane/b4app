@@ -117,7 +117,7 @@ import Testing
   @Test func phoneWritableListIsExact() {
     #expect(
       SyncColumns.phoneWritable == [
-        "threads": ["title", "pinned", "archived", "readTurnId", "userDeletedAt"],
+        "threads": ["title", "pinned", "archived", "readTurnId", "userDeletedAt", "model", "permission"],
         "projects": ["name"],
         "drafts": ["threadId", "text", "updatedAt"],
       ])

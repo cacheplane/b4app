@@ -70,6 +70,7 @@ const TABLES: [TableSpec; 9] = [
             "nativeScope",
             "projectId",
             "capabilities",
+            "models",
             "status",
             "authStatus",
             "createdAt",
@@ -107,6 +108,8 @@ const TABLES: [TableSpec; 9] = [
             "projectId",
             "readTurnId",
             "userDeletedAt",
+            "model",
+            "permission",
         ],
         parent: Some(("connectionId", "connections")),
     },
@@ -408,9 +411,9 @@ mod tests {
     #[test]
     fn fixture_decodes() {
         let changes: Vec<Change> = serde_json::from_str(FIXTURE).unwrap();
-        assert_eq!(changes.len(), 12);
+        assert_eq!(changes.len(), 13);
         let seqs: Vec<i64> = changes.iter().map(|c| c.device_seq).collect();
-        assert_eq!(seqs, (1..=12).collect::<Vec<_>>());
+        assert_eq!(seqs, (1..=13).collect::<Vec<_>>());
         // Every change names a synced table, and the one big payload is over the limit.
         assert!(changes.iter().all(|c| table_spec(&c.table).is_some()));
         let oversize: Vec<&str> = changes

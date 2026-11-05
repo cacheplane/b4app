@@ -40,6 +40,8 @@ private func runningTurn(threadId: String) -> Turn {
     #expect(await model.deleteThread(id: opened.id))
     #expect(model.detail == nil)
     #expect(model.selectedThreadId == nil)
+    // The iPhone goes back to the list, rather than to the new-thread composer.
+    #expect(model.sidebarRequest == 1)
     #expect(!model.threads.contains { $0.id == opened.id })
     // The refetch an earlier event scheduled finds nothing and brings nothing back.
     try await Task.sleep(for: .milliseconds(600))

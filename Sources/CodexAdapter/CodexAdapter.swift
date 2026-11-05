@@ -218,6 +218,7 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
         account.map { "Signed in as \($0.email ?? $0.type) (\($0.planType ?? "plan unknown"))." }
         ?? "Codex is signed out. Sign in with ChatGPT to start a conversation."
       inspection.capabilities = Self.capabilities
+      inspection.models = await listModels()
     } catch {
       let failure = WorkspaceError.from(error)
       inspection.status = failure.code == .missingExecutable ? .error : .incompatible
@@ -225,6 +226,19 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
       inspection.message = "codex app-server did not answer: \(failure.message)"
     }
     return inspection
+  }
+
+  /// `model/list`, first page. A Codex without it, or any error, leaves the list unread (nil); that
+  /// is not a connection failure.
+  private func listModels() async -> [RuntimeModel]? {
+    guard let server = try? await ensureStarted(),
+      let result = try? await server.request("model/list", CodexProtocol.modelListParams()),
+      let entries = result["data"]?.arrayValue
+    else { return nil }
+    return entries.compactMap { entry in
+      guard let id = entry["model"]?.stringValue else { return nil }
+      return RuntimeModel(id: id, label: entry["displayName"]?.stringValue ?? id)
+    }
   }
 
   static let capabilities: Capabilities = [
@@ -237,7 +251,8 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
     let server = try await ensureStarted()
     let account = try await requireAccount()
     let result = try await server.request(
-      "thread/start", CodexProtocol.threadStartParams(cwd: input.workingDirectory, policy: threadPolicy))
+      "thread/start",
+      CodexProtocol.threadStartParams(cwd: input.workingDirectory, policy: threadPolicy, model: input.model))
     guard let threadId = result["thread"]?["id"]?.stringValue else {
       throw WorkspaceError(.protocolInvalid, "thread/start returned no thread id.")
     }
@@ -303,7 +318,8 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
       result = try await server.request(
         "turn/start",
         CodexProtocol.turnStartParams(
-          threadId: ref.nativeSessionId, text: input.text, cwd: input.workingDirectory))
+          threadId: ref.nativeSessionId, text: input.text, cwd: input.workingDirectory, model: input.model,
+          permission: input.permission, writableRoots: input.additionalDirectories))
     } catch {
       let failure = WorkspaceError.from(error)
       if failure.details?["reason"]?.stringValue == "timeout" {

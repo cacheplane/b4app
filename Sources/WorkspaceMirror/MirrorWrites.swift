@@ -21,10 +21,11 @@ extension MirrorStore {
     var value: JSONValue
   }
 
-  /// Rename, pin, or archive a thread; nil arguments are left as they are. Nil when the thread does not
-  /// exist (or this build cannot read it).
+  /// Rename, pin, archive, or set the model or permission of a thread; nil arguments are left as they
+  /// are. Nil when the thread does not exist (or this build cannot read it).
   public func updateThread(
-    id: String, title: String?, pinned: Bool?, archived: Bool?
+    id: String, title: String?, pinned: Bool?, archived: Bool?, model: String? = nil,
+    permission: String? = nil
   ) throws -> ConversationThread? {
     try locked {
       try transaction {
@@ -45,6 +46,15 @@ extension MirrorStore {
           changes.append(
             LocalChange(table: "threads", rowId: id, op: "update", column: "archived", value: .bool(archived))
           )
+        }
+        if let model, model != current.model {
+          changes.append(
+            LocalChange(table: "threads", rowId: id, op: "update", column: "model", value: .string(model)))
+        }
+        if let permission, permission != current.permission {
+          changes.append(
+            LocalChange(
+              table: "threads", rowId: id, op: "update", column: "permission", value: .string(permission)))
         }
         try writeColumns(changes, key: "id")
         try record(changes)

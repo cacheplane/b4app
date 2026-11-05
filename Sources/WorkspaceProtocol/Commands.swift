@@ -338,8 +338,8 @@ public enum ThreadCreate: WorkspaceCommand {
     public var connectionId: String
     public var workingDirectory: String?
     public var title: String?
-    /// The new thread's id, minted by the phone for `thread.start`; nil mints one here. Only the relay
-    /// sets it (`Router` drops it from a local `thread.create`).
+    /// The new thread's id, minted by the caller of `thread.start`; nil mints one here. Only
+    /// `thread.start` sets it (`Router` drops it from a local `thread.create`).
     public var threadId: String?
     public init(
       connectionId: String, workingDirectory: String? = nil, title: String? = nil, threadId: String? = nil
@@ -378,18 +378,26 @@ public enum ThreadRead: WorkspaceCommand {
   public static let method = Method.threadRead
 }
 
-/// Local title, pin, and archive changes. Never rewrites native provider history.
+/// Local title, pin, archive, model, and permission changes; nil leaves a field as it is. Never
+/// rewrites native provider history. The model and permission are what the thread's next turn uses.
 public enum ThreadUpdate: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
     public var threadId: String
     public var title: String?
     public var pinned: Bool?
     public var archived: Bool?
-    public init(threadId: String, title: String? = nil, pinned: Bool? = nil, archived: Bool? = nil) {
+    public var model: String?
+    public var permission: String?
+    public init(
+      threadId: String, title: String? = nil, pinned: Bool? = nil, archived: Bool? = nil,
+      model: String? = nil, permission: String? = nil
+    ) {
       self.threadId = threadId
       self.title = title
       self.pinned = pinned
       self.archived = archived
+      self.model = model
+      self.permission = permission
     }
   }
   public typealias Result = ThreadCreate.Result

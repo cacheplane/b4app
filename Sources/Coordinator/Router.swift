@@ -9,7 +9,7 @@ import WorkspaceStorage
 /// Every method that reads or writes the store runs on the signed-in account's scope, resolved per
 /// command (`needsAccount`); with nobody signed in it answers `signed_out` before its params are read.
 /// `system.*`, `diagnostics.read`, `events.replay` (the shared event log, which carries
-/// `account.changed`), and the relay-only methods need no account; `hub.join` signs in when nobody is.
+/// `account.changed`), and the relay-only `turn.lookup` need no account; `hub.join` signs in when nobody is.
 /// `account.*` is routed to the account manager without an account; the commands that act on the
 /// signed-in one answer `signed_out` themselves, and `account.logout` and `account.delete` (like
 /// `hub.leave`) run outside the scope's gate, since closing the scope waits for what is inside it.
@@ -84,7 +84,7 @@ public actor Router {
   /// purpose: a new method has to be put in one group or the other.
   static func needsAccount(_ method: WorkspaceProtocol.Method) -> Bool {
     switch method {
-    case .systemPing, .diagnosticsRead, .eventsReplay, .hubJoin, .threadStart, .turnLookup, .accountStatus,
+    case .systemPing, .diagnosticsRead, .eventsReplay, .hubJoin, .turnLookup, .accountStatus,
       .accountPasskeyBegin, .accountPasskeyFinish, .accountAppleStart, .accountAppleFinish,
       .accountCompleteProfile, .accountLogout, .accountIdentities, .accountAddPasskeyBegin,
       .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice,
@@ -97,7 +97,8 @@ public actor Router {
       .workspaceActiveWork, .workspaceStopLocalWork, .workspaceReconcile, .databaseStatus, .databaseBackup,
       .databaseRestore, .databaseImportSQLite, .hubStatus, .hubLeave, .hubPair, .hubPairStatus,
       .settingsRead, .settingsUpdate, .projectList, .projectCreate, .projectUpdate, .projectRename,
-      .projectDelete, .threadMarkRead, .usageRead, .connectionUpdate, .credentialRemove, .threadDelete:
+      .projectDelete, .threadMarkRead, .usageRead, .connectionUpdate, .credentialRemove, .threadDelete,
+      .threadStart:
       return true
     }
   }
@@ -133,7 +134,7 @@ public actor Router {
           details: ["epoch": .string(events.epoch), "sequence": .number(Double(await events.sequence))])
       }
       return try JSONValue(encoding: EventsReplay.Result(events: replayed))
-    case .threadStart, .turnLookup:
+    case .turnLookup:
       throw WorkspaceError(.unsupportedCapability, "Only relayed from the hub.")
     case .hubJoin:
       let params = try command.params(for: HubJoin.self)
@@ -203,7 +204,7 @@ public actor Router {
     let sessions = scope.sessions
     let servers = scope.servers
     switch command.method {
-    case .systemPing, .diagnosticsRead, .eventsReplay, .hubJoin, .threadStart, .turnLookup, .accountStatus,
+    case .systemPing, .diagnosticsRead, .eventsReplay, .hubJoin, .turnLookup, .accountStatus,
       .accountPasskeyBegin, .accountPasskeyFinish, .accountAppleStart, .accountAppleFinish,
       .accountCompleteProfile, .accountLogout, .accountIdentities, .accountAddPasskeyBegin,
       .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice,
@@ -247,7 +248,7 @@ public actor Router {
       return try JSONValue(
         encoding: try await sessions.connectionLogin(try command.params(for: ConnectionLogin.self)))
     case .threadCreate:
-      // A caller-chosen thread id is for `thread.start` through the relay only.
+      // A caller-chosen thread id is for `thread.start` only.
       var params = try command.params(for: ThreadCreate.self)
       params.threadId = nil
       return try JSONValue(encoding: try await sessions.threadCreate(params))
@@ -280,6 +281,12 @@ public actor Router {
       return try JSONValue(
         encoding: try await sessions.turnSend(
           try command.params(for: TurnSend.self), operationId: command.envelope.operationId ?? ""))
+    case .threadStart:
+      // The Mac's own app may start without a project: the folder's project is used, or made.
+      return try JSONValue(
+        encoding: try await sessions.threadStart(
+          try command.params(for: ThreadStart.self), operationId: command.envelope.operationId ?? "",
+          requireProject: false))
     case .turnInterrupt:
       return try JSONValue(
         encoding: try await sessions.turnInterrupt(try command.params(for: TurnInterrupt.self)))

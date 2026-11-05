@@ -78,17 +78,6 @@ import WorkspaceProtocol
     #expect(ThreadRow.accessibilityLabel(model: model, thread: untitled).hasPrefix("Untitled, "))
   }
 
-  @Test func newThreadNamesTheProjectOfTheChosenFolder() async throws {
-    let model = try await ListFixture.model()
-    #expect(
-      NewThreadProject.describe(directory: "/Users/brian/repos/b4app/", projects: model.projects)
-        == .joins("b4app"))
-    #expect(
-      NewThreadProject.describe(directory: "/Users/brian/repos/other", projects: model.projects)
-        == .newProject)
-    #expect(NewThreadProject.describe(directory: "", projects: model.projects) == .newProject)
-  }
-
   @Test func diagnosticsWordsTheUploadCounts() {
     #expect(DiagnosticsView.uploads(0, "refused") == "None")
     #expect(DiagnosticsView.uploads(1, "waiting to upload") == "1 change waiting to upload")

@@ -1,24 +1,35 @@
 import Foundation
 
-/// Create a thread and send its first turn in one step. Reachable only through the relay (the phone
-/// mints `threadId`; the command id is the turn's operationId), so a retry lands on the same thread and
-/// the same turn. `folder` is required for Codex and Claude and must be one of the project's folders;
-/// it is absent for a local B4 connection, whose thread is bound to its route.
+/// Create a thread and send its first turn in one step, from the phone through the relay or from the
+/// Mac's own app. The caller mints `threadId` and the command's operationId is the turn's, so a retry
+/// lands on the same thread and the same turn. `folder` is required for Codex and Claude; with a
+/// `projectId` it must be one of the project's folders, and without one (the Mac's app only; a relayed
+/// start always names a project) the folder's own project is used, made when none owns it. It is
+/// absent for a B4 connection, whose thread is bound to its route. `model` and `permission` are the
+/// thread's runtime choices, nil for the runtime's own; the thread is titled from the first line of
+/// `text`.
 public enum ThreadStart: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
     public var threadId: String
-    public var projectId: String
+    public var projectId: String?
     public var connectionId: String
     public var folder: String?
     public var text: String
+    /// A `RuntimeModel.id`; nil lets the runtime pick its default.
+    public var model: String?
+    /// A `PermissionOption.id` of the connection's runtime; nil leaves the runtime's own configuration.
+    public var permission: String?
     public init(
-      threadId: String, projectId: String, connectionId: String, folder: String? = nil, text: String
+      threadId: String, projectId: String? = nil, connectionId: String, folder: String? = nil, text: String,
+      model: String? = nil, permission: String? = nil
     ) {
       self.threadId = threadId
       self.projectId = projectId
       self.connectionId = connectionId
       self.folder = folder
       self.text = text
+      self.model = model
+      self.permission = permission
     }
   }
   public struct Result: Codable, Sendable, Equatable {

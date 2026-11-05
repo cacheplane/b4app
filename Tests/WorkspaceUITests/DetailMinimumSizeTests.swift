@@ -83,6 +83,7 @@ private nonisolated func edited(
     let store = try MirrorStore.inMemory()
     let transport = MirrorTransport(store: store, version: "0.2.0")
     let model = WorkspaceModel(transportProvider: { transport })
+    model.preferences = InMemoryPreferences()
     model.connect()
     let link = await model.settledLink()
     try #require(link == .ready, "the model did not connect: \(model.linkMessage ?? "no message")")
@@ -109,6 +110,28 @@ private nonisolated func edited(
     await model.disconnect()
   }
 
+  /// With no thread open the detail is the new-thread composer, and it must fit the smallest window
+  /// too: its headline measured 646 points at zero width when it was `fixedSize(vertical:)`, which
+  /// made the split view taller than the window and pushed the sidebar's footer out of it.
+  @Test func newThreadComposerFitsTheMinimumWindow() async throws {
+    let h = try await ModelHarness.start()
+    defer { Task { await h.stop() } }
+    let model = h.model
+    _ = try #require(await model.addConnection(kind: .codex, label: "Codex", executablePath: fakeCodex))
+    try #require(model.newThreadEntryReason == nil)
+    model.newThreadDraft.text = String(repeating: "a draft that goes on and on ", count: 200)
+
+    let controller = NSHostingController(rootView: ThreadsView(model: model))
+    let atZero = controller.sizeThatFits(in: .zero)
+    let atDetailWidth = controller.sizeThatFits(in: CGSize(width: Self.detailWidth, height: 0))
+    #expect(
+      atZero.height <= Self.availableHeight,
+      "minimum height \(atZero.height) at zero width exceeds the window's \(Self.availableHeight)")
+    #expect(
+      atDetailWidth.height <= Self.availableHeight,
+      "minimum height \(atDetailWidth.height) at \(Self.detailWidth) wide exceeds \(Self.availableHeight)")
+  }
+
   /// The sidebar's footer sits outside its scroll view, so its notice must stay bounded however long
   /// the coordinator's error, the host note, or the version note runs.
   @Test func sidebarFooterStaysBounded() async throws {
@@ -117,6 +140,7 @@ private nonisolated func edited(
     let store = try MirrorStore.inMemory()
     let transport = MirrorTransport(store: store, version: "0.2.0")
     let live = WorkspaceModel(transportProvider: { transport })
+    live.preferences = InMemoryPreferences()
     live.connect()
     try #require(await live.settledLink() == .ready)
     await live.refreshDiagnostics()
@@ -128,6 +152,7 @@ private nonisolated func edited(
     live.account = WorkspaceAccount(username: "blove", displayName: String(repeating: "Brian ", count: 40))
     // A link that failed with a long message.
     let failed = WorkspaceModel(transportProvider: { throw WorkspaceError(.endpointUnavailable, note) })
+    failed.preferences = InMemoryPreferences()
     failed.connect()
     try #require(await failed.settledLink() == .unavailable)
     failed.hostNote = note
@@ -148,6 +173,7 @@ private nonisolated func edited(
     let store = try MirrorStore.inMemory()
     let transport = MirrorTransport(store: store, version: "0.2.0")
     let model = WorkspaceModel(transportProvider: { transport })
+    model.preferences = InMemoryPreferences()
     model.connect()
     try #require(await model.settledLink() == .ready)
     await model.refreshDiagnostics()

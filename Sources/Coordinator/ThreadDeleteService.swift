@@ -33,8 +33,7 @@ extension SessionService {
   /// End the deleted thread's unresolved turn. A live one is interrupted through its adapter (the
   /// thread commands refuse a deleted thread, so not through `turnInterrupt`), asking again once the
   /// runtime has named the turn, and given up to 10 seconds to end. Whatever is still unresolved after
-  /// that, or was already `reconciling`, is ended here as cancelled: nothing would ever show or resolve
-  /// it, and it would keep its folder locked.
+  /// that, or was already `reconciling`, is ended here as cancelled: nothing would ever show or resolve it.
   private func stopTurn(of thread: ConversationThread, connection: Connection?) async {
     guard let active = try? db.activeTurn(threadId: thread.id) else { return }
     if active.status != .reconciling, let connection, connection.enabled,

@@ -75,6 +75,27 @@ private func pulled(
     #expect(store.outboxCount == 3)
   }
 
+  @Test func permissionChangeQueuesAnUpdate() throws {
+    let store = try linkedStore()
+    let edited = try #require(
+      try store.updateThread(
+        id: "thread-1", title: nil, pinned: nil, archived: nil, model: nil, permission: "plan"))
+    #expect(edited.permission == "plan")
+    let queued = try store.outbox(limit: 10)
+    #expect(queued.count == 1)
+    let row = try #require(queued.first)
+    #expect(row.table == "threads" && row.rowId == "thread-1" && row.op == "update")
+    #expect(row.column == "permission" && row.value == "plan")
+
+    // A model and the same permission again: one more row, for the model alone.
+    _ = try store.updateThread(
+      id: "thread-1", title: nil, pinned: nil, archived: nil, model: "opus", permission: "plan")
+    let all = try store.outbox(limit: 10)
+    #expect(all.count == 2)
+    #expect(all[1].column == "model" && all[1].value == "opus")
+    #expect(try store.thread(id: "thread-1")?.model == "opus")
+  }
+
   @Test func deviceSequenceNumbersAreNeverReused() throws {
     let path = NSTemporaryDirectory() + "mirror-\(UUID().uuidString.prefix(8)).sqlite"
     defer { MirrorStoreTests.remove(path) }

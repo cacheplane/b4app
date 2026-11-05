@@ -510,6 +510,19 @@ actor EventCollector {
 }
 
 @Suite(.serialized) struct ClaudeSessionServiceTests {
+  @Test func inspectionModelsReachTheConnection() async throws {
+    let h = try await Harness.start()
+    let claude = try await h.addClaude()
+    let inspected = try await h.client.request(
+      ConnectionInspect.self, ConnectionInspect.Params(connectionId: claude.id),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    #expect(inspected.connection.models?.map(\.id) == ["opus", "sonnet", "haiku"])
+    let listed = try await h.client.request(ConnectionList.self, ConnectionList.Params())
+    #expect(
+      listed.connections.first { $0.id == claude.id }?.models?.map(\.id) == ["opus", "sonnet", "haiku"])
+    await h.stop()
+  }
+
   @Test func runsAClaudeConversationBesideACodexThread() async throws {
     let h = try await Harness.start()
     let codex = try await h.addCodex()
@@ -565,13 +578,7 @@ actor EventCollector {
     let codex = try await h.addCodex()
     let claude = try await h.addClaude()
     let codexThread = try await h.newThread(codex)
-    // A second directory: the directory lock (spec 10.1.5) would otherwise serialize the two turns.
-    let claudeDir = (h.workDir as NSString).deletingLastPathComponent + "/claude-work"
-    try FileManager.default.createDirectory(atPath: claudeDir, withIntermediateDirectories: true)
-    let claudeThread = try await h.client.request(
-      ThreadCreate.self, ThreadCreate.Params(connectionId: claude.id, workingDirectory: claudeDir),
-      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30))
-    ).thread
+    let claudeThread = try await h.newThread(claude)
     let pending = try await h.send(codexThread, "please approve this")
     try await h.events.waitFor { $0.kind == .runtimeRequestOpened && $0.threadId == codexThread.id }
     let crashed = try await h.send(claudeThread, "crash now")
@@ -589,6 +596,268 @@ actor EventCollector {
     let again = try await h.send(claudeThread, "hello again")
     try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == again.id }
     await h.stop()
+  }
+}
+
+/// A Claude thread beside folders of its project: the fake's log shows what each turn handed it.
+@Suite(.serialized) struct ClaudeTurnOptionsTests {
+  private struct Rig {
+    let h: Harness
+    let claude: Connection
+    let thread: ConversationThread
+    let log: String
+    let folderB: String
+
+    static func start() async throws -> Rig {
+      let base = NSTemporaryDirectory() + "b4t-\(UUID().uuidString.prefix(8))"
+      try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+      let log = base + "/fake-claude.log"
+      let h = try await Harness.start(extraEnvironment: ["FAKE_CLAUDE_LOG": log])
+      let claude = try await h.addClaude()
+      let thread = try await h.newThread(claude)
+      let rig = Rig(h: h, claude: claude, thread: thread, log: log, folderB: try folder(base, "b"))
+      // B joins the thread's project (automatic until it gains a folder).
+      try await rig.addFolder(rig.folderB)
+      return rig
+    }
+
+    static func folder(_ base: String, _ name: String) throws -> String {
+      let path = base + "/" + name
+      try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+      return path
+    }
+
+    func addFolder(_ path: String) async throws {
+      _ = try await h.client.request(
+        ProjectUpdate.self,
+        ProjectUpdate.Params(projectId: try #require(thread.projectId), addFolders: [path]),
+        options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    }
+
+    func finishedTurn(_ text: String) async throws {
+      let turn = try await h.send(thread, text)
+      try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    }
+
+    /// The fake's log, one JSON object per line.
+    func lines() throws -> [[String: JSONValue]] {
+      let text = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
+      return try text.split(separator: "\n").map {
+        try JSONDecoder().decode([String: JSONValue].self, from: Data($0.utf8))
+      }
+    }
+
+    func launches() throws -> [[String]] {
+      try lines().compactMap { $0["argv"]?.arrayValue?.compactMap(\.stringValue) }
+    }
+
+    func addDirs(_ argv: [String]) -> [String] {
+      argv.indices.dropLast().filter { argv[$0] == "--add-dir" }.map { argv[$0 + 1] }
+    }
+  }
+
+  @Test func turnsAttachTheProjectsOtherFolders() async throws {
+    let rig = try await Rig.start()
+    try await rig.finishedTurn("hello")
+    let launches = try rig.launches()
+    let argv = try #require(launches.last)
+    #expect(rig.addDirs(argv) == [SessionService.canonicalDirectory(rig.folderB)])
+    #expect(!rig.addDirs(argv).contains(SessionService.canonicalDirectory(rig.h.workDir)))
+    await rig.h.stop()
+  }
+
+  @Test func aFolderAddedLaterReachesTheNextTurn() async throws {
+    let rig = try await Rig.start()
+    try await rig.finishedTurn("hello")
+    let folderC = try Rig.folder((rig.folderB as NSString).deletingLastPathComponent, "c")
+    try await rig.addFolder(folderC)
+    try await rig.finishedTurn("hello again")
+    let launches = try rig.launches()
+    // The session's own launch, then a restart for each change of the directory set.
+    #expect(launches.count == 3)
+    #expect(rig.addDirs(launches[0]).isEmpty)
+    #expect(rig.addDirs(launches[1]) == [SessionService.canonicalDirectory(rig.folderB)])
+    #expect(
+      rig.addDirs(try #require(launches.last))
+        == [rig.folderB, folderC].map(SessionService.canonicalDirectory))
+    await rig.h.stop()
+  }
+
+  /// A project folder gone from disk is not handed to the runtime; the folders still there are.
+  @Test func aFolderGoneFromDiskIsLeftOut() async throws {
+    let rig = try await Rig.start()
+    let folderC = try Rig.folder((rig.folderB as NSString).deletingLastPathComponent, "c")
+    try await rig.addFolder(folderC)
+    try FileManager.default.removeItem(atPath: folderC)
+    try await rig.finishedTurn("hello")
+    let argv = try #require(try rig.launches().last)
+    #expect(rig.addDirs(argv) == [SessionService.canonicalDirectory(rig.folderB)])
+    await rig.h.stop()
+  }
+
+  @Test func aChangeDuringATurnAppliesToTheNextTurn() async throws {
+    let rig = try await Rig.start()
+    let held = try await rig.h.send(rig.thread, "hang around")
+    _ = try await rig.h.client.request(
+      ThreadUpdate.self, ThreadUpdate.Params(threadId: rig.thread.id, permission: "plan"),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    _ = try await rig.h.client.request(
+      TurnInterrupt.self, TurnInterrupt.Params(threadId: rig.thread.id),
+      options: RequestOptions(operationId: UUID().uuidString))
+    try await rig.h.events.waitFor { $0.kind == .turnFinished && $0.turnId == held.id }
+    #expect(try rig.lines().allSatisfy { $0["control"]?.stringValue != "set_permission_mode" })
+
+    try await rig.finishedTurn("next")
+    let order = try rig.lines().compactMap { line -> String? in
+      if let control = line["control"]?.stringValue { return control }
+      return line["user"]?.stringValue
+    }
+    #expect(order.suffix(2) == ["set_permission_mode", "next"])
+    await rig.h.stop()
+  }
+}
+
+/// `thread.start` from the Mac's own app, over the local socket: no project is required, and the thread
+/// starts with the model, permission, and title it was given.
+@Suite(.serialized) struct LocalThreadStartTests {
+  private func start(
+    _ h: Harness, _ params: ThreadStart.Params, operationId: String = UUID().uuidString
+  ) async throws -> ThreadStart.Result {
+    try await h.client.request(
+      ThreadStart.self, params, options: RequestOptions(operationId: operationId, timeout: .seconds(30)))
+  }
+
+  @Test func localThreadStartCreatesThreadAndTurn() async throws {
+    let base = NSTemporaryDirectory() + "b4t-\(UUID().uuidString.prefix(8))"
+    try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+    let log = base + "/fake-claude.log"
+    let h = try await Harness.start(extraEnvironment: ["FAKE_CLAUDE_LOG": log])
+    let claude = try await h.addClaude()
+    let project = try await h.client.request(
+      ProjectCreate.self, ProjectCreate.Params(name: "App", folders: [h.workDir]),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30))
+    ).project
+    let threadId = UUID().uuidString.lowercased()
+    let started = try await start(
+      h,
+      ThreadStart.Params(
+        threadId: threadId, projectId: project.id, connectionId: claude.id, folder: h.workDir,
+        text: "Fix the login bug\nIt fails after a restart.", model: "sonnet", permission: "plan"))
+    #expect(started.thread.id == threadId)
+    #expect(started.thread.projectId == project.id)
+    #expect(started.thread.model == "sonnet" && started.thread.permission == "plan")
+    #expect(started.thread.title == "Fix the login bug")
+    #expect(started.turn.threadId == threadId)
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == started.turn.id }
+    let read = try await h.read(started.thread)
+    #expect(read.thread.model == "sonnet" && read.thread.permission == "plan")
+    #expect(read.turns.map(\.id) == [started.turn.id])
+
+    // Claude launched with the choices, so no control request had to correct them.
+    let lines = try String(contentsOfFile: log, encoding: .utf8).split(separator: "\n").map {
+      try JSONDecoder().decode([String: JSONValue].self, from: Data($0.utf8))
+    }
+    let launches = lines.compactMap { $0["argv"]?.arrayValue?.compactMap(\.stringValue) }
+    #expect(launches.count == 1)
+    let argv = try #require(launches.first)
+    #expect(argv.contains("--model=sonnet"))
+    #expect(zip(argv, argv.dropFirst()).contains { $0 == "--permission-mode" && $1 == "plan" })
+    let controls = lines.compactMap { $0["control"]?.stringValue }
+    #expect(!controls.contains("set_model") && !controls.contains("set_permission_mode"))
+    await h.stop()
+  }
+
+  @Test func localThreadStartIsIdempotentPerOperation() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let operationId = UUID().uuidString
+    let params = ThreadStart.Params(
+      threadId: UUID().uuidString.lowercased(), connectionId: codex.id, folder: h.workDir, text: "hi")
+    let first = try await start(h, params, operationId: operationId)
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == first.turn.id }
+    let again = try await start(h, params, operationId: operationId)
+    // Past the router's own replay: the service finds the turn this operation already made.
+    let direct = try await h.coordinator.sessions.threadStart(
+      params, operationId: operationId, requireProject: false)
+    for result in [again, direct] {
+      #expect(result.thread.id == first.thread.id)
+      #expect(result.turn.id == first.turn.id)
+    }
+    let db = h.coordinator.database
+    #expect(try db.listThreads(ThreadFilter(includeArchived: true)).map(\.id) == [first.thread.id])
+    #expect(try db.turns(threadId: first.thread.id).count == 1)
+    await h.stop()
+  }
+
+  @Test func aChosenFolderWithoutAProjectGetsAnAutomaticProject() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let fresh = h.workDir + "/fresh"
+    try FileManager.default.createDirectory(atPath: fresh, withIntermediateDirectories: true)
+    let db = h.coordinator.database
+    #expect(try db.project(folderPath: SessionService.canonicalDirectory(fresh)) == nil)
+    let started = try await start(
+      h,
+      ThreadStart.Params(
+        threadId: UUID().uuidString.lowercased(), connectionId: codex.id, folder: fresh, text: "hi"))
+    let project = try #require(try db.project(folderPath: SessionService.canonicalDirectory(fresh)))
+    #expect(started.thread.projectId == project.id)
+    #expect(!project.manual)
+    #expect(project.folders.map(\.path) == [SessionService.canonicalDirectory(fresh)])
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == started.turn.id }
+    await h.stop()
+  }
+
+  @Test func localThreadStartMayUseRemoteB4() async throws {
+    let server = try await FakeB4.start()
+    let h = try await Harness.start()
+    // Remote as far as the thread rules go; the fixture itself listens on loopback.
+    let remote = try h.coordinator.database.insertConnection(
+      Connection(
+        id: "c-remote", kind: .b4, label: "Remote", target: server.baseURL, routeKey: "/chat#agent",
+        b4Mode: .remote, status: .ready))
+    let started = try await start(
+      h,
+      ThreadStart.Params(threadId: UUID().uuidString.lowercased(), connectionId: remote.id, text: "hello b4"))
+    #expect(started.thread.connectionId == remote.id)
+    #expect(started.thread.context == "/chat#agent")
+    #expect(started.thread.title == "hello b4")
+    let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == started.turn.id }
+    #expect(finished.payload["outcome"]?.stringValue == "completed")
+    await h.stop()
+    await server.stop()
+  }
+
+  @Test func localThreadStartRefusesAnotherRuntimesPermissionAndB4Choices() async throws {
+    let server = try await FakeB4.start()
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let b4 = try await h.addB4(server).connection
+    let refused: [(ThreadStart.Params, String)] = [
+      (
+        ThreadStart.Params(
+          threadId: UUID().uuidString.lowercased(), connectionId: codex.id, folder: h.workDir, text: "hi",
+          permission: "plan"),
+        "unknown_permission"
+      ),
+      (
+        ThreadStart.Params(
+          threadId: UUID().uuidString.lowercased(), connectionId: b4.id, text: "hi", model: "opus"),
+        "not_supported_for_b4"
+      ),
+    ]
+    for (params, reason) in refused {
+      do {
+        _ = try await start(h, params)
+        Issue.record("expected \(reason)")
+      } catch let error as WorkspaceError {
+        #expect(error.code == .protocolInvalid)
+        #expect(error.details?["reason"]?.stringValue == reason)
+      }
+      #expect(try h.coordinator.database.thread(id: params.threadId) == nil)
+    }
+    await h.stop()
+    await server.stop()
   }
 }
 
@@ -635,6 +904,29 @@ actor EventCollector {
     #expect(Set(listed.threads.map(\.id)) == [thread.id, codexThread.id])
     let again = try await h.addB4(server)
     #expect(again.connection.id == b4.id)
+    await h.stop()
+    await server.stop()
+  }
+
+  @Test func threadUpdateRefusesAModelOrPermissionOnAB4Thread() async throws {
+    let server = try await FakeB4.start()
+    let h = try await Harness.start()
+    let b4 = try await h.addB4(server).connection
+    let thread = try await h.newB4Thread(b4)
+    for params in [
+      ThreadUpdate.Params(threadId: thread.id, model: "opus"),
+      ThreadUpdate.Params(threadId: thread.id, permission: "plan"),
+    ] {
+      do {
+        _ = try await h.client.request(
+          ThreadUpdate.self, params,
+          options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+        Issue.record("expected a refusal")
+      } catch let error as WorkspaceError {
+        #expect(error.code == .protocolInvalid)
+        #expect(error.details?["reason"]?.stringValue == "not_supported_for_b4")
+      }
+    }
     await h.stop()
     await server.stop()
   }
@@ -847,6 +1139,38 @@ actor EventCollector {
     await restarted.close()
   }
 
+  @Test func threadUpdateStoresModelAndPermission() async throws {
+    let h = try await Harness.start()
+    let claude = try await h.addClaude()
+    let thread = try await h.newThread(claude)
+    #expect(thread.model == nil && thread.permission == nil)
+    let updated = try await h.client.request(
+      ThreadUpdate.self, ThreadUpdate.Params(threadId: thread.id, model: "opus", permission: "plan"),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30))
+    ).thread
+    #expect(updated.model == "opus" && updated.permission == "plan")
+    let read = try await h.read(thread).thread
+    #expect(read.model == "opus" && read.permission == "plan")
+    await h.stop()
+  }
+
+  @Test func threadUpdateRefusesAnotherRuntimesPermission() async throws {
+    let h = try await Harness.start()
+    let claude = try await h.addClaude()
+    let thread = try await h.newThread(claude)
+    do {
+      _ = try await h.client.request(
+        ThreadUpdate.self, ThreadUpdate.Params(threadId: thread.id, permission: "full-access"),
+        options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+      Issue.record("expected a refusal")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .protocolInvalid)
+      #expect(error.details?["reason"]?.stringValue == "unknown_permission")
+    }
+    #expect(try await h.read(thread).thread.permission == nil)
+    await h.stop()
+  }
+
   /// The snapshot carries non-terminal turns so a fresh viewer can show per-thread state (spec 3.1).
   @Test func snapshotListsActiveTurns() async throws {
     let h = try await Harness.start()
@@ -1015,65 +1339,25 @@ actor EventCollector {
     }
   }
 
-  /// A18 and spec 10.1.5: one writable harness turn per canonical directory through this app, across
-  /// connections, held through an unknown outcome and released by a deliberate abandon.
-  @Test func directoryLockSerializesHarnessTurnsAcrossConnections() async throws {
+  /// The per-directory lock (D-033, spec 10.1.5) is gone: a turn running in a folder does not keep
+  /// another thread there from starting one. Only a thread's own active turn blocks it.
+  @Test func twoThreadsMayRunInOneFolder() async throws {
     let h = try await Harness.start()
-    let codex = try await h.addCodex()
     let claude = try await h.addClaude()
-    let first = try await h.newThread(codex)
-    let second = try await h.newThread(codex)
-    let viaLink = try await h.client.request(
-      ThreadCreate.self,
-      ThreadCreate.Params(connectionId: claude.id, workingDirectory: h.workDir + "/../work/"),
-      options: mutation()
-    ).thread
-    let elsewhere = (h.workDir as NSString).deletingLastPathComponent + "/other"
-    try FileManager.default.createDirectory(atPath: elsewhere, withIntermediateDirectories: true)
-    let other = try await h.client.request(
-      ThreadCreate.self, ThreadCreate.Params(connectionId: codex.id, workingDirectory: elsewhere),
-      options: mutation()
-    ).thread
+    let first = try await h.newThread(claude)
+    let second = try await h.newThread(claude)
 
     let running = try await h.send(first, "hang around")
-    let refused = await expectRefusal(
-      { try await h.send(second, "me too") }, code: .protocolInvalid, reason: "directory_locked")
-    #expect(refused?.details?["threadId"]?.stringValue == first.id)
-    #expect(refused?.details?["turnId"]?.stringValue == running.id)
+    let beside = try await h.send(second, "me too")
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == beside.id }
+    #expect(try h.coordinator.database.turn(id: running.id)?.status != .terminal)
     _ = await expectRefusal(
-      { try await h.send(viaLink, "claude in the same place") }, code: .protocolInvalid,
-      reason: "directory_locked")
-    let free = try await h.send(other, "different directory")
-    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == free.id }
-    #expect(try h.coordinator.database.turns(threadId: second.id).isEmpty)
+      { try await h.send(first, "while it runs") }, code: .protocolInvalid, reason: "turn_active")
 
-    // The lock survives the runtime crashing under the first turn (outcome unknown).
     _ = try await h.client.request(
       TurnInterrupt.self, TurnInterrupt.Params(threadId: first.id), options: mutation())
     try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == running.id }
-    let crashed = try await h.send(first, "crash now")
-    try await h.events.waitFor {
-      $0.kind == .turnStateChanged && $0.turnId == crashed.id
-        && $0.payload["status"]?.stringValue == "reconciling"
-    }
-    _ = await expectRefusal(
-      { try await h.send(second, "still locked?") }, code: .protocolInvalid, reason: "directory_locked")
-    do {
-      _ = try await h.client.request(
-        TurnAbandon.self, TurnInterrupt.Params(threadId: second.id), options: mutation())
-      Issue.record("abandon needs a reconciling turn")
-    } catch let error as WorkspaceError {
-      #expect(error.code == .notFound)
-    }
-    let abandoned = try await h.client.request(
-      TurnAbandon.self, TurnInterrupt.Params(threadId: first.id), options: mutation())
-    #expect(abandoned.turn.status == .terminal)
-    #expect(abandoned.turn.outcome == .failed)
-    let read = try await h.read(first)
-    #expect(read.items.last?.role == .system)
-    #expect(read.items.last?.type == "turnAbandoned")
-    let unlocked = try await h.send(second, "finally")
-    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == unlocked.id }
+    #expect(try h.coordinator.database.turn(id: beside.id)?.outcome == .completed)
     await h.stop()
   }
 
@@ -1101,9 +1385,21 @@ actor EventCollector {
     #expect(reconciled.turns.first { $0.id == unknown.id }?.status == .reconciling)
     _ = await expectRefusal(
       { try await h.send(thread, "again?") }, code: .protocolInvalid, reason: "turn_active")
+    let abandoned = try await h.client.request(
+      TurnAbandon.self, TurnInterrupt.Params(threadId: thread.id), options: mutation())
+    #expect(abandoned.turn.id == unknown.id)
+    #expect(abandoned.turn.status == .terminal)
+    #expect(abandoned.turn.outcome == .failed)
+    let afterAbandon = try await h.read(thread)
+    #expect(afterAbandon.items.last?.role == .system)
+    #expect(afterAbandon.items.last?.type == "turnAbandoned")
+    // With no turn active, there is nothing to abandon.
     do {
       _ = try await h.client.request(
         TurnAbandon.self, TurnInterrupt.Params(threadId: thread.id), options: mutation())
+      Issue.record("abandon needs a reconciling turn")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .notFound)
     }
     let late = try await h.send(thread, "late ack please")
     let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == late.id }

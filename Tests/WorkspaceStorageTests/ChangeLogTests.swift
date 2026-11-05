@@ -68,6 +68,42 @@ private func seed(_ db: WorkspaceDatabase) throws -> (thread: ConversationThread
     #expect(try target.displayItems(threadId: thread.id) == source.displayItems(threadId: thread.id))
   }
 
+  /// A thread's model and permission choices sync and merge by clock like its other phone-writable
+  /// columns.
+  @Test func threadModelAndPermissionAreClocked() throws {
+    let db = try WorkspaceDatabase.temporary()
+    let (thread, _) = try seed(db)
+    let before = try #require(try db.columnClock(table: "threads", rowId: thread.id, column: "permission"))
+    _ = try db.updateThread(id: thread.id) { $0.permission = "plan" }
+
+    let updates = try db.changes(after: 0).filter {
+      $0.op == "update" && $0.table == "threads" && $0.column == "permission"
+    }
+    #expect(updates.count == 1)
+    let change = try #require(updates.first)
+    #expect(change.value?.stringValue == "plan")
+    let after = try #require(try db.columnClock(table: "threads", rowId: thread.id, column: "permission"))
+    #expect(after == change.hlc && after > before)
+    #expect(try db.thread(id: thread.id)?.permission == "plan")
+    #expect(try db.thread(id: thread.id)?.model == nil)
+    #expect(SyncColumns.clocked["threads"]!.isSuperset(of: ["model", "permission"]))
+  }
+
+  /// A connection's models are a JSON list: stored, logged, and replayed whole.
+  @Test func connectionModelsRoundTripThroughTheLog() throws {
+    let source = try WorkspaceDatabase.temporary()
+    _ = try seed(source)
+    let models = [RuntimeModel(id: "gpt-5.5", label: "GPT-5.5"), RuntimeModel(id: "o4", label: "o4")]
+    _ = try source.updateConnection(id: "c1") { $0.models = models }
+    #expect(try source.connection(id: "c1")?.models == models)
+    let logged = try #require(try source.changes(after: 0).last { $0.column == "models" })
+    #expect(logged.value?.arrayValue?.count == 2)
+
+    let target = try WorkspaceDatabase.temporary()
+    _ = try target.replay(try source.changes(after: 0))
+    #expect(try target.connection(id: "c1")?.models == models)
+  }
+
   /// An update in the change log stores the column's new value, which can be any JSON value: a
   /// string, a boolean, a number, null, or an object. Every one must survive backup and restore.
   @Test func exportAndRestoreRoundTripKeepsScalarChangeValues() throws {

@@ -111,9 +111,9 @@ struct B4AppiOS: App {
     }
   }
 
-  /// A sheet of the workspace's own is up (Settings, New thread, Search).
+  /// A sheet of the workspace's own is up (Settings, Search).
   private var workspaceSheetUp: Bool {
-    model.showSettingsSheet || model.showNewThread || model.showSearch
+    model.showSettingsSheet || model.showSearch
   }
 
   /// The sign-in screen's "Other ways to sign in" is up. Not in `workspaceSheetUp`, whose change shows

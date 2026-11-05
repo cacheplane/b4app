@@ -101,8 +101,8 @@ async fn push_materialises_and_is_idempotent(pool: PgPool) {
     let batch = common::filtered_fixture();
 
     let accepted = push_through(&app, &device, &batch).await.unwrap();
-    assert_eq!(accepted, 12);
-    assert_eq!(count(&app, &device, "changes").await, 12);
+    assert_eq!(accepted, 13);
+    assert_eq!(count(&app, &device, "changes").await, 13);
     // Every fixture change carries its clock, and the hub stores it as sent.
     let stored = changes::pull(&app, &device, 0, 1000).await.unwrap();
     for (sent, kept) in batch.iter().zip(&stored.changes) {
@@ -114,6 +114,8 @@ async fn push_materialises_and_is_idempotent(pool: PgPool) {
         .await
         .expect("the thread is mirrored");
     assert_eq!(thread["title"], "Renamed");
+    assert_eq!(thread["permission"], "plan");
+    assert_eq!(thread["model"], Value::Null);
     assert_eq!(thread["pinned"], false);
     assert_eq!(thread["connectionId"], "conn-1");
     assert_eq!(thread["org_id"], device.org_id.to_string());
@@ -156,8 +158,8 @@ async fn push_materialises_and_is_idempotent(pool: PgPool) {
         .unwrap();
     tx.commit().await.unwrap();
     let again = push_through(&app, &device, &batch).await.unwrap();
-    assert_eq!(again, 12);
-    assert_eq!(count(&app, &device, "changes").await, 12);
+    assert_eq!(again, 13);
+    assert_eq!(count(&app, &device, "changes").await, 13);
     assert!(row(&app, &device, "turns", "id", "turn-1").await.is_none());
     assert_eq!(count(&app, &device, "turns").await, 1);
 
@@ -166,7 +168,7 @@ async fn push_materialises_and_is_idempotent(pool: PgPool) {
     let mut shuffled = batch[..3].to_vec();
     shuffled.reverse();
     assert_eq!(push_through(&app, &device, &shuffled).await.unwrap(), 3);
-    assert_eq!(push_through(&app, &device, &[]).await.unwrap(), 12);
+    assert_eq!(push_through(&app, &device, &[]).await.unwrap(), 13);
 }
 
 #[sqlx::test(migrations = false)]
@@ -405,13 +407,14 @@ async fn pull_pages_and_is_scoped_to_the_user(pool: PgPool) {
     let rest = changes::pull(&app, &device, first.next, 1000)
         .await
         .unwrap();
-    assert_eq!(rest.changes.len(), 7);
+    assert_eq!(rest.changes.len(), 8);
     assert!(!rest.more);
-    assert_eq!(rest.next, 12);
+    assert_eq!(rest.next, 13);
     assert_eq!(rest.changes[4].op, ChangeOp::Update);
     assert_eq!(rest.changes[4].column.as_deref(), Some("title"));
     assert_eq!(rest.changes[6].op, ChangeOp::Delete);
     assert_eq!(rest.changes[6].value, None);
+    assert_eq!(rest.changes[7].column.as_deref(), Some("permission"));
     let truncated = rest
         .changes
         .iter()
@@ -421,15 +424,15 @@ async fn pull_pages_and_is_scoped_to_the_user(pool: PgPool) {
     assert_eq!(truncated["payload"]["truncated"], true);
 
     // A page that ends exactly at the last change is not "more".
-    let exact = changes::pull(&app, &device, 5, 7).await.unwrap();
+    let exact = changes::pull(&app, &device, 5, 8).await.unwrap();
     assert_eq!(
         (exact.changes.len(), exact.more, exact.next),
-        (7, false, 12)
+        (8, false, 13)
     );
     // Nothing after the end: an empty page keeps the cursor.
-    let empty = changes::pull(&app, &device, 12, 1000).await.unwrap();
+    let empty = changes::pull(&app, &device, 13, 1000).await.unwrap();
     assert!(empty.changes.is_empty());
-    assert_eq!((empty.next, empty.more), (12, false));
+    assert_eq!((empty.next, empty.more), (13, false));
     // A limit of zero is clamped, not an error.
     assert_eq!(
         changes::pull(&app, &device, 0, 0)
@@ -445,7 +448,7 @@ async fn pull_pages_and_is_scoped_to_the_user(pool: PgPool) {
     assert!(theirs.changes.is_empty());
     // Their feed is empty, but the cursor still moves to the org's newest change: nothing of
     // theirs lies before it.
-    assert_eq!(theirs.next, 12);
+    assert_eq!(theirs.next, 13);
 
     // The same device id's rows are the device's own: the feed is scoped by user, so a second
     // device of the same user would see this device's changes.
@@ -473,7 +476,7 @@ async fn pull_pages_and_is_scoped_to_the_user(pool: PgPool) {
         }
     };
     let phone = changes::pull(&app, &second, 0, 1000).await.unwrap();
-    assert_eq!(phone.changes.len(), 12);
+    assert_eq!(phone.changes.len(), 13);
     assert!(phone
         .changes
         .iter()
@@ -514,9 +517,9 @@ async fn another_org_sees_nothing_of_the_feed_or_the_mirror(pool: PgPool) {
     let accepted = push_through(&app, &outsider, &common::filtered_fixture())
         .await
         .unwrap();
-    assert_eq!(accepted, 12);
+    assert_eq!(accepted, 13);
     assert_eq!(count(&app, &outsider, "threads").await, 1);
-    assert_eq!(count(&app, &device, "changes").await, 12);
+    assert_eq!(count(&app, &device, "changes").await, 13);
 }
 
 /// A connection's usage (plan windows, B4 token totals) is mirrored like any synced row, so a phone
@@ -1743,37 +1746,37 @@ fn fixture_with_projects(device: &AuthedDevice) -> Vec<Change> {
     let clock = |ms_hex: &str| Some(format!("{ms_hex}-0000-{}", device.device_id));
     let mut batch = common::filtered_fixture();
     let mut project = insert(
-        13,
+        14,
         "projects",
         "proj-1",
         json!({"id": "proj-1", "name": "b4app", "manual": false,
                "createdAt": "2026-10-31T12:00:00Z", "updatedAt": "2026-10-31T12:00:00Z"}),
     );
-    project.hlc = clock("019a396ca5c8");
+    project.hlc = clock("019a396ca9b0");
     let mut folder = insert(
-        14,
+        15,
         "projectFolders",
         "folder-1",
         json!({"id": "folder-1", "projectId": "proj-1", "path": "/Users/brian/repos/b4app",
                "createdAt": "2026-10-31T12:00:00Z"}),
     );
-    folder.hlc = clock("019a396ca9b0");
+    folder.hlc = clock("019a396cad98");
     let mut moved = update(
-        15,
+        16,
         "threads",
         "thread-1",
         "projectId",
         Some(json!("proj-1")),
     );
-    moved.hlc = clock("019a396cad98");
+    moved.hlc = clock("019a396cb180");
     let mut renamed = update(
-        16,
+        17,
         "projects",
         "proj-1",
         "name",
         Some(json!("Personal Agent")),
     );
-    renamed.hlc = clock("019a396cb180");
+    renamed.hlc = clock("019a396cb568");
     batch.extend([project, folder, moved, renamed]);
     batch
 }
@@ -1785,7 +1788,7 @@ async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
     let batch = fixture_with_projects(&device);
     push_through(&app, &device, &batch).await.unwrap();
     let last = batch.len() as i64;
-    assert_eq!(last, 16);
+    assert_eq!(last, 17);
 
     // Nothing is older than a day, so nothing is pruned and the horizon stays put.
     let kept = b4hub_db::prune::prune(&app, device.org_id, Duration::from_secs(86_400))
@@ -1798,7 +1801,7 @@ async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
             .unwrap()
             .changes
             .len(),
-        16
+        17
     );
 
     // Everything is older than "now".
@@ -1806,7 +1809,7 @@ async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(horizon, last);
-    for after in [0, 3, 15] {
+    for after in [0, 3, 16] {
         let error = changes::pull(&app, &device, after, 1000).await.unwrap_err();
         assert!(
             matches!(error, b4hub_db::Error::ResyncRequired),
@@ -1843,6 +1846,7 @@ async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
     };
     assert_eq!(find("threads", "thread-1")["projectId"], "proj-1");
     assert_eq!(find("threads", "thread-1")["title"], "Renamed");
+    assert_eq!(find("threads", "thread-1")["permission"], "plan");
     assert_eq!(find("projects", "proj-1")["name"], "Personal Agent");
     assert_eq!(
         find("projectFolders", "folder-1")["path"],
@@ -1905,7 +1909,7 @@ async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
         &app,
         &device,
         &[update(
-            17,
+            18,
             "threads",
             "thread-1",
             "title",
@@ -1945,7 +1949,7 @@ async fn prune_deletes_only_older_changes_and_never_lowers_the_horizon(pool: PgP
     );
     assert!(changes::pull(&app, &device, 4, 1000).await.is_err());
     let rest = changes::pull(&app, &device, 5, 1000).await.unwrap();
-    assert_eq!(rest.changes.len(), 7);
+    assert_eq!(rest.changes.len(), 8);
     assert_eq!(rest.changes[0].hub_seq, 6);
 
     // A longer retention afterwards changes nothing and does not lower the horizon.
@@ -1962,7 +1966,7 @@ async fn prune_deletes_only_older_changes_and_never_lowers_the_horizon(pool: PgP
             .unwrap()
             .changes
             .len(),
-        7
+        8
     );
     // Another org's horizon is its own.
     let other = common::enrolled_in(&admin, &app, "other", "alice").await;
@@ -2004,12 +2008,12 @@ async fn snapshot_is_user_scoped(pool: PgPool) {
     assert!(theirs.clocks.iter().all(|c| c.row_id == "bob-thread"));
     assert!(!theirs.clocks.is_empty());
     // `next` is the org's highest hubSeq, not the user's.
-    assert_eq!(theirs.next, 14);
+    assert_eq!(theirs.next, 15);
 
     let mine = b4hub_db::snapshot::take(&app, &alice).await.unwrap();
     assert!(mine.changes.iter().all(|c| !c.row_id.starts_with("bob-")));
     assert!(mine.clocks.iter().all(|c| !c.row_id.starts_with("bob-")));
-    assert_eq!(mine.next, 14);
+    assert_eq!(mine.next, 15);
 
     // Another org sees nothing at all.
     let outsider = common::enrolled_in(&admin, &app, "other", "carol").await;
@@ -2094,7 +2098,7 @@ async fn push_stores_each_values_size(pool: PgPool) {
     let device = common::enrolled(&admin, &app, "blove").await;
     let mut batch = common::filtered_fixture();
     batch.push(insert(
-        13,
+        14,
         "connections",
         "multibyte",
         json!({"id": "multibyte", "label": "é\u{1F600}"}),
@@ -2117,10 +2121,11 @@ async fn push_stores_each_values_size(pool: PgPool) {
     // The delete carries no value; the multibyte value counts bytes, not characters.
     assert_eq!(sizes[11], 0);
     assert_eq!(
-        sizes[12],
+        sizes[13],
         r#"{"id": "multibyte", "label": "é😀"}"#.len() as i32
     );
     assert!(sizes[..11].iter().all(|bytes| *bytes > 0));
+    assert!(sizes[12] > 0);
 }
 
 /// Where a page ends is decided from the stored sizes, not from the values: with the stored size

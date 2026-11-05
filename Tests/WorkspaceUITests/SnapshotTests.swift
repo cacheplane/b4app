@@ -95,7 +95,7 @@ private let fakeClaude =
       try await window.capture(to: "\(dir)/host-disconnected-\(suffix).png")
       model.hostDisconnected = false
       model.selectedThreadId = nil
-      try await window.capture(to: "\(dir)/threads-empty-\(suffix).png")
+      try await window.capture(to: "\(dir)/new-thread-\(suffix).png")
       model.selectedThreadId = release.id
       await model.openThread(id: release.id)
       for page in SettingsPage.allCases {
@@ -209,10 +209,12 @@ struct SnapshotShell: View {
     _ name: String, size: CGSize, @ViewBuilder _ content: () -> V
   ) async throws {
     // The window is larger than the content: a ScrollView drew nothing in a window as narrow as the
-    // sidebar. The capture is cropped back to the content's size.
+    // sidebar. The capture is cropped back to the content's size, from the window's top edge, so the
+    // content ignores the title bar's safe area (which pushed its bottom out of the crop).
     let window = SnapshotWindow(
       rootView: content().frame(width: size.width, height: size.height).background(LLA.Color.surface)
-        .tint(LLA.Color.accent).frame(width: 1200, height: 900, alignment: .topLeading),
+        .tint(LLA.Color.accent).frame(width: 1200, height: 900, alignment: .topLeading)
+        .ignoresSafeArea(),
       size: CGSize(width: 1200, height: 900))
     defer { window.close() }
     for (appearance, suffix) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
@@ -280,6 +282,33 @@ struct SnapshotShell: View {
     }
   }
 
+  /// The blank new-thread composer, and the picker row under a thread's composer: the place fixed,
+  /// its permission and model live.
+  @Test func newThreadComposer() async throws {
+    let model = try await ListFixture.model()
+    try await render("newThreadComposer", size: CGSize(width: 760, height: 420)) {
+      NewThreadView(model: model)
+    }
+    var thread = try #require(model.threads.first { $0.id == "busy" })
+    thread.model = "sonnet"
+    thread.permission = "plan"
+    try await render("threadPickerRow", size: CGSize(width: 560, height: 120)) {
+      ComposerPickerRow(model: model, .thread(thread))
+        .padding(LLA.Space.l)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(LLA.Color.bg)
+    }
+    // A long model id at a narrow width: the place and then the runtime truncate; nothing overflows.
+    thread.model = "claude-opus-5-20261101-with-a-very-long-suffix"
+    thread.permission = "bypassPermissions"
+    try await render("threadPickerRowNarrow", size: CGSize(width: 380, height: 120)) {
+      ComposerPickerRow(model: model, .thread(thread))
+        .padding(LLA.Space.l)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(LLA.Color.bg)
+    }
+  }
+
   @Test func macSidebarGroupsByProject() async throws {
     let model = try await ListFixture.model()
     try await render("macSidebarGroupsByProject", size: CGSize(width: 290, height: 800)) {
@@ -333,6 +362,50 @@ struct SnapshotShell: View {
         Hairline()
         FlatThreadList(model: model)
       }
+    }
+  }
+
+  /// The iPhone list (new-thread composer spec, "The iPhone"; mockup screen 1): the header's avatar,
+  /// filter, and search, the threads, and the "New thread" field at the bottom; then the same with a
+  /// notice above the field. The header is the iOS navigation bar, which macOS cannot draw, so a row of
+  /// the same pieces stands in for it.
+  @Test func iosListHeaderAndDock() async throws {
+    let model = try await ListFixture.model()
+    model.account = WorkspaceAccount(username: "blove", displayName: "Brian Love")
+    #expect(model.newThreadEntryReason == nil)
+    let list = VStack(alignment: .leading, spacing: 0) {
+      HStack(spacing: LLA.Space.m) {
+        ProfileAvatar(model: model, size: 32)
+        Spacer()
+        Image(systemName: "line.3.horizontal.decrease.circle")
+        Image(systemName: "magnifyingglass")
+      }
+      .font(.system(size: 17))
+      .foregroundStyle(LLA.Color.ink)
+      .padding(.horizontal, LLA.Space.l)
+      .frame(height: 44)
+      Text("Threads").font(LLAFont.display).foregroundStyle(LLA.Color.ink)
+        .padding(.horizontal, LLA.Space.l)
+        .padding(.bottom, LLA.Space.s)
+      FlatThreadList(model: model)
+        .safeAreaInset(edge: .bottom, spacing: 0) { NewThreadDock(model: model) }
+    }
+    try await render("ios-list-dock", size: CGSize(width: 390, height: 844)) { list }
+    model.hostNote = "The background agent is not running. Open Login Items to allow it."
+    model.hostActionTitle = "Open Login Items"
+    model.hostAction = {}
+    try await render("ios-list-dock-notice", size: CGSize(width: 390, height: 844)) { list }
+  }
+
+  /// The dock while no project's Mac can take a thread: the field is off and the reason shows above
+  /// it, since a compact width cannot reach the new-thread screen that would say why.
+  @Test func iosDockBlocked() async throws {
+    let model = WorkspaceModel(transportProvider: { throw WorkspaceError(.endpointUnavailable, "offline") })
+    model.preferences = InMemoryPreferences()
+    let reason = try #require(model.newThreadEntryReason)
+    #expect(reason == "Add a ready Codex connection first")
+    try await render("ios-dock-blocked", size: CGSize(width: 390, height: 140)) {
+      NewThreadDock(model: model).frame(maxHeight: .infinity, alignment: .bottom)
     }
   }
 
@@ -415,14 +488,14 @@ struct SnapshotShell: View {
     Project(id: docs, name: "Docs", manual: true),
   ]
 
-  static func model() async throws -> WorkspaceModel {
-    let transport = ScriptedTransport()
+  static func model(_ transport: ScriptedTransport = ScriptedTransport()) async throws -> WorkspaceModel {
     transport.set(
       connections: [
         Connection(id: "c1", kind: .codex, label: "Codex", target: "codex", status: .ready),
         Connection(id: "c2", kind: .claude, label: "Claude Code", target: "claude", status: .ready),
       ], threads: threads, projects: projects)
     let model = WorkspaceModel(transportProvider: { transport })
+    model.preferences = InMemoryPreferences()
     let now = Date(timeIntervalSince1970: base + 60 * 60)
     model.now = { now }
     model.connect()

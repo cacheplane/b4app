@@ -140,7 +140,7 @@ public actor RelayExecutor {
   }
 
   /// Refusal reasons whose `details.turnId` names the turn in the way, not one this command made.
-  static let blockingReasons: Set<String> = ["turn_active", "directory_locked"]
+  static let blockingReasons: Set<String> = ["turn_active"]
 
   /// The phone reads `details.turnId` as "this send's turn exists, so it was accepted". A refusal made
   /// before this command's turn existed names another turn there (the one in the way); at this boundary
@@ -167,21 +167,11 @@ public actor RelayExecutor {
     return .object(object)
   }
 
-  /// A NUL cannot be stored, and the store refuses it only after the turn row exists, which would leave
-  /// that turn `submitting` (see the Task 8 report); a relayed text with one is refused before anything.
-  private static func requireStorableText(_ text: String) throws {
-    guard !text.unicodeScalars.contains("\0") else {
-      throw WorkspaceError(
-        .protocolInvalid, "The message contains a character that cannot be sent.",
-        details: ["reason": "invalid_text"])
-    }
-  }
-
   private func run(id: String, method: RelayMethod, params: JSONValue) async throws -> JSONValue {
     switch method {
     case .turnSend:
       let send = try decode(TurnSend.self, params)
-      try Self.requireStorableText(send.text)
+      try SessionService.requireStorableText(send.text)
       return try JSONValue(encoding: try await sessions.turnSend(send, operationId: id))
     case .turnInterrupt:
       return try JSONValue(encoding: try await sessions.turnInterrupt(try decode(TurnInterrupt.self, params)))
@@ -189,8 +179,10 @@ public actor RelayExecutor {
       return try JSONValue(
         encoding: try await sessions.requestRespond(try decode(RequestRespond.self, params)))
     case .threadStart:
+      // The phone always names a project; only the Mac's own app may start without one.
       return try JSONValue(
-        encoding: try await threadStart(try decode(ThreadStart.self, params), operationId: id))
+        encoding: try await sessions.threadStart(
+          try decode(ThreadStart.self, params), operationId: id, requireProject: true))
     case .turnLookup:
       return try JSONValue(encoding: try turnLookup(try decode(TurnLookup.self, params)))
     case .projectCreate:
@@ -217,110 +209,7 @@ public actor RelayExecutor {
     return TurnLookup.Result(state: .none)
   }
 
-  // MARK: - thread.start
-
-  /// Create the thread (or reuse the one this id already names) and send its first turn, so a retry
-  /// lands on the same thread and the same turn. Refuses with `protocol_invalid` anything the Mac would
-  /// not start itself: an unknown project, a Codex or Claude folder that is not one of the project's
-  /// folders, a B4 connection that does not serve the project, a remote B4 connection, a connection not
-  /// ready for a conversation, a thread id that is not a lowercase UUID (`invalid_thread_id`), or one
-  /// already used with another connection or folder. What `turnSend` refuses before inserting a turn
-  /// (`SessionService.assertCanStart`) is refused before the thread is made.
-  private func threadStart(
-    _ params: ThreadStart.Params, operationId: String
-  ) async throws -> ThreadStart.Result {
-    try Self.requireStorableText(params.text)
-    // The phone mints the id; the thread row keeps it, so only the form this Mac mints is taken.
-    guard Self.isLowercaseUUID(params.threadId) else {
-      throw Self.refusal("The new thread's id is not valid.", reason: "invalid_thread_id")
-    }
-    // A retry of a start that already made its turn gets that answer, whatever changed since (the
-    // connection may have gone offline): refusing it now would tell the phone the send never happened.
-    if let turn = try db.turn(operationId: operationId) {
-      guard turn.threadId == params.threadId, let thread = try db.thread(id: turn.threadId) else {
-        throw Self.refusal(
-          "This command already started a turn on another thread.", reason: "operation_reused")
-      }
-      return ThreadStart.Result(thread: thread, turn: turn)
-    }
-    guard !params.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-      throw WorkspaceError(.protocolInvalid, "Turn text must not be empty.")
-    }
-    guard let project = try db.project(id: params.projectId) else {
-      throw Self.refusal("This project is not on this Mac.", reason: "project_missing")
-    }
-    guard let connection = try db.connection(id: params.connectionId) else {
-      throw Self.refusal("This connection is not on this Mac.", reason: "connection_missing")
-    }
-    let projectFolders = Set(project.folders.map(\.path))
-    let requested = params.folder.flatMap { $0.isEmpty ? nil : $0 }
-    let folder: String?
-    switch connection.kind {
-    case .codex, .claude:
-      guard let requested else {
-        throw Self.refusal(
-          "A \(connection.kind.rawValue) thread needs one of the project's folders.", reason: "folder_missing"
-        )
-      }
-      let canonical = SessionService.canonicalDirectory(requested)
-      guard projectFolders.contains(canonical) else {
-        throw Self.refusal(
-          "That folder is not one of this project's folders.", reason: "folder_outside_project")
-      }
-      folder = canonical
-    case .b4:
-      if connection.b4Mode == .remote {
-        throw Self.refusal(
-          "A remote B4 connection cannot start a thread from another device.", reason: "remote_b4")
-      }
-      guard requested == nil else {
-        throw Self.refusal(
-          "A B4 thread is bound to its route and takes no folder.", reason: "folder_not_allowed")
-      }
-      // The connection's synced project and the coordinator's own resolution (its managed server's
-      // folder) must both name this project.
-      guard connection.localServerId != nil, connection.projectId == project.id,
-        let serverFolder = try await projects.serverFolder(of: connection),
-        projectFolders.contains(serverFolder)
-      else {
-        throw Self.refusal(
-          "Connection \(connection.label) does not serve this project.", reason: "connection_outside_project")
-      }
-      folder = nil
-    }
-    guard connection.enabled, connection.status == .ready else {
-      throw Self.refusal(
-        "Connection \(connection.label) is not ready for a conversation.", reason: "connection_not_ready")
-    }
-    // What `turnSend` would refuse before inserting the turn is refused before the thread is made, so a
-    // refused start (and each retry) leaves no empty thread behind.
-    try await sessions.assertCanStart(
-      connection: connection.id, folder: folder, threadId: params.threadId)
-    let thread: ConversationThread
-    if let existing = try db.thread(id: params.threadId) {
-      let sameFolder = folder == nil || existing.context.map(SessionService.canonicalDirectory) == folder
-      guard existing.connectionId == connection.id, sameFolder else {
-        throw Self.refusal(
-          "Thread \(params.threadId) already exists with another connection or folder.",
-          reason: "thread_mismatch")
-      }
-      thread = existing
-    } else {
-      thread = try await sessions.threadCreate(
-        ThreadCreate.Params(connectionId: connection.id, workingDirectory: folder, threadId: params.threadId)
-      ).thread
-    }
-    let turn = try await sessions.turnSend(
-      TurnSend.Params(threadId: thread.id, text: params.text), operationId: operationId
-    ).turn
-    return ThreadStart.Result(thread: try db.thread(id: thread.id) ?? thread, turn: turn)
-  }
-
   // MARK: - Helpers
-
-  static func isLowercaseUUID(_ text: String) -> Bool {
-    text.count == 36 && UUID(uuidString: text) != nil && text == text.lowercased()
-  }
 
   private func decode<C: WorkspaceCommand>(_ command: C.Type, _ params: JSONValue) throws -> C.Params {
     do {
@@ -330,9 +219,5 @@ public actor RelayExecutor {
         .protocolInvalid, "Invalid params for \"\(C.method.rawValue)\".",
         details: ["method": .string(C.method.rawValue)])
     }
-  }
-
-  private static func refusal(_ message: String, reason: String) -> WorkspaceError {
-    WorkspaceError(.protocolInvalid, message, details: ["reason": .string(reason)])
   }
 }

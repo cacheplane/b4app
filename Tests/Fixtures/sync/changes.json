@@ -54,7 +54,9 @@
    "archived": false,
    "continuity": "available",
    "createdAt": "2026-10-31T12:01:00Z",
-   "updatedAt": "2026-10-31T12:01:00Z"
+   "updatedAt": "2026-10-31T12:01:00Z",
+   "model": null,
+   "permission": null
   },
   "hlc": "019a396c7ad0-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
  },
@@ -249,5 +251,15 @@
   "column": null,
   "value": null,
   "hlc": "019a396ca1e0-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
+ },
+ {
+  "deviceSeq": 13,
+  "wall": 1761900013000,
+  "table": "threads",
+  "rowId": "thread-1",
+  "op": "update",
+  "column": "permission",
+  "value": "plan",
+  "hlc": "019a396ca5c8-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
  }
 ]

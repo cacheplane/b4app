@@ -146,11 +146,11 @@ func change(
       #expect(store.cursor == 0)
       #expect(try store.link() == nil)
       _ = try store.apply(try fixtureAsStored())
-      try store.setCursor(12)
+      try store.setCursor(13)
       try store.saveLink(link)
     }
     let reopened = try MirrorStore(path: path)
-    #expect(reopened.cursor == 12)
+    #expect(reopened.cursor == 13)
     #expect(try reopened.link() == link)
     #expect(try reopened.items(threadId: "thread-1").count == 4)
 

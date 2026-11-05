@@ -166,7 +166,7 @@ public actor ProjectService {
   /// second project.
   public func create(_ params: ProjectCreate.Params) async throws -> ProjectCreate.Result {
     let id = try params.projectId.map { id in
-      guard RelayExecutor.isLowercaseUUID(id) else {
+      guard SessionService.isLowercaseUUID(id) else {
         throw WorkspaceError(
           .protocolInvalid, "The new project's id is not valid.", details: ["reason": "invalid_project_id"])
       }

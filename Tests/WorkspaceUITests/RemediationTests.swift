@@ -32,10 +32,6 @@ import WorkspaceProtocol
       Remediation.for(WorkspaceError(.identityChanged, "other"), connection: codex).action == .newThread)
     #expect(
       Remediation.for(WorkspaceError(.submissionUnknown, "lost"), connection: codex).action == .checkAgain)
-    let locked = Remediation.for(
-      WorkspaceError(.protocolInvalid, "locked", details: ["reason": "directory_locked", "threadId": "t9"]),
-      connection: codex)
-    #expect(locked.action == .openThread(threadId: "t9"))
     let unknownActive = Remediation.for(
       WorkspaceError(
         .protocolInvalid, "active", details: ["reason": "turn_active", "status": "reconciling"]),

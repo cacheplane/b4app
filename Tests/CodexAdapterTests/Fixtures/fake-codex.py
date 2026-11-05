@@ -41,7 +41,17 @@ def read():
         sys.exit(0)
     msg = json.loads(line)
     log("<- " + line.strip())
+    record_params(msg)
     return msg
+
+
+def record_params(msg):
+    # FAKE_CODEX_PARAMS=<file>: one {"method", "params"} JSON line per client request, so tests can
+    # assert what the adapter sent. Unset, nothing is written.
+    path = os.environ.get("FAKE_CODEX_PARAMS")
+    if path and msg.get("method"):
+        with open(path, "a") as f:
+            f.write(json.dumps({"method": msg["method"], "params": msg.get("params")}) + "\n")
 
 
 def wait_response(req_id, waiting_thread=None):
@@ -140,6 +150,14 @@ while True:
     elif method == "account/rateLimits/read":
         allowed = os.environ.get("FAKE_CODEX_BLOCKED") != "1"
         send({"id": req_id, "result": {"rateLimits": rate_limits(), "ordinaryUsageAllowed": allowed}})
+    elif method == "model/list":
+        if os.environ.get("FAKE_CODEX_NO_MODEL_LIST") == "1":
+            send({"id": req_id, "error": {"code": -32601, "message": "unknown method model/list"}})
+        else:
+            send({"id": req_id, "result": {"data": [
+                {"id": "gpt-fake", "model": "gpt-fake", "displayName": "GPT Fake", "description": "",
+                 "hidden": False, "isDefault": True, "defaultReasoningEffort": "medium",
+                 "supportedReasoningEfforts": []}]}})
     elif method == "account/login/start":
         send({"id": req_id, "result": {"type": "chatgpt", "authUrl": "https://auth.example/login?state=1",
                                        "loginId": "login_1"}})

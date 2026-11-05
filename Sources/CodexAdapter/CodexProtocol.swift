@@ -37,9 +37,16 @@ public enum CodexProtocol {
     }
   }
 
-  public static func threadStartParams(cwd: String?, policy: ThreadPolicy? = nil) -> JSONValue {
+  /// `model` goes on `thread/start`; the permission preset goes on the first `turn/start`, whose
+  /// overrides apply "to this turn and subsequent turns".
+  public static func threadStartParams(
+    cwd: String?, policy: ThreadPolicy? = nil, model: String? = nil
+  )
+    -> JSONValue
+  {
     var params: [String: JSONValue] = ["serviceName": .string(clientName)]
     if let cwd { params["cwd"] = .string(cwd) }
+    if let model { params["model"] = .string(model) }
     if let policy {
       params["approvalPolicy"] = .string(policy.approvalPolicy)
       params["sandbox"] = .string(policy.sandbox)
@@ -64,13 +71,26 @@ public enum CodexProtocol {
     ]
   }
 
-  public static func turnStartParams(threadId: String, text: String, cwd: String?) -> JSONValue {
+  /// A `permission` that is not a `CodexPermission` id adds no policy, the same as none: a value
+  /// synced from the phone can reach the adapter without the coordinator having checked it.
+  public static func turnStartParams(
+    threadId: String, text: String, cwd: String?, model: String? = nil, permission: String? = nil,
+    writableRoots: [String] = []
+  ) -> JSONValue {
     var params: [String: JSONValue] = [
       "threadId": .string(threadId), "input": [["type": "text", "text": .string(text)]],
     ]
     if let cwd { params["cwd"] = .string(cwd) }
+    if let model { params["model"] = .string(model) }
+    if let preset = permission.flatMap(CodexPermission.init(rawValue:)) {
+      params["approvalPolicy"] = .string(preset.approvalPolicy)
+      params["sandboxPolicy"] = preset.sandboxPolicy(writableRoots: writableRoots)
+    }
     return .object(params)
   }
+
+  /// `model/list` (first page only); hidden models are not offered.
+  public static func modelListParams() -> JSONValue { ["includeHidden": false] }
 
   public static func turnInterruptParams(threadId: String, turnId: String) -> JSONValue {
     ["threadId": .string(threadId), "turnId": .string(turnId)]

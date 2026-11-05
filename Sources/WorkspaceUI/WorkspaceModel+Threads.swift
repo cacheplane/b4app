@@ -43,3 +43,22 @@ extension WorkspaceModel {
     }
   }
 }
+
+/// A thread's model and permission, changed from the picker row under its composer.
+extension WorkspaceModel {
+  /// Choose the model or permission a thread's next turn uses; nil leaves that one as it is (no
+  /// override, once made, can be cleared: Codex keeps a turn's override for later turns). The phone's
+  /// change is a synced field the Mac applies on the next turn, never a relayed call. A refusal (a B4
+  /// thread, a permission the runtime lacks) shows in `lastError`.
+  public func setThreadRuntime(threadId: String, model: String?, permission: String?) async {
+    guard model != nil || permission != nil else { return }
+    let updated: ConversationThread? = await perform {
+      try await $0.request(
+        ThreadUpdate.self,
+        ThreadUpdate.Params(threadId: threadId, model: model, permission: permission),
+        options: Self.mutation()
+      ).thread
+    }
+    if let updated { store(updated) }
+  }
+}

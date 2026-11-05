@@ -167,6 +167,15 @@ private let turnStream = """
     let turn = CodexProtocol.turnStartParams(threadId: "thr_1", text: "Run tests", cwd: "/work")
     #expect(turn["input"] == [["type": "text", "text": "Run tests"]])
     #expect(turn["threadId"]?.stringValue == "thr_1")
+    let chosen = CodexProtocol.turnStartParams(
+      threadId: "thr_1", text: "go", cwd: nil, model: "gpt-5",
+      permission: CodexPermission.fullAccess.rawValue,
+      writableRoots: ["/x"])
+    #expect(chosen["model"]?.stringValue == "gpt-5")
+    #expect(chosen["approvalPolicy"]?.stringValue == "never")
+    #expect(chosen["sandboxPolicy"] == ["type": "dangerFullAccess"])
+    #expect(CodexProtocol.threadStartParams(cwd: nil, model: "gpt-5")["model"]?.stringValue == "gpt-5")
+    #expect(CodexProtocol.modelListParams() == ["includeHidden": false])
     let initialize = CodexProtocol.initializeParams(version: "0.0.0")
     #expect(initialize["clientInfo"]?["name"]?.stringValue == "agent_workspace")
     #expect(initialize["capabilities"]?["experimentalApi"]?.boolValue == false)
