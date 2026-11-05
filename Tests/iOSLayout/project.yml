@@ -1,0 +1,67 @@
+name: WorkspaceLayout
+options:
+  deploymentTarget:
+    iOS: "26.0"
+packages:
+  b4app:
+    path: ../..
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    CODE_SIGNING_ALLOWED: NO
+targets:
+  WorkspaceLayoutHarness:
+    type: application
+    platform: iOS
+    sources:
+      - path: Harness
+      - path: ../../Apps/iOS/B4App/SyncBanner.swift
+      - path: ../Fixtures/sync/changes.json
+        buildPhase: resources
+    info:
+      path: ../../.build/iOSLayout/Info.plist
+      properties:
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cacheplane.b4app.layout-harness
+        TARGETED_DEVICE_FAMILY: "1,2"
+    dependencies:
+      - package: b4app
+        product: WorkspaceUI
+      - package: b4app
+        product: WorkspaceMirror
+      - package: b4app
+        product: WorkspaceSync
+      - package: b4app
+        product: WorkspaceProtocol
+      - package: b4app
+        product: WorkspaceSecrets
+  WorkspaceLayoutTests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cacheplane.b4app.layout-tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: WorkspaceLayoutHarness
+        SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated
+    dependencies:
+      - target: WorkspaceLayoutHarness
+schemes:
+  WorkspaceLayout:
+    build:
+      targets:
+        WorkspaceLayoutHarness: all
+        WorkspaceLayoutTests: [test]
+    test:
+      targets:
+        - WorkspaceLayoutTests

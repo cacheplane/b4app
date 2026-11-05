@@ -43,7 +43,7 @@ jobs:
       - name: shellcheck
         run: |
           shopt -s nullglob
-          shellcheck .github/scripts/*.sh Hub/scripts/*.sh Hub/chart/scripts/*.sh Infra/scripts/*.sh Infra/scripts/tests/stubs/* Infra/scripts/tests/helpers.bash Scripts/docs-index.sh Scripts/fix-app-registrations.sh Scripts/tests/stubs/*
+          shellcheck .github/scripts/*.sh Hub/scripts/*.sh Hub/chart/scripts/*.sh Infra/scripts/*.sh Infra/scripts/tests/stubs/* Infra/scripts/tests/helpers.bash Scripts/docs-index.sh Scripts/fix-app-registrations.sh Scripts/test-ios-layout.sh Scripts/tests/stubs/*
       - name: Fetch main for the decision-number check
         run: git fetch --no-tags --depth=1 origin main
       - name: Decision and verification records
@@ -119,6 +119,17 @@ jobs:
         run: >
           xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS-Beta -destination 'generic/platform=iOS Simulator'
           -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO
+      - name: iOS navigation and banner regression tests
+        env:
+          B4APP_LAYOUT_DERIVED_DATA: .build/DerivedData
+        run: ./Scripts/test-ios-layout.sh -clonedSourcePackagesDirPath .spm
+      - name: Save iOS layout screenshots and test results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-layout-results
+          path: .build/iOSLayout/Results-*.xcresult
+          retention-days: 7
 
   hub:
     name: Hub (Rust)
