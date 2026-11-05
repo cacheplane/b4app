@@ -102,6 +102,12 @@ mock_provider "aws" {
 mock_provider "aws" {
   alias = "copy"
 
+  mock_resource "aws_kms_key" {
+    defaults = {
+      arn = "arn:aws:kms:us-west-2:111111111111:key/11111111-1111-1111-1111-111111111111"
+    }
+  }
+
   mock_resource "aws_backup_vault" {
     defaults = {
       arn = "arn:aws:backup:us-west-2:111111111111:backup-vault:b4hub-test-copy"
@@ -220,6 +226,11 @@ run "copy_action_only_with_region" {
     condition     = one(aws_backup_plan.hub.rule).schedule == "cron(0 6 * * ? *)" && one(one(aws_backup_plan.hub.rule).lifecycle).delete_after == 35
     error_message = "daily at 06:00 UTC, kept 35 days"
   }
+
+  assert {
+    condition     = length(aws_kms_key.copy) == 0 && length(aws_kms_alias.copy) == 0
+    error_message = "no copy key without a copy region"
+  }
 }
 
 run "copy_action_with_region" {
@@ -242,6 +253,16 @@ run "copy_action_with_region" {
   assert {
     condition     = one(one(one(aws_backup_plan.hub.rule).copy_action).lifecycle).delete_after == 35
     error_message = "copies are kept 35 days"
+  }
+
+  assert {
+    condition     = length(aws_kms_key.copy) == 1 && aws_backup_vault.copy[0].kms_key_arn == aws_kms_key.copy[0].arn && aws_kms_key.copy[0].enable_key_rotation && aws_kms_alias.copy[0].name == "alias/b4hub-test-copy"
+    error_message = "the copy vault is encrypted with its own rotating customer managed key in the copy region"
+  }
+
+  assert {
+    condition     = aws_backup_vault.copy[0].force_destroy
+    error_message = "the copy vault may be replaced with recovery points in it (a key change replaces it)"
   }
 }
 

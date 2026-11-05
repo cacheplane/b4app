@@ -4,12 +4,39 @@ resource "aws_backup_vault" "hub" {
 }
 
 # Cross-region copies land in a vault in the second provider's region. The
-# account key is regional, so this vault uses the service default key.
+# account key is regional, so the copy region gets its own customer managed
+# key: a snapshot under the service default key can be restored only in that
+# region and account, while one under this key can be copied back to the hub's
+# region or shared, which the restore drill's comparison (runbook 8 B.3) needs.
+resource "aws_kms_key" "copy" {
+  provider = aws.copy
+  count    = var.backup_copy_region == null ? 0 : 1
+
+  description             = "${local.name} backup copies"
+  enable_key_rotation     = true
+  deletion_window_in_days = 30
+}
+
+resource "aws_kms_alias" "copy" {
+  provider = aws.copy
+  count    = var.backup_copy_region == null ? 0 : 1
+
+  name          = "alias/${local.name}-copy"
+  target_key_id = aws_kms_key.copy[0].key_id
+}
+
 resource "aws_backup_vault" "copy" {
   provider = aws.copy
   count    = var.backup_copy_region == null ? 0 : 1
 
-  name = "${local.name}-copy"
+  name        = "${local.name}-copy"
+  kms_key_arn = aws_kms_key.copy[0].arn
+
+  # The key cannot change on a vault, so a key change replaces it. The copies
+  # here are secondary (the source vault keeps its own for 35 days), so the
+  # replacement may remove them; without this the destroy fails while any
+  # recovery point remains.
+  force_destroy = true
 }
 
 resource "aws_backup_plan" "hub" {
