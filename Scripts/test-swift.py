@@ -33,6 +33,9 @@ ISOLATED_GROUPS = tuple((suite, (suite,)) for suite in SINGLE_SUITE_GROUPS) + (
     ('coordinator-hello', HELLO_SUITES),
 )
 TOTAL_BUDGET_SECONDS = 35 * 60
+COMPILER_TRACE_ARGS = [
+    '--verbose', '-Xswiftc', '-driver-show-incremental', '-Xswiftc', '-driver-show-job-lifecycle',
+]
 
 # Keep this session leader alive until the caller has cleaned its process group. Waiting on the
 # actual command inside the supervisor retains its real exit status without reaping the group
@@ -242,12 +245,14 @@ def run_command(command, timeout, log):
     return result
 
 
-def run_pipeline(swift_args, results_dir, runner=run_command, budget_seconds=TOTAL_BUDGET_SECONDS):
+def run_pipeline(swift_args, results_dir, runner=run_command, budget_seconds=TOTAL_BUDGET_SECONDS,
+                 trace_build=False):
     started = time.monotonic()
     deadline = started + budget_seconds
     results_dir.mkdir(parents=True, exist_ok=True)
     result = {'schema_version': 1, 'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-              'budget_seconds': budget_seconds, 'swift_build_arguments': swift_args, 'partitions': [],
+              'budget_seconds': budget_seconds, 'swift_build_arguments': swift_args,
+              'compiler_trace_requested': trace_build, 'partitions': [],
               'complete': False, 'passed': False}
 
     def save():
@@ -255,9 +260,24 @@ def run_pipeline(swift_args, results_dir, runner=run_command, budget_seconds=TOT
         (results_dir / 'summary.json').write_text(json.dumps(result, indent=2) + '\n')
 
     diagnostic = os.environ.get('B4APP_CI_DIAGNOSTICS') == '1'
+    if trace_build:
+        # Verbose list changes Swift Testing identifiers. Build under this same deadline, then
+        # keep ordinary skip-build discovery and its strict inventory parser unchanged.
+        compilation = runner(['swift', 'build', *swift_args, '--build-tests', *COMPILER_TRACE_ARGS],
+                             max(0.001, deadline - time.monotonic()), results_dir / 'compilation.log')
+        result['compilation'] = compilation
+        print('CI_SWIFT_COMPILATION ' + json.dumps({k: v for k, v in compilation.items()
+              if k not in ['stdout', 'stderr']}), flush=True)
+        if (compilation['exit_code'] != 0 or compilation['timed_out']
+                or compilation.get('output_closed') is False or compilation.get('cleanup_error')
+                or compilation.get('supervisor_error')):
+            result['error'] = 'Swift test compilation failed or exceeded the aggregate budget'
+            save()
+            print('CI_SWIFT_ERROR ' + result['error'], flush=True)
+            return 1
     if diagnostic:
         print('CI_SWIFT_PHASE ' + json.dumps({'phase': 'discovery-begin', 'elapsed_seconds': time.monotonic()-started}), flush=True)
-    discovery = runner(['swift', 'test', *swift_args, 'list'], max(0.001, deadline - time.monotonic()),
+    discovery = runner(['swift', 'test', *swift_args, *(['--skip-build'] if trace_build else []), 'list'], max(0.001, deadline - time.monotonic()),
                        results_dir / 'discovery.log')
     result['discovery'] = discovery
     if diagnostic:
@@ -330,7 +350,7 @@ def run_pipeline(swift_args, results_dir, runner=run_command, budget_seconds=TOT
     result['passed'] = result['complete'] and all(p['passed'] for p in parts)
     save()
     print('CI_SWIFT_SUMMARY ' + json.dumps({k: v for k, v in result.items()
-          if k not in ['discovery', 'partitions']}), flush=True)
+          if k not in ['discovery', 'compilation', 'partitions']}), flush=True)
     return 0 if result['passed'] else 1
 
 
@@ -339,6 +359,8 @@ def main():
     for flag in ['scratch-path', 'cache-path', 'config-path', 'security-path']:
         parser.add_argument('--' + flag)
     parser.add_argument('--jobs', type=int)
+    parser.add_argument('--trace-build', action='store_true',
+                        help='trace test compilation before ordinary skip-build discovery')
     parser.add_argument('--disable-dependency-cache', action='store_true')
     parser.add_argument('--manifest-cache', choices=['shared', 'local', 'none'])
     parser.add_argument('--only-use-versions-from-resolved-file', action='store_true')
@@ -348,13 +370,13 @@ def main():
         parser.error('--jobs must be positive')
     swift_args = []
     for name, value in vars(args).items():
-        if name == 'results_path' or value is None or value is False:
+        if name in ['results_path', 'trace_build'] or value is None or value is False:
             continue
         swift_args.append('--' + name.replace('_', '-'))
         if value is not True:
             swift_args.append(str(value))
     run = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S') + '-' + str(os.getpid())
-    return run_pipeline(swift_args, args.results_path / run)
+    return run_pipeline(swift_args, args.results_path / run, trace_build=args.trace_build)
 
 
 if __name__ == '__main__':
