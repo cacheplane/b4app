@@ -102,10 +102,12 @@ final class ProbedHub: HubAPI {
   let signal: SyncSignal
   private let waiting = Mutex(0)
   private let started = Mutex(0)
+  private let waits = Mutex<[Int]>([])
   /// Pulls asked to wait for news (`wait > 0`) that have not returned.
   var longPollsInFlight: Int { waiting.withLock { $0 } }
   /// Every hub call that has started, of any kind.
   var calls: Int { started.withLock { $0 } }
+  var pullWaits: [Int] { waits.withLock { $0 } }
 
   init(_ base: any HubAPI, _ signal: SyncSignal) {
     self.base = base
@@ -127,6 +129,7 @@ final class ProbedHub: HubAPI {
     try await probe { try await base.push(changes) }
   }
   func pull(after: Int, limit: Int, wait: Int) async throws -> PullResponse {
+    waits.withLock { $0.append(wait) }
     if wait > 0 { waiting.withLock { $0 += 1 } }
     defer { if wait > 0 { waiting.withLock { $0 -= 1 } } }
     return try await probe { try await base.pull(after: after, limit: limit, wait: wait) }
@@ -550,6 +553,104 @@ private let link = MirrorLink(
     await sync.stop()
     await running.value
     #expect(ContinuousClock.now - started < .seconds(5))
+  }
+
+  @Test func aNudgeDuringFailureReportingSkipsTheBackoff() async throws {
+    let store = try MirrorStore.inMemory()
+    try store.saveLink(link)
+    let hub = FakeHubAPI(stored: Array(try fixtureAsStored().prefix(2)))
+    await hub.setFailNext(HubError(kind: "transport", code: "transport", message: "offline", status: 0))
+    let reported = Gate()
+    let release = Gate()
+    let signal = SyncSignal()
+    let sync = MirrorSync(
+      store: store, api: ProbedHub(hub, signal), onBatch: { _ in },
+      onStatus: { status in
+        signal.fire()
+        if status.lastError != nil {
+          reported.open()
+          await release.wait()
+        }
+      }, initialBackoff: .seconds(600))
+    let running = Task { await sync.run() }
+    defer {
+      Task {
+        await sync.stop(); await running.value
+      }
+    }
+    await reported.wait()
+
+    // Reconnection can arrive while the failure callback is still running, before the sleep exists.
+    await sync.nudge()
+    release.open()
+    try await signal.until("recovered without waiting out the backoff") {
+      try store.cursor == 2 && store.link()?.lastError == nil
+    }
+  }
+
+  @Test func aNudgeWakesAnExistingFailureBackoff() async throws {
+    let store = try MirrorStore.inMemory()
+    try store.saveLink(link)
+    let hub = FakeHubAPI(stored: Array(try fixtureAsStored().prefix(2)))
+    await hub.setFailNext(HubError(kind: "transport", code: "transport", message: "offline", status: 0))
+    let reported = Gate()
+    let signal = SyncSignal()
+    let sync = MirrorSync(
+      store: store, api: ProbedHub(hub, signal), onBatch: { _ in },
+      onStatus: { status in
+        if status.lastError != nil { reported.open() }
+        signal.fire()
+      }, initialBackoff: .seconds(600))
+    let running = Task { await sync.run() }
+    defer {
+      Task {
+        await sync.stop(); await running.value
+      }
+    }
+    await reported.wait()
+    // Give the loop a chance to enter the retry sleep; the other test covers the earlier window.
+    try await Task.sleep(for: .milliseconds(100))
+
+    await sync.nudge()
+    try await signal.until("recovered without waiting out the backoff") {
+      try store.cursor == 2 && store.link()?.lastError == nil
+    }
+  }
+
+  @Test func recoveryChecksAQuietHubWithoutWaitingForNewChanges() async throws {
+    let store = try MirrorStore.inMemory()
+    try store.saveLink(link)
+    let rows = Array(try fixtureAsStored().prefix(2))
+    _ = try store.apply(rows)
+    try store.setCursor(2)
+    let hub = FakeHubAPI(stored: rows)
+    await hub.setFailNext(HubError(kind: "transport", code: "transport", message: "offline", status: 0))
+    let statuses = StatusRecorder()
+    let signal = SyncSignal()
+    let probed = ProbedHub(hub, signal)
+    let sync = MirrorSync(
+      store: store, api: probed, onBatch: { _ in },
+      onStatus: {
+        await statuses.record($0)
+        signal.fire()
+      }, initialBackoff: .milliseconds(10))
+    let running = Task { await sync.run() }
+    defer {
+      Task {
+        await sync.stop(); await running.value
+      }
+    }
+
+    // Inspect the request rather than timing it: a loaded full-suite run may be descheduled for
+    // longer than the long-poll itself. The recovery request must explicitly ask not to wait.
+    try await signal.until("the recovery pull started") { !probed.pullWaits.isEmpty }
+    #expect(probed.pullWaits.first == 0)
+    try await signal.until("successful recovery pull on an unchanged hub") {
+      await statuses.all.contains { $0.lastError == nil }
+    }
+    #expect(await statuses.all.first?.lastError != nil)
+    #expect(try store.link()?.lastError == nil)
+    #expect(store.cursor == 2)
   }
 
   // MARK: - Suspension (the app going to the background)

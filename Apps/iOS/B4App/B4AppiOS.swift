@@ -45,13 +45,14 @@ struct B4AppiOS: App {
   var body: some Scene {
     WindowGroup {
       WorkspaceRootView(model: model)
-        // The shared shell's footer speaks for the mirror, which is always reachable; whether the
-        // mirror is keeping up with the hub is said here, above everything, while it is not.
-        .safeAreaInset(edge: .top, spacing: 0) {
-          if model.rootScreen == .workspace {
-            SyncBanner(status: host.syncStatus, relayRefused: host.relayRefused)
+        // Each workspace column places the notice below its navigation bar. An inset outside the
+        // split view can cover the phone's Back and toolbar buttons while offline.
+        .environment(
+          \.workspaceStatusBanner,
+          {
+            AnyView(SyncBanner(status: host.syncStatus, relayRefused: host.relayRefused))
           }
-        }
+        )
         .environment(
           \.phoneSignIn,
           PhoneSignInHooks(

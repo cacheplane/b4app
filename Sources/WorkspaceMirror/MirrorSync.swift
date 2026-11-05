@@ -12,9 +12,10 @@ import os
 /// - Once per `run()`, before any push, an empty push asks the hub for the highest `deviceSeq` it has
 ///   recorded for this device; the store's counter is raised to it if lower, so a counter lost to a
 ///   restored backup never reissues a number.
-/// - `nudge()` (a local write was made) wakes the loop: it cancels a long-poll in flight and goes round
-///   again, so the edit is pushed at once. A nudge while a push is in flight is not lost; the loop
-///   pushes again before it waits.
+/// - `nudge()` (a local write, or the relay reconnected) wakes the loop: it cancels a long-poll or
+///   retry backoff and goes round again. A nudge while a push is in flight is not lost; the loop
+///   pushes again before it waits. After a failure, the recovery pull does not long-poll, so even an
+///   unchanged hub proves the mirror is caught up at once.
 /// - `resync_required` (the cursor fell behind the hub's retention) fetches the hub's snapshot and
 ///   replaces the mirror with it, keeping unsent edits. A mirror that was just rebuilt starts the same
 ///   way (`startFromSnapshot`) rather than pulling the whole feed from 0.
@@ -149,10 +150,12 @@ public actor MirrorSync {
 
   private struct Suspending: Error {}
 
-  /// A local write was made: push it now rather than after the long-poll ends.
+  /// A local write or restored connection: retry now rather than after the long-poll or backoff ends.
+  /// A suspended loop stays parked until `resume()`.
   public func nudge() {
     nudged = true
     pulling?.cancel()
+    backingOff?.cancel()
   }
 
   private func syncLoop() async {
@@ -214,12 +217,12 @@ public actor MirrorSync {
     if unauthorized { await onUnauthorized?() }
   }
 
-  /// The pull for this turn. With a nudge already waiting it does not wait for news.
+  /// The pull for this turn. A nudge or recovery from a failure checks now, without waiting for news.
   private func pull() async throws -> PullResponse {
     // Stopped while pushing: no long-poll starts that nothing would cancel.
     guard !stopped else { throw CancellationError() }
     let cursor = store.cursor
-    let wait = nudged ? 0 : Self.waitSeconds
+    let wait = nudged || lastError != nil ? 0 : Self.waitSeconds
     let api = api
     let task = Task { try await api.pull(after: cursor, limit: Self.pageLimit, wait: wait) }
     pulling = task
@@ -280,8 +283,8 @@ public actor MirrorSync {
     let delay = backoff
     let wait = Task { _ = try? await Task.sleep(for: delay) }
     backingOff = wait
-    // A suspension asked for while `record` ran cuts the backoff at once.
-    if suspended { wait.cancel() }
+    // A nudge or suspension while `record` ran must also cut this not-yet-created backoff short.
+    if nudged || suspended || stopped { wait.cancel() }
     await wait.value
     backingOff = nil
     backoff = min(backoff * 2, maxBackoff)

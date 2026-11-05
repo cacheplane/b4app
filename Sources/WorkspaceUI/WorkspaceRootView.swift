@@ -52,6 +52,7 @@ struct RootScreenView: View {
 /// detail shows the selected thread.
 struct WorkspaceShell: View {
   @Bindable var model: WorkspaceModel
+  @Environment(\.workspaceStatusBanner) private var statusBanner
   /// On a compact width (iPhone) the split view shows one column; choosing a thread in the sidebar
   /// moves to the detail. Ignored where both columns show.
   @State private var compactColumn = NavigationSplitViewColumn.sidebar
@@ -80,9 +81,11 @@ struct WorkspaceShell: View {
     NavigationSplitView(preferredCompactColumn: $compactColumn) {
       SidebarView(model: model)
         .navigationSplitViewColumnWidth(min: 240, ideal: 290)
+        .safeAreaInset(edge: .top, spacing: 0) { statusBanner?() }
     } detail: {
       ThreadsView(model: model)
         .modifier(WorkspaceWindowBackground())
+        .safeAreaInset(edge: .top, spacing: 0) { statusBanner?() }
     }
     .environment(\.showDetail, showDetail)
     .onChange(of: detailOnScreen, initial: true) { _, onScreen in model.isDetailOnScreen = onScreen }
@@ -151,6 +154,10 @@ struct WorkspaceWindowBackground: ViewModifier {
 }
 
 extension EnvironmentValues {
+  /// The app's sync or account notice, placed inside each navigation column so the phone's Back and
+  /// toolbar buttons keep their own space. The shared UI receives only a view, never mirror state.
+  @Entry public var workspaceStatusBanner: (@MainActor () -> AnyView)? = nil
+
   /// Moves a collapsed split view to its detail column (set by `WorkspaceRootView`).
   @Entry var showDetail: @MainActor @Sendable () -> Void = {}
 }
