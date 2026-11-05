@@ -1,8 +1,8 @@
 {
-  "scope": "Nonpublishing retained Swift CI instrumentation, no optimization",
-  "case": "diagnostic",
-  "reference": "590410759576dfd6b2a661bdd6c3fb727cce82b1",
-  "preserve": "All1170originalSwiftIDs/148suites/41Python(34old+7new)/48Bats/4native/lockedRust/cache32MB and all deadlines.",
-  "observer": "Optin numericphase/own-descendant/system telemetry; no new SQL orsettings change. time-l common toboth on/off. No speedupclaim.",
+  "scope": "Nonpublishing final retained diagnostic policy cache-unavailable check",
+  "policy": "diagnostic",
+  "base_source": "7ee4a8b3030863bf27d1ccdd5d408bd5a3bf5c77",
+  "preserve": "All original1170SwiftIDs/34tooling/48Bats/4native/lockedRust/all deadlines, no Swift test changes.",
+  "cache_condition": "Run-unique fullcache key, nofallback. Defaultcachepolicy unchanged.",
   "publication": "None"
 }
