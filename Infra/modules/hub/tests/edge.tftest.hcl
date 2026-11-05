@@ -102,6 +102,12 @@ mock_provider "aws" {
 mock_provider "aws" {
   alias = "copy"
 
+  mock_resource "aws_kms_key" {
+    defaults = {
+      arn = "arn:aws:kms:us-west-2:111111111111:key/11111111-1111-1111-1111-111111111111"
+    }
+  }
+
   mock_resource "aws_backup_vault" {
     defaults = {
       arn = "arn:aws:backup:us-west-2:111111111111:backup-vault:b4hub-test-copy"
