@@ -315,7 +315,7 @@ public actor SessionService {
         // The identity the runtime presents now; nil (signed out, unreachable) keeps the last known one.
         if let scope = inspection.nativeScope, !scope.isEmpty { $0.nativeScope = scope }
       } ?? connection
-    await context.eventLog.publish(
+    await publishVisibleEvent(
       try AdapterEvent.connectionChanged(
         connectionId: connection.id, status: inspection.status, authStatus: inspection.authStatus,
         transport: .disconnected, message: inspection.message
@@ -393,11 +393,11 @@ public actor SessionService {
     // The thread joins the project of its folder (created on first use) in one step with its insert, so
     // no project edit can land in between; `context` stays as given.
     let thread = try await context.projects.insertThread(newThread, connection: connection)
-    await context.eventLog.publish(
+    await publishVisibleEvent(
       AdapterEvent(
         kind: .sessionCreated, connectionId: connection.id, threadId: thread.id,
         nativeIds: ["threadId": ref.nativeSessionId], payload: ["scope": .string(ref.nativeScope)]))
-    await context.eventLog.publish(try AdapterEvent.threadUpdated(thread))
+    await publishVisibleEvent(try AdapterEvent.threadUpdated(thread))
     return ThreadCreate.Result(thread: thread)
   }
 
@@ -408,7 +408,7 @@ public actor SessionService {
       let after = try db.markRead(threadId: params.threadId, turnId: params.turnId)
     else { throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.") }
     if before.readTurnId != after.readTurnId {
-      await context.eventLog.publish(try AdapterEvent.threadUpdated(after))
+      await publishVisibleEvent(try AdapterEvent.threadUpdated(after))
     }
     return ThreadMarkRead.Result(thread: after)
   }
@@ -468,7 +468,7 @@ public actor SessionService {
     guard thread.continuity != state,
       let updated = try? db.updateThread(id: thread.id, { $0.continuity = state })
     else { return thread }
-    if let event = try? AdapterEvent.threadUpdated(updated) { await context.eventLog.publish(event) }
+    if let event = try? AdapterEvent.threadUpdated(updated) { await publishVisibleEvent(event) }
     return updated
   }
 
@@ -486,7 +486,7 @@ public actor SessionService {
       let snapshot = try await adapter.loadSession(ref)
       let merge = try db.mergeSnapshotItems(threadId: thread.id, items: snapshot.items)
       if merge.inserted + merge.updated + merge.removed > 0 {
-        await context.eventLog.publish(
+        await publishVisibleEvent(
           AdapterEvent(
             kind: .reconciliationSnapshot, connectionId: connection.id, threadId: thread.id,
             nativeIds: ["threadId": thread.nativeThreadId],
@@ -562,7 +562,7 @@ public actor SessionService {
           if let permission = params.permission { $0.permission = permission }
         })
     else { throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.") }
-    await context.eventLog.publish(try AdapterEvent.threadUpdated(thread))
+    await publishVisibleEvent(try AdapterEvent.threadUpdated(thread))
     return ThreadCreate.Result(thread: thread)
   }
 
@@ -746,7 +746,7 @@ public actor SessionService {
       payload: ["text": .string(text)], provenance: .live)
     // Cleared, not deleted: the empty text syncs as an ordinary last-writer-wins update.
     try? db.clearDraft(threadId: thread.id)
-    await context.eventLog.publish(
+    await publishVisibleEvent(
       AdapterEvent(
         kind: .messageCompleted, connectionId: connection.id, threadId: thread.id, turnId: turn.id,
         payload: ["displayItem": try JSONValue(encoding: userItem), "role": "user"]))
@@ -811,7 +811,7 @@ public actor SessionService {
     switch code {
     case .authRequired:
       if let updated = try? db.updateConnection(id: connection.id, { $0.authStatus = .required }) {
-        await context.eventLog.publish(
+        await publishVisibleEvent(
           AdapterEvent.connectionChanged(
             connectionId: updated.id, status: updated.status, authStatus: .required, transport: .connected,
             message: "Sign-in expired or was revoked: \(message)"))
@@ -819,7 +819,7 @@ public actor SessionService {
       await context.diagnostics.recordError(scope: scope, code: code.rawValue, message: message)
     case .incompatibleVersion:
       if let updated = try? db.updateConnection(id: connection.id, { $0.status = .incompatible }) {
-        await context.eventLog.publish(
+        await publishVisibleEvent(
           AdapterEvent.connectionChanged(
             connectionId: updated.id, status: .incompatible, authStatus: updated.authStatus,
             transport: .connected, message: message))
@@ -925,7 +925,7 @@ public actor SessionService {
           "The runtime never reported how this turn ended, and you chose to abandon it. The agent may or may not have acted on the request; nothing was re-sent.",
         "submission": .string(active.submission.rawValue),
       ], provenance: .live)
-    await context.eventLog.publish(
+    await publishVisibleEvent(
       AdapterEvent(
         kind: .messageCompleted, connectionId: thread.connectionId, threadId: thread.id, turnId: active.id,
         payload: ["displayItem": try JSONValue(encoding: note), "role": "system"]))
@@ -937,7 +937,7 @@ public actor SessionService {
     await publishTurn(
       .turnFinished, turn, thread: thread, payload: ["outcome": "failed", "source": "abandoned"])
     if let touched = try db.updateThread(id: thread.id, { _ in }) {
-      await context.eventLog.publish(try AdapterEvent.threadUpdated(touched))
+      await publishVisibleEvent(try AdapterEvent.threadUpdated(touched))
     }
     return TurnSend.Result(turn: turn)
   }
@@ -1112,7 +1112,7 @@ public actor SessionService {
       throw WorkspaceError(.staleRuntimeRequest, "Runtime request \(request.id) was answered concurrently.")
     }
     let resolved = try db.runtimeRequest(id: request.id) ?? request
-    await context.eventLog.publish(
+    await publishVisibleEvent(
       AdapterEvent(
         kind: .runtimeRequestResolved, connectionId: connection.id, threadId: thread.id,
         turnId: request.turnId,
@@ -1130,11 +1130,23 @@ public actor SessionService {
     body["turn"] = (try? JSONValue(encoding: turn)) ?? .null
     body["status"] = .string(turn.status.rawValue)
     if let outcome = turn.outcome { body["outcome"] = .string(outcome.rawValue) }
-    await context.eventLog.publish(
+    await publishVisibleEvent(
       AdapterEvent(
         kind: kind, connectionId: thread.connectionId, threadId: thread.id, turnId: turn.id,
         nativeIds: turn.nativeTurnId.map { ["turnId": $0, "threadId": thread.nativeThreadId] } ?? [:],
         payload: .object(body)))
+  }
+
+  /// A captured thread may predate another device's deletion. Decide visibility at publication,
+  /// holding the row lease through EventLog.publish so deletion cannot commit between them.
+  private func publishVisibleEvent(_ event: AdapterEvent) async {
+    do {
+      try await publishVisibleEnvelope(event, database: db, eventLog: context.eventLog)
+    } catch {
+      logger.error("event publication failed: \(String(describing: error), privacy: .public)")
+      await context.diagnostics.recordError(
+        scope: "event_publication", code: "internal", message: String(describing: error))
+    }
   }
 
   private func project(_ incoming: AdapterEvent) async {
@@ -1204,7 +1216,7 @@ public actor SessionService {
         }
         if let updated { event.payload = merge(raw.payload, ["turn": try JSONValue(encoding: updated)]) }
         if let touched = try db.updateThread(id: thread.id, { _ in }), touched.userDeletedAt == nil {
-          await context.eventLog.publish(try AdapterEvent.threadUpdated(touched))
+          await publishVisibleEvent(try AdapterEvent.threadUpdated(touched))
         }
         if outcome == .failed,
           let code = raw.payload["errorCode"]?.stringValue.flatMap(ErrorCode.init(rawValue:)),
@@ -1271,7 +1283,7 @@ public actor SessionService {
     }
     // A deleted thread's rows still follow its runtime, but nothing about it reaches a client.
     if thread?.userDeletedAt != nil { return }
-    await context.eventLog.publish(event)
+    await publishVisibleEvent(event)
   }
 
   /// A completion that carries no text keeps what the item streamed (a runtime may complete a stopped
@@ -1305,7 +1317,7 @@ public actor SessionService {
             $0.payload = .object(payload)
           })
       else { continue }
-      await context.eventLog.publish(
+      await publishVisibleEvent(
         AdapterEvent(
           kind: .messageCompleted, connectionId: thread.connectionId, threadId: thread.id,
           turnId: stored.turnId,
@@ -1350,7 +1362,7 @@ public actor SessionService {
       }
       for request in try db.pendingRuntimeRequests(threadId: thread.id) {
         _ = try db.transitionRuntimeRequest(id: request.id, to: .expired)
-        await context.eventLog.publish(
+        await publishVisibleEvent(
           AdapterEvent(
             kind: .runtimeRequestExpired, connectionId: raw.connectionId, threadId: thread.id,
             turnId: request.turnId, nativeIds: ["requestId": request.nativeRequestId],
@@ -1380,7 +1392,7 @@ public actor SessionService {
     // of unknown outcome until reconciled. Never assume success or cancellation.
     for request in try db.pendingRuntimeRequests(connectionId: raw.connectionId) {
       _ = try db.transitionRuntimeRequest(id: request.id, to: .expired)
-      await context.eventLog.publish(
+      await publishVisibleEvent(
         AdapterEvent(
           kind: .runtimeRequestExpired, connectionId: raw.connectionId, threadId: request.threadId,
           turnId: request.turnId, nativeIds: ["requestId": request.nativeRequestId],
@@ -1402,5 +1414,16 @@ public actor SessionService {
 
   private func merge(_ base: JSONValue, _ extra: [String: JSONValue]) -> JSONValue {
     .object((base.objectValue ?? [:]).merging(extra) { _, new in new })
+  }
+}
+
+/// The synchronous callback runs in the event-log actor turn while storage holds the row lease.
+private func publishVisibleEnvelope(
+  _ event: AdapterEvent, database: WorkspaceDatabase, eventLog: isolated EventLog
+) throws {
+  if let threadId = event.threadId {
+    try database.withVisibleThread(id: threadId) { eventLog.publish(event) }
+  } else {
+    eventLog.publish(event)
   }
 }
