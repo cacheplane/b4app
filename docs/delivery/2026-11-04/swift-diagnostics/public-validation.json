@@ -1,6 +1,6 @@
 {
   "scope": "Nonpublishing retained Swift CI instrumentation, no optimization",
-  "case": "diagnostic",
+  "case": "control",
   "reference": "590410759576dfd6b2a661bdd6c3fb727cce82b1",
   "preserve": "All1170originalSwiftIDs/148suites/41Python(34old+7new)/48Bats/4native/lockedRust/cache32MB and all deadlines.",
   "observer": "Optin numericphase/own-descendant/system telemetry; no new SQL orsettings change. time-l common toboth on/off. No speedupclaim.",
