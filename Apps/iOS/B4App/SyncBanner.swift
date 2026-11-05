@@ -27,7 +27,7 @@ struct SyncBanner: View {
           .lineLimit(relayRefused == nil ? 1 : 2)
           .truncationMode(.tail)
       }
-      .padding(.horizontal, LLA.Space.l)
+      .padding(.horizontal, LLA.Metrics.margin)
       .padding(.vertical, LLA.Space.s)
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(LLA.Color.surfaceRaised)
