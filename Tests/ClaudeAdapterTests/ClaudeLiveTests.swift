@@ -74,4 +74,55 @@ struct ClaudeLiveTests {
     #expect(!snapshot.items.isEmpty)
     await reopened.dispose()
   }
+
+  /// The new-thread composer's runtime choice against the real CLI (D-183): a session launched on
+  /// Haiku with a second folder attached reads a file there; a mode and a model change reach the
+  /// running process as control requests; Bypass restarts it with `--resume`, and the conversation
+  /// carries on.
+  @Test func runtimeChoiceAppliesLive() async throws {
+    let adapter = ClaudeAdapter(connectionId: "live", executablePath: nil, clientVersion: "live-test")
+    let collector = EventCollector(adapter.events())
+    let inspection = try await adapter.inspectConnection()
+    try #require(inspection.status == .ready && inspection.authStatus == .authenticated)
+    #expect(inspection.models?.map(\.id) == ["opus", "sonnet", "haiku"])
+    let base = NSTemporaryDirectory() + "b4app-claude-choice-\(UUID().uuidString.prefix(8))"
+    let cwd = base + "/start"
+    let extra = base + "/extra"
+    for dir in [cwd, extra] {
+      try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    }
+    try "periwinkle\n".write(toFile: extra + "/marker.txt", atomically: true, encoding: .utf8)
+    let ref = try await adapter.createSession(
+      NewSessionInput(workingDirectory: cwd, model: "haiku", additionalDirectories: [extra]))
+
+    func turn(_ id: String, _ text: String, model: String?, permission: String?) async throws -> String {
+      let receipt = try await adapter.sendTurn(
+        ref,
+        input: TurnInput(
+          operationId: id, text: text, workingDirectory: cwd, model: model, permission: permission,
+          additionalDirectories: [extra]))
+      let done = try await collector.waitFor(timeout: .seconds(240)) {
+        $0.kind == .turnFinished && $0.nativeIds["turnId"] == receipt.nativeTurnId
+      }
+      #expect(done.payload["outcome"]?.stringValue == "completed", "\(id): \(done.payload)")
+      let reply = await collector.events.last {
+        $0.kind == .messageCompleted && $0.nativeIds["turnId"] == receipt.nativeTurnId
+      }
+      let said = reply?.payload["item"]?["text"]?.stringValue ?? ""
+      print("live \(id):", said)
+      return said
+    }
+
+    let read = try await turn(
+      "choice-1", "Read the file \(extra)/marker.txt and reply with only the word it contains.",
+      model: "haiku", permission: nil)
+    #expect(read.lowercased().contains("periwinkle"))
+    _ = try await turn("choice-2", "Reply with exactly: two", model: "haiku", permission: "acceptEdits")
+    _ = try await turn("choice-3", "Reply with exactly: three", model: "sonnet", permission: "plan")
+    let resumed = try await turn(
+      "choice-4", "What word was in marker.txt? Reply with just that word.", model: "sonnet",
+      permission: "bypassPermissions")
+    #expect(resumed.lowercased().contains("periwinkle"))
+    await adapter.dispose()
+  }
 }

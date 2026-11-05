@@ -116,4 +116,70 @@ struct CodexLiveTests {
     #expect(reply?.payload["item"]?["text"]?.stringValue?.contains("HTTP") == true)
     await adapter.dispose()
   }
+
+  /// The new-thread composer's runtime choice against the real app-server (D-183): `model/list`
+  /// answers; under "Auto" the second folder is a writable root, so a write there lands; under "Read
+  /// only" the same kind of write does not (an approval it asks for is denied).
+  @Test func runtimeChoiceAppliesLive() async throws {
+    let adapter = CodexAdapter(connectionId: "live", executablePath: nil, clientVersion: "live-test")
+    let collector = EventCollector(adapter.events())
+    let inspection = try await adapter.inspectConnection()
+    try #require(inspection.status == .ready && inspection.authStatus == .authenticated)
+    print("live models:", inspection.models?.map(\.id) ?? [])
+    #expect(inspection.models?.isEmpty == false)
+    let base = NSTemporaryDirectory() + "b4app-codex-choice-\(UUID().uuidString.prefix(8))"
+    let cwd = base + "/start"
+    let extra = base + "/extra"
+    for dir in [cwd, extra] {
+      try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    }
+    let ref = try await adapter.createSession(NewSessionInput(workingDirectory: cwd))
+
+    var handled = Set<String>()
+    /// Runs one turn to its end, denying any approval it asks for; returns the approvals asked.
+    func turn(_ id: String, _ text: String, permission: String) async throws -> Int {
+      let receipt = try await adapter.sendTurn(
+        ref,
+        input: TurnInput(
+          operationId: id, text: text, workingDirectory: cwd, permission: permission,
+          additionalDirectories: [extra]))
+      var asked = 0
+      while true {
+        let seen = handled
+        let event = try await collector.waitFor(timeout: .seconds(240)) {
+          $0.nativeIds["turnId"] == receipt.nativeTurnId
+            && ($0.kind == .turnFinished
+              || ($0.kind == .runtimeRequestOpened
+                && $0.nativeIds["requestId"].map { !seen.contains($0) } == true))
+        }
+        if event.kind == .turnFinished {
+          print("live \(id):", event.payload["outcome"]?.stringValue ?? "-", "approvals asked:", asked)
+          return asked
+        }
+        asked += 1
+        let requestId = event.nativeIds["requestId"]!
+        handled.insert(requestId)
+        let kind = RuntimeRequestKind(rawValue: event.payload["kind"]?.stringValue ?? "") ?? .unknown
+        print("live \(id) approval:", kind.rawValue)
+        try await adapter.respond(
+          RuntimeRequestRef(
+            nativeRequestId: requestId, kind: kind, adapterGeneration: event.adapterGeneration),
+          response: .decision(.deny))
+      }
+    }
+    _ = try await turn(
+      "choice-auto",
+      "Create a file at \(extra)/auto.txt containing exactly: ok. Then reply done. Do not ask me questions.",
+      permission: "auto")
+    #expect(
+      FileManager.default.fileExists(atPath: extra + "/auto.txt"),
+      "Auto did not make the second folder writable")
+
+    _ = try await turn(
+      "choice-readonly",
+      "Create a file at \(extra)/blocked.txt containing exactly: no. If you cannot, reply blocked. Do not ask me questions.",
+      permission: "read-only")
+    #expect(!FileManager.default.fileExists(atPath: extra + "/blocked.txt"), "Read only let a write through")
+    await adapter.dispose()
+  }
 }

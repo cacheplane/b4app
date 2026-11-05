@@ -244,7 +244,7 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
   static let capabilities: Capabilities = [
     .streaming: .supported, .nativeResume: .supported, .historyRetrieval: .supported,
     .explicitInterruption: .supported, .reconnect: .unverified, .permissionDecisions: .supported,
-    .userQuestions: .supported, .modelSelection: .unverified,
+    .userQuestions: .supported, .modelSelection: .supported,
   ]
 
   public func createSession(_ input: NewSessionInput) async throws -> NativeSessionRef {
