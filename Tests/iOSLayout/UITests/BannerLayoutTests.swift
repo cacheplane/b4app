@@ -5,7 +5,8 @@ final class BannerLayoutTests: XCTestCase {
   @MainActor
   private func launch(
     _ screen: String, notice: String = "sync", accessibility: Bool = false, dark: Bool = false,
-    recover: Bool = false, withSyncFailure: Bool = false
+    recover: Bool = false, withSyncFailure: Bool = false,
+    syncError: String? = nil, lastSyncAt: String? = nil
   ) -> XCUIApplication {
     continueAfterFailure = false
     XCUIDevice.shared.orientation = .portrait
@@ -15,6 +16,8 @@ final class BannerLayoutTests: XCTestCase {
       "LAYOUT_RECOVER": recover ? "1" : "0",
       "LAYOUT_SYNC_FAILURE": withSyncFailure ? "1" : "0",
     ]
+    if let syncError { app.launchEnvironment["LAYOUT_SYNC_ERROR"] = syncError }
+    if let lastSyncAt { app.launchEnvironment["LAYOUT_LAST_SYNC"] = lastSyncAt }
     if accessibility {
       app.launchArguments = [
         "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL",
@@ -310,6 +313,76 @@ final class BannerLayoutTests: XCTestCase {
     for screen in ["list", "detail"] {
       let app = launch(screen, notice: "healthy")
       checkLayout(app, screen: screen, hasBanner: false)
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  private func visibleSyncBanner(_ app: XCUIApplication) -> XCUIElement {
+    let query = app.descendants(matching: .any).matching(identifier: "sync.banner")
+    XCTAssertTrue(query.firstMatch.waitForExistence(timeout: 5))
+    let banner = query.allElementsBoundByIndex.first { $0.isHittable }
+    XCTAssertNotNil(banner)
+    return banner ?? query.firstMatch
+  }
+
+  @MainActor
+  func testInitialSyncFailureUsesPlainLanguage() {
+    for screen in ["list", "detail"] {
+      let app = launch(screen, syncError: "Hub error 0 transport: Could not connect to the server.")
+      checkLayout(app, screen: screen)
+      XCTAssertEqual(visibleSyncBanner(app).label, "Not synced yet. Retrying…")
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testStaleSyncFailureKeepsLastSuccessTime() {
+    for screen in ["list", "detail"] {
+      let app = launch(screen, notice: "stale", syncError: "Hub error 503 maintenance: Service unavailable.")
+      checkLayout(app, screen: screen)
+      let label = visibleSyncBanner(app).label
+      XCTAssertTrue(label.hasPrefix("Last synced "), label)
+      XCTAssertTrue(label.hasSuffix(". Retrying…"), label)
+      XCTAssertFalse(label.contains("Hub error"))
+      XCTAssertFalse(label.contains("Offline"), "A server failure does not mean the phone is offline")
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testOlderSyncTimeAndLargeTextRemainReadable() {
+    let earlier = ISO8601DateFormatter().string(from: Date.now.addingTimeInterval(-172800))
+    for screen in ["list", "detail"] {
+      let app = launch(
+        screen, notice: "stale", accessibility: true,
+        syncError: "Hub error 0 transport: A long diagnostic message that should never fill the banner.",
+        lastSyncAt: earlier)
+      checkLayout(app, screen: screen)
+      let label = visibleSyncBanner(app).label
+      XCTAssertTrue(label.hasPrefix("Last synced "), label)
+      XCTAssertTrue(label.hasSuffix(". Retrying…"), label)
+      XCTAssertFalse(label.contains("diagnostic"))
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testRefusedLinkAsksForSignInInsteadOfRetrying() {
+    for screen in ["list", "detail"] {
+      let app = launch(screen, notice: "refused")
+      checkLayout(app, screen: screen)
+      XCTAssertEqual(visibleSyncBanner(app).label, "Log out, then sign in to reconnect.")
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testBlockedMirrorDoesNotPromiseRetry() {
+    for screen in ["list", "detail"] {
+      let app = launch(screen, notice: "blocked")
+      checkLayout(app, screen: screen)
+      XCTAssertEqual(visibleSyncBanner(app).label, "Sync paused. Check Diagnostics.")
       app.terminate()
     }
   }

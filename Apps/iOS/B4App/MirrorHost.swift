@@ -78,7 +78,7 @@ extension MirrorAccount: @retroactive AccountHost {}
   /// Watches the relay for the stops it makes on its own.
   @ObservationIgnored private var relayWatch: Task<Void, Never>?
   /// The copy for a refused link.
-  static let relayRefusedMessage = "The hub no longer accepts this iPhone. Log out, then sign in again."
+  static let relayRefusedMessage = SyncBanner.signInRequiredMessage
   /// The shell's model, once made.
   @ObservationIgnored private weak var model: WorkspaceModel?
   /// The sync's suspend and resume calls, chained (as the relay's are) so they reach it in the order
