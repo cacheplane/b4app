@@ -110,7 +110,7 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable {
   static let capabilities: Capabilities = [
     .streaming: .supported, .nativeResume: .supported, .historyRetrieval: .supported,
     .explicitInterruption: .supported, .reconnect: .unverified, .permissionDecisions: .supported,
-    .userQuestions: .supported, .modelSelection: .unverified,
+    .userQuestions: .supported, .modelSelection: .supported,
   ]
 
   // MARK: - Sessions
