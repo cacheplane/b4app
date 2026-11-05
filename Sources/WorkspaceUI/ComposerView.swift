@@ -160,7 +160,10 @@ struct ComposerView: View {
         .foregroundStyle(danger ? LLA.Color.danger : LLA.Color.muted)
         .fixedSize(horizontal: false, vertical: true)
     }
-    .padding(.horizontal, Self.textLeading)
+    // The phone already gets its page gutter from ComposerView; do not add it a second time.
+    #if os(macOS)
+      .padding(.horizontal, Self.textLeading)
+    #endif
     .accessibilityElement(children: .combine)
   }
 

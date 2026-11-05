@@ -25,7 +25,7 @@ struct NewThreadDock: View {
       .accessibilityLabel(Self.placeholder)
       .accessibilityHint(reason ?? "Opens a new thread")
       .accessibilityIdentifier("new-thread-dock")
-      .padding(.horizontal, LLA.Space.m)
+      .padding(.horizontal, LLA.Metrics.margin)
       .padding(.vertical, LLA.Space.s)
     }
     .background(LLA.Color.surface)

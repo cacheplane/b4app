@@ -138,6 +138,8 @@ struct LayoutApp: App {
         .task {
           await relay.start()
           let socket = try! await connection.nextSocket()
+          // Leave the link awaiting hello to render the shipped connection notices on both screens.
+          guard notice != "connecting" else { return }
           socket.deliver(
             .hello(
               protocol: 1, minClientProtocol: 1, deviceId: "phone-1", role: .client, heartbeatSeconds: 10,
