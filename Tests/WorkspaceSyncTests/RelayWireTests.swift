@@ -15,7 +15,7 @@ import WorkspaceProtocol
   @Test func relayFixtureRoundTrips() throws {
     let data = try Data(contentsOf: fixtureURL("relay.json"))
     let elements = try JSONCoding.decoder.decode([JSONValue].self, from: data)
-    #expect(elements.count == 18)
+    #expect(elements.count == 21)
     for element in elements {
       let elementData = try JSONCoding.encoder.encode(element)
       let message = try JSONCoding.decoder.decode(RelayMessage.self, from: elementData)
@@ -94,7 +94,10 @@ import WorkspaceProtocol
   @Test func methodsAndRolesUseTheirWireStrings() {
     #expect(
       RelayMethod.allCases.map(\.rawValue)
-        == ["turn.send", "turn.interrupt", "request.respond", "thread.start", "turn.lookup"])
+        == [
+          "turn.send", "turn.interrupt", "request.respond", "thread.start", "turn.lookup", "project.create",
+          "project.update", "project.delete",
+        ])
     #expect(RelayRole.host.rawValue == "host" && RelayRole.client.rawValue == "client")
   }
 

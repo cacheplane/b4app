@@ -103,6 +103,8 @@ struct WorkspaceShell: View {
         NewThreadSheet(model: model).environment(\.showDetail, showDetail)
       }
     }
+    // The phone's New project and Edit project; the Mac's sheets hang off its sidebar.
+    .sheet(item: $model.projectSheet) { PhoneProjectSheet(model: model, request: $0) }
     #if os(macOS)
       // "Add your iPhone", once after a new account's onboarding (sign-in plan, Task 12).
       .sheet(isPresented: $model.showAddPhone) { AddPhoneView(model: model) }

@@ -462,10 +462,6 @@ private final class WriteCounter: Sendable {
       })
     refusals.append(
       await #expect(throws: WorkspaceError.self) {
-        try await client.request(ProjectDelete.self, .init(projectId: "p1"), options: options)
-      })
-    refusals.append(
-      await #expect(throws: WorkspaceError.self) {
         try await client.request(HubLeave.self, EmptyParams(), options: options)
       })
     for refusal in refusals {
@@ -754,6 +750,71 @@ private final class WriteCounter: Sendable {
 
   /// The hub watches a started thread for the phone; a start refused before its turn was made gives
   /// that watch back, so refusals never use up the link's four. One whose turn exists keeps it.
+  @Test func projectEditsGoToTheMacAndKeepTheOwnerTheMirrorKnows() async throws {
+    let (store, h, socket) = try await relayedMirror()
+    _ = try store.apply([
+      change("projects", "p1", "insert", value: projectJSON("p1")),
+      change("projectFolders", "f1", "insert", value: folderJSON("f1", projectId: "p1", path: "/work/app")),
+    ])
+    let owner = try #require(try store.projects().first?.ownerDeviceId)
+    let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay))
+    _ = try await client.ready()
+    let options = RequestOptions(operationId: "op-1")
+
+    // An update goes to the Mac as it is; the project it returns (the Mac sends no owner) gets the
+    // mirror's owner back, so the phone keeps routing to that Mac.
+    let update = ProjectUpdate.Params(projectId: "p1", addFolders: ["~/work/docs"])
+    let updating = Task { try await client.request(ProjectUpdate.self, update, options: options) }
+    guard case .command(let id, .projectUpdate, let params, _, _) = try await RelayHarness.nextCommand(socket)
+    else {
+      Issue.record("expected project.update")
+      return
+    }
+    #expect(params == (try JSONValue(encoding: update)))
+    var edited = Project(id: "p1", name: "", manual: true, folders: [])
+    socket.deliver(.reply(id: id, result: try JSONValue(encoding: ProjectUpdate.Result(project: edited))))
+    #expect(try await updating.value.project.ownerDeviceId == owner)
+
+    // A new project is not in the mirror yet: it has no owner until its row syncs.
+    let create = ProjectCreate.Params(
+      name: "New", folders: ["/work/new"], projectId: "p-new", deviceId: owner)
+    let creating = Task { try await client.request(ProjectCreate.self, create, options: options) }
+    guard
+      case .command(let createId, .projectCreate, let createParams, _, _) =
+        try await RelayHarness.nextCommand(socket)
+    else {
+      Issue.record("expected project.create")
+      return
+    }
+    #expect(createParams["deviceId"] == .string(owner) && createParams["projectId"] == "p-new")
+    edited.id = "p-new"
+    socket.deliver(
+      .reply(id: createId, result: try JSONValue(encoding: ProjectCreate.Result(project: edited))))
+    #expect(try await creating.value.project.ownerDeviceId == nil)
+
+    // The Mac's refusal is the phone's answer, word for word, and the mirror is untouched.
+    let deleting = Task {
+      try await client.request(ProjectDelete.self, ProjectDelete.Params(projectId: "p1"), options: options)
+    }
+    guard case .command(let deleteId, .projectDelete, _, _, _) = try await RelayHarness.nextCommand(socket)
+    else {
+      Issue.record("expected project.delete")
+      return
+    }
+    socket.deliver(
+      .reply(
+        id: deleteId,
+        error: RelayWireError(
+          .protocolInvalid, "Project app is automatic; only manual projects can be deleted.")
+      ))
+    let refused = await #expect(throws: WorkspaceError.self) { try await deleting.value }
+    #expect(
+      refused?.code == .protocolInvalid && refused?.message.hasPrefix("Project app is automatic") == true)
+    #expect(try store.projects().map(\.id) == ["p1"])
+    await client.close()
+    await h.relay.stop()
+  }
+
   @Test func aRefusedStartLetsGoOfItsAutoWatch() async throws {
     let (store, h, socket) = try await relayedMirror()
     let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay))

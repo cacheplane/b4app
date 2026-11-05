@@ -16,9 +16,12 @@ import WorkspaceSync
 /// event like the Mac's coordinator does, then `onLocalWrite` is called so the host can wake the
 /// uploader. Everything else the phone cannot do answers `unsupported_capability` "… is done on the Mac."
 ///
-/// With a `MirrorRelay` (M8c), `turn.send`, `turn.interrupt`, `request.respond`, `thread.start`, and
-/// `turn.lookup` go to the Mac through the hub: `turn.send` and `thread.start` use the envelope's
-/// `operationId` as the relay id (the Mac's idempotency key), the others a fresh one. The transport
+/// With a `MirrorRelay` (M8c), `turn.send`, `turn.interrupt`, `request.respond`, `thread.start`,
+/// `turn.lookup`, and the project edits (`project.create`, `project.update`, `project.delete`) go to the
+/// Mac through the hub: `turn.send` and `thread.start` use the envelope's `operationId` as the relay id
+/// (the Mac's idempotency key), the others a fresh one. A project the Mac returns is given the owner
+/// the mirror knows for it, so an edit never makes a known project look ownerless; a new project has
+/// none until its row syncs, which is also when the hub can route to it. The transport
 /// watches the thread read last, and only that one. Relayed events are re-emitted in this transport's
 /// epoch and change only the on-screen model, never the mirror:
 /// - a `message.delta` for an item the mirror holds as final, or that a relayed completion already
@@ -119,7 +122,8 @@ public final class MirrorTransport: WorkspaceTransport {
   /// The phone's commands the relay carries to the Mac.
   static let relayed: [WorkspaceProtocol.Method: RelayMethod] = [
     .turnSend: .turnSend, .turnInterrupt: .turnInterrupt, .requestRespond: .requestRespond,
-    .threadStart: .threadStart, .turnLookup: .turnLookup,
+    .threadStart: .threadStart, .turnLookup: .turnLookup, .projectCreate: .projectCreate,
+    .projectUpdate: .projectUpdate, .projectDelete: .projectDelete,
   ]
 
   /// The methods the mirror answers; every other one is refused.
@@ -129,16 +133,11 @@ public final class MirrorTransport: WorkspaceTransport {
     .threadMarkRead, .draftSave, .usageRead, .threadDelete,
   ]
 
-  /// The methods the phone leaves to the Mac, whose projects it only reads and renames.
-  static let macOnly: Set<WorkspaceProtocol.Method> = [.projectCreate, .projectUpdate, .projectDelete]
-
-  static let macRefusal = "Creating, editing folders of, and deleting projects is done on the Mac."
-
   /// Why the phone does not do `method`: "… is done on the Mac."
   static func refusal(for method: WorkspaceProtocol.Method) -> String {
     switch method {
     case .projectCreate, .projectUpdate, .projectDelete:
-      return macRefusal
+      return "Until this iPhone is paired with your Mac's hub, editing projects is done on the Mac."
     case .turnSend, .turnInterrupt, .requestRespond, .threadStart, .turnLookup:
       return "Until this iPhone is paired with your Mac's hub, chatting is done on the Mac."
     case .threadCreate:
@@ -591,7 +590,15 @@ public final class MirrorTransport: WorkspaceTransport {
         if state.overlays[started.threadId] == nil { state.overlays[started.threadId] = Overlay() }
       }
     }
-    let result = await relay.command(id: id, method: method, params: command.params)
+    var result = await relay.command(id: id, method: method, params: command.params)
+    if method == .projectCreate || method == .projectUpdate, case .success(let value) = result,
+      var edited = try? value.decode(ProjectCreate.Result.self)
+    {
+      edited.project.ownerDeviceId =
+        (try? store.projects())?.first { $0.id == edited.project.id }?
+        .ownerDeviceId
+      if let patched = try? JSONValue(encoding: edited) { result = .success(patched) }
+    }
     if let started, settle(started.threadId, result) {
       // Before the refusal is answered, so it goes out ahead of any watch the caller asks for next.
       await relay.releaseAutoWatch(started.threadId)

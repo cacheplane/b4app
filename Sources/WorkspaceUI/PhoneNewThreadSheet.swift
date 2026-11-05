@@ -77,7 +77,7 @@ extension WorkspaceModel {
     if let reason = offered.lazy.compactMap({ self.startBlockedReason(for: $0) }).first { return reason }
     if let reason = newThreadDisabledReason { return reason }
     return projects.isEmpty
-      ? "No projects yet. Start one on your Mac."
+      ? RelayCopy.noProjects
       : "Add a ready connection on your Mac first"
   }
 }
@@ -253,7 +253,7 @@ struct PhoneNewThreadSheet: View {
           }
           VStack(alignment: .leading, spacing: LLA.Space.l) {
             if draft.projects.isEmpty {
-              Text("No projects yet. Start one on your Mac.").llaSmallMuted()
+              Text(RelayCopy.noProjects).llaSmallMuted()
             } else {
               projectField
               connectionField

@@ -66,6 +66,12 @@ pub enum RelayMethod {
     ThreadStart,
     #[serde(rename = "turn.lookup")]
     TurnLookup,
+    #[serde(rename = "project.create")]
+    ProjectCreate,
+    #[serde(rename = "project.update")]
+    ProjectUpdate,
+    #[serde(rename = "project.delete")]
+    ProjectDelete,
 }
 
 impl RelayMethod {
@@ -77,6 +83,9 @@ impl RelayMethod {
             RelayMethod::RequestRespond => "request.respond",
             RelayMethod::ThreadStart => "thread.start",
             RelayMethod::TurnLookup => "turn.lookup",
+            RelayMethod::ProjectCreate => "project.create",
+            RelayMethod::ProjectUpdate => "project.update",
+            RelayMethod::ProjectDelete => "project.delete",
         }
     }
 }
@@ -199,7 +208,7 @@ mod tests {
     #[test]
     fn relay_fixture_round_trips() {
         let elements: Vec<serde_json::Value> = serde_json::from_str(FIXTURE).unwrap();
-        assert_eq!(elements.len(), 18);
+        assert_eq!(elements.len(), 21);
         for element in elements {
             let decoded: RelayMessage = serde_json::from_value(element.clone()).unwrap();
             assert_eq!(serde_json::to_value(decoded).unwrap(), element);
@@ -214,6 +223,9 @@ mod tests {
             (RelayMethod::RequestRespond, "request.respond"),
             (RelayMethod::ThreadStart, "thread.start"),
             (RelayMethod::TurnLookup, "turn.lookup"),
+            (RelayMethod::ProjectCreate, "project.create"),
+            (RelayMethod::ProjectUpdate, "project.update"),
+            (RelayMethod::ProjectDelete, "project.delete"),
         ] {
             assert_eq!(method.as_str(), wire);
             assert_eq!(serde_json::to_value(method).unwrap(), wire);

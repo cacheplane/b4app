@@ -81,13 +81,22 @@ public enum ProjectList: WorkspaceCommand {
 /// Create a manual project over one or more existing folders. A folder that belongs to an automatic
 /// project moves out of it (its threads follow, and an automatic project left empty is deleted); a
 /// folder of another manual project is refused.
+///
+/// The phone sends it over the relay: `deviceId` names the Mac the folders are on (the hub routes by
+/// it; the Mac ignores it), and `projectId` is a lowercase UUID the phone mints, so a resend of the
+/// same create finds the project the first one made instead of making another. Without `projectId`
+/// the coordinator mints one.
 public enum ProjectCreate: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
     public var name: String
     public var folders: [String]
-    public init(name: String, folders: [String]) {
+    public var projectId: String?
+    public var deviceId: String?
+    public init(name: String, folders: [String], projectId: String? = nil, deviceId: String? = nil) {
       self.name = name
       self.folders = folders
+      self.projectId = projectId
+      self.deviceId = deviceId
     }
   }
   public struct Result: Codable, Sendable, Equatable {

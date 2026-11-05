@@ -1435,11 +1435,18 @@ ids it routes by, nor `result` at all.
 | `turn.lookup` | `params.threadId` | the thread |
 | `request.respond` | `params.requestId` | the runtime request's thread (`"runtimeRequests"."threadId"`) |
 | `thread.start` | `params.projectId` | the project |
+| `project.update` | `params.projectId` | the project |
+| `project.delete` | `params.projectId` | the project |
+| `project.create` | `params.deviceId` | that device itself (a new project has no row yet) |
 
-The owner is the row's `owner_device_id` on the hub (the device whose push inserted it). The hub
-checks, in this order:
+The owner is the row's `owner_device_id` on the hub (the device whose push inserted it); for
+`project.create` it is the device `params.deviceId` names. The project edits carry the coordinator's
+own params (`project.create { deviceId, projectId?, name, folders }`, `project.update { projectId,
+name?, addFolders?, removeFolders? }`, `project.delete { projectId }`); the Mac validates the
+folders, which are paths on that Mac. The phone renames a project through the change log
+(`projects.name` is phone-writable), never over the link. The hub checks, in this order:
 
-1. **Role and method.** A `command` from a host link, or with a method outside the five, is
+1. **Role and method.** A `command` from a host link, or with a method outside the eight, is
    `not_found` (a host never sends commands; an unknown method answers by the frame's `id`).
 2. **Limits.** (A resend of a command still in flight is not counted; see *In flight*.) A client device may send 60 commands a minute (a sliding window), in bursts of at
    most 20 (after a burst, one a second). A user's `turn.send` and `thread.start` together are
@@ -1450,7 +1457,8 @@ checks, in this order:
    `rate_limited` (`retryAfterMs: 1000`) at once, without being checked or counted, while a
    resend of one still running attaches to it as usual.
 3. **Lookup.** The row is looked up by id within the caller's org and user. A missing row,
-   another user's or another org's, a missing routing param, and a row whose owner is not a
+   another user's or another org's, a missing routing param (or a `deviceId` that is not a
+   UUID), and a row whose owner is not a
    non-revoked `macos` device of the caller's own user all answer `not_found`, the same way.
 4. **Already answered.** `request.respond` for a request whose state on the hub is set and is not
    `pending` is `stale_runtime_request` at once, without forwarding. (The Mac stays the authority:
@@ -1461,7 +1469,8 @@ checks, in this order:
      `command_expired`) and `from` (the calling device's id and name). If the Mac's link dropped
      meanwhile the answer is `device_offline`; if its outbound queue stays full for 5 seconds the
      answer is `relay_timeout` (the Mac is online but not taking frames in time).
-   - **Owner offline, `turn.send`, `thread.start`, or `turn.lookup`:** `device_offline` at once,
+   - **Owner offline, `turn.send`, `thread.start`, `turn.lookup`, or a project edit:**
+     `device_offline` at once,
      with `details: { deviceId, deviceName, lastSeenAt }` (`lastSeenAt` omitted for a Mac never
      seen). These are never held.
    - **Owner offline, `turn.interrupt` or `request.respond`:** if the Mac was last heard from less
@@ -1659,7 +1668,8 @@ their rate limit. Reads (`GET /v1/changes`, `GET /v1/snapshot`, `GET /v1/me`,
 `"maintenance": "read_only"`. A client treats `maintenance` like a transient failure: keep the
 outbox, retry after the header's delay.
 
-Over the link, a client's `turn.send`, `thread.start`, and `request.respond` are answered at once
+Over the link, a client's `turn.send`, `thread.start`, `request.respond`, `project.create`,
+`project.update`, and `project.delete` are answered at once
 with a `reply` whose error is `maintenance` and the same message, and are not forwarded.
 `turn.lookup`, `turn.interrupt`, and `watch` continue.
 
