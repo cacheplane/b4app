@@ -683,6 +683,18 @@ actor EventCollector {
     await rig.h.stop()
   }
 
+  /// A project folder gone from disk is not handed to the runtime; the folders still there are.
+  @Test func aFolderGoneFromDiskIsLeftOut() async throws {
+    let rig = try await Rig.start()
+    let folderC = try Rig.folder((rig.folderB as NSString).deletingLastPathComponent, "c")
+    try await rig.addFolder(folderC)
+    try FileManager.default.removeItem(atPath: folderC)
+    try await rig.finishedTurn("hello")
+    let argv = try #require(try rig.launches().last)
+    #expect(rig.addDirs(argv) == [SessionService.canonicalDirectory(rig.folderB)])
+    await rig.h.stop()
+  }
+
   @Test func aChangeDuringATurnAppliesToTheNextTurn() async throws {
     let rig = try await Rig.start()
     let held = try await rig.h.send(rig.thread, "hang around")

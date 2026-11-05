@@ -376,7 +376,7 @@ public actor SessionService {
       let others = try db.project(folderPath: canonical)?.folders.map(\.path).filter { $0 != canonical }
       input = NewSessionInput(
         workingDirectory: directory, model: model, permission: permission,
-        additionalDirectories: others ?? [])
+        additionalDirectories: Self.existingDirectories(others ?? []))
       threadContext = directory
       defaultTitle = (directory as NSString).lastPathComponent
     }
@@ -869,14 +869,23 @@ public actor SessionService {
   }
 
   /// The project's other folders, for the runtime to reach beside the thread's own: the canonical paths
-  /// of its project's folders, oldest first, without the thread's working directory. Empty for a thread
-  /// with no project or no directory (B4).
+  /// of its project's folders, oldest first, without the thread's working directory or any folder no
+  /// longer on disk. Empty for a thread with no project or no directory (B4).
   func additionalDirectories(for thread: ConversationThread) throws -> [String] {
     guard let projectId = thread.projectId, let context = thread.context, !context.isEmpty,
       try db.connection(id: thread.connectionId)?.kind != .b4, let project = try db.project(id: projectId)
     else { return [] }
     let own = Self.canonicalDirectory(context)
-    return project.folders.map(\.path).filter { $0 != own }
+    return Self.existingDirectories(project.folders.map(\.path).filter { $0 != own })
+  }
+
+  /// The paths that are directories on disk now: a project folder deleted or unmounted since it was
+  /// added is not handed to a runtime.
+  static func existingDirectories(_ paths: [String]) -> [String] {
+    paths.filter { path in
+      var isDirectory: ObjCBool = false
+      return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
   }
 
   /// Symlinks resolved, `..` collapsed, no trailing slash: the identity of a working directory.
