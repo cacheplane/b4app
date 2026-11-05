@@ -8,58 +8,119 @@ import WorkspaceProtocol
 /// NIO server on the coordinator's Unix socket: hello on connect, events fanned out, commands routed.
 public final class SocketServer: Sendable {
   private let group: MultiThreadedEventLoopGroup
-  private let serverChannel: NIOAsyncChannel<NIOAsyncChannel<ByteBuffer, ByteBuffer>, Never>
+  private let serverChannel: NIOAsyncChannel<Void, Never>
   private let acceptTask: Task<Void, Never>
+  private let connections: Connections
   private let closeTask = Mutex<Task<Void, Never>?>(nil)
   public let socketPath: String
 
   private init(
     group: MultiThreadedEventLoopGroup,
-    serverChannel: NIOAsyncChannel<NIOAsyncChannel<ByteBuffer, ByteBuffer>, Never>,
-    acceptTask: Task<Void, Never>, socketPath: String
+    serverChannel: NIOAsyncChannel<Void, Never>,
+    acceptTask: Task<Void, Never>, connections: Connections, socketPath: String
   ) {
     self.group = group
     self.serverChannel = serverChannel
     self.acceptTask = acceptTask
+    self.connections = connections
     self.socketPath = socketPath
   }
 
   public static func start(
     socketPath: String, router: Router, eventLog: EventLog
   ) async throws -> SocketServer {
+    try await start(
+      socketPath: socketPath, router: router, eventLog: eventLog,
+      beforeAccepting: nil, childActivated: nil)
+  }
+
+  /// Internal lifecycle seam: tests can hold accept consumption after a child is initialized.
+  static func start(
+    socketPath: String, router: Router, eventLog: EventLog,
+    beforeAccepting: (@Sendable () async -> Void)?, childActivated: (@Sendable () -> Void)?
+  ) async throws -> SocketServer {
     let logger = Log.logger("socket")
     let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-    let serverChannel: NIOAsyncChannel<NIOAsyncChannel<ByteBuffer, ByteBuffer>, Never>
+    let connections = Connections()
+    let serverChannel: NIOAsyncChannel<Void, Never>
     do {
       serverChannel = try await ServerBootstrap(group: group)
         .serverChannelOption(.socketOption(.so_reuseaddr), value: 1)
         .bind(unixDomainSocketPath: socketPath, cleanupExistingSocketFile: true) { channel in
           channel.eventLoop.makeCompletedFuture {
-            try channel.pipeline.syncOperations.addHandler(ByteToMessageHandler(LineBasedFrameDecoder()))
-            return try NIOAsyncChannel<ByteBuffer, ByteBuffer>(wrappingChannelSynchronously: channel)
+            try connections.start(
+              channel, router: router, eventLog: eventLog, childActivated: childActivated)
           }
         }
     } catch {
+      await connections.close()
       try? await group.shutdownGracefully()
       throw WorkspaceError(.internalError, "Could not listen on \(socketPath): \(error)")
     }
     chmod(socketPath, 0o600)
     let acceptTask = Task {
+      if let beforeAccepting { await beforeAccepting() }
       do {
         try await serverChannel.executeThenClose { inbound in
-          try await withThrowingDiscardingTaskGroup { connections in
-            for try await connection in inbound {
-              connections.addTask { await Self.serve(connection, router: router, eventLog: eventLog) }
-            }
-          }
+          // The buffer contains only acceptance notifications. Every child already has an owner.
+          for try await _ in inbound {}
         }
       } catch {
         logger.info("accept loop ended: \(String(describing: error), privacy: .public)")
       }
+      await connections.close()
     }
     logger.info("listening at \(socketPath, privacy: .public)")
     return SocketServer(
-      group: group, serverChannel: serverChannel, acceptTask: acceptTask, socketPath: socketPath)
+      group: group, serverChannel: serverChannel, acceptTask: acceptTask, connections: connections,
+      socketPath: socketPath)
+  }
+
+  /// Registers each cleanup owner before its initializer can publish into the cancellable stream.
+  private final class Connections: Sendable {
+    private struct State {
+      var sealed = false
+      var owners: [UUID: Task<Void, Never>] = [:]
+    }
+    private let state = Mutex(State())
+
+    func start(
+      _ channel: Channel, router: Router, eventLog: EventLog,
+      childActivated: (@Sendable () -> Void)?
+    ) throws {
+      do {
+        try state.withLock { state in
+          guard !state.sealed else { throw ChannelError.ioOnClosedChannel }
+          try channel.pipeline.syncOperations.addHandler(ByteToMessageHandler(LineBasedFrameDecoder()))
+          if let childActivated {
+            try channel.pipeline.syncOperations.addHandler(ChildActiveProbe(notify: childActivated))
+          }
+          let connection = try NIOAsyncChannel<ByteBuffer, ByteBuffer>(
+            wrappingChannelSynchronously: channel)
+          let id = UUID()
+          state.owners[id] = Task {
+            await SocketServer.serve(connection, router: router, eventLog: eventLog)
+            self.finished(id)
+          }
+        }
+      } catch {
+        channel.close(promise: nil)
+        throw error
+      }
+    }
+
+    private func finished(_ id: UUID) {
+      state.withLock { $0.owners[id] = nil }
+    }
+
+    func close() async {
+      let owners = state.withLock { state in
+        state.sealed = true
+        return Array(state.owners.values)
+      }
+      for owner in owners { owner.cancel() }
+      for owner in owners { await owner.value }
+    }
   }
 
   private static func serve(
@@ -113,14 +174,21 @@ public final class SocketServer: Sendable {
     }
   }
 
+  /// Observes listener closure without waiting for the held accept-consumption test seam.
+  func waitForListenerClosure() async {
+    try? await serverChannel.channel.closeFuture.get()
+  }
+
   public func close() async {
     let closing = closeTask.withLock { task in
       if let task { return task }
-      let closing = Task { [acceptTask, serverChannel, group, socketPath] in
+      let closing = Task { [acceptTask, serverChannel, connections, group, socketPath] in
+        // Seal admission before cancelling the accept stream. An initializer arriving after this
+        // point closes its raw channel without creating an unowned async writer.
+        await connections.close()
         acceptTask.cancel()
         try? await serverChannel.channel.close()
-        // The accept task owns the per-connection scopes too. They must unwind before
-        // the shared event loop is shut down, including when clients are still connected.
+        // Both listener and connection scopes finish before their shared event loop shuts down.
         await acceptTask.value
         try? await group.shutdownGracefully()
         try? FileManager.default.removeItem(atPath: socketPath)
@@ -161,5 +229,18 @@ private final class SocketReply: Sendable {
       }
       if ready.0 { continuation.resume(returning: ready.1) }
     }
+  }
+}
+
+/// The lifecycle fixture observes activation after NIO has handed the writer to its application.
+private final class ChildActiveProbe: ChannelInboundHandler, Sendable {
+  typealias InboundIn = ByteBuffer
+  let notify: @Sendable () -> Void
+
+  init(notify: @escaping @Sendable () -> Void) { self.notify = notify }
+
+  func channelActive(context: ChannelHandlerContext) {
+    context.fireChannelActive()
+    notify()
   }
 }

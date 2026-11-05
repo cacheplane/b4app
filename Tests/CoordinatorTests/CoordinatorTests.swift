@@ -351,6 +351,51 @@ private final class RetireCount: Sendable {
     phase("coordinator-close-end")
   }
 
+  @Test func shutdownOwnsAChildBeforeAcceptConsumption() async throws {
+    let coordinator = try await startIsolated()
+    let accepting = Gate()
+    let activated = Gate()
+    defer { accepting.open(); activated.open() }
+    let server = try await SocketServer.start(
+      socketPath: coordinator.paths.socketPath + ".held", router: coordinator.router,
+      eventLog: coordinator.eventLog, beforeAccepting: { await accepting.wait() },
+      childActivated: { activated.open() })
+    do {
+      let transport = try await UnixSocketTransport.connect(path: server.socketPath)
+      let ready = await Bounded.run(within: .seconds(10)) { await activated.wait() }
+      #expect(ready)
+      let incoming = transport.incoming
+      let hello = Task {
+        var iterator = incoming.makeAsyncIterator()
+        return await iterator.next()
+      }
+      // This is an ownership guard, not a ten-second performance objective: accept consumption
+      // remains held, so the old implementation cannot run a connection's cleanup scope at all.
+      let owned = await Bounded.run(within: .seconds(10)) { _ = await hello.value }
+      #expect(owned, "An active child must have an owner before accept consumption")
+      if owned { #expect(await hello.value != nil) }
+      let closing = Task { await server.close() }
+      let listenerClosed = await Bounded.run(within: .seconds(10)) {
+        await server.waitForListenerClosure()
+      }
+      #expect(listenerClosed)
+      accepting.open()
+      await closing.value
+      let ended = Task { for await _ in incoming {} }
+      let streamClosed = await Bounded.run(within: .seconds(10)) { await ended.value }
+      #expect(streamClosed, "The owned child must close without waiting for its client")
+      await transport.close()
+      await ended.value
+      _ = await hello.value
+    } catch {
+      accepting.open()
+      await server.close()
+      await coordinator.close()
+      throw error
+    }
+    await coordinator.close()
+  }
+
   @Test func concurrentTransportClosesAndALateSendAreSafe() async throws {
     let coordinator = try await startIsolated()
     let transport = try await UnixSocketTransport.connect(path: coordinator.paths.socketPath)
