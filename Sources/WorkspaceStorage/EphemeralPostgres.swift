@@ -67,7 +67,7 @@ public enum EphemeralPostgres {
       cluster, "pg_ctl",
       [
         "-D", cluster.dataDir, "-l", cluster.logPath, "-w", "-t", "60", "-o",
-        cluster.serverOptions.joined(separator: " "), "start",
+        (cluster.serverOptions + ["-c", "shared_buffers=256MB"]).joined(separator: " "), "start",
       ])
     atexit {
       // Best effort: stop the shared cluster and remove it when the test process exits. A run that

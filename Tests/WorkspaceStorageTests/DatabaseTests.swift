@@ -151,3 +151,34 @@ private func thread(
     try db.close()
   }
 }
+
+@Suite struct EphemeralBufferTests {
+  @Test func bufferBudgetPreservesDurabilityAndDatabaseIsolation() throws {
+    let first = try WorkspaceDatabase.temporary()
+    defer { try? first.close() }
+    let settings = try first.read {
+      try $0.execute(
+        """
+        SELECT current_setting('shared_buffers') AS buffers,
+          current_setting('fsync') AS fsync,
+          current_setting('full_page_writes') AS full_pages,
+          current_setting('synchronous_commit') AS synchronous_commit,
+          current_setting('wal_level') AS wal_level,
+          current_setting('max_wal_size') AS max_wal_size
+        """
+      ).rows[0]
+    }
+    #expect(settings.text("buffers") == "256MB")
+    #expect(settings.text("fsync") == "on")
+    #expect(settings.text("full_pages") == "on")
+    #expect(settings.text("synchronous_commit") == "on")
+    #expect(settings.text("wal_level") == "replica")
+    #expect(settings.text("max_wal_size") == "1GB")
+    _ = try first.insertConnection(connection("buffer-isolation"))
+    let second = try WorkspaceDatabase.temporary()
+    defer { try? second.close() }
+    #expect(first.endpoint.database != second.endpoint.database)
+    #expect(try second.connection(id: "buffer-isolation") == nil)
+    #expect(try first.connection(id: "buffer-isolation")?.label == "buffer-isolation")
+  }
+}
