@@ -3,7 +3,7 @@ import UIKit
 import WorkspaceUI
 
 /// "Connect your Mac" (sign-in plan, Task 15; mockup A2): on a phone whose account has no Mac it takes
-/// the thread list's place; the sidebar's footer and profile menu stay. It is the signed-out landing's
+/// the thread list's place; the header's profile menu stays. It is the signed-out landing's
 /// layout and copy without "Other ways to sign in". Its state and copy are `ConnectMac`'s and the
 /// drawing is `ConnectMacScreen`'s (`WorkspaceUI`, tested there); this gives them the pasteboard and
 /// the app's scanner.

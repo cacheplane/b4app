@@ -398,6 +398,17 @@ struct SnapshotShell: View {
     try await render("ios-list-dock-notice", size: CGSize(width: 390, height: 844)) { list }
   }
 
+  /// The dock while no project's Mac can take a thread: the field is off and the reason shows above
+  /// it, since a compact width cannot reach the new-thread screen that would say why.
+  @Test func iosDockBlocked() async throws {
+    let model = WorkspaceModel(transportProvider: { throw WorkspaceError(.endpointUnavailable, "offline") })
+    let reason = try #require(model.newThreadEntryReason)
+    #expect(reason == "Add a ready Codex connection first")
+    try await render("ios-dock-blocked", size: CGSize(width: 390, height: 140)) {
+      NewThreadDock(model: model).frame(maxHeight: .infinity, alignment: .bottom)
+    }
+  }
+
   @Test func rowShowsEachBandDot() async throws {
     let model = try await ListFixture.model()
     let rows = [

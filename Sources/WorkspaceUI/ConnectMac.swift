@@ -4,7 +4,7 @@ import SwiftUI
 
 /// "Connect your Mac" (sign-in plan, Task 15; mockup A2, approved 2026-11-02): the iPhone's signed-out
 /// screen leads with it, and on a phone whose account has no Mac it replaces the thread list in the
-/// same layout. The sidebar's footer and the profile menu stay. Threads run on a Mac, so there is
+/// same layout. The header's profile menu stays. Threads run on a Mac, so there is
 /// nothing to list until one joins; the phone's next sync (at most a minute) finds it. Both are drawn
 /// from `PhoneLandingContent`; the scanner and the enrollment sheet are the app's.
 public enum ConnectMacCopy {

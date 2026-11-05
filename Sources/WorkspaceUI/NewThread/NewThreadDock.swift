@@ -2,8 +2,9 @@ import SwiftUI
 
 /// The bottom of the iPhone's list (new-thread composer spec, "The iPhone"; mockup screen 1): the
 /// account's notices, then a "New thread" field in the composer's line shape. The field is a doorway,
-/// not an editor: a tap opens the new-thread screen, whose composer takes the text. Off, with the
-/// reason as its hint, while no project's Mac can take a thread.
+/// not an editor: a tap opens the new-thread screen, whose composer takes the text. Off while no
+/// project's Mac can take a thread, with the reason in a line above it and as its hint: on a compact
+/// width the new-thread screen, which would say why, cannot be reached.
 struct NewThreadDock: View {
   @Bindable var model: WorkspaceModel
 
@@ -13,6 +14,7 @@ struct NewThreadDock: View {
     let reason = model.newThreadEntryReason
     VStack(spacing: 0) {
       AccountNotices(model: model)
+      if let reason { NoticeLine(reason, id: "new-thread-dock-reason") }
       Button {
         Task { await model.openNewThread() }
       } label: {

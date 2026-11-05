@@ -115,20 +115,20 @@ struct AccountNotices: View {
 
   var body: some View {
     if model.link == .unavailable {
-      notice(
+      NoticeLine(
         "Coordinator unavailable: \(model.linkMessage ?? "")", id: "link-note", actionTitle: "Retry"
       ) { model.connect() }
     }
     if let note = model.hostNote {
-      notice(note, id: "host-note", actionTitle: model.hostActionTitle) {
+      NoticeLine(note, id: "host-note", actionTitle: model.hostActionTitle) {
         if let action = model.hostAction { Task { await action() } }
       }
     }
     if let failure = model.logOutFailure {
-      notice(failure, id: "logout-failure", actionTitle: "OK") { model.dismissLogOutFailure() }
+      NoticeLine(failure, id: "logout-failure", actionTitle: "OK") { model.dismissLogOutFailure() }
     }
     if let mismatch = model.versionMismatch {
-      notice(
+      NoticeLine(
         mismatch, id: "version-note",
         actionTitle: model.restartCoordinator == nil ? nil : "Restart coordinator"
       ) {
@@ -136,10 +136,23 @@ struct AccountNotices: View {
       }
     }
   }
+}
 
-  private func notice(
-    _ text: String, id: String, actionTitle: String?, action: @escaping () -> Void
-  ) -> some View {
+/// One muted line of a notice, clamped to three lines, with an optional link at its trailing end.
+struct NoticeLine: View {
+  let text: String
+  let id: String
+  var actionTitle: String?
+  var action: () -> Void = {}
+
+  init(_ text: String, id: String, actionTitle: String? = nil, action: @escaping () -> Void = {}) {
+    self.text = text
+    self.id = id
+    self.actionTitle = actionTitle
+    self.action = action
+  }
+
+  var body: some View {
     HStack(alignment: .top, spacing: LLA.Space.s) {
       Text(text).font(LLAFont.caption).foregroundStyle(LLA.Color.muted).lineLimit(3)
       Spacer(minLength: 0)
