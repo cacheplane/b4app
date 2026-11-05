@@ -63,11 +63,15 @@ public enum EphemeralPostgres {
         "--no-instructions",
       ])
     try PrivateFiles.ensurePrivateDirectory(cluster.socketDir)
+    // Hundreds of fresh databases can fill the default 1 GB WAL budget in seconds. Let the
+    // private test cluster absorb that burst without repeated checkpoints syncing every database.
+    // Production options and all durability settings stay unchanged.
+    let testServerOptions = cluster.serverOptions + ["-c", "max_wal_size=4GB"]
     try run(
       cluster, "pg_ctl",
       [
         "-D", cluster.dataDir, "-l", cluster.logPath, "-w", "-t", "60", "-o",
-        cluster.serverOptions.joined(separator: " "), "start",
+        testServerOptions.joined(separator: " "), "start",
       ])
     atexit {
       // Best effort: stop the shared cluster and remove it when the test process exits. A run that

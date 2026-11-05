@@ -17,6 +17,30 @@ private func thread(
 }
 
 @Suite struct DatabaseTests {
+  @Test func ephemeralClusterKeepsDurabilityWithRoomForFixtureWal() throws {
+    let endpoint = try EphemeralPostgres.endpoint()
+    let lib = try LibPQ.load(binDir: endpoint.binDir!)
+    let client = try PostgresConnection(
+      lib: lib,
+      connectionString:
+        "host=\(endpoint.socketDir) port=\(endpoint.port) dbname=\(endpoint.database) user=\(NSUserName())")
+    let row = try #require(
+      client.execute(
+        """
+        SELECT current_setting('max_wal_size') AS wal,
+               current_setting('fsync') AS fsync,
+               current_setting('full_page_writes') AS full_pages,
+               current_setting('synchronous_commit') AS sync_commit,
+               current_setting('wal_level') AS wal_level
+        """
+      ).rows.first)
+    #expect(row.text("wal") == "4GB")
+    #expect(row.text("fsync") == "on")
+    #expect(row.text("full_pages") == "on")
+    #expect(row.text("sync_commit") == "on")
+    #expect(row.text("wal_level") == "replica")
+  }
+
   @Test func appliesTheBundledMigrationsOnce() throws {
     let db = try WorkspaceDatabase.temporary()
     #expect(
