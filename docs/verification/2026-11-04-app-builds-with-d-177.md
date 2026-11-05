@@ -1,0 +1,7 @@
+## 2026-11-04: App builds carrying D-177
+
+D-177 (the relay link waits out a `429`'s `Retry-After`; cacheplane/b4app#114, `798b5d1`) is client code in `Sources/WorkspaceSync`, shared by the Mac app and the iPhone app.
+
+- **Mac.** No rebuild was needed. The three installed apps in `~/repos/b4app/dist/`, prod, beta, and local (whose LaunchAgents run the coordinator from there), were built today at 12:44 to 12:50 from `dff91b3`, which contains `798b5d1`. Each one's app and coordinator binaries contain D-177's symbols (`maxRetryAfter`, `retryNotBefore`, `rateLimited`), and nothing under `Sources`, `Apps`, `project.yml`, `Config`, or `Package.swift` changed on `main` after `dff91b3`.
+- **iPhone.** The newest TestFlight build was prod 0.1.0 (2611031947, from `2338c2e`), uploaded 2026-11-03 at 12:07 PST, before D-177. A new prod build, 0.1.0 (2611050013), was uploaded with `B4APP_FLAVOR=prod ./Scripts/upload-ios.sh` from `main` at `5240706`: the archive, the cloud-signed export, and altool's validation and upload all succeeded. App Store Connect then reported it `VALID` and `IN_BETA_TESTING` for the internal group. The archive printed one existing warning (a `case` already handled, `Sources/WorkspaceUI/Remediation.swift:122`).
+- Not checked on a device: installing 2611050013 on the owner's iPhone, and a `429` at the upgrade there. `RelayLinkTests` and `URLSessionLinkTests` cover the behaviour.
