@@ -169,7 +169,10 @@ final class PhoneProjectDraft {
       projectId = UUID().uuidString.lowercased()
       name = ""
       folders = []
-      deviceId = model.projectMacs.first?.deviceId
+      // A Mac that can take the project now, as the new-thread sheet opens on a startable project.
+      let macs = model.projectMacs
+      deviceId =
+        (macs.first { model.projectEditBlockedReason(deviceId: $0.deviceId) == nil } ?? macs.first)?.deviceId
     case .edit(let id):
       let project = model.projects.first { $0.id == id }
       self.project = project

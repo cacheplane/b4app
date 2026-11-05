@@ -142,6 +142,8 @@ private enum Projects {
     // The other Mac can still take a new project.
     draft.selectMac("mac-2")
     #expect(draft.blockedReason == nil)
+    // A new sheet opens on the Mac that can take it.
+    #expect(PhoneProjectDraft(model: model, request: .create).deviceId == "mac-2")
     await model.disconnect()
   }
 
