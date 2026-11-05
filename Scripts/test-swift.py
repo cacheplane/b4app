@@ -38,14 +38,31 @@ TOTAL_BUDGET_SECONDS = 35 * 60
 # actual command inside the supervisor retains its real exit status without reaping the group
 # leader early and risking a reused group id. The command does not inherit the reporting pipe.
 SUPERVISOR = '''
-import json, os, signal, subprocess, sys
+import json, os, resource, signal, subprocess, sys
 signal.signal(signal.SIGTERM, lambda *_: None)
 fd = int(sys.argv[1])
 try:
+    diagnostic = os.environ.get('B4APP_CI_DIAGNOSTICS') == '1'
+    before = None
+    if diagnostic:
+        try:
+            before = resource.getrusage(resource.RUSAGE_CHILDREN)
+        except Exception:
+            pass
     child = subprocess.Popen(json.loads(sys.argv[2]), close_fds=True)
     os.close(1)
     os.close(2)
     result = {"exit_code": child.wait(), "command_pid": child.pid}
+    if diagnostic:
+        try:
+            after = resource.getrusage(resource.RUSAGE_CHILDREN)
+            result["resources"] = {"user_seconds": after.ru_utime-before.ru_utime,
+                "system_seconds": after.ru_stime-before.ru_stime,
+                "max_rss_bytes": after.ru_maxrss if sys.platform == "darwin" else after.ru_maxrss*1024,
+                "voluntary_context_switches": after.ru_nvcsw-before.ru_nvcsw,
+                "involuntary_context_switches": after.ru_nivcsw-before.ru_nivcsw}
+        except Exception as error:
+            result["resource_error"] = type(error).__name__
 except OSError as error:
     result = {"exit_code": 127, "error": str(error)}
 os.write(fd, (json.dumps(result) + "\\n").encode())
@@ -111,6 +128,9 @@ def run_command(command, timeout, log):
         previous = result.get('cleanup_error')
         result['cleanup_error'] = (previous + '; ' if previous else '') + message
 
+    diagnostic = os.environ.get('B4APP_CI_DIAGNOSTICS') == '1'
+    completion_offsets = []
+    report_offsets = []
     chunks = []
     errors = []
     output = log.open('w')
@@ -138,6 +158,8 @@ def run_command(command, timeout, log):
         try:
             with os.fdopen(report_read) as stream:
                 reported.update(json.loads(stream.readline()))
+                if diagnostic:
+                    report_offsets.append(time.monotonic() - started)
         except (OSError, ValueError) as error:
             reported.update(exit_code=127, error='missing supervisor report: ' + str(error))
         finally:
@@ -153,6 +175,8 @@ def run_command(command, timeout, log):
         try:
             for line in stream:
                 with output_lock:
+                    if diagnostic and re.search(r'Test run with \d+ tests? in \d+ suites? (passed|failed) after ', line):
+                        completion_offsets.append(time.monotonic() - started)
                     destination.append(line)
                     output.write(line)
                     output.flush()
@@ -207,6 +231,14 @@ def run_command(command, timeout, log):
                   exit_code=reported.get('exit_code', 124), supervisor_exit_code=process.returncode,
                   command_pid=reported.get('command_pid'), supervisor_error=reported.get('error'),
                   wall_seconds=time.monotonic() - started)
+    if diagnostic:
+        result.update(command_resources=reported.get('resources'),
+                      resource_error=reported.get('resource_error'),
+                      observed_completion_report_count=len(completion_offsets),
+                      observed_library_report_seconds=completion_offsets[0] if len(completion_offsets) == 1 else None,
+                      observed_command_report_seconds=report_offsets[0] if report_offsets else None,
+                      observed_report_to_exit_seconds=(report_offsets[0]-completion_offsets[0])
+                      if len(completion_offsets) == 1 and report_offsets else None)
     return result
 
 
@@ -222,9 +254,15 @@ def run_pipeline(swift_args, results_dir, runner=run_command, budget_seconds=TOT
         result['wall_seconds'] = time.monotonic() - started
         (results_dir / 'summary.json').write_text(json.dumps(result, indent=2) + '\n')
 
+    diagnostic = os.environ.get('B4APP_CI_DIAGNOSTICS') == '1'
+    if diagnostic:
+        print('CI_SWIFT_PHASE ' + json.dumps({'phase': 'discovery-begin', 'elapsed_seconds': time.monotonic()-started}), flush=True)
     discovery = runner(['swift', 'test', *swift_args, 'list'], max(0.001, deadline - time.monotonic()),
                        results_dir / 'discovery.log')
     result['discovery'] = discovery
+    if diagnostic:
+        print('CI_SWIFT_DISCOVERY ' + json.dumps({k: v for k, v in discovery.items()
+              if k not in ['stdout', 'stderr']}), flush=True)
     try:
         if (discovery['exit_code'] != 0 or discovery['timed_out']
                 or discovery.get('output_closed') is False or discovery.get('cleanup_error')
@@ -252,6 +290,9 @@ def run_pipeline(swift_args, results_dir, runner=run_command, budget_seconds=TOT
         # Leave time for each remaining TERM/KILL/output cleanup even if every child hangs.
         allocation = max(0.001, (deadline - time.monotonic() - 6 * remaining) / remaining)
         command = ['swift', 'test', *swift_args, '--skip-build', part['selection_arg'], part['selector']]
+        if diagnostic:
+            print('CI_SWIFT_PHASE ' + json.dumps({'phase': 'partition-begin', 'name': part['name'],
+                  'elapsed_seconds': time.monotonic()-started}), flush=True)
         child = runner(command, allocation, results_dir / f'partition-{index + 1}.log')
         child.update(name=part['name'], expected_methods=len(part['ids']), passed=False,
                      watchdog_seconds=allocation)

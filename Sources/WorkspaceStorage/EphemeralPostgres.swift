@@ -32,7 +32,9 @@ public enum EphemeralPostgres {
       connectionString:
         "host=\(shared.cluster.socketDir) port=\(shared.cluster.port) dbname=postgres user=\(shared.cluster.user)"
     )
-    try admin.execute("CREATE DATABASE \(Rows.quote(String(name)))")
+    try EphemeralDiagnostics.measure("createDatabase") {
+      try admin.execute("CREATE DATABASE \(Rows.quote(String(name)))")
+    }
     return PostgresEndpoint(
       socketDir: shared.cluster.socketDir, port: shared.cluster.port, database: String(name), dataDir: nil,
       logPath: shared.cluster.logPath, binDir: shared.cluster.binDir)
@@ -51,33 +53,47 @@ public enum EphemeralPostgres {
     let ownPid = ProcessInfo.processInfo.processIdentifier
     let short = String(ownPid)
     let tmp = ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory()
-    sweepStale(in: [NSTemporaryDirectory(), tmp], ownPid: ownPid)
+    EphemeralDiagnostics.measure("sweep") {
+      sweepStale(in: [NSTemporaryDirectory(), tmp], ownPid: ownPid)
+    }
     let cluster = PostgresCluster(
       binDir: binDir, dataDir: NSTemporaryDirectory() + "b4pg-shared-\(short)/data",
       socketDir: (tmp as NSString).appendingPathComponent("b4pgs-\(short)"),
       logPath: NSTemporaryDirectory() + "b4pg-shared-\(short)/postgres.log", maxConnections: 300)
-    try run(
-      cluster, "initdb",
-      [
-        "-D", cluster.dataDir, "-U", cluster.user, "--auth=trust", "--encoding=UTF8", "--locale=C",
-        "--no-instructions",
-      ])
+    try EphemeralDiagnostics.measure("initdb") {
+      try run(
+        cluster, "initdb",
+        [
+          "-D", cluster.dataDir, "-U", cluster.user, "--auth=trust", "--encoding=UTF8", "--locale=C",
+          "--no-instructions",
+        ])
+    }
     try PrivateFiles.ensurePrivateDirectory(cluster.socketDir)
-    try run(
-      cluster, "pg_ctl",
-      [
-        "-D", cluster.dataDir, "-l", cluster.logPath, "-w", "-t", "60", "-o",
-        cluster.serverOptions.joined(separator: " "), "start",
-      ])
+    try EphemeralDiagnostics.measure("start") {
+      try run(
+        cluster, "pg_ctl",
+        [
+          "-D", cluster.dataDir, "-l", cluster.logPath, "-w", "-t", "60", "-o",
+          cluster.serverOptions.joined(separator: " "), "start",
+        ])
+    }
     atexit {
       // Best effort: stop the shared cluster and remove it when the test process exits. A run that
       // is killed skips this; the next run's sweep removes what it left.
       if let shared = EphemeralPostgres.state.withLock({ $0 }) {
-        try? EphemeralPostgres.run(
-          shared.cluster, "pg_ctl", ["-D", shared.cluster.dataDir, "-m", "immediate", "stop"])
+        EphemeralDiagnostics.snapshot(shared.cluster)
+        try? EphemeralDiagnostics.measure("stop") {
+          try EphemeralPostgres.run(
+            shared.cluster, "pg_ctl", ["-D", shared.cluster.dataDir, "-m", "immediate", "stop"])
+        }
+        EphemeralDiagnostics.checkpointLog(shared.cluster)
         let fm = FileManager.default
-        try? fm.removeItem(atPath: (shared.cluster.dataDir as NSString).deletingLastPathComponent)
-        try? fm.removeItem(atPath: shared.cluster.socketDir)
+        try? EphemeralDiagnostics.measure("removeData") {
+          try fm.removeItem(atPath: (shared.cluster.dataDir as NSString).deletingLastPathComponent)
+        }
+        try? EphemeralDiagnostics.measure("removeSocket") {
+          try fm.removeItem(atPath: shared.cluster.socketDir)
+        }
       }
     }
     let shared = Shared(cluster: cluster)

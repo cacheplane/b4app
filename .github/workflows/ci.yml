@@ -55,6 +55,8 @@ jobs:
     name: Package build and tests
     runs-on: macos-26
     timeout-minutes: 45
+    env:
+      B4APP_CI_DIAGNOSTICS: "1"
     steps:
       - uses: actions/checkout@v5
       - name: Select Xcode 26.6
@@ -79,11 +81,11 @@ jobs:
       - name: Fetch PostgreSQL (the tests boot a private cluster from it)
         run: ./Scripts/fetch-postgres.sh
       - name: Build
-        run: swift build
+        run: python3 .github/scripts/ci-diagnostics.py build -- /usr/bin/time -l swift build
       - name: Test
         env:
           SWIFTNIO_STRICT: "1"
-        run: python3 Scripts/test-swift.py
+        run: python3 .github/scripts/ci-diagnostics.py test -- /usr/bin/time -l python3 Scripts/test-swift.py
 
   apps:
     name: macOS and iOS app builds
