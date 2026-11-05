@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 from urllib.parse import urlparse
 
 ROUTE = os.environ.get("FAKE_B4_ROUTE", "/chat#agent")
@@ -28,6 +29,17 @@ STATE = {"threads": {}, "counter": 0}
 LIVE = {}
 
 MIDDLEWARE_PATHS = ("runs/stream", "resume", "pending_interrupts", "turns", "events")
+
+
+class FixtureHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def server_bind(self):
+        # HTTPServer does reverse DNS only to fill server_name. The fixture handlers
+        # do not need a canonical hostname, and the lookup can stall on macOS CI.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 def log(text):
@@ -560,9 +572,7 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     options = parser.parse_args()
     load_state()
-    ThreadingHTTPServer.allow_reuse_address = True
-    ThreadingHTTPServer.daemon_threads = True
-    server = ThreadingHTTPServer((options.host, options.port), Handler)
+    server = FixtureHTTPServer((options.host, options.port), Handler)
     port = server.server_address[1]
     port_file = os.environ.get("FAKE_B4_PORT_FILE")
     if port_file:
@@ -574,6 +584,8 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

@@ -26,7 +26,6 @@ import signal
 import subprocess
 import sys
 import time
-from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -129,14 +128,14 @@ def install_term_handler(child=None):
 def serve(port, ready_line):
     import fake_b4
     fake_b4.load_state()
-    ThreadingHTTPServer.allow_reuse_address = True
-    ThreadingHTTPServer.daemon_threads = True
-    server = ThreadingHTTPServer(("127.0.0.1", port), fake_b4.Handler)
+    server = fake_b4.FixtureHTTPServer(("127.0.0.1", port), fake_b4.Handler)
     out(ready_line % server.server_address[1])
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        server.server_close()
     return 0
 
 
