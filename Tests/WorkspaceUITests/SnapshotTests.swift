@@ -209,10 +209,12 @@ struct SnapshotShell: View {
     _ name: String, size: CGSize, @ViewBuilder _ content: () -> V
   ) async throws {
     // The window is larger than the content: a ScrollView drew nothing in a window as narrow as the
-    // sidebar. The capture is cropped back to the content's size.
+    // sidebar. The capture is cropped back to the content's size, from the window's top edge, so the
+    // content ignores the title bar's safe area (which pushed its bottom out of the crop).
     let window = SnapshotWindow(
       rootView: content().frame(width: size.width, height: size.height).background(LLA.Color.surface)
-        .tint(LLA.Color.accent).frame(width: 1200, height: 900, alignment: .topLeading),
+        .tint(LLA.Color.accent).frame(width: 1200, height: 900, alignment: .topLeading)
+        .ignoresSafeArea(),
       size: CGSize(width: 1200, height: 900))
     defer { window.close() }
     for (appearance, suffix) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
@@ -362,6 +364,38 @@ struct SnapshotShell: View {
         FlatThreadList(model: model)
       }
     }
+  }
+
+  /// The iPhone list (new-thread composer spec, "The iPhone"; mockup screen 1): the header's avatar,
+  /// filter, and search, the threads, and the "New thread" field at the bottom; then the same with a
+  /// notice above the field. The header is the iOS navigation bar, which macOS cannot draw, so a row of
+  /// the same pieces stands in for it.
+  @Test func iosListHeaderAndDock() async throws {
+    let model = try await ListFixture.model()
+    model.account = WorkspaceAccount(username: "blove", displayName: "Brian Love")
+    #expect(model.newThreadEntryReason == nil)
+    let list = VStack(alignment: .leading, spacing: 0) {
+      HStack(spacing: LLA.Space.m) {
+        ProfileAvatar(model: model, size: 32)
+        Spacer()
+        Image(systemName: "line.3.horizontal.decrease.circle")
+        Image(systemName: "magnifyingglass")
+      }
+      .font(.system(size: 17))
+      .foregroundStyle(LLA.Color.ink)
+      .padding(.horizontal, LLA.Space.l)
+      .frame(height: 44)
+      Text("Threads").font(LLAFont.display).foregroundStyle(LLA.Color.ink)
+        .padding(.horizontal, LLA.Space.l)
+        .padding(.bottom, LLA.Space.s)
+      FlatThreadList(model: model)
+        .safeAreaInset(edge: .bottom, spacing: 0) { NewThreadDock(model: model) }
+    }
+    try await render("ios-list-dock", size: CGSize(width: 390, height: 844)) { list }
+    model.hostNote = "The background agent is not running. Open Login Items to allow it."
+    model.hostActionTitle = "Open Login Items"
+    model.hostAction = {}
+    try await render("ios-list-dock-notice", size: CGSize(width: 390, height: 844)) { list }
   }
 
   @Test func rowShowsEachBandDot() async throws {

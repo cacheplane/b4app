@@ -197,13 +197,18 @@ struct ComposerCircleStyle: ButtonStyle {
   @Environment(\.isEnabled) private var isEnabled
 
   func makeBody(configuration: Configuration) -> some View {
-    configuration.label
-      .labelStyle(.iconOnly)
-      .font(.system(size: glyph, weight: .bold))
-      .foregroundStyle(isEnabled ? LLA.Color.bg : LLA.Color.ghost)
-      .frame(width: diameter, height: diameter)
-      .background(Circle().fill(isEnabled ? LLA.Color.ink : LLA.Color.surfaceRaised))
+    Self.face(configuration.label, diameter: diameter, glyph: glyph, enabled: isEnabled)
       .opacity(configuration.isPressed ? 0.75 : 1)
       .contentShape(Circle().inset(by: -(ComposerView.line - ComposerView.control) / 2))
+  }
+
+  /// The circle alone, for a field that only looks like the composer (the iPhone list's "New thread").
+  static func face(_ label: some View, diameter: CGFloat, glyph: CGFloat, enabled: Bool) -> some View {
+    label
+      .labelStyle(.iconOnly)
+      .font(.system(size: glyph, weight: .bold))
+      .foregroundStyle(enabled ? LLA.Color.bg : LLA.Color.ghost)
+      .frame(width: diameter, height: diameter)
+      .background(Circle().fill(enabled ? LLA.Color.ink : LLA.Color.surfaceRaised))
   }
 }

@@ -34,4 +34,17 @@ import WorkspaceProtocol
     model.listSearch = ""
     #expect(Set(model.orderedThreads.map(\.id)) == ["t3", "t4"])
   }
+
+  /// The header's search button opens the list's field; an account that ends takes the search with
+  /// it, as it does the ⌘K palette, so the next account's list starts unfiltered and closed.
+  @Test func searchPresentationResetsWithTheAccount() {
+    let model = model()
+    model.listSearchPresented = true
+    model.listSearch = "trip"
+    model.showSearch = true
+    model.forgetWorkspace()
+    #expect(!model.listSearchPresented)
+    #expect(model.listSearch.isEmpty)
+    #expect(!model.showSearch)
+  }
 }

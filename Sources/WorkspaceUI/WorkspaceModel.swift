@@ -178,6 +178,8 @@ public final class WorkspaceModel {
   /// The iPhone list's pull-down search: narrows the list to threads whose shown title contains it
   /// (D-053, amended). Empty shows every thread.
   public var listSearch = ""
+  /// The list's search field is open and focused: the iPhone header's search button sets it.
+  public var listSearchPresented = false
   public var showArchived = false
   /// The iPhone's "Other ways to sign in" sheet, over the signed-out screen. On the model, like the
   /// sheets above, so the app holds a pairing link back until it closes.
@@ -1521,6 +1523,8 @@ public final class WorkspaceModel {
     hubLink = nil
     diagnostics = nil
     showSearch = false
+    listSearch = ""
+    listSearchPresented = false
     showProfileMenu = false
     lastError = nil
     showAddPhone = false

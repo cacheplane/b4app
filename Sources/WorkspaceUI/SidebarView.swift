@@ -1,10 +1,12 @@
 import SwiftUI
 import WorkspaceProtocol
 
-/// The sidebar on both platforms, with the profile button at the bottom. On the Mac, New thread,
-/// Search, and More are rows above the threads; on the iPhone they are its navigation bar's compose
-/// button, filter menu, and pull-down search field (D-053, amended), so the list starts at the top. No
-/// surfaces: Connections, B4 projects, and Diagnostics live in Settings, reached from the profile menu.
+/// The sidebar on both platforms. On the Mac, New thread, Search, and More are rows above the threads
+/// and the profile button is at the bottom. On the iPhone the profile menu leads the navigation bar,
+/// the filter menu and a search button (for the list's own search field) trail it, and a "New thread"
+/// field sits at the bottom (D-053; the new-thread composer spec, "The iPhone"), so the list starts
+/// at the top. No surfaces: Connections, B4 projects, and Diagnostics live in Settings, reached from the
+/// profile menu.
 struct SidebarView: View {
   @Bindable var model: WorkspaceModel
   /// The phone's "Connect your Mac", which takes the list's place while the account has no Mac.
@@ -13,15 +15,23 @@ struct SidebarView: View {
   var body: some View {
     shown
       .background(LLA.Color.surface)
-      .overlay {
-        // A click anywhere else in the sidebar closes the profile menu.
-        if model.showProfileMenu {
-          Color.clear.contentShape(Rectangle())
+      #if os(macOS)
+        .overlay {
+          // A click anywhere else in the sidebar closes the profile menu.
+          if model.showProfileMenu {
+            Color.clear.contentShape(Rectangle())
             .onTapGesture { model.showProfileMenu = false }
             .accessibilityHidden(true)
+          }
         }
-      }
-      .safeAreaInset(edge: .bottom, spacing: 0) { SidebarFooter(model: model) }
+        .safeAreaInset(edge: .bottom, spacing: 0) { SidebarFooter(model: model) }
+      #else
+        // On "Connect your Mac" too, so the account can still be left from there.
+        .toolbar {
+          ToolbarItem(placement: .topBarLeading) { ProfileToolbarMenu(model: model) }
+          .sharedBackgroundVisibility(.hidden)
+        }
+      #endif
   }
 
   /// The list, or the phone's "Connect your Mac" in its place while the account has no Mac.
@@ -93,23 +103,26 @@ struct SidebarView: View {
     }
   #else
     // The phone uses a List: rows need swipe actions, and the split view collapses to one column there.
-    // New thread and the filters are in the navigation bar, and search pulls down from above the list,
-    // as in the iPhone's own Mail and Messages.
+    // The filters and search are in the navigation bar, and the search field pulls down from above the
+    // list (or opens from the search button), as in the iPhone's own Mail. New thread is the field at
+    // the bottom.
     private var content: some View {
       List {
         ThreadListView(model: model)
       }
       .listStyle(.plain)
-      .searchable(text: $model.listSearch, prompt: "Search threads")
+      .searchable(
+        text: $model.listSearch, isPresented: $model.listSearchPresented,
+        placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search threads"
+      )
       // Titles are matched in any case; a capital the keyboard adds unasked only gets in the way.
       .textInputAutocapitalization(.never)
       .navigationTitle(model.projectFilter == .all ? "Threads" : model.filterTitle)
       .toolbar {
         ToolbarItemGroup(placement: .topBarTrailing) {
           MoreMenu(model: model, inToolbar: true)
-          Button("New thread", systemImage: "square.and.pencil") { Task { await model.openNewThread() } }
-            .disabled(model.newThreadEntryReason != nil)
-            .accessibilityIdentifier("new-thread-toolbar")
+          Button("Search", systemImage: "magnifyingglass") { model.listSearchPresented = true }
+            .accessibilityIdentifier("list-search")
         }
       }
       .scrollContentBackground(.hidden)
@@ -117,6 +130,7 @@ struct SidebarView: View {
       .environment(\.defaultMinListRowHeight, LLA.Metrics.row)
       // Pinned above the scrolling list, so it stays in view while the threads are browsed.
       .safeAreaInset(edge: .top, spacing: 0) { listNotice }
+      .safeAreaInset(edge: .bottom, spacing: 0) { NewThreadDock(model: model) }
     }
   #endif
 }

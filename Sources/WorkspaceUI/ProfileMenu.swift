@@ -107,99 +107,13 @@ extension WorkspaceModel {
   }
 }
 
-/// The bottom of the sidebar: any notice (the coordinator is unreachable, the host's note, a version
-/// mismatch), then the profile button, whose menu opens upward over the list. It sits outside the
-/// sidebar's scroll view, so every notice is clamped to three lines (D-047).
-struct SidebarFooter: View {
+/// The account's notices (the coordinator is unreachable, the host's note, a failed log-out, a version
+/// mismatch), each clamped to three lines (D-047). The Mac shows them above the profile button; the
+/// iPhone above the list's "New thread" field.
+struct AccountNotices: View {
   @Bindable var model: WorkspaceModel
-  @State private var hovering = false
-  @State private var confirmingLogOut = false
-  @State private var buttonHeight: CGFloat = 0
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @Environment(\.dynamicTypeSize) private var typeSize
-  /// The avatar follows the name's text size; 26 pt on the Mac, 32 pt on the phone at the default size.
-  #if os(iOS)
-    @ScaledMetric(relativeTo: .body) private var avatarSize: CGFloat = 32
-  #else
-    @ScaledMetric(relativeTo: .body) private var avatarSize: CGFloat = 26
-  #endif
-
-  init(model: WorkspaceModel) { self.model = model }
 
   var body: some View {
-    VStack(spacing: 0) {
-      Hairline()
-      notices
-      profileButton
-        .padding(.horizontal, 6)
-        .padding(.vertical, 6)
-        .onGeometryChange(for: CGFloat.self) {
-          $0.size.height
-        } action: {
-          buttonHeight = $0
-        }
-        .overlay(alignment: .bottom) {
-          if model.showProfileMenu {
-            ProfileMenuPanel(model: model, dismiss: { setMenu(open: false) }) {
-              setMenu(open: false)
-              // The phone's host unlinks as before; the Mac asks "Log out of <org name>?" with the
-              // work that would stop.
-              if model.accountSource == .host {
-                confirmingLogOut = true
-              } else {
-                Task { await model.requestLogOut() }
-              }
-            }
-            // Its own height, not the button's: the overlay proposes the button's size.
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 6)
-            // Bottom-aligned and lifted by the button's height: the panel's bottom edge sits 6 pt
-            // above the button's top. (An alignment guide on the overlay was ignored.)
-            .padding(.bottom, buttonHeight + 6)
-            .transition(
-              reduceMotion ? .identity : .opacity.combined(with: .offset(y: 6)))
-          }
-        }
-    }
-    .background(LLA.Color.surface)
-    .alert(
-      "Log out of \(model.accountStatus?.account?.orgName ?? "the hub")?", isPresented: $confirmingLogOut
-    ) {
-      Button("Log out", role: .destructive) { Task { await model.logOut() } }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text(Self.hostLogOutMessage)
-    }
-    .alert(
-      model.logOutConfirmation?.title ?? "", isPresented: logOutBinding, presenting: model.logOutConfirmation
-    ) { confirmation in
-      Button(confirmation.confirmTitle, role: .destructive) {
-        Task { await model.confirmLogOut(confirmation) }
-      }
-      Button(LogOutConfirmation.cancelTitle, role: .cancel) { model.cancelLogOut() }
-    } message: { confirmation in
-      Text(confirmation.message)
-    }
-  }
-
-  /// The phone's log-out (its host ends the session and empties the mirror).
-  static let hostLogOutMessage =
-    "This iPhone stops showing your threads until you sign in again. Nothing on your Mac changes."
-
-  private var logOutBinding: Binding<Bool> {
-    Binding(
-      get: { model.logOutConfirmation != nil },
-      set: { if !$0 { model.cancelLogOut() } })
-  }
-
-  private func setMenu(open: Bool) {
-    if open { Task { await model.refreshAccount() } }
-    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) { model.showProfileMenu = open }
-  }
-
-  // MARK: Notices
-
-  @ViewBuilder private var notices: some View {
     if model.link == .unavailable {
       notice(
         "Coordinator unavailable: \(model.linkMessage ?? "")", id: "link-note", actionTitle: "Retry"
@@ -238,57 +152,28 @@ struct SidebarFooter: View {
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier(id)
   }
+}
 
-  // MARK: The button
+/// The account's initials in an ink circle (a person without an account), with the coordinator link's
+/// status as a dot at its corner.
+struct ProfileAvatar: View {
+  @Bindable var model: WorkspaceModel
+  let size: CGFloat
 
-  private var profileButton: some View {
-    Button {
-      setMenu(open: !model.showProfileMenu)
-    } label: {
-      HStack(spacing: LLA.Space.s) {
-        avatar
-        VStack(alignment: .leading, spacing: 1) {
-          Text(model.account?.name ?? "Not signed in")
-            .font(LLAFont.rowStrong).foregroundStyle(LLA.Color.ink).lineLimit(1)
-          Text(model.linkStatusText)
-            .font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
-            .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
-        }
-        Spacer(minLength: LLA.Space.xs)
-        Image(systemName: "chevron.up.chevron.down")
-          .font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
-      }
-      .padding(.horizontal, LLA.Space.s)
-      .padding(.vertical, 6)
-      .frame(minHeight: LLA.Metrics.row)
-      .background(
-        RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
-          .fill(hovering || model.showProfileMenu ? LLA.Color.surfaceRaised : .clear)
-      )
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .onHover { hovering = $0 }
-    .accessibilityLabel(model.account?.name ?? "Not signed in")
-    .accessibilityValue(model.linkStatusText)
-    .accessibilityHint("Opens the profile menu")
-    .accessibilityIdentifier("profile-button")
-  }
-
-  private var avatar: some View {
+  var body: some View {
     ZStack(alignment: .bottomTrailing) {
-      Circle().fill(LLA.Color.ink).frame(width: avatarSize, height: avatarSize)
+      Circle().fill(LLA.Color.ink).frame(width: size, height: size)
         .overlay {
           if let account = model.account {
             Text(account.initials)
-              .font(LLAFont.sans(fixed: avatarSize * 0.38, weight: .semibold)).foregroundStyle(LLA.Color.bg)
+              .font(LLAFont.sans(fixed: size * 0.38, weight: .semibold)).foregroundStyle(LLA.Color.bg)
               .lineLimit(1).minimumScaleFactor(0.6)
           } else {
-            Image(systemName: "person.fill").font(.system(size: avatarSize * 0.45))
+            Image(systemName: "person.fill").font(.system(size: size * 0.45))
               .foregroundStyle(LLA.Color.bg)
           }
         }
-      Circle().fill(statusColor).frame(width: avatarSize * 0.27, height: avatarSize * 0.27)
+      Circle().fill(statusColor).frame(width: size * 0.27, height: size * 0.27)
         .overlay(Circle().strokeBorder(LLA.Color.surface, lineWidth: 1.5))
         .offset(x: 1, y: 1)
     }
@@ -304,99 +189,282 @@ struct SidebarFooter: View {
   }
 }
 
-/// The profile menu: Settings, GitHub, and Log out. The app's own panel rather than `Menu`, so it can
-/// open upward from the button at the button's width on both platforms. Up, Down, and Return choose;
-/// Escape closes.
-struct ProfileMenuPanel: View {
-  @Bindable var model: WorkspaceModel
-  let dismiss: () -> Void
-  let requestLogOut: () -> Void
-  @State private var highlighted: Int?
-  @FocusState private var focused: Bool
-  @Environment(\.openURL) private var openURL
+/// One of the profile menu's items, shared by the Mac's panel and the iPhone's header menu.
+struct ProfileMenuItem {
+  var title: String
+  var systemImage: String
+  var shortcut: String?
+  var dividerBefore = false
+  var choose: () -> Void
 
-  init(model: WorkspaceModel, dismiss: @escaping () -> Void, requestLogOut: @escaping () -> Void = {}) {
-    self.model = model
-    self.dismiss = dismiss
-    self.requestLogOut = requestLogOut
-  }
-
-  private struct Item {
-    var title: String
-    var systemImage: String
-    var shortcut: String?
-    var dividerBefore = false
-    var choose: () -> Void
-  }
-
-  private var items: [Item] {
+  /// Settings, GitHub, and Log out (while there is an account to log out of). `dismiss` closes the
+  /// Mac's panel before an item acts; the iPhone's menu closes itself.
+  @MainActor static func items(
+    model: WorkspaceModel, openURL: OpenURLAction, dismiss: @escaping () -> Void,
+    requestLogOut: @escaping () -> Void
+  ) -> [ProfileMenuItem] {
     var items = [
-      Item(title: "Settings", systemImage: "gearshape", shortcut: shortcut("⌘,")) {
+      ProfileMenuItem(title: "Settings", systemImage: "gearshape", shortcut: shortcut("⌘,")) {
         dismiss()
         model.openSettings()
       },
-      Item(title: "GitHub", systemImage: "arrow.up.right.square", shortcut: nil) {
+      ProfileMenuItem(title: "GitHub", systemImage: "arrow.up.right.square", shortcut: nil) {
         dismiss()
         openURL(WorkspaceLinks.github)
       },
     ]
     if model.canLogOut {
       items.append(
-        Item(
+        ProfileMenuItem(
           title: "Log out", systemImage: "rectangle.portrait.and.arrow.right", shortcut: nil,
           dividerBefore: true, choose: requestLogOut))
     }
     return items
   }
 
-  private func shortcut(_ text: String) -> String? {
+  private static func shortcut(_ text: String) -> String? {
     #if os(macOS)
       return text
     #else
       return nil
     #endif
   }
+}
 
-  var body: some View {
-    let items = self.items
-    VStack(alignment: .leading, spacing: 2) {
-      ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-        if item.dividerBefore { Hairline().padding(.vertical, LLA.Space.xs) }
-        Button(action: item.choose) {
-          SidebarRowLabel(
-            title: item.title, systemImage: item.systemImage, trailing: item.shortcut,
-            selected: highlighted == index)
-        }
-        .buttonStyle(.llaRow)
-        .onHover { if $0 { highlighted = index } }
+/// The profile menu's Log out, asked: the phone's host unlinks after a plain question
+/// (`confirmingHostLogOut`); the Mac asks "Log out of <org name>?" with the work that would stop
+/// (`WorkspaceModel.logOutConfirmation`).
+struct ProfileLogOutAlerts: ViewModifier {
+  @Bindable var model: WorkspaceModel
+  @Binding var confirmingHostLogOut: Bool
+
+  /// The phone's log-out (its host ends the session and empties the mirror).
+  static let hostLogOutMessage =
+    "This iPhone stops showing your threads until you sign in again. Nothing on your Mac changes."
+
+  /// Log out chosen: the host's question, or the coordinator's, which first asks what is running.
+  @MainActor static func begin(model: WorkspaceModel, confirmingHostLogOut: Binding<Bool>) {
+    if model.accountSource == .host {
+      confirmingHostLogOut.wrappedValue = true
+    } else {
+      Task { await model.requestLogOut() }
+    }
+  }
+
+  func body(content: Content) -> some View {
+    content
+      .alert(
+        "Log out of \(model.accountStatus?.account?.orgName ?? "the hub")?",
+        isPresented: $confirmingHostLogOut
+      ) {
+        Button("Log out", role: .destructive) { Task { await model.logOut() } }
+        Button("Cancel", role: .cancel) {}
+      } message: {
+        Text(Self.hostLogOutMessage)
       }
-    }
-    .padding(6)
-    .background(LLA.Color.bg, in: RoundedRectangle(cornerRadius: LLA.Radius.menu, style: .continuous))
-    .overlay(RoundedRectangle(cornerRadius: LLA.Radius.menu, style: .continuous).strokeBorder(LLA.Color.rule))
-    .llaPopoverShadow()
-    .focusable()
-    .focusEffectDisabled()
-    .focused($focused)
-    .onAppear { focused = true }
-    .onKeyPress(.escape) {
-      dismiss()
-      return .handled
-    }
-    .onKeyPress(.downArrow) {
-      highlighted = ThreadSearch.step((highlighted ?? -1), by: 1, count: items.count)
-      return .handled
-    }
-    .onKeyPress(.upArrow) {
-      highlighted = ThreadSearch.step((highlighted ?? items.count), by: -1, count: items.count)
-      return .handled
-    }
-    .onKeyPress(.return) {
-      guard let highlighted, items.indices.contains(highlighted) else { return .ignored }
-      items[highlighted].choose()
-      return .handled
-    }
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("profile-menu")
+      .alert(
+        model.logOutConfirmation?.title ?? "", isPresented: logOutBinding,
+        presenting: model.logOutConfirmation
+      ) { confirmation in
+        Button(confirmation.confirmTitle, role: .destructive) {
+          Task { await model.confirmLogOut(confirmation) }
+        }
+        Button(LogOutConfirmation.cancelTitle, role: .cancel) { model.cancelLogOut() }
+      } message: { confirmation in
+        Text(confirmation.message)
+      }
+  }
+
+  private var logOutBinding: Binding<Bool> {
+    Binding(
+      get: { model.logOutConfirmation != nil },
+      set: { if !$0 { model.cancelLogOut() } })
   }
 }
+
+#if os(iOS)
+  /// The iPhone's profile menu, at the leading end of the list's header (new-thread composer spec,
+  /// "The iPhone"): the avatar, and a native menu of the profile items.
+  struct ProfileToolbarMenu: View {
+    @Bindable var model: WorkspaceModel
+    @State private var confirmingLogOut = false
+    @Environment(\.openURL) private var openURL
+
+    /// The avatar's size in the navigation bar, whose height does not follow the text size.
+    static let avatarSize: CGFloat = 32
+
+    var body: some View {
+      let items = ProfileMenuItem.items(model: model, openURL: openURL, dismiss: {}) {
+        ProfileLogOutAlerts.begin(model: model, confirmingHostLogOut: $confirmingLogOut)
+      }
+      Menu {
+        ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+          if item.dividerBefore { Divider() }
+          Button(item.title, systemImage: item.systemImage, action: item.choose)
+        }
+      } label: {
+        ProfileAvatar(model: model, size: Self.avatarSize)
+      }
+      .accessibilityLabel(model.account?.name ?? "Not signed in")
+      .accessibilityValue(model.linkStatusText)
+      .accessibilityHint("Opens the profile menu")
+      .accessibilityIdentifier("profile-button")
+      .modifier(ProfileLogOutAlerts(model: model, confirmingHostLogOut: $confirmingLogOut))
+    }
+  }
+#endif
+
+#if os(macOS)
+  /// The bottom of the Mac's sidebar: any notice, then the profile button, whose menu opens upward
+  /// over the list. It sits outside the sidebar's scroll view, so every notice is clamped to three
+  /// lines (D-047).
+  struct SidebarFooter: View {
+    @Bindable var model: WorkspaceModel
+    @State private var hovering = false
+    @State private var confirmingLogOut = false
+    @State private var buttonHeight: CGFloat = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var typeSize
+    /// The avatar follows the name's text size; 26 pt at the default size.
+    @ScaledMetric(relativeTo: .body) private var avatarSize: CGFloat = 26
+
+    init(model: WorkspaceModel) { self.model = model }
+
+    var body: some View {
+      VStack(spacing: 0) {
+        Hairline()
+        AccountNotices(model: model)
+        profileButton
+          .padding(.horizontal, 6)
+          .padding(.vertical, 6)
+          .onGeometryChange(for: CGFloat.self) {
+            $0.size.height
+          } action: {
+            buttonHeight = $0
+          }
+          .overlay(alignment: .bottom) {
+            if model.showProfileMenu {
+              ProfileMenuPanel(model: model, dismiss: { setMenu(open: false) }) {
+                setMenu(open: false)
+                ProfileLogOutAlerts.begin(model: model, confirmingHostLogOut: $confirmingLogOut)
+              }
+              // Its own height, not the button's: the overlay proposes the button's size.
+              .fixedSize(horizontal: false, vertical: true)
+              .padding(.horizontal, 6)
+              // Bottom-aligned and lifted by the button's height: the panel's bottom edge sits 6 pt
+              // above the button's top. (An alignment guide on the overlay was ignored.)
+              .padding(.bottom, buttonHeight + 6)
+              .transition(
+                reduceMotion ? .identity : .opacity.combined(with: .offset(y: 6)))
+            }
+          }
+      }
+      .background(LLA.Color.surface)
+      .modifier(ProfileLogOutAlerts(model: model, confirmingHostLogOut: $confirmingLogOut))
+    }
+
+    private func setMenu(open: Bool) {
+      if open { Task { await model.refreshAccount() } }
+      withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) { model.showProfileMenu = open }
+    }
+
+    // MARK: The button
+
+    private var profileButton: some View {
+      Button {
+        setMenu(open: !model.showProfileMenu)
+      } label: {
+        HStack(spacing: LLA.Space.s) {
+          ProfileAvatar(model: model, size: avatarSize)
+          VStack(alignment: .leading, spacing: 1) {
+            Text(model.account?.name ?? "Not signed in")
+              .font(LLAFont.rowStrong).foregroundStyle(LLA.Color.ink).lineLimit(1)
+            Text(model.linkStatusText)
+              .font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
+              .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
+          }
+          Spacer(minLength: LLA.Space.xs)
+          Image(systemName: "chevron.up.chevron.down")
+            .font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
+        }
+        .padding(.horizontal, LLA.Space.s)
+        .padding(.vertical, 6)
+        .frame(minHeight: LLA.Metrics.row)
+        .background(
+          RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
+            .fill(hovering || model.showProfileMenu ? LLA.Color.surfaceRaised : .clear)
+        )
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .onHover { hovering = $0 }
+      .accessibilityLabel(model.account?.name ?? "Not signed in")
+      .accessibilityValue(model.linkStatusText)
+      .accessibilityHint("Opens the profile menu")
+      .accessibilityIdentifier("profile-button")
+    }
+  }
+
+  /// The Mac's profile menu: the app's own panel rather than `Menu`, so it can open upward from the
+  /// button at the button's width. Up, Down, and Return choose; Escape closes.
+  struct ProfileMenuPanel: View {
+    @Bindable var model: WorkspaceModel
+    let dismiss: () -> Void
+    let requestLogOut: () -> Void
+    @State private var highlighted: Int?
+    @FocusState private var focused: Bool
+    @Environment(\.openURL) private var openURL
+
+    init(model: WorkspaceModel, dismiss: @escaping () -> Void, requestLogOut: @escaping () -> Void = {}) {
+      self.model = model
+      self.dismiss = dismiss
+      self.requestLogOut = requestLogOut
+    }
+
+    var body: some View {
+      let items = ProfileMenuItem.items(
+        model: model, openURL: openURL, dismiss: dismiss, requestLogOut: requestLogOut)
+      VStack(alignment: .leading, spacing: 2) {
+        ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+          if item.dividerBefore { Hairline().padding(.vertical, LLA.Space.xs) }
+          Button(action: item.choose) {
+            SidebarRowLabel(
+              title: item.title, systemImage: item.systemImage, trailing: item.shortcut,
+              selected: highlighted == index)
+          }
+          .buttonStyle(.llaRow)
+          .onHover { if $0 { highlighted = index } }
+        }
+      }
+      .padding(6)
+      .background(LLA.Color.bg, in: RoundedRectangle(cornerRadius: LLA.Radius.menu, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: LLA.Radius.menu, style: .continuous).strokeBorder(LLA.Color.rule)
+      )
+      .llaPopoverShadow()
+      .focusable()
+      .focusEffectDisabled()
+      .focused($focused)
+      .onAppear { focused = true }
+      .onKeyPress(.escape) {
+        dismiss()
+        return .handled
+      }
+      .onKeyPress(.downArrow) {
+        highlighted = ThreadSearch.step((highlighted ?? -1), by: 1, count: items.count)
+        return .handled
+      }
+      .onKeyPress(.upArrow) {
+        highlighted = ThreadSearch.step((highlighted ?? items.count), by: -1, count: items.count)
+        return .handled
+      }
+      .onKeyPress(.return) {
+        guard let highlighted, items.indices.contains(highlighted) else { return .ignored }
+        items[highlighted].choose()
+        return .handled
+      }
+      .accessibilityElement(children: .contain)
+      .accessibilityIdentifier("profile-menu")
+    }
+  }
+#endif
