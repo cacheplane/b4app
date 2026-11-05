@@ -71,11 +71,13 @@ struct NewThreadView: View {
   /// The phone's notice about the Mac that owns the project: offline, left the hub, or reconnecting.
   private var notice: HostNoticeMessage? { draft.project.flatMap(model.startNotice(for:)) }
 
+  /// No text here is `fixedSize(vertical:)`: the split view measures this column at zero width, where a
+  /// fixed-height wrapped line grows one character per line, and that minimum made the split view
+  /// taller than the window (D-047). The texts still wrap whenever there is room.
   private func composer(_ draft: NewThreadDraft) -> some View {
     VStack(alignment: .leading, spacing: 0) {
       Text(Self.headline)
         .llaDisplay()
-        .fixedSize(horizontal: false, vertical: true)
         .padding(.horizontal, LLA.Space.xs)
         .padding(.bottom, LLA.Space.l)
       ComposerField(text: Bindable(draft).text, placeholder: placeholder(draft), focused: $focused) {
@@ -112,7 +114,6 @@ struct NewThreadView: View {
         Text(status)
           .font(LLAFont.caption)
           .foregroundStyle(draft.statusIsFailure ? LLA.Color.danger : LLA.Color.muted)
-          .fixedSize(horizontal: false, vertical: true)
       }
       .padding(.horizontal, ComposerField<EmptyView>.textLeading)
       .padding(.top, LLA.Space.s)
@@ -121,7 +122,6 @@ struct NewThreadView: View {
     } else if let reason = draft.blockedReason, notice == nil {
       Text(reason)
         .llaCaption()
-        .fixedSize(horizontal: false, vertical: true)
         .padding(.horizontal, ComposerField<EmptyView>.textLeading)
         .padding(.top, LLA.Space.s)
         .accessibilityIdentifier("new-thread-reason")
