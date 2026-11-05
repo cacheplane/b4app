@@ -4,6 +4,8 @@
 No test body, argument case, test deadline, or intra-suite concurrency is changed. Independent
 test suites no longer all share one cooperative worker pool. See the retained unpartitioned
 failure and workload amendment in docs/delivery/2026-11-03/reliability/isolation/manifest-v6.json.
+The coordinator hello fixture group is documented in
+docs/delivery/2026-11-03/swift-ci-latency/public-experiment.json.
 """
 import argparse
 import datetime
@@ -18,11 +20,17 @@ import sys
 import threading
 import time
 
-ISOLATED_SUITES = (
+SINGLE_SUITE_GROUPS = (
     'WorkspaceMirrorTests.MirrorLogOutTests',
     'CoordinatorTests.SocketShutdownTests',
     'CoordinatorTests.AccountCommandTests',
     'WorkspaceUITests.AttentionModelTests',
+    'WorkspaceClientTests.WorkspaceClientTests',
+)
+HELLO_SUITES = ('CoordinatorTests.HubSyncTests', 'CoordinatorTests.LegacySecretCopyTests')
+ISOLATED_SUITES = SINGLE_SUITE_GROUPS + HELLO_SUITES
+ISOLATED_GROUPS = tuple((suite, (suite,)) for suite in SINGLE_SUITE_GROUPS) + (
+    ('coordinator-hello', HELLO_SUITES),
 )
 TOTAL_BUDGET_SECONDS = 35 * 60
 
@@ -70,9 +78,10 @@ def validate_plan(inventory, plan):
 
 def make_plan(inventory):
     plan = []
-    for suite in ISOLATED_SUITES:
-        selector = '^' + re.escape(suite) + '/'
-        plan.append({'name': suite, 'selection_arg': '--filter', 'selector': selector,
+    for name, suites in ISOLATED_GROUPS:
+        pattern = '|'.join(re.escape(suite) for suite in suites)
+        selector = '^' + (pattern if len(suites) == 1 else '(?:' + pattern + ')') + '/'
+        plan.append({'name': name, 'selection_arg': '--filter', 'selector': selector,
                      'ids': [x for x in inventory if re.search(selector, x)]})
     selector = '^(?:' + '|'.join(re.escape(suite) for suite in ISOLATED_SUITES) + ')/'
     plan.append({'name': 'remaining-tests', 'selection_arg': '--skip', 'selector': selector,
@@ -98,6 +107,10 @@ def run_command(command, timeout, log):
     started = time.monotonic()
     result = {'command': command, 'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
               'timed_out': False}
+    def cleanup_error(message):
+        previous = result.get('cleanup_error')
+        result['cleanup_error'] = (previous + '; ' if previous else '') + message
+
     chunks = []
     errors = []
     output = log.open('w')
@@ -166,6 +179,8 @@ def run_command(command, timeout, log):
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+        except OSError as error:
+            cleanup_error('SIGTERM failed: ' + str(error))
         time.sleep(2)
     # On normal completion the command has already exited with the reported status. Remove the
     # supervisor and any leaked members of this owned group before the next partition starts.
@@ -173,10 +188,12 @@ def run_command(command, timeout, log):
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+    except OSError as error:
+        cleanup_error('SIGKILL failed: ' + str(error))
     try:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
-        result['cleanup_error'] = 'supervisor did not exit after KILL'
+        cleanup_error('supervisor did not exit after KILL')
     reporter.join(timeout=1)
     for reader in readers:
         reader.join(timeout=1)
