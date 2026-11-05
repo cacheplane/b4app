@@ -65,8 +65,7 @@ jobs:
           path: |
             .build
             ~/Library/Caches/org.swift.swiftpm
-          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
-          restore-keys: spm-${{ runner.os }}-
+          key: spm-cache-policy-holdout-${{ github.run_id }}-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
       - name: Record restored SwiftPM layout
         run: |
           python3 - <<'PY_LAYOUT'

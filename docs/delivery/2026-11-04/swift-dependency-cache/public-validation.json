@@ -1,7 +1,7 @@
 {
-  "scope": "Nonpublishing comparison of current and dependency-only SwiftPM caching",
-  "case": "control",
-  "retained_product_source": "590410759576dfd6b2a661bdd6c3fb727cce82b1",
-  "preserve": "All1170 originalSwiftIDs,34tooling,48Bats,4native,lockedRust andall existingdeadlines. Product/test/helper/locksunchanged.",
-  "measurement": "Build+Test+cache restore/save/layout AND fullpackage clocks; everyfullattemptretained, no release/deployment."
+  "scope": "Nonpublishing final cache-unavailable validation",
+  "policy": "control",
+  "base_source": "934b738d75a870002dca110ae975f97e9c8bf17b",
+  "fixed_retained_source": "590410759576dfd6b2a661bdd6c3fb727cce82b1",
+  "condition": "Run-unique package cache key with no fallback. All1170Swift/34tooling/48Bats/four native/lockedRust/deadlines unchanged. No release/deploy."
 }
