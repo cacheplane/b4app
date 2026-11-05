@@ -1,6 +1,7 @@
 {
-  "case": "P1",
+  "case": "PH",
   "base": "90467731755067e64b9e843ae5d5d76ee0fa0aae",
   "intent": "Nonpublishing full current-main CI; preserve every test, native layout check, cache policy and deadline. Candidate changes only fakeB4 startup DNS and additive regression controls.",
-  "evidence": "Full evidence retained locally; no release or deployment requested."
+  "evidence": "Full evidence retained locally; no release or deployment requested.",
+  "cache": "Isolated run-scoped full compiled cache; no fallback. Product and tests identical to P1."
 }
