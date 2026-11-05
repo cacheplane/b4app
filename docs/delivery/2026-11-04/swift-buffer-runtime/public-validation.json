@@ -1,0 +1,8 @@
+{
+  "scope": "Nonpublishing Swift Test fixture buffer comparison",
+  "case": "control",
+  "reference": "590410759576dfd6b2a661bdd6c3fb727cce82b1",
+  "preserve": "Current cache/all1170originalSwiftIDs/34tooling/48Bats/4native/lockedRust/allassertions/deadlines. Candidateaddsoneeffective-setting/durability/isolation guard.",
+  "objective": "Two warm observations per arm; median Test and fullpackage each at least10percentlower, allrequiredcheckspass.",
+  "policy": "Only ephemeralfixture shared_buffers differs; production/durability/WAL unchanged; no release/deployment."
+}
