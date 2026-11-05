@@ -50,7 +50,10 @@ struct B4AppiOS: App {
         .environment(
           \.workspaceStatusBanner,
           {
-            AnyView(SyncBanner(status: host.syncStatus, relayRefused: host.relayRefused))
+            AnyView(
+              SyncBanner(
+                status: host.syncStatus, relayRefused: host.relayRefused,
+                syncPaused: host.storeError != nil))
           }
         )
         .environment(

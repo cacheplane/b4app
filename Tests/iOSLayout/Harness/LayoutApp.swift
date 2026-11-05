@@ -94,10 +94,12 @@ struct LayoutApp: App {
     _model = State(initialValue: model)
     _status = State(
       initialValue: MirrorSyncStatus(
-        lastError: ["sync", "stale", "refused"].contains(notice)
+        lastError: ["sync", "stale", "refused", "blocked"].contains(notice)
           || ProcessInfo.processInfo.environment["LAYOUT_SYNC_FAILURE"] == "1"
-          ? "The Internet connection appears to be offline." : nil,
-        lastSyncAt: notice == "stale" ? Timestamp.now() : nil))
+          ? ProcessInfo.processInfo.environment["LAYOUT_SYNC_ERROR"]
+            ?? "The Internet connection appears to be offline." : nil,
+        lastSyncAt: ProcessInfo.processInfo.environment["LAYOUT_LAST_SYNC"]
+          ?? (notice == "stale" ? Timestamp.now() : nil)))
   }
 
   var body: some Scene {
@@ -110,7 +112,8 @@ struct LayoutApp: App {
               SyncBanner(
                 status: status,
                 relayRefused: notice == "refused"
-                  ? "The hub no longer accepts this iPhone. Log out, then sign in again." : nil))
+                  ? SyncBanner.signInRequiredMessage : nil,
+                syncPaused: notice == "blocked"))
           }
         )
         .environment(\.connectMacContent, { AnyView(ConnectMacScreen(state: connect, onScan: {})) })
