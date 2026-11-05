@@ -1,0 +1,7 @@
+{
+  "scope": "Nonpublishing retained correctness validation; unsupported WAL trial reverted",
+  "case": "retained",
+  "base": "e141e8c995206c053630971f973708f7912b62cb",
+  "preserve": "All original1170 Swift declaration IDs, all assertions/deadlines, seven exhaustive groups,34 tooling plusnative/Rustchecks. No speedclaim, release or deployment.",
+  "source_only": true
+}

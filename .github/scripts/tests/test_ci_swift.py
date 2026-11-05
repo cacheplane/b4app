@@ -1,15 +1,33 @@
 """Isolated runner fixtures; these are not Swift integration or hosted CI results."""
+import errno
 import importlib.util
 import json
 import os
 import pathlib
 import re
 import signal
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[3] / 'Scripts' / 'test-swift.py'
+
+
+def dispose_owned_process_group(pid, killpg):
+    try:
+        # Only a still-unreaped child reserves this numeric group id for our fixture.
+        # If run_command already reaped it, or it is not our child, never signal it.
+        waited, _ = os.waitpid(pid, os.WNOHANG)
+        if waited == 0:
+            try:
+                killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            os.waitpid(pid, 0)
+    except ChildProcessError:
+        pass
 
 
 class SwiftPartitionsTests(unittest.TestCase):
@@ -33,10 +51,35 @@ class SwiftPartitionsTests(unittest.TestCase):
     def test_exact_boundaries_and_complete_disjoint_inventory(self):
         ids = self.inventory()
         plan = self.module.make_plan(ids)
-        self.assertEqual(len(plan), 5)
-        self.assertEqual([len(p['ids']) for p in plan], [1, 1, 1, 1, 2])
+        self.assertEqual(len(plan), 7)
+        self.assertEqual([len(p['ids']) for p in plan], [1, 1, 1, 1, 1, 2, 2])
         self.assertIn(ids[-1], plan[-1]['ids'])
         self.assertEqual(sorted(x for p in plan for x in p['ids']), sorted(ids))
+
+    def test_coordinator_hello_suites_share_one_exact_group(self):
+        expected = ['CoordinatorTests.HubSyncTests/example()',
+                    'CoordinatorTests.LegacySecretCopyTests/example()']
+        ids = self.inventory()
+        ids += [x for x in expected if x not in ids]
+        extra = 'CoordinatorTests.HubSyncTestsExtra/staysInRemainder()'
+        ids.append(extra)
+        plan = self.module.make_plan(ids)
+        groups = [p for p in plan if p['name'] == 'coordinator-hello']
+        self.assertEqual([sorted(p['ids']) for p in groups], [sorted(expected)])
+        self.assertIn(extra, plan[-1]['ids'])
+
+    def test_client_cancellation_suite_has_its_own_exact_partition(self):
+        suite = 'WorkspaceClientTests.WorkspaceClientTests'
+        target = suite + '/example()'
+        lookalike = suite + 'Extra/staysInRemainder()'
+        ids = self.inventory()
+        if target not in ids:
+            ids.append(target)
+        ids.append(lookalike)
+        plan = self.module.make_plan(ids)
+        groups = [part for part in plan if part['name'] == suite]
+        self.assertEqual([part['ids'] for part in groups], [[target]])
+        self.assertIn(lookalike, plan[-1]['ids'])
 
     def test_plan_rejects_overlap_omission_empty_and_selector_mismatch(self):
         ids = self.inventory()
@@ -98,7 +141,7 @@ class SwiftPartitionsTests(unittest.TestCase):
         for bad in ['exit', 'report-failed']:
             result, calls, summary = self.pipeline(bad)
             self.assertEqual(result, 1)
-            self.assertEqual(len(calls), 6)
+            self.assertEqual(len(calls), 8)
             self.assertEqual(summary['reported_tests'], len(self.inventory()))
             self.assertEqual(summary['missing_report_partitions'], 0)
 
@@ -106,13 +149,13 @@ class SwiftPartitionsTests(unittest.TestCase):
         for bad in ['missing', 'count']:
             result, calls, _ = self.pipeline(bad)
             self.assertEqual(result, 1)
-            self.assertEqual(len(calls), 6)
+            self.assertEqual(len(calls), 8)
 
     def test_identical_build_flags_and_dynamic_new_tests_are_preserved(self):
         flags = ['--scratch-path', '/tmp/example', '--jobs', '2']
         result, calls, _ = self.pipeline(args=flags)
         self.assertEqual(result, 0)
-        self.assertEqual(len(calls), 6)
+        self.assertEqual(len(calls), 8)
         for command in calls:
             self.assertEqual(command[:2 + len(flags)], ['swift', 'test', *flags])
         self.assertEqual(calls[0][-1], 'list')
@@ -125,6 +168,42 @@ class SwiftPartitionsTests(unittest.TestCase):
                 pathlib.Path(tmp) / 'child.log')
         self.assertTrue(result['timed_out'])
         self.assertNotEqual(result['exit_code'], 0)
+
+    def test_signal_permission_failure_is_reported_without_losing_the_result(self):
+        real_killpg = os.killpg
+        owned_pids = []
+
+        def deny_kill(pid, sig):
+            owned_pids.append(pid)
+            if sig == signal.SIGKILL:
+                raise PermissionError(errno.EPERM, 'injected signal denial')
+            return real_killpg(pid, sig)
+
+        result = None
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                with mock.patch.object(self.module.os, 'killpg', side_effect=deny_kill):
+                    result = self.module.run_command(
+                        [sys.executable, '-c', 'import time; time.sleep(30)'], 1,
+                        pathlib.Path(tmp) / 'denied.log')
+                self.assertTrue(result['timed_out'])
+                self.assertNotEqual(result['exit_code'], 0)
+                self.assertIn('SIGKILL', result['cleanup_error'])
+                self.assertIn('injected signal denial', result['cleanup_error'])
+            finally:
+                # The injected denial leaves only our supervised group alive. Dispose it using
+                # the real signal function, and reap this test's own session leader.
+                if owned_pids:
+                    dispose_owned_process_group(owned_pids[-1], real_killpg)
+
+    def test_denial_fixture_never_signals_a_reaped_or_unowned_group(self):
+        child = subprocess.Popen([sys.executable, '-c', 'pass'])
+        child.wait()
+        signalled = []
+        for pid in [child.pid, os.getpid()]:
+            with self.subTest(pid=pid):
+                dispose_owned_process_group(pid, lambda *args: signalled.append(args))
+        self.assertEqual(signalled, [])
 
     def test_discovery_stdout_is_not_contaminated_by_build_diagnostics(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -150,7 +229,4 @@ class SwiftPartitionsTests(unittest.TestCase):
             finally:
                 if not result['output_closed']:
                     # Dispose only this test's still-open process group after the red control.
-                    try:
-                        os.killpg(result['pid'], signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+                    dispose_owned_process_group(result['pid'], os.killpg)
