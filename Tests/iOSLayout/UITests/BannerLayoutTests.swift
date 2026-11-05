@@ -1,0 +1,291 @@
+import UIKit
+import XCTest
+
+final class BannerLayoutTests: XCTestCase {
+  @MainActor
+  private func launch(
+    _ screen: String, notice: String = "sync", accessibility: Bool = false, dark: Bool = false,
+    recover: Bool = false, withSyncFailure: Bool = false
+  ) -> XCUIApplication {
+    continueAfterFailure = false
+    XCUIDevice.shared.orientation = .portrait
+    let app = XCUIApplication()
+    app.launchEnvironment = [
+      "LAYOUT_SCREEN": screen, "LAYOUT_NOTICE": notice, "LAYOUT_DARK": dark ? "1" : "0",
+      "LAYOUT_RECOVER": recover ? "1" : "0",
+      "LAYOUT_SYNC_FAILURE": withSyncFailure ? "1" : "0",
+    ]
+    if accessibility {
+      app.launchArguments = [
+        "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL",
+      ]
+    }
+    app.launch()
+    return app
+  }
+
+  @MainActor
+  private func checkLayout(_ app: XCUIApplication, screen: String, hasBanner: Bool = true) {
+    let banners = app.descendants(matching: .any).matching(identifier: "sync.banner")
+    if hasBanner { XCTAssertTrue(banners.firstMatch.waitForExistence(timeout: 10), app.debugDescription) }
+    let banner = banners.allElementsBoundByIndex.first {
+      $0.frame.height > 0 && $0.isHittable
+    }
+    XCTAssertEqual(banner != nil, hasBanner, app.debugDescription)
+    let tree = XCTAttachment(
+      string: app.debugDescription + "\nBANNERS:\n"
+        + banners.allElementsBoundByIndex.map {
+          "\($0.elementType) \($0.frame) hittable=\($0.isHittable) \($0.label)"
+        }
+        .joined(separator: "\n"))
+    tree.name = "\(screen)-accessibility"
+    tree.lifetime = .keepAlways
+    add(tree)
+    let shot = XCTAttachment(screenshot: app.screenshot())
+    shot.name = screen
+    shot.lifetime = .keepAlways
+    add(shot)
+    if screen == "connect-mac" {
+      XCTAssertTrue(app.staticTexts["Connect your Mac"].waitForExistence(timeout: 10))
+      if !app.buttons["Scan the code"].isHittable { app.scrollViews.firstMatch.swipeUp() }
+      XCTAssertTrue(app.buttons["Scan the code"].isHittable)
+    } else {
+      let title =
+        screen == "detail"
+        ? "Fix the login bug"
+        : screen == "new-thread" ? "New thread" : screen == "archived" ? "Archived" : "Threads"
+      let heading = app.navigationBars.staticTexts[title].firstMatch
+      XCTAssertTrue(heading.waitForExistence(timeout: 10), app.debugDescription)
+      XCTAssertGreaterThan(heading.frame.height, 0)
+      let titleShot = XCTAttachment(screenshot: heading.screenshot())
+      titleShot.name = "\(screen)-title"
+      titleShot.lifetime = .keepAlways
+      add(titleShot)
+      XCTAssertGreaterThan(
+        foregroundFraction(heading.screenshot().image, dark: app.launchEnvironment["LAYOUT_DARK"] == "1"),
+        0.01, "The navigation title exists in accessibility but its text is not drawn")
+      if let banner {
+        XCTAssertLessThanOrEqual(heading.frame.maxY, contentFrame(banner).minY, "Banner covers \(title)")
+      }
+      if !["detail", "new-thread", "no-ready-detail"].contains(screen) {
+        XCTAssertTrue(app.buttons["sidebar-more"].isHittable)
+        XCTAssertTrue(app.buttons["list-search"].isHittable)
+        XCTAssertTrue(app.buttons["new-thread-dock"].exists)
+      }
+    }
+    for button in app.navigationBars.buttons.allElementsBoundByIndex {
+      if let banner {
+        XCTAssertFalse(button.frame.intersects(contentFrame(banner)), "Banner covers \(button.identifier)")
+      }
+    }
+    if !["detail", "new-thread", "no-ready-detail"].contains(screen) {
+      XCTAssertTrue(app.buttons["profile-button"].isHittable)
+    }
+  }
+
+  // A safe-area background's combined accessibility frame may extend all the way to y=0, even
+  // though its text and controls are below the navigation bar. Judge those actual contents.
+  @MainActor
+  private func contentFrame(_ element: XCUIElement) -> CGRect {
+    let contents =
+      element.descendants(matching: .staticText).allElementsBoundByIndex
+      + element.descendants(matching: .button).allElementsBoundByIndex
+    let frames = contents.filter { $0.isHittable && $0.frame.height > 0 }.map(\.frame)
+    return frames.isEmpty ? element.frame : frames.reduce(CGRect.null) { $0.union($1) }
+  }
+
+  // UIKit can expose an obscured large title to accessibility even when none of its text is drawn.
+  // Check the title's own screenshot too; geometry and `exists` alone missed the home-screen bug.
+  @MainActor
+  private func foregroundFraction(_ image: UIImage, dark: Bool) -> Double {
+    guard let image = image.cgImage else { return 0 }
+    var pixels = [UInt8](repeating: 0, count: image.width * image.height * 4)
+    let rendered = pixels.withUnsafeMutableBytes { buffer in
+      guard
+        let context = CGContext(
+          data: buffer.baseAddress, width: image.width, height: image.height, bitsPerComponent: 8,
+          bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+      else { return false }
+      context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+      return true
+    }
+    guard rendered else { return 0 }
+    let count = stride(from: 0, to: pixels.count, by: 4).filter { index in
+      let rgb = pixels[index...index + 2]
+      return dark ? rgb.allSatisfy { $0 > 190 } : rgb.allSatisfy { $0 < 80 }
+    }.count
+    return Double(count) / Double(image.width * image.height)
+  }
+
+  @MainActor
+  func testListBannerKeepsLargeTitleAndToolbarVisible() {
+    let app = launch("list")
+    checkLayout(app, screen: "list")
+  }
+
+  @MainActor
+  func testDetailBannerKeepsInlineTitleAndToolbarVisible() {
+    let app = launch("detail")
+    checkLayout(app, screen: "detail")
+  }
+
+  @MainActor
+  func testEveryWorkspaceSurfaceWithSyncFailure() {
+    for screen in ["empty", "archived", "no-match", "detail", "new-thread", "no-ready-detail", "connect-mac"]
+    {
+      let app = launch(screen)
+      checkLayout(app, screen: screen)
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testLandscapeLayouts() {
+    for screen in ["list", "empty", "detail", "connect-mac"] {
+      let app = launch(screen)
+      XCUIDevice.shared.orientation = .landscapeLeft
+      checkLayout(app, screen: screen)
+      app.terminate()
+      XCUIDevice.shared.orientation = .portrait
+    }
+  }
+
+  @MainActor
+  func testAccessibilityTextLayouts() {
+    for screen in ["list", "empty", "detail", "connect-mac"] {
+      let app = launch(screen, accessibility: true)
+      checkLayout(app, screen: screen)
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testRefusalBannerInDarkMode() {
+    for screen in ["list", "detail", "new-thread", "no-ready-detail", "connect-mac"] {
+      let app = launch(screen, notice: "refused", dark: true)
+      checkLayout(app, screen: screen)
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testOtherNoticeImplementations() {
+    let cases = [
+      ("list", "account", "account-notice"),
+      ("list", "host-offline", "host-notice"),
+      ("detail", "host-offline", "host-notice"),
+      ("list", "action-error", "sidebar-error"),
+      ("detail", "action-error", "error-banner"),
+    ]
+    for (screen, notice, identifier) in cases {
+      for syncFailure in [false, true] {
+        let app = launch(screen, notice: notice, withSyncFailure: syncFailure)
+        let query = app.descendants(matching: .any).matching(identifier: identifier)
+        XCTAssertTrue(query.firstMatch.waitForExistence(timeout: 10), app.debugDescription)
+        guard let shown = query.allElementsBoundByIndex.first(where: { $0.isHittable }) else {
+          XCTFail("\(identifier) is missing or obscured")
+          return
+        }
+        checkLayout(app, screen: screen, hasBanner: syncFailure)
+        let noticeFrame = query.allElementsBoundByIndex.filter { $0.isHittable }
+          .map { contentFrame($0) }.reduce(CGRect.null) { $0.union($1) }
+        for button in app.navigationBars.buttons.allElementsBoundByIndex {
+          XCTAssertFalse(button.frame.intersects(noticeFrame), "\(identifier) covers navigation")
+        }
+        if notice == "account" {
+          XCTAssertTrue(app.buttons["account-notice.dismiss"].isHittable)
+        } else if notice == "action-error" {
+          let dismiss = app.buttons["Dismiss"].firstMatch
+          XCTAssertTrue(dismiss.isHittable)
+          dismiss.tap()
+          XCTAssertTrue(shown.waitForNonExistence(timeout: 5))
+          checkLayout(app, screen: screen, hasBanner: syncFailure)
+        }
+        app.terminate()
+      }
+    }
+    for screen in ["list", "detail"] {
+      let app = launch(screen, notice: "stale")
+      checkLayout(app, screen: screen)
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testHealthyLayoutsHaveNoSyncBanner() {
+    for screen in ["list", "detail"] {
+      let app = launch(screen, notice: "healthy")
+      checkLayout(app, screen: screen, hasBanner: false)
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testSignInAndOnboardingDoNotShowWorkspaceNotices() {
+    for screen in ["sign-in", "sign-in-no-camera", "onboarding"] {
+      let app = launch(screen)
+      if screen == "onboarding" {
+        XCTAssertTrue(app.staticTexts["onboarding.title"].waitForExistence(timeout: 10))
+      } else if screen == "sign-in-no-camera" {
+        XCTAssertTrue(app.buttons["Sign in with a passkey"].waitForExistence(timeout: 10))
+      } else {
+        XCTAssertTrue(app.buttons["Other ways to sign in"].waitForExistence(timeout: 10))
+      }
+      XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "sync.banner").firstMatch.exists)
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testNavigateIntoThreadAndBackWithBannerPresent() {
+    let app = launch("list")
+    checkLayout(app, screen: "list")
+    app.buttons["thread-row"].firstMatch.tap()
+    checkLayout(app, screen: "detail")
+    app.navigationBars.buttons.element(boundBy: 0).tap()
+    checkLayout(app, screen: "list")
+  }
+
+  @MainActor
+  func testSearchWithBannerPresent() {
+    let app = launch("list")
+    checkLayout(app, screen: "list")
+    app.buttons["list-search"].tap()
+    let search = app.searchFields["Search threads"]
+    XCTAssertTrue(search.isHittable)
+    search.tap()
+    search.typeText("no-such-thread")
+    XCTAssertTrue(app.staticTexts["No matching threads."].waitForExistence(timeout: 5))
+    let banners = app.descendants(matching: .any).matching(identifier: "sync.banner")
+      .allElementsBoundByIndex.filter { $0.isHittable }
+    XCTAssertFalse(banners.isEmpty)
+    for banner in banners { XCTAssertFalse(contentFrame(banner).intersects(search.frame)) }
+  }
+
+  @MainActor
+  func testExpandedAndCollapsedListTitles() {
+    let app = launch("scrolling")
+    checkLayout(app, screen: "scrolling")
+    app.swipeUp()
+    checkLayout(app, screen: "scrolling")
+    app.swipeDown()
+    app.swipeDown()
+    checkLayout(app, screen: "scrolling")
+  }
+
+  @MainActor
+  func testBannerClearsOnHomeAndDetail() {
+    for screen in ["list", "detail"] {
+      let app = launch(screen, recover: true)
+      checkLayout(app, screen: screen)
+      let banner = app.descendants(matching: .any).matching(identifier: "sync.banner")
+        .allElementsBoundByIndex.first { $0.isHittable }!
+      app.buttons["fixture.recover"].tap()
+      XCTAssertTrue(
+        banner.waitForNonExistence(timeout: 15))
+      checkLayout(app, screen: screen, hasBanner: false)
+      app.terminate()
+    }
+  }
+}

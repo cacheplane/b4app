@@ -11,6 +11,7 @@ struct SidebarView: View {
   @Bindable var model: WorkspaceModel
   /// The phone's "Connect your Mac", which takes the list's place while the account has no Mac.
   @Environment(\.connectMacContent) private var connectMacContent
+  @Environment(\.workspaceStatusBanner) private var statusBanner
 
   var body: some View {
     shown
@@ -38,6 +39,7 @@ struct SidebarView: View {
   @ViewBuilder private var shown: some View {
     if model.showsConnectMac, let connectMacContent {
       connectMacContent()
+        .safeAreaInset(edge: .top, spacing: 0) { statusBanner?() }
     } else {
       content
     }
@@ -108,7 +110,16 @@ struct SidebarView: View {
     // the bottom.
     private var content: some View {
       List {
-        ThreadListView(model: model)
+        Section {
+          ThreadListView(model: model)
+        } header: {
+          VStack(spacing: 0) {
+            statusBanner?()
+            listNotice
+          }
+          .textCase(nil)
+          .listRowInsets(EdgeInsets())
+        }
       }
       .listStyle(.plain)
       .searchable(
@@ -128,8 +139,9 @@ struct SidebarView: View {
       .scrollContentBackground(.hidden)
       // Rows are exactly their 44 pt target: no untappable band above and below each one.
       .environment(\.defaultMinListRowHeight, LLA.Metrics.row)
-      // Pinned above the scrolling list, so it stays in view while the threads are browsed.
-      .safeAreaInset(edge: .top, spacing: 0) { listNotice }
+      // Plain-list section headers pin below the navigation bar. A top safe-area inset/bar
+      // suppresses the large title while a notice is present, even when attached to the List itself.
+      .environment(\.defaultMinListHeaderHeight, 0)
       .safeAreaInset(edge: .bottom, spacing: 0) { NewThreadDock(model: model) }
     }
   #endif

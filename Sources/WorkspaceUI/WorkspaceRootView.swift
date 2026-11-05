@@ -81,10 +81,13 @@ struct WorkspaceShell: View {
     NavigationSplitView(preferredCompactColumn: $compactColumn) {
       SidebarView(model: model)
         .navigationSplitViewColumnWidth(min: 240, ideal: 290)
-        .safeAreaInset(edge: .top, spacing: 0) { statusBanner?() }
     } detail: {
       ThreadsView(model: model)
         .modifier(WorkspaceWindowBackground())
+        #if os(iOS)
+          // Empty detail has no scrolling large-title host; use the thread's inline mode there too.
+          .navigationBarTitleDisplayMode(.inline)
+        #endif
         .safeAreaInset(edge: .top, spacing: 0) { statusBanner?() }
     }
     .environment(\.showDetail, showDetail)
