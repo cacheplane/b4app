@@ -33,7 +33,7 @@ use sqlx::types::Uuid;
 use sqlx::{Acquire, FromRow, Postgres, Transaction};
 
 use crate::devices::{AuthedDevice, Platform};
-use crate::push::{self, Notification, Withdrawal};
+use crate::push::{self, Notification, Refresh, Withdrawal};
 use crate::{Db, Error, Result};
 
 /// What happened to one change that was new to the hub.
@@ -78,6 +78,9 @@ pub struct PushOutcome {
     /// The background pushes that withdraw what the push ended (an answered or expired request,
     /// a read turn, a deleted thread): one per phone, by device id. Empty when nothing ended.
     pub withdrawals: Vec<Withdrawal>,
+    /// Silent mirror wakes for applied archive-column updates, excluding phones already receiving
+    /// an alert or withdrawal in this batch. Sent only after commit.
+    pub refreshes: Vec<Refresh>,
 }
 
 /// Why `auth` may not make `change`, if it may not.
@@ -185,6 +188,7 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
     // withdrawal decisions below.
     let mut touched: Vec<(Kind, String)> = Vec::new();
     let mut threads: Vec<String> = Vec::new();
+    let mut archive_changed = false;
     for change in batch {
         if let Some(code) = refusal(auth, change) {
             tracing::warn!(
@@ -235,6 +239,9 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
             Ok(Applied::Yes) => {
                 savepoint.commit().await?;
                 applied += 1;
+                archive_changed |= change.table == "threads"
+                    && change.op == ChangeOp::Update
+                    && change.column.as_deref() == Some("archived");
                 if let Some(kind) = push::kind_of_table(&change.table) {
                     let entry = (kind, change.row_id.clone());
                     if !touched.contains(&entry) {
@@ -275,6 +282,11 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
     // same transaction, so the ledger commits with the rows and a retried batch cannot notify or
     // withdraw twice.
     let (notifications, withdrawals) = push::decide(&mut tx, auth, &touched, &threads).await?;
+    let refreshes = if archive_changed {
+        push::archive_refreshes(&mut tx, auth, &notifications, &withdrawals).await?
+    } else {
+        Vec::new()
+    };
     tx.commit().await?;
 
     if skipped > 0 {
@@ -291,6 +303,7 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
         accepted_through: accepted,
         rejected,
         notifications,
+        refreshes,
         withdrawals,
     })
 }

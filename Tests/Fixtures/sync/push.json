@@ -755,5 +755,17 @@
     "Simulator Target Bundle": "com.cacheplane.b4app.ios"
    }
   }
+ ],
+ "refreshes": [
+  {
+   "bundleId": "com.cacheplane.b4app.ios",
+   "expected": {
+    "aps": {
+     "content-available": 1
+    },
+    "refresh": true,
+    "Simulator Target Bundle": "com.cacheplane.b4app.ios"
+   }
+  }
  ]
 }
