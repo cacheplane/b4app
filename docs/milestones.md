@@ -343,3 +343,7 @@ Exit gate status: closed. Part 1 passed in the Simulator through APNs sandbox; p
   The hub keeps every synced row (D-089, the owner's rule of 2026-11-02): a `delete` change marks the row deleted (migration 0009 `deleted_at`) and keeps its column clocks; every read leaves it out, and an insert of the same id revives it. `implemented`, `fixture-tested` (`Hub/crates/b4hub-db/tests/changes.rs`). A full delete is not built.
 - [x] M8f Attention on the phone (notifications through a swappable push sender, a `spool` sender for the Simulator and `apns`, and the home-screen widget showing the top three threads). `implemented`, `fixture-tested`, and `live-tested` in the Simulator (2026-11-02). See "M8f: attention on the phone" above. Design: the M8b design's M8f section; plan `docs/superpowers/plans/2026-11-02-m8f-attention.md`; decisions D-121 to D-129.
 - [x] M8f APNs Real notifications through Apple's push service, withdrawal, and the badge. `implemented`, `fixture-tested`, and `live-tested`: the Simulator through APNs sandbox, and the owner's iPhone through APNs production on the test hub and on prod (2026-11-03). See "M8f APNs" above; decisions D-141 to D-149.
+
+## Documentation authoring
+
+- Explicit fresh-thread B4 recording (`docs-record`): implemented and fixture-tested. The private output preserves deltas and observed state, checks stream continuity, and excludes account/connection/grant fields. Live Navlog capture and publication qualification are pending; see `docs/verification/2026-11-06-docs-recording.md`.
