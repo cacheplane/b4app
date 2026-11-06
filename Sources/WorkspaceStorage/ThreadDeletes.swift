@@ -9,6 +9,29 @@ public enum ThreadDeleteState: String, Sendable {
 
 /// Deleted threads (migration 0008). The marker is synced; the runtime-delete progress is local to this Mac.
 extension WorkspaceDatabase {
+  /// Run a brief synchronous publisher only while this thread is visible. The row lease orders
+  /// publication against local deletion and pulled updates; the shared advisory lock comes first,
+  /// exactly as for local writes. The callback must not suspend or reenter the database.
+  @discardableResult
+  public func withVisibleThread(id: String, _ publish: () -> Void) throws -> Bool {
+    try read { c in
+      try c.execute("BEGIN")
+      do {
+        try c.execute(
+          "SELECT pg_advisory_xact_lock_shared($1::bigint)", [String(Self.remoteApplyLockKey)])
+        let visible = try !c.execute(
+          #"SELECT 1 FROM "threads" WHERE "id" = $1 AND "userDeletedAt" IS NULL FOR SHARE"#, [id]
+        ).rows.isEmpty
+        if visible { publish() }
+        try c.execute("COMMIT")
+        return visible
+      } catch {
+        try? c.execute("ROLLBACK")
+        throw error
+      }
+    }
+  }
+
   /// Mark the thread deleted at `at`. A thread already deleted keeps its first time. Nil when the
   /// thread does not exist.
   public func markThreadDeleted(id: String, at: String) throws -> ConversationThread? {
