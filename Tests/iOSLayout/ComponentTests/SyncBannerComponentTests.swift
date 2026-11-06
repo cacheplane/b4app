@@ -23,10 +23,19 @@ import XCTest
   }
 
   func testMaximumTextWrapsOlderTimestamp() throws {
+    let environment = XCTAttachment(
+      string:
+        "locale=\(Locale.current.identifier); timezone=\(TimeZone.current.identifier); calendar=\(Calendar.current.identifier)"
+    )
+    environment.name = "banner-render-environment"
+    environment.lifetime = .keepAlways
+    add(environment)
     let normal = try render(width: 320, size: .large, lastSyncAt: "2001-01-01T10:30:00Z")
     let large = try render(width: 320, size: .accessibility5, lastSyncAt: "2001-01-01T10:30:00Z")
     XCTAssertGreaterThan(large.height, normal.height * 2)
     XCTAssertGreaterThan(large.inkHeight, normal.inkHeight * 2)
+    XCTAssertGreaterThanOrEqual(
+      large.inkLineCount, 3, "The older timestamp must wrap into multiple visible text lines.")
     XCTAssertGreaterThan(large.inkCount, normal.inkCount)
     XCTAssertEqual(try XCTUnwrap(large.markerMinX), 16, accuracy: 1)
   }
@@ -35,6 +44,7 @@ import XCTest
     let height: CGFloat
     let inkCount: Int
     let inkHeight: Int
+    let inkLineCount: Int
     let markerMinX: CGFloat?
   }
 
@@ -107,6 +117,7 @@ import XCTest
     return Pixels(
       height: fitting.height, inkCount: inkCount,
       inkHeight: (inkRows.max() ?? 0) - (inkRows.min() ?? 0),
+      inkLineCount: inkRows.filter { !inkRows.contains($0 - 1) }.count,
       markerMinX: markerMinX.map { CGFloat($0) })
   }
 }
