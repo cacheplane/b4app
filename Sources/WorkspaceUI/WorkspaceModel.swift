@@ -1282,6 +1282,7 @@ public final class WorkspaceModel {
     }
     let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return }
+    let generation = accountGeneration
     composerText = ""
     let sent: Turn? = await perform {
       try await $0.request(
@@ -1289,7 +1290,11 @@ public final class WorkspaceModel {
         options: Self.mutation(timeout: .seconds(90))
       ).turn
     }
-    if sent == nil, composerText.isEmpty, self.detail?.activeTurn != nil {
+    if sent == nil, generation == accountGeneration,
+      selectedThreadId == detail.thread.id, self.detail?.thread.id == detail.thread.id,
+      !deletedThreadIds.contains(detail.thread.id), composerText.isEmpty,
+      self.detail?.activeTurn != nil || Remediation.isArchivedSession(lastFailure)
+    {
       composerText = text
     }
   }
@@ -1351,7 +1356,10 @@ public final class WorkspaceModel {
     case .openConnections: openSettings(.connections)
     case .openServers: openSettings(.servers)
     case .newThread: await openNewThread(projectId: detail?.thread.projectId)
-    case .checkAgain: if let id = detail?.thread.id { await reconcileThread(id: id) }
+    case .checkAgain:
+      if let id = detail?.thread.id { await reconcileThread(id: id) }
+      // Reconciliation clears the notice on success and supplies the current failure otherwise.
+      return
     case .abandonTurn: if let id = detail?.thread.id { await abandonTurn(threadId: id) }
     }
     if case .none = action { return }

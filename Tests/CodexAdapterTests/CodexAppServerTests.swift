@@ -276,6 +276,41 @@ private func paramsFile() -> URL {
     await adapter.dispose()
   }
 
+  @Test func archivedResumeRetainsRecoveryAndDoesNotSubmit() async throws {
+    let file = paramsFile()
+    defer { try? FileManager.default.removeItem(at: file) }
+    let adapter = makeAdapter(["FAKE_CODEX_PARAMS": file.path])
+    let ref = NativeSessionRef(nativeSessionId: "thr_archived", nativeScope: "owner@example.com")
+    let failure = await #expect(throws: WorkspaceError.self) {
+      _ = try await adapter.sendTurn(ref, input: TurnInput(operationId: "op1", text: "preserve my draft"))
+    }
+    #expect(failure?.code == .protocolInvalid)
+    #expect(failure?.details?["reason"]?.stringValue == "native_session_archived")
+    #expect(failure?.message.contains("codex unarchive thr_archived") == true)
+    #expect(failure?.details?["rpcCode"]?.numberValue == -32600)
+    #expect(failure?.details?["nativeMessage"]?.stringValue?.contains("is archived") == true)
+    #expect(try recordedParams("turn/start", in: file).isEmpty)
+    await adapter.dispose()
+  }
+
+  @Test(arguments: ["thr_config_missing", "thr_resume_fault"])
+  func unrelatedResumeErrorsDoNotClaimTheSessionIsMissing(_ threadId: String) async throws {
+    let file = paramsFile()
+    defer { try? FileManager.default.removeItem(at: file) }
+    let adapter = makeAdapter(["FAKE_CODEX_PARAMS": file.path])
+    let ref = NativeSessionRef(nativeSessionId: threadId, nativeScope: "owner@example.com")
+    let failure = await #expect(throws: WorkspaceError.self) {
+      _ = try await adapter.sendTurn(ref, input: TurnInput(operationId: "op1", text: "hi"))
+    }
+    #expect(failure?.code == .internalError)
+    #expect(
+      failure?.message
+        == (threadId == "thr_config_missing"
+          ? "configuration file not found" : "failed to read session: permission denied"))
+    #expect(try recordedParams("turn/start", in: file).isEmpty)
+    await adapter.dispose()
+  }
+
   @Test func interruptEndsAHangingTurnAsCancelled() async throws {
     let adapter = makeAdapter()
     let collector = EventCollector(adapter.events())

@@ -23,7 +23,15 @@ struct ComposerView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: LLA.Space.s) {
-      if let error = model.lastError { errorBanner(error) }
+      if let error = model.lastError,
+        !Remediation.coveredByContinuity(model.lastFailure, continuity: detail.thread.continuity)
+      {
+        ThreadErrorNotice(error: error, failure: model.lastFailure, remedy: model.remediation) { action in
+          Task { await model.perform(action) }
+        } dismiss: {
+          model.lastError = nil
+        }
+      }
       relayLines
       if let turn = activeTurn { turnRow(turn) }
       ComposerField(text: $model.composerText, placeholder: placeholder, focused: $focused) {
@@ -167,27 +175,6 @@ struct ComposerView: View {
     .accessibilityElement(children: .combine)
   }
 
-  private func errorBanner(_ error: String) -> some View {
-    let remedy = model.remediation
-    return LLACard(fill: .surface, padding: LLA.Space.m) {
-      HStack(alignment: .top, spacing: LLA.Space.m) {
-        VStack(alignment: .leading, spacing: 2) {
-          Text(remedy?.message ?? error).font(LLAFont.small).foregroundStyle(LLA.Color.danger)
-          if remedy != nil, let code = model.lastFailure?.code {
-            Text(code.rawValue).llaCodeMuted()
-          }
-        }
-        Spacer()
-        if let remedy, let title = remedy.actionTitle, remedy.action != .none {
-          Button(title) { Task { await model.perform(remedy.action) } }
-            .buttonStyle(.llaSecondary)
-            .accessibilityIdentifier("remediation")
-        }
-        Button("Dismiss") { model.lastError = nil }.buttonStyle(.llaLink)
-      }
-    }
-    .accessibilityIdentifier("error-banner")
-  }
 }
 
 /// The composer's round button: an ink circle (32 pt at the default text size) with the symbol in the
