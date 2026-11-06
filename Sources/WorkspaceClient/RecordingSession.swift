@@ -79,7 +79,7 @@ struct RecordingBuffer: Sendable {
         "type": .string(item.type), "provenance": .string(item.provenance.rawValue),
       ]
       if let native = item.nativeItemId { fields["nativeItemId"] = .string(native) }
-      for key in ["text", "name", "input", "output", "status"] {
+      for key in ["text", "name", "input", "output", "status", "event", "data", "label"] {
         if let value = item.payload[key] { fields[key] = value }
       }
     case .messageDelta:

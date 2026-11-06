@@ -61,6 +61,22 @@ import WorkspaceProtocol
     #expect(!recording.isSettled)
   }
 
+  @Test func retainsDisplayedCapabilityDataAndToolLabels() throws {
+    let item = DisplayItem(
+      id: "item", threadId: "thread", turnId: "turn", nativeItemId: "native-item",
+      role: .tool, type: "subagent.step",
+      payload: ["event": "subagent.step", "data": ["label": "Checking performance"], "label": "Performance"],
+      sequence: 0, provenance: .live)
+    var recording = RecordingBuffer(threadId: "thread", connectionId: "connection", maxBytes: 100_000)
+    recording.begin(epoch: "epoch", sequence: 0)
+    try recording.accept(
+      envelope(1, kind: .toolCompleted, payload: ["displayItem": try JSONValue(encoding: item)]), elapsedMs: 0
+    )
+    #expect(recording.events[0].fields["data"] == ["label": "Checking performance"])
+    #expect(recording.events[0].fields["event"] == "subagent.step")
+    #expect(recording.events[0].fields["label"] == "Performance")
+  }
+
   private func envelope(
     _ sequence: Int, kind: EventKind, thread: String? = "thread", payload: JSONValue = [:]
   ) -> EventEnvelope {
