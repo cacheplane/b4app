@@ -9,6 +9,13 @@ struct ThreadsView: View {
   var body: some View {
     if let thread = model.threads.first(where: { $0.id == model.selectedThreadId }) {
       ThreadDetailView(model: model, thread: thread)
+    } else if model.selectedThreadId != nil, openingSelection {
+      ProgressView("Loading thread…")
+        .llaSmallMuted()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(LLA.Color.bg)
+        .navigationTitle("Thread")
+        .accessibilityIdentifier("thread-opening")
     } else if model.conversationReadyConnections.isEmpty {
       LLAEmptyState(
         "Threads",
@@ -21,16 +28,12 @@ struct ThreadsView: View {
           .accessibilityIdentifier("add-connection")
       }
       .navigationTitle("Threads")
-    } else if model.selectedThreadId == nil || !openingSelection {
-      NewThreadView(model: model)
     } else {
-      // A thread is being opened that the list has not shown yet: a blank pane, not the composer.
-      LLA.Color.bg.frame(maxWidth: .infinity, maxHeight: .infinity).accessibilityHidden(true)
+      NewThreadView(model: model)
     }
   }
 
-  /// The selected thread's open is still out. Once it settles an unlisted id is gone (the model drops
-  /// a not-found one), so the pane is the composer again.
+  /// Keep a loading pane while a read or an external open is waiting for the thread's local row.
   private var openingSelection: Bool {
     model.detailLoading || model.pendingThreadOpen == model.selectedThreadId
   }

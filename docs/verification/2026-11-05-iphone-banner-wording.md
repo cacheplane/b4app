@@ -26,4 +26,12 @@ The permanent fixture harness renders the shipped iOS banner and shared workspac
 | Complete iPhone layout matrix | Pass: 23 tests, zero failures/skips, 566.696 seconds |
 | Screenshot inspection | Home/detail, retry/refusal/paused, and older timestamp at maximum Dynamic Type: banner readable, below navigation, with controls available |
 
-The complete result bundle is `/tmp/b4app-banner-copy-matrix.xcresult`; exported screenshots are under `.build/verification/2026-11-05-banner-wording/`. This is an isolated fixture UI gate, not a new physical iPhone or live-provider test. The new TestFlight build requires the owner's on-device retest.
+The complete result bundle is `/tmp/b4app-banner-copy-matrix.xcresult`; exported screenshots are under `.build/verification/2026-11-05-banner-wording/`. These automated checks use an isolated fixture app, separate from the physical iPhone result below.
+
+### Production build and physical iPhone retest
+
+PR #136 merged at `253b6e79d4532a0e4eaa5e008f5d8048fe2eb247` with all four CI checks green. Production TestFlight 0.1.0 (2611052247) was archived from that clean merge commit, validated and uploaded successfully, then confirmed `VALID` and `IN_BETA_TESTING`. It includes the padding cleanup from PR #134 and the wording changes above.
+
+After the provided retest instructions, the owner reported: “All passed on Home and in a thread. The banner clears within a few seconds.” Record the banner wording, spacing, navigation access and network-recovery retest as owner-reported `live-tested` on this build. Recovery timing is approximate and owner-reported, not instrumented.
+
+This closes the current banner/padding and step 5 follow-up. The report does not establish a new notification, withdrawal, badge or widget regression pass on this build, or separately confirm the optional maximum-text-size check.
