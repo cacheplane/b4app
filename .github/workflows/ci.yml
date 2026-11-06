@@ -53,7 +53,7 @@ jobs:
       - name: Deploy script tests
         run: bats Infra/scripts/tests
       - name: B4 fixture startup regression tests
-        run: python3 -m unittest discover -s Scripts/tests -p test_b4_fixture_bind.py -v
+        run: python3 -m unittest discover -s Scripts/tests -p 'test_*.py' -v
       - name: Launch Services script tests
         run: bats Scripts/tests
 
@@ -124,6 +124,9 @@ jobs:
       - name: iOS navigation and banner regression tests
         env:
           B4APP_LAYOUT_DERIVED_DATA: .build/DerivedData
+          B4APP_LAYOUT_EXPECTED_UI_TESTS: "13"
+          B4APP_LAYOUT_EXPECTED_COMPONENT_TESTS: "3"
+          B4APP_LAYOUT_FOCUSED_COVERAGE: "0"
         run: ./Scripts/test-ios-layout.sh -clonedSourcePackagesDirPath .spm
       - name: Save iOS layout screenshots and test results
         if: always()
