@@ -67,7 +67,7 @@ enum RecordingOutput {
         let sensitive =
           key.range(
             of:
-              #"(?i)(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|authorization|grant)"#,
+              #"(?i)(?:api[_-]?key|token|session|password|secret|authorization|grant)"#,
             options: .regularExpression) != nil
         safe[key] = sensitive ? .string("[redacted]") : cleanValue(child, home: home)
       }
@@ -77,26 +77,43 @@ enum RecordingOutput {
   }
 
   static func write(events: [RecordedEvent], appVersion: String, path: String) throws {
-    guard path.hasPrefix("/"), !path.split(separator: "/").contains("public"),
-      !path.split(separator: "/").contains(".git")
+    guard path.hasPrefix("/"), !path.contains("\0"), isPrivatePath(path)
     else { throw RecordingOutputFailure.invalidPath }
     let safe = try sanitized(events)
     let data = try JSONCoding.encoder.encode(RecordingFile(appVersion: appVersion, events: safe))
     guard data.count <= 20 * 1024 * 1024 else { throw RecordingOutputFailure.limitExceeded }
     let destination = URL(fileURLWithPath: path)
-    let temporary = destination.deletingLastPathComponent().appendingPathComponent(
-      ".docs-record-\(UUID().uuidString)"
-    ).path
-    let fd = Darwin.open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode_t(0o600))
+    // Validate the directory actually opened, including symlink resolution. Keep
+    // all writes relative to this descriptor so a changed parent symlink cannot
+    // redirect publication after validation. Reserve case variants on all volumes.
+    let directory = Darwin.open(
+      destination.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+    guard directory >= 0 else { throw RecordingOutputFailure.writeFailed }
+    defer { Darwin.close(directory) }
+    var resolved = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+    let resolvedResult = resolved.withUnsafeMutableBufferPointer {
+      fcntl(directory, F_GETPATH, $0.baseAddress!)
+    }
+    let resolvedPath = String(
+      decoding: resolved.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    guard resolvedResult == 0, isPrivatePath(resolvedPath) else {
+      throw RecordingOutputFailure.invalidPath
+    }
+    let temporary = ".docs-record-\(UUID().uuidString)"
+    let fd = Darwin.openat(directory, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode_t(0o600))
     guard fd >= 0 else { throw RecordingOutputFailure.writeFailed }
     let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-    defer { try? handle.close(); unlink(temporary) }
+    defer { try? handle.close(); unlinkat(directory, temporary, 0) }
     do { try handle.write(contentsOf: data); try handle.synchronize() } catch {
       throw RecordingOutputFailure.writeFailed
     }
     // link is atomic and refuses every existing destination, including symlinks.
-    guard Darwin.link(temporary, path) == 0 else {
+    guard Darwin.linkat(directory, temporary, directory, destination.lastPathComponent, 0) == 0 else {
       throw errno == EEXIST ? RecordingOutputFailure.alreadyExists : RecordingOutputFailure.writeFailed
     }
+  }
+
+  private static func isPrivatePath(_ path: String) -> Bool {
+    !path.split(separator: "/").contains { ["public", ".git"].contains($0.lowercased()) }
   }
 }

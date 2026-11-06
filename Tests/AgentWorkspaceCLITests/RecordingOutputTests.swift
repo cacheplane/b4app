@@ -6,6 +6,43 @@ import WorkspaceProtocol
 @testable import WorkspaceClient
 
 @Suite struct RecordingOutputTests {
+  @Test(arguments: ["token", "id_token", "ID-TOKEN", "session"])
+  func masksStandardCredentialKeys(key: String) throws {
+    let event = RecordedEvent(
+      sourceSequence: 0, elapsedMs: 0, kind: .toolCompleted, turnId: "turn",
+      fields: .object(["output": .object([key: .string("opaque-value")])]))
+    let safe = try RecordingOutput.sanitized([event])
+    #expect(safe[0].fields["output"]?[key] == "[redacted]")
+  }
+
+  @Test(arguments: ["public", ".git", "PUBLIC", ".GIT"])
+  func refusesSymlinkedProtectedParents(directory: String) throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let protected = folder.appendingPathComponent(directory)
+    try FileManager.default.createDirectory(at: protected, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let alias = folder.appendingPathComponent("private-alias")
+    try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: protected)
+    #expect(throws: RecordingOutputFailure.invalidPath) {
+      try RecordingOutput.write(
+        events: [], appVersion: "test", path: alias.appendingPathComponent("capture.json").path)
+    }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: protected.path).isEmpty)
+  }
+
+  @Test(arguments: ["PUBLIC", ".GIT"])
+  func refusesCaseVariantProtectedParents(directory: String) throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let protected = folder.appendingPathComponent(directory)
+    try FileManager.default.createDirectory(at: protected, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    #expect(throws: RecordingOutputFailure.invalidPath) {
+      try RecordingOutput.write(
+        events: [], appVersion: "test", path: protected.appendingPathComponent("capture.json").path)
+    }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: protected.path).isEmpty)
+  }
+
   @Test func refusesASecretSplitAcrossDeltas() throws {
     let events = [delta(1, "sk-"), delta(2, "123456789abcdef")]
     #expect(throws: RecordingOutputFailure.unsafeStream) {
