@@ -2,13 +2,15 @@ import UIKit
 import XCTest
 
 final class BannerLayoutTests: XCTestCase {
+  let coverage = JourneyCoverage()
   @MainActor
-  private func launch(
+  func launch(
     _ screen: String, notice: String = "sync", accessibility: Bool = false, dark: Bool = false,
     recover: Bool = false, withSyncFailure: Bool = false,
     syncError: String? = nil, lastSyncAt: String? = nil
   ) -> XCUIApplication {
     continueAfterFailure = false
+    coverage.beforeLaunch(in: self)
     XCUIDevice.shared.orientation = .portrait
     let app = XCUIApplication()
     app.launchEnvironment = [
@@ -24,13 +26,16 @@ final class BannerLayoutTests: XCTestCase {
       ]
     }
     app.launch()
+    coverage.didLaunch(in: self)
     return app
   }
 
   @MainActor
-  private func checkLayout(_ app: XCUIApplication, screen: String, hasBanner: Bool = true) {
+  func checkLayout(
+    _ app: XCUIApplication, screen: String, hasBanner: Bool = true, covering checkpoints: [String] = []
+  ) {
     let banners = app.descendants(matching: .any).matching(identifier: "sync.banner")
-    if hasBanner { XCTAssertTrue(banners.firstMatch.waitForExistence(timeout: 10), app.debugDescription) }
+    if hasBanner { waitForVisibleBanner(banners, timeout: 10, positiveHeight: true) }
     let banner = banners.allElementsBoundByIndex.first {
       $0.frame.height > 0 && $0.isHittable
     }
@@ -84,12 +89,30 @@ final class BannerLayoutTests: XCTestCase {
     if !["detail", "new-thread", "no-ready-detail"].contains(screen) {
       XCTAssertTrue(app.buttons["profile-button"].isHittable)
     }
+    coverage.layout(in: self, covering: checkpoints)
+  }
+
+  // Existence can precede the navigation transition finishing. Wait for the same condition the
+  // layout assertion requires, inside the original readiness deadline, rather than weakening it.
+  @MainActor
+  private func waitForVisibleBanner(
+    _ query: XCUIElementQuery, timeout: TimeInterval, positiveHeight: Bool
+  ) {
+    let visible = NSPredicate { _, _ in
+      MainActor.assumeIsolated {
+        query.allElementsBoundByIndex.contains {
+          $0.exists && (!positiveHeight || $0.frame.height > 0) && $0.isHittable
+        }
+      }
+    }
+    let ready = XCTNSPredicateExpectation(predicate: visible, object: nil)
+    XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: timeout), .completed)
   }
 
   // A safe-area background's combined accessibility frame may extend all the way to y=0, even
   // though its text and controls are below the navigation bar. Judge those actual contents.
   @MainActor
-  private func contentFrame(_ element: XCUIElement) -> CGRect {
+  func contentFrame(_ element: XCUIElement) -> CGRect {
     let contents =
       element.descendants(matching: .staticText).allElementsBoundByIndex
       + element.descendants(matching: .button).allElementsBoundByIndex
@@ -175,7 +198,7 @@ final class BannerLayoutTests: XCTestCase {
   }
 
   @MainActor
-  private func checkComposerAlignment(_ app: XCUIApplication) {
+  func checkComposerAlignment(_ app: XCUIApplication) {
     let editor = app.textFields["composer"]
     XCTAssertTrue(editor.waitForExistence(timeout: 5))
     XCTAssertEqual(editor.frame.minX, 32, accuracy: 0.5, "Draft text uses the page and field insets")
@@ -318,9 +341,9 @@ final class BannerLayoutTests: XCTestCase {
   }
 
   @MainActor
-  private func visibleSyncBanner(_ app: XCUIApplication) -> XCUIElement {
+  func visibleSyncBanner(_ app: XCUIApplication) -> XCUIElement {
     let query = app.descendants(matching: .any).matching(identifier: "sync.banner")
-    XCTAssertTrue(query.firstMatch.waitForExistence(timeout: 5))
+    waitForVisibleBanner(query, timeout: 5, positiveHeight: false)
     let banner = query.allElementsBoundByIndex.first { $0.isHittable }
     XCTAssertNotNil(banner)
     return banner ?? query.firstMatch

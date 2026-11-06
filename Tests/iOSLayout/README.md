@@ -23,3 +23,14 @@ Fast `SyncBannerContentTests` in the Swift package check banner visibility, copy
 The result gate requires exactly 25 passing UI cases and three passing component cases, with no skipped or failed tests. It checks each target independently, so a component-only run cannot silently satisfy full coverage. When adding tests, update the expected counts in both the script defaults and CI.
 
 Extra arguments go to `xcodebuild`, for example `'-only-testing:WorkspaceLayoutTests/BannerLayoutTests/testListBannerKeepsLargeTitleAndToolbarVisible()'`. Include the parentheses and quote the entire argument. For an intentionally focused run, set `B4APP_LAYOUT_EXPECTED_UI_TESTS=1 B4APP_LAYOUT_EXPECTED_COMPONENT_TESTS=0` for that selector; for all component tests, use `B4APP_LAYOUT_EXPECTED_UI_TESTS=0 B4APP_LAYOUT_EXPECTED_COMPONENT_TESTS=3` with `-only-testing:WorkspaceLayoutComponentTests`. These overrides are for local diagnostics; CI explicitly requires both full targets. The script rejects zero tests and count mismatches. These are fixture layout checks, not a physical-device or live-hub integration gate.
+
+
+The journey-consolidation baseline also requires the coverage manifest's 62 legacy scenarios and
+69 layout checkpoints (131 distinct execution markers) from the actual xcresult activities. A marker
+records that an assertion block ran; it does not replace an assertion or prove equivalent fixture
+inputs. Duplicate, unknown, and missing markers fail the gate. The original 25 UI methods remain
+intact while additive journeys are proved.
+
+For focused local UI diagnostics also set `B4APP_LAYOUT_FOCUSED_COVERAGE=1`; this derives the
+required subset from the reviewed method mapping. Both script and result-reader entry points refuse
+focused coverage when `CI` is set. CI always requires the full obligation set.

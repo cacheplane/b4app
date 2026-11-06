@@ -1,5 +1,8 @@
 """Unit tests for the result gate, not simulated native integration evidence."""
 import importlib.util
+import os
+import subprocess
+import sys
 from pathlib import Path
 import unittest
 
@@ -26,6 +29,21 @@ def summary(total=28):
 
 
 class LayoutResultTests(unittest.TestCase):
+    def test_ci_rejects_focused_override_at_both_entry_points(self):
+        root = Path(__file__).resolve().parents[2]
+        env = {**os.environ, "CI": "true", "B4APP_LAYOUT_FOCUSED_COVERAGE": "1",
+               "PATH": "/usr/bin:/bin"}
+        commands = [
+            [sys.executable, str(root / "Scripts/verify_ios_layout_results.py"),
+             "missing-summary.json", "missing-tests.json", "--focused-coverage"],
+            ["/bin/sh", str(root / "Scripts/test-ios-layout.sh")],
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Focused UI coverage is local-only", result.stderr)
+
     def test_requires_both_full_targets(self):
         self.assertEqual(module.verify(summary(), tree(), 25, 3),
                          {"WorkspaceLayoutTests": 25, "WorkspaceLayoutComponentTests": 3})

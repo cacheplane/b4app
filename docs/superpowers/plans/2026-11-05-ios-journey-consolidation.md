@@ -22,7 +22,7 @@
 
 ## Task2 — Add a behavior-level result contract before changing journeys
 
-**Create:** `Tests/iOSLayout/coverage.json`, `Tests/iOSLayout/UITests/JourneyCoverage.swift`.
+**Create:** `Tests/iOSLayout/UITests/coverage.json`, `Tests/iOSLayout/UITests/JourneyCoverage.swift`.
 **Modify:** `Tests/iOSLayout/project.yml`, `Tests/iOSLayout/UITests/BannerLayoutTests.swift`, `Scripts/verify_ios_layout_results.py`, `Scripts/test-ios-layout.sh`, `Scripts/tests/test_ios_layout_results.py`.
 
 - [ ] Encode each old method with its launch count (sum62). Give scenarios stableIDs `<oldMethod>#<ordinal>` and layout checkpoints `<scenario>/layout#<ordinal>` (sum69). Most scenarios have1layout; sign-in3have0, navigationhas3, scrollinghas3, recovery2each, and OtherNotice scenarios7–10have2each.
