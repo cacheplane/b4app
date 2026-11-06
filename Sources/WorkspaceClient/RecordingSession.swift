@@ -232,6 +232,14 @@ public actor RecordingSession {
         audit.requests.allSatisfy({ $0.state != .pending }),
         let buffer, buffer.isSettled
       else { throw RecordingFailure.unsettled }
+      // A turn can finish between the replay barrier and this read. Reject an
+      // unobserved turn instead of silently returning an incomplete recording.
+      let observedTurns = Set(
+        buffer.events.compactMap { event -> String? in
+          guard [.turnAcknowledged, .turnStateChanged, .turnFinished].contains(event.kind) else { return nil }
+          return event.turnId
+        })
+      guard observedTurns == Set(audit.turns.map(\.id)) else { throw RecordingFailure.unsettled }
       status = .finished
       stopTasks()
       return buffer.events

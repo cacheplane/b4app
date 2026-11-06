@@ -155,7 +155,8 @@ import WorkspaceProtocol
     await client.close()
   }
 
-  @Test func finishAuditsTheThreadBeforeReturningARecording() async throws {
+  @Test(arguments: [TurnStatus.running, .terminal])
+  func finishAuditsTheThreadBeforeReturningARecording(status: TurnStatus) async throws {
     let (transport, client) = try await makeClient()
     let session = RecordingSession(client: client, threadId: "thread")
     let starting = Task { try await session.start() }
@@ -171,7 +172,7 @@ import WorkspaceProtocol
         transport, index: 4,
         result: ThreadRead.Result(
           thread: thread,
-          turns: [Turn(id: "turn", threadId: "thread", operationId: "op", status: .running)], items: [],
+          turns: [Turn(id: "turn", threadId: "thread", operationId: "op", status: status)], items: [],
           requests: []))
       await #expect(throws: RecordingFailure.unsettled) { try await finishing.value }
     } else {

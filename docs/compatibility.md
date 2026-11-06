@@ -321,3 +321,5 @@ Read from `.github/workflows/hub-chart.yml`, `ci.yml`, `Infra/`, and `Hub/chart/
 ## Documentation recording format
 
 `agent-workspace docs-record` writes private `b4app-docs-private-v1` recordings from fresh B4 threads. The website normalizes these into public turn capture version 1. This authoring capability is fixture-tested; it is not a general transcript export or a production-release acceptance result. Current request-resolution events do not expose the decision, so a recording cannot claim which choice was made from resolution alone.
+
+Documentation capture qualification (2026-11-06): the recorder at `b3930da` observed two real Navlog turns through the installed beta 0.1.0 coordinator, using the workspace B4 runtime at `dd4271cbe` and `gpt-5-mini`. The beta executable digest and unavailable app-source revision are documented in the verification record; the recorder revision is not substituted for the installed app source.

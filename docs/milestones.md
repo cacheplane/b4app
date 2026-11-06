@@ -346,4 +346,4 @@ Exit gate status: closed. Part 1 passed in the Simulator through APNs sandbox; p
 
 ## Documentation authoring
 
-- Explicit fresh-thread B4 recording (`docs-record`): implemented and fixture-tested. The private output preserves deltas and observed state, checks stream continuity, and excludes account/connection/grant fields. Live Navlog capture and publication qualification are pending; see `docs/verification/2026-11-06-docs-recording.md`.
+- Explicit fresh-thread B4 recording (`docs-record`): implemented and fixture-tested. The private output preserves deltas and observed state, checks stream continuity, and excludes account/connection/grant fields. Two Navlog turns were captured through the beta app (125 observed events) and reviewed for website replay. Approval/cancellation remain fixture-tested; see `docs/verification/2026-11-06-docs-recording.md`.
