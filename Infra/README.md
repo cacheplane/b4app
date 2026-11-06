@@ -630,7 +630,7 @@ The Organization's region policy allows `backup`, `backup-storage`, `kms`, `rds`
 
 ### 9. Incident basics
 
-First look: `https://hub.<env>.b4.run/readyz` (`hub.b4.run` for prod), then the Better Stack monitor, then the alarm email. Log groups are `/b4hub/<env>/hub` (serving), `/b4hub/<env>/migrate`, and `/b4hub/<env>/admin`.
+First look: `https://hub.<env>.b4.run/readyz` (`hub.b4.run` for prod), then the SNS alarm email and CloudWatch metrics/logs. External monitoring is deferred under [D-186](../docs/decisions/D-186-hosted-hub-followup-closeout.md); include its monitor in incident checks when that workstream resumes. Log groups are `/b4hub/<env>/hub` (serving), `/b4hub/<env>/migrate`, and `/b4hub/<env>/admin`.
 
 | Alarm (`b4hub-<env>-...`) | Means | Check first |
 | --- | --- | --- |
@@ -674,7 +674,7 @@ b4hub maintenance off
 
 On a Compose host the same commands run through the `migrate` service, which carries the admin URL: `docker compose run --rm migrate maintenance on --message "..."`, then `docker compose run --rm migrate maintenance off`. The switch is a row in `hub_settings`, so it survives deploys and restarts: `status` is the first thing to check when writes fail with `maintenance` and nobody remembers turning it on. Expect the `alb-5xx` alarm while it is on with an active Mac: the load balancer counts each refused write as a 5xx (the hub logs them at `WARN`, not `ERROR`), and the Mac client retries its outbox on its own schedule.
 
-Upstream status, each subscribed with the owner's email: Better Stack (the `/readyz` monitors and the status page at `status.b4.run`), the AWS Health Dashboard of each account, `githubstatus.com`, and Apple's developer system status (`developer.apple.com/system-status`).
+External monitoring remains deferred by the owner's 2026-11-05 closeout decision ([D-186](../docs/decisions/D-186-hosted-hub-followup-closeout.md)). CloudWatch alarms and confirmed SNS email subscriptions are operating in both accounts; external probes, paging/escalation, `status.b4.run`, and upstream status subscriptions are not claimed as configured. When the owner resumes that roadmap item, include both `/readyz` URLs, AWS Health for each account, `githubstatus.com`, and Apple's developer system status (`developer.apple.com/system-status`). Monthly restore drills and routine incident/runbook work continue.
 
 ### 10. The ALB was recreated
 
