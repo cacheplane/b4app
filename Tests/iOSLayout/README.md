@@ -2,7 +2,7 @@
 
 Run `./Scripts/test-ios-layout.sh` from the repository root. It needs Xcode, an installed iOS 26 Simulator runtime, and XcodeGen. The script selects an available iPhone (preferring an already booted one), generates its test project under `.build/iOSLayout`, and leaves an `.xcresult` bundle there with screenshots. CI runs it after the app builds.
 
-The fixture app compiles the shipped `WorkspaceRootView` and `SyncBanner` over an in-memory mirror and fake relay. It never accesses the owner's account, Keychain, hub, mirror, or installed app. Its extra target is separate from the shipping app targets.
+The fixture app compiles the shipped `WorkspaceRootView` and `SyncBanner` over an in-memory mirror and fake relay. It never accesses the owner's account, Keychain, hub, mirror, or installed app. Its test targets are separate from the shipping app targets. The required scheme retains all 25 UI tests and adds three UIKit-hosted component tests of the actual `SyncBanner`. No UI behavior has moved out of the PR gate.
 
 Coverage includes populated, empty, archived, unmatched-search, and scrolled thread lists; thread detail, the new-thread composer, and its no-ready-runtime fallback; Connect your Mac; sign-in and onboarding; sync failure, stale-sync, relay refusal, account notice, Mac-offline and action-error notices; healthy and recovered states; portrait, landscape, accessibility text, and dark mode. The tests tap a thread and return, use search, and check banner clearing on home and detail. The home checks include the profile, filter, search, and new-thread controls.
 
@@ -18,4 +18,8 @@ B4APP_LAYOUT_RESULTS=/tmp/banner-layout.xcresult \
   ./Scripts/test-ios-layout.sh
 ```
 
-Extra arguments go to `xcodebuild`, for example `'-only-testing:WorkspaceLayoutTests/BannerLayoutTests/testListBannerKeepsLargeTitleAndToolbarVisible()'`. Include the parentheses and quote the entire argument. The script rejects a run that executes zero tests. These are fixture layout checks, not a physical-device or live-hub integration gate.
+Fast `SyncBannerContentTests` in the Swift package check banner visibility, copy, refusal/paused precedence, and today/older timestamp formatting with an explicit clock, calendar, and locale. The UIKit component tests check healthy-banner height, actual text pixels, the 16 pt marker inset, and maximum-text wrapping. They do not certify navigation placement, safe areas, keyboard behavior, accessibility hit testing, recovery, or notification catch-up; those remain UI responsibilities. Rendered timestamp geometry still uses the runner's Foundation locale and time zone.
+
+The result gate requires exactly 25 passing UI cases and three passing component cases, with no skipped or failed tests. It checks each target independently, so a component-only run cannot silently satisfy full coverage. When adding tests, update the expected counts in both the script defaults and CI.
+
+Extra arguments go to `xcodebuild`, for example `'-only-testing:WorkspaceLayoutTests/BannerLayoutTests/testListBannerKeepsLargeTitleAndToolbarVisible()'`. Include the parentheses and quote the entire argument. For an intentionally focused run, set `B4APP_LAYOUT_EXPECTED_UI_TESTS=1 B4APP_LAYOUT_EXPECTED_COMPONENT_TESTS=0` for that selector; for all component tests, use `B4APP_LAYOUT_EXPECTED_UI_TESTS=0 B4APP_LAYOUT_EXPECTED_COMPONENT_TESTS=3` with `-only-testing:WorkspaceLayoutComponentTests`. These overrides are for local diagnostics; CI explicitly requires both full targets. The script rejects zero tests and count mismatches. These are fixture layout checks, not a physical-device or live-hub integration gate.

@@ -26,13 +26,10 @@ if xcodebuild test -quiet -project .build/iOSLayout/WorkspaceLayout.xcodeproj -s
   -derivedDataPath "${B4APP_LAYOUT_DERIVED_DATA:-.build/iOSLayout/DerivedData}" \
   -resultBundlePath "$results" "$@"; then
   xcrun xcresulttool get test-results summary --path "$results" --compact > "$results.summary.json"
-  python3 -c '
-import json, sys
-summary = json.load(open(sys.argv[1]))
-print(json.dumps(summary))
-if summary.get("totalTestCount", 0) == 0 or summary.get("result") != "Passed":
-    raise SystemExit("Layout verification did not execute a passing test suite.")
-' "$results.summary.json"
+  xcrun xcresulttool get test-results tests --path "$results" --compact > "$results.tests.json"
+  python3 Scripts/verify_ios_layout_results.py "$results.summary.json" "$results.tests.json" \
+    --ui-count "${B4APP_LAYOUT_EXPECTED_UI_TESTS:-25}" \
+    --component-count "${B4APP_LAYOUT_EXPECTED_COMPONENT_TESTS:-3}"
 else
   result=$?
   if [ -d "$results" ]; then
