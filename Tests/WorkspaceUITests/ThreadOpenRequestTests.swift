@@ -100,9 +100,9 @@ import WorkspaceSync
       model.selectedThreadId == "not-synced" && !model.detailLoading
     }
     #expect(model.lastError == nil)
-    // The read finishing precedes the outer retry loop registering its relative
-    // sleep. Advancing before registration can strand it beyond the new time.
-    try await waitUntil("notification retry sleep registered") { clock.pendingSleeperCount == 1 }
+    // loadDetail clears its loading flag before the retry sleep is registered. Advancing before
+    // registration would put that sleep after the new clock time and leave it asleep indefinitely.
+    try await waitUntil("missing-thread retry scheduled") { clock.sleepingCount > 0 }
     clock.advance(by: WorkspaceModel.threadOpenWait)
     try await waitUntil("open timeout") { model.pendingThreadOpen == nil }
     #expect(model.selectedThreadId == nil)

@@ -37,7 +37,7 @@ final class TestClock: Clock, @unchecked Sendable {
 
   var now: Instant { lock.withLock { current } }
   var minimumResolution: Duration { .nanoseconds(1) }
-  var pendingSleeperCount: Int { lock.withLock { sleepers.count } }
+  var sleepingCount: Int { lock.withLock { sleepers.count } }
 
   /// The calendar time matching `now`.
   var date: Date {
@@ -59,7 +59,8 @@ final class TestClock: Clock, @unchecked Sendable {
           sleepers.append(Sleeper(id: id, deadline: deadline, continuation: continuation))
           return nil
         }
-        if let outcome { continuation.resume(with: outcome) } else { ConditionNudge.post() }
+        if let outcome { continuation.resume(with: outcome) }
+        ConditionNudge.post()
       }
     } onCancel: {
       let cancelled = lock.withLock { () -> Sleeper? in

@@ -56,6 +56,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     withdrawing keys: [String] = [], then completion: @escaping (UIBackgroundFetchResult) -> Void
   ) {
     Task { @MainActor in
+      Self.logger.notice(
+        "background notification refresh; low power: \(ProcessInfo.processInfo.isLowPowerModeEnabled, privacy: .public); refresh status: \(UIApplication.shared.backgroundRefreshStatus.rawValue, privacy: .public)"
+      )
       // Before `backgroundRefresh`'s background task: `withdraw(keys:)` must never touch the mirror.
       if !keys.isEmpty { await MirrorHost.shared.withdraw(keys: keys) }
       completion(await MirrorHost.shared.backgroundRefresh() ? .newData : .noData)

@@ -51,6 +51,50 @@ public actor MirrorSync {
   private var backingOff: Task<Void, Never>?
   /// Set when the loop has returned, so a later `suspend()` does not wait for a park that cannot come.
   private var ended = false
+  /// A pull cycle must begin after a refresh was registered before it can satisfy that refresh.
+  private(set) var refreshGeneration = 0
+  private var moreToPull = false
+  private struct RefreshWaiter {
+    var generation: Int
+    var continuation: CheckedContinuation<Bool, Never>
+    var timeout: Task<Void, Never>
+  }
+  private var refreshWaiters: [UUID: RefreshWaiter] = [:]
+
+  /// Nudge the running loop and wait for a fresh pull to reach the end of the feed, after publishing
+  /// all of its pages. A snapshot or an older pull alone cannot satisfy it. Pending refreshes disable
+  /// long polling, including on an empty feed. The account must resume a parked loop separately.
+  /// False on timeout, cancellation or a stopped loop; none of those leaves a waiter behind.
+  public func refresh(waitingAtMost limit: Duration) async -> Bool {
+    guard !stopped, !ended, !Task.isCancelled, limit > .zero else { return false }
+    let id = UUID()
+    refreshGeneration += 1
+    let generation = refreshGeneration
+    return await withTaskCancellationHandler {
+      await withCheckedContinuation { continuation in
+        let timeout = Task {
+          guard (try? await Task.sleep(for: limit)) != nil else { return }
+          finishRefresh(id, caughtUp: false)
+        }
+        refreshWaiters[id] = RefreshWaiter(
+          generation: generation, continuation: continuation, timeout: timeout)
+        nudge()
+      }
+    } onCancel: {
+      Task { await self.finishRefresh(id, caughtUp: false) }
+    }
+  }
+
+  private func finishRefresh(_ id: UUID, caughtUp: Bool) {
+    guard let waiter = refreshWaiters.removeValue(forKey: id) else { return }
+    waiter.timeout.cancel()
+    waiter.continuation.resume(returning: caughtUp)
+  }
+
+  private func finishRefreshes(through generation: Int, caughtUp: Bool) {
+    let ids = refreshWaiters.filter { $0.value.generation <= generation }.map(\.key)
+    for id in ids { finishRefresh(id, caughtUp: caughtUp) }
+  }
   private var needsSnapshot: Bool
   private var sequenceChecked = false
   private var resyncsInARow = 0
@@ -101,6 +145,7 @@ public actor MirrorSync {
   /// Ends the loop, cancelling a long-poll in flight (and waking a parked loop so it can end).
   public func stop() {
     stopped = true
+    finishRefreshes(through: refreshGeneration, caughtUp: false)
     loop?.cancel()
     pulling?.cancel()
     backingOff?.cancel()
@@ -166,6 +211,7 @@ public actor MirrorSync {
         await park()
         continue
       }
+      let refreshThrough = refreshGeneration
       // Cleared before the outbox is read, so a write made after the read sets it again.
       nudged = false
       do {
@@ -178,6 +224,7 @@ public actor MirrorSync {
         await refreshDevices()
         try checkpoint()
         let page = try await pull()
+        moreToPull = page.more
         let batch = try store.apply(page.changes)
         try store.setCursor(page.next)
         await record(error: nil)
@@ -189,6 +236,7 @@ public actor MirrorSync {
           )
         }
         if !page.changes.isEmpty { await onBatch(batch) }
+        if !page.more { finishRefreshes(through: refreshThrough, caughtUp: true) }
       } catch is Suspending {
         continue
       } catch let error as HubError where error.status == 401 {
@@ -212,6 +260,7 @@ public actor MirrorSync {
       }
     }
     ended = true
+    finishRefreshes(through: refreshGeneration, caughtUp: false)
     wake()
     // Told once, as the loop ends. The handler must not wait for this loop (it is still running).
     if unauthorized { await onUnauthorized?() }
@@ -222,7 +271,7 @@ public actor MirrorSync {
     // Stopped while pushing: no long-poll starts that nothing would cancel.
     guard !stopped else { throw CancellationError() }
     let cursor = store.cursor
-    let wait = nudged || lastError != nil ? 0 : Self.waitSeconds
+    let wait = nudged || lastError != nil || moreToPull || !refreshWaiters.isEmpty ? 0 : Self.waitSeconds
     let api = api
     let task = Task { try await api.pull(after: cursor, limit: Self.pageLimit, wait: wait) }
     pulling = task
