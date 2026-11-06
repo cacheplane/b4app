@@ -23,13 +23,16 @@ struct ModelHarness {
   let model: WorkspaceModel
   let workDir: String
 
-  static func start(secretStore: any SecretStore = MemorySecretStore()) async throws -> ModelHarness {
+  static func start(
+    secretStore: any SecretStore = MemorySecretStore(), extraEnvironment: [String: String] = [:]
+  ) async throws -> ModelHarness {
     let base = NSTemporaryDirectory() + "b4ui-\(UUID().uuidString.prefix(8))"
     try FileManager.default.createDirectory(atPath: base + "/work", withIntermediateDirectories: true)
     let paths = try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = "/nonexistent/node"
     env["ANTHROPIC_API_KEY"] = nil
+    for (key, value) in extraEnvironment { env[key] = value }
     try signInTestAccount(paths)
     guard
       case .running(let coordinator) = try await Coordinator.start(

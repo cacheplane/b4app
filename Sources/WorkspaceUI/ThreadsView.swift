@@ -119,6 +119,11 @@ struct ThreadDetailView: View {
     VStack(spacing: 0) {
       if !detail.requests.isEmpty {
         RuntimeRequestList(model: model, requests: detail.requests)
+          // Reserve the recovery row's height when continuity also needs attention. The requests
+          // already scroll; the composer and recovery actions must still fit the smallest window.
+          .frame(
+            maxHeight: thread.continuity == .available
+              ? nil : LLA.Metrics.requestsMaxHeight - LLA.Metrics.control - LLA.Space.l)
         Hairline()
       }
       if thread.continuity != .available {
@@ -228,18 +233,19 @@ struct ContinuityBanner: View {
 
   var body: some View {
     LLACard(fill: .surface) {
-      HStack(alignment: .top, spacing: LLA.Space.l) {
+      VStack(alignment: .leading, spacing: LLA.Space.m) {
         VStack(alignment: .leading, spacing: LLA.Space.xs) {
           Text("Continuation is unavailable").font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
           Text(explanation).llaSmallMuted()
         }
-        Spacer()
-        Button("Check again") { Task { await model.reconcileThread(id: thread.id) } }
-          .buttonStyle(.llaSecondary)
-          .disabled(model.busy)
-        Button("New thread") { Task { await model.openNewThread(projectId: thread.projectId) } }
-          .buttonStyle(.llaPrimary)
-          .disabled(model.newThreadEntryReason != nil)
+        RecoveryNoticeActions {
+          Button("Check again") { Task { await model.reconcileThread(id: thread.id) } }
+            .buttonStyle(.llaSecondary)
+            .disabled(model.busy)
+          Button("New thread") { Task { await model.openNewThread(projectId: thread.projectId) } }
+            .buttonStyle(.llaPrimary)
+            .disabled(model.newThreadEntryReason != nil)
+        }
       }
     }
     .padding(.horizontal, LLA.Metrics.margin)

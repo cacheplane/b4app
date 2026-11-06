@@ -423,7 +423,7 @@ public actor SessionService {
       await reconcile(reconciling, thread: thread)
     }
     if try db.displayItems(threadId: thread.id).isEmpty, !(try db.turns(threadId: thread.id)).isEmpty {
-      thread = await loadHistory(thread)
+      thread = (try? await loadHistory(thread)) ?? thread
     }
     return try readResult(thread)
   }
@@ -444,7 +444,7 @@ public actor SessionService {
     if let active = try db.activeTurn(threadId: thread.id), active.status != .submitting {
       await reconcile(active, thread: thread)
     }
-    thread = await loadHistory(thread)
+    thread = try await loadHistory(thread, surfaceRecovery: true)
     return try readResult(thread)
   }
 
@@ -475,7 +475,11 @@ public actor SessionService {
   /// Load native history through `loadSession` and merge it into the cache. A missing native
   /// session marks the thread `missing` only once a turn was recorded; a fresh thread has nothing to
   /// resume yet. Transport failures leave the cache and the continuity as they were.
-  private func loadHistory(_ thread: ConversationThread) async -> ConversationThread {
+  private func loadHistory(
+    _ thread: ConversationThread, surfaceRecovery: Bool = false
+  ) async throws
+    -> ConversationThread
+  {
     guard let (_, connection, adapter) = try? threadContext(id: thread.id) else { return thread }
     if await managedServerOutage(connection) != nil { return thread }
     if Self.identityChanged(thread: thread, connection: connection) {
@@ -498,9 +502,19 @@ public actor SessionService {
       return await setContinuity(thread, .available)
     } catch {
       let failure = WorkspaceError.from(error)
+      if failure.code == .protocolInvalid,
+        failure.details?["reason"]?.stringValue == "native_session_archived"
+      {
+        // Older adapters marked every resume rejection as missing. The runtime has now confirmed
+        // that this session exists, and an explicit check must show its real recovery instruction.
+        let restored = await setContinuity(thread, .available)
+        if surfaceRecovery { throw failure }
+        return restored
+      }
       if failure.code == .nativeSessionMissing, !((try? db.turns(threadId: thread.id)) ?? []).isEmpty {
         return await setContinuity(thread, .missing)
       }
+      if surfaceRecovery { throw failure }
       logger.info(
         "history load for \(thread.id, privacy: .public) skipped: \(failure.code.rawValue, privacy: .public)")
       return thread
