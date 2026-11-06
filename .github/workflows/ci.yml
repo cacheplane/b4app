@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "blove/ci-validation/ios-test-perf/**"]
   pull_request:
 
 concurrency:

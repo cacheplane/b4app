@@ -31,13 +31,14 @@ final class BannerLayoutTests: XCTestCase {
   private func checkLayout(_ app: XCUIApplication, screen: String, hasBanner: Bool = true) {
     let banners = app.descendants(matching: .any).matching(identifier: "sync.banner")
     if hasBanner { XCTAssertTrue(banners.firstMatch.waitForExistence(timeout: 10), app.debugDescription) }
-    let banner = banners.allElementsBoundByIndex.first {
+    let candidates = banners.allElementsBoundByIndex
+    let banner = candidates.first {
       $0.frame.height > 0 && $0.isHittable
     }
     XCTAssertEqual(banner != nil, hasBanner, app.debugDescription)
     let tree = XCTAttachment(
       string: app.debugDescription + "\nBANNERS:\n"
-        + banners.allElementsBoundByIndex.map {
+        + candidates.map {
           "\($0.elementType) \($0.frame) hittable=\($0.isHittable) \($0.label)"
         }
         .joined(separator: "\n"))
@@ -48,10 +49,13 @@ final class BannerLayoutTests: XCTestCase {
     shot.name = screen
     shot.lifetime = .keepAlways
     add(shot)
+    var bannerContents: CGRect?
     if screen == "connect-mac" {
       XCTAssertTrue(app.staticTexts["Connect your Mac"].waitForExistence(timeout: 10))
       if !app.buttons["Scan the code"].isHittable { app.scrollViews.firstMatch.swipeUp() }
       XCTAssertTrue(app.buttons["Scan the code"].isHittable)
+      // The swipe above can move the banner: take this observation after that interaction.
+      bannerContents = banner.map { contentFrame($0) }
     } else {
       let title =
         screen == "detail"
@@ -60,15 +64,17 @@ final class BannerLayoutTests: XCTestCase {
       let heading = app.navigationBars.staticTexts[title].firstMatch
       XCTAssertTrue(heading.waitForExistence(timeout: 10), app.debugDescription)
       XCTAssertGreaterThan(heading.frame.height, 0)
-      let titleShot = XCTAttachment(screenshot: heading.screenshot())
+      let titleImage = heading.screenshot()
+      let titleShot = XCTAttachment(screenshot: titleImage)
       titleShot.name = "\(screen)-title"
       titleShot.lifetime = .keepAlways
       add(titleShot)
       XCTAssertGreaterThan(
-        foregroundFraction(heading.screenshot().image, dark: app.launchEnvironment["LAYOUT_DARK"] == "1"),
+        foregroundFraction(titleImage.image, dark: app.launchEnvironment["LAYOUT_DARK"] == "1"),
         0.01, "The navigation title exists in accessibility but its text is not drawn")
-      if let banner {
-        XCTAssertLessThanOrEqual(heading.frame.maxY, contentFrame(banner).minY, "Banner covers \(title)")
+      bannerContents = banner.map { contentFrame($0) }
+      if let bannerContents {
+        XCTAssertLessThanOrEqual(heading.frame.maxY, bannerContents.minY, "Banner covers \(title)")
       }
       if !["detail", "new-thread", "no-ready-detail"].contains(screen) {
         XCTAssertTrue(app.buttons["sidebar-more"].isHittable)
@@ -77,8 +83,8 @@ final class BannerLayoutTests: XCTestCase {
       }
     }
     for button in app.navigationBars.buttons.allElementsBoundByIndex {
-      if let banner {
-        XCTAssertFalse(button.frame.intersects(contentFrame(banner)), "Banner covers \(button.identifier)")
+      if let bannerContents {
+        XCTAssertFalse(button.frame.intersects(bannerContents), "Banner covers \(button.identifier)")
       }
     }
     if !["detail", "new-thread", "no-ready-detail"].contains(screen) {
