@@ -23,7 +23,7 @@ def prepare(output, requested_udid=None):
             candidates.extend((runtime, d) for d in group
                               if d.get('isAvailable') and d['name'].startswith('iPhone'))
     candidates.sort(key=lambda pair: pair[1]['state'] != 'Booted')
-    if requested_udid:
+    if requested_udid is not None:
         # Local experiments must bind an explicitly created task-owned device.
         uuid.UUID(requested_udid)
         candidates = [pair for pair in candidates if pair[1]['udid'] == requested_udid]

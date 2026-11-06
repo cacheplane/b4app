@@ -87,6 +87,12 @@ sys.exit(99)
         self.assertFalse(self.output.exists())
         self.assertEqual(len(self.recorded_calls()), 1)
 
+    def test_blank_override_never_falls_back_to_default_device(self):
+        result = self.run_setup(None, '--udid', '')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.output.exists())
+        self.assertEqual(len(self.recorded_calls()), 1)
+
     def test_no_eligible_device_fails_without_boot_or_handoff(self):
         result = self.run_setup({'com.apple.CoreSimulator.SimRuntime.iOS-25-0': [device()]})
         self.assertNotEqual(result.returncode, 0)
