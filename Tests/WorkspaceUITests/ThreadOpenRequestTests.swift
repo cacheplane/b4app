@@ -16,8 +16,9 @@ import WorkspaceSync
     try mirrored().transport
   }
 
-  private func mirrored() throws -> (transport: MirrorTransport, store: MirrorStore, fixture: [StoredChange])
-  {
+  private func mirrored(
+    seedThread: Bool = true
+  ) throws -> (transport: MirrorTransport, store: MirrorStore, fixture: [StoredChange]) {
     let url = URL(fileURLWithPath: "\(#filePath)")
       .deletingLastPathComponent().deletingLastPathComponent()
       .appendingPathComponent("Fixtures/sync/changes.json")
@@ -28,7 +29,7 @@ import WorkspaceSync
         table: change.table, rowId: change.rowId, op: change.op, column: change.column, value: change.value)
     }
     let store = try MirrorStore.inMemory()
-    _ = try store.apply(Array(all.prefix(2)))
+    _ = try store.apply(Array(all.prefix(seedThread ? 2 : 1)))
     return (MirrorTransport(store: store, version: "0.2.0"), store, all)
   }
 
@@ -55,9 +56,141 @@ import WorkspaceSync
     #expect(model.selectedThreadId == nil)
 
     model.requestOpenThread("thread-1")
-    #expect(model.pendingThreadOpen == nil)
     try await waitUntil("detail") { model.detail?.thread.id == "thread-1" }
+    try await waitUntil("open completed") { model.pendingThreadOpen == nil }
     #expect(model.selectedThreadId == "thread-1")
+    await model.disconnect()
+  }
+
+  /// The alert can arrive while the phone is suspended, before its mirror has pulled the thread.
+  /// Opening it must keep the intent until that row arrives, rather than declare it deleted.
+  @Test(arguments: [false, true])
+  func requested_thread_waits_for_its_first_sync(coldLaunch: Bool) async throws {
+    let (transport, store, fixture) = try mirrored(seedThread: false)
+    let model = WorkspaceModel(transportProvider: { transport }, accountSource: .host)
+    if coldLaunch { model.requestOpenThread("thread-1") }
+    model.connect()
+    try #require(await model.settledLink() == .ready)
+    if !coldLaunch { model.requestOpenThread("thread-1") }
+    try await waitUntil("open retained or lookup finished") {
+      model.pendingThreadOpen == "thread-1" || model.lastError != nil
+    }
+    #expect(model.lastError == nil, "A thread missing from a stale mirror is not known to be deleted")
+    #expect(model.pendingThreadOpen == "thread-1")
+
+    transport.publish(try store.apply(Array(fixture.dropFirst())))
+    try await waitUntil("thread appears in list") { model.threads.contains { $0.id == "thread-1" } }
+    try await waitUntil("notification opens the newly synced thread") {
+      model.detail?.thread.id == "thread-1"
+    }
+    #expect(model.pendingThreadOpen == nil)
+    #expect(model.lastError == nil)
+    await model.disconnect()
+  }
+
+  @Test func a_missing_notification_thread_has_a_bounded_honest_failure() async throws {
+    let transport = try mirroredTransport()
+    let clock = TestClock()
+    let model = WorkspaceModel(transportProvider: { transport }, accountSource: .host)
+    model.clock = clock
+    model.connect()
+    try #require(await model.settledLink() == .ready)
+    model.requestOpenThread("not-synced")
+    try await waitUntil("first missing read finished") {
+      model.selectedThreadId == "not-synced" && !model.detailLoading
+    }
+    #expect(model.lastError == nil)
+    clock.advance(by: WorkspaceModel.threadOpenWait)
+    try await waitUntil("open timeout") { model.pendingThreadOpen == nil }
+    #expect(model.selectedThreadId == nil)
+    #expect(model.lastError == "This thread is unavailable. Check your connection and try again.")
+    await model.disconnect()
+  }
+
+  @Test func back_cancels_an_open_waiting_for_sync() async throws {
+    let (transport, store, fixture) = try mirrored(seedThread: false)
+    let clock = TestClock()
+    let model = WorkspaceModel(transportProvider: { transport }, accountSource: .host)
+    model.clock = clock
+    model.connect()
+    try #require(await model.settledLink() == .ready)
+    model.requestOpenThread("thread-1")
+    try await waitUntil("first missing read finished") {
+      model.selectedThreadId == "thread-1" && !model.detailLoading
+    }
+    model.cancelThreadOpen()
+    transport.publish(try store.apply(Array(fixture.dropFirst())))
+    clock.advance(by: WorkspaceModel.threadOpenWait)
+    try await model.refreshSnapshot()
+    #expect(model.pendingThreadOpen == nil)
+    #expect(model.selectedThreadId == nil)
+    #expect(model.detail == nil)
+    #expect(model.lastError == nil)
+    await model.disconnect()
+  }
+
+  @Test func starting_a_new_thread_cancels_the_notification_open() async throws {
+    let (transport, store, fixture) = try mirrored(seedThread: false)
+    let model = WorkspaceModel(transportProvider: { transport }, accountSource: .host)
+    model.connect()
+    try #require(await model.settledLink() == .ready)
+    model.requestOpenThread("thread-1")
+    try await waitUntil("notification selected") { model.selectedThreadId == "thread-1" }
+    await model.openNewThread()
+    transport.publish(try store.apply(Array(fixture.dropFirst())))
+    try await model.refreshSnapshot()
+    #expect(model.pendingThreadOpen == nil)
+    #expect(model.selectedThreadId == nil)
+    #expect(model.detail == nil)
+    #expect(model.lastError == nil)
+    await model.disconnect()
+  }
+
+  @Test func a_late_missing_read_cannot_replace_a_newer_open() async throws {
+    let mirror = try mirroredTransport()
+    let held = HeldReads(mirror)
+    let model = WorkspaceModel(transportProvider: { held }, accountSource: .host)
+    model.connect()
+    try #require(await model.settledLink() == .ready)
+    model.requestOpenThread("not-synced")
+    try await waitUntil("old read held") { held.heldCount == 1 }
+    model.requestOpenThread("thread-1")
+    try await waitUntil("new read held") { held.heldCount == 2 }
+    held.release()
+    try await waitUntil("new request opens") { model.detail?.thread.id == "thread-1" }
+    #expect(model.selectedThreadId == "thread-1")
+    #expect(model.pendingThreadOpen == nil)
+    #expect(model.lastError == nil)
+    await model.disconnect()
+  }
+
+  @Test func a_snapshot_during_a_notification_open_does_not_restore_not_found() async throws {
+    let (transport, store, fixture) = try mirrored()
+    let model = WorkspaceModel(transportProvider: { transport }, accountSource: .host)
+    model.connect()
+    try #require(await model.settledLink() == .ready)
+    await model.openThread(id: "thread-1")
+    try #require(model.detail?.thread.id == "thread-1")
+    model.requestOpenThread("thread-2")
+    try await waitUntil("missing second thread read finished") {
+      model.selectedThreadId == "thread-2" && !model.detailLoading
+    }
+    try await model.refreshSnapshot()
+    #expect(model.lastError == nil)
+    #expect(model.pendingThreadOpen == "thread-2")
+    #expect(model.selectedThreadId == "thread-2")
+
+    var value = try #require(fixture[1].value?.objectValue)
+    value["id"] = "thread-2"
+    value["nativeThreadId"] = "native-2"
+    transport.publish(
+      try store.apply([
+        StoredChange(
+          hubSeq: 100, deviceId: "mac-1", deviceSeq: 100, wall: fixture[1].wall,
+          table: "threads", rowId: "thread-2", op: "insert", column: nil, value: .object(value))
+      ]))
+    try await waitUntil("second thread opens", timeout: .seconds(3)) { model.detail?.thread.id == "thread-2" }
+    #expect(model.lastError == nil)
     await model.disconnect()
   }
 

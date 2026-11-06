@@ -152,9 +152,11 @@ public final class WorkspaceModel {
   /// Mac, a sheet on the iPhone); a counter so asking twice opens it twice.
   public var settingsPage: SettingsPage = SettingsPage.allCases[0]
   public var settingsRequest = 0
-  /// A thread a notification tap or widget row asked for before the link was ready; `connect()` opens
-  /// it once the first snapshot is in. A later request replaces an earlier one.
+  /// A notification or widget open waiting for the link or the phone's mirror to catch up.
+  /// A later request replaces an earlier one.
   public private(set) var pendingThreadOpen: String?
+  @ObservationIgnored private var threadOpenTask: Task<Void, Never>?
+  static let threadOpenWait: Duration = .seconds(15)
   /// Counts every `requestOpenThread` and `openNewThread`; the root view moves the iPhone to the
   /// detail column on a change.
   public private(set) var detailRequest = 0
@@ -466,6 +468,8 @@ public final class WorkspaceModel {
   }
 
   public func connect() {
+    threadOpenTask?.cancel()
+    threadOpenTask = nil
     connectTask?.cancel()
     link = .connecting
     linkMessage = nil
@@ -495,11 +499,9 @@ public final class WorkspaceModel {
         let covered = snapshotPosition ?? (hello.epoch, hello.sequence)
         try Task.checkCancellation()
         link = .ready
-        let requested = pendingThreadOpen
-        pendingThreadOpen = nil
         settleLink()
         // Not awaited: a slow `thread.read` must not hold up `observe` (events, desync handling).
-        if let requested { Task { await openThread(id: requested) } }
+        openRequestedThread()
         await observe(client, events: events, covered: covered)
       } catch {
         guard !Task.isCancelled else { return }
@@ -536,6 +538,8 @@ public final class WorkspaceModel {
   var showsStore: Bool { (accountSource == .host && accountHost == nil) || accountState == .signedIn }
 
   public func disconnect() async {
+    threadOpenTask?.cancel()
+    threadOpenTask = nil
     connectTask?.cancel()
     await client?.close()
     client = nil
@@ -544,17 +548,65 @@ public final class WorkspaceModel {
     settleLink()
   }
 
-  /// Open the thread a notification or widget row asked for. When the link is ready it opens at once;
-  /// otherwise (a cold launch) the id waits and `connect()` opens it right after the first snapshot. An
-  /// id that is not in the list still goes through `openThread`; the detail read decides.
+  /// Open a notification or widget's thread after the link is ready. A new thread may reach the
+  /// phone's mirror after its notification, so missing phone reads wait briefly for sync to catch up.
   public func requestOpenThread(_ id: String) {
     detailRequest += 1
-    guard link == .ready else {
-      pendingThreadOpen = id
-      return
-    }
+    stopThreadOpen()
+    lastError = nil
+    pendingThreadOpen = id
+    openRequestedThread()
+  }
+
+  /// Back while a notification's thread is still syncing cancels that open, rather than letting a
+  /// late read or timeout change the screen the owner chose.
+  public func cancelThreadOpen() {
+    guard let id = pendingThreadOpen else { return }
+    stopThreadOpen()
+    dropSelection(of: id)
+  }
+
+  private func stopThreadOpen() {
+    threadOpenTask?.cancel()
+    threadOpenTask = nil
     pendingThreadOpen = nil
-    Task { await openThread(id: id) }
+  }
+
+  private func openRequestedThread() {
+    guard link == .ready, let id = pendingThreadOpen else { return }
+    threadOpenTask?.cancel()
+    let clock: any Clock<Duration> = self.clock
+    openRequestedThread(id: id, clock: clock)
+  }
+
+  private func openRequestedThread<C: Clock<Duration>>(id: String, clock: C) {
+    let generation = accountGeneration
+    threadOpenTask = Task { [weak self] in
+      guard let self else { return }
+      if let current = detail, current.thread.id != id { await saveDraft(threadId: current.thread.id) }
+      guard !Task.isCancelled, pendingThreadOpen == id, generation == accountGeneration else { return }
+      selectedThreadId = id
+      unreadHold.remove(id)
+      let deadline = clock.now.advanced(by: Self.threadOpenWait)
+      while !Task.isCancelled, pendingThreadOpen == id, generation == accountGeneration {
+        if await loadDetail(id: id) {
+          guard !Task.isCancelled, pendingThreadOpen == id, generation == accountGeneration else { return }
+          pendingThreadOpen = nil
+          threadOpenTask = nil
+          await markReadIfNeeded(threadId: id)
+          return
+        }
+        guard !Task.isCancelled, pendingThreadOpen == id, generation == accountGeneration else { return }
+        if clock.now >= deadline {
+          pendingThreadOpen = nil
+          threadOpenTask = nil
+          dropSelection(of: id)
+          lastError = "This thread is unavailable. Check your connection and try again."
+          return
+        }
+        do { try await clock.sleep(for: .milliseconds(250)) } catch { return }
+      }
+    }
   }
 
   /// Open Settings, at `page` when given.
@@ -659,7 +711,9 @@ public final class WorkspaceModel {
     threads = snapshot.threads
     // The open thread went while the link was down: nothing stays selected. A start still settling
     // is kept; its thread may not be in the list yet.
-    if let id = selectedThreadId, !threads.contains(where: { $0.id == id }), pendingSends[id] == nil {
+    if let id = selectedThreadId, !threads.contains(where: { $0.id == id }), pendingSends[id] == nil,
+      pendingThreadOpen != id
+    {
       dropSelection(of: id)
     }
     activeTurns = Dictionary(
@@ -862,6 +916,7 @@ public final class WorkspaceModel {
   /// start in `projectId` when given, and put the cursor in the composer's field.
   /// The pane changes first; the text is saved after, so the phone does not wait on the relay to move.
   public func openNewThread(projectId: String? = nil) async {
+    stopThreadOpen()
     let open = detail.map { (threadId: $0.thread.id, text: composerText) }
     selectedThreadId = nil
     if let projectId { newThreadDraft.selectProject(projectId) }
@@ -871,6 +926,7 @@ public final class WorkspaceModel {
   }
 
   public func openThread(id: String) async {
+    stopThreadOpen()
     if let current = detail, current.thread.id != id { await saveDraft(threadId: current.thread.id) }
     selectedThreadId = id
     unreadHold.remove(id)
@@ -878,24 +934,24 @@ public final class WorkspaceModel {
     await markReadIfNeeded(threadId: id)
   }
 
-  private func loadDetail(id: String) async {
-    guard let client else { return }
+  @discardableResult private func loadDetail(id: String) async -> Bool {
+    guard let client else { return true }
     detailLoading = true
     defer { detailLoading = false }
     let generation = accountGeneration
     do {
       let read = try await client.request(
         ThreadRead.self, ThreadRead.Params(threadId: id), options: RequestOptions(timeout: .seconds(60)))
-      guard generation == accountGeneration else { return }
+      guard !Task.isCancelled, generation == accountGeneration, selectedThreadId == id else { return true }
       // Deleted while this read was out (a refresh can start just before a delete): stay closed.
-      if deletedThreadIds.contains(id) { return }
+      if deletedThreadIds.contains(id) { return true }
       // The saved draft is restored only when switching threads, and before the detail is published
       // so the composer is live only once it is settled. A refresh of the open thread (snapshot,
       // wake, a connection change) keeps whatever is being typed: restoring from disk there would
       // overwrite it, and the save already scheduled would then persist the overwrite.
       if detail?.thread.id != id {
         let draft = try? await client.request(DraftRead.self, DraftRead.Params(threadId: id)).draft
-        guard generation == accountGeneration else { return }
+        guard !Task.isCancelled, generation == accountGeneration, selectedThreadId == id else { return true }
         restoringDraft = true
         composerText = draft?.text ?? ""
         restoringDraft = false
@@ -918,12 +974,18 @@ public final class WorkspaceModel {
       }
       lastError = nil
     } catch {
-      guard generation == accountGeneration else { return }
-      if startedThreadMissing(threadId: id, error: error) || deletedThreadIds.contains(id) { return }
+      guard !Task.isCancelled, generation == accountGeneration, selectedThreadId == id else { return true }
+      if startedThreadMissing(threadId: id, error: error) || deletedThreadIds.contains(id) { return true }
+      // A push can precede the phone's first pull of a new thread. Only external phone opens wait;
+      // an ordinary read (or a Mac read) keeps its existing not-found behavior.
+      if relaysThroughHub, pendingThreadOpen == id, WorkspaceError.from(error).code == .notFound {
+        return false
+      }
       // Gone (a notification or widget row for a thread deleted since): nothing stays selected.
       if WorkspaceError.from(error).code == .notFound { dropSelection(of: id) }
       lastError = Self.describe(error)
     }
+    return true
   }
 
   public func saveDraft(threadId: String) async {
@@ -1131,6 +1193,7 @@ public final class WorkspaceModel {
   /// Drop a deleted thread everywhere: the list, its running turn and send state, and the open detail,
   /// whose unsent text is discarded rather than saved or sent.
   func forget(threadId: String) {
+    if pendingThreadOpen == threadId { stopThreadOpen() }
     deletedThreadIds.insert(threadId)
     threads.removeAll { $0.id == threadId }
     activeTurns[threadId] = nil
@@ -1490,6 +1553,7 @@ public final class WorkspaceModel {
   /// Everything of an account that is no longer the signed-in one: no row, filter, pending send (they
   /// hold message text), or timer of it may stay, or write into the next account's store.
   func forgetWorkspace() {
+    stopThreadOpen()
     accountGeneration += 1
     draftSaveTask?.cancel()
     draftSaveTask = nil

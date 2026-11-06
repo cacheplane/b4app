@@ -414,6 +414,39 @@ final class BannerLayoutTests: XCTestCase {
   }
 
   @MainActor
+  func testNotificationWaitsForThreadToSync() {
+    for screen in ["notification-cold", "notification-warm"] {
+      let app = launch(screen, notice: "healthy")
+      if screen == "notification-warm" {
+        app.buttons["fixture.open-notification"].tap()
+      }
+      XCTAssertTrue(
+        app.descendants(matching: .any)["thread-opening"].firstMatch.waitForExistence(timeout: 10))
+      let loading = XCTAttachment(screenshot: app.screenshot())
+      loading.name = "\(screen)-loading"
+      loading.lifetime = .keepAlways
+      add(loading)
+      XCTAssertFalse(app.staticTexts["New thread"].isHittable)
+      app.buttons["fixture.finish-sync"].tap()
+      XCTAssertTrue(app.navigationBars.staticTexts["Fix the login bug"].waitForExistence(timeout: 10))
+      checkLayout(app, screen: "detail", hasBanner: false)
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testBackCancelsNotificationWaitingForSync() {
+    let app = launch("notification-warm", notice: "healthy")
+    app.buttons["fixture.open-notification"].tap()
+    XCTAssertTrue(app.descendants(matching: .any)["thread-opening"].firstMatch.waitForExistence(timeout: 10))
+    app.navigationBars.buttons.element(boundBy: 0).tap()
+    app.buttons["fixture.finish-sync"].tap()
+    checkLayout(app, screen: "list", hasBanner: false)
+    XCTAssertFalse(app.navigationBars.staticTexts["Fix the login bug"].isHittable)
+    app.terminate()
+  }
+
+  @MainActor
   func testSearchWithBannerPresent() {
     let app = launch("list")
     checkLayout(app, screen: "list")
