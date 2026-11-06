@@ -44,6 +44,18 @@ class LayoutResultTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Focused UI coverage is local-only", result.stderr)
 
+    def test_ci_rejects_partial_target_count_overrides(self):
+        root = Path(__file__).resolve().parents[2]
+        for ui, component in [(0, 3), (13, 0), (12, 3), (13, 2)]:
+            with self.subTest(ui=ui, component=component):
+                result = subprocess.run(
+                    [sys.executable, str(root / "Scripts/verify_ios_layout_results.py"),
+                     "missing-summary.json", "missing-tests.json", "--ui-count", str(ui),
+                     "--component-count", str(component)], cwd=root,
+                    env={**os.environ, "CI": "true"}, capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("CI requires the complete UI and component targets", result.stderr)
+
     def test_requires_both_full_targets(self):
         self.assertEqual(module.verify(summary(), tree(), 25, 3),
                          {"WorkspaceLayoutTests": 25, "WorkspaceLayoutComponentTests": 3})

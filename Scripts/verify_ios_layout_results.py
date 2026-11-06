@@ -5,6 +5,9 @@ import json
 import os
 from pathlib import Path
 
+REQUIRED_UI_TESTS = 13
+REQUIRED_COMPONENT_TESTS = 3
+
 
 def verify(summary, tests, ui_count, component_count):
     expected = {"WorkspaceLayoutTests": ui_count, "WorkspaceLayoutComponentTests": component_count}
@@ -43,14 +46,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("summary", type=Path)
     parser.add_argument("tests", type=Path)
-    parser.add_argument("--ui-count", type=int, default=25)
-    parser.add_argument("--component-count", type=int, default=3)
+    parser.add_argument("--ui-count", type=int, default=REQUIRED_UI_TESTS)
+    parser.add_argument("--component-count", type=int, default=REQUIRED_COMPONENT_TESTS)
     parser.add_argument("--result-bundle", type=Path)
     parser.add_argument("--coverage-manifest", type=Path, default=Path("Tests/iOSLayout/UITests/coverage.json"))
     parser.add_argument("--focused-coverage", action="store_true")
     args = parser.parse_args()
     if args.focused_coverage and os.environ.get("CI"):
         parser.error("Focused UI coverage is local-only; CI requires the full contract")
+    if os.environ.get("CI") and (args.ui_count, args.component_count) != (
+            REQUIRED_UI_TESTS, REQUIRED_COMPONENT_TESTS):
+        parser.error("CI requires the complete UI and component targets")
     summary = json.loads(args.summary.read_text())
     tests = json.loads(args.tests.read_text())
     counts = verify(summary, tests, args.ui_count, args.component_count)

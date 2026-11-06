@@ -101,8 +101,8 @@
       "method": "testEveryWorkspaceSurfaceWithSyncFailure",
       "ordinal": 5,
       "layouts": 1,
-      "journey": "Startup/empty-state guards; workspace navigation",
-      "preservation": "Keep empty/archive/no-match/direct-detail/no-ready/no-Mac starts; ready new-thread checks through actual navigation."
+      "journey": "Startup/empty-state guards",
+      "preservation": "Retain original cold ready-newthread start: native proof showed keyboard focus differed from warm navigation."
     },
     {
       "id": "testEveryWorkspaceSurfaceWithSyncFailure#6",
@@ -294,7 +294,7 @@
       "ordinal": 9,
       "layouts": 2,
       "journey": "Secondary notices/dismissal",
-      "preservation": "Account2 + offline2 + action-error2 + default-stale1 starts; preserve both sync flags and all original checks on each relevant surface."
+      "preservation": "Retain original cold action-error detail with this sync-failure flag; warm fixture injection did not survive detail refresh."
     },
     {
       "id": "testOtherNoticeImplementations#10",
@@ -302,7 +302,7 @@
       "ordinal": 10,
       "layouts": 2,
       "journey": "Secondary notices/dismissal",
-      "preservation": "Account2 + offline2 + action-error2 + default-stale1 starts; preserve both sync flags and all original checks on each relevant surface."
+      "preservation": "Retain original cold action-error detail with this sync-failure flag; warm fixture injection did not survive detail refresh."
     },
     {
       "id": "testOtherNoticeImplementations#11",
@@ -505,5 +505,163 @@
       "preservation": "Retain two starts and visible recovery on each surface; no new reset channel."
     }
   ],
-  "journey_methods": {}
+  "journey_methods": {
+    "testWorkspaceNavigationJourney": [
+      "testListBannerKeepsLargeTitleAndToolbarVisible#1/layout#1",
+      "testListBannerKeepsLargeTitleAndToolbarVisible#1/complete",
+      "testNavigateIntoThreadAndBackWithBannerPresent#1/layout#1",
+      "testNavigateIntoThreadAndBackWithBannerPresent#1/layout#2",
+      "testNavigateIntoThreadAndBackWithBannerPresent#1/layout#3",
+      "testNavigateIntoThreadAndBackWithBannerPresent#1/complete",
+      "testSearchWithBannerPresent#1/layout#1",
+      "testSearchWithBannerPresent#1/complete",
+      "testExpandedAndCollapsedListTitles#1/layout#1",
+      "testExpandedAndCollapsedListTitles#1/layout#2",
+      "testExpandedAndCollapsedListTitles#1/layout#3",
+      "testExpandedAndCollapsedListTitles#1/complete"
+    ],
+    "testHealthyComposerJourney": [
+      "testHomeComposerUsesPageGutters#1/layout#1",
+      "testHomeComposerUsesPageGutters#1/complete",
+      "testThreadComposerAndControlsAlign#1/layout#1",
+      "testThreadComposerAndControlsAlign#1/complete",
+      "testNewThreadComposerAndControlsAlign#1/layout#1",
+      "testNewThreadComposerAndControlsAlign#1/complete",
+      "testHealthyLayoutsHaveNoSyncBanner#1/layout#1",
+      "testHealthyLayoutsHaveNoSyncBanner#1/complete",
+      "testHealthyLayoutsHaveNoSyncBanner#2/layout#1",
+      "testHealthyLayoutsHaveNoSyncBanner#2/complete"
+    ],
+    "testSyncCopyJourneys": [
+      "testInitialSyncFailureUsesPlainLanguage#1/layout#1",
+      "testInitialSyncFailureUsesPlainLanguage#1/complete",
+      "testInitialSyncFailureUsesPlainLanguage#2/layout#1",
+      "testInitialSyncFailureUsesPlainLanguage#2/complete",
+      "testStaleSyncFailureKeepsLastSuccessTime#1/layout#1",
+      "testStaleSyncFailureKeepsLastSuccessTime#1/complete",
+      "testStaleSyncFailureKeepsLastSuccessTime#2/layout#1",
+      "testStaleSyncFailureKeepsLastSuccessTime#2/complete",
+      "testRefusedLinkAsksForSignInInsteadOfRetrying#1/layout#1",
+      "testRefusedLinkAsksForSignInInsteadOfRetrying#1/complete",
+      "testRefusedLinkAsksForSignInInsteadOfRetrying#2/layout#1",
+      "testRefusedLinkAsksForSignInInsteadOfRetrying#2/complete",
+      "testBlockedMirrorDoesNotPromiseRetry#1/layout#1",
+      "testBlockedMirrorDoesNotPromiseRetry#1/complete",
+      "testBlockedMirrorDoesNotPromiseRetry#2/layout#1",
+      "testBlockedMirrorDoesNotPromiseRetry#2/complete"
+    ],
+    "testSecondaryNoticeJourneys": [
+      "testOtherNoticeImplementations#1/layout#1",
+      "testOtherNoticeImplementations#1/complete",
+      "testOtherNoticeImplementations#2/layout#1",
+      "testOtherNoticeImplementations#2/complete",
+      "testOtherNoticeImplementations#3/layout#1",
+      "testOtherNoticeImplementations#3/complete",
+      "testOtherNoticeImplementations#4/layout#1",
+      "testOtherNoticeImplementations#4/complete",
+      "testOtherNoticeImplementations#5/layout#1",
+      "testOtherNoticeImplementations#5/complete",
+      "testOtherNoticeImplementations#6/layout#1",
+      "testOtherNoticeImplementations#6/complete",
+      "testOtherNoticeImplementations#7/layout#1",
+      "testOtherNoticeImplementations#7/layout#2",
+      "testOtherNoticeImplementations#7/complete",
+      "testOtherNoticeImplementations#8/layout#1",
+      "testOtherNoticeImplementations#8/layout#2",
+      "testOtherNoticeImplementations#8/complete",
+      "testOtherNoticeImplementations#9/layout#1",
+      "testOtherNoticeImplementations#9/layout#2",
+      "testOtherNoticeImplementations#9/complete",
+      "testOtherNoticeImplementations#10/layout#1",
+      "testOtherNoticeImplementations#10/layout#2",
+      "testOtherNoticeImplementations#10/complete",
+      "testOtherNoticeImplementations#11/layout#1",
+      "testOtherNoticeImplementations#11/complete",
+      "testOtherNoticeImplementations#12/layout#1",
+      "testOtherNoticeImplementations#12/complete"
+    ],
+    "testConnectionNoticeJourney": [
+      "testHomeConnectionNoticeUsesPageGutter#1/layout#1",
+      "testHomeConnectionNoticeUsesPageGutter#1/complete",
+      "testThreadConnectionNoticeUsesPageGutter#1/layout#1",
+      "testThreadConnectionNoticeUsesPageGutter#1/complete"
+    ],
+    "testStartupAndEmptyJourneys": [
+      "testDetailBannerKeepsInlineTitleAndToolbarVisible#1/layout#1",
+      "testDetailBannerKeepsInlineTitleAndToolbarVisible#1/complete",
+      "testEveryWorkspaceSurfaceWithSyncFailure#1/layout#1",
+      "testEveryWorkspaceSurfaceWithSyncFailure#1/complete",
+      "testEveryWorkspaceSurfaceWithSyncFailure#2/layout#1",
+      "testEveryWorkspaceSurfaceWithSyncFailure#2/complete",
+      "testEveryWorkspaceSurfaceWithSyncFailure#3/layout#1",
+      "testEveryWorkspaceSurfaceWithSyncFailure#3/complete",
+      "testEveryWorkspaceSurfaceWithSyncFailure#4/layout#1",
+      "testEveryWorkspaceSurfaceWithSyncFailure#4/complete",
+      "testEveryWorkspaceSurfaceWithSyncFailure#6/layout#1",
+      "testEveryWorkspaceSurfaceWithSyncFailure#6/complete",
+      "testEveryWorkspaceSurfaceWithSyncFailure#7/layout#1",
+      "testEveryWorkspaceSurfaceWithSyncFailure#7/complete",
+      "testEveryWorkspaceSurfaceWithSyncFailure#5/complete",
+      "testEveryWorkspaceSurfaceWithSyncFailure#5/layout#1"
+    ],
+    "testLandscapeJourney": [
+      "testLandscapeLayouts#1/layout#1",
+      "testLandscapeLayouts#1/complete",
+      "testLandscapeLayouts#2/layout#1",
+      "testLandscapeLayouts#2/complete",
+      "testLandscapeLayouts#3/layout#1",
+      "testLandscapeLayouts#3/complete",
+      "testLandscapeLayouts#4/layout#1",
+      "testLandscapeLayouts#4/complete"
+    ],
+    "testMaximumTextJourneys": [
+      "testAccessibilityTextLayouts#1/layout#1",
+      "testAccessibilityTextLayouts#1/complete",
+      "testAccessibilityTextLayouts#2/layout#1",
+      "testAccessibilityTextLayouts#2/complete",
+      "testAccessibilityTextLayouts#3/layout#1",
+      "testAccessibilityTextLayouts#3/complete",
+      "testAccessibilityTextLayouts#4/layout#1",
+      "testAccessibilityTextLayouts#4/complete",
+      "testOlderSyncTimeAndLargeTextRemainReadable#1/layout#1",
+      "testOlderSyncTimeAndLargeTextRemainReadable#1/complete",
+      "testOlderSyncTimeAndLargeTextRemainReadable#2/layout#1",
+      "testOlderSyncTimeAndLargeTextRemainReadable#2/complete"
+    ],
+    "testDarkRefusalJourney": [
+      "testRefusalBannerInDarkMode#1/layout#1",
+      "testRefusalBannerInDarkMode#1/complete",
+      "testRefusalBannerInDarkMode#2/layout#1",
+      "testRefusalBannerInDarkMode#2/complete",
+      "testRefusalBannerInDarkMode#3/layout#1",
+      "testRefusalBannerInDarkMode#3/complete",
+      "testRefusalBannerInDarkMode#4/layout#1",
+      "testRefusalBannerInDarkMode#4/complete",
+      "testRefusalBannerInDarkMode#5/layout#1",
+      "testRefusalBannerInDarkMode#5/complete"
+    ],
+    "testRecoveryJourneys": [
+      "testBannerClearsOnHomeAndDetail#1/layout#1",
+      "testBannerClearsOnHomeAndDetail#1/layout#2",
+      "testBannerClearsOnHomeAndDetail#1/complete",
+      "testBannerClearsOnHomeAndDetail#2/layout#1",
+      "testBannerClearsOnHomeAndDetail#2/layout#2",
+      "testBannerClearsOnHomeAndDetail#2/complete"
+    ],
+    "testEntryRootJourneys": [
+      "testSignInAndOnboardingDoNotShowWorkspaceNotices#1/complete",
+      "testSignInAndOnboardingDoNotShowWorkspaceNotices#2/complete",
+      "testSignInAndOnboardingDoNotShowWorkspaceNotices#3/complete"
+    ],
+    "testNotificationOpenJourneys": [
+      "testNotificationWaitsForThreadToSync#1/layout#1",
+      "testNotificationWaitsForThreadToSync#1/complete",
+      "testNotificationWaitsForThreadToSync#2/layout#1",
+      "testNotificationWaitsForThreadToSync#2/complete"
+    ],
+    "testNotificationCancelJourney": [
+      "testBackCancelsNotificationWaitingForSync#1/layout#1",
+      "testBackCancelsNotificationWaitingForSync#1/complete"
+    ]
+  }
 }

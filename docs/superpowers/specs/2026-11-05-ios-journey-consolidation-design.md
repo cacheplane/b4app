@@ -77,3 +77,19 @@ If preservation proof fails, retain the original test/start. If elapsed-time ben
 ## Approval checkpoint
 
 The owner approved this written navigation-first design before implementation. The precise journey count can increase when required to preserve a documented behavior; it cannot decrease by silently omitting a ledger obligation.
+
+
+## Validated implementation adjustments
+
+The approved allowance to retain additional starts was used: the implementation has 13 families and
+42 starts, preserving all 62 legacy scenarios and 69 checkpoints. Native comparison found that the
+cold sync/new-thread entry had keyboard focus while the warm pilot did not, so its cold start remains.
+The warm action-error detail fixture failed to retain its injected error through refresh, so both
+original cold detail starts remain and the experimental fixture hook was removed. The fixture app
+is byte-identical to the matched hosted baseline and shared assertion logic is unchanged.
+
+Before removal, the additive source passed complete legacy and journey selections separately:
+25 UI + 3 components and 13 UI + 3 components, each with all 131 obligation markers. Actual launch
+activities and explicit launch-return markers independently counted 62 and 42. Per-method marker
+sets matched the reviewed ledger; healthy and dark composer input/frame comparisons matched.
+Actual alignment and late-dismissal source faults were rejected, with exact restorations.

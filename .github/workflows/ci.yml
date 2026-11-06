@@ -124,7 +124,7 @@ jobs:
       - name: iOS navigation and banner regression tests
         env:
           B4APP_LAYOUT_DERIVED_DATA: .build/DerivedData
-          B4APP_LAYOUT_EXPECTED_UI_TESTS: "25"
+          B4APP_LAYOUT_EXPECTED_UI_TESTS: "13"
           B4APP_LAYOUT_EXPECTED_COMPONENT_TESTS: "3"
           B4APP_LAYOUT_FOCUSED_COVERAGE: "0"
         run: ./Scripts/test-ios-layout.sh -clonedSourcePackagesDirPath .spm

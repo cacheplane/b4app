@@ -36,7 +36,7 @@ if xcodebuild test -quiet -project .build/iOSLayout/WorkspaceLayout.xcodeproj -s
   if [ "${B4APP_LAYOUT_FOCUSED_COVERAGE:-0}" = 1 ]; then focused_flag=--focused-coverage; fi
   python3 Scripts/verify_ios_layout_results.py "$results.summary.json" "$results.tests.json" \
     --result-bundle "$results" ${focused_flag:+"$focused_flag"} \
-    --ui-count "${B4APP_LAYOUT_EXPECTED_UI_TESTS:-25}" \
+    --ui-count "${B4APP_LAYOUT_EXPECTED_UI_TESTS:-13}" \
     --component-count "${B4APP_LAYOUT_EXPECTED_COMPONENT_TESTS:-3}"
 else
   result=$?

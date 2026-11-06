@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Use superpowers:executing-plans inline, task by task. Read-only review agents are allowed; do not delegate implementation.
 
-**Goal:** Preserve every existing per-PR UI behavior while consolidating 25 methods/62 app starts into about 13 journey families/39 starts, then measure the complete CI impact.
+**Goal:** Preserve every existing per-PR UI behavior while consolidating 25 methods/62 app starts into 13 journey families/42 starts after validated cold-entry preservation, then measure the complete CI impact.
 
 **Architecture:** Keep the shipped views and existing isolated fixture app. Reuse a running app through real navigation; preserve cold entry/profile/fallback starts. Add a manifest of the 62 legacy launch scenarios and their 69 layout checkpoints; require execution markers as well as target counts. No arbitrary fixture-reset service or production hook.
 
@@ -37,11 +37,11 @@
 ## Task3 — Add navigation pilots alongside the originals
 
 **Create:** `Tests/iOSLayout/UITests/BannerJourneys.swift`.
-**Modify:** shared helpers in `BannerLayoutTests.swift` (visibility only as needed to share), and fixture `LayoutApp.swift` for a journey-only action-error injection flag.
+**Modify:** shared helpers in `BannerLayoutTests.swift` (visibility only as needed to share), and the original fixture unchanged after rejecting the warm action-error injection prototype.
 
 - [ ] Add navigation/search/scroll and healthy-composer pilots without removing old test methods. Reach Home→thread→Back and new-thread through actual taps. Keep the long-list seed separate.
 - [ ] Give every original assertion/fixture variant an owner in the ledger before aliasing markers. Preserve picker inputs; if navigation changes them, retain a fresh start rather than silently changing the test.
-- [ ] Add notice pilot paths. The new fixture flag allows the existing after-detail-read action-error injection for a journey that started on Home; the old25 tests do not set this flag and retain original behavior. No production file changes.
+- [ ] Add notice pilot paths. Retain both original cold action-error detail starts: the experimental warm injection flag failed native state-equivalence proof and was removed. The fixture remains byte-identical to baseline.
 - [ ] Run legacy reference and pilot selections separately from the same additive source so duplicate marker sets cannot masquerade as one passing run. Compare scenario/checkpoint sets for the migrated obligations and inspect rendered screenshots.
 - [ ] Inject actual source faults in a rendered-title/alignment check and in a late step such as dismissal or recovery. Verify assertions fail and the missing/aborted checkpoints are diagnosable; restore exact source and green. Never use an unconditional XCTest failure as visual-equivalence proof.
 
@@ -49,7 +49,7 @@
 
 **Files:** `BannerJourneys.swift`, `BannerLayoutTests.swift`, `coverage.json`, `Tests/iOSLayout/README.md`.
 
-- [ ] Implement the approved13-family table: navigation/search/scroll2starts; healthy composers1; sync copy4; secondary notices7; connecting gutters1; startup/empty guards6; landscape3; max-text/older4; dark refusal3; recovery2; entry roots3; notification open2; notification cancel1. Sum39, retain more starts whenever necessary.
+- [ ] Implement the approved13-family table: navigation/search/scroll2starts; healthy composers1; sync copy4; secondary notices9; connecting gutters1; startup/empty guards7; landscape3; max-text/older4; dark refusal3; recovery2; entry roots3; notification open2; notification cancel1. Sum42 after retaining three distinct cold starts established by native comparison.
 - [ ] Reuse existing assertion helpers and exactcopy/gutter/ink/hit/recovery conditions. Keep distinct error inputs, both sync flags and every original surface/profile combination. Do not optimize screenshot/query acquisition in this phase.
 - [ ] Preserve the genuine cold/warm notification launches, independent cancellation setup, all three auth entry roots, no-ready/no-Mac and direct-detail startup guards.
 - [ ] Execute the complete legacy and complete journey selections locally from additive source, with the full131-ID requirement separately satisfied in each. Preserve every failure; do not select only passing subsets.
@@ -70,3 +70,19 @@
 ## Execution choice
 
 Execute inline in this session, as requested by the owner. Read-only reviewers may audit the spec, plan, coverage and results; implementation remains with the primary agent. User approval already covers the written spec; do not repeat the same approval request when no material design change occurs.
+
+
+## Execution checkpoint
+
+Tasks 1–4 are proved locally before removing entry points: B2 hosted baseline at `90d0f6a` passed all
+four jobs; complete additive legacy/journey selections independently passed their 131-ID contracts
+and 3 components, with 62/42 observed launches. The initial warm action-error fixture hook was
+rejected and removed; the original fixture remains unchanged. A stale local Runner resource path
+failed closed during one replay; unchanged source passed on a fresh task Simulator and empty
+DerivedData. That failure remains in the private attempt ledger.
+
+The consolidated count change and entry-point removal now await hosted C2 validation. The planned
+H2 holdout is the final draft PR's full CI, with temporary validation triggers removed and the actual
+synthetic merge tree/parents verified against the frozen head/base. This avoids an extra matrix
+solely for opening the PR. Maximum four new matrices, thresholds, cache policy and deadlines remain
+unchanged; no merge, publishing or deployment is authorized.
