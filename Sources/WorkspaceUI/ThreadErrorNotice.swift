@@ -21,6 +21,8 @@ struct ThreadErrorNotice: View {
           .foregroundStyle(LLA.Color.danger)
           .textSelection(.enabled)
           .frame(maxWidth: .infinity, alignment: .leading)
+          // Reserve the instructions' wrapped height before flexible diagnostics take space.
+          .layoutPriority(1)
         if let failure {
           DisclosureGroup("Details", isExpanded: $detailsExpanded) {
             // A split view also measures us at zero width. Keep wrapped, selectable diagnostics

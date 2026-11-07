@@ -47,6 +47,7 @@ private nonisolated func edited(
   struct Variant: CustomStringConvertible {
     var name: String
     var rows: [StoredChange]
+    var error: WorkspaceError? = nil
     var description: String { name }
   }
 
@@ -75,6 +76,16 @@ private nonisolated func edited(
       Variant(
         name: "continuity banner and a long request",
         rows: others.map { $0.table == "threads" ? brokenThread : $0 } + [longRequest]),
+      Variant(
+        name: "archived recovery error", rows: others,
+        error: WorkspaceError(
+          .protocolInvalid,
+          "This session is archived. Run the native unarchive command, then choose Check again. Your transcript and draft are preserved.",
+          details: ["reason": "native_session_archived"])),
+      Variant(
+        name: "long fallback error", rows: others,
+        error: WorkspaceError(
+          .internalError, String(repeating: "A long runtime failure. ", count: 300))),
     ]
   }
 
@@ -95,6 +106,9 @@ private nonisolated func edited(
     try await waitUntil("detail") { model.detail?.requests.count == expectedRequests }
     // A long draft: the composer's hidden measuring copy of the text must stay clamped too.
     model.composerText = String(repeating: "a draft that goes on and on ", count: 200)
+    if let failure = variant.error {
+      let _: Bool? = await model.perform { _ in throw failure }
+    }
 
     let controller = NSHostingController(rootView: ThreadsView(model: model))
     let atZero = controller.sizeThatFits(in: .zero)
