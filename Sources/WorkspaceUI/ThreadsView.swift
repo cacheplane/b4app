@@ -116,7 +116,10 @@ struct ThreadDetailView: View {
 
   /// Pending requests, the continuity banner, and the composer, under the transcript.
   @ViewBuilder private func bottom(_ detail: ThreadDetail) -> some View {
-    VStack(spacing: 0) {
+    ThreadControls(
+      prioritizingRecovery: model.lastError != nil
+        && !Remediation.coveredByContinuity(model.lastFailure, continuity: detail.thread.continuity)
+    ) {
       if !detail.requests.isEmpty {
         RuntimeRequestList(model: model, requests: detail.requests)
           // Reserve the recovery row's height when continuity also needs attention. The requests
@@ -222,6 +225,18 @@ struct ThreadDetailView: View {
     if let turn = model.detail?.activeTurn, model.detail?.thread.id == thread.id {
       TurnStatusBadge(turn: turn, offline: model.activeTurnLabel(for: thread))
     }
+  }
+}
+
+/// Reserve the controls' bounded ideal height before the flexible transcript takes the rest.
+/// A priority inside the error card alone cannot affect this outer allocation boundary.
+struct ThreadControls<Content: View>: View {
+  var prioritizingRecovery: Bool
+  @ViewBuilder var content: () -> Content
+
+  var body: some View {
+    VStack(spacing: 0) { content() }
+      .layoutPriority(prioritizingRecovery ? 1 : 0)
   }
 }
 

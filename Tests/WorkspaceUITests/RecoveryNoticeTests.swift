@@ -7,6 +7,19 @@ import WorkspaceProtocol
 
 /// The real notice at desktop and narrow widths, using the live archived-session response shape.
 @Suite(.serialized) @MainActor struct RecoveryNoticeTests {
+  @Test func longExpandedPrimaryErrorKeepsTheMinimumSizeBounded() {
+    let message = String(repeating: "A runtime failure with an arbitrarily long explanation. ", count: 300)
+    let failure = WorkspaceError(.internalError, message)
+    let notice = ThreadErrorNotice(
+      error: message, failure: failure, remedy: nil, perform: { _ in }, dismiss: {},
+      detailsExpanded: true)
+    let controller = NSHostingController(rootView: notice)
+    for width in [CGFloat(0), 340, 610] {
+      let minimum = controller.sizeThatFits(in: CGSize(width: width, height: 0))
+      #expect(minimum.height < 300, "primary error forces a tall split-view minimum: \(minimum)")
+    }
+  }
+
   @Test func longExpandedDiagnosticsStayWithinTheWindowBudget() {
     let failure = WorkspaceError(
       .internalError, "Could not read the session.",
