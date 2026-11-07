@@ -135,4 +135,25 @@ struct ThreadLinkTests {
       #expect(ThreadLink.key(fromNotification: userInfo) == nil)
     }
   }
+
+  @Test func refreshFixtureHasNoNavigationOrWithdrawalSemantics() throws {
+    let url = URL(fileURLWithPath: "\(#filePath)")
+      .deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Fixtures/sync/push.json")
+    let document = try #require(
+      try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    let refreshes = try #require(document["refreshes"] as? [[String: Any]])
+    #expect(!refreshes.isEmpty)
+    for entry in refreshes {
+      let info = try #require(entry["expected"] as? [AnyHashable: Any])
+      let aps = try #require(info["aps"] as? [String: Any])
+      #expect(aps.count == 1)
+      #expect(aps["content-available"] as? Int == 1)
+      #expect(info["refresh"] as? Bool == true)
+      #expect(ThreadLink.threadId(fromNotification: info) == nil)
+      #expect(ThreadLink.reason(fromNotification: info) == nil)
+      #expect(ThreadLink.key(fromNotification: info) == nil)
+      #expect(ThreadLink.withdrawKeys(fromNotification: info).isEmpty)
+    }
+  }
 }
