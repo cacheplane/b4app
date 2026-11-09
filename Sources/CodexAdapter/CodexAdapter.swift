@@ -280,7 +280,22 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
       return result
     } catch {
       let failure = WorkspaceError.from(error)
-      if failure.details?["rpcCode"] != nil {
+      if failure.details?["rpcCode"]?.numberValue == -32600 {
+        let id = ref.nativeSessionId
+        let message = failure.message.lowercased()
+        if message.hasPrefix("session \(id.lowercased()) is archived.") {
+          var details = failure.details?.objectValue ?? [:]
+          details["reason"] = "native_session_archived"
+          details["nativeMessage"] = .string(failure.message)
+          throw WorkspaceError(
+            .protocolInvalid,
+            "This Codex session is archived. Run `codex unarchive \(id)` in Terminal, then choose Check again. Your transcript and draft are preserved.",
+            details: .object(details))
+        }
+        guard
+          message.hasPrefix("no rollout found for thread id \(id.lowercased())")
+            || message == "thread \(id.lowercased()) not found"
+        else { throw failure }
         throw WorkspaceError(
           .nativeSessionMissing,
           "Codex could not resume thread \(ref.nativeSessionId): \(failure.message). The cached transcript stays; start a new thread to continue.",

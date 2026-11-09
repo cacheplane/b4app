@@ -114,6 +114,8 @@ public enum LLA {
     /// The most height the pending-request area takes before it scrolls, so a long command or
     /// several requests never push the composer off the window or collapse the split view.
     public static let requestsMaxHeight: CGFloat = 240
+    /// Expanded diagnostic text scrolls within this height instead of enlarging the app window.
+    public static let diagnosticsMaxHeight: CGFloat = 120
   }
 
   /// WCAG 2 contrast ratio between two sRGB hex colours; the theme tests pin the palette with it.

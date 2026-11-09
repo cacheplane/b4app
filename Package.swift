@@ -117,6 +117,9 @@ let package = Package(
       name: "WorkspaceProtocolTests", dependencies: ["WorkspaceProtocol"], swiftSettings: concurrency),
     .testTarget(name: "WorkspaceClientTests", dependencies: ["WorkspaceClient"], swiftSettings: concurrency),
     .testTarget(
+      name: "AgentWorkspaceCLITests", dependencies: ["AgentWorkspaceCLI", "WorkspaceClient"],
+      swiftSettings: concurrency),
+    .testTarget(
       name: "WorkspaceSyncTests",
       dependencies: [
         "WorkspaceSync",

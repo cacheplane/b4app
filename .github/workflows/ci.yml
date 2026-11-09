@@ -52,6 +52,8 @@ jobs:
         run: .github/scripts/test-tag-guard.sh
       - name: Deploy script tests
         run: bats Infra/scripts/tests
+      - name: B4 fixture startup regression tests
+        run: python3 -m unittest discover -s Scripts/tests -p test_b4_fixture_bind.py -v
       - name: Launch Services script tests
         run: bats Scripts/tests
 

@@ -160,7 +160,11 @@ struct NoticeLine: View {
         Button(actionTitle, action: action).buttonStyle(.llaLink).font(LLAFont.caption).fixedSize()
       }
     }
-    .padding(.horizontal, 14)
+    #if os(iOS)
+      .padding(.horizontal, LLA.Metrics.margin)
+    #else
+      .padding(.horizontal, 14)
+    #endif
     .padding(.top, 10)
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier(id)

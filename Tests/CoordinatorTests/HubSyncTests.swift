@@ -438,14 +438,17 @@ private struct HubHarness {
     // A 401 is recorded and leaves the rows unsynced; since the per-account split (Task 9) it also signs
     // the account out, so no write-driven push follows.
     let accounts = h.coordinator.accounts
-    // Quiet first, so the 401 lands on the parked pull: otherwise a push still in flight could sync the
-    // row below, or a profile read could take the 401 and sign out without the link recording it.
+    // Quiet first, so no push still in flight can sync the row below.
     try await h.untilSyncQuiet(db)
-    // Unsynced rows written straight to the store (no event, so no push yet); the 401 then arrives on
-    // the pull's long poll, which `setFailNext` wakes.
+    // Unsynced rows written straight to the store (no event, so no write push); the 401 then arrives on
+    // the pull's long poll, which `setFailNextPull` wakes, or on the 30 s timer's push if that fires
+    // first, so neither can sync the row. Aimed at the sync calls, not at whichever call comes next: a
+    // plain `setFailNext` could go to a late profile read, which signs out without the link recording
+    // it, and under the full suite's load the timer's push synced the row before the 401.
     _ = try db.insertConnection(
       Connection(id: "c-after", kind: .claude, label: "After", target: "/bin/claude"))
-    await h.fake.setFailNext(unauthorized)
+    await h.fake.setFailNextPush(unauthorized)
+    await h.fake.setFailNextPull(unauthorized)
     // Polled: HubSync records the 401 on the link, and the account manager signs out, with no event
     // or later hub call after it.
     let deadline = ContinuousClock.now + .seconds(10)

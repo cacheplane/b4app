@@ -17,6 +17,8 @@ struct LayoutApp: App {
   private let account: MirrorAccount
   private let relay: MirrorRelay
   private let connection: FakeHubLinkConnection
+  private let completeNotificationSync: () -> Void
+  @State private var notificationSynced = false
   private let screen = ProcessInfo.processInfo.environment["LAYOUT_SCREEN"] ?? "list"
   private let notice = ProcessInfo.processInfo.environment["LAYOUT_NOTICE"] ?? "sync"
 
@@ -34,14 +36,17 @@ struct LayoutApp: App {
     }
     let url = Bundle.main.url(forResource: "changes", withExtension: "json")!
     let changes = try! JSONCoding.decoder.decode([SyncChange].self, from: Data(contentsOf: url))
-    let count = screen == "no-ready-detail" ? 0 : screen == "empty" || screen == "connect-mac" ? 1 : 2
-    let rows = changes.prefix(count)
+    let count =
+      screen == "no-ready-detail" || screen.hasPrefix("notification")
+      ? 0 : screen == "empty" || screen == "connect-mac" ? 1 : 2
+    let rows =
+      changes
       .enumerated().map { index, change in
         StoredChange(
           hubSeq: index + 1, deviceId: "mac-1", deviceSeq: change.deviceSeq, wall: change.wall,
           table: change.table, rowId: change.rowId, op: change.op, column: change.column, value: change.value)
       }
-    _ = try! store.apply(rows)
+    _ = try! store.apply(Array(rows.prefix(count)))
     if screen != "connect-mac" {
       let at = Timestamp.now()
       let project: JSONValue = [
@@ -79,6 +84,9 @@ struct LayoutApp: App {
       url: URL(string: "https://example.invalid")!, token: { "fixture-token" }, connection: connection)
     self.relay = relay
     let transport = MirrorTransport(store: store, version: "layout-fixture", relay: relay)
+    completeNotificationSync = {
+      transport.publish(try! store.apply(Array(rows.prefix(9))))
+    }
     let account = MirrorAccount(
       store: store, secrets: MemorySecretStore(),
       configuration: .init(hubURL: URL(string: "https://example.invalid")!, deviceName: "Fixture iPhone"),
@@ -90,14 +98,16 @@ struct LayoutApp: App {
     model.accountHasNoMac = screen == "connect-mac"
     if screen == "archived" { model.projectFilter = .archived }
     if screen == "no-match" { model.listSearch = "no-such-thread" }
-    if screen == "detail" { model.requestOpenThread("thread-1") }
+    if screen == "detail" || screen == "notification-cold" { model.requestOpenThread("thread-1") }
     _model = State(initialValue: model)
     _status = State(
       initialValue: MirrorSyncStatus(
-        lastError: ["sync", "stale", "refused"].contains(notice)
+        lastError: ["sync", "stale", "refused", "blocked"].contains(notice)
           || ProcessInfo.processInfo.environment["LAYOUT_SYNC_FAILURE"] == "1"
-          ? "The Internet connection appears to be offline." : nil,
-        lastSyncAt: notice == "stale" ? Timestamp.now() : nil))
+          ? ProcessInfo.processInfo.environment["LAYOUT_SYNC_ERROR"]
+            ?? "The Internet connection appears to be offline." : nil,
+        lastSyncAt: ProcessInfo.processInfo.environment["LAYOUT_LAST_SYNC"]
+          ?? (notice == "stale" ? Timestamp.now() : nil)))
   }
 
   var body: some Scene {
@@ -110,7 +120,8 @@ struct LayoutApp: App {
               SyncBanner(
                 status: status,
                 relayRefused: notice == "refused"
-                  ? "The hub no longer accepts this iPhone. Log out, then sign in again." : nil))
+                  ? SyncBanner.signInRequiredMessage : nil,
+                syncPaused: notice == "blocked"))
           }
         )
         .environment(\.connectMacContent, { AnyView(ConnectMacScreen(state: connect, onScan: {})) })
@@ -121,6 +132,21 @@ struct LayoutApp: App {
         )
         .preferredColorScheme(ProcessInfo.processInfo.environment["LAYOUT_DARK"] == "1" ? .dark : .light)
         .overlay(alignment: .bottomTrailing) {
+          if screen.hasPrefix("notification"), !notificationSynced {
+            VStack {
+              if screen == "notification-warm" {
+                Button("Open notification") { model.requestOpenThread("thread-1") }
+                  .accessibilityIdentifier("fixture.open-notification")
+              }
+              Button("Finish sync") {
+                completeNotificationSync()
+                notificationSynced = true
+              }
+              .accessibilityIdentifier("fixture.finish-sync")
+            }
+            .buttonStyle(.borderedProminent)
+            .padding()
+          }
           if ProcessInfo.processInfo.environment["LAYOUT_RECOVER"] == "1" {
             // Fixture-only trigger: no timer can race the UI test's initial assertions.
             Button("Restore fixture connection") { status = MirrorSyncStatus(lastSyncAt: Timestamp.now()) }
@@ -138,6 +164,8 @@ struct LayoutApp: App {
         .task {
           await relay.start()
           let socket = try! await connection.nextSocket()
+          // Leave the link awaiting hello to render the shipped connection notices on both screens.
+          guard notice != "connecting" else { return }
           socket.deliver(
             .hello(
               protocol: 1, minClientProtocol: 1, deviceId: "phone-1", role: .client, heartbeatSeconds: 10,

@@ -5,7 +5,8 @@ final class BannerLayoutTests: XCTestCase {
   @MainActor
   private func launch(
     _ screen: String, notice: String = "sync", accessibility: Bool = false, dark: Bool = false,
-    recover: Bool = false, withSyncFailure: Bool = false
+    recover: Bool = false, withSyncFailure: Bool = false,
+    syncError: String? = nil, lastSyncAt: String? = nil
   ) -> XCUIApplication {
     continueAfterFailure = false
     XCUIDevice.shared.orientation = .portrait
@@ -15,6 +16,8 @@ final class BannerLayoutTests: XCTestCase {
       "LAYOUT_RECOVER": recover ? "1" : "0",
       "LAYOUT_SYNC_FAILURE": withSyncFailure ? "1" : "0",
     ]
+    if let syncError { app.launchEnvironment["LAYOUT_SYNC_ERROR"] = syncError }
+    if let lastSyncAt { app.launchEnvironment["LAYOUT_LAST_SYNC"] = lastSyncAt }
     if accessibility {
       app.launchArguments = [
         "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL",
@@ -131,6 +134,99 @@ final class BannerLayoutTests: XCTestCase {
   }
 
   @MainActor
+  func testHomeConnectionNoticeUsesPageGutter() {
+    let app = launch("list", notice: "connecting", withSyncFailure: true)
+    let notice = app.descendants(matching: .any).matching(identifier: "new-thread-dock-reason").firstMatch
+    XCTAssertTrue(notice.waitForExistence(timeout: 10), app.debugDescription)
+    checkLayout(app, screen: "list")
+    XCTAssertEqual(notice.frame.minX, 16, accuracy: 0.5, "Home notice must use the page gutter once")
+  }
+
+  @MainActor
+  func testThreadConnectionNoticeUsesPageGutter() {
+    let app = launch("detail", notice: "connecting", withSyncFailure: true)
+    let notice = app.descendants(matching: .any).matching(identifier: "hub-link").firstMatch
+    XCTAssertTrue(notice.waitForExistence(timeout: 10), app.debugDescription)
+    checkLayout(app, screen: "detail")
+    XCTAssertEqual(notice.frame.minX, 16, accuracy: 0.5, "Thread notice must use the page gutter once")
+  }
+
+  @MainActor
+  func testHomeComposerUsesPageGutters() {
+    let app = launch("list", notice: "healthy")
+    checkLayout(app, screen: "list", hasBanner: false)
+    let dock = app.buttons["new-thread-dock"]
+    XCTAssertEqual(dock.frame.minX, 16, accuracy: 0.5)
+    XCTAssertEqual(app.frame.maxX - dock.frame.maxX, 16, accuracy: 0.5)
+  }
+
+  @MainActor
+  func testThreadComposerAndControlsAlign() {
+    let app = launch("detail", notice: "healthy")
+    checkLayout(app, screen: "detail", hasBanner: false)
+    checkComposerAlignment(app)
+  }
+
+  @MainActor
+  func testNewThreadComposerAndControlsAlign() {
+    let app = launch("new-thread", notice: "healthy")
+    checkLayout(app, screen: "new-thread", hasBanner: false)
+    checkComposerAlignment(app)
+  }
+
+  @MainActor
+  private func checkComposerAlignment(_ app: XCUIApplication) {
+    let editor = app.textFields["composer"]
+    XCTAssertTrue(editor.waitForExistence(timeout: 5))
+    XCTAssertEqual(editor.frame.minX, 32, accuracy: 0.5, "Draft text uses the page and field insets")
+    let project = app.descendants(matching: .any).matching(identifier: "picker-project").firstMatch
+    let runtime = app.descendants(matching: .any).matching(identifier: "picker-runtime").firstMatch
+    XCTAssertEqual(
+      inkBounds(project).minX, editor.frame.minX, accuracy: 1.5, "Project text aligns with draft text")
+    XCTAssertEqual(
+      app.frame.maxX - inkBounds(runtime).maxX, 32, accuracy: 1.5,
+      "Trailing control ink uses the same inner and outer insets")
+    XCTAssertTrue(app.buttons["picker-permission"].isHittable)
+    XCTAssertTrue(runtime.isHittable)
+  }
+
+  // Menu labels expose different accessibility bounds from plain labels. Measure rendered ink so
+  // their extra hit areas cannot hide a visible alignment error. These cases use the light theme.
+  @MainActor
+  private func inkBounds(_ element: XCUIElement) -> CGRect {
+    guard let image = element.screenshot().image.cgImage else { return .null }
+    var pixels = [UInt8](repeating: 0, count: image.width * image.height * 4)
+    let rendered = pixels.withUnsafeMutableBytes { buffer in
+      guard
+        let context = CGContext(
+          data: buffer.baseAddress, width: image.width, height: image.height, bitsPerComponent: 8,
+          bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+      else { return false }
+      context.setFillColor(CGColor(gray: 1, alpha: 1))
+      context.fill(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+      context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+      return true
+    }
+    guard rendered else { return .null }
+    var first = image.width
+    var last = -1
+    for index in stride(from: 0, to: pixels.count, by: 4) {
+      if pixels[index...index + 2].allSatisfy({ $0 < 190 }) {
+        let x = (index / 4) % image.width
+        first = min(first, x)
+        last = max(last, x)
+      }
+    }
+    guard last >= first else { return .null }
+    let frame = element.frame
+    let scale = frame.width / CGFloat(image.width)
+    return CGRect(
+      x: frame.minX + CGFloat(first) * scale, y: frame.minY,
+      width: CGFloat(last - first + 1) * scale, height: frame.height)
+  }
+
+  @MainActor
   func testEveryWorkspaceSurfaceWithSyncFailure() {
     for screen in ["empty", "archived", "no-match", "detail", "new-thread", "no-ready-detail", "connect-mac"]
     {
@@ -222,6 +318,76 @@ final class BannerLayoutTests: XCTestCase {
   }
 
   @MainActor
+  private func visibleSyncBanner(_ app: XCUIApplication) -> XCUIElement {
+    let query = app.descendants(matching: .any).matching(identifier: "sync.banner")
+    XCTAssertTrue(query.firstMatch.waitForExistence(timeout: 5))
+    let banner = query.allElementsBoundByIndex.first { $0.isHittable }
+    XCTAssertNotNil(banner)
+    return banner ?? query.firstMatch
+  }
+
+  @MainActor
+  func testInitialSyncFailureUsesPlainLanguage() {
+    for screen in ["list", "detail"] {
+      let app = launch(screen, syncError: "Hub error 0 transport: Could not connect to the server.")
+      checkLayout(app, screen: screen)
+      XCTAssertEqual(visibleSyncBanner(app).label, "Not synced yet. Retrying…")
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testStaleSyncFailureKeepsLastSuccessTime() {
+    for screen in ["list", "detail"] {
+      let app = launch(screen, notice: "stale", syncError: "Hub error 503 maintenance: Service unavailable.")
+      checkLayout(app, screen: screen)
+      let label = visibleSyncBanner(app).label
+      XCTAssertTrue(label.hasPrefix("Last synced "), label)
+      XCTAssertTrue(label.hasSuffix(". Retrying…"), label)
+      XCTAssertFalse(label.contains("Hub error"))
+      XCTAssertFalse(label.contains("Offline"), "A server failure does not mean the phone is offline")
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testOlderSyncTimeAndLargeTextRemainReadable() {
+    let earlier = ISO8601DateFormatter().string(from: Date.now.addingTimeInterval(-172800))
+    for screen in ["list", "detail"] {
+      let app = launch(
+        screen, notice: "stale", accessibility: true,
+        syncError: "Hub error 0 transport: A long diagnostic message that should never fill the banner.",
+        lastSyncAt: earlier)
+      checkLayout(app, screen: screen)
+      let label = visibleSyncBanner(app).label
+      XCTAssertTrue(label.hasPrefix("Last synced "), label)
+      XCTAssertTrue(label.hasSuffix(". Retrying…"), label)
+      XCTAssertFalse(label.contains("diagnostic"))
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testRefusedLinkAsksForSignInInsteadOfRetrying() {
+    for screen in ["list", "detail"] {
+      let app = launch(screen, notice: "refused")
+      checkLayout(app, screen: screen)
+      XCTAssertEqual(visibleSyncBanner(app).label, "Log out, then sign in to reconnect.")
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testBlockedMirrorDoesNotPromiseRetry() {
+    for screen in ["list", "detail"] {
+      let app = launch(screen, notice: "blocked")
+      checkLayout(app, screen: screen)
+      XCTAssertEqual(visibleSyncBanner(app).label, "Sync paused. Check Diagnostics.")
+      app.terminate()
+    }
+  }
+
+  @MainActor
   func testSignInAndOnboardingDoNotShowWorkspaceNotices() {
     for screen in ["sign-in", "sign-in-no-camera", "onboarding"] {
       let app = launch(screen)
@@ -245,6 +411,39 @@ final class BannerLayoutTests: XCTestCase {
     checkLayout(app, screen: "detail")
     app.navigationBars.buttons.element(boundBy: 0).tap()
     checkLayout(app, screen: "list")
+  }
+
+  @MainActor
+  func testNotificationWaitsForThreadToSync() {
+    for screen in ["notification-cold", "notification-warm"] {
+      let app = launch(screen, notice: "healthy")
+      if screen == "notification-warm" {
+        app.buttons["fixture.open-notification"].tap()
+      }
+      XCTAssertTrue(
+        app.descendants(matching: .any)["thread-opening"].firstMatch.waitForExistence(timeout: 10))
+      let loading = XCTAttachment(screenshot: app.screenshot())
+      loading.name = "\(screen)-loading"
+      loading.lifetime = .keepAlways
+      add(loading)
+      XCTAssertFalse(app.staticTexts["New thread"].isHittable)
+      app.buttons["fixture.finish-sync"].tap()
+      XCTAssertTrue(app.navigationBars.staticTexts["Fix the login bug"].waitForExistence(timeout: 10))
+      checkLayout(app, screen: "detail", hasBanner: false)
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testBackCancelsNotificationWaitingForSync() {
+    let app = launch("notification-warm", notice: "healthy")
+    app.buttons["fixture.open-notification"].tap()
+    XCTAssertTrue(app.descendants(matching: .any)["thread-opening"].firstMatch.waitForExistence(timeout: 10))
+    app.navigationBars.buttons.element(boundBy: 0).tap()
+    app.buttons["fixture.finish-sync"].tap()
+    checkLayout(app, screen: "list", hasBanner: false)
+    XCTAssertFalse(app.navigationBars.staticTexts["Fix the login bug"].isHittable)
+    app.terminate()
   }
 
   @MainActor

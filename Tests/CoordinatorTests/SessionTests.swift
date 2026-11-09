@@ -1232,6 +1232,65 @@ actor EventCollector {
     await restarted.stop()
   }
 
+  @Test func archivedSessionDoesNotBecomeMissingAndKeepsItsCachedMessage() async throws {
+    let h = try await Harness.start()
+    let connection = try await h.addCodex()
+    let thread = try h.coordinator.database.insertThread(
+      ConversationThread(
+        id: "archived-native", connectionId: connection.id, nativeThreadId: "thr_archived",
+        nativeScope: "owner@example.com", title: "Archived in Codex", context: h.workDir))
+    let draft = "continue this conversation"
+    let failure = await #expect(throws: WorkspaceError.self) { _ = try await h.send(thread, draft) }
+    #expect(failure?.code == .protocolInvalid)
+    #expect(failure?.details?["cause"]?["reason"]?.stringValue == "native_session_archived")
+    let read = try await h.read(thread)
+    #expect(read.thread.continuity == .available)
+    #expect(read.turns.last?.submission == .prepared)
+    #expect(read.turns.last?.outcome == .failed)
+    #expect(read.items.contains { $0.payload["text"]?.stringValue == draft })
+    await h.stop()
+  }
+
+  @Test func recheckingAnArchivedSessionRepairsAnObsoleteMissingState() async throws {
+    let h = try await Harness.start()
+    let connection = try await h.addCodex()
+    let thread = try h.coordinator.database.insertThread(
+      ConversationThread(
+        id: "legacy-missing", connectionId: connection.id, nativeThreadId: "thr_archived",
+        nativeScope: "owner@example.com", title: "Wrongly missing", context: h.workDir))
+    _ = try h.coordinator.database.updateThread(id: thread.id) { $0.continuity = .missing }
+    _ = try h.coordinator.database.saveDraft(threadId: thread.id, text: "my unsent draft")
+    for _ in 0..<2 {
+      let failure = await #expect(throws: WorkspaceError.self) {
+        _ = try await h.client.request(
+          ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id), options: mutation())
+      }
+      #expect(failure?.details?["reason"]?.stringValue == "native_session_archived")
+      #expect(try h.coordinator.database.thread(id: thread.id)?.continuity == .available)
+    }
+    #expect(try h.coordinator.database.turns(threadId: thread.id).isEmpty)
+    #expect(try h.coordinator.database.draft(threadId: thread.id)?.text == "my unsent draft")
+    await h.stop()
+  }
+
+  @Test func explicitRecoveryReportsUnrelatedResumeFailures() async throws {
+    let h = try await Harness.start()
+    let connection = try await h.addCodex()
+    let thread = try h.coordinator.database.insertThread(
+      ConversationThread(
+        id: "resume-fault", connectionId: connection.id, nativeThreadId: "thr_resume_fault",
+        nativeScope: "owner@example.com", title: "Cannot read", context: h.workDir))
+    let failure = await #expect(throws: WorkspaceError.self) {
+      _ = try await h.client.request(
+        ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id), options: mutation())
+    }
+    #expect(failure?.code == .internalError)
+    #expect(failure?.message == "failed to read session: permission denied")
+    #expect(try h.coordinator.database.thread(id: thread.id)?.continuity == .available)
+    #expect(try h.coordinator.database.turns(threadId: thread.id).isEmpty)
+    await h.stop()
+  }
+
   /// Spec 3.3: a missing native session keeps the cache, refuses continuation, and never claims a resume.
   @Test func missingNativeSessionIsReportedAndRefusesNewTurns() async throws {
     let h = try await Harness.start()

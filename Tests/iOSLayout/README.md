@@ -6,6 +6,8 @@ The fixture app compiles the shipped `WorkspaceRootView` and `SyncBanner` over a
 
 Coverage includes populated, empty, archived, unmatched-search, and scrolled thread lists; thread detail, the new-thread composer, and its no-ready-runtime fallback; Connect your Mac; sign-in and onboarding; sync failure, stale-sync, relay refusal, account notice, Mac-offline and action-error notices; healthy and recovered states; portrait, landscape, accessibility text, and dark mode. The tests tap a thread and return, use search, and check banner clearing on home and detail. The home checks include the profile, filter, search, and new-thread controls.
 
+Horizontal alignment checks measure the 16 pt page gutter on home and thread connection notices and the home composer. On both composer screens they compare the rendered picker-label ink with the draft text's 32 pt leading edge (16 pt outside plus 16 pt inside the field). Menu labels and plain labels expose different accessibility hit bounds, so those bounds alone cannot prove visible text alignment.
+
 Navigation titles are checked in their rendered screenshots as well as accessibility and geometry. UIKit can report a large title as present even when a top safe-area notice prevents its text from being drawn. List headers must remain below navigation controls as the title expands or collapses.
 
 To target a device or retain results at a chosen location:

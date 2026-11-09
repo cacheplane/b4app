@@ -9,6 +9,13 @@ struct ThreadsView: View {
   var body: some View {
     if let thread = model.threads.first(where: { $0.id == model.selectedThreadId }) {
       ThreadDetailView(model: model, thread: thread)
+    } else if model.selectedThreadId != nil, openingSelection {
+      ProgressView("Loading thread…")
+        .llaSmallMuted()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(LLA.Color.bg)
+        .navigationTitle("Thread")
+        .accessibilityIdentifier("thread-opening")
     } else if model.conversationReadyConnections.isEmpty {
       LLAEmptyState(
         "Threads",
@@ -21,16 +28,12 @@ struct ThreadsView: View {
           .accessibilityIdentifier("add-connection")
       }
       .navigationTitle("Threads")
-    } else if model.selectedThreadId == nil || !openingSelection {
-      NewThreadView(model: model)
     } else {
-      // A thread is being opened that the list has not shown yet: a blank pane, not the composer.
-      LLA.Color.bg.frame(maxWidth: .infinity, maxHeight: .infinity).accessibilityHidden(true)
+      NewThreadView(model: model)
     }
   }
 
-  /// The selected thread's open is still out. Once it settles an unlisted id is gone (the model drops
-  /// a not-found one), so the pane is the composer again.
+  /// Keep a loading pane while a read or an external open is waiting for the thread's local row.
   private var openingSelection: Bool {
     model.detailLoading || model.pendingThreadOpen == model.selectedThreadId
   }
@@ -113,9 +116,17 @@ struct ThreadDetailView: View {
 
   /// Pending requests, the continuity banner, and the composer, under the transcript.
   @ViewBuilder private func bottom(_ detail: ThreadDetail) -> some View {
-    VStack(spacing: 0) {
+    ThreadControls(
+      prioritizingRecovery: model.lastError != nil
+        && !Remediation.coveredByContinuity(model.lastFailure, continuity: detail.thread.continuity)
+    ) {
       if !detail.requests.isEmpty {
         RuntimeRequestList(model: model, requests: detail.requests)
+          // Reserve the recovery row's height when continuity also needs attention. The requests
+          // already scroll; the composer and recovery actions must still fit the smallest window.
+          .frame(
+            maxHeight: thread.continuity == .available
+              ? nil : LLA.Metrics.requestsMaxHeight - LLA.Metrics.control - LLA.Space.l)
         Hairline()
       }
       if thread.continuity != .available {
@@ -217,6 +228,18 @@ struct ThreadDetailView: View {
   }
 }
 
+/// Reserve the controls' bounded ideal height before the flexible transcript takes the rest.
+/// A priority inside the error card alone cannot affect this outer allocation boundary.
+struct ThreadControls<Content: View>: View {
+  var prioritizingRecovery: Bool
+  @ViewBuilder var content: () -> Content
+
+  var body: some View {
+    VStack(spacing: 0) { content() }
+      .layoutPriority(prioritizingRecovery ? 1 : 0)
+  }
+}
+
 /// Spec 3.3: when the native session is gone or belongs to another identity, keep the cached view,
 /// say so, and offer a new thread. The composer stays disabled.
 struct ContinuityBanner: View {
@@ -225,18 +248,19 @@ struct ContinuityBanner: View {
 
   var body: some View {
     LLACard(fill: .surface) {
-      HStack(alignment: .top, spacing: LLA.Space.l) {
+      VStack(alignment: .leading, spacing: LLA.Space.m) {
         VStack(alignment: .leading, spacing: LLA.Space.xs) {
           Text("Continuation is unavailable").font(LLAFont.bodyStrong).foregroundStyle(LLA.Color.ink)
           Text(explanation).llaSmallMuted()
         }
-        Spacer()
-        Button("Check again") { Task { await model.reconcileThread(id: thread.id) } }
-          .buttonStyle(.llaSecondary)
-          .disabled(model.busy)
-        Button("New thread") { Task { await model.openNewThread(projectId: thread.projectId) } }
-          .buttonStyle(.llaPrimary)
-          .disabled(model.newThreadEntryReason != nil)
+        RecoveryNoticeActions {
+          Button("Check again") { Task { await model.reconcileThread(id: thread.id) } }
+            .buttonStyle(.llaSecondary)
+            .disabled(model.busy)
+          Button("New thread") { Task { await model.openNewThread(projectId: thread.projectId) } }
+            .buttonStyle(.llaPrimary)
+            .disabled(model.newThreadEntryReason != nil)
+        }
       }
     }
     .padding(.horizontal, LLA.Metrics.margin)

@@ -174,6 +174,18 @@ while True:
         thread_id = params["threadId"]
         if thread_id == "thr_missing":
             send({"id": req_id, "error": {"code": -32600, "message": "thread thr_missing not found"}})
+        elif thread_id == "thr_archived" and not os.path.exists(os.environ.get("FAKE_CODEX_UNARCHIVED_FILE", "")):
+            gate = os.environ.get("FAKE_CODEX_ARCHIVED_RELEASE")
+            if gate:
+                deadline = time.monotonic() + 60
+                while not os.path.exists(gate) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            send({"id": req_id, "error": {"code": -32600, "message":
+                "session thr_archived is archived. Run `codex unarchive thr_archived` to unarchive it first."}})
+        elif thread_id == "thr_config_missing":
+            send({"id": req_id, "error": {"code": -32600, "message": "configuration file not found"}})
+        elif thread_id == "thr_resume_fault":
+            send({"id": req_id, "error": {"code": -32603, "message": "failed to read session: permission denied"}})
         else:
             cwd = params.get("cwd") or loaded.get(thread_id) or "/tmp"
             loaded[thread_id] = cwd

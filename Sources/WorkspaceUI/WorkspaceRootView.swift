@@ -100,6 +100,9 @@ struct WorkspaceShell: View {
     // The open thread was deleted (here or on another device), or the account ended: the iPhone goes
     // back to the list. A selection cleared for a new thread keeps the detail column, which shows it.
     .onChange(of: model.sidebarRequest) { compactColumn = .sidebar }
+    .onChange(of: compactColumn) { _, column in
+      if column == .sidebar { model.cancelThreadOpen() }
+    }
     .onDisappear { model.isDetailOnScreen = false }
     // The phone's New project and Edit project; the Mac's sheets hang off its sidebar.
     .sheet(item: $model.projectSheet) { PhoneProjectSheet(model: model, request: $0) }

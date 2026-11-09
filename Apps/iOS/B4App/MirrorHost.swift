@@ -78,7 +78,7 @@ extension MirrorAccount: @retroactive AccountHost {}
   /// Watches the relay for the stops it makes on its own.
   @ObservationIgnored private var relayWatch: Task<Void, Never>?
   /// The copy for a refused link.
-  static let relayRefusedMessage = "The hub no longer accepts this iPhone. Log out, then sign in again."
+  static let relayRefusedMessage = SyncBanner.signInRequiredMessage
   /// The shell's model, once made.
   @ObservationIgnored private weak var model: WorkspaceModel?
   /// The sync's suspend and resume calls, chained (as the relay's are) so they reach it in the order
@@ -88,8 +88,8 @@ extension MirrorAccount: @retroactive AccountHost {}
   @ObservationIgnored private(set) var pushToken: String?
   /// A thread a link asked for before `makeModel` made the model (a cold launch from a tap).
   @ObservationIgnored private var pendingOpen: String?
-  /// `backgroundRefresh` calls waiting for the next batch, each with the timer that gives up on it.
-  @ObservationIgnored private var batchWaiters: [UUID: BatchWaiter] = [:]
+  /// Overlapping wakes share work, but a late arrival still requires a fresh catch-up cycle.
+  @ObservationIgnored private let backgroundRefreshes = MirrorRefreshCoordinator()
 
   /// Numbers the sync's control calls in the order they were queued, and the last resume among them, so
   /// a suspend that a later resume has overtaken (a wake that stopped waiting for it) does nothing.
@@ -116,13 +116,8 @@ extension MirrorAccount: @retroactive AccountHost {}
   /// The badge last set, so only a change is logged.
   @ObservationIgnored private var lastBadge: Int?
 
-  private struct BatchWaiter {
-    var continuation: CheckedContinuation<Bool, Never>
-    var timeout: Task<Void, Never>
-  }
-
   private static let logger = Logger(subsystem: "com.cacheplane.b4app", category: "attention")
-  /// How long a background wake waits for the pull it nudged.
+  /// How long a background wake waits for its fresh pull to reach the end of the feed.
   private static let backgroundWait: Duration = .seconds(8)
   /// How long a background wake waits for a queued suspend of the sync before resuming it anyway.
   private static let queuedSuspendWait: Duration = .seconds(3)
@@ -453,40 +448,31 @@ extension MirrorAccount: @retroactive AccountHost {}
     return model.isDetailOnScreen && model.selectedThreadId == threadId
   }
 
-  /// A `content-available` push woke the app: let the sync loop run (after waiting at most three
-  /// seconds for a suspend queued before it), nudge it, wait up to eight seconds for the batch it pulls,
-  /// reload the widget, and run the notification backstop and badge. Unless the app is active by then,
-  /// the loop is paused at an idle point before this returns, so the caller's completion handler (after
-  /// which iOS may suspend the app) never runs while the loop holds the mirror. True when a batch
-  /// arrived.
+  /// A push woke the app: catch up through the final feed page, reload the widget and reconcile
+  /// notifications, then park the sync before iOS may suspend us. A snapshot or the first partial page
+  /// alone is not completion. Overlapping wakes repeat the cycle when necessary, within the existing
+  /// three-second queued-resume plus eight-second refresh budget. True when the feed was caught up.
   func backgroundRefresh() async -> Bool {
+    await backgroundRefreshes.perform(waitingAtMost: Self.queuedSuspendWait + Self.backgroundWait) {
+      await self.backgroundRefreshCycle(waitingAtMost: $0)
+    }
+  }
+
+  private func backgroundRefreshCycle(waitingAtMost limit: Duration) async -> Bool {
     guard let sync = account?.sync else { return false }
+    let deadline = ContinuousClock.now + limit
     let assertion = BackgroundAssertion(name: "Refresh the mirror")
     defer { assertion.end() }
-    await controlSync(.resume, waitingAtMost: Self.queuedSuspendWait)?.value
-    let arrived = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-      let id = UUID()
-      let timeout = Task {
-        try? await Task.sleep(for: Self.backgroundWait)
-        MirrorHost.shared.resumeWaiter(id, arrived: false)
-      }
-      batchWaiters[id] = BatchWaiter(continuation: continuation, timeout: timeout)
-      Task { await sync.nudge() }
-    }
+    await controlSync(.resume, waitingAtMost: min(Self.queuedSuspendWait, limit))?.value
+    let remaining = min(Self.backgroundWait, ContinuousClock.now.duration(to: deadline))
+    let caughtUp = await sync.refresh(waitingAtMost: remaining)
     WidgetCenter.shared.reloadAllTimelines()
     await reconcileNotifications()
     if UIApplication.shared.applicationState != .active {
       await controlSync(.suspend)?.value
     }
-    return arrived
-  }
-
-  /// Resumes one waiter, once: it is removed before it is resumed, so the later of the batch and the
-  /// timer finds nothing.
-  private func resumeWaiter(_ id: UUID, arrived: Bool) {
-    guard let waiter = batchWaiters.removeValue(forKey: id) else { return }
-    waiter.timeout.cancel()
-    waiter.continuation.resume(returning: arrived)
+    Self.logger.notice("background mirror catch-up completed: \(caughtUp, privacy: .public)")
+    return caughtUp
   }
 
   private enum SyncControl { case suspend, resume }
@@ -791,7 +777,6 @@ extension MirrorAccount: @retroactive AccountHost {}
       WidgetCenter.shared.reloadAllTimelines()
     }
     scheduleReconcile()
-    for id in Array(batchWaiters.keys) { resumeWaiter(id, arrived: true) }
   }
 
   /// While pulls succeed only the time moves, so nothing is redrawn until a pull fails or recovers.

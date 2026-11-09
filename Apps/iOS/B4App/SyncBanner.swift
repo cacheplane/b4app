@@ -3,18 +3,20 @@ import WorkspaceMirror
 import WorkspaceProtocol
 import WorkspaceUI
 
-/// One line while the last pull failed: when the mirror last caught up and why it cannot now. Hidden
-/// once a pull succeeds. While the hub refuses the relay's link (a revoked device), that comes first:
-/// it lasts until the phone logs out and pairs again.
+/// A concise sync status, hidden after a successful pull. Technical errors remain in Diagnostics.
+/// A refused relay requires sign-in; an unreadable mirror is paused rather than retrying.
 struct SyncBanner: View {
+  static let signInRequiredMessage = "Log out, then sign in to reconnect."
+
   let status: MirrorSyncStatus
   var relayRefused: String?
+  var syncPaused = false
 
   var body: some View {
-    if let message = relayRefused
-      ?? status.lastError.map({
-        Self.message(error: $0, lastSyncAt: status.lastSyncAt)
-      })
+    if let message = syncPaused
+      ? "Sync paused. Check Diagnostics."
+      : relayRefused
+        ?? status.lastError.map({ _ in Self.message(lastSyncAt: status.lastSyncAt) })
     {
       HStack(spacing: LLA.Space.s) {
         Circle()
@@ -24,10 +26,8 @@ struct SyncBanner: View {
         Text(message)
           .font(LLAFont.small)
           .foregroundStyle(LLA.Color.ink)
-          .lineLimit(relayRefused == nil ? 1 : 2)
-          .truncationMode(.tail)
       }
-      .padding(.horizontal, LLA.Space.l)
+      .padding(.horizontal, LLA.Metrics.margin)
       .padding(.vertical, LLA.Space.s)
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(LLA.Color.surfaceRaised)
@@ -39,12 +39,12 @@ struct SyncBanner: View {
     }
   }
 
-  static func message(error: String, lastSyncAt: String?) -> String {
+  static func message(lastSyncAt: String?) -> String {
     guard let lastSyncAt, let date = Timestamp.date(from: lastSyncAt) else {
-      return "Not synced yet: \(error)"
+      return "Not synced yet. Retrying…"
     }
     let time = date.formatted(
       date: Calendar.current.isDateInToday(date) ? .omitted : .abbreviated, time: .shortened)
-    return "Not synced since \(time): \(error)"
+    return "Last synced \(time). Retrying…"
   }
 }

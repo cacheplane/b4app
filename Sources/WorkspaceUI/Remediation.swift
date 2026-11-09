@@ -24,9 +24,28 @@ public struct Remediation: Equatable, Sendable {
     self.actionTitle = actionTitle
   }
 
+  /// The persistent continuity card already explains this failure. Other errors still need their
+  /// own notice, including an archived session whose history has not been lost.
+  static func coveredByContinuity(_ error: WorkspaceError?, continuity: ThreadContinuity) -> Bool {
+    switch (continuity, error?.code) {
+    case (.missing, .nativeSessionMissing?), (.identityChanged, .identityChanged?): true
+    default: false
+    }
+  }
+
+  static func isArchivedSession(_ error: WorkspaceError?) -> Bool {
+    guard let error, error.code == .protocolInvalid else { return false }
+    return reason(for: error) == "native_session_archived"
+  }
+
+  /// A rejected turn wraps the adapter's details under `cause`; a direct reconcile does not.
+  private static func reason(for error: WorkspaceError) -> String? {
+    error.details?["reason"]?.stringValue ?? error.details?["cause"]?["reason"]?.stringValue
+  }
+
   /// The remedy for an error on `connection` (nil when the failure is not tied to one).
   public static func `for`(_ error: WorkspaceError, connection: Connection?) -> Remediation {
-    let reason = error.details?["reason"]?.stringValue
+    let reason = reason(for: error)
     switch error.code {
     case .authRequired:
       switch connection?.kind {
@@ -92,6 +111,8 @@ public struct Remediation: Equatable, Sendable {
         message:
           "That request is no longer pending; the runtime presents its current requests after a reconnect.",
         action: .checkAgain, actionTitle: "Check again")
+    case .protocolInvalid where reason == "native_session_archived":
+      return Remediation(message: error.message, action: .checkAgain, actionTitle: "Check again")
     case .protocolInvalid where reason == "turn_active":
       let status = error.details?["status"]?.stringValue ?? "active"
       return Remediation(

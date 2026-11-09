@@ -958,7 +958,13 @@ The same transaction withdraws what is over: a notified request that is no longe
 notified in a thread that was deleted. Each is withdrawn once (the ledger's `withdrawn_at`), to the
 same phones as the alert, the one whose push caused it included.
 
-Alerts and withdrawals are sent after the commit, on a task of their own: the push response never
+A successfully applied update to `threads.archived` (archive or unarchive) also requests a silent
+mirror refresh for each eligible other phone. Multiple such writes in one batch need one refresh
+per phone. Duplicate uploads, losing/refused/skipped writes and unrelated column updates do not
+request a refresh. A phone already receiving an alert or withdrawal in that batch needs no extra
+refresh. Quiet threads need no notification ledger entry.
+
+Alerts, withdrawals and refreshes are sent after the commit, on a task of their own: the push response never
 waits on delivery, and a failed delivery is logged (device id, notification keys, and APNs's
 status, `reason`, and `apns-id`; never the token, the title, or the provider token) and dropped.
 
@@ -993,13 +999,23 @@ A withdrawal is a background push naming the keys to remove, with no alert, soun
 {"aps": {"content-available": 1}, "withdraw": ["request:request-1", "turn:turn-7"]}
 ```
 
+An archive refresh has no navigation or withdrawal keys and no alert, sound or badge:
+
+```json
+{"aps": {"content-available": 1}, "refresh": true}
+```
+
+The phone catches up its mirror and requests a widget reload through its existing background
+handler. APNs delivery and widget scheduling remain best effort; a refresh is not a delivery or
+rendering acknowledgement.
+
 #### Senders
 
 `B4HUB_PUSH_SENDER` chooses how `serve` delivers:
 
 - `none` (the default, also when unset): nothing is sent.
-- `spool`: each alert and withdrawal is written to `B4HUB_PUSH_SPOOL_DIR` (required; created if missing)
-  as `<unix ms>-<uuid>.apns`, the payload above (or the withdrawal) plus the `Simulator Target Bundle` key set to the
+- `spool`: each alert, withdrawal and refresh is written to `B4HUB_PUSH_SPOOL_DIR` (required; created if missing)
+  as `<unix ms>-<uuid>.apns`, the relevant payload above plus the `Simulator Target Bundle` key set to the
   phone's `bundleId`, which is what `xcrun simctl push booted - < file` reads. The file is written
   under a hidden `.tmp` name and renamed when complete, so a watcher never reads half a file.
   The Compose file sets this up and mounts the directory at `B4HUB_PUSH_SPOOL_HOST_DIR` (default
@@ -1014,7 +1030,8 @@ A withdrawal is a background push naming the keys to remove, with no alert, soun
     and `iat`, reused for 50 minutes.
   - Headers: `apns-topic` is the token's `bundleId`; an alert is `apns-push-type: alert`,
     `apns-priority: 10`, `apns-collapse-id` its `key`, expiring after 4 hours; a withdrawal is
-    `background`, priority `5`, expiring after 15 minutes.
+    `background`, priority `5`, expiring after 15 minutes. A refresh uses the same background
+    headers and lifetime, with the constant `apns-collapse-id: mirror-refresh`.
   - Apple's answers: `410`, `400 BadDeviceToken`, and `400 DeviceTokenNotForTopic` delete the
     phone's push token (unless it registered a newer one meanwhile), so it is told nothing until it
     registers again. `403 ExpiredProviderToken` or `InvalidProviderToken` re-mints the JWT and

@@ -60,7 +60,12 @@ struct ComposerPickerRow: View {
     }
     .font(LLAFont.small)
     .foregroundStyle(LLA.Color.muted)
-    .padding(.horizontal, LLA.Space.xs)
+    #if os(iOS)
+      // Row and label padding together match the field's inner text inset.
+      .padding(.horizontal, ComposerField<EmptyView>.textLeading - PickerLabel.horizontalInset)
+    #else
+      .padding(.horizontal, LLA.Space.xs)
+    #endif
     #if os(macOS)
       .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
         guard case .success(let url) = result, case .draft(let draft) = source else { return }
@@ -347,6 +352,7 @@ struct ComposerPickerRow: View {
 /// A picker's face: the runtime's mark when there is one, the choice in one line, and a small chevron
 /// when it opens a menu.
 private struct PickerLabel: View {
+  static let horizontalInset = LLA.Space.s
   var mark: ConnectionKind? = nil
   let text: String
   var chevron = true
@@ -362,7 +368,7 @@ private struct PickerLabel: View {
           .accessibilityHidden(true)
       }
     }
-    .padding(.horizontal, LLA.Space.s)
+    .padding(.horizontal, Self.horizontalInset)
     .padding(.vertical, LLA.Space.xs)
     // The phone's target reaches 44 pt without making the row that tall.
     #if os(iOS)
