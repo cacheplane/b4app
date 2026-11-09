@@ -295,6 +295,28 @@ async fn presence_reaches_clients_on_connect_and_drop(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn a_link_task_that_panics_still_takes_its_device_offline(pool: PgPool) {
+    let hub = spawn_hub(&pool).await;
+    let blove = hub.user("cacheplane", "blove").await;
+    let (mac_token, mac_id) = hub.enroll(&blove, "macos", "Mac").await;
+    let (phone_token, _) = hub.enroll(&blove, "ios", "iPhone").await;
+    let mut phone = FakeDevice::connect(hub.addr, &phone_token).await;
+    hello_of(phone.next().await);
+    assert!(!hosts_of(phone.next().await)[0].online);
+    let mut mac = FakeDevice::connect(hub.addr, &mac_token).await;
+    hello_of(mac.next().await);
+    assert!(hosts_of(phone.next().await)[0].online);
+
+    // A bug in the Mac's link task panics it, past the cleanup a normal end runs.
+    hub.state.relay.panic_on_next_frame();
+    mac.send(&RelayMessage::Ping).await;
+
+    // The device still leaves the registry and its phone hears it go offline.
+    assert!(!hosts_of(phone.next().await)[0].online);
+    assert!(!hub.state.relay.online(mac_id));
+}
+
+#[sqlx::test(migrations = false)]
 async fn a_device_that_says_goodbye_goes_offline_too(pool: PgPool) {
     let hub = spawn_hub(&pool).await;
     let blove = hub.user("cacheplane", "blove").await;
@@ -1958,6 +1980,25 @@ async fn a_fifth_watch_is_refused(pool: PgPool) {
     phone.unwatch("thread-1").await;
     phone.watch("thread-5").await;
     phone.expect_no_frame(QUIET).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn watching_a_thread_again_needs_no_lookup(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+    phone.watch("thread-1").await;
+    assert_eq!(mac.expect_watching().await, ["thread-1"]);
+
+    // With the row gone, a lookup would answer `not_found`; a repeated watch makes none.
+    sqlx::query("DELETE FROM threads WHERE id = 'thread-1'")
+        .execute(&world.hub.admin.pool)
+        .await
+        .unwrap();
+    phone.watch("thread-1").await;
+    phone.expect_no_frame(QUIET).await;
+    mac.expect_no_frame(QUIET).await;
+    assert_eq!(world.hub.state.relay.watched_by(world.mac_id), ["thread-1"]);
 }
 
 #[sqlx::test(migrations = false)]

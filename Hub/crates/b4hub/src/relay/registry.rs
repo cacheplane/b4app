@@ -6,7 +6,7 @@
 //! whether it is still the current one when it comes to clean up.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 
@@ -416,6 +416,8 @@ struct Inner {
     commands_in_flight_max: AtomicUsize,
     clock: WallClock,
     gate: Mutex<Option<Arc<RegistrationGate>>>,
+    /// Set by [`Relay::panic_on_next_frame`], a test seam.
+    panic_next_frame: AtomicBool,
     upgrades: SlidingWindow,
     live: watch::Sender<usize>,
     /// Held while a broadcast reads who is online and delivers it ([`Relay::broadcast_presence`]).
@@ -460,6 +462,7 @@ impl Relay {
             commands_in_flight_max: AtomicUsize::new(COMMANDS_IN_FLIGHT),
             clock,
             gate: Mutex::new(None),
+            panic_next_frame: AtomicBool::new(false),
             upgrades: SlidingWindow::upgrades(),
             live: watch::channel(0).0,
             presence_order: Mutex::new(()),
@@ -775,6 +778,19 @@ impl Relay {
         Ok(())
     }
 
+    /// True when `client`'s link, still its device's current one, already watches `thread_id`.
+    pub fn watches(&self, client: &LinkHandle, thread_id: &str) -> bool {
+        let links = self.links();
+        match links.get(&client.device_id) {
+            Some(entry) if entry.handle.generation == client.generation => self
+                .watchers()
+                .by_client
+                .get(&client.device_id)
+                .is_some_and(|watches| watches.contains_key(thread_id)),
+            _ => false,
+        }
+    }
+
     /// Stops `client`'s link watching `thread_id`; a thread it did not watch is ignored.
     pub fn unwatch(&self, client: &LinkHandle, thread_id: &str) {
         client.forget_gap(thread_id);
@@ -875,6 +891,17 @@ impl Relay {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&gate));
         gate
+    }
+
+    /// Makes the link task that reads the next text frame panic, as a bug in the link path would.
+    /// A test seam; nothing in the hub calls it.
+    pub fn panic_on_next_frame(&self) {
+        self.0.panic_next_frame.store(true, Ordering::SeqCst);
+    }
+
+    /// True once after [`Relay::panic_on_next_frame`].
+    pub(super) fn take_frame_panic(&self) -> bool {
+        self.0.panic_next_frame.swap(false, Ordering::SeqCst)
     }
 
     /// Waits at the registration gate, if one is installed.

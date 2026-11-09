@@ -225,7 +225,7 @@ Design: `docs/superpowers/specs/2026-11-01-m8c-relay-design.md`. Plan: `docs/sup
 - [x] Archive/unarchive changes request a silent background mirror refresh, including quiet threads without notifications. `implemented`, `fixture-tested` (504 hub tests, 1,453 Swift tests, both native builds and lint checks); independently reviewed. Production hub release, TestFlight upload and the physical archive-from-Mac retest are pending (`docs/verification/2026-11-06-archive-background-wake.md`).
 - [x] Local B4 connections create automatic projects, and `connections.projectId` syncs so the phone can start B4 threads (D-059, D-080). `implemented`, `fixture-tested`. `live-tested`: pending.
 - [x] Minimum client protocol 1; hub, Mac, and phone speak link protocol 1. `implemented`, `fixture-tested`.
-- [ ] Remote B4 threads started from the phone; queuing turns for an offline Mac; several Macs per user; cross-instance routing. `open` by design (non-goals; cross-instance routing is M8e).
+- [ ] Remote B4 threads started from the phone; queuing turns for an offline Mac; several Macs per user. `open` by design (non-goals). Cross-instance routing, once listed here, is done: every link of one user is served by one instance (D-085), and long-polls, session ends, and liveness cross instances over `LISTEN` / `NOTIFY` (D-161 to D-164, D-172).
 
 Known limitations (the ones a person could notice; the full list is in the build's review notes):
 
