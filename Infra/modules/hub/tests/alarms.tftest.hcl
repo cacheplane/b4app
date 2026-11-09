@@ -232,6 +232,25 @@ run "migrate_event_rule" {
   }
 }
 
+run "backup_copy_failed_rule" {
+  command = apply
+
+  assert {
+    condition     = jsondecode(aws_cloudwatch_event_rule.backup_copy_failed.event_pattern).source == ["aws.backup"] && jsondecode(aws_cloudwatch_event_rule.backup_copy_failed.event_pattern)["detail-type"] == ["Copy Job State Change"] && jsondecode(aws_cloudwatch_event_rule.backup_copy_failed.event_pattern).detail.state == ["FAILED"]
+    error_message = "a failed AWS Backup copy job raises an event to the alerts topic"
+  }
+
+  assert {
+    condition     = aws_cloudwatch_event_target.backup_copy_failed.arn == aws_sns_topic.alerts.arn
+    error_message = "the copy-failed rule targets the alerts topic"
+  }
+
+  assert {
+    condition     = contains([for st in jsondecode(aws_sns_topic_policy.alerts.policy).Statement : st.Sid], "EventRulesPublish")
+    error_message = "the topic policy lets both event rules publish"
+  }
+}
+
 run "budget_threshold" {
   command = apply
 
