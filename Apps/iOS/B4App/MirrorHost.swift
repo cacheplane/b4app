@@ -216,7 +216,8 @@ extension MirrorAccount: @retroactive AccountHost {}
 
   /// The shared shell's model, with the phone's account as its host and the flavour's sign-in screen.
   func makeModel() -> WorkspaceModel {
-    let model = WorkspaceModel(transportProvider: Self.transportProvider, accountSource: .host)
+    let model = WorkspaceModel(
+      transportProvider: Self.transportProvider, accountSource: .host, preferences: UserDefaults.standard)
     model.signInConfiguration = SignInConfiguration(
       siteDomain: Self.flavor.siteDomain, appleSignIn: Self.flavor.appleSignIn, badge: Self.flavor.badge)
     model.accountHost = account

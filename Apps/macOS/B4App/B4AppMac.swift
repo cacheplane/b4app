@@ -12,7 +12,7 @@ import WorkspaceUI
 /// The flavour's sign-in settings come from here, since `WorkspaceUI` does not link `WorkspacePlatform`;
 /// a log-out goes on a connection of its own, so it never waits behind a slow command.
 @MainActor let sharedModel: WorkspaceModel = {
-  let model = WorkspaceModel(transportProvider: CoordinatorHost.transport)
+  let model = WorkspaceModel(transportProvider: CoordinatorHost.transport, preferences: UserDefaults.standard)
   let flavor = Flavor.current
   model.signInConfiguration = SignInConfiguration(
     siteDomain: flavor.siteDomain, appleSignIn: flavor.appleSignIn, badge: flavor.badge)

@@ -59,7 +59,6 @@ private enum Phone {
   ) async throws -> WorkspaceModel {
     transport.set(connections: connections, threads: threads, projects: [p1, p2, p3])
     let model = try await PhoneFixture.model(transport, clock: clock, online: nil, open: nil)
-    model.preferences = InMemoryPreferences()
     transport.emit(PhoneFixture.presence("mac-1", online: true))
     transport.emit(PhoneFixture.presence("mac-2", name: "Studio", online: true))
     try await waitUntil("presence") {
@@ -819,7 +818,6 @@ private enum Phone {
     let transport = ScriptedTransport()
     transport.set(connections: Phone.macConnections, threads: [], projects: Phone.macProjects)
     let model = WorkspaceModel(transportProvider: { transport })
-    model.preferences = InMemoryPreferences()
     let draft = model.newThreadDraft
     #expect(draft.projectId == nil)
     #expect(draft.connectionId == nil)
@@ -1129,5 +1127,22 @@ private enum Phone {
     #expect(phoneSections.local.map(\.id) == ["b4-p1"])
     #expect(phoneSections.remote.isEmpty)
     await phone.disconnect()
+  }
+
+  /// The file picker can hand back a folder through a symlink; the draft looks it up by the form the
+  /// coordinator keys project folders by, symlinks resolved and no trailing slash, so a project's own
+  /// folder is still found.
+  @Test func aChosenFolderIsKeyedLikeTheCoordinatorsFolders() throws {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("draft-\(UUID().uuidString)")
+    let real = base.appendingPathComponent("atlas")
+    let link = base.appendingPathComponent("atlas-link")
+    try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+
+    let canonical = NewThreadDraft.folderPath(of: real)
+    #expect(!canonical.hasSuffix("/"))
+    #expect(NewThreadDraft.folderPath(of: link) == canonical)
+    #expect(NewThreadDraft.folderPath(of: URL(fileURLWithPath: link.path + "/")) == canonical)
   }
 }

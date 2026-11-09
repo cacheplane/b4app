@@ -93,7 +93,6 @@ struct LayoutApp: App {
       memory: MirrorDeviceMemory(url: nil), makeAPI: { _, _ in FakeHubAPI() })
     self.account = account
     let model = WorkspaceModel(transportProvider: { transport }, accountSource: .host)
-    model.preferences = InMemoryPreferences()
     model.accountHost = account
     model.accountHasNoMac = screen == "connect-mac"
     if screen == "archived" { model.projectFilter = .archived }
