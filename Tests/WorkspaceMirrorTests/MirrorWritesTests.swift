@@ -406,6 +406,25 @@ private func pulled(
     #expect(try store.apply([change("projectFolders", "f1", "delete")]).touchedProjectIds == ["p1"])
   }
 
+  /// D-184: a Mac whose hub device changed re-announces its rows as inserts with the oldest clock.
+  /// The owner moves to the new device; a column the phone edited keeps the phone's value.
+  @Test func aReannouncedRowMovesItsOwnerAndKeepsAPhoneEdit() throws {
+    let store = try linkedStore()
+    _ = try store.updateThread(id: "thread-1", title: "From phone", pinned: nil, archived: nil)
+    let fixture = try fixtureAsStored()
+    let thread = try #require(fixture.first { $0.table == "threads" && $0.op == "insert" })
+    let connection = try #require(fixture.first { $0.table == "connections" && $0.op == "insert" })
+    let oldest = try clock("000000000000-0000-mac-new")
+    _ = try store.apply([
+      pulled(
+        "connections", connection.rowId, "insert", value: connection.value, deviceId: "mac-new", hlc: oldest),
+      pulled("threads", "thread-1", "insert", value: thread.value, deviceId: "mac-new", hlc: oldest),
+    ])
+    #expect(try store.ownerDeviceId(table: "threads", rowId: "thread-1") == "mac-new")
+    #expect(try store.ownerDeviceId(table: "connections", rowId: connection.rowId) == "mac-new")
+    #expect(try store.thread(id: "thread-1")?.title == "From phone")
+  }
+
   @Test func ownerComesFromTheInsertAndItsNameFromDevices() throws {
     let store = try linkedStore(prefix: 2)
     try store.saveDevices([
