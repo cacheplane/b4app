@@ -1504,6 +1504,11 @@ folders, which are paths on that Mac. The phone renames a project through the ch
    `thread.start`, 15 seconds for the others (counted from when it was forwarded), then answers
    `relay_timeout`. A `reply` that arrives later, or for an `id` nothing waits for, is dropped.
 
+**A Mac older than the command.** A host that receives a `command` whose `method` its build does not
+know (a newer phone through a newer hub) answers at once with a `reply` whose error is
+`unsupported_capability`, `details: { reason: "unknown_method", method }`, rather than leaving the
+hub to answer `relay_timeout`. Any other frame a device cannot read is skipped, and the link stays up.
+
 **In flight.** A command is in flight from when it arrives (before the limits) until its answer is
 queued for the caller, keyed by the calling *device* and the `id`. A second command with the same
 key while the first is in flight attaches to it: it is not counted against the limits, not

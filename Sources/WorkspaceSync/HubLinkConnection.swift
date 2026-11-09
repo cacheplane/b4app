@@ -13,8 +13,27 @@ public enum HubLinkError: Error, Equatable, Sendable {
   case failed(String)
   /// A frame arrived that is not a relay message this build knows. The link is still up.
   case undecodable
+  /// A `command` arrived whose method this build does not know (a newer hub forwarding a newer
+  /// phone's command). The link is still up; the frame's `id` and `method` let a Mac answer it.
+  case unknownCommand(id: String, method: String)
   /// `RelayLink.send` with no live link.
   case notConnected
+}
+
+/// Reads one relay frame. A frame that does not decode throws `HubLinkError.undecodable`, except a
+/// `command` with a string `id`, which throws `.unknownCommand` so the Mac can say it cannot run it.
+public enum RelayFrame {
+  public static func decode(_ data: Data) throws -> RelayMessage {
+    do {
+      return try JSONDecoder().decode(RelayMessage.self, from: data)
+    } catch {
+      guard
+        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        object["type"] as? String == "command", let id = object["id"] as? String
+      else { throw HubLinkError.undecodable }
+      throw HubLinkError.unknownCommand(id: id, method: object["method"] as? String ?? "")
+    }
+  }
 }
 
 /// One open WebSocket to the hub's link endpoint: relay frames in, relay frames out.
@@ -207,11 +226,7 @@ final class URLSessionHubLinkSocket: NSObject, HubLinkSocket, URLSessionWebSocke
     case .data(let bytes): data = bytes
     @unknown default: throw HubLinkError.undecodable
     }
-    do {
-      return try JSONDecoder().decode(RelayMessage.self, from: data)
-    } catch {
-      throw HubLinkError.undecodable
-    }
+    return try RelayFrame.decode(data)
   }
 
   var responseCookies: [String: String] { lock.withLock { cookiesSet } }
@@ -369,7 +384,7 @@ public final class FakeHubLinkSocket: HubLinkSocket, @unchecked Sendable {
   public let responseCookies: [String: String]
 
   private let lock = NSLock()
-  private let toDevice = FakeChannel<RelayMessage?>()
+  private let toDevice = FakeChannel<Result<RelayMessage, HubLinkError>>()
   private let toHub = FakeChannel<RelayMessage>()
   private var deviceClose: Int?
   private var sentLog: [RelayMessage] = []
@@ -390,10 +405,21 @@ public final class FakeHubLinkSocket: HubLinkSocket, @unchecked Sendable {
   // Hub side.
 
   /// Sends a frame to the device.
-  public func deliver(_ message: RelayMessage) { toDevice.push(message) }
+  public func deliver(_ message: RelayMessage) { toDevice.push(.success(message)) }
 
   /// Sends a frame the device cannot decode.
-  public func deliverUndecodable() { toDevice.push(nil) }
+  public func deliverUndecodable() { toDevice.push(.failure(.undecodable)) }
+
+  /// Sends raw frame text, decoded on the device as a real socket decodes it (`RelayFrame.decode`).
+  public func deliverText(_ text: String) {
+    do {
+      toDevice.push(.success(try RelayFrame.decode(Data(text.utf8))))
+    } catch let error as HubLinkError {
+      toDevice.push(.failure(error))
+    } catch {
+      toDevice.push(.failure(.undecodable))
+    }
+  }
 
   /// The next frame the device sent, waiting for it.
   public func nextSent() async throws -> RelayMessage { try await toHub.next() }
@@ -413,8 +439,7 @@ public final class FakeHubLinkSocket: HubLinkSocket, @unchecked Sendable {
   }
 
   public func receive() async throws -> RelayMessage {
-    guard let message = try await toDevice.next() else { throw HubLinkError.undecodable }
-    return message
+    try await toDevice.next().get()
   }
 
   public func close(code: Int) {
