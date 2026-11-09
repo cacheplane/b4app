@@ -343,8 +343,12 @@ jobs:
             *) echo "::error::could not check whether b4hub $VERSION is published (exit $status); not pushing"; exit 1 ;;
           esac
           echo "$GH_TOKEN" | helm registry login ghcr.io --username "$GH_ACTOR" --password-stdin
-          out="$(helm push "$PACKAGE" "$CHART_OCI" 2>&1)"
+          # A bare `out="$(helm push ...)"` exits under `set -e` before the output is echoed,
+          # which hid the reason for hub-v0.5.2's failed push; print it either way.
+          status=0
+          out="$(helm push "$PACKAGE" "$CHART_OCI" 2>&1)" || status=$?
           echo "$out"
+          [ "$status" -eq 0 ] || { echo "::error::helm push failed (exit $status)"; exit 1; }
           digest="$(sed -n 's/^Digest: \(sha256:[0-9a-f]\{64\}\)$/\1/p' <<< "$out")"
           [ -n "$digest" ] || { echo "::error::no digest in the helm push output"; exit 1; }
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
