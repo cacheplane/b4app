@@ -1421,8 +1421,13 @@ treats the link as dead and reconnects.
 
 ### Presence
 
-A host is online while it has a link. A client receives `presence` once after `hello`, then again
-whenever one of its user's Macs goes online or offline: `hosts` is every non-revoked `macos`
+A host is online while it has a link, and for **10 seconds** after a link it did not end for good
+drops: a Mac on a network change, a short sleep, or a hub deploy usually links again within that,
+and its phones then never see it go offline. Only if it is still gone when the 10 seconds pass are
+they told it is offline. A Mac whose link the hub closed `4001` (revoked, or its session ended) is
+offline at once. The grace is presence only: a command to a Mac with no link is answered
+`device_offline` (or held) at once, as always. A client receives `presence` once after `hello`,
+then again whenever one of its user's Macs goes online or offline: `hosts` is every non-revoked `macos`
 device of that user (never another user's), with `online` and `lastSeenAt` (RFC 3339 in UTC with
 milliseconds; omitted for a Mac never seen). A Mac that is revoked drops out of the list.
 

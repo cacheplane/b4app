@@ -34,7 +34,7 @@ use tokio::time::Instant;
 
 use super::limits::IN_FLIGHT_RETRY;
 use super::registry::{Close, Identity, LinkHandle, LiveLink, Outbound, Registration};
-use super::{invalid_frame, route, PROTOCOL};
+use super::{close_code, invalid_frame, route, PROTOCOL};
 use crate::auth::{bearer_token, AuthedDevice};
 use crate::error::ApiError;
 use crate::instances;
@@ -358,7 +358,14 @@ async fn serve_link<S: LinkSocket>(
     // drop was noticed. That goes in the database before the device reads as offline, so anyone who
     // sees it offline (a command judging how recently it was seen) finds the time already there.
     link.write_last_seen(link.last_frame).await;
-    let was_current = registered.unregister();
+    // A Mac that went away on its own reads online for a grace, in case it is back at once; one
+    // the hub closed for good (revoked, its session ended) is offline now.
+    let linger = role == Role::Host
+        && !relay.offline_grace().is_zero()
+        && close
+            .as_ref()
+            .is_none_or(|close| close.code != close_code::REVOKED);
+    let was_current = registered.unregister(linger);
     // Once the user has no link left here, their claim goes now, before this link's close is even
     // written, so the instance they reconnect to takes them at once (D-165, D-172): whether this
     // instance is draining, or its links were cut while it lives on.
@@ -379,9 +386,7 @@ async fn serve_link<S: LinkSocket>(
         None => false,
     };
     if was_current && role == Role::Host {
-        relay
-            .broadcast_presence(&link.state.db, link.handle.org_id, link.handle.user_id)
-            .await;
+        host_left(&link.state, &link.handle, linger).await;
     }
     if closed || link.peer_closed {
         await_peer_close(&mut socket).await;
@@ -410,12 +415,13 @@ struct Registered {
 }
 
 impl Registered {
-    /// Takes the link out of the registry. True when it was the device's current link.
-    fn unregister(&mut self) -> bool {
+    /// Takes the link out of the registry, a Mac's lingering when `linger`. True when it was the
+    /// device's current link.
+    fn unregister(&mut self, linger: bool) -> bool {
         self.done = true;
         self.state
             .relay
-            .unregister(self.handle.device_id, self.handle.generation)
+            .unregister_lingering(self.handle.device_id, self.handle.generation, linger)
     }
 }
 
@@ -424,7 +430,8 @@ impl Drop for Registered {
         if self.done {
             return;
         }
-        let was_current = self.unregister();
+        let linger = self.handle.role == Role::Host && !self.state.relay.offline_grace().is_zero();
+        let was_current = self.unregister(linger);
         if self.probe || !was_current {
             return;
         }
@@ -442,13 +449,37 @@ impl Drop for Registered {
             )
             .await;
             if handle.role == Role::Host {
-                state
-                    .relay
-                    .broadcast_presence(&state.db, handle.org_id, handle.user_id)
-                    .await;
+                host_left(&state, &handle, linger).await;
             }
         });
     }
+}
+
+/// Tells the user's phones that the Mac of `handle` lost its link. When it `lingered`, it still
+/// reads online, and the phones hear of it only if it has not linked again once
+/// [`Relay::offline_grace`] has passed (D-193); otherwise they hear now.
+async fn host_left(state: &AppState, handle: &LinkHandle, lingered: bool) {
+    if !lingered {
+        state
+            .relay
+            .broadcast_presence(&state.db, handle.org_id, handle.user_id)
+            .await;
+        return;
+    }
+    let grace = state.relay.offline_grace();
+    let (state, handle) = (state.clone(), handle.clone());
+    tokio::spawn(async move {
+        tokio::time::sleep(grace).await;
+        let relay = &state.relay;
+        // A Mac that linked again was never offline to its phones: nothing to tell them.
+        if relay.linger_ended(handle.device_id, handle.generation)
+            && !relay.online(handle.device_id)
+        {
+            relay
+                .broadcast_presence(&state.db, handle.org_id, handle.user_id)
+                .await;
+        }
+    });
 }
 
 struct Link {
