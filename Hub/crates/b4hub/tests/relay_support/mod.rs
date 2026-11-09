@@ -225,6 +225,9 @@ pub async fn spawn_instance(pool: &PgPool, heartbeat: Duration) -> Hub {
 pub async fn spawn_hub_with(pool: &PgPool, clock: WallClock, instances: InstancesState) -> Hub {
     let (admin, mut state) = migrated(pool).await;
     state.relay = Relay::with_clock(clock);
+    // A Mac reads offline as soon as its link is gone, so a test hears it at once; the tests of
+    // the grace (D-193) set their own.
+    state.relay.set_offline_grace(Duration::ZERO);
     state.instances = instances;
     // Open several connections now: a pool that must connect lazily while a test's clock is
     // paused would otherwise race its own acquire timeout.

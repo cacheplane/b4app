@@ -140,6 +140,11 @@ impl Outbound {
 /// phone that stops reading holds a few MiB rather than [`LINK_QUEUE`] events of up to 256 KiB.
 pub const EVENT_BYTES_MAX: usize = 4 * 1024 * 1024;
 
+/// How long a Mac whose link dropped on its own still reads online in `presence` (D-193): long
+/// enough for a Mac on a network change, a short sleep, or a hub deploy to link again (its first
+/// retries come within about 7 s), so its phones never see it flicker offline.
+pub const OFFLINE_GRACE: Duration = Duration::from_secs(10);
+
 /// What other tasks may know about a link: who it is and how to queue a frame to it. Cheap to
 /// clone; the link task owns the socket.
 #[derive(Debug, Clone)]
@@ -416,6 +421,11 @@ struct Inner {
     commands_in_flight_max: AtomicUsize,
     clock: WallClock,
     gate: Mutex<Option<Arc<RegistrationGate>>>,
+    /// [`Relay::offline_grace`], in milliseconds.
+    offline_grace_ms: AtomicU64,
+    /// Macs whose link dropped within the grace, by the generation of that link: `presence` still
+    /// counts them online.
+    lingering: Mutex<HashMap<Uuid, u64>>,
     /// Set by [`Relay::panic_on_next_frame`], a test seam.
     panic_next_frame: AtomicBool,
     upgrades: SlidingWindow,
@@ -462,6 +472,8 @@ impl Relay {
             commands_in_flight_max: AtomicUsize::new(COMMANDS_IN_FLIGHT),
             clock,
             gate: Mutex::new(None),
+            offline_grace_ms: AtomicU64::new(OFFLINE_GRACE.as_millis() as u64),
+            lingering: Mutex::default(),
             panic_next_frame: AtomicBool::new(false),
             upgrades: SlidingWindow::upgrades(),
             live: watch::channel(0).0,
@@ -546,10 +558,20 @@ impl Relay {
     /// Removes the link `generation` of `device_id`. True when it was the current link, which
     /// means the device just went offline; false when a newer link has since replaced it.
     pub fn unregister(&self, device_id: Uuid, generation: u64) -> bool {
+        self.unregister_lingering(device_id, generation, false)
+    }
+
+    /// [`Relay::unregister`], and when `linger` and it was the current link, the device keeps
+    /// reading online in `presence` until [`Relay::linger_ended`] for that link. It is marked
+    /// lingering before its link is removed, so no presence read in between finds it offline.
+    pub fn unregister_lingering(&self, device_id: Uuid, generation: u64, linger: bool) -> bool {
         let (current, dropped_watches) = {
             let mut links = self.links();
             match links.get(&device_id) {
                 Some(entry) if entry.handle.generation == generation => {
+                    if linger {
+                        self.lingering().insert(device_id, generation);
+                    }
                     links.remove(&device_id);
                     (true, self.forget_watches(device_id))
                 }
@@ -560,6 +582,38 @@ impl Relay {
             self.bump_watches();
         }
         current
+    }
+
+    /// Ends the grace of `device_id`'s link `generation`. True when that link was still the one
+    /// lingering (no later link of the device has dropped since, which has a grace of its own).
+    pub fn linger_ended(&self, device_id: Uuid, generation: u64) -> bool {
+        let mut lingering = self.lingering();
+        if lingering.get(&device_id) == Some(&generation) {
+            lingering.remove(&device_id);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// How long a Mac whose link dropped on its own still reads online: [`OFFLINE_GRACE`].
+    pub fn offline_grace(&self) -> Duration {
+        Duration::from_millis(self.0.offline_grace_ms.load(Ordering::Relaxed))
+    }
+
+    /// Sets [`Relay::offline_grace`]; zero makes a Mac read offline as soon as its link is gone.
+    /// A test seam: nothing in the hub changes it.
+    pub fn set_offline_grace(&self, grace: Duration) {
+        self.0
+            .offline_grace_ms
+            .store(grace.as_millis() as u64, Ordering::Relaxed);
+    }
+
+    fn lingering(&self) -> MutexGuard<'_, HashMap<Uuid, u64>> {
+        self.0
+            .lingering
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Asks the current link of `device_id` to close with `close`. True when there was one. The
@@ -696,7 +750,9 @@ impl Relay {
         Ok(self.presence_of(hosts))
     }
 
-    /// The `presence` frame for `hosts` as read from the database, online as of now.
+    /// The `presence` frame for `hosts` as read from the database, online as of now: with a link,
+    /// or within the grace of one that dropped. The lingering set is read after the links, and a
+    /// Mac is put in it before its link is removed, so a Mac in its grace is never missed.
     fn presence_of(&self, hosts: Vec<(Uuid, String, Option<String>)>) -> RelayMessage {
         RelayMessage::Presence {
             hosts: hosts
@@ -704,7 +760,7 @@ impl Relay {
                 .map(|(device_id, name, last_seen_at)| HostPresence {
                     device_id,
                     name,
-                    online: self.online(device_id),
+                    online: self.online(device_id) || self.lingering().contains_key(&device_id),
                     last_seen_at,
                 })
                 .collect(),
