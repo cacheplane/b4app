@@ -638,7 +638,7 @@ First look: `https://hub.<env>.b4.run/readyz` (`hub.b4.run` for prod), then the 
 | --- | --- | --- |
 | `alb-5xx` | Five or more 5xx responses from the hub in five minutes | The hub log for `ERROR`; whether a deploy just ran |
 | `unhealthy-hosts` | The target group has an unhealthy task for two minutes | `/readyz` (database or migrations not ready fails it) and the task's stopped reason in the ECS console |
-| `latency-p99` | p99 above 2 seconds for ten minutes | The database CPU and connection alarms, then slow requests in the log |
+| `latency-p99` | p99 of the hub's own request latency above 2 seconds for ten minutes (the `/v1/changes` long-poll and the WebSocket upgrade are excluded; the ALB's `TargetResponseTime` includes them and reads about 25 s by design) | The database CPU and connection alarms, then slow requests in the log |
 | `running-tasks` | The service has no running task | `aws ecs describe-services` events; an image or secret that will not start; the circuit breaker may have rolled back |
 | `rds-free-storage` | Under 2 GB free | Table sizes; the change log is pruned daily; storage autoscales to 100 GB |
 | `rds-cpu` | CPU above 80 percent for fifteen minutes | RDS metrics; a runaway client in the hub log |
