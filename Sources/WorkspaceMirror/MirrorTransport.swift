@@ -255,7 +255,8 @@ public final class MirrorTransport: WorkspaceTransport {
     for task in tasks.withLock({ $0 }) { task.cancel() }
   }
 
-  /// Emits `connection.changed` per touched connection (its status and sign-in from the row),
+  /// Emits `connection.changed` per touched connection (its status and sign-in, and the whole row, so
+  /// a new owner, label, or model list reaches the model as it does from the coordinator),
   /// `project.changed` per touched project, `thread.updated` per touched thread (with the row), and `message.completed` carrying the
   /// `displayItem` for each touched item of the thread last read. Does nothing once closed.
   public func publish(_ batch: AppliedBatch) {
@@ -263,10 +264,10 @@ public final class MirrorTransport: WorkspaceTransport {
     let connections = (try? store.connections()) ?? []
     for connection in connections where batch.touchedConnectionIds.contains(connection.id) {
       // The phone holds no runtime connection of its own, so the transport field says so.
-      events.append(
-        .connectionChanged(
-          connectionId: connection.id, status: connection.status, authStatus: connection.authStatus,
-          transport: .disconnected))
+      let changed = AdapterEvent.connectionChanged(
+        connectionId: connection.id, status: connection.status, authStatus: connection.authStatus,
+        transport: .disconnected)
+      events.append((try? changed.carrying(connection)) ?? changed)
     }
     for id in batch.touchedProjectIds.sorted() { events.append(.projectChanged(projectId: id)) }
     // The whole usage rides on the event, so an open Connections page updates without a read.
