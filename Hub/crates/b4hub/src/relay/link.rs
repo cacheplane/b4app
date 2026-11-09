@@ -315,6 +315,12 @@ async fn serve_link<S: LinkSocket>(
     if !probe {
         tracing::info!(device = %handle.device_id, ?role, replaced, "link open");
     }
+    let mut registered = Registered {
+        state: state.clone(),
+        handle: handle.clone(),
+        probe,
+        done: false,
+    };
 
     let mut link = Link {
         state,
@@ -352,7 +358,7 @@ async fn serve_link<S: LinkSocket>(
     // drop was noticed. That goes in the database before the device reads as offline, so anyone who
     // sees it offline (a command judging how recently it was seen) finds the time already there.
     link.write_last_seen(link.last_frame).await;
-    let was_current = relay.unregister(link.handle.device_id, link.handle.generation);
+    let was_current = registered.unregister();
     // Once the user has no link left here, their claim goes now, before this link's close is even
     // written, so the instance they reconnect to takes them at once (D-165, D-172): whether this
     // instance is draining, or its links were cut while it lives on.
@@ -389,6 +395,60 @@ async fn serve_link<S: LinkSocket>(
         code = close.as_ref().map(|close| close.code),
         "link closed"
     );
+}
+
+/// A link's place in the registry, taken back when the link task ends however it ends. The
+/// ordinary end calls [`Registered::unregister`] in its place in the cleanup (after the last-seen
+/// write, before the claim and presence); a link task that panics, or is dropped before it gets
+/// there, is unregistered on drop instead, and its claim and presence follow on a task of their
+/// own. Without it, the device would stay online with its watches until it linked again.
+struct Registered {
+    state: AppState,
+    handle: LinkHandle,
+    probe: bool,
+    done: bool,
+}
+
+impl Registered {
+    /// Takes the link out of the registry. True when it was the device's current link.
+    fn unregister(&mut self) -> bool {
+        self.done = true;
+        self.state
+            .relay
+            .unregister(self.handle.device_id, self.handle.generation)
+    }
+}
+
+impl Drop for Registered {
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        let was_current = self.unregister();
+        if self.probe || !was_current {
+            return;
+        }
+        tracing::warn!(device = %self.handle.device_id, "link task ended early; link unregistered");
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let (state, handle) = (self.state.clone(), self.handle.clone());
+        runtime.spawn(async move {
+            instances::release_if_unlinked(
+                &state.db,
+                &state.relay,
+                &state.instances,
+                handle.user_id,
+            )
+            .await;
+            if handle.role == Role::Host {
+                state
+                    .relay
+                    .broadcast_presence(&state.db, handle.org_id, handle.user_id)
+                    .await;
+            }
+        });
+    }
 }
 
 struct Link {
@@ -567,6 +627,9 @@ impl Link {
 
     /// Handles one text frame; the returned frame, if any, is written back at once.
     async fn on_text(&self, text: &str) -> Option<RelayMessage> {
+        if self.state.relay.take_frame_panic() {
+            panic!("a link task panicked (test seam)");
+        }
         match serde_json::from_str::<RelayMessage>(text) {
             Ok(RelayMessage::Ping) => Some(RelayMessage::Pong {
                 hub_time: self.state.relay.hub_time(),

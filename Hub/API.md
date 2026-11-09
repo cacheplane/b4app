@@ -1542,7 +1542,7 @@ owner must be a non-revoked `macos` device of the caller's own user. Otherwise t
 `error` frame `not_found`; a missing thread, another user's, another org's, and one owned by
 a device that is not the user's Mac all read the same. A success has no answer. The Mac need not
 be online: the watch is kept and the Mac is told when it links. The same link may watch a thread it
-already watches (nothing changes). At most **4** threads per link: a fifth distinct thread gets an
+already watches (nothing changes, and the hub does not look the thread up again). At most **4** threads per link: a fifth distinct thread gets an
 `error` frame `watch_limit`, and the link and its other watches are untouched. Every `error` frame
 answering a `watch` carries `details.threadId`, the thread it refuses, so a client can tell it from
 an error about the link: the phone treats it as a gap for that thread, and watches again after a

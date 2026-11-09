@@ -410,6 +410,11 @@ pub async fn handle_watch(
     client: &LinkHandle,
     thread_id: &str,
 ) -> Option<RelayMessage> {
+    // Watching a thread the link already watches changes nothing, so it needs no lookup: a client
+    // that repeats its watches costs no database work.
+    if relay.watches(client, thread_id) {
+        return None;
+    }
     let owner = match thread_owner(relay, db, client, thread_id).await {
         Ok(owner) => owner,
         Err(error) => return Some(watch_refused(error, thread_id)),
