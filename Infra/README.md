@@ -183,6 +183,8 @@ Both roots are created with `desired_count = 0`, since no image has been deploye
 
 ### CI and reading a plan comment
 
+`infra.yml` ignores changes to this README, and on `main` it asks for the `production` approval only when a plan with the read-only role shows changes (the `Plan prod (main)` job); a merge that changes nothing in production ends without an approval request.
+
 Until an account is bootstrapped and its `AWS_ROLE_*` and `TFSTATE_KMS_KEY_ARN_*` repository variables exist, the `plan` jobs run `fmt`, `validate`, and `tflint` only and print a notice, and the `apply` jobs skip with a warning, so a pull request is not red merely because AWS is not set up yet. Once the variables exist the same jobs plan and apply for real.
 
 `.github/workflows/infra.yml` runs on pull requests that touch `Infra/`: a `test` job (format check and `terraform test` in the module) and a `plan` job per environment (format, validate, tflint, `terraform plan`). Each plan leg posts one comment, `Terraform plan: test` or `Terraform plan: prod`, updated in place on later pushes. Read the summary line first (`N to add, N to change, N to destroy`), then the resource list: any database, KMS key, or state bucket marked `delete` (a replacement shows as `delete + create`) means stop and ask. The comment holds only counts and resource addresses, because the repository is public; the full plan is in the plan step of the workflow run log. On a merge to `main`, `apply-test` runs, then `apply-prod` waits for the `production` reviewer. The approver sees the PR plan comment and the test apply that already ran; the prod job then re-plans and applies its own `plan.bin` in one job, so check the prod job log if the PR comment is old.

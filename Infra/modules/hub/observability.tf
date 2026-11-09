@@ -47,12 +47,12 @@ resource "aws_sns_topic_policy" "alerts" {
         Condition = { StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id } }
       },
       {
-        Sid       = "MigrateRulePublishes"
+        Sid       = "EventRulesPublish"
         Effect    = "Allow"
         Principal = { Service = "events.amazonaws.com" }
         Action    = "sns:Publish"
         Resource  = aws_sns_topic.alerts.arn
-        Condition = { ArnEquals = { "aws:SourceArn" = aws_cloudwatch_event_rule.migrate_stopped.arn } }
+        Condition = { ArnEquals = { "aws:SourceArn" = [aws_cloudwatch_event_rule.migrate_stopped.arn, aws_cloudwatch_event_rule.backup_copy_failed.arn] } }
       },
     ]
   })
@@ -206,6 +206,31 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections" {
 # exit code; a clean run is also one email. The deploy workflow checks the exit
 # code itself and is the gate. The ":" ends the family name so the hub and
 # admin families cannot match.
+# A failed backup copy job (the nightly copy to the copy vault, or the
+# on-demand copy of runbook 8 B) is reported by AWS Backup in the source
+# region as an event, never as a metric; the first one failed silently on
+# 2026-11-03 until an operator looked. The rule is created in every
+# environment; with no copy region it simply never matches.
+resource "aws_cloudwatch_event_rule" "backup_copy_failed" {
+  name        = "${local.name}-backup-copy-failed"
+  description = "An AWS Backup copy job for the hub failed."
+  event_pattern = jsonencode({
+    source        = ["aws.backup"]
+    "detail-type" = ["Copy Job State Change"]
+    detail = {
+      state = ["FAILED"]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "backup_copy_failed" {
+  rule      = aws_cloudwatch_event_rule.backup_copy_failed.name
+  target_id = "${local.name}-alerts"
+  arn       = aws_sns_topic.alerts.arn
+
+  depends_on = [aws_sns_topic_policy.alerts]
+}
+
 resource "aws_cloudwatch_event_rule" "migrate_stopped" {
   name        = "${local.name}-migrate-stopped"
   description = "A hub migrate task stopped."
