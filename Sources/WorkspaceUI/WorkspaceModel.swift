@@ -201,8 +201,9 @@ public final class WorkspaceModel {
   /// The clock for relative times ("Replied 3m ago") and the composer idle rule; tests replace it.
   public var now: @Sendable () -> Date = { Date() }
   /// This device's small choices (the last model and permission a new thread used); `UserDefaults`
-  /// in the apps, in memory in tests. Never synced.
-  @ObservationIgnored public var preferences: any LocalPreferences = UserDefaults.standard
+  /// in the apps, which pass it to `init`, and in memory otherwise, so a test never shares the test
+  /// runner's defaults with another. Never synced.
+  @ObservationIgnored public var preferences: any LocalPreferences
   /// Set after `connection.login`; the view opens it in the system browser and clears it.
   public var pendingLoginURL: URL?
 
@@ -346,9 +347,13 @@ public final class WorkspaceModel {
   /// Threads deleted here or elsewhere: nothing about them is shown again, whatever arrives later.
   @ObservationIgnored private var deletedThreadIds: Set<String> = []
 
-  public init(transportProvider: @escaping TransportProvider, accountSource: AccountSource = .coordinator) {
+  public init(
+    transportProvider: @escaping TransportProvider, accountSource: AccountSource = .coordinator,
+    preferences: any LocalPreferences = InMemoryPreferences()
+  ) {
     self.transportProvider = transportProvider
     self.accountSource = accountSource
+    self.preferences = preferences
   }
 
   /// The list under the connection and project filters: pinned first, then needs input,

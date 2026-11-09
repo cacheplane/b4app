@@ -94,8 +94,17 @@ final class NewThreadDraft {
     self.folder = folder
   }
 
+  /// The path of a folder the system's file picker handed back, in the form the coordinator keys a
+  /// project's folders by (`SessionService.canonicalDirectory`): symlinks resolved, `..` collapsed, no
+  /// trailing slash. So a project's folder reached through a link is still that project's.
+  static func folderPath(of url: URL) -> String {
+    var path = url.standardizedFileURL.resolvingSymlinksInPath().path
+    while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+    return path
+  }
+
   /// "Choose folder…" (the Mac): a project's own folder starts in that project; any other folder starts
-  /// with no project, on a Codex or Claude connection.
+  /// with no project, on a Codex or Claude connection. `path` is `folderPath(of:)`.
   func chooseFolder(_ path: String) {
     guard !workspace.relaysThroughHub else { return }
     if let project = workspace.startProjects.first(where: { $0.folders.contains { $0.path == path } }) {

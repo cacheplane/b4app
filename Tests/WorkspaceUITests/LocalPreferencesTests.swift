@@ -24,11 +24,16 @@ import Testing
     #expect(prefs.data(forKey: "permission") == nil)
   }
 
-  @Test func theModelDefaultsToTheAppDefaults() {
+  /// A model keeps its choices in memory unless it is given somewhere to keep them, so no test
+  /// reads or writes the test runner's `UserDefaults`; the apps pass `UserDefaults.standard`.
+  @Test @MainActor func theModelKeepsPreferencesInMemoryUnlessGivenSome() {
     let model = WorkspaceModel(transportProvider: { throw CancellationError() })
-    #expect(model.preferences === UserDefaults.standard)
-    let prefs = InMemoryPreferences()
-    model.preferences = prefs
-    #expect(model.preferences === prefs)
+    #expect(model.preferences is InMemoryPreferences)
+    let other = WorkspaceModel(transportProvider: { throw CancellationError() })
+    #expect(model.preferences !== other.preferences)
+
+    let app = WorkspaceModel(
+      transportProvider: { throw CancellationError() }, preferences: UserDefaults.standard)
+    #expect(app.preferences === UserDefaults.standard)
   }
 }

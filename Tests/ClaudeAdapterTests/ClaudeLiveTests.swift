@@ -125,4 +125,56 @@ struct ClaudeLiveTests {
     #expect(resumed.lowercased().contains("periwinkle"))
     await adapter.dispose()
   }
+
+  /// Plan mode keeps its word against the real CLI: asked to write a file, a session in `plan`
+  /// writes nothing, while the same request in `acceptEdits` (the control) writes it. Any approval
+  /// asked for on the way (leaving plan mode, the write itself) is denied, as a user who wants only
+  /// the plan would.
+  @Test func planModeWritesNothingLive() async throws {
+    let adapter = ClaudeAdapter(connectionId: "live", executablePath: nil, clientVersion: "live-test")
+    let collector = EventCollector(adapter.events())
+    let inspection = try await adapter.inspectConnection()
+    try #require(inspection.status == .ready && inspection.authStatus == .authenticated)
+
+    /// Whether a session in `permission` wrote the file it was asked to.
+    func wrote(_ permission: String) async throws -> Bool {
+      let cwd = NSTemporaryDirectory() + "b4app-claude-\(permission)-\(UUID().uuidString.prefix(8))"
+      try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
+      let target = cwd + "/made.txt"
+      let ref = try await adapter.createSession(
+        NewSessionInput(workingDirectory: cwd, model: "haiku", permission: permission))
+      let receipt = try await adapter.sendTurn(
+        ref,
+        input: TurnInput(
+          operationId: "\(permission)-1",
+          text: "Create the file \(target) containing the single word tangerine. Do it now; do not ask.",
+          workingDirectory: cwd, model: "haiku", permission: permission))
+      let turnId = try #require(receipt.nativeTurnId)
+      var answered: Set<String> = []
+      while true {
+        let seen = answered
+        let event = try await collector.waitFor(timeout: .seconds(240)) {
+          ($0.kind == .turnFinished && $0.nativeIds["turnId"] == turnId)
+            || ($0.kind == .runtimeRequestOpened && !seen.contains($0.nativeIds["requestId"] ?? ""))
+        }
+        if event.kind == .turnFinished { break }
+        let id = try #require(event.nativeIds["requestId"])
+        answered.insert(id)
+        let kind = event.payload["kind"]?.stringValue.flatMap(RuntimeRequestKind.init(rawValue:)) ?? .unknown
+        print("live \(permission) request:", kind, event.payload["request"]?["toolName"] ?? .null)
+        if kind == .userQuestion || kind == .elicitation {
+          _ = try await adapter.interrupt(ref, turn: ActiveTurnRef(nativeTurnId: turnId))
+        } else {
+          try await adapter.respond(
+            RuntimeRequestRef(nativeRequestId: id, kind: kind, adapterGeneration: event.adapterGeneration),
+            response: .decision(.deny))
+        }
+      }
+      return FileManager.default.fileExists(atPath: target)
+    }
+
+    #expect(try await wrote("acceptEdits"), "the control did not write; the prompt proves nothing")
+    #expect(try await !wrote("plan"), "plan mode wrote the file")
+    await adapter.dispose()
+  }
 }
