@@ -91,6 +91,22 @@ import WorkspaceProtocol
     #expect(throws: (any Error).self) { try JSONCoding.decoder.decode(RelayMessage.self, from: data) }
   }
 
+  @Test func aCommandWithAnUnknownMethodIsNamedNotJustSkipped() throws {
+    func outcome(_ text: String) -> Result<RelayMessage, HubLinkError> {
+      do { return .success(try RelayFrame.decode(Data(text.utf8))) } catch let error as HubLinkError {
+        return .failure(error)
+      } catch { return .failure(.failed("\(error)")) }
+    }
+    #expect(
+      outcome(#"{"type":"command","id":"c1","method":"project.archive","params":{}}"#)
+        == .failure(.unknownCommand(id: "c1", method: "project.archive")))
+    // Without an id there is nothing to answer, and any other unknown frame is only skipped.
+    #expect(outcome(#"{"type":"command","method":"project.archive","params":{}}"#) == .failure(.undecodable))
+    #expect(outcome(#"{"type":"teleport"}"#) == .failure(.undecodable))
+    #expect(outcome("not json") == .failure(.undecodable))
+    #expect(outcome(#"{"type":"ping"}"#) == .success(.ping))
+  }
+
   @Test func methodsAndRolesUseTheirWireStrings() {
     #expect(
       RelayMethod.allCases.map(\.rawValue)
