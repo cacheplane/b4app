@@ -198,8 +198,13 @@ run "alarm_shapes" {
   }
 
   assert {
-    condition     = aws_cloudwatch_metric_alarm.latency_p99.extended_statistic == "p99" && aws_cloudwatch_metric_alarm.latency_p99.threshold == 2 && aws_cloudwatch_metric_alarm.latency_p99.evaluation_periods == 10
-    error_message = "latency: p99 > 2 s for 10 periods"
+    condition     = aws_cloudwatch_metric_alarm.latency_p99.extended_statistic == "p99" && aws_cloudwatch_metric_alarm.latency_p99.threshold == 2000 && aws_cloudwatch_metric_alarm.latency_p99.evaluation_periods == 10 && aws_cloudwatch_metric_alarm.latency_p99.namespace == "b4hub/b4hub-test" && aws_cloudwatch_metric_alarm.latency_p99.metric_name == "RequestLatencyMs"
+    error_message = "latency: p99 of the hub's own request latency (ms) > 2000 for 10 periods"
+  }
+
+  assert {
+    condition     = aws_cloudwatch_log_metric_filter.request_latency.log_group_name == "/b4hub/test/hub" && strcontains(aws_cloudwatch_log_metric_filter.request_latency.pattern, "$.span.path != \"/v1/changes\"") && strcontains(aws_cloudwatch_log_metric_filter.request_latency.pattern, "$.span.path != \"/v1/devices/self/link\"") && one(aws_cloudwatch_log_metric_filter.request_latency.metric_transformation).value == "$.elapsed_ms"
+    error_message = "the latency metric comes from the hub log, excluding the long-poll and WebSocket paths"
   }
 
   assert {

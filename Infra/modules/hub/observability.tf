@@ -106,24 +106,41 @@ resource "aws_cloudwatch_metric_alarm" "unhealthy_hosts" {
   }
 }
 
+# Latency is measured from the hub's own request log, not the load balancer's
+# TargetResponseTime: the sync long-poll (`GET /v1/changes`, up to 25 s) and
+# the relay's WebSocket upgrade are legitimately slow, and with a few devices
+# connected they are most of the traffic, so the ALB's p99 sat at 25 s and the
+# alarm was in ALARM from the first day (2026-11-02 to 2026-11-09). The filter
+# publishes every other request's elapsed_ms as a metric value.
+resource "aws_cloudwatch_log_metric_filter" "request_latency" {
+  name           = "${local.name}-request-latency"
+  log_group_name = aws_cloudwatch_log_group.hub["hub"].name
+  pattern        = "{ ($.message = \"request complete\") && ($.span.path != \"/v1/changes\") && ($.span.path != \"/v1/devices/self/link\") }"
+
+  metric_transformation {
+    name      = "RequestLatencyMs"
+    namespace = "b4hub/${local.name}"
+    value     = "$.elapsed_ms"
+    unit      = "Milliseconds"
+  }
+}
+
 resource "aws_cloudwatch_metric_alarm" "latency_p99" {
   alarm_name          = "${local.name}-latency-p99"
-  alarm_description   = "p99 target response time above two seconds for ten minutes."
-  namespace           = "AWS/ApplicationELB"
-  metric_name         = "TargetResponseTime"
+  alarm_description   = "p99 request latency (long polls excluded) above two seconds for ten minutes."
+  namespace           = "b4hub/${local.name}"
+  metric_name         = "RequestLatencyMs"
   extended_statistic  = "p99"
   period              = 60
   evaluation_periods  = 10
   datapoints_to_alarm = 10
-  threshold           = 2
+  threshold           = 2000
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
-  dimensions = {
-    LoadBalancer = aws_lb.this.arn_suffix
-    TargetGroup  = aws_lb_target_group.hub.arn_suffix
-  }
+
+  depends_on = [aws_cloudwatch_log_metric_filter.request_latency]
 }
 
 # ECS: only while the service is meant to have tasks. The root creates it with
