@@ -410,13 +410,15 @@ struct MirrorRelayTests {
     let store = try MirrorStore.inMemory()
     let h = RelayHarness()
     // The hub's clock runs 120 s ahead of the phone's.
-    let socket = try await h.connect(hubTime: Date().addingTimeInterval(120))
+    let started = Date()
+    let socket = try await h.connect(hubTime: started.addingTimeInterval(120))
     let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay))
     _ = try await client.ready()
     let events = await client.events()
     var iterator = events.makeAsyncIterator()
 
-    let seenOnHub = Date().addingTimeInterval(120 - 30)
+    let setup = Date().timeIntervalSince(started)
+    let seenOnHub = started.addingTimeInterval(setup + 120 - 30)
     socket.deliver(
       .presence(hosts: [
         RelayHostPresence(
@@ -436,7 +438,11 @@ struct MirrorRelayTests {
     #expect(hosts[0].name == "Brian's MacBook Pro" && !hosts[0].online)
     // On the phone's clock: about 30 s ago, not 90 s in the future.
     let seen = try #require(hosts[0].lastSeenAt.flatMap(Timestamp.date(from:)))
-    #expect(abs(seen.timeIntervalSinceNow + 30) < 5)
+    // The relay measures the offset when the hello arrives, somewhere inside `setup`, so the
+    // translated time lies between 30 s before the start and 30 s before the hello plus `setup`.
+    // Bounds from the test's own clock readings hold however slow the runner is.
+    #expect(seen.timeIntervalSince(started) >= -31)
+    #expect(seen.timeIntervalSinceNow <= -30 + setup + 1)
     #expect(hosts[1].online && hosts[1].lastSeenAt == nil)
     // The snapshot carries the same, so a model that connects after these events still knows them.
     let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
