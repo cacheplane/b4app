@@ -1,6 +1,6 @@
 # iOS navigation and banner regression tests
 
-Run `./Scripts/test-ios-layout.sh` from the repository root. It needs Xcode, an installed iOS 26 Simulator runtime, and XcodeGen. The script selects an available iPhone (preferring an already booted one), generates its test project under `.build/iOSLayout`, and leaves an `.xcresult` bundle there with screenshots. CI runs it after the app builds.
+Run `./Scripts/test-ios-layout.sh` from the repository root. It needs Xcode, an installed iOS 26 Simulator runtime, and XcodeGen. The script selects an available iPhone (preferring an already booted one), generates its test project under `.build/iOSLayout`, and leaves an `.xcresult` bundle there with screenshots. CI runs it in its own job, beside the app builds.
 
 The fixture app compiles the shipped `WorkspaceRootView` and `SyncBanner` over an in-memory mirror and fake relay. Its banner reads an `@Observable` status, as the app's reads `MirrorHost`, and its fake hub greets every link the relay opens and answers its pings, so a runner that stalls the app does not leave a stale banner or "Connecting to the hub…" behind. The tests wait for a screen's title and then for a hittable notice before judging it, since a pushed thread's banner exists in accessibility before it can be hit. It never accesses the owner's account, Keychain, hub, mirror, or installed app. Its extra target is separate from the shipping app targets.
 
