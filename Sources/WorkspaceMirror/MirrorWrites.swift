@@ -172,7 +172,7 @@ extension MirrorStore {
         guard let current = try projectLocked(id: id) else { return nil }
         guard current.name != name else { return current }
         let changes = [
-          LocalChange(table: "projects", rowId: id, op: "update", column: "name", value: .string(name))
+          LocalChange(table: "environments", rowId: id, op: "update", column: "name", value: .string(name))
         ]
         try writeColumns(changes, key: "id")
         try record(changes)

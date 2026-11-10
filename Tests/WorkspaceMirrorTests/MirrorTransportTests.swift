@@ -88,9 +88,9 @@ private final class WriteCounter: Sendable {
     try store.saveLink(syncedLink)
     _ = try store.apply(try fixtureAsStored())
     _ = try store.apply([
-      change("projects", "p1", "insert", value: projectJSON("p1")),
+      change("environments", "p1", "insert", value: projectJSON("p1")),
       change(
-        "projectFolders", "f1", "insert",
+        "environmentFolders", "f1", "insert",
         value: folderJSON("f1", projectId: "p1", path: "/Users/blove/repos/b4app")),
     ])
     let writes = WriteCounter()
@@ -785,8 +785,9 @@ private final class WriteCounter: Sendable {
   @Test func projectEditsGoToTheMacAndKeepTheOwnerTheMirrorKnows() async throws {
     let (store, h, socket) = try await relayedMirror()
     _ = try store.apply([
-      change("projects", "p1", "insert", value: projectJSON("p1")),
-      change("projectFolders", "f1", "insert", value: folderJSON("f1", projectId: "p1", path: "/work/app")),
+      change("environments", "p1", "insert", value: projectJSON("p1")),
+      change(
+        "environmentFolders", "f1", "insert", value: folderJSON("f1", projectId: "p1", path: "/work/app")),
     ])
     let owner = try #require(try store.projects().first?.ownerDeviceId)
     let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay))

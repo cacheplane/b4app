@@ -177,7 +177,7 @@ private func pulled(
       change("threads", "missing", "update", column: "title", value: "x"),
       change("threads", "missing", "update", column: "context", value: "/tmp"),
       change("runtimeRequests", "missing", "update", column: "state", value: "resolved"),
-      change("projectFolders", "missing", "update", column: "projectId", value: "p1"),
+      change("environmentFolders", "missing", "update", column: "environmentId", value: "p1"),
       change("connections", "missing", "update", column: "label", value: "x"),
     ])
     #expect(batch == AppliedBatch())
@@ -343,13 +343,13 @@ private func pulled(
   @Test func renameProjectToEmptyShowsFolderName() throws {
     let store = try linkedStore()
     _ = try store.apply([
-      change("projects", "p1", "insert", value: projectJSON("p1")),
+      change("environments", "p1", "insert", value: projectJSON("p1")),
       change(
-        "projectFolders", "f2", "insert",
+        "environmentFolders", "f2", "insert",
         value: folderJSON(
           "f2", projectId: "p1", path: "/Users/blove/repos/later", created: "2026-10-31T06:00:00Z")),
       change(
-        "projectFolders", "f1", "insert",
+        "environmentFolders", "f1", "insert",
         value: folderJSON("f1", projectId: "p1", path: "/Users/blove/repos/b4app")),
     ])
     let original = try #require(try store.projects().first)
@@ -365,7 +365,7 @@ private func pulled(
     #expect(try store.projects().first?.displayName == "b4app")
     // Both renames are one queued row (nothing was sent in between), holding the last name.
     let queued = try store.outbox(limit: 10)
-    #expect(queued.map(\.table) == ["projects"])
+    #expect(queued.map(\.table) == ["environments"])
     #expect(queued.map(\.column) == ["name"])
     #expect(queued.map(\.value) == [""])
     #expect(try store.renameProject(id: "missing", name: "x") == nil)
@@ -399,11 +399,11 @@ private func pulled(
     #expect(gone.touchedThreadIds == ["thread-1"])
 
     let project = try store.apply([
-      change("projects", "p1", "insert", value: projectJSON("p1")),
-      change("projectFolders", "f1", "insert", value: folderJSON("f1", projectId: "p1", path: "/tmp/p")),
+      change("environments", "p1", "insert", value: projectJSON("p1")),
+      change("environmentFolders", "f1", "insert", value: folderJSON("f1", projectId: "p1", path: "/tmp/p")),
     ])
     #expect(project.touchedProjectIds == ["p1"])
-    #expect(try store.apply([change("projectFolders", "f1", "delete")]).touchedProjectIds == ["p1"])
+    #expect(try store.apply([change("environmentFolders", "f1", "delete")]).touchedProjectIds == ["p1"])
   }
 
   /// D-184: a Mac whose hub device changed re-announces its rows as inserts with the oldest clock.
@@ -442,7 +442,7 @@ private func pulled(
     #expect(try store.ownerDeviceId(table: "connections", rowId: "conn-1") == macId)
     // The phone reads the owner of a connection and of a project, to send a new thread to the right Mac.
     #expect(try store.connections().first { $0.id == "conn-1" }?.ownerDeviceId == macId)
-    _ = try store.apply([change("projects", "p1", "insert", value: projectJSON("p1"))])
+    _ = try store.apply([change("environments", "p1", "insert", value: projectJSON("p1"))])
     #expect(try store.projects().first { $0.id == "p1" }?.ownerDeviceId == macId)
     // A change cannot set the owner directly.
     let refused = try store.apply([
@@ -473,7 +473,7 @@ private func pulled(
           op: "insert",
           value: fixture[0].value, hlc: hubClock.rawValue),
         StoredChange(
-          hubSeq: 0, deviceId: macId, deviceSeq: 0, wall: 0, table: "projects", rowId: "p1", op: "insert",
+          hubSeq: 0, deviceId: macId, deviceSeq: 0, wall: 0, table: "environments", rowId: "p1", op: "insert",
           value: projectJSON("p1", name: "Hub project"), hlc: hubClock.rawValue),
         StoredChange(
           hubSeq: 0, deviceId: macId, deviceSeq: 0, wall: 0, table: "threads", rowId: "thread-1",

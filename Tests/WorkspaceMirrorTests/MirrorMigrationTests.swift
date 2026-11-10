@@ -97,9 +97,9 @@ private func writeVersion1File(_ path: String) throws {
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
     #expect(try raw.integer("PRAGMA user_version") == MirrorSchema.version)
-    #expect(MirrorSchema.version == 6)
-    #expect(MirrorSchema.migrations.map(\.version) == [1, 2, 3, 4, 5, 6])
-    for table in ["projects", "projectFolders", "devices", "outbox", "columnClocks"] {
+    #expect(MirrorSchema.version == 7)
+    #expect(MirrorSchema.migrations.map(\.version) == [1, 2, 3, 4, 5, 6, 7])
+    for table in ["environments", "environmentFolders", "devices", "outbox", "columnClocks"] {
       #expect(try raw.integer("SELECT count(*) FROM sqlite_master WHERE name = '\(table)'") == 1, "\(table)")
     }
   }
@@ -125,8 +125,8 @@ private func writeVersion1File(_ path: String) throws {
     defer { raw.close() }
     #expect(try raw.integer("PRAGMA user_version") == MirrorSchema.version)
     for (table, column) in [
-      ("threads", "projectId"), ("threads", "readTurnId"), ("threads", "ownerDeviceId"),
-      ("connections", "ownerDeviceId"), ("projects", "ownerDeviceId"), ("connections", "projectId"),
+      ("threads", "environmentId"), ("threads", "readTurnId"), ("threads", "ownerDeviceId"),
+      ("connections", "ownerDeviceId"), ("environments", "ownerDeviceId"), ("connections", "environmentId"),
     ] {
       #expect(
         try raw.integer("SELECT count(*) FROM pragma_table_info('\(table)') WHERE name = '\(column)'") == 1,
@@ -167,7 +167,8 @@ private func writeVersion1File(_ path: String) throws {
     defer { raw.close() }
     #expect(try raw.integer("PRAGMA user_version") == MirrorSchema.version)
     #expect(
-      try raw.integer(#"SELECT count(*) FROM pragma_table_info('connections') WHERE name = 'projectId'"#) == 1
+      try raw.integer(#"SELECT count(*) FROM pragma_table_info('connections') WHERE name = 'environmentId'"#)
+        == 1
     )
     #expect(try raw.integer(Self.nativeItemIndex) == 1)
   }
@@ -196,7 +197,7 @@ private func writeVersion1File(_ path: String) throws {
     do {
       let raw = try RawSQLite(path: path)
       defer { raw.close() }
-      #expect(try raw.integer("PRAGMA user_version") == 6)
+      #expect(try raw.integer("PRAGMA user_version") == MirrorSchema.version)
       for (table, column) in [("threads", "model"), ("threads", "permission"), ("connections", "models")] {
         #expect(
           try raw.integer("SELECT count(*) FROM pragma_table_info('\(table)') WHERE name = '\(column)'") == 1,
@@ -210,6 +211,110 @@ private func writeVersion1File(_ path: String) throws {
     _ = try store.apply([change("threads", "thread-1", "update", column: "permission", value: "plan")])
     #expect(try store.connections().first?.models == models)
     #expect(try store.thread(id: "thread-1")?.permission == "plan")
+  }
+
+  /// A version 6 file holding a project with a folder and a thread in it, a connection serving it, an
+  /// unsent rename of the project, an unsent draft insert, and the per-column clocks and undecodable
+  /// markers that name the old tables, becomes a version 7 file under the new names, keeping all of it.
+  @Test func mirrorUpgradeRenamesProjectsAndKeepsAnUnsentRename() throws {
+    let path = temporaryPath()
+    defer { MirrorStoreTests.remove(path) }
+    try writeVersion1File(path)
+    do {
+      let raw = try RawSQLite(path: path)
+      defer { raw.close() }
+      try raw.exec("BEGIN")
+      for migration in MirrorSchema.migrations where (2...6).contains(migration.version) {
+        for statement in migration.statements { try raw.exec(statement) }
+      }
+      try raw.exec(
+        """
+        INSERT INTO "projects" ("id", "name", "manual", "createdAt", "updatedAt", "ownerDeviceId")
+        VALUES ('project-1', 'b4app', 1, '2026-10-31T12:00:00Z', '2026-10-31T12:00:00Z', 'phone-1')
+        """)
+      try raw.exec(
+        """
+        INSERT INTO "projectFolders" ("id", "projectId", "path", "createdAt")
+        VALUES ('folder-1', 'project-1', '/work/b4app', '2026-10-31T12:00:00Z')
+        """)
+      try raw.exec(#"UPDATE "threads" SET "projectId" = 'project-1' WHERE "id" = 'thread-1'"#)
+      try raw.exec(#"UPDATE "connections" SET "projectId" = 'project-1' WHERE "id" = 'conn-1'"#)
+      try raw.exec(
+        #"INSERT INTO "outbox" ("deviceSeq", "hlc", "table", "rowId", "op", "column", "value") "#
+          + #"VALUES (1, '019a396c76e8-0000-phone-1', 'projects', 'project-1', 'update', 'name', '"app"'), "#
+          + #"(2, '019a396c76e9-0000-phone-1', 'threads', 'thread-1', 'update', 'projectId', '"project-1"'), "#
+          + #"(3, '019a396c76ea-0000-phone-1', 'projectFolders', 'folder-2', 'insert', NULL, "#
+          + #"'{"id":"folder-2","projectId":"project-1","path":"/x"}'), "#
+          + #"(4, '019a396c76eb-0000-phone-1', 'drafts', 'thread-1', 'insert', NULL, "#
+          + #"'{"threadId":"thread-1","text":"projectId stays in text"}')"#)
+      try raw.exec(#"UPDATE "syncState" SET "lastDeviceSeq" = 4 WHERE "id" = 1"#)
+      try raw.exec(
+        #"INSERT INTO "columnClocks" ("table", "rowId", "column", "hlc") VALUES "#
+          + #"('projects', 'project-1', 'name', '019a396c76e8-0000-phone-1'), "#
+          + #"('threads', 'thread-1', 'projectId', '019a396c76e9-0000-phone-1'), "#
+          + #"('threads', 'thread-1', 'title', '019a396c76e7-0000-phone-1')"#)
+      try raw.exec(
+        #"INSERT INTO "undecodableRows" ("table", "rowId") VALUES ('projects', 'bad-1'), ('projectFolders', 'bad-2')"#
+      )
+      try raw.exec("PRAGMA user_version = 6")
+      try raw.exec("COMMIT")
+    }
+
+    let store = try MirrorStore(path: path)
+    #expect(store.outboxCount == 4)
+    let raw = try RawSQLite(path: path)
+    defer { raw.close() }
+    #expect(try raw.integer("PRAGMA user_version") == MirrorSchema.version)
+    #expect(try raw.integer(#"SELECT count(*) FROM "environments" WHERE "name" = 'b4app'"#) == 1)
+    #expect(
+      try raw.integer(#"SELECT count(*) FROM "environmentFolders" WHERE "environmentId" = 'project-1'"#) == 1)
+    #expect(try raw.integer(#"SELECT count(*) FROM "threads" WHERE "environmentId" = 'project-1'"#) == 1)
+    #expect(try raw.integer(#"SELECT count(*) FROM "connections" WHERE "environmentId" = 'project-1'"#) == 1)
+    #expect(try raw.integer(#"SELECT count(*) FROM "environments" WHERE "ownerDeviceId" = 'phone-1'"#) == 1)
+    for gone in ["projects", "projectFolders", "projectFoldersByProject", "threadsByProject"] {
+      #expect(try raw.integer("SELECT count(*) FROM sqlite_master WHERE name = '\(gone)'") == 0, "\(gone)")
+    }
+    for (table, column) in [("environmentFolders", "environmentId"), ("threads", "environmentId")] {
+      #expect(
+        try raw.integer("SELECT count(*) FROM pragma_table_info('\(table)') WHERE name = '\(column)'") == 1)
+    }
+    for index in ["environmentFoldersByEnvironment", "threadsByEnvironment"] {
+      #expect(
+        try raw.integer("SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = '\(index)'") == 1,
+        "\(index)")
+    }
+    // The foreign key follows the table: deleting the environment still cascades to its folders.
+    try raw.exec("PRAGMA foreign_keys = ON")
+    try raw.exec(#"DELETE FROM "environments" WHERE "id" = 'project-1'"#)
+    #expect(try raw.integer(#"SELECT count(*) FROM "environmentFolders""#) == 0)
+
+    // The unsent rename is still queued, under the new table name, with its value intact.
+    let pending = try store.outbox(limit: 10)
+    #expect(pending.map(\.deviceSeq) == [1, 2, 3, 4])
+    #expect(pending[0].table == "environments" && pending[0].column == "name")
+    #expect(pending[0].value == .string("app"))
+    #expect(pending[1].table == "threads" && pending[1].column == "environmentId")
+    #expect(pending[2].table == "environmentFolders")
+    #expect(pending[2].value?["environmentId"]?.stringValue == "project-1")
+    #expect(pending[2].value?["projectId"] == nil)
+    #expect(pending[3].table == "drafts")
+    #expect(pending[3].value?["text"]?.stringValue == "projectId stays in text")
+
+    #expect(
+      try raw.integer(
+        #"SELECT count(*) FROM "columnClocks" WHERE "table" = 'environments' AND "column" = 'name'"#)
+        == 1)
+    #expect(
+      try raw.integer(
+        #"SELECT count(*) FROM "columnClocks" WHERE "table" = 'threads' AND "column" = 'environmentId'"#) == 1
+    )
+    #expect(
+      try raw.integer(
+        #"SELECT count(*) FROM "columnClocks" WHERE "table" LIKE 'project%' OR "column" = 'projectId'"#) == 0)
+    #expect(
+      try raw.integer(
+        #"SELECT count(*) FROM "undecodableRows" WHERE "table" IN ('environments', 'environmentFolders')"#)
+        == 2)
   }
 
   /// The index the relay's per-delta lookup uses: on `displayItems`, by thread then native item id.
@@ -232,9 +337,11 @@ private func writeVersion1File(_ path: String) throws {
     let store = try MirrorStore.inMemory()
     _ = try store.apply(Array(try fixtureAsStored().prefix(1)))
     #expect(try store.connections().first?.projectId == "project-1")
-    _ = try store.apply([change("connections", "conn-1", "update", column: "projectId", value: "project-2")])
+    _ = try store.apply([
+      change("connections", "conn-1", "update", column: "environmentId", value: "project-2")
+    ])
     #expect(try store.connections().first?.projectId == "project-2")
-    _ = try store.apply([change("connections", "conn-1", "update", column: "projectId", value: .null)])
+    _ = try store.apply([change("connections", "conn-1", "update", column: "environmentId", value: .null)])
     #expect(try store.connections().first?.projectId == nil)
   }
 
@@ -250,7 +357,7 @@ private func writeVersion1File(_ path: String) throws {
     }
     do {
       let raw = try RawSQLite(path: path)
-      try raw.exec("PRAGMA user_version = 7")
+      try raw.exec("PRAGMA user_version = 8")
       raw.close()
     }
     let before = bytes(path)
@@ -260,7 +367,7 @@ private func writeVersion1File(_ path: String) throws {
     #expect(bytes(path) == before)
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
-    #expect(try raw.integer("PRAGMA user_version") == 7)
+    #expect(try raw.integer("PRAGMA user_version") == 8)
     #expect(try raw.integer(#"SELECT count(*) FROM "outbox""#) == 1)
   }
 
@@ -313,7 +420,7 @@ private func writeVersion1File(_ path: String) throws {
           + #"VALUES (\#(outboxSeq), '019a396c76e8-0000-phone-1', 'threads', 'thread-1', 'update', 'title', '"x"')"#
       )
     }
-    try raw.exec("PRAGMA user_version = 7")
+    try raw.exec("PRAGMA user_version = 8")
   }
 
   /// The first local write after a rebuild, on the fixture's thread.
@@ -363,7 +470,7 @@ private func writeVersion1File(_ path: String) throws {
         .replacingOccurrences(of: "'", with: "''")
       try raw.exec(#"CREATE TABLE "syncState" ("id" INTEGER PRIMARY KEY, "link" TEXT, "lastDeviceSeq")"#)
       try raw.exec(#"INSERT INTO "syncState" VALUES (1, '\#(link)', 'seven')"#)
-      try raw.exec("PRAGMA user_version = 7")
+      try raw.exec("PRAGMA user_version = 8")
     }
     let store = try MirrorStore.rebuild(path: path)
     #expect(try store.link() == nil)
@@ -391,7 +498,7 @@ private func writeVersion1File(_ path: String) throws {
       let raw = try RawSQLite(path: path)
       try raw.exec("PRAGMA journal_mode = WAL")
       try raw.exec(#"CREATE TABLE "something" ("id" TEXT)"#)
-      try raw.exec("PRAGMA user_version = 7")
+      try raw.exec("PRAGMA user_version = 8")
       raw.close()
     }
     #expect(throws: MirrorStoreError.needsRebuild(outboxEmpty: true)) { try MirrorStore(path: path) }

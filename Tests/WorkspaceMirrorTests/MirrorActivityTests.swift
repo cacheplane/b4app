@@ -93,8 +93,8 @@ private func band(_ name: String) -> AttentionBand {
     let fixture = try AttentionFixture.load()
     let store = try fixture.store()
     _ = try store.apply([
-      change("projects", "p1", "insert", value: projectJSON("p1")),
-      change("threads", "t-working", "update", column: "projectId", value: "p1"),
+      change("environments", "p1", "insert", value: projectJSON("p1")),
+      change("threads", "t-working", "update", column: "environmentId", value: "p1"),
     ])
     #expect(
       try store.threads(includeArchived: true, connectionId: nil, query: nil, projectId: "p1").map(\.id) == [
@@ -115,7 +115,10 @@ func folderJSON(
 )
   -> JSONValue
 {
-  ["id": .string(id), "projectId": .string(projectId), "path": .string(path), "createdAt": .string(created)]
+  [
+    "id": .string(id), "environmentId": .string(projectId), "path": .string(path),
+    "createdAt": .string(created),
+  ]
 }
 
 extension JSONValue {

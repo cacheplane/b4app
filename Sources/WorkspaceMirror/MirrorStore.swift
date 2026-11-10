@@ -261,7 +261,7 @@ public final class MirrorStore: @unchecked Sendable {
       binds.append(.text(connectionId))
     }
     if let projectId {
-      clauses.append(#"t."projectId" = ?"#)
+      clauses.append(#"t."environmentId" = ?"#)
       binds.append(.text(projectId))
     }
     if !includeArchived { clauses.append(#"t."archived" = 0"#) }
@@ -340,10 +340,11 @@ public final class MirrorStore: @unchecked Sendable {
   public func projects() throws -> [Project] {
     try locked {
       let projects = try all(
-        Project.self, "projects", #"SELECT * FROM "projects" ORDER BY "createdAt", "id""#)
+        Project.self, "environments", #"SELECT * FROM "environments" ORDER BY "createdAt", "id""#)
       let folders = Dictionary(
         grouping: try all(
-          ProjectFolder.self, "projectFolders", #"SELECT * FROM "projectFolders" ORDER BY "createdAt", "id""#),
+          ProjectFolder.self, "environmentFolders",
+          #"SELECT * FROM "environmentFolders" ORDER BY "createdAt", "id""#),
         by: \.projectId)
       return projects.map {
         var project = $0
@@ -356,11 +357,12 @@ public final class MirrorStore: @unchecked Sendable {
   func projectLocked(id: String) throws -> Project? {
     guard
       var project = try one(
-        Project.self, "projects", #"SELECT * FROM "projects" WHERE "id" = ?"#, [.text(id)])
+        Project.self, "environments", #"SELECT * FROM "environments" WHERE "id" = ?"#, [.text(id)])
     else { return nil }
     project.folders = try all(
-      ProjectFolder.self, "projectFolders",
-      #"SELECT * FROM "projectFolders" WHERE "projectId" = ? ORDER BY "createdAt", "id""#, [.text(id)])
+      ProjectFolder.self, "environmentFolders",
+      #"SELECT * FROM "environmentFolders" WHERE "environmentId" = ? ORDER BY "createdAt", "id""#, [.text(id)]
+    )
     return project
   }
 
@@ -539,8 +541,8 @@ public final class MirrorStore: @unchecked Sendable {
   func decodes(table: String, _ row: Row) -> Bool {
     switch table {
     case "connections": return decode(Connection.self, table: table, row) != nil
-    case "projects": return decode(Project.self, table: table, row) != nil
-    case "projectFolders": return decode(ProjectFolder.self, table: table, row) != nil
+    case "environments": return decode(Project.self, table: table, row) != nil
+    case "environmentFolders": return decode(ProjectFolder.self, table: table, row) != nil
     case "threads": return decode(ConversationThread.self, table: table, row) != nil
     case "turns": return decode(Turn.self, table: table, row) != nil
     case "displayItems": return decode(DisplayItem.self, table: table, row) != nil

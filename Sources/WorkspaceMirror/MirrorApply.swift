@@ -72,7 +72,7 @@ extension MirrorStore {
 
   /// The column that names a row's parent thread or project, for the touched sets.
   private static let parentColumns: [String: String] = [
-    "turns": "threadId", "runtimeRequests": "threadId", "projectFolders": "projectId",
+    "turns": "threadId", "runtimeRequests": "threadId", "environmentFolders": "environmentId",
   ]
 
   /// Applies changes inside the open transaction, in order.
@@ -115,10 +115,10 @@ extension MirrorStore {
       case "threads": state.batch.touchedThreadIds.insert(change.rowId)
       // A draft's row id is its thread id; the open composer reloads on the thread's event.
       case "drafts": state.batch.touchedThreadIds.insert(change.rowId)
-      case "projects": state.batch.touchedProjectIds.insert(change.rowId)
+      case "environments": state.batch.touchedProjectIds.insert(change.rowId)
       case "connectionUsage": state.batch.touchedUsageIds.insert(change.rowId)
       case "turns", "runtimeRequests": state.batch.touchedThreadIds.formUnion(parents)
-      case "projectFolders": state.batch.touchedProjectIds.formUnion(parents)
+      case "environmentFolders": state.batch.touchedProjectIds.formUnion(parents)
       case "displayItems" where change.op != "delete":
         if !state.itemIds.contains(change.rowId) { state.itemIds.append(change.rowId) }
       default: break

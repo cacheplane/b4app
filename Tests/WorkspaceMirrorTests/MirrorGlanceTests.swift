@@ -16,12 +16,12 @@ private func seededStore(at path: String, link: MirrorLink? = nil) throws -> (Mi
   let store = try MirrorStore(path: path)
   let batch = try store.apply(
     fixture.inserts + [
-      change("projects", "p1", "insert", value: projectJSON("p1", name: "Alpha")),
-      change("projects", "p2", "insert", value: projectJSON("p2")),
+      change("environments", "p1", "insert", value: projectJSON("p1", name: "Alpha")),
+      change("environments", "p2", "insert", value: projectJSON("p2")),
       change(
-        "projectFolders", "f2", "insert", value: folderJSON("f2", projectId: "p2", path: "/Users/x/beta")),
-      change("threads", "t-pinned-working", "update", column: "projectId", value: "p1"),
-      change("threads", "t-ask-request-late", "update", column: "projectId", value: "p2"),
+        "environmentFolders", "f2", "insert", value: folderJSON("f2", projectId: "p2", path: "/Users/x/beta")),
+      change("threads", "t-pinned-working", "update", column: "environmentId", value: "p1"),
+      change("threads", "t-ask-request-late", "update", column: "environmentId", value: "p2"),
     ])
   #expect(batch.skipped == 0)
   if let link { try store.saveLink(link) }
