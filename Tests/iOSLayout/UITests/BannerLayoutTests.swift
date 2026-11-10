@@ -39,7 +39,10 @@ final class BannerLayoutTests: XCTestCase {
     let heading =
       screen == "connect-mac"
       ? app.staticTexts["Connect your Mac"] : app.navigationBars.staticTexts[title].firstMatch
-    XCTAssertTrue(heading.waitForExistence(timeout: 10), app.debugDescription)
+    // Slow CI app/Simulator startup can stall accessibility queries beyond ten seconds while the
+    // requested detail is still opening. Wait for that screen before judging layout; every
+    // rendered-title, banner and control assertion below remains required.
+    XCTAssertTrue(heading.waitForExistence(timeout: 60), app.debugDescription)
     let banners = app.descendants(matching: .any).matching(identifier: "sync.banner")
     let banner = hasBanner ? waitForVisible(banners) : visible(banners)
     XCTAssertEqual(banner != nil, hasBanner, app.debugDescription)

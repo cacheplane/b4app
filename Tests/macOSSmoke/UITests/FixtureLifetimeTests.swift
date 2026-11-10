@@ -3,7 +3,7 @@ import XCTest
 
 final class FixtureLifetimeTests: XCTestCase {
   @MainActor func testHostExitsWhenItsOwnerPipeCloses() async throws {
-    let fixture = try await SmokeFixture.start()
+    let fixture = try await SmokeFixture.start(in: self)
     addTeardownBlock { @MainActor in try await fixture.stop(in: self) }
     try fixture.releaseOwnership()
     let deadline = ContinuousClock.now + .seconds(15)
