@@ -1008,11 +1008,11 @@ async fn session_end_keeps_device(pool: PgPool) {
 
 // ---- Deleting the account ----
 
-fn project(seq: i64) -> Change {
+fn environment(seq: i64) -> Change {
     Change {
         device_seq: seq,
         wall: 1_761_900_000_000 + seq,
-        table: "projects".into(),
+        table: "environments".into(),
         row_id: format!("proj-{seq}"),
         op: ChangeOp::Insert,
         column: None,
@@ -1045,7 +1045,7 @@ async fn delete_me_removes_org_rows_and_calls_revoker(pool: PgPool) {
         .await
         .unwrap()
         .unwrap();
-    changes::push(&hub.state.db, &mac, &[project(1), project(2)])
+    changes::push(&hub.state.db, &mac, &[environment(1), environment(2)])
         .await
         .unwrap();
     let mut other = Authenticator::new(ORIGIN);
@@ -1055,7 +1055,7 @@ async fn delete_me_removes_org_rows_and_calls_revoker(pool: PgPool) {
     assert!(org_rows(&pool, who.org_id)
         .await
         .iter()
-        .any(|(table, n)| table == "projects" && *n == 2));
+        .any(|(table, n)| table == "environments" && *n == 2));
 
     let refused = call(hub, "DELETE", "/v1/me", None, t).await;
     assert_eq!(refused.code(), "step_up_required");

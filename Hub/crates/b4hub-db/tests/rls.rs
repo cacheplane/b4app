@@ -204,7 +204,7 @@ async fn two_personal_orgs_are_isolated(pool: PgPool) {
     assert_ne!(session.device_id, b.device_id);
 }
 
-/// Seeds, as the owner, a thread, a runtime request on it, and a project, all owned by `owner`
+/// Seeds, as the owner, a thread, a runtime request on it, and an environment, all owned by `owner`
 /// and belonging to `who`.
 async fn seed_owned_rows(
     admin: &b4hub_db::Db,
@@ -216,7 +216,7 @@ async fn seed_owned_rows(
          VALUES ('thread-1', $1, $2, $3, $3)",
         "INSERT INTO \"runtimeRequests\" (\"id\", \"threadId\", \"state\", org_id, user_id, \
          device_id, owner_device_id) VALUES ('request-1', 'thread-1', 'pending', $1, $2, $3, $3)",
-        "INSERT INTO \"projects\" (\"id\", org_id, user_id, device_id, owner_device_id) \
+        "INSERT INTO \"environments\" (\"id\", org_id, user_id, device_id, owner_device_id) \
          VALUES ('project-1', $1, $2, $3, $3)",
     ] {
         sqlx::query(statement)
@@ -231,7 +231,7 @@ async fn seed_owned_rows(
 
 #[sqlx::test(migrations = false)]
 async fn relay_lookups_respect_rls(pool: PgPool) {
-    use b4hub_db::relay::{owner_device, owner_of_project, owner_of_request, owner_of_thread};
+    use b4hub_db::relay::{owner_device, owner_of_environment, owner_of_request, owner_of_thread};
 
     let (admin, app) = common::migrated(&pool).await;
     let mac = common::enrolled_in(&admin, &app, "cacheplane", "blove").await;
@@ -253,10 +253,12 @@ async fn relay_lookups_respect_rls(pool: PgPool) {
         .expect("the user's own request");
     assert_eq!(request.owner.device_id, mac.device_id);
     assert_eq!(request.state.as_deref(), Some("pending"));
-    assert!(owner_of_project(&app, mac.org_id, mac.user_id, "project-1")
-        .await
-        .unwrap()
-        .is_some());
+    assert!(
+        owner_of_environment(&app, mac.org_id, mac.user_id, "project-1")
+            .await
+            .unwrap()
+            .is_some()
+    );
     assert!(owner_device(&app, mac.org_id, mac.user_id, mac.device_id)
         .await
         .unwrap()
@@ -272,7 +274,7 @@ async fn relay_lookups_respect_rls(pool: PgPool) {
         .await
         .unwrap()
         .is_none());
-    assert!(owner_of_project(&app, other, mac.user_id, "project-1")
+    assert!(owner_of_environment(&app, other, mac.user_id, "project-1")
         .await
         .unwrap()
         .is_none());

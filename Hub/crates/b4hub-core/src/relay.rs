@@ -66,12 +66,12 @@ pub enum RelayMethod {
     ThreadStart,
     #[serde(rename = "turn.lookup")]
     TurnLookup,
-    #[serde(rename = "project.create")]
-    ProjectCreate,
-    #[serde(rename = "project.update")]
-    ProjectUpdate,
-    #[serde(rename = "project.delete")]
-    ProjectDelete,
+    #[serde(rename = "environment.create")]
+    EnvironmentCreate,
+    #[serde(rename = "environment.update")]
+    EnvironmentUpdate,
+    #[serde(rename = "environment.delete")]
+    EnvironmentDelete,
 }
 
 impl RelayMethod {
@@ -83,9 +83,9 @@ impl RelayMethod {
             RelayMethod::RequestRespond => "request.respond",
             RelayMethod::ThreadStart => "thread.start",
             RelayMethod::TurnLookup => "turn.lookup",
-            RelayMethod::ProjectCreate => "project.create",
-            RelayMethod::ProjectUpdate => "project.update",
-            RelayMethod::ProjectDelete => "project.delete",
+            RelayMethod::EnvironmentCreate => "environment.create",
+            RelayMethod::EnvironmentUpdate => "environment.update",
+            RelayMethod::EnvironmentDelete => "environment.delete",
         }
     }
 }
@@ -223,9 +223,9 @@ mod tests {
             (RelayMethod::RequestRespond, "request.respond"),
             (RelayMethod::ThreadStart, "thread.start"),
             (RelayMethod::TurnLookup, "turn.lookup"),
-            (RelayMethod::ProjectCreate, "project.create"),
-            (RelayMethod::ProjectUpdate, "project.update"),
-            (RelayMethod::ProjectDelete, "project.delete"),
+            (RelayMethod::EnvironmentCreate, "environment.create"),
+            (RelayMethod::EnvironmentUpdate, "environment.update"),
+            (RelayMethod::EnvironmentDelete, "environment.delete"),
         ] {
             assert_eq!(method.as_str(), wire);
             assert_eq!(serde_json::to_value(method).unwrap(), wire);

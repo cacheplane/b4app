@@ -944,8 +944,8 @@ const ORG_TABLES: [&str; 22] = [
     "notifications_sent",
     "org_sync_horizons",
     "pairing_mints",
-    "projectFolders",
-    "projects",
+    "environmentFolders",
+    "environments",
     "push_tokens",
     "runtimeRequests",
     "step_up_grants",
@@ -984,7 +984,7 @@ fn insert(seq: i64, table: &str, row: &str, value: serde_json::Value) -> Change 
     }
 }
 
-/// Fills every org table for `who`'s org: the fixture (feed, mirror, clocks), a project and its
+/// Fills every org table for `who`'s org: the fixture (feed, mirror, clocks), an environment and its
 /// folder, a draft, a connection's usage, an enrollment code, a pairing code (and its mint), a handoff, and a horizon.
 async fn fill_org(admin: &Db, app: &Db, pool: &PgPool, created: &accounts::Created) {
     let who = authed(app, &created.token).await;
@@ -992,15 +992,15 @@ async fn fill_org(admin: &Db, app: &Db, pool: &PgPool, created: &accounts::Creat
     batch.extend([
         insert(
             14,
-            "projects",
+            "environments",
             "proj-1",
             json!({"id": "proj-1", "name": "b4app", "manual": false}),
         ),
         insert(
             15,
-            "projectFolders",
+            "environmentFolders",
             "folder-1",
-            json!({"id": "folder-1", "projectId": "proj-1", "path": "/tmp/b4app"}),
+            json!({"id": "folder-1", "environmentId": "proj-1", "path": "/tmp/b4app"}),
         ),
         insert(
             16,

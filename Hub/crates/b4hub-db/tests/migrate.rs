@@ -18,7 +18,7 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(status.pending, 0);
-    assert_eq!(status.applied, (1..=17).collect::<Vec<i64>>());
+    assert_eq!(status.applied, (1..=18).collect::<Vec<i64>>());
 
     let app = Db::connect(&app_url).await.unwrap();
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM orgs")
@@ -30,7 +30,7 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
         .fetch_one(&app.pool)
         .await
         .unwrap();
-    assert_eq!(migrations, 17);
+    assert_eq!(migrations, 18);
     app.pool.close().await;
 
     let row =
@@ -138,14 +138,14 @@ async fn tenant_tables_force_row_level_security(pool: PgPool) {
         ("displayItems", true, true),
         ("drafts", true, true),
         ("enrollment_codes", false, false),
+        ("environmentFolders", true, true),
+        ("environments", true, true),
         ("hub_instances", false, false),
         ("hub_settings", false, false),
         ("notifications_sent", true, true),
         ("org_sync_horizons", true, true),
         ("orgs", false, false),
         ("pairing_mints", true, true),
-        ("projectFolders", true, true),
-        ("projects", true, true),
         ("push_tokens", true, true),
         ("runtimeRequests", true, true),
         ("step_up_grants", false, false),
@@ -452,5 +452,213 @@ async fn the_passkey_placeholder_name_is_cleared(pool: PgPool) {
             ("passkey".to_string(), None),
             ("passkey".to_string(), Some("Ann's Mac".to_string())),
         ]
+    );
+}
+
+/// Applies `0001`..`0017` from the migrations directory to `pool`, as the ledger of a hub from
+/// before the environments rename.
+async fn migrate_to_0017(pool: &PgPool) {
+    use sqlx::migrate::Migrator;
+
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let scratch = Scratch(std::env::temp_dir().join(format!(
+        "b4hub-migrations-{}",
+        b4hub_core::ids::new_uuid().simple()
+    )));
+    std::fs::create_dir_all(&scratch.0).unwrap();
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    for entry in std::fs::read_dir(&source).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_str().unwrap().to_string();
+        if name.as_str() < "0018" && name.ends_with(".sql") {
+            std::fs::copy(&path, scratch.0.join(&name)).unwrap();
+        }
+    }
+    Migrator::new(scratch.0.as_path())
+        .await
+        .unwrap()
+        .run(pool)
+        .await
+        .unwrap();
+}
+
+async fn count(pool: &PgPool, sql: &str) -> i64 {
+    sqlx::query_scalar(sql).fetch_one(pool).await.unwrap()
+}
+
+/// `0018_environments.sql` renames the project tables and columns and rewrites the names the feed
+/// and the column clocks store as data, so an older write cannot win after the upgrade and an
+/// unpushed change still applies under the new names.
+#[sqlx::test(migrations = false)]
+async fn environments_rename_carries_rows_changes_and_clocks(pool: PgPool) {
+    migrate_to_0017(&pool).await;
+    let seeded = orgs::seed(
+        &Db { pool: pool.clone() },
+        "acme",
+        "Acme",
+        "ann",
+        "Ann",
+        "ann@example.test",
+    )
+    .await
+    .unwrap();
+    let device: sqlx::types::Uuid = sqlx::query_scalar(
+        "INSERT INTO devices (id, org_id, user_id, name, platform) \
+         VALUES (gen_random_uuid(), $1, $2, 'Mac', 'macos') RETURNING id",
+    )
+    .bind(seeded.org_id)
+    .bind(seeded.user_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    for statement in [
+        r#"INSERT INTO "projects" ("id", "name", org_id, user_id, device_id, owner_device_id)
+           VALUES ('proj-1', 'b4app', $1, $2, $3, $3)"#,
+        r#"INSERT INTO "projectFolders" ("id", "projectId", org_id, user_id, device_id, owner_device_id)
+           VALUES ('folder-1', 'proj-1', $1, $2, $3, $3)"#,
+        r#"INSERT INTO "threads" ("id", "projectId", org_id, user_id, device_id, owner_device_id)
+           VALUES ('thread-1', 'proj-1', $1, $2, $3, $3)"#,
+        r#"INSERT INTO "connections" ("id", "projectId", org_id, user_id, device_id, owner_device_id)
+           VALUES ('conn-1', 'proj-1', $1, $2, $3, $3)"#,
+        // The feed: an insert of the project, an insert of the thread whose value carries the
+        // `projectId` key, an update of that column, and a rename of the project.
+        r#"INSERT INTO changes (org_id, device_id, device_seq, user_id, wall, "table", row_id, op, "column", value, hlc)
+           VALUES ($1, $3, 1, $2, 1, 'projects', 'proj-1', 'insert', NULL, '{"id": "proj-1", "name": "b4app"}', 'a-1'),
+                  ($1, $3, 2, $2, 2, 'threads', 'thread-1', 'insert', NULL, '{"id": "thread-1", "projectId": "proj-1"}', 'a-2'),
+                  ($1, $3, 3, $2, 3, 'threads', 'thread-1', 'update', 'projectId', '"proj-1"', 'a-3'),
+                  ($1, $3, 4, $2, 4, 'projectFolders', 'folder-1', 'insert', NULL, '{"id": "folder-1", "projectId": "proj-1"}', 'a-4'),
+                  ($1, $3, 5, $2, 5, 'projects', 'proj-1', 'update', 'name', '"b4app"', 'a-5')"#,
+        r#"INSERT INTO column_clocks (org_id, "table", row_id, "column", hlc)
+           VALUES ($1, 'projects', 'proj-1', 'name', 'a-5'),
+                  ($1, 'threads', 'thread-1', 'projectId', 'a-3'),
+                  ($1, 'threads', 'thread-1', 'readTurnId', 'a-9')"#,
+    ] {
+        sqlx::query(statement)
+            .bind(seeded.org_id)
+            .bind(seeded.user_id)
+            .bind(device)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    sqlx::raw_sql(include_str!("../migrations/0018_environments.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        count(
+            &pool,
+            r#"SELECT count(*) FROM "environments" WHERE name = 'b4app'"#
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        count(
+            &pool,
+            r#"SELECT count(*) FROM "environmentFolders" WHERE "environmentId" = 'proj-1'"#
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        count(
+            &pool,
+            r#"SELECT count(*) FROM "threads" WHERE "environmentId" = 'proj-1'"#
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        count(
+            &pool,
+            r#"SELECT count(*) FROM "connections" WHERE "environmentId" = 'proj-1'"#
+        )
+        .await,
+        1
+    );
+    // No stored name survives as data, in the feed or in the clocks.
+    assert_eq!(
+        count(
+            &pool,
+            r#"SELECT (SELECT count(*) FROM changes
+                       WHERE "table" IN ('projects', 'projectFolders') OR "column" = 'projectId'
+                          OR value ? 'projectId')
+                    + (SELECT count(*) FROM column_clocks
+                       WHERE "table" IN ('projects', 'projectFolders') OR "column" = 'projectId')"#
+        )
+        .await,
+        0
+    );
+    // The rewritten rows are the same five rows, now under the new names.
+    assert_eq!(
+        count(
+            &pool,
+            r#"SELECT count(*) FROM changes
+               WHERE "table" IN ('environments', 'environmentFolders') OR "column" = 'environmentId'
+                  OR value ? 'environmentId'"#
+        )
+        .await,
+        5
+    );
+    assert_eq!(
+        count(
+            &pool,
+            r#"SELECT count(*) FROM changes
+               WHERE value_bytes = octet_length(value::text) AND value -> 'environmentId' = '"proj-1"'"#
+        )
+        .await,
+        2
+    );
+    assert_eq!(
+        count(
+            &pool,
+            r#"SELECT count(*) FROM column_clocks
+               WHERE ("table", "column", hlc) IN
+                     (('environments', 'name', 'a-5'), ('threads', 'environmentId', 'a-3'),
+                      ('threads', 'readTurnId', 'a-9'))"#
+        )
+        .await,
+        3
+    );
+    let tables: Vec<String> = sqlx::query_scalar(
+        "SELECT tablename::text FROM pg_tables \
+         WHERE schemaname = 'public' AND tablename IN ('projects', 'projectFolders')",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(tables.is_empty(), "{tables:?}");
+    let indexes: Vec<String> = sqlx::query_scalar(
+        "SELECT indexname::text FROM pg_indexes WHERE schemaname = 'public' \
+         AND indexname IN ('environments_by_user', 'environmentFolders_by_user') ORDER BY 1",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        indexes,
+        ["environmentFolders_by_user", "environments_by_user"]
+    );
+    // Row-level security followed the renamed tables (also asserted, for a fresh database, by
+    // `tenant_tables_force_row_level_security`).
+    let secured: Vec<(String, bool, bool)> = sqlx::query_as(
+        "SELECT relname::text, relrowsecurity, relforcerowsecurity FROM pg_class \
+         WHERE relname IN ('environments', 'environmentFolders', 'changes', 'column_clocks') ORDER BY 1",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(secured.len(), 4);
+    assert!(
+        secured.iter().all(|(_, on, forced)| *on && *forced),
+        "{secured:?}"
     );
 }

@@ -27,8 +27,8 @@ pub const MAX_PAGE_BYTES: usize = 8 * 1024 * 1024;
 /// The tables whose rows sync, in dependency order.
 pub const SYNCED_TABLES: [&str; 9] = [
     "connections",
-    "projects",
-    "projectFolders",
+    "environments",
+    "environmentFolders",
     "threads",
     "turns",
     "displayItems",
@@ -68,7 +68,7 @@ const TABLES: [TableSpec; 9] = [
             "localServerId",
             "authReference",
             "nativeScope",
-            "projectId",
+            "environmentId",
             "capabilities",
             "models",
             "status",
@@ -79,16 +79,16 @@ const TABLES: [TableSpec; 9] = [
         parent: None,
     },
     TableSpec {
-        name: "projects",
+        name: "environments",
         key: "id",
         columns: &["id", "name", "manual", "createdAt", "updatedAt"],
         parent: None,
     },
     TableSpec {
-        name: "projectFolders",
+        name: "environmentFolders",
         key: "id",
-        columns: &["id", "projectId", "path", "createdAt"],
-        parent: Some(("projectId", "projects")),
+        columns: &["id", "environmentId", "path", "createdAt"],
+        parent: Some(("environmentId", "environments")),
     },
     TableSpec {
         name: "threads",
@@ -105,7 +105,7 @@ const TABLES: [TableSpec; 9] = [
             "continuity",
             "createdAt",
             "updatedAt",
-            "projectId",
+            "environmentId",
             "readTurnId",
             "userDeletedAt",
             "model",
@@ -433,13 +433,13 @@ mod tests {
         let connection = changes[0].value.as_ref().unwrap();
         assert_eq!(connection["authReference"], "secret:abc");
         assert_eq!(connection["target"], "/usr/local/bin/codex");
-        // And the project it serves, which only the Mac writes and the hub keeps.
-        assert_eq!(connection["projectId"], "project-1");
+        // And the environment it serves, which only the Mac writes and the hub keeps.
+        assert_eq!(connection["environmentId"], "project-1");
         assert!(table_spec("connections")
             .unwrap()
             .columns
-            .contains(&"projectId"));
-        assert!(!is_scrubbed("connections", "projectId"));
+            .contains(&"environmentId"));
+        assert!(!is_scrubbed("connections", "environmentId"));
     }
 
     #[test]
