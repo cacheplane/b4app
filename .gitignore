@@ -12,6 +12,7 @@ xcuserdata/
 *.xcuserstate
 *.xcworkspace/xcuserdata/
 .spm/
+Tests/B4Runtime/node_modules/
 
 # local data
 *.sqlite
