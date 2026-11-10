@@ -63,9 +63,10 @@ private actor FakeLaunchd {
 
     let loaded = try await LaunchAgentControl.install(
       programPath: "/Applications/New.app/b4app-coordinator", home: home,
-      // This fake advances on calls, not elapsed time. The production deadline is wall-clock, and four
-      // actor hops outlasted its 30 s on a CI runner whose cooperative pool was busy with parallel
-      // suites (45 s, run 42766454581), so neither a sleep nor the deadline may decide this test.
+      // This fake advances on calls, not elapsed time. Sleeping can exhaust the production deadline
+      // while unrelated parallel suites initialize their private databases, and so can the calls
+      // themselves (each waits its turn on a starved pool: 47 s on CI with no sleep at all), so
+      // the deadline is out of reach too.
       launchctl: { arguments, _ in await launchd.run(arguments) }, leaveTimeout: .seconds(3600),
       poll: .zero)
 

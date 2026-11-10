@@ -224,6 +224,8 @@ A local B4 project the app runs for you (registering it runs its `b4.config` and
 
 The CLI connects to the running coordinator or starts `b4app-coordinator` next to itself. Set `B4APP_RUNTIME_DIR` and `B4APP_DATA_DIR` to isolate an experiment from the real data under `~/Library/Application Support/b4app`. The runtime directory must be short enough for a Unix socket path (104 bytes); the default under `$TMPDIR` is.
 
+The [B4 runtime integration trial](Tests/B4Runtime/README.md) runs the published B4 CLI against a local aimock fixture in CI. It uses synthetic responses and a dummy credential, makes no paid provider calls, and covers the CLI/runtime integration only; UI promotion and installed-app verification are separate follow-up work.
+
 Live provider tests are opt-in and never run in CI:
 
 ```bash

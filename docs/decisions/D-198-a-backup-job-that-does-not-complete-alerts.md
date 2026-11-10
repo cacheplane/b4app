@@ -1,0 +1,6 @@
+## 2026-11-09 (hosted-hub operations: the silent backup failure)
+
+- **D-198 An AWS Backup backup job that fails, is aborted, or expires unstarted alerts. Amends D-194.** D-194 added an alert for a failed copy job. The week-one review then found that the Sunday backups of 2026-11-01 and 2026-11-08 had themselves failed against the RDS maintenance window (D-196 moved the window), and a backup that never completes starts no copy job, so the copy rule said nothing. AWS Backup reports job outcomes as events, not metrics.
+  - **The rule.** The hub module adds an EventBridge rule for `aws.backup` `Backup Job State Change` events in state `FAILED`, `ABORTED`, or `EXPIRED`, targeting the alerts topic; the topic policy lets the three event rules publish. `EXPIRED` is a job that never started inside its start window, which leaves the day without a recovery point just as a failure does.
+  - **Scope.** Like the copy rule it matches every backup job in the account and region. Each account holds one hub and nothing else, so that is the hub's plan; a second backup plan in the account would alert here too, which is wanted.
+  - **Not done.** No alarm for the absence of a backup (a plan that is disabled or never scheduled raises no event). The monthly restore drill's freshness check (runbook 8, under 36 hours) is the backstop for that.

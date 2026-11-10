@@ -1,0 +1,22 @@
+{
+  "fixtures": [
+    {
+      "match": { "userMessage": "smoke-stream", "model": "gpt-4.1-mini" },
+      "response": { "content": "Streaming fixture reply arrives in several pieces." },
+      "latency": 100,
+      "chunkSize": 4
+    },
+    {
+      "match": { "userMessage": "smoke-tool", "hasToolResult": true, "toolResultContains": "fixture-value" },
+      "response": { "content": "The real fixture lookup returned fixture-value." }
+    },
+    {
+      "match": { "userMessage": "smoke-tool", "hasToolResult": false },
+      "response": { "toolCalls": [{ "id": "call_fixture_lookup", "name": "fixture_lookup", "arguments": "{\"query\":\"fixture-proof\"}" }] }
+    },
+    {
+      "match": { "userMessage": "smoke-after-restart" },
+      "response": { "content": "The same conversation continued after restart." }
+    }
+  ]
+}

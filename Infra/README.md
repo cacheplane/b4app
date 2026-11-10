@@ -191,7 +191,7 @@ Until an account is bootstrapped and its `AWS_ROLE_*` and `TFSTATE_KMS_KEY_ARN_*
 
 ### Alarm notifications
 
-Seven CloudWatch alarms (5xx, unhealthy hosts, p99 latency, running tasks, database free storage, CPU, connections; unhealthy hosts and running tasks exist only while `desired_count > 0`), an EventBridge rule that emails whenever a migrate task stops (the email shows the stop code and container exit code, so a clean run is also one email; it cannot filter on a non-zero exit), and a monthly cost budget that emails at 150 percent of actual spend all go to `alarm_email` through the `b4hub-<env>-alerts` topic.
+Seven CloudWatch alarms (5xx, unhealthy hosts, p99 latency, running tasks, database free storage, CPU, connections; unhealthy hosts and running tasks exist only while `desired_count > 0`), an EventBridge rule that emails whenever a migrate task stops (the email shows the stop code and container exit code, so a clean run is also one email; it cannot filter on a non-zero exit), two EventBridge rules that email when an AWS Backup backup job fails, is aborted, or expires unstarted and when a copy job fails, and a monthly cost budget that emails at 150 percent of actual spend all go to `alarm_email` through the `b4hub-<env>-alerts` topic.
 
 ## Operator runbooks
 
@@ -644,7 +644,7 @@ First look: `https://hub.<env>.b4.run/readyz` (`hub.b4.run` for prod), then the 
 | `rds-cpu` | CPU above 80 percent for fifteen minutes | RDS metrics; a runaway client in the hub log |
 | `rds-connections` | More than 60 connections | A second hub process, a stuck migration task, or an admin task left running (stop it with the command `admin-shell.sh` printed) |
 
-The EventBridge email `Migrate task ... stopped` arrives on every migrate run, clean or not; a non-zero exit code in it means a failed deploy (the workflow already stopped there). The monthly budget email means spend is over 150 percent of the budget.
+The EventBridge email `Migrate task ... stopped` arrives on every migrate run, clean or not; a non-zero exit code in it means a failed deploy (the workflow already stopped there). The monthly budget email means spend is over 150 percent of the budget. An AWS Backup email (`Backup Job State Change` or `Copy Job State Change`, raw event JSON) means that night has no recovery point, or none in the copy region: read `detail.statusMessage` in it, then `aws backup list-backup-jobs --by-state FAILED` (or `list-copy-jobs`), and start an on-demand backup once the cause is fixed. A backup that overlaps the RDS maintenance window fails this way (D-196).
 
 Logs Insights, on `/b4hub/<env>/hub`:
 
