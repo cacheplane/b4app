@@ -54,13 +54,15 @@ final class B4RuntimeSmokeTests: XCTestCase {
     try requireElement(app.buttons["stop"], in: app, timeout: 15)
     let transcript = app.scrollViews["transcript"].firstMatch
     try requireElement(transcript, in: app)
-    let partial = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Streaming fixture"))
-      .firstMatch
+    let partial = text("Streaming fixture", in: app)
     try requireElement(partial, in: app, timeout: 20)
     XCTAssertTrue(partial.isHittable)
     XCTAssertTrue(
       transcript.frame.contains(partial.frame), "Streaming text must be visible in the transcript")
-    XCTAssertFalse(partial.label.contains(Self.streamed), "A buffered final answer cannot prove UI streaming")
+    let partialText = [partial.label, partial.value as? String ?? ""]
+    XCTAssertFalse(
+      partialText.contains { $0.contains(Self.streamed) }, "A buffered final answer cannot prove UI streaming"
+    )
     let streaming = try await read(fixture)
     XCTAssertTrue(streaming.turns.contains { $0.status == .running })
     capture(app, name: "b4-streaming")
@@ -150,7 +152,9 @@ final class B4RuntimeSmokeTests: XCTestCase {
   }
 
   @MainActor private func text(_ value: String, in app: XCUIApplication) -> XCUIElement {
-    app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", value)).firstMatch
+    app.staticTexts.matching(
+      NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", value, value)
+    ).firstMatch
   }
 
   @MainActor private func open(_ app: XCUIApplication) throws {
