@@ -13,4 +13,8 @@ A reassessment of both hosted hubs one week after they went live (continuation o
 | Organization region policy, `us-west-2` exception | narrowed from `rds:*` and `ec2:*` to listed actions (D-196); copy vault, subnet groups and VPC calls still answer, `rds describe-db-clusters` is denied |
 | Sign-up policy | `B4HUB_SIGNUP=open` on both hubs; the owner confirmed open sign-up on production is intended (2026-11-09) |
 
+D-196 applied the same day: test by the merge of PR #155, production through the plan-gated approval (run 42718358851, 1 added, 2 changed). Afterwards `latency-p99` reads OK in both accounts on `RequestLatencyMs` (test p99 about 20 ms), no alarm is in ALARM in production, both instances show maintenance `sun:09:00-sun:10:00`, and `hub.b4.run/readyz` is ok. The first Sunday backup under the new window (2026-11-15 06:00 UTC) is the remaining proof.
+
+D-198 (a backup job that fails, is aborted, or expires unstarted emails the alerts topic; PR #164) was applied on 2026-11-10: test by the merge, production through the plan-gated approval (run 42779638901, 2 added, 1 changed, as planned), and `hub.b4.run/readyz` answered 200 afterwards. The rule was not inspected in either account directly (the operator's CLI session had expired) and no failed job has exercised it.
+
 Not re-run: the restore drill (last 2026-11-04), gate 2b, Compose and Helm gates. Still deferred by the owner: external monitoring (D-186).
