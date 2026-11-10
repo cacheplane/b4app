@@ -6,7 +6,7 @@ final class BannerLayoutTests: XCTestCase {
   private func launch(
     _ screen: String, notice: String = "sync", accessibility: Bool = false, dark: Bool = false,
     recover: Bool = false, withSyncFailure: Bool = false,
-    syncError: String? = nil, lastSyncAt: String? = nil
+    syncError: String? = nil, lastSyncAt: String? = nil, holdThreadOpen: Bool = false
   ) -> XCUIApplication {
     continueAfterFailure = false
     XCUIDevice.shared.orientation = .portrait
@@ -18,6 +18,7 @@ final class BannerLayoutTests: XCTestCase {
     ]
     if let syncError { app.launchEnvironment["LAYOUT_SYNC_ERROR"] = syncError }
     if let lastSyncAt { app.launchEnvironment["LAYOUT_LAST_SYNC"] = lastSyncAt }
+    if holdThreadOpen { app.launchEnvironment["LAYOUT_HOLD_THREAD_OPEN"] = "1" }
     if accessibility {
       app.launchArguments = [
         "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL",
@@ -455,10 +456,15 @@ final class BannerLayoutTests: XCTestCase {
 
   @MainActor
   func testBackCancelsNotificationWaitingForSync() {
-    let app = launch("notification-warm", notice: "healthy")
+    // The app gives up on a notified thread after 15 s and returns to the list by itself. A runner
+    // stall, or a system notification banner XCTest waits out before tapping, can outlast that, and
+    // the late Back tap then lands on the list. Holding the wait leaves Back as the only way out.
+    let app = launch("notification-warm", notice: "healthy", holdThreadOpen: true)
     app.buttons["fixture.open-notification"].tap()
-    XCTAssertTrue(app.descendants(matching: .any)["thread-opening"].firstMatch.waitForExistence(timeout: 10))
+    let opening = app.descendants(matching: .any)["thread-opening"].firstMatch
+    XCTAssertTrue(opening.waitForExistence(timeout: 10))
     app.navigationBars.buttons.element(boundBy: 0).tap()
+    XCTAssertTrue(opening.waitForNonExistence(timeout: 10))
     app.buttons["fixture.finish-sync"].tap()
     checkLayout(app, screen: "list", hasBanner: false)
     XCTAssertFalse(app.navigationBars.staticTexts["Fix the login bug"].isHittable)

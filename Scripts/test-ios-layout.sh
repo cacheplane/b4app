@@ -18,6 +18,10 @@ if not devices:
     raise SystemExit("No available iPhone Simulator; install an iOS runtime in Xcode.")
 print(devices[0]["udid"])
 ')
+  # Boot it and wait for the boot to finish before xcodebuild builds the harness. Left to
+  # xcodebuild, a cold Simulator is still settling when the first tests run: on a hosted runner the
+  # first two then failed to set the orientation and to launch the app (run 42770467156).
+  xcrun simctl bootstatus "$device" -b >/dev/null
   destination="platform=iOS Simulator,id=$device"
 fi
 results=${B4APP_LAYOUT_RESULTS:-"$PWD/.build/iOSLayout/Results-$(date -u +%Y%m%dT%H%M%S).xcresult"}

@@ -16,6 +16,17 @@ extension MirrorAccount: @retroactive AccountHost {}
   init(_ status: MirrorSyncStatus) { self.status = status }
 }
 
+/// A clock whose `now` stands still while its sleeps take real time. The model's 15 s wait for a
+/// notified thread then never expires by itself, so a test of Back during that wait does not race a
+/// stalled runner.
+struct HeldClock: Clock {
+  let now = ContinuousClock.now
+  var minimumResolution: Duration { ContinuousClock().minimumResolution }
+  func sleep(until deadline: ContinuousClock.Instant, tolerance: Duration?) async throws {
+    try await ContinuousClock().sleep(for: now.duration(to: deadline), tolerance: tolerance)
+  }
+}
+
 @main
 struct LayoutApp: App {
   @State private var model: WorkspaceModel
@@ -101,6 +112,7 @@ struct LayoutApp: App {
     self.account = account
     let model = WorkspaceModel(transportProvider: { transport }, accountSource: .host)
     model.accountHost = account
+    if ProcessInfo.processInfo.environment["LAYOUT_HOLD_THREAD_OPEN"] == "1" { model.clock = HeldClock() }
     model.accountHasNoMac = screen == "connect-mac"
     if screen == "archived" { model.projectFilter = .archived }
     if screen == "no-match" { model.listSearch = "no-such-thread" }
