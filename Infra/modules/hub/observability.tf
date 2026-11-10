@@ -52,7 +52,7 @@ resource "aws_sns_topic_policy" "alerts" {
         Principal = { Service = "events.amazonaws.com" }
         Action    = "sns:Publish"
         Resource  = aws_sns_topic.alerts.arn
-        Condition = { ArnEquals = { "aws:SourceArn" = [aws_cloudwatch_event_rule.migrate_stopped.arn, aws_cloudwatch_event_rule.backup_copy_failed.arn] } }
+        Condition = { ArnEquals = { "aws:SourceArn" = [aws_cloudwatch_event_rule.migrate_stopped.arn, aws_cloudwatch_event_rule.backup_copy_failed.arn, aws_cloudwatch_event_rule.backup_job_failed.arn] } }
       },
     ]
   })
@@ -242,6 +242,32 @@ resource "aws_cloudwatch_event_rule" "backup_copy_failed" {
 
 resource "aws_cloudwatch_event_target" "backup_copy_failed" {
   rule      = aws_cloudwatch_event_rule.backup_copy_failed.name
+  target_id = "${local.name}-alerts"
+  arn       = aws_sns_topic.alerts.arn
+
+  depends_on = [aws_sns_topic_policy.alerts]
+}
+
+# A backup job that does not complete is an event too, never a metric. The
+# Sunday backups of 2026-11-01 and 2026-11-08 failed against the RDS
+# maintenance window (D-196) and nothing said so; with no backup there is no
+# copy job either, so the copy rule above stays silent. ABORTED and EXPIRED
+# (the job never started inside its start window) leave the day without a
+# recovery point just as FAILED does.
+resource "aws_cloudwatch_event_rule" "backup_job_failed" {
+  name        = "${local.name}-backup-job-failed"
+  description = "An AWS Backup backup job for the hub did not complete."
+  event_pattern = jsonencode({
+    source        = ["aws.backup"]
+    "detail-type" = ["Backup Job State Change"]
+    detail = {
+      state = ["FAILED", "ABORTED", "EXPIRED"]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "backup_job_failed" {
+  rule      = aws_cloudwatch_event_rule.backup_job_failed.name
   target_id = "${local.name}-alerts"
   arn       = aws_sns_topic.alerts.arn
 
