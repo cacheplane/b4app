@@ -36,14 +36,14 @@ Files: new `Tests/macOSSmoke/UITests/B4RuntimeSmokeTests.swift`, shared helpers 
 - [x] Type/send the tool prompt, require the actual rendered step and one tool ledger entry, and validate native turn/message identities.
 - [x] Type/persist the restart draft, stop B4 through the test owner and click Send. Verify one failure notice, expanded full instructions, aligned controls, retained draft/history and unchanged provider request count.
 - [x] Restart B4 on the same endpoint; click Check again without automatic resend, then deliberate Send. Verify same native thread, completed continuation and no duplicate tool/provider requests; relaunch UI and verify history.
-- [ ] Add wider/dark variant using the existing CI width override. Capture artifacts and verify the existing five smoke tests still pass.
+- [x] Add wider/dark variant using the existing CI width override. Capture artifacts and verify the existing five smoke tests still pass.
 
 ## Task 4: Review, CI and merge
 
 Files: `.github/workflows/ci.yml`, smoke/runtime READMEs, `docs/compatibility.md`, `docs/milestones.md`, trial plan progress and a new gate record.
 
 - [x] Select pinned Node in the macOS job; keep fixture/runtime dependencies test-only. Record the real-UI/real-runtime/simulated-model boundary and retained artifacts.
-- [ ] Run runtime tests, focused Swift checks/build, full package verification when host capacity permits, smoke matrix, native builds, strict format and workflow/docs/whitespace checks.
+- [x] Run runtime tests, focused Swift checks/build, full package verification when host capacity permits, smoke matrix, native builds, strict format and workflow/docs/whitespace checks.
 - [x] Obtain independent spec and code-quality reviews and fix important findings.
 - [x] Merge PR #166 only with every CI check green; rebase this follow-up onto its merged main commit without duplicate first-stage changes.
 - [ ] Open the second PR, monitor all checks, resolve failures and merge only on green. Preserve the active worktree and report both merged PRs with verified limits.
@@ -53,4 +53,6 @@ Files: `.github/workflows/ci.yml`, smoke/runtime READMEs, `docs/compatibility.md
 - [x] Reproduce local refused-send draft loss with failing model assertions for composer and persisted save; restore within the existing context/newer-text guards and run focused recovery tests.
 - [x] Reproduce canonical B4 checkpoint-id duplication with a failing merge regression; carry optional native turn identity from B4 snapshots and reconcile matching completed live messages within that native turn only.
 - [x] Verify repeated identical text in different turns and failed prepared attempts retain distinct app identities, and repeated reconciliation is idempotent.
-- [ ] Re-run real UI recovery with canonical history ids, complete all seven smoke cases on clean CI and retain coordinator state even on early failure.
+- [x] Re-run real UI recovery with canonical history ids, complete all seven smoke cases on clean CI and retain coordinator state even on early failure.
+
+Final implementation evidence: all seven macOS smoke cases passed on `65d6c70` in CI run 42781960533; 1,478 Swift tests passed after the latest-main rebase. The first UI selector mismatch was corrected without weakening streaming proof. One existing package version probe stalled in CI; the final evidence-only head requires a fresh full check set before merge.
