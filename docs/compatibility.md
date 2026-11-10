@@ -11,6 +11,7 @@ Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M
 | Xcode | 26.6 (17F113), Swift 6.3.3 |
 | XcodeGen | 2.46.0 |
 | macOS recovery smoke | XCUITest on macOS 26.5 / Xcode 26.6, with a test-only app, separate real coordinator and ephemeral PostgreSQL, and fixture provider. Requires an active desktop session; the test runner opts out of App Sandbox. See [verification](verification/2026-11-09-macos-recovery-smoke.md). |
+| B4 runtime integration | Node 24.20.0; published `@b4run/cli`, `core`, `sdk` and `langchain` 0.15.8; `@copilotkit/aimock` 1.47.0. Exact npm dependency graph in `Tests/B4Runtime/package-lock.json`. The real CLI, agent, tool executor and SQLite persistence run against a simulated loopback model provider; this is fixture integration, not live-model or installed-app evidence. See [trial](verification/2026-11-09-b4-aimock-trial.md). |
 | Node (for B4 servers only) | v24.20.0 at `~/.nvm/versions/node/v24.20.0/bin/node` (found on `PATH` by `NodeLocator`, or without a shell through the nvm layout, D-040; `B4APP_NODE_PATH` overrides) |
 | Code-signing identity | none installed (`security find-identity -v -p codesigning`: 0 valid); packages are signed ad hoc (D-039) |
 | Fonts bundled | Hanken Grotesk Regular and SemiBold (OFL, from the LiveLoveApp repository), JetBrains Mono variable (OFL); registered per process with CoreText |

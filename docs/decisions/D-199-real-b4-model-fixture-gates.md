@@ -1,0 +1,7 @@
+## 2026-11-09 (real runtime fixture gates)
+
+- **D-199 Real B4 integration gates run the published runtime against a pinned local model fixture.** Applies the specification's fixture/live distinction to provider routing and runtime lifecycle coverage.
+  - **Boundary.** The real B4 CLI, standard agent, custom tool execution and SQLite checkpoints run against aimock's loopback provider API. Results are `fixture-tested`: a real runtime with a simulated model is neither live-provider nor signed-install evidence. Existing fast fake-runtime tests and opt-in live-provider checks remain separate.
+  - **Reproducibility.** Test-only npm dependencies and their transitive graph are locked under `Tests/B4Runtime`; no Node dependency enters a Swift target or shipped bundle. Explicit provider routing, matched request journals, successful terminal outcomes and an actual tool ledger are required. Unmatched requests fail; recording and upstream passthrough are disabled.
+  - **Ownership.** Every case owns private temporary project/state, one loopback mock server and its B4 child. Startup/shutdown are bounded, restart reuses that project's native history, and synthetic diagnostics are retained before cleanup. The owner's app, account, environment files and managed servers are outside the gate.
+  - **Promotion.** A separate CI job verifies the real-runtime trial. On success, the same owned fixture is reused by the workspace UI/coordinator smoke suite to verify presentation and preserved drafts through deliberate recovery; it continues to identify the model as simulated.
