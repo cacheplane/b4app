@@ -10,6 +10,7 @@ Recorded on 2026-10-30 (M0 baseline, updated for M1 the same day, M2 to M6 and M
 | macOS | 26.5 (Darwin 25.5.0) |
 | Xcode | 26.6 (17F113), Swift 6.3.3 |
 | XcodeGen | 2.46.0 |
+| macOS recovery smoke | XCUITest on macOS 26.5 / Xcode 26.6, with a test-only app, separate real coordinator and ephemeral PostgreSQL, and fixture provider. Requires an active desktop session; the test runner opts out of App Sandbox. See [verification](verification/2026-11-09-macos-recovery-smoke.md). |
 | Node (for B4 servers only) | v24.20.0 at `~/.nvm/versions/node/v24.20.0/bin/node` (found on `PATH` by `NodeLocator`, or without a shell through the nvm layout, D-040; `B4APP_NODE_PATH` overrides) |
 | Code-signing identity | none installed (`security find-identity -v -p codesigning`: 0 valid); packages are signed ad hoc (D-039) |
 | Fonts bundled | Hanken Grotesk Regular and SemiBold (OFL, from the LiveLoveApp repository), JetBrains Mono variable (OFL); registered per process with CoreText |
