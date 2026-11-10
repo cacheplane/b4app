@@ -1,0 +1,89 @@
+name: WorkspaceSmoke
+options:
+  deploymentTarget:
+    macOS: "26.0"
+packages:
+  b4app:
+    path: ../..
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    CODE_SIGN_IDENTITY: "-"
+    ENABLE_APP_SANDBOX: NO
+    ENABLE_HARDENED_RUNTIME: NO
+    B4APP_SMOKE_DESKTOP_HEIGHT: "600"
+    B4APP_SMOKE_DESKTOP_WIDTH: "1200"
+    B4APP_SMOKE_NODE_PATH: ""
+targets:
+  WorkspaceSmokeHost:
+    type: tool
+    platform: macOS
+    sources: [Host]
+    dependencies:
+      - package: b4app
+        product: Coordinator
+      - package: b4app
+        product: WorkspaceStorage
+      - package: b4app
+        product: WorkspacePlatform
+      - package: b4app
+        product: WorkspaceClient
+      - package: b4app
+        product: NIOTransport
+  WorkspaceSmokeHarness:
+    type: application
+    platform: macOS
+    sources: [Harness]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cacheplane.b4app.smoke-harness
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    dependencies:
+      - package: b4app
+        product: WorkspaceUI
+      - package: b4app
+        product: NIOTransport
+  WorkspaceSmokeTests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: UITests
+      - path: ../CodexAdapterTests/Fixtures/fake-codex.py
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cacheplane.b4app.smoke-tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: WorkspaceSmokeHarness
+    entitlements:
+      path: ../../Tests/macOSSmoke/SmokeTests.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+        com.apple.security.get-task-allow: true
+    dependencies:
+      - target: WorkspaceSmokeHarness
+      - target: WorkspaceSmokeHost
+        link: false
+      - package: b4app
+        product: WorkspaceClient
+      - package: b4app
+        product: NIOTransport
+schemes:
+  WorkspaceSmoke:
+    build:
+      targets:
+        WorkspaceSmokeHost: all
+        WorkspaceSmokeHarness: all
+        WorkspaceSmokeTests: [test]
+    test:
+      environmentVariables:
+        B4APP_POSTGRES_BIN: $(SRCROOT)/../../.build/postgres/bin
+        SWIFTNIO_STRICT: "1"
+        SMOKE_DESKTOP_HEIGHT: $(B4APP_SMOKE_DESKTOP_HEIGHT)
+        SMOKE_DESKTOP_WIDTH: $(B4APP_SMOKE_DESKTOP_WIDTH)
+        SMOKE_NODE_PATH: $(B4APP_SMOKE_NODE_PATH)
+        SMOKE_RUNTIME_PACKAGE: $(SRCROOT)/../../Tests/B4Runtime
+      targets:
+        - WorkspaceSmokeTests

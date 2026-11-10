@@ -87,6 +87,105 @@ private func seeded() throws -> WorkspaceDatabase {
 }
 
 @Suite struct SnapshotMergeTests {
+  @Test func canonicalHistoryIdsReuseMessagesWithinAcknowledgedNativeTurns() throws {
+    let db = try seeded()
+    defer { try? db.close() }
+    var live: [DisplayItem] = []
+    for index in 1...2 {
+      let turnId = "local-\(index)"
+      _ = try db.insertTurn(
+        Turn(
+          id: turnId, threadId: "t1", operationId: "op-\(index)", nativeTurnId: "turn-\(index)",
+          status: .terminal, submission: .acknowledged, outcome: .completed))
+      for role in [DisplayItemRole.user, .assistant] {
+        live.append(
+          try db.upsertDisplayItem(
+            threadId: "t1", turnId: turnId,
+            nativeItemId: role == .user ? nil : "turn-\(index):m1", role: role,
+            type: role == .user ? "userMessage" : "agentMessage",
+            payload: ["text": role == .user ? "same question" : "same answer"], provenance: .live))
+      }
+    }
+    // A refused attempt with the same text is not part of native history.
+    _ = try db.insertTurn(
+      Turn(id: "refused", threadId: "t1", operationId: "refused", status: .terminal, outcome: .failed))
+    let refused = try db.upsertDisplayItem(
+      threadId: "t1", turnId: "refused", nativeItemId: nil, role: .user, type: "userMessage",
+      payload: ["text": "same question"], provenance: .live)
+    let history = try (1...2).flatMap { index in
+      try ["user", "assistant"].map { role in
+        // Decode the additive adapter field as a real snapshot payload, including on the old code
+        // which ignores it. The pre-fix merge inserts duplicate rows instead of preserving identity.
+        try JSONValue.object([
+          "nativeItemId": .string("history-\(index)-\(role)"), "nativeTurnId": .string("turn-\(index)"),
+          "role": .string(role), "type": .string(role == "user" ? "userMessage" : "agentMessage"),
+          "payload": ["text": role == "user" ? "same question" : "same answer"],
+        ]).decode(SnapshotItem.self)
+      }
+    }
+    for _ in 0..<2 {
+      _ = try db.mergeSnapshotItems(threadId: "t1", items: history)
+      let rows = try db.displayItems(threadId: "t1")
+      #expect(rows.map(\.id) == live.map(\.id) + [refused.id])
+      #expect(rows.map(\.turnId) == ["local-1", "local-1", "local-2", "local-2", "refused"])
+      #expect(rows.map(\.nativeItemId) == history.map(\.nativeItemId) + [nil])
+      #expect(rows.allSatisfy { $0.provenance == .live })
+    }
+  }
+
+  @Test func scopedFallbackReservesLaterExactMatches() throws {
+    let db = try seeded()
+    defer { try? db.close() }
+    _ = try db.insertTurn(
+      Turn(
+        id: "local", threadId: "t1", operationId: "op", nativeTurnId: "turn-1", status: .terminal,
+        submission: .acknowledged, outcome: .completed))
+    var live: [DisplayItem] = []
+    for nativeId in ["canonical-second", "turn-1:m2"] {
+      live.append(
+        try db.upsertDisplayItem(
+          threadId: "t1", turnId: "local", nativeItemId: nativeId, role: .assistant, type: "agentMessage",
+          payload: ["text": "same answer"], provenance: .live))
+    }
+    let history = ["canonical-first", "canonical-second"].map {
+      SnapshotItem(
+        nativeItemId: $0, role: "assistant", type: "agentMessage", payload: ["text": "same answer"],
+        nativeTurnId: "turn-1")
+    }
+    _ = try db.mergeSnapshotItems(threadId: "t1", items: history)
+    #expect(try db.displayItems(threadId: "t1").map(\.id) == [live[1].id, live[0].id])
+  }
+
+  @Test(arguments: ["ambiguous", "prepared", "unknown", "running", "wrong-turn", "wrong-text", "wrong-type"])
+  func scopedFallbackDoesNotGuessAcrossUnconfirmedIdentities(_ scenario: String) throws {
+    let db = try seeded()
+    defer { try? db.close() }
+    let turn = Turn(
+      id: "local", threadId: "t1", operationId: "op", nativeTurnId: "turn-1",
+      status: scenario == "running" ? .running : .terminal,
+      submission: scenario == "prepared" ? .prepared : scenario == "unknown" ? .unknown : .acknowledged,
+      outcome: scenario == "running" ? nil : .completed)
+    _ = try db.insertTurn(turn)
+    if scenario == "ambiguous" {
+      var other = turn
+      other.id = "other"
+      other.operationId = "other"
+      _ = try db.insertTurn(other)
+    }
+    let live = try db.upsertDisplayItem(
+      threadId: "t1", turnId: turn.id, nativeItemId: nil, role: .user, type: "userMessage",
+      payload: ["text": "question"], provenance: .live)
+    let item = SnapshotItem(
+      nativeItemId: nil, role: "user", type: scenario == "wrong-type" ? "other" : "userMessage",
+      payload: ["text": scenario == "wrong-text" ? "other question" : "question"],
+      nativeTurnId: scenario == "wrong-turn" ? "turn-2" : "turn-1")
+    _ = try db.mergeSnapshotItems(threadId: "t1", items: [item])
+    let rows = try db.displayItems(threadId: "t1")
+    #expect(rows.count == 2)
+    #expect(rows.last?.id == live.id)
+    #expect(rows.first?.turnId == nil)
+  }
+
   private func snapshot(_ id: String?, _ role: String, _ text: String) -> SnapshotItem {
     SnapshotItem(
       nativeItemId: id, role: role, type: role == "user" ? "userMessage" : "agentMessage",

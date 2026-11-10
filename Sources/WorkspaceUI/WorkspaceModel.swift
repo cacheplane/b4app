@@ -1295,10 +1295,11 @@ public final class WorkspaceModel {
         options: Self.mutation(timeout: .seconds(90))
       ).turn
     }
+    // A refusal can already have a terminal turn (for example, a stopped B4 endpoint). Keep the
+    // input for deliberate recovery even when no active turn remains; never overwrite newer text.
     if sent == nil, generation == accountGeneration,
       selectedThreadId == detail.thread.id, self.detail?.thread.id == detail.thread.id,
-      !deletedThreadIds.contains(detail.thread.id), composerText.isEmpty,
-      self.detail?.activeTurn != nil || Remediation.isArchivedSession(lastFailure)
+      !deletedThreadIds.contains(detail.thread.id), composerText.isEmpty
     {
       composerText = text
     }
