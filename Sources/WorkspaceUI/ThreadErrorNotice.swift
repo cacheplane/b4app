@@ -23,6 +23,7 @@ struct ThreadErrorNotice: View {
           .frame(maxWidth: .infinity, alignment: .leading)
           // Reserve the instructions' wrapped height before flexible diagnostics take space.
           .layoutPriority(1)
+          .accessibilityIdentifier("recovery-message")
         if let failure {
           DisclosureGroup("Details", isExpanded: $detailsExpanded) {
             // A split view also measures us at zero width. Keep wrapped, selectable diagnostics
@@ -45,6 +46,7 @@ struct ThreadErrorNotice: View {
           }
           .font(LLAFont.small)
           .foregroundStyle(LLA.Color.muted)
+          .accessibilityIdentifier("recovery-details")
         }
         RecoveryNoticeActions {
           if let remedy, let title = remedy.actionTitle, remedy.action != .none {
@@ -53,9 +55,11 @@ struct ThreadErrorNotice: View {
               .accessibilityIdentifier("remediation")
           }
           Button("Dismiss", action: dismiss).buttonStyle(.llaSecondary)
+            .accessibilityIdentifier("recovery-dismiss")
         }
       }
     }
+    .accessibilityElement(children: .contain)
     .accessibilityIdentifier("error-banner")
   }
 }

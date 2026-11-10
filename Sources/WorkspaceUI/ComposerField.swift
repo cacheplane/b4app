@@ -72,6 +72,7 @@ struct ComposerField<Trailing: View>: View {
     )
     .overlay(
       RoundedRectangle(cornerRadius: lineSize / 2, style: .circular).strokeBorder(LLA.Color.rule)
+        .allowsHitTesting(false)
     )
     .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { fieldWidth = $0 }
     .background(alignment: .topLeading) { measurements }

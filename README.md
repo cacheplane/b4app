@@ -35,6 +35,14 @@ Render every screen of the app offscreen (both appearances) into PNGs, over a re
 B4APP_SNAPSHOT_DIR=docs/screenshots swift test --filter SnapshotTests
 ```
 
+Run the macOS recovery interaction smoke tests (real workspace UI and isolated coordinator, fixture runtime):
+
+```bash
+./Scripts/test-macos-smoke.sh
+```
+
+The [smoke-test guide](Tests/macOSSmoke/README.md) describes the archived-session journey, rendered-text checks, draft persistence, and retained Xcode results.
+
 ```bash
 ./Scripts/generate-project.sh
 ```
