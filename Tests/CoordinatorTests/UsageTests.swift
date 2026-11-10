@@ -112,6 +112,11 @@ actor RefusingRemoveStore: SecretStore {
       ConnectionAdd.Params(kind: .b4, label: "Gone", url: "http://127.0.0.1:9", route: "/chat#agent"),
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(60)))
     #expect(result.connection.status == .offline || result.connection.status == .error)
+    // The command response can reach the client before the collector consumes its last event.
+    try await h.events.waitFor {
+      $0.kind == .connectionChanged && $0.connectionId == result.connection.id
+        && $0.payload["attempt"]?.numberValue == 3
+    }
     let attempts = await h.events.events.map(\.event)
       .filter { $0.kind == .connectionChanged && $0.connectionId == result.connection.id }
       .compactMap { $0.payload["attempt"]?.numberValue.map(Int.init) }
