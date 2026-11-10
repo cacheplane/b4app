@@ -12,7 +12,7 @@ Scope: fixture-based UI/coordinator integration on Apple Silicon macOS 26.5, Xco
 - Repeat-close regression: a third close after two concurrent closes deterministically trapped with `Cannot schedule tasks on an EventLoop that has already shut down`. Sharing one cleanup task for all closers fixed it; the same strict test passed 40 iterations in 19.154 seconds.
 - Full package suite passed: 1,472 tests across 183 suites in 88.615 seconds. `swift build` and both shipping native app builds (macOS and generic iOS Simulator) passed on the final transport implementation.
 - Zero-test guard passed: a method filter matching no test produced an Xcode summary with zero tests, and the wrapper rejected it with exit 1. Skipping the entire bundle was separately rejected by Xcode itself (exit 70).
-- Strict Swift formatting, shellcheck, actionlint, documentation index validation and whitespace checks passed. Fresh validation after rebasing onto the latest main is recorded below when complete.
+- Strict Swift formatting, shellcheck, actionlint, documentation index validation and whitespace checks passed. Rebased cleanly onto main `20d3f97` (PR #162). The first rebased parallel run failed only its newly added count-based LaunchAgent fixture after its sleep exhausted the wall-clock budget. Removing that unnecessary fake poll delay preserved production timing; the next full parallel run passed all 1,474 tests across 184 suites in 93.109 seconds. Rebased package/native builds passed. CI reruns the final smoke suite.
 
 ### Regressions found by actual pointer input
 
