@@ -376,7 +376,7 @@ public final class WorkspaceDatabase: Sendable {
       }
       if let projectId = filter.projectId {
         params.append(projectId)
-        clauses.append("t.\"projectId\" = $\(params.count)")
+        clauses.append("t.\"environmentId\" = $\(params.count)")
       }
       if !filter.includeArchived { clauses.append("t.\"archived\" = false") }
       if let query = filter.query?.trimmingCharacters(in: .whitespaces), !query.isEmpty {
@@ -950,7 +950,7 @@ public final class WorkspaceDatabase: Sendable {
 
   /// The tables whose rows carry an owner: the device of a row's latest insert, on the hub
   /// (`owner_device_id`) and in the phone's mirror (`ownerDeviceId`).
-  static let ownedTables = ["connections", "projects", "threads"]
+  static let ownedTables = ["connections", "environments", "threads"]
 
   /// Re-announce this Mac's own rows as its current hub device, once per device (D-184): when the
   /// link's `ownedAs` is not its `deviceId`, append an insert for every row of `ownedTables` to the

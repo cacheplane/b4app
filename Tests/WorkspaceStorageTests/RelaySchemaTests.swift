@@ -40,12 +40,12 @@ import WorkspaceProtocol
       Connection(id: "c1", kind: .b4, label: "B4", target: "http://127.0.0.1:1", projectId: "p1"))
     #expect(try db.connection(id: "c1")?.projectId == "p1")
     let insert = try #require(try db.changes(after: 0).first { $0.table == "connections" })
-    #expect(insert.value?["projectId"] == .string("p1"))
+    #expect(insert.value?["environmentId"] == .string("p1"))
 
     try db.setConnectionProject(id: "c1", projectId: nil)
     #expect(try db.connection(id: "c1")?.projectId == nil)
     try db.setConnectionProject(id: "c1", projectId: "p1")
-    let moves = try db.changes(after: 0).filter { $0.table == "connections" && $0.column == "projectId" }
+    let moves = try db.changes(after: 0).filter { $0.table == "connections" && $0.column == "environmentId" }
     // A cleared column is a SQL NULL in the log, which decodes as no value.
     #expect(moves.map(\.value) == [nil, .string("p1")])
 

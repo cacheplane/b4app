@@ -94,12 +94,12 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     try seedThread(db, "t2")
     _ = try db.write { c in
       try c.execute(
-        "INSERT INTO \"projects\" (\"id\", \"name\", \"createdAt\", \"updatedAt\") VALUES ('p1', 'P', 'now', 'now')"
+        "INSERT INTO \"environments\" (\"id\", \"name\", \"createdAt\", \"updatedAt\") VALUES ('p1', 'P', 'now', 'now')"
       )
       try c.execute(
         "INSERT INTO \"drafts\" (\"threadId\", \"text\", \"updatedAt\") VALUES ('t1', 'hello', 'now')")
     }
-    let rows = ["threads": "t1", "projects": "p1", "drafts": "t1"]
+    let rows = ["threads": "t1", "environments": "p1", "drafts": "t1"]
     // Insert records every clocked column and nothing else.
     for (table, columns) in SyncColumns.clocked {
       #expect(Set(try clocks(db, table: table, rowId: rows[table]!).keys) == columns, "insert: \(table)")
@@ -110,13 +110,13 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     // `threadId`, so updating it moves the row: that column is checked on its own below.
     let updates: [String: [String: String]] = [
       "threads": [
-        "title": "'x'", "pinned": "true", "archived": "true", "readTurnId": "'u9'", "projectId": "'p1'",
+        "title": "'x'", "pinned": "true", "archived": "true", "readTurnId": "'u9'", "environmentId": "'p1'",
         "userDeletedAt": "'2026-11-02T12:00:00.000Z'", "model": "'opus'", "permission": "'plan'",
       ],
-      "projects": ["name": "'Renamed'"],
+      "environments": ["name": "'Renamed'"],
       "drafts": ["threadId": "'t2'", "text": "'again'", "updatedAt": "'later'"],
     ]
-    let keys = ["threads": "id", "projects": "id", "drafts": "threadId"]
+    let keys = ["threads": "id", "environments": "id", "drafts": "threadId"]
     for (table, columns) in SyncColumns.clocked {
       #expect(Set(updates[table]!.keys) == columns, "the update table covers \(table)")
       for column in columns.sorted() where !(table == "drafts" && column == "threadId") {
@@ -139,40 +139,41 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     let db = try WorkspaceDatabase.temporary()
     _ = try db.write { c in
       try c.execute(
-        "INSERT INTO \"projects\" (\"id\", \"createdAt\", \"updatedAt\") VALUES ('p1', 'now', 'now')")
+        "INSERT INTO \"environments\" (\"id\", \"createdAt\", \"updatedAt\") VALUES ('p1', 'now', 'now')")
       try c.execute(
-        "INSERT INTO \"projectFolders\" (\"id\", \"projectId\", \"path\", \"createdAt\") VALUES ('f1', 'p1', '/tmp/a', 'now')"
+        "INSERT INTO \"environmentFolders\" (\"id\", \"environmentId\", \"path\", \"createdAt\") VALUES ('f1', 'p1', '/tmp/a', 'now')"
       )
     }
     #expect(
       WorkspaceDatabase.syncedTables.map(\.table) == [
-        "connections", "projects", "projectFolders", "threads", "turns", "displayItems", "runtimeRequests",
+        "connections", "environments", "environmentFolders", "threads", "turns", "displayItems",
+        "runtimeRequests",
         "drafts", "connectionUsage",
       ])
     let changes = try db.changes(after: 0)
-    #expect(changes.map(\.table) == ["projects", "projectFolders"])
+    #expect(changes.map(\.table) == ["environments", "environmentFolders"])
     #expect(changes.allSatisfy { $0.op == "insert" })
     // The path is unique, and deleting a project removes its folders and unassigns its threads.
     #expect(throws: (any Error).self) {
       try db.write {
         _ = try $0.execute(
-          "INSERT INTO \"projectFolders\" (\"id\", \"projectId\", \"path\", \"createdAt\") VALUES ('f2', 'p1', '/tmp/a', 'now')"
+          "INSERT INTO \"environmentFolders\" (\"id\", \"environmentId\", \"path\", \"createdAt\") VALUES ('f2', 'p1', '/tmp/a', 'now')"
         )
       }
     }
     try seedThread(db)
-    try db.write { _ = try $0.execute("UPDATE \"threads\" SET \"projectId\" = 'p1'") }
+    try db.write { _ = try $0.execute("UPDATE \"threads\" SET \"environmentId\" = 'p1'") }
     #expect(try db.thread(id: "t1")?.projectId == "p1")
-    try db.write { _ = try $0.execute("DELETE FROM \"projects\" WHERE \"id\" = 'p1'") }
+    try db.write { _ = try $0.execute("DELETE FROM \"environments\" WHERE \"id\" = 'p1'") }
     #expect(try db.thread(id: "t1")?.projectId == nil)
-    #expect(try db.rowCount(table: "projectFolders") == 0)
+    #expect(try db.rowCount(table: "environmentFolders") == 0)
   }
 
   @Test func readColumnsRoundTripAndComputedFieldsAreNeverStored() throws {
     let db = try WorkspaceDatabase.temporary()
     _ = try db.write { c in
       try c.execute(
-        "INSERT INTO \"projects\" (\"id\", \"createdAt\", \"updatedAt\") VALUES ('p1', 'now', 'now')")
+        "INSERT INTO \"environments\" (\"id\", \"createdAt\", \"updatedAt\") VALUES ('p1', 'now', 'now')")
     }
     _ = try db.insertConnection(
       Connection(id: "c1", kind: .codex, label: "Codex", target: "/usr/local/bin/codex"))
@@ -306,6 +307,84 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     #expect(try db.thread(id: "done")?.updatedAt == "2026-01-01T00:00:00Z")
   }
 
+  @Test func environmentsMigrationCarriesRowsAndUnpushedChanges() throws {
+    // A store at 0010 with a project, its folder, a thread and a connection that point at it. The
+    // change-log rows those inserts produce are unpushed, and so are their column clocks.
+    let endpoint = try EphemeralPostgres.endpoint()
+    let lib = try LibPQ.load(binDir: endpoint.binDir!)
+    let raw = try PostgresConnection(
+      lib: lib,
+      connectionString:
+        "host=\(endpoint.socketDir) port=\(endpoint.port) dbname=\(endpoint.database) user=\(NSUserName())")
+    _ = try Migrator.applied(raw)
+    for file in try Migrator.files() where file.name < "0011" {
+      try raw.execute(file.sql)
+      try raw.execute(
+        "INSERT INTO \"schemaMigrations\" (\"name\", \"appliedAt\") VALUES ($1, 'then')", [file.name])
+    }
+    try raw.execute(
+      "INSERT INTO \"projects\" (\"id\", \"name\", \"createdAt\", \"updatedAt\") VALUES ('p1', 'b4app', 'now', 'now')"
+    )
+    try raw.execute(
+      "INSERT INTO \"projectFolders\" (\"id\", \"projectId\", \"path\", \"createdAt\") VALUES ('f1', 'p1', '/tmp/a', 'now')"
+    )
+    try raw.execute(
+      "INSERT INTO \"connections\" (\"id\", \"kind\", \"label\", \"target\", \"capabilities\", \"status\", \"authStatus\", \"projectId\", \"createdAt\", \"updatedAt\") VALUES ('c1', 'codex', 'Codex', '/x', '{}', 'ready', 'authenticated', 'p1', 'now', 'now')"
+    )
+    try raw.execute(
+      "INSERT INTO \"threads\" (\"id\", \"connectionId\", \"nativeThreadId\", \"projectId\", \"createdAt\", \"updatedAt\") VALUES ('t1', 'c1', 'n1', 'p1', 'now', 'now')"
+    )
+    try raw.execute("UPDATE \"projects\" SET \"name\" = 'before' WHERE \"id\" = 'p1'")
+    let logged = try raw.execute(
+      "SELECT count(*) AS \"n\" FROM \"changes\" WHERE \"table\" IN ('projects', 'projectFolders') OR \"column\" = 'projectId' OR \"value\" ? 'projectId'"
+    ).rows.first?.text("n")
+    #expect(logged != "0")
+    let maxSeq =
+      Int(try raw.execute("SELECT max(\"seq\") AS \"n\" FROM \"changes\"").rows.first?.text("n") ?? "0") ?? 0
+
+    let db = try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
+    #expect(try db.appliedMigrations().last == "0011_environments")
+    func scalar(_ sql: String) throws -> Int {
+      try db.read { c in try c.execute(sql).rows.first?.text("n").flatMap(Int.init) ?? -1 }
+    }
+    #expect(try scalar("SELECT count(*) AS n FROM \"environments\" WHERE \"name\" = 'before'") == 1)
+    #expect(
+      try scalar("SELECT count(*) AS n FROM \"environmentFolders\" WHERE \"environmentId\" = 'p1'") == 1)
+    #expect(try scalar("SELECT count(*) AS n FROM \"threads\" WHERE \"environmentId\" IS NOT NULL") == 1)
+    #expect(try scalar("SELECT count(*) AS n FROM \"connections\" WHERE \"environmentId\" IS NOT NULL") == 1)
+    #expect(
+      try scalar(
+        "SELECT count(*) AS n FROM \"changes\" WHERE \"table\" IN ('projects', 'projectFolders') OR \"column\" = 'projectId' OR \"value\" ? 'projectId'"
+      ) == 0)
+    #expect(try scalar("SELECT count(*) AS n FROM \"changes\" WHERE \"table\" = 'environments'") >= 1)
+    #expect(
+      try scalar(
+        "SELECT count(*) AS n FROM \"changes\" WHERE \"table\" = 'environmentFolders' AND \"op\" = 'insert' AND \"value\" ->> 'environmentId' = 'p1'"
+      ) == 1)
+    #expect(
+      try scalar(
+        "SELECT count(*) AS n FROM \"changes\" WHERE \"table\" = 'threads' AND \"op\" = 'insert' AND \"value\" ->> 'environmentId' = 'p1'"
+      ) == 1)
+    #expect(try scalar("SELECT count(*) AS n FROM \"changes\" WHERE \"synced\"") == 0)
+    // The migration itself logs nothing, and the per-column clocks follow the rename.
+    #expect(try scalar("SELECT count(*) AS n FROM \"changes\" WHERE \"seq\" > \(maxSeq)") == 0)
+    #expect(try clocks(db, table: "environments", rowId: "p1")["name"] != nil)
+    #expect(try clocks(db, table: "threads", rowId: "t1")["environmentId"] != nil)
+    #expect(try clocks(db, table: "projects", rowId: "p1").isEmpty)
+
+    // A write after the migration is logged under the new names and clocked.
+    try db.write { _ = try $0.execute("UPDATE \"environments\" SET \"name\" = 'renamed'") }
+    #expect(
+      try scalar(
+        "SELECT count(*) AS n FROM \"changes\" WHERE \"table\" = 'environments' AND \"column\" = 'name' AND \"value\" = '\"renamed\"'"
+      ) == 1)
+    try db.write { _ = try $0.execute("UPDATE \"threads\" SET \"environmentId\" = NULL") }
+    #expect(
+      try scalar(
+        "SELECT count(*) AS n FROM \"changes\" WHERE \"table\" = 'threads' AND \"column\" = 'environmentId'"
+      ) >= 1)
+  }
+
   @Test func runtimeRequestsAreIndexedByThread() throws {
     let db = try WorkspaceDatabase.temporary()
     let definition = try db.read { c in
@@ -321,20 +400,21 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     try seedThread(source)
     _ = try source.write { c in
       try c.execute(
-        "INSERT INTO \"projects\" (\"id\", \"name\", \"createdAt\", \"updatedAt\") VALUES ('p1', 'P', 'now', 'now')"
+        "INSERT INTO \"environments\" (\"id\", \"name\", \"createdAt\", \"updatedAt\") VALUES ('p1', 'P', 'now', 'now')"
       )
       try c.execute(
-        "INSERT INTO \"projectFolders\" (\"id\", \"projectId\", \"path\", \"createdAt\") VALUES ('f1', 'p1', '/tmp/a', 'now')"
+        "INSERT INTO \"environmentFolders\" (\"id\", \"environmentId\", \"path\", \"createdAt\") VALUES ('f1', 'p1', '/tmp/a', 'now')"
       )
-      try c.execute("UPDATE \"threads\" SET \"projectId\" = 'p1', \"readTurnId\" = 'u1' WHERE \"id\" = 't1'")
+      try c.execute(
+        "UPDATE \"threads\" SET \"environmentId\" = 'p1', \"readTurnId\" = 'u1' WHERE \"id\" = 't1'")
     }
     let path = NSTemporaryDirectory() + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
     try source.export(to: path)
     let target = try WorkspaceDatabase.temporary()
     try target.restore(from: path)
     #expect(try target.thread(id: "t1")?.projectId == "p1")
-    #expect(try target.rowCount(table: "projects") == 1)
-    #expect(try target.rowCount(table: "projectFolders") == 1)
+    #expect(try target.rowCount(table: "environments") == 1)
+    #expect(try target.rowCount(table: "environmentFolders") == 1)
     #expect(
       try clocks(target, table: "threads", rowId: "t1") == clocks(source, table: "threads", rowId: "t1"))
     #expect(try target.changes(after: 0) == source.changes(after: 0))

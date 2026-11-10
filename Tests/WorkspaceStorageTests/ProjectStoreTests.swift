@@ -53,7 +53,7 @@ private func seedThread(_ db: WorkspaceDatabase, _ id: String) throws {
     #expect(renamed.updatedAt > created.updatedAt)
     #expect(renamed.manual && renamed.createdAt == "2026-01-01T00:00:00Z")
     let change = try #require(
-      try db.changes(after: 0).last { $0.table == "projects" && $0.column == "name" })
+      try db.changes(after: 0).last { $0.table == "environments" && $0.column == "name" })
     #expect(change.value?.stringValue == "New")
   }
 
@@ -116,7 +116,7 @@ private func seedThread(_ db: WorkspaceDatabase, _ id: String) throws {
     let before = try db.thread(id: "t1")
     try db.setThreadProject(threadIds: ["t1"], projectId: "p1")
     let change = try #require(
-      try db.changes(after: 0).last { $0.table == "threads" && $0.column == "projectId" })
+      try db.changes(after: 0).last { $0.table == "threads" && $0.column == "environmentId" })
     #expect(change.value?.stringValue == "p1")
     #expect(try db.thread(id: "t1")?.projectId == "p1")
     #expect(try db.thread(id: "t1")?.updatedAt == before?.updatedAt)

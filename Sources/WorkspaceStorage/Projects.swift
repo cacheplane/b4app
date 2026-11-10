@@ -5,14 +5,14 @@ import WorkspaceProtocol
 /// forms, a caller's job; a path belongs to at most one project (`projectFolders."path"` is UNIQUE).
 extension WorkspaceDatabase {
   private static let foldersInOrder =
-    "SELECT * FROM \"projectFolders\" ORDER BY \"createdAt\" COLLATE \"C\", \"id\" COLLATE \"C\""
+    "SELECT * FROM \"environmentFolders\" ORDER BY \"createdAt\" COLLATE \"C\", \"id\" COLLATE \"C\""
 
   /// Every project, oldest first, each with its folders (oldest first).
   public func listProjects() throws -> [Project] {
     try read { c in
       let projects = try all(
         c, Project.self,
-        "SELECT * FROM \"projects\" ORDER BY \"createdAt\" COLLATE \"C\", \"id\" COLLATE \"C\"")
+        "SELECT * FROM \"environments\" ORDER BY \"createdAt\" COLLATE \"C\", \"id\" COLLATE \"C\"")
       let folders = Dictionary(
         grouping: try all(c, ProjectFolder.self, Self.foldersInOrder), by: \.projectId)
       return projects.map { project in
@@ -31,17 +31,17 @@ extension WorkspaceDatabase {
   public func project(folderPath: String) throws -> Project? {
     try read {
       try project(
-        c: $0, where: "p.\"id\" = (SELECT \"projectId\" FROM \"projectFolders\" WHERE \"path\" = $1)",
+        c: $0, where: "p.\"id\" = (SELECT \"environmentId\" FROM \"environmentFolders\" WHERE \"path\" = $1)",
         [folderPath])
     }
   }
 
   private func project(c: PostgresConnection, where clause: String, _ params: [String?]) throws -> Project? {
-    guard var project = try one(c, Project.self, "SELECT p.* FROM \"projects\" p WHERE " + clause, params)
+    guard var project = try one(c, Project.self, "SELECT p.* FROM \"environments\" p WHERE " + clause, params)
     else { return nil }
     project.folders = try all(
       c, ProjectFolder.self,
-      "SELECT * FROM \"projectFolders\" WHERE \"projectId\" = $1 ORDER BY \"createdAt\" COLLATE \"C\", \"id\" COLLATE \"C\"",
+      "SELECT * FROM \"environmentFolders\" WHERE \"environmentId\" = $1 ORDER BY \"createdAt\" COLLATE \"C\", \"id\" COLLATE \"C\"",
       [project.id])
     return project
   }
@@ -51,14 +51,14 @@ extension WorkspaceDatabase {
   /// apart in the order given, so the first is the oldest.
   public func insertProject(_ project: Project, folders: [String]) throws -> Project {
     try write { c in
-      try insert(c, "projects", project)
+      try insert(c, "environments", project)
       let base = Date()
       var stored: [ProjectFolder] = []
       for (index, path) in folders.enumerated() {
         let folder = ProjectFolder(
           id: UUID().uuidString.lowercased(), projectId: project.id, path: path,
           createdAt: Timestamp.string(from: base.addingTimeInterval(Double(index) / 1000)))
-        try insert(c, "projectFolders", folder)
+        try insert(c, "environmentFolders", folder)
         stored.append(folder)
       }
       var inserted = project
@@ -72,7 +72,7 @@ extension WorkspaceDatabase {
   public func renameProject(id: String, name: String) throws -> Project? {
     try write { c in
       let renamed = try c.execute(
-        "UPDATE \"projects\" SET \"name\" = $2, \"updatedAt\" = $3 WHERE \"id\" = $1",
+        "UPDATE \"environments\" SET \"name\" = $2, \"updatedAt\" = $3 WHERE \"id\" = $1",
         [id, name, Timestamp.now()]
       ).affected
       guard renamed > 0 else { return nil }
@@ -85,7 +85,7 @@ extension WorkspaceDatabase {
   public func moveFolder(path: String, toProject projectId: String) throws {
     try write { c in
       let moved = try c.execute(
-        "UPDATE \"projectFolders\" SET \"projectId\" = $2 WHERE \"path\" = $1", [path, projectId]
+        "UPDATE \"environmentFolders\" SET \"environmentId\" = $2 WHERE \"path\" = $1", [path, projectId]
       ).affected
       guard moved > 0 else { throw Self.unownedFolder(path) }
     }
@@ -95,7 +95,7 @@ extension WorkspaceDatabase {
   /// `protocolInvalid`.
   public func removeFolder(path: String) throws {
     try write { c in
-      let removed = try c.execute("DELETE FROM \"projectFolders\" WHERE \"path\" = $1", [path]).affected
+      let removed = try c.execute("DELETE FROM \"environmentFolders\" WHERE \"path\" = $1", [path]).affected
       guard removed > 0 else { throw Self.unownedFolder(path) }
     }
   }
@@ -107,7 +107,7 @@ extension WorkspaceDatabase {
 
   /// Delete a project. Its folders go with it and its threads become unassigned.
   public func deleteProject(id: String) throws {
-    try write { _ = try $0.execute("DELETE FROM \"projects\" WHERE \"id\" = $1", [id]) }
+    try write { _ = try $0.execute("DELETE FROM \"environments\" WHERE \"id\" = $1", [id]) }
   }
 
   /// Assign threads to a project, or unassign them with nil. Does not move the threads' `updatedAt`.
@@ -117,7 +117,7 @@ extension WorkspaceDatabase {
     try write { c in
       for id in threadIds {
         _ = try c.execute(
-          "UPDATE \"threads\" SET \"projectId\" = $2::text WHERE \"id\" = $1", [id, projectId])
+          "UPDATE \"threads\" SET \"environmentId\" = $2::text WHERE \"id\" = $1", [id, projectId])
       }
     }
   }
@@ -164,7 +164,7 @@ extension WorkspaceDatabase {
     try write { c in
       var manual = project
       manual.manual = true
-      try insert(c, "projects", manual)
+      try insert(c, "environments", manual)
       return try applyEdit(c, id: project.id, name: nil, placing: placing, releasing: [])
     }
   }
@@ -179,7 +179,7 @@ extension WorkspaceDatabase {
     id: String, name: String?, placing: [FolderPlacement], releasing: [FolderRelease]
   ) throws -> ProjectEditResult {
     try write { c in
-      guard try one(c, Project.self, "SELECT * FROM \"projects\" WHERE \"id\" = $1", [id]) != nil else {
+      guard try one(c, Project.self, "SELECT * FROM \"environments\" WHERE \"id\" = $1", [id]) != nil else {
         throw WorkspaceError(.notFound, "Project \(id) does not exist.")
       }
       return try applyEdit(c, id: id, name: name, placing: placing, releasing: releasing)
@@ -190,7 +190,7 @@ extension WorkspaceDatabase {
   /// new automatic project with the threads that use it; folders without a release are dropped.
   public func deleteManualProject(id: String, releasing: [FolderRelease]) throws -> ProjectEditResult {
     try write { c in
-      guard let project = try one(c, Project.self, "SELECT * FROM \"projects\" WHERE \"id\" = $1", [id])
+      guard let project = try one(c, Project.self, "SELECT * FROM \"environments\" WHERE \"id\" = $1", [id])
       else { throw WorkspaceError(.notFound, "Project \(id) does not exist.") }
       guard project.manual else {
         throw WorkspaceError(
@@ -198,7 +198,7 @@ extension WorkspaceDatabase {
       }
       // The project's folders go with it (cascade) and its threads become unassigned, which frees each
       // released folder's unique path for its replacement.
-      try c.execute("DELETE FROM \"projects\" WHERE \"id\" = $1", [id])
+      try c.execute("DELETE FROM \"environments\" WHERE \"id\" = $1", [id])
       var changed = [id]
       for release in releasing {
         guard let replacement = release.replacement else { continue }
@@ -217,22 +217,23 @@ extension WorkspaceDatabase {
     var deleted: [String] = []
     var touched = false
     if let name {
-      try c.execute("UPDATE \"projects\" SET \"name\" = $2 WHERE \"id\" = $1", [id, name])
+      try c.execute("UPDATE \"environments\" SET \"name\" = $2 WHERE \"id\" = $1", [id, name])
       touched = true
     }
     var previousOwners: [String] = []
     for placement in placing {
       let owner = try one(
-        c, ProjectFolder.self, "SELECT * FROM \"projectFolders\" WHERE \"path\" = $1 FOR UPDATE",
+        c, ProjectFolder.self, "SELECT * FROM \"environmentFolders\" WHERE \"path\" = $1 FOR UPDATE",
         [placement.path])
       if let owner {
         guard owner.projectId != id else { continue }
         try c.execute(
-          "UPDATE \"projectFolders\" SET \"projectId\" = $2 WHERE \"path\" = $1", [placement.path, id])
+          "UPDATE \"environmentFolders\" SET \"environmentId\" = $2 WHERE \"path\" = $1",
+          [placement.path, id])
         if !previousOwners.contains(owner.projectId) { previousOwners.append(owner.projectId) }
       } else {
         try insert(
-          c, "projectFolders",
+          c, "environmentFolders",
           ProjectFolder(id: UUID().uuidString.lowercased(), projectId: id, path: placement.path))
       }
       try assign(c, threadIds: placement.threadIds, to: id)
@@ -240,7 +241,8 @@ extension WorkspaceDatabase {
     }
     for release in releasing {
       let removed = try c.execute(
-        "DELETE FROM \"projectFolders\" WHERE \"path\" = $1 AND \"projectId\" = $2", [release.path, id]
+        "DELETE FROM \"environmentFolders\" WHERE \"path\" = $1 AND \"environmentId\" = $2",
+        [release.path, id]
       ).affected
       guard removed > 0 else {
         throw WorkspaceError(
@@ -257,20 +259,21 @@ extension WorkspaceDatabase {
       // Placing a folder is a deliberate act: an automatic project that gains one stays for good.
       let manualSQL = placing.isEmpty ? "" : ", \"manual\" = true"
       try c.execute(
-        "UPDATE \"projects\" SET \"updatedAt\" = $2\(manualSQL) WHERE \"id\" = $1", [id, Timestamp.now()])
+        "UPDATE \"environments\" SET \"updatedAt\" = $2\(manualSQL) WHERE \"id\" = $1", [id, Timestamp.now()])
     }
     for owner in previousOwners {
       changed.append(owner)
       let remaining = try c.execute(
-        "SELECT 1 FROM \"projectFolders\" WHERE \"projectId\" = $1 LIMIT 1", [owner]
+        "SELECT 1 FROM \"environmentFolders\" WHERE \"environmentId\" = $1 LIMIT 1", [owner]
       ).rows.count
-      let manual = try one(c, Project.self, "SELECT * FROM \"projects\" WHERE \"id\" = $1", [owner])?.manual
+      let manual = try one(c, Project.self, "SELECT * FROM \"environments\" WHERE \"id\" = $1", [owner])?
+        .manual
       if remaining == 0, manual == false {
-        try c.execute("DELETE FROM \"projects\" WHERE \"id\" = $1", [owner])
+        try c.execute("DELETE FROM \"environments\" WHERE \"id\" = $1", [owner])
         deleted.append(owner)
       } else {
         try c.execute(
-          "UPDATE \"projects\" SET \"updatedAt\" = $2 WHERE \"id\" = $1", [owner, Timestamp.now()])
+          "UPDATE \"environments\" SET \"updatedAt\" = $2 WHERE \"id\" = $1", [owner, Timestamp.now()])
       }
     }
     return ProjectEditResult(
@@ -283,16 +286,16 @@ extension WorkspaceDatabase {
   ) throws {
     var automatic = replacement
     automatic.manual = false
-    try insert(c, "projects", automatic)
+    try insert(c, "environments", automatic)
     try insert(
-      c, "projectFolders",
+      c, "environmentFolders",
       ProjectFolder(id: UUID().uuidString.lowercased(), projectId: replacement.id, path: release.path))
     try assign(c, threadIds: release.threadIds, to: replacement.id)
   }
 
   private func assign(_ c: PostgresConnection, threadIds: [String], to projectId: String) throws {
     for threadId in threadIds {
-      try c.execute("UPDATE \"threads\" SET \"projectId\" = $2 WHERE \"id\" = $1", [threadId, projectId])
+      try c.execute("UPDATE \"threads\" SET \"environmentId\" = $2 WHERE \"id\" = $1", [threadId, projectId])
     }
   }
 }
@@ -306,7 +309,7 @@ extension WorkspaceDatabase {
   public func setConnectionProject(id: String, projectId: String?) throws {
     try write { c in
       _ = try c.execute(
-        "UPDATE \"connections\" SET \"projectId\" = $2::text WHERE \"id\" = $1", [id, projectId])
+        "UPDATE \"connections\" SET \"environmentId\" = $2::text WHERE \"id\" = $1", [id, projectId])
     }
   }
 

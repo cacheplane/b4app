@@ -95,7 +95,7 @@ private func clock(_ db: WorkspaceDatabase, _ table: String, _ rowId: String, _ 
         remote(phone, at, "threads", "t1", column: "pinned", value: true),
         remote(phone, at, "threads", "t1", column: "archived", value: true),
         remote(phone, at, "threads", "t1", column: "readTurnId", value: "turn-9"),
-        remote(phone, at, "projects", "p1", column: "name", value: "Renamed"),
+        remote(phone, at, "environments", "p1", column: "name", value: "Renamed"),
       ], ownDeviceId: mac, macDeviceIds: [mac], cursor: 3)
     #expect(applied.applied == 4)
     #expect(applied.touchedThreadIds == ["t1"])
@@ -185,7 +185,8 @@ private func clock(_ db: WorkspaceDatabase, _ table: String, _ rowId: String, _ 
         remote(phone, stamp(epochMillis() + 60_000, phone), "connections", "c1", column: "target", value: ""),
         remote(
           phone, stamp(epochMillis() + 60_000, phone), "threads", "t1", column: "nativeScope", value: "s"),
-        remote(phone, stamp(epochMillis() + 60_000, phone), "threads", "t1", column: "projectId", value: "p"),
+        remote(
+          phone, stamp(epochMillis() + 60_000, phone), "threads", "t1", column: "environmentId", value: "p"),
         remote(phone, stamp(epochMillis() + 60_000, phone), "threads", "t1", column: "updatedAt", value: "x"),
         remote(
           phone, stamp(epochMillis() + 60_000, phone), "threads", "t2", "insert",

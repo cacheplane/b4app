@@ -119,7 +119,7 @@ extension WorkspaceDatabase {
           result.applied += 1
           switch change.table {
           case "threads": result.touchedThreadIds.insert(change.rowId)
-          case "projects": result.touchedProjectIds.insert(change.rowId)
+          case "environments": result.touchedProjectIds.insert(change.rowId)
           default: result.touchedDraftThreadIds.insert(change.rowId)
           }
         } catch  where Self.isDataError(error) {
@@ -155,7 +155,7 @@ extension WorkspaceDatabase {
   /// Applies one change that passed the device check; true when it wrote at least one column.
   private func merge(_ c: PostgresConnection, _ change: RemoteChange, at hlc: String) throws -> Bool {
     switch (change.table, change.op) {
-    case ("threads", "update"), ("projects", "update"):
+    case ("threads", "update"), ("environments", "update"):
       guard let column = change.column, SyncColumns.isPhoneWritable(table: change.table, column: column),
         let value = change.value,
         value != .null || !SyncColumns.isNeverCleared(table: change.table, column: column),

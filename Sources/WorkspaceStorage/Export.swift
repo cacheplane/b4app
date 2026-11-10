@@ -14,7 +14,7 @@ extension WorkspaceDatabase {
   public static let archiveFormat = "b4app-export"
   public static let archiveVersion = 3
   public static let archiveTables = [
-    "localServers", "connections", "projects", "projectFolders", "threads", "turns", "displayItems",
+    "localServers", "connections", "environments", "environmentFolders", "threads", "turns", "displayItems",
     "runtimeRequests", "drafts", "devices", "changes", "columnClocks",
   ]
 
