@@ -23,8 +23,9 @@ import WorkspaceStorage
     }
     let root = URL(fileURLWithPath: CommandLine.arguments[1]).standardizedFileURL
     let fake = CommandLine.arguments[2]
+    let realB4 = fake == "--b4"
     guard root.deletingLastPathComponent().path == "/tmp", root.lastPathComponent.hasPrefix("b4smk-"),
-      FileManager.default.isExecutableFile(atPath: fake)
+      realB4 || FileManager.default.isExecutableFile(atPath: fake)
     else { throw WorkspaceError(.protocolInvalid, "Refusing non-fixture paths.") }
     // SIGTERM closes the coordinator and reaches normal exit (including PostgreSQL's atexit).
     signal(SIGTERM, SIG_IGN)
@@ -67,33 +68,44 @@ import WorkspaceStorage
           checkRetryDelays: [.zero], threadDeleteSweep: .zero))
     else { throw WorkspaceError(.internalError, "Fixture coordinator did not start.") }
     do {
-      trace("Adding fake runtime and cached thread")
+      trace(realB4 ? "Adding real B4 thread" : "Adding fake runtime and cached thread")
       let client = WorkspaceClient(
         transport: try await UnixSocketTransport.connect(path: paths.socketPath))
-      let connection = try await client.request(
-        ConnectionAdd.self, .init(kind: .codex, label: "Fixture runtime", executablePath: fake),
-        options: .init(operationId: UUID().uuidString)
-      ).connection
-      guard let database = coordinator.accounts.current?.database else {
-        throw WorkspaceError(.internalError, "Fixture account did not open.")
+      let threadId: String
+      do {
+        if realB4 {
+          threadId = try await B4SmokeSeed.create(root: root, client: client)
+        } else {
+          let connection = try await client.request(
+            ConnectionAdd.self, .init(kind: .codex, label: "Fixture runtime", executablePath: fake),
+            options: .init(operationId: UUID().uuidString)
+          ).connection
+          guard let database = coordinator.accounts.current?.database else {
+            throw WorkspaceError(.internalError, "Fixture account did not open.")
+          }
+          let thread = try database.insertThread(
+            ConversationThread(
+              id: "smoke-archived", connectionId: connection.id, nativeThreadId: "thr_archived",
+              nativeScope: connection.nativeScope ?? "", title: "Archived recovery fixture",
+              context: root.appendingPathComponent("work").path))
+          _ = try database.insertDisplayItem(
+            DisplayItem(
+              id: "smoke-history", threadId: thread.id, role: .assistant, type: "agentMessage",
+              payload: ["text": .string(String(repeating: "Earlier cached transcript.\n", count: 100))],
+              sequence: 1, provenance: .cache))
+          _ = try database.insertDisplayItem(
+            DisplayItem(
+              id: "smoke-cached", threadId: thread.id, role: .assistant, type: "agentMessage",
+              payload: ["text": "Cached transcript remains readable."], sequence: 2, provenance: .cache))
+          _ = try database.saveDraft(threadId: thread.id, text: "Keep this smoke-test draft.")
+          threadId = thread.id
+        }
+      } catch {
+        await client.close()
+        throw error
       }
-      let thread = try database.insertThread(
-        ConversationThread(
-          id: "smoke-archived", connectionId: connection.id, nativeThreadId: "thr_archived",
-          nativeScope: connection.nativeScope ?? "", title: "Archived recovery fixture",
-          context: root.appendingPathComponent("work").path))
-      _ = try database.insertDisplayItem(
-        DisplayItem(
-          id: "smoke-history", threadId: thread.id, role: .assistant, type: "agentMessage",
-          payload: ["text": .string(String(repeating: "Earlier cached transcript.\n", count: 100))],
-          sequence: 1, provenance: .cache))
-      _ = try database.insertDisplayItem(
-        DisplayItem(
-          id: "smoke-cached", threadId: thread.id, role: .assistant, type: "agentMessage",
-          payload: ["text": "Cached transcript remains readable."], sequence: 2, provenance: .cache))
-      _ = try database.saveDraft(threadId: thread.id, text: "Keep this smoke-test draft.")
       await client.close()
-      let ready: [String: String] = ["socket": paths.socketPath, "threadId": thread.id]
+      let ready: [String: String] = ["socket": paths.socketPath, "threadId": threadId]
       try JSONEncoder().encode(ready).write(to: root.appendingPathComponent("ready.json"), options: .atomic)
       trace("Fixture ready")
       for await _ in stopped { break }

@@ -10,17 +10,24 @@ import XCTest
   let process: Process
   let socket: String
   let client: WorkspaceClient
+  let threadId: String
+  let realRuntime: B4RuntimeOwner?
   private let lifetime: FileHandle
 
-  private init(root: URL, process: Process, socket: String, client: WorkspaceClient, lifetime: FileHandle) {
+  private init(
+    root: URL, process: Process, socket: String, client: WorkspaceClient, threadId: String,
+    realRuntime: B4RuntimeOwner?, lifetime: FileHandle
+  ) {
     self.root = root
     self.process = process
     self.socket = socket
     self.client = client
+    self.threadId = threadId
+    self.realRuntime = realRuntime
     self.lifetime = lifetime
   }
 
-  static func start() async throws -> SmokeFixture {
+  static func start(in test: XCTestCase, realB4: Bool = false) async throws -> SmokeFixture {
     let root = URL(fileURLWithPath: "/tmp/b4smk-\(UUID().uuidString.prefix(8))")
     try FileManager.default.createDirectory(
       at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -38,7 +45,7 @@ import XCTest
     let process = Process()
     let ownerPipe = Pipe()
     process.executableURL = host
-    process.arguments = [root.path, fake.path]
+    process.arguments = [root.path, realB4 ? "--b4" : fake.path]
     process.standardOutput = output
     process.standardError = output
     process.standardInput = ownerPipe
@@ -46,8 +53,13 @@ import XCTest
       "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "TMPDIR": NSTemporaryDirectory(),
       "B4APP_POSTGRES_BIN": try XCTUnwrap(ProcessInfo.processInfo.environment["B4APP_POSTGRES_BIN"]),
     ]
-    try process.run()
+    var runtime: B4RuntimeOwner?
     do {
+      if realB4 {
+        runtime = try B4RuntimeOwner(root: root)
+        try await runtime?.start()
+      }
+      try process.run()
       try output.close()
       try ownerPipe.fileHandleForReading.close()
       let ready = root.appendingPathComponent("ready.json")
@@ -62,14 +74,21 @@ import XCTest
       }
       let manifest = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: ready))
       let socket = try XCTUnwrap(manifest["socket"])
+      let threadId = try XCTUnwrap(manifest["threadId"])
       let transport = try await UnixSocketTransport.connect(path: socket)
       let client = WorkspaceClient(transport: transport)
       return SmokeFixture(
-        root: root, process: process, socket: socket, client: client,
+        root: root, process: process, socket: socket, client: client, threadId: threadId,
+        realRuntime: runtime,
         lifetime: ownerPipe.fileHandleForWriting)
     } catch {
+      try? output.close()
       try? ownerPipe.fileHandleForWriting.close()
-      if await stopProcess(process) { try? FileManager.default.removeItem(at: root) }
+      try? ownerPipe.fileHandleForReading.close()
+      let hostStopped = await stopProcess(process)
+      let runtimeStopped = await runtime?.stop(in: test) ?? true
+      attachLogs(root: root, to: test)
+      if hostStopped, runtimeStopped { try? FileManager.default.removeItem(at: root) }
       throw error
     }
   }
@@ -114,9 +133,41 @@ import XCTest
   }
 
   func stop(in test: XCTestCase) async throws {
+    if realRuntime != nil {
+      // Capture even when the journey failed before its final assertions. Evidence collection must
+      // not prevent independent client, coordinator and runtime cleanup.
+      var state: [String: JSONValue] = [:]
+      do {
+        state["thread"] = try JSONValue(
+          encoding: await client.request(
+            ThreadRead.self, .init(threadId: threadId), options: .init(timeout: .seconds(5))))
+      } catch { state["threadReadError"] = .string(String(describing: error)) }
+      do {
+        state["draft"] = try JSONValue(
+          encoding: await client.request(
+            DraftRead.self, .init(threadId: threadId), options: .init(timeout: .seconds(5))))
+      } catch { state["draftReadError"] = .string(String(describing: error)) }
+      if let data = try? JSONEncoder().encode(state) {
+        let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+        attachment.name = "b4-coordinator-teardown-state"
+        attachment.lifetime = .keepAlways
+        test.add(attachment)
+      }
+    }
     await client.close()
     try? lifetime.close()
     let stopped = await Self.stopProcess(process)
+    let runtimeStopped = await realRuntime?.stop(in: test) ?? true
+    Self.attachLogs(root: root, to: test)
+    XCTAssertTrue(stopped, "Fixture host failed to stop: \(root.path)")
+    if stopped {
+      XCTAssertEqual(process.terminationReason, .exit, "Fixture host crashed during shutdown")
+      XCTAssertEqual(process.terminationStatus, 0)
+    }
+    if stopped, runtimeStopped { try FileManager.default.removeItem(at: root) }
+  }
+
+  private static func attachLogs(root: URL, to test: XCTestCase) {
     for name in ["host.log", "runtime-requests.jsonl"] {
       if let data = try? Data(contentsOf: root.appendingPathComponent(name)) {
         let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.plain-text")
@@ -124,12 +175,6 @@ import XCTest
         attachment.lifetime = .keepAlways
         test.add(attachment)
       }
-    }
-    XCTAssertTrue(stopped, "Fixture host failed to stop: \(root.path)")
-    if stopped {
-      XCTAssertEqual(process.terminationReason, .exit, "Fixture host crashed during shutdown")
-      XCTAssertEqual(process.terminationStatus, 0)
-      try FileManager.default.removeItem(at: root)
     }
   }
 

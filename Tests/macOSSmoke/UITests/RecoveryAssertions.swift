@@ -1,7 +1,7 @@
 import AppKit
 import XCTest
 
-extension RecoverySmokeTests {
+extension XCTestCase {
   @MainActor func checkRenderedMessage(_ app: XCUIApplication, root: URL) throws {
     let message = app.staticTexts["recovery-message"]
     let actualShot = message.screenshot()

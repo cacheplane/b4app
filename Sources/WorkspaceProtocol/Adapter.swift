@@ -62,11 +62,16 @@ public struct NativeSessionRef: Codable, Sendable, Equatable {
 
 public struct SnapshotItem: Codable, Sendable, Equatable {
   public var nativeItemId: String?
+  /// Optional native turn identity for matching a checkpoint message to its completed live row.
+  public var nativeTurnId: String?
   public var role: String
   public var type: String
   public var payload: JSONValue
-  public init(nativeItemId: String?, role: String, type: String, payload: JSONValue) {
+  public init(
+    nativeItemId: String?, role: String, type: String, payload: JSONValue, nativeTurnId: String? = nil
+  ) {
     self.nativeItemId = nativeItemId
+    self.nativeTurnId = nativeTurnId
     self.role = role
     self.type = type
     self.payload = payload

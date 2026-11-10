@@ -29,3 +29,12 @@ The Node owner gets an environment allowlist and private fixture paths. It inher
 Install the locked Node package and select Node 24 in the macOS smoke job; pass the executable and fixture-package paths through test-only build settings. No Node dependency is embedded in the shipping app or shared SwiftUI module. Keep the separate fast runtime CI job and all existing smoke tests. Full Swift/package/native/iOS and updated smoke CI must pass at the reviewed head before merge. Record local failures or environmental limits honestly.
 
 Live-model compatibility, signed installation and managed-server settings interactions remain separate gates. This suite claims real UI/coordinator/attached-B4 integration with a simulated model.
+
+## Findings from the first real UI run
+
+The user authorized continuing through fixes exposed by the trial. The real flow found two product defects to include in this promotion:
+
+- A refused local send to a stopped B4 endpoint loses the composer and saved draft. Restore a failed command's input only while the original account and thread are still selected/open, the thread was not deleted, and no newer text was typed. Restoration never resends.
+- B4 streaming assistant ids (`turn-N:mM`) and saved checkpoint message ids differ; local user items also lack the saved native id. Existing reconciliation duplicates both. Extend snapshot items with an optional native turn identity. The pinned B4 runtime defines turns by HumanMessage boundaries, matching the adapter's existing `turn-N` ordinal. Within a matching terminal acknowledged native turn, reuse an unused cached row only for the same role, item type and exact nonempty text, then adopt the canonical saved message id. Keep app row/turn identities and live payloads. Prepared refusals, unresolved submissions and other providers receive no such fallback. Exact native-id matches retain priority.
+
+Regression coverage must include equal text in multiple native turns, refused attempts with the same text, canonical id adoption and idempotent repeated reconciliation. The UI journey retains its no-duplicate assertions after Check again and relaunch.

@@ -42,6 +42,7 @@ struct TranscriptView: View {
         .frame(maxWidth: LLA.Metrics.column, alignment: .leading)
         .frame(maxWidth: .infinity)
       }
+      .accessibilityIdentifier("transcript")
       #if os(iOS)
         // Dragging the transcript down puts the keyboard away, as in Messages.
         .scrollDismissesKeyboard(.interactively)
