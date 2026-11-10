@@ -57,7 +57,7 @@ struct AgentWorkspace: AsyncParsableCommand {
     subcommands: [
       Doctor.self, ConnectionCommand.self, ThreadCommand.self, TurnCommand.self, RequestCommand.self,
       Server.self, Credential.self, CoordinatorCommand.self, DatabaseCommand.self, HubCommand.self,
-      AccountCommand.self,
+      AccountCommand.self, DocsRecord.self,
     ])
 }
 

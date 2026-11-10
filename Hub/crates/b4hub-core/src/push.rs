@@ -139,6 +139,16 @@ pub fn withdrawal_payload(keys: &[String]) -> Value {
     })
 }
 
+/// A silent hint to catch up the mirror, without navigation or notification removal semantics.
+pub fn refresh_payload() -> Value {
+    json!({ "aps": { "content-available": 1 }, "refresh": true })
+}
+
+/// [`refresh_payload`] plus the Simulator's target bundle.
+pub fn spool_refresh_payload(bundle_id: &str) -> Value {
+    with_bundle(refresh_payload(), bundle_id)
+}
+
 /// [`withdrawal_payload`] plus the `Simulator Target Bundle` key.
 pub fn spool_withdrawal_payload(keys: &[String], bundle_id: &str) -> Value {
     with_bundle(withdrawal_payload(keys), bundle_id)
@@ -248,6 +258,25 @@ mod tests {
                 .unwrap()
                 .remove("Simulator Target Bundle");
             assert_eq!(withdrawal_payload(&keys), plain);
+        }
+    }
+
+    #[test]
+    fn refresh_fixture() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../../../Tests/Fixtures/sync/push.json"))
+                .unwrap();
+        let entries = fixture["refreshes"].as_array().unwrap();
+        assert!(!entries.is_empty());
+        for entry in entries {
+            let bundle = entry["bundleId"].as_str().unwrap();
+            assert_eq!(spool_refresh_payload(bundle), entry["expected"]);
+            let mut plain = entry["expected"].clone();
+            plain
+                .as_object_mut()
+                .unwrap()
+                .remove("Simulator Target Bundle");
+            assert_eq!(refresh_payload(), plain);
         }
     }
 

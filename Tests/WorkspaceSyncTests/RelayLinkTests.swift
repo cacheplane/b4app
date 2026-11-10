@@ -629,6 +629,39 @@ struct RelayLinkTests {
     await h.flush(socket)
     #expect(socket.deviceClosedCode == nil)
   }
+
+  /// A newer phone's command, forwarded by a newer hub, reaches a Mac that does not know its method.
+  static let unknownCommand =
+    #"{"type":"command","id":"c-new","method":"project.archive","params":{"projectId":"p1"},"deadline":"2026-11-09T12:00:10.000Z","from":{"deviceId":"0198c3a2-77d0-7a11-8c6e-1f4e2d5b9a07","name":"iPhone"}}"#
+
+  @Test func aMacAnswersACommandItCannotRunAtOnce() async throws {
+    let h = LinkHarness()
+    let socket = try await h.connect(role: .host)
+    socket.deliverText(Self.unknownCommand)
+    var reply: RelayMessage
+    repeat { reply = try await socket.nextSent() } while reply == .ping
+    guard case .reply(let id, let result, let error?) = reply else {
+      Issue.record("expected an error reply, got \(reply)")
+      return
+    }
+    #expect(id == "c-new" && result == nil)
+    #expect(error.code == "unsupported_capability")
+    #expect(error.message.contains("\u{201C}project.archive\u{201D}"))
+    #expect(error.details?["reason"] == "unknown_method" && error.details?["method"] == "project.archive")
+    // The link stays up, and the command is not handed on as a message.
+    await h.flush(socket)
+    #expect(socket.deviceClosedCode == nil)
+    #expect(await h.recorder.messages.allSatisfy { if case .command = $0 { false } else { true } })
+  }
+
+  @Test func aPhoneIgnoresACommandItCannotRead() async throws {
+    let h = LinkHarness()
+    let socket = try await h.connect(role: .client)
+    socket.deliverText(Self.unknownCommand)
+    await h.flush(socket)
+    #expect(socket.deviceClosedCode == nil)
+    #expect(!socket.sentMessages.contains { if case .reply = $0 { true } else { false } })
+  }
 }
 
 /// A connection whose first open waits for `release()` and then fails; later opens go to a fake.

@@ -23,13 +23,16 @@ struct ModelHarness {
   let model: WorkspaceModel
   let workDir: String
 
-  static func start(secretStore: any SecretStore = MemorySecretStore()) async throws -> ModelHarness {
+  static func start(
+    secretStore: any SecretStore = MemorySecretStore(), extraEnvironment: [String: String] = [:]
+  ) async throws -> ModelHarness {
     let base = NSTemporaryDirectory() + "b4ui-\(UUID().uuidString.prefix(8))"
     try FileManager.default.createDirectory(atPath: base + "/work", withIntermediateDirectories: true)
     let paths = try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = "/nonexistent/node"
     env["ANTHROPIC_API_KEY"] = nil
+    for (key, value) in extraEnvironment { env[key] = value }
     try signInTestAccount(paths)
     guard
       case .running(let coordinator) = try await Coordinator.start(
@@ -40,7 +43,6 @@ struct ModelHarness {
     let model = WorkspaceModel(transportProvider: {
       try await UnixSocketTransport.connect(path: socketPath, timeout: .seconds(5))
     })
-    model.preferences = InMemoryPreferences()
     model.connect()
     guard await model.settledLink() == .ready else {
       throw WorkspaceError(.internalError, "the model did not connect: \(model.linkMessage ?? "no message")")
@@ -222,7 +224,6 @@ func waitUntil(
   @Test func openNewThreadClearsTheSelectionAndFocuses() async throws {
     let h = try await ModelHarness.start()
     let model = h.model
-    model.preferences = InMemoryPreferences()
     model.draftSaveDelay = .seconds(60)
     let connection = try #require(
       await model.addConnection(kind: .codex, label: "Fake Codex", executablePath: fakeCodex))
@@ -246,7 +247,6 @@ func waitUntil(
 
   @Test func openNewThreadWithAProjectPreselectsIt() async throws {
     let model = try await ListFixture.model()
-    model.preferences = InMemoryPreferences()
     // The newest project is the default; Marketing site is asked for.
     #expect(model.newThreadDraft.projectId == ListFixture.b4app)
     model.selectedThreadId = "asks"
@@ -279,7 +279,6 @@ func waitUntil(
 
   @Test func remediationNewThreadOpensTheComposer() async throws {
     let model = try await ListFixture.model()
-    model.preferences = InMemoryPreferences()
     model.selectedThreadId = "asks"
     model.lastError = "The runtime no longer has this thread's native session."
     let focus = model.newThreadFocusRequest

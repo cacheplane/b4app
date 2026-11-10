@@ -198,8 +198,13 @@ run "alarm_shapes" {
   }
 
   assert {
-    condition     = aws_cloudwatch_metric_alarm.latency_p99.extended_statistic == "p99" && aws_cloudwatch_metric_alarm.latency_p99.threshold == 2 && aws_cloudwatch_metric_alarm.latency_p99.evaluation_periods == 10
-    error_message = "latency: p99 > 2 s for 10 periods"
+    condition     = aws_cloudwatch_metric_alarm.latency_p99.extended_statistic == "p99" && aws_cloudwatch_metric_alarm.latency_p99.threshold == 2000 && aws_cloudwatch_metric_alarm.latency_p99.evaluation_periods == 10 && aws_cloudwatch_metric_alarm.latency_p99.namespace == "b4hub/b4hub-test" && aws_cloudwatch_metric_alarm.latency_p99.metric_name == "RequestLatencyMs"
+    error_message = "latency: p99 of the hub's own request latency (ms) > 2000 for 10 periods"
+  }
+
+  assert {
+    condition     = aws_cloudwatch_log_metric_filter.request_latency.log_group_name == "/b4hub/test/hub" && strcontains(aws_cloudwatch_log_metric_filter.request_latency.pattern, "$.span.path != \"/v1/changes\"") && strcontains(aws_cloudwatch_log_metric_filter.request_latency.pattern, "$.span.path != \"/v1/devices/self/link\"") && one(aws_cloudwatch_log_metric_filter.request_latency.metric_transformation).value == "$.elapsed_ms"
+    error_message = "the latency metric comes from the hub log, excluding the long-poll and WebSocket paths"
   }
 
   assert {
@@ -229,6 +234,25 @@ run "migrate_event_rule" {
   assert {
     condition     = jsondecode(aws_cloudwatch_event_rule.migrate_stopped.event_pattern).detail.taskDefinitionArn[0].prefix == "arn:aws:ecs:us-east-2:111111111111:task-definition/b4hub-test-hub-migrate:"
     error_message = "only the migrate family, matched with the colon so the hub family cannot match"
+  }
+}
+
+run "backup_copy_failed_rule" {
+  command = apply
+
+  assert {
+    condition     = jsondecode(aws_cloudwatch_event_rule.backup_copy_failed.event_pattern).source == ["aws.backup"] && jsondecode(aws_cloudwatch_event_rule.backup_copy_failed.event_pattern)["detail-type"] == ["Copy Job State Change"] && jsondecode(aws_cloudwatch_event_rule.backup_copy_failed.event_pattern).detail.state == ["FAILED"]
+    error_message = "a failed AWS Backup copy job raises an event to the alerts topic"
+  }
+
+  assert {
+    condition     = aws_cloudwatch_event_target.backup_copy_failed.arn == aws_sns_topic.alerts.arn
+    error_message = "the copy-failed rule targets the alerts topic"
+  }
+
+  assert {
+    condition     = contains([for st in jsondecode(aws_sns_topic_policy.alerts.policy).Statement : st.Sid], "EventRulesPublish")
+    error_message = "the topic policy lets both event rules publish"
   }
 }
 

@@ -9,10 +9,28 @@ import WorkspaceUI
 // mirror, with a fake relay; it never opens the owner's mirror, Keychain, hub, or installed app.
 extension MirrorAccount: @retroactive AccountHost {}
 
+/// The banner's status, observed as the app observes `MirrorHost.syncStatus`, so a fixture change
+/// reaches the banner by the shipped path rather than through an `App`-level `@State`.
+@MainActor @Observable final class FixtureSync {
+  var status: MirrorSyncStatus
+  init(_ status: MirrorSyncStatus) { self.status = status }
+}
+
+/// A clock whose `now` stands still while its sleeps take real time. The model's 15 s wait for a
+/// notified thread then never expires by itself, so a test of Back during that wait does not race a
+/// stalled runner.
+struct HeldClock: Clock {
+  let now = ContinuousClock.now
+  var minimumResolution: Duration { ContinuousClock().minimumResolution }
+  func sleep(until deadline: ContinuousClock.Instant, tolerance: Duration?) async throws {
+    try await ContinuousClock().sleep(for: now.duration(to: deadline), tolerance: tolerance)
+  }
+}
+
 @main
 struct LayoutApp: App {
   @State private var model: WorkspaceModel
-  @State private var status: MirrorSyncStatus
+  @State private var sync: FixtureSync
   @State private var connect = ConnectMac(siteDomain: "example.invalid", hasCamera: true, copy: { _ in })
   private let account: MirrorAccount
   private let relay: MirrorRelay
@@ -93,21 +111,22 @@ struct LayoutApp: App {
       memory: MirrorDeviceMemory(url: nil), makeAPI: { _, _ in FakeHubAPI() })
     self.account = account
     let model = WorkspaceModel(transportProvider: { transport }, accountSource: .host)
-    model.preferences = InMemoryPreferences()
     model.accountHost = account
+    if ProcessInfo.processInfo.environment["LAYOUT_HOLD_THREAD_OPEN"] == "1" { model.clock = HeldClock() }
     model.accountHasNoMac = screen == "connect-mac"
     if screen == "archived" { model.projectFilter = .archived }
     if screen == "no-match" { model.listSearch = "no-such-thread" }
     if screen == "detail" || screen == "notification-cold" { model.requestOpenThread("thread-1") }
     _model = State(initialValue: model)
-    _status = State(
-      initialValue: MirrorSyncStatus(
-        lastError: ["sync", "stale", "refused", "blocked"].contains(notice)
-          || ProcessInfo.processInfo.environment["LAYOUT_SYNC_FAILURE"] == "1"
-          ? ProcessInfo.processInfo.environment["LAYOUT_SYNC_ERROR"]
-            ?? "The Internet connection appears to be offline." : nil,
-        lastSyncAt: ProcessInfo.processInfo.environment["LAYOUT_LAST_SYNC"]
-          ?? (notice == "stale" ? Timestamp.now() : nil)))
+    _sync = State(
+      initialValue: FixtureSync(
+        MirrorSyncStatus(
+          lastError: ["sync", "stale", "refused", "blocked"].contains(notice)
+            || ProcessInfo.processInfo.environment["LAYOUT_SYNC_FAILURE"] == "1"
+            ? ProcessInfo.processInfo.environment["LAYOUT_SYNC_ERROR"]
+              ?? "The Internet connection appears to be offline." : nil,
+          lastSyncAt: ProcessInfo.processInfo.environment["LAYOUT_LAST_SYNC"]
+            ?? (notice == "stale" ? Timestamp.now() : nil))))
   }
 
   var body: some Scene {
@@ -118,7 +137,7 @@ struct LayoutApp: App {
           {
             AnyView(
               SyncBanner(
-                status: status,
+                status: sync.status,
                 relayRefused: notice == "refused"
                   ? SyncBanner.signInRequiredMessage : nil,
                 syncPaused: notice == "blocked"))
@@ -147,12 +166,15 @@ struct LayoutApp: App {
             .buttonStyle(.borderedProminent)
             .padding()
           }
-          if ProcessInfo.processInfo.environment["LAYOUT_RECOVER"] == "1" {
-            // Fixture-only trigger: no timer can race the UI test's initial assertions.
-            Button("Restore fixture connection") { status = MirrorSyncStatus(lastSyncAt: Timestamp.now()) }
-              .buttonStyle(.borderedProminent)
-              .accessibilityIdentifier("fixture.recover")
-              .padding()
+          if ProcessInfo.processInfo.environment["LAYOUT_RECOVER"] == "1", sync.status.lastError != nil {
+            // Fixture-only trigger: no timer can race the UI test's initial assertions. It goes once the
+            // status has changed, so the test can tell a lost tap from a banner that did not clear.
+            Button("Restore fixture connection") {
+              sync.status = MirrorSyncStatus(lastSyncAt: Timestamp.now())
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("fixture.recover")
+            .padding()
           }
         }
         .onChange(of: model.detail?.thread.id, initial: true) { _, id in
@@ -163,35 +185,52 @@ struct LayoutApp: App {
         }
         .task {
           await relay.start()
-          let socket = try! await connection.nextSocket()
-          // Leave the link awaiting hello to render the shipped connection notices on both screens.
-          guard notice != "connecting" else { return }
-          socket.deliver(
-            .hello(
-              protocol: 1, minClientProtocol: 1, deviceId: "phone-1", role: .client, heartbeatSeconds: 10,
-              hubTime: Timestamp.now()))
-          socket.deliver(
-            .presence(hosts: [
-              RelayHostPresence(
-                deviceId: "mac-1", name: "Fixture Mac", online: notice != "host-offline",
-                lastSeenAt: Timestamp.string(from: Date().addingTimeInterval(-120)))
-            ]))
-          if screen == "new-thread" || screen == "no-ready-detail" {
-            _ = await model.settledLink()
-            await model.openNewThread()
-          }
-          if notice == "account" {
-            _ = await model.settledLink()
-            var accountStatus = account.accountStatus
-            accountStatus.notice =
-              "The last sign-out could not reach the hub; that session was left open there."
-            model.applyHostAccount(accountStatus)
-          }
-          if notice == "action-error", screen != "detail" {
-            _ = await model.settledLink()
-            model.lastError = "The requested action could not be completed."
+          // The fake hub answers every link as the hub does: it greets each one and answers its pings.
+          // The relay drops a link after 30 s without a frame and opens another, so a slow runner that
+          // stalls the app would otherwise leave "Connecting to the hub…" on screen for the rest of a test.
+          var prepared = false
+          while let socket = try? await connection.nextSocket() {
+            // Leave the link awaiting hello to render the shipped connection notices on both screens.
+            guard notice != "connecting" else { continue }
+            socket.deliver(
+              .hello(
+                protocol: 1, minClientProtocol: 1, deviceId: "phone-1", role: .client, heartbeatSeconds: 10,
+                hubTime: Timestamp.now()))
+            socket.deliver(
+              .presence(hosts: [
+                RelayHostPresence(
+                  deviceId: "mac-1", name: "Fixture Mac", online: notice != "host-offline",
+                  lastSeenAt: Timestamp.string(from: Date().addingTimeInterval(-120)))
+              ]))
+            Task {
+              while let frame = try? await socket.nextSent() {
+                if case .ping = frame { socket.deliver(.pong(hubTime: Timestamp.now())) }
+              }
+            }
+            guard !prepared else { continue }
+            prepared = true
+            await prepare()
           }
         }
+    }
+  }
+
+  /// The fixture's state that needs a settled link, set up once, after the first hello.
+  private func prepare() async {
+    if screen == "new-thread" || screen == "no-ready-detail" {
+      _ = await model.settledLink()
+      await model.openNewThread()
+    }
+    if notice == "account" {
+      _ = await model.settledLink()
+      var accountStatus = account.accountStatus
+      accountStatus.notice =
+        "The last sign-out could not reach the hub; that session was left open there."
+      model.applyHostAccount(accountStatus)
+    }
+    if notice == "action-error", screen != "detail" {
+      _ = await model.settledLink()
+      model.lastError = "The requested action could not be completed."
     }
   }
 }

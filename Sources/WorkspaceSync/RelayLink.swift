@@ -80,6 +80,19 @@ public actor RelayLink {
   private var cookies: [String: String] = [:]
   /// `409 relocated` answers since the last `hello`.
   private var relocations = 0
+  /// This link's role, from the latest `hello`.
+  private var role: RelayRole?
+
+  /// The reply a Mac sends for a relayed command whose method this build does not know.
+  static func unknownCommandReply(id: String, method: String) -> RelayMessage {
+    let named = method.isEmpty ? "this" : "\u{201C}\(method)\u{201D}"
+    return .reply(
+      id: id,
+      error: RelayWireError(
+        .unsupportedCapability,
+        "Your Mac's Agent Workspace can't do \(named) yet. Update it on the Mac, then try again.",
+        details: ["reason": "unknown_method", "method": .string(method)]))
+  }
 
   /// - Parameters:
   ///   - url: the hub's base URL (as `HubURL.validate` returns it); the connection adds the path.
@@ -266,6 +279,14 @@ public actor RelayLink {
         guard runID == id else { return .retry("cancelled") }
         armWatchdog(id)
         continue
+      } catch HubLinkError.unknownCommand(let commandId, let method) {
+        // A command this build cannot run (the phone and hub are newer than this Mac). A Mac answers
+        // it at once, so the phone says why instead of waiting out the hub's reply timeout; a client
+        // is never sent commands and ignores one.
+        guard runID == id else { return .retry("cancelled") }
+        armWatchdog(id)
+        if role == .host { try? await socket.send(Self.unknownCommandReply(id: commandId, method: method)) }
+        continue
       } catch {
         return ended(by: error)
       }
@@ -275,6 +296,7 @@ public actor RelayLink {
       switch message {
       case .hello(_, _, _, let role, _, let hubTime):
         noteHubTime(hubTime)
+        self.role = role
         if !connected {
           connected = true
           reachedHello = true

@@ -922,6 +922,50 @@ public final class WorkspaceDatabase: Sendable {
     }
   }
 
+  /// The tables whose rows carry an owner: the device of a row's latest insert, on the hub
+  /// (`owner_device_id`) and in the phone's mirror (`ownerDeviceId`).
+  static let ownedTables = ["connections", "projects", "threads"]
+
+  /// Re-announce this Mac's own rows as its current hub device, once per device (D-184): when the
+  /// link's `ownedAs` is not its `deviceId`, append an insert for every row of `ownedTables` to the
+  /// change log and record the device. The inserts carry the oldest clock there is, so on the hub and
+  /// in the mirror they move the row's owner and its Mac-only columns and never win a clocked column
+  /// (a phone's rename or pin stays). Returns the inserts appended; 0 with no link or nothing to do.
+  ///
+  /// With nothing in the log synced yet, it only records the device: the coming upload is the whole
+  /// log as this device, every row's own insert included (the log is never pruned, and `clearHubLink`
+  /// marks it unsynced for the next join).
+  @discardableResult
+  public func claimOwnedRows() throws -> Int {
+    try write { c in
+      guard
+        let row = try c.execute(#"SELECT "deviceId", "ownedAs" FROM "hubLink" WHERE "id" = 1"#).rows.first,
+        let device = row.text("deviceId")
+      else { return 0 }
+      if row.text("ownedAs") == device { return 0 }
+      let pushed = try !c.execute(#"SELECT 1 FROM "changes" WHERE "synced" LIMIT 1"#).rows.isEmpty
+      guard pushed else {
+        try c.execute(#"UPDATE "hubLink" SET "ownedAs" = $1 WHERE "id" = 1"#, [device])
+        return 0
+      }
+      let wall = String(Int(Date().timeIntervalSince1970 * 1000))
+      let oldest = "000000000000-0000-" + device
+      var appended = 0
+      for table in Self.ownedTables {
+        let quoted = Rows.quote(table)
+        let inserted = try c.execute(
+          """
+          INSERT INTO "changes" ("deviceId", "wall", "table", "rowId", "op", "value", "hlc")
+          SELECT $1, $2::bigint, $3, t."id", 'insert', to_jsonb(t), $4 FROM \(quoted) t
+          RETURNING "seq"
+          """, [device, wall, table, oldest])
+        appended += inserted.rows.count
+      }
+      try c.execute(#"UPDATE "hubLink" SET "ownedAs" = $1 WHERE "id" = 1"#, [device])
+      return appended
+    }
+  }
+
   /// Forget the hub: remove the link and mark the whole change log unsynced, so a later join (to this
   /// or another hub) uploads everything again.
   public func clearHubLink() throws {

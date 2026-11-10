@@ -106,8 +106,9 @@ public actor HubSync {
 
   // MARK: - Lifecycle
 
-  /// Load the link (if this Mac has joined), tag local writes with its device id, and start the
-  /// write nudge and the 30 s timer.
+  /// Load the link (if this Mac has joined), tag local writes with its device id, re-announce this
+  /// Mac's rows if its device changed since it last did (D-184), and start the write nudge and the
+  /// 30 s timer.
   public func start() async {
     guard !closed else { return }
     do {
@@ -134,6 +135,7 @@ public actor HubSync {
       fetchDisplayNameIfMissing()
     }
     let events = await eventLog.subscribe()
+    if api != nil, claimOwnedRows() > 0 { nudge() }
     nudgeTask = Task { [weak self] in
       for await _ in events {
         guard let self else { return }
@@ -257,6 +259,8 @@ public actor HubSync {
     refreshKeepAwake()
     logger.info(
       "joined \(base.host ?? "hub", privacy: .public) as device \(enrolled.deviceId, privacy: .public)")
+    // Nothing is synced yet, so this only records the device: the push below uploads the whole log.
+    claimOwnedRows()
     do {
       _ = try await pushNow()
     } catch {
@@ -413,6 +417,24 @@ public actor HubSync {
   }
 
   // MARK: - Pushing
+
+  /// The rows this Mac re-announced as its current device (D-184); a failure is logged and tried again
+  /// at the next start.
+  @discardableResult
+  private func claimOwnedRows() -> Int {
+    do {
+      let claimed = try database.claimOwnedRows()
+      if claimed > 0 {
+        logger.notice(
+          "re-announced \(claimed, privacy: .public) rows as device \(self.database.deviceId, privacy: .public)"
+        )
+      }
+      return claimed
+    } catch {
+      logger.error("could not re-announce this Mac's rows: \(Self.describe(error), privacy: .public)")
+      return 0
+    }
+  }
 
   private func nudge() {
     guard pendingNudge == nil, api != nil, !suspended else { return }

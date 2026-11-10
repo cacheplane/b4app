@@ -19,11 +19,13 @@ on:
   pull_request:
     paths:
       - "Infra/**"
+      - "!Infra/README.md"
       - ".github/workflows/infra.yml"
   push:
     branches: [main]
     paths:
       - "Infra/**"
+      - "!Infra/README.md"
       - ".github/workflows/infra.yml"
 
 permissions:
@@ -260,10 +262,85 @@ jobs:
         if: steps.aws.outputs.configured == 'true'
         run: terraform apply -no-color -input=false -lock-timeout=10m plan.bin
 
-  apply-prod:
-    name: Apply prod
+  # Production's apply waits on the owner in the `production` Environment, so
+  # it must not be asked for when there is nothing to apply (a runbook edit
+  # under Infra/ used to park an approval request for a no-op). This job plans
+  # with the read-only plan role first; the gated job runs only on a non-empty
+  # plan.
+  plan-prod-main:
+    name: Plan prod (main)
     if: github.event_name == 'push'
     needs: apply-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: infra-plan-prod
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      TF_VAR_alarm_email: ${{ vars.B4HUB_ALARM_EMAIL }}
+    defaults:
+      run:
+        working-directory: Infra/envs/prod
+    outputs:
+      configured: ${{ steps.aws.outputs.configured }}
+      changes: ${{ steps.plan.outputs.changes }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.1
+          terraform_wrapper: false
+      - name: Check the AWS repository variables
+        id: aws
+        env:
+          ROLE: ${{ vars.AWS_ROLE_PLAN_PROD }}
+          KMS_KEY: ${{ vars.TFSTATE_KMS_KEY_ARN_PROD }}
+        run: |
+          if [ -n "$ROLE" ] && [ -n "$KMS_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=No AWS account for prod yet::AWS_ROLE_PLAN_PROD and TFSTATE_KMS_KEY_ARN_PROD are not set; skipping the plan."
+          fi
+      - name: Configure AWS credentials
+        if: steps.aws.outputs.configured == 'true'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_PLAN_PROD }}
+          aws-region: us-east-2
+          mask-aws-account-id: true
+      - name: Initialize
+        if: steps.aws.outputs.configured == 'true'
+        env:
+          KMS_KEY: ${{ vars.TFSTATE_KMS_KEY_ARN_PROD }}
+        run: |
+          terraform init \
+            -backend-config="bucket=b4hub-prod-tfstate" \
+            -backend-config="key=hub.tfstate" \
+            -backend-config="region=us-east-2" \
+            -backend-config="kms_key_id=${KMS_KEY}" \
+            -backend-config="encrypt=true"
+      - name: Plan
+        id: plan
+        if: steps.aws.outputs.configured == 'true'
+        run: |
+          set +e
+          terraform plan -no-color -input=false -lock-timeout=10m -detailed-exitcode > plan.txt
+          code=$?
+          set -e
+          case "$code" in
+            0) echo "changes=false" >> "$GITHUB_OUTPUT"; echo "::notice title=Production is up to date::The plan has no changes; the production apply is not requested." ;;
+            2) echo "changes=true" >> "$GITHUB_OUTPUT"; grep -E '^Plan:' plan.txt || true ;;
+            *) echo "::error::terraform plan failed"; tail -50 plan.txt; exit 1 ;;
+          esac
+
+  apply-prod:
+    name: Apply prod
+    if: github.event_name == 'push' && needs.plan-prod-main.outputs.changes == 'true'
+    needs: [apply-test, plan-prod-main]
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     environment: production

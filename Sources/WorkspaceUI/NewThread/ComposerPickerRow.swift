@@ -49,7 +49,8 @@ struct ComposerPickerRow: View {
         }
       } else {
         HStack(alignment: .center, spacing: 2) {
-          place
+          // The place gives way first, but keeps enough to show its name's ends.
+          place.keepsWidth(Self.placeFloor)
           Spacer(minLength: LLA.Space.s)
           // Room goes to the permission first, then the runtime, so at the narrowest window the place
           // truncates first and the runtime's label (a long connection label and model id) next.
@@ -69,10 +70,13 @@ struct ComposerPickerRow: View {
     #if os(macOS)
       .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
         guard case .success(let url) = result, case .draft(let draft) = source else { return }
-        draft.chooseFolder(url.path)
+        draft.chooseFolder(NewThreadDraft.folderPath(of: url))
       }
     #endif
   }
+
+  /// The least the place keeps when the row is short of room (a shorter name keeps its own width).
+  static let placeFloor: CGFloat = 88
 
   // MARK: What the source has chosen
 
@@ -424,6 +428,31 @@ extension View {
   /// A system menu whose face is the label as drawn, with no button chrome or indicator.
   fileprivate func pickerMenu() -> some View {
     menuIndicator(.hidden).buttonStyle(.plain)
+  }
+
+  /// However narrow its container, this view keeps its ideal width up to `floor`: a stack short of
+  /// room can cut it that far and no further, and a view narrower than `floor` is never widened.
+  func keepsWidth(_ floor: CGFloat) -> some View {
+    KeepsWidth(floor: floor) { self }
+  }
+}
+
+/// `keepsWidth(_:)`'s layout: one subview, offered at least `min(ideal, floor)` of width.
+private struct KeepsWidth: Layout {
+  var floor: CGFloat
+
+  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    guard let view = subviews.first else { return .zero }
+    let least = min(view.sizeThatFits(.unspecified).width, floor)
+    var offered = proposal
+    if let width = offered.width { offered.width = max(width, least) }
+    let size = view.sizeThatFits(offered)
+    return CGSize(width: max(size.width, least), height: size.height)
+  }
+
+  func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    subviews.first?.place(
+      at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
   }
 }
 

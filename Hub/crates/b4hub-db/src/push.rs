@@ -11,7 +11,7 @@
 //! badge, the number of threads that need the user, from the attention rules in SQL
 //! ([`bands`]), which follow `Attention.band(of:)` and are checked by the shared fixture.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use b4hub_core::push::{
@@ -76,6 +76,26 @@ impl fmt::Debug for Withdrawal {
             .field("environment", &self.environment)
             .field("bundle_id", &self.bundle_id)
             .field("keys", &self.keys)
+            .finish()
+    }
+}
+
+/// A silent mirror refresh for a phone not already receiving another wake in this batch.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Refresh {
+    pub device_id: Uuid,
+    pub token: String,
+    pub environment: String,
+    pub bundle_id: String,
+}
+
+impl fmt::Debug for Refresh {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Refresh")
+            .field("device_id", &self.device_id)
+            .field("token", &"<redacted>")
+            .field("environment", &self.environment)
+            .field("bundle_id", &self.bundle_id)
             .finish()
     }
 }
@@ -205,6 +225,32 @@ async fn phones(
     .fetch_all(conn)
     .await?;
     Ok(phones)
+}
+
+/// An applied archive/unarchive batch needs only one wake per other eligible phone. An alert or
+/// withdrawal sent to that phone already makes the same mirror catch-up happen.
+pub(crate) async fn archive_refreshes(
+    conn: &mut PgConnection,
+    auth: &AuthedDevice,
+    notifications: &[Notification],
+    withdrawals: &[Withdrawal],
+) -> Result<Vec<Refresh>> {
+    let covered: HashSet<_> = notifications
+        .iter()
+        .map(|n| n.device_id)
+        .chain(withdrawals.iter().map(|w| w.device_id))
+        .collect();
+    Ok(phones(conn, auth, Some(auth.device_id))
+        .await?
+        .into_iter()
+        .filter(|phone| !covered.contains(&phone.device_id))
+        .map(|phone| Refresh {
+            device_id: phone.device_id,
+            token: phone.token,
+            environment: phone.environment,
+            bundle_id: phone.bundle_id,
+        })
+        .collect())
 }
 
 /// Everything a push's applied changes decide, in its transaction: the notifications for the

@@ -43,6 +43,38 @@ import WorkspaceProtocol
       connection: b4)
     #expect(stopped.action == .openServers(serverId: "s1"))
   }
+
+  @Test(arguments: [false, true])
+  func archivedSessionKeepsItsRecoveryInstruction(wrappedByTurnSend: Bool) {
+    let message = "This Codex session is archived. Run `codex unarchive thr_archived`, then check again."
+    let details: JSONValue = ["reason": "native_session_archived"]
+    let remedy = Remediation.for(
+      WorkspaceError(.protocolInvalid, message, details: wrappedByTurnSend ? ["cause": details] : details),
+      connection: codex)
+    #expect(remedy.message == message)
+    #expect(remedy.action == .checkAgain)
+    #expect(remedy.actionTitle == "Check again")
+  }
+
+  @Test func continuityCoversOnlyTheSameFailure() {
+    let missing = WorkspaceError(.nativeSessionMissing, "gone")
+    let identity = WorkspaceError(.identityChanged, "changed")
+    #expect(Remediation.coveredByContinuity(missing, continuity: .missing))
+    #expect(Remediation.coveredByContinuity(identity, continuity: .identityChanged))
+    #expect(!Remediation.coveredByContinuity(missing, continuity: .available))
+    #expect(!Remediation.coveredByContinuity(missing, continuity: .identityChanged))
+    #expect(!Remediation.coveredByContinuity(identity, continuity: .missing))
+    for continuity in [ThreadContinuity.available, .missing, .identityChanged] {
+      #expect(!Remediation.coveredByContinuity(nil, continuity: continuity))
+      #expect(
+        !Remediation.coveredByContinuity(
+          WorkspaceError(.endpointUnavailable, "offline"), continuity: continuity))
+      #expect(
+        !Remediation.coveredByContinuity(
+          WorkspaceError(.protocolInvalid, "archived", details: ["reason": "native_session_archived"]),
+          continuity: continuity))
+    }
+  }
 }
 
 @MainActor

@@ -73,6 +73,11 @@ async fn push(
                 .into_iter()
                 .map(Message::Withdraw),
         )
+        .chain(
+            std::mem::take(&mut outcome.refreshes)
+                .into_iter()
+                .map(Message::Refresh),
+        )
         .collect();
     if let Some(sender) = &state.push {
         push::deliver(sender.clone(), state.db.clone(), device.org_id, messages);

@@ -1,5 +1,5 @@
 //! Sending to a phone (decisions D-123 and D-131 onward). A [`PushSender`] takes one [`Message`]
-//! the hub decided on inside the push transaction: an alert, or a background withdrawal of alerts
+//! the hub decided on inside the push transaction: an alert, a silent mirror refresh, or a withdrawal of alerts
 //! whose request was answered or whose turn was read. [`deliver`] runs the sends after the commit
 //! on a task of their own, so a push never waits on, or fails because of, a sender, and deletes a
 //! token Apple says is dead. Two senders exist: [`SpoolSender`] writes `.apns` files that `xcrun
@@ -16,8 +16,11 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use b4hub_core::push::{payload, spool_payload, spool_withdrawal_payload, withdrawal_payload};
-use b4hub_db::push::{Notification, Withdrawal};
+use b4hub_core::push::{
+    payload, refresh_payload, spool_payload, spool_refresh_payload, spool_withdrawal_payload,
+    withdrawal_payload,
+};
+use b4hub_db::push::{Notification, Refresh, Withdrawal};
 use b4hub_db::Db;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
@@ -31,6 +34,8 @@ pub enum Message {
     Alert(Notification),
     /// A background push naming the delivered notifications the app removes.
     Withdraw(Withdrawal),
+    /// A silent hint that archive metadata changed and the mirror should catch up.
+    Refresh(Refresh),
 }
 
 impl Message {
@@ -38,6 +43,7 @@ impl Message {
         match self {
             Message::Alert(n) => n.device_id,
             Message::Withdraw(w) => w.device_id,
+            Message::Refresh(r) => r.device_id,
         }
     }
 
@@ -46,6 +52,7 @@ impl Message {
         match self {
             Message::Alert(n) => &n.token,
             Message::Withdraw(w) => &w.token,
+            Message::Refresh(r) => &r.token,
         }
     }
 
@@ -54,6 +61,7 @@ impl Message {
         match self {
             Message::Alert(n) => &n.environment,
             Message::Withdraw(w) => &w.environment,
+            Message::Refresh(r) => &r.environment,
         }
     }
 
@@ -62,6 +70,7 @@ impl Message {
         match self {
             Message::Alert(n) => &n.bundle_id,
             Message::Withdraw(w) => &w.bundle_id,
+            Message::Refresh(r) => &r.bundle_id,
         }
     }
 
@@ -70,14 +79,16 @@ impl Message {
         match self {
             Message::Alert(n) => n.key.clone(),
             Message::Withdraw(w) => w.keys.join(","),
+            Message::Refresh(_) => String::new(),
         }
     }
 
-    /// `alert` or `withdraw`, for the log.
+    /// `alert`, `withdraw`, or `refresh`, for the log.
     pub fn kind(&self) -> &'static str {
         match self {
             Message::Alert(_) => "alert",
             Message::Withdraw(_) => "withdraw",
+            Message::Refresh(_) => "refresh",
         }
     }
 }
@@ -167,6 +178,7 @@ impl PushSender for SpoolSender {
                     &n.bundle_id,
                 ),
                 Message::Withdraw(w) => spool_withdrawal_payload(&w.keys, &w.bundle_id),
+                Message::Refresh(r) => spool_refresh_payload(&r.bundle_id),
             };
             let bytes = serde_json::to_vec_pretty(&payload).map_err(|_| PushError::Encode)?;
             let dir = self.dir.clone();
@@ -449,7 +461,9 @@ impl ApnsSender {
         let now = (self.clock)();
         let (push_type, priority, lifetime) = match message {
             Message::Alert(_) => ("alert", "10", ALERT_LIFETIME_SECS),
-            Message::Withdraw(_) => ("background", "5", WITHDRAWAL_LIFETIME_SECS),
+            Message::Withdraw(_) | Message::Refresh(_) => {
+                ("background", "5", WITHDRAWAL_LIFETIME_SECS)
+            }
         };
         let mut request = endpoint
             .http
@@ -466,6 +480,8 @@ impl ApnsSender {
             if n.key.len() <= MAX_COLLAPSE_ID_BYTES {
                 request = request.header("apns-collapse-id", n.key.as_str());
             }
+        } else if let Message::Refresh(_) = message {
+            request = request.header("apns-collapse-id", "mirror-refresh");
         }
         let response = request.send().await.map_err(|error| {
             // `reqwest`'s error names the URL, which holds the token: only its kind is kept.
@@ -514,6 +530,7 @@ impl PushSender for ApnsSender {
             let body = match message {
                 Message::Alert(n) => payload(&n.thread_id, &n.title, n.reason, &n.key, n.badge),
                 Message::Withdraw(w) => withdrawal_payload(&w.keys),
+                Message::Refresh(_) => refresh_payload(),
             };
             let body = serde_json::to_vec(&body).map_err(|_| PushError::Encode)?;
             let mut jwt = self.provider_token(None)?;

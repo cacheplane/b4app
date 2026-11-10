@@ -48,8 +48,11 @@ resource "aws_db_instance" "hub" {
 
   backup_retention_period = var.db_backup_retention_days
   backup_window           = "05:00-06:00"
-  maintenance_window      = "sun:06:30-sun:07:30"
-  copy_tags_to_snapshot   = true
+  # Three hours after the AWS Backup plan's 06:00 UTC run: AWS Backup refuses
+  # to start a job "inside or too close to" the maintenance window, and with
+  # the window at 06:30 every Sunday's backup (and its copy) failed.
+  maintenance_window    = "sun:09:00-sun:10:00"
+  copy_tags_to_snapshot = true
 
   deletion_protection       = var.environment == "prod"
   skip_final_snapshot       = var.environment != "prod"

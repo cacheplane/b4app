@@ -265,6 +265,38 @@ private final class WriteCounter: Sendable {
     await client.close()
   }
 
+  /// A connection's change carries the whole row, so a client sees its new owner (a Mac that
+  /// re-announced its rows, D-184), label, or models, not only its status. Without the row the phone
+  /// kept the old owner until relaunched and offered no connection for the Mac's projects.
+  @Test func aConnectionChangeCarriesTheWholeRow() async throws {
+    let store = try MirrorStore.inMemory()
+    let transport = MirrorTransport(store: store, version: "0.2.0")
+    let client = WorkspaceClient(transport: transport)
+    _ = try await client.ready()
+    let events = await client.events()
+    let fixture = try fixtureAsStored()
+    transport.publish(try store.apply(Array(fixture.prefix(2))))
+
+    let insert = try #require(fixture.first { $0.table == "connections" && $0.op == "insert" })
+    transport.publish(
+      try store.apply([
+        change(
+          "connections", insert.rowId, "insert", value: insert.value, deviceId: "mac-new",
+          hlc: "000000000000-0000-mac-new")
+      ]))
+
+    var changes: [AdapterEvent] = []
+    for await envelope in events where envelope.event.kind == .connectionChanged {
+      changes.append(envelope.event)
+      if changes.count == 2 { break }
+    }
+    let carried = try changes.map { try #require($0.payload["connection"]).decode(Connection.self) }
+    #expect(carried.map(\.id) == [insert.rowId, insert.rowId])
+    #expect(carried.map(\.ownerDeviceId) == ["mac-1", "mac-new"])
+    #expect(changes.allSatisfy { $0.payload["status"] == "ready" })
+    await client.close()
+  }
+
   @Test func itemsOfAThreadNotReadAreNotPublished() async throws {
     let store = try MirrorStore.inMemory()
     let transport = MirrorTransport(store: store, version: "0.2.0")

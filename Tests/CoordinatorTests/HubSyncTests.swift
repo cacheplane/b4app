@@ -549,6 +549,46 @@ private struct HubHarness {
     try db.close()
   }
 
+  /// D-184: a join pushes every row as the joining device; a later start on the same store as another
+  /// device (a sign-in that got a new one) re-announces the rows, so the hub and the phone see the
+  /// current device as their owner.
+  @Test func aNewDeviceReannouncesTheRowsItAlreadyPushed() async throws {
+    let db = try WorkspaceDatabase.temporary()
+    _ = try db.insertConnection(Connection(id: "c1", kind: .codex, label: "Codex", target: "/bin/codex"))
+    _ = try db.insertThread(
+      ConversationThread(
+        id: "t1", connectionId: "c1", nativeThreadId: "n1", nativeScope: "s", title: "T", context: "/tmp"))
+    let fake = FakeHubAPI()
+    await fake.addEnrollmentCode(code, enrolled)
+    let secrets = MemorySecretStore()
+    let first = HubSync(database: db, secretStore: secrets, eventLog: EventLog(), makeAPI: { _, _ in fake })
+    _ = try await first.join(url: "http://127.0.0.1:8080", code: code, deviceName: "Mac")
+    await first.stop()
+    // The join's push carried each row's own insert once; nothing was re-announced on top.
+    let joinInserts = await fake.pushed.flatMap { $0 }.filter { $0.op == "insert" && $0.table == "threads" }
+    #expect(joinInserts.count == 1)
+    #expect(try db.unsyncedChangeCount() == 0)
+
+    // The same store, signed in later as another device.
+    var link = try #require(try db.hubLink())
+    link.deviceId = "dev-mac-2"
+    try db.saveHubLink(link)
+    let pushedBefore = await fake.pushed.count
+    let second = HubSync(database: db, secretStore: secrets, eventLog: EventLog(), makeAPI: { _, _ in fake })
+    await second.start()
+    let deadline = ContinuousClock.now + .seconds(10)
+    while ContinuousClock.now < deadline {
+      let pushes = await fake.pushed.count
+      if try db.unsyncedChangeCount() == 0, pushes > pushedBefore { break }
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    let reannounced = await fake.pushed.dropFirst(pushedBefore).flatMap { $0 }
+    #expect(Set(reannounced.filter { $0.op == "insert" }.map(\.table)) == ["connections", "threads"])
+    #expect(reannounced.allSatisfy { $0.hlc?.hasPrefix("000000000000-0000-") == true })
+    await second.stop()
+    try db.close()
+  }
+
   @Test func aFailedNameFetchIsRetriedAfterTheNextSuccessfulPush() async throws {
     // A coordinator started at login before the network is up: the first /v1/me fails.
     let db = try WorkspaceDatabase.temporary()

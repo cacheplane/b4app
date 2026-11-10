@@ -23,9 +23,10 @@ use b4hub::push::{
 };
 use b4hub::serve::{self, AppState};
 use b4hub_core::push::{
-    payload, spool_payload, spool_withdrawal_payload, withdrawal_payload, Reason,
+    payload, refresh_payload, spool_payload, spool_refresh_payload, spool_withdrawal_payload,
+    withdrawal_payload, Reason,
 };
-use b4hub_db::push::{Notification, Withdrawal};
+use b4hub_db::push::{Notification, Refresh, Withdrawal};
 use b4hub_db::{devices, orgs, Db};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -463,6 +464,45 @@ async fn tokens_of(pool: &PgPool, device: Uuid) -> Vec<String> {
 }
 
 #[sqlx::test(migrations = false)]
+async fn archive_only_route_wakes_a_phone_with_no_notification(pool: PgPool) {
+    let mut w = world(&pool).await;
+    register(&w).await;
+    let phone = device_id(&w, &w.phone).await;
+    let seen = Seen::default();
+    w.state.push = Some(Arc::new(RecordingSender { seen: seen.clone() }));
+    let mut setup: Value = serde_json::from_str(&pending_request_batch()).unwrap();
+    setup["changes"].as_array_mut().unwrap().truncate(2);
+    let (status, body) = send(
+        &w.state,
+        "POST",
+        "/v1/changes",
+        &w.mac,
+        Some(setup.to_string()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(seen.lock().unwrap().is_empty());
+
+    let batch = json!({"changes": [{
+        "deviceSeq": 3, "wall": 1_761_900_000_003_i64, "table": "threads",
+        "rowId": "thread-1", "op": "update", "column": "archived", "value": true
+    }]})
+    .to_string();
+    let (status, body) = send(&w.state, "POST", "/v1/changes", &w.mac, Some(batch)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["acceptedThrough"], 3);
+    let archived: bool = sqlx::query_scalar("SELECT archived FROM threads WHERE id = 'thread-1'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(archived);
+    eventually("the archive refresh", || seen.lock().unwrap().len() == 1).await;
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].device_id(), phone);
+    assert_eq!(seen[0].kind(), "refresh");
+}
+
+#[sqlx::test(migrations = false)]
 async fn the_route_delivers_alerts_and_withdrawals(pool: PgPool) {
     let mut w = world(&pool).await;
     register(&w).await;
@@ -800,6 +840,51 @@ async fn alert_carries_jwt_topic_and_headers() {
         .unwrap();
     assert_eq!(production.received().len(), 1);
     assert_eq!(sandbox.received().len(), 1);
+}
+
+#[tokio::test]
+async fn refresh_is_silent_background_and_collapsible() {
+    let key = test_key();
+    let (sandbox, production) = (FakeApns::start().await, FakeApns::start().await);
+    let now = Arc::new(AtomicU64::new(T0));
+    let sender = apns(&key, &sandbox, &production, fixed_clock(&now));
+    let w = withdrawal();
+    let message = Message::Refresh(Refresh {
+        device_id: w.device_id,
+        token: w.token,
+        environment: w.environment,
+        bundle_id: w.bundle_id,
+    });
+    assert_eq!(sender.send(&message).await.unwrap(), Sent::Delivered);
+    let received = production.received();
+    assert_eq!(received.len(), 1);
+    let r = &received[0];
+    assert_eq!(r.header("apns-push-type"), Some("background"));
+    assert_eq!(r.header("apns-priority"), Some("5"));
+    assert_eq!(r.header("apns-collapse-id"), Some("mirror-refresh"));
+    assert_eq!(r.header("apns-topic"), Some(BUNDLE));
+    assert_eq!(
+        r.header("apns-expiration").unwrap().parse::<u64>().unwrap(),
+        T0 + 900
+    );
+    assert_eq!(r.body, refresh_payload());
+    assert_eq!(
+        r.body,
+        json!({"aps":{"content-available":1},"refresh":true})
+    );
+    assert!(message.keys().is_empty());
+    assert!(!format!("{message:?}").contains(GOOD_TOKEN));
+    verify(r.jwt(), &key);
+    let dir = TempDir::new();
+    let spool = SpoolSender::new(dir.0.clone()).unwrap();
+    spool.send(&message).await.unwrap();
+    let files: Vec<_> = std::fs::read_dir(&dir.0)
+        .unwrap()
+        .map(|f| f.unwrap().path())
+        .collect();
+    assert_eq!(files.len(), 1);
+    let written: Value = serde_json::from_slice(&std::fs::read(&files[0]).unwrap()).unwrap();
+    assert_eq!(written, spool_refresh_payload(BUNDLE));
 }
 
 #[tokio::test]

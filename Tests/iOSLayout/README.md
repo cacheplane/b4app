@@ -1,8 +1,8 @@
 # iOS navigation and banner regression tests
 
-Run `./Scripts/test-ios-layout.sh` from the repository root. It requires Xcode, XcodeGen, and an iOS 26 iPhone Simulator. It generates its project under `.build/iOSLayout` and retains an `.xcresult` bundle with screenshots. CI runs it after all four app builds.
+Run `./Scripts/test-ios-layout.sh` from the repository root. It requires Xcode, XcodeGen, and an iOS 26 iPhone Simulator. It generates its project under `.build/iOSLayout` and retains an `.xcresult` bundle with screenshots. CI runs it in its own job, beside the app builds.
 
-The fixture app renders the shipped `WorkspaceRootView` and `SyncBanner` over an in-memory mirror and fake relay. It never accesses the owner's account, Keychain, hub, mirror, or installed app. These are fixture UI checks, not physical-device or live-hub integration checks.
+The fixture app renders the shipped `WorkspaceRootView` and `SyncBanner` over an in-memory mirror and fake relay. Its banner reads an `@Observable` status, as the app's reads `MirrorHost`, and its fake hub greets every link the relay opens and answers its pings, so a runner that stalls the app does not leave a stale banner or "Connecting to the hub…" behind. The tests wait for a screen's title and then for a hittable notice before judging it, since a pushed thread's banner exists in accessibility before it can be hit. It never accesses the owner's account, Keychain, hub, mirror, or installed app. These are fixture UI checks, not physical-device or live-hub integration checks.
 
 The required scheme runs 13 UI journeys and three UIKit-hosted component tests. The journeys cover all 62 legacy launch scenarios and their 69 layout checkpoints in 42 app launches. Four identical initial-state layout blocks share assertions; all custom copy, rendered-ink, geometry, control-hit, search, dismissal, recovery, and notification checks remain. Every behavior stays in the PR gate.
 

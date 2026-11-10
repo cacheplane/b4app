@@ -47,6 +47,7 @@ private nonisolated func edited(
   struct Variant: CustomStringConvertible {
     var name: String
     var rows: [StoredChange]
+    var error: WorkspaceError? = nil
     var description: String { name }
   }
 
@@ -75,6 +76,16 @@ private nonisolated func edited(
       Variant(
         name: "continuity banner and a long request",
         rows: others.map { $0.table == "threads" ? brokenThread : $0 } + [longRequest]),
+      Variant(
+        name: "archived recovery error", rows: others,
+        error: WorkspaceError(
+          .protocolInvalid,
+          "This session is archived. Run the native unarchive command, then choose Check again. Your transcript and draft are preserved.",
+          details: ["reason": "native_session_archived"])),
+      Variant(
+        name: "long fallback error", rows: others,
+        error: WorkspaceError(
+          .internalError, String(repeating: "A long runtime failure. ", count: 300))),
     ]
   }
 
@@ -83,7 +94,6 @@ private nonisolated func edited(
     let store = try MirrorStore.inMemory()
     let transport = MirrorTransport(store: store, version: "0.2.0")
     let model = WorkspaceModel(transportProvider: { transport })
-    model.preferences = InMemoryPreferences()
     model.connect()
     let link = await model.settledLink()
     try #require(link == .ready, "the model did not connect: \(model.linkMessage ?? "no message")")
@@ -95,6 +105,9 @@ private nonisolated func edited(
     try await waitUntil("detail") { model.detail?.requests.count == expectedRequests }
     // A long draft: the composer's hidden measuring copy of the text must stay clamped too.
     model.composerText = String(repeating: "a draft that goes on and on ", count: 200)
+    if let failure = variant.error {
+      let _: Bool? = await model.perform { _ in throw failure }
+    }
 
     let controller = NSHostingController(rootView: ThreadsView(model: model))
     let atZero = controller.sizeThatFits(in: .zero)
@@ -140,7 +153,6 @@ private nonisolated func edited(
     let store = try MirrorStore.inMemory()
     let transport = MirrorTransport(store: store, version: "0.2.0")
     let live = WorkspaceModel(transportProvider: { transport })
-    live.preferences = InMemoryPreferences()
     live.connect()
     try #require(await live.settledLink() == .ready)
     await live.refreshDiagnostics()
@@ -152,7 +164,6 @@ private nonisolated func edited(
     live.account = WorkspaceAccount(username: "blove", displayName: String(repeating: "Brian ", count: 40))
     // A link that failed with a long message.
     let failed = WorkspaceModel(transportProvider: { throw WorkspaceError(.endpointUnavailable, note) })
-    failed.preferences = InMemoryPreferences()
     failed.connect()
     try #require(await failed.settledLink() == .unavailable)
     failed.hostNote = note
@@ -173,7 +184,6 @@ private nonisolated func edited(
     let store = try MirrorStore.inMemory()
     let transport = MirrorTransport(store: store, version: "0.2.0")
     let model = WorkspaceModel(transportProvider: { transport })
-    model.preferences = InMemoryPreferences()
     model.connect()
     try #require(await model.settledLink() == .ready)
     await model.refreshDiagnostics()

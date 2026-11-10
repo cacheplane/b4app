@@ -74,24 +74,35 @@ public enum LaunchAgentControl {
   }
 
   /// Write the plist for `programPath` (replacing any other) and bootstrap it. A loaded job is
-  /// booted out first so launchd reads the new file. Returns true when launchd accepted it.
+  /// booted out first so launchd reads the new file, and the bootstrap waits until launchd no longer
+  /// lists it: `bootout` returns while the old coordinator is still stopping (it shuts its PostgreSQL
+  /// down in order), and a `bootstrap` sent meanwhile fails with 5 and leaves the agent unloaded. After
+  /// `leaveTimeout` the bootstrap is tried anyway and its refusal reported. Returns true when launchd
+  /// accepted it.
   @discardableResult
-  public static func install(programPath: String, home: String = NSHomeDirectory()) async throws -> Bool {
+  public static func install(
+    programPath: String, home: String = NSHomeDirectory(),
+    launchctl: @escaping LegacyAdoption.Launchctl = LegacyAdoption.systemLaunchctl,
+    leaveTimeout: Duration = .seconds(30), poll: Duration = .milliseconds(200)
+  ) async throws -> Bool {
     let path = userPlistPath(home: home)
     try FileManager.default.createDirectory(
       atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
     try userPlist(programPath: programPath).write(toFile: path, atomically: true, encoding: .utf8)
-    if await isLoaded() {
-      _ = try? await CommandRunner.run(
-        "/bin/launchctl", ["bootout", "\(domain)/\(label)"], options: CommandOptions(timeout: .seconds(90)))
+    let target = "\(domain)/\(label)"
+    if await launchctl(["print", target], .seconds(5))?.exitCode == 0 {
+      _ = await launchctl(["bootout", target], .seconds(90))
+      let deadline = ContinuousClock.now + leaveTimeout
+      while await launchctl(["print", target], .seconds(5))?.exitCode == 0, ContinuousClock.now < deadline {
+        try await Task.sleep(for: poll)
+      }
     }
-    let result = try await CommandRunner.run(
-      "/bin/launchctl", ["bootstrap", domain, path], options: CommandOptions(timeout: .seconds(30)))
-    guard result.exitCode == 0 else {
-      throw WorkspaceError(
-        .endpointUnavailable,
-        "launchctl bootstrap failed (\(result.exitCode ?? -1)): \(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))"
-      )
+    let result = await launchctl(["bootstrap", domain, path], .seconds(30))
+    guard let result, result.exitCode == 0 else {
+      let answer =
+        result.map { "\($0.exitCode ?? -1): \($0.stderr.trimmingCharacters(in: .whitespacesAndNewlines))" }
+        ?? "could not run"
+      throw WorkspaceError(.endpointUnavailable, "launchctl bootstrap failed (\(answer))")
     }
     return true
   }

@@ -4,6 +4,7 @@ import WidgetKit
 import WorkspaceMirror
 import WorkspaceProtocol
 import WorkspaceUI
+import os
 
 /// The top three threads, most urgent first (D-126), read from the mirror the app keeps in the App
 /// Group. Small is one tap target that opens the first thread; medium makes each row a link.
@@ -43,6 +44,7 @@ nonisolated struct GlanceEntry: TimelineEntry {
 /// Builds the timeline from the mirror: an entry now and one when the data turns stale, then a reload
 /// fifteen minutes on. The app reloads it sooner after every batch that touched threads or projects.
 nonisolated struct GlanceProvider: TimelineProvider {
+  private static let logger = Logger(subsystem: "com.cacheplane.b4app", category: "widget")
   func placeholder(in context: Context) -> GlanceEntry {
     GlanceEntry(date: .now, glance: Self.sample)
   }
@@ -56,6 +58,9 @@ nonisolated struct GlanceProvider: TimelineProvider {
   func getTimeline(in context: Context, completion: @escaping (Timeline<GlanceEntry>) -> Void) {
     let now = Date.now
     let glance = Self.load()
+    Self.logger.notice(
+      "widget timeline loaded; linked: \(glance.linked, privacy: .public); rows: \(glance.rows.count, privacy: .public); stale: \(glance.isStale(at: now), privacy: .public)"
+    )
     let entries = glance.entryDates(now: now).map { GlanceEntry(date: $0, glance: glance) }
     completion(Timeline(entries: entries, policy: .after(glance.reloadDate(now: now))))
   }

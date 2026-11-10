@@ -174,6 +174,179 @@ async fn ledger(w: &World) -> Vec<(String, String, String)> {
 }
 
 #[sqlx::test(migrations = false)]
+async fn archive_refreshes_coalesce_and_replays_do_not_wake(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Quiet").await;
+    let setup = push_batch(
+        &w,
+        &[insert(
+            3,
+            "threads",
+            "thread-2",
+            json!({"id":"thread-2", "connectionId":"conn-1"}),
+        )],
+    )
+    .await;
+    assert!(setup.refreshes.is_empty());
+    let batch = [
+        update(4, "threads", "thread-1", "archived", json!(true)),
+        update(5, "threads", "thread-2", "archived", json!(true)),
+    ];
+    let outcome = push_batch(&w, &batch).await;
+    let mut ids: Vec<_> = outcome.refreshes.iter().map(|r| r.device_id).collect();
+    ids.sort();
+    let mut expected: Vec<_> = w.phones.iter().map(|p| p.device_id).collect();
+    expected.sort();
+    assert_eq!(ids, expected);
+    assert!(outcome.notifications.is_empty() && outcome.withdrawals.is_empty());
+    assert!(outcome
+        .refreshes
+        .iter()
+        .all(|r| r.environment == "sandbox" && r.bundle_id == "com.example.app"));
+    assert!(!format!("{:?}", outcome.refreshes).contains("token-"));
+    assert!(push_batch(&w, &batch).await.refreshes.is_empty());
+    assert_eq!(
+        push_batch(
+            &w,
+            &[update(6, "threads", "thread-1", "archived", json!(false))]
+        )
+        .await
+        .refreshes
+        .len(),
+        2
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn archive_refresh_ignores_lost_refused_skipped_and_unrelated_changes(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Quiet").await;
+    let mut winning = update(3, "threads", "thread-1", "archived", json!(true));
+    winning.wall += 100;
+    assert_eq!(push_batch(&w, &[winning]).await.refreshes.len(), 2);
+    let mut malformed = update(6, "threads", "thread-1", "archived", json!("invalid"));
+    malformed.wall += 200;
+    let mut refused = update(7, "threads", "thread-1", "archived", json!(false));
+    refused.hlc = Some("invalid".into());
+    let outcome = push_batch(
+        &w,
+        &[
+            update(4, "threads", "thread-1", "archived", json!(false)),
+            update(5, "threads", "missing", "archived", json!(true)),
+            malformed,
+            refused,
+            update(8, "threads", "thread-1", "title", json!("Renamed")),
+        ],
+    )
+    .await;
+    assert!(outcome.refreshes.is_empty());
+    assert_eq!(outcome.rejected.len(), 1);
+    let stranger = common::enrolled_as(&w.admin, &w.app, "eve", "macos").await;
+    assert!(changes::push(
+        &w.app,
+        &stranger,
+        &[update(1, "threads", "thread-1", "archived", json!(true))]
+    )
+    .await
+    .unwrap()
+    .refreshes
+    .is_empty());
+    push_batch(&w, &[delete(9, "threads", "thread-1")]).await;
+    assert!(push_batch(
+        &w,
+        &[update(10, "threads", "thread-1", "archived", json!(false))]
+    )
+    .await
+    .refreshes
+    .is_empty());
+}
+
+#[sqlx::test(migrations = false)]
+async fn archive_refresh_filters_recipients_and_excludes_the_uploading_phone(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Quiet").await;
+    let outcome = changes::push(
+        &w.app,
+        &w.phones[0],
+        &[update(1, "threads", "thread-1", "archived", json!(true))],
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.refreshes.len(), 1);
+    assert_eq!(outcome.refreshes[0].device_id, w.phones[1].device_id);
+    devices::revoke_self(&w.app, w.mac.org_id, w.phones[0].device_id)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM device_tokens WHERE device_id = $1")
+        .bind(w.phones[1].device_id)
+        .execute(&w.admin.pool)
+        .await
+        .unwrap();
+    let _tokenless = common::enrolled_as(&w.admin, &w.app, "blove", "ios").await;
+    for phone in [
+        common::enrolled_as(&w.admin, &w.app, "eve", "ios").await,
+        common::enrolled_in_as(&w.admin, &w.app, "other-org", "blove", "ios").await,
+    ] {
+        push::save_token(
+            &w.app,
+            &phone,
+            "stranger-token",
+            "production",
+            "com.example.app",
+        )
+        .await
+        .unwrap();
+    }
+    let eligible = common::enrolled_as(&w.admin, &w.app, "blove", "ios").await;
+    push::save_token(
+        &w.app,
+        &eligible,
+        "eligible-token",
+        "production",
+        "com.example.app",
+    )
+    .await
+    .unwrap();
+    let mut change = update(3, "threads", "thread-1", "archived", json!(false));
+    change.wall += 10;
+    let outcome = push_batch(&w, &[change]).await;
+    assert_eq!(outcome.refreshes.len(), 1);
+    assert_eq!(outcome.refreshes[0].device_id, eligible.device_id);
+}
+
+#[sqlx::test(migrations = false)]
+async fn archive_refresh_is_covered_by_alerts_or_withdrawals_for_each_phone(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Quiet").await;
+    let outcome = push_batch(
+        &w,
+        &[
+            update(3, "threads", "thread-1", "archived", json!(true)),
+            request(4, "request-1", "tool_permission", "pending"),
+        ],
+    )
+    .await;
+    assert_eq!(outcome.notifications.len(), 2);
+    assert!(outcome.refreshes.is_empty());
+    let outcome = push_batch(
+        &w,
+        &[
+            update(5, "threads", "thread-1", "archived", json!(false)),
+            update(
+                6,
+                "runtimeRequests",
+                "request-1",
+                "state",
+                json!("resolved"),
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(outcome.withdrawals.len(), 2);
+    assert!(outcome.refreshes.is_empty());
+}
+
+#[sqlx::test(migrations = false)]
 async fn pending_request_notifies_each_other_phone(pool: PgPool) {
     let w = world(&pool).await;
     with_thread(&w, "Fix the build").await;

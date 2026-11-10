@@ -121,9 +121,8 @@ extension BannerLayoutTests {
     syncFailure: Bool, legacyIndex: Int
   ) {
     let query = app.descendants(matching: .any).matching(identifier: identifier)
-    XCTAssertTrue(query.firstMatch.waitForExistence(timeout: 10), app.debugDescription)
-    guard query.allElementsBoundByIndex.contains(where: { $0.isHittable }) else {
-      XCTFail("\(identifier) is missing or obscured")
+    guard waitForVisible(query) != nil else {
+      XCTFail("\(identifier) is missing or obscured\n\(app.debugDescription)")
       return
     }
     checkLayout(
@@ -286,10 +285,13 @@ extension BannerLayoutTests {
     for (index, screen) in ["list", "detail"].enumerated() {
       let app = launch(screen, recover: true)
       checkLayout(app, screen: screen, covering: [point("testBannerClearsOnHomeAndDetail", index + 1)])
-      let banner = app.descendants(matching: .any).matching(identifier: "sync.banner")
-        .allElementsBoundByIndex.first { $0.isHittable }!
-      app.buttons["fixture.recover"].tap()
-      XCTAssertTrue(banner.waitForNonExistence(timeout: 15))
+      let recover = app.buttons["fixture.recover"]
+      recover.tap()
+      // The control goes once the fixture's status has changed, so a lost tap fails here, not as a
+      // banner that seemed not to clear.
+      XCTAssertTrue(recover.waitForNonExistence(timeout: 10), "The fixture did not take the tap")
+      let banners = app.descendants(matching: .any).matching(identifier: "sync.banner")
+      XCTAssertTrue(banners.firstMatch.waitForNonExistence(timeout: 10), app.debugDescription)
       checkLayout(
         app, screen: screen, hasBanner: false,
         covering: [point("testBannerClearsOnHomeAndDetail", index + 1, 2)])
@@ -336,10 +338,15 @@ extension BannerLayoutTests {
   }
 
   @MainActor func testNotificationCancelJourney() {
-    let app = launch("notification-warm", notice: "healthy")
+    // The app gives up on a notified thread after 15 s and returns to the list by itself. A runner
+    // stall, or a system notification banner XCTest waits out before tapping, can outlast that, and
+    // the late Back tap then lands on the list. Holding the wait leaves Back as the only way out.
+    let app = launch("notification-warm", notice: "healthy", holdThreadOpen: true)
     app.buttons["fixture.open-notification"].tap()
-    XCTAssertTrue(app.descendants(matching: .any)["thread-opening"].firstMatch.waitForExistence(timeout: 10))
+    let opening = app.descendants(matching: .any)["thread-opening"].firstMatch
+    XCTAssertTrue(opening.waitForExistence(timeout: 10))
     back(app)
+    XCTAssertTrue(opening.waitForNonExistence(timeout: 10))
     app.buttons["fixture.finish-sync"].tap()
     checkLayout(
       app, screen: "list", hasBanner: false, covering: [point("testBackCancelsNotificationWaitingForSync")])

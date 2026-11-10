@@ -23,7 +23,15 @@ struct ComposerView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: LLA.Space.s) {
-      if let error = model.lastError { errorBanner(error) }
+      if let error = model.lastError,
+        !Remediation.coveredByContinuity(model.lastFailure, continuity: detail.thread.continuity)
+      {
+        ThreadErrorNotice(error: error, failure: model.lastFailure, remedy: model.remediation) { action in
+          Task { await model.perform(action) }
+        } dismiss: {
+          model.lastError = nil
+        }
+      }
       relayLines
       if let turn = activeTurn { turnRow(turn) }
       ComposerField(text: $model.composerText, placeholder: placeholder, focused: $focused) {
@@ -85,14 +93,27 @@ struct ComposerView: View {
 
   // MARK: Above the field
 
+  /// The line above the field while a turn holds the draft, in the thread header's words.
+  static func turnNote(for status: TurnStatus) -> String {
+    let state =
+      switch status {
+      case .submitting: "A turn is being sent."
+      case .running: "A turn is running."
+      case .waitingForUser: "The turn is waiting for you."
+      case .stopping: "A turn is stopping."
+      case .reconciling: "A turn's outcome is unknown."
+      case .terminal: "A turn is finishing."
+      }
+    return state + " Your draft stays here until it finishes."
+  }
+
   /// What the running turn means for the draft, and the reconcile pair when its outcome is unknown.
   /// The words line up with the text inside the field.
   private func turnRow(_ turn: Turn) -> some View {
     // Two lines at most on the Mac, whose smallest window must still fit the detail
     // (`DetailMinimumSizeTests`); the phone wraps it whole, for large text.
     let words =
-      model.activeTurnLabel(for: detail.thread)
-      ?? "A turn is \(turn.status.rawValue). Your draft stays here until it finishes."
+      model.activeTurnLabel(for: detail.thread) ?? Self.turnNote(for: turn.status)
     let text = Text(words)
       .llaCaption()
       #if os(macOS)
@@ -167,27 +188,6 @@ struct ComposerView: View {
     .accessibilityElement(children: .combine)
   }
 
-  private func errorBanner(_ error: String) -> some View {
-    let remedy = model.remediation
-    return LLACard(fill: .surface, padding: LLA.Space.m) {
-      HStack(alignment: .top, spacing: LLA.Space.m) {
-        VStack(alignment: .leading, spacing: 2) {
-          Text(remedy?.message ?? error).font(LLAFont.small).foregroundStyle(LLA.Color.danger)
-          if remedy != nil, let code = model.lastFailure?.code {
-            Text(code.rawValue).llaCodeMuted()
-          }
-        }
-        Spacer()
-        if let remedy, let title = remedy.actionTitle, remedy.action != .none {
-          Button(title) { Task { await model.perform(remedy.action) } }
-            .buttonStyle(.llaSecondary)
-            .accessibilityIdentifier("remediation")
-        }
-        Button("Dismiss") { model.lastError = nil }.buttonStyle(.llaLink)
-      }
-    }
-    .accessibilityIdentifier("error-banner")
-  }
 }
 
 /// The composer's round button: an ink circle (32 pt at the default text size) with the symbol in the

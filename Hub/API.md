@@ -958,7 +958,13 @@ The same transaction withdraws what is over: a notified request that is no longe
 notified in a thread that was deleted. Each is withdrawn once (the ledger's `withdrawn_at`), to the
 same phones as the alert, the one whose push caused it included.
 
-Alerts and withdrawals are sent after the commit, on a task of their own: the push response never
+A successfully applied update to `threads.archived` (archive or unarchive) also requests a silent
+mirror refresh for each eligible other phone. Multiple such writes in one batch need one refresh
+per phone. Duplicate uploads, losing/refused/skipped writes and unrelated column updates do not
+request a refresh. A phone already receiving an alert or withdrawal in that batch needs no extra
+refresh. Quiet threads need no notification ledger entry.
+
+Alerts, withdrawals and refreshes are sent after the commit, on a task of their own: the push response never
 waits on delivery, and a failed delivery is logged (device id, notification keys, and APNs's
 status, `reason`, and `apns-id`; never the token, the title, or the provider token) and dropped.
 
@@ -993,13 +999,23 @@ A withdrawal is a background push naming the keys to remove, with no alert, soun
 {"aps": {"content-available": 1}, "withdraw": ["request:request-1", "turn:turn-7"]}
 ```
 
+An archive refresh has no navigation or withdrawal keys and no alert, sound or badge:
+
+```json
+{"aps": {"content-available": 1}, "refresh": true}
+```
+
+The phone catches up its mirror and requests a widget reload through its existing background
+handler. APNs delivery and widget scheduling remain best effort; a refresh is not a delivery or
+rendering acknowledgement.
+
 #### Senders
 
 `B4HUB_PUSH_SENDER` chooses how `serve` delivers:
 
 - `none` (the default, also when unset): nothing is sent.
-- `spool`: each alert and withdrawal is written to `B4HUB_PUSH_SPOOL_DIR` (required; created if missing)
-  as `<unix ms>-<uuid>.apns`, the payload above (or the withdrawal) plus the `Simulator Target Bundle` key set to the
+- `spool`: each alert, withdrawal and refresh is written to `B4HUB_PUSH_SPOOL_DIR` (required; created if missing)
+  as `<unix ms>-<uuid>.apns`, the relevant payload above plus the `Simulator Target Bundle` key set to the
   phone's `bundleId`, which is what `xcrun simctl push booted - < file` reads. The file is written
   under a hidden `.tmp` name and renamed when complete, so a watcher never reads half a file.
   The Compose file sets this up and mounts the directory at `B4HUB_PUSH_SPOOL_HOST_DIR` (default
@@ -1014,7 +1030,8 @@ A withdrawal is a background push naming the keys to remove, with no alert, soun
     and `iat`, reused for 50 minutes.
   - Headers: `apns-topic` is the token's `bundleId`; an alert is `apns-push-type: alert`,
     `apns-priority: 10`, `apns-collapse-id` its `key`, expiring after 4 hours; a withdrawal is
-    `background`, priority `5`, expiring after 15 minutes.
+    `background`, priority `5`, expiring after 15 minutes. A refresh uses the same background
+    headers and lifetime, with the constant `apns-collapse-id: mirror-refresh`.
   - Apple's answers: `410`, `400 BadDeviceToken`, and `400 DeviceTokenNotForTopic` delete the
     phone's push token (unless it registered a newer one meanwhile), so it is told nothing until it
     registers again. `403 ExpiredProviderToken` or `InvalidProviderToken` re-mints the JWT and
@@ -1404,8 +1421,13 @@ treats the link as dead and reconnects.
 
 ### Presence
 
-A host is online while it has a link. A client receives `presence` once after `hello`, then again
-whenever one of its user's Macs goes online or offline: `hosts` is every non-revoked `macos`
+A host is online while it has a link, and for **10 seconds** after a link it did not end for good
+drops: a Mac on a network change, a short sleep, or a hub deploy usually links again within that,
+and its phones then never see it go offline. Only if it is still gone when the 10 seconds pass are
+they told it is offline. A Mac whose link the hub closed `4001` (revoked, or its session ended) is
+offline at once. The grace is presence only: a command to a Mac with no link is answered
+`device_offline` (or held) at once, as always. A client receives `presence` once after `hello`,
+then again whenever one of its user's Macs goes online or offline: `hosts` is every non-revoked `macos`
 device of that user (never another user's), with `online` and `lastSeenAt` (RFC 3339 in UTC with
 milliseconds; omitted for a Mac never seen). A Mac that is revoked drops out of the list.
 
@@ -1482,6 +1504,11 @@ folders, which are paths on that Mac. The phone renames a project through the ch
    `thread.start`, 15 seconds for the others (counted from when it was forwarded), then answers
    `relay_timeout`. A `reply` that arrives later, or for an `id` nothing waits for, is dropped.
 
+**A Mac older than the command.** A host that receives a `command` whose `method` its build does not
+know (a newer phone through a newer hub) answers at once with a `reply` whose error is
+`unsupported_capability`, `details: { reason: "unknown_method", method }`, rather than leaving the
+hub to answer `relay_timeout`. Any other frame a device cannot read is skipped, and the link stays up.
+
 **In flight.** A command is in flight from when it arrives (before the limits) until its answer is
 queued for the caller, keyed by the calling *device* and the `id`. A second command with the same
 key while the first is in flight attaches to it: it is not counted against the limits, not
@@ -1525,7 +1552,7 @@ owner must be a non-revoked `macos` device of the caller's own user. Otherwise t
 `error` frame `not_found`; a missing thread, another user's, another org's, and one owned by
 a device that is not the user's Mac all read the same. A success has no answer. The Mac need not
 be online: the watch is kept and the Mac is told when it links. The same link may watch a thread it
-already watches (nothing changes). At most **4** threads per link: a fifth distinct thread gets an
+already watches (nothing changes, and the hub does not look the thread up again). At most **4** threads per link: a fifth distinct thread gets an
 `error` frame `watch_limit`, and the link and its other watches are untouched. Every `error` frame
 answering a `watch` carries `details.threadId`, the thread it refuses, so a client can tell it from
 an error about the link: the phone treats it as a gap for that thread, and watches again after a

@@ -56,9 +56,11 @@ private func remove(_ path: String) {
     let path = tempPath()
     defer { remove(path) }
     let (store, fixture) = try seededStore(at: path, link: link)
+    #expect(MirrorGlance.load(path: path).rows.first?.threadId == "t-pinned-working")
     _ = try store.apply([change("threads", "t-pinned-working", "update", column: "archived", value: true)])
     let glance = try MirrorGlance.load(store: store)
     #expect(glance.rows.map(\.threadId) == Array(fixture.expected.order.dropFirst().prefix(3)))
+    #expect(MirrorGlance.load(path: path) == glance)
   }
 
   @Test func pathFormReadsTheSameFileReadOnly() throws {

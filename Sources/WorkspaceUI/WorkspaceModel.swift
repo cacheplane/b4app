@@ -201,8 +201,9 @@ public final class WorkspaceModel {
   /// The clock for relative times ("Replied 3m ago") and the composer idle rule; tests replace it.
   public var now: @Sendable () -> Date = { Date() }
   /// This device's small choices (the last model and permission a new thread used); `UserDefaults`
-  /// in the apps, in memory in tests. Never synced.
-  @ObservationIgnored public var preferences: any LocalPreferences = UserDefaults.standard
+  /// in the apps, which pass it to `init`, and in memory otherwise, so a test never shares the test
+  /// runner's defaults with another. Never synced.
+  @ObservationIgnored public var preferences: any LocalPreferences
   /// Set after `connection.login`; the view opens it in the system browser and clears it.
   public var pendingLoginURL: URL?
 
@@ -346,9 +347,13 @@ public final class WorkspaceModel {
   /// Threads deleted here or elsewhere: nothing about them is shown again, whatever arrives later.
   @ObservationIgnored private var deletedThreadIds: Set<String> = []
 
-  public init(transportProvider: @escaping TransportProvider, accountSource: AccountSource = .coordinator) {
+  public init(
+    transportProvider: @escaping TransportProvider, accountSource: AccountSource = .coordinator,
+    preferences: any LocalPreferences = InMemoryPreferences()
+  ) {
     self.transportProvider = transportProvider
     self.accountSource = accountSource
+    self.preferences = preferences
   }
 
   /// The list under the connection and project filters: pinned first, then needs input,
@@ -1285,6 +1290,7 @@ public final class WorkspaceModel {
     }
     let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return }
+    let generation = accountGeneration
     composerText = ""
     let sent: Turn? = await perform {
       try await $0.request(
@@ -1292,7 +1298,11 @@ public final class WorkspaceModel {
         options: Self.mutation(timeout: .seconds(90))
       ).turn
     }
-    if sent == nil, composerText.isEmpty, self.detail?.activeTurn != nil {
+    if sent == nil, generation == accountGeneration,
+      selectedThreadId == detail.thread.id, self.detail?.thread.id == detail.thread.id,
+      !deletedThreadIds.contains(detail.thread.id), composerText.isEmpty,
+      self.detail?.activeTurn != nil || Remediation.isArchivedSession(lastFailure)
+    {
       composerText = text
     }
   }
@@ -1354,7 +1364,10 @@ public final class WorkspaceModel {
     case .openConnections: openSettings(.connections)
     case .openServers: openSettings(.servers)
     case .newThread: await openNewThread(projectId: detail?.thread.projectId)
-    case .checkAgain: if let id = detail?.thread.id { await reconcileThread(id: id) }
+    case .checkAgain:
+      if let id = detail?.thread.id { await reconcileThread(id: id) }
+      // Reconciliation clears the notice on success and supplies the current failure otherwise.
+      return
     case .abandonTurn: if let id = detail?.thread.id { await abandonTurn(threadId: id) }
     }
     if case .none = action { return }

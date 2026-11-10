@@ -173,20 +173,21 @@ class SimulatorWorkflowTests(unittest.TestCase):
                     if status == 0:
                         self.assertEqual(marker.read_text().strip(), destination)
 
-    def test_boot_precedes_builds_and_exact_readiness_precedes_full_wrapper(self):
+    def test_boot_is_in_the_layout_job_and_exact_readiness_precedes_full_wrapper(self):
+        # The layout tests run in their own job (D-197), so the boot no longer overlaps the app builds.
         workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        job = workflow.index('\n  ios-layout:')
         setup = workflow.index('python3 Scripts/prepare_ios_layout_simulator.py')
-        first_build = workflow.index('xcodebuild build -project B4App.xcodeproj')
         readiness = workflow.index('xcrun simctl bootstatus "$B4APP_LAYOUT_SIMULATOR_UDID" -b')
         wrapper = workflow.index('./Scripts/test-ios-layout.sh -clonedSourcePackagesDirPath .spm')
-        self.assertLess(setup, first_build)
-        self.assertLess(first_build, readiness)
+        self.assertLess(job, setup)
+        self.assertLess(setup, readiness)
         self.assertLess(readiness, wrapper)
+        self.assertLess(wrapper, workflow.index('\n  hub:'))
         self.assertIn('B4APP_LAYOUT_SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}', workflow)
         self.assertIn('B4APP_LAYOUT_DESTINATION: ${{ steps.simulator.outputs.destination }}', workflow)
         self.assertIn('set -euo pipefail\n          xcrun simctl bootstatus', workflow)
-        self.assertIn('timeout-minutes: 60', workflow)
-
+        self.assertIn('timeout-minutes: 40', workflow[job:])
 
 if __name__ == '__main__':
     unittest.main()
