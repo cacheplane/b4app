@@ -134,19 +134,19 @@ jobs:
       - name: Build macOS app
         run: >
           xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'platform=macOS'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO
+          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
       - name: Build iOS app (simulator)
         run: >
           xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO
+          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
       - name: Build macOS app (beta)
         run: >
           xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS-Beta -destination 'platform=macOS'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO
+          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
       - name: Build iOS app (beta, simulator)
         run: >
           xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS-Beta -destination 'generic/platform=iOS Simulator'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO
+          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
 
   # The fixture app builds from the package, not from the four app builds, so it runs beside them.
   ios-layout:
