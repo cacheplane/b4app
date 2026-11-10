@@ -10,7 +10,8 @@ mod relay_support;
 use std::time::{Duration, SystemTime};
 
 use axum::http::StatusCode;
-use b4hub::relay::{close_code, rfc3339_millis};
+use b4hub::instances::InstancesState;
+use b4hub::relay::{close_code, rfc3339_millis, WallClock};
 use b4hub_core::relay::{RelayMessage, RelayMethod, Role};
 use b4hub_db::accounts::{self, DeviceSpec, Identity, Principal};
 use b4hub_db::devices::{self, Platform};
@@ -20,7 +21,7 @@ use sqlx::PgPool;
 
 use relay_support::{
     epoch_seconds, eventually, fill_queue, pause_clock, real_sleep, settle, spawn_hub,
-    spawn_hub_paused, FakeDevice, Hub, Seeded, FRAME_WAIT,
+    spawn_hub_paused, spawn_hub_with, FakeDevice, Hub, Seeded, FRAME_WAIT,
 };
 
 /// The `hello` a link starts with, as `(role, heartbeatSeconds, deviceId)`.
@@ -2625,7 +2626,17 @@ async fn maintenance_refuses_link_writes_and_keeps_reads(pool: PgPool) {
 
 #[sqlx::test(migrations = false)]
 async fn a_link_whose_token_is_deleted_behind_its_back_closes_within_a_minute(pool: PgPool) {
-    let world = World::new(spawn_hub_paused(&pool).await).await;
+    // A one-minute heartbeat makes the signal listener's silence window four minutes. At the
+    // default (20 s) two 10 s steps of the paused clock can pass before a heartbeat's echo comes
+    // back in real time; the listener then reconnects and rechecks every link, which closes this
+    // one early, by the path this test is not about.
+    let hub = spawn_hub_with(
+        &pool,
+        WallClock::anchored_to_tokio(),
+        InstancesState::new(Duration::from_secs(60)),
+    )
+    .await;
+    let world = World::new(hub).await;
     let clock = pause_clock();
     let mut phone = world.phone().await;
     // The token goes without a request to the hub, so nothing signals: only the link's own

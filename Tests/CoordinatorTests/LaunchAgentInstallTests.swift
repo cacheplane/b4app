@@ -64,8 +64,11 @@ private actor FakeLaunchd {
     let loaded = try await LaunchAgentControl.install(
       programPath: "/Applications/New.app/b4app-coordinator", home: home,
       // This fake advances on calls, not elapsed time. Sleeping can exhaust the production deadline
-      // while unrelated parallel suites initialize their private databases.
-      launchctl: { arguments, _ in await launchd.run(arguments) }, poll: .zero)
+      // while unrelated parallel suites initialize their private databases, and so can the calls
+      // themselves (each waits its turn on a starved pool: 47 s on CI with no sleep at all), so
+      // the deadline is out of reach too.
+      launchctl: { arguments, _ in await launchd.run(arguments) }, leaveTimeout: .seconds(3600),
+      poll: .zero)
 
     #expect(loaded)
     #expect(await launchd.calls == ["print", "bootout", "print", "print", "print", "print", "bootstrap"])
