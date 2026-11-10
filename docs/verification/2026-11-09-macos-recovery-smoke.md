@@ -31,3 +31,7 @@ macOS includes leading focus padding and expanded content in a disclosure contro
 UI artifacts, app termination, and fixture shutdown have separate teardown blocks, so a failed screenshot cannot skip process cleanup. Startup failures also close their owned host. The host watches an owner pipe as well as SIGTERM: losing the runner closes the pipe, allowing a normal coordinator/database shutdown even when XCTest cannot execute teardown. Shutdown logs and the host's normal exit status are verified. A separate fixture lifetime test releases the pipe without signalling the host.
 
 The script rejects failed/zero-test summaries. CI retains targeted window screenshots, accessibility trees, protocol state and fixture logs; verbose whole-system diagnostics are disabled. Signed-package installation, embedded helper discovery, LaunchAgent registration and live-provider compatibility remain separate gates.
+
+### First CI run
+
+The compact light/dark journeys and owner-pipe lifetime check passed on GitHub's macOS 26.7.2 virtual machine. The desktop-width cases failed the fixture geometry assertion because an 800-point content request was clamped to 622/625 points. The default matrix now uses 900×600 and 1200×600, maintaining minimum-height compression coverage at both widths; an explicit build-setting override retains the 800-point local variant. This changes fixture geometry only. The PR's next CI run verifies the updated defaults.

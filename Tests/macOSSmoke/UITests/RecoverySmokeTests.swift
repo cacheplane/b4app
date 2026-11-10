@@ -12,6 +12,10 @@ final class RecoverySmokeTests: XCTestCase {
 
   @MainActor private func journey(width: Int, dark: Bool) async throws {
     continueAfterFailure = false
+    let desktopHeight = try XCTUnwrap(
+      Int(ProcessInfo.processInfo.environment["SMOKE_DESKTOP_HEIGHT"] ?? "600"))
+    let height = width == 900 ? 600 : desktopHeight
+    guard height >= 600 else { throw NSError(domain: "SmokeAssertion", code: 5) }
     let fixture = try await SmokeFixture.start()
     // XCTest runs teardown blocks in reverse registration order, even when diagnostics fail.
     addTeardownBlock { @MainActor in try await fixture.stop(in: self) }
@@ -21,7 +25,7 @@ final class RecoverySmokeTests: XCTestCase {
     }
     app.launchEnvironment = [
       "SMOKE_SOCKET": fixture.socket, "SMOKE_WIDTH": String(width), "SMOKE_DARK": dark ? "1" : "0",
-      "SMOKE_HEIGHT": width == 900 ? "600" : "800",
+      "SMOKE_HEIGHT": String(height),
       "SWIFTNIO_STRICT": "1",
     ]
     addTeardownBlock { @MainActor in
@@ -46,7 +50,7 @@ final class RecoverySmokeTests: XCTestCase {
       app.menuItems["New Window"].click()
     }
     try requireElement(app.windows.firstMatch, in: app)
-    try await checkContentSize(app, root: fixture.root, width: width)
+    try await checkContentSize(app, root: fixture.root, width: width, height: height)
     let row = app.buttons.matching(identifier: "thread-row").firstMatch
     try requireElement(row, in: app, timeout: 30)
     XCTAssertTrue(row.label.contains("Archived recovery fixture"))
@@ -67,7 +71,7 @@ final class RecoverySmokeTests: XCTestCase {
     try requireElement(details, in: app)
     try await setDetails(details, message: message, expanded: true)
     try checkRecovery(app, expanded: true)
-    try await checkContentSize(app, root: fixture.root, width: width)
+    try await checkContentSize(app, root: fixture.root, width: width, height: height)
     try checkRenderedMessage(app, root: fixture.root)
     try await setDetails(details, message: message, expanded: false)
     try checkRecovery(app, expanded: false)
@@ -99,7 +103,7 @@ final class RecoverySmokeTests: XCTestCase {
       app.menuItems["New Window"].click()
     }
     try requireElement(app.windows.firstMatch, in: app)
-    try await checkContentSize(app, root: fixture.root, width: width)
+    try await checkContentSize(app, root: fixture.root, width: width, height: height)
     XCTAssertTrue(row.waitForExistence(timeout: 15), app.debugDescription)
     row.click()
     try requireElement(composer, in: app)
@@ -133,7 +137,9 @@ final class RecoverySmokeTests: XCTestCase {
     }
   }
 
-  @MainActor private func checkContentSize(_ app: XCUIApplication, root: URL, width: Int) async throws {
+  @MainActor private func checkContentSize(
+    _ app: XCUIApplication, root: URL, width: Int, height: Int
+  ) async throws {
     // Compare a native content measurement with the independently captured window frame.
     let deadline = ContinuousClock.now + .seconds(5)
     while ContinuousClock.now < deadline {
@@ -144,7 +150,7 @@ final class RecoverySmokeTests: XCTestCase {
         abs(frame.width - frameWidth) <= 1, abs(frame.height - frameHeight) <= 1
       {
         XCTAssertEqual(geometry["contentWidth"], Double(width))
-        XCTAssertEqual(geometry["contentHeight"], Double(width == 900 ? 600 : 800))
+        XCTAssertEqual(geometry["contentHeight"], Double(height))
         return
       }
       try await Task.sleep(for: .milliseconds(100))

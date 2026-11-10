@@ -4,7 +4,7 @@ Run `./Scripts/test-macos-smoke.sh` on an Apple Silicon Mac with Xcode 26, Xcode
 
 The harness mounts the shipped `WorkspaceRootView` and connects over the real client/socket to a separate fixture host running the real coordinator. Only the provider is simulated, by the existing archived-session fake runtime. The fixture host seeds its own account, database, cached transcript and draft. Every journey has a fresh private `/tmp/b4smk-*` root; the runner closes its own host at teardown. The installed app, owner account, Keychain and LaunchAgents are outside this suite.
 
-The four journeys cover compact (900×600) and desktop (1200×800) content sizes in light and dark appearance. They open the chat through the sidebar, send once, expand/collapse/re-expand Details, check the visible recovery text against a freshly rendered unconstrained reference, check notice count and action alignment, invoke Check again and Dismiss, and relaunch the UI to verify the persisted draft. Protocol reads verify one failed terminal attempt, no native turn id and retained cached history. The fake runtime's request log independently rejects any native `turn/start`.
+The four journeys cover compact (900×600) and desktop (1200×600) content sizes in light and dark appearance. They open the chat through the sidebar, send once, expand/collapse/re-expand Details, check the visible recovery text against a freshly rendered unconstrained reference, check notice count and action alignment, invoke Check again and Dismiss, and relaunch the UI to verify the persisted draft. Protocol reads verify one failed terminal attempt, no native turn id and retained cached history. The fake runtime's request log independently rejects any native `turn/start`.
 
 A fifth test verifies that closing the runner's ownership pipe stops the fixture host without sending a signal. The same EOF mechanism handles a runner crash that skips teardown. The runner and UI app enable SwiftNIO strict lifecycle checks; client shutdown must finish its scoped reader before closing the event loop. The host retains the coordinator’s existing bounded account-shutdown order.
 
@@ -18,3 +18,9 @@ Results and attachments are in `.build/macOSSmoke/Results-*.xcresult`. CI retain
 ```
 
 This is fixture UI/coordinator integration coverage. Signed installation, embedded helper discovery, LaunchAgent registration and real-provider compatibility remain separate opt-in gates.
+
+Both default widths use the supported minimum 600-point content height, so they fit GitHub's virtual desktop and exercise compression at a tighter height. On a larger desktop, also run the 800-point variant with:
+
+```sh
+./Scripts/test-macos-smoke.sh B4APP_SMOKE_DESKTOP_HEIGHT=800
+```
