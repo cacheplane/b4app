@@ -90,7 +90,8 @@ jobs:
   apps:
     name: macOS and iOS app builds
     runs-on: macos-26
-    timeout-minutes: 60
+    # With the layout job's 40 this keeps the 60 minutes the two shared as one job.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - name: Select Xcode 26.6
@@ -121,6 +122,24 @@ jobs:
         run: >
           xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS-Beta -destination 'generic/platform=iOS Simulator'
           -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO
+
+  # The fixture app builds from the package, not from the four app builds, so it runs beside them.
+  ios-layout:
+    name: iOS navigation and banner regression tests
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Cache SwiftPM (xcodebuild)
+        uses: actions/cache@v4
+        with:
+          path: .spm
+          key: spm-xcode-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-xcode-${{ runner.os }}-
       - name: iOS navigation and banner regression tests
         env:
           B4APP_LAYOUT_DERIVED_DATA: .build/DerivedData
