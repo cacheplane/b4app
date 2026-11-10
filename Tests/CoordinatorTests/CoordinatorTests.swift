@@ -40,6 +40,24 @@ private func connect(_ coordinator: RunningCoordinator) async throws -> Workspac
 }
 
 @Suite(.serialized) struct CoordinatorSocketTests {
+  @Test func repeatedConnectionsFinishBeforeTheirEventLoopsShutDown() async throws {
+    let coordinator = try await startIsolated()
+    do {
+      for _ in 0..<40 {
+        let client = try await connect(coordinator)
+        #expect(try await client.request(SystemPing.self, EmptyParams()).pong)
+        async let first: Void = client.close()
+        async let second: Void = client.close()
+        _ = await (first, second)
+        await client.close()
+      }
+      await coordinator.close()
+    } catch {
+      await coordinator.close()
+      throw error
+    }
+  }
+
   @Test func answersPingWithItsEpochAndRejectsUnknownMethods() async throws {
     let coordinator = try await startIsolated()
     defer { Task { await coordinator.close() } }

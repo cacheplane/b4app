@@ -256,6 +256,30 @@ run "backup_copy_failed_rule" {
   }
 }
 
+run "backup_job_failed_rule" {
+  command = apply
+
+  assert {
+    condition     = jsondecode(aws_cloudwatch_event_rule.backup_job_failed.event_pattern).source == ["aws.backup"] && jsondecode(aws_cloudwatch_event_rule.backup_job_failed.event_pattern)["detail-type"] == ["Backup Job State Change"]
+    error_message = "the rule matches AWS Backup backup job events"
+  }
+
+  assert {
+    condition     = jsondecode(aws_cloudwatch_event_rule.backup_job_failed.event_pattern).detail.state == ["FAILED", "ABORTED", "EXPIRED"]
+    error_message = "a backup job that fails, is aborted, or expires unstarted raises the event"
+  }
+
+  assert {
+    condition     = aws_cloudwatch_event_target.backup_job_failed.arn == aws_sns_topic.alerts.arn
+    error_message = "the backup-job-failed rule targets the alerts topic"
+  }
+
+  assert {
+    condition     = length([for st in jsondecode(aws_sns_topic_policy.alerts.policy).Statement : st if st.Sid == "EventRulesPublish"][0].Condition.ArnEquals["aws:SourceArn"]) == 3
+    error_message = "the topic policy lets all three event rules publish"
+  }
+}
+
 run "budget_threshold" {
   command = apply
 

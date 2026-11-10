@@ -112,6 +112,11 @@ actor RefusingRemoveStore: SecretStore {
       ConnectionAdd.Params(kind: .b4, label: "Gone", url: "http://127.0.0.1:9", route: "/chat#agent"),
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(60)))
     #expect(result.connection.status == .offline || result.connection.status == .error)
+    // The command response can reach the client before the collector consumes its last event.
+    try await h.events.waitFor {
+      $0.kind == .connectionChanged && $0.connectionId == result.connection.id
+        && $0.payload["attempt"]?.numberValue == 3
+    }
     let attempts = await h.events.events.map(\.event)
       .filter { $0.kind == .connectionChanged && $0.connectionId == result.connection.id }
       .compactMap { $0.payload["attempt"]?.numberValue.map(Int.init) }
@@ -238,7 +243,9 @@ actor RefusingRemoveStore: SecretStore {
   /// A background check answers at once and reports through events, so it never holds the socket (the
   /// coordinator serves one client's requests in order) while it retries.
   @Test func aBackgroundCheckAnswersAtOnce() async throws {
-    let h = try await Harness.start(checkRetryDelays: [.seconds(1), .seconds(1)])
+    // Six seconds of retries: the two answers below must come back inside them, and a starved CI
+    // runner has taken over a second for each (the bounds were 0.8 s and 0.9 s of a 2 s check).
+    let h = try await Harness.start(checkRetryDelays: [.seconds(3), .seconds(3)])
     let added = try await h.client.request(
       ConnectionAdd.self,
       ConnectionAdd.Params(kind: .b4, label: "Gone", url: "http://127.0.0.1:9", route: "/chat#agent"),
@@ -249,11 +256,11 @@ actor RefusingRemoveStore: SecretStore {
     let answer = try await h.client.request(
       ConnectionInspect.self, ConnectionInspect.Params(connectionId: added.connection.id, background: true),
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
-    #expect(clock.now - started < .milliseconds(800))
+    #expect(clock.now - started < .seconds(5))
     #expect(answer.connection.id == added.connection.id)
     // The socket is free: another request answers while the check retries.
     _ = try await h.client.request(ConnectionList.self, ConnectionList.Params())
-    #expect(clock.now - started < .milliseconds(900))
+    #expect(clock.now - started < .seconds(5))
     // The check's result arrives later, as the closing `connection.changed` after its three tries.
     let attempts = try await h.events.waitFor {
       $0.kind == .connectionChanged && $0.connectionId == added.connection.id
@@ -261,7 +268,7 @@ actor RefusingRemoveStore: SecretStore {
         && (Timestamp.date(from: $0.at) ?? .distantPast) > startedAt
     }
     #expect(attempts.payload["attempts"]?.numberValue == 3)
-    #expect(clock.now - started > .seconds(1))
+    #expect(clock.now - started > .seconds(5))
     await h.stop()
   }
 

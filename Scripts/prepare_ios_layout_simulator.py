@@ -12,9 +12,11 @@ import uuid
 
 def prepare(output, requested_udid=None):
     started = time.monotonic()
+    # The first simctl call on a cold runner starts CoreSimulator's service; a hosted runner took
+    # more than 60 s over it (run 42765752032), so the listing gets longer than the boot.
     result = subprocess.run(
         ['xcrun', 'simctl', 'list', 'devices', 'available', '--json'],
-        check=True, capture_output=True, text=True, timeout=60)
+        check=True, capture_output=True, text=True, timeout=300)
     inventory = json.loads(result.stdout)['devices']
     candidates = []
     for runtime, group in inventory.items():

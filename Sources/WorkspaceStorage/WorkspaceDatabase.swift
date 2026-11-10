@@ -623,6 +623,9 @@ public final class WorkspaceDatabase: Sendable {
   /// matches a cached item of the same role and text reuses that row), then the cached live items
   /// nothing matched (the turn in flight), renumbered in one transaction. Snapshot and cache rows the
   /// snapshot no longer contains are removed. Live rows are never removed or duplicated.
+  /// A tagged message may also recover its canonical id within one unambiguous terminal,
+  /// acknowledged native turn, matching role, type and exact text. Reserve all exact native ids
+  /// before that fallback; never apply the legacy global text match to a tagged item.
   @discardableResult
   public func mergeSnapshotItems(threadId: String, items: [SnapshotItem]) throws -> SnapshotMerge {
     try write { c in
@@ -632,22 +635,45 @@ public final class WorkspaceDatabase: Sendable {
       var summary = SnapshotMerge()
       var ordered: [DisplayItem] = []
       var usedRows = Set<String>()
+      let turns = try all(c, Turn.self, "SELECT * FROM turns WHERE \"threadId\" = $1", [threadId])
+      let reservedIds = Set(items.compactMap(\.nativeItemId))
       for item in items {
         let role = DisplayItemRole(rawValue: item.role) ?? .tool
-        let match: DisplayItem?
+        var match: DisplayItem?
         if let nativeId = item.nativeItemId {
           match = cached.first { $0.nativeItemId == nativeId && !usedRows.contains($0.id) }
-        } else if let text = Self.matchText(item.payload), !text.isEmpty {
+        }
+        if match == nil, let nativeTurnId = item.nativeTurnId,
+          role == .user || role == .assistant,
+          let text = Self.matchText(item.payload), !text.isEmpty
+        {
+          let candidates = turns.filter { $0.nativeTurnId == nativeTurnId }
+          if candidates.count == 1, let turn = candidates.first,
+            turn.status == .terminal, turn.submission == .acknowledged
+          {
+            match = cached.first {
+              $0.turnId == turn.id && $0.provenance == .live && $0.role == role && $0.type == item.type
+                && !usedRows.contains($0.id) && Self.matchText($0.payload) == text
+                && ($0.nativeItemId.map { !reservedIds.contains($0) } ?? true)
+            }
+          }
+        }
+        if match == nil, item.nativeTurnId == nil, item.nativeItemId == nil,
+          let text = Self.matchText(item.payload), !text.isEmpty
+        {
           match = cached.first {
             $0.role == role && !usedRows.contains($0.id) && Self.matchText($0.payload) == text
           }
-        } else {
-          match = nil
         }
         if var row = match {
           usedRows.insert(row.id)
           if row.provenance == .live {
-            summary.skipped += 1
+            if let nativeId = item.nativeItemId, row.nativeItemId != nativeId {
+              row.nativeItemId = nativeId
+              summary.updated += 1
+            } else {
+              summary.skipped += 1
+            }
           } else {
             row.payload = item.payload
             row.type = item.type

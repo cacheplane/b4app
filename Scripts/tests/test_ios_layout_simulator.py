@@ -138,7 +138,7 @@ sys.exit(99)
                     module.subprocess, 'run', side_effect=responses) as run:
                 self.assertEqual(module.main(['--github-output', str(self.output)]), 124)
                 self.assertEqual(run.call_count, len(responses))
-                self.assertTrue(all(c.kwargs['timeout'] == 60 for c in run.call_args_list))
+                self.assertEqual([c.kwargs['timeout'] for c in run.call_args_list], [300, 60][:len(responses)])
                 self.assertFalse(self.output.exists())
 
 

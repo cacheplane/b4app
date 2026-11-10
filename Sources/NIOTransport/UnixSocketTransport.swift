@@ -12,6 +12,7 @@ public final class UnixSocketTransport: WorkspaceTransport, Sendable {
   private let outbound: NIOAsyncChannelOutboundWriter<ByteBuffer>
   private let group: EventLoopGroup
   private let readerTask: Task<Void, Never>
+  private let shutdown = SocketShutdown()
 
   private init(channel: NIOAsyncChannel<ByteBuffer, ByteBuffer>, group: EventLoopGroup) async throws {
     self.channel = channel
@@ -80,10 +81,27 @@ public final class UnixSocketTransport: WorkspaceTransport, Sendable {
   }
 
   public func close() async {
-    outbound.finish()
-    readerTask.cancel()
-    try? await channel.channel.close()
-    try? await group.shutdownGracefully()
+    await shutdown.run { [outbound, readerTask, channel, group] in
+      outbound.finish()
+      readerTask.cancel()
+      try? await channel.channel.close()
+      // executeThenClose still schedules its final channel close after cancellation.
+      // Keep the event loop alive until that scoped owner has finished.
+      await readerTask.value
+      try? await group.shutdownGracefully()
+    }
+  }
+}
+
+/// Every closer waits for the same cleanup; later calls never touch an already stopped event loop.
+private actor SocketShutdown {
+  private var task: Task<Void, Never>?
+
+  func run(_ cleanup: @escaping @Sendable () async -> Void) async {
+    if let task { await task.value; return }
+    let task = Task { await cleanup() }
+    self.task = task
+    await task.value
   }
 }
 

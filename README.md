@@ -35,6 +35,14 @@ Render every screen of the app offscreen (both appearances) into PNGs, over a re
 B4APP_SNAPSHOT_DIR=docs/screenshots swift test --filter SnapshotTests
 ```
 
+Run the macOS recovery interaction smoke tests (real workspace UI and isolated coordinator, fixture runtime):
+
+```bash
+./Scripts/test-macos-smoke.sh
+```
+
+The [smoke-test guide](Tests/macOSSmoke/README.md) describes the archived-session journey, rendered-text checks, draft persistence, and retained Xcode results.
+
 ```bash
 ./Scripts/generate-project.sh
 ```
@@ -215,6 +223,8 @@ A local B4 project the app runs for you (registering it runs its `b4.config` and
 `server add` resolves Node 24+ and the project-installed `@b4run/cli` (never `.bin/b4`, never downloaded), allocates a loopback port once, and inspects the routes with `b4 routes --json`. `server start` runs `b4 start --host 127.0.0.1 --port <n>` (source mode, the default) or `b4 dev --port <n> --env-file <p>` (`--mode development`, hot reload) from the project directory with an environment the coordinator builds from the env file, waits for `/healthz`, and is idempotent. `server status`, `server logs [--follow]`, `server restart`, `server stop`, `server inspect`, and `server list` work the same from Settings → B4 projects; `stop` and `restart` refuse while a route connection has a running turn unless `--force`. Servers keep running when the app quits or the coordinator restarts; the next coordinator re-adopts one whose pid, start time, and arguments still match, and never signals anything else. Logs live under the data directory and are redacted when read.
 
 The CLI connects to the running coordinator or starts `b4app-coordinator` next to itself. Set `B4APP_RUNTIME_DIR` and `B4APP_DATA_DIR` to isolate an experiment from the real data under `~/Library/Application Support/b4app`. The runtime directory must be short enough for a Unix socket path (104 bytes); the default under `$TMPDIR` is.
+
+The [B4 runtime integration trial](Tests/B4Runtime/README.md) runs the published B4 CLI against a local aimock fixture in CI. It uses synthetic responses and a dummy credential, makes no paid provider calls, and covers the CLI/runtime integration only; UI promotion and installed-app verification are separate follow-up work.
 
 Live provider tests are opt-in and never run in CI:
 

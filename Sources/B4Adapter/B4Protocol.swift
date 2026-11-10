@@ -214,19 +214,25 @@ public enum B4Protocol {
       if let id = entry.toolCallId { results[id] = entry.text }
     }
     var items: [SnapshotItem] = []
+    // B4 rebuilds its turn list at each HumanMessage boundary, the same ordinal used by sendTurn.
+    // Its checkpoint message ids differ from the stream's synthetic turn-N:mM ids.
+    var ordinal = 0
     for entry in messages {
+      if entry.role == "user" { ordinal += 1 }
+      let nativeTurnId = ordinal > 0 ? "turn-\(ordinal)" : nil
       switch entry.role {
       case "user":
         items.append(
           SnapshotItem(
-            nativeItemId: entry.id, role: "user", type: "userMessage", payload: ["text": .string(entry.text)])
+            nativeItemId: entry.id, role: "user", type: "userMessage", payload: ["text": .string(entry.text)],
+            nativeTurnId: nativeTurnId)
         )
       case "assistant":
         if !entry.text.isEmpty {
           items.append(
             SnapshotItem(
               nativeItemId: entry.id, role: "assistant", type: "agentMessage",
-              payload: ["text": .string(entry.text)]))
+              payload: ["text": .string(entry.text)], nativeTurnId: nativeTurnId))
         }
         for call in entry.toolCalls {
           let id = call["id"]?.stringValue

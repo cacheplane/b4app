@@ -315,5 +315,14 @@ private let completedOutput: JSONValue = ["messages": [["role": "assistant", "co
     #expect(items[2].payload["output"]?.stringValue == "{\"hits\":2}")
     #expect(items[2].payload["input"] == ["q": "b4"])
     #expect(items[3].payload["text"]?.stringValue == "Found 2 hits.")
+    #expect(items.map(\.nativeTurnId) == ["turn-1", "turn-1", nil, "turn-1"])
+    let repeated = B4Protocol.snapshotItems(
+      stateValues: [
+        "messages": [
+          lc("HumanMessage", ["content": "same"]), lc("AIMessage", ["content": "answer"]),
+          lc("HumanMessage", ["content": "same"]), lc("AIMessage", ["content": "answer"]),
+        ]
+      ])
+    #expect(repeated.map(\.nativeTurnId) == ["turn-1", "turn-1", "turn-2", "turn-2"])
   }
 }
