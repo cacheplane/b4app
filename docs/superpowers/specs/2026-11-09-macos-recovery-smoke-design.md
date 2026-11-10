@@ -12,7 +12,7 @@ Each journey owns a unique scratch root and database. Setup seeds an active fixt
 
 ## Journeys
 
-Four variants cover normal and minimum supported macOS window sizes (1200×600 and 900×600 content), light and dark appearance. Each variant starts from fresh state, selects the seeded chat through the sidebar, clicks Send exactly once, and waits for the archived refusal. It expands, collapses, and re-expands Details. It checks the recovery display, invokes Check again while still archived, and gracefully closes/relaunches the UI against the same host. The thread remains selected by an explicit sidebar click after relaunch; selection persistence is outside this contract.
+Four variants cover minimum (900×600) and wider content sizes (1200×600 locally, 1000×600 in CI), each in light and dark appearance. Each variant starts from fresh state, selects the seeded chat through the sidebar, clicks Send exactly once, and waits for the archived refusal. It expands, collapses, and re-expands Details. It checks the recovery display, invokes Check again while still archived, and gracefully closes/relaunches the UI against the same host. The thread remains selected by an explicit sidebar click after relaunch; selection persistence is outside this contract.
 
 Assertions: exactly one terminal failed turn, no native turn id, cached transcript retained, draft unchanged in composer and storage, exactly one active error notice, no redundant continuity notice, bounded visible diagnostics, full recovery instructions rendered, aligned action/Dismiss controls without overlap, and visible usable composer. Check again creates no additional turn. Relaunch reads the saved draft without seeding again. Notice persistence across app relaunch is not required.
 

@@ -35,3 +35,7 @@ The script rejects failed/zero-test summaries. CI retains targeted window screen
 ### First CI run
 
 The compact light/dark journeys and owner-pipe lifetime check passed on GitHub's macOS 26.7.2 virtual machine. The desktop-width cases failed the fixture geometry assertion because an 800-point content request was clamped to 622/625 points. The default matrix now uses 900×600 and 1200×600, maintaining minimum-height compression coverage at both widths; an explicit build-setting override retains the 800-point local variant. This changes fixture geometry only. The PR's next CI run verifies the updated defaults.
+
+The final transport and 600-point-height matrix passed all five local tests in 321.093 seconds (`.build/macOSSmoke/Results-20261110T050553.xcresult`). The next CI run passed the same three compact/lifetime tests but caught off-screen Send controls at 1200 points: its screenshot and accessibility tree showed a 1200-point window on a 1024-point display. CI now explicitly requests a 1000-point desktop width; local runs retain 1200. The harness reports usable screen bounds, and each journey asserts that its entire window fits. No display settings are changed, no tests are skipped, and content-size/hittability/rendered-text assertions remain strict.
+
+Both 1000×600 desktop appearance journeys passed locally with the new screen-containment assertion: two tests, zero failures, 207.540 seconds (`.build/macOSSmoke/Results-20261110T052028.xcresult`).

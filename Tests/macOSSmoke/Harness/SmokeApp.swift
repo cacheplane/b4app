@@ -101,7 +101,7 @@ private struct WindowSetup: NSViewRepresentable {
     }
 
     @objc private func reportGeometry() {
-      if let window, socket.hasPrefix("/tmp/b4smk-"), !adjustingSize {
+      if let window, let screen = window.screen, socket.hasPrefix("/tmp/b4smk-"), !adjustingSize {
         let content = window.contentLayoutRect.size
         if abs(content.width - size.width) > 1 || abs(content.height - size.height) > 1 {
           // Full-size content windows count the toolbar in setContentSize; reserve it explicitly.
@@ -116,6 +116,8 @@ private struct WindowSetup: NSViewRepresentable {
         let geometry = [
           "contentWidth": actual.width, "contentHeight": actual.height,
           "frameWidth": window.frame.width, "frameHeight": window.frame.height,
+          "screenWidth": screen.visibleFrame.width, "screenHeight": screen.visibleFrame.height,
+          "windowFitsScreen": screen.visibleFrame.insetBy(dx: -1, dy: -1).contains(window.frame) ? 1 : 0,
         ]
         let url = URL(fileURLWithPath: socket).deletingLastPathComponent()
           .deletingLastPathComponent().appendingPathComponent("window.json")

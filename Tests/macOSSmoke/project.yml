@@ -13,6 +13,7 @@ settings:
     ENABLE_APP_SANDBOX: NO
     ENABLE_HARDENED_RUNTIME: NO
     B4APP_SMOKE_DESKTOP_HEIGHT: "600"
+    B4APP_SMOKE_DESKTOP_WIDTH: "1200"
 targets:
   WorkspaceSmokeHost:
     type: tool
@@ -80,5 +81,6 @@ schemes:
         B4APP_POSTGRES_BIN: $(SRCROOT)/../../.build/postgres/bin
         SWIFTNIO_STRICT: "1"
         SMOKE_DESKTOP_HEIGHT: $(B4APP_SMOKE_DESKTOP_HEIGHT)
+        SMOKE_DESKTOP_WIDTH: $(B4APP_SMOKE_DESKTOP_WIDTH)
       targets:
         - WorkspaceSmokeTests

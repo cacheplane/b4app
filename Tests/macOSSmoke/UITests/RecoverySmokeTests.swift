@@ -5,17 +5,22 @@ import WorkspaceProtocol
 import XCTest
 
 final class RecoverySmokeTests: XCTestCase {
-  @MainActor func testCompactLightRecovery() async throws { try await journey(width: 900, dark: false) }
-  @MainActor func testCompactDarkRecovery() async throws { try await journey(width: 900, dark: true) }
-  @MainActor func testDesktopLightRecovery() async throws { try await journey(width: 1200, dark: false) }
-  @MainActor func testDesktopDarkRecovery() async throws { try await journey(width: 1200, dark: true) }
+  @MainActor func testCompactLightRecovery() async throws { try await journey(desktop: false, dark: false) }
+  @MainActor func testCompactDarkRecovery() async throws { try await journey(desktop: false, dark: true) }
+  @MainActor func testDesktopLightRecovery() async throws { try await journey(desktop: true, dark: false) }
+  @MainActor func testDesktopDarkRecovery() async throws { try await journey(desktop: true, dark: true) }
 
-  @MainActor private func journey(width: Int, dark: Bool) async throws {
+  @MainActor private func journey(desktop: Bool, dark: Bool) async throws {
     continueAfterFailure = false
     let desktopHeight = try XCTUnwrap(
       Int(ProcessInfo.processInfo.environment["SMOKE_DESKTOP_HEIGHT"] ?? "600"))
-    let height = width == 900 ? 600 : desktopHeight
-    guard height >= 600 else { throw NSError(domain: "SmokeAssertion", code: 5) }
+    let desktopWidth = try XCTUnwrap(
+      Int(ProcessInfo.processInfo.environment["SMOKE_DESKTOP_WIDTH"] ?? "1200"))
+    let width = desktop ? desktopWidth : 900
+    let height = desktop ? desktopHeight : 600
+    guard height >= 600, desktopWidth >= 1000 else {
+      throw NSError(domain: "SmokeAssertion", code: 5)
+    }
     let fixture = try await SmokeFixture.start()
     // XCTest runs teardown blocks in reverse registration order, even when diagnostics fail.
     addTeardownBlock { @MainActor in try await fixture.stop(in: self) }
@@ -151,6 +156,8 @@ final class RecoverySmokeTests: XCTestCase {
       {
         XCTAssertEqual(geometry["contentWidth"], Double(width))
         XCTAssertEqual(geometry["contentHeight"], Double(height))
+        XCTAssertEqual(
+          geometry["windowFitsScreen"], 1, "Fixture window must fit its usable screen: \(geometry)")
         return
       }
       try await Task.sleep(for: .milliseconds(100))

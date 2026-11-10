@@ -28,7 +28,7 @@ Files: modify journey test; create `Tests/macOSSmoke/UITests/RecoveryAssertions.
 - [x] Render an unconstrained reference in the fixture harness using the same public LLA font and primary text's measured content width. Compare rendered danger-text line extent with the captured real notice, not just accessibility text. Keep reference presentation outside the recovery screenshot and restore the workspace before further interaction.
 - [x] Assert one failed terminal turn without native id and draft equality using protocol reads; invoke Check again and repeat state assertions.
 - [x] Quit UI gracefully, relaunch against the existing host, select thread, assert draft loaded and turn count unchanged.
-- [x] Run four variants: 900×600 and 1200×600, each light and dark. Attach window screenshots, accessibility and state diagnostics, including failure teardown.
+- [x] Run four variants: 900×600 and 1200×600 locally (1000×600 in CI), each light and dark. Attach window screenshots, accessibility and state diagnostics, including failure teardown.
 - [x] Negative control: save production files to a temporary backup, temporarily remove message and controls layout priorities, run the constrained expanded test, verify failure specifically identifies clipped text; restore files even if the command fails. Run positive suite again.
 
 ## Task 3: Runner and CI

@@ -174,7 +174,8 @@ jobs:
           path: .build/postgres-dl
           key: postgres-dl-${{ hashFiles('Scripts/fetch-postgres.sh') }}
       - name: macOS recovery smoke tests
-        run: ./Scripts/test-macos-smoke.sh -clonedSourcePackagesDirPath .spm
+        # The virtual desktop is 1024 points wide; keep both journeys fully on-screen.
+        run: ./Scripts/test-macos-smoke.sh B4APP_SMOKE_DESKTOP_WIDTH=1000 -clonedSourcePackagesDirPath .spm
       - name: Save macOS screenshots and test results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
