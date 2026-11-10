@@ -1,0 +1,33 @@
+## 2026-11-09: macOS recovery smoke tests
+
+Scope: fixture-based UI/coordinator integration on Apple Silicon macOS 26.5, Xcode 26.6 (17F113), Swift 6.3.3 and the pinned PostgreSQL 17.11 binaries. The host runs the real coordinator and database, the harness mounts the shipped workspace UI, and only the provider is simulated. The owner's installed app, account, testing chat and draft were not used by this suite.
+
+### Evidence
+
+- Existing recovery baseline: five tests in three suites passed after fetching the pinned test database binaries. Initial execution correctly failed when those binaries were missing.
+- First full compact/light journey passed: one failed terminal attempt without a native turn id; cached history and draft preserved; Details expanded/collapsed/re-expanded; rendered primary text matched an unconstrained reference; one active recovery card, aligned actions and a visible composer; Check again made no new turn; Dismiss cleared the notice; a graceful UI quit/relaunch recovered the saved draft from the same coordinator. Result: `.build/macOSSmoke/Results-20261110T035649.xcresult`, one test passed, 74.690 seconds of test execution.
+- Negative control: disabling only the two recovery layout priorities failed on the rendered-text assertion: 11.5 points of visible ink versus 29.5 points for the full reference. Both source files were restored automatically. Result: `.build/macOSSmoke/Results-20261110T035931.xcresult`.
+- Strict socket/recovery checks: 12 tests in four suites passed in 24.909 seconds, including 40 repeated connections with concurrent close calls. The stress test alone did not reproduce the race described below; the failing smoke run supplied that evidence.
+- Five-test suite passed: four size/appearance journeys and the owner-pipe lifetime test, zero failures, 418.927 seconds. Result: `.build/macOSSmoke/Results-20261110T042153.xcresult`. This run preceded the final repeat-close guard; that guard is covered by the strict regression and package checks below, and CI reruns the complete smoke suite.
+- Repeat-close regression: a third close after two concurrent closes deterministically trapped with `Cannot schedule tasks on an EventLoop that has already shut down`. Sharing one cleanup task for all closers fixed it; the same strict test passed 40 iterations in 19.154 seconds.
+- Full package suite passed: 1,472 tests across 183 suites in 88.615 seconds. `swift build` and both shipping native app builds (macOS and generic iOS Simulator) passed on the final transport implementation.
+- Zero-test guard passed: a method filter matching no test produced an Xcode summary with zero tests, and the wrapper rejected it with exit 1. Skipping the entire bundle was separately rejected by Xcode itself (exit 70).
+- Strict Swift formatting, shellcheck, actionlint, documentation index validation and whitespace checks passed. Fresh validation after rebasing onto the latest main is recorded below when complete.
+
+### Regressions found by actual pointer input
+
+The composer accepted an enabled/hittable Send control in accessibility but did not run its action after a mouse click at the rendered center. A fixture-only input trace confirmed mouse-down/up at the expected position with the draft still present; the runtime request ledger contained no resume. Making only the decorative composer border noninteractive let the same click reach the real coordinator and fake runtime's archived refusal. The smoke suite retains a runtime-request assertion immediately after Send, so a visible enabled button alone cannot pass this gate. The temporary mouse trace was removed after diagnosis.
+
+The recovery card's identifier previously propagated to its message, disclosure and both actions. Explicit accessibility containment now represents one card and retains independently addressable message and controls. This makes notice-count checks describe notices rather than counting every child with an inherited identifier.
+
+The first four-variant run also exposed a socket shutdown race. The compact/light runner trapped in SwiftNIO's late-scheduling diagnostic while `UnixSocketTransport`'s `executeThenClose` reader was trying its final channel close after the event loop group had shut down. The client transport now awaits that scoped reader before closing its group, and concurrent/later closes await one shared shutdown task. The runner and UI app enable `SWIFTNIO_STRICT=1` to detect late client scheduling directly. An analogous server-loop join was reviewed and reverted: waiting for pending router commands before account shutdown could bypass the account scope's bounded drain and runtime disposal. The server's existing shutdown ordering is retained. The initial desktop checks separately caught a fixture measurement error (748 content points instead of the requested 800); the harness now compensates using the native content-layout rectangle rather than including the toolbar in its requested height.
+
+### Harness reliability
+
+The macOS test runner has test-only entitlements with App Sandbox disabled, allowing its private fixture database and socket. The harness never resolves a production socket. It explicitly opens a workspace window when macOS launches the app without one; scene restoration is disabled. Native content measurements are cross-checked against XCUITest window bounds after toolbar sizing, including after Details expansion and relaunch.
+
+macOS includes leading focus padding and expanded content in a disclosure control's accessibility frame. The test anchors pointer input to the drawn arrow, observes the expanded value, and finds the diagnostics scroll view within the single recovery card; the disclosure's identifier propagates to its contents. No model call or injected UI error bypasses these interactions.
+
+UI artifacts, app termination, and fixture shutdown have separate teardown blocks, so a failed screenshot cannot skip process cleanup. Startup failures also close their owned host. The host watches an owner pipe as well as SIGTERM: losing the runner closes the pipe, allowing a normal coordinator/database shutdown even when XCTest cannot execute teardown. Shutdown logs and the host's normal exit status are verified. A separate fixture lifetime test releases the pipe without signalling the host.
+
+The script rejects failed/zero-test summaries. CI retains targeted window screenshots, accessibility trees, protocol state and fixture logs; verbose whole-system diagnostics are disabled. Signed-package installation, embedded helper discovery, LaunchAgent registration and live-provider compatibility remain separate gates.

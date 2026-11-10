@@ -18,7 +18,7 @@ Assertions: exactly one terminal failed turn, no native turn id, cached transcri
 
 ## Rendering contract
 
-Accessibility values cannot prove visible text: the original truncated label exposed its full value. Add stable accessibility identifiers to the primary message, Details, diagnostics and Dismiss. Compare danger-text rendered vertical extent in the real window with an unconstrained reference rendered by the same SwiftUI font, content width, appearance and scale. The reference belongs only to test support, not the shipped app. Frame/visibility assertions catch clipping outside the window. Keep the existing component compression tests for the smaller pane proposals. Verify the new regression's sensitivity once by temporarily disabling the two layout priorities from PR #147 and observing its truncation assertion fail, then restore the exact production source.
+Accessibility values cannot prove visible text: the original truncated label exposed its full value. Add stable accessibility identifiers to the primary message, Details and Dismiss; scope the diagnostics scroll view to its notice because the native disclosure propagates its own identifier to its contents. Give the notice explicit accessibility containment so its identifier describes one card. Compare danger-text rendered vertical extent in the real window with an unconstrained reference rendered by the same SwiftUI font, content width, appearance and scale. The reference belongs only to test support, not the shipped app. Frame/visibility assertions catch clipping outside the window. Keep the existing component compression tests for the smaller pane proposals. Verify the new regression's sensitivity once by temporarily disabling the two layout priorities from PR #147 and observing its truncation assertion fail, then restore the exact production source.
 
 ## Execution and artifacts
 
@@ -27,3 +27,9 @@ Accessibility values cannot prove visible text: the original truncated label exp
 ## Follow-on scope
 
 Signed package installation, embedded helper discovery, LaunchAgent registration, real-provider authentication/compatibility and inference remain opt-in later gates. B4 restart and reconnect can become separate fixture journeys after this foundation is proved.
+
+## Implementation finding
+
+Actual pointer input exposed a decorative composer border intercepting Send clicks even though accessibility reported the button enabled and hittable. The minimal correction makes that border noninteractive. The smoke test requires the single click to reach the runtime, then verifies no native turn starts after the archived refusal. It also clicks Dismiss and verifies notice removal without losing the draft.
+
+Running multiple journeys exposed a socket lifetime race: scoped channel cleanup could outlive its event loop. The client transport reader now finishes before its group shuts down, and all concurrent or later closers await the same cleanup task. The runner and UI app enable SwiftNIO strict checks; the coordinator’s existing bounded account-shutdown order is preserved. A fixture ownership pipe makes runner loss trigger normal host shutdown, and a separate lifecycle test verifies EOF without a signal.
