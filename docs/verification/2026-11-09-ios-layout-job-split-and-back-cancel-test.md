@@ -1,0 +1,15 @@
+## 2026-11-09: The iOS layout job's first hosted runs (D-197), and the Back test that raced the 15 s open wait
+
+D-197 moved the iOS navigation and banner regression tests into their own CI job and claimed no speedup until it was measured. These are the first hosted runs, and the diagnosis of the one failure among them. The failure was a test race that the split did not cause; the fixture now removes it.
+
+| Check | Result |
+| --- | --- |
+| Before the split | Eight successful runs on 2026-11-09 (six before the pull request, then main `8197fe1` and `0ee71d3`): the "macOS and iOS app builds" job, always the last to finish, took 1408 to 2232 s. |
+| After the split | Two successful runs: pull request #158 (run 42716157942), layout job 1230 s and builds job 548 s; main `cb1a8d5` (run 42745033484), layout job 851 s and builds job 350 s. The layout job was the last to finish in both. Two samples; no percentile is claimed. |
+| Limits | Builds 350 and 548 s of 1200 s; layout 851 and 1230 s of 2400 s. |
+| Cost of the lost DerivedData | Not visible. The layout step no longer follows an iOS simulator build in the same DerivedData; its two times are inside or below the 1027 to 1503 s it took before. |
+| Required check | "iOS navigation and banner regression tests" was added to `main`'s required status checks before #158 merged. |
+| Failure on main `20d3f97` | Run 42747882176, first attempt: `testBackCancelsNotificationWaitingForSync` failed at `checkLayout`'s `sidebar-more` hittable assertion; the other 24 tests passed. #162, the commit under test, changed only the coordinator's LaunchAgent code. |
+| Cause, from the result bundle | The harness took 75 s to launch. Springboard then showed a system notification ("Ready for Apple Intelligence", from Settings) over the navigation bar as the test went to tap Back; XCTest's default interruption handler waited for it and tapped about 17 s after the notified thread started opening. `WorkspaceModel.threadOpenWait` is 15 s, so the app had already given up, returned to the list, and shown "This thread is unavailable." The late tap landed at the list's Filter button and opened its menu, which covered the controls `checkLayout` requires. |
+| Fix | Fixture and test only. `LAYOUT_HOLD_THREAD_OPEN=1` gives the fixture's model a `HeldClock` whose `now` stands still while its sleeps take real time, so the wait cannot expire by itself; only this test sets it. The test also asserts that `thread-opening` goes after the Back tap, so a lost tap fails there. No shipped source changed. |
+| Local control | iPhone 17 Pro Simulator, iOS 26.5. With a temporary 20 s delay before Back: the held test passed (the opening screen was still there, and Back dismissed it), and the same delay without the hold failed. The final test, without the delay, passed. The full 25-test selection was not run locally; the pull request's hosted run is that check. |
