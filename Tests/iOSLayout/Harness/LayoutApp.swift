@@ -103,7 +103,6 @@ struct LayoutApp: App {
     model.accountHost = account
     model.accountHasNoMac = screen == "connect-mac"
     if screen == "archived" { model.projectFilter = .archived }
-    if screen == "no-match" { model.listSearch = "no-such-thread" }
     if screen == "detail" || screen == "notification-cold" { model.requestOpenThread("thread-1") }
     _model = State(initialValue: model)
     _sync = State(

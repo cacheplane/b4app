@@ -249,8 +249,7 @@ final class BannerLayoutTests: XCTestCase {
 
   @MainActor
   func testEveryWorkspaceSurfaceWithSyncFailure() {
-    for screen in ["empty", "archived", "no-match", "detail", "new-thread", "no-ready-detail", "connect-mac"]
-    {
+    for screen in ["empty", "archived", "detail", "new-thread", "no-ready-detail", "connect-mac"] {
       let app = launch(screen)
       checkLayout(app, screen: screen)
       app.terminate()
@@ -469,16 +468,13 @@ final class BannerLayoutTests: XCTestCase {
   func testSearchWithBannerPresent() {
     let app = launch("list")
     checkLayout(app, screen: "list")
+    // The list keeps no search field of its own (D-201): the button opens the Search sheet.
+    XCTAssertFalse(app.searchFields["Search threads"].exists)
     app.buttons["list-search"].tap()
+    XCTAssertTrue(app.descendants(matching: .any)["search-palette"].firstMatch.waitForExistence(timeout: 5))
     let search = app.searchFields["Search threads"]
+    XCTAssertTrue(search.waitForExistence(timeout: 5))
     XCTAssertTrue(search.isHittable)
-    search.tap()
-    search.typeText("no-such-thread")
-    XCTAssertTrue(app.staticTexts["No matching threads."].waitForExistence(timeout: 5))
-    let banners = app.descendants(matching: .any).matching(identifier: "sync.banner")
-      .allElementsBoundByIndex.filter { $0.isHittable }
-    XCTAssertFalse(banners.isEmpty)
-    for banner in banners { XCTAssertFalse(contentFrame(banner).intersects(search.frame)) }
   }
 
   @MainActor
