@@ -663,3 +663,88 @@ async fn environments_rename_carries_rows_changes_and_clocks(pool: PgPool) {
         "{secured:?}"
     );
 }
+
+#[sqlx::test(migrations = false)]
+async fn environments_rename_runner_preserves_opaque_json_update_history(pool: PgPool) {
+    migrate_to_0017(&pool).await;
+    let seeded = orgs::seed(
+        &Db { pool: pool.clone() },
+        "opaque-regression",
+        "Fixture",
+        "ann",
+        "Ann",
+        "ann@example.test",
+    )
+    .await
+    .unwrap();
+    let device: sqlx::types::Uuid = sqlx::query_scalar("INSERT INTO devices (id, org_id, user_id, name, platform) VALUES (gen_random_uuid(), $1, $2, 'Mac', 'macos') RETURNING id")
+        .bind(seeded.org_id).bind(seeded.user_id).fetch_one(&pool).await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let outcome = async {
+        for statement in [
+            r#"INSERT INTO "projects" (id,name,org_id,user_id,device_id,owner_device_id) VALUES ('p1','before',$1,$2,$3,$3)"#,
+            r#"INSERT INTO "projectFolders" (id,"projectId",org_id,user_id,device_id,owner_device_id) VALUES ('f1','p1',$1,$2,$3,$3)"#,
+            r#"INSERT INTO "threads" (id,"projectId",org_id,user_id,device_id,owner_device_id) VALUES ('t1','p1',$1,$2,$3,$3)"#,
+            r#"INSERT INTO "connections" (id,"projectId",org_id,user_id,device_id,owner_device_id) VALUES ('c1','p1',$1,$2,$3,$3)"#,
+            r#"INSERT INTO column_clocks (org_id,"table",row_id,"column",hlc) SELECT $1,v.tbl,v.row_id,v.col,'clock' FROM (VALUES ('projects','p1','name'),('threads','t1','projectId')) v(tbl,row_id,col) WHERE $2::uuid IS NOT NULL AND $3::uuid IS NOT NULL"#,
+        ] {
+            sqlx::query(statement).bind(seeded.org_id).bind(seeded.user_id).bind(device).execute(&mut *conn).await?;
+        }
+        sqlx::query(r#"-- One prepared INSERT, bind $1 org UUID, $2 user UUID, $3 enrolled fixture device UUID.
+INSERT INTO changes (org_id, device_id, device_seq, user_id, wall, "table", row_id, op, "column", value, hlc, value_bytes)
+SELECT $1, $3, s.seq, $2, s.seq, s.tbl, s.row_id, s.op, s.col, s.val, 'regression-' || s.seq::text, octet_length(s.val::text)
+FROM (VALUES
+ (1::bigint, 'projects', 'p1', 'insert', NULL::text, '{"id":"p1","name":"before"}'::jsonb),
+ (2, 'projectFolders', 'f1', 'insert', NULL, '{"id":"f1","projectId":"p1"}'::jsonb),
+ (3, 'threads', 't1', 'insert', NULL, '{"id":"t1","projectId":"p1"}'::jsonb),
+ (4, 'threads', 't1', 'update', 'projectId', '"p1"'::jsonb),
+ (5, 'connections', 'c1', 'insert', NULL, '{"id":"c1","projectId":"p1"}'::jsonb),
+ (101, 'displayItems', 'opaque-single', 'update', 'payload', '{"projectId":"external"}'::jsonb),
+ (102, 'displayItems', 'opaque-both', 'update', 'payload', '{"projectId":"external","environmentId":"keep","nested":{"projectId":"inside"}}'::jsonb),
+ (103, 'displayItems', 'opaque-nested', 'update', 'payload', '{"nested":{"projectId":"inside"}}'::jsonb),
+ (104, 'displayItems', 'opaque-array', 'update', 'payload', '[{"projectId":"external"}]'::jsonb),
+ (105, 'connections', 'opaque-capabilities', 'update', 'capabilities', '{"projectId":"external","environmentId":"keep"}'::jsonb)
+) AS s(seq,tbl,row_id,op,col,val);
+"#).bind(seeded.org_id).bind(seeded.user_id).bind(device).execute(&mut *conn).await?;
+        sqlx::raw_sql(r#"CREATE TEMP TABLE regression_opaque_before AS SELECT * FROM changes WHERE row_id LIKE 'opaque-%';
+CREATE TEMP TABLE regression_count_before AS SELECT count(*) AS n FROM changes;
+DO $$ BEGIN
+ IF (SELECT count(*) FROM regression_opaque_before) <> 5 THEN RAISE EXCEPTION 'expected five opaque native change rows'; END IF;
+END $$;
+"#).execute(&mut *conn).await?;
+        // Exercise the production runner on this test database; the acquired connection keeps
+        // only its private TEMP beforeimages, outside any transaction, for the comparison below.
+        b4hub_db::migrate::run(&admin_url(&pool), &app_url(&pool, "pw-test")).await?;
+        sqlx::raw_sql(r#"-- Observe the production runner result using this connection's private beforeimages.
+DO $$ BEGIN
+ IF (SELECT count(*) FROM "environments" WHERE "id" = 'p1' AND "name" = 'before') <> 1
+ OR (SELECT count(*) FROM "environmentFolders" WHERE "id" = 'f1' AND "environmentId" = 'p1') <> 1
+ OR (SELECT count(*) FROM "threads" WHERE "id" = 't1' AND "environmentId" = 'p1') <> 1
+ OR (SELECT count(*) FROM "connections" WHERE "id" = 'c1' AND "environmentId" = 'p1') <> 1 THEN
+  RAISE EXCEPTION 'structural row rename failed';
+ END IF;
+ IF (SELECT count(*) FROM changes WHERE op = 'insert' AND "table" IN ('environmentFolders','threads','connections') AND value ->> 'environmentId' = 'p1' AND value_bytes = octet_length(value::text)) <> 3
+ OR NOT EXISTS (SELECT 1 FROM changes WHERE "table" = 'threads' AND op = 'update' AND "column" = 'environmentId' AND value = '"p1"'::jsonb)
+ OR EXISTS (SELECT 1 FROM changes WHERE "table" IN ('projects','projectFolders') OR "column" = 'projectId')
+ OR NOT EXISTS (SELECT 1 FROM column_clocks WHERE "table" = 'environments' AND row_id = 'p1' AND "column" = 'name')
+ OR NOT EXISTS (SELECT 1 FROM column_clocks WHERE "table" = 'threads' AND row_id = 't1' AND "column" = 'environmentId')
+ OR EXISTS (SELECT 1 FROM column_clocks WHERE "table" IN ('projects','projectFolders') OR "column" = 'projectId') THEN
+  RAISE EXCEPTION 'structural change/clock/size rename failed';
+ END IF;
+ IF (SELECT count(*) FROM changes) <> (SELECT n FROM regression_count_before) THEN RAISE EXCEPTION 'feed row count changed'; END IF;
+ IF (SELECT count(*) FROM pg_class WHERE relname IN ('environments','environmentFolders','changes','column_clocks') AND relnamespace = 'public'::regnamespace AND relrowsecurity AND relforcerowsecurity) <> 4 THEN
+  RAISE EXCEPTION 'RLS/force flags not preserved';
+ END IF;
+ -- Opaque whole-row history, including its original stored byte count, must remain exact.
+ IF EXISTS (SELECT 1 FROM regression_opaque_before b LEFT JOIN changes a USING (org_id,hub_seq) WHERE to_jsonb(a) IS DISTINCT FROM to_jsonb(b)) THEN
+  RAISE EXCEPTION 'opaque JSON update history changed during structural rename';
+ END IF;
+END $$;
+"#).execute(&mut *conn).await?;
+        Ok::<(), b4hub_db::Error>(())
+    }.await;
+    // Preserve the assertion/setup error until the explicitly owned test pool is normally closed.
+    drop(conn);
+    pool.close().await;
+    outcome.unwrap();
+}

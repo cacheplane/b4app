@@ -110,6 +110,20 @@ import WorkspaceSync
     await model.disconnect()
   }
 
+  @Test func a_retry_sleep_does_not_extend_the_notification_open_deadline() async throws {
+    let transport = try mirroredTransport()
+    let clock = DeadlineJumpClock(jump: WorkspaceModel.threadOpenWait)
+    let model = WorkspaceModel(transportProvider: { transport }, accountSource: .host)
+    model.clock = clock
+    model.connect()
+    try #require(await model.settledLink() == .ready)
+    model.requestOpenThread("not-synced")
+    try await waitUntil("retry sleep registered") { clock.firstSleep != nil }
+    let retry = try #require(clock.firstSleep)
+    #expect(retry <= TestClock.Instant(offset: WorkspaceModel.threadOpenWait))
+    await model.disconnect()
+  }
+
   @Test func back_cancels_an_open_waiting_for_sync() async throws {
     let (transport, store, fixture) = try mirrored(seedThread: false)
     let clock = TestClock()
@@ -306,5 +320,34 @@ private final class HeldReads: WorkspaceTransport {
       return state.held
     }
     for continuation in waiting { continuation.resume() }
+  }
+}
+
+/// Advances between the expiry check and scheduling the retry, reproducing the CI clock race
+/// without waiting for a wall-clock timeout. A retry must still be bounded by the original deadline.
+private final class DeadlineJumpClock: Clock, @unchecked Sendable {
+  typealias Instant = TestClock.Instant
+  private let base = TestClock()
+  private let jump: Duration
+  private let state = Mutex<(reads: Int, firstSleep: Instant?)>((0, nil))
+
+  init(jump: Duration) { self.jump = jump }
+
+  var minimumResolution: Duration { base.minimumResolution }
+  var now: Instant {
+    let shouldJump = state.withLock { state in
+      state.reads += 1
+      return state.reads == 3
+    }
+    if shouldJump { base.advance(by: jump) }
+    return base.now
+  }
+
+  var firstSleep: Instant? { state.withLock { $0.firstSleep } }
+
+  func sleep(until deadline: Instant, tolerance: Duration?) async throws {
+    state.withLock { if $0.firstSleep == nil { $0.firstSleep = deadline } }
+    ConditionNudge.post()
+    try await base.sleep(until: deadline, tolerance: tolerance)
   }
 }

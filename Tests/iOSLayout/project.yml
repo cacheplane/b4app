@@ -56,12 +56,30 @@ targets:
         SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated
     dependencies:
       - target: WorkspaceLayoutHarness
+  WorkspaceLayoutComponentTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ComponentTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cacheplane.b4app.layout-component-tests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated
+    dependencies:
+      - target: WorkspaceLayoutHarness
+      - package: b4app
+        product: WorkspaceUI
+      - package: b4app
+        product: WorkspaceMirror
 schemes:
   WorkspaceLayout:
     build:
       targets:
         WorkspaceLayoutHarness: all
         WorkspaceLayoutTests: [test]
+        WorkspaceLayoutComponentTests: [test]
     test:
       targets:
         - WorkspaceLayoutTests
+        - WorkspaceLayoutComponentTests

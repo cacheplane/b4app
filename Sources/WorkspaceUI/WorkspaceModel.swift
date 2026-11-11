@@ -592,7 +592,10 @@ public final class WorkspaceModel {
           lastError = "This thread is unavailable. Check your connection and try again."
           return
         }
-        do { try await clock.sleep(for: .milliseconds(250)) } catch { return }
+        // Capture an absolute wake-up before suspension: a clock advance between the check and
+        // registering a relative sleep must not park this request beyond its original deadline.
+        let retryAt = min(deadline, clock.now.advanced(by: .milliseconds(250)))
+        do { try await clock.sleep(until: retryAt, tolerance: nil) } catch { return }
       }
     }
   }

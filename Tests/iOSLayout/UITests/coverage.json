@@ -1,0 +1,657 @@
+{
+  "schema": 1,
+  "reference": {
+    "source": "a7e1ef743cebaf3704a3fa37ede72db8018df12d",
+    "ui_file_sha256": "6e7f79b92ca6cba1c6495692a177bba35b0c06e9d92850f86da88335d50ec414",
+    "methods": 25,
+    "scenarios": 61,
+    "layouts": 68
+  },
+  "scenarios": [
+    {
+      "id": "testListBannerKeepsLargeTitleAndToolbarVisible#1",
+      "method": "testListBannerKeepsLargeTitleAndToolbarVisible",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Workspace navigation/search/scroll",
+      "preservation": "Initial Home checkpoint; shares only identical initial-state assertions."
+    },
+    {
+      "id": "testDetailBannerKeepsInlineTitleAndToolbarVisible#1",
+      "method": "testDetailBannerKeepsInlineTitleAndToolbarVisible",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Startup/empty-state guards",
+      "preservation": "Preserve a direct-detail startup, separately from warm navigation."
+    },
+    {
+      "id": "testHomeConnectionNoticeUsesPageGutter#1",
+      "method": "testHomeConnectionNoticeUsesPageGutter",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Connection notice gutters",
+      "preservation": "Measure Home before navigating."
+    },
+    {
+      "id": "testThreadConnectionNoticeUsesPageGutter#1",
+      "method": "testThreadConnectionNoticeUsesPageGutter",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Connection notice gutters",
+      "preservation": "Navigate to detail with the same connecting/sync inputs; retain the detail gutter check."
+    },
+    {
+      "id": "testHomeComposerUsesPageGutters#1",
+      "method": "testHomeComposerUsesPageGutters",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Healthy workspace/composers",
+      "preservation": "Healthy Home dock before any navigation."
+    },
+    {
+      "id": "testThreadComposerAndControlsAlign#1",
+      "method": "testThreadComposerAndControlsAlign",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Healthy workspace/composers",
+      "preservation": "Actual thread tap; preserve draft/picker ink and hit assertions."
+    },
+    {
+      "id": "testNewThreadComposerAndControlsAlign#1",
+      "method": "testNewThreadComposerAndControlsAlign",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Healthy workspace/composers",
+      "preservation": "Actual new-thread control; require equivalent picker inputs or retain original startup."
+    },
+    {
+      "id": "testEveryWorkspaceSurfaceWithSyncFailure#1",
+      "method": "testEveryWorkspaceSurfaceWithSyncFailure",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Startup/empty-state guards; workspace navigation",
+      "preservation": "Keep empty/archive/direct-detail/no-ready/no-Mac starts; ready new-thread checks through actual navigation."
+    },
+    {
+      "id": "testEveryWorkspaceSurfaceWithSyncFailure#2",
+      "method": "testEveryWorkspaceSurfaceWithSyncFailure",
+      "ordinal": 2,
+      "layouts": 1,
+      "journey": "Startup/empty-state guards; workspace navigation",
+      "preservation": "Keep empty/archive/direct-detail/no-ready/no-Mac starts; ready new-thread checks through actual navigation."
+    },
+    {
+      "id": "testEveryWorkspaceSurfaceWithSyncFailure#4",
+      "method": "testEveryWorkspaceSurfaceWithSyncFailure",
+      "ordinal": 4,
+      "layouts": 1,
+      "journey": "Startup/empty-state guards; workspace navigation",
+      "preservation": "Keep empty/archive/direct-detail/no-ready/no-Mac starts; ready new-thread checks through actual navigation."
+    },
+    {
+      "id": "testEveryWorkspaceSurfaceWithSyncFailure#5",
+      "method": "testEveryWorkspaceSurfaceWithSyncFailure",
+      "ordinal": 5,
+      "layouts": 1,
+      "journey": "Startup/empty-state guards",
+      "preservation": "Retain original cold ready-newthread start: native proof showed keyboard focus differed from warm navigation."
+    },
+    {
+      "id": "testEveryWorkspaceSurfaceWithSyncFailure#6",
+      "method": "testEveryWorkspaceSurfaceWithSyncFailure",
+      "ordinal": 6,
+      "layouts": 1,
+      "journey": "Startup/empty-state guards; workspace navigation",
+      "preservation": "Keep empty/archive/direct-detail/no-ready/no-Mac starts; ready new-thread checks through actual navigation."
+    },
+    {
+      "id": "testEveryWorkspaceSurfaceWithSyncFailure#7",
+      "method": "testEveryWorkspaceSurfaceWithSyncFailure",
+      "ordinal": 7,
+      "layouts": 1,
+      "journey": "Startup/empty-state guards; workspace navigation",
+      "preservation": "Keep empty/archive/direct-detail/no-ready/no-Mac starts; ready new-thread checks through actual navigation."
+    },
+    {
+      "id": "testLandscapeLayouts#1",
+      "method": "testLandscapeLayouts",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Landscape",
+      "preservation": "List/detail share one process; empty and Connect your Mac remain separate."
+    },
+    {
+      "id": "testLandscapeLayouts#2",
+      "method": "testLandscapeLayouts",
+      "ordinal": 2,
+      "layouts": 1,
+      "journey": "Landscape",
+      "preservation": "List/detail share one process; empty and Connect your Mac remain separate."
+    },
+    {
+      "id": "testLandscapeLayouts#3",
+      "method": "testLandscapeLayouts",
+      "ordinal": 3,
+      "layouts": 1,
+      "journey": "Landscape",
+      "preservation": "List/detail share one process; empty and Connect your Mac remain separate."
+    },
+    {
+      "id": "testLandscapeLayouts#4",
+      "method": "testLandscapeLayouts",
+      "ordinal": 4,
+      "layouts": 1,
+      "journey": "Landscape",
+      "preservation": "List/detail share one process; empty and Connect your Mac remain separate."
+    },
+    {
+      "id": "testAccessibilityTextLayouts#1",
+      "method": "testAccessibilityTextLayouts",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Maximum text/older timestamp",
+      "preservation": "Same maximum text profile and four surfaces; retain empty/no-Mac separate seeds."
+    },
+    {
+      "id": "testAccessibilityTextLayouts#2",
+      "method": "testAccessibilityTextLayouts",
+      "ordinal": 2,
+      "layouts": 1,
+      "journey": "Maximum text/older timestamp",
+      "preservation": "Same maximum text profile and four surfaces; retain empty/no-Mac separate seeds."
+    },
+    {
+      "id": "testAccessibilityTextLayouts#3",
+      "method": "testAccessibilityTextLayouts",
+      "ordinal": 3,
+      "layouts": 1,
+      "journey": "Maximum text/older timestamp",
+      "preservation": "Same maximum text profile and four surfaces; retain empty/no-Mac separate seeds."
+    },
+    {
+      "id": "testAccessibilityTextLayouts#4",
+      "method": "testAccessibilityTextLayouts",
+      "ordinal": 4,
+      "layouts": 1,
+      "journey": "Maximum text/older timestamp",
+      "preservation": "Same maximum text profile and four surfaces; retain empty/no-Mac separate seeds."
+    },
+    {
+      "id": "testRefusalBannerInDarkMode#1",
+      "method": "testRefusalBannerInDarkMode",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Dark refusal",
+      "preservation": "All five surfaces; list/detail/ready-new share real navigation; preserve no-ready/no-Mac setups."
+    },
+    {
+      "id": "testRefusalBannerInDarkMode#2",
+      "method": "testRefusalBannerInDarkMode",
+      "ordinal": 2,
+      "layouts": 1,
+      "journey": "Dark refusal",
+      "preservation": "All five surfaces; list/detail/ready-new share real navigation; preserve no-ready/no-Mac setups."
+    },
+    {
+      "id": "testRefusalBannerInDarkMode#3",
+      "method": "testRefusalBannerInDarkMode",
+      "ordinal": 3,
+      "layouts": 1,
+      "journey": "Dark refusal",
+      "preservation": "All five surfaces; list/detail/ready-new share real navigation; preserve no-ready/no-Mac setups."
+    },
+    {
+      "id": "testRefusalBannerInDarkMode#4",
+      "method": "testRefusalBannerInDarkMode",
+      "ordinal": 4,
+      "layouts": 1,
+      "journey": "Dark refusal",
+      "preservation": "All five surfaces; list/detail/ready-new share real navigation; preserve no-ready/no-Mac setups."
+    },
+    {
+      "id": "testRefusalBannerInDarkMode#5",
+      "method": "testRefusalBannerInDarkMode",
+      "ordinal": 5,
+      "layouts": 1,
+      "journey": "Dark refusal",
+      "preservation": "All five surfaces; list/detail/ready-new share real navigation; preserve no-ready/no-Mac setups."
+    },
+    {
+      "id": "testOtherNoticeImplementations#1",
+      "method": "testOtherNoticeImplementations",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Secondary notices/dismissal",
+      "preservation": "Account2 + offline2 + action-error2 + default-stale1 starts; preserve both sync flags and all original checks on each relevant surface."
+    },
+    {
+      "id": "testOtherNoticeImplementations#2",
+      "method": "testOtherNoticeImplementations",
+      "ordinal": 2,
+      "layouts": 1,
+      "journey": "Secondary notices/dismissal",
+      "preservation": "Account2 + offline2 + action-error2 + default-stale1 starts; preserve both sync flags and all original checks on each relevant surface."
+    },
+    {
+      "id": "testOtherNoticeImplementations#3",
+      "method": "testOtherNoticeImplementations",
+      "ordinal": 3,
+      "layouts": 1,
+      "journey": "Secondary notices/dismissal",
+      "preservation": "Account2 + offline2 + action-error2 + default-stale1 starts; preserve both sync flags and all original checks on each relevant surface."
+    },
+    {
+      "id": "testOtherNoticeImplementations#4",
+      "method": "testOtherNoticeImplementations",
+      "ordinal": 4,
+      "layouts": 1,
+      "journey": "Secondary notices/dismissal",
+      "preservation": "Account2 + offline2 + action-error2 + default-stale1 starts; preserve both sync flags and all original checks on each relevant surface."
+    },
+    {
+      "id": "testOtherNoticeImplementations#5",
+      "method": "testOtherNoticeImplementations",
+      "ordinal": 5,
+      "layouts": 1,
+      "journey": "Secondary notices/dismissal",
+      "preservation": "Account2 + offline2 + action-error2 + default-stale1 starts; preserve both sync flags and all original checks on each relevant surface."
+    },
+    {
+      "id": "testOtherNoticeImplementations#6",
+      "method": "testOtherNoticeImplementations",
+      "ordinal": 6,
+      "layouts": 1,
+      "journey": "Secondary notices/dismissal",
+      "preservation": "Account2 + offline2 + action-error2 + default-stale1 starts; preserve both sync flags and all original checks on each relevant surface."
+    },
+    {
+      "id": "testOtherNoticeImplementations#7",
+      "method": "testOtherNoticeImplementations",
+      "ordinal": 7,
+      "layouts": 2,
+      "journey": "Secondary notices/dismissal",
+      "preservation": "Account2 + offline2 + action-error2 + default-stale1 starts; preserve both sync flags and all original checks on each relevant surface."
+    },
+    {
+      "id": "testOtherNoticeImplementations#8",
+      "method": "testOtherNoticeImplementations",
+      "ordinal": 8,
+      "layouts": 2,
+      "journey": "Secondary notices/dismissal",
+      "preservation": "Account2 + offline2 + action-error2 + default-stale1 starts; preserve both sync flags and all original checks on each relevant surface."
+    },
+    {
+      "id": "testOtherNoticeImplementations#9",
+      "method": "testOtherNoticeImplementations",
+      "ordinal": 9,
+      "layouts": 2,
+      "journey": "Secondary notices/dismissal",
+      "preservation": "Retain original cold action-error detail with this sync-failure flag; warm fixture injection did not survive detail refresh."
+    },
+    {
+      "id": "testOtherNoticeImplementations#10",
+      "method": "testOtherNoticeImplementations",
+      "ordinal": 10,
+      "layouts": 2,
+      "journey": "Secondary notices/dismissal",
+      "preservation": "Retain original cold action-error detail with this sync-failure flag; warm fixture injection did not survive detail refresh."
+    },
+    {
+      "id": "testOtherNoticeImplementations#11",
+      "method": "testOtherNoticeImplementations",
+      "ordinal": 11,
+      "layouts": 1,
+      "journey": "Secondary notices/dismissal",
+      "preservation": "Account2 + offline2 + action-error2 + default-stale1 starts; preserve both sync flags and all original checks on each relevant surface."
+    },
+    {
+      "id": "testOtherNoticeImplementations#12",
+      "method": "testOtherNoticeImplementations",
+      "ordinal": 12,
+      "layouts": 1,
+      "journey": "Secondary notices/dismissal",
+      "preservation": "Account2 + offline2 + action-error2 + default-stale1 starts; preserve both sync flags and all original checks on each relevant surface."
+    },
+    {
+      "id": "testHealthyLayoutsHaveNoSyncBanner#1",
+      "method": "testHealthyLayoutsHaveNoSyncBanner",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Healthy workspace/composers",
+      "preservation": "Assert absence on Home and detail, not only after recovery."
+    },
+    {
+      "id": "testHealthyLayoutsHaveNoSyncBanner#2",
+      "method": "testHealthyLayoutsHaveNoSyncBanner",
+      "ordinal": 2,
+      "layouts": 1,
+      "journey": "Healthy workspace/composers",
+      "preservation": "Assert absence on Home and detail, not only after recovery."
+    },
+    {
+      "id": "testInitialSyncFailureUsesPlainLanguage#1",
+      "method": "testInitialSyncFailureUsesPlainLanguage",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Sync copy journeys",
+      "preservation": "Keep raw transport error input and exact copy on both surfaces."
+    },
+    {
+      "id": "testInitialSyncFailureUsesPlainLanguage#2",
+      "method": "testInitialSyncFailureUsesPlainLanguage",
+      "ordinal": 2,
+      "layouts": 1,
+      "journey": "Sync copy journeys",
+      "preservation": "Keep raw transport error input and exact copy on both surfaces."
+    },
+    {
+      "id": "testStaleSyncFailureKeepsLastSuccessTime#1",
+      "method": "testStaleSyncFailureKeepsLastSuccessTime",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Sync copy journeys",
+      "preservation": "Keep raw server error input distinct from default stale fixture."
+    },
+    {
+      "id": "testStaleSyncFailureKeepsLastSuccessTime#2",
+      "method": "testStaleSyncFailureKeepsLastSuccessTime",
+      "ordinal": 2,
+      "layouts": 1,
+      "journey": "Sync copy journeys",
+      "preservation": "Keep raw server error input distinct from default stale fixture."
+    },
+    {
+      "id": "testOlderSyncTimeAndLargeTextRemainReadable#1",
+      "method": "testOlderSyncTimeAndLargeTextRemainReadable",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Maximum text/older timestamp",
+      "preservation": "Separate older-date input and maximum text; both surfaces and diagnostic exclusion."
+    },
+    {
+      "id": "testOlderSyncTimeAndLargeTextRemainReadable#2",
+      "method": "testOlderSyncTimeAndLargeTextRemainReadable",
+      "ordinal": 2,
+      "layouts": 1,
+      "journey": "Maximum text/older timestamp",
+      "preservation": "Separate older-date input and maximum text; both surfaces and diagnostic exclusion."
+    },
+    {
+      "id": "testRefusedLinkAsksForSignInInsteadOfRetrying#1",
+      "method": "testRefusedLinkAsksForSignInInsteadOfRetrying",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Sync copy journeys",
+      "preservation": "Exact refusal copy on Home and detail in light appearance."
+    },
+    {
+      "id": "testRefusedLinkAsksForSignInInsteadOfRetrying#2",
+      "method": "testRefusedLinkAsksForSignInInsteadOfRetrying",
+      "ordinal": 2,
+      "layouts": 1,
+      "journey": "Sync copy journeys",
+      "preservation": "Exact refusal copy on Home and detail in light appearance."
+    },
+    {
+      "id": "testBlockedMirrorDoesNotPromiseRetry#1",
+      "method": "testBlockedMirrorDoesNotPromiseRetry",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Sync copy journeys",
+      "preservation": "Exact paused copy on Home and detail."
+    },
+    {
+      "id": "testBlockedMirrorDoesNotPromiseRetry#2",
+      "method": "testBlockedMirrorDoesNotPromiseRetry",
+      "ordinal": 2,
+      "layouts": 1,
+      "journey": "Sync copy journeys",
+      "preservation": "Exact paused copy on Home and detail."
+    },
+    {
+      "id": "testSignInAndOnboardingDoNotShowWorkspaceNotices#1",
+      "method": "testSignInAndOnboardingDoNotShowWorkspaceNotices",
+      "ordinal": 1,
+      "layouts": 0,
+      "journey": "Sign-in/onboarding",
+      "preservation": "Retain three separate startup processes and all original affordance/absence checks."
+    },
+    {
+      "id": "testSignInAndOnboardingDoNotShowWorkspaceNotices#2",
+      "method": "testSignInAndOnboardingDoNotShowWorkspaceNotices",
+      "ordinal": 2,
+      "layouts": 0,
+      "journey": "Sign-in/onboarding",
+      "preservation": "Retain three separate startup processes and all original affordance/absence checks."
+    },
+    {
+      "id": "testSignInAndOnboardingDoNotShowWorkspaceNotices#3",
+      "method": "testSignInAndOnboardingDoNotShowWorkspaceNotices",
+      "ordinal": 3,
+      "layouts": 0,
+      "journey": "Sign-in/onboarding",
+      "preservation": "Retain three separate startup processes and all original affordance/absence checks."
+    },
+    {
+      "id": "testNavigateIntoThreadAndBackWithBannerPresent#1",
+      "method": "testNavigateIntoThreadAndBackWithBannerPresent",
+      "ordinal": 1,
+      "layouts": 3,
+      "journey": "Workspace navigation/search/scroll",
+      "preservation": "Keep Home -> thread -> Back sequence before other interactions."
+    },
+    {
+      "id": "testNotificationWaitsForThreadToSync#1",
+      "method": "testNotificationWaitsForThreadToSync",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Notification open",
+      "preservation": "Retain genuine cold and warm launches and loading screenshot/state."
+    },
+    {
+      "id": "testNotificationWaitsForThreadToSync#2",
+      "method": "testNotificationWaitsForThreadToSync",
+      "ordinal": 2,
+      "layouts": 1,
+      "journey": "Notification open",
+      "preservation": "Retain genuine cold and warm launches and loading screenshot/state."
+    },
+    {
+      "id": "testBackCancelsNotificationWaitingForSync#1",
+      "method": "testBackCancelsNotificationWaitingForSync",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Notification Back cancellation",
+      "preservation": "Retain independent warm setup and later-sync cancellation assertion."
+    },
+    {
+      "id": "testSearchWithBannerPresent#1",
+      "method": "testSearchWithBannerPresent",
+      "ordinal": 1,
+      "layouts": 1,
+      "journey": "Workspace navigation/search/scroll",
+      "preservation": "Keep populated fixture inputs; the list has no search field and the button opens the Search sheet with a hittable field (D-201)."
+    },
+    {
+      "id": "testExpandedAndCollapsedListTitles#1",
+      "method": "testExpandedAndCollapsedListTitles",
+      "ordinal": 1,
+      "layouts": 3,
+      "journey": "Workspace navigation/search/scroll",
+      "preservation": "Separate long-list launch; keep all three rendered-title checkpoints."
+    },
+    {
+      "id": "testBannerClearsOnHomeAndDetail#1",
+      "method": "testBannerClearsOnHomeAndDetail",
+      "ordinal": 1,
+      "layouts": 2,
+      "journey": "Recovery",
+      "preservation": "Retain two starts and visible recovery on each surface; no new reset channel."
+    },
+    {
+      "id": "testBannerClearsOnHomeAndDetail#2",
+      "method": "testBannerClearsOnHomeAndDetail",
+      "ordinal": 2,
+      "layouts": 2,
+      "journey": "Recovery",
+      "preservation": "Retain two starts and visible recovery on each surface; no new reset channel."
+    }
+  ],
+  "journey_methods": {
+    "testWorkspaceNavigationJourney": [
+      "testListBannerKeepsLargeTitleAndToolbarVisible#1/layout#1",
+      "testListBannerKeepsLargeTitleAndToolbarVisible#1/complete",
+      "testNavigateIntoThreadAndBackWithBannerPresent#1/layout#1",
+      "testNavigateIntoThreadAndBackWithBannerPresent#1/layout#2",
+      "testNavigateIntoThreadAndBackWithBannerPresent#1/layout#3",
+      "testNavigateIntoThreadAndBackWithBannerPresent#1/complete",
+      "testSearchWithBannerPresent#1/layout#1",
+      "testSearchWithBannerPresent#1/complete",
+      "testExpandedAndCollapsedListTitles#1/layout#1",
+      "testExpandedAndCollapsedListTitles#1/layout#2",
+      "testExpandedAndCollapsedListTitles#1/layout#3",
+      "testExpandedAndCollapsedListTitles#1/complete"
+    ],
+    "testHealthyComposerJourney": [
+      "testHomeComposerUsesPageGutters#1/layout#1",
+      "testHomeComposerUsesPageGutters#1/complete",
+      "testThreadComposerAndControlsAlign#1/layout#1",
+      "testThreadComposerAndControlsAlign#1/complete",
+      "testNewThreadComposerAndControlsAlign#1/layout#1",
+      "testNewThreadComposerAndControlsAlign#1/complete",
+      "testHealthyLayoutsHaveNoSyncBanner#1/layout#1",
+      "testHealthyLayoutsHaveNoSyncBanner#1/complete",
+      "testHealthyLayoutsHaveNoSyncBanner#2/layout#1",
+      "testHealthyLayoutsHaveNoSyncBanner#2/complete"
+    ],
+    "testSyncCopyJourneys": [
+      "testInitialSyncFailureUsesPlainLanguage#1/layout#1",
+      "testInitialSyncFailureUsesPlainLanguage#1/complete",
+      "testInitialSyncFailureUsesPlainLanguage#2/layout#1",
+      "testInitialSyncFailureUsesPlainLanguage#2/complete",
+      "testStaleSyncFailureKeepsLastSuccessTime#1/layout#1",
+      "testStaleSyncFailureKeepsLastSuccessTime#1/complete",
+      "testStaleSyncFailureKeepsLastSuccessTime#2/layout#1",
+      "testStaleSyncFailureKeepsLastSuccessTime#2/complete",
+      "testRefusedLinkAsksForSignInInsteadOfRetrying#1/layout#1",
+      "testRefusedLinkAsksForSignInInsteadOfRetrying#1/complete",
+      "testRefusedLinkAsksForSignInInsteadOfRetrying#2/layout#1",
+      "testRefusedLinkAsksForSignInInsteadOfRetrying#2/complete",
+      "testBlockedMirrorDoesNotPromiseRetry#1/layout#1",
+      "testBlockedMirrorDoesNotPromiseRetry#1/complete",
+      "testBlockedMirrorDoesNotPromiseRetry#2/layout#1",
+      "testBlockedMirrorDoesNotPromiseRetry#2/complete"
+    ],
+    "testSecondaryNoticeJourneys": [
+      "testOtherNoticeImplementations#1/layout#1",
+      "testOtherNoticeImplementations#1/complete",
+      "testOtherNoticeImplementations#2/layout#1",
+      "testOtherNoticeImplementations#2/complete",
+      "testOtherNoticeImplementations#3/layout#1",
+      "testOtherNoticeImplementations#3/complete",
+      "testOtherNoticeImplementations#4/layout#1",
+      "testOtherNoticeImplementations#4/complete",
+      "testOtherNoticeImplementations#5/layout#1",
+      "testOtherNoticeImplementations#5/complete",
+      "testOtherNoticeImplementations#6/layout#1",
+      "testOtherNoticeImplementations#6/complete",
+      "testOtherNoticeImplementations#7/layout#1",
+      "testOtherNoticeImplementations#7/layout#2",
+      "testOtherNoticeImplementations#7/complete",
+      "testOtherNoticeImplementations#8/layout#1",
+      "testOtherNoticeImplementations#8/layout#2",
+      "testOtherNoticeImplementations#8/complete",
+      "testOtherNoticeImplementations#9/layout#1",
+      "testOtherNoticeImplementations#9/layout#2",
+      "testOtherNoticeImplementations#9/complete",
+      "testOtherNoticeImplementations#10/layout#1",
+      "testOtherNoticeImplementations#10/layout#2",
+      "testOtherNoticeImplementations#10/complete",
+      "testOtherNoticeImplementations#11/layout#1",
+      "testOtherNoticeImplementations#11/complete",
+      "testOtherNoticeImplementations#12/layout#1",
+      "testOtherNoticeImplementations#12/complete"
+    ],
+    "testConnectionNoticeJourney": [
+      "testHomeConnectionNoticeUsesPageGutter#1/layout#1",
+      "testHomeConnectionNoticeUsesPageGutter#1/complete",
+      "testThreadConnectionNoticeUsesPageGutter#1/layout#1",
+      "testThreadConnectionNoticeUsesPageGutter#1/complete"
+    ],
+    "testStartupAndEmptyJourneys": [
+      "testDetailBannerKeepsInlineTitleAndToolbarVisible#1/layout#1",
+      "testDetailBannerKeepsInlineTitleAndToolbarVisible#1/complete",
+      "testEveryWorkspaceSurfaceWithSyncFailure#1/layout#1",
+      "testEveryWorkspaceSurfaceWithSyncFailure#1/complete",
+      "testEveryWorkspaceSurfaceWithSyncFailure#2/layout#1",
+      "testEveryWorkspaceSurfaceWithSyncFailure#2/complete",
+      "testEveryWorkspaceSurfaceWithSyncFailure#4/layout#1",
+      "testEveryWorkspaceSurfaceWithSyncFailure#4/complete",
+      "testEveryWorkspaceSurfaceWithSyncFailure#6/layout#1",
+      "testEveryWorkspaceSurfaceWithSyncFailure#6/complete",
+      "testEveryWorkspaceSurfaceWithSyncFailure#7/layout#1",
+      "testEveryWorkspaceSurfaceWithSyncFailure#7/complete",
+      "testEveryWorkspaceSurfaceWithSyncFailure#5/complete",
+      "testEveryWorkspaceSurfaceWithSyncFailure#5/layout#1"
+    ],
+    "testLandscapeJourney": [
+      "testLandscapeLayouts#1/layout#1",
+      "testLandscapeLayouts#1/complete",
+      "testLandscapeLayouts#2/layout#1",
+      "testLandscapeLayouts#2/complete",
+      "testLandscapeLayouts#3/layout#1",
+      "testLandscapeLayouts#3/complete",
+      "testLandscapeLayouts#4/layout#1",
+      "testLandscapeLayouts#4/complete"
+    ],
+    "testMaximumTextJourneys": [
+      "testAccessibilityTextLayouts#1/layout#1",
+      "testAccessibilityTextLayouts#1/complete",
+      "testAccessibilityTextLayouts#2/layout#1",
+      "testAccessibilityTextLayouts#2/complete",
+      "testAccessibilityTextLayouts#3/layout#1",
+      "testAccessibilityTextLayouts#3/complete",
+      "testAccessibilityTextLayouts#4/layout#1",
+      "testAccessibilityTextLayouts#4/complete",
+      "testOlderSyncTimeAndLargeTextRemainReadable#1/layout#1",
+      "testOlderSyncTimeAndLargeTextRemainReadable#1/complete",
+      "testOlderSyncTimeAndLargeTextRemainReadable#2/layout#1",
+      "testOlderSyncTimeAndLargeTextRemainReadable#2/complete"
+    ],
+    "testDarkRefusalJourney": [
+      "testRefusalBannerInDarkMode#1/layout#1",
+      "testRefusalBannerInDarkMode#1/complete",
+      "testRefusalBannerInDarkMode#2/layout#1",
+      "testRefusalBannerInDarkMode#2/complete",
+      "testRefusalBannerInDarkMode#3/layout#1",
+      "testRefusalBannerInDarkMode#3/complete",
+      "testRefusalBannerInDarkMode#4/layout#1",
+      "testRefusalBannerInDarkMode#4/complete",
+      "testRefusalBannerInDarkMode#5/layout#1",
+      "testRefusalBannerInDarkMode#5/complete"
+    ],
+    "testRecoveryJourneys": [
+      "testBannerClearsOnHomeAndDetail#1/layout#1",
+      "testBannerClearsOnHomeAndDetail#1/layout#2",
+      "testBannerClearsOnHomeAndDetail#1/complete",
+      "testBannerClearsOnHomeAndDetail#2/layout#1",
+      "testBannerClearsOnHomeAndDetail#2/layout#2",
+      "testBannerClearsOnHomeAndDetail#2/complete"
+    ],
+    "testEntryRootJourneys": [
+      "testSignInAndOnboardingDoNotShowWorkspaceNotices#1/complete",
+      "testSignInAndOnboardingDoNotShowWorkspaceNotices#2/complete",
+      "testSignInAndOnboardingDoNotShowWorkspaceNotices#3/complete"
+    ],
+    "testNotificationOpenJourneys": [
+      "testNotificationWaitsForThreadToSync#1/layout#1",
+      "testNotificationWaitsForThreadToSync#1/complete",
+      "testNotificationWaitsForThreadToSync#2/layout#1",
+      "testNotificationWaitsForThreadToSync#2/complete"
+    ],
+    "testNotificationCancelJourney": [
+      "testBackCancelsNotificationWaitingForSync#1/layout#1",
+      "testBackCancelsNotificationWaitingForSync#1/complete"
+    ]
+  }
+}

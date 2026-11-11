@@ -6,18 +6,17 @@ import WorkspaceUI
 /// A concise sync status, hidden after a successful pull. Technical errors remain in Diagnostics.
 /// A refused relay requires sign-in; an unreadable mirror is paused rather than retrying.
 struct SyncBanner: View {
-  static let signInRequiredMessage = "Log out, then sign in to reconnect."
+  static let signInRequiredMessage = SyncBannerContent.signInRequiredMessage
 
   let status: MirrorSyncStatus
   var relayRefused: String?
   var syncPaused = false
 
   var body: some View {
-    if let message = syncPaused
-      ? "Sync paused. Check Diagnostics."
-      : relayRefused
-        ?? status.lastError.map({ _ in Self.message(lastSyncAt: status.lastSyncAt) })
-    {
+    if let message = SyncBannerContent(
+      lastError: status.lastError, lastSyncAt: status.lastSyncAt,
+      relayRefused: relayRefused, syncPaused: syncPaused
+    ).text {
       HStack(spacing: LLA.Space.s) {
         Circle()
           .fill(LLA.Color.danger)
@@ -39,12 +38,4 @@ struct SyncBanner: View {
     }
   }
 
-  static func message(lastSyncAt: String?) -> String {
-    guard let lastSyncAt, let date = Timestamp.date(from: lastSyncAt) else {
-      return "Not synced yet. Retrying…"
-    }
-    let time = date.formatted(
-      date: Calendar.current.isDateInToday(date) ? .omitted : .abbreviated, time: .shortened)
-    return "Last synced \(time). Retrying…"
-  }
 }

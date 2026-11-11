@@ -218,6 +218,8 @@ Exit gate status: the fixture gates pass (design exit items 4 to 6, locally: a c
 
 - [x] The set of folders threads work in is an "environment" in every store, wire contract, Swift symbol (`WorkEnvironment`), CLI output and UI string; "B4 project" keeps its name. `fixture-tested`: hub, coordinator store and phone mirror migrations carry the old rows, change-log entries and clocks across, and an upgrade run of a coordinator over a pre-rename store serves the thread under its `environmentId` (`docs/verification/2026-11-10-environments-rename.md`).
 
+- [x] Pending Hub migration 18 preserves opaque sync values and byte counts while renaming structural references (D-205). `implemented` and `fixture-tested`: a public-runner regression and eleven real-PostgreSQL controls cover native values, tenant isolation, RLS flags, failures and concurrency. The verification record distinguishes the earlier native-test base from current-source build checks and required PR CI. Already upgraded data and the local workspace Store need separate work ([record](verification/2026-11-11-hub-environment-history-preservation.md)).
+
 ## No-folder starts (D-203)
 
 - [x] A Codex or Claude thread starts with no folder from the Mac, the phone and the CLI (`thread new --no-folder`): the coordinator makes `<threadFoldersDir>/<date>-<id>` (0700), records it in the local `appFolders` table, and the thread has no environment. `fixture-tested` (`NoFolderStartTests`, `AppFolderStoreTests`, `EnvironmentServiceTests`, `ThreadNewCommandTests`, with the fake Codex and Claude runtimes). Not `live-tested`: no real runtime started a thread this way, and the hand check through a coordinator was not possible while signed out (`docs/verification/2026-11-10-no-folder-starts.md`).
@@ -372,6 +374,15 @@ Exit gate status: closed. Part 1 passed in the Simulator through APNs sandbox; p
   The hub keeps every synced row (D-089, the owner's rule of 2026-11-02): a `delete` change marks the row deleted (migration 0009 `deleted_at`) and keeps its column clocks; every read leaves it out, and an insert of the same id revives it. `implemented`, `fixture-tested` (`Hub/crates/b4hub-db/tests/changes.rs`). A full delete is not built.
 - [x] M8f Attention on the phone (notifications through a swappable push sender, a `spool` sender for the Simulator and `apns`, and the home-screen widget showing the top three threads). `implemented`, `fixture-tested`, and `live-tested` in the Simulator (2026-11-02). See "M8f: attention on the phone" above. Design: the M8b design's M8f section; plan `docs/superpowers/plans/2026-11-02-m8f-attention.md`; decisions D-121 to D-129.
 - [x] M8f APNs Real notifications through Apple's push service, withdrawal, and the badge. `implemented`, `fixture-tested`, and `live-tested`: the Simulator through APNs sandbox, and the owner's iPhone through APNs production on the test hub and on prod (2026-11-03). See "M8f APNs" above; decisions D-141 to D-149.
+
+## CI test performance follow-up (2026-11-05)
+
+- [x] Add banner presentation tests and a UIKit-hosted component prototype over the shipped view, retaining all 25 UI tests. `implemented`, `fixture-tested`; actual one-line/padding source faults are detected after strengthening the initial pixel oracle. No replacement equivalence or CI speedup claimed.
+- [x] Reproduce the notification retry-clock race and cap retry sleeps at the existing deadline. `fixture-tested` locally: 1,415 Swift tests in 171 suites, native app builds and test-target compilation; not yet hosted-tested as a combined source.
+- [x] Validate the retained combined prototype in hosted CI during the separately authorized journey phase. Baseline run 42167249209 passed all four jobs, 1,415 Swift tests in 171 suites, 25 UI tests and three components with all 131 scenario/checkpoint markers. The earlier phase and its three-request budget remain closed; its failed helper cleanup remains reverted. See [the new gate record](verification/2026-11-05-ios-journey-consolidation.md).
+
+- [x] Consolidate iOS regression journeys while preserving behavior coverage (2026-11-05). `implemented`, `fixture-tested`, and hosted-CI-tested: 13 UI journeys plus three components, all 131 legacy markers, and 42 launches versus 62. The original 25 entry points were removed only after independent complete native proofs. See [the gate record](verification/2026-11-05-ios-journey-consolidation.md).
+- [ ] Accept the consolidation as a CI performance improvement. C2 passed every check but UI time rose from 1,237 to 1,361 seconds and native time from 1,610 to 1,941 seconds. Frozen performance thresholds failed; final planned PR holdout remains pending. No performance retention recommendation.
 
 ## Documentation authoring
 

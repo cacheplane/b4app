@@ -64,6 +64,10 @@ public final class StreamingProcess: Sendable {
     }
     let holder = Mutex<StreamingProcess?>(nil)
     let stderrEOF = Mutex(false)
+    // What the child wrote to stderr before the holder was set. A child that fails at once (a resume
+    // of an unknown Claude session) can write and exit before this function returns; dropping those
+    // bytes loses the only text that says why.
+    let earlyStderr = Mutex<[UInt8]>([])
     stderrPipe.fileHandleForReading.readabilityHandler = { handle in
       let data = handle.availableData
       if data.isEmpty {
@@ -72,7 +76,12 @@ public final class StreamingProcess: Sendable {
         holder.withLock { $0 }?.endStderr()
         return
       }
-      holder.withLock { $0 }?.appendStderr(Array(data))
+      // Checked and kept under the holder's lock, so the setter below sees every early byte.
+      let instance = holder.withLock { instance in
+        if instance == nil { earlyStderr.withLock { $0.append(contentsOf: data) } }
+        return instance
+      }
+      instance?.appendStderr(Array(data))
     }
     process.terminationHandler = { finished in
       let status: ExitStatus =
@@ -88,6 +97,8 @@ public final class StreamingProcess: Sendable {
     }
     let instance = StreamingProcess(process: process, stdin: stdinPipe.fileHandleForWriting, stdout: stream)
     holder.withLock { $0 = instance }
+    // Before anything a later handler call appended: stderr stays in the order it was written.
+    instance.prependStderr(earlyStderr.withLock { $0 })
     // Set after the holder, read by the handler before it: one of the two always sees the other.
     if stderrEOF.withLock({ $0 }) { instance.endStderr() }
     // The handlers above may have fired before the holder was set; nothing is lost for exit because
@@ -171,6 +182,16 @@ public final class StreamingProcess: Sendable {
       return state.stderrWaiters
     }
     for waiter in waiters { waiter.resume() }
+  }
+
+  private func prependStderr(_ bytes: [UInt8]) {
+    guard !bytes.isEmpty else { return }
+    state.withLock { state in
+      state.stderrTail.insert(contentsOf: bytes, at: 0)
+      if state.stderrTail.count > Self.stderrLimit {
+        state.stderrTail.removeFirst(state.stderrTail.count - Self.stderrLimit)
+      }
+    }
   }
 
   private func appendStderr(_ bytes: [UInt8]) {

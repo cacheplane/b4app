@@ -78,7 +78,7 @@ jobs:
       - name: Deploy script tests
         run: bats Infra/scripts/tests
       - name: B4 fixture startup regression tests
-        run: python3 -m unittest discover -s Scripts/tests -p test_b4_fixture_bind.py -v
+        run: python3 -m unittest discover -s Scripts/tests -p 'test_*.py' -v
       - name: Launch Services script tests
         run: bats Scripts/tests
 
@@ -134,19 +134,19 @@ jobs:
       - name: Build macOS app
         run: >
           xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'platform=macOS'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO
+          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
       - name: Build iOS app (simulator)
         run: >
           xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO
+          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
       - name: Build macOS app (beta)
         run: >
           xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS-Beta -destination 'platform=macOS'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO
+          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
       - name: Build iOS app (beta, simulator)
         run: >
           xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS-Beta -destination 'generic/platform=iOS Simulator'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO
+          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
 
   # The fixture app builds from the package, not from the four app builds, so it runs beside them.
   ios-layout:
@@ -165,10 +165,23 @@ jobs:
           path: .spm
           key: spm-xcode-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
           restore-keys: spm-xcode-${{ runner.os }}-
+      - name: Begin iOS Simulator boot
+        id: simulator
+        # The listing may take 5 minutes on a cold runner and the boot call 1.
+        timeout-minutes: 7
+        run: python3 Scripts/prepare_ios_layout_simulator.py --github-output "$GITHUB_OUTPUT"
       - name: iOS navigation and banner regression tests
         env:
+          B4APP_LAYOUT_SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
+          B4APP_LAYOUT_DESTINATION: ${{ steps.simulator.outputs.destination }}
           B4APP_LAYOUT_DERIVED_DATA: .build/DerivedData
-        run: ./Scripts/test-ios-layout.sh -clonedSourcePackagesDirPath .spm
+          B4APP_LAYOUT_EXPECTED_UI_TESTS: "13"
+          B4APP_LAYOUT_EXPECTED_COMPONENT_TESTS: "3"
+          B4APP_LAYOUT_FOCUSED_COVERAGE: "0"
+        run: |
+          set -euo pipefail
+          xcrun simctl bootstatus "$B4APP_LAYOUT_SIMULATOR_UDID" -b
+          ./Scripts/test-ios-layout.sh -clonedSourcePackagesDirPath .spm
       - name: Save iOS layout screenshots and test results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
