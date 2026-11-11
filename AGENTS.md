@@ -19,6 +19,7 @@ This repository is the Personal Agent Workspace: a native Swift macOS app, an iO
 
 - `Sources/WorkspaceProtocol` and `Sources/WorkspaceClient` are Foundation-only and link on iOS. Never import AppKit, NIO, GRDB, or Subprocess there.
 - `Sources/WorkspaceUI` is SwiftUI shared by both apps; it talks only to `WorkspaceClient` and never imports `WorkspaceMirror`, `WorkspaceSync`, or `WorkspaceStorage`.
+- A thread's row state is `ThreadState` (`Sources/WorkspaceProtocol/Attention.swift`: `approve`, `reply`, `failed`, `finished`, `working`, `quiet`; `Attention.state(of:)` and `Attention.ordered`), drawn by `ThreadMark` (`Sources/WorkspaceUI/Theme/ThreadMark.swift`), which the iOS widget (`Apps/iOSWidget/`) shares with `animated: false`; the badge (`needsYouCount`) is unchanged by it (D-204). `ThreadRow`, `ArrivalTracker` and `Theme/ArrivalTrace.swift` make the single-line row and its arrival trace, and `Sources/WorkspaceUI/TopBar.swift` is the Mac's top bar (view options, search, new thread).
 - `Sources/WorkspacePlatform` holds paths, executable lookup, process running, and the singleton lock; it re-exports `WorkspaceSecrets`.
 - `Sources/WorkspaceSecrets` (secret references and the Keychain store; Foundation and Security, both platforms), `Sources/WorkspaceSync` (hub wire types and HTTP client; Foundation only), and `Sources/WorkspaceMirror` link on iOS.
 - `Sources/WorkspaceStorage` is the only module that opens the coordinator's PostgreSQL store (it also reads a retired pre-0.2 SQLite file once, for the import), and only the coordinator uses it.
