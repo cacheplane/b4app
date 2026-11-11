@@ -532,7 +532,8 @@ private func failure(
     #expect(try h.db.listThreads(ThreadFilter(includeArchived: true)).map(\.id) == [threadId])
   }
 
-  /// The phone always names an environment: a relayed start without one is refused before anything is made.
+  /// A relayed start with a folder must name its environment: without one it is refused before anything is
+  /// made.
   @Test func relayedStartStillRequiresAEnvironment() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }

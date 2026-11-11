@@ -12,26 +12,39 @@ import WorkspaceStorage
 public actor EnvironmentService {
   private let db: WorkspaceDatabase
   private let eventLog: EventLog
+  /// Where the app makes a folder for a thread started with no folder (`PlatformPaths.threadFoldersDir`).
+  public let threadFoldersDir: String
 
-  public init(database: WorkspaceDatabase, eventLog: EventLog) {
+  public init(database: WorkspaceDatabase, eventLog: EventLog, threadFoldersDir: String) {
     self.db = database
     self.eventLog = eventLog
+    self.threadFoldersDir = threadFoldersDir
   }
 
   // MARK: - Resolution
 
   /// The canonical folder a thread's environment is keyed by: a harness thread's working directory, a
   /// local B4 thread's managed server project directory (through `connection.localServerId`), and nil
-  /// for a remote B4 thread or anything without a folder. A folder that no longer exists is still
-  /// canonicalised (nothing here touches the disk).
+  /// for a remote B4 thread, a harness thread working in a folder the app made (`isAppFolder`), or
+  /// anything without a folder. A folder that no longer exists is still canonicalised (nothing here
+  /// touches the disk).
   func folder(forThread thread: ConversationThread, connection: Connection) throws -> String? {
     switch connection.kind {
     case .codex, .claude:
       guard let context = thread.context, !context.isEmpty else { return nil }
-      return SessionService.canonicalDirectory(context)
+      let canonical = SessionService.canonicalDirectory(context)
+      return try isAppFolder(canonical) ? nil : canonical
     case .b4:
       return try serverFolder(of: connection)
     }
+  }
+
+  /// Whether a canonical folder is one the app made for a thread: it has an `appFolders` row, or it sits
+  /// under `threadFoldersDir` (any spelling of the root).
+  public func isAppFolder(_ canonical: String) throws -> Bool {
+    if try db.appFolder(path: canonical) != nil { return true }
+    let roots = Set([threadFoldersDir, SessionService.canonicalDirectory(threadFoldersDir)])
+    return roots.contains { canonical.hasPrefix($0 + "/") }
   }
 
   /// The canonical project directory of the managed server a local B4 connection runs on; nil for any

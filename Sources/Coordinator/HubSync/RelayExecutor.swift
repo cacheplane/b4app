@@ -180,10 +180,11 @@ public actor RelayExecutor {
       return try JSONValue(
         encoding: try await sessions.requestRespond(try decode(RequestRespond.self, params)))
     case .threadStart:
-      // The phone always names an environment; only the Mac's own app may start without one.
+      // From another device a start with a folder names its environment; one with neither works in a
+      // folder the app makes.
       return try JSONValue(
         encoding: try await sessions.threadStart(
-          try decode(ThreadStart.self, params), operationId: id, requireEnvironment: true))
+          try decode(ThreadStart.self, params), operationId: id, fromAnotherDevice: true))
     case .turnLookup:
       return try JSONValue(encoding: try turnLookup(try decode(TurnLookup.self, params)))
     case .environmentCreate:

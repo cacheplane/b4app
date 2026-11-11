@@ -282,11 +282,12 @@ public actor Router {
         encoding: try await sessions.turnSend(
           try command.params(for: TurnSend.self), operationId: command.envelope.operationId ?? ""))
     case .threadStart:
-      // The Mac's own app may start without an environment: the folder's environment is used, or made.
+      // The Mac's own app may start without an environment: the folder's environment is used, or made, and
+      // with no folder either the thread works in a folder the app makes.
       return try JSONValue(
         encoding: try await sessions.threadStart(
           try command.params(for: ThreadStart.self), operationId: command.envelope.operationId ?? "",
-          requireEnvironment: false))
+          fromAnotherDevice: false))
     case .turnInterrupt:
       return try JSONValue(
         encoding: try await sessions.turnInterrupt(try command.params(for: TurnInterrupt.self)))

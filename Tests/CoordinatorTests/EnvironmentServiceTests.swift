@@ -204,6 +204,38 @@ private struct EnvironmentHarness {
     #expect(try h.db.listEnvironments().count == 2)
   }
 
+  /// A folder is the app's when it has an `appFolders` row or sits under `threadFoldersDir`; a Codex or
+  /// Claude thread working in one has no environment folder, so it joins none.
+  @Test func anAppFolderIsNoEnvironmentsFolder() async throws {
+    let h = try await EnvironmentHarness.start()
+    defer { Task { await h.close() } }
+    let environments = h.coordinator.environments
+    let recorded = SessionService.canonicalDirectory(try h.folder("recorded"))
+    try h.db.insertAppFolder(AppFolder(path: recorded, threadId: "t-recorded", createdAt: Timestamp.now()))
+    let root = h.coordinator.paths.threadFoldersDir
+    try FileManager.default.createDirectory(atPath: root + "/loose", withIntermediateDirectories: true)
+    let underRoot = SessionService.canonicalDirectory(root + "/loose")
+    let plain = SessionService.canonicalDirectory(try h.folder("plain"))
+    #expect(try await environments.isAppFolder(recorded))
+    #expect(try await environments.isAppFolder(underRoot))
+    #expect(try await !environments.isAppFolder(plain))
+    #expect(try await !environments.isAppFolder(SessionService.canonicalDirectory(root)))
+    #expect(try await !environments.isAppFolder(SessionService.canonicalDirectory(root) + "-sibling"))
+
+    let codex = try h.db.insertConnection(
+      Connection(id: "c-codex", kind: .codex, label: "Codex", target: fakeCodex))
+    for (id, context) in [("t-recorded", recorded), ("t-loose", underRoot)] {
+      let thread = try h.db.insertThread(
+        ConversationThread(id: id, connectionId: codex.id, nativeThreadId: "n-\(id)", context: context))
+      #expect(try await environments.folder(forThread: thread, connection: codex) == nil)
+    }
+    let ordinary = ConversationThread(
+      id: "t-plain", connectionId: codex.id, nativeThreadId: "n", context: plain)
+    #expect(try await environments.folder(forThread: ordinary, connection: codex) == plain)
+    #expect(try await environments.backfill() == 0)
+    #expect(try h.db.listEnvironments().isEmpty)
+  }
+
   @Test func backfillRunsOnceAtStartAfterMigrations() async throws {
     let first = try await EnvironmentHarness.start()
     let base = first.base

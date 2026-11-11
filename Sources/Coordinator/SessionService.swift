@@ -344,33 +344,41 @@ public actor SessionService {
   }
 
   /// `threadCreate` with the thread's runtime choices, already validated (`threadStart`): they are stored
-  /// on the new thread and the runtime's session starts with them.
+  /// on the new thread and the runtime's session starts with them. A Codex or Claude create with no
+  /// `workingDirectory` works in a folder the app makes for the thread (`appFolder(forThread:)`), made
+  /// after every check that can refuse; it has no environment.
   func threadCreate(
     _ params: ThreadCreate.Params, model: String?, permission: String?
   ) async throws -> ThreadCreate.Result {
     let (connection, adapter) = try connectionAndAdapter(id: params.connectionId)
     if let outage = await managedServerOutage(connection) { throw outage }
+    let threadId = params.threadId ?? UUID().uuidString.lowercased()
     let input: NewSessionInput
     let threadContext: String?
     let defaultTitle: String
+    // The folder this call made for the thread, taken back (only while still empty) if the create fails.
+    var madeFolder: String?
     if connection.kind == .b4 {
       // A B4 thread is bound to the connection's route, not a directory (spec 3.3, D-013 analog).
       input = NewSessionInput(routeKey: connection.routeKey)
       threadContext = connection.routeKey
       defaultTitle = connection.routeKey.flatMap(B4RouteKey.init)?.displayName ?? connection.label
     } else {
-      guard let requested = params.workingDirectory, !requested.isEmpty else {
-        throw WorkspaceError(
-          .protocolInvalid, "A \(connection.kind.rawValue) thread needs a workingDirectory.")
-      }
-      var isDirectory: ObjCBool = false
-      let directory = (requested as NSString).expandingTildeInPath
-      guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory),
-        isDirectory.boolValue
-      else {
-        throw WorkspaceError(
-          .protocolInvalid, "Working directory \(requested) does not exist.",
-          details: ["workingDirectory": .string(requested)])
+      let directory: String
+      if let requested = params.workingDirectory, !requested.isEmpty {
+        var isDirectory: ObjCBool = false
+        directory = (requested as NSString).expandingTildeInPath
+        guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory),
+          isDirectory.boolValue
+        else {
+          throw WorkspaceError(
+            .protocolInvalid, "Working directory \(requested) does not exist.",
+            details: ["workingDirectory": .string(requested)])
+        }
+      } else {
+        let made = try makeAppFolder(forThread: threadId)
+        directory = made.path
+        if made.created { madeFolder = made.path }
       }
       // The environment that owns its folder may already list other folders for the runtime to reach.
       let canonical = Self.canonicalDirectory(directory)
@@ -381,25 +389,99 @@ public actor SessionService {
       threadContext = directory
       defaultTitle = (directory as NSString).lastPathComponent
     }
-    let ref = try await adapter.createSession(input)
-    if !ref.nativeScope.isEmpty, connection.nativeScope != ref.nativeScope {
-      _ = try db.updateConnection(id: connection.id) { $0.nativeScope = ref.nativeScope }
+    let thread: ConversationThread
+    let ref: NativeSessionRef
+    do {
+      ref = try await adapter.createSession(input)
+      if !ref.nativeScope.isEmpty, connection.nativeScope != ref.nativeScope {
+        _ = try db.updateConnection(id: connection.id) { $0.nativeScope = ref.nativeScope }
+      }
+      let title = params.title?.trimmingCharacters(in: .whitespaces)
+      let newThread = ConversationThread(
+        id: threadId, connectionId: connection.id, nativeThreadId: ref.nativeSessionId,
+        nativeScope: ref.nativeScope, title: (title?.isEmpty == false ? title : nil) ?? defaultTitle,
+        context: threadContext, model: model, permission: permission)
+      // The thread joins the environment of its folder (created on first use) in one step with its insert, so
+      // no environment edit can land in between; `context` stays as given. An app folder joins none.
+      thread = try await context.environments.insertThread(newThread, connection: connection)
+    } catch {
+      if let madeFolder { discardAppFolder(madeFolder) }
+      throw error
     }
-    let title = params.title?.trimmingCharacters(in: .whitespaces)
-    let newThread = ConversationThread(
-      id: params.threadId ?? UUID().uuidString.lowercased(), connectionId: connection.id,
-      nativeThreadId: ref.nativeSessionId,
-      nativeScope: ref.nativeScope, title: (title?.isEmpty == false ? title : nil) ?? defaultTitle,
-      context: threadContext, model: model, permission: permission)
-    // The thread joins the environment of its folder (created on first use) in one step with its insert, so
-    // no environment edit can land in between; `context` stays as given.
-    let thread = try await context.environments.insertThread(newThread, connection: connection)
     await publishVisibleEvent(
       AdapterEvent(
         kind: .sessionCreated, connectionId: connection.id, threadId: thread.id,
         nativeIds: ["threadId": ref.nativeSessionId], payload: ["scope": .string(ref.nativeScope)]))
     await publishVisibleEvent(try AdapterEvent.threadUpdated(thread))
     return ThreadCreate.Result(thread: thread)
+  }
+
+  // MARK: - App folders
+
+  /// The canonical path of the folder the app makes for a thread started with no folder: made (mode 0700,
+  /// under `PlatformPaths.threadFoldersDir`) and recorded on the first call, the same path on every later
+  /// call, and made again at that path if it was removed since.
+  func appFolder(forThread threadId: String) throws -> String {
+    try makeAppFolder(forThread: threadId).path
+  }
+
+  /// `appFolder(forThread:)`, saying whether this call made the folder and its record, so that only the
+  /// call that made them takes them back (`discardAppFolder`).
+  private func makeAppFolder(forThread threadId: String) throws -> (path: String, created: Bool) {
+    if let recorded = try db.appFolder(threadId: threadId) {
+      if !Self.isDirectory(recorded.path) { try PrivateFiles.ensurePrivateDirectory(recorded.path) }
+      return (recorded.path, false)
+    }
+    let root = context.environments.threadFoldersDir
+    try PrivateFiles.ensurePrivateDirectory(root)
+    let date = Date().formatted(Self.folderDate)
+    var path = (root as NSString).appendingPathComponent("\(date)-\(threadId.prefix(8))")
+    if FileManager.default.fileExists(atPath: path) {
+      path = (root as NSString).appendingPathComponent("\(date)-\(threadId)")
+    }
+    // Never adopt a folder that is already there: someone else's files could be in it.
+    do {
+      try FileManager.default.createDirectory(
+        atPath: path, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+      try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
+    } catch {
+      throw WorkspaceError(
+        .internalError, "Could not make a folder for the thread at \(path).",
+        details: ["folder": .string(path)])
+    }
+    let canonical = Self.canonicalDirectory(path)
+    do {
+      try db.insertAppFolder(AppFolder(path: canonical, threadId: threadId, createdAt: Timestamp.now()))
+    } catch {
+      Self.removeIfEmpty(path)
+      throw error
+    }
+    return (canonical, true)
+  }
+
+  /// Take back a folder this service made moments ago for a create that then failed: the folder only while
+  /// it is still empty, and its record.
+  private func discardAppFolder(_ path: String) {
+    Self.removeIfEmpty(path)
+    do { try db.deleteAppFolder(path: path) } catch {
+      logger.error("could not forget an app folder: \(String(describing: error), privacy: .public)")
+    }
+  }
+
+  /// A folder's date: the UTC day it was made, `yyyy-MM-dd`.
+  private static let folderDate = Date.ISO8601FormatStyle(timeZone: TimeZone(identifier: "UTC")!).year()
+    .month().day()
+
+  /// Remove a folder only while it is empty: nothing here deletes a folder that could hold someone's files.
+  private static func removeIfEmpty(_ path: String) {
+    guard let contents = try? FileManager.default.contentsOfDirectory(atPath: path), contents.isEmpty
+    else { return }
+    try? FileManager.default.removeItem(atPath: path)
+  }
+
+  static func isDirectory(_ path: String) -> Bool {
+    var isDirectory: ObjCBool = false
+    return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
   }
 
   /// Mark a thread read up to `turnId`, or unread again with nil. The storage guard ignores a turn that
@@ -601,21 +683,23 @@ public actor SessionService {
   // MARK: - thread.start
 
   /// Create the thread (or reuse the one this id already names) and send its first turn, so a retry
-  /// lands on the same thread and the same turn. The relay calls it with `requireEnvironment` (the phone
-  /// always names an environment), the Mac's own app without.
+  /// lands on the same thread and the same turn. The relay calls it `fromAnotherDevice`, the Mac's own
+  /// app not.
   ///
   /// Refuses with `protocol_invalid` anything the Mac would not start itself: a text it cannot store
-  /// (`invalid_text`), a thread id that is not a lowercase UUID (`invalid_thread_id`), no environment when
-  /// one is required or an unknown one, an unknown connection, a Codex or Claude start with no folder or
-  /// (given an environment) one outside the environment's folders, a B4 start with a folder, a remote B4
-  /// connection when an environment is required, a local B4 connection that does not serve the given
-  /// environment, a connection not ready for a conversation, a model or permission the runtime does not
-  /// take (`validateRuntimeChoice`), or a thread id already used with another connection or folder.
-  /// What `turnSend` refuses before inserting a turn (`assertCanStart`) is refused before the thread
-  /// is made. A Codex or Claude thread with no environment given joins its folder's environment (made when none
-  /// owns it) as it is inserted (D-048).
+  /// (`invalid_text`), a thread id that is not a lowercase UUID (`invalid_thread_id`), an unknown
+  /// environment, an unknown connection, a Codex or Claude start with an environment and no folder or
+  /// one outside the environment's folders, a Codex or Claude start from another device with a folder and
+  /// no environment, a B4 start with a folder, a remote B4 connection from another device, a local B4
+  /// connection from another device with no environment or one that does not serve the given environment,
+  /// a connection not ready for a conversation, a model or permission the runtime does not take
+  /// (`validateRuntimeChoice`), or a thread id already used with another connection or folder. What
+  /// `turnSend` refuses before inserting a turn (`assertCanStart`) is refused before the thread is made.
+  /// A Codex or Claude thread with a folder and no environment given joins its folder's environment (made
+  /// when none owns it) as it is inserted (D-048); one with neither, from any device, works in a folder the
+  /// app makes for it (`appFolder(forThread:)`) and has no environment.
   public func threadStart(
-    _ params: ThreadStart.Params, operationId: String, requireEnvironment: Bool
+    _ params: ThreadStart.Params, operationId: String, fromAnotherDevice: Bool
   ) async throws -> ThreadStart.Result {
     try Self.requireStorableText(params.text)
     // The caller mints the id; the thread row keeps it, so only the form this Mac mints is taken.
@@ -640,12 +724,11 @@ public actor SessionService {
         throw Self.refusal("This environment is not on this Mac.", reason: "environment_missing")
       }
       environment = found
-    } else if requireEnvironment {
-      throw Self.refusal(
-        "A new thread from another device needs an environment.", reason: "environment_missing")
     } else {
       environment = nil
     }
+    let environmentMissing = Self.refusal(
+      "A new thread from another device needs an environment.", reason: "environment_missing")
     guard let connection = try db.connection(id: params.connectionId) else {
       throw Self.refusal("This connection is not on this Mac.", reason: "connection_missing")
     }
@@ -655,11 +738,17 @@ public actor SessionService {
     switch connection.kind {
     case .codex, .claude:
       guard let requested else {
+        // No folder and no environment: `threadCreate` makes the thread a folder of its own.
+        if environment == nil {
+          folder = nil
+          break
+        }
         throw Self.refusal(
           "A \(connection.kind.rawValue) thread needs one of the environment's folders.",
           reason: "folder_missing"
         )
       }
+      if environment == nil, fromAnotherDevice { throw environmentMissing }
       let canonical = Self.canonicalDirectory(requested)
       guard environment == nil || environmentFolders.contains(canonical) else {
         throw Self.refusal(
@@ -668,10 +757,11 @@ public actor SessionService {
       folder = canonical
     case .b4:
       let remote = connection.b4Mode == .remote
-      if remote, requireEnvironment {
+      if remote, fromAnotherDevice {
         throw Self.refusal(
           "A remote B4 connection cannot start a thread from another device.", reason: "remote_b4")
       }
+      if !remote, environment == nil, fromAnotherDevice { throw environmentMissing }
       guard requested == nil else {
         throw Self.refusal(
           "A B4 thread is bound to its route and takes no folder.", reason: "folder_not_allowed")
@@ -735,8 +825,11 @@ public actor SessionService {
     }
   }
 
-  private static func refusal(_ message: String, reason: String) -> WorkspaceError {
-    WorkspaceError(.protocolInvalid, message, details: ["reason": .string(reason)])
+  private static func refusal(
+    _ message: String, reason: String, details: [String: JSONValue] = [:]
+  ) -> WorkspaceError {
+    WorkspaceError(
+      .protocolInvalid, message, details: .object(details.merging(["reason": .string(reason)]) { $1 }))
   }
 
   // MARK: - Turns
@@ -746,6 +839,15 @@ public actor SessionService {
     guard !text.isEmpty else { throw WorkspaceError(.protocolInvalid, "Turn text must not be empty.") }
     if let existing = try db.turn(operationId: operationId) { return TurnSend.Result(turn: existing) }
     let (thread, connection, adapter) = try threadContext(id: params.threadId)
+    // A Codex or Claude thread's folder deleted or unmounted since: its runtime has nowhere to work. The
+    // cached transcript still reads; the remedy is a new thread.
+    if connection.kind != .b4, let path = thread.context, !path.isEmpty,
+      !Self.isDirectory((path as NSString).expandingTildeInPath)
+    {
+      throw Self.refusal(
+        "This thread's folder is gone (\(path)). Start a new thread to continue.", reason: "folder_gone",
+        details: ["folder": .string(path)])
+    }
     if let outage = await managedServerOutage(connection) { throw outage }
     try await assertContinuable(thread, connection: connection)
     if let active = try db.activeTurn(threadId: thread.id) {

@@ -172,16 +172,24 @@ struct ThreadCommand: AsyncParsableCommand {
     @Option(help: "Connection id, label, or kind.") var connection: String?
     @Option(help: "Working directory for the agent (default: current directory; ignored for B4 routes).")
     var cwd: String?
+    @Flag(help: "Start with no folder: the app makes one for the thread, which has no environment.")
+    var noFolder = false
     @Option var title: String?
+    func validate() throws {
+      if cwd != nil && noFolder { throw ValidationError("Use --cwd or --no-folder, not both.") }
+    }
+    /// The `thread.create` this command sends to `target`.
+    func createParams(for target: Connection) -> ThreadCreate.Params {
+      let directory: String? =
+        target.kind == .b4 || noFolder ? nil : (cwd ?? FileManager.default.currentDirectoryPath)
+      return ThreadCreate.Params(connectionId: target.id, workingDirectory: directory, title: title)
+    }
     func run() async throws {
       do {
         let client = try await Link.open()
         let target = try await Link.connection(client, matching: connection)
-        let directory: String? = target.kind == .b4 ? nil : (cwd ?? FileManager.default.currentDirectoryPath)
         let result = try await client.request(
-          ThreadCreate.self,
-          ThreadCreate.Params(connectionId: target.id, workingDirectory: directory, title: title),
-          options: Link.mutation())
+          ThreadCreate.self, createParams(for: target), options: Link.mutation())
         await client.close()
         print(global.json ? try Format.jsonOk(result) : Format.thread(result.thread, connection: target))
       } catch {
