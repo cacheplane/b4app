@@ -41,13 +41,24 @@ Rendered after the fix wave with `B4APP_SNAPSHOT_DIR=<dir under $TMPDIR> swift t
 - `ios-list-dock-light.png`: the iOS list as drawn by macOS (Mac metrics): title and mark per row, approve absent here, reply, failed cross, finished dot, two working arcs, quiet rows without marks, filter and search icons in the header. This is not the phone's layout.
 - Greyscale renders of the first two files were checked in Task 4 (`sips`) and the shapes stayed distinct.
 
+### On-screen check (Local app, real Codex)
+
+Done on 2026-11-11 with the Local flavour app packaged from this branch (Developer ID, not notarized), installed in `/Applications`, against the owner's local data, in light appearance, driven in the background through accessibility (so nothing here involved a real pointer or key press).
+
+- **Top bar.** After the traffic lights: View options, Search, New thread, then the system's Hide Sidebar, with no overflow menu. Their accessibility frames are 28 by 28 each (View options at x 105, Search 137, New thread 169), which closes the review's open question about the view-options target.
+- **Rows.** Thread rows report frames of 224 by 28 starting 8 pt inside the sidebar, touching, with titles on one edge and marks on the other. A read failed thread shows a medium-weight title and the red cross; quiet threads are muted with no mark; the selected row has the raised fill.
+- **Working.** A thread running `sleep 25` showed the track ring with the lime arc, and the arc was at a different angle in successive captures, so it orbits.
+- **Finishing while not open.** When that thread finished with another thread selected, its mark became the small ink dot and a hairline border appeared around the row (the arrival). The captures were stills taken within a second of each other, so the slide and the point of light were not seen.
+- **Search.** File > Search… opened the palette, whose rows carry the same marks (cross, dot).
+- **Sidebar hidden.** The main view's toolbar showed Show Sidebar, Search and New thread, and no View options; showing the sidebar again restored the three buttons there.
+
 ### Not checked
 
-- All motion in the running app: the orbit, the approve pulse, the working shimmer, the arrival slide and the lap. Stills cannot judge timing, smoothness, or the lap's speed; the on-screen pass that follows should.
-- ⌘N and ⌘K pressed in the running app, with the sidebar shown and hidden.
-- The top bar with the sidebar hidden in the real app (a scratch hosting harness showed search and new thread only, with a limit: it has no system sidebar toggle).
+- Motion judged in motion: the approve pulse (no approval was pending), the working shimmer, the arrival slide, and the lap and its speed. The orbit was seen moving only as differing stills.
+- ⌘N and ⌘K as key presses. The File menu holds "New Thread" and "Search…", and Search… was invoked from the menu; the key equivalents themselves were not pressed.
+- The Mac hover fill (background control has no pointer) and the view-options icon with a filter active.
+- Dark appearance and Reduce Motion in the running app.
 - The phone and the widget on a device or in the Simulator: margins, the three-line wrap at accessibility sizes, `ScaledMetric` marks, the slide inside a list cell (a `List` cell may clip its 12 pt slide), and the widget's rendering. Both apps compile (the iOS scheme builds the widget).
-- The Mac hover fill (it needs a pointer; the opacity is tested, the fill was not seen), the constant-speed lap in motion, the view-options icon filled with a filter active, and its 28 by 28 target in the real window: a smoke run (`Scripts/test-macos-smoke.sh -only-testing:WorkspaceSmokeTests/RecoverySmokeTests/testCompactLightRecovery`) failed before any test with "Timed out while enabling automation mode", so the window's accessibility tree was not read this time.
 - A hosted hub or push notification run: nothing in `Hub/` changed.
 
 ### Deviations from the plan
