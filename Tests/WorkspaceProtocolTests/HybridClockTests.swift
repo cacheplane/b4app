@@ -120,6 +120,7 @@ import Testing
         "threads": ["title", "pinned", "archived", "readTurnId", "userDeletedAt", "model", "permission"],
         "environments": ["name"],
         "drafts": ["threadId", "text", "updatedAt"],
+        "viewSettings": ["id", "arrangement", "quietThreads", "showArchived", "updatedAt"],
       ])
     var expected = SyncColumns.phoneWritable
     expected["threads", default: []].insert("environmentId")

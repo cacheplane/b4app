@@ -98,8 +98,9 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
       )
       try c.execute(
         "INSERT INTO \"drafts\" (\"threadId\", \"text\", \"updatedAt\") VALUES ('t1', 'hello', 'now')")
+      try c.execute("INSERT INTO \"viewSettings\" (\"id\") VALUES ('view')")
     }
-    let rows = ["threads": "t1", "environments": "p1", "drafts": "t1"]
+    let rows = ["threads": "t1", "environments": "p1", "drafts": "t1", "viewSettings": "view"]
     // Insert records every clocked column and nothing else.
     for (table, columns) in SyncColumns.clocked {
       #expect(Set(try clocks(db, table: table, rowId: rows[table]!).keys) == columns, "insert: \(table)")
@@ -115,11 +116,17 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
       ],
       "environments": ["name": "'Renamed'"],
       "drafts": ["threadId": "'t2'", "text": "'again'", "updatedAt": "'later'"],
+      "viewSettings": [
+        "id": "'view'", "arrangement": "'byEnvironment'", "quietThreads": "'tiny'", "showArchived": "true",
+        "updatedAt": "'later'",
+      ],
     ]
-    let keys = ["threads": "id", "environments": "id", "drafts": "threadId"]
+    let keys = ["threads": "id", "environments": "id", "drafts": "threadId", "viewSettings": "id"]
     for (table, columns) in SyncColumns.clocked {
       #expect(Set(updates[table]!.keys) == columns, "the update table covers \(table)")
-      for column in columns.sorted() where !(table == "drafts" && column == "threadId") {
+      // The view row's id never changes.
+      for column in columns.sorted()
+      where !(table == "drafts" && column == "threadId") && !(table == "viewSettings" && column == "id") {
         let before = try clocks(db, table: table, rowId: rows[table]!)
         _ = try db.write {
           _ = try $0.execute(
@@ -148,7 +155,7 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
       WorkspaceDatabase.syncedTables.map(\.table) == [
         "connections", "environments", "environmentFolders", "threads", "turns", "displayItems",
         "runtimeRequests",
-        "drafts", "connectionUsage",
+        "drafts", "connectionUsage", "viewSettings",
       ])
     let changes = try db.changes(after: 0)
     #expect(changes.map(\.table) == ["environments", "environmentFolders"])

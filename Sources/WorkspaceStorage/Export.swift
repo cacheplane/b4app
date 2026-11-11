@@ -16,7 +16,7 @@ extension WorkspaceDatabase {
   public static let archiveTables = [
     "localServers", "connections", "environments", "environmentFolders", "threads", "appFolders", "turns",
     "displayItems",
-    "runtimeRequests", "drafts", "devices", "changes", "columnClocks",
+    "runtimeRequests", "drafts", "viewSettings", "devices", "changes", "columnClocks",
   ]
 
   public struct ArchiveSummary: Sendable, Equatable {

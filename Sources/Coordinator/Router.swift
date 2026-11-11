@@ -98,7 +98,7 @@ public actor Router {
       .databaseRestore, .databaseImportSQLite, .hubStatus, .hubLeave, .hubPair, .hubPairStatus,
       .settingsRead, .settingsUpdate, .environmentList, .environmentCreate, .environmentUpdate,
       .environmentRename, .environmentDelete, .threadMarkRead, .usageRead, .connectionUpdate,
-      .credentialRemove, .threadDelete, .threadStart:
+      .credentialRemove, .threadDelete, .threadStart, .viewSettingsGet, .viewSettingsSet:
       return true
     }
   }
@@ -231,6 +231,16 @@ public actor Router {
       }
       return try JSONValue(
         encoding: DraftSave.Result(draft: try db.saveDraft(threadId: params.threadId, text: params.text)))
+    case .viewSettingsGet:
+      return try JSONValue(encoding: try db.viewSettings())
+    case .viewSettingsSet:
+      let params = try command.params(for: ViewSettingsSet.self)
+      let settings = try db.setViewSettings(
+        arrangement: params.arrangement, quietThreads: params.quietThreads, showArchived: params.showArchived)
+      if params.arrangement != nil || params.quietThreads != nil || params.showArchived != nil {
+        await events.publish(try .viewSettingsChanged(settings))
+      }
+      return try JSONValue(encoding: settings)
     case .eventsSnapshot:
       return try JSONValue(
         encoding: EventsSnapshot.Result(

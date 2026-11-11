@@ -271,6 +271,77 @@ private func clock(_ db: WorkspaceDatabase, _ table: String, _ rowId: String, _ 
     #expect(try db.draft(threadId: "t1")?.text == "typed on the Mac")
   }
 
+  /// The view settings row: a phone's insert creates it, a later insert merges column by column at its
+  /// clock, an update creates the row when this Mac has none, and a row other than `view` is refused.
+  @Test func remoteViewSettingsCreateAndMergeTheOneRow() throws {
+    let db = try WorkspaceDatabase.temporary()
+    try seed(db)
+    // In the past, so the Mac's edit below stamps after it and a second phone stamp fits between.
+    let at = epochMillis() - 10_000
+    let created = try db.applyRemote(
+      [
+        remote(
+          phone, stamp(at, phone), "viewSettings", "view", "insert",
+          value: [
+            "id": "view", "arrangement": "byEnvironment", "quietThreads": "tiny", "showArchived": true,
+            "updatedAt": "2026-11-11T12:00:00.000Z",
+          ]),
+        remote(
+          phone, stamp(at, phone), "viewSettings", "other", "insert",
+          value: ["id": "other", "arrangement": "byEnvironment"]),
+        remote(
+          phone, stamp(at, phone), "viewSettings", "view", "insert",
+          value: ["id": "other", "arrangement": "byEnvironment"]),
+      ], ownDeviceId: mac, macDeviceIds: [mac], cursor: 1)
+    #expect(created.applied == 1 && created.skipped == 2 && created.touchedViewSettings)
+    #expect(created.touchedThreadIds.isEmpty && created.touchedDraftThreadIds.isEmpty)
+    #expect(
+      try db.viewSettings()
+        == ViewSettings(arrangement: .byEnvironment, quietThreads: .tiny, showArchived: true))
+    #expect(
+      try db.columnClock(table: "viewSettings", rowId: "view", column: "showArchived") == stamp(at, phone))
+    // Nothing is recorded, so nothing echoes back to the hub.
+    #expect(try db.changes(after: 0).allSatisfy { $0.table != "viewSettings" })
+
+    // A Mac edit after it, then a phone insert between the two clocks: only the columns the Mac did not
+    // write since take the insert's values.
+    _ = try db.setViewSettings(arrangement: .needsYouFirst)
+    let merged = try db.applyRemote(
+      [
+        remote(
+          phone, stamp(at + 5_000, phone), "viewSettings", "view", "insert",
+          value: ["id": "view", "arrangement": "byEnvironment", "quietThreads": "hidden"])
+      ], ownDeviceId: mac, macDeviceIds: [mac], cursor: 2)
+    #expect(merged.applied == 1)
+    #expect(
+      try db.viewSettings()
+        == ViewSettings(arrangement: .needsYouFirst, quietThreads: .hidden, showArchived: true))
+
+    // A bad value for the boolean is skipped without failing the batch.
+    let bad = try db.applyRemote(
+      [
+        remote(
+          phone, stamp(epochMillis() + 5_000, phone), "viewSettings", "view", column: "showArchived",
+          value: "not a boolean")
+      ], ownDeviceId: mac, macDeviceIds: [mac], cursor: 3)
+    #expect(bad.applied == 0 && bad.skipped == 1)
+    #expect(try db.viewSettings().showArchived)
+  }
+
+  @Test func aRemoteViewSettingsUpdateCreatesTheMissingRow() throws {
+    let db = try WorkspaceDatabase.temporary()
+    try seed(db)
+    let at = stamp(epochMillis() + 1_000, phone)
+    let applied = try db.applyRemote(
+      [remote(phone, at, "viewSettings", "view", column: "quietThreads", value: "collapsed")],
+      ownDeviceId: mac, macDeviceIds: [mac], cursor: 1)
+    #expect(applied.applied == 1 && applied.touchedViewSettings)
+    #expect(try db.viewSettings() == ViewSettings(quietThreads: .collapsed))
+    #expect(try db.columnClock(table: "viewSettings", rowId: "view", column: "quietThreads") == at)
+    // Only the written column has a clock: a local edit of another column is not held back by it.
+    #expect(try db.columnClock(table: "viewSettings", rowId: "view", column: "arrangement") == nil)
+  }
+
   @Test func aBadValueIsSkippedWithoutFailingTheBatch() throws {
     let db = try WorkspaceDatabase.temporary()
     try seed(db)

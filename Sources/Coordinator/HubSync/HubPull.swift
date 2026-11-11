@@ -6,8 +6,9 @@ import WorkspaceSync
 
 /// Pulls other devices' edits from the hub into this Mac's store (M8b): long-poll after
 /// `hubLink.cursor`, merge the page through `WorkspaceDatabase.applyRemote` (which advances the cursor
-/// in the same transaction), and publish `thread.updated` and `environment.changed` for what it touched so
-/// the app refreshes as it does for local writes. Owned and started by `HubSync`.
+/// in the same transaction), and publish `thread.updated`, `environment.changed`, and
+/// `viewSettings.changed` for what it touched so the app refreshes as it does for local writes. Owned
+/// and started by `HubSync`.
 ///
 /// - Nothing is applied until `GET /v1/devices` has answered once: its `macos` devices, revoked ones
 ///   included, are this Mac's own history (an old device id after `hub leave` and `hub join`), and
@@ -162,6 +163,11 @@ public actor HubPull {
     for id in applied.touchedEnvironmentIds.sorted() {
       await eventLog.publish(.environmentChanged(environmentId: id))
     }
+    if applied.touchedViewSettings, let settings = try? database.viewSettings(),
+      let event = try? AdapterEvent.viewSettingsChanged(settings)
+    {
+      await eventLog.publish(event)
+    }
   }
 
   static func remoteChange(_ stored: StoredChange) -> RemoteChange {
@@ -174,8 +180,9 @@ public actor HubPull {
   /// A row's `deviceId` is its owner (normally this Mac) and says nothing about who wrote a column, so
   /// each value is attributed to the device of its own column clock:
   ///
-  /// - a `threads` or `environments` row becomes one update per phone-writable column that has a clock (a
-  ///   column without one was never edited since clocks began, and the Mac's value stands);
+  /// - a `threads`, `environments`, or `viewSettings` row becomes one update per phone-writable column
+  ///   that has a clock (a column without one was never edited since clocks began, and the Mac's value
+  ///   stands); a view settings update creates the row when this Mac has none;
   /// - a `drafts` row travels whole, at its newest column clock and as that clock's device, so a draft
   ///   only the phone has is created and an existing one merges column by column;
   /// - every other table is dropped (`applyRemote` would skip it anyway).
@@ -201,7 +208,8 @@ public actor HubPull {
             op: "insert", value: row.value))
         continue
       }
-      for column in writable.sorted() {
+      // A key column (the view settings row's `id`) is the row id, not an edit.
+      for column in writable.sorted() where column != "id" {
         guard let columnValue = value[column], let hlc = rowClocks[column] else { continue }
         changes.append(
           RemoteChange(

@@ -558,15 +558,16 @@ public actor FakeHubAPI: HubAPI {
   }
 
   /// The hub's per-change refusal, or `nil` when the change is accepted. A `macos` device may write
-  /// anything; any other platform may only update phone-writable columns or insert a draft.
+  /// anything; any other platform may only update phone-writable columns or insert a draft or the
+  /// view settings row.
   private func refusal(for change: SyncChange) -> String? {
     if let hlc = change.hlc, HLC(rawValue: hlc) == nil { return "invalid_clock" }
     if platform != "macos" {
       let phoneUpdate =
         change.op == "update"
         && change.column.map { SyncColumns.isPhoneWritable(table: change.table, column: $0) } == true
-      let draftInsert = change.op == "insert" && change.table == "drafts"
-      if !phoneUpdate && !draftInsert { return "column_not_writable" }
+      let phoneInsert = change.op == "insert" && ["drafts", "viewSettings"].contains(change.table)
+      if !phoneUpdate && !phoneInsert { return "column_not_writable" }
     }
     if let value = change.value,
       let encoded = try? JSONCoding.encoder.encode(value), encoded.count > Self.maxValueBytes

@@ -152,6 +152,10 @@ private actor EventRecorder {
   func environmentChanges(_ id: String) -> [EventEnvelope] {
     events.filter { $0.event.kind == .environmentChanged && $0.event.payload["environmentId"] == .string(id) }
   }
+
+  func viewSettingsChanges() -> [EventEnvelope] {
+    events.filter { $0.event.kind == .viewSettingsChanged }
+  }
 }
 
 @Suite(.serialized) struct HubPullTests {
@@ -171,10 +175,12 @@ private actor EventRecorder {
       _ = await h.append(
         "threads", "t1", column: "archived", value: true, hlc: phoneClock(device: "dev-mac"),
         device: "dev-mac")
-      let last = await h.append(
+      _ = await h.append(
         "drafts", "t1", "insert",
         value: ["threadId": "t1", "text": "from the phone", "updatedAt": .string(Timestamp.now())],
         hlc: phoneClock())
+      let last = await h.append(
+        "viewSettings", "view", column: "quietThreads", value: "hidden", hlc: phoneClock())
 
       try await h.waitFor("the cursor to pass the phone's edits") { try h.db.hubLink()?.cursor == last }
       let thread = try #require(try h.db.thread(id: "t1"))
@@ -183,11 +189,16 @@ private actor EventRecorder {
       #expect(thread.updatedAt == before.updatedAt)
       #expect(try h.db.environment(id: "p1")?.name == "Phone environment")
       #expect(try h.db.draft(threadId: "t1")?.text == "from the phone")
-      try await h.waitFor("thread.updated and environment.changed") {
+      #expect(try h.db.viewSettings() == ViewSettings(quietThreads: .hidden))
+      try await h.waitFor("thread.updated, environment.changed, and viewSettings.changed") {
         let threads = await recorder.threadUpdates("t1")
         let environments = await recorder.environmentChanges("p1")
-        return !threads.isEmpty && !environments.isEmpty
+        let views = await recorder.viewSettingsChanges()
+        return !threads.isEmpty && !environments.isEmpty && !views.isEmpty
       }
+      #expect(
+        try await recorder.viewSettingsChanges().last?.event.payload["settings"]?.decode(ViewSettings.self)
+          == ViewSettings(quietThreads: .hidden))
       let published = await recorder.threadUpdates("t1").last
       #expect(published?.event.payload["thread"]?["title"] == .string("Phone title"))
       // Applying a pull records nothing, so there is nothing to push back.
@@ -318,8 +329,14 @@ private actor EventRecorder {
         StoredChange(
           hubSeq: 0, deviceId: "dev-mac", deviceSeq: 0, wall: 0, table: "drafts", rowId: "t1", op: "insert",
           value: ["threadId": "t1", "text": "", "updatedAt": "u"], hlc: mac),
+        StoredChange(
+          hubSeq: 0, deviceId: "dev-phone", deviceSeq: 0, wall: 0, table: "viewSettings", rowId: "view",
+          op: "insert", value: ["id": "view", "arrangement": "byEnvironment", "quietThreads": "tiny"],
+          hlc: phone),
       ],
       clocks: [
+        ColumnClock(table: "viewSettings", rowId: "view", column: "id", hlc: phone),
+        ColumnClock(table: "viewSettings", rowId: "view", column: "quietThreads", hlc: phone),
         ColumnClock(table: "threads", rowId: "t1", column: "title", hlc: phone),
         ColumnClock(table: "threads", rowId: "t1", column: "pinned", hlc: mac),
         ColumnClock(table: "drafts", rowId: "t1", column: "threadId", hlc: mac),
@@ -339,6 +356,10 @@ private actor EventRecorder {
         RemoteChange(
           deviceId: "dev-mac", hlc: mac, table: "drafts", rowId: "t1", op: "insert", column: nil,
           value: ["threadId": "t1", "text": "", "updatedAt": "u"]),
+        // The view row column by column too, its key left out; `arrangement` has no clock.
+        RemoteChange(
+          deviceId: "dev-phone", hlc: phone, table: "viewSettings", rowId: "view", op: "update",
+          column: "quietThreads", value: "tiny"),
       ])
   }
 

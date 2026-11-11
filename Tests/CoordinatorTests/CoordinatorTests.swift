@@ -130,6 +130,33 @@ private func connect(_ coordinator: RunningCoordinator) async throws -> Workspac
     await coordinator.close()
   }
 
+  @Test func viewSettingsGetAndSetWriteOnlyTheGivenFieldsAndPublish() async throws {
+    let coordinator = try await startIsolated()
+    let client = try await connect(coordinator)
+    let events = await client.events()
+    #expect(try await client.request(ViewSettingsGet.self, EmptyParams()) == ViewSettings())
+    let set = try await client.request(
+      ViewSettingsSet.self, ViewSettingsSet.Params(quietThreads: .collapsed),
+      options: RequestOptions(operationId: "view-1"))
+    #expect(set == ViewSettings(quietThreads: .collapsed))
+    let both = try await client.request(
+      ViewSettingsSet.self, ViewSettingsSet.Params(arrangement: .byEnvironment, showArchived: true),
+      options: RequestOptions(operationId: "view-2"))
+    #expect(both == ViewSettings(arrangement: .byEnvironment, quietThreads: .collapsed, showArchived: true))
+    #expect(try await client.request(ViewSettingsGet.self, EmptyParams()) == both)
+
+    var iterator = events.makeAsyncIterator()
+    var published: [ViewSettings] = []
+    while published.count < 2, let envelope = await iterator.next() {
+      guard envelope.event.kind == .viewSettingsChanged else { continue }
+      published.append(try #require(try envelope.event.payload["settings"]?.decode(ViewSettings.self)))
+    }
+    #expect(published == [set, both])
+    #expect(Router.needsAccount(.viewSettingsGet) && Router.needsAccount(.viewSettingsSet))
+    await client.close()
+    await coordinator.close()
+  }
+
   @Test func streamsEventsInOrderAndReplaysOrDemandsSnapshot() async throws {
     let coordinator = try await startIsolated()
     let client = try await connect(coordinator)

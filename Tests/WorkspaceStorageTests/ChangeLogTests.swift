@@ -36,11 +36,17 @@ private func seed(_ db: WorkspaceDatabase) throws -> (thread: ConversationThread
       $0.outcome = .completed
     }
     try source.deleteDraft(threadId: thread.id)
+    _ = try source.setViewSettings(arrangement: .byEnvironment)
+    _ = try source.setViewSettings(quietThreads: .hidden)
 
     let changes = try source.changes(after: 0)
     #expect(
       changes.filter { $0.op == "insert" }.map(\.table).sorted() == [
-        "connections", "displayItems", "displayItems", "drafts", "threads", "turns",
+        "connections", "displayItems", "displayItems", "drafts", "threads", "turns", "viewSettings",
+      ])
+    #expect(
+      changes.filter { $0.table == "viewSettings" && $0.op == "update" }.compactMap(\.column).sorted() == [
+        "quietThreads", "updatedAt",
       ])
     let titleUpdates = changes.filter { $0.op == "update" && $0.table == "threads" && $0.column == "title" }
     #expect(titleUpdates.map { $0.value?.stringValue } == ["Renamed"])
@@ -62,6 +68,7 @@ private func seed(_ db: WorkspaceDatabase) throws -> (thread: ConversationThread
     #expect(try target.turns(threadId: thread.id) == source.turns(threadId: thread.id))
     #expect(try target.displayItems(threadId: thread.id) == source.displayItems(threadId: thread.id))
     #expect(try target.draft(threadId: thread.id) == nil)
+    #expect(try target.viewSettings() == ViewSettings(arrangement: .byEnvironment, quietThreads: .hidden))
     // A replay records nothing of its own, and replaying twice changes nothing.
     #expect(try target.changes(after: 0).isEmpty)
     #expect(try target.replay(changes) == changes.count)
