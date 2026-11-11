@@ -9,19 +9,20 @@ private let link = MirrorLink(
   hubURL: "http://localhost:8080", deviceId: "phone-1", deviceName: "Brian's iPhone",
   tokenRef: "secret:hub-token", orgSlug: "cacheplane", username: "blove")
 
-/// A file-backed mirror seeded from the attention fixture, with two projects: `p1` named "Alpha" for
+/// A file-backed mirror seeded from the attention fixture, with two environments: `p1` named "Alpha" for
 /// the first pinned thread, `p2` unnamed with a folder for the late request's thread.
 private func seededStore(at path: String, link: MirrorLink? = nil) throws -> (MirrorStore, AttentionFixture) {
   let fixture = try AttentionFixture.load()
   let store = try MirrorStore(path: path)
   let batch = try store.apply(
     fixture.inserts + [
-      change("projects", "p1", "insert", value: projectJSON("p1", name: "Alpha")),
-      change("projects", "p2", "insert", value: projectJSON("p2")),
+      change("environments", "p1", "insert", value: environmentJSON("p1", name: "Alpha")),
+      change("environments", "p2", "insert", value: environmentJSON("p2")),
       change(
-        "projectFolders", "f2", "insert", value: folderJSON("f2", projectId: "p2", path: "/Users/x/beta")),
-      change("threads", "t-pinned-working", "update", column: "projectId", value: "p1"),
-      change("threads", "t-ask-request-late", "update", column: "projectId", value: "p2"),
+        "environmentFolders", "f2", "insert",
+        value: folderJSON("f2", environmentId: "p2", path: "/Users/x/beta")),
+      change("threads", "t-pinned-working", "update", column: "environmentId", value: "p1"),
+      change("threads", "t-ask-request-late", "update", column: "environmentId", value: "p2"),
     ])
   #expect(batch.skipped == 0)
   if let link { try store.saveLink(link) }
@@ -37,7 +38,7 @@ private func remove(_ path: String) {
 }
 
 @Suite struct MirrorGlanceTests {
-  @Test func loadsTheTopThreeInAttentionOrderWithProjectNames() throws {
+  @Test func loadsTheTopThreeInAttentionOrderWithEnvironmentNames() throws {
     let path = tempPath()
     defer { remove(path) }
     let (store, fixture) = try seededStore(at: path, link: link)
@@ -45,7 +46,7 @@ private func remove(_ path: String) {
     #expect(glance.linked)
     #expect(glance.rows.map(\.threadId) == Array(fixture.expected.order.prefix(3)))
     #expect(glance.rows.map(\.pinned) == [true, true, false])
-    #expect(glance.rows.map(\.projectName) == ["Alpha", nil, "beta"])
+    #expect(glance.rows.map(\.environmentName) == ["Alpha", nil, "beta"])
     let ordered = Attention.ordered(try store.threads(includeArchived: false, connectionId: nil, query: nil))
     #expect(glance.rows.map(\.band) == ordered.prefix(3).map { Attention.band(of: $0) })
     #expect(glance.rows.map(\.title) == ordered.prefix(3).map(\.title))

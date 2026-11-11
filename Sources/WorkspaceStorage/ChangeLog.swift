@@ -19,7 +19,8 @@ public struct ChangeRecord: Codable, Sendable, Equatable {
 extension WorkspaceDatabase {
   /// The synced tables, in dependency order, with their key column.
   public static let syncedTables: [(table: String, key: String)] = [
-    ("connections", "id"), ("projects", "id"), ("projectFolders", "id"), ("threads", "id"), ("turns", "id"),
+    ("connections", "id"), ("environments", "id"), ("environmentFolders", "id"), ("threads", "id"),
+    ("turns", "id"),
     ("displayItems", "id"), ("runtimeRequests", "id"), ("drafts", "threadId"),
     ("connectionUsage", "connectionId"),
   ]

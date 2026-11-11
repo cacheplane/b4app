@@ -5,12 +5,12 @@ import WorkspaceProtocol
 @testable import WorkspaceUI
 
 @Suite(.serialized) @MainActor struct ThreadListTests {
-  @Test func collapsedProjectsRoundTripThroughACommaJoinedString() {
-    #expect(CollapsedProjects.parse("") == [])
-    #expect(CollapsedProjects.parse("b,a,,b") == ["a", "b"])
-    #expect(CollapsedProjects.encode(["b", "a"]) == "a,b")
-    #expect(CollapsedProjects.encode([]) == "")
-    #expect(CollapsedProjects.parse(CollapsedProjects.encode(["x", "other"])) == ["x", "other"])
+  @Test func collapsedEnvironmentsRoundTripThroughACommaJoinedString() {
+    #expect(CollapsedEnvironments.parse("") == [])
+    #expect(CollapsedEnvironments.parse("b,a,,b") == ["a", "b"])
+    #expect(CollapsedEnvironments.encode(["b", "a"]) == "a,b")
+    #expect(CollapsedEnvironments.encode([]) == "")
+    #expect(CollapsedEnvironments.parse(CollapsedEnvironments.encode(["x", "other"])) == ["x", "other"])
   }
 
   @Test func dotLabelsNameTheBand() {
@@ -20,35 +20,36 @@ import WorkspaceProtocol
     #expect(AttentionBand.quiet.dotLabel == "Quiet")
   }
 
-  @Test func filterMenuListsProjectsByLatestActivityAndOtherOnlyWhenPresent() async throws {
+  @Test func filterMenuListsEnvironmentsByLatestActivityAndOtherOnlyWhenPresent() async throws {
     let model = try await ListFixture.model()
     // b4app's newest thread is at minute 58, Marketing site's at 50, and Docs has no threads.
-    #expect(model.filterProjects.map(\.id) == [ListFixture.b4app, ListFixture.marketing, ListFixture.docs])
+    #expect(
+      model.filterEnvironments.map(\.id) == [ListFixture.b4app, ListFixture.marketing, ListFixture.docs])
     #expect(model.hasOtherThreads)
-    #expect(model.filterTitle == "All projects")
-    model.projectFilter = .project(ListFixture.marketing)
+    #expect(model.filterTitle == "All environments")
+    model.environmentFilter = .environment(ListFixture.marketing)
     #expect(model.filterTitle == "Marketing site")
-    model.projectFilter = .other
+    model.environmentFilter = .other
     #expect(model.filterTitle == "Other")
-    model.projectFilter = .archived
+    model.environmentFilter = .archived
     #expect(model.filterTitle == "Archived")
   }
 
-  @Test func macSectionsKeepAnEmptyManualProjectSoItCanBeRenamedOrDeleted() async throws {
+  @Test func macSectionsKeepAnEmptyManualEnvironmentSoItCanBeRenamedOrDeleted() async throws {
     let model = try await ListFixture.model()
     #expect(model.sidebarSections.map(\.title) == ["b4app", "Marketing site", "Docs", "Other"])
     #expect(model.sidebarSections.first { $0.id == ListFixture.docs }?.threads.isEmpty == true)
-    // A connection filter narrows the list; it does not pad it with empty projects.
+    // A connection filter narrows the list; it does not pad it with empty environments.
     model.connectionFilter = "c2"
     #expect(model.sidebarSections.map(\.title) == ["Marketing site"])
   }
 
-  @Test func projectNameIsTheDisplayNameAndNilForOther() async throws {
+  @Test func environmentNameIsTheDisplayNameAndNilForOther() async throws {
     let model = try await ListFixture.model()
     let thread = try #require(model.threads.first { $0.id == "asks" })
-    #expect(model.projectName(for: thread) == "b4app")
+    #expect(model.environmentName(for: thread) == "b4app")
     let loose = try #require(model.threads.first { $0.id == "loose" })
-    #expect(model.projectName(for: loose) == nil)
+    #expect(model.environmentName(for: loose) == nil)
   }
 
   @Test func markAsUnreadIsOfferedOnlyForAReadReply() async throws {
@@ -114,10 +115,10 @@ import WorkspaceProtocol
   @Test func aListFailureShowsInTheSidebarUnlessTheDetailAlreadyShowsIt() async throws {
     let model = try await ListFixture.model()
     #expect(model.sidebarError() == nil)  // no error, no banner
-    model.lastError = "That folder already belongs to another project."
+    model.lastError = "That folder already belongs to another environment."
 
     model.selectedThreadId = nil
-    #expect(model.sidebarError() == "That folder already belongs to another project.")
+    #expect(model.sidebarError() == "That folder already belongs to another environment.")
 
     // An open thread shows it in the composer, so the list does not repeat it...
     model.selectedThreadId = "asks"

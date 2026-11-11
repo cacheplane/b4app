@@ -29,16 +29,13 @@ extension BannerLayoutTests {
       app, screen: "list", covering: [point("testNavigateIntoThreadAndBackWithBannerPresent", 1, 3)])
     done(id("testNavigateIntoThreadAndBackWithBannerPresent"))
     checkLayout(app, screen: "list", covering: [point("testSearchWithBannerPresent")])
+    // The list keeps no search field of its own (D-201): the button opens the Search sheet.
+    XCTAssertFalse(app.searchFields["Search threads"].exists)
     app.buttons["list-search"].tap()
+    XCTAssertTrue(app.descendants(matching: .any)["search-palette"].firstMatch.waitForExistence(timeout: 5))
     let search = app.searchFields["Search threads"]
+    XCTAssertTrue(search.waitForExistence(timeout: 5))
     XCTAssertTrue(search.isHittable)
-    search.tap()
-    search.typeText("no-such-thread")
-    XCTAssertTrue(app.staticTexts["No matching threads."].waitForExistence(timeout: 5))
-    let banners = app.descendants(matching: .any).matching(identifier: "sync.banner")
-      .allElementsBoundByIndex.filter { $0.isHittable }
-    XCTAssertFalse(banners.isEmpty)
-    for banner in banners { XCTAssertFalse(contentFrame(banner).intersects(search.frame)) }
     done(id("testSearchWithBannerPresent"))
     app.terminate()
 
@@ -203,8 +200,8 @@ extension BannerLayoutTests {
 
   @MainActor func testStartupAndEmptyJourneys() {
     for (screen, index) in [
-      ("empty", 1), ("archived", 2), ("no-match", 3), ("detail", 4), ("new-thread", 5),
-      ("no-ready-detail", 6),
+      // Ordinal 3 was the unmatched in-list search, which main removed with that field (D-201).
+      ("empty", 1), ("archived", 2), ("detail", 4), ("new-thread", 5), ("no-ready-detail", 6),
       ("connect-mac", 7),
     ] {
       let app = launch(screen)

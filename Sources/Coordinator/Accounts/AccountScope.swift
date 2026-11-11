@@ -59,9 +59,9 @@ public final class ScopeGate: Sendable {
 }
 
 /// Everything that belongs to one signed-in account (sign-in plan, Task 9): its database, the session
-/// service, the managed local servers, the projects, and `HubSync` (which owns the relay link, the
+/// service, the managed local servers, the environments, and `HubSync` (which owns the relay link, the
 /// keep-awake assertion, and pairing). The relay link's executor is built from this scope's sessions,
-/// projects, and database, so a command from the hub never reaches another account's threads.
+/// environments, and database, so a command from the hub never reaches another account's threads.
 ///
 /// The coordinator shares the rest between accounts: the lock, the cluster, the event log,
 /// diagnostics, the socket server, the sleep watcher, runtime detection, and executable lookup.
@@ -122,7 +122,7 @@ public final class AccountScope: Sendable {
   public let database: WorkspaceDatabase
   public let sessions: SessionService
   public let servers: LocalServerService
-  public let projects: ProjectService
+  public let environments: EnvironmentService
   public let hub: HubSync
   public let relay: RelayExecutor
   private let closed = Mutex(false)
@@ -141,7 +141,7 @@ public final class AccountScope: Sendable {
 
   private init(
     row: AccountRow, instance: UUID, gate: ScopeGate, database: WorkspaceDatabase,
-    sessions: SessionService, servers: LocalServerService, projects: ProjectService, hub: HubSync,
+    sessions: SessionService, servers: LocalServerService, environments: EnvironmentService, hub: HubSync,
     relay: RelayExecutor
   ) {
     self.row = Mutex(row)
@@ -150,7 +150,7 @@ public final class AccountScope: Sendable {
     self.database = database
     self.sessions = sessions
     self.servers = servers
-    self.projects = projects
+    self.environments = environments
     self.hub = hub
     self.relay = relay
   }
@@ -177,7 +177,7 @@ public final class AccountScope: Sendable {
       createIfMissing: createIfMissing)
   }
 
-  /// Start the account's services on its opened database: the project backfill, sessions, the managed
+  /// Start the account's services on its opened database: the environment backfill, sessions, the managed
   /// servers this store remembers, and `HubSync` (with its pull and link when the database has joined).
   /// Nothing here can fail; a failed backfill is logged and tried again at the next open.
   static func open(
@@ -190,28 +190,28 @@ public final class AccountScope: Sendable {
     let servers = LocalServerService(
       context: LocalServerService.Context(
         database: database, eventLog: eventLog, environment: context.environment, paths: context.paths))
-    let projects = ProjectService(database: database, eventLog: eventLog)
-    // Give every existing thread without a project the project of its folder. A failure here must not
+    let environments = EnvironmentService(database: database, eventLog: eventLog)
+    // Give every existing thread without an environment the environment of its folder. A failure here must not
     // keep the account from opening: the next open tries again.
     do {
-      let assigned = try await projects.backfill()
-      if assigned > 0 { logger.info("project backfill assigned \(assigned, privacy: .public) threads") }
-      let served = try await projects.backfillConnections()
-      if served > 0 { logger.info("project backfill assigned \(served, privacy: .public) connections") }
+      let assigned = try await environments.backfill()
+      if assigned > 0 { logger.info("environment backfill assigned \(assigned, privacy: .public) threads") }
+      let served = try await environments.backfillConnections()
+      if served > 0 { logger.info("environment backfill assigned \(served, privacy: .public) connections") }
     } catch {
-      logger.error("project backfill failed: \(String(describing: error), privacy: .public)")
+      logger.error("environment backfill failed: \(String(describing: error), privacy: .public)")
     }
     let sessions = SessionService(
       context: SessionService.Context(
         database: database, eventLog: eventLog, diagnostics: context.diagnostics,
         environment: context.environment, clientVersion: CoordinatorVersion.current,
-        secretStore: context.secretStore, projects: projects, adapterFactory: context.adapterFactory,
+        secretStore: context.secretStore, environments: environments, adapterFactory: context.adapterFactory,
         servers: servers, checkRetryDelays: context.checkRetryDelays,
         threadDeleteSweep: context.threadDeleteSweep))
     await sessions.start()
     await servers.startAll()
     let relay = RelayExecutor(
-      sessions: sessions, projects: projects, database: database, diagnostics: context.diagnostics,
+      sessions: sessions, environments: environments, database: database, diagnostics: context.diagnostics,
       gate: gate)
     let linkConnection = context.hubLinkConnection ?? URLSessionHubLinkConnection()
     let makeLink: HubSync.LinkFactory = { url, token in
@@ -227,7 +227,7 @@ public final class AccountScope: Sendable {
     await hub.start()
     return AccountScope(
       row: row, instance: instance, gate: gate, database: database, sessions: sessions, servers: servers,
-      projects: projects, hub: hub, relay: relay)
+      environments: environments, hub: hub, relay: relay)
   }
 
   /// Close the scope, in this order: refuse new work (before anything suspends, so no command, relayed

@@ -1,6 +1,6 @@
 //! What the relay reads and writes in the database: a user's Macs for the presence frame,
 //! `devices.last_seen_at` as a link reports it, and the device that owns the thread, runtime
-//! request, or project a command names.
+//! request, or environment a command names.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -157,22 +157,22 @@ pub async fn owner_of_request(
     ))
 }
 
-/// The owner of the user's project `project_id` (`projects.owner_device_id`).
-pub async fn owner_of_project(
+/// The owner of the user's environment `environment_id` (`environments.owner_device_id`).
+pub async fn owner_of_environment(
     db: &Db,
     org_id: Uuid,
     user_id: Uuid,
-    project_id: &str,
+    environment_id: &str,
 ) -> Result<Option<Owner>> {
     let mut tx = db.tenant_tx(org_id).await?;
     let row: Option<OwnerRow> = sqlx::query_as(&format!(
-        "SELECT {OWNER_COLUMNS} FROM \"projects\" p \
+        "SELECT {OWNER_COLUMNS} FROM \"environments\" p \
          JOIN devices d ON d.id = p.owner_device_id AND d.org_id = p.org_id \
          WHERE p.org_id = $1 AND p.user_id = $2 AND p.\"id\" = $3 AND p.deleted_at IS NULL"
     ))
     .bind(org_id)
     .bind(user_id)
-    .bind(project_id)
+    .bind(environment_id)
     .fetch_optional(&mut *tx)
     .await?;
     tx.commit().await?;

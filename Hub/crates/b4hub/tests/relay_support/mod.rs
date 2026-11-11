@@ -400,14 +400,14 @@ impl Hub {
         .await;
     }
 
-    /// Inserts the project `project_id`.
-    pub async fn seed_project(&self, who: &Seeded, owner: Uuid, project_id: &str) {
+    /// Inserts the environment `environment_id`.
+    pub async fn seed_environment(&self, who: &Seeded, owner: Uuid, environment_id: &str) {
         self.seed(
-            "INSERT INTO \"projects\" (\"id\", org_id, user_id, device_id, owner_device_id) \
+            "INSERT INTO \"environments\" (\"id\", org_id, user_id, device_id, owner_device_id) \
              VALUES ($4, $1, $2, $3, $3)",
             who,
             owner,
-            &[project_id],
+            &[environment_id],
         )
         .await;
     }

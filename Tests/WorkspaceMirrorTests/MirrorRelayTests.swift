@@ -260,7 +260,7 @@ struct MirrorRelayTests {
     #expect(refused?.message == "This message is too long to send from the phone.")
     let start = await #expect(throws: WorkspaceError.self) {
       try await client.request(
-        ThreadStart.self, .init(threadId: "t-new", projectId: "p1", connectionId: "conn-1", text: huge),
+        ThreadStart.self, .init(threadId: "t-new", environmentId: "p1", connectionId: "conn-1", text: huge),
         options: RequestOptions(operationId: "op-2"))
     }
     #expect(start?.message == "This message is too long to send from the phone.")

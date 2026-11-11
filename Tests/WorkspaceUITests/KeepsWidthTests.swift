@@ -4,7 +4,7 @@ import Testing
 
 @testable import WorkspaceUI
 
-/// The picker row's project label gives way first at a narrow width, but never to a sliver: it keeps
+/// The picker row's environment label gives way first at a narrow width, but never to a sliver: it keeps
 /// its ideal width up to the floor, so a long name still shows its ends and a short one is not padded.
 @Suite @MainActor struct KeepsWidthTests {
   private func width(_ view: some View, proposed: CGFloat) -> CGFloat {
@@ -12,7 +12,7 @@ import Testing
   }
 
   @Test func aLongLabelKeepsTheFloor() {
-    let name = String(repeating: "A long project name ", count: 6)
+    let name = String(repeating: "A long environment name ", count: 6)
     let label = Text(name).lineLimit(1).truncationMode(.middle).keepsWidth(80)
     #expect(width(label, proposed: 10) >= 80)
     // Given more, it takes up to what it is given (a truncated line may measure a little less).

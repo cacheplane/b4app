@@ -57,8 +57,8 @@ class LayoutCoverageTests(unittest.TestCase):
 
     def test_actual_manifest_preserves_all_reference_obligations(self):
         manifest = json.loads((root / "Tests/iOSLayout/UITests/coverage.json").read_text())
-        self.assertEqual(len(module.required_ids(manifest)), 131)
-        self.assertEqual(len(manifest["scenarios"]), 62)
+        self.assertEqual(len(module.required_ids(manifest)), 129)
+        self.assertEqual(len(manifest["scenarios"]), 61)
         self.assertEqual(len({x["method"] for x in manifest["scenarios"]}), 25)
 
     def test_manifest_cannot_silently_drop_or_duplicate_scenarios(self):

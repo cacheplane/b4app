@@ -1,7 +1,7 @@
 import Foundation
 import Synchronization
 
-/// Small choices that belong to this device and never sync: the last model, permission, and project a
+/// Small choices that belong to this device and never sync: the last model, permission, and environment a
 /// new thread used. Values are encoded `Data`, keyed by a string, so a reader owns its own format and
 /// a missing or unreadable value just means "no preference".
 public protocol LocalPreferences: AnyObject, Sendable {

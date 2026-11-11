@@ -98,10 +98,11 @@ import WorkspaceProtocol
       } catch { return .failure(.failed("\(error)")) }
     }
     #expect(
-      outcome(#"{"type":"command","id":"c1","method":"project.archive","params":{}}"#)
-        == .failure(.unknownCommand(id: "c1", method: "project.archive")))
+      outcome(#"{"type":"command","id":"c1","method":"environment.archive","params":{}}"#)
+        == .failure(.unknownCommand(id: "c1", method: "environment.archive")))
     // Without an id there is nothing to answer, and any other unknown frame is only skipped.
-    #expect(outcome(#"{"type":"command","method":"project.archive","params":{}}"#) == .failure(.undecodable))
+    #expect(
+      outcome(#"{"type":"command","method":"environment.archive","params":{}}"#) == .failure(.undecodable))
     #expect(outcome(#"{"type":"teleport"}"#) == .failure(.undecodable))
     #expect(outcome("not json") == .failure(.undecodable))
     #expect(outcome(#"{"type":"ping"}"#) == .success(.ping))
@@ -111,8 +112,9 @@ import WorkspaceProtocol
     #expect(
       RelayMethod.allCases.map(\.rawValue)
         == [
-          "turn.send", "turn.interrupt", "request.respond", "thread.start", "turn.lookup", "project.create",
-          "project.update", "project.delete",
+          "turn.send", "turn.interrupt", "request.respond", "thread.start", "turn.lookup",
+          "environment.create",
+          "environment.update", "environment.delete",
         ])
     #expect(RelayRole.host.rawValue == "host" && RelayRole.client.rawValue == "client")
   }

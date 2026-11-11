@@ -145,9 +145,9 @@ public final class WorkspaceModel {
       Task { await markReadIfNeeded(threadId: id) }
     }
   }
-  /// Every project with its folders, loaded with the threads and refreshed on `project.changed`.
-  public internal(set) var projects: [Project] = []
-  public var projectFilter: ProjectFilter = .all
+  /// Every environment with its folders, loaded with the threads and refreshed on `environment.changed`.
+  public internal(set) var environments: [WorkEnvironment] = []
+  public var environmentFilter: EnvironmentFilter = .all
   /// The Settings page to show, and a counter the root view watches to open Settings (a window on the
   /// Mac, a sheet on the iPhone); a counter so asking twice opens it twice.
   public var settingsPage: SettingsPage = SettingsPage.allCases[0]
@@ -172,19 +172,14 @@ public final class WorkspaceModel {
   /// Set by the Settings views while they are on screen.
   public var settingsVisible = false
   public var selectedThreadId: String?
-  /// The search palette (⌘K).
+  /// The search palette (⌘K on the Mac, the list's search button on the iPhone).
   public var showSearch = false
   /// The profile menu above the sidebar's profile button.
   public var showProfileMenu = false
   public var connectionFilter: String?
-  /// The iPhone list's pull-down search: narrows the list to threads whose shown title contains it
-  /// (D-053, amended). Empty shows every thread.
-  public var listSearch = ""
-  /// The list's search field is open and focused: the iPhone header's search button sets it.
-  public var listSearchPresented = false
   public var showArchived = false
-  /// The phone's project sheet: a new project, or one project's name and folders.
-  public var projectSheet: ProjectSheetRequest?
+  /// The phone's environment sheet: a new environment, or one environment's name and folders.
+  public var environmentSheet: EnvironmentSheetRequest?
   /// The iPhone's "Other ways to sign in" sheet, over the signed-out screen. On the model, like the
   /// sheets above, so the app holds a pairing link back until it closes.
   public var showSignInOptions = false
@@ -356,47 +351,46 @@ public final class WorkspaceModel {
     self.preferences = preferences
   }
 
-  /// The list under the connection and project filters: pinned first, then needs input,
+  /// The list under the connection and environment filters: pinned first, then needs input,
   /// unread reply, working, and quiet, newest activity first inside each (`Attention.ordered`).
   public var orderedThreads: [ConversationThread] {
-    Attention.ordered(filtered(archived: projectFilter == .archived, project: projectFilter))
+    Attention.ordered(filtered(archived: environmentFilter == .archived, environment: environmentFilter))
   }
 
   /// Pinned threads of `orderedThreads`.
   public var pinnedThreads: [ConversationThread] { orderedThreads.filter(\.pinned) }
 
-  /// The unpinned threads of `orderedThreads` grouped by project (the Mac sidebar).
-  public var projectSections: [ProjectSection] {
-    ProjectSection.build(threads: orderedThreads.filter { !$0.pinned }, projects: projects)
+  /// The unpinned threads of `orderedThreads` grouped by environment (the Mac sidebar).
+  public var environmentSections: [EnvironmentSection] {
+    EnvironmentSection.build(threads: orderedThreads.filter { !$0.pinned }, environments: environments)
   }
 
-  /// Unarchived threads under the search, connection, and project filters, in attention order.
+  /// Unarchived threads under the search, connection, and environment filters, in attention order.
   public var visibleThreads: [ConversationThread] {
-    Attention.ordered(filtered(archived: false, project: projectFilter == .archived ? .all : projectFilter))
+    Attention.ordered(
+      filtered(archived: false, environment: environmentFilter == .archived ? .all : environmentFilter))
   }
 
   /// Archived threads under the search and connection filters, shown when `showArchived` is on.
   public var archivedThreads: [ConversationThread] {
-    Attention.ordered(filtered(archived: true, project: .all))
+    Attention.ordered(filtered(archived: true, environment: .all))
   }
 
   public func band(of thread: ConversationThread) -> AttentionBand { Attention.band(of: thread) }
 
-  /// A thread belongs under "Other" when it has no project or its project is not known.
+  /// A thread belongs under "Other" when it has no environment or its environment is not known.
   private func isOther(_ thread: ConversationThread) -> Bool {
-    guard let projectId = thread.projectId else { return true }
-    return !projects.contains { $0.id == projectId }
+    guard let environmentId = thread.environmentId else { return true }
+    return !environments.contains { $0.id == environmentId }
   }
 
-  private func filtered(archived: Bool, project: ProjectFilter) -> [ConversationThread] {
-    let needle = listSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-    return threads.filter { $0.archived == archived }
+  private func filtered(archived: Bool, environment: EnvironmentFilter) -> [ConversationThread] {
+    threads.filter { $0.archived == archived }
       .filter { connectionFilter == nil || $0.connectionId == connectionFilter }
-      .filter { needle.isEmpty || ThreadSearch.shownTitle($0).localizedCaseInsensitiveContains(needle) }
       .filter {
-        switch project {
+        switch environment {
         case .all, .archived: return true
-        case .project(let id): return $0.projectId == id
+        case .environment(let id): return $0.environmentId == id
         case .other: return isOther($0)
         }
       }
@@ -731,7 +725,7 @@ public final class WorkspaceModel {
     let listed = (try? await client.request(ServerList.self, EmptyParams()).servers) ?? []
     guard generation == accountGeneration else { return }
     servers = listed
-    await refreshProjects()
+    await refreshEnvironments()
     guard generation == accountGeneration else { return }
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
     snapshotPosition = (snapshot.epoch, snapshot.sequence)
@@ -921,13 +915,13 @@ public final class WorkspaceModel {
   }
 
   /// The empty pane is the new-thread composer: keep the open thread's unsent text, select nothing,
-  /// start in `projectId` when given, and put the cursor in the composer's field.
+  /// start in `environmentId` when given, and put the cursor in the composer's field.
   /// The pane changes first; the text is saved after, so the phone does not wait on the relay to move.
-  public func openNewThread(projectId: String? = nil) async {
+  public func openNewThread(environmentId: String? = nil) async {
     stopThreadOpen()
     let open = detail.map { (threadId: $0.thread.id, text: composerText) }
     selectedThreadId = nil
-    if let projectId { newThreadDraft.selectProject(projectId) }
+    if let environmentId { newThreadDraft.selectEnvironment(environmentId) }
     newThreadFocusRequest += 1
     detailRequest += 1
     if let open { await saveDraft(threadId: open.threadId, text: open.text) }
@@ -1061,63 +1055,67 @@ public final class WorkspaceModel {
     }
   }
 
-  // MARK: - Projects
+  // MARK: - Environments
 
-  public func refreshProjects() async {
+  public func refreshEnvironments() async {
     let generation = accountGeneration
-    guard let client, let list = try? await client.request(ProjectList.self, EmptyParams()),
+    guard let client, let list = try? await client.request(EnvironmentList.self, EmptyParams()),
       generation == accountGeneration
     else { return }
-    projects = list.projects
+    environments = list.environments
   }
 
   @discardableResult
-  public func createProject(name: String, folders: [String]) async -> Project? {
-    let created: Project? = await perform {
+  public func createEnvironment(name: String, folders: [String]) async -> WorkEnvironment? {
+    let created: WorkEnvironment? = await perform {
       try await $0.request(
-        ProjectCreate.self, ProjectCreate.Params(name: name, folders: folders), options: Self.mutation()
-      ).project
+        EnvironmentCreate.self, EnvironmentCreate.Params(name: name, folders: folders),
+        options: Self.mutation()
+      ).environment
     }
     if let created { merge(created) }
     return created
   }
 
-  /// Rename a project; the empty string restores the folder-name display.
-  public func renameProject(id: String, name: String) async {
-    let renamed: Project? = await perform {
+  /// Rename an environment; the empty string restores the folder-name display.
+  public func renameEnvironment(id: String, name: String) async {
+    let renamed: WorkEnvironment? = await perform {
       try await $0.request(
-        ProjectRename.self, ProjectRename.Params(projectId: id, name: name), options: Self.mutation()
-      ).project
+        EnvironmentRename.self, EnvironmentRename.Params(environmentId: id, name: name),
+        options: Self.mutation()
+      ).environment
     }
     if let renamed { merge(renamed) }
   }
 
-  public func addFolder(projectId: String, path: String) async {
-    let updated: Project? = await perform {
+  public func addFolder(environmentId: String, path: String) async {
+    let updated: WorkEnvironment? = await perform {
       try await $0.request(
-        ProjectUpdate.self, ProjectUpdate.Params(projectId: projectId, addFolders: [path]),
+        EnvironmentUpdate.self, EnvironmentUpdate.Params(environmentId: environmentId, addFolders: [path]),
         options: Self.mutation()
-      ).project
+      ).environment
     }
     if let updated { merge(updated) }
-    // Threads whose folder moved arrive as `thread.updated`; the list follows `project.changed`.
+    // Threads whose folder moved arrive as `thread.updated`; the list follows `environment.changed`.
   }
 
-  public func deleteProject(id: String) async {
+  public func deleteEnvironment(id: String) async {
     let deleted: String? = await perform {
-      try await $0.request(ProjectDelete.self, ProjectDelete.Params(projectId: id), options: Self.mutation())
-        .projectId
+      try await $0.request(
+        EnvironmentDelete.self, EnvironmentDelete.Params(environmentId: id), options: Self.mutation()
+      )
+      .environmentId
     }
     guard let deleted else { return }
-    projects.removeAll { $0.id == deleted }
-    if projectFilter == .project(deleted) { projectFilter = .all }
+    environments.removeAll { $0.id == deleted }
+    if environmentFilter == .environment(deleted) { environmentFilter = .all }
   }
 
-  func merge(_ project: Project) {
-    if let index = projects.firstIndex(where: { $0.id == project.id }) {
-      projects[index] = project
+  func merge(_ environment: WorkEnvironment) {
+    if let index = environments.firstIndex(where: { $0.id == environment.id }) {
+      environments[index] = environment
     } else {
-      projects.append(project)
+      environments.append(environment)
     }
   }
 
@@ -1364,7 +1362,7 @@ public final class WorkspaceModel {
     case .signIn(let connectionId): await login(connectionId: connectionId)
     case .openConnections: openSettings(.connections)
     case .openServers: openSettings(.servers)
-    case .newThread: await openNewThread(projectId: detail?.thread.projectId)
+    case .newThread: await openNewThread(environmentId: detail?.thread.environmentId)
     case .checkAgain:
       if let id = detail?.thread.id { await reconcileThread(id: id) }
       // Reconciliation clears the notice on success and supplies the current failure otherwise.
@@ -1473,8 +1471,8 @@ public final class WorkspaceModel {
         if detail?.thread.id == thread.id { reloadRemoteDraftIfIdle(threadId: thread.id) }
         scheduleRefetch(threadId: thread.id)
       }
-    case .projectChanged:
-      Task { await refreshProjects() }
+    case .environmentChanged:
+      Task { await refreshEnvironments() }
     case .serverChanged:
       if let server = try? event.payload["server"]?.decode(LocalServer.self) { merge(server) }
     case .usageChanged:
@@ -1581,14 +1579,14 @@ public final class WorkspaceModel {
     endRelayState()
     isStartingThread = false
     forgetNewThreadDraft()
-    projectFilter = .all
+    environmentFilter = .all
     connectionFilter = nil
     showArchived = false
     pendingForceStop = nil
     diagnosticsError = nil
     connections = []
     threads = []
-    projects = []
+    environments = []
     servers = []
     serverLogs = [:]
     activeTurns = [:]
@@ -1605,10 +1603,8 @@ public final class WorkspaceModel {
     hubJoined = false
     hubLink = nil
     diagnostics = nil
-    projectSheet = nil
+    environmentSheet = nil
     showSearch = false
-    listSearch = ""
-    listSearchPresented = false
     showProfileMenu = false
     lastError = nil
     showAddPhone = false

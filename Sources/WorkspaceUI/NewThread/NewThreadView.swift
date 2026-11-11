@@ -43,13 +43,13 @@ struct NewThreadView: View {
     #if os(iOS)
       .navigationBarTitleDisplayMode(.inline)
     #endif
-    // The draft may have been made before the projects and connections loaded, or its choice may have
+    // The draft may have been made before the environments and connections loaded, or its choice may have
     // gone away since: keep what is still offered and fill in the rest.
     .onAppear {
       draft.refreshChoices()
       focused = true
     }
-    .onChange(of: model.projects) { draft.refreshChoices() }
+    .onChange(of: model.environments) { draft.refreshChoices() }
     .onChange(of: model.connections) { draft.refreshChoices() }
     .onChange(of: model.newThreadFocusRequest) { focused = true }
     // A start accepted later (a retry, a lookup) did not open its thread; open it now.
@@ -68,8 +68,8 @@ struct NewThreadView: View {
     #endif
   }
 
-  /// The phone's notice about the Mac that owns the project: offline, left the hub, or reconnecting.
-  private var notice: HostNoticeMessage? { draft.project.flatMap(model.startNotice(for:)) }
+  /// The phone's notice about the Mac that owns the environment: offline, left the hub, or reconnecting.
+  private var notice: HostNoticeMessage? { draft.environment.flatMap(model.startNotice(for:)) }
 
   /// No text here is `fixedSize(vertical:)`: the split view measures this column at zero width, where a
   /// fixed-height wrapped line grows one character per line, and that minimum made the split view

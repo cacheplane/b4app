@@ -3,9 +3,9 @@ import WorkspaceProtocol
 
 // MARK: - Presentation logic
 
-/// The Mac sidebar's collapsed project ids, kept as one comma-joined string in `@SceneStorage`
+/// The Mac sidebar's collapsed environment ids, kept as one comma-joined string in `@SceneStorage`
 /// (per device and window, never synced).
-enum CollapsedProjects {
+enum CollapsedEnvironments {
   static func parse(_ raw: String) -> Set<String> {
     Set(raw.split(separator: ",").map(String.init))
   }
@@ -26,10 +26,10 @@ extension AttentionBand {
 }
 
 extension WorkspaceModel {
-  /// The display name of the project a thread belongs to; nil for "Other".
-  func projectName(for thread: ConversationThread) -> String? {
-    guard let id = thread.projectId else { return nil }
-    return projects.first { $0.id == id }?.displayName
+  /// The display name of the environment a thread belongs to; nil for "Other".
+  func environmentName(for thread: ConversationThread) -> String? {
+    guard let id = thread.environmentId else { return nil }
+    return environments.first { $0.id == id }?.displayName
   }
 
   /// A read reply exists to un-read only when the thread is quiet and has a latest turn.
@@ -37,16 +37,16 @@ extension WorkspaceModel {
     band(of: thread) == .quiet && thread.activity?.latestTurnId != nil
   }
 
-  /// Projects for the filter menu: the one with the newest thread activity first, projects without
+  /// Environments for the filter menu: the one with the newest thread activity first, environments without
   /// threads last by name.
-  var filterProjects: [Project] {
+  var filterEnvironments: [WorkEnvironment] {
     var newest: [String: String] = [:]
     for thread in threads {
-      guard let id = thread.projectId else { continue }
+      guard let id = thread.environmentId else { continue }
       let at = thread.activity?.lastActivityAt ?? thread.createdAt
       if at > (newest[id] ?? "") { newest[id] = at }
     }
-    return projects.sorted { lhs, rhs in
+    return environments.sorted { lhs, rhs in
       switch (newest[lhs.id], newest[rhs.id]) {
       case (let l?, let r?) where l != r: return l > r
       case (_?, nil): return true
@@ -56,37 +56,37 @@ extension WorkspaceModel {
     }
   }
 
-  /// Whether any live thread has no known project, so the menu offers "Other".
+  /// Whether any live thread has no known environment, so the menu offers "Other".
   var hasOtherThreads: Bool {
     threads.contains { thread in
-      !thread.archived && (thread.projectId.map { id in !projects.contains { $0.id == id } } ?? true)
+      !thread.archived && (thread.environmentId.map { id in !environments.contains { $0.id == id } } ?? true)
     }
   }
 
-  /// The menu's title for the current project filter.
+  /// The menu's title for the current environment filter.
   var filterTitle: String {
-    switch projectFilter {
-    case .all: return "All projects"
-    case .project(let id): return projects.first { $0.id == id }?.displayName ?? "Project"
+    switch environmentFilter {
+    case .all: return "All environments"
+    case .environment(let id): return environments.first { $0.id == id }?.displayName ?? "Environment"
     case .other: return "Other"
     case .archived: return "Archived"
     }
   }
 
-  /// The Mac sidebar's sections: `projectSections`, plus manual projects that hold no listed thread
-  /// (a new project, or one whose threads are pinned or archived) so they can still be renamed,
+  /// The Mac sidebar's sections: `environmentSections`, plus manual environments that hold no listed thread
+  /// (a new environment, or one whose threads are pinned or archived) so they can still be renamed,
   /// given a folder, or deleted. A connection filter shows matches only. "Other" stays last.
-  var sidebarSections: [ProjectSection] {
-    let built = projectSections
-    guard connectionFilter == nil, projectFilter == .all else { return built }
+  var sidebarSections: [EnvironmentSection] {
+    let built = environmentSections
+    guard connectionFilter == nil, environmentFilter == .all else { return built }
     let present = Set(built.map(\.id))
     let empty =
-      projects
+      environments
       .filter { $0.manual && !present.contains($0.id) }
       .sorted { ($0.displayName, $0.id) < ($1.displayName, $1.id) }
-      .map { ProjectSection(id: $0.id, title: $0.displayName, threads: []) }
-    let other = built.filter { $0.id == ProjectSection.otherId }
-    return built.filter { $0.id != ProjectSection.otherId } + empty + other
+      .map { EnvironmentSection(id: $0.id, title: $0.displayName, threads: []) }
+    let other = built.filter { $0.id == EnvironmentSection.otherId }
+    return built.filter { $0.id != EnvironmentSection.otherId } + empty + other
   }
 }
 
@@ -98,7 +98,7 @@ extension WorkspaceModel {
     return !detailLoading
   }
 
-  /// The failure the list prints where the action happened: a project or thread action failed and
+  /// The failure the list prints where the action happened: an environment or thread action failed and
   /// nothing else on screen says so. `detailVisible` is false where the detail is not on screen (the
   /// iPhone's single column). A sheet prints its own copy of the error, and the banner is hidden
   /// behind it, so the sheets are unaffected.
@@ -288,11 +288,11 @@ struct ThreadRow: View {
 // MARK: - The list
 
 /// The thread list for the sidebar: on the Mac a "Pinned" group, then one collapsible section per
-/// project, then "Other"; on the iPhone one flat list in attention order, narrowed by the filter menu.
+/// environment, then "Other"; on the iPhone one flat list in attention order, narrowed by the filter menu.
 struct ThreadListView: View {
   @Bindable var model: WorkspaceModel
   #if os(macOS)
-    @SceneStorage("collapsedProjects") private var collapsedRaw = ""
+    @SceneStorage("collapsedEnvironments") private var collapsedRaw = ""
   #endif
 
   #if os(iOS)
@@ -303,11 +303,11 @@ struct ThreadListView: View {
     #if os(macOS)
       VStack(alignment: .leading, spacing: 0) {
         SidebarErrorBanner(model: model)
-        ProjectSectionsView(
+        EnvironmentSectionsView(
           model: model,
           collapsed: Binding(
-            get: { CollapsedProjects.parse(collapsedRaw) },
-            set: { collapsedRaw = CollapsedProjects.encode($0) }))
+            get: { CollapsedEnvironments.parse(collapsedRaw) },
+            set: { collapsedRaw = CollapsedEnvironments.encode($0) }))
       }
     #else
       // On the iPhone's single column the thread detail is not on screen, so the list says it.
@@ -327,14 +327,10 @@ struct FlatThreadRows: View {
   var body: some View {
     let rows = model.orderedThreads
     if rows.isEmpty {
-      Text(
-        !model.listSearch.trimmingCharacters(in: .whitespaces).isEmpty
-          ? "No matching threads."
-          : model.projectFilter == .archived ? "No archived threads." : "No threads yet."
-      )
-      .llaSmallMuted()
-      .listRowSeparator(.hidden)
-      .listRowBackground(Color.clear)
+      Text(model.environmentFilter == .archived ? "No archived threads." : "No threads yet.")
+        .llaSmallMuted()
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
     }
     ForEach(rows) { thread in
       ThreadRow(model: model, thread: thread)
@@ -386,16 +382,16 @@ struct FlatThreadList: View {
 // MARK: - The Mac sections
 
 #if os(macOS)
-  /// The Mac sidebar's list: Pinned, then a collapsible section per project, "Other" last, the
-  /// archive while More's switch is on, and "New Project…" at the end. Plain stacks, not `List`: a List drew nothing
+  /// The Mac sidebar's list: Pinned, then a collapsible section per environment, "Other" last, the
+  /// archive while More's switch is on, and "New Environment…" at the end. Plain stacks, not `List`: a List drew nothing
   /// in the macOS 26 split-view sidebar (see `SidebarView`).
-  struct ProjectSectionsView: View {
+  struct EnvironmentSectionsView: View {
     @Bindable var model: WorkspaceModel
     @Binding var collapsed: Set<String>
     @State private var creating = false
-    @State private var renaming: Project?
-    @State private var deleting: Project?
-    @State private var folderTarget: Project?
+    @State private var renaming: WorkEnvironment?
+    @State private var deleting: WorkEnvironment?
+    @State private var folderTarget: WorkEnvironment?
     @State private var choosingFolder = false
 
     var body: some View {
@@ -416,7 +412,7 @@ struct FlatThreadList: View {
         Button {
           creating = true
         } label: {
-          Text("New Project…")
+          Text("New Environment…")
             .font(LLAFont.small).foregroundStyle(LLA.Color.muted)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
@@ -425,29 +421,29 @@ struct FlatThreadList: View {
         }
         .buttonStyle(.plain)
         .padding(.top, LLA.Space.m)
-        .accessibilityIdentifier("new-project")
+        .accessibilityIdentifier("new-environment")
       }
-      .sheet(isPresented: $creating) { NewProjectSheet(model: model) }
-      .sheet(item: $renaming) { RenameProjectSheet(model: model, project: $0) }
+      .sheet(isPresented: $creating) { NewEnvironmentSheet(model: model) }
+      .sheet(item: $renaming) { RenameEnvironmentSheet(model: model, environment: $0) }
       .confirmationDialog(
-        deleting.map { "Delete \u{201C}\($0.displayName)\u{201D}?" } ?? "Delete project?",
+        deleting.map { "Delete \u{201C}\($0.displayName)\u{201D}?" } ?? "Delete environment?",
         isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
         titleVisibility: .visible, presenting: deleting
-      ) { project in
-        Button("Delete Project", role: .destructive) {
-          Task { await model.deleteProject(id: project.id) }
+      ) { environment in
+        Button("Delete Environment", role: .destructive) {
+          Task { await model.deleteEnvironment(id: environment.id) }
         }
         Button("Cancel", role: .cancel) {}
       } message: { _ in
-        Text("Its folders return to automatic projects. No threads are deleted.")
+        Text("Its folders return to automatic environments. No threads are deleted.")
       }
       .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
-        guard case .success(let url) = result, let project = folderTarget else { return }
-        Task { await model.addFolder(projectId: project.id, path: url.path) }
+        guard case .success(let url) = result, let environment = folderTarget else { return }
+        Task { await model.addFolder(environmentId: environment.id, path: url.path) }
       }
     }
 
-    @ViewBuilder private func sectionView(_ section: ProjectSection) -> some View {
+    @ViewBuilder private func sectionView(_ section: EnvironmentSection) -> some View {
       let isCollapsed = collapsed.contains(section.id)
       VStack(alignment: .leading, spacing: 2) {
         header(section, isCollapsed: isCollapsed)
@@ -461,8 +457,8 @@ struct FlatThreadList: View {
       .padding(.top, LLA.Space.xs)
     }
 
-    private func header(_ section: ProjectSection, isCollapsed: Bool) -> some View {
-      let project = model.projects.first { $0.id == section.id }
+    private func header(_ section: EnvironmentSection, isCollapsed: Bool) -> some View {
+      let environment = model.environments.first { $0.id == section.id }
       // A collapsed section still shows a dot when something inside is waiting or unread.
       let urgent = section.threads.map { model.band(of: $0) }.min().flatMap {
         $0 == .needsInput || $0 == .unread ? $0 : nil
@@ -484,18 +480,18 @@ struct FlatThreadList: View {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .accessibilityIdentifier("project-header")
+      .accessibilityIdentifier("environment-header")
       .accessibilityValue(isCollapsed ? "collapsed" : "expanded")
       .contextMenu {
-        if let project {
-          Button("Rename…", systemImage: "pencil") { renaming = project }
+        if let environment {
+          Button("Rename…", systemImage: "pencil") { renaming = environment }
           Button("Add Folder…", systemImage: "folder.badge.plus") {
-            folderTarget = project
+            folderTarget = environment
             choosingFolder = true
           }
-          if project.manual {
+          if environment.manual {
             Divider()
-            Button("Delete Project", systemImage: "trash", role: .destructive) { deleting = project }
+            Button("Delete Environment", systemImage: "trash", role: .destructive) { deleting = environment }
           }
         }
       }

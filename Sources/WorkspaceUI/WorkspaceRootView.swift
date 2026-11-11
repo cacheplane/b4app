@@ -104,8 +104,8 @@ struct WorkspaceShell: View {
       if column == .sidebar { model.cancelThreadOpen() }
     }
     .onDisappear { model.isDetailOnScreen = false }
-    // The phone's New project and Edit project; the Mac's sheets hang off its sidebar.
-    .sheet(item: $model.projectSheet) { PhoneProjectSheet(model: model, request: $0) }
+    // The phone's New environment and Edit environment; the Mac's sheets hang off its sidebar.
+    .sheet(item: $model.environmentSheet) { PhoneEnvironmentSheet(model: model, request: $0) }
     #if os(macOS)
       // "Add your iPhone", once after a new account's onboarding (sign-in plan, Task 12).
       .sheet(isPresented: $model.showAddPhone) { AddPhoneView(model: model) }

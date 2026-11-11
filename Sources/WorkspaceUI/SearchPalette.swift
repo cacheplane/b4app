@@ -149,8 +149,8 @@ struct SearchPalette: View {
         .font(LLAFont.row)
         .foregroundStyle(LLA.Color.ink)
         .lineLimit(1)
-      if let project = model.projectName(for: thread) {
-        Text(project).font(LLAFont.caption).foregroundStyle(LLA.Color.muted).lineLimit(1)
+      if let environment = model.environmentName(for: thread) {
+        Text(environment).font(LLAFont.caption).foregroundStyle(LLA.Color.muted).lineLimit(1)
       }
       if thread.archived {
         Text("Archived").font(LLAFont.caption).foregroundStyle(LLA.Color.muted)

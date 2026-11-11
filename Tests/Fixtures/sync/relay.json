@@ -31,7 +31,7 @@
   "params": {
    "connectionId": "conn-1",
    "text": "Start a new thread",
-   "projectId": "project-1",
+   "environmentId": "project-1",
    "model": "sonnet",
    "permission": "plan"
   }
@@ -47,10 +47,10 @@
  {
   "type": "command",
   "id": "4f1e8c2a-6d73-4b9e-a051-8c3d2e7f9a66",
-  "method": "project.create",
+  "method": "environment.create",
   "params": {
    "deviceId": "01a194cf-0d12-7418-b3b5-5559dbee2441",
-   "projectId": "9b2c4e6a-1d3f-4a5b-8c7d-0e1f2a3b4c5d",
+   "environmentId": "9b2c4e6a-1d3f-4a5b-8c7d-0e1f2a3b4c5d",
    "name": "Work",
    "folders": [
     "~/repos/b4app",
@@ -61,9 +61,9 @@
  {
   "type": "command",
   "id": "8a6d2f4c-3e15-4c7b-b9a2-1f0e3d5c7b77",
-  "method": "project.update",
+  "method": "environment.update",
   "params": {
-   "projectId": "project-1",
+   "environmentId": "project-1",
    "name": "b4app",
    "addFolders": [
     "/Users/blove/repos/b4app/Hub"
@@ -76,9 +76,9 @@
  {
   "type": "command",
   "id": "2c9e7a1b-5f48-4d3c-8e6a-7b2d1c0f9e88",
-  "method": "project.delete",
+  "method": "environment.delete",
   "params": {
-   "projectId": "project-1"
+   "environmentId": "project-1"
   }
  },
  {

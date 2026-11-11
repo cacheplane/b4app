@@ -157,13 +157,12 @@ final class BannerLayoutTests: XCTestCase {
   func checkComposerAlignment(_ app: XCUIApplication) {
     let editor = app.textFields["composer"]
     XCTAssertTrue(editor.waitForExistence(timeout: 5))
-    XCTAssertEqual(
-      editor.frame.minX, 32, accuracy: 0.5, "Draft text uses the page and field insets")
-    let project = app.descendants(matching: .any).matching(identifier: "picker-project").firstMatch
+    XCTAssertEqual(editor.frame.minX, 32, accuracy: 0.5, "Draft text uses the page and field insets")
+    let environment = app.descendants(matching: .any).matching(identifier: "picker-place").firstMatch
     let runtime = app.descendants(matching: .any).matching(identifier: "picker-runtime").firstMatch
     XCTAssertEqual(
-      inkBounds(project).minX, editor.frame.minX, accuracy: 1.5,
-      "Project text aligns with draft text")
+      inkBounds(environment).minX, editor.frame.minX, accuracy: 1.5, "Environment text aligns with draft text"
+    )
     XCTAssertEqual(
       app.frame.maxX - inkBounds(runtime).maxX, 32, accuracy: 1.5,
       "Trailing control ink uses the same inner and outer insets")

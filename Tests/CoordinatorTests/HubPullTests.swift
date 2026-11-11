@@ -149,8 +149,8 @@ private actor EventRecorder {
     events.filter { $0.event.kind == .threadUpdated && $0.event.threadId == id }
   }
 
-  func projectChanges(_ id: String) -> [EventEnvelope] {
-    events.filter { $0.event.kind == .projectChanged && $0.event.payload["projectId"] == .string(id) }
+  func environmentChanges(_ id: String) -> [EventEnvelope] {
+    events.filter { $0.event.kind == .environmentChanged && $0.event.payload["environmentId"] == .string(id) }
   }
 }
 
@@ -158,12 +158,12 @@ private actor EventRecorder {
   @Test func pullAppliesPhoneEditsAndPublishes() async throws {
     try await PullHarness.with { h in
       let recorder = await EventRecorder(h.events, signal: h.signal)
-      _ = try h.db.insertProject(Project(id: "p1", name: ""), folders: ["/tmp/p"])
+      _ = try h.db.insertEnvironment(WorkEnvironment(id: "p1", name: ""), folders: ["/tmp/p"])
       let before = try #require(try h.db.thread(id: "t1"))
       let logged = try h.db.changes(after: 0).count
 
       _ = await h.append("threads", "t1", column: "title", value: "Phone title", hlc: phoneClock())
-      _ = await h.append("projects", "p1", column: "name", value: "Phone project", hlc: phoneClock())
+      _ = await h.append("environments", "p1", column: "name", value: "Phone environment", hlc: phoneClock())
       // A revoked old Mac's row and an echo of this Mac's own edit are skipped.
       _ = await h.append(
         "threads", "t1", column: "pinned", value: true, hlc: phoneClock(device: "dev-old-mac"),
@@ -181,12 +181,12 @@ private actor EventRecorder {
       #expect(thread.title == "Phone title")
       #expect(!thread.pinned && !thread.archived)
       #expect(thread.updatedAt == before.updatedAt)
-      #expect(try h.db.project(id: "p1")?.name == "Phone project")
+      #expect(try h.db.environment(id: "p1")?.name == "Phone environment")
       #expect(try h.db.draft(threadId: "t1")?.text == "from the phone")
-      try await h.waitFor("thread.updated and project.changed") {
+      try await h.waitFor("thread.updated and environment.changed") {
         let threads = await recorder.threadUpdates("t1")
-        let projects = await recorder.projectChanges("p1")
-        return !threads.isEmpty && !projects.isEmpty
+        let environments = await recorder.environmentChanges("p1")
+        return !threads.isEmpty && !environments.isEmpty
       }
       let published = await recorder.threadUpdates("t1").last
       #expect(published?.event.payload["thread"]?["title"] == .string("Phone title"))

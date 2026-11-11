@@ -45,6 +45,6 @@ extension RunningCoordinator {
   var database: WorkspaceDatabase { scope.database }
   var sessions: SessionService { scope.sessions }
   var servers: LocalServerService { scope.servers }
-  var projects: ProjectService { scope.projects }
+  var environments: EnvironmentService { scope.environments }
   var hub: HubSync { scope.hub }
 }

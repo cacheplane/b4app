@@ -5,7 +5,7 @@ import WorkspaceProtocol
 import WorkspaceUI
 
 /// The iOS companion reads the workspace the Mac syncs to the hub (M8a): the shared shell over the
-/// local mirror. Organising threads and projects from the phone (M8b) writes to the mirror and uploads
+/// local mirror. Organising threads and environments from the phone (M8b) writes to the mirror and uploads
 /// through the hub; chatting (M8c) goes through the hub's relay to the Mac, whose link is held while the
 /// app is active.
 ///

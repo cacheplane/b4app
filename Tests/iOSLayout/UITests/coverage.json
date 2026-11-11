@@ -4,8 +4,8 @@
     "source": "a7e1ef743cebaf3704a3fa37ede72db8018df12d",
     "ui_file_sha256": "6e7f79b92ca6cba1c6495692a177bba35b0c06e9d92850f86da88335d50ec414",
     "methods": 25,
-    "scenarios": 62,
-    "layouts": 69
+    "scenarios": 61,
+    "layouts": 68
   },
   "scenarios": [
     {
@@ -70,7 +70,7 @@
       "ordinal": 1,
       "layouts": 1,
       "journey": "Startup/empty-state guards; workspace navigation",
-      "preservation": "Keep empty/archive/no-match/direct-detail/no-ready/no-Mac starts; ready new-thread checks through actual navigation."
+      "preservation": "Keep empty/archive/direct-detail/no-ready/no-Mac starts; ready new-thread checks through actual navigation."
     },
     {
       "id": "testEveryWorkspaceSurfaceWithSyncFailure#2",
@@ -78,15 +78,7 @@
       "ordinal": 2,
       "layouts": 1,
       "journey": "Startup/empty-state guards; workspace navigation",
-      "preservation": "Keep empty/archive/no-match/direct-detail/no-ready/no-Mac starts; ready new-thread checks through actual navigation."
-    },
-    {
-      "id": "testEveryWorkspaceSurfaceWithSyncFailure#3",
-      "method": "testEveryWorkspaceSurfaceWithSyncFailure",
-      "ordinal": 3,
-      "layouts": 1,
-      "journey": "Startup/empty-state guards; workspace navigation",
-      "preservation": "Keep empty/archive/no-match/direct-detail/no-ready/no-Mac starts; ready new-thread checks through actual navigation."
+      "preservation": "Keep empty/archive/direct-detail/no-ready/no-Mac starts; ready new-thread checks through actual navigation."
     },
     {
       "id": "testEveryWorkspaceSurfaceWithSyncFailure#4",
@@ -94,7 +86,7 @@
       "ordinal": 4,
       "layouts": 1,
       "journey": "Startup/empty-state guards; workspace navigation",
-      "preservation": "Keep empty/archive/no-match/direct-detail/no-ready/no-Mac starts; ready new-thread checks through actual navigation."
+      "preservation": "Keep empty/archive/direct-detail/no-ready/no-Mac starts; ready new-thread checks through actual navigation."
     },
     {
       "id": "testEveryWorkspaceSurfaceWithSyncFailure#5",
@@ -110,7 +102,7 @@
       "ordinal": 6,
       "layouts": 1,
       "journey": "Startup/empty-state guards; workspace navigation",
-      "preservation": "Keep empty/archive/no-match/direct-detail/no-ready/no-Mac starts; ready new-thread checks through actual navigation."
+      "preservation": "Keep empty/archive/direct-detail/no-ready/no-Mac starts; ready new-thread checks through actual navigation."
     },
     {
       "id": "testEveryWorkspaceSurfaceWithSyncFailure#7",
@@ -118,7 +110,7 @@
       "ordinal": 7,
       "layouts": 1,
       "journey": "Startup/empty-state guards; workspace navigation",
-      "preservation": "Keep empty/archive/no-match/direct-detail/no-ready/no-Mac starts; ready new-thread checks through actual navigation."
+      "preservation": "Keep empty/archive/direct-detail/no-ready/no-Mac starts; ready new-thread checks through actual navigation."
     },
     {
       "id": "testLandscapeLayouts#1",
@@ -478,7 +470,7 @@
       "ordinal": 1,
       "layouts": 1,
       "journey": "Workspace navigation/search/scroll",
-      "preservation": "Keep populated fixture inputs, actual keyboard typing, no-match and overlap assertions."
+      "preservation": "Keep populated fixture inputs; the list has no search field and the button opens the Search sheet with a hittable field (D-201)."
     },
     {
       "id": "testExpandedAndCollapsedListTitles#1",
@@ -593,8 +585,6 @@
       "testEveryWorkspaceSurfaceWithSyncFailure#1/complete",
       "testEveryWorkspaceSurfaceWithSyncFailure#2/layout#1",
       "testEveryWorkspaceSurfaceWithSyncFailure#2/complete",
-      "testEveryWorkspaceSurfaceWithSyncFailure#3/layout#1",
-      "testEveryWorkspaceSurfaceWithSyncFailure#3/complete",
       "testEveryWorkspaceSurfaceWithSyncFailure#4/layout#1",
       "testEveryWorkspaceSurfaceWithSyncFailure#4/complete",
       "testEveryWorkspaceSurfaceWithSyncFailure#6/layout#1",

@@ -80,6 +80,10 @@ const PINNED: &[(&str, &str)] = &[
         "0017_thread_runtime_choice.sql",
         "d3960ad53eaba095e540e205641c1d4572090a900028360098c06e3b6d24f2c9",
     ),
+    (
+        "0018_environments.sql",
+        "2a7090851b9ae1ff34813a75829203eb41fd1bff364cc8c8dad107ed547b3b48",
+    ),
 ];
 
 #[test]

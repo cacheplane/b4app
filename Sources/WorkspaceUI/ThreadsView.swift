@@ -257,7 +257,7 @@ struct ContinuityBanner: View {
           Button("Check again") { Task { await model.reconcileThread(id: thread.id) } }
             .buttonStyle(.llaSecondary)
             .disabled(model.busy)
-          Button("New thread") { Task { await model.openNewThread(projectId: thread.projectId) } }
+          Button("New thread") { Task { await model.openNewThread(environmentId: thread.environmentId) } }
             .buttonStyle(.llaPrimary)
             .disabled(model.newThreadEntryReason != nil)
         }

@@ -8,7 +8,7 @@ import WorkspaceProtocol
   @Test func keepsDeltasAndAdvancesAcrossUnrelatedEvents() throws {
     var recording = RecordingBuffer(threadId: "thread", connectionId: "connection", maxBytes: 100_000)
     recording.begin(epoch: "epoch", sequence: 0)
-    try recording.accept(envelope(1, kind: .projectChanged, thread: nil), elapsedMs: 0)
+    try recording.accept(envelope(1, kind: .environmentChanged, thread: nil), elapsedMs: 0)
     try recording.accept(envelope(2, kind: .messageDelta, payload: ["delta": "hello"]), elapsedMs: 1)
     try recording.accept(envelope(2, kind: .messageDelta, payload: ["delta": "hello"]), elapsedMs: 1)
     #expect(recording.events.count == 1)
@@ -18,9 +18,9 @@ import WorkspaceProtocol
 
   @Test func rejectsGapEpochAndAccountChanges() throws {
     for event in [
-      envelope(2, kind: .projectChanged, thread: nil),
+      envelope(2, kind: .environmentChanged, thread: nil),
       EventEnvelope(
-        epoch: "other", sequence: 1, event: AdapterEvent(kind: .projectChanged, connectionId: "")),
+        epoch: "other", sequence: 1, event: AdapterEvent(kind: .environmentChanged, connectionId: "")),
       envelope(1, kind: .accountChanged, thread: nil),
     ] {
       var recording = RecordingBuffer(threadId: "thread", connectionId: "connection", maxBytes: 100_000)

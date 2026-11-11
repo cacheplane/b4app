@@ -632,7 +632,7 @@ struct RelayLinkTests {
 
   /// A newer phone's command, forwarded by a newer hub, reaches a Mac that does not know its method.
   static let unknownCommand =
-    #"{"type":"command","id":"c-new","method":"project.archive","params":{"projectId":"p1"},"deadline":"2026-11-09T12:00:10.000Z","from":{"deviceId":"0198c3a2-77d0-7a11-8c6e-1f4e2d5b9a07","name":"iPhone"}}"#
+    #"{"type":"command","id":"c-new","method":"environment.archive","params":{"environmentId":"p1"},"deadline":"2026-11-09T12:00:10.000Z","from":{"deviceId":"0198c3a2-77d0-7a11-8c6e-1f4e2d5b9a07","name":"iPhone"}}"#
 
   @Test func aMacAnswersACommandItCannotRunAtOnce() async throws {
     let h = LinkHarness()
@@ -646,8 +646,8 @@ struct RelayLinkTests {
     }
     #expect(id == "c-new" && result == nil)
     #expect(error.code == "unsupported_capability")
-    #expect(error.message.contains("\u{201C}project.archive\u{201D}"))
-    #expect(error.details?["reason"] == "unknown_method" && error.details?["method"] == "project.archive")
+    #expect(error.message.contains("\u{201C}environment.archive\u{201D}"))
+    #expect(error.details?["reason"] == "unknown_method" && error.details?["method"] == "environment.archive")
     // The link stays up, and the command is not handed on as a message.
     await h.flush(socket)
     #expect(socket.deviceClosedCode == nil)

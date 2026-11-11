@@ -94,7 +94,8 @@ struct Harness {
     // The fixture is a Python script, so the child needs the real PATH; Node lookups stay isolated.
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = "/nonexistent/node"
-    env["FAKE_CLAUDE_PROJECTS"] = (paths.dataDir as NSString).deletingLastPathComponent + "/claude-projects"
+    env["FAKE_CLAUDE_PROJECTS"] =
+      (paths.dataDir as NSString).deletingLastPathComponent + "/claude-environments"
     env["ANTHROPIC_API_KEY"] = nil
     for (key, value) in extraEnvironment { env[key] = value }
     // A check retries without waiting here, so a failing check costs nothing in other tests.
@@ -599,7 +600,7 @@ actor EventCollector {
   }
 }
 
-/// A Claude thread beside folders of its project: the fake's log shows what each turn handed it.
+/// A Claude thread beside folders of its environment: the fake's log shows what each turn handed it.
 @Suite(.serialized) struct ClaudeTurnOptionsTests {
   private struct Rig {
     let h: Harness
@@ -616,7 +617,7 @@ actor EventCollector {
       let claude = try await h.addClaude()
       let thread = try await h.newThread(claude)
       let rig = Rig(h: h, claude: claude, thread: thread, log: log, folderB: try folder(base, "b"))
-      // B joins the thread's project (automatic until it gains a folder).
+      // B joins the thread's environment (automatic until it gains a folder).
       try await rig.addFolder(rig.folderB)
       return rig
     }
@@ -629,8 +630,8 @@ actor EventCollector {
 
     func addFolder(_ path: String) async throws {
       _ = try await h.client.request(
-        ProjectUpdate.self,
-        ProjectUpdate.Params(projectId: try #require(thread.projectId), addFolders: [path]),
+        EnvironmentUpdate.self,
+        EnvironmentUpdate.Params(environmentId: try #require(thread.environmentId), addFolders: [path]),
         options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
     }
 
@@ -656,7 +657,7 @@ actor EventCollector {
     }
   }
 
-  @Test func turnsAttachTheProjectsOtherFolders() async throws {
+  @Test func turnsAttachTheEnvironmentsOtherFolders() async throws {
     let rig = try await Rig.start()
     try await rig.finishedTurn("hello")
     let launches = try rig.launches()
@@ -683,7 +684,7 @@ actor EventCollector {
     await rig.h.stop()
   }
 
-  /// A project folder gone from disk is not handed to the runtime; the folders still there are.
+  /// An environment folder gone from disk is not handed to the runtime; the folders still there are.
   @Test func aFolderGoneFromDiskIsLeftOut() async throws {
     let rig = try await Rig.start()
     let folderC = try Rig.folder((rig.folderB as NSString).deletingLastPathComponent, "c")
@@ -717,7 +718,7 @@ actor EventCollector {
   }
 }
 
-/// `thread.start` from the Mac's own app, over the local socket: no project is required, and the thread
+/// `thread.start` from the Mac's own app, over the local socket: no environment is required, and the thread
 /// starts with the model, permission, and title it was given.
 @Suite(.serialized) struct LocalThreadStartTests {
   private func start(
@@ -733,18 +734,18 @@ actor EventCollector {
     let log = base + "/fake-claude.log"
     let h = try await Harness.start(extraEnvironment: ["FAKE_CLAUDE_LOG": log])
     let claude = try await h.addClaude()
-    let project = try await h.client.request(
-      ProjectCreate.self, ProjectCreate.Params(name: "App", folders: [h.workDir]),
+    let environment = try await h.client.request(
+      EnvironmentCreate.self, EnvironmentCreate.Params(name: "App", folders: [h.workDir]),
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30))
-    ).project
+    ).environment
     let threadId = UUID().uuidString.lowercased()
     let started = try await start(
       h,
       ThreadStart.Params(
-        threadId: threadId, projectId: project.id, connectionId: claude.id, folder: h.workDir,
+        threadId: threadId, environmentId: environment.id, connectionId: claude.id, folder: h.workDir,
         text: "Fix the login bug\nIt fails after a restart.", model: "sonnet", permission: "plan"))
     #expect(started.thread.id == threadId)
-    #expect(started.thread.projectId == project.id)
+    #expect(started.thread.environmentId == environment.id)
     #expect(started.thread.model == "sonnet" && started.thread.permission == "plan")
     #expect(started.thread.title == "Fix the login bug")
     #expect(started.turn.threadId == threadId)
@@ -778,7 +779,7 @@ actor EventCollector {
     let again = try await start(h, params, operationId: operationId)
     // Past the router's own replay: the service finds the turn this operation already made.
     let direct = try await h.coordinator.sessions.threadStart(
-      params, operationId: operationId, requireProject: false)
+      params, operationId: operationId, requireEnvironment: false)
     for result in [again, direct] {
       #expect(result.thread.id == first.thread.id)
       #expect(result.turn.id == first.turn.id)
@@ -789,21 +790,21 @@ actor EventCollector {
     await h.stop()
   }
 
-  @Test func aChosenFolderWithoutAProjectGetsAnAutomaticProject() async throws {
+  @Test func aChosenFolderWithoutAEnvironmentGetsAnAutomaticEnvironment() async throws {
     let h = try await Harness.start()
     let codex = try await h.addCodex()
     let fresh = h.workDir + "/fresh"
     try FileManager.default.createDirectory(atPath: fresh, withIntermediateDirectories: true)
     let db = h.coordinator.database
-    #expect(try db.project(folderPath: SessionService.canonicalDirectory(fresh)) == nil)
+    #expect(try db.environment(folderPath: SessionService.canonicalDirectory(fresh)) == nil)
     let started = try await start(
       h,
       ThreadStart.Params(
         threadId: UUID().uuidString.lowercased(), connectionId: codex.id, folder: fresh, text: "hi"))
-    let project = try #require(try db.project(folderPath: SessionService.canonicalDirectory(fresh)))
-    #expect(started.thread.projectId == project.id)
-    #expect(!project.manual)
-    #expect(project.folders.map(\.path) == [SessionService.canonicalDirectory(fresh)])
+    let environment = try #require(try db.environment(folderPath: SessionService.canonicalDirectory(fresh)))
+    #expect(started.thread.environmentId == environment.id)
+    #expect(!environment.manual)
+    #expect(environment.folders.map(\.path) == [SessionService.canonicalDirectory(fresh)])
     try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == started.turn.id }
     await h.stop()
   }

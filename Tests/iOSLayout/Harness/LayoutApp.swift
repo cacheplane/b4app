@@ -67,18 +67,18 @@ struct LayoutApp: App {
     _ = try! store.apply(Array(rows.prefix(count)))
     if screen != "connect-mac" {
       let at = Timestamp.now()
-      let project: JSONValue = [
-        "id": "project-1", "name": "Layout project", "manual": true,
+      let environment: JSONValue = [
+        "id": "project-1", "name": "Layout environment", "manual": true,
         "createdAt": .string(at), "updatedAt": .string(at),
       ]
-      let folder = ProjectFolder(id: "folder-1", projectId: "project-1", path: "/tmp/layout-fixture")
+      let folder = EnvironmentFolder(id: "folder-1", environmentId: "project-1", path: "/tmp/layout-fixture")
       _ = try! store.apply([
         StoredChange(
           hubSeq: 1000, deviceId: "mac-1", deviceSeq: 1000, wall: changes[1].wall,
-          table: "projects", rowId: "project-1", op: "insert", column: nil, value: project),
+          table: "environments", rowId: "project-1", op: "insert", column: nil, value: environment),
         StoredChange(
           hubSeq: 1001, deviceId: "mac-1", deviceSeq: 1001, wall: changes[1].wall,
-          table: "projectFolders", rowId: "folder-1", op: "insert", column: nil,
+          table: "environmentFolders", rowId: "folder-1", op: "insert", column: nil,
           value: try! JSONValue(encoding: folder)),
       ])
     }
@@ -114,8 +114,7 @@ struct LayoutApp: App {
     model.accountHost = account
     if ProcessInfo.processInfo.environment["LAYOUT_HOLD_THREAD_OPEN"] == "1" { model.clock = HeldClock() }
     model.accountHasNoMac = screen == "connect-mac"
-    if screen == "archived" { model.projectFilter = .archived }
-    if screen == "no-match" { model.listSearch = "no-such-thread" }
+    if screen == "archived" { model.environmentFilter = .archived }
     if screen == "detail" || screen == "notification-cold" { model.requestOpenThread("thread-1") }
     _model = State(initialValue: model)
     _sync = State(

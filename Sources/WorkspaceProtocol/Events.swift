@@ -19,8 +19,8 @@ public enum EventKind: String, Codable, Sendable, CaseIterable {
   case adapterError = "adapter.error"
   case threadUpdated = "thread.updated"
   case serverChanged = "server.changed"
-  /// A project, or the set of its folders, changed. `payload["projectId"]` names it.
-  case projectChanged = "project.changed"
+  /// An environment, or the set of its folders, changed. `payload["environmentId"]` names it.
+  case environmentChanged = "environment.changed"
   /// A runtime reported its plan allowance. `payload["reading"]` is a `UsageReading`.
   case usageChanged = "usage.changed"
   /// The phone's view of its hub link and of one Mac's presence (M8c). Only the phone's
@@ -80,9 +80,10 @@ public struct AdapterEvent: Codable, Sendable, Equatable {
     AdapterEvent(kind: .serverChanged, connectionId: "", payload: ["server": try JSONValue(encoding: server)])
   }
 
-  /// A project was created, renamed, deleted, or gained or lost a folder. Not tied to a connection.
-  public static func projectChanged(projectId: String) -> AdapterEvent {
-    AdapterEvent(kind: .projectChanged, connectionId: "", payload: ["projectId": .string(projectId)])
+  /// An environment was created, renamed, deleted, or gained or lost a folder. Not tied to a connection.
+  public static func environmentChanged(environmentId: String) -> AdapterEvent {
+    AdapterEvent(
+      kind: .environmentChanged, connectionId: "", payload: ["environmentId": .string(environmentId)])
   }
 
   public static func threadUpdated(_ thread: ConversationThread) throws -> AdapterEvent {

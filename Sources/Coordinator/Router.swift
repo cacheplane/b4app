@@ -96,9 +96,9 @@ public actor Router {
       .serverStart, .serverStatus, .serverLogs, .serverRestart, .serverStop, .serverInspect,
       .workspaceActiveWork, .workspaceStopLocalWork, .workspaceReconcile, .databaseStatus, .databaseBackup,
       .databaseRestore, .databaseImportSQLite, .hubStatus, .hubLeave, .hubPair, .hubPairStatus,
-      .settingsRead, .settingsUpdate, .projectList, .projectCreate, .projectUpdate, .projectRename,
-      .projectDelete, .threadMarkRead, .usageRead, .connectionUpdate, .credentialRemove, .threadDelete,
-      .threadStart:
+      .settingsRead, .settingsUpdate, .environmentList, .environmentCreate, .environmentUpdate,
+      .environmentRename, .environmentDelete, .threadMarkRead, .usageRead, .connectionUpdate,
+      .credentialRemove, .threadDelete, .threadStart:
       return true
     }
   }
@@ -260,20 +260,20 @@ public actor Router {
     case .threadMarkRead:
       return try JSONValue(
         encoding: try await sessions.threadMarkRead(try command.params(for: ThreadMarkRead.self)))
-    case .projectList:
-      return try JSONValue(encoding: try await scope.projects.list())
-    case .projectCreate:
+    case .environmentList:
+      return try JSONValue(encoding: try await scope.environments.list())
+    case .environmentCreate:
       return try JSONValue(
-        encoding: try await scope.projects.create(try command.params(for: ProjectCreate.self)))
-    case .projectUpdate:
+        encoding: try await scope.environments.create(try command.params(for: EnvironmentCreate.self)))
+    case .environmentUpdate:
       return try JSONValue(
-        encoding: try await scope.projects.update(try command.params(for: ProjectUpdate.self)))
-    case .projectRename:
+        encoding: try await scope.environments.update(try command.params(for: EnvironmentUpdate.self)))
+    case .environmentRename:
       return try JSONValue(
-        encoding: try await scope.projects.rename(try command.params(for: ProjectRename.self)))
-    case .projectDelete:
+        encoding: try await scope.environments.rename(try command.params(for: EnvironmentRename.self)))
+    case .environmentDelete:
       return try JSONValue(
-        encoding: try await scope.projects.delete(try command.params(for: ProjectDelete.self)))
+        encoding: try await scope.environments.delete(try command.params(for: EnvironmentDelete.self)))
     case .threadReconcile:
       return try JSONValue(
         encoding: try await sessions.threadReconcile(try command.params(for: ThreadReconcile.self)))
@@ -282,11 +282,11 @@ public actor Router {
         encoding: try await sessions.turnSend(
           try command.params(for: TurnSend.self), operationId: command.envelope.operationId ?? ""))
     case .threadStart:
-      // The Mac's own app may start without a project: the folder's project is used, or made.
+      // The Mac's own app may start without an environment: the folder's environment is used, or made.
       return try JSONValue(
         encoding: try await sessions.threadStart(
           try command.params(for: ThreadStart.self), operationId: command.envelope.operationId ?? "",
-          requireProject: false))
+          requireEnvironment: false))
     case .turnInterrupt:
       return try JSONValue(
         encoding: try await sessions.turnInterrupt(try command.params(for: TurnInterrupt.self)))

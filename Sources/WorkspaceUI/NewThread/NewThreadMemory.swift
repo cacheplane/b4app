@@ -9,15 +9,15 @@ struct RuntimeChoice: Codable, Equatable {
   var permission: String?
 }
 
-/// What the new-thread composer remembers on this device, never synced: the project the last thread
-/// was started in, the last starting folder and runtime of each project, the last runtime anywhere,
+/// What the new-thread composer remembers on this device, never synced: the environment the last thread
+/// was started in, the last starting folder and runtime of each environment, the last runtime anywhere,
 /// and the unsent first message. Ids may name what no longer exists; the draft falls back past them.
 struct NewThreadMemory: Codable, Equatable {
   static let key = "newThread.memory"
 
-  var projectId: String?
-  var folderByProject: [String: String] = [:]
-  var runtimeByProject: [String: RuntimeChoice] = [:]
+  var environmentId: String?
+  var folderByEnvironment: [String: String] = [:]
+  var runtimeByEnvironment: [String: RuntimeChoice] = [:]
   var lastRuntime: RuntimeChoice?
   var text = ""
 
@@ -41,18 +41,18 @@ struct NewThreadMemory: Codable, Equatable {
     if memory != before { memory.save(to: preferences) }
   }
 
-  /// A start the Mac accepted: its project (the one the coordinator resolved, when the Mac chose a
-  /// folder outside every project), starting folder, and runtime are now the last ones. A remote B4
-  /// start has no project and leaves the remembered one alone.
+  /// A start the Mac accepted: its environment (the one the coordinator resolved, when the Mac chose a
+  /// folder outside every environment), starting folder, and runtime are now the last ones. A remote B4
+  /// start has no environment and leaves the remembered one alone.
   mutating func remember(_ start: ThreadStart.Params, thread: ConversationThread?) {
     let choice = RuntimeChoice(
       connectionId: start.connectionId, model: start.model, permission: start.permission)
     lastRuntime = choice
-    guard let project = thread?.projectId ?? start.projectId else { return }
-    projectId = project
-    runtimeByProject[project] = choice
+    guard let environment = thread?.environmentId ?? start.environmentId else { return }
+    environmentId = environment
+    runtimeByEnvironment[environment] = choice
     // A B4 thread has no folder (its context is the route). The thread's own context is the folder as
-    // the coordinator wrote it, the same form as the project's folder list.
-    if let folder = start.folder { folderByProject[project] = thread?.context ?? folder }
+    // the coordinator wrote it, the same form as the environment's folder list.
+    if let folder = start.folder { folderByEnvironment[environment] = thread?.context ?? folder }
   }
 }
