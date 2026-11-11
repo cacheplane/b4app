@@ -372,11 +372,6 @@ public final class WorkspaceModel {
   /// quiet, pinned first and then newest activity first inside each (`Attention.ordered`).
   public var orderedThreads: [ConversationThread] { Attention.ordered(filtered(archived: false)) }
 
-  /// The threads of `orderedThreads` grouped by environment (the Mac's "By environment").
-  public var environmentSections: [EnvironmentSection] {
-    EnvironmentSection.build(threads: orderedThreads, environments: environments)
-  }
-
   /// What the list draws: the threads under the connection filter, arranged by the view settings
   /// this device shows (`shownSettings`).
   var listLayout: ListLayout {
@@ -917,10 +912,22 @@ public final class WorkspaceModel {
   /// start in `environmentId` when given, and put the cursor in the composer's field.
   /// The pane changes first; the text is saved after, so the phone does not wait on the relay to move.
   public func openNewThread(environmentId: String? = nil) async {
+    await openNewThread { draft in if let environmentId { draft.selectEnvironment(environmentId) } }
+  }
+
+  /// From a "By environment" heading: the composer starts in the group's environment, or with no folder
+  /// under "No folder".
+  func openNewThread(in group: ListLayout.Group) async {
+    await openNewThread { draft in
+      if let id = group.environmentId { draft.selectEnvironment(id) } else { draft.selectNoFolder() }
+    }
+  }
+
+  private func openNewThread(preselect: (NewThreadDraft) -> Void) async {
     stopThreadOpen()
     let open = detail.map { (threadId: $0.thread.id, text: composerText) }
     selectedThreadId = nil
-    if let environmentId { newThreadDraft.selectEnvironment(environmentId) }
+    preselect(newThreadDraft)
     newThreadFocusRequest += 1
     detailRequest += 1
     if let open { await saveDraft(threadId: open.threadId, text: open.text) }

@@ -3,8 +3,8 @@ import WorkspaceProtocol
 
 // MARK: - Presentation logic
 
-/// The Mac sidebar's collapsed environment ids, kept as one comma-joined string in `@SceneStorage`
-/// (per device and window, never synced).
+/// The collapsed "By environment" groups' ids (`ListLayout.Group.id`), kept as one comma-joined string
+/// in `@SceneStorage` (per device and window, never synced; decision 13).
 enum CollapsedEnvironments {
   static func parse(_ raw: String) -> Set<String> {
     Set(raw.split(separator: ",").map(String.init))
@@ -46,22 +46,6 @@ extension WorkspaceModel {
       default: return (lhs.displayName, lhs.id) < (rhs.displayName, rhs.id)
       }
     }
-  }
-
-  /// The Mac sidebar's sections: `environmentSections`, plus manual environments that hold no listed thread
-  /// (a new environment, or one whose threads are archived) so they can still be renamed,
-  /// given a folder, or deleted. A connection filter shows matches only. "No folder" stays last.
-  var sidebarSections: [EnvironmentSection] {
-    let built = environmentSections
-    guard connectionFilter == nil else { return built }
-    let present = Set(built.map(\.id))
-    let empty =
-      environments
-      .filter { $0.manual && !present.contains($0.id) }
-      .sorted { ($0.displayName, $0.id) < ($1.displayName, $1.id) }
-      .map { EnvironmentSection(id: $0.id, title: $0.displayName, threads: []) }
-    let other = built.filter { $0.id == EnvironmentSection.otherId }
-    return built.filter { $0.id != EnvironmentSection.otherId } + empty + other
   }
 }
 
@@ -313,8 +297,8 @@ struct StowedThreadsRow: View {
 
 /// The thread list for the sidebar, drawn from `ListLayout` on both platforms: under "Needs you first"
 /// the top list, a 24 pt gap, then the lower list as `quietThreads` draws it; under "By environment"
-/// (until it is drawn as its own) the Mac's environment sections and the phone's groups. The archived
-/// block follows a 24 pt gap while "Show archived" is on. Hidden's row is the sidebar's on the Mac
+/// a heading per group with its threads beneath, 8 pt between groups. The archived block follows a
+/// 24 pt gap while "Show archived" is on. Hidden's row is the sidebar's on the Mac
 /// (`HiddenWorkingRows`, pinned above the profile footer) and the list's last row on the phone.
 struct ThreadListView: View {
   @Bindable var model: WorkspaceModel
@@ -357,9 +341,9 @@ struct ThreadListView: View {
         if !lower.drawsNothing {
           macLower(lower).padding(.top, top.isEmpty ? 0 : Self.gap)
         }
-      case .byEnvironment:
-        EnvironmentSectionsView(
-          model: model,
+      case .byEnvironment(let groups):
+        EnvironmentGroupsView(
+          model: model, groups: groups,
           collapsed: Binding(
             get: { CollapsedEnvironments.parse(collapsedRaw) },
             set: { collapsedRaw = CollapsedEnvironments.encode($0) }))
@@ -421,13 +405,14 @@ struct HiddenWorkingRows: View {
 }
 
 /// The phone's rows, from `ListLayout`: the top list, then the lower list after a 24 pt gap (or
-/// Collapsed's row, opened and closed by a tap); "By environment" groups under plain headings until it
-/// is drawn as its own; the archived block after a 24 pt gap; and last, Hidden's row while agents run.
-/// Meant to sit inside a `List`; it supplies the swipe actions.
+/// Collapsed's row, opened and closed by a tap); under "By environment" a heading per group, 8 pt
+/// apart, a tap collapsing it; the archived block after a 24 pt gap; and last, Hidden's row while
+/// agents run. Meant to sit inside a `List`; it supplies the swipe actions.
 struct FlatThreadRows: View {
   @Bindable var model: WorkspaceModel
   @Binding var showsStowed: Bool
   @State private var deleting: ConversationThread?
+  @SceneStorage("collapsedEnvironments") private var collapsedRaw = ""
 
   var body: some View {
     let layout = model.listLayout
@@ -464,14 +449,16 @@ struct FlatThreadRows: View {
           EmptyView()
         }
       case .byEnvironment(let groups):
+        let collapsed = CollapsedEnvironments.parse(collapsedRaw)
         ForEach(groups) { group in
-          Text(group.title).font(LLAFont.small).foregroundStyle(LLA.Color.muted)
-            .listRowInsets(
-              EdgeInsets(top: LLA.Space.s, leading: LLA.Space.l, bottom: 0, trailing: LLA.Space.l)
-            )
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
-          rows(group.threads, gap: 0)
+          let isCollapsed = collapsed.contains(group.id)
+          EnvironmentHeading(model: model, group: group, isCollapsed: isCollapsed) {
+            var next = collapsed
+            if isCollapsed { next.remove(group.id) } else { next.insert(group.id) }
+            collapsedRaw = CollapsedEnvironments.encode(next)
+          }
+          .modifier(PhoneRowChrome(gap: group.id == groups.first?.id ? 0 : EnvironmentHeading.groupGap))
+          if !isCollapsed { rows(group.threads, gap: 0) }
         }
       }
       rows(layout.archived, gap: drawn ? gap : 0)
@@ -547,14 +534,127 @@ struct FlatThreadList: View {
   }
 }
 
-// MARK: - The Mac sections
+// MARK: - By environment
+
+/// A "By environment" group's heading (decision 9): the name at 12 pt, weight 500, muted, where thread
+/// titles start; no count and no rule. A 28 pt row on the Mac, 44 on the phone. Activating it collapses
+/// or expands the group. A collapsed group shows its most urgent thread's mark in the marks' column,
+/// acknowledged only when every thread in that state is. On the Mac, under the pointer, the name turns
+/// ink, a chevron appears beside it, and a new-thread button takes the mark's column; on the phone a
+/// long press offers "New thread here". Either opens the composer in the group's environment, or with
+/// no folder under "No folder".
+struct EnvironmentHeading: View {
+  @Bindable var model: WorkspaceModel
+  let group: ListLayout.Group
+  let isCollapsed: Bool
+  let toggle: () -> Void
+  #if os(macOS)
+    @State private var hovering = false
+  #endif
+
+  /// Between one group's last row and the next heading.
+  static let groupGap: CGFloat = LLA.Space.s
+  #if os(macOS)
+    static let height: CGFloat = 28
+  #else
+    static let height: CGFloat = 44
+  #endif
+
+  static func newThreadTitle(_ group: ListLayout.Group) -> String { "New thread in \(group.title)" }
+
+  /// "expanded", or "collapsed" and the spoken label of the group's most urgent state.
+  static func accessibilityValue(isCollapsed: Bool, mostUrgent: ThreadState?) -> String {
+    guard isCollapsed else { return "expanded" }
+    return ["collapsed", mostUrgent?.spokenLabel].compactMap { $0 }.joined(separator: ", ")
+  }
+
+  var body: some View {
+    Button(action: toggle) {
+      HStack(spacing: LLA.Space.xs) {
+        Text(group.title)
+          .font(LLAFont.sans(12, weight: .medium, relativeTo: .caption))
+          .foregroundStyle(highlighted ? LLA.Color.ink : LLA.Color.muted)
+          .lineLimit(1)
+        if highlighted {
+          Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(LLA.Color.ink)
+        }
+        Spacer(minLength: LLA.Space.s)
+        mark.opacity(highlighted ? 0 : 1)
+      }
+      .padding(.horizontal, ThreadRow.contentInset)
+      .frame(minHeight: Self.height)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    #if os(macOS)
+      .overlay(alignment: .trailing) { if hovering { newThreadButton } }
+      .onHover { hovering = $0 }
+      .padding(.horizontal, ThreadRow.fillInset - ThreadRow.sidebarPadding)
+    #endif
+    .accessibilityLabel(group.title)
+    .accessibilityValue(Self.accessibilityValue(isCollapsed: isCollapsed, mostUrgent: group.mostUrgent))
+    .accessibilityIdentifier("environment-header")
+    #if os(macOS)
+      // The hover button is out of reach of VoiceOver and the keyboard; the heading offers the same.
+      .accessibilityAction(named: Self.newThreadTitle(group)) { openNewThread() }
+    #else
+      .contextMenu {
+        Button("New thread here", systemImage: "square.and.pencil") { openNewThread() }
+        .disabled(model.newThreadEntryReason != nil)
+      }
+    #endif
+  }
+
+  /// The pointer is over the heading (the Mac only).
+  private var highlighted: Bool {
+    #if os(macOS)
+      hovering
+    #else
+      false
+    #endif
+  }
+
+  /// A collapsed group's most urgent mark; quiet, or an expanded group, draws nothing and keeps the
+  /// box's place.
+  private var mark: some View {
+    let state = isCollapsed ? group.mostUrgent ?? .quiet : .quiet
+    let acknowledged = group.threads.allSatisfy { model.state(of: $0) != state || model.isAcknowledged($0) }
+    return ThreadMark(state: state, acknowledged: acknowledged)
+  }
+
+  private func openNewThread() {
+    Task { await model.openNewThread(in: group) }
+  }
+
+  #if os(macOS)
+    /// 28 by 28, centred on the marks' column (the mark's 12 pt box ends 8 pt inside the heading).
+    private var newThreadButton: some View {
+      Button(action: openNewThread) {
+        Image(systemName: "square.and.pencil")
+          .foregroundStyle(LLA.Color.ink)
+          .frame(width: TopBarButton.side, height: TopBarButton.side)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.borderless)
+      .disabled(model.newThreadEntryReason != nil)
+      .help(model.newThreadEntryReason ?? Self.newThreadTitle(group))
+      .accessibilityLabel(Self.newThreadTitle(group))
+      .accessibilityIdentifier("environment-new-thread")
+      .padding(.trailing, ThreadRow.contentInset + LLA.Metrics.mark / 2 - TopBarButton.side / 2)
+    }
+  #endif
+}
 
 #if os(macOS)
-  /// The Mac's "By environment" until it is drawn as its own: a collapsible section per environment,
-  /// "No folder" last, pinned threads first inside their state. Plain stacks, not `List`: a List drew
-  /// nothing in the macOS 26 split-view sidebar (see `SidebarView`).
-  struct EnvironmentSectionsView: View {
+  /// The Mac's "By environment": each group's heading, then its threads unless it is collapsed, 8 pt
+  /// between groups. Plain stacks, not `List`: a List drew nothing in the macOS 26 split-view sidebar
+  /// (see `SidebarView`). A heading's context menu keeps Rename, Add Folder, and (for a manual one)
+  /// Delete until the environment form gives them a home.
+  struct EnvironmentGroupsView: View {
     @Bindable var model: WorkspaceModel
+    let groups: [ListLayout.Group]
     @Binding var collapsed: Set<String>
     @State private var renaming: WorkEnvironment?
     @State private var deleting: WorkEnvironment?
@@ -562,9 +662,17 @@ struct FlatThreadList: View {
     @State private var choosingFolder = false
 
     var body: some View {
-      VStack(alignment: .leading, spacing: 2) {
-        ForEach(model.sidebarSections) { section in
-          sectionView(section)
+      VStack(alignment: .leading, spacing: 0) {
+        ForEach(groups) { group in
+          let isCollapsed = collapsed.contains(group.id)
+          VStack(alignment: .leading, spacing: 0) {
+            EnvironmentHeading(model: model, group: group, isCollapsed: isCollapsed) {
+              if isCollapsed { collapsed.remove(group.id) } else { collapsed.insert(group.id) }
+            }
+            .contextMenu { environmentActions(group) }
+            if !isCollapsed { ThreadRows(model: model, threads: group.threads) }
+          }
+          .padding(.top, group.id == groups.first?.id ? 0 : EnvironmentHeading.groupGap)
         }
       }
       .sheet(item: $renaming) { RenameEnvironmentSheet(model: model, environment: $0) }
@@ -586,59 +694,16 @@ struct FlatThreadList: View {
       }
     }
 
-    @ViewBuilder private func sectionView(_ section: EnvironmentSection) -> some View {
-      let isCollapsed = collapsed.contains(section.id)
-      VStack(alignment: .leading, spacing: 2) {
-        header(section, isCollapsed: isCollapsed)
-        if !isCollapsed {
-          if section.threads.isEmpty {
-            Text("No threads.").llaSmallMuted().padding(.horizontal, 10).padding(.vertical, 4)
-          } else {
-            ThreadRows(model: model, threads: section.threads)
-          }
+    @ViewBuilder private func environmentActions(_ group: ListLayout.Group) -> some View {
+      if let environment = model.environments.first(where: { $0.id == group.environmentId }) {
+        Button("Rename…", systemImage: "pencil") { renaming = environment }
+        Button("Add Folder…", systemImage: "folder.badge.plus") {
+          folderTarget = environment
+          choosingFolder = true
         }
-      }
-      .padding(.top, LLA.Space.xs)
-    }
-
-    private func header(_ section: EnvironmentSection, isCollapsed: Bool) -> some View {
-      let environment = model.environments.first { $0.id == section.id }
-      // A collapsed section still shows the most urgent mark of a top-list thread inside; an approve
-      // mark pulses until every approve thread in it has been opened.
-      let urgent = section.threads.map { model.state(of: $0) }.min().flatMap { $0.isTopList ? $0 : nil }
-      let acknowledged = section.threads.allSatisfy {
-        model.state(of: $0) != urgent || model.isAcknowledged($0)
-      }
-      return Button {
-        if isCollapsed { collapsed.remove(section.id) } else { collapsed.insert(section.id) }
-      } label: {
-        HStack(spacing: LLA.Space.s) {
-          Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-            .font(.system(size: 9, weight: .semibold)).foregroundStyle(LLA.Color.muted)
-            .frame(width: 10)
-          Text(section.title).font(LLAFont.smallStrong).foregroundStyle(LLA.Color.ink).lineLimit(1)
-          Spacer(minLength: 0)
-          if isCollapsed, let urgent { ThreadMark(state: urgent, acknowledged: acknowledged) }
-          Text("\(section.threads.count)").font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .accessibilityIdentifier("environment-header")
-      .accessibilityValue(isCollapsed ? "collapsed" : "expanded")
-      .contextMenu {
-        if let environment {
-          Button("Rename…", systemImage: "pencil") { renaming = environment }
-          Button("Add Folder…", systemImage: "folder.badge.plus") {
-            folderTarget = environment
-            choosingFolder = true
-          }
-          if environment.manual {
-            Divider()
-            Button("Delete Environment", systemImage: "trash", role: .destructive) { deleting = environment }
-          }
+        if environment.manual {
+          Divider()
+          Button("Delete Environment", systemImage: "trash", role: .destructive) { deleting = environment }
         }
       }
     }

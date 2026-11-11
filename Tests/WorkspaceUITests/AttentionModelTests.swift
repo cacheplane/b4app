@@ -387,7 +387,7 @@ private struct AttentionDocument: Decodable {
       ])
   }
 
-  @Test func environmentSectionsHoldPinnedThreadsAndRiseWithUrgency() async throws {
+  @Test func groupsHoldPinnedThreadsInStateOrderAndSortByName() async throws {
     let transport = ScriptedTransport()
     transport.set(
       threads: [
@@ -404,15 +404,15 @@ private struct AttentionDocument: Decodable {
           activity: activity(turn: "u4", status: .terminal, at: 99)),
       ],
       environments: [environment("pa", "Alpha"), environment("pb", "Beta"), environment("pc", "Gamma")])
-    let model = try await connected(transport)
+    let groups = try await byEnvironment(transport)
     // There is no Pinned group: a pinned thread stays in its environment, first within its state.
-    // Beta holds a thread that needs input; Gamma an unread one; No folder a working one; Alpha only quiet.
-    #expect(model.environmentSections.map(\.id) == ["pb", "pc", "pa", "other"])
-    #expect(model.environmentSections.map(\.title) == ["Beta", "Gamma", "Alpha", "No folder"])
-    #expect(model.environmentSections[0].threads.map(\.id) == ["pinned-b", "waiting-b"])
-    #expect(model.environmentSections[1].threads.map(\.id) == ["unread-c", "quiet-c"])
-    #expect(model.environmentSections[2].threads.map(\.id) == ["quiet-a", "quiet-a2"])
-    #expect(model.environmentSections[3].threads.map(\.id) == ["loose"])
+    // Groups are by name whatever their threads need; No folder is last.
+    #expect(groups.map(\.id) == ["pa", "pb", "pc", "other"])
+    #expect(groups.map(\.title) == ["Alpha", "Beta", "Gamma", "No folder"])
+    #expect(groups[0].threads.map(\.id) == ["quiet-a", "quiet-a2"])
+    #expect(groups[1].threads.map(\.id) == ["pinned-b", "waiting-b"])
+    #expect(groups[2].threads.map(\.id) == ["unread-c", "quiet-c"])
+    #expect(groups[3].threads.map(\.id) == ["loose"])
   }
 
   @Test func otherComesLastEvenWhenItHoldsTheOnlyThreadThatNeedsInput() async throws {
@@ -424,9 +424,9 @@ private struct AttentionDocument: Decodable {
         thread("b", environment: "pb", activity: activity(at: 2)),
       ],
       environments: [environment("pa", "Alpha"), environment("pb", "Beta")])
-    let model = try await connected(transport)
-    #expect(model.environmentSections.map(\.id) == ["pb", "pa", "other"])
-    #expect(model.environmentSections.last?.threads.map(\.id) == ["asks"])
+    let groups = try await byEnvironment(transport)
+    #expect(groups.map(\.id) == ["pa", "pb", "other"])
+    #expect(groups.last?.threads.map(\.id) == ["asks"])
   }
 
   @Test func aNoFolderThreadIsListedUnderNoFolder() async throws {
@@ -436,13 +436,13 @@ private struct AttentionDocument: Decodable {
     transport.set(
       threads: [loose, thread("a", environment: "pa", activity: activity(at: 5))],
       environments: [environment("pa", "Alpha")])
-    let model = try await connected(transport)
-    let section = try #require(model.environmentSections.first { $0.threads.contains { $0.id == "loose" } })
-    #expect(section.title == "No folder")
-    #expect(model.environmentSections.map(\.title) == ["Alpha", "No folder"])
+    let groups = try await byEnvironment(transport)
+    let group = try #require(groups.first { $0.threads.contains { $0.id == "loose" } })
+    #expect(group.title == "No folder")
+    #expect(groups.map(\.title) == ["Alpha", "No folder"])
   }
 
-  @Test func sectionsInOneStateBreakTiesByRecentActivityThenTitle() async throws {
+  @Test func groupsSortByNameNotByRecentActivity() async throws {
     let transport = ScriptedTransport()
     transport.set(
       threads: [
@@ -451,8 +451,7 @@ private struct AttentionDocument: Decodable {
         thread("c", environment: "pc", activity: activity(at: 20)),
       ],
       environments: [environment("pa", "Alpha"), environment("pb", "Zulu"), environment("pc", "Bravo")])
-    let model = try await connected(transport)
-    #expect(model.environmentSections.map(\.title) == ["Bravo", "Zulu", "Alpha"])
+    #expect(try await byEnvironment(transport).map(\.title) == ["Alpha", "Bravo", "Zulu"])
   }
 
   @Test func aEnvironmentWithoutAnExplicitNameShowsItsFolder() async throws {
@@ -461,8 +460,16 @@ private struct AttentionDocument: Decodable {
       id: "pa", name: "",
       folders: [EnvironmentFolder(id: "f1", environmentId: "pa", path: "/Users/brian/repos/b4app")])
     transport.set(threads: [thread("a", environment: "pa")], environments: [auto])
+    #expect(try await byEnvironment(transport).map(\.title) == ["b4app"])
+  }
+
+  /// The connected model's groups under "By environment".
+  private func byEnvironment(_ transport: ScriptedTransport) async throws -> [ListLayout.Group] {
     let model = try await connected(transport)
-    #expect(model.environmentSections.map(\.title) == ["b4app"])
+    transport.emit(try .viewSettingsChanged(ViewSettings(arrangement: .byEnvironment)))
+    try await waitUntil("by environment") { model.viewSettings.arrangement == .byEnvironment }
+    guard case .byEnvironment(let groups) = model.listLayout.body else { return [] }
+    return groups
   }
 
   @Test func theListIsEveryUnarchivedThreadAndTheArchiveIsApart() async throws {
@@ -1075,6 +1082,44 @@ private struct AttentionDocument: Decodable {
     #expect(model.orderedThreads.contains { $0.id == "t1" })
 
     // The next event about any thread does not make it an arrival.
+    var renamed = model.threads.first { $0.id == "live" }!
+    renamed.title = "renamed"
+    transport.emit(try .threadUpdated(renamed))
+    try await waitUntil("renamed") { model.threads.contains { $0.title == "renamed" } }
+    #expect(model.arrival(for: model.threads.first { $0.id == "t1" }!) == nil)
+    #expect(model.arrival(for: model.threads.first { $0.id == "t2" }!) != nil)
+  }
+
+  @Test func aThreadMovingIntoNoFolderUnderByEnvironmentDoesNotTrace() async throws {
+    let transport = ScriptedTransport()
+    let filed = thread("t1", environment: "pa", activity: activity(turn: "u1", status: .terminal, at: 2))
+    let other = thread("t2", activity: activity(turn: "u2", status: .running, at: 1))
+    let model = try await modelWithALiveTrace(
+      transport, others: [filed, other], environments: [environment("pa", "Alpha")])
+    transport.emit(try .viewSettingsChanged(ViewSettings(arrangement: .byEnvironment)))
+    try await waitUntil("by environment") { model.viewSettings.arrangement == .byEnvironment }
+    func groups() -> [String: [String]] {
+      guard case .byEnvironment(let groups) = model.listLayout.body else { return [:] }
+      return Dictionary(uniqueKeysWithValues: groups.map { ($0.title, $0.threads.map(\.id)) })
+    }
+    #expect(groups()["Alpha"] == ["t1"])
+    // A trace that starts under this arrangement, so the regrouping can be seen to leave it alone.
+    var otherDone = other
+    otherDone.activity = activity(turn: "u2", status: .terminal, at: 4)
+    transport.emit(try .threadUpdated(otherDone))
+    try await waitUntil("t2 arrived") {
+      model.threads.contains { $0.id == "t2" && model.arrival(for: $0) != nil }
+    }
+
+    // Its environment is deleted elsewhere: t1 moves from Alpha's group to "No folder".
+    transport.set(environments: [])
+    transport.emit(.environmentChanged(environmentId: "pa"))
+    try await waitUntil("environments refetched") { model.environments.isEmpty }
+    #expect(groups()["Alpha"] == nil)
+    #expect(groups()["No folder"]?.contains("t1") == true)
+    #expect(model.arrival(for: model.threads.first { $0.id == "t1" }!) == nil)
+
+    // Nor on the next event about any thread.
     var renamed = model.threads.first { $0.id == "live" }!
     renamed.title = "renamed"
     transport.emit(try .threadUpdated(renamed))

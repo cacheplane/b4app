@@ -4,8 +4,9 @@ import WorkspaceProtocol
 
 @testable import WorkspaceUI
 
-/// The "Needs you first" arrangement (decisions 6, 7, and 10): the top list, the lower list drawn by
-/// `quietThreads`, and the archived block.
+/// The two arrangements: "Needs you first" (decisions 6, 7, and 10), the top list, the lower list drawn
+/// by `quietThreads`, and the archived block; and "By environment" (decision 8), one group per
+/// environment with live threads, by name, "No folder" last.
 @Suite struct ListLayoutTests {
   private func stamp(_ minute: Int) -> String {
     Timestamp.string(from: Date(timeIntervalSince1970: 1_793_000_000 + Double(minute) * 60))
@@ -48,10 +49,26 @@ import WorkspaceProtocol
   }
 
   private func layout(
-    _ threads: [ConversationThread], _ settings: ViewSettings = ViewSettings()
+    _ threads: [ConversationThread], _ settings: ViewSettings = ViewSettings(),
+    environments: [WorkEnvironment] = []
   ) -> ListLayout {
-    ListLayout.build(threads: threads, environments: [], settings: settings)
+    ListLayout.build(threads: threads, environments: environments, settings: settings)
   }
+
+  private func groups(
+    _ threads: [ConversationThread], _ environments: [WorkEnvironment]
+  ) -> [ListLayout.Group]? {
+    let built = layout(threads, ViewSettings(arrangement: .byEnvironment), environments: environments)
+    guard case .byEnvironment(let groups) = built.body else { return nil }
+    return groups
+  }
+
+  private let named = [
+    WorkEnvironment(id: "pz", name: "zulu"),
+    WorkEnvironment(id: "pa", name: "Alpha"),
+    WorkEnvironment(id: "pm", name: "mike"),
+    WorkEnvironment(id: "pb", name: "alpha"),
+  ]
 
   private func parts(_ layout: ListLayout) -> (top: [String], lower: ListLayout.Lower)? {
     guard case .needsYouFirst(let top, let lower) = layout.body else { return nil }
@@ -210,5 +227,94 @@ import WorkspaceProtocol
     #expect(lower.count == 4)
     // Small is the same rows at their own size.
     #expect(try #require(parts(layout(mixed))).lower == .rows(lower, tiny: false))
+  }
+
+  // MARK: By environment
+
+  @Test func groupsSortByNameAndNoFolderIsLast() throws {
+    let threads = [
+      thread("loose", .approve, at: 9),
+      thread("z", .quiet, at: 1, environment: "pz"),
+      thread("m", .quiet, at: 2, environment: "pm"),
+      thread("a", .quiet, at: 3, environment: "pa"),
+      thread("b", .quiet, at: 4, environment: "pb"),
+    ]
+    let built = try #require(groups(threads, named))
+    // By name, ignoring case; "Alpha" and "alpha" tie and fall back to their ids. "No folder" is last
+    // although it holds the only thread that needs you.
+    #expect(built.map(\.title) == ["Alpha", "alpha", "mike", "zulu", "No folder"])
+    #expect(built.map(\.id) == ["pa", "pb", "pm", "pz", ListLayout.Group.noFolderId])
+    #expect(built.map(\.environmentId) == ["pa", "pb", "pm", "pz", nil])
+  }
+
+  @Test func groupOrderDoesNotChangeWhenAThreadNeedsYou() throws {
+    var threads = [
+      thread("a", .quiet, at: 1, environment: "pa"),
+      thread("z", .working, at: 2, environment: "pz"),
+    ]
+    let before = try #require(groups(threads, named)).map(\.id)
+    #expect(before == ["pa", "pz"])
+    threads[1] = thread("z", .approve, at: 3, environment: "pz")
+    #expect(try #require(groups(threads, named)).map(\.id) == before)
+  }
+
+  @Test func anEnvironmentWithNoLiveThreadsHasNoGroup() throws {
+    let threads = [
+      thread("a", .quiet, at: 1, environment: "pa"),
+      // Mike's only thread is archived; zulu and the second alpha have none.
+      thread("m", .finished, at: 2, archived: true, environment: "pm"),
+    ]
+    #expect(try #require(groups(threads, named)).map(\.id) == ["pa"])
+    // Shown archived threads are the archived block, never a group.
+    let shown = layout(
+      threads, ViewSettings(arrangement: .byEnvironment, showArchived: true), environments: named)
+    #expect(
+      shown.body
+        == .byEnvironment([
+          ListLayout.Group(
+            id: "pa", title: "Alpha", environmentId: "pa", threads: [threads[0]])
+        ]))
+    #expect(shown.archived.map(\.id) == ["m"])
+    // No threads at all: no group, not even "No folder".
+    #expect(try #require(groups([], named)).isEmpty)
+  }
+
+  @Test func threadsInsideAGroupAreInStateOrder() throws {
+    let threads = mixed.map { thread in
+      var filed = thread
+      filed.environmentId = "pa"
+      return filed
+    }
+    let built = try #require(groups(threads, named))
+    #expect(built.count == 1)
+    #expect(
+      built[0].threads.map(\.id) == [
+        "approve-new", "approve-old", "reply", "failed", "finished", "working-new", "working-old",
+        "quiet-new", "quiet-old",
+      ])
+  }
+
+  @Test func aCollapsedGroupReportsItsMostUrgentState() throws {
+    let threads = [
+      thread("q", .quiet, at: 9, environment: "pa"),
+      thread("w", .working, at: 8, environment: "pa"),
+      thread("ap", .approve, at: 1, environment: "pa"),
+      thread("f", .finished, at: 5, environment: "pz"),
+      thread("q2", .quiet, at: 5, environment: "pm"),
+    ]
+    let built = try #require(groups(threads, named))
+    #expect(built.map(\.mostUrgent) == [.approve, .quiet, .finished])
+    #expect(ListLayout.Group(id: "x", title: "x", environmentId: nil, threads: []).mostUrgent == nil)
+  }
+
+  @Test func aThreadWhoseEnvironmentIsUnknownIsUnderNoFolder() throws {
+    let threads = [
+      thread("gone", .reply, at: 2, environment: "deleted"),
+      thread("loose", .quiet, at: 3),
+      thread("a", .quiet, at: 1, environment: "pa"),
+    ]
+    let built = try #require(groups(threads, named))
+    #expect(built.map(\.title) == ["Alpha", "No folder"])
+    #expect(built.last?.threads.map(\.id) == ["gone", "loose"])
   }
 }

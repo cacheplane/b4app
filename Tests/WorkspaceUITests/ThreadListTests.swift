@@ -20,13 +20,40 @@ import WorkspaceProtocol
       model.filterEnvironments.map(\.id) == [ListFixture.b4app, ListFixture.marketing, ListFixture.docs])
   }
 
-  @Test func macSectionsKeepAnEmptyManualEnvironmentSoItCanBeRenamedOrDeleted() async throws {
-    let model = try await ListFixture.model()
-    #expect(model.sidebarSections.map(\.title) == ["b4app", "Marketing site", "Docs", "No folder"])
-    #expect(model.sidebarSections.first { $0.id == ListFixture.docs }?.threads.isEmpty == true)
-    // A connection filter narrows the list; it does not pad it with empty environments.
-    model.connectionFilter = "c2"
-    #expect(model.sidebarSections.map(\.title) == ["Marketing site"])
+  @Test func newThreadFromAHeadingPreselectsItsEnvironment() async throws {
+    let transport = ScriptedTransport()
+    let model = try await ListFixture.model(transport)
+    transport.emit(try .viewSettingsChanged(ViewSettings(arrangement: .byEnvironment)))
+    try await waitUntil("by environment") { model.viewSettings.arrangement == .byEnvironment }
+    guard case .byEnvironment(let groups) = model.listLayout.body else {
+      Issue.record("By environment: \(model.listLayout.body)")
+      return
+    }
+    // Docs has no live threads, so no heading; "No folder" is last.
+    #expect(groups.map(\.title) == ["b4app", "Marketing site", "No folder"])
+    model.selectedThreadId = "asks"
+    await model.openNewThread(in: groups[1])
+    #expect(model.selectedThreadId == nil)
+    #expect(model.newThreadDraft.environmentId == ListFixture.marketing)
+    // "No folder" preselects no folder, replacing the choice before it.
+    await model.openNewThread(in: groups[2])
+    #expect(model.newThreadDraft.isNoFolder)
+    await model.openNewThread(in: groups[0])
+    #expect(model.newThreadDraft.environmentId == ListFixture.b4app)
+  }
+
+  @Test func theHeadingSpeaksExpandedOrCollapsedAndTheMostUrgentState() {
+    #expect(EnvironmentHeading.accessibilityValue(isCollapsed: false, mostUrgent: .approve) == "expanded")
+    #expect(
+      EnvironmentHeading.accessibilityValue(isCollapsed: true, mostUrgent: .approve)
+        == "collapsed, Needs your approval")
+    #expect(EnvironmentHeading.accessibilityValue(isCollapsed: true, mostUrgent: nil) == "collapsed")
+    let group = ListLayout.Group(id: "p", title: "Docs", environmentId: "p", threads: [])
+    #expect(EnvironmentHeading.newThreadTitle(group) == "New thread in Docs")
+    #expect(EnvironmentHeading.groupGap == 8)
+    #if os(macOS)
+      #expect(EnvironmentHeading.height == 28)
+    #endif
   }
 
   @Test func theListIsNeedsYouFirstByDefaultWithoutAPinnedGroup() async throws {

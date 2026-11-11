@@ -319,28 +319,42 @@ struct SnapshotShell: View {
     }
   }
 
-  /// The sidebar with a thread in each of the six states.
+  /// "By environment" with a thread in each of the six states: b4app, Marketing site, and No folder by
+  /// name (Docs has no live thread, so no heading); then b4app collapsed over its approval; then with
+  /// "Show archived" on, the archived block after the last group; then the phone's list.
   @Test func macSidebarGroupsByEnvironment() async throws {
     let transport = ScriptedTransport()
-    let model = try await ListFixture.model(transport, extra: [ListFixture.approving])
+    var archived = ListFixture.thread(
+      "old", "Old spike", environment: ListFixture.docs, turn: "t10", status: .terminal, outcome: .completed,
+      read: "t10", at: 5)
+    archived.archived = true
+    let model = try await ListFixture.model(transport, extra: [ListFixture.approving, archived])
+    model.account = WorkspaceAccount(username: "blove", displayName: "Brian Love")
     transport.emit(try .viewSettingsChanged(ViewSettings(arrangement: .byEnvironment)))
     try await waitUntil("by environment") { model.viewSettings.arrangement == .byEnvironment }
+    let size = CGSize(width: LLA.Metrics.sidebarWidth, height: 520)
+    try await render("macSidebarGroupsByEnvironment", size: size) { SidebarView(model: model) }
+    guard case .byEnvironment(let groups) = model.listLayout.body else {
+      Issue.record("By environment: \(model.listLayout.body)")
+      return
+    }
+    #expect(groups.map(\.title) == ["b4app", "Marketing site", "No folder"])
+    #expect(groups.first?.mostUrgent == .approve)
+    try await render("macSidebarGroupsByEnvironment-collapsed", size: size) {
+      ScrollView {
+        EnvironmentGroupsView(model: model, groups: groups, collapsed: .constant([ListFixture.b4app]))
+          .padding(.horizontal, 10).padding(.top, LLA.Space.s)
+      }
+    }
+    transport.emit(try .viewSettingsChanged(ViewSettings(arrangement: .byEnvironment, showArchived: true)))
+    try await waitUntil("archived shown") { model.viewSettings.showArchived }
     try await render(
-      "macSidebarGroupsByEnvironment", size: CGSize(width: LLA.Metrics.sidebarWidth, height: 800)
+      "macSidebarGroupsByEnvironment-archived", size: CGSize(width: LLA.Metrics.sidebarWidth, height: 640)
     ) {
       SidebarView(model: model)
     }
-  }
-
-  @Test func macSidebarCollapsedEnvironment() async throws {
-    let model = try await ListFixture.model()
-    try await render(
-      "macSidebarCollapsedEnvironment", size: CGSize(width: LLA.Metrics.sidebarWidth, height: 640)
-    ) {
-      ScrollView {
-        EnvironmentSectionsView(model: model, collapsed: .constant([ListFixture.b4app]))
-          .padding(.horizontal, 10)
-      }
+    try await render("iosGroupsByEnvironment", size: CGSize(width: 390, height: 760)) {
+      FlatThreadList(model: model, showsStowed: .constant(false))
     }
   }
 

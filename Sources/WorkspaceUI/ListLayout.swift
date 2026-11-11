@@ -4,15 +4,25 @@ import WorkspaceProtocol
 /// What the thread list draws, from the threads and the view settings this device shows; both
 /// platforms draw from it. "Needs you first" (decision 6) is the top list (approve, reply, failed,
 /// finished), then the lower list (working, then quiet) drawn by `quietThreads` (decision 7); "By
-/// environment" is one group per environment. With "Show archived" on, the archived threads are a
-/// final block in either arrangement (decision 10).
+/// environment" (decision 8) is one group per environment with live threads, by name, "No folder"
+/// last. With "Show archived" on, the archived threads are a final block in either arrangement
+/// (decision 10).
 struct ListLayout: Equatable {
-  /// One environment's live threads, or "No folder" (`environmentId` nil).
+  /// One environment's live threads in state order (`Attention.ordered`), or "No folder"
+  /// (`environmentId` nil, `id` `noFolderId`).
   struct Group: Equatable, Identifiable {
+    /// The environment id, or `noFolderId`; also the key `CollapsedEnvironments` keeps.
     var id: String
     var title: String
     var environmentId: String?
     var threads: [ConversationThread]
+
+    /// "No folder"'s id: threads without an environment, or with one this device does not know.
+    static let noFolderId = "other"
+    static let noFolderTitle = "No folder"
+
+    /// The state of its most urgent thread (the first), which a collapsed heading marks; nil when empty.
+    var mostUrgent: ThreadState? { threads.first.map(Attention.state(of:)) }
   }
 
   /// The threads that do not need the owner, as `quietThreads` draws them.
@@ -84,15 +94,41 @@ struct ListLayout: Equatable {
         }
       return ListLayout(body: .needsYouFirst(top: top, lower: lower), archived: archived)
     case .byEnvironment:
-      // Until the by-environment arrangement is drawn as its own (the next task), its groups are the
-      // Mac's environment sections.
-      let groups = EnvironmentSection.build(threads: live, environments: environments).map {
-        Group(
-          id: $0.id, title: $0.title, environmentId: $0.id == EnvironmentSection.otherId ? nil : $0.id,
-          threads: $0.threads)
-      }
+      let groups = groups(live, environments: environments)
       return ListLayout(body: .byEnvironment(groups), archived: archived)
     }
+  }
+
+  /// One group per environment that has a live thread, then "No folder" for threads without an
+  /// environment or with one not in `environments` (not loaded yet, or deleted). Groups are ordered by
+  /// name ignoring case, then id, so the order never moves with thread states; `live` is already in
+  /// state order, which each group keeps. An environment without live threads has no group.
+  private static func groups(_ live: [ConversationThread], environments: [WorkEnvironment]) -> [Group] {
+    let names = Dictionary(
+      environments.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
+    var members: [String: [ConversationThread]] = [:]
+    var loose: [ConversationThread] = []
+    for thread in live {
+      if let id = thread.environmentId, names[id] != nil {
+        members[id, default: []].append(thread)
+      } else {
+        loose.append(thread)
+      }
+    }
+    let named = members.map { id, threads in
+      Group(id: id, title: names[id] ?? id, environmentId: id, threads: threads)
+    }
+    .sorted { lhs, rhs in
+      switch lhs.title.caseInsensitiveCompare(rhs.title) {
+      case .orderedAscending: true
+      case .orderedDescending: false
+      case .orderedSame: lhs.id < rhs.id
+      }
+    }
+    let noFolder =
+      loose.isEmpty
+      ? [] : [Group(id: Group.noFolderId, title: Group.noFolderTitle, environmentId: nil, threads: loose)]
+    return named + noFolder
   }
 
   /// The collapsed row's text: "9 more", and ", 2 working" while any of them runs.
