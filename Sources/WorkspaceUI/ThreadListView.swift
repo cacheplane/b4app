@@ -357,13 +357,12 @@ struct FlatThreadList: View {
 // MARK: - The Mac sections
 
 #if os(macOS)
-  /// The Mac sidebar's list: Pinned, then a collapsible section per environment, "No folder" last, the
-  /// archive while More's switch is on, and "New Environment…" at the end. Plain stacks, not `List`: a List drew nothing
-  /// in the macOS 26 split-view sidebar (see `SidebarView`).
+  /// The Mac sidebar's list: Pinned, then a collapsible section per environment, "No folder" last, and
+  /// the archive while view options' switch is on. Plain stacks, not `List`: a List drew nothing in the
+  /// macOS 26 split-view sidebar (see `SidebarView`).
   struct EnvironmentSectionsView: View {
     @Bindable var model: WorkspaceModel
     @Binding var collapsed: Set<String>
-    @State private var creating = false
     @State private var renaming: WorkEnvironment?
     @State private var deleting: WorkEnvironment?
     @State private var folderTarget: WorkEnvironment?
@@ -384,21 +383,7 @@ struct FlatThreadList: View {
           sectionView(section)
         }
         archive
-        Button {
-          creating = true
-        } label: {
-          Text("New Environment…")
-            .font(LLAFont.small).foregroundStyle(LLA.Color.muted)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.top, LLA.Space.m)
-        .accessibilityIdentifier("new-environment")
       }
-      .sheet(isPresented: $creating) { NewEnvironmentSheet(model: model) }
       .sheet(item: $renaming) { RenameEnvironmentSheet(model: model, environment: $0) }
       .confirmationDialog(
         deleting.map { "Delete \u{201C}\($0.displayName)\u{201D}?" } ?? "Delete environment?",
@@ -480,7 +465,7 @@ struct FlatThreadList: View {
       VStack(spacing: 0) { ForEach(threads) { ThreadRow(model: model, thread: $0) } }
     }
 
-    /// The archived threads, listed last while More's "Show archived" is on.
+    /// The archived threads, listed last while view options' "Show archived" is on.
     @ViewBuilder private var archive: some View {
       if model.showArchived {
         SidebarGroupLabel("Archived")

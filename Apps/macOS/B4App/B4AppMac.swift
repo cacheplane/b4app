@@ -40,11 +40,15 @@ struct B4AppMac: App {
     }
     .defaultSize(width: 1200, height: 800)
     .commands {
-      // Nothing that needs an account is reachable from the menus while nobody is signed in.
+      // Nothing that needs an account is reachable from the menus while nobody is signed in. ⌘N and ⌘K
+      // are declared here only, so they work with the sidebar (and its top bar) hidden.
       CommandGroup(replacing: .newItem) {
         Button("New Thread") { Task { await sharedModel.openNewThread() } }
-          .keyboardShortcut("n")
+          .keyboardShortcut(TopBarButton.newThread.shortcut)
           .disabled(sharedModel.accountState != .signedIn || sharedModel.newThreadEntryReason != nil)
+        Button("Search\u{2026}") { sharedModel.showSearch = true }
+          .keyboardShortcut(TopBarButton.search.shortcut)
+          .disabled(sharedModel.rootScreen != .workspace)
       }
       CommandGroup(replacing: .appSettings) {
         SettingsLink { Text("Settings…") }
