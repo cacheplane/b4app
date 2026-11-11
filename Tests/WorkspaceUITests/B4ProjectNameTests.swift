@@ -4,7 +4,7 @@ import WorkspaceProtocol
 
 @testable import WorkspaceUI
 
-/// "B4 project" is a different feature from the environment (D-201) and keeps its name everywhere.
+/// "B4 project" is a different feature from the environment (D-202) and keeps its name everywhere.
 /// These guard against the environments rename reaching it.
 @Suite struct B4ProjectNameTests {
   @Test func b4ProjectsKeepTheirName() throws {

@@ -172,16 +172,11 @@ public final class WorkspaceModel {
   /// Set by the Settings views while they are on screen.
   public var settingsVisible = false
   public var selectedThreadId: String?
-  /// The search palette (⌘K).
+  /// The search palette (⌘K on the Mac, the list's search button on the iPhone).
   public var showSearch = false
   /// The profile menu above the sidebar's profile button.
   public var showProfileMenu = false
   public var connectionFilter: String?
-  /// The iPhone list's pull-down search: narrows the list to threads whose shown title contains it
-  /// (D-053, amended). Empty shows every thread.
-  public var listSearch = ""
-  /// The list's search field is open and focused: the iPhone header's search button sets it.
-  public var listSearchPresented = false
   public var showArchived = false
   /// The phone's environment sheet: a new environment, or one environment's name and folders.
   public var environmentSheet: EnvironmentSheetRequest?
@@ -390,10 +385,8 @@ public final class WorkspaceModel {
   }
 
   private func filtered(archived: Bool, environment: EnvironmentFilter) -> [ConversationThread] {
-    let needle = listSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-    return threads.filter { $0.archived == archived }
+    threads.filter { $0.archived == archived }
       .filter { connectionFilter == nil || $0.connectionId == connectionFilter }
-      .filter { needle.isEmpty || ThreadSearch.shownTitle($0).localizedCaseInsensitiveContains(needle) }
       .filter {
         switch environment {
         case .all, .archived: return true
@@ -1609,8 +1602,6 @@ public final class WorkspaceModel {
     diagnostics = nil
     environmentSheet = nil
     showSearch = false
-    listSearch = ""
-    listSearchPresented = false
     showProfileMenu = false
     lastError = nil
     showAddPhone = false

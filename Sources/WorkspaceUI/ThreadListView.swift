@@ -327,14 +327,10 @@ struct FlatThreadRows: View {
   var body: some View {
     let rows = model.orderedThreads
     if rows.isEmpty {
-      Text(
-        !model.listSearch.trimmingCharacters(in: .whitespaces).isEmpty
-          ? "No matching threads."
-          : model.environmentFilter == .archived ? "No archived threads." : "No threads yet."
-      )
-      .llaSmallMuted()
-      .listRowSeparator(.hidden)
-      .listRowBackground(Color.clear)
+      Text(model.environmentFilter == .archived ? "No archived threads." : "No threads yet.")
+        .llaSmallMuted()
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
     }
     ForEach(rows) { thread in
       ThreadRow(model: model, thread: thread)

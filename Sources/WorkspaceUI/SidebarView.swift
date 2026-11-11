@@ -3,7 +3,7 @@ import WorkspaceProtocol
 
 /// The sidebar on both platforms. On the Mac, New thread, Search, and More are rows above the threads
 /// and the profile button is at the bottom. On the iPhone the profile menu leads the navigation bar,
-/// the filter menu and a search button (for the list's own search field) trail it, and a "New thread"
+/// the filter menu and a search button (for the Search sheet) trail it, and a "New thread"
 /// field sits at the bottom (D-053; the new-thread composer spec, "The iPhone"), so the list starts
 /// at the top. No surfaces: Connections, B4 projects, and Diagnostics live in Settings, reached from the
 /// profile menu.
@@ -105,9 +105,8 @@ struct SidebarView: View {
     }
   #else
     // The phone uses a List: rows need swipe actions, and the split view collapses to one column there.
-    // The filters and search are in the navigation bar, and the search field pulls down from above the
-    // list (or opens from the search button), as in the iPhone's own Mail. New thread is the field at
-    // the bottom.
+    // The filters and search are in the navigation bar; the search button opens the Search sheet, so
+    // no field sits above the list. New thread is the field at the bottom.
     private var content: some View {
       List {
         Section {
@@ -122,17 +121,11 @@ struct SidebarView: View {
         }
       }
       .listStyle(.plain)
-      .searchable(
-        text: $model.listSearch, isPresented: $model.listSearchPresented,
-        placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search threads"
-      )
-      // Titles are matched in any case; a capital the keyboard adds unasked only gets in the way.
-      .textInputAutocapitalization(.never)
       .navigationTitle(model.environmentFilter == .all ? "Threads" : model.filterTitle)
       .toolbar {
         ToolbarItemGroup(placement: .topBarTrailing) {
           MoreMenu(model: model, inToolbar: true)
-          Button("Search", systemImage: "magnifyingglass") { model.listSearchPresented = true }
+          Button("Search", systemImage: "magnifyingglass") { model.showSearch = true }
             .accessibilityIdentifier("list-search")
         }
       }

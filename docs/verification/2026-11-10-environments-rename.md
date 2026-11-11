@@ -1,6 +1,6 @@
 ## 2026-11-10: Environments rename
 
-The rename of "project" to "environment" (D-201) across the hub, the coordinator store, the phone's mirror, the Swift targets, the CLI, and the interface. "B4 project" is unchanged.
+The rename of "project" to "environment" (D-202) across the hub, the coordinator store, the phone's mirror, the Swift targets, the CLI, and the interface. "B4 project" is unchanged.
 
 ### Suites
 
