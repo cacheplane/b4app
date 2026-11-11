@@ -164,6 +164,66 @@ extension MirrorStore {
     return draft
   }
 
+  /// Write the given view settings fields and `updatedAt` (a field not given keeps its stored value,
+  /// known to this build or not) and return the result. With the row missing, one insert of the key and
+  /// the given fields is queued, and claims no clock for a field it does not set, so it never overrides
+  /// another device's first write of that field; otherwise an update per changed field, and of
+  /// `updatedAt` when anything changed. A write that changes nothing queues nothing.
+  @discardableResult
+  public func setViewSettings(
+    arrangement: ViewSettings.Arrangement? = nil, quietThreads: ViewSettings.QuietThreads? = nil,
+    showArchived: Bool? = nil
+  ) throws -> ViewSettings {
+    var fields: [(column: String, value: JSONValue)] = []
+    if let arrangement { fields.append(("arrangement", .string(arrangement.rawValue))) }
+    if let quietThreads { fields.append(("quietThreads", .string(quietThreads.rawValue))) }
+    if let showArchived { fields.append(("showArchived", .bool(showArchived))) }
+    let rowId = ViewSettings.rowId
+    return try locked {
+      try transaction {
+        guard !fields.isEmpty else { return try viewSettingsLocked() }
+        let updatedAt = JSONValue.string(Timestamp.now())
+        guard
+          let stored = try query(#"SELECT * FROM "viewSettings" WHERE "id" = ?"#, [.text(rowId)]).first
+        else {
+          let row = fields + [("updatedAt", updatedAt)]
+          try run(
+            "INSERT INTO \"viewSettings\" (\"id\", \(row.map { Self.quote($0.column) }.joined(separator: ", ")))"
+              + " VALUES (?, \(row.map { _ in "?" }.joined(separator: ", ")))",
+            [.text(rowId)] + row.map { bindable($0.value, table: "viewSettings", column: $0.column) })
+          var object: [String: JSONValue] = ["id": .string(rowId)]
+          for (column, value) in row { object[column] = value }
+          try record([LocalChange(table: "viewSettings", rowId: rowId, op: "insert", value: .object(object))])
+          return try viewSettingsLocked()
+        }
+        var changes = fields.filter { field in
+          stored[field.column] != cell(bindable(field.value, table: "viewSettings", column: field.column))
+        }.map {
+          LocalChange(table: "viewSettings", rowId: rowId, op: "update", column: $0.column, value: $0.value)
+        }
+        if !changes.isEmpty,
+          stored["updatedAt"] != cell(bindable(updatedAt, table: "viewSettings", column: "updatedAt"))
+        {
+          changes.append(
+            LocalChange(
+              table: "viewSettings", rowId: rowId, op: "update", column: "updatedAt", value: updatedAt))
+        }
+        try writeColumns(changes, key: "id")
+        try record(changes)
+        return try viewSettingsLocked()
+      }
+    }
+  }
+
+  /// A bound value as the cell it stores.
+  private func cell(_ bind: Bind) -> Cell {
+    switch bind {
+    case .null: .null
+    case .integer(let value): .integer(value)
+    case .text(let text): .text(text)
+    }
+  }
+
   /// Rename an environment; the empty string restores its folder-name `displayName`. Nil when the environment
   /// does not exist.
   public func renameEnvironment(id: String, name: String) throws -> WorkEnvironment? {
@@ -340,7 +400,10 @@ extension MirrorStore {
     var seq = last
     for change in changes {
       let clocked = SyncColumns.clocked[change.table] ?? []
-      let written = change.op == "insert" ? clocked.sorted() : [change.column].compactMap { $0 }
+      // An insert claims the clocks of the columns it carries, and no others.
+      let written =
+        change.op == "insert"
+        ? (change.value.objectValue.map { Array($0.keys) } ?? []).sorted() : [change.column].compactMap { $0 }
       for column in written where clocked.contains(column) {
         try advanceClock(change.table, change.rowId, column, to: hlc)
       }

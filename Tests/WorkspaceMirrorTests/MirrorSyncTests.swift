@@ -173,8 +173,7 @@ private let link = MirrorLink(
     let batches = await recorder.batches
     #expect(batches.first?.touchedThreadIds == ["thread-1"])
     #expect(batches.first?.touchedItems.count == 4)
-    #expect(batches.allSatisfy { $0.undecodableRows == 0 })
-    #expect(batches.map(\.skipped).reduce(0, +) == unmirroredFixtureChanges)
+    #expect(batches.allSatisfy { $0.skipped == 0 && $0.undecodableRows == 0 })
     #expect(try store.link()?.lastSyncAt != nil)
     #expect(try store.link()?.lastError == nil)
 

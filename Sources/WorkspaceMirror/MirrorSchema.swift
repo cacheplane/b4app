@@ -23,6 +23,8 @@ import Foundation
 /// `environments` and `environmentFolders`, and the three `projectId` columns become `environmentId`.
 /// The table and column names the mirror also stores as data (the outbox, `columnClocks`, and
 /// `undecodableRows`) are rewritten with them.
+///
+/// Version 8 adds `viewSettings`, the account's one row of view settings (id `view`).
 enum MirrorSchema {
   /// `PRAGMA user_version` once every migration has run.
   static var version: Int { migrations.last?.version ?? 0 }
@@ -40,11 +42,16 @@ enum MirrorSchema {
     ("connections", "id"), ("environments", "id"), ("environmentFolders", "id"), ("threads", "id"),
     ("turns", "id"),
     ("displayItems", "id"), ("runtimeRequests", "id"), ("drafts", "threadId"),
-    ("connectionUsage", "connectionId"),
+    ("connectionUsage", "connectionId"), ("viewSettings", "id"),
   ]
 
   /// Tables whose rows record the device that inserted them in `ownerDeviceId`.
   static let ownedTables: Set<String> = ["connections", "threads", "environments"]
+
+  /// Tables whose insert carries only the key and the columns it sets (the Mac's migration 0013): a
+  /// null or absent column in one is "not set", so it never overwrites a stored value or claims a clock.
+  /// Any device may create such a row before it has seen another device's.
+  static let partialInsertTables: Set<String> = ["viewSettings"]
 
   /// Columns of synced tables that only the mirror writes: a change never sets them.
   static let localColumns: Set<String> = ["ownerDeviceId"]
@@ -52,6 +59,7 @@ enum MirrorSchema {
   /// Columns whose `INTEGER` holds a boolean (0 or 1); they read back as JSON `true`/`false`.
   static let booleanColumns: [String: Set<String>] = [
     "connections": ["enabled"], "threads": ["pinned", "archived"], "environments": ["manual"],
+    "viewSettings": ["showArchived"],
   ]
 
   /// Columns whose `TEXT` holds a JSON document; they read back inline.
@@ -67,7 +75,7 @@ enum MirrorSchema {
   /// every migration after `n`, all in one transaction.
   static let migrations: [(version: Int, statements: [String])] = [
     (1, version1), (2, version2), (3, version3), (4, version4), (5, version5), (6, version6),
-    (7, version7),
+    (7, version7), (8, version8),
   ]
 
   /// M8a's schema.
@@ -304,4 +312,19 @@ enum MirrorSchema {
           AND CASE WHEN json_valid("value") THEN json_type("value", '$.projectId') END IS NOT NULL
       """,
     ]
+
+  /// View settings: one synced row whose id is always `view`, as the Mac's `0013_view_settings.sql`.
+  /// Every column but the key is nullable, and the text columns take any value, so one this build does
+  /// not know is kept (and reads as the default).
+  static let version8 = [
+    """
+    CREATE TABLE "viewSettings" (
+      "id" TEXT PRIMARY KEY,
+      "arrangement" TEXT,
+      "quietThreads" TEXT,
+      "showArchived" INTEGER CHECK ("showArchived" IN (0, 1)),
+      "updatedAt" TEXT
+    ) STRICT
+    """
+  ]
 }
