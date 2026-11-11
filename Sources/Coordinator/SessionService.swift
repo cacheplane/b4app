@@ -459,10 +459,11 @@ public actor SessionService {
     return (canonical, true)
   }
 
-  /// Take back a folder this service made moments ago for a create that then failed: the folder only while
-  /// it is still empty, and its record.
+  /// Take back a folder this service made moments ago for a create that then failed, only while it is still
+  /// empty, and then its record. A folder something wrote into stays, and so does its record, so it is still
+  /// known as one the app made.
   private func discardAppFolder(_ path: String) {
-    Self.removeIfEmpty(path)
+    guard Self.removeIfEmpty(path) else { return }
     do { try db.deleteAppFolder(path: path) } catch {
       logger.error("could not forget an app folder: \(String(describing: error), privacy: .public)")
     }
@@ -472,11 +473,11 @@ public actor SessionService {
   private static let folderDate = Date.ISO8601FormatStyle(timeZone: TimeZone(identifier: "UTC")!).year()
     .month().day()
 
-  /// Remove a folder only while it is empty: nothing here deletes a folder that could hold someone's files.
-  private static func removeIfEmpty(_ path: String) {
-    guard let contents = try? FileManager.default.contentsOfDirectory(atPath: path), contents.isEmpty
-    else { return }
-    try? FileManager.default.removeItem(atPath: path)
+  /// Remove a folder only while it is empty, saying whether it is gone: `rmdir(2)` refuses a folder with
+  /// anything in it, so nothing here deletes a file, however late it was written.
+  @discardableResult
+  private static func removeIfEmpty(_ path: String) -> Bool {
+    rmdir(path) == 0 || errno == ENOENT
   }
 
   static func isDirectory(_ path: String) -> Bool {

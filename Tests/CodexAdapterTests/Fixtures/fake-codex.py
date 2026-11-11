@@ -161,6 +161,12 @@ while True:
     elif method == "account/login/start":
         send({"id": req_id, "result": {"type": "chatgpt", "authUrl": "https://auth.example/login?state=1",
                                        "loginId": "login_1"}})
+    elif method == "thread/start" and os.environ.get("FAKE_CODEX_START_FAIL"):
+        # FAKE_CODEX_START_FAIL=1 refuses every thread/start; =write first leaves a file in its cwd.
+        if os.environ["FAKE_CODEX_START_FAIL"] == "write" and params.get("cwd"):
+            with open(os.path.join(params["cwd"], "left-behind.txt"), "w") as f:
+                f.write("written before the start failed\n")
+        send({"id": req_id, "error": {"code": -32603, "message": "thread/start failed"}})
     elif method == "thread/start":
         thread_counter += 1
         thread_id = "thr_%s%d" % (ID_PREFIX, thread_counter)

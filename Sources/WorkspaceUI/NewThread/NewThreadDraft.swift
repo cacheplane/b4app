@@ -262,6 +262,11 @@ final class NewThreadDraft {
     if !unsettled, let reason = workspace.unsettledStartReason { return reason }
     let phone = workspace.relaysThroughHub
     guard let connection else {
+      if isNoFolder {
+        return phone
+          ? "No ready Codex or Claude connection on your Mac can start a thread with no folder."
+          : "No ready Codex or Claude connection can start a thread with no folder."
+      }
       if environment == nil, chosenFolder == nil { return phone ? nil : "Choose a folder to start in." }
       return phone
         ? "No ready connection on your Mac can start a thread in this environment."

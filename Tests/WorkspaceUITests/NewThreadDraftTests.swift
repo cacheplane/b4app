@@ -55,7 +55,8 @@ private enum Phone {
   /// A phone on the test clock with both Macs online, environments and connections loaded.
   @MainActor
   static func model(
-    _ transport: ScriptedTransport, clock: TestClock, threads: [ConversationThread] = []
+    _ transport: ScriptedTransport, clock: TestClock, threads: [ConversationThread] = [],
+    connections: [Connection] = connections
   ) async throws -> WorkspaceModel {
     transport.set(connections: connections, threads: threads, environments: [p1, p2, p3])
     let model = try await PhoneFixture.model(transport, clock: clock, online: nil, open: nil)
@@ -833,7 +834,7 @@ private enum Phone {
     let draft = model.newThreadDraft
     #expect(draft.environmentId == nil)
     #expect(draft.connectionId == nil)
-    #expect(draft.blockedReason == "Choose a folder to start in.")
+    #expect(draft.blockedReason == "No ready Codex or Claude connection can start a thread with no folder.")
     model.connect()
     try #require(await model.settledLink() == .ready)
     try await waitUntil("environments") { model.environments.count == 3 }
@@ -1308,6 +1309,44 @@ private enum Phone {
       await model.startThread(environmentId: nil, connectionId: "codex-1", folder: nil, text: "Hello?") == nil
     )
     #expect(transport.recorded(.threadStart).isEmpty)
+    await model.disconnect()
+  }
+
+  @Test func noFolderOnTheMacWithNoReadyCodexOrClaudeSaysSo() async throws {
+    // The Mac's only ready connection is an environment's local B4, which cannot start with no folder.
+    let localB4 = Phone.macConnections.filter { $0.id == "b4-p1" }
+    let model = try await Phone.macModel(ScriptedTransport(), connections: localB4)
+    let draft = NewThreadDraft(model: model, environmentId: nil)
+    draft.selectNoFolder()
+    #expect(draft.isNoFolder)
+    #expect(draft.connectionId == nil)
+    draft.text = "Anything"
+    #expect(draft.blockedReason == "No ready Codex or Claude connection can start a thread with no folder.")
+    #expect(!draft.canSend)
+    await model.disconnect()
+  }
+
+  @Test func noFolderOnThePhoneWithNoReadyCodexOrClaudeOnItsMacSaysSo() async throws {
+    // The primary Mac is online, but its Codex and Claude connections are not ready.
+    let connections = Phone.connections.map { connection in
+      var connection = connection
+      if connection.id == "codex-1" || connection.id == "claude-1" { connection.status = .offline }
+      return connection
+    }
+    let recent = PhoneFixture.thread("recent", owner: "mac-1", at: -10)
+    let model = try await Phone.model(
+      ScriptedTransport(), clock: TestClock(), threads: [recent], connections: connections)
+    try #require(model.primaryHostId == "mac-1")
+    #expect(model.startBlockedReason(forDevice: "mac-1") == nil)
+    let draft = NewThreadDraft(model: model, environmentId: nil)
+    draft.selectNoFolder()
+    #expect(draft.isNoFolder)
+    #expect(draft.connectionId == nil)
+    draft.text = "Anything"
+    #expect(
+      draft.blockedReason
+        == "No ready Codex or Claude connection on your Mac can start a thread with no folder.")
+    #expect(!draft.canSend)
     await model.disconnect()
   }
 

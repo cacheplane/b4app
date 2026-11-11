@@ -202,7 +202,7 @@ struct ComposerPickerRow: View {
         }
       }
     }
-    Divider()
+    if !draft.environments.isEmpty { Divider() }
     choice("No folder", selected: draft.isNoFolder) { draft.selectNoFolder() }
       .accessibilityIdentifier("no-folder")
     #if os(macOS)

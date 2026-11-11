@@ -910,12 +910,26 @@ actor EventCollector {
     return path
   }
 
-  @Test func aStartWithNoFolderMakesOneAndHasNoEnvironment() async throws {
+  /// The runtimes that start a thread in a folder, so a no-folder test runs against both fakes.
+  enum Runtime: CaseIterable, Sendable {
+    case codex, claude
+
+    func add(_ h: Harness) async throws -> Connection {
+      switch self {
+      case .codex: try await h.addCodex()
+      case .claude: try await h.addClaude()
+      }
+    }
+  }
+
+  @Test(arguments: Runtime.allCases)
+  func aStartWithNoFolderMakesOneAndHasNoEnvironment(_ runtime: Runtime) async throws {
     let h = try await Harness.start()
-    let codex = try await h.addCodex()
+    let connection = try await runtime.add(h)
     let before = Date()
     let started = try await start(
-      h, ThreadStart.Params(threadId: UUID().uuidString.lowercased(), connectionId: codex.id, text: "hi"))
+      h, ThreadStart.Params(threadId: UUID().uuidString.lowercased(), connectionId: connection.id, text: "hi")
+    )
     let path = try expectAppFolder(h, started.thread, before: before, after: Date())
     #expect(try h.coordinator.database.listEnvironments().isEmpty)
     #expect(try await h.coordinator.sessions.appFolder(forThread: started.thread.id) == path)
@@ -1002,6 +1016,36 @@ actor EventCollector {
     await h.stop()
   }
 
+  /// A start whose session cannot be created takes back the folder it made, and its record.
+  @Test func aStartWhoseSessionFailsLeavesNoFolder() async throws {
+    let h = try await Harness.start(extraEnvironment: ["FAKE_CODEX_START_FAIL": "1"])
+    let codex = try await h.addCodex()
+    let threadId = UUID().uuidString.lowercased()
+    await #expect(throws: WorkspaceError.self) {
+      _ = try await start(h, ThreadStart.Params(threadId: threadId, connectionId: codex.id, text: "hi"))
+    }
+    #expect(try h.coordinator.database.thread(id: threadId) == nil)
+    #expect(entries(h).isEmpty)
+    #expect(try h.coordinator.database.listAppFolders().isEmpty)
+    await h.stop()
+  }
+
+  /// A folder something wrote into before the session failed is never removed: the folder and the file
+  /// stay, and so does its record, so it is still known as a folder the app made.
+  @Test func aStartWhoseSessionFailsAfterAFileWasWrittenKeepsTheFolder() async throws {
+    let h = try await Harness.start(extraEnvironment: ["FAKE_CODEX_START_FAIL": "write"])
+    let codex = try await h.addCodex()
+    let threadId = UUID().uuidString.lowercased()
+    await #expect(throws: WorkspaceError.self) {
+      _ = try await start(h, ThreadStart.Params(threadId: threadId, connectionId: codex.id, text: "hi"))
+    }
+    #expect(try h.coordinator.database.thread(id: threadId) == nil)
+    let recorded = try #require(try h.coordinator.database.appFolder(threadId: threadId))
+    #expect(try FileManager.default.contentsOfDirectory(atPath: recorded.path) == ["left-behind.txt"])
+    #expect(entries(h) == [(recorded.path as NSString).lastPathComponent])
+    await h.stop()
+  }
+
   @Test func backfillLeavesAppFolderThreadsWithoutAnEnvironment() async throws {
     let h = try await Harness.start()
     let codex = try await h.addCodex()
@@ -1035,11 +1079,13 @@ actor EventCollector {
     await h.stop()
   }
 
-  @Test func aThreadWhoseFolderIsGoneStillReads() async throws {
+  @Test(arguments: Runtime.allCases)
+  func aThreadWhoseFolderIsGoneStillReads(_ runtime: Runtime) async throws {
     let h = try await Harness.start()
-    let codex = try await h.addCodex()
+    let connection = try await runtime.add(h)
     let started = try await start(
-      h, ThreadStart.Params(threadId: UUID().uuidString.lowercased(), connectionId: codex.id, text: "hi"))
+      h, ThreadStart.Params(threadId: UUID().uuidString.lowercased(), connectionId: connection.id, text: "hi")
+    )
     try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == started.turn.id }
     let cached = try await h.read(started.thread).items
     #expect(!cached.isEmpty)
