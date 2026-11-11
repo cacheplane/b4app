@@ -125,7 +125,7 @@ struct SnapshotShell: View {
 
   private var shell: some View {
     HStack(spacing: 0) {
-      SidebarView(model: model).frame(width: 290)
+      SidebarView(model: model).frame(width: LLA.Metrics.sidebarWidth)
       Rectangle().fill(LLA.Color.rule).frame(width: 1)
       ThreadsView(model: model)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -143,11 +143,21 @@ struct SnapshotShell: View {
   let window: NSWindow
   let host: NSHostingView<Content>
 
-  init(rootView: Content, onScreen: Bool = false, size: CGSize = CGSize(width: 1200, height: 800)) {
+  /// `untitled` gives the window no title bar, so content laid out from y 0 has no top safe area for
+  /// a scroll view's edge to be drawn across.
+  init(
+    rootView: Content, onScreen: Bool = false, untitled: Bool = false,
+    size: CGSize = CGSize(width: 1200, height: 800)
+  ) {
     host = NSHostingView(rootView: rootView)
+    // Offscreen, the sidebar's `.toolbar` would be bridged into this plain window and its bottom edge
+    // drawn across the content (the first row cut by a hairline). The root render keeps it, as the
+    // app does.
+    if !onScreen { host.sceneBridgingOptions = [] }
     window = NSWindow(
       contentRect: NSRect(origin: .zero, size: size),
-      styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+      styleMask: untitled ? [.borderless] : [.titled, .closable, .resizable, .fullSizeContentView],
+      backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = host
     // AppKit populates the split view's sidebar only once the window is on screen, so the window is
@@ -209,13 +219,13 @@ struct SnapshotShell: View {
     _ name: String, size: CGSize, @ViewBuilder _ content: () -> V
   ) async throws {
     // The window is larger than the content: a ScrollView drew nothing in a window as narrow as the
-    // sidebar. The capture is cropped back to the content's size, from the window's top edge, so the
-    // content ignores the title bar's safe area (which pushed its bottom out of the crop).
+    // sidebar. The capture is cropped back to the content's size, from the window's top edge. The window
+    // has no title bar: a scroll view under one drew its top edge across content that starts at y 0.
     let window = SnapshotWindow(
       rootView: content().frame(width: size.width, height: size.height).background(LLA.Color.surface)
         .tint(LLA.Color.accent).frame(width: 1200, height: 900, alignment: .topLeading)
         .ignoresSafeArea(),
-      size: CGSize(width: 1200, height: 900))
+      untitled: true, size: CGSize(width: 1200, height: 900))
     defer { window.close() }
     for (appearance, suffix) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
       window.appearance = NSAppearance(named: appearance)
@@ -309,16 +319,21 @@ struct SnapshotShell: View {
     }
   }
 
+  /// The sidebar with a thread in each of the six states.
   @Test func macSidebarGroupsByEnvironment() async throws {
-    let model = try await ListFixture.model()
-    try await render("macSidebarGroupsByEnvironment", size: CGSize(width: 290, height: 800)) {
+    let model = try await ListFixture.model(extra: [ListFixture.approving])
+    try await render(
+      "macSidebarGroupsByEnvironment", size: CGSize(width: LLA.Metrics.sidebarWidth, height: 800)
+    ) {
       SidebarView(model: model)
     }
   }
 
   @Test func macSidebarCollapsedEnvironment() async throws {
     let model = try await ListFixture.model()
-    try await render("macSidebarCollapsedEnvironment", size: CGSize(width: 290, height: 640)) {
+    try await render(
+      "macSidebarCollapsedEnvironment", size: CGSize(width: LLA.Metrics.sidebarWidth, height: 640)
+    ) {
       ScrollView {
         EnvironmentSectionsView(model: model, collapsed: .constant([ListFixture.b4app]))
           .padding(.horizontal, 10)
@@ -329,7 +344,9 @@ struct SnapshotShell: View {
   @Test func macSidebarShowsAFailedEnvironmentAction() async throws {
     let model = try await ListFixture.model()
     model.lastError = "That folder already belongs to the environment \u{201C}Marketing site\u{201D}."
-    try await render("macSidebarShowsAFailedEnvironmentAction", size: CGSize(width: 290, height: 420)) {
+    try await render(
+      "macSidebarShowsAFailedEnvironmentAction", size: CGSize(width: LLA.Metrics.sidebarWidth, height: 420)
+    ) {
       ScrollView { ThreadListView(model: model).padding(.horizontal, 10) }
     }
   }
@@ -408,29 +425,70 @@ struct SnapshotShell: View {
     }
   }
 
-  @Test func rowShowsEachBandDot() async throws {
-    let model = try await ListFixture.model()
-    let rows = [
-      model.threads.first { $0.id == "asks" }, model.threads.first { $0.id == "unread" },
-      model.threads.first { $0.id == "busy" }, model.threads.first { $0.id == "quiet" },
-    ].compactMap { $0 }
-    #expect(rows.map { model.band(of: $0) } == [.needsInput, .unread, .working, .quiet])
-    try await render("rowShowsEachBandDot", size: CGSize(width: 290, height: 420)) {
-      VStack(alignment: .leading, spacing: 2) {
+  /// A row in each of the six states (finished selected), a long title that truncates before the mark,
+  /// then each mark on its own: approve acknowledged and not, and the working mark still and orbiting
+  /// (a still render shows one phase of each).
+  @Test func rowShowsEachStateMark() async throws {
+    let long = ListFixture.thread(
+      "long", "Approve the hub migration and then rerun the whole retention suite",
+      environment: ListFixture.b4app,
+      turn: "t10", status: .waitingForUser, pending: 1, at: 54)
+    let model = try await ListFixture.model(extra: [ListFixture.approving, long])
+    let rows = ["approving", "asks", "failed", "unread", "busy", "quiet", "long"].compactMap { id in
+      model.threads.first { $0.id == id }
+    }
+    #expect(rows.prefix(6).map { model.state(of: $0) } == ThreadState.allCases)
+    model.selectedThreadId = "unread"
+    try await render("rowShowsEachStateMark", size: CGSize(width: LLA.Metrics.sidebarWidth, height: 420)) {
+      VStack(alignment: .leading, spacing: 0) {
         ForEach(rows) { ThreadRow(model: model, thread: $0) }
         Hairline().padding(.vertical, LLA.Space.m)
         HStack(spacing: LLA.Space.l) {
-          ForEach([AttentionBand.needsInput, .unread, .working, .quiet], id: \.rawValue) {
-            AttentionDot(band: $0)
-          }
+          ForEach(ThreadState.allCases, id: \.rawValue) { ThreadMark(state: $0, animated: false) }
+          ThreadMark(state: .approve, acknowledged: true)
         }
+        HStack(spacing: LLA.Space.l) {
+          ForEach(ThreadState.allCases, id: \.rawValue) { ThreadMark(state: $0) }
+        }
+        .environment(\.dynamicTypeSize, .accessibility2)
       }
       .padding(10)
     }
   }
+
+  /// The arrival trace frozen at moments of its 10 s, on rows of the Mac's fill geometry (x 8–232,
+  /// 28 tall): the slide part-way, the light at several points of its two laps, the hairline alone,
+  /// fading, and under Reduce Motion. Stills only; the motion itself is not judged here.
+  @Test func arrivalTraceAtItsMoments() async throws {
+    let moments: [(String, ArrivalTraceFrame)] = [
+      ("0.25 s, sliding", ArrivalTraceFrame(elapsed: 0.25, laps: true, reduceMotion: false)),
+      ("0.6 s, lap 1", ArrivalTraceFrame(elapsed: 0.6, laps: true, reduceMotion: false)),
+      ("1.2 s, lap 1", ArrivalTraceFrame(elapsed: 1.2, laps: true, reduceMotion: false)),
+      ("2.4 s, lap 2", ArrivalTraceFrame(elapsed: 2.4, laps: true, reduceMotion: false)),
+      ("1.2 s, no lap", ArrivalTraceFrame(elapsed: 1.2, laps: false, reduceMotion: false)),
+      ("5 s, hairline", ArrivalTraceFrame(elapsed: 5, laps: true, reduceMotion: false)),
+      ("9.25 s, fading", ArrivalTraceFrame(elapsed: 9.25, laps: true, reduceMotion: false)),
+      ("0.25 s, Reduce Motion", ArrivalTraceFrame(elapsed: 0.25, laps: true, reduceMotion: true)),
+      ("10 s, over", ArrivalTraceFrame(elapsed: 10, laps: true, reduceMotion: false)),
+    ]
+    try await render(
+      "arrivalTraceAtItsMoments", size: CGSize(width: LLA.Metrics.sidebarWidth, height: 9 * 36)
+    ) {
+      VStack(spacing: LLA.Space.s) {
+        ForEach(moments, id: \.0) { name, frame in
+          Text(name).font(LLAFont.row).foregroundStyle(LLA.Color.ink)
+            .padding(.horizontal, ThreadRow.contentInset)
+            .frame(maxWidth: .infinity, minHeight: LLA.Metrics.threadRow, alignment: .leading)
+            .overlay { ArrivalTraceEdge(frame: frame) }
+            .offset(y: frame.offset)
+        }
+      }
+      .padding(.horizontal, ThreadRow.fillInset)
+    }
+  }
 }
 
-/// A fixed set of threads in every band, across two environments, "Other", and one empty manual environment.
+/// A fixed set of threads in every state but approve (`approving`, added with `extra`), across two environments, "Other", and one empty manual environment.
 @MainActor enum ListFixture {
   static let b4app = "p-b4app"
   static let marketing = "p-marketing"
@@ -482,6 +540,15 @@ struct SnapshotShell: View {
       read: "t8", at: 10),
   ]
 
+  /// A thread waiting on an approval; not in `threads`, whose counts other tests rely on.
+  static let approving: ConversationThread = {
+    var approving = thread(
+      "approving", "Approve the deploy", environment: b4app, turn: "t9", status: .waitingForUser, pending: 1,
+      at: 56)
+    approving.activity?.pendingApprovals = 1
+    return approving
+  }()
+
   static let environments: [WorkEnvironment] = [
     WorkEnvironment(
       id: b4app, name: "",
@@ -490,12 +557,15 @@ struct SnapshotShell: View {
     WorkEnvironment(id: docs, name: "Docs", manual: true),
   ]
 
-  static func model(_ transport: ScriptedTransport = ScriptedTransport()) async throws -> WorkspaceModel {
+  /// The fixture's model; `extra` threads join the fixture's own.
+  static func model(
+    _ transport: ScriptedTransport = ScriptedTransport(), extra: [ConversationThread] = []
+  ) async throws -> WorkspaceModel {
     transport.set(
       connections: [
         Connection(id: "c1", kind: .codex, label: "Codex", target: "codex", status: .ready),
         Connection(id: "c2", kind: .claude, label: "Claude Code", target: "claude", status: .ready),
-      ], threads: threads, environments: environments)
+      ], threads: threads + extra, environments: environments)
     let model = WorkspaceModel(transportProvider: { transport })
     let now = Date(timeIntervalSince1970: base + 60 * 60)
     model.now = { now }

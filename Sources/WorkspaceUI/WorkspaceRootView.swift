@@ -56,6 +56,9 @@ struct WorkspaceShell: View {
   /// On a compact width (iPhone) the split view shows one column; choosing a thread in the sidebar
   /// moves to the detail. Ignored where both columns show.
   @State private var compactColumn = NavigationSplitViewColumn.sidebar
+  /// Whether the Mac's sidebar is showing: while it is hidden, search and new thread move from its top
+  /// bar to the main view's toolbar.
+  @State private var columnVisibility = NavigationSplitViewVisibility.automatic
   @Environment(\.scenePhase) private var scenePhase
   #if os(macOS)
     @Environment(\.appearsActive) private var appearsActive
@@ -78,15 +81,27 @@ struct WorkspaceShell: View {
   }
 
   var body: some View {
-    NavigationSplitView(preferredCompactColumn: $compactColumn) {
+    NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $compactColumn) {
       SidebarView(model: model)
-        .navigationSplitViewColumnWidth(min: 240, ideal: 290)
+        #if os(macOS)
+          .environment(\.sidebarVisibility, columnVisibility)
+          // Fixed, so the thread rows' geometry (fill, title, mark) is exact.
+          .navigationSplitViewColumnWidth(LLA.Metrics.sidebarWidth)
+        #else
+          .navigationSplitViewColumnWidth(min: 240, ideal: 290)
+        #endif
     } detail: {
       ThreadsView(model: model)
         .modifier(WorkspaceWindowBackground())
         #if os(iOS)
           // Empty detail has no scrolling large-title host; use the thread's inline mode there too.
           .navigationBarTitleDisplayMode(.inline)
+        #else
+          // Beside the sidebar toggle, where the sidebar's own buttons were.
+          .toolbar {
+            TopBarItems(
+              model: model, buttons: TopBarButton.mainView(columnVisibility), placement: .navigation)
+          }
         #endif
         .safeAreaInset(edge: .top, spacing: 0) { statusBanner?() }
     }

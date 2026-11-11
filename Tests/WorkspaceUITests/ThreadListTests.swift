@@ -13,13 +13,6 @@ import WorkspaceProtocol
     #expect(CollapsedEnvironments.parse(CollapsedEnvironments.encode(["x", "other"])) == ["x", "other"])
   }
 
-  @Test func dotLabelsNameTheBand() {
-    #expect(AttentionBand.needsInput.dotLabel == "Needs your input")
-    #expect(AttentionBand.unread.dotLabel == "Unread reply")
-    #expect(AttentionBand.working.dotLabel == "Working")
-    #expect(AttentionBand.quiet.dotLabel == "Quiet")
-  }
-
   @Test func filterMenuListsEnvironmentsByLatestActivityAndOtherOnlyWhenPresent() async throws {
     let model = try await ListFixture.model()
     // b4app's newest thread is at minute 58, Marketing site's at 50, and Docs has no threads.
@@ -59,18 +52,24 @@ import WorkspaceProtocol
     #expect(!offered("unread"))
     #expect(!offered("asks"))
     #expect(!offered("busy"))
+    #expect(!offered("failed"))
+    // A failure stays failed once read, but un-reading it is still offered (it returns to the badge).
+    var readFailure = try #require(model.threads.first { $0.id == "failed" })
+    readFailure.readTurnId = "t4"
+    #expect(model.canMarkUnread(readFailure))
   }
 
   @Test func rowSpeaksItsReasonAndConnection() async throws {
-    // The row shows only the title and a runtime mark; why it sits there and where it runs are spoken
-    // in its label (not a hint, which VoiceOver users can turn off), and a pinned row says so.
+    // The row shows only the title and the state's mark; the state, why it sits there, and where it
+    // runs are spoken in its label (not a hint, which VoiceOver users can turn off), and a pinned row
+    // says so.
     let model = try await ListFixture.model()
     let asks = try #require(model.threads.first { $0.id == "asks" })
     let label = try #require(model.connection(id: asks.connectionId)?.label)
-    #expect(model.band(of: asks) == .needsInput)
+    #expect(model.state(of: asks) == .reply)
     #expect(
       ThreadRow.accessibilityLabel(model: model, thread: asks)
-        == "\(asks.title), \(model.reasonLine(for: asks)), \(label)")
+        == "\(asks.title), Needs your reply, \(model.reasonLine(for: asks)), \(label)")
     var pinned = asks
     pinned.pinned = true
     #expect(ThreadRow.accessibilityLabel(model: model, thread: pinned).hasPrefix("Pinned, \(asks.title), "))
@@ -83,33 +82,6 @@ import WorkspaceProtocol
     #expect(DiagnosticsView.uploads(0, "refused") == "None")
     #expect(DiagnosticsView.uploads(1, "waiting to upload") == "1 change waiting to upload")
     #expect(DiagnosticsView.uploads(2, "refused") == "2 changes refused")
-  }
-
-  @Test func onlyAWorkingDotPulsesAndReduceMotionStopsIt() {
-    for band in [AttentionBand.needsInput, .unread, .quiet] {
-      #expect(!AttentionDot.pulses(band: band, reduceMotion: false))
-    }
-    #expect(AttentionDot.pulses(band: .working, reduceMotion: false))
-    #expect(!AttentionDot.pulses(band: .working, reduceMotion: true))
-  }
-
-  @Test func theWorkingRingStaysAsDarkAsTheQuietRingAtItsPaleSidePhase() {
-    // Ink at the pulse floor over the page background versus the muted quiet ring, light and dark.
-    func blend(_ ink: UInt32, over bg: UInt32) -> Double {
-      let f = AttentionDot.pulseFloor
-      func channel(_ shift: UInt32) -> Double {
-        Double((ink >> shift) & 0xFF) * f + Double((bg >> shift) & 0xFF) * (1 - f)
-      }
-      return 0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
-    }
-    func lum(_ hex: UInt32) -> Double {
-      0.2126 * Double((hex >> 16) & 0xFF) + 0.7152 * Double((hex >> 8) & 0xFF) + 0.0722 * Double(hex & 0xFF)
-    }
-    let light = LLA.Palette.self
-    // Light: a paler ring has higher luminance; allow a few levels of slack for the thicker stroke.
-    #expect(blend(light.ink.light, over: light.surface.light) <= lum(light.muted.light) + 12)
-    // Dark: a paler ring has lower luminance.
-    #expect(blend(light.ink.dark, over: light.surface.dark) >= lum(light.muted.dark) - 12)
   }
 
   @Test func aListFailureShowsInTheSidebarUnlessTheDetailAlreadyShowsIt() async throws {

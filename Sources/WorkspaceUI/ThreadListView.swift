@@ -13,18 +13,6 @@ enum CollapsedEnvironments {
   static func encode(_ ids: Set<String>) -> String { ids.sorted().joined(separator: ",") }
 }
 
-extension AttentionBand {
-  /// What the status dot says to VoiceOver: the dot carries the band, so it needs a name.
-  var dotLabel: String {
-    switch self {
-    case .needsInput: return "Needs your input"
-    case .unread: return "Unread reply"
-    case .working: return "Working"
-    case .quiet: return "Quiet"
-    }
-  }
-}
-
 extension WorkspaceModel {
   /// The display name of the environment a thread belongs to; nil for "No folder".
   func environmentName(for thread: ConversationThread) -> String? {
@@ -32,9 +20,13 @@ extension WorkspaceModel {
     return environments.first { $0.id == id }?.displayName
   }
 
-  /// A read reply exists to un-read only when the thread is quiet and has a latest turn.
+  /// A read reply exists to un-read only when the thread has a latest turn, it ended, and it was read:
+  /// quiet, or failed and read (a failure stays failed once read, but un-reading it puts it back in
+  /// the badge).
   func canMarkUnread(_ thread: ConversationThread) -> Bool {
-    band(of: thread) == .quiet && thread.activity?.latestTurnId != nil
+    guard let latest = thread.activity?.latestTurnId else { return false }
+    let state = state(of: thread)
+    return state == .quiet || (state == .failed && thread.readTurnId == latest)
   }
 
   /// Environments for the filter menu: the one with the newest thread activity first, environments without
@@ -129,68 +121,12 @@ struct SidebarErrorBanner: View {
   }
 }
 
-// MARK: - Status dot
-
-/// The attention band as an 8 pt dot (D-036, one accent): needs input is the accent, filled; unread is
-/// ink, filled; working is an ink ring that breathes unless Reduce Motion is on; quiet is a small
-/// muted hollow ring. The band is also the accessibility label, so colour is never the only signal.
-public struct AttentionDot: View {
-  let band: AttentionBand
-
-  public init(band: AttentionBand) { self.band = band }
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var dim = false
-  /// 8 pt at the default size; it grows with the row's text so it stays legible beside it.
-  @ScaledMetric(relativeTo: .body) private var size: CGFloat = 8
-
-  /// The lowest opacity of a working ring. A working ring (ink, 8 pt, 1.5 pt stroke) must never read
-  /// paler than a quiet ring (muted, 6 pt, 1 pt stroke), so the pulse stops well short of faint.
-  static let pulseFloor = 0.65
-
-  /// Whether the dot animates: only a working thread, and never under Reduce Motion.
-  static func pulses(band: AttentionBand, reduceMotion: Bool) -> Bool {
-    band == .working && !reduceMotion
-  }
-
-  private var pulses: Bool { Self.pulses(band: band, reduceMotion: reduceMotion) }
-
-  public var body: some View {
-    ZStack {
-      switch band {
-      case .needsInput:
-        Circle().fill(LLA.Color.accent)
-      case .unread:
-        Circle().fill(LLA.Color.ink)
-      case .working:
-        Circle().strokeBorder(LLA.Color.ink, lineWidth: 1.5).opacity(pulses && dim ? Self.pulseFloor : 1)
-      case .quiet:
-        Circle().strokeBorder(LLA.Color.muted, lineWidth: 1).frame(width: size * 0.75, height: size * 0.75)
-      }
-    }
-    .frame(width: size, height: size)
-    // Keyed by whether the dot pulses, not by appearance: a row keeps its identity when its band
-    // changes in place, and Reduce Motion can change while it is on screen. Each change resets the
-    // phase first, so a ring that goes working, quiet, working starts again at full opacity.
-    .task(id: pulses) {
-      var reset = Transaction()
-      reset.disablesAnimations = true
-      withTransaction(reset) { dim = false }
-      guard pulses else { return }
-      try? await Task.sleep(for: .milliseconds(30))
-      guard !Task.isCancelled else { return }
-      withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { dim = true }
-    }
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(band.dotLabel)
-  }
-}
-
 // MARK: - Rows
 
-/// One list row: the band dot, the title, and the runtime's ghosted mark (and a pin on the iPhone,
-/// whose flat list has no Pinned group). Why it sits there and which connection runs it are spoken,
-/// not shown. The context menu holds the organization actions;
-/// archiving never stops a turn (spec 3.3).
+/// One list row on one line: the title, then the state's mark at the trailing edge. The pin, the
+/// runtime, why the thread sits where it does, and which connection runs it are spoken, not shown
+/// (decision 10). The context menu holds the organization actions; archiving never stops a turn
+/// (spec 3.3).
 struct ThreadRow: View {
   @Bindable var model: WorkspaceModel
   let thread: ConversationThread
@@ -199,11 +135,37 @@ struct ThreadRow: View {
   @State private var deleting: ConversationThread?
   @Environment(\.showDetail) private var showDetail
   @Environment(\.dynamicTypeSize) private var typeSize
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// The pointer is over the row (the Mac only).
+  @State private var hovering = false
+
+  #if os(macOS)
+    /// The fill's inset from the sidebar's edges: it spans x 8–232 of the 240 pt column.
+    static let fillInset: CGFloat = LLA.Space.s
+    /// The title's and the mark's inset inside the fill: the title starts at x 16, the mark's box ends
+    /// at x 224.
+    static let contentInset: CGFloat = LLA.Space.s
+    /// The horizontal padding the sidebar puts around its stacks (`SidebarView`); the row reaches past
+    /// it to its own fill inset.
+    private static let sidebarPadding: CGFloat = 10
+  #else
+    /// With the list's 6 pt row inset, the title and the mark sit 16 pt in, on the phone's margin.
+    static let contentInset: CGFloat = 10
+  #endif
+
+  /// The fill's strength, of `surfaceRaised`: full when selected, 60% under the pointer, else none.
+  static func fillOpacity(selected: Bool, hovering: Bool) -> Double {
+    selected ? 1 : hovering ? 0.6 : 0
+  }
+
+  /// Act-level titles (approve, reply, failed) are medium; every other title is regular.
+  static func titleWeight(for state: ThreadState) -> Font.Weight {
+    state.isActLevel ? .medium : .regular
+  }
 
   var body: some View {
-    let band = model.band(of: thread)
+    let state = model.state(of: thread)
     let selected = model.selectedThreadId == thread.id
-    let loud = selected || band == .needsInput || band == .unread
     Button {
       // Select before showing the detail, so the detail coming on screen cannot mark the thread that
       // was open before (still loaded until `openThread` replaces it) read.
@@ -212,31 +174,31 @@ struct ThreadRow: View {
       Task { await model.openThread(id: thread.id) }
     } label: {
       HStack(spacing: LLA.Space.s) {
-        AttentionDot(band: band)
-        Text(thread.title.isEmpty ? "Untitled" : thread.title)
-          .font(loud ? LLAFont.rowStrong : LLAFont.row)
-          .foregroundStyle(LLA.Color.ink)
-          .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
-        Spacer(minLength: LLA.Space.s)
-        #if os(iOS)
-          // Trailing, beside the mark, so every title starts on the same edge.
-          if thread.pinned {
-            Image(systemName: "pin.fill").font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
-              .accessibilityHidden(true)
-          }
-        #endif
-        if let kind = model.connection(id: thread.connectionId)?.kind { RuntimeMark(kind: kind) }
+        title(state: state)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        ThreadMark(state: state, acknowledged: model.isAcknowledged(thread))
       }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 6)
-      .frame(minHeight: LLA.Metrics.row)
+      .padding(.horizontal, Self.contentInset)
+      #if os(iOS)
+        .padding(.vertical, 6)
+      #endif
+      .frame(minHeight: LLA.Metrics.threadRow)
       .background(
         RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
-          .fill(selected ? LLA.Color.surfaceRaised : .clear)
+          .fill(LLA.Color.surfaceRaised.opacity(Self.fillOpacity(selected: selected, hovering: hovering)))
       )
+      // On the fill's frame, so the trace follows its rounded edge (x 8–232 on the Mac).
+      .arrivalTrace(model.arrival(for: thread), reduceMotion: reduceMotion)
       .contentShape(Rectangle())
+      #if os(macOS)
+        .onHover { hovering = $0 }
+      #endif
     }
     .buttonStyle(.llaRow)
+    #if os(macOS)
+      // Outside the button, so the pressed fill spans the same 8–232 as the selection.
+      .padding(.horizontal, Self.fillInset - Self.sidebarPadding)
+    #endif
     .accessibilityIdentifier("thread-row")
     .accessibilityValue(model.threadState(thread).rawValue)
     .accessibilityLabel(Self.accessibilityLabel(model: model, thread: thread))
@@ -272,12 +234,35 @@ struct ThreadRow: View {
     }
   }
 
-  /// The title plus what the row no longer prints: whether it is pinned, the reason it sits where it
-  /// does, the connection, and the connection's trouble when it is offline or errored.
+  /// The title, in the state's weight and colour: a working title shimmers, a quiet one is muted and
+  /// fades with age. The text itself never blinks.
+  private func title(state: ThreadState) -> some View {
+    Text(thread.title.isEmpty ? "Untitled" : thread.title)
+      .font(Self.titleWeight(for: state) == .medium ? LLAFont.rowMedium : LLAFont.row)
+      .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
+      .workingShimmer(active: state == .working)
+      .foregroundStyle(state == .quiet ? LLA.Color.muted : LLA.Color.ink)
+      .opacity(state == .quiet ? quietOpacity : 1)
+  }
+
+  /// A quiet title's fade, by the age of the thread's last activity (or its creation, without any).
+  private var quietOpacity: Double {
+    guard let date = Timestamp.date(from: thread.activity?.lastActivityAt ?? thread.createdAt) else {
+      return 1
+    }
+    return QuietFade.opacity(ageInDays: model.now().timeIntervalSince(date) / 86_400)
+  }
+
+  /// The title plus what the row no longer prints: whether it is pinned, the state its mark draws,
+  /// the reason it sits where it does, the connection, and the connection's trouble when it is offline
+  /// or errored. The state is left out where the reason already starts with it ("Failed 3 min. ago").
   static func accessibilityLabel(model: WorkspaceModel, thread: ConversationThread) -> String {
     var parts = thread.pinned ? ["Pinned"] : []
     parts.append(thread.title.isEmpty ? "Untitled" : thread.title)
-    parts.append(model.reasonLine(for: thread))
+    let spoken = model.state(of: thread).spokenLabel
+    let reason = model.reasonLine(for: thread)
+    if !reason.hasPrefix(spoken) { parts.append(spoken) }
+    parts.append(reason)
     parts.append(model.connection(id: thread.connectionId)?.label ?? "Unknown connection")
     let state = model.threadState(thread)
     if [.reconnecting, .error, .unknown, .stopping].contains(state) { parts.append(state.label) }
@@ -318,7 +303,8 @@ struct ThreadListView: View {
   }
 }
 
-/// The phone's rows: pinned threads first, then the rest, no band headings (the dots carry the band).
+/// The phone's rows in attention order: by state, pinned first inside each, no state headings (the marks
+/// carry the state).
 /// Meant to sit inside a `List`; it supplies the swipe actions.
 struct FlatThreadRows: View {
   @Bindable var model: WorkspaceModel
@@ -382,13 +368,12 @@ struct FlatThreadList: View {
 // MARK: - The Mac sections
 
 #if os(macOS)
-  /// The Mac sidebar's list: Pinned, then a collapsible section per environment, "No folder" last, the
-  /// archive while More's switch is on, and "New Environment…" at the end. Plain stacks, not `List`: a List drew nothing
-  /// in the macOS 26 split-view sidebar (see `SidebarView`).
+  /// The Mac sidebar's list: Pinned, then a collapsible section per environment, "No folder" last, and
+  /// the archive while view options' switch is on. Plain stacks, not `List`: a List drew nothing in the
+  /// macOS 26 split-view sidebar (see `SidebarView`).
   struct EnvironmentSectionsView: View {
     @Bindable var model: WorkspaceModel
     @Binding var collapsed: Set<String>
-    @State private var creating = false
     @State private var renaming: WorkEnvironment?
     @State private var deleting: WorkEnvironment?
     @State private var folderTarget: WorkEnvironment?
@@ -403,27 +388,13 @@ struct FlatThreadList: View {
         }
         if !pinned.isEmpty {
           SidebarGroupLabel("Pinned")
-          ForEach(pinned) { ThreadRow(model: model, thread: $0) }
+          rows(pinned)
         }
         ForEach(sections) { section in
           sectionView(section)
         }
         archive
-        Button {
-          creating = true
-        } label: {
-          Text("New Environment…")
-            .font(LLAFont.small).foregroundStyle(LLA.Color.muted)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.top, LLA.Space.m)
-        .accessibilityIdentifier("new-environment")
       }
-      .sheet(isPresented: $creating) { NewEnvironmentSheet(model: model) }
       .sheet(item: $renaming) { RenameEnvironmentSheet(model: model, environment: $0) }
       .confirmationDialog(
         deleting.map { "Delete \u{201C}\($0.displayName)\u{201D}?" } ?? "Delete environment?",
@@ -448,9 +419,10 @@ struct FlatThreadList: View {
       VStack(alignment: .leading, spacing: 2) {
         header(section, isCollapsed: isCollapsed)
         if !isCollapsed {
-          ForEach(section.threads) { ThreadRow(model: model, thread: $0) }
           if section.threads.isEmpty {
             Text("No threads.").llaSmallMuted().padding(.horizontal, 10).padding(.vertical, 4)
+          } else {
+            rows(section.threads)
           }
         }
       }
@@ -459,9 +431,11 @@ struct FlatThreadList: View {
 
     private func header(_ section: EnvironmentSection, isCollapsed: Bool) -> some View {
       let environment = model.environments.first { $0.id == section.id }
-      // A collapsed section still shows a dot when something inside is waiting or unread.
-      let urgent = section.threads.map { model.band(of: $0) }.min().flatMap {
-        $0 == .needsInput || $0 == .unread ? $0 : nil
+      // A collapsed section still shows the most urgent mark of a top-list thread inside; an approve
+      // mark pulses until every approve thread in it has been opened.
+      let urgent = section.threads.map { model.state(of: $0) }.min().flatMap { $0.isTopList ? $0 : nil }
+      let acknowledged = section.threads.allSatisfy {
+        model.state(of: $0) != urgent || model.isAcknowledged($0)
       }
       return Button {
         if isCollapsed { collapsed.remove(section.id) } else { collapsed.insert(section.id) }
@@ -472,7 +446,7 @@ struct FlatThreadList: View {
             .frame(width: 10)
           Text(section.title).font(LLAFont.smallStrong).foregroundStyle(LLA.Color.ink).lineLimit(1)
           Spacer(minLength: 0)
-          if isCollapsed, let urgent { AttentionDot(band: urgent) }
+          if isCollapsed, let urgent { ThreadMark(state: urgent, acknowledged: acknowledged) }
           Text("\(section.threads.count)").font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
         }
         .padding(.horizontal, 10)
@@ -497,14 +471,20 @@ struct FlatThreadList: View {
       }
     }
 
-    /// The archived threads, listed last while More's "Show archived" is on.
+    /// Thread rows, touching: no gap between one row's fill and the next.
+    private func rows(_ threads: [ConversationThread]) -> some View {
+      VStack(spacing: 0) { ForEach(threads) { ThreadRow(model: model, thread: $0) } }
+    }
+
+    /// The archived threads, listed last while view options' "Show archived" is on.
     @ViewBuilder private var archive: some View {
       if model.showArchived {
         SidebarGroupLabel("Archived")
         if model.archivedThreads.isEmpty {
           Text("No archived threads.").llaSmallMuted().padding(.horizontal, 10).padding(.vertical, 6)
+        } else {
+          rows(model.archivedThreads)
         }
-        ForEach(model.archivedThreads) { ThreadRow(model: model, thread: $0) }
       }
     }
   }

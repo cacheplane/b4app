@@ -120,7 +120,7 @@ extension WorkspaceModel {
   public var newThreadDisabledReason: String? { listNotice?.text }
 
   /// "Not confirmed while your Mac is offline" for a turn the mirror still shows as active on a Mac
-  /// that is offline, instead of a working spinner. Its band stays as synced.
+  /// that is offline, instead of a working spinner. Its state stays as synced.
   public func activeTurnLabel(for thread: ConversationThread) -> String? {
     guard
       activeTurns[thread.id] != nil || (detail?.thread.id == thread.id && detail?.activeTurn != nil)

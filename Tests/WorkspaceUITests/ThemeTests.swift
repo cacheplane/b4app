@@ -92,6 +92,31 @@ import Testing
     #expect(LLAFonts.isAvailable(LLAFonts.monoRegular))
   }
 
+  @Test func theMediumFaceIsBundledAndRegisters() {
+    #expect(LLAFonts.register() == true)
+    #expect(LLAFonts.isAvailable(LLAFonts.sansMedium))
+  }
+
+  @Test func mediumWeightUsesTheMediumFace() {
+    #expect(LLAFont.sansFace(weight: .medium, boldText: false, registered: true) == LLAFonts.sansMedium)
+    #expect(LLAFont.sansFace(weight: .regular, boldText: false, registered: true) == LLAFonts.sansRegular)
+    #expect(LLAFont.sansFace(weight: .semibold, boldText: false, registered: true) == LLAFonts.sansSemiBold)
+    // Bold Text lifts every weight to semibold.
+    #expect(LLAFont.sansFace(weight: .medium, boldText: true, registered: true) == LLAFonts.sansSemiBold)
+  }
+
+  @Test func mediumFallsBackToTheSystemFontWhenRegistrationFails() throws {
+    let empty = try #require(Bundle(path: NSTemporaryDirectory()))
+    let registered = LLAFonts.register(bundle: empty)
+    #expect(registered == false)
+    #expect(LLAFont.sansFace(weight: .medium, boldText: false, registered: registered) == nil)
+  }
+
+  @Test func workingIsTheSameLimeInBothModes() {
+    #expect(LLA.Palette.working.light == 0xB4CE37)
+    #expect(LLA.Palette.working.dark == 0xB4CE37)
+  }
+
   @Test func fallsBackWhenMissing() throws {
     let empty = try #require(Bundle(path: NSTemporaryDirectory()))
     #expect(LLAFonts.register(bundle: empty) == false)

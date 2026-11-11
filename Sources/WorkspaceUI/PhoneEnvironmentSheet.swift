@@ -301,7 +301,8 @@ final class PhoneEnvironmentDraft {
 
 /// The phone's New environment and Edit environment: the Mac (only when there are several, for a new
 /// environment), the name, the folders with the Mac's own folders offered, and a typed path. Mounted by
-/// the root view on the phone; the Mac keeps `NewEnvironmentSheet` and its sidebar menus.
+/// the root view on the phone. The Mac has no New environment (an environment is made when a folder is
+/// first used) and keeps its sidebar section menus.
 struct PhoneEnvironmentSheet: View {
   @Bindable var model: WorkspaceModel
   @State private var draft: PhoneEnvironmentDraft

@@ -70,7 +70,7 @@ private final class SplitRefreshHub: HubAPI {
     #expect(caughtUp)
     #expect(store.cursor == 13)
     #expect(glance.rows.map(\.threadId) == ["thread-1"])
-    #expect(glance.rows.first?.band == .needsInput)
+    #expect(glance.rows.first?.state == .approve)
     #expect(hub.waits.withLock { $0.filter { $0.after == 1 }.allSatisfy { $0.wait == 0 } })
     await sync.stop()
     await running.value
@@ -112,7 +112,7 @@ private final class SplitRefreshHub: HubAPI {
     #expect(await refresh.value)
     await sync.suspend()
     #expect(store.cursor == 13)
-    #expect(try MirrorGlance.load(store: store).rows.first?.band == .needsInput)
+    #expect(try MirrorGlance.load(store: store).rows.first?.state == .approve)
     await sync.stop()
     await running.value
   }
@@ -131,7 +131,7 @@ private final class SplitRefreshHub: HubAPI {
     #expect(await refresh.value)
     await sync.suspend()
     #expect(store.cursor == 13)
-    #expect(try MirrorGlance.load(store: store).rows.first?.band == .needsInput)
+    #expect(try MirrorGlance.load(store: store).rows.first?.state == .approve)
     await sync.stop()
     await running.value
   }

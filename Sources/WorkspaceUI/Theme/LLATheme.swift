@@ -52,6 +52,8 @@ public enum LLA {
     public static let accent = Dynamic(light: 0x002FA7, dark: 0x7F98E0)
     public static let accentHover = Dynamic(light: 0x00247F, dark: 0xA3B5EA)
     public static let danger = Dynamic(light: 0x962E1F, dark: 0xE07A6A)
+    /// The working mark's arc: the same lime in both modes.
+    public static let working = Dynamic(light: 0xB4CE37, dark: 0xB4CE37)
     public static let codeBg = Dynamic(light: 0x0D0D0D, dark: 0x161617)
     public static let codeFg = Dynamic(light: 0xECECEC, dark: 0xECECEC)
     public static let selection = Dynamic(light: 0xD9E0F5, dark: 0x1F2A4D)
@@ -69,6 +71,7 @@ public enum LLA {
     public static let accent = Palette.accent.color
     public static let accentHover = Palette.accentHover.color
     public static let danger = Palette.danger.color
+    public static let working = Palette.working.color
     public static let codeBg = Palette.codeBg.color
     public static let codeFg = Palette.codeFg.color
     public static let selection = Palette.selection.color
@@ -97,15 +100,23 @@ public enum LLA {
       public static let control: CGFloat = 30
       /// The least height of a tappable row. The Mac draws rows at their content height.
       public static let row: CGFloat = 0
+      /// A thread row: one 16 pt line in a 28 pt row, rows touching.
+      public static let threadRow: CGFloat = 28
       /// Side margin of a page, the transcript, and the composer.
       public static let margin: CGFloat = Space.xl
     #else
       /// Apple's minimum hit target on iPhone, 44 by 44 pt (HIG, Accessibility; D-060).
       public static let control: CGFloat = 44
       public static let row: CGFloat = 44
+      /// A thread row's least height; Dynamic Type grows it.
+      public static let threadRow: CGFloat = 44
       /// The iPhone's system layout margin, 16 pt, so pages line up with lists and the navigation bar.
       public static let margin: CGFloat = Space.l
     #endif
+    /// The Mac sidebar column's fixed width.
+    public static let sidebarWidth: CGFloat = 240
+    /// The box a thread's state mark is drawn in, at the default text size (`ThreadMark`).
+    public static let mark: CGFloat = 12
     /// Reading column for transcripts and long copy.
     public static let column: CGFloat = 720
     /// The smallest window the macOS app allows; the thread detail must fit inside it at any

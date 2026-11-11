@@ -41,14 +41,17 @@ private func remove(_ path: String) {
   @Test func loadsTheTopThreeInAttentionOrderWithEnvironmentNames() throws {
     let path = tempPath()
     defer { remove(path) }
-    let (store, fixture) = try seededStore(at: path, link: link)
+    let (store, _) = try seededStore(at: path, link: link)
     let glance = try MirrorGlance.load(store: store)
     #expect(glance.linked)
-    #expect(glance.rows.map(\.threadId) == Array(fixture.expected.order.prefix(3)))
-    #expect(glance.rows.map(\.pinned) == [true, true, false])
-    #expect(glance.rows.map(\.environmentName) == ["Alpha", nil, "beta"])
+    // State first (decision 5): the two approvals and the failure come before the pinned threads.
+    #expect(glance.rows.map(\.threadId) == ["t-ask-request-late", "t-ask-turn-late", "t-failed-unread"])
+    #expect(glance.rows.map(\.state) == [.approve, .approve, .failed])
+    #expect(glance.rows.map(\.pinned) == [false, false, false])
+    #expect(glance.rows.map(\.environmentName) == ["beta", nil, nil])
     let ordered = Attention.ordered(try store.threads(includeArchived: false, connectionId: nil, query: nil))
-    #expect(glance.rows.map(\.band) == ordered.prefix(3).map { Attention.band(of: $0) })
+    #expect(glance.rows.map(\.threadId) == ordered.prefix(3).map(\.id))
+    #expect(glance.rows.map(\.state) == ordered.prefix(3).map { Attention.state(of: $0) })
     #expect(glance.rows.map(\.title) == ordered.prefix(3).map(\.title))
     #expect(try MirrorGlance.load(store: store, limit: 5).rows.count == 5)
   }
@@ -56,12 +59,49 @@ private func remove(_ path: String) {
   @Test func archivedThreadsAreLeftOut() throws {
     let path = tempPath()
     defer { remove(path) }
-    let (store, fixture) = try seededStore(at: path, link: link)
-    #expect(MirrorGlance.load(path: path).rows.first?.threadId == "t-pinned-working")
-    _ = try store.apply([change("threads", "t-pinned-working", "update", column: "archived", value: true)])
+    let (store, _) = try seededStore(at: path, link: link)
+    #expect(MirrorGlance.load(path: path).rows.first?.threadId == "t-ask-request-late")
+    _ = try store.apply([change("threads", "t-ask-request-late", "update", column: "archived", value: true)])
     let glance = try MirrorGlance.load(store: store)
-    #expect(glance.rows.map(\.threadId) == Array(fixture.expected.order.dropFirst().prefix(3)))
+    #expect(glance.rows.map(\.threadId) == ["t-ask-turn-late", "t-failed-unread", "t-unread-b"])
     #expect(MirrorGlance.load(path: path) == glance)
+  }
+
+  /// Read failures stay failed and rank above finished, but the badge does not count them: the glance
+  /// lists what the badge counts first, so they cannot fill its rows. The list's order is unchanged.
+  @Test func theGlanceListsWhatTheBadgeCountsFirst() throws {
+    let store = try MirrorStore.inMemory()
+    let connection = Connection(
+      id: "c1", kind: .codex, label: "Codex", target: "/usr/bin/codex", createdAt: "2026-10-31T05:00:00Z",
+      updatedAt: "2026-10-31T05:00:00Z")
+    var changes = [change("connections", "c1", "insert", value: try JSONValue(encoding: connection))]
+    func add(_ id: String, outcome: TurnOutcome, read: Bool, minute: Int) throws {
+      let at = String(format: "2026-10-31T10:%02d:00Z", minute)
+      let thread = ConversationThread(
+        id: id, connectionId: "c1", nativeThreadId: "n-\(id)", title: id, createdAt: at, updatedAt: at,
+        readTurnId: read ? "u-\(id)" : nil)
+      let turn = Turn(
+        id: "u-\(id)", threadId: id, operationId: "op-\(id)", status: .terminal, submission: .acknowledged,
+        outcome: outcome, createdAt: at, updatedAt: at)
+      changes.append(change("threads", id, "insert", value: try JSONValue(encoding: thread)))
+      changes.append(change("turns", turn.id, "insert", value: try JSONValue(encoding: turn)))
+    }
+    for (index, id) in ["failed-1", "failed-2", "failed-3"].enumerated() {
+      try add(id, outcome: .failed, read: true, minute: 10 + index)
+    }
+    try add("finished-1", outcome: .completed, read: false, minute: 1)
+    try add("finished-2", outcome: .completed, read: false, minute: 2)
+    let batch = try store.apply(changes)
+    #expect(batch.skipped == 0)
+
+    let threads = try store.threads(includeArchived: false, connectionId: nil, query: nil)
+    // The list: the failures first.
+    #expect(Attention.ordered(threads).prefix(3).allSatisfy { Attention.state(of: $0) == .failed })
+    #expect(threads.filter(Attention.countsTowardBadge).map(\.id).sorted() == ["finished-1", "finished-2"])
+
+    let glance = try MirrorGlance.load(store: store)
+    #expect(glance.rows.map(\.threadId) == ["finished-2", "finished-1", "failed-3"])
+    #expect(glance.rows.map(\.state) == [.finished, .finished, .failed])
   }
 
   @Test func pathFormReadsTheSameFileReadOnly() throws {

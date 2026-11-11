@@ -1,8 +1,9 @@
 import SwiftUI
 import WorkspaceProtocol
 
-/// The sidebar on both platforms. On the Mac, New thread, Search, and More are rows above the threads
-/// and the profile button is at the bottom. On the iPhone the profile menu leads the navigation bar,
+/// The sidebar on both platforms. On the Mac, view options, search, and new thread are icon buttons in
+/// the sidebar's top bar (`TopBarButton`), the threads fill the column, and the profile button is at
+/// the bottom. On the iPhone the profile menu leads the navigation bar,
 /// the filter menu and a search button (for the Search sheet) trail it, and a "New thread"
 /// field sits at the bottom (D-053; the new-thread composer spec, "The iPhone"), so the list starts
 /// at the top. No surfaces: Connections, B4 projects, and Diagnostics live in Settings, reached from the
@@ -12,6 +13,9 @@ struct SidebarView: View {
   /// The phone's "Connect your Mac", which takes the list's place while the account has no Mac.
   @Environment(\.connectMacContent) private var connectMacContent
   @Environment(\.workspaceStatusBanner) private var statusBanner
+  #if os(macOS)
+    @Environment(\.sidebarVisibility) private var visibility
+  #endif
 
   var body: some View {
     shown
@@ -45,34 +49,6 @@ struct SidebarView: View {
     }
   }
 
-  /// New thread, Search, More (the Mac's rows). New thread is off while no environment's Mac can take a
-  /// thread: all offline, or left the hub (the list's notice says why). Search and More stay, since
-  /// every thread is still browsable.
-  #if os(macOS)
-    private var actionRows: some View {
-      VStack(alignment: .leading, spacing: 2) {
-        // Selected while the pane is the new-thread composer, as a thread row is while it is open.
-        SidebarActionRow(
-          title: "New thread", systemImage: "square.and.pencil", shortcut: shortcut("⌘N"),
-          selected: model.selectedThreadId == nil && model.newThreadEntryReason == nil
-        ) {
-          Task { await model.openNewThread() }
-        }
-        .disabled(model.newThreadEntryReason != nil)
-        .help(model.newThreadEntryReason ?? "Start a new thread")
-        .accessibilityIdentifier("new-thread-toolbar")
-        SidebarActionRow(title: "Search", systemImage: "magnifyingglass", shortcut: shortcut("⌘K")) {
-          model.showSearch = true
-        }
-        .keyboardShortcut("k")
-        .accessibilityIdentifier("sidebar-search")
-        MoreMenu(model: model)
-      }
-    }
-
-    private func shortcut(_ text: String) -> String? { text }
-  #endif
-
   /// The Mac left the hub, or the primary Mac is offline: a persistent notice above the list, which
   /// stays browsable (M8c; this replaced M8b's empty state).
   @ViewBuilder private var listNotice: some View {
@@ -90,17 +66,20 @@ struct SidebarView: View {
     // nothing on macOS 26 (seen in the app and reproduced by `SnapshotTests` in root mode).
     private var content: some View {
       VStack(alignment: .leading, spacing: 0) {
-        actionRows
-          .padding(.horizontal, 10)
-          .padding(.top, LLA.Space.s)
-          .padding(.bottom, LLA.Space.m)
         listNotice
         ScrollView {
           ThreadListView(model: model)
             .padding(.horizontal, 10)
+            .padding(.top, LLA.Space.s)
             .padding(.bottom, LLA.Space.l)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+      }
+      // The top bar: a flexible space after the traffic lights, then view options, search, and new
+      // thread; the system's sidebar toggle follows.
+      .toolbar {
+        ToolbarSpacer(.flexible)
+        TopBarItems(model: model, buttons: TopBarButton.sidebar(visibility))
       }
     }
   #else
@@ -124,7 +103,7 @@ struct SidebarView: View {
       .navigationTitle(model.environmentFilter == .all ? "Threads" : model.filterTitle)
       .toolbar {
         ToolbarItemGroup(placement: .topBarTrailing) {
-          MoreMenu(model: model, inToolbar: true)
+          MoreMenu(model: model)
           Button("Search", systemImage: "magnifyingglass") { model.showSearch = true }
             .accessibilityIdentifier("list-search")
         }
@@ -159,8 +138,8 @@ struct SidebarGroupLabel: View {
   }
 }
 
-/// A sidebar row's face: an SF Symbol in ink, the title, and an optional muted trailing note (a
-/// shortcut, or the More menu's active filter). Raised when selected.
+/// A sidebar row's face: an SF Symbol in ink, the title, and an optional muted trailing note. Raised
+/// when selected.
 struct SidebarRowLabel: View {
   let title: String
   let systemImage: String
@@ -225,19 +204,12 @@ struct SidebarActionRow: View {
   }
 }
 
-/// "More": the list's view options for now, and the place for future app features. On the Mac, the
-/// archive switch and the connection filter; on the iPhone, the environment filter (which includes the
-/// archive) and the connection filter.
+/// The list's view options, a menu behind a toolbar button on both platforms. On the Mac, the top
+/// bar's view-options button (`TopBarButton.viewOptions`) with the archive switch and the connection
+/// filter; on the iPhone, the navigation bar's filter button with the environment filter (which
+/// includes the archive), New Environment, and the connection filter.
 struct MoreMenu: View {
   @Bindable var model: WorkspaceModel
-
-  /// The iPhone's navigation bar shows the menu as a filter button rather than a sidebar row.
-  let inToolbar: Bool
-
-  init(model: WorkspaceModel, inToolbar: Bool = false) {
-    self.model = model
-    self.inToolbar = inToolbar
-  }
 
   var body: some View {
     Menu {
@@ -270,7 +242,11 @@ struct MoreMenu: View {
         connectionPicker
       #endif
     } label: {
-      if inToolbar {
+      #if os(macOS)
+        // Filled and in ink while a connection is picked or archived threads show.
+        TopBarLabel(button: .viewOptions, filtered: model.viewOptionsFiltered)
+          .accessibilityValue(activeFilter ?? "None")
+      #else
         // Filled while a filter narrows the list, as the iPhone's own apps show it.
         Label(
           "Filter",
@@ -278,13 +254,17 @@ struct MoreMenu: View {
             ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill"
         )
         .accessibilityValue(activeFilter ?? "None")
-      } else {
-        SidebarRowLabel(title: "More", systemImage: "ellipsis", trailing: activeFilter)
-      }
+      #endif
     }
     .menuIndicator(.hidden)
-    .modifier(SidebarMenuStyle(inToolbar: inToolbar))
-    .accessibilityIdentifier("sidebar-more")
+    #if os(macOS)
+      // The menu's button sizes itself to the symbol; this gives it the other buttons' 28 pt target.
+      .frame(width: TopBarButton.side, height: TopBarButton.side)
+      .contentShape(Rectangle())
+      .accessibilityIdentifier(TopBarButton.viewOptions.identifier)
+    #else
+      .accessibilityIdentifier("sidebar-more")
+    #endif
   }
 
   @ViewBuilder private var connectionPicker: some View {
@@ -300,7 +280,7 @@ struct MoreMenu: View {
     }
   }
 
-  /// What the menu narrows the list to, if anything, shown muted beside "More".
+  /// What the menu narrows the list to, if anything (the button's accessibility value).
   private var activeFilter: String? {
     var parts: [String] = []
     #if os(iOS)
@@ -318,12 +298,4 @@ struct MoreMenu: View {
       return model.filterEnvironments.first { $0.id == id }
     }
   #endif
-}
-
-/// A sidebar row's plain look for the More row; the toolbar's own button look for the filter button.
-private struct SidebarMenuStyle: ViewModifier {
-  let inToolbar: Bool
-  func body(content: Content) -> some View {
-    if inToolbar { content } else { content.buttonStyle(.plain) }
-  }
 }

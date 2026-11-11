@@ -226,9 +226,10 @@ public final class MirrorStore: @unchecked Sendable {
   }
 
   /// Every thread column, the owner's device name from `devices`, and `activity`: the latest turn
-  /// (greatest `createdAt`, ties by greatest `id`), the count of pending runtime requests, and the
-  /// newest of the thread's `createdAt` and its latest turn's and latest request's `updatedAt`, all
-  /// compared bytewise, the same as the Mac's query. Callers append a WHERE clause on `t`.
+  /// (greatest `createdAt`, ties by greatest `id`), the count of pending runtime requests and of those
+  /// that ask for approval (`RuntimeRequestKind.isApproval`), and the newest of the thread's
+  /// `createdAt` and its latest turn's and latest request's `updatedAt`, all compared bytewise, the
+  /// same as the Mac's query. Callers append a WHERE clause on `t`.
   static let threadWithActivity = """
     SELECT t.*, d."name" AS "ownerDeviceName", json_object(
       'latestTurnId', lt."id",
@@ -236,6 +237,9 @@ public final class MirrorStore: @unchecked Sendable {
       'latestTurnOutcome', lt."outcome",
       'pendingRequests', (
         SELECT count(*) FROM "runtimeRequests" WHERE "threadId" = t."id" AND "state" = 'pending'),
+      'pendingApprovals', (
+        SELECT count(*) FROM "runtimeRequests" WHERE "threadId" = t."id" AND "state" = 'pending'
+          AND "kind" IN ('command_approval', 'file_change_approval', 'tool_permission')),
       'lastActivityAt', max(
         t."createdAt", coalesce(lt."updatedAt", ''),
         coalesce((SELECT max("updatedAt") FROM "runtimeRequests" WHERE "threadId" = t."id"), ''))
