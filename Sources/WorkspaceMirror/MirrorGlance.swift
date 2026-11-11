@@ -1,18 +1,18 @@
 import Foundation
 import WorkspaceProtocol
 
-/// One line on the widget: a thread, how urgent it is, and the project it belongs to.
+/// One line on the widget: a thread, how urgent it is, and the environment it belongs to.
 public struct GlanceRow: Sendable, Equatable, Codable {
   public var threadId: String
   public var title: String
-  public var projectName: String?
+  public var environmentName: String?
   public var band: AttentionBand
   public var pinned: Bool
 
-  public init(threadId: String, title: String, projectName: String?, band: AttentionBand, pinned: Bool) {
+  public init(threadId: String, title: String, environmentName: String?, band: AttentionBand, pinned: Bool) {
     self.threadId = threadId
     self.title = title
-    self.projectName = projectName
+    self.environmentName = environmentName
     self.band = band
     self.pinned = pinned
   }
@@ -60,16 +60,16 @@ public struct Glance: Sendable, Equatable {
 }
 
 public enum MirrorGlance {
-  /// The first `limit` non-archived threads in attention order (pinned first), with project names, and
+  /// The first `limit` non-archived threads in attention order (pinned first), with environment names, and
   /// the link's state and last sync.
   public static func load(store: MirrorStore, limit: Int = 3) throws -> Glance {
     let threads = Attention.ordered(try store.threads(includeArchived: false, connectionId: nil, query: nil))
     let names = Dictionary(
-      try store.projects().map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
+      try store.environments().map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
     let rows = threads.prefix(max(limit, 0)).map { thread in
       GlanceRow(
         threadId: thread.id, title: thread.title,
-        projectName: thread.projectId.flatMap { names[$0] },
+        environmentName: thread.environmentId.flatMap { names[$0] },
         band: Attention.band(of: thread), pinned: thread.pinned)
     }
     let link = try store.link()

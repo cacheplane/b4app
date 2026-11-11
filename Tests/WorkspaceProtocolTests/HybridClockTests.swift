@@ -118,15 +118,15 @@ import Testing
     #expect(
       SyncColumns.phoneWritable == [
         "threads": ["title", "pinned", "archived", "readTurnId", "userDeletedAt", "model", "permission"],
-        "projects": ["name"],
+        "environments": ["name"],
         "drafts": ["threadId", "text", "updatedAt"],
       ])
     var expected = SyncColumns.phoneWritable
-    expected["threads", default: []].insert("projectId")
+    expected["threads", default: []].insert("environmentId")
     #expect(SyncColumns.clocked == expected)
     #expect(SyncColumns.isPhoneWritable(table: "threads", column: "pinned"))
     #expect(SyncColumns.isPhoneWritable(table: "drafts", column: "text"))
-    #expect(!SyncColumns.isPhoneWritable(table: "threads", column: "projectId"))
+    #expect(!SyncColumns.isPhoneWritable(table: "threads", column: "environmentId"))
     #expect(!SyncColumns.isPhoneWritable(table: "threads", column: "context"))
     #expect(!SyncColumns.isPhoneWritable(table: "turns", column: "status"))
   }

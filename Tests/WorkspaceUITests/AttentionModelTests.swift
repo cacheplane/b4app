@@ -26,7 +26,7 @@ final class ScriptedTransport: WorkspaceTransport {
     var sequence = 0
     var connections: [Connection] = []
     var threads: [ConversationThread] = []
-    var projects: [Project] = []
+    var environments: [WorkEnvironment] = []
     var reads: [String: ThreadRead.Result] = [:]
     var drafts: [String: Draft] = [:]
     var calls: [Call] = []
@@ -63,12 +63,13 @@ final class ScriptedTransport: WorkspaceTransport {
   // Scripting
 
   func set(
-    connections: [Connection]? = nil, threads: [ConversationThread]? = nil, projects: [Project]? = nil
+    connections: [Connection]? = nil, threads: [ConversationThread]? = nil,
+    environments: [WorkEnvironment]? = nil
   ) {
     state.withLock {
       if let connections { $0.connections = connections }
       if let threads { $0.threads = threads }
-      if let projects { $0.projects = projects }
+      if let environments { $0.environments = environments }
     }
   }
 
@@ -190,8 +191,8 @@ final class ScriptedTransport: WorkspaceTransport {
         encoding: EventsSnapshot.Result(
           epoch: epoch, sequence: state.sequence, connections: state.connections, threads: state.threads,
           presence: state.presence))
-    case .projectList?:
-      return try JSONValue(encoding: ProjectList.Result(projects: state.projects))
+    case .environmentList?:
+      return try JSONValue(encoding: EnvironmentList.Result(environments: state.environments))
     case .threadRead?:
       let id = params["threadId"]?.stringValue ?? ""
       guard let read = state.reads[id] else { throw WorkspaceError(.notFound, "no thread \(id)") }
@@ -208,27 +209,27 @@ final class ScriptedTransport: WorkspaceTransport {
       state.threads[index].readTurnId = turnId
       state.reads[id]?.thread.readTurnId = turnId
       return try JSONValue(encoding: ThreadCreate.Result(thread: state.threads[index]))
-    case .projectRename?:
-      let id = params["projectId"]?.stringValue ?? ""
-      guard let index = state.projects.firstIndex(where: { $0.id == id }) else {
-        throw WorkspaceError(.notFound, "no project \(id)")
+    case .environmentRename?:
+      let id = params["environmentId"]?.stringValue ?? ""
+      guard let index = state.environments.firstIndex(where: { $0.id == id }) else {
+        throw WorkspaceError(.notFound, "no environment \(id)")
       }
-      state.projects[index].name = params["name"]?.stringValue ?? ""
-      return try JSONValue(encoding: ProjectCreate.Result(project: state.projects[index]))
-    case .projectCreate?:
-      let project = Project(id: "p-new", name: params["name"]?.stringValue ?? "")
-      state.projects.append(project)
-      return try JSONValue(encoding: ProjectCreate.Result(project: project))
-    case .projectUpdate?:
-      let id = params["projectId"]?.stringValue ?? ""
-      guard let index = state.projects.firstIndex(where: { $0.id == id }) else {
-        throw WorkspaceError(.notFound, "no project \(id)")
+      state.environments[index].name = params["name"]?.stringValue ?? ""
+      return try JSONValue(encoding: EnvironmentCreate.Result(environment: state.environments[index]))
+    case .environmentCreate?:
+      let environment = WorkEnvironment(id: "p-new", name: params["name"]?.stringValue ?? "")
+      state.environments.append(environment)
+      return try JSONValue(encoding: EnvironmentCreate.Result(environment: environment))
+    case .environmentUpdate?:
+      let id = params["environmentId"]?.stringValue ?? ""
+      guard let index = state.environments.firstIndex(where: { $0.id == id }) else {
+        throw WorkspaceError(.notFound, "no environment \(id)")
       }
-      return try JSONValue(encoding: ProjectCreate.Result(project: state.projects[index]))
-    case .projectDelete?:
-      let id = params["projectId"]?.stringValue ?? ""
-      state.projects.removeAll { $0.id == id }
-      return try JSONValue(encoding: ProjectDelete.Result(projectId: id))
+      return try JSONValue(encoding: EnvironmentCreate.Result(environment: state.environments[index]))
+    case .environmentDelete?:
+      let id = params["environmentId"]?.stringValue ?? ""
+      state.environments.removeAll { $0.id == id }
+      return try JSONValue(encoding: EnvironmentDelete.Result(environmentId: id))
     case .hubStatus?:
       return try JSONValue(encoding: state.hub)
     case .hubLeave?:
@@ -261,12 +262,13 @@ private func minutes(_ n: Int) -> String {
 }
 
 private func thread(
-  _ id: String, project: String? = nil, pinned: Bool = false, archived: Bool = false, title: String? = nil,
+  _ id: String, environment: String? = nil, pinned: Bool = false, archived: Bool = false,
+  title: String? = nil,
   readTurnId: String? = nil, activity: ThreadActivity? = nil
 ) -> ConversationThread {
   ConversationThread(
     id: id, connectionId: "c1", nativeThreadId: "n-\(id)", title: title ?? id, pinned: pinned,
-    archived: archived, createdAt: minutes(0), updatedAt: minutes(0), projectId: project,
+    archived: archived, createdAt: minutes(0), updatedAt: minutes(0), environmentId: environment,
     readTurnId: readTurnId, activity: activity)
 }
 
@@ -301,7 +303,9 @@ private func request(
     payload: .object([:]), createdAt: minutes(1), updatedAt: minutes(1))
 }
 
-private func project(_ id: String, _ name: String) -> Project { Project(id: id, name: name) }
+private func environment(_ id: String, _ name: String) -> WorkEnvironment {
+  WorkEnvironment(id: id, name: name)
+}
 
 private func finished(_ turn: Turn) throws -> AdapterEvent {
   AdapterEvent(
@@ -375,33 +379,33 @@ private struct AttentionDocument: Decodable {
     #expect(model.visibleThreads.map(\.id) == document.expected.order)
   }
 
-  @Test func projectSectionsExcludePinnedAndRiseWithUrgency() async throws {
+  @Test func environmentSectionsExcludePinnedAndRiseWithUrgency() async throws {
     let transport = ScriptedTransport()
     transport.set(
       threads: [
         thread(
-          "quiet-a", project: "pa", readTurnId: "u1",
+          "quiet-a", environment: "pa", readTurnId: "u1",
           activity: activity(turn: "u1", status: .terminal, at: 50)),
-        thread("quiet-a2", project: "pa", activity: activity(at: 40)),
-        thread("waiting-b", project: "pb", activity: activity(pending: 1, at: 5)),
-        thread("pinned-b", project: "pb", pinned: true, activity: activity(pending: 1, at: 90)),
+        thread("quiet-a2", environment: "pa", activity: activity(at: 40)),
+        thread("waiting-b", environment: "pb", activity: activity(pending: 1, at: 5)),
+        thread("pinned-b", environment: "pb", pinned: true, activity: activity(pending: 1, at: 90)),
         thread("loose", activity: activity(turn: "u2", status: .running, at: 30)),
-        thread("unread-c", project: "pc", activity: activity(turn: "u3", status: .terminal, at: 20)),
+        thread("unread-c", environment: "pc", activity: activity(turn: "u3", status: .terminal, at: 20)),
         thread(
-          "quiet-c", project: "pc", readTurnId: "u4",
+          "quiet-c", environment: "pc", readTurnId: "u4",
           activity: activity(turn: "u4", status: .terminal, at: 99)),
       ],
-      projects: [project("pa", "Alpha"), project("pb", "Beta"), project("pc", "Gamma")])
+      environments: [environment("pa", "Alpha"), environment("pb", "Beta"), environment("pc", "Gamma")])
     let model = try await connected(transport)
     #expect(model.pinnedThreads.map(\.id) == ["pinned-b"])
     // Beta holds a thread that needs input; Gamma an unread one; Other a working one; Alpha only quiet.
-    #expect(model.projectSections.map(\.id) == ["pb", "pc", "pa", "other"])
-    #expect(model.projectSections.map(\.title) == ["Beta", "Gamma", "Alpha", "Other"])
-    #expect(model.projectSections.flatMap(\.threads).map(\.id).contains("pinned-b") == false)
-    #expect(model.projectSections[0].threads.map(\.id) == ["waiting-b"])
-    #expect(model.projectSections[1].threads.map(\.id) == ["unread-c", "quiet-c"])
-    #expect(model.projectSections[2].threads.map(\.id) == ["quiet-a", "quiet-a2"])
-    #expect(model.projectSections[3].threads.map(\.id) == ["loose"])
+    #expect(model.environmentSections.map(\.id) == ["pb", "pc", "pa", "other"])
+    #expect(model.environmentSections.map(\.title) == ["Beta", "Gamma", "Alpha", "Other"])
+    #expect(model.environmentSections.flatMap(\.threads).map(\.id).contains("pinned-b") == false)
+    #expect(model.environmentSections[0].threads.map(\.id) == ["waiting-b"])
+    #expect(model.environmentSections[1].threads.map(\.id) == ["unread-c", "quiet-c"])
+    #expect(model.environmentSections[2].threads.map(\.id) == ["quiet-a", "quiet-a2"])
+    #expect(model.environmentSections[3].threads.map(\.id) == ["loose"])
   }
 
   @Test func otherComesLastEvenWhenItHoldsTheOnlyThreadThatNeedsInput() async throws {
@@ -409,58 +413,58 @@ private struct AttentionDocument: Decodable {
     transport.set(
       threads: [
         thread("asks", activity: activity(pending: 1, at: 99)),
-        thread("a", project: "pa", activity: activity(at: 1)),
-        thread("b", project: "pb", activity: activity(at: 2)),
+        thread("a", environment: "pa", activity: activity(at: 1)),
+        thread("b", environment: "pb", activity: activity(at: 2)),
       ],
-      projects: [project("pa", "Alpha"), project("pb", "Beta")])
+      environments: [environment("pa", "Alpha"), environment("pb", "Beta")])
     let model = try await connected(transport)
-    #expect(model.projectSections.map(\.id) == ["pb", "pa", "other"])
-    #expect(model.projectSections.last?.threads.map(\.id) == ["asks"])
+    #expect(model.environmentSections.map(\.id) == ["pb", "pa", "other"])
+    #expect(model.environmentSections.last?.threads.map(\.id) == ["asks"])
   }
 
   @Test func sectionsInOneBandBreakTiesByRecentActivityThenTitle() async throws {
     let transport = ScriptedTransport()
     transport.set(
       threads: [
-        thread("a", project: "pa", activity: activity(at: 10)),
-        thread("b", project: "pb", activity: activity(at: 20)),
-        thread("c", project: "pc", activity: activity(at: 20)),
+        thread("a", environment: "pa", activity: activity(at: 10)),
+        thread("b", environment: "pb", activity: activity(at: 20)),
+        thread("c", environment: "pc", activity: activity(at: 20)),
       ],
-      projects: [project("pa", "Alpha"), project("pb", "Zulu"), project("pc", "Bravo")])
+      environments: [environment("pa", "Alpha"), environment("pb", "Zulu"), environment("pc", "Bravo")])
     let model = try await connected(transport)
-    #expect(model.projectSections.map(\.title) == ["Bravo", "Zulu", "Alpha"])
+    #expect(model.environmentSections.map(\.title) == ["Bravo", "Zulu", "Alpha"])
   }
 
-  @Test func aProjectWithoutAnExplicitNameShowsItsFolder() async throws {
+  @Test func aEnvironmentWithoutAnExplicitNameShowsItsFolder() async throws {
     let transport = ScriptedTransport()
-    let auto = Project(
+    let auto = WorkEnvironment(
       id: "pa", name: "",
-      folders: [ProjectFolder(id: "f1", projectId: "pa", path: "/Users/brian/repos/b4app")])
-    transport.set(threads: [thread("a", project: "pa")], projects: [auto])
+      folders: [EnvironmentFolder(id: "f1", environmentId: "pa", path: "/Users/brian/repos/b4app")])
+    transport.set(threads: [thread("a", environment: "pa")], environments: [auto])
     let model = try await connected(transport)
-    #expect(model.projectSections.map(\.title) == ["b4app"])
+    #expect(model.environmentSections.map(\.title) == ["b4app"])
   }
 
-  @Test func projectFilterNarrowsTheList() async throws {
+  @Test func environmentFilterNarrowsTheList() async throws {
     let transport = ScriptedTransport()
     transport.set(
       threads: [
-        thread("in-a", project: "pa", activity: activity(at: 3)),
-        thread("in-b", project: "pb", activity: activity(at: 2)),
+        thread("in-a", environment: "pa", activity: activity(at: 3)),
+        thread("in-b", environment: "pb", activity: activity(at: 2)),
         thread("loose", activity: activity(at: 1)),
-        thread("old", project: "pa", archived: true, activity: activity(at: 4)),
+        thread("old", environment: "pa", archived: true, activity: activity(at: 4)),
       ],
-      projects: [project("pa", "Alpha"), project("pb", "Beta")])
+      environments: [environment("pa", "Alpha"), environment("pb", "Beta")])
     let model = try await connected(transport)
-    #expect(model.projectFilter == .all)
+    #expect(model.environmentFilter == .all)
     #expect(model.orderedThreads.map(\.id) == ["in-a", "in-b", "loose"])
-    model.projectFilter = .project("pa")
+    model.environmentFilter = .environment("pa")
     #expect(model.orderedThreads.map(\.id) == ["in-a"])
-    model.projectFilter = .other
+    model.environmentFilter = .other
     #expect(model.orderedThreads.map(\.id) == ["loose"])
-    model.projectFilter = .archived
+    model.environmentFilter = .archived
     #expect(model.orderedThreads.map(\.id) == ["old"])
-    model.projectFilter = .all
+    model.environmentFilter = .all
     #expect(model.archivedThreads.map(\.id) == ["old"])
   }
 
@@ -818,47 +822,47 @@ private struct AttentionDocument: Decodable {
     #expect(model.band(of: model.threads[0]) == .needsInput)
   }
 
-  @Test func projectCommandsSendTheirParamsAndTheListFollowsProjectChanged() async throws {
+  @Test func environmentCommandsSendTheirParamsAndTheListFollowsEnvironmentChanged() async throws {
     let transport = ScriptedTransport()
-    transport.set(threads: [], projects: [project("pa", "Alpha")])
+    transport.set(threads: [], environments: [environment("pa", "Alpha")])
     let model = try await connected(transport)
-    #expect(model.projects.map(\.id) == ["pa"])
+    #expect(model.environments.map(\.id) == ["pa"])
 
-    await model.renameProject(id: "pa", name: "Renamed")
-    #expect(transport.calls(.projectRename).first?["projectId"]?.stringValue == "pa")
-    #expect(transport.calls(.projectRename).first?["name"]?.stringValue == "Renamed")
-    #expect(model.projects.first?.name == "Renamed")
+    await model.renameEnvironment(id: "pa", name: "Renamed")
+    #expect(transport.calls(.environmentRename).first?["environmentId"]?.stringValue == "pa")
+    #expect(transport.calls(.environmentRename).first?["name"]?.stringValue == "Renamed")
+    #expect(model.environments.first?.name == "Renamed")
 
-    let created = await model.createProject(name: "New", folders: ["/Users/brian/x"])
+    let created = await model.createEnvironment(name: "New", folders: ["/Users/brian/x"])
     #expect(created?.id == "p-new")
     #expect(
-      transport.calls(.projectCreate).first?["folders"]?.arrayValue?.compactMap(\.stringValue) == [
+      transport.calls(.environmentCreate).first?["folders"]?.arrayValue?.compactMap(\.stringValue) == [
         "/Users/brian/x"
       ])
-    #expect(model.projects.map(\.id).contains("p-new"))
+    #expect(model.environments.map(\.id).contains("p-new"))
 
-    await model.addFolder(projectId: "pa", path: "/Users/brian/y")
-    let update = try #require(transport.calls(.projectUpdate).first)
-    #expect(update["projectId"]?.stringValue == "pa")
+    await model.addFolder(environmentId: "pa", path: "/Users/brian/y")
+    let update = try #require(transport.calls(.environmentUpdate).first)
+    #expect(update["environmentId"]?.stringValue == "pa")
     #expect(update["addFolders"]?.arrayValue?.compactMap(\.stringValue) == ["/Users/brian/y"])
 
-    model.projectFilter = .project("pa")
-    await model.deleteProject(id: "pa")
-    #expect(transport.calls(.projectDelete).first?["projectId"]?.stringValue == "pa")
-    #expect(model.projects.map(\.id) == ["p-new"])
-    #expect(model.projectFilter == .all)
+    model.environmentFilter = .environment("pa")
+    await model.deleteEnvironment(id: "pa")
+    #expect(transport.calls(.environmentDelete).first?["environmentId"]?.stringValue == "pa")
+    #expect(model.environments.map(\.id) == ["p-new"])
+    #expect(model.environmentFilter == .all)
 
     // An event from elsewhere (the other device renamed one) refetches the list.
-    transport.set(projects: [project("p-new", "Elsewhere")])
-    transport.emit(.projectChanged(projectId: "p-new"))
-    try await waitUntil("refetched") { model.projects.first?.name == "Elsewhere" }
+    transport.set(environments: [environment("p-new", "Elsewhere")])
+    transport.emit(.environmentChanged(environmentId: "p-new"))
+    try await waitUntil("refetched") { model.environments.first?.name == "Elsewhere" }
   }
 
-  @Test func aRefusedProjectCommandSurfacesTheReason() async throws {
+  @Test func aRefusedEnvironmentCommandSurfacesTheReason() async throws {
     let transport = ScriptedTransport()
-    transport.set(threads: [], projects: [])
+    transport.set(threads: [], environments: [])
     let model = try await connected(transport)
-    await model.renameProject(id: "missing", name: "x")
-    #expect(model.lastError?.contains("no project missing") == true)
+    await model.renameEnvironment(id: "missing", name: "x")
+    #expect(model.lastError?.contains("no environment missing") == true)
   }
 }

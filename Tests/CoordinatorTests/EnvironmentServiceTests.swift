@@ -13,14 +13,14 @@ private let fakeCodex =
   .appendingPathComponent("CodexAdapterTests/Fixtures/fake-codex.py").path
 
 /// A coordinator over a scratch store with the fake Codex runtime, and scratch folders to work in.
-private struct ProjectHarness {
+private struct EnvironmentHarness {
   let coordinator: RunningCoordinator
   let client: WorkspaceClient
   let events: EventCollector
   let base: String
   var db: WorkspaceDatabase { coordinator.database }
 
-  static func start(paths existing: PlatformPaths? = nil) async throws -> ProjectHarness {
+  static func start(paths existing: PlatformPaths? = nil) async throws -> EnvironmentHarness {
     let base: String
     let paths: PlatformPaths
     if let existing {
@@ -42,7 +42,7 @@ private struct ProjectHarness {
     let client = try await UnixSocketTransport.client(path: paths.socketPath)
     let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
-    return ProjectHarness(
+    return EnvironmentHarness(
       coordinator: coordinator, client: client, events: EventCollector(await client.events()), base: base)
   }
 
@@ -69,14 +69,14 @@ private struct ProjectHarness {
     ).thread
   }
 
-  func projects() async throws -> [Project] {
-    try await client.request(ProjectList.self, EmptyParams()).projects
+  func environments() async throws -> [WorkEnvironment] {
+    try await client.request(EnvironmentList.self, EmptyParams()).environments
   }
 
-  func create(_ name: String, _ folders: [String]) async throws -> Project {
+  func create(_ name: String, _ folders: [String]) async throws -> WorkEnvironment {
     try await client.request(
-      ProjectCreate.self, ProjectCreate.Params(name: name, folders: folders), options: mutation()
-    ).project
+      EnvironmentCreate.self, EnvironmentCreate.Params(name: name, folders: folders), options: mutation()
+    ).environment
   }
 
   func failure(_ body: () async throws -> some Sendable) async -> WorkspaceError? {
@@ -86,17 +86,17 @@ private struct ProjectHarness {
     } catch { return WorkspaceError.from(error) }
   }
 
-  /// Every `project.changed` published so far, as project ids.
-  func projectEvents() async -> [String] { Self.projectIds(await events.events.map(\.event)) }
+  /// Every `environment.changed` published so far, as environment ids.
+  func environmentEvents() async -> [String] { Self.environmentIds(await events.events.map(\.event)) }
 
-  /// Waits, event by event, until `condition` holds of `projectEvents()` (events reach the client after
+  /// Waits, event by event, until `condition` holds of `environmentEvents()` (events reach the client after
   /// the request returns), then returns them; fails the test at the deadline with what arrived.
-  func projectEvents(
+  func environmentEvents(
     until condition: @Sendable ([String]) -> Bool, sourceLocation: SourceLocation = #_sourceLocation
   ) async -> [String] {
-    _ = await events.until { condition(Self.projectIds($0)) }
-    let seen = await projectEvents()
-    #expect(condition(seen), "project.changed events seen: \(seen)", sourceLocation: sourceLocation)
+    _ = await events.until { condition(Self.environmentIds($0)) }
+    let seen = await environmentEvents()
+    #expect(condition(seen), "environment.changed events seen: \(seen)", sourceLocation: sourceLocation)
     return seen
   }
 
@@ -117,8 +117,8 @@ private struct ProjectHarness {
     return seen
   }
 
-  private static func projectIds(_ events: [AdapterEvent]) -> [String] {
-    events.filter { $0.kind == .projectChanged }.compactMap { $0.payload["projectId"]?.stringValue }
+  private static func environmentIds(_ events: [AdapterEvent]) -> [String] {
+    events.filter { $0.kind == .environmentChanged }.compactMap { $0.payload["environmentId"]?.stringValue }
   }
 
   private static func threadUpdates(_ threadId: String, in events: [AdapterEvent]) -> [AdapterEvent] {
@@ -131,9 +131,9 @@ private struct ProjectHarness {
   }
 }
 
-@Suite(.serialized) struct ProjectServiceTests {
-  @Test func newThreadsShareAProjectAcrossSpellings() async throws {
-    let h = try await ProjectHarness.start()
+@Suite(.serialized) struct EnvironmentServiceTests {
+  @Test func newThreadsShareAEnvironmentAcrossSpellings() async throws {
+    let h = try await EnvironmentHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let app = try h.folder("app")
@@ -144,28 +144,28 @@ private struct ProjectHarness {
     var threads: [ConversationThread] = []
     for spelling in spellings { threads.append(try await h.newThread(connection, in: spelling)) }
 
-    let projects = try await h.projects()
-    #expect(projects.count == 1)
-    let project = try #require(projects.first)
-    #expect(project.displayName == "app")
-    #expect(!project.manual && project.name.isEmpty)
-    #expect(project.folders.map(\.path) == [SessionService.canonicalDirectory(app)])
+    let environments = try await h.environments()
+    #expect(environments.count == 1)
+    let environment = try #require(environments.first)
+    #expect(environment.displayName == "app")
+    #expect(!environment.manual && environment.name.isEmpty)
+    #expect(environment.folders.map(\.path) == [SessionService.canonicalDirectory(app)])
     for (thread, spelling) in zip(threads, spellings) {
-      #expect(thread.projectId == project.id)
+      #expect(thread.environmentId == environment.id)
       // The raw spelling is stored as given (tilde expanded); only the lookup is canonical.
       let stored = try #require(try h.db.thread(id: thread.id))
       #expect(stored.context == (spelling as NSString).expandingTildeInPath)
-      #expect(stored.projectId == project.id)
+      #expect(stored.environmentId == environment.id)
     }
-    // Only the first thread created a project, so viewers heard of it once. The last thread's event
-    // comes after every project event, so waiting for it settles the count.
+    // Only the first thread created an environment, so viewers heard of it once. The last thread's event
+    // comes after every environment event, so waiting for it settles the count.
     let last = threads[3].id
     try await h.events.waitFor { $0.kind == .threadUpdated && $0.threadId == last }
-    #expect(await h.projectEvents(until: { !$0.isEmpty }) == [project.id])
+    #expect(await h.environmentEvents(until: { !$0.isEmpty }) == [environment.id])
   }
 
   @Test func backfillHandlesAMissingFolder() async throws {
-    let h = try await ProjectHarness.start()
+    let h = try await EnvironmentHarness.start()
     defer { Task { await h.close() } }
     let codex = try await h.db.insertConnection(
       Connection(id: "c-codex", kind: .codex, label: "Codex", target: fakeCodex))
@@ -186,26 +186,26 @@ private struct ProjectHarness {
     try thread("t-remote", remote, "/chat#agent")
     try thread("t-nofolder", codex, nil)
 
-    let assigned = try await h.coordinator.projects.backfill()
+    let assigned = try await h.coordinator.environments.backfill()
     #expect(assigned == 3)
-    let projects = try h.db.listProjects()
-    #expect(projects.map(\.displayName).sorted() == ["gone", "here"])
-    let goneProject = try #require(projects.first { $0.displayName == "gone" })
-    #expect(try h.db.thread(id: "t-gone")?.projectId == goneProject.id)
-    #expect(try h.db.thread(id: "t-gone2")?.projectId == goneProject.id)
-    #expect(try h.db.thread(id: "t-here")?.projectId != nil)
+    let environments = try h.db.listEnvironments()
+    #expect(environments.map(\.displayName).sorted() == ["gone", "here"])
+    let goneEnvironment = try #require(environments.first { $0.displayName == "gone" })
+    #expect(try h.db.thread(id: "t-gone")?.environmentId == goneEnvironment.id)
+    #expect(try h.db.thread(id: "t-gone2")?.environmentId == goneEnvironment.id)
+    #expect(try h.db.thread(id: "t-here")?.environmentId != nil)
     // Remote B4 and folderless threads stay unassigned.
-    #expect(try h.db.thread(id: "t-remote")?.projectId == nil)
-    #expect(try h.db.thread(id: "t-nofolder")?.projectId == nil)
+    #expect(try h.db.thread(id: "t-remote")?.environmentId == nil)
+    #expect(try h.db.thread(id: "t-nofolder")?.environmentId == nil)
     // `context` is never rewritten.
     #expect(try h.db.thread(id: "t-gone2")?.context == gone + "/")
-    // Idempotent: nothing left to assign, and no second project for the same folder.
-    #expect(try await h.coordinator.projects.backfill() == 0)
-    #expect(try h.db.listProjects().count == 2)
+    // Idempotent: nothing left to assign, and no second environment for the same folder.
+    #expect(try await h.coordinator.environments.backfill() == 0)
+    #expect(try h.db.listEnvironments().count == 2)
   }
 
   @Test func backfillRunsOnceAtStartAfterMigrations() async throws {
-    let first = try await ProjectHarness.start()
+    let first = try await EnvironmentHarness.start()
     let base = first.base
     let connection = try first.db.insertConnection(
       Connection(id: "c1", kind: .codex, label: "Codex", target: fakeCodex))
@@ -215,121 +215,124 @@ private struct ProjectHarness {
     let paths = first.coordinator.paths
     await first.close()
 
-    let second = try await ProjectHarness.start(paths: paths)
+    let second = try await EnvironmentHarness.start(paths: paths)
     defer { Task { await second.close() } }
     #expect(second.base == base)
-    let project = try #require(try second.db.listProjects().first)
-    #expect(project.displayName == "legacy")
-    #expect(try second.db.thread(id: "old")?.projectId == project.id)
+    let environment = try #require(try second.db.listEnvironments().first)
+    #expect(environment.displayName == "legacy")
+    #expect(try second.db.thread(id: "old")?.environmentId == environment.id)
   }
 
-  @Test func movingAFolderIntoAManualProjectMovesItsThreads() async throws {
-    let h = try await ProjectHarness.start()
+  @Test func movingAFolderIntoAManualEnvironmentMovesItsThreads() async throws {
+    let h = try await EnvironmentHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let app = try h.folder("app")
     let thread = try await h.newThread(connection, in: app)
-    let automatic = try #require(thread.projectId)
+    let automatic = try #require(thread.environmentId)
 
     let manual = try await h.create("Site", [app + "/"])
     #expect(manual.manual && manual.name == "Site")
     #expect(manual.folders.map(\.path) == [SessionService.canonicalDirectory(app)])
-    #expect(try h.db.thread(id: thread.id)?.projectId == manual.id)
-    // The automatic project was left empty and is gone.
-    #expect(try await h.projects().map(\.id) == [manual.id])
-    // The automatic project is announced when created and again when it is emptied and deleted.
-    let changed = await h.projectEvents(until: {
+    #expect(try h.db.thread(id: thread.id)?.environmentId == manual.id)
+    // The automatic environment was left empty and is gone.
+    #expect(try await h.environments().map(\.id) == [manual.id])
+    // The automatic environment is announced when created and again when it is emptied and deleted.
+    let changed = await h.environmentEvents(until: {
       $0.contains(manual.id) && $0.filter { $0 == automatic }.count == 2
     })
     #expect(changed.filter { $0 == automatic }.count == 2)
     let updated = try await h.events.waitFor {
       $0.kind == .threadUpdated && $0.threadId == thread.id
-        && $0.payload["thread"]?["projectId"]?.stringValue == manual.id
+        && $0.payload["thread"]?["environmentId"]?.stringValue == manual.id
     }
     #expect(updated.threadId == thread.id)
 
-    // A new thread in the same folder joins the manual project instead of making an automatic one.
+    // A new thread in the same folder joins the manual environment instead of making an automatic one.
     let later = try await h.newThread(connection, in: app)
-    #expect(later.projectId == manual.id)
-    #expect(try await h.projects().count == 1)
+    #expect(later.environmentId == manual.id)
+    #expect(try await h.environments().count == 1)
   }
 
   @Test func updateValidatesEveryFolderBeforeChangingAnything() async throws {
-    let h = try await ProjectHarness.start()
+    let h = try await EnvironmentHarness.start()
     defer { Task { await h.close() } }
     let a = try h.folder("a")
     let b = try h.folder("b")
-    let project = try await h.create("Mine", [a])
+    let environment = try await h.create("Mine", [a])
     let other = try await h.create("Other", [b])
     let missing = h.base + "/nowhere"
 
     // Adding a folder that does not exist names it and changes nothing, even the rename.
     let notThere = await h.failure {
       try await h.client.request(
-        ProjectUpdate.self,
-        ProjectUpdate.Params(projectId: project.id, name: "Renamed", addFolders: [a, missing]),
+        EnvironmentUpdate.self,
+        EnvironmentUpdate.Params(environmentId: environment.id, name: "Renamed", addFolders: [a, missing]),
         options: h.mutation())
     }
     #expect(notThere?.code == .protocolInvalid)
     #expect(notThere?.message.contains(missing) == true)
-    // Another manual project's folder is refused too.
+    // Another manual environment's folder is refused too.
     let owned = await h.failure {
       try await h.client.request(
-        ProjectUpdate.self, ProjectUpdate.Params(projectId: project.id, addFolders: [b]),
+        EnvironmentUpdate.self, EnvironmentUpdate.Params(environmentId: environment.id, addFolders: [b]),
         options: h.mutation())
     }
     #expect(owned?.code == .protocolInvalid)
     #expect(owned?.message.contains(b) == true)
-    // Removing a folder the project does not have names it.
-    let notInProject = await h.failure {
+    // Removing a folder the environment does not have names it.
+    let notInEnvironment = await h.failure {
       try await h.client.request(
-        ProjectUpdate.self, ProjectUpdate.Params(projectId: project.id, removeFolders: [missing]),
+        EnvironmentUpdate.self,
+        EnvironmentUpdate.Params(environmentId: environment.id, removeFolders: [missing]),
         options: h.mutation())
     }
-    #expect(notInProject?.code == .protocolInvalid)
-    #expect(notInProject?.message.contains(missing) == true)
+    #expect(notInEnvironment?.code == .protocolInvalid)
+    #expect(notInEnvironment?.message.contains(missing) == true)
     let unknown = await h.failure {
       try await h.client.request(
-        ProjectUpdate.self, ProjectUpdate.Params(projectId: "nope", name: "x"), options: h.mutation())
+        EnvironmentUpdate.self, EnvironmentUpdate.Params(environmentId: "nope", name: "x"),
+        options: h.mutation())
     }
     #expect(unknown?.code == .notFound)
-    let now = try await h.projects()
-    #expect(now.first { $0.id == project.id }?.name == "Mine")
-    #expect(now.first { $0.id == project.id }?.folders.count == 1)
+    let now = try await h.environments()
+    #expect(now.first { $0.id == environment.id }?.name == "Mine")
+    #expect(now.first { $0.id == environment.id }?.folders.count == 1)
     #expect(now.first { $0.id == other.id }?.folders.count == 1)
   }
 
-  @Test func addingAFolderToAnAutomaticProjectMakesItManualAndMovesTheThreads() async throws {
-    let h = try await ProjectHarness.start()
+  @Test func addingAFolderToAnAutomaticEnvironmentMakesItManualAndMovesTheThreads() async throws {
+    let h = try await EnvironmentHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let a = try h.folder("a")
     let b = try h.folder("b")
     let inA = try await h.newThread(connection, in: a)
     let inB = try await h.newThread(connection, in: b)
-    let projectA = try #require(inA.projectId)
-    let projectB = try #require(inB.projectId)
+    let environmentA = try #require(inA.environmentId)
+    let environmentB = try #require(inB.environmentId)
 
     let result = try await h.client.request(
-      ProjectUpdate.self, ProjectUpdate.Params(projectId: projectA, name: "Both", addFolders: [b]),
+      EnvironmentUpdate.self,
+      EnvironmentUpdate.Params(environmentId: environmentA, name: "Both", addFolders: [b]),
       options: h.mutation()
-    ).project
+    ).environment
     #expect(result.manual && result.name == "Both")
     #expect(
       result.folders.map(\.path) == [
         SessionService.canonicalDirectory(a), SessionService.canonicalDirectory(b),
       ])
-    #expect(try h.db.thread(id: inB.id)?.projectId == projectA)
-    #expect(try await h.projects().map(\.id) == [projectA])
-    _ = await h.projectEvents(until: { $0.contains(projectB) })
+    #expect(try h.db.thread(id: inB.id)?.environmentId == environmentA)
+    #expect(try await h.environments().map(\.id) == [environmentA])
+    _ = await h.environmentEvents(until: { $0.contains(environmentB) })
     try await h.events.waitFor {
       $0.kind == .threadUpdated && $0.threadId == inB.id
-        && $0.payload["thread"]?["projectId"]?.stringValue == projectA
+        && $0.payload["thread"]?["environmentId"]?.stringValue == environmentA
     }
   }
 
-  @Test func removingAFolderGivesItsThreadsAnAutomaticProject() async throws {
-    let h = try await ProjectHarness.start()
+  @Test func removingAFolderGivesItsThreadsAnAutomaticEnvironment() async throws {
+    let h = try await EnvironmentHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let a = try h.folder("a")
@@ -337,36 +340,37 @@ private struct ProjectHarness {
     let unused = try h.folder("unused")
     let thread = try await h.newThread(connection, in: a)
     let manual = try await h.create("Site", [a, b, unused])
-    #expect(try h.db.thread(id: thread.id)?.projectId == manual.id)
+    #expect(try h.db.thread(id: thread.id)?.environmentId == manual.id)
 
     let updated = try await h.client.request(
-      ProjectUpdate.self, ProjectUpdate.Params(projectId: manual.id, removeFolders: [a + "/", unused]),
+      EnvironmentUpdate.self,
+      EnvironmentUpdate.Params(environmentId: manual.id, removeFolders: [a + "/", unused]),
       options: h.mutation()
-    ).project
+    ).environment
     #expect(updated.folders.map(\.path) == [SessionService.canonicalDirectory(b)])
-    // `a` has a thread, so it gets an automatic project at once; `unused` waits for its next thread.
-    let moved = try #require(try h.db.thread(id: thread.id)?.projectId)
+    // `a` has a thread, so it gets an automatic environment at once; `unused` waits for its next thread.
+    let moved = try #require(try h.db.thread(id: thread.id)?.environmentId)
     #expect(moved != manual.id)
-    let replacement = try #require(try h.db.project(id: moved))
+    let replacement = try #require(try h.db.environment(id: moved))
     #expect(!replacement.manual && replacement.displayName == "a")
-    #expect(try h.db.project(folderPath: SessionService.canonicalDirectory(unused)) == nil)
-    _ = await h.projectEvents(until: { $0.contains(replacement.id) })
+    #expect(try h.db.environment(folderPath: SessionService.canonicalDirectory(unused)) == nil)
+    _ = await h.environmentEvents(until: { $0.contains(replacement.id) })
     try await h.events.waitFor {
       $0.kind == .threadUpdated && $0.threadId == thread.id
-        && $0.payload["thread"]?["projectId"]?.stringValue == moved
+        && $0.payload["thread"]?["environmentId"]?.stringValue == moved
     }
 
-    // An automatic project has nothing to remove without first adding.
+    // An automatic environment has nothing to remove without first adding.
     let refused = await h.failure {
       try await h.client.request(
-        ProjectUpdate.self, ProjectUpdate.Params(projectId: replacement.id, removeFolders: [a]),
+        EnvironmentUpdate.self, EnvironmentUpdate.Params(environmentId: replacement.id, removeFolders: [a]),
         options: h.mutation())
     }
     #expect(refused?.code == .protocolInvalid)
   }
 
-  @Test func deletingAManualProjectReturnsItsFoldersToAutomaticProjects() async throws {
-    let h = try await ProjectHarness.start()
+  @Test func deletingAManualEnvironmentReturnsItsFoldersToAutomaticEnvironments() async throws {
+    let h = try await EnvironmentHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let a = try h.folder("a")
@@ -375,78 +379,80 @@ private struct ProjectHarness {
     let manual = try await h.create("Site", [a, b])
 
     let deleted = try await h.client.request(
-      ProjectDelete.self, ProjectDelete.Params(projectId: manual.id), options: h.mutation())
-    #expect(deleted.projectId == manual.id)
-    let projects = try await h.projects()
-    #expect(projects.count == 1)
-    #expect(projects[0].displayName == "a" && !projects[0].manual)
-    #expect(try h.db.thread(id: thread.id)?.projectId == projects[0].id)
-    _ = await h.projectEvents(until: { $0.filter { $0 == manual.id }.count >= 2 })
+      EnvironmentDelete.self, EnvironmentDelete.Params(environmentId: manual.id), options: h.mutation())
+    #expect(deleted.environmentId == manual.id)
+    let environments = try await h.environments()
+    #expect(environments.count == 1)
+    #expect(environments[0].displayName == "a" && !environments[0].manual)
+    #expect(try h.db.thread(id: thread.id)?.environmentId == environments[0].id)
+    _ = await h.environmentEvents(until: { $0.filter { $0 == manual.id }.count >= 2 })
     #expect(
       await h.failure {
         try await h.client.request(
-          ProjectDelete.self, ProjectDelete.Params(projectId: "nope"), options: h.mutation())
+          EnvironmentDelete.self, EnvironmentDelete.Params(environmentId: "nope"), options: h.mutation())
       }?.code == .notFound)
   }
 
-  @Test func anAutomaticProjectCannotBeDeleted() async throws {
-    let h = try await ProjectHarness.start()
+  @Test func anAutomaticEnvironmentCannotBeDeleted() async throws {
+    let h = try await EnvironmentHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let thread = try await h.newThread(connection, in: try h.folder("a"))
-    let projectId = try #require(thread.projectId)
+    let environmentId = try #require(thread.environmentId)
     let error = await h.failure {
       try await h.client.request(
-        ProjectDelete.self, ProjectDelete.Params(projectId: projectId), options: h.mutation())
+        EnvironmentDelete.self, EnvironmentDelete.Params(environmentId: environmentId), options: h.mutation())
     }
     #expect(error?.code == .protocolInvalid)
-    #expect(try h.db.project(id: projectId) != nil)
+    #expect(try h.db.environment(id: environmentId) != nil)
   }
 
   @Test func createRefusesNoFoldersAndMissingFolders() async throws {
-    let h = try await ProjectHarness.start()
+    let h = try await EnvironmentHarness.start()
     defer { Task { await h.close() } }
     let none = await h.failure { try await h.create("Empty", []) }
     #expect(none?.code == .protocolInvalid)
     let missing = h.base + "/nowhere"
     let bad = await h.failure { try await h.create("Bad", [try h.folder("real"), missing]) }
     #expect(bad?.code == .protocolInvalid && bad?.message.contains(missing) == true)
-    #expect(try await h.projects().isEmpty)
+    #expect(try await h.environments().isEmpty)
   }
 
   @Test func renameToEmptyRestoresTheFolderName() async throws {
-    let h = try await ProjectHarness.start()
+    let h = try await EnvironmentHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let thread = try await h.newThread(connection, in: try h.folder("app"))
-    let projectId = try #require(thread.projectId)
+    let environmentId = try #require(thread.environmentId)
 
-    func rename(_ name: String) async throws -> Project {
+    func rename(_ name: String) async throws -> WorkEnvironment {
       try await h.client.request(
-        ProjectRename.self, ProjectRename.Params(projectId: projectId, name: name), options: h.mutation()
-      ).project
+        EnvironmentRename.self, EnvironmentRename.Params(environmentId: environmentId, name: name),
+        options: h.mutation()
+      ).environment
     }
     #expect(try await rename("Site").displayName == "Site")
-    #expect(try await h.projects().first?.displayName == "Site")
+    #expect(try await h.environments().first?.displayName == "Site")
     #expect(try await rename("").displayName == "app")
-    #expect(try await h.projects().first?.displayName == "app")
+    #expect(try await h.environments().first?.displayName == "app")
     #expect(try await rename("   ").displayName == "app")
     let missing = await h.failure {
       try await h.client.request(
-        ProjectRename.self, ProjectRename.Params(projectId: "nope", name: "x"), options: h.mutation())
+        EnvironmentRename.self, EnvironmentRename.Params(environmentId: "nope", name: "x"),
+        options: h.mutation())
     }
     #expect(missing?.code == .notFound)
     try await h.events.waitFor {
-      $0.kind == .projectChanged && $0.payload["projectId"]?.stringValue == projectId
+      $0.kind == .environmentChanged && $0.payload["environmentId"]?.stringValue == environmentId
     }
   }
 
-  @Test func localB4ThreadsUseTheServerProjectAndRemoteHaveNone() async throws {
+  @Test func localB4ThreadsUseTheServerEnvironmentAndRemoteHaveNone() async throws {
     let h = try await ServerHarness.start()
     defer { Task { await h.close() } }
     let path = try h.project("research-agent")
     let server = try await h.add(path)
-    let projects = h.coordinator.projects
+    let environments = h.coordinator.environments
 
     let local = try h.coordinator.database.insertConnection(
       Connection(
@@ -460,18 +466,18 @@ private struct ProjectHarness {
     let thread = ConversationThread(
       id: "t", connectionId: local.id, nativeThreadId: "n", context: "/chat#agent")
 
-    let localId = try #require(try await projects.projectId(forThread: thread, connection: local))
-    let project = try #require(try h.coordinator.database.project(id: localId))
-    #expect(project.folders.map(\.path) == [SessionService.canonicalDirectory(path)])
-    #expect(project.displayName == "research-agent")
-    // The same server again finds the same project; the remote connection has none.
-    #expect(try await projects.projectId(forThread: thread, connection: local) == localId)
-    #expect(try await projects.projectId(forThread: thread, connection: remote) == nil)
-    #expect(try h.coordinator.database.listProjects().count == 1)
+    let localId = try #require(try await environments.environmentId(forThread: thread, connection: local))
+    let environment = try #require(try h.coordinator.database.environment(id: localId))
+    #expect(environment.folders.map(\.path) == [SessionService.canonicalDirectory(path)])
+    #expect(environment.displayName == "research-agent")
+    // The same server again finds the same environment; the remote connection has none.
+    #expect(try await environments.environmentId(forThread: thread, connection: local) == localId)
+    #expect(try await environments.environmentId(forThread: thread, connection: remote) == nil)
+    #expect(try h.coordinator.database.listEnvironments().count == 1)
   }
 
   @Test func markReadAndClearedDraftThroughTheRouter() async throws {
-    let h = try await ProjectHarness.start()
+    let h = try await EnvironmentHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let thread = try await h.newThread(connection, in: try h.folder("work"))
@@ -531,49 +537,49 @@ private struct ProjectHarness {
     #expect(missing?.code == .notFound)
   }
 
-  @Test func insertThreadIsAtomicAgainstProjectEdits() async throws {
-    let h = try await ProjectHarness.start()
+  @Test func insertThreadIsAtomicAgainstEnvironmentEdits() async throws {
+    let h = try await EnvironmentHarness.start()
     defer { Task { await h.close() } }
     let connection = try h.db.insertConnection(
       Connection(id: "c1", kind: .codex, label: "Codex", target: fakeCodex))
-    let projects = h.coordinator.projects
+    let environments = h.coordinator.environments
 
-    // Deterministic part: the thread comes back with its project, a new project is announced once, and
-    // the row is stored with that project.
+    // Deterministic part: the thread comes back with its environment, a new environment is announced once, and
+    // the row is stored with that environment.
     let first = try h.folder("first")
-    let inserted = try await projects.insertThread(
+    let inserted = try await environments.insertThread(
       ConversationThread(id: "t0", connectionId: connection.id, nativeThreadId: "n0", context: first),
       connection: connection)
-    let projectId = try #require(inserted.projectId)
-    #expect(try h.db.thread(id: "t0")?.projectId == projectId)
-    _ = await h.projectEvents(until: { $0 == [projectId] })
+    let environmentId = try #require(inserted.environmentId)
+    #expect(try h.db.thread(id: "t0")?.environmentId == environmentId)
+    _ = await h.environmentEvents(until: { $0 == [environmentId] })
 
-    // A project command racing a thread create can no longer interleave with it: resolving the project
+    // An environment command racing a thread create can no longer interleave with it: resolving the environment
     // and inserting the row are one actor section with no suspension point. Whichever runs first, the
-    // thread ends in the project that owns its folder (before the fix, create-first deleted the empty
-    // automatic project under the insert, and update-first left the thread in a project that no longer
+    // thread ends in the environment that owns its folder (before the fix, create-first deleted the empty
+    // automatic environment under the insert, and update-first left the thread in an environment that no longer
     // owned its folder). Scheduling cannot be forced, so this repeats the race and checks the invariant.
     for round in 0..<30 {
       let folder = try h.folder("race-\(round)")
       let canonical = SessionService.canonicalDirectory(folder)
       let id = "race-\(round)"
-      async let created: ConversationThread = projects.insertThread(
+      async let created: ConversationThread = environments.insertThread(
         ConversationThread(id: id, connectionId: connection.id, nativeThreadId: "n\(id)", context: folder),
         connection: connection)
-      async let edited: ProjectCreate.Result = projects.create(
-        ProjectCreate.Params(name: "Manual \(round)", folders: [folder]))
-      let (thread, project) = try await (created, edited)
+      async let edited: EnvironmentCreate.Result = environments.create(
+        EnvironmentCreate.Params(name: "Manual \(round)", folders: [folder]))
+      let (thread, environment) = try await (created, edited)
       let stored = try #require(try h.db.thread(id: thread.id))
-      #expect(stored.projectId == project.project.id, "round \(round)")
-      #expect(try h.db.project(folderPath: canonical)?.id == stored.projectId, "round \(round)")
-      #expect(try h.db.project(id: stored.projectId ?? "") != nil, "round \(round)")
+      #expect(stored.environmentId == environment.environment.id, "round \(round)")
+      #expect(try h.db.environment(folderPath: canonical)?.id == stored.environmentId, "round \(round)")
+      #expect(try h.db.environment(id: stored.environmentId ?? "") != nil, "round \(round)")
     }
   }
 }
 
-/// `connections.projectId` (migration 0005): a local B4 connection belongs to the project of its managed
-/// server's folder, and follows that folder when a project edit moves it.
-@Suite(.serialized) struct ConnectionProjectTests {
+/// `connections.environmentId` (migration 0005): a local B4 connection belongs to the environment of its managed
+/// server's folder, and follows that folder when an environment edit moves it.
+@Suite(.serialized) struct ConnectionEnvironmentTests {
   private func connect(_ h: ServerHarness, _ server: LocalServer) async throws -> Connection {
     try await h.client.request(
       ConnectionAdd.self, ConnectionAdd.Params(kind: .b4, route: "/chat#agent", serverId: server.id),
@@ -585,26 +591,26 @@ private struct ProjectHarness {
     try #require(try h.coordinator.database.connection(id: connection.id))
   }
 
-  @Test func localB4ConnectionGetsItsServersProject() async throws {
+  @Test func localB4ConnectionGetsItsServersEnvironment() async throws {
     let h = try await ServerHarness.start()
     defer { Task { await h.close() } }
     let path = try h.project("research-agent")
     let server = try await h.add(path)
     let connection = try await connect(h, server)
 
-    let projectId = try #require(try stored(h, connection).projectId)
-    #expect(connection.projectId == projectId)
-    let project = try #require(try h.coordinator.database.project(id: projectId))
-    #expect(project.folders.map(\.path) == [SessionService.canonicalDirectory(path)])
-    #expect(project.displayName == "research-agent")
-    // The connection's insert already carries the project, in the one change that creates the row.
+    let environmentId = try #require(try stored(h, connection).environmentId)
+    #expect(connection.environmentId == environmentId)
+    let environment = try #require(try h.coordinator.database.environment(id: environmentId))
+    #expect(environment.folders.map(\.path) == [SessionService.canonicalDirectory(path)])
+    #expect(environment.displayName == "research-agent")
+    // The connection's insert already carries the environment, in the one change that creates the row.
     let insert = try #require(
       try h.coordinator.database.changes(after: 0).first {
         $0.table == "connections" && $0.op == "insert" && $0.rowId == connection.id
       })
-    #expect(insert.value?["projectId"] == .string(projectId))
-    // A second connection on the same server finds the same project rather than making another.
-    #expect(try h.coordinator.database.listProjects().count == 1)
+    #expect(insert.value?["environmentId"] == .string(environmentId))
+    // A second connection on the same server finds the same environment rather than making another.
+    #expect(try h.coordinator.database.listEnvironments().count == 1)
   }
 
   @Test func movingTheServerFolderMovesTheConnection() async throws {
@@ -613,49 +619,50 @@ private struct ProjectHarness {
     let path = try h.project("research-agent")
     let server = try await h.add(path)
     let connection = try await connect(h, server)
-    let automatic = try #require(try stored(h, connection).projectId)
+    let automatic = try #require(try stored(h, connection).environmentId)
 
-    // A manual project takes the folder: the connection follows.
+    // A manual environment takes the folder: the connection follows.
     let manual = try await h.client.request(
-      ProjectCreate.self, ProjectCreate.Params(name: "Research", folders: [path]), options: h.mutation()
-    ).project
-    #expect(try stored(h, connection).projectId == manual.id)
-    #expect(try h.coordinator.database.project(id: automatic) == nil)
+      EnvironmentCreate.self, EnvironmentCreate.Params(name: "Research", folders: [path]),
+      options: h.mutation()
+    ).environment
+    #expect(try stored(h, connection).environmentId == manual.id)
+    #expect(try h.coordinator.database.environment(id: automatic) == nil)
 
-    // The folder leaves it (the manual project is kept, empty): the connection gets an automatic project.
+    // The folder leaves it (the manual environment is kept, empty): the connection gets an automatic environment.
     _ = try await h.client.request(
-      ProjectUpdate.self, ProjectUpdate.Params(projectId: manual.id, removeFolders: [path]),
+      EnvironmentUpdate.self, EnvironmentUpdate.Params(environmentId: manual.id, removeFolders: [path]),
       options: h.mutation())
-    let afterRemove = try #require(try stored(h, connection).projectId)
+    let afterRemove = try #require(try stored(h, connection).environmentId)
     #expect(afterRemove != manual.id)
     #expect(
-      try h.coordinator.database.project(id: afterRemove)?.folders.map(\.path) == [
+      try h.coordinator.database.environment(id: afterRemove)?.folders.map(\.path) == [
         SessionService.canonicalDirectory(path)
       ])
 
-    // Another manual project takes it and is then deleted: the connection returns to an automatic one.
+    // Another manual environment takes it and is then deleted: the connection returns to an automatic one.
     let second = try await h.client.request(
-      ProjectCreate.self, ProjectCreate.Params(name: "Second", folders: [path]), options: h.mutation()
-    ).project
-    #expect(try stored(h, connection).projectId == second.id)
+      EnvironmentCreate.self, EnvironmentCreate.Params(name: "Second", folders: [path]), options: h.mutation()
+    ).environment
+    #expect(try stored(h, connection).environmentId == second.id)
     _ = try await h.client.request(
-      ProjectDelete.self, ProjectDelete.Params(projectId: second.id), options: h.mutation())
-    let afterDelete = try #require(try stored(h, connection).projectId)
+      EnvironmentDelete.self, EnvironmentDelete.Params(environmentId: second.id), options: h.mutation())
+    let afterDelete = try #require(try stored(h, connection).environmentId)
     #expect(afterDelete != second.id)
     #expect(
-      try h.coordinator.database.project(id: afterDelete)?.folders.map(\.path) == [
+      try h.coordinator.database.environment(id: afterDelete)?.folders.map(\.path) == [
         SessionService.canonicalDirectory(path)
       ])
     // The change log recorded each move as an update of the one column.
     let moves = try h.coordinator.database.changes(after: 0).filter {
-      $0.table == "connections" && $0.op == "update" && $0.column == "projectId"
+      $0.table == "connections" && $0.op == "update" && $0.column == "environmentId"
         && $0.rowId == connection.id
     }
     #expect(moves.count >= 3)
   }
 
-  @Test func codexAndRemoteB4ConnectionsHaveNoProject() async throws {
-    let h = try await ProjectHarness.start()
+  @Test func codexAndRemoteB4ConnectionsHaveNoEnvironment() async throws {
+    let h = try await EnvironmentHarness.start()
     defer { Task { await h.close() } }
     let codex = try await h.addCodex()
     let remote = try h.db.insertConnection(
@@ -667,15 +674,15 @@ private struct ProjectHarness {
       Connection(
         id: "c-unserved", kind: .b4, label: "Unserved", target: "http://127.0.0.1:1",
         routeKey: "/chat#agent", b4Mode: .managedLocal))
-    let projects = h.coordinator.projects
+    let environments = h.coordinator.environments
     for connection in [codex, remote, unserved] {
-      #expect(try await projects.projectId(forConnection: connection) == nil, "\(connection.label)")
+      #expect(try await environments.environmentId(forConnection: connection) == nil, "\(connection.label)")
     }
-    #expect(try await projects.backfillConnections() == 0)
+    #expect(try await environments.backfillConnections() == 0)
     for id in [codex.id, remote.id, unserved.id] {
-      #expect(try h.db.connection(id: id)?.projectId == nil)
+      #expect(try h.db.connection(id: id)?.environmentId == nil)
     }
-    #expect(try h.db.listProjects().isEmpty)
+    #expect(try h.db.listEnvironments().isEmpty)
   }
 
   @Test func backfillSetsExistingConnections() async throws {
@@ -684,7 +691,7 @@ private struct ProjectHarness {
     let path = try h.project("research-agent")
     let server = try await h.add(path)
     let db = h.coordinator.database
-    // Rows as an older build left them: a local B4 connection with no project, and a remote one.
+    // Rows as an older build left them: a local B4 connection with no environment, and a remote one.
     let local = try db.insertConnection(
       Connection(
         id: "c-local", kind: .b4, label: "Local", target: "http://127.0.0.1:1", routeKey: "/chat#agent",
@@ -693,20 +700,21 @@ private struct ProjectHarness {
       Connection(
         id: "c-remote", kind: .b4, label: "Remote", target: "https://b4.example.com",
         routeKey: "/chat#agent", b4Mode: .remote))
-    #expect(local.projectId == nil)
+    #expect(local.environmentId == nil)
     let before = try db.changes(after: 0).last?.seq ?? 0
 
-    #expect(try await h.coordinator.projects.backfillConnections() == 1)
-    let projectId = try #require(try db.connection(id: "c-local")?.projectId)
-    #expect(try db.project(id: projectId)?.folders.map(\.path) == [SessionService.canonicalDirectory(path)])
-    #expect(try db.connection(id: "c-remote")?.projectId == nil)
+    #expect(try await h.coordinator.environments.backfillConnections() == 1)
+    let environmentId = try #require(try db.connection(id: "c-local")?.environmentId)
+    #expect(
+      try db.environment(id: environmentId)?.folders.map(\.path) == [SessionService.canonicalDirectory(path)])
+    #expect(try db.connection(id: "c-remote")?.environmentId == nil)
     // It ran with the change log on, so the hub hears of it as an update of the one column.
     let updates = try db.changes(after: before).filter { $0.table == "connections" && $0.op == "update" }
-    #expect(updates.map(\.column) == ["projectId"])
-    #expect(updates.first?.value == .string(projectId))
+    #expect(updates.map(\.column) == ["environmentId"])
+    #expect(updates.first?.value == .string(environmentId))
     #expect(updates.first?.rowId == "c-local")
-    // Idempotent: nothing left to assign, and no second project for the same folder.
-    #expect(try await h.coordinator.projects.backfillConnections() == 0)
-    #expect(try db.listProjects().count == 1)
+    // Idempotent: nothing left to assign, and no second environment for the same folder.
+    #expect(try await h.coordinator.environments.backfillConnections() == 0)
+    #expect(try db.listEnvironments().count == 1)
   }
 }

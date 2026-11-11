@@ -6,7 +6,7 @@ import WorkspaceSync
 
 /// Pulls other devices' edits from the hub into this Mac's store (M8b): long-poll after
 /// `hubLink.cursor`, merge the page through `WorkspaceDatabase.applyRemote` (which advances the cursor
-/// in the same transaction), and publish `thread.updated` and `project.changed` for what it touched so
+/// in the same transaction), and publish `thread.updated` and `environment.changed` for what it touched so
 /// the app refreshes as it does for local writes. Owned and started by `HubSync`.
 ///
 /// - Nothing is applied until `GET /v1/devices` has answered once: its `macos` devices, revoked ones
@@ -159,8 +159,8 @@ public actor HubPull {
         await eventLog.publish(event)
       }
     }
-    for id in applied.touchedProjectIds.sorted() {
-      await eventLog.publish(.projectChanged(projectId: id))
+    for id in applied.touchedEnvironmentIds.sorted() {
+      await eventLog.publish(.environmentChanged(environmentId: id))
     }
   }
 
@@ -174,7 +174,7 @@ public actor HubPull {
   /// A row's `deviceId` is its owner (normally this Mac) and says nothing about who wrote a column, so
   /// each value is attributed to the device of its own column clock:
   ///
-  /// - a `threads` or `projects` row becomes one update per phone-writable column that has a clock (a
+  /// - a `threads` or `environments` row becomes one update per phone-writable column that has a clock (a
   ///   column without one was never edited since clocks began, and the Mac's value stands);
   /// - a `drafts` row travels whole, at its newest column clock and as that clock's device, so a draft
   ///   only the phone has is created and an existing one merges column by column;

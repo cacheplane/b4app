@@ -139,7 +139,7 @@ async fn push_materialises_and_is_idempotent(pool: PgPool) {
         "supported"
     );
     assert_eq!(connection["profileRevision"], 1);
-    assert_eq!(connection["projectId"], "project-1");
+    assert_eq!(connection["environmentId"], "project-1");
     for blanked in ["authReference", "localServerId", "target"] {
         assert_eq!(connection[blanked], Value::Null, "{blanked}");
     }
@@ -339,6 +339,46 @@ async fn changes_that_cannot_apply_are_recorded_but_skipped(pool: PgPool) {
     assert_eq!(thread["org_id"], device.org_id.to_string());
 }
 
+/// An app from before the environments rename still pushes `projects` and `projectFolders`.
+/// The hub has no such tables and treats the names like any other unknown table: the change is
+/// recorded and skipped, the push is accepted, and nothing errors.
+#[sqlx::test(migrations = false)]
+async fn a_push_naming_the_old_projects_table_is_skipped_like_any_unknown_table(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let device = common::enrolled(&admin, &app, "blove").await;
+    thread_fixture(&app, &device, 1).await;
+    let before = count(&app, &device, "changes").await;
+
+    let batch = vec![
+        insert(3, "nonsense", "x", json!({"id": "x"})),
+        insert(
+            4,
+            "projects",
+            "proj-1",
+            json!({"id": "proj-1", "name": "b4app"}),
+        ),
+        insert(
+            5,
+            "projectFolders",
+            "folder-1",
+            json!({"id": "folder-1", "projectId": "proj-1", "path": "/tmp/b4app"}),
+        ),
+        update(6, "projects", "proj-1", "name", Some(json!("renamed"))),
+        update(7, "threads", "thread-1", "projectId", Some(json!("proj-1"))),
+    ];
+    let outcome = changes::push(&app, &device, &batch).await.unwrap();
+    assert_eq!(outcome.accepted_through, 7);
+    assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+    assert_eq!(count(&app, &device, "changes").await, before + 5);
+    for table in ["environments", "environmentFolders"] {
+        assert_eq!(count(&app, &device, table).await, 0, "{table}");
+    }
+    let thread = row(&app, &device, "threads", "id", "thread-1")
+        .await
+        .unwrap();
+    assert_eq!(thread["environmentId"], Value::Null);
+}
+
 #[sqlx::test(migrations = false)]
 async fn a_user_cannot_touch_another_users_rows(pool: PgPool) {
     let (admin, app) = common::migrated(&pool).await;
@@ -496,9 +536,9 @@ async fn another_org_sees_nothing_of_the_feed_or_the_mirror(pool: PgPool) {
     assert!(page.changes.is_empty());
     for table in std::iter::once("changes").chain(SYNCED_TABLES) {
         assert_eq!(count(&app, &outsider, table).await, 0, "{table}");
-        // The fixture has no projects or usage (`connection_usage_is_mirrored_and_pulled` covers
+        // The fixture has no environments or usage (`connection_usage_is_mirrored_and_pulled` covers
         // that table); its draft is deleted, and kept.
-        if !["projects", "projectFolders", "connectionUsage"].contains(&table) {
+        if !["environments", "environmentFolders", "connectionUsage"].contains(&table) {
             assert!(count(&app, &device, table).await > 0, "{table}");
         }
     }
@@ -952,10 +992,16 @@ async fn phone_cannot_write_mac_only_columns(pool: PgPool) {
             210,
             PHONE_CLOCK,
         ),
-        // A phone cannot write projectId (clocked, but Mac-only), delete, or touch a table the
+        // A phone cannot write environmentId (clocked, but Mac-only), delete, or touch a table the
         // list does not name.
         at(
-            update(3, "threads", "thread-1", "projectId", Some(json!("p-1"))),
+            update(
+                3,
+                "threads",
+                "thread-1",
+                "environmentId",
+                Some(json!("p-1")),
+            ),
             220,
             PHONE_CLOCK,
         ),
@@ -989,7 +1035,7 @@ async fn phone_cannot_write_mac_only_columns(pool: PgPool) {
     let thread = row(&app, &mac, "threads", "id", "thread-1").await.unwrap();
     assert_eq!(thread["continuity"], "native");
     assert_eq!(thread["pinned"], true);
-    assert_eq!(thread["projectId"], Value::Null);
+    assert_eq!(thread["environmentId"], Value::Null);
 
     // The same changes from the Mac work.
     let from_mac: Vec<Change> = batch
@@ -1005,7 +1051,7 @@ async fn phone_cannot_write_mac_only_columns(pool: PgPool) {
     assert!(outcome.rejected.is_empty());
     let thread = row(&app, &mac, "threads", "id", "thread-1").await.unwrap();
     assert_eq!(thread["continuity"], "forged");
-    assert_eq!(thread["projectId"], "p-1");
+    assert_eq!(thread["environmentId"], "p-1");
     assert!(row(&app, &mac, "turns", "id", "turn-p").await.is_some());
 }
 
@@ -1242,14 +1288,14 @@ async fn connection_secrets_are_scrubbed_even_if_sent(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
-async fn connection_project_id_is_materialised(pool: PgPool) {
+async fn connection_environment_id_is_materialised(pool: PgPool) {
     let (admin, app) = common::migrated(&pool).await;
     let mac = common::enrolled(&admin, &app, "blove").await;
     let bound = insert(
         1,
         "connections",
         "conn-1",
-        json!({"id": "conn-1", "kind": "b4", "label": "B4", "projectId": "project-1"}),
+        json!({"id": "conn-1", "kind": "b4", "label": "B4", "environmentId": "project-1"}),
     );
     let unbound = insert(
         2,
@@ -1262,11 +1308,11 @@ async fn connection_project_id_is_materialised(pool: PgPool) {
     let connection = row(&app, &mac, "connections", "id", "conn-1")
         .await
         .unwrap();
-    assert_eq!(connection["projectId"], "project-1");
+    assert_eq!(connection["environmentId"], "project-1");
     let other = row(&app, &mac, "connections", "id", "conn-2")
         .await
         .unwrap();
-    assert_eq!(other["projectId"], Value::Null);
+    assert_eq!(other["environmentId"], Value::Null);
 }
 
 #[sqlx::test(migrations = false)]
@@ -1744,24 +1790,24 @@ fn expected_clocks(batch: &[Change]) -> Vec<(String, String, String, String)> {
         .collect()
 }
 
-/// The fixture plus a project, its folder, and the thread moved into it, each with an explicit
+/// The fixture plus an environment, its folder, and the thread moved into it, each with an explicit
 /// clock so the snapshot's clocks can be worked out from what was sent.
-fn fixture_with_projects(device: &AuthedDevice) -> Vec<Change> {
+fn fixture_with_environments(device: &AuthedDevice) -> Vec<Change> {
     let clock = |ms_hex: &str| Some(format!("{ms_hex}-0000-{}", device.device_id));
     let mut batch = common::filtered_fixture();
-    let mut project = insert(
+    let mut environment = insert(
         14,
-        "projects",
+        "environments",
         "proj-1",
         json!({"id": "proj-1", "name": "b4app", "manual": false,
                "createdAt": "2026-10-31T12:00:00Z", "updatedAt": "2026-10-31T12:00:00Z"}),
     );
-    project.hlc = clock("019a396ca9b0");
+    environment.hlc = clock("019a396ca9b0");
     let mut folder = insert(
         15,
-        "projectFolders",
+        "environmentFolders",
         "folder-1",
-        json!({"id": "folder-1", "projectId": "proj-1", "path": "/Users/brian/repos/b4app",
+        json!({"id": "folder-1", "environmentId": "proj-1", "path": "/Users/brian/repos/b4app",
                "createdAt": "2026-10-31T12:00:00Z"}),
     );
     folder.hlc = clock("019a396cad98");
@@ -1769,19 +1815,19 @@ fn fixture_with_projects(device: &AuthedDevice) -> Vec<Change> {
         16,
         "threads",
         "thread-1",
-        "projectId",
+        "environmentId",
         Some(json!("proj-1")),
     );
     moved.hlc = clock("019a396cb180");
     let mut renamed = update(
         17,
-        "projects",
+        "environments",
         "proj-1",
         "name",
         Some(json!("Personal Agent")),
     );
     renamed.hlc = clock("019a396cb568");
-    batch.extend([project, folder, moved, renamed]);
+    batch.extend([environment, folder, moved, renamed]);
     batch
 }
 
@@ -1789,7 +1835,7 @@ fn fixture_with_projects(device: &AuthedDevice) -> Vec<Change> {
 async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
     let (admin, app) = common::migrated(&pool).await;
     let device = common::enrolled(&admin, &app, "blove").await;
-    let batch = fixture_with_projects(&device);
+    let batch = fixture_with_environments(&device);
     push_through(&app, &device, &batch).await.unwrap();
     let last = batch.len() as i64;
     assert_eq!(last, 17);
@@ -1834,26 +1880,26 @@ async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
     let tables: Vec<&str> = got.iter().map(|(t, _, _)| t.as_str()).collect();
     for table in [
         "connections",
-        "projects",
-        "projectFolders",
+        "environments",
+        "environmentFolders",
         "threads",
         "turns",
     ] {
         assert!(tables.contains(&table), "{table}");
     }
-    // The thread moved into the project, the project was renamed.
+    // The thread moved into the environment, the environment was renamed.
     let find = |table: &str, id: &str| {
         got.iter()
             .find(|(t, i, _)| t == table && i == id)
             .map(|(_, _, v)| v.clone())
             .unwrap()
     };
-    assert_eq!(find("threads", "thread-1")["projectId"], "proj-1");
+    assert_eq!(find("threads", "thread-1")["environmentId"], "proj-1");
     assert_eq!(find("threads", "thread-1")["title"], "Renamed");
     assert_eq!(find("threads", "thread-1")["permission"], "plan");
-    assert_eq!(find("projects", "proj-1")["name"], "Personal Agent");
+    assert_eq!(find("environments", "proj-1")["name"], "Personal Agent");
     assert_eq!(
-        find("projectFolders", "folder-1")["path"],
+        find("environmentFolders", "folder-1")["path"],
         "/Users/brian/repos/b4app"
     );
     for change in &snapshot.changes {
@@ -1885,7 +1931,7 @@ async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
         })
         .collect();
     assert_eq!(have, want);
-    assert!(have.iter().any(|c| c.0 == "projects" && c.2 == "name"));
+    assert!(have.iter().any(|c| c.0 == "environments" && c.2 == "name"));
     for change in &snapshot.changes {
         let greatest = want
             .iter()
@@ -2343,11 +2389,11 @@ async fn an_insert_revives_a_deleted_row(pool: PgPool) {
             90,
             MAC_CLOCK,
         ),
-        // A project folder removed, then added again.
+        // An environment folder removed, then added again.
         at(
             insert(
                 5,
-                "projects",
+                "environments",
                 "proj-1",
                 json!({"id": "proj-1", "name": "b4app", "manual": true}),
             ),
@@ -2357,20 +2403,20 @@ async fn an_insert_revives_a_deleted_row(pool: PgPool) {
         at(
             insert(
                 6,
-                "projectFolders",
+                "environmentFolders",
                 "folder-1",
-                json!({"id": "folder-1", "projectId": "proj-1", "path": "/Users/b/a"}),
+                json!({"id": "folder-1", "environmentId": "proj-1", "path": "/Users/b/a"}),
             ),
             310,
             MAC_CLOCK,
         ),
-        at(delete(7, "projectFolders", "folder-1"), 320, MAC_CLOCK),
+        at(delete(7, "environmentFolders", "folder-1"), 320, MAC_CLOCK),
         at(
             insert(
                 8,
-                "projectFolders",
+                "environmentFolders",
                 "folder-1",
-                json!({"id": "folder-1", "projectId": "proj-1", "path": "/Users/b/b"}),
+                json!({"id": "folder-1", "environmentId": "proj-1", "path": "/Users/b/b"}),
             ),
             330,
             MAC_CLOCK,
@@ -2387,7 +2433,7 @@ async fn an_insert_revives_a_deleted_row(pool: PgPool) {
         clock_of(&app, &mac, "threads", "thread-1", "title").await,
         batch[1].hlc
     );
-    let folder = row(&app, &mac, "projectFolders", "id", "folder-1")
+    let folder = row(&app, &mac, "environmentFolders", "id", "folder-1")
         .await
         .unwrap();
     assert!(folder["deleted_at"].is_null(), "{folder}");
@@ -2438,8 +2484,8 @@ async fn an_insert_revives_a_deleted_row(pool: PgPool) {
         rows,
         vec![
             ("connections", "conn-1"),
-            ("projects", "proj-1"),
-            ("projectFolders", "folder-1"),
+            ("environments", "proj-1"),
+            ("environmentFolders", "folder-1"),
             ("threads", "thread-1"),
             ("drafts", "thread-1"),
         ]
@@ -2448,15 +2494,15 @@ async fn an_insert_revives_a_deleted_row(pool: PgPool) {
     let ops: Vec<(&str, ChangeOp)> = page
         .changes
         .iter()
-        .filter(|c| c.table == "projectFolders" || c.table == "drafts")
+        .filter(|c| c.table == "environmentFolders" || c.table == "drafts")
         .map(|c| (c.table.as_str(), c.op))
         .collect();
     assert_eq!(
         ops,
         vec![
-            ("projectFolders", ChangeOp::Insert),
-            ("projectFolders", ChangeOp::Delete),
-            ("projectFolders", ChangeOp::Insert),
+            ("environmentFolders", ChangeOp::Insert),
+            ("environmentFolders", ChangeOp::Delete),
+            ("environmentFolders", ChangeOp::Insert),
             ("drafts", ChangeOp::Insert),
             ("drafts", ChangeOp::Delete),
             ("drafts", ChangeOp::Insert),

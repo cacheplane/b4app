@@ -62,22 +62,23 @@ private final class WriteCounter: Sendable {
     await client.close()
   }
 
-  @Test func transportRefusesProjectCreateNamingTheMac() async throws {
+  @Test func transportRefusesEnvironmentCreateNamingTheMac() async throws {
     let client = WorkspaceClient(
       transport: MirrorTransport(store: try MirrorStore.inMemory(), version: "0.2.0"))
     _ = try await client.ready()
     let options = RequestOptions(operationId: "op-1")
     let create = await #expect(throws: WorkspaceError.self) {
-      try await client.request(ProjectCreate.self, .init(name: "x", folders: ["/tmp"]), options: options)
+      try await client.request(EnvironmentCreate.self, .init(name: "x", folders: ["/tmp"]), options: options)
     }
     #expect(create?.code == .unsupportedCapability)
     #expect(create?.message.contains("the Mac") == true)
     let update = await #expect(throws: WorkspaceError.self) {
-      try await client.request(ProjectUpdate.self, .init(projectId: "p1", name: "x"), options: options)
+      try await client.request(
+        EnvironmentUpdate.self, .init(environmentId: "p1", name: "x"), options: options)
     }
     #expect(update?.code == .unsupportedCapability && update?.message.contains("the Mac") == true)
     let delete = await #expect(throws: WorkspaceError.self) {
-      try await client.request(ProjectDelete.self, .init(projectId: "p1"), options: options)
+      try await client.request(EnvironmentDelete.self, .init(environmentId: "p1"), options: options)
     }
     #expect(delete?.code == .unsupportedCapability && delete?.message.contains("the Mac") == true)
     await client.close()
@@ -88,10 +89,10 @@ private final class WriteCounter: Sendable {
     try store.saveLink(syncedLink)
     _ = try store.apply(try fixtureAsStored())
     _ = try store.apply([
-      change("projects", "p1", "insert", value: projectJSON("p1")),
+      change("environments", "p1", "insert", value: environmentJSON("p1")),
       change(
-        "projectFolders", "f1", "insert",
-        value: folderJSON("f1", projectId: "p1", path: "/Users/blove/repos/b4app")),
+        "environmentFolders", "f1", "insert",
+        value: folderJSON("f1", environmentId: "p1", path: "/Users/blove/repos/b4app")),
     ])
     let writes = WriteCounter()
     let transport = MirrorTransport(store: store, version: "0.2.0", onLocalWrite: { writes.bump() })
@@ -104,13 +105,13 @@ private final class WriteCounter: Sendable {
       return RequestOptions(operationId: "op-\(n)")
     }
 
-    let listed = try await client.request(ProjectList.self, EmptyParams())
-    #expect(listed.projects.map(\.id) == ["p1"] && listed.projects.first?.displayName == "b4app")
+    let listed = try await client.request(EnvironmentList.self, EmptyParams())
+    #expect(listed.environments.map(\.id) == ["p1"] && listed.environments.first?.displayName == "b4app")
     #expect(writes.count == 0)
 
     let renamed = try await client.request(
-      ProjectRename.self, .init(projectId: "p1", name: "Agent Workspace"), options: options())
-    #expect(renamed.project.displayName == "Agent Workspace")
+      EnvironmentRename.self, .init(environmentId: "p1", name: "Agent Workspace"), options: options())
+    #expect(renamed.environment.displayName == "Agent Workspace")
     let updated = try await client.request(
       ThreadUpdate.self, .init(threadId: "thread-1", title: "From phone", pinned: true), options: options())
     #expect(updated.thread.title == "From phone" && updated.thread.pinned)
@@ -125,7 +126,8 @@ private final class WriteCounter: Sendable {
     #expect(store.outboxCount == 5)
 
     let missing = await #expect(throws: WorkspaceError.self) {
-      try await client.request(ProjectRename.self, .init(projectId: "nope", name: "x"), options: options())
+      try await client.request(
+        EnvironmentRename.self, .init(environmentId: "nope", name: "x"), options: options())
     }
     #expect(missing?.code == .notFound)
     let missingThread = await #expect(throws: WorkspaceError.self) {
@@ -134,8 +136,8 @@ private final class WriteCounter: Sendable {
     #expect(missingThread?.code == .notFound)
     #expect(writes.count == 4)  // a refused write is not a local write
 
-    // A pulled batch announces the projects it touched, and the threads its turns belong to.
-    transport.publish(AppliedBatch(touchedThreadIds: ["thread-1"], touchedProjectIds: ["p1"]))
+    // A pulled batch announces the environments it touched, and the threads its turns belong to.
+    transport.publish(AppliedBatch(touchedThreadIds: ["thread-1"], touchedEnvironmentIds: ["p1"]))
 
     var received: [AdapterEvent] = []
     for await envelope in events {
@@ -144,10 +146,10 @@ private final class WriteCounter: Sendable {
     }
     // Rename, update, and mark-read each announce themselves (a draft is not part of the thread row),
     // in the order the writes were made, before the pulled batch's.
-    #expect(received.prefix(3).map(\.kind) == [.projectChanged, .threadUpdated, .threadUpdated])
-    #expect(received[0].payload["projectId"] == "p1")
+    #expect(received.prefix(3).map(\.kind) == [.environmentChanged, .threadUpdated, .threadUpdated])
+    #expect(received[0].payload["environmentId"] == "p1")
     #expect(received[1].threadId == "thread-1" && received[2].threadId == "thread-1")
-    #expect(Set(received.suffix(2).map(\.kind)) == [.projectChanged, .threadUpdated])
+    #expect(Set(received.suffix(2).map(\.kind)) == [.environmentChanged, .threadUpdated])
     await client.close()
   }
 
@@ -267,7 +269,7 @@ private final class WriteCounter: Sendable {
 
   /// A connection's change carries the whole row, so a client sees its new owner (a Mac that
   /// re-announced its rows, D-184), label, or models, not only its status. Without the row the phone
-  /// kept the old owner until relaunched and offered no connection for the Mac's projects.
+  /// kept the old owner until relaunched and offered no connection for the Mac's environments.
   @Test func aConnectionChangeCarriesTheWholeRow() async throws {
     let store = try MirrorStore.inMemory()
     let transport = MirrorTransport(store: store, version: "0.2.0")
@@ -638,7 +640,7 @@ private final class WriteCounter: Sendable {
     var events = (await client.events()).makeAsyncIterator()
 
     let params = ThreadStart.Params(
-      threadId: "thread-new", projectId: "p1", connectionId: "conn-1", folder: "/Users/brian/project",
+      threadId: "thread-new", environmentId: "p1", connectionId: "conn-1", folder: "/Users/brian/project",
       text: "Hi")
     async let started = client.request(ThreadStart.self, params, options: RequestOptions(operationId: "op-s"))
     #expect(
@@ -665,7 +667,7 @@ private final class WriteCounter: Sendable {
       id: "thread-new", connectionId: "conn-1", nativeThreadId: "native-new",
       nativeScope: "/Users/brian/project",
       title: "Hi", context: "/Users/brian/project", createdAt: "2026-11-01T10:00:00.000Z",
-      updatedAt: "2026-11-01T10:00:00.000Z", projectId: "p1")
+      updatedAt: "2026-11-01T10:00:00.000Z", environmentId: "p1")
     socket.deliver(
       .reply(id: "op-s", result: try JSONValue(encoding: ThreadStart.Result(thread: thread, turn: turn))))
     #expect(try await started.thread == thread)
@@ -709,7 +711,7 @@ private final class WriteCounter: Sendable {
     _ = try await client.request(ThreadRead.self, .init(threadId: "thread-1"))
 
     let params = ThreadStart.Params(
-      threadId: "thread-new", projectId: "p1", connectionId: "conn-1", text: "Hi")
+      threadId: "thread-new", environmentId: "p1", connectionId: "conn-1", text: "Hi")
     async let started = client.request(ThreadStart.self, params, options: RequestOptions(operationId: "op-s"))
     _ = try await RelayHarness.nextCommand(socket)
     let turn = relayTurn("turn-new", threadId: "thread-new", operationId: "op-s")
@@ -743,7 +745,7 @@ private final class WriteCounter: Sendable {
       transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay, now: now.now))
     _ = try await client.ready()
     let params = ThreadStart.Params(
-      threadId: "thread-new", projectId: "p1", connectionId: "conn-1", text: "Hi")
+      threadId: "thread-new", environmentId: "p1", connectionId: "conn-1", text: "Hi")
     async let started = client.request(ThreadStart.self, params, options: RequestOptions(operationId: "op-s"))
     _ = try await RelayHarness.nextFrame(socket)
     let turn = relayTurn("turn-new", threadId: "thread-new", operationId: "op-s")
@@ -763,7 +765,7 @@ private final class WriteCounter: Sendable {
 
     // A refused start leaves no placeholder behind.
     let other = ThreadStart.Params(
-      threadId: "thread-other", projectId: "p1", connectionId: "conn-1", text: "Hi")
+      threadId: "thread-other", environmentId: "p1", connectionId: "conn-1", text: "Hi")
     let refused = Task {
       try await client.request(ThreadStart.self, other, options: RequestOptions(operationId: "op-t"))
     }
@@ -782,67 +784,72 @@ private final class WriteCounter: Sendable {
 
   /// The hub watches a started thread for the phone; a start refused before its turn was made gives
   /// that watch back, so refusals never use up the link's four. One whose turn exists keeps it.
-  @Test func projectEditsGoToTheMacAndKeepTheOwnerTheMirrorKnows() async throws {
+  @Test func environmentEditsGoToTheMacAndKeepTheOwnerTheMirrorKnows() async throws {
     let (store, h, socket) = try await relayedMirror()
     _ = try store.apply([
-      change("projects", "p1", "insert", value: projectJSON("p1")),
-      change("projectFolders", "f1", "insert", value: folderJSON("f1", projectId: "p1", path: "/work/app")),
+      change("environments", "p1", "insert", value: environmentJSON("p1")),
+      change(
+        "environmentFolders", "f1", "insert", value: folderJSON("f1", environmentId: "p1", path: "/work/app")),
     ])
-    let owner = try #require(try store.projects().first?.ownerDeviceId)
+    let owner = try #require(try store.environments().first?.ownerDeviceId)
     let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay))
     _ = try await client.ready()
     let options = RequestOptions(operationId: "op-1")
 
-    // An update goes to the Mac as it is; the project it returns (the Mac sends no owner) gets the
+    // An update goes to the Mac as it is; the environment it returns (the Mac sends no owner) gets the
     // mirror's owner back, so the phone keeps routing to that Mac.
-    let update = ProjectUpdate.Params(projectId: "p1", addFolders: ["~/work/docs"])
-    let updating = Task { try await client.request(ProjectUpdate.self, update, options: options) }
-    guard case .command(let id, .projectUpdate, let params, _, _) = try await RelayHarness.nextCommand(socket)
+    let update = EnvironmentUpdate.Params(environmentId: "p1", addFolders: ["~/work/docs"])
+    let updating = Task { try await client.request(EnvironmentUpdate.self, update, options: options) }
+    guard
+      case .command(let id, .environmentUpdate, let params, _, _) = try await RelayHarness.nextCommand(socket)
     else {
-      Issue.record("expected project.update")
+      Issue.record("expected environment.update")
       return
     }
     #expect(params == (try JSONValue(encoding: update)))
-    var edited = Project(id: "p1", name: "", manual: true, folders: [])
-    socket.deliver(.reply(id: id, result: try JSONValue(encoding: ProjectUpdate.Result(project: edited))))
-    #expect(try await updating.value.project.ownerDeviceId == owner)
+    var edited = WorkEnvironment(id: "p1", name: "", manual: true, folders: [])
+    socket.deliver(
+      .reply(id: id, result: try JSONValue(encoding: EnvironmentUpdate.Result(environment: edited))))
+    #expect(try await updating.value.environment.ownerDeviceId == owner)
 
-    // A new project is not in the mirror yet: it has no owner until its row syncs.
-    let create = ProjectCreate.Params(
-      name: "New", folders: ["/work/new"], projectId: "p-new", deviceId: owner)
-    let creating = Task { try await client.request(ProjectCreate.self, create, options: options) }
+    // A new environment is not in the mirror yet: it has no owner until its row syncs.
+    let create = EnvironmentCreate.Params(
+      name: "New", folders: ["/work/new"], environmentId: "p-new", deviceId: owner)
+    let creating = Task { try await client.request(EnvironmentCreate.self, create, options: options) }
     guard
-      case .command(let createId, .projectCreate, let createParams, _, _) =
+      case .command(let createId, .environmentCreate, let createParams, _, _) =
         try await RelayHarness.nextCommand(socket)
     else {
-      Issue.record("expected project.create")
+      Issue.record("expected environment.create")
       return
     }
-    #expect(createParams["deviceId"] == .string(owner) && createParams["projectId"] == "p-new")
+    #expect(createParams["deviceId"] == .string(owner) && createParams["environmentId"] == "p-new")
     edited.id = "p-new"
     socket.deliver(
-      .reply(id: createId, result: try JSONValue(encoding: ProjectCreate.Result(project: edited))))
-    #expect(try await creating.value.project.ownerDeviceId == nil)
+      .reply(id: createId, result: try JSONValue(encoding: EnvironmentCreate.Result(environment: edited))))
+    #expect(try await creating.value.environment.ownerDeviceId == nil)
 
     // The Mac's refusal is the phone's answer, word for word, and the mirror is untouched.
     let deleting = Task {
-      try await client.request(ProjectDelete.self, ProjectDelete.Params(projectId: "p1"), options: options)
+      try await client.request(
+        EnvironmentDelete.self, EnvironmentDelete.Params(environmentId: "p1"), options: options)
     }
-    guard case .command(let deleteId, .projectDelete, _, _, _) = try await RelayHarness.nextCommand(socket)
+    guard
+      case .command(let deleteId, .environmentDelete, _, _, _) = try await RelayHarness.nextCommand(socket)
     else {
-      Issue.record("expected project.delete")
+      Issue.record("expected environment.delete")
       return
     }
     socket.deliver(
       .reply(
         id: deleteId,
         error: RelayWireError(
-          .protocolInvalid, "Project app is automatic; only manual projects can be deleted.")
+          .protocolInvalid, "Environment app is automatic; only manual environments can be deleted.")
       ))
     let refused = await #expect(throws: WorkspaceError.self) { try await deleting.value }
     #expect(
-      refused?.code == .protocolInvalid && refused?.message.hasPrefix("Project app is automatic") == true)
-    #expect(try store.projects().map(\.id) == ["p1"])
+      refused?.code == .protocolInvalid && refused?.message.hasPrefix("Environment app is automatic") == true)
+    #expect(try store.environments().map(\.id) == ["p1"])
     await client.close()
     await h.relay.stop()
   }
@@ -852,7 +859,7 @@ private final class WriteCounter: Sendable {
     let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay))
     _ = try await client.ready()
     let refused = ThreadStart.Params(
-      threadId: "thread-refused", projectId: "p1", connectionId: "conn-1", text: "Hi")
+      threadId: "thread-refused", environmentId: "p1", connectionId: "conn-1", text: "Hi")
     let first = Task {
       try await client.request(ThreadStart.self, refused, options: RequestOptions(operationId: "op-r"))
     }
@@ -871,7 +878,7 @@ private final class WriteCounter: Sendable {
     #expect(try await RelayHarness.nextFrame(socket) == .watch(threadId: "thread-2"))
 
     let failed = ThreadStart.Params(
-      threadId: "thread-failed", projectId: "p1", connectionId: "conn-1", text: "Hi")
+      threadId: "thread-failed", environmentId: "p1", connectionId: "conn-1", text: "Hi")
     let second = Task {
       try await client.request(ThreadStart.self, failed, options: RequestOptions(operationId: "op-f"))
     }

@@ -32,8 +32,9 @@ private func parse(_ json: String) throws -> ParsedCommand { try parseCommand(Da
       .turnInterrupt, .turnAbandon, .requestRespond, .draftSave, .credentialAdd, .serverAdd, .serverStart,
       .serverRestart,
       .serverStop, .serverInspect, .workspaceStopLocalWork, .workspaceReconcile, .databaseBackup,
-      .databaseRestore, .databaseImportSQLite, .hubJoin, .hubLeave, .projectCreate, .projectUpdate,
-      .projectRename, .projectDelete, .threadMarkRead, .threadStart, .settingsUpdate, .connectionUpdate,
+      .databaseRestore, .databaseImportSQLite, .hubJoin, .hubLeave, .environmentCreate, .environmentUpdate,
+      .environmentRename, .environmentDelete, .threadMarkRead, .threadStart, .settingsUpdate,
+      .connectionUpdate,
       .accountPasskeyFinish, .accountAppleFinish, .accountCompleteProfile, .accountLogout,
       .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice,
       .accountAppleLinkFinish, .credentialRemove, .threadDelete,
@@ -60,36 +61,48 @@ private func parse(_ json: String) throws -> ParsedCommand { try parseCommand(Da
     #expect(AccountStatus.method == .accountStatus)
   }
 
-  @Test func projectAndReadCommandsDecodeTheirParams() throws {
+  @Test func environmentWireNamesAreTheNewOnes() throws {
+    #expect(EnvironmentRename.method.rawValue == "environment.rename")
+    #expect(EnvironmentList.method.rawValue == "environment.list")
+    let thread = ConversationThread(
+      id: "t1", connectionId: "c", nativeThreadId: "n1", createdAt: "2026-11-10T00:00:00Z",
+      environmentId: "e1")
+    let json = String(decoding: try JSONEncoder().encode(thread), as: UTF8.self)
+    #expect(json.contains(#""environmentId":"e1""#) && !json.contains("projectId"))
+  }
+
+  @Test func environmentAndReadCommandsDecodeTheirParams() throws {
     func command(_ method: String, _ params: String) throws -> ParsedCommand {
       try parse(
         #"{"protocolVersion":1,"kind":"command","requestId":"r","operationId":"op","method":"\#(method)","params":\#(params)}"#
       )
     }
     let update = try command(
-      "project.update", #"{"projectId":"p","name":"","addFolders":["/a"],"removeFolders":["/b"]}"#)
+      "environment.update", #"{"environmentId":"p","name":"","addFolders":["/a"],"removeFolders":["/b"]}"#)
     #expect(
-      try update.params(for: ProjectUpdate.self)
-        == ProjectUpdate.Params(projectId: "p", name: "", addFolders: ["/a"], removeFolders: ["/b"]))
-    let bare = try command("project.update", #"{"projectId":"p"}"#)
-    #expect(try bare.params(for: ProjectUpdate.self) == ProjectUpdate.Params(projectId: "p"))
+      try update.params(for: EnvironmentUpdate.self)
+        == EnvironmentUpdate.Params(environmentId: "p", name: "", addFolders: ["/a"], removeFolders: ["/b"]))
+    let bare = try command("environment.update", #"{"environmentId":"p"}"#)
+    #expect(try bare.params(for: EnvironmentUpdate.self) == EnvironmentUpdate.Params(environmentId: "p"))
     #expect(
-      try command("project.create", #"{"name":"Site","folders":["/a"]}"#).params(for: ProjectCreate.self)
-        == ProjectCreate.Params(name: "Site", folders: ["/a"]))
+      try command("environment.create", #"{"name":"Site","folders":["/a"]}"#).params(
+        for: EnvironmentCreate.self)
+        == EnvironmentCreate.Params(name: "Site", folders: ["/a"]))
     #expect(
-      try command("project.rename", #"{"projectId":"p","name":""}"#).params(for: ProjectRename.self)
-        == ProjectRename.Params(projectId: "p", name: ""))
+      try command("environment.rename", #"{"environmentId":"p","name":""}"#).params(
+        for: EnvironmentRename.self)
+        == EnvironmentRename.Params(environmentId: "p", name: ""))
     #expect(
-      try command("project.delete", #"{"projectId":"p"}"#).params(for: ProjectDelete.self)
-        == ProjectDelete.Params(projectId: "p"))
+      try command("environment.delete", #"{"environmentId":"p"}"#).params(for: EnvironmentDelete.self)
+        == EnvironmentDelete.Params(environmentId: "p"))
     #expect(
       try command("thread.markRead", #"{"threadId":"t","turnId":"u"}"#).params(for: ThreadMarkRead.self)
         == ThreadMarkRead.Params(threadId: "t", turnId: "u"))
     #expect(
       try command("thread.markRead", #"{"threadId":"t"}"#).params(for: ThreadMarkRead.self)
         == ThreadMarkRead.Params(threadId: "t", turnId: nil))
-    #expect(AdapterEvent.projectChanged(projectId: "p").payload["projectId"]?.stringValue == "p")
-    #expect(EventKind.projectChanged.rawValue == "project.changed")
+    #expect(AdapterEvent.environmentChanged(environmentId: "p").payload["environmentId"]?.stringValue == "p")
+    #expect(EventKind.environmentChanged.rawValue == "environment.changed")
   }
 
   @Test func requestRespondDecodesDecisionsAndAnswers() throws {

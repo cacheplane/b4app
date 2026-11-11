@@ -15,7 +15,7 @@ import WorkspaceProtocol
 
   private func seed(_ db: WorkspaceDatabase) throws {
     _ = try db.insertConnection(Connection(id: "c1", kind: .codex, label: "Codex", target: "/bin/codex"))
-    _ = try db.insertProject(Project(id: "p1", name: "b4app"), folders: ["/tmp/owned-rows-p1"])
+    _ = try db.insertEnvironment(WorkEnvironment(id: "p1", name: "b4app"), folders: ["/tmp/owned-rows-p1"])
     _ = try db.insertThread(
       ConversationThread(
         id: "t1", connectionId: "c1", nativeThreadId: "thr_1", nativeScope: "acct", title: "First",
@@ -35,7 +35,7 @@ import WorkspaceProtocol
     let before = try db.changes(after: 0).count
     #expect(try db.claimOwnedRows() == 3)
     let appended = Array(try db.changes(after: 0).dropFirst(before))
-    #expect(appended.map(\.table).sorted() == ["connections", "projects", "threads"])
+    #expect(appended.map(\.table).sorted() == ["connections", "environments", "threads"])
     #expect(appended.allSatisfy { $0.op == "insert" && $0.deviceId == "dev-new" && !$0.synced })
     #expect(appended.allSatisfy { $0.hlc == "000000000000-0000-dev-new" })
     #expect(appended.first { $0.table == "threads" }?.value?["title"] == .string("First"))

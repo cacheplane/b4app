@@ -1,37 +1,37 @@
 import Foundation
 
-/// A folder that belongs to exactly one project. `path` is a `SessionService.canonicalDirectory` form.
-public struct ProjectFolder: Codable, Sendable, Equatable, Identifiable {
+/// A folder that belongs to exactly one environment. `path` is a `SessionService.canonicalDirectory` form.
+public struct EnvironmentFolder: Codable, Sendable, Equatable, Identifiable {
   public var id: String
-  public var projectId: String
+  public var environmentId: String
   public var path: String
   public var createdAt: String
 
-  public init(id: String, projectId: String, path: String, createdAt: String = Timestamp.now()) {
+  public init(id: String, environmentId: String, path: String, createdAt: String = Timestamp.now()) {
     self.id = id
-    self.projectId = projectId
+    self.environmentId = environmentId
     self.path = path
     self.createdAt = createdAt
   }
 }
 
 /// A named group of threads. An empty `name` displays as the last component of its oldest folder.
-public struct Project: Codable, Sendable, Equatable, Identifiable {
+public struct WorkEnvironment: Codable, Sendable, Equatable, Identifiable {
   public var id: String
   public var name: String
-  /// True when a person created the project; false when the backfill derived it from a folder.
+  /// True when a person created the environment; false when the backfill derived it from a folder.
   public var manual: Bool
   public var createdAt: String
   public var updatedAt: String
-  /// Filled on read, oldest first; never a column of `projects`.
-  public var folders: [ProjectFolder]
-  /// The device id of the Mac that owns the project (the one whose folders it lists), from the phone's
+  /// Filled on read, oldest first; never a column of `environments`.
+  public var folders: [EnvironmentFolder]
+  /// The device id of the Mac that owns the environment (the one whose folders it lists), from the phone's
   /// mirror; nil on the Mac. A new thread from the phone goes to this Mac (M8c).
   public var ownerDeviceId: String?
 
   public init(
     id: String, name: String = "", manual: Bool = false, createdAt: String = Timestamp.now(),
-    updatedAt: String = Timestamp.now(), folders: [ProjectFolder] = [], ownerDeviceId: String? = nil
+    updatedAt: String = Timestamp.now(), folders: [EnvironmentFolder] = [], ownerDeviceId: String? = nil
   ) {
     self.id = id
     self.name = name
@@ -49,12 +49,12 @@ public struct Project: Codable, Sendable, Equatable, Identifiable {
     manual = try c.decode(Bool.self, forKey: .manual)
     createdAt = try c.decode(String.self, forKey: .createdAt)
     updatedAt = try c.decode(String.self, forKey: .updatedAt)
-    folders = try c.decodeIfPresent([ProjectFolder].self, forKey: .folders) ?? []
+    folders = try c.decodeIfPresent([EnvironmentFolder].self, forKey: .folders) ?? []
     ownerDeviceId = try c.decodeIfPresent(String.self, forKey: .ownerDeviceId)
   }
 
   /// `name` when it is not empty, else the last path component of the oldest folder, else
-  /// "Untitled project". Computed on read; never stored or encoded.
+  /// "Untitled environment". Computed on read; never stored or encoded.
   public var displayName: String {
     if !name.isEmpty { return name }
     let oldest = folders.min { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
@@ -62,96 +62,96 @@ public struct Project: Codable, Sendable, Equatable, Identifiable {
       let last = URL(fileURLWithPath: path).lastPathComponent
       if !last.isEmpty, last != "/" { return last }
     }
-    return "Untitled project"
+    return "Untitled environment"
   }
 }
 
 // MARK: - Commands
 
-/// Every project with its folders and `displayName` resolved, oldest first.
-public enum ProjectList: WorkspaceCommand {
+/// Every environment with its folders and `displayName` resolved, oldest first.
+public enum EnvironmentList: WorkspaceCommand {
   public typealias Params = EmptyParams
   public struct Result: Codable, Sendable, Equatable {
-    public var projects: [Project]
-    public init(projects: [Project]) { self.projects = projects }
+    public var environments: [WorkEnvironment]
+    public init(environments: [WorkEnvironment]) { self.environments = environments }
   }
-  public static let method = Method.projectList
+  public static let method = Method.environmentList
 }
 
-/// Create a manual project over one or more existing folders. A folder that belongs to an automatic
-/// project moves out of it (its threads follow, and an automatic project left empty is deleted); a
-/// folder of another manual project is refused.
+/// Create a manual environment over one or more existing folders. A folder that belongs to an automatic
+/// environment moves out of it (its threads follow, and an automatic environment left empty is deleted); a
+/// folder of another manual environment is refused.
 ///
 /// The phone sends it over the relay: `deviceId` names the Mac the folders are on (the hub routes by
-/// it; the Mac ignores it), and `projectId` is a lowercase UUID the phone mints, so a resend of the
-/// same create finds the project the first one made instead of making another. Without `projectId`
+/// it; the Mac ignores it), and `environmentId` is a lowercase UUID the phone mints, so a resend of the
+/// same create finds the environment the first one made instead of making another. Without `environmentId`
 /// the coordinator mints one.
-public enum ProjectCreate: WorkspaceCommand {
+public enum EnvironmentCreate: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
     public var name: String
     public var folders: [String]
-    public var projectId: String?
+    public var environmentId: String?
     public var deviceId: String?
-    public init(name: String, folders: [String], projectId: String? = nil, deviceId: String? = nil) {
+    public init(name: String, folders: [String], environmentId: String? = nil, deviceId: String? = nil) {
       self.name = name
       self.folders = folders
-      self.projectId = projectId
+      self.environmentId = environmentId
       self.deviceId = deviceId
     }
   }
   public struct Result: Codable, Sendable, Equatable {
-    public var project: Project
-    public init(project: Project) { self.project = project }
+    public var environment: WorkEnvironment
+    public init(environment: WorkEnvironment) { self.environment = environment }
   }
-  public static let method = Method.projectCreate
+  public static let method = Method.environmentCreate
 }
 
-/// Rename a project and add or remove folders in one call. Adding a folder to an automatic project
+/// Rename an environment and add or remove folders in one call. Adding a folder to an automatic environment
 /// makes it manual. Every folder is validated before anything changes.
-public enum ProjectUpdate: WorkspaceCommand {
+public enum EnvironmentUpdate: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
-    public var projectId: String
+    public var environmentId: String
     public var name: String?
     public var addFolders: [String]?
     public var removeFolders: [String]?
     public init(
-      projectId: String, name: String? = nil, addFolders: [String]? = nil, removeFolders: [String]? = nil
+      environmentId: String, name: String? = nil, addFolders: [String]? = nil, removeFolders: [String]? = nil
     ) {
-      self.projectId = projectId
+      self.environmentId = environmentId
       self.name = name
       self.addFolders = addFolders
       self.removeFolders = removeFolders
     }
   }
-  public typealias Result = ProjectCreate.Result
-  public static let method = Method.projectUpdate
+  public typealias Result = EnvironmentCreate.Result
+  public static let method = Method.environmentUpdate
 }
 
 /// The rename both devices can do. The empty string restores the folder-name display.
-public enum ProjectRename: WorkspaceCommand {
+public enum EnvironmentRename: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
-    public var projectId: String
+    public var environmentId: String
     public var name: String
-    public init(projectId: String, name: String) {
-      self.projectId = projectId
+    public init(environmentId: String, name: String) {
+      self.environmentId = environmentId
       self.name = name
     }
   }
-  public typealias Result = ProjectCreate.Result
-  public static let method = Method.projectRename
+  public typealias Result = EnvironmentCreate.Result
+  public static let method = Method.environmentRename
 }
 
-/// Delete a manual project; its folders return to automatic projects where threads use them.
-public enum ProjectDelete: WorkspaceCommand {
+/// Delete a manual environment; its folders return to automatic environments where threads use them.
+public enum EnvironmentDelete: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
-    public var projectId: String
-    public init(projectId: String) { self.projectId = projectId }
+    public var environmentId: String
+    public init(environmentId: String) { self.environmentId = environmentId }
   }
   public struct Result: Codable, Sendable, Equatable {
-    public var projectId: String
-    public init(projectId: String) { self.projectId = projectId }
+    public var environmentId: String
+    public init(environmentId: String) { self.environmentId = environmentId }
   }
-  public static let method = Method.projectDelete
+  public static let method = Method.environmentDelete
 }
 
 /// Mark a thread read up to `turnId`, or unread again with nil. The write happens only when `turnId`

@@ -129,15 +129,15 @@ public final class HybridClock: Sendable {
 public enum SyncColumns {
   public static let phoneWritable: [String: Set<String>] = [
     "threads": ["title", "pinned", "archived", "readTurnId", "userDeletedAt", "model", "permission"],
-    "projects": ["name"],
+    "environments": ["name"],
     "drafts": ["threadId", "text", "updatedAt"],
   ]
 
-  /// Phone-writable columns plus `threads.projectId`, which only the Mac writes but which merges by
+  /// Phone-writable columns plus `threads.environmentId`, which only the Mac writes but which merges by
   /// clock too.
   public static let clocked: [String: Set<String>] = {
     var all = phoneWritable
-    all["threads", default: []].insert("projectId")
+    all["threads", default: []].insert("environmentId")
     return all
   }()
 

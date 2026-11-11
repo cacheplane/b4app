@@ -45,7 +45,7 @@ struct SidebarView: View {
     }
   }
 
-  /// New thread, Search, More (the Mac's rows). New thread is off while no project's Mac can take a
+  /// New thread, Search, More (the Mac's rows). New thread is off while no environment's Mac can take a
   /// thread: all offline, or left the hub (the list's notice says why). Search and More stay, since
   /// every thread is still browsable.
   #if os(macOS)
@@ -121,7 +121,7 @@ struct SidebarView: View {
         }
       }
       .listStyle(.plain)
-      .navigationTitle(model.projectFilter == .all ? "Threads" : model.filterTitle)
+      .navigationTitle(model.environmentFilter == .all ? "Threads" : model.filterTitle)
       .toolbar {
         ToolbarItemGroup(placement: .topBarTrailing) {
           MoreMenu(model: model, inToolbar: true)
@@ -226,7 +226,7 @@ struct SidebarActionRow: View {
 }
 
 /// "More": the list's view options for now, and the place for future app features. On the Mac, the
-/// archive switch and the connection filter; on the iPhone, the project filter (which includes the
+/// archive switch and the connection filter; on the iPhone, the environment filter (which includes the
 /// archive) and the connection filter.
 struct MoreMenu: View {
   @Bindable var model: WorkspaceModel
@@ -245,26 +245,28 @@ struct MoreMenu: View {
         Toggle("Show archived", isOn: $model.showArchived)
         connectionPicker
       #else
-        Picker("Project", selection: $model.projectFilter) {
-          Text("All projects").tag(ProjectFilter.all)
-          ForEach(model.filterProjects) { project in
-            Text(project.displayName).tag(ProjectFilter.project(project.id))
+        Picker("Environment", selection: $model.environmentFilter) {
+          Text("All environments").tag(EnvironmentFilter.all)
+          ForEach(model.filterEnvironments) { environment in
+            Text(environment.displayName).tag(EnvironmentFilter.environment(environment.id))
           }
-          if model.hasOtherThreads || model.projectFilter == .other {
-            Text("Other").tag(ProjectFilter.other)
+          if model.hasOtherThreads || model.environmentFilter == .other {
+            Text("Other").tag(EnvironmentFilter.other)
           }
-          Text("Archived").tag(ProjectFilter.archived)
+          Text("Archived").tag(EnvironmentFilter.archived)
         }
         .pickerStyle(.inline)
-        // A name alone saves through the change log; folders and Delete go to the project's Mac.
-        if let project = selectedProject {
-          Button("Edit \u{201C}\(project.displayName)\u{201D}\u{2026}", systemImage: "pencil") {
-            model.projectSheet = .edit(projectId: project.id)
+        // A name alone saves through the change log; folders and Delete go to the environment's Mac.
+        if let environment = selectedEnvironment {
+          Button("Edit \u{201C}\(environment.displayName)\u{201D}\u{2026}", systemImage: "pencil") {
+            model.environmentSheet = .edit(environmentId: environment.id)
           }
-          .accessibilityIdentifier("edit-project")
+          .accessibilityIdentifier("edit-environment")
         }
-        Button("New Project\u{2026}", systemImage: "folder.badge.plus") { model.projectSheet = .create }
-          .accessibilityIdentifier("new-project")
+        Button("New Environment\u{2026}", systemImage: "folder.badge.plus") {
+          model.environmentSheet = .create
+        }
+        .accessibilityIdentifier("new-environment")
         connectionPicker
       #endif
     } label: {
@@ -302,7 +304,7 @@ struct MoreMenu: View {
   private var activeFilter: String? {
     var parts: [String] = []
     #if os(iOS)
-      if model.projectFilter != .all { parts.append(model.filterTitle) }
+      if model.environmentFilter != .all { parts.append(model.filterTitle) }
     #endif
     if let id = model.connectionFilter, let connection = model.connection(id: id) {
       parts.append(connection.label)
@@ -311,9 +313,9 @@ struct MoreMenu: View {
   }
 
   #if os(iOS)
-    private var selectedProject: Project? {
-      guard case .project(let id) = model.projectFilter else { return nil }
-      return model.filterProjects.first { $0.id == id }
+    private var selectedEnvironment: WorkEnvironment? {
+      guard case .environment(let id) = model.environmentFilter else { return nil }
+      return model.filterEnvironments.first { $0.id == id }
     }
   #endif
 }

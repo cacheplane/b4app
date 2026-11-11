@@ -18,6 +18,11 @@ import Foundation
 /// Version 3 (M8c) adds `connections.projectId`, the project a local B4 connection serves (a Mac-only
 /// column the phone reads to offer B4 connections when starting a thread), and an index on
 /// `displayItems ("threadId", "nativeItemId")` for the relay's lookup on every streamed delta.
+///
+/// Version 7 renames the project to the environment: `projects` and `projectFolders` become
+/// `environments` and `environmentFolders`, and the three `projectId` columns become `environmentId`.
+/// The table and column names the mirror also stores as data (the outbox, `columnClocks`, and
+/// `undecodableRows`) are rewritten with them.
 enum MirrorSchema {
   /// `PRAGMA user_version` once every migration has run.
   static var version: Int { migrations.last?.version ?? 0 }
@@ -32,20 +37,21 @@ enum MirrorSchema {
 
   /// The synced tables in dependency order, with their key column (as `WorkspaceDatabase.syncedTables`).
   static let syncedTables: [(table: String, key: String)] = [
-    ("connections", "id"), ("projects", "id"), ("projectFolders", "id"), ("threads", "id"), ("turns", "id"),
+    ("connections", "id"), ("environments", "id"), ("environmentFolders", "id"), ("threads", "id"),
+    ("turns", "id"),
     ("displayItems", "id"), ("runtimeRequests", "id"), ("drafts", "threadId"),
     ("connectionUsage", "connectionId"),
   ]
 
   /// Tables whose rows record the device that inserted them in `ownerDeviceId`.
-  static let ownedTables: Set<String> = ["connections", "threads", "projects"]
+  static let ownedTables: Set<String> = ["connections", "threads", "environments"]
 
   /// Columns of synced tables that only the mirror writes: a change never sets them.
   static let localColumns: Set<String> = ["ownerDeviceId"]
 
   /// Columns whose `INTEGER` holds a boolean (0 or 1); they read back as JSON `true`/`false`.
   static let booleanColumns: [String: Set<String>] = [
-    "connections": ["enabled"], "threads": ["pinned", "archived"], "projects": ["manual"],
+    "connections": ["enabled"], "threads": ["pinned", "archived"], "environments": ["manual"],
   ]
 
   /// Columns whose `TEXT` holds a JSON document; they read back inline.
@@ -61,6 +67,7 @@ enum MirrorSchema {
   /// every migration after `n`, all in one transaction.
   static let migrations: [(version: Int, statements: [String])] = [
     (1, version1), (2, version2), (3, version3), (4, version4), (5, version5), (6, version6),
+    (7, version7),
   ]
 
   /// M8a's schema.
@@ -264,4 +271,37 @@ enum MirrorSchema {
     #"ALTER TABLE "threads" ADD COLUMN "permission" TEXT"#,
     #"ALTER TABLE "connections" ADD COLUMN "models" TEXT"#,
   ]
+
+  /// Environments: the project renamed. Tables, columns and indexes are renamed in place (SQLite
+  /// rewrites the foreign key and any index on a renamed column; the two indexes are dropped first and
+  /// created again under their new names). The names stored as data follow: each outbox row's table and
+  /// column, the keys of an unsent insert's row, `columnClocks`, and `undecodableRows`. Without that an
+  /// unsent edit would name a table the hub no longer knows and a column's clock would be lost.
+  static let version7 =
+    [
+      #"DROP INDEX "projectFoldersByProject""#,
+      #"DROP INDEX "threadsByProject""#,
+      #"ALTER TABLE "projects" RENAME TO "environments""#,
+      #"ALTER TABLE "projectFolders" RENAME TO "environmentFolders""#,
+      #"ALTER TABLE "environmentFolders" RENAME COLUMN "projectId" TO "environmentId""#,
+      #"ALTER TABLE "threads" RENAME COLUMN "projectId" TO "environmentId""#,
+      #"ALTER TABLE "connections" RENAME COLUMN "projectId" TO "environmentId""#,
+      #"CREATE INDEX "environmentFoldersByEnvironment" ON "environmentFolders" ("environmentId", "createdAt")"#,
+      #"CREATE INDEX "threadsByEnvironment" ON "threads" ("environmentId")"#,
+    ]
+    + ["outbox", "columnClocks", "undecodableRows"].flatMap { stored in
+      [
+        #"UPDATE "\#(stored)" SET "table" = 'environments' WHERE "table" = 'projects'"#,
+        #"UPDATE "\#(stored)" SET "table" = 'environmentFolders' WHERE "table" = 'projectFolders'"#,
+      ]
+    } + [
+      #"UPDATE "outbox" SET "column" = 'environmentId' WHERE "column" = 'projectId'"#,
+      #"UPDATE "columnClocks" SET "column" = 'environmentId' WHERE "column" = 'projectId'"#,
+      """
+      UPDATE "outbox"
+        SET "value" = json_set(json_remove("value", '$.projectId'), '$.environmentId', json_extract("value", '$.projectId'))
+        WHERE "op" = 'insert' AND "table" IN ('environments', 'environmentFolders', 'threads', 'connections')
+          AND CASE WHEN json_valid("value") THEN json_type("value", '$.projectId') END IS NOT NULL
+      """,
+    ]
 }

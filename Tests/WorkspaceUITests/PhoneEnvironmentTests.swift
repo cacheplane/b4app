@@ -7,26 +7,26 @@ import WorkspaceProtocol
 
 // MARK: - Fixture
 
-/// Two Macs. `mac-1` owns the automatic projects `auto-a` and `auto-b` and the manual `work`; `mac-2`
+/// Two Macs. `mac-1` owns the automatic environments `auto-a` and `auto-b` and the manual `work`; `mac-2`
 /// owns the automatic `studio`.
-private enum Projects {
-  static func folder(_ id: String, _ projectId: String, _ path: String) -> ProjectFolder {
-    ProjectFolder(id: id, projectId: projectId, path: path, createdAt: PhoneFixture.at(-1000))
+private enum Environments {
+  static func folder(_ id: String, _ environmentId: String, _ path: String) -> EnvironmentFolder {
+    EnvironmentFolder(id: id, environmentId: environmentId, path: path, createdAt: PhoneFixture.at(-1000))
   }
 
-  static func project(
+  static func environment(
     _ id: String, manual: Bool = false, owner: String = "mac-1", _ paths: [String]
-  ) -> Project {
-    Project(
+  ) -> WorkEnvironment {
+    WorkEnvironment(
       id: id, name: manual ? "Work" : "", manual: manual, createdAt: PhoneFixture.at(-1000),
       updatedAt: PhoneFixture.at(-1000),
       folders: paths.enumerated().map { folder("\(id)-\($0.offset)", id, $0.element) }, ownerDeviceId: owner)
   }
 
-  static let autoA = project("auto-a", ["/work/a"])
-  static let autoB = project("auto-b", ["/work/b"])
-  static let work = project("work", manual: true, ["/work/w"])
-  static let studio = project("studio", owner: "mac-2", ["/studio/s"])
+  static let autoA = environment("auto-a", ["/work/a"])
+  static let autoB = environment("auto-b", ["/work/b"])
+  static let work = environment("work", manual: true, ["/work/w"])
+  static let studio = environment("studio", owner: "mac-2", ["/studio/s"])
 
   @MainActor
   static func model(
@@ -34,32 +34,32 @@ private enum Projects {
   ) async throws
     -> WorkspaceModel
   {
-    transport.set(connections: [], threads: [], projects: [autoA, autoB, work, studio])
+    transport.set(connections: [], threads: [], environments: [autoA, autoB, work, studio])
     let model = try await PhoneFixture.model(transport, clock: clock, online: nil, open: nil)
     transport.emit(PhoneFixture.presence("mac-1", online: true))
     transport.emit(PhoneFixture.presence("mac-2", name: "Studio", online: true))
     try await waitUntil("presence") {
       model.hostPresence["mac-1"] != nil && model.hostPresence["mac-2"] != nil
     }
-    try await waitUntil("projects") { model.projects.count == 4 }
+    try await waitUntil("environments") { model.environments.count == 4 }
     return model
   }
 
-  static func reply(_ project: Project) -> ScriptedTransport.Reply {
-    .result(try! JSONValue(encoding: ProjectCreate.Result(project: project)))
+  static func reply(_ environment: WorkEnvironment) -> ScriptedTransport.Reply {
+    .result(try! JSONValue(encoding: EnvironmentCreate.Result(environment: environment)))
   }
 }
 
 // MARK: - Tests
 
-@Suite(.serialized) @MainActor struct PhoneProjectTests {
-  @Test func aNewProjectGoesToTheChosenMacWithItsOwnId() async throws {
+@Suite(.serialized) @MainActor struct PhoneEnvironmentTests {
+  @Test func aNewEnvironmentGoesToTheChosenMacWithItsOwnId() async throws {
     let transport = ScriptedTransport()
-    let model = try await Projects.model(transport)
-    let draft = PhoneProjectDraft(model: model, request: .create)
+    let model = try await Environments.model(transport)
+    let draft = PhoneEnvironmentDraft(model: model, request: .create)
     #expect(draft.isNew && draft.macs.count == 2)
     let mac = try #require(draft.deviceId)
-    // Only the chosen Mac's automatic projects' folders are offered: a manual project's folder would be
+    // Only the chosen Mac's automatic environments' folders are offered: a manual environment's folder would be
     // refused, and the other Mac's are not on this one.
     let expected = mac == "mac-1" ? ["/work/a", "/work/b"] : ["/studio/s"]
     #expect(Set(draft.suggestions) == Set(expected))
@@ -75,25 +75,25 @@ private enum Projects {
     draft.name = " New "
     #expect(draft.canSave)
 
-    let created = Project(id: draft.projectId, name: "New", manual: true, folders: [])
-    transport.script(.projectCreate, [Projects.reply(created)])
+    let created = WorkEnvironment(id: draft.environmentId, name: "New", manual: true, folders: [])
+    transport.script(.environmentCreate, [Environments.reply(created)])
     await draft.submit()
     #expect(draft.finished && draft.failure == nil)
-    let call = try #require(transport.recorded(.projectCreate).first)
+    let call = try #require(transport.recorded(.environmentCreate).first)
     #expect(call.params["deviceId"] == "mac-1")
-    #expect(call.params["projectId"] == .string(draft.projectId))
+    #expect(call.params["environmentId"] == .string(draft.environmentId))
     #expect(call.params["name"] == "New")
     #expect(call.params["folders"] == ["/work/a", "~/repos/new"])
-    // The list moves to the new project.
-    #expect(model.projectFilter == .project(draft.projectId))
-    #expect(model.projects.contains { $0.id == draft.projectId })
+    // The list moves to the new environment.
+    #expect(model.environmentFilter == .environment(draft.environmentId))
+    #expect(model.environments.contains { $0.id == draft.environmentId })
     await model.disconnect()
   }
 
   @Test func switchingMacsDropsTheOtherMacsFolders() async throws {
     let transport = ScriptedTransport()
-    let model = try await Projects.model(transport)
-    let draft = PhoneProjectDraft(model: model, request: .create)
+    let model = try await Environments.model(transport)
+    let draft = PhoneEnvironmentDraft(model: model, request: .create)
     draft.selectMac("mac-1")
     draft.add("/work/a")
     draft.typed = "/typed"
@@ -106,15 +106,15 @@ private enum Projects {
 
   @Test func theMacsRefusalAndAnOfflineMacShowInTheSheet() async throws {
     let transport = ScriptedTransport()
-    let model = try await Projects.model(transport)
-    let draft = PhoneProjectDraft(model: model, request: .create)
+    let model = try await Environments.model(transport)
+    let draft = PhoneEnvironmentDraft(model: model, request: .create)
     draft.selectMac("mac-1")
     draft.typed = "/not/here"
     draft.addTyped()
 
     // The Mac checks the folder and says why it refused; the sheet stays open with the text.
     transport.script(
-      .projectCreate,
+      .environmentCreate,
       [.failure(WorkspaceError(.protocolInvalid, "Folder /not/here does not exist."))])
     await draft.submit()
     #expect(!draft.finished)
@@ -122,7 +122,7 @@ private enum Projects {
 
     // The hub says the Mac went offline: worded with its name and when it was last seen.
     transport.script(
-      .projectCreate,
+      .environmentCreate,
       [
         .failure(
           WorkspaceError(
@@ -138,37 +138,37 @@ private enum Projects {
     let reason = try #require(draft.blockedReason)
     #expect(reason.hasPrefix("\(PhoneFixture.macName) is offline · last seen "))
     #expect(!draft.canSave)
-    #expect(transport.recorded(.projectCreate).count == 2)
-    // The other Mac can still take a new project.
+    #expect(transport.recorded(.environmentCreate).count == 2)
+    // The other Mac can still take a new environment.
     draft.selectMac("mac-2")
     #expect(draft.blockedReason == nil)
     // A new sheet opens on the Mac that can take it.
-    #expect(PhoneProjectDraft(model: model, request: .create).deviceId == "mac-2")
+    #expect(PhoneEnvironmentDraft(model: model, request: .create).deviceId == "mac-2")
     await model.disconnect()
   }
 
   @Test func aNameAloneIsARenameThatNeedsNoMac() async throws {
     let transport = ScriptedTransport()
-    let model = try await Projects.model(transport)
+    let model = try await Environments.model(transport)
     transport.emit(PhoneFixture.presence("mac-1", online: false, lastSeen: -120))
     try await waitUntil("offline") { model.hostPresence["mac-1"]?.online == false }
 
-    let draft = PhoneProjectDraft(model: model, request: .edit(projectId: "work"))
+    let draft = PhoneEnvironmentDraft(model: model, request: .edit(environmentId: "work"))
     #expect(!draft.isNew && draft.folders == ["/work/w"])
     #expect(!draft.canSave)
     draft.name = "Renamed"
     // The Mac is offline, and still a rename saves: it goes through the change log.
     #expect(draft.blockedReason == nil && draft.canSave)
-    var renamed = Projects.work
+    var renamed = Environments.work
     renamed.name = "Renamed"
-    transport.script(.projectRename, [Projects.reply(renamed)])
+    transport.script(.environmentRename, [Environments.reply(renamed)])
     await draft.submit()
     #expect(draft.finished)
-    #expect(transport.recorded(.projectRename).first?.params["name"] == "Renamed")
-    #expect(transport.recorded(.projectUpdate).isEmpty)
+    #expect(transport.recorded(.environmentRename).first?.params["name"] == "Renamed")
+    #expect(transport.recorded(.environmentUpdate).isEmpty)
 
     // A folder change does need the Mac.
-    let folders = PhoneProjectDraft(model: model, request: .edit(projectId: "work"))
+    let folders = PhoneEnvironmentDraft(model: model, request: .edit(environmentId: "work"))
     folders.add("/work/a")
     #expect(folders.blockedReason?.hasPrefix("\(PhoneFixture.macName) is offline") == true)
     #expect(!folders.canSave)
@@ -177,28 +177,28 @@ private enum Projects {
 
   @Test func folderChangesGoToTheMacInOneUpdate() async throws {
     let transport = ScriptedTransport()
-    let model = try await Projects.model(transport)
-    let draft = PhoneProjectDraft(model: model, request: .edit(projectId: "work"))
+    let model = try await Environments.model(transport)
+    let draft = PhoneEnvironmentDraft(model: model, request: .edit(environmentId: "work"))
     draft.add("/work/b")
     draft.remove("/work/w")
     draft.name = "Both"
     #expect(draft.added == ["/work/b"] && draft.removed == ["/work/w"])
-    transport.script(.projectUpdate, [Projects.reply(Projects.work)])
+    transport.script(.environmentUpdate, [Environments.reply(Environments.work)])
     await draft.submit()
     #expect(draft.finished)
-    let call = try #require(transport.recorded(.projectUpdate).first)
-    #expect(call.params["projectId"] == "work")
+    let call = try #require(transport.recorded(.environmentUpdate).first)
+    #expect(call.params["environmentId"] == "work")
     #expect(call.params["name"] == "Both")
     #expect(call.params["addFolders"] == ["/work/b"])
     #expect(call.params["removeFolders"] == ["/work/w"])
-    #expect(transport.recorded(.projectRename).isEmpty)
+    #expect(transport.recorded(.environmentRename).isEmpty)
     await model.disconnect()
   }
 
-  @Test func anAutomaticProjectKeepsItsFolderAndCannotBeDeleted() async throws {
+  @Test func anAutomaticEnvironmentKeepsItsFolderAndCannotBeDeleted() async throws {
     let transport = ScriptedTransport()
-    let model = try await Projects.model(transport)
-    let draft = PhoneProjectDraft(model: model, request: .edit(projectId: "auto-a"))
+    let model = try await Environments.model(transport)
+    let draft = PhoneEnvironmentDraft(model: model, request: .edit(environmentId: "auto-a"))
     #expect(!draft.canRemove("/work/a") && !draft.canDelete)
     draft.remove("/work/a")
     #expect(draft.folders == ["/work/a"])
@@ -208,25 +208,25 @@ private enum Projects {
     await model.disconnect()
   }
 
-  @Test func deletingAManualProjectAsksItsMac() async throws {
+  @Test func deletingAManualEnvironmentAsksItsMac() async throws {
     let transport = ScriptedTransport()
-    let model = try await Projects.model(transport)
-    model.projectFilter = .project("work")
-    let draft = PhoneProjectDraft(model: model, request: .edit(projectId: "work"))
+    let model = try await Environments.model(transport)
+    model.environmentFilter = .environment("work")
+    let draft = PhoneEnvironmentDraft(model: model, request: .edit(environmentId: "work"))
     #expect(draft.canDelete && draft.deleteBlockedReason == nil)
     transport.script(
-      .projectDelete, [.result(try JSONValue(encoding: ProjectDelete.Result(projectId: "work")))])
+      .environmentDelete, [.result(try JSONValue(encoding: EnvironmentDelete.Result(environmentId: "work")))])
     await draft.delete()
     #expect(draft.finished)
-    #expect(transport.recorded(.projectDelete).first?.params["projectId"] == "work")
-    #expect(!model.projects.contains { $0.id == "work" })
-    #expect(model.projectFilter == .all)
+    #expect(transport.recorded(.environmentDelete).first?.params["environmentId"] == "work")
+    #expect(!model.environments.contains { $0.id == "work" })
+    #expect(model.environmentFilter == .all)
 
-    // A project the phone made whose row has not synced has no Mac to send to yet.
-    let fresh = Project(id: "fresh", name: "Fresh", manual: true, folders: [])
+    // An environment the phone made whose row has not synced has no Mac to send to yet.
+    let fresh = WorkEnvironment(id: "fresh", name: "Fresh", manual: true, folders: [])
     model.merge(fresh)
-    let pending = PhoneProjectDraft(model: model, request: .edit(projectId: "fresh"))
-    #expect(pending.deleteBlockedReason == RelayCopy.projectNotSynced)
+    let pending = PhoneEnvironmentDraft(model: model, request: .edit(environmentId: "fresh"))
+    #expect(pending.deleteBlockedReason == RelayCopy.environmentNotSynced)
     await model.disconnect()
   }
 }

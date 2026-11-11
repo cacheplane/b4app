@@ -41,7 +41,7 @@
    "continuity": "available",
    "createdAt": "2026-10-31T05:00:00Z",
    "updatedAt": "2026-10-31T05:00:00Z",
-   "projectId": null,
+   "environmentId": null,
    "readTurnId": null
   },
   {
@@ -56,7 +56,7 @@
    "continuity": "available",
    "createdAt": "2026-10-31T08:00:00Z",
    "updatedAt": "2026-10-31T08:00:00Z",
-   "projectId": null,
+   "environmentId": null,
    "readTurnId": "u-pq1"
   },
   {
@@ -71,7 +71,7 @@
    "continuity": "available",
    "createdAt": "2026-10-31T09:00:00Z",
    "updatedAt": "2026-10-31T09:00:00Z",
-   "projectId": null,
+   "environmentId": null,
    "readTurnId": "u-arl1"
   },
   {
@@ -86,7 +86,7 @@
    "continuity": "available",
    "createdAt": "2026-10-31T09:30:00Z",
    "updatedAt": "2026-10-31T09:30:00Z",
-   "projectId": null,
+   "environmentId": null,
    "readTurnId": "u-atl2"
   },
   {
@@ -101,7 +101,7 @@
    "continuity": "available",
    "createdAt": "2026-10-31T09:50:00Z",
    "updatedAt": "2026-10-31T09:50:00Z",
-   "projectId": null,
+   "environmentId": null,
    "readTurnId": null
   },
   {
@@ -116,7 +116,7 @@
    "continuity": "available",
    "createdAt": "2026-10-31T09:45:00Z",
    "updatedAt": "2026-10-31T09:45:00Z",
-   "projectId": null,
+   "environmentId": null,
    "readTurnId": null
   },
   {
@@ -131,7 +131,7 @@
    "continuity": "available",
    "createdAt": "2026-10-31T09:30:00Z",
    "updatedAt": "2026-10-31T09:30:00Z",
-   "projectId": null,
+   "environmentId": null,
    "readTurnId": null
   },
   {
@@ -146,7 +146,7 @@
    "continuity": "available",
    "createdAt": "2026-10-31T09:00:00Z",
    "updatedAt": "2026-10-31T09:00:00Z",
-   "projectId": null,
+   "environmentId": null,
    "readTurnId": null
   },
   {
@@ -161,7 +161,7 @@
    "continuity": "available",
    "createdAt": "2026-10-31T09:00:00Z",
    "updatedAt": "2026-10-31T09:00:00Z",
-   "projectId": null,
+   "environmentId": null,
    "readTurnId": null
   },
   {
@@ -176,7 +176,7 @@
    "continuity": "available",
    "createdAt": "2026-10-31T10:00:00Z",
    "updatedAt": "2026-10-31T10:00:00Z",
-   "projectId": null,
+   "environmentId": null,
    "readTurnId": null
   },
   {
@@ -191,7 +191,7 @@
    "continuity": "available",
    "createdAt": "2026-10-31T06:15:00Z",
    "updatedAt": "2026-10-31T06:15:00Z",
-   "projectId": null,
+   "environmentId": null,
    "readTurnId": "u-cr1"
   },
   {
@@ -206,7 +206,7 @@
    "continuity": "available",
    "createdAt": "2026-10-31T07:00:00Z",
    "updatedAt": "2026-10-31T07:00:00Z",
-   "projectId": null,
+   "environmentId": null,
    "readTurnId": null
   },
   {
@@ -221,7 +221,7 @@
    "continuity": "available",
    "createdAt": "2026-10-31T06:30:00Z",
    "updatedAt": "2026-10-31T06:30:00Z",
-   "projectId": null,
+   "environmentId": null,
    "readTurnId": null
   },
   {
@@ -236,7 +236,7 @@
    "continuity": "available",
    "createdAt": "2026-10-31T06:30:00Z",
    "updatedAt": "2026-10-31T06:30:00Z",
-   "projectId": null,
+   "environmentId": null,
    "readTurnId": null
   },
   {
@@ -251,7 +251,7 @@
    "continuity": "available",
    "createdAt": "2026-10-31T06:00:00Z",
    "updatedAt": "2027-01-01T00:00:00Z",
-   "projectId": null,
+   "environmentId": null,
    "readTurnId": null
   }
  ],

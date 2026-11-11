@@ -61,7 +61,7 @@ public enum StartOutcome: Sendable {
 }
 
 /// A started coordinator: lock, cluster, event log, diagnostics, accounts, router, socket server. The
-/// signed-in account's services (database, sessions, servers, projects, hub) are its `AccountScope`,
+/// signed-in account's services (database, sessions, servers, environments, hub) are its `AccountScope`,
 /// `accounts.current`, nil while nobody is signed in (sign-in plan, Task 9).
 public final class RunningCoordinator: Sendable {
   public let paths: PlatformPaths

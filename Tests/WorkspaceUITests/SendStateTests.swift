@@ -113,9 +113,9 @@ enum PhoneFixture {
   static let connection = Connection(
     id: "c1", kind: .codex, label: "Codex", target: "", ownerDeviceId: "mac-1", status: .ready)
 
-  /// A project of `mac-1` with one folder, for the tests that start a thread.
-  static let project = Project(
-    id: "p1", name: "Work", folders: [ProjectFolder(id: "f1", projectId: "p1", path: "/work")],
+  /// An environment of `mac-1` with one folder, for the tests that start a thread.
+  static let environment = WorkEnvironment(
+    id: "p1", name: "Work", folders: [EnvironmentFolder(id: "f1", environmentId: "p1", path: "/work")],
     ownerDeviceId: "mac-1")
 
   static func turn(
@@ -641,11 +641,11 @@ enum PhoneFixture {
   @Test func aConfirmedStartWhosePlaceholderExpiredStaysStarted() async throws {
     let clock = TestClock()
     let transport = PhoneFixture.transport()
-    transport.set(projects: [PhoneFixture.project])
+    transport.set(environments: [PhoneFixture.environment])
     let model = try await PhoneFixture.model(transport, clock: clock, open: nil)
     transport.script(.threadStart, [.hold])
     let task = Task {
-      await model.startThread(projectId: "p1", connectionId: "c1", folder: "/work", text: "Start here")
+      await model.startThread(environmentId: "p1", connectionId: "c1", folder: "/work", text: "Start here")
     }
     try await waitUntil("starting") { transport.heldCount(.threadStart) == 1 }
     let send = try #require(model.pendingSends.values.first { $0.text == "Start here" })
@@ -678,11 +678,11 @@ enum PhoneFixture {
   @Test func anUnconfirmedStartWhoseReadFailsShowsNotConfirmed() async throws {
     let clock = TestClock()
     let transport = PhoneFixture.transport()
-    transport.set(projects: [PhoneFixture.project])
+    transport.set(environments: [PhoneFixture.environment])
     transport.script(.threadStart, [PhoneFixture.notConfirmed("link_dropped")])
     let model = try await PhoneFixture.model(transport, clock: clock, open: nil)
     let pending = try #require(
-      await model.startThread(projectId: "p1", connectionId: "c1", folder: "/work", text: "Start here"))
+      await model.startThread(environmentId: "p1", connectionId: "c1", folder: "/work", text: "Start here"))
     #expect(pending.state == .notConfirmed)
     transport.script(
       .threadRead, [.failure(WorkspaceError(.notFound, "Thread \(pending.threadId) does not exist."))])
@@ -696,11 +696,11 @@ enum PhoneFixture {
   @Test func threadStartIsTrackedOnItsNewThread() async throws {
     let clock = TestClock()
     let transport = PhoneFixture.transport()
-    transport.set(projects: [PhoneFixture.project])
+    transport.set(environments: [PhoneFixture.environment])
     transport.script(.threadStart, [PhoneFixture.notConfirmed("link_dropped")])
     let model = try await PhoneFixture.model(transport, clock: clock, open: nil)
     let pending = try #require(
-      await model.startThread(projectId: "p1", connectionId: "c1", folder: "/work", text: "Start here"))
+      await model.startThread(environmentId: "p1", connectionId: "c1", folder: "/work", text: "Start here"))
     #expect(pending.state == .notConfirmed)
     #expect(pending.start?.threadId == pending.threadId)
     #expect(model.pendingSends[pending.threadId]?.id == pending.id)
@@ -724,7 +724,7 @@ enum PhoneFixture {
     // Accepted at once, the new thread opens.
     transport.script(.threadStart, [.hold])
     let task = Task {
-      await model.startThread(projectId: "p1", connectionId: "c1", folder: nil, text: "Next")
+      await model.startThread(environmentId: "p1", connectionId: "c1", folder: nil, text: "Next")
     }
     try await waitUntil("starting") { transport.heldCount(.threadStart) == 1 }
     let second = try #require(model.pendingSends.values.first { $0.text == "Next" })

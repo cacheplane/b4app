@@ -116,79 +116,84 @@ struct ComposerPickerRow: View {
     #endif
   }
 
-  // MARK: Project · folder
+  // MARK: Environment · folder
 
   @ViewBuilder private var place: some View {
     switch source {
     case .draft(let draft):
       if draft.isRemoteB4 {
-        // A remote B4 has no project; the runtime menu is the way back to one.
-        PickerLabel(text: "No project", chevron: false)
-          .accessibilityLabel("Project")
-          .accessibilityValue("No project")
-          .accessibilityIdentifier("picker-project")
+        // A remote B4 has no environment; the runtime menu is the way back to one.
+        PickerLabel(text: "No folder", chevron: false)
+          .accessibilityLabel("Environment")
+          .accessibilityValue("No folder")
+          .accessibilityIdentifier("picker-place")
       } else {
         let text = placeText(draft)
         Menu {
-          projectItems(draft)
+          environmentItems(draft)
         } label: {
           PickerLabel(text: text)
         }
         .pickerMenu()
-        .accessibilityLabel("Project")
+        .accessibilityLabel("Environment")
         .accessibilityValue(text)
-        .accessibilityIdentifier("picker-project")
+        .accessibilityIdentifier("picker-place")
       }
     case .thread(let thread):
       PickerLabel(text: placeText(thread), chevron: false)
-        .accessibilityLabel("Project")
+        .accessibilityLabel("Environment")
         .accessibilityValue(placeText(thread))
-        .accessibilityIdentifier("picker-project")
+        .accessibilityIdentifier("picker-place")
     }
   }
 
-  /// The project's name, with the starting folder's name when it has several; a chosen folder (the
-  /// Mac's "Choose folder…") by its own name until Send finds its project.
+  /// The environment's name, with the starting folder's name when it has several; a chosen folder (the
+  /// Mac's "Choose folder…") by its own name until Send finds its environment.
   private func placeText(_ draft: NewThreadDraft) -> String {
     if let chosen = draft.chosenFolder { return Self.folderName(chosen) }
-    guard let project = draft.project else { return "No project" }
-    guard draft.connection?.kind != .b4, project.folders.count > 1, let folder = draft.folder else {
-      return project.displayName
+    guard let environment = draft.environment else { return "No folder" }
+    guard draft.connection?.kind != .b4, environment.folders.count > 1, let folder = draft.folder else {
+      return environment.displayName
     }
-    return "\(project.displayName) · \(Self.folderName(folder))"
+    return "\(environment.displayName) · \(Self.folderName(folder))"
   }
 
   private func placeText(_ thread: ConversationThread) -> String {
-    let project = thread.projectId.flatMap { id in model.projects.first { $0.id == id } }
+    let environment = thread.environmentId.flatMap { id in model.environments.first { $0.id == id } }
     let b4 = connection?.kind == .b4
-    guard let project else {
-      guard !b4, let context = thread.context, !context.isEmpty else { return "No project" }
+    guard let environment else {
+      guard !b4, let context = thread.context, !context.isEmpty else { return "No folder" }
       return Self.folderName(context)
     }
-    guard !b4, project.folders.count > 1, let context = thread.context else { return project.displayName }
-    return "\(project.displayName) · \(Self.folderName(context))"
+    guard !b4, environment.folders.count > 1, let context = thread.context else {
+      return environment.displayName
+    }
+    return "\(environment.displayName) · \(Self.folderName(context))"
   }
 
-  /// Each project a thread can start in: a project with one folder is one item; one with several is a
-  /// group of its folders. Choosing a folder chooses its project. Then "Choose folder…" on the Mac.
-  @ViewBuilder private func projectItems(_ draft: NewThreadDraft) -> some View {
-    ForEach(draft.projects) { project in
-      if project.folders.count > 1 {
-        Section(project.displayName) {
-          ForEach(project.folders) { folder in
+  /// Each environment a thread can start in: an environment with one folder is one item; one with several is a
+  /// group of its folders. Choosing a folder chooses its environment. Then "Choose folder…" on the Mac.
+  @ViewBuilder private func environmentItems(_ draft: NewThreadDraft) -> some View {
+    ForEach(draft.environments) { environment in
+      if environment.folders.count > 1 {
+        Section(environment.displayName) {
+          ForEach(environment.folders) { folder in
             choice(
               Self.folderName(folder.path),
-              selected: draft.chosenFolder == nil && draft.projectId == project.id
+              selected: draft.chosenFolder == nil && draft.environmentId == environment.id
                 && draft.folder == folder.path
-            ) { draft.selectFolder(folder.path, in: project.id) }
+            ) { draft.selectFolder(folder.path, in: environment.id) }
           }
         }
       } else {
-        choice(project.displayName, selected: draft.chosenFolder == nil && draft.projectId == project.id) {
-          if let folder = project.folders.first {
-            draft.selectFolder(folder.path, in: project.id)
+        choice(
+          environment.displayName,
+          selected: draft.chosenFolder == nil && draft.environmentId == environment.id
+        ) {
+          if let folder = environment.folders.first {
+            draft.selectFolder(folder.path, in: environment.id)
           } else {
-            draft.selectProject(project.id)
+            draft.selectEnvironment(environment.id)
           }
         }
       }
@@ -282,7 +287,7 @@ struct ComposerPickerRow: View {
     return ("\(connection.label) · \(name)", name)
   }
 
-  /// One group per Codex or Claude connection (Claude Code first, then Codex), then this project's
+  /// One group per Codex or Claude connection (Claude Code first, then Codex), then this environment's
   /// local B4 agents, then on the Mac the remote ones. Built from what the draft offers, so no item is
   /// one `selectRuntime` would ignore.
   @ViewBuilder private func draftRuntimeItems(_ draft: NewThreadDraft) -> some View {
@@ -303,7 +308,7 @@ struct ComposerPickerRow: View {
         agentItems(sections.local, draft)
       } header: {
         MenuHeader(
-          title: draft.project.map { "B4 agents in \($0.displayName)" } ?? "B4 agents", kind: .b4)
+          title: draft.environment.map { "B4 agents in \($0.displayName)" } ?? "B4 agents", kind: .b4)
       }
     }
     if !sections.remote.isEmpty {

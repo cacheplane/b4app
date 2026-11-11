@@ -7,15 +7,15 @@ public struct ThreadFilter: Sendable, Equatable {
   public var connectionId: String?
   public var includeArchived: Bool
   public var query: String?
-  public var projectId: String?
+  public var environmentId: String?
   public init(
     connectionId: String? = nil, includeArchived: Bool = false, query: String? = nil,
-    projectId: String? = nil
+    environmentId: String? = nil
   ) {
     self.connectionId = connectionId
     self.includeArchived = includeArchived
     self.query = query
-    self.projectId = projectId
+    self.environmentId = environmentId
   }
 }
 
@@ -262,7 +262,7 @@ public final class WorkspaceDatabase: Sendable {
     id: String, _ mutate: @Sendable (inout Connection) -> Void
   ) throws -> Connection? {
     try write { c in
-      // Locked, so a concurrent `setConnectionProject` is never overwritten by this row's old copy.
+      // Locked, so a concurrent `setConnectionEnvironment` is never overwritten by this row's old copy.
       guard
         var connection = try one(
           c, Connection.self, "SELECT * FROM \"connections\" WHERE \"id\" = $1 FOR UPDATE", [id])
@@ -374,9 +374,9 @@ public final class WorkspaceDatabase: Sendable {
         params.append(connectionId)
         clauses.append("t.\"connectionId\" = $\(params.count)")
       }
-      if let projectId = filter.projectId {
-        params.append(projectId)
-        clauses.append("t.\"projectId\" = $\(params.count)")
+      if let environmentId = filter.environmentId {
+        params.append(environmentId)
+        clauses.append("t.\"environmentId\" = $\(params.count)")
       }
       if !filter.includeArchived { clauses.append("t.\"archived\" = false") }
       if let query = filter.query?.trimmingCharacters(in: .whitespaces), !query.isEmpty {
@@ -950,7 +950,7 @@ public final class WorkspaceDatabase: Sendable {
 
   /// The tables whose rows carry an owner: the device of a row's latest insert, on the hub
   /// (`owner_device_id`) and in the phone's mirror (`ownerDeviceId`).
-  static let ownedTables = ["connections", "projects", "threads"]
+  static let ownedTables = ["connections", "environments", "threads"]
 
   /// Re-announce this Mac's own rows as its current hub device, once per device (D-184): when the
   /// link's `ownedAs` is not its `deviceId`, append an insert for every row of `ownedTables` to the

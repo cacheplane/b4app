@@ -33,35 +33,37 @@ import WorkspaceProtocol
     #expect(!WorkspaceDatabase.syncedTables.contains { $0.table == "settings" })
   }
 
-  @Test func connectionProjectIsLoggedAndClearedWhenItsProjectIsDeleted() throws {
+  @Test func connectionEnvironmentIsLoggedAndClearedWhenItsEnvironmentIsDeleted() throws {
     let db = try WorkspaceDatabase.temporary()
-    _ = try db.insertProject(Project(id: "p1"), folders: ["/tmp/a"])
+    _ = try db.insertEnvironment(WorkEnvironment(id: "p1"), folders: ["/tmp/a"])
     _ = try db.insertConnection(
-      Connection(id: "c1", kind: .b4, label: "B4", target: "http://127.0.0.1:1", projectId: "p1"))
-    #expect(try db.connection(id: "c1")?.projectId == "p1")
+      Connection(id: "c1", kind: .b4, label: "B4", target: "http://127.0.0.1:1", environmentId: "p1"))
+    #expect(try db.connection(id: "c1")?.environmentId == "p1")
     let insert = try #require(try db.changes(after: 0).first { $0.table == "connections" })
-    #expect(insert.value?["projectId"] == .string("p1"))
+    #expect(insert.value?["environmentId"] == .string("p1"))
 
-    try db.setConnectionProject(id: "c1", projectId: nil)
-    #expect(try db.connection(id: "c1")?.projectId == nil)
-    try db.setConnectionProject(id: "c1", projectId: "p1")
-    let moves = try db.changes(after: 0).filter { $0.table == "connections" && $0.column == "projectId" }
+    try db.setConnectionEnvironment(id: "c1", environmentId: nil)
+    #expect(try db.connection(id: "c1")?.environmentId == nil)
+    try db.setConnectionEnvironment(id: "c1", environmentId: "p1")
+    let moves = try db.changes(after: 0).filter { $0.table == "connections" && $0.column == "environmentId" }
     // A cleared column is a SQL NULL in the log, which decodes as no value.
     #expect(moves.map(\.value) == [nil, .string("p1")])
 
-    // The project's deletion leaves the connection, unassigned.
-    try db.deleteProject(id: "p1")
-    #expect(try db.connection(id: "c1")?.projectId == nil)
-    // A project that does not exist is refused, not silently dropped.
-    #expect(throws: WorkspaceError.self) { try db.setConnectionProject(id: "c1", projectId: "missing") }
+    // The environment's deletion leaves the connection, unassigned.
+    try db.deleteEnvironment(id: "p1")
+    #expect(try db.connection(id: "c1")?.environmentId == nil)
+    // An environment that does not exist is refused, not silently dropped.
+    #expect(throws: WorkspaceError.self) {
+      try db.setConnectionEnvironment(id: "c1", environmentId: "missing")
+    }
   }
 
-  @Test func aConnectionWithoutAProjectIdStillDecodes() throws {
+  @Test func aConnectionWithoutAEnvironmentIdStillDecodes() throws {
     let json = """
       {"id":"c1","kind":"codex","label":"Codex","enabled":true,"profileRevision":0,"target":"/x",
        "capabilities":{},"status":"ready","authStatus":"authenticated","createdAt":"now","updatedAt":"now"}
       """
     let connection = try JSONCoding.decoder.decode(Connection.self, from: Data(json.utf8))
-    #expect(connection.projectId == nil)
+    #expect(connection.environmentId == nil)
   }
 }

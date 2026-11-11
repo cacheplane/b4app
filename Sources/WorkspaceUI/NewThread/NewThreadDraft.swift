@@ -3,7 +3,7 @@ import Observation
 import WorkspaceProtocol
 
 /// The new-thread composer's state, the same on the Mac and the phone: where the thread starts (a
-/// project and its starting folder, or on the Mac a folder chosen outside every project), the runtime
+/// environment and its starting folder, or on the Mac a folder chosen outside every environment), the runtime
 /// connection, model, and permission, and the first message.
 ///
 /// The choices open on this device's last ones (`NewThreadMemory`, the spec's "Defaults"), falling
@@ -13,10 +13,10 @@ import WorkspaceProtocol
 @MainActor @Observable
 final class NewThreadDraft {
   unowned let workspace: WorkspaceModel
-  private(set) var projectId: String?
-  /// The starting folder, one of the project's folders; nil with no project.
+  private(set) var environmentId: String?
+  /// The starting folder, one of the environment's folders; nil with no environment.
   private(set) var folder: String?
-  /// A folder from "Choose folder…" that is none of a project's folders (the Mac only). Its project is
+  /// A folder from "Choose folder…" that is none of an environment's folders (the Mac only). Its environment is
   /// found or made by the coordinator on Send, never before, so an abandoned draft leaves none behind.
   private(set) var chosenFolder: String?
   private(set) var connectionId: String?
@@ -40,78 +40,82 @@ final class NewThreadDraft {
   /// Why the last Send did nothing, when the model refused it before sending.
   private(set) var refusal: String?
 
-  /// A draft on this device's last choices; `projectId`, when it names a project a thread can start
-  /// in, replaces only the remembered project.
-  init(model: WorkspaceModel, projectId: String?) {
+  /// A draft on this device's last choices; `environmentId`, when it names an environment a thread can start
+  /// in, replaces only the remembered environment.
+  init(model: WorkspaceModel, environmentId: String?) {
     workspace = model
     let memory = NewThreadMemory.load(from: model.preferences)
     text = memory.text
-    place(in: defaultProject(projectId, memory), memory)
-    apply(defaultRuntime(memory, allowRemote: projectId == nil))
+    place(in: defaultEnvironment(environmentId, memory), memory)
+    apply(defaultRuntime(memory, allowRemote: environmentId == nil))
   }
 
   // MARK: Choices
 
-  var projects: [Project] { workspace.startProjects }
-  var project: Project? { projectId.flatMap { id in workspace.projects.first { $0.id == id } } }
+  var environments: [WorkEnvironment] { workspace.startEnvironments }
+  var environment: WorkEnvironment? {
+    environmentId.flatMap { id in workspace.environments.first { $0.id == id } }
+  }
 
-  /// The runtimes offered here: a project's connections, or with none (a chosen folder) the ones that
-  /// need no project; on the Mac, remote B4 last.
+  /// The runtimes offered here: an environment's connections, or with none (a chosen folder) the ones that
+  /// need no environment; on the Mac, remote B4 last.
   var connections: [Connection] {
-    guard let project else { return workspace.startConnectionsWithoutProject }
-    return workspace.startConnections(for: project) + workspace.remoteB4Connections
+    guard let environment else { return workspace.startConnectionsWithoutEnvironment }
+    return workspace.startConnections(for: environment) + workspace.remoteB4Connections
   }
 
   var connection: Connection? { connections.first { $0.id == connectionId } }
 
-  /// A remote B4 connection is chosen: no project, no folder, no permission.
+  /// A remote B4 connection is chosen: no environment, no folder, no permission.
   var isRemoteB4: Bool { connection.map { $0.kind == .b4 && $0.b4Mode == .remote } ?? false }
 
-  var folders: [ProjectFolder] {
-    guard let project, let connection else { return [] }
-    return workspace.startFolders(for: project, connection: connection)
+  var folders: [EnvironmentFolder] {
+    guard let environment, let connection else { return [] }
+    return workspace.startFolders(for: environment, connection: connection)
   }
 
   var needsFolderChoice: Bool {
-    guard let project, let connection else { return false }
-    return workspace.needsFolderChoice(for: project, connection: connection)
+    guard let environment, let connection else { return false }
+    return workspace.needsFolderChoice(for: environment, connection: connection)
   }
 
-  /// Start in a project: its remembered folder (or its first), and the runtime kept when the project
-  /// offers it, otherwise the project's own defaults.
-  func selectProject(_ id: String) {
-    guard let project = workspace.startProjects.first(where: { $0.id == id }) else { return }
+  /// Start in an environment: its remembered folder (or its first), and the runtime kept when the environment
+  /// offers it, otherwise the environment's own defaults.
+  func selectEnvironment(_ id: String) {
+    guard let environment = workspace.startEnvironments.first(where: { $0.id == id }) else { return }
     let memory = NewThreadMemory.load(from: workspace.preferences)
-    place(in: project, memory)
+    place(in: environment, memory)
     if connection == nil || isRemoteB4 { apply(defaultRuntime(memory, allowRemote: false)) }
   }
 
-  /// Start in one of a project's folders; choosing the folder chooses the project.
-  func selectFolder(_ folder: String, in projectId: String) {
-    selectProject(projectId)
-    guard self.projectId == projectId, project?.folders.contains(where: { $0.path == folder }) == true
+  /// Start in one of an environment's folders; choosing the folder chooses the environment.
+  func selectFolder(_ folder: String, in environmentId: String) {
+    selectEnvironment(environmentId)
+    guard self.environmentId == environmentId,
+      environment?.folders.contains(where: { $0.path == folder }) == true
     else { return }
     self.folder = folder
   }
 
   /// The path of a folder the system's file picker handed back, in the form the coordinator keys a
-  /// project's folders by (`SessionService.canonicalDirectory`): symlinks resolved, `..` collapsed, no
-  /// trailing slash. So a project's folder reached through a link is still that project's.
+  /// environment's folders by (`SessionService.canonicalDirectory`): symlinks resolved, `..` collapsed, no
+  /// trailing slash. So an environment's folder reached through a link is still that environment's.
   static func folderPath(of url: URL) -> String {
     var path = url.standardizedFileURL.resolvingSymlinksInPath().path
     while path.count > 1, path.hasSuffix("/") { path.removeLast() }
     return path
   }
 
-  /// "Choose folder…" (the Mac): a project's own folder starts in that project; any other folder starts
-  /// with no project, on a Codex or Claude connection. `path` is `folderPath(of:)`.
+  /// "Choose folder…" (the Mac): an environment's own folder starts in that environment; any other folder starts
+  /// with no environment, on a Codex or Claude connection. `path` is `folderPath(of:)`.
   func chooseFolder(_ path: String) {
     guard !workspace.relaysThroughHub else { return }
-    if let project = workspace.startProjects.first(where: { $0.folders.contains { $0.path == path } }) {
-      selectFolder(path, in: project.id)
+    if let environment = workspace.startEnvironments.first(where: { $0.folders.contains { $0.path == path } })
+    {
+      selectFolder(path, in: environment.id)
       return
     }
-    projectId = nil
+    environmentId = nil
     folder = nil
     chosenFolder = path
     if connection == nil || connection?.kind == .b4 {
@@ -120,7 +124,7 @@ final class NewThreadDraft {
   }
 
   /// Choose a runtime connection and its model. Another runtime resets the permission to "As
-  /// configured"; a B4 agent has neither model nor permission, and a remote one has no project.
+  /// configured"; a B4 agent has neither model nor permission, and a remote one has no environment.
   func selectRuntime(connectionId id: String, model chosen: String?) {
     guard let next = connections.first(where: { $0.id == id }) else { return }
     let previousKind = connection?.kind
@@ -128,13 +132,13 @@ final class NewThreadDraft {
     model = next.kind == .b4 ? nil : chosen
     if next.kind == .b4 || previousKind != next.kind { permission = nil }
     if isRemoteB4 {
-      projectId = nil
+      environmentId = nil
       folder = nil
       chosenFolder = nil
-    } else if projectId == nil, chosenFolder == nil {
+    } else if environmentId == nil, chosenFolder == nil {
       // Leaving a remote B4: the thread needs a place again.
       let memory = NewThreadMemory.load(from: workspace.preferences)
-      place(in: defaultProject(nil, memory), memory)
+      place(in: defaultEnvironment(nil, memory), memory)
     }
   }
 
@@ -146,50 +150,52 @@ final class NewThreadDraft {
   }
 
   /// Keep the choices that are still offered and fill in the rest from memory, as a new draft would:
-  /// for a draft made before the projects and connections loaded, or one whose choice went away.
+  /// for a draft made before the environments and connections loaded, or one whose choice went away.
   func refreshChoices() {
     let memory = NewThreadMemory.load(from: workspace.preferences)
     if !isRemoteB4, chosenFolder == nil {
-      if let project {
-        if !project.folders.contains(where: { $0.path == folder }) { place(in: project, memory) }
+      if let environment {
+        if !environment.folders.contains(where: { $0.path == folder }) { place(in: environment, memory) }
       } else {
-        place(in: defaultProject(nil, memory), memory)
+        place(in: defaultEnvironment(nil, memory), memory)
       }
     }
-    if connection == nil { apply(defaultRuntime(memory, allowRemote: projectId == nil)) }
+    if connection == nil { apply(defaultRuntime(memory, allowRemote: environmentId == nil)) }
   }
 
   // MARK: Defaults
 
-  /// The project asked for, else the remembered one, else the newest. The phone takes the remembered
-  /// or newest only among projects whose Mac can take a start now, as its sheet always has.
-  private func defaultProject(_ requested: String?, _ memory: NewThreadMemory) -> Project? {
-    let projects = workspace.startProjects
-    if let requested, let project = projects.first(where: { $0.id == requested }) { return project }
+  /// The environment asked for, else the remembered one, else the newest. The phone takes the remembered
+  /// or newest only among environments whose Mac can take a start now, as its sheet always has.
+  private func defaultEnvironment(_ requested: String?, _ memory: NewThreadMemory) -> WorkEnvironment? {
+    let environments = workspace.startEnvironments
+    if let requested, let environment = environments.first(where: { $0.id == requested }) {
+      return environment
+    }
     let candidates =
       workspace.relaysThroughHub
-      ? projects.filter {
+      ? environments.filter {
         workspace.startBlockedReason(for: $0) == nil && !workspace.startConnections(for: $0).isEmpty
-      } : projects
-    return candidates.first { $0.id == memory.projectId } ?? candidates.first ?? projects.first
+      } : environments
+    return candidates.first { $0.id == memory.environmentId } ?? candidates.first ?? environments.first
   }
 
-  private func place(in project: Project?, _ memory: NewThreadMemory) {
-    projectId = project?.id
+  private func place(in environment: WorkEnvironment?, _ memory: NewThreadMemory) {
+    environmentId = environment?.id
     chosenFolder = nil
-    folder = project.flatMap { project in
-      let paths = project.folders.map(\.path)
-      let remembered = memory.folderByProject[project.id].flatMap { paths.contains($0) ? $0 : nil }
+    folder = environment.flatMap { environment in
+      let paths = environment.folders.map(\.path)
+      let remembered = memory.folderByEnvironment[environment.id].flatMap { paths.contains($0) ? $0 : nil }
       return remembered ?? paths.first
     }
   }
 
-  /// The runtime last used in this project, else the last used anywhere, else the first offered with
-  /// its default model and "As configured". A remembered remote B4 is taken only when no project was
-  /// asked for, since it would leave the project.
+  /// The runtime last used in this environment, else the last used anywhere, else the first offered with
+  /// its default model and "As configured". A remembered remote B4 is taken only when no environment was
+  /// asked for, since it would leave the environment.
   private func defaultRuntime(_ memory: NewThreadMemory, allowRemote: Bool) -> RuntimeChoice? {
     let offered = connections.filter { allowRemote || !($0.kind == .b4 && $0.b4Mode == .remote) }
-    let remembered = [projectId.flatMap { memory.runtimeByProject[$0] }, memory.lastRuntime]
+    let remembered = [environmentId.flatMap { memory.runtimeByEnvironment[$0] }, memory.lastRuntime]
     for case let choice? in remembered {
       guard let connection = offered.first(where: { $0.id == choice.connectionId }) else { continue }
       return Self.valid(choice, for: connection)
@@ -218,7 +224,7 @@ final class NewThreadDraft {
     model = choice?.model
     permission = choice?.permission
     if isRemoteB4 {
-      projectId = nil
+      environmentId = nil
       folder = nil
       chosenFolder = nil
     }
@@ -226,22 +232,22 @@ final class NewThreadDraft {
 
   // MARK: Sending
 
-  /// Why Send is off, in words: the project's Mac cannot be reached, an earlier start is still open, or
+  /// Why Send is off, in words: the environment's Mac cannot be reached, an earlier start is still open, or
   /// the choices give nothing to start. Nil when it can be sent.
   var blockedReason: String? {
-    if let project, let reason = workspace.startBlockedReason(for: project) { return reason }
+    if let environment, let reason = workspace.startBlockedReason(for: environment) { return reason }
     if !unsettled, let reason = workspace.unsettledStartReason { return reason }
     let phone = workspace.relaysThroughHub
     guard let connection else {
-      if project == nil, chosenFolder == nil { return phone ? nil : "Choose a folder to start in." }
+      if environment == nil, chosenFolder == nil { return phone ? nil : "Choose a folder to start in." }
       return phone
-        ? "No ready connection on your Mac can start a thread in this project."
-        : "No ready connection can start a thread in this project."
+        ? "No ready connection on your Mac can start a thread in this environment."
+        : "No ready connection can start a thread in this environment."
     }
     if connection.kind != .b4, chosenFolder == nil, folder == nil {
-      if project == nil { return "Choose a folder to start in." }
+      if environment == nil { return "Choose a folder to start in." }
       return phone
-        ? "This project has no folder yet. Add one on your Mac." : "This project has no folder yet."
+        ? "This environment has no folder yet. Add one on your Mac." : "This environment has no folder yet."
     }
     return nil
   }
@@ -304,7 +310,7 @@ final class NewThreadDraft {
     defer { submitting = false }
     let b4 = connection.kind == .b4
     let sent = await workspace.startThread(
-      projectId: projectId, connectionId: connection.id, folder: b4 ? nil : chosenFolder ?? folder,
+      environmentId: environmentId, connectionId: connection.id, folder: b4 ? nil : chosenFolder ?? folder,
       model: b4 ? nil : model, permission: b4 ? nil : permission, text: text)
     startedThreadId = sent?.threadId
     if sent == nil { refusal = blockedReason ?? RelayCopy.startRefused }
@@ -330,7 +336,7 @@ extension WorkspaceModel {
   /// until the account ends.
   var newThreadDraft: NewThreadDraft {
     if let draft = newThreadDraftStorage { return draft }
-    let draft = NewThreadDraft(model: self, projectId: nil)
+    let draft = NewThreadDraft(model: self, environmentId: nil)
     newThreadDraftStorage = draft
     return draft
   }

@@ -34,7 +34,7 @@ extension MirrorAccount: @retroactive AccountHost {}
 /// holding a lock on a file in the App Group container, and resumed on the next active.
 ///
 /// Attention (M8f): the mirror lives in the flavour's App Group so the widget reads it (D-125), every
-/// batch that touched threads or projects and every sign-in or sign-out reloads the widget's
+/// batch that touched threads or environments and every sign-in or sign-out reloads the widget's
 /// timelines, the APNs token goes to the hub while signed in (D-122), and a thread link (a notification
 /// tap, a widget row) opens its thread (D-124).
 @MainActor @Observable final class MirrorHost {
@@ -774,7 +774,7 @@ extension MirrorAccount: @retroactive AccountHost {}
   private func publish(_ batch: AppliedBatch) {
     transport?.publish(batch)
     refreshHostState()
-    if !batch.touchedThreadIds.isEmpty || !batch.touchedProjectIds.isEmpty {
+    if !batch.touchedThreadIds.isEmpty || !batch.touchedEnvironmentIds.isEmpty {
       WidgetCenter.shared.reloadAllTimelines()
     }
     scheduleReconcile()

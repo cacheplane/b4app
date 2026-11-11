@@ -322,8 +322,8 @@ private struct HubHarness {
     #expect(SyncFilter.outbound(try record(3, "runtimeRequests", "insert", value: small))?.value == small)
   }
 
-  @Test func projectsTravelAndEveryChangeCarriesItsClock() throws {
-    for table in ["projects", "projectFolders"] {
+  @Test func environmentsTravelAndEveryChangeCarriesItsClock() throws {
+    for table in ["environments", "environmentFolders"] {
       let out = try #require(SyncFilter.outbound(try record(1, table, "insert", value: ["id": "r1"])))
       #expect(out.table == table)
       #expect(out.hlc == "0000000000a1-0000-local")
@@ -349,7 +349,7 @@ private struct HubHarness {
     #expect(sent["futureSecret"] == nil)
     #expect(Set(sent.keys) == SyncFilter.connectionColumns)
     #expect(sent.count == 18)
-    #expect(sent["projectId"] == .string("v-projectId"))
+    #expect(sent["environmentId"] == .string("v-environmentId"))
     #expect(sent["models"] == .string("v-models"))
     #expect(sent["authReference"] == .null)
     #expect(sent["localServerId"] == .null)
@@ -360,13 +360,13 @@ private struct HubHarness {
 }
 
 @Suite(.serialized) struct HubSyncTests {
-  @Test func connectionProjectIdIsUploaded() async throws {
+  @Test func connectionEnvironmentIdIsUploaded() async throws {
     let h = try await HubHarness.start()
     defer { Task { await h.close() } }
     let seeded = try h.workspace()
     defer { try? seeded.close() }
     var db = seeded
-    let project = try db.insertProject(Project(id: "p1"), folders: ["/tmp/b4-project"])
+    let environment = try db.insertEnvironment(WorkEnvironment(id: "p1"), folders: ["/tmp/b4-project"])
     let server = try db.insertLocalServer(
       LocalServer(
         id: "s1", name: "proj", projectPath: "/tmp/b4-project", nodePath: "/usr/bin/node",
@@ -374,23 +374,23 @@ private struct HubHarness {
     _ = try db.insertConnection(
       Connection(
         id: "c-b4", kind: .b4, label: "Local B4", target: "http://127.0.0.1:9", routeKey: "/chat#agent",
-        b4Mode: .managedLocal, localServerId: server.id, projectId: project.id))
+        b4Mode: .managedLocal, localServerId: server.id, environmentId: environment.id))
 
     _ = try await h.join()
     db = h.coordinator.database
     let pushed = await h.fake.pushed.flatMap { $0 }
     let insert = try #require(pushed.first { $0.table == "connections" && $0.rowId == "c-b4" })
-    #expect(insert.value?["projectId"] == .string("p1"))
+    #expect(insert.value?["environmentId"] == .string("p1"))
     // The machine-local columns are still blank.
     #expect(insert.value?["target"] == .string(""))
     #expect(insert.value?["localServerId"] == .null)
 
     // A later move travels as an update of the one column, a clear as a JSON null.
-    try db.setConnectionProject(id: "c-b4", projectId: nil)
+    try db.setConnectionEnvironment(id: "c-b4", environmentId: nil)
     let update = try #require(
-      try db.changes(after: 0).last { $0.table == "connections" && $0.column == "projectId" })
+      try db.changes(after: 0).last { $0.table == "connections" && $0.column == "environmentId" })
     let out = try #require(SyncFilter.outbound(update))
-    #expect(out.column == "projectId")
+    #expect(out.column == "environmentId")
     #expect(out.value == .null)
   }
 
@@ -406,7 +406,7 @@ private struct HubHarness {
 
     let joined = try await h.join()
     let db = h.coordinator.database
-    // Everything the store held when the join pushed: the seeded rows and what the sign-in's project
+    // Everything the store held when the join pushed: the seeded rows and what the sign-in's environment
     // backfill added for them.
     let backlog = try db.changes(after: 0).compactMap(SyncFilter.outbound)
     #expect(joined.joined)

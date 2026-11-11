@@ -6,8 +6,8 @@
 //! 1. the role (only a client link sends commands) and the method (an allowlist; an unknown one
 //!    never decodes, and [`unknown_command`] answers it), then the in-flight check, then the rate
 //!    limits;
-//! 2. the lookup of the thread, the runtime request's thread, the project, or (for
-//!    `project.create`, which names no row yet) the device named by `deviceId`, within the caller's
+//! 2. the lookup of the thread, the runtime request's thread, the environment, or (for
+//!    `environment.create`, which names no row yet) the device named by `deviceId`, within the caller's
 //!    org and user (a thread started moments ago through this hub is found in the pending-thread
 //!    map first); a miss is `not_found`;
 //! 3. the owner: it must be a non-revoked `macos` device of the caller's user, or `not_found`;
@@ -38,7 +38,9 @@ use b4hub_core::relay::{
     From, RelayMessage, RelayMethod, Role, WireError, COMMAND_DEADLINE, HELD_MAX, HOLD_WINDOW,
     PENDING_THREAD_TTL, REPLY_WAIT_OTHER, REPLY_WAIT_START,
 };
-use b4hub_db::relay::{owner_device, owner_of_project, owner_of_request, owner_of_thread, Owner};
+use b4hub_db::relay::{
+    owner_device, owner_of_environment, owner_of_request, owner_of_thread, Owner,
+};
 use b4hub_db::Db;
 use serde_json::{json, Value};
 use tokio::sync::{oneshot, watch};
@@ -534,15 +536,17 @@ async fn find_owner(
                 _ => Ok(owner),
             }
         }
-        RelayMethod::ThreadStart | RelayMethod::ProjectUpdate | RelayMethod::ProjectDelete => {
-            let project_id = param(params, "projectId")?;
-            let found = owner_of_project(db, org, user, project_id)
+        RelayMethod::ThreadStart
+        | RelayMethod::EnvironmentUpdate
+        | RelayMethod::EnvironmentDelete => {
+            let environment_id = param(params, "environmentId")?;
+            let found = owner_of_environment(db, org, user, environment_id)
                 .await
                 .map_err(lookup_failed)?;
             eligible(caller, found.ok_or_else(not_found)?)
         }
-        // A new project has no row yet: the phone names the Mac whose folders it will list.
-        RelayMethod::ProjectCreate => {
+        // A new environment has no row yet: the phone names the Mac whose folders it will list.
+        RelayMethod::EnvironmentCreate => {
             let device_id = param(params, "deviceId")?
                 .parse::<Uuid>()
                 .map_err(|_| not_found())?;

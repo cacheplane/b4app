@@ -826,7 +826,7 @@ async fn hub_stopping(stopping: &mut tokio::sync::watch::Receiver<bool>) {
 }
 
 /// The commands that change something on the Mac, refused while maintenance is on: `turn.send`,
-/// `thread.start`, `request.respond`, and the project edits. `turn.lookup` is a read, and
+/// `thread.start`, `request.respond`, and the environment edits. `turn.lookup` is a read, and
 /// `turn.interrupt` stops work rather than starting it, so both continue.
 fn writes(method: RelayMethod) -> bool {
     matches!(
@@ -834,9 +834,9 @@ fn writes(method: RelayMethod) -> bool {
         RelayMethod::TurnSend
             | RelayMethod::ThreadStart
             | RelayMethod::RequestRespond
-            | RelayMethod::ProjectCreate
-            | RelayMethod::ProjectUpdate
-            | RelayMethod::ProjectDelete
+            | RelayMethod::EnvironmentCreate
+            | RelayMethod::EnvironmentUpdate
+            | RelayMethod::EnvironmentDelete
     )
 }
 

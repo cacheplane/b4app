@@ -89,21 +89,22 @@ private func band(_ name: String) -> AttentionBand {
     }
   }
 
-  @Test func threadsFilterByProject() throws {
+  @Test func threadsFilterByEnvironment() throws {
     let fixture = try AttentionFixture.load()
     let store = try fixture.store()
     _ = try store.apply([
-      change("projects", "p1", "insert", value: projectJSON("p1")),
-      change("threads", "t-working", "update", column: "projectId", value: "p1"),
+      change("environments", "p1", "insert", value: environmentJSON("p1")),
+      change("threads", "t-working", "update", column: "environmentId", value: "p1"),
     ])
     #expect(
-      try store.threads(includeArchived: true, connectionId: nil, query: nil, projectId: "p1").map(\.id) == [
-        "t-working"
-      ])
+      try store.threads(includeArchived: true, connectionId: nil, query: nil, environmentId: "p1").map(\.id)
+        == [
+          "t-working"
+        ])
   }
 }
 
-func projectJSON(_ id: String, name: String = "", created: String = "2026-10-31T05:00:00Z") -> JSONValue {
+func environmentJSON(_ id: String, name: String = "", created: String = "2026-10-31T05:00:00Z") -> JSONValue {
   [
     "id": .string(id), "name": .string(name), "manual": false, "createdAt": .string(created),
     "updatedAt": .string(created),
@@ -111,11 +112,14 @@ func projectJSON(_ id: String, name: String = "", created: String = "2026-10-31T
 }
 
 func folderJSON(
-  _ id: String, projectId: String, path: String, created: String = "2026-10-31T05:00:00Z"
+  _ id: String, environmentId: String, path: String, created: String = "2026-10-31T05:00:00Z"
 )
   -> JSONValue
 {
-  ["id": .string(id), "projectId": .string(projectId), "path": .string(path), "createdAt": .string(created)]
+  [
+    "id": .string(id), "environmentId": .string(environmentId), "path": .string(path),
+    "createdAt": .string(created),
+  ]
 }
 
 extension JSONValue {

@@ -42,7 +42,7 @@ nonisolated struct GlanceEntry: TimelineEntry {
 }
 
 /// Builds the timeline from the mirror: an entry now and one when the data turns stale, then a reload
-/// fifteen minutes on. The app reloads it sooner after every batch that touched threads or projects.
+/// fifteen minutes on. The app reloads it sooner after every batch that touched threads or environments.
 nonisolated struct GlanceProvider: TimelineProvider {
   private static let logger = Logger(subsystem: "com.cacheplane.b4app", category: "widget")
   func placeholder(in context: Context) -> GlanceEntry {
@@ -80,13 +80,15 @@ nonisolated struct GlanceProvider: TimelineProvider {
     linked: true,
     rows: [
       GlanceRow(
-        threadId: "sample-1", title: "Approve the schema migration", projectName: "b4app", band: .needsInput,
+        threadId: "sample-1", title: "Approve the schema migration", environmentName: "b4app",
+        band: .needsInput,
         pinned: false),
       GlanceRow(
-        threadId: "sample-2", title: "Refactor the sync loop", projectName: "b4app", band: .working,
+        threadId: "sample-2", title: "Refactor the sync loop", environmentName: "b4app", band: .working,
         pinned: false),
       GlanceRow(
-        threadId: "sample-3", title: "Release notes for 0.2", projectName: nil, band: .unread, pinned: false),
+        threadId: "sample-3", title: "Release notes for 0.2", environmentName: nil, band: .unread,
+        pinned: false),
     ],
     asOf: nil)
 }
@@ -139,11 +141,11 @@ struct AttentionWidgetView: View {
   }
 }
 
-/// One thread: its attention dot beside a one-line title, and under the title its project, muted, when
+/// One thread: its attention dot beside a one-line title, and under the title its environment, muted, when
 /// it has one.
 struct GlanceRowView: View {
   let row: GlanceRow
-  /// The dot's width (`AttentionDot` scales the same way), so the project lines up under the title.
+  /// The dot's width (`AttentionDot` scales the same way), so the environment lines up under the title.
   @ScaledMetric(relativeTo: .body) private var dot: CGFloat = 8
 
   var body: some View {
@@ -155,8 +157,8 @@ struct GlanceRowView: View {
           .foregroundStyle(LLA.Color.ink)
           .lineLimit(1)
       }
-      if let project = row.projectName {
-        Text(project)
+      if let environment = row.environmentName {
+        Text(environment)
           .font(LLAFont.caption)
           .foregroundStyle(LLA.Color.muted)
           .lineLimit(1)

@@ -48,7 +48,7 @@ public struct MirrorLink: Codable, Sendable, Equatable {
 }
 
 /// What one `apply` changed, for the transport to turn into events: threads (their own rows, and the
-/// thread of every turn and runtime request written), projects (their rows and their folders'),
+/// thread of every turn and runtime request written), environments (their rows and their folders'),
 /// connections, the display items written (as they now read), how many changes were not applied, and
 /// how many rows the batch wrote that this build cannot decode (stored, but left out of reads). A
 /// change whose clocked columns all lost to newer clocks wrote nothing: it touches nothing and is not
@@ -57,7 +57,7 @@ public struct AppliedBatch: Sendable, Equatable {
   public var touchedThreadIds: Set<String>
   public var touchedItems: [DisplayItem]
   public var touchedConnectionIds: Set<String>
-  public var touchedProjectIds: Set<String>
+  public var touchedEnvironmentIds: Set<String>
   /// Connections whose `connectionUsage` row changed.
   public var touchedUsageIds: Set<String>
   public var skipped: Int
@@ -65,13 +65,13 @@ public struct AppliedBatch: Sendable, Equatable {
 
   public init(
     touchedThreadIds: Set<String> = [], touchedItems: [DisplayItem] = [],
-    touchedConnectionIds: Set<String> = [], touchedProjectIds: Set<String> = [],
+    touchedConnectionIds: Set<String> = [], touchedEnvironmentIds: Set<String> = [],
     touchedUsageIds: Set<String> = [], skipped: Int = 0, undecodableRows: Int = 0
   ) {
     self.touchedThreadIds = touchedThreadIds
     self.touchedItems = touchedItems
     self.touchedConnectionIds = touchedConnectionIds
-    self.touchedProjectIds = touchedProjectIds
+    self.touchedEnvironmentIds = touchedEnvironmentIds
     self.touchedUsageIds = touchedUsageIds
     self.skipped = skipped
     self.undecodableRows = undecodableRows
@@ -249,7 +249,7 @@ public final class MirrorStore: @unchecked Sendable {
   /// Threads ordered as the Mac lists them (pinned first, then most recently updated); `query` matches
   /// the title case-insensitively, with `%` and `_` taken literally.
   public func threads(
-    includeArchived: Bool, connectionId: String?, query: String?, projectId: String? = nil
+    includeArchived: Bool, connectionId: String?, query: String?, environmentId: String? = nil
   ) throws
     -> [ConversationThread]
   {
@@ -260,9 +260,9 @@ public final class MirrorStore: @unchecked Sendable {
       clauses.append(#"t."connectionId" = ?"#)
       binds.append(.text(connectionId))
     }
-    if let projectId {
-      clauses.append(#"t."projectId" = ?"#)
-      binds.append(.text(projectId))
+    if let environmentId {
+      clauses.append(#"t."environmentId" = ?"#)
+      binds.append(.text(environmentId))
     }
     if !includeArchived { clauses.append(#"t."archived" = 0"#) }
     if let query = query?.trimmingCharacters(in: .whitespaces), !query.isEmpty {
@@ -335,33 +335,35 @@ public final class MirrorStore: @unchecked Sendable {
     }
   }
 
-  /// Every project, oldest first (ties by id), each with its folders oldest first, as the Mac lists
+  /// Every environment, oldest first (ties by id), each with its folders oldest first, as the Mac lists
   /// them; `displayName` resolves from them.
-  public func projects() throws -> [Project] {
+  public func environments() throws -> [WorkEnvironment] {
     try locked {
-      let projects = try all(
-        Project.self, "projects", #"SELECT * FROM "projects" ORDER BY "createdAt", "id""#)
+      let environments = try all(
+        WorkEnvironment.self, "environments", #"SELECT * FROM "environments" ORDER BY "createdAt", "id""#)
       let folders = Dictionary(
         grouping: try all(
-          ProjectFolder.self, "projectFolders", #"SELECT * FROM "projectFolders" ORDER BY "createdAt", "id""#),
-        by: \.projectId)
-      return projects.map {
-        var project = $0
-        project.folders = folders[project.id] ?? []
-        return project
+          EnvironmentFolder.self, "environmentFolders",
+          #"SELECT * FROM "environmentFolders" ORDER BY "createdAt", "id""#),
+        by: \.environmentId)
+      return environments.map {
+        var environment = $0
+        environment.folders = folders[environment.id] ?? []
+        return environment
       }
     }
   }
 
-  func projectLocked(id: String) throws -> Project? {
+  func environmentLocked(id: String) throws -> WorkEnvironment? {
     guard
-      var project = try one(
-        Project.self, "projects", #"SELECT * FROM "projects" WHERE "id" = ?"#, [.text(id)])
+      var environment = try one(
+        WorkEnvironment.self, "environments", #"SELECT * FROM "environments" WHERE "id" = ?"#, [.text(id)])
     else { return nil }
-    project.folders = try all(
-      ProjectFolder.self, "projectFolders",
-      #"SELECT * FROM "projectFolders" WHERE "projectId" = ? ORDER BY "createdAt", "id""#, [.text(id)])
-    return project
+    environment.folders = try all(
+      EnvironmentFolder.self, "environmentFolders",
+      #"SELECT * FROM "environmentFolders" WHERE "environmentId" = ? ORDER BY "createdAt", "id""#, [.text(id)]
+    )
+    return environment
   }
 
   /// The user's devices as `saveDevices` last stored them, in the hub's order.
@@ -539,8 +541,8 @@ public final class MirrorStore: @unchecked Sendable {
   func decodes(table: String, _ row: Row) -> Bool {
     switch table {
     case "connections": return decode(Connection.self, table: table, row) != nil
-    case "projects": return decode(Project.self, table: table, row) != nil
-    case "projectFolders": return decode(ProjectFolder.self, table: table, row) != nil
+    case "environments": return decode(WorkEnvironment.self, table: table, row) != nil
+    case "environmentFolders": return decode(EnvironmentFolder.self, table: table, row) != nil
     case "threads": return decode(ConversationThread.self, table: table, row) != nil
     case "turns": return decode(Turn.self, table: table, row) != nil
     case "displayItems": return decode(DisplayItem.self, table: table, row) != nil

@@ -829,19 +829,21 @@ fn params_for(method: RelayMethod) -> Value {
         RelayMethod::RequestRespond => json!({"requestId": "request-1", "decision": "accept"}),
         RelayMethod::ThreadStart => json!({
             "threadId": "new-thread",
-            "projectId": "project-1",
+            "environmentId": "project-1",
             "connectionId": "conn-1",
             "folder": "/Users/blove/repos/b4app",
             "text": "start here",
         }),
         RelayMethod::TurnLookup => json!({"operationId": "op-1", "threadId": "thread-1"}),
-        RelayMethod::ProjectCreate | RelayMethod::ProjectUpdate | RelayMethod::ProjectDelete => {
-            panic!("a project edit's params come from project_params")
+        RelayMethod::EnvironmentCreate
+        | RelayMethod::EnvironmentUpdate
+        | RelayMethod::EnvironmentDelete => {
+            panic!("an environment edit's params come from environment_params")
         }
     }
 }
 
-/// A user with a Mac and a phone, and a thread, a pending request on it, and a project, all owned
+/// A user with a Mac and a phone, and a thread, a pending request on it, and an environment, all owned
 /// by the Mac.
 struct World {
     hub: Hub,
@@ -860,7 +862,7 @@ impl World {
         hub.seed_thread(&blove, mac_id, "thread-1").await;
         hub.seed_request(&blove, mac_id, "request-1", "thread-1", "pending")
             .await;
-        hub.seed_project(&blove, mac_id, "project-1").await;
+        hub.seed_environment(&blove, mac_id, "project-1").await;
         World {
             hub,
             blove,
@@ -955,7 +957,7 @@ async fn another_users_thread_is_not_found(pool: PgPool) {
         "pending",
     )
     .await;
-    hub.seed_project(&colleague, colleague_mac, "their-project")
+    hub.seed_environment(&colleague, colleague_mac, "their-project")
         .await;
     let mut their_mac = FakeDevice::ready(hub.addr, &colleague_mac_token).await.0;
     let mut phone = world.phone().await;
@@ -975,7 +977,7 @@ async fn another_users_thread_is_not_found(pool: PgPool) {
         ),
         (
             RelayMethod::ThreadStart,
-            json!({"threadId": "t", "projectId": "their-project"}),
+            json!({"threadId": "t", "environmentId": "their-project"}),
         ),
     ] {
         phone.command(method.as_str(), method, params).await;
@@ -999,7 +1001,8 @@ async fn another_orgs_thread_is_not_found(pool: PgPool) {
     hub.seed_thread(&stranger, stranger_mac, "thread-1").await;
     hub.seed_request(&stranger, stranger_mac, "request-1", "thread-1", "pending")
         .await;
-    hub.seed_project(&stranger, stranger_mac, "project-1").await;
+    hub.seed_environment(&stranger, stranger_mac, "project-1")
+        .await;
     hub.seed_thread(&stranger, stranger_mac, "their-thread")
         .await;
     let mut their_mac = FakeDevice::ready(hub.addr, &stranger_mac_token).await.0;
@@ -1182,40 +1185,40 @@ async fn send_is_never_held(pool: PgPool) {
     assert_eq!(world.hub.state.relay.held(world.mac_id), 0);
 }
 
-/// The project edits, which go to the Mac whose folders the project lists.
-const PROJECT_METHODS: [RelayMethod; 3] = [
-    RelayMethod::ProjectCreate,
-    RelayMethod::ProjectUpdate,
-    RelayMethod::ProjectDelete,
+/// The environment edits, which go to the Mac whose folders the environment lists.
+const ENVIRONMENT_METHODS: [RelayMethod; 3] = [
+    RelayMethod::EnvironmentCreate,
+    RelayMethod::EnvironmentUpdate,
+    RelayMethod::EnvironmentDelete,
 ];
 
-/// Params a phone would send for a project edit: a new project names the Mac `mac_id` (it has no
-/// row yet), an existing one names the seeded project.
-fn project_params(method: RelayMethod, mac_id: Uuid) -> Value {
+/// Params a phone would send for an environment edit: a new environment names the Mac `mac_id` (it has no
+/// row yet), an existing one names the seeded environment.
+fn environment_params(method: RelayMethod, mac_id: Uuid) -> Value {
     match method {
-        RelayMethod::ProjectCreate => json!({
+        RelayMethod::EnvironmentCreate => json!({
             "deviceId": mac_id.to_string(),
-            "projectId": "new-project",
+            "environmentId": "new-project",
             "name": "Work",
             "folders": ["/Users/blove/repos/b4app"],
         }),
-        RelayMethod::ProjectUpdate => json!({
-            "projectId": "project-1",
+        RelayMethod::EnvironmentUpdate => json!({
+            "environmentId": "project-1",
             "addFolders": ["/Users/blove/repos/b4app/Hub"],
         }),
-        RelayMethod::ProjectDelete => json!({"projectId": "project-1"}),
+        RelayMethod::EnvironmentDelete => json!({"environmentId": "project-1"}),
         _ => params_for(method),
     }
 }
 
 #[sqlx::test(migrations = false)]
-async fn project_edits_reach_the_mac_they_name(pool: PgPool) {
+async fn environment_edits_reach_the_mac_they_name(pool: PgPool) {
     let world = World::new(spawn_hub(&pool).await).await;
     let mut mac = world.mac().await;
     let mut phone = world.phone().await;
 
-    for method in PROJECT_METHODS {
-        let params = project_params(method, world.mac_id);
+    for method in ENVIRONMENT_METHODS {
+        let params = environment_params(method, world.mac_id);
         phone.command(method.as_str(), method, params.clone()).await;
         let (id, got, forwarded, deadline, from) = mac.expect_command().await;
         assert_eq!((id.as_str(), got), (method.as_str(), method));
@@ -1230,12 +1233,12 @@ async fn project_edits_reach_the_mac_they_name(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
-async fn a_project_edit_naming_no_mac_of_the_users_is_not_found(pool: PgPool) {
+async fn a_environment_edit_naming_no_mac_of_the_users_is_not_found(pool: PgPool) {
     let world = World::new(spawn_hub(&pool).await).await;
     let hub = &world.hub;
     let colleague = hub.user("cacheplane", "colleague").await;
     let (colleague_mac_token, colleague_mac) = hub.enroll(&colleague, "macos", "Their Mac").await;
-    hub.seed_project(&colleague, colleague_mac, "their-project")
+    hub.seed_environment(&colleague, colleague_mac, "their-project")
         .await;
     let mut their_mac = FakeDevice::ready(hub.addr, &colleague_mac_token).await.0;
     let mut mac = world.mac().await;
@@ -1245,29 +1248,32 @@ async fn a_project_edit_naming_no_mac_of_the_users_is_not_found(pool: PgPool) {
     for (n, (method, params)) in [
         // Another user's Mac, the user's own phone, an id that is not a device, and none at all.
         (
-            RelayMethod::ProjectCreate,
+            RelayMethod::EnvironmentCreate,
             create(json!(colleague_mac.to_string())),
         ),
         (
-            RelayMethod::ProjectCreate,
+            RelayMethod::EnvironmentCreate,
             create(json!(world.phone_id.to_string())),
         ),
-        (RelayMethod::ProjectCreate, create(json!("not-a-device"))),
         (
-            RelayMethod::ProjectCreate,
+            RelayMethod::EnvironmentCreate,
+            create(json!("not-a-device")),
+        ),
+        (
+            RelayMethod::EnvironmentCreate,
             json!({"name": "", "folders": []}),
         ),
         (
-            RelayMethod::ProjectUpdate,
-            json!({"projectId": "their-project", "name": "Mine"}),
+            RelayMethod::EnvironmentUpdate,
+            json!({"environmentId": "their-project", "name": "Mine"}),
         ),
         (
-            RelayMethod::ProjectDelete,
-            json!({"projectId": "their-project"}),
+            RelayMethod::EnvironmentDelete,
+            json!({"environmentId": "their-project"}),
         ),
         (
-            RelayMethod::ProjectDelete,
-            json!({"projectId": "no-such-project"}),
+            RelayMethod::EnvironmentDelete,
+            json!({"environmentId": "no-such-project"}),
         ),
     ]
     .into_iter()
@@ -1286,19 +1292,19 @@ async fn a_project_edit_naming_no_mac_of_the_users_is_not_found(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
-async fn a_project_edit_is_never_held(pool: PgPool) {
+async fn a_environment_edit_is_never_held(pool: PgPool) {
     let world = World::new(spawn_hub(&pool).await).await;
     world.mac_flaps().await;
     let mut phone = world.phone().await;
 
     // Like a send: the Mac was seen a moment ago, and still the answer is `device_offline` at once,
     // naming the Mac, so the phone can say when it was last seen. Nothing is queued.
-    for method in PROJECT_METHODS {
+    for method in ENVIRONMENT_METHODS {
         phone
             .command(
                 method.as_str(),
                 method,
-                project_params(method, world.mac_id),
+                environment_params(method, world.mac_id),
             )
             .await;
         let (id, error) = phone.expect_refusal().await;
@@ -1701,7 +1707,7 @@ async fn twenty_one_sends_per_user_are_limited(pool: PgPool) {
     let mut their_phone = FakeDevice::ready(hub.addr, &their_token).await.0;
 
     let missing_send = json!({"threadId": "missing", "text": "hi"});
-    let missing_start = json!({"threadId": "t", "projectId": "missing"});
+    let missing_start = json!({"threadId": "t", "environmentId": "missing"});
     // Twenty from two devices of one user, ten each: sends and starts count together.
     for n in 0..10 {
         phone
@@ -2558,15 +2564,15 @@ async fn maintenance_refuses_link_writes_and_keeps_reads(pool: PgPool) {
         RelayMethod::TurnSend,
         RelayMethod::ThreadStart,
         RelayMethod::RequestRespond,
-        RelayMethod::ProjectCreate,
-        RelayMethod::ProjectUpdate,
-        RelayMethod::ProjectDelete,
+        RelayMethod::EnvironmentCreate,
+        RelayMethod::EnvironmentUpdate,
+        RelayMethod::EnvironmentDelete,
     ] {
         phone
             .command(
                 method.as_str(),
                 method,
-                project_params(method, world.mac_id),
+                environment_params(method, world.mac_id),
             )
             .await;
         let (id, error) = phone.expect_refusal().await;
