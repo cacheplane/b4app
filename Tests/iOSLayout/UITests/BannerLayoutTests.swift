@@ -505,6 +505,9 @@ final class BannerLayoutTests: XCTestCase {
       checkLayout(app, screen: screen)
       let recover = app.buttons["fixture.recover"]
       recover.tap()
+      // The Simulator can lose a tap: on main f4ca23d it left this button pressed and the status
+      // unchanged. The control exists only in the fixture, so a second tap checks no less of the app.
+      if !recover.waitForNonExistence(timeout: 3), recover.isHittable { recover.tap() }
       // The control goes once the fixture's status has changed, so a lost tap fails here, not as a
       // banner that seemed not to clear.
       XCTAssertTrue(recover.waitForNonExistence(timeout: 10), "The fixture did not take the tap")
