@@ -20,7 +20,7 @@ import WorkspaceProtocol
 
   @Test func decodesTheSharedFixture() throws {
     let changes = try fixtureChanges()
-    #expect(changes.count == 13)
+    #expect(changes.count == 15)
     #expect(changes[0].table == "connections" && changes[0].op == "insert")
     #expect(changes[0].deviceSeq == 1)
     #expect(changes[0].value?["id"] == "conn-1")
@@ -32,6 +32,13 @@ import WorkspaceProtocol
     #expect(
       changes[12].table == "threads" && changes[12].op == "update" && changes[12].column == "permission"
         && changes[12].value == "plan")
+    // The account's view settings row, inserted and then given a new quietThreads.
+    #expect(changes[13].table == "viewSettings" && changes[13].rowId == "view" && changes[13].op == "insert")
+    #expect(changes[13].value?["arrangement"] == "needsYouFirst")
+    #expect(
+      changes[14].table == "viewSettings" && changes[14].op == "update"
+        && changes[14].column == "quietThreads"
+        && changes[14].value == "collapsed")
   }
 
   /// One entry of `conflicts.json`: the change the device made, which device it was, and its place.

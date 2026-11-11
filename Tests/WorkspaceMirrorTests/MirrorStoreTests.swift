@@ -20,6 +20,10 @@ func fixtureAsStored(file: StaticString = #filePath) throws -> [StoredChange] {
   }
 }
 
+/// The fixture's `viewSettings` changes (its last two): the mirror has no such table yet, so applying
+/// the fixture skips them. The mirror's own table comes with the view settings work's mirror task.
+let unmirroredFixtureChanges = 2
+
 func itemJSON(id: String = "x", threadId: String, sequence: Int = 1) -> JSONValue {
   [
     "id": .string(id), "threadId": .string(threadId), "turnId": nil, "nativeItemId": nil, "role": "assistant",
@@ -60,7 +64,7 @@ func change(
     #expect(batch.touchedThreadIds == ["thread-1"])
     #expect(batch.touchedConnectionIds == ["conn-1"])
     #expect(batch.touchedItems.map(\.id) == ["item-1", "item-2", "item-3", "item-4"])
-    #expect(batch.skipped == 0)
+    #expect(batch.skipped == unmirroredFixtureChanges)
 
     let orphan = StoredChange(
       hubSeq: 99, deviceId: "d", deviceSeq: 99, wall: 0, table: "displayItems", rowId: "x", op: "insert",
@@ -76,7 +80,7 @@ func change(
     let changes = try fixtureAsStored()
     _ = try store.apply(changes)
     let again = try store.apply(changes)
-    #expect(again.skipped == 0)
+    #expect(again.skipped == unmirroredFixtureChanges)
     #expect(try store.connections().count == 1)
     #expect(try store.threads(includeArchived: true, connectionId: nil, query: nil).count == 1)
     #expect(try store.turns(threadId: "thread-1").count == 2)
@@ -218,7 +222,7 @@ func change(
   @Test func theSharedFixtureDecodesCompletelyThroughTheProtocolTypes() throws {
     let store = try MirrorStore.inMemory()
     let batch = try store.apply(try fixtureAsStored())
-    #expect(batch.skipped == 0)
+    #expect(batch.skipped == unmirroredFixtureChanges)
     #expect(batch.undecodableRows == 0)
     #expect(try store.connections().count == 1)
     #expect(try store.threads(includeArchived: true, connectionId: nil, query: nil).count == 1)

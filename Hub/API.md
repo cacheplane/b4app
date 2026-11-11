@@ -1118,18 +1118,22 @@ clock the hub keeps is the one it serves back in the feed.
 
 These columns merge last-writer-wins: `threads.title`, `threads.pinned`, `threads.archived`,
 `threads.readTurnId`, `threads.environmentId`, `threads.userDeletedAt`, `threads.model`,
-`threads.permission`, `environments.name`, `drafts.threadId`, `drafts.text`, `drafts.updatedAt`. The hub remembers, per row and column, the clock of the change that last set
+`threads.permission`, `environments.name`, `drafts.threadId`, `drafts.text`, `drafts.updatedAt`,
+`viewSettings.id`, `viewSettings.arrangement`, `viewSettings.quietThreads`,
+`viewSettings.showArchived`, `viewSettings.updatedAt`. The hub remembers, per row and column, the clock of the change that last set
 it (`column_clocks`); an `update` of such a column applies only when its clock is greater, and
 an `insert` counts as setting every such column it carries, at its clock. A change that loses is
 still recorded in the feed (it is history) but writes nothing. Every other column applies
 whatever its clock, as in M8a.
 
 A `macos` device may write any column. An `ios` or `cli` device may only `update` these
-columns, and `insert` rows of `drafts`: `threads.title`, `threads.pinned`, `threads.archived`,
+columns, and `insert` rows of `drafts` and `viewSettings`: `threads.title`, `threads.pinned`, `threads.archived`,
 `threads.readTurnId`, `threads.userDeletedAt`, `threads.model`, `threads.permission`, `environments.name`,
-`drafts.threadId`, `drafts.text`, `drafts.updatedAt`. Anything else (including every `delete`) is rejected with
+`drafts.threadId`, `drafts.text`, `drafts.updatedAt`, `viewSettings.id`, `viewSettings.arrangement`,
+`viewSettings.quietThreads`, `viewSettings.showArchived`, `viewSettings.updatedAt`. Anything else (including every `delete`) is rejected with
 `column_not_writable`. A draft is cleared by setting `text` to `""`, never by deleting it. A thread is
-deleted by setting `userDeletedAt` (never cleared), and its row stays.
+deleted by setting `userDeletedAt` (never cleared), and its row stays. The `view` row of
+`viewSettings` is never deleted.
 
 **Ownership and scrubbing.** Each mirrored row records `owner_device_id`, the device of its latest
 `insert` (an `update` never changes it; `device_id` remains the last writer). The hub sets
@@ -1208,7 +1212,7 @@ appear, and no deleted row or its clocks. `200`:
 
 - `changes` are synthetic `insert`s, one per row, tables in dependency order (`connections`,
   `environments`, `environmentFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`,
-  `connectionUsage`),
+  `connectionUsage`, `viewSettings`),
   rows within a table by id. Each has `hubSeq` 0, `deviceSeq` 0, `wall` 0, `column` `null`,
   `deviceId` the row's owner (the device of its latest insert), and `value` the row's Mac columns
   (no `org_id`, `user_id`, `device_id`, `owner_device_id`, or `deleted_at`;
@@ -1246,7 +1250,7 @@ that does not wait at all. The client simply reconnects, normally to the replace
 }
 ```
 
-That is the first of the twelve changes in `Tests/Fixtures/sync/changes.json` (which also carries each change's `hlc`), the fixture the
+That is the first of the fifteen changes in `Tests/Fixtures/sync/changes.json` (which also carries each change's `hlc`), the fixture the
 Swift client and the hub both test against. The fixture is a bare array of `Change`; a push wraps
 it as `{"changes": [...]}`. It shows the client's pre-upload shape, not what goes on the wire: the
 coordinator blanks `connections.authReference`, `connections.localServerId`, and
@@ -1254,13 +1258,13 @@ coordinator blanks `connections.authReference`, `connections.localServerId`, and
 16 hex characters of its SHA-256, and replaces over-large payloads before it sends anything. The file
 deliberately holds one `displayItems` change (`deviceSeq` 7) whose `value` is just over the hub's
 2 MiB limit, so pushing the raw array answers `200` with that change in `rejected` (`payload_too_large`) and the
-other eleven applied; do not paste it whole.
+other fourteen applied; do not paste it whole.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `deviceSeq` | integer | The change's sequence on the device that wrote it: unique per device, increasing. The idempotency key together with the authenticated device. |
 | `wall` | integer | Milliseconds since the epoch on the origin device. |
-| `table` | string | One of `connections`, `environments`, `environmentFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`, `connectionUsage`. Any other name (including `localServers`, which never syncs) is recorded and skipped. `connectionUsage` (migration 0010) holds a connection's latest plan reading and B4 token totals as JSON documents (`reading`, `tokens`); only a Mac writes it. |
+| `table` | string | One of `connections`, `environments`, `environmentFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`, `connectionUsage`, `viewSettings`. Any other name (including `localServers`, which never syncs) is recorded and skipped. `connectionUsage` (migration 0010) holds a connection's latest plan reading and B4 token totals as JSON documents (`reading`, `tokens`); only a Mac writes it. `viewSettings` (migration 0019) holds how the account's thread list is arranged; see *View settings* below. |
 | `rowId` | string | The row's key: its `id`, `threadId` for `drafts`, or `connectionId` for `connectionUsage`. Client-chosen text; unique per org within a table. |
 | `op` | `"insert"`, `"update"`, or `"delete"` | |
 | `column` | string or `null` | For `update`, the column being set; otherwise absent or `null`. |
@@ -1269,6 +1273,29 @@ other eleven applied; do not paste it whole.
 
 Unknown fields are rejected (`400 invalid_request`). Column names are the Mac schema's quoted
 camelCase names; ownership columns (`org_id`, `user_id`, `device_id`) can only come from the token.
+
+### View settings
+
+`viewSettings` holds one row per account, whose `id` is always the literal `view`. Its columns:
+
+| Column | Type | Values |
+| --- | --- | --- |
+| `id` | text | `view`. |
+| `arrangement` | text | `needsYouFirst` (the default) or `byEnvironment`. |
+| `quietThreads` | text | `small` (the default), `tiny`, `collapsed`, or `hidden`. |
+| `showArchived` | boolean | Default `false`. |
+| `updatedAt` | text | When a device last changed the row (ISO 8601). |
+
+Any device writes it: a phone may `insert` the row and `update` any of its columns, and every
+column merges by clock, so two devices that each insert `view` before seeing the other's end
+with one row holding the newest value of each column. The row is never deleted (a phone's
+`delete` is rejected). The hub never checks the values: a missing row, a `null`, or a value a
+device does not know reads as the default on that device, and the stored value is left as it is.
+
+Known limit: rows are keyed `(org_id, id)` and an upsert applies only for the row's own user, so
+in an org with several users only the first user's `view` row is stored; the other users' inserts
+and updates are recorded in the feed and skipped, and their devices do not share these settings
+with each other. Every account today is a single-user org; lifting the limit needs a per-user key.
 
 ### `StoredChange` (the feed shape)
 

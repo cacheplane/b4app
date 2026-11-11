@@ -930,7 +930,7 @@ async fn remove_last_identity_refused(pool: PgPool) {
 
 /// Every table with an `org_id` column. A new one fails `delete_user_removes_every_tenant_row`
 /// until it is listed here and `delete_user` clears it.
-const ORG_TABLES: [&str; 22] = [
+const ORG_TABLES: [&str; 23] = [
     "auth_handoffs",
     "changes",
     "column_clocks",
@@ -953,6 +953,7 @@ const ORG_TABLES: [&str; 22] = [
     "turns",
     "user_identities",
     "users",
+    "viewSettings",
 ];
 
 async fn org_counts(pool: &PgPool, org_id: Uuid) -> Vec<(String, i64)> {
@@ -984,39 +985,40 @@ fn insert(seq: i64, table: &str, row: &str, value: serde_json::Value) -> Change 
     }
 }
 
-/// Fills every org table for `who`'s org: the fixture (feed, mirror, clocks), an environment and its
-/// folder, a draft, a connection's usage, an enrollment code, a pairing code (and its mint), a handoff, and a horizon.
+/// Fills every org table for `who`'s org: the fixture (feed, mirror, clocks, the view settings
+/// row), an environment and its folder, a draft, a connection's usage, an enrollment code, a pairing
+/// code (and its mint), a handoff, and a horizon.
 async fn fill_org(admin: &Db, app: &Db, pool: &PgPool, created: &accounts::Created) {
     let who = authed(app, &created.token).await;
     let mut batch = common::filtered_fixture();
     batch.extend([
         insert(
-            14,
+            16,
             "environments",
             "proj-1",
             json!({"id": "proj-1", "name": "b4app", "manual": false}),
         ),
         insert(
-            15,
+            17,
             "environmentFolders",
             "folder-1",
             json!({"id": "folder-1", "environmentId": "proj-1", "path": "/tmp/b4app"}),
         ),
         insert(
-            16,
+            18,
             "drafts",
             "thread-1",
             json!({"threadId": "thread-1", "text": "hello"}),
         ),
         insert(
-            17,
+            19,
             "connectionUsage",
             "conn-1",
             json!({"connectionId": "conn-1", "reading": null, "tokens": {"today": 5}}),
         ),
     ]);
     let outcome = changes::push(app, &who, &batch).await.unwrap();
-    assert_eq!(outcome.accepted_through, 17);
+    assert_eq!(outcome.accepted_through, 19);
     devices::create_enrollment_code(
         admin,
         created.org_id,

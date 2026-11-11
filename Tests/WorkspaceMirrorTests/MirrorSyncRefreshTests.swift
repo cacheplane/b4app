@@ -68,7 +68,7 @@ private final class SplitRefreshHub: HubAPI {
     // Read through the widget's real read-only connection, after the wake has parked the writer.
     let glance = MirrorGlance.load(path: path)
     #expect(caughtUp)
-    #expect(store.cursor == 13)
+    #expect(store.cursor == 15)
     #expect(glance.rows.map(\.threadId) == ["thread-1"])
     #expect(glance.rows.first?.state == .approve)
     #expect(hub.waits.withLock { $0.filter { $0.after == 1 }.allSatisfy { $0.wait == 0 } })
@@ -111,7 +111,7 @@ private final class SplitRefreshHub: HubAPI {
     release.open()
     #expect(await refresh.value)
     await sync.suspend()
-    #expect(store.cursor == 13)
+    #expect(store.cursor == 15)
     #expect(try MirrorGlance.load(store: store).rows.first?.state == .approve)
     await sync.stop()
     await running.value
@@ -130,7 +130,7 @@ private final class SplitRefreshHub: HubAPI {
     await sync.resume()
     #expect(await refresh.value)
     await sync.suspend()
-    #expect(store.cursor == 13)
+    #expect(store.cursor == 15)
     #expect(try MirrorGlance.load(store: store).rows.first?.state == .approve)
     await sync.stop()
     await running.value
@@ -153,7 +153,7 @@ private final class SplitRefreshHub: HubAPI {
     await hub.base.append(try fixtureAsStored())
     release.open()
     #expect(await second.value)
-    #expect(store.cursor == 13)
+    #expect(store.cursor == 15)
     await sync.stop()
     await running.value
   }

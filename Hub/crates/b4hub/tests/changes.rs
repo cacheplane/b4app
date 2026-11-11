@@ -201,7 +201,7 @@ async fn push_then_pull_over_http(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body, json!({"acceptedThrough": 13}));
+    assert_eq!(body, json!({"acceptedThrough": 15}));
 
     // Retrying the same batch is the same answer.
     let (status, body) = send(
@@ -213,7 +213,7 @@ async fn push_then_pull_over_http(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, json!({"acceptedThrough": 13}));
+    assert_eq!(body, json!({"acceptedThrough": 15}));
 
     let (status, page) = send(
         &state,
@@ -244,15 +244,15 @@ async fn push_then_pull_over_http(pool: PgPool) {
         None,
     )
     .await;
-    assert_eq!(rest["changes"].as_array().unwrap().len(), 8);
+    assert_eq!(rest["changes"].as_array().unwrap().len(), 10);
     assert_eq!(
         (rest["more"].clone(), rest["next"].clone()),
-        (json!(false), json!(13))
+        (json!(false), json!(15))
     );
 
     // The defaults (no query) are after=0, limit 1000, no waiting.
     let (_, all) = send(&state, "GET", "/v1/changes", Some(&token), None).await;
-    assert_eq!(all["changes"].as_array().unwrap().len(), 13);
+    assert_eq!(all["changes"].as_array().unwrap().len(), 15);
 
     // `limit=0` is clamped to one change, not an error.
     let (status, one) = send(&state, "GET", "/v1/changes?limit=0", Some(&token), None).await;
@@ -280,7 +280,7 @@ async fn pull_pages_and_long_polls(pool: PgPool) {
     let poll = send(
         &state,
         "GET",
-        "/v1/changes?after=13&wait=5",
+        "/v1/changes?after=15&wait=5",
         Some(&token),
         None,
     );
@@ -291,7 +291,7 @@ async fn pull_pages_and_long_polls(pool: PgPool) {
             "POST",
             "/v1/changes",
             Some(&token),
-            Some(push_body(&[small_change(14, "conn-2")])),
+            Some(push_body(&[small_change(16, "conn-2")])),
         )
         .await
     };
@@ -312,10 +312,10 @@ async fn pull_pages_and_long_polls(pool: PgPool) {
     let (status, theirs) = send(&state, "GET", "/v1/changes?after=0", Some(&other), None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(theirs["changes"], json!([]));
-    // Their cursor still advances to the org's newest change (14), which is none of theirs.
+    // Their cursor still advances to the org's newest change (16), which is none of theirs.
     assert_eq!(
         (theirs["next"].clone(), theirs["more"].clone()),
-        (json!(14), json!(false))
+        (json!(16), json!(false))
     );
 }
 
@@ -401,9 +401,9 @@ async fn oversize_value_is_rejected_per_change(pool: PgPool) {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         body,
-        json!({"acceptedThrough": 13, "rejected": [{"deviceSeq": 7, "code": "payload_too_large"}]})
+        json!({"acceptedThrough": 15, "rejected": [{"deviceSeq": 7, "code": "payload_too_large"}]})
     );
-    assert_eq!(count(&state, "cacheplane", "changes").await, 12);
+    assert_eq!(count(&state, "cacheplane", "changes").await, 14);
     assert_eq!(count(&state, "cacheplane", "displayItems").await, 3);
 
     // A value exactly at the limit is accepted; one byte over is rejected. (`"x"` quotes count.)
@@ -440,7 +440,7 @@ async fn oversize_value_is_rejected_per_change(pool: PgPool) {
         json!({"acceptedThrough": 100}),
         "no rejected key when none"
     );
-    assert_eq!(count(&state, "cacheplane", "changes").await, 13);
+    assert_eq!(count(&state, "cacheplane", "changes").await, 15);
 
     // The body limit is still 413: a body over 32 MiB is refused before it is read.
     let body = format!(
@@ -747,7 +747,7 @@ async fn a_pruned_cursor_resyncs_through_the_snapshot_over_http(pool: PgPool) {
     let horizon = b4hub_db::prune::prune(&state.db, org_id, Duration::from_secs(86_400))
         .await
         .unwrap();
-    assert_eq!(horizon, 13);
+    assert_eq!(horizon, 15);
 
     let (status, body) = send(&state, "GET", "/v1/changes?after=3", Some(&token), None).await;
     assert_eq!(status, StatusCode::GONE, "{body}");
@@ -765,7 +765,7 @@ async fn a_pruned_cursor_resyncs_through_the_snapshot_over_http(pool: PgPool) {
 
     let (status, snapshot) = send(&state, "GET", "/v1/snapshot", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK, "{snapshot}");
-    assert_eq!(snapshot["next"], 13);
+    assert_eq!(snapshot["next"], 15);
     let changes = snapshot["changes"].as_array().unwrap();
     assert!(!changes.is_empty());
     assert!(changes
@@ -783,12 +783,12 @@ async fn a_pruned_cursor_resyncs_through_the_snapshot_over_http(pool: PgPool) {
     let (_, theirs) = send(&state, "GET", "/v1/snapshot", Some(&other), None).await;
     assert_eq!(theirs["changes"], json!([]));
     assert_eq!(theirs["clocks"], json!([]));
-    assert_eq!(theirs["next"], 13);
+    assert_eq!(theirs["next"], 15);
 
-    let (status, body) = send(&state, "GET", "/v1/changes?after=13", Some(&token), None).await;
+    let (status, body) = send(&state, "GET", "/v1/changes?after=15", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["changes"], json!([]));
-    assert_eq!(body["next"], 13);
+    assert_eq!(body["next"], 15);
 }
 
 #[sqlx::test(migrations = false)]
@@ -850,11 +850,11 @@ async fn the_prune_command_prunes_one_org_or_all(pool: PgPool) {
         .await
         .unwrap_err();
     assert_eq!(error.exit_code(), 2, "{error}");
-    assert_eq!(count(&state, "cacheplane", "changes").await, 13);
+    assert_eq!(count(&state, "cacheplane", "changes").await, 15);
 
     // Not older than the retention: nothing happens.
     run(&["--older-than-days", "3"]).await.unwrap();
-    assert_eq!(count(&state, "cacheplane", "changes").await, 13);
+    assert_eq!(count(&state, "cacheplane", "changes").await, 15);
 
     run(&["--older-than-days", "1", "--org", "cacheplane"])
         .await

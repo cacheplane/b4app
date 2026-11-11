@@ -167,13 +167,14 @@ private let link = MirrorLink(
     try await signal.until("first page") { store.cursor == 8 }
     #expect(try store.items(threadId: "thread-1").count == 4)
     await hub.append(Array(try fixtureAsStored()[8...]))
-    try await signal.until("second page") { store.cursor == 13 }
+    try await signal.until("second page") { store.cursor == 15 }
     #expect(try store.thread(id: "thread-1")?.title == "Renamed")
     try await signal.until("batches") { await recorder.batches.count >= 2 }
     let batches = await recorder.batches
     #expect(batches.first?.touchedThreadIds == ["thread-1"])
     #expect(batches.first?.touchedItems.count == 4)
-    #expect(batches.allSatisfy { $0.skipped == 0 && $0.undecodableRows == 0 })
+    #expect(batches.allSatisfy { $0.undecodableRows == 0 })
+    #expect(batches.map(\.skipped).reduce(0, +) == unmirroredFixtureChanges)
     #expect(try store.link()?.lastSyncAt != nil)
     #expect(try store.link()?.lastError == nil)
 
@@ -267,7 +268,7 @@ private let link = MirrorLink(
     let store = try MirrorStore.inMemory()
     try store.saveLink(link)
     _ = try store.apply(try fixtureAsStored())
-    try store.setCursor(13)
+    try store.setCursor(15)
     _ = try store.updateThread(id: "thread-1", title: "From phone", pinned: true, archived: nil)
     #expect(store.outboxCount == 2)
     let hub = FakeHubAPI(stored: try fixtureAsStored())
@@ -278,7 +279,7 @@ private let link = MirrorLink(
 
     try await signal.until("outbox drained") { store.outboxCount == 0 }
     // The hub echoes the phone's own changes back; they apply as no-ops and the cursor moves past them.
-    try await signal.until("pulled back") { store.cursor == 15 }
+    try await signal.until("pulled back") { store.cursor == 17 }
     let sent = await hub.pushed.flatMap { $0 }
     #expect(sent.map(\.deviceSeq) == [1, 2])
     #expect(sent.map(\.column) == ["title", "pinned"])
