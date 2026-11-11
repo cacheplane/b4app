@@ -52,6 +52,8 @@ public enum LLA {
     public static let accent = Dynamic(light: 0x002FA7, dark: 0x7F98E0)
     public static let accentHover = Dynamic(light: 0x00247F, dark: 0xA3B5EA)
     public static let danger = Dynamic(light: 0x962E1F, dark: 0xE07A6A)
+    /// The working mark's arc: the same lime in both modes.
+    public static let working = Dynamic(light: 0xB4CE37, dark: 0xB4CE37)
     public static let codeBg = Dynamic(light: 0x0D0D0D, dark: 0x161617)
     public static let codeFg = Dynamic(light: 0xECECEC, dark: 0xECECEC)
     public static let selection = Dynamic(light: 0xD9E0F5, dark: 0x1F2A4D)
@@ -69,6 +71,7 @@ public enum LLA {
     public static let accent = Palette.accent.color
     public static let accentHover = Palette.accentHover.color
     public static let danger = Palette.danger.color
+    public static let working = Palette.working.color
     public static let codeBg = Palette.codeBg.color
     public static let codeFg = Palette.codeFg.color
     public static let selection = Palette.selection.color

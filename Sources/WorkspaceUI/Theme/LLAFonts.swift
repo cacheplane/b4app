@@ -5,10 +5,11 @@ import SwiftUI
   import UIKit
 #endif
 
-/// Hanken Grotesk (400, 600) and JetBrains Mono (variable), bundled under the SIL Open Font License
+/// Hanken Grotesk (400, 500, 600) and JetBrains Mono (variable), bundled under the SIL Open Font License
 /// and registered with CoreText once per process. When a face is missing the system font stands in.
 public enum LLAFonts {
   public static let sansRegular = "HankenGrotesk-Regular"
+  public static let sansMedium = "HankenGrotesk-Medium"
   public static let sansSemiBold = "HankenGrotesk-SemiBold"
   public static let monoRegular = "JetBrainsMono-Regular"
   public static let monoSemiBold = "JetBrainsMono-SemiBold"
@@ -31,7 +32,7 @@ public enum LLAFonts {
       // A second registration of the same file reports "already registered"; that is success.
       _ = CTFontManagerRegisterFontsForURL(url as CFURL, .process, &error)
     }
-    return !urls.isEmpty && [sansRegular, sansSemiBold, monoRegular].allSatisfy(isAvailable)
+    return !urls.isEmpty && [sansRegular, sansMedium, sansSemiBold, monoRegular].allSatisfy(isAvailable)
   }
 
   /// True when CoreText resolves `postScriptName` to itself rather than a fallback face.
@@ -127,10 +128,18 @@ public enum LLAFont {
   )
     -> Font
   {
-    guard LLAFonts.register() else { return .system(size: size, weight: weight) }
-    return .custom(
-      heavy.contains(weight) || boldText ? LLAFonts.sansSemiBold : LLAFonts.sansRegular, size: size,
-      relativeTo: style)
+    guard let face = sansFace(weight: weight, boldText: boldText, registered: LLAFonts.register()) else {
+      return .system(size: size, weight: weight)
+    }
+    return .custom(face, size: size, relativeTo: style)
+  }
+
+  /// The bundled face for a weight, or nil when registration failed and the system font stands in.
+  /// Medium has its own face; the heavy weights, and every weight under Bold Text, take semibold.
+  static func sansFace(weight: Font.Weight, boldText: Bool, registered: Bool) -> String? {
+    guard registered else { return nil }
+    if heavy.contains(weight) || boldText { return LLAFonts.sansSemiBold }
+    return weight == .medium ? LLAFonts.sansMedium : LLAFonts.sansRegular
   }
 
   /// Bold Text is the app's to honour with a custom face (HIG, Typography): regular text takes the
@@ -146,8 +155,10 @@ public enum LLAFont {
   /// A size that Dynamic Type leaves alone, for text inside a shape that already scales (a monogram
   /// in an avatar or a runtime mark); scaling both would double the growth.
   public static func sans(fixed size: CGFloat, weight: Font.Weight = .regular) -> Font {
-    guard LLAFonts.register() else { return .system(size: size, weight: weight) }
-    return .custom(heavy.contains(weight) ? LLAFonts.sansSemiBold : LLAFonts.sansRegular, fixedSize: size)
+    guard let face = sansFace(weight: weight, boldText: false, registered: LLAFonts.register()) else {
+      return .system(size: size, weight: weight)
+    }
+    return .custom(face, fixedSize: size)
   }
 
   public static func mono(
@@ -173,6 +184,7 @@ public enum LLAFont {
   public static var codeSmall: Font { mono(scale.codeSmall, relativeTo: .footnote) }
   /// Sidebar, menu, and search rows: dense on the Mac, the size of a system list row on the phone.
   public static var row: Font { sans(scale.row, relativeTo: scale.rowStyle) }
+  public static var rowMedium: Font { sans(scale.row, weight: .medium, relativeTo: scale.rowStyle) }
   public static var rowStrong: Font { sans(scale.row, weight: .semibold, relativeTo: scale.rowStyle) }
   /// The composer's draft text: body on the Mac, a step under body on the phone (16 pt, `.callout`),
   /// so a draft reads lighter than the replies above it (D-061).
