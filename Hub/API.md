@@ -1456,13 +1456,14 @@ ids it routes by, nor `result` at all.
 | `turn.interrupt` | `params.threadId` | the thread |
 | `turn.lookup` | `params.threadId` | the thread |
 | `request.respond` | `params.requestId` | the runtime request's thread (`"runtimeRequests"."threadId"`) |
-| `thread.start` | `params.environmentId` | the environment |
+| `thread.start` | `params.environmentId`, or `params.deviceId` when there is none | the environment, or that device itself (a thread with no folder) |
 | `environment.update` | `params.environmentId` | the environment |
 | `environment.delete` | `params.environmentId` | the environment |
 | `environment.create` | `params.deviceId` | that device itself (a new environment has no row yet) |
 
 The owner is the row's `owner_device_id` on the hub (the device whose push inserted it); for
-`environment.create` it is the device `params.deviceId` names. The environment edits carry the coordinator's
+`environment.create`, and for a `thread.start` that names no environment (absent or `null`), it is the
+device `params.deviceId` names. A `thread.start` with neither is `not_found`; the Mac ignores `deviceId`. The environment edits carry the coordinator's
 own params (`environment.create { deviceId, environmentId?, name, folders }`, `environment.update { environmentId,
 name?, addFolders?, removeFolders? }`, `environment.delete { environmentId }`); the Mac validates the
 folders, which are paths on that Mac. The phone renames an environment through the change log
