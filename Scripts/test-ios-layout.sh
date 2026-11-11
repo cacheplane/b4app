@@ -2,6 +2,10 @@
 # Exercise the real shared shell and iOS sync banner in an isolated fixture app, without accounts,
 # Keychain access, network traffic, or modifying the owner's installed app. Requires XcodeGen.
 set -eu
+if [ -n "${CI:-}" ] && [ "${B4APP_LAYOUT_FOCUSED_COVERAGE:-0}" = 1 ]; then
+  echo "Focused UI coverage is local-only; CI requires the full contract" >&2
+  exit 2
+fi
 cd "$(dirname "$0")/.."
 mkdir -p .build/iOSLayout
 xcodegen generate --spec Tests/iOSLayout/project.yml --project .build/iOSLayout >/dev/null
@@ -30,13 +34,14 @@ if xcodebuild test -quiet -project .build/iOSLayout/WorkspaceLayout.xcodeproj -s
   -derivedDataPath "${B4APP_LAYOUT_DERIVED_DATA:-.build/iOSLayout/DerivedData}" \
   -resultBundlePath "$results" "$@"; then
   xcrun xcresulttool get test-results summary --path "$results" --compact > "$results.summary.json"
-  python3 -c '
-import json, sys
-summary = json.load(open(sys.argv[1]))
-print(json.dumps(summary))
-if summary.get("totalTestCount", 0) == 0 or summary.get("result") != "Passed":
-    raise SystemExit("Layout verification did not execute a passing test suite.")
-' "$results.summary.json"
+  xcrun xcresulttool get test-results tests --path "$results" --compact > "$results.tests.json"
+  # xcodebuild has already consumed the caller's arguments; only parser flags follow here.
+  focused_flag=
+  if [ "${B4APP_LAYOUT_FOCUSED_COVERAGE:-0}" = 1 ]; then focused_flag=--focused-coverage; fi
+  python3 Scripts/verify_ios_layout_results.py "$results.summary.json" "$results.tests.json" \
+    --result-bundle "$results" ${focused_flag:+"$focused_flag"} \
+    --ui-count "${B4APP_LAYOUT_EXPECTED_UI_TESTS:-13}" \
+    --component-count "${B4APP_LAYOUT_EXPECTED_COMPONENT_TESTS:-3}"
 else
   result=$?
   if [ -d "$results" ]; then
