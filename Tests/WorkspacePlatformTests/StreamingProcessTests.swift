@@ -41,6 +41,18 @@ private func collect(_ stream: AsyncStream<[UInt8]>) async -> String {
     #expect(!tail.contains("line-00000"))
   }
 
+  /// A child that writes to stderr and exits at once: nothing it wrote may be lost to the moment
+  /// between the spawn and `start` returning. The race needs a stalled thread to show, so this passes
+  /// by luck without the early buffer most of the time; it pins the contract all the same.
+  @Test func keepsStderrWrittenByAChildThatExitsAtOnce() async throws {
+    for _ in 0..<20 {
+      let child = try StreamingProcess.start(executable: "/bin/sh", arguments: ["-c", "echo early 1>&2"])
+      _ = await child.waitForExit()
+      await child.waitForStderrEnd()
+      #expect(child.recentStderr() == "early\n")
+    }
+  }
+
   @Test func writeAfterExitFailsWithEndpointUnavailable() async throws {
     let child = try StreamingProcess.start(executable: "/usr/bin/true", arguments: [])
     _ = await child.waitForExit()
