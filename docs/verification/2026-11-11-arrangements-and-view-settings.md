@@ -45,7 +45,25 @@ Rendered with `B4APP_SNAPSHOT_DIR=<dir under $TMPDIR> swift test --filter Snapsh
 
 Other renders in the folder (`macQuietThreads-hidden-open`, `-hidden-onlyQuiet`, `iosQuietThreads-hidden`, the `-dark` pairs, `macSidebarGroupsByEnvironment-light` and the existing sheets) were produced by the same passing run and not each opened.
 
+### On-screen check (Local app, real Codex)
+
+Done on 2026-11-11 with the Local flavour app packaged from this branch (Developer ID, not notarized), installed in `/Applications`, and the Compose hub rebuilt from this branch (hub migration 0019 and store migration 0013 applied to the owner's local data). The app was driven in the background through accessibility, which cannot open pop-up menus or hover, so each setting was changed by sending `viewSettings.set` to the coordinator's socket as a second client; the app followed every change from the `viewSettings.changed` event.
+
+- **Needs you first, Small (the default).** The failed thread and the finished thread on top, a 24 pt gap (rows at y 60 and 88, the next at 140), then the quiet rows; with a thread running, it led the lower list with the orbit.
+- **Collapsed.** One muted row, "2 more". Pressing it listed the two stowed threads beneath it.
+- **Tiny.** The lower rows report frames 224 by 20; the top rows stay 28.
+- **Hidden.** With nothing running, only the top list and no gap or row beneath. With a thread running `sleep 40`, a "1 working" row with the orbit sat just above the profile footer (frame y 596, the footer at 635); pressing it listed the working thread in the list after a 24 pt gap.
+- **By environment.** Headings "b4app" and "No folder", 28 pt, 8 pt between groups, threads in state order. Collapsing "b4app" left its heading with the red cross of its failed thread at the trailing edge; pressing it again expanded it.
+- **Sync.** The local hub's `viewSettings` table holds one row (`view`) with the last values set, and `column_clocks` has one clock each for `arrangement`, `quietThreads`, `showArchived` and `updatedAt`.
+
+Seen while checking, not changed here:
+
+- The view-options button's accessibility label read "View options" on the new-thread screen and "Filter" once a thread was open.
+- With Hidden, the open thread was a working one and so was not in the sidebar until the "1 working" row was pressed.
+
 ### Not checked
+
+- The view-options menu itself (its items, the disabled quiet-thread items under By environment), since pop-up menus could not be opened; the archived block (the local data has no archived thread); the phone following a change made on the Mac.
 
 - The collapsed row opening and closing with a real pointer (Mac: it closes when the pointer leaves the sidebar) and with a second tap (phone).
 - The hidden row above the footer in the running app (seen only in a render), and its opened working rows scrolling with many of them (the render shows two, not a scroll).
