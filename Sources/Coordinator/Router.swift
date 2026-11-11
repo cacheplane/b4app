@@ -97,9 +97,8 @@ public actor Router {
       .workspaceActiveWork, .workspaceStopLocalWork, .workspaceReconcile, .databaseStatus, .databaseBackup,
       .databaseRestore, .databaseImportSQLite, .hubStatus, .hubLeave, .hubPair, .hubPairStatus,
       .settingsRead, .settingsUpdate, .environmentList, .environmentCreate, .environmentUpdate,
-      .environmentRename,
-      .environmentDelete, .threadMarkRead, .usageRead, .connectionUpdate, .credentialRemove, .threadDelete,
-      .threadStart:
+      .environmentRename, .environmentDelete, .threadMarkRead, .usageRead, .connectionUpdate,
+      .credentialRemove, .threadDelete, .threadStart:
       return true
     }
   }

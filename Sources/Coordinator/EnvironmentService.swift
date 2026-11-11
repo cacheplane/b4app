@@ -21,7 +21,7 @@ public actor EnvironmentService {
   // MARK: - Resolution
 
   /// The canonical folder a thread's environment is keyed by: a harness thread's working directory, a
-  /// local B4 thread's managed server environment directory (through `connection.localServerId`), and nil
+  /// local B4 thread's managed server project directory (through `connection.localServerId`), and nil
   /// for a remote B4 thread or anything without a folder. A folder that no longer exists is still
   /// canonicalised (nothing here touches the disk).
   func folder(forThread thread: ConversationThread, connection: Connection) throws -> String? {
@@ -34,7 +34,7 @@ public actor EnvironmentService {
     }
   }
 
-  /// The canonical environment directory of the managed server a local B4 connection runs on; nil for any
+  /// The canonical project directory of the managed server a local B4 connection runs on; nil for any
   /// other connection, or when the server row is gone.
   func serverFolder(of connection: Connection) throws -> String? {
     guard connection.kind == .b4, let serverId = connection.localServerId,

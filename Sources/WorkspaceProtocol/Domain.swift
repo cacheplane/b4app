@@ -135,7 +135,7 @@ public enum LocalServerHealth: String, Codable, Sendable, CaseIterable {
   case stopped, starting, ready, unhealthy, unknown
 }
 
-/// One route of an inspected environment, from `b4 routes --json`. The protocol route key is `id#kind`.
+/// One route of an inspected project, from `b4 routes --json`. The protocol route key is `id#kind`.
 public struct LocalServerRoute: Codable, Sendable, Equatable, Hashable {
   public var id: String
   public var kind: String
@@ -154,7 +154,7 @@ public struct LocalServerRoute: Codable, Sendable, Equatable, Hashable {
 /// together with the argv are the verified child identity; a pid alone never establishes ownership.
 public struct LocalServer: Codable, Sendable, Equatable, Identifiable {
   public var id: String
-  /// CLI handle; unique. Defaults to the environment directory name.
+  /// CLI handle; unique. Defaults to the project directory name.
   public var name: String
   public var projectPath: String
   public var nodePath: String

@@ -501,7 +501,7 @@ public enum CredentialAdd: WorkspaceCommand {
 
 // MARK: - M4 managed server methods
 
-/// Register a local B4 project. Inspection (`b4 routes --json`) runs the environment's config and route
+/// Register a local B4 project. Inspection (`b4 routes --json`) runs the project's config and route
 /// modules, so registration is the trust decision. `port` is allocated once when omitted.
 public enum ServerAdd: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
@@ -555,7 +555,7 @@ public enum ServerStatus: WorkspaceCommand {
   public static let method = Method.serverStatus
 }
 
-/// Re-run route discovery for a registered environment.
+/// Re-run route discovery for a registered project.
 public enum ServerInspect: WorkspaceCommand {
   public typealias Params = ServerRef
   public typealias Result = ServerAdd.Result

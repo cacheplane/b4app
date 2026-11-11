@@ -32,11 +32,11 @@ Not exercised: the environment list itself (there is no CLI command for it), a h
 
 ### Rollout
 
-Deploy the hub (migration 0018) and install the Mac and phone builds together, in a quiet moment. The hub does not refuse a change that names an old table: it records it and skips it (the `a_push_naming_the_old_projects_table_is_skipped_like_any_unknown_table` test in `Hub/crates/b4hub-db/tests/changes.rs`). An environment edit pushed by a not-yet-upgraded app after the hub is deployed is lost, not retried. With two hub tasks, the old task errors on the renamed tables until it is replaced.
+Deploy the hub (migration 0018) and install the Mac and phone builds together, in a quiet moment. The hub does not refuse a change that names an old table: it records it and skips it (the `a_push_naming_the_old_projects_table_is_skipped_like_any_unknown_table` test in `Hub/crates/b4hub-db/tests/changes.rs`). An environment edit pushed by a not-yet-upgraded app after the hub is deployed is lost, not retried. The loss is wider than environment edits: a thread or connection inserted by a not-yet-upgraded Mac lands on the hub with `environmentId` null (the hub keeps only the columns its table spec knows, so the old `projectId` key is dropped and nothing re-pushes it), so the phone shows those threads ungrouped; and a new app talking to a not-yet-replaced old hub task loses environment rows the same way. With two hub tasks, the old task errors on the renamed tables until it is replaced.
 
 ### Accepted resets
 
-The per-device new-thread memory (`newThread.memory` in `LocalPreferences`: last place, folder, runtime, and any unsent first-message draft) and the Mac's collapsed-sections state (`@SceneStorage` key `collapsedEnvironments`) start fresh after the upgrade. Export archives made before the rename no longer restore.
+The per-device new-thread memory (`newThread.memory` in `LocalPreferences`: last place, folder, runtime, and any unsent first-message draft) and the Mac's collapsed-sections state (`@SceneStorage` key `collapsedEnvironments`) start fresh after the upgrade. Export archives made before the rename restore without error but come back with no environments: their `projects` and `projectFolders` rows are skipped and the `projectId` on threads and connections is dropped. Restore is refused while the account is joined to a hub.
 
 ### Follow-ups
 
@@ -44,4 +44,3 @@ The per-device new-thread memory (`newThread.memory` in `LocalPreferences`: last
 - `migrate.rs` copies the scratch-directory guard instead of sharing a helper.
 - Primary-key constraint names (`projects_pkey`, `projectFolders_pkey`) keep their old names in both PostgreSQL stores.
 - The mirror migration test has no unsent insert with a null `projectId`.
-- `Router.swift`'s case list around lines 99 to 101 wraps oddly.
