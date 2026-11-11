@@ -131,6 +131,29 @@ struct ListLayout: Equatable {
     return named + noFolder
   }
 
+  /// The mode whose row stows threads now: Collapsed with something below the top list, or Hidden while
+  /// something works; nil under Small or Tiny, under "By environment", and when nothing is stowed.
+  var stowing: ViewSettings.QuietThreads? {
+    switch body {
+    case .needsYouFirst(_, .collapsed(let count, _, _)) where count > 0: .collapsed
+    case .needsYouFirst(_, .hidden(let working)) where !working.isEmpty: .hidden
+    default: nil
+    }
+  }
+
+  /// Whether the opened stowed rows (per window, never stored) stay open as the list goes from stowing
+  /// `old` to stowing `new`: only while the same row still stows something. A change of arrangement or
+  /// mode, or the stowed set emptying, closes them, so the row never comes back already open.
+  static func keepsStowedOpen(
+    from old: ViewSettings.QuietThreads?, to new: ViewSettings.QuietThreads?
+  ) -> Bool {
+    old != nil && old == new
+  }
+
+  /// Whether the list prints "No threads yet.": no live thread (`hasLiveThreads`, before Hidden leaves
+  /// the quiet ones out) and no archived row drawn.
+  func saysNoThreadsYet(hasLiveThreads: Bool) -> Bool { !hasLiveThreads && archived.isEmpty }
+
   /// The collapsed row's text: "9 more", and ", 2 working" while any of them runs.
   static func collapsedLabel(count: Int, working: Int) -> String {
     working > 0 ? "\(count) more, \(working) working" : "\(count) more"

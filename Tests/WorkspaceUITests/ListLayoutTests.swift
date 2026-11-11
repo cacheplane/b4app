@@ -216,6 +216,60 @@ import WorkspaceProtocol
     #expect(layout(threads, ViewSettings(quietThreads: .collapsed)).body.drawsAboveArchive)
   }
 
+  /// The opened stowed rows (per window) stay open only while the same row stows something: changing
+  /// the arrangement or the mode, or the stowed set emptying, closes them, so a Collapsed or Hidden row
+  /// never comes back already open.
+  @Test func theStowedRowsCloseWhenWhatTheyStowChanges() throws {
+    let quiet = thread("q", .quiet, at: 1)
+    let working = thread("w", .working, at: 2)
+    let both = [quiet, working]
+    #expect(layout(both, ViewSettings(quietThreads: .collapsed)).stowing == .collapsed)
+    #expect(layout([quiet], ViewSettings(quietThreads: .collapsed)).stowing == .collapsed)
+    #expect(layout(both, ViewSettings(quietThreads: .hidden)).stowing == .hidden)
+    // Nothing stowed: Collapsed with no threads below the top list, Hidden with nothing working.
+    #expect(layout([thread("a", .approve, at: 1)], ViewSettings(quietThreads: .collapsed)).stowing == nil)
+    #expect(layout([quiet], ViewSettings(quietThreads: .hidden)).stowing == nil)
+    // Rows, or another arrangement, stow nothing.
+    #expect(layout(both).stowing == nil)
+    #expect(layout(both, ViewSettings(quietThreads: .tiny)).stowing == nil)
+    #expect(
+      layout(both, ViewSettings(arrangement: .byEnvironment, quietThreads: .collapsed)).stowing == nil)
+
+    func staysOpen(_ from: ListLayout, _ to: ListLayout) -> Bool {
+      ListLayout.keepsStowedOpen(from: from.stowing, to: to.stowing)
+    }
+    let collapsed = layout(both, ViewSettings(quietThreads: .collapsed))
+    // The stowed set changing but not emptying keeps it open.
+    #expect(staysOpen(collapsed, layout([quiet], ViewSettings(quietThreads: .collapsed))))
+    #expect(
+      staysOpen(
+        layout(both, ViewSettings(quietThreads: .hidden)),
+        layout([working, thread("w2", .working, at: 3)], ViewSettings(quietThreads: .hidden))))
+    // The arrangement changing, the mode changing, or the set emptying closes it.
+    #expect(
+      !staysOpen(collapsed, layout(both, ViewSettings(arrangement: .byEnvironment, quietThreads: .collapsed)))
+    )
+    #expect(!staysOpen(collapsed, layout(both, ViewSettings(quietThreads: .hidden))))
+    #expect(!staysOpen(collapsed, layout(both, ViewSettings(quietThreads: .small))))
+    #expect(
+      !staysOpen(
+        layout(both, ViewSettings(quietThreads: .hidden)),
+        layout([quiet], ViewSettings(quietThreads: .hidden))))
+    #expect(
+      !staysOpen(collapsed, layout([thread("a", .approve, at: 1)], ViewSettings(quietThreads: .collapsed))))
+    #expect(!ListLayout.keepsStowedOpen(from: nil, to: nil))
+  }
+
+  /// "No threads yet." prints only when there is no live thread and no archived row is drawn, on both
+  /// platforms.
+  @Test func noThreadsYetIsNotPrintedAboveArchivedRows() throws {
+    let archivedOnly = [thread("old", .quiet, at: 1, archived: true)]
+    #expect(!layout(archivedOnly, ViewSettings(showArchived: true)).saysNoThreadsYet(hasLiveThreads: false))
+    #expect(layout(archivedOnly).saysNoThreadsYet(hasLiveThreads: false))
+    #expect(layout([]).saysNoThreadsYet(hasLiveThreads: false))
+    #expect(!layout([thread("q", .quiet, at: 1)]).saysNoThreadsYet(hasLiveThreads: true))
+  }
+
   @Test func tinyAppliesOnlyToTheLowerList() throws {
     let built = try #require(parts(layout(mixed, ViewSettings(quietThreads: .tiny))))
     #expect(built.top.count == 5)

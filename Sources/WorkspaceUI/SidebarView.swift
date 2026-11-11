@@ -23,8 +23,11 @@ struct SidebarView: View {
   var body: some View {
     shown
       .background(LLA.Color.surface)
-      // Another way of drawing the lower list starts closed.
-      .onChange(of: model.shownSettings.quietThreads) { showsStowed = false }
+      // Another arrangement or mode, or nothing left to stow, closes the stowed rows, so the row never
+      // comes back already open.
+      .onChange(of: model.listLayout.stowing) { old, new in
+        if !ListLayout.keepsStowedOpen(from: old, to: new) { showsStowed = false }
+      }
       #if os(macOS)
         .overlay {
           // A click anywhere else in the sidebar closes the profile menu.
@@ -80,9 +83,10 @@ struct SidebarView: View {
             .padding(.bottom, LLA.Space.l)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        // Hidden's row: pinned to the bottom of the scrolling area, just above the profile footer.
+        // Hidden's row: pinned to the bottom of the scrolling area, just above the profile footer. The
+        // working threads it opens are the scrolling list's last rows (`ThreadListView`).
         if case .needsYouFirst(_, .hidden(let working)) = model.listLayout.body, !working.isEmpty {
-          HiddenWorkingRows(model: model, working: working, open: $showsStowed)
+          HiddenWorkingRow(working: working.count, open: $showsStowed)
             .padding(.horizontal, 10)
             .padding(.vertical, LLA.Space.xs)
         }

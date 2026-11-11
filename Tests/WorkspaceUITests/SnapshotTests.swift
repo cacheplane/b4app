@@ -400,9 +400,9 @@ struct SnapshotShell: View {
   }
 
   /// "Needs you first" with each way of drawing the threads that do not need you: Small, Tiny,
-  /// Collapsed (closed, then open), and Hidden (closed, then open, its row above the profile footer);
-  /// then Hidden with nothing but quiet threads, which draws an empty list. Then the phone's list with
-  /// Collapsed open and with Hidden.
+  /// Collapsed (closed, then open), and Hidden (closed, then open: its row above the profile footer, the
+  /// working threads it opens last in the scrolling list); then Hidden with nothing but quiet threads,
+  /// which draws an empty list. Then the phone's list with Collapsed open and with Hidden.
   @Test func quietThreadsInEachMode() async throws {
     let transport = ScriptedTransport()
     let model = try await ListFixture.model(transport, extra: [ListFixture.approving])
@@ -433,11 +433,12 @@ struct SnapshotShell: View {
     }
     try await render("macQuietThreads-hidden-open", size: size) {
       VStack(spacing: 0) {
+        // The opened working threads are the scrolling list's last rows; the row stays pinned below.
         ScrollView {
-          ThreadListView(model: model, showsStowed: .constant(false))
+          ThreadListView(model: model, showsStowed: .constant(true))
             .padding(.horizontal, 10).padding(.top, LLA.Space.s)
         }
-        HiddenWorkingRows(model: model, working: working, open: .constant(true))
+        HiddenWorkingRow(working: working.count, open: .constant(true))
           .padding(.horizontal, 10).padding(.vertical, LLA.Space.xs)
       }
     }

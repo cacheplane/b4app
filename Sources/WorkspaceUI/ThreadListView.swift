@@ -299,7 +299,8 @@ struct StowedThreadsRow: View {
 /// the top list, a 24 pt gap, then the lower list as `quietThreads` draws it; under "By environment"
 /// a heading per group with its threads beneath, 8 pt between groups. The archived block follows a
 /// 24 pt gap while "Show archived" is on. Hidden's row is the sidebar's on the Mac
-/// (`HiddenWorkingRows`, pinned above the profile footer) and the list's last row on the phone.
+/// (`HiddenWorkingRow`, pinned above the profile footer, the rows it opens last in this list) and the
+/// list's last row on the phone.
 struct ThreadListView: View {
   @Bindable var model: WorkspaceModel
   /// Whether the stowed threads (Collapsed or Hidden) are shown: per window, never stored.
@@ -331,15 +332,18 @@ struct ThreadListView: View {
 
   #if os(macOS)
     @ViewBuilder private func macList(_ layout: ListLayout) -> some View {
-      let empty = model.orderedThreads.isEmpty
-      if empty {
+      if layout.saysNoThreadsYet(hasLiveThreads: !model.orderedThreads.isEmpty) {
         Text("No threads yet.").llaSmallMuted().padding(.horizontal, 10).padding(.vertical, 6)
       }
       switch layout.body {
       case .needsYouFirst(let top, let lower):
         ThreadRows(model: model, threads: top)
-        if !lower.drawsNothing {
-          macLower(lower).padding(.top, top.isEmpty ? 0 : Self.gap)
+        switch lower {
+        case .hidden:
+          // Nothing here, so no gap: Hidden's row is the sidebar's, and the rows it opens come last.
+          EmptyView()
+        case .rows, .collapsed:
+          if !lower.drawsNothing { macLower(lower).padding(.top, top.isEmpty ? 0 : Self.gap) }
         }
       case .byEnvironment(let groups):
         EnvironmentGroupsView(
@@ -350,7 +354,12 @@ struct ThreadListView: View {
       }
       if !layout.archived.isEmpty {
         ThreadRows(model: model, threads: layout.archived)
-          .padding(.top, empty || layout.body.drawsAboveArchive ? Self.gap : 0)
+          .padding(.top, layout.body.drawsAboveArchive ? Self.gap : 0)
+      }
+      // The working threads Hidden's row opens: the scrolling list's last rows, so many of them scroll.
+      if showsStowed, case .needsYouFirst(_, .hidden(let working)) = layout.body, !working.isEmpty {
+        ThreadRows(model: model, threads: working)
+          .padding(.top, layout.body.drawsAboveArchive || !layout.archived.isEmpty ? Self.gap : 0)
       }
     }
 
@@ -368,7 +377,7 @@ struct ThreadListView: View {
           if showsStowed { ThreadRows(model: model, threads: threads) }
         }
       case .hidden:
-        // The sidebar draws Hidden's row, above the profile footer.
+        // Never reached: `macList` draws Hidden's opened rows last, and the sidebar draws its row.
         EmptyView()
       }
     }
@@ -386,20 +395,17 @@ struct ThreadRows: View {
   }
 }
 
-/// Hidden's row, "2 working" with the orbit, while agents run; activating it shows those threads
-/// beneath it. The Mac pins it above the profile footer, outside the list's scroll view.
-struct HiddenWorkingRows: View {
-  @Bindable var model: WorkspaceModel
-  let working: [ConversationThread]
+/// The Mac's Hidden row, "2 working" with the orbit, while agents run, pinned above the profile footer
+/// outside the list's scroll view; activating it shows those threads as the scrolling list's last rows
+/// (`ThreadListView`).
+struct HiddenWorkingRow: View {
+  let working: Int
   @Binding var open: Bool
 
   var body: some View {
-    if let text = ListLayout.hiddenLabel(working: working.count) {
-      VStack(spacing: 0) {
-        StowedThreadsRow(text: text, working: true, open: open) { open.toggle() }
-          .accessibilityIdentifier("hidden-working")
-        if open { ThreadRows(model: model, threads: working) }
-      }
+    if let text = ListLayout.hiddenLabel(working: working) {
+      StowedThreadsRow(text: text, working: true, open: open) { open.toggle() }
+        .accessibilityIdentifier("hidden-working")
     }
   }
 }
@@ -417,8 +423,7 @@ struct FlatThreadRows: View {
   var body: some View {
     let layout = model.listLayout
     let gap = ThreadListView.gap
-    let empty = model.orderedThreads.isEmpty && layout.archived.isEmpty
-    if empty {
+    if layout.saysNoThreadsYet(hasLiveThreads: !model.orderedThreads.isEmpty) {
       Text("No threads yet.")
         .llaSmallMuted()
         .listRowSeparator(.hidden)
