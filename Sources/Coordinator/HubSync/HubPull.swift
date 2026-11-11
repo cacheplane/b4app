@@ -12,7 +12,8 @@ import WorkspaceSync
 ///
 /// - Nothing is applied until `GET /v1/devices` has answered once: its `macos` devices, revoked ones
 ///   included, are this Mac's own history (an old device id after `hub leave` and `hub join`), and
-///   `applyRemote` skips them. The list is refreshed at most once a minute.
+///   `applyRemote` skips them, except their `viewSettings` changes, whose source of truth is the hub.
+///   The list is refreshed at most once a minute.
 /// - `resync_required` (the cursor fell behind the hub's retention) fetches `GET /v1/snapshot` and
 ///   merges its phone-writable values (`remoteChanges(fromSnapshot:)`), continuing from its `next`.
 ///   Local rows stay; only newer clocks win.
@@ -182,7 +183,8 @@ public actor HubPull {
   ///
   /// - a `threads`, `environments`, or `viewSettings` row becomes one update per phone-writable column
   ///   that has a clock (a column without one was never edited since clocks began, and the Mac's value
-  ///   stands); a view settings update creates the row when this Mac has none;
+  ///   stands); a view settings update creates the row when this Mac has none, and applies even when its
+  ///   clock is another Mac's;
   /// - a `drafts` row travels whole, at its newest column clock and as that clock's device, so a draft
   ///   only the phone has is created and an existing one merges column by column;
   /// - every other table is dropped (`applyRemote` would skip it anyway).

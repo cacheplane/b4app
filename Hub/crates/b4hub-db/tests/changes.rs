@@ -2839,6 +2839,53 @@ async fn a_mac_and_a_phone_both_inserting_view_end_with_one_row(pool: PgPool) {
     assert_eq!(stored["showArchived"], false);
 }
 
+/// Two first inserts that each carry only the column their device set (the Mac's trigger and the
+/// phone's `partialInsertTables` leave the others out): the later-arriving one has the older clock,
+/// yet its column has no clock on the hub, so it still lands, and the row keeps both.
+#[sqlx::test(migrations = false)]
+async fn two_partial_view_inserts_keep_both_columns_whatever_their_order(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let (mac, phone) = mac_and_phone(&admin, &app).await;
+    push_through(
+        &app,
+        &phone,
+        &[at(
+            insert(
+                1,
+                "viewSettings",
+                "view",
+                json!({"id": "view", "arrangement": "byEnvironment"}),
+            ),
+            400,
+            PHONE_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    let outcome = changes::push(
+        &app,
+        &mac,
+        &[at(
+            insert(
+                3,
+                "viewSettings",
+                "view",
+                json!({"id": "view", "quietThreads": "hidden"}),
+            ),
+            300,
+            MAC_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    assert!(outcome.rejected.is_empty());
+    assert_eq!(count(&app, &mac, "viewSettings").await, 1);
+    let stored = view(&app, &mac).await;
+    assert_eq!(stored["arrangement"], "byEnvironment");
+    assert_eq!(stored["quietThreads"], "hidden");
+    assert!(stored["showArchived"].is_null());
+}
+
 #[sqlx::test(migrations = false)]
 async fn view_settings_are_pulled_by_the_users_other_devices(pool: PgPool) {
     let (admin, app) = common::migrated(&pool).await;
@@ -2949,7 +2996,7 @@ async fn a_phone_may_not_delete_view_settings(pool: PgPool) {
         &phone,
         &[
             at(delete(1, "viewSettings", "view"), 400, PHONE_CLOCK),
-            // Nor rename the row: its key is not an update the hub applies.
+            // Nor write a column outside the phone-writable list (the hub's own `user_id`).
             at(
                 update(2, "viewSettings", "view", "user_id", Some(json!("x"))),
                 410,
@@ -2975,6 +3022,48 @@ async fn a_phone_may_not_delete_view_settings(pool: PgPool) {
     assert_eq!(count(&app, &mac, "changes").await, before);
     let stored = view(&app, &mac).await;
     assert!(stored["deleted_at"].is_null());
+    assert_eq!(stored["arrangement"], "needsYouFirst");
+}
+
+/// `id` is phone-writable (a phone's insert carries it), so a phone update of it is accepted and
+/// recorded like any other, but it never renames the row: the row is still `view`.
+#[sqlx::test(migrations = false)]
+async fn a_phone_update_of_the_view_id_is_recorded_and_leaves_the_row_alone(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let (mac, phone) = mac_and_phone(&admin, &app).await;
+    push_through(
+        &app,
+        &mac,
+        &[at(
+            insert(
+                3,
+                "viewSettings",
+                "view",
+                json!({"id": "view", "arrangement": "needsYouFirst"}),
+            ),
+            300,
+            MAC_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    let before = count(&app, &mac, "changes").await;
+    let outcome = changes::push(
+        &app,
+        &phone,
+        &[at(
+            update(1, "viewSettings", "view", "id", Some(json!("renamed"))),
+            400,
+            PHONE_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    assert!(outcome.rejected.is_empty());
+    assert_eq!(count(&app, &mac, "changes").await, before + 1);
+    assert_eq!(count(&app, &mac, "viewSettings").await, 1);
+    let stored = view(&app, &mac).await;
+    assert_eq!(stored["id"], "view");
     assert_eq!(stored["arrangement"], "needsYouFirst");
 }
 

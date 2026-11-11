@@ -58,7 +58,9 @@ extension WorkspaceDatabase {
   /// targets and secrets, hashed scopes), so nothing it sends may overwrite a Mac-only value:
   ///
   /// - A change from `ownDeviceId`, any of `macDeviceIds`, or `local` (this Mac before it joined), by
-  ///   attribution or by its clock's device, is the Mac's own history and is skipped.
+  ///   attribution or by its clock's device, is the Mac's own history and is skipped, except a change
+  ///   to `viewSettings`: that row's source of truth is the hub, so another Mac's settings must reach
+  ///   this one, and its per-column clocks make this Mac's own echo a no-op.
   /// - Only updates of `SyncColumns.phoneWritable` columns of `threads` and `environments` rows that exist
   ///   here apply, plus inserts and updates of `drafts` whose thread exists here, and inserts and updates
   ///   of the `viewSettings` row whose id is `view` (either creates the row when it is missing). No other
@@ -110,7 +112,10 @@ extension WorkspaceDatabase {
         }
         let hlc = parsed.clamped(toWall: wall)
         clock.observe(hlc)
-        if macs.contains(change.deviceId) || macs.contains(hlc.deviceId) {
+        // The view settings row's source of truth is the hub, not a Mac, so it is the one table a Mac
+        // accepts from a Mac (its own echo included): its merge is by column clock, so an echo is a
+        // no-op and an older write loses.
+        if change.table != "viewSettings", macs.contains(change.deviceId) || macs.contains(hlc.deviceId) {
           result.skipped += 1
           continue
         }

@@ -313,6 +313,61 @@ private actor EventRecorder {
     }
   }
 
+  /// View settings written on another Mac reach this one through the feed and through a snapshot (whose
+  /// columns are attributed to their clocks' Mac), while this Mac's own write, echoed back by the hub,
+  /// changes nothing and publishes no `viewSettings.changed`.
+  @Test func viewSettingsFromAnotherMacApplyThroughTheFeedAndTheSnapshot() async throws {
+    try await PullHarness.with { h in
+      let recorder = await EventRecorder(h.events, signal: h.signal)
+      let fed = await h.append(
+        "viewSettings", "view", "insert", value: ["id": "view", "arrangement": "byEnvironment"],
+        hlc: phoneClock(device: "dev-old-mac"), device: "dev-old-mac")
+      try await h.waitFor("the other Mac's settings and viewSettings.changed") {
+        let published = await recorder.viewSettingsChanges()
+        return try h.db.hubLink()?.cursor == fed && !published.isEmpty
+      }
+      #expect(try h.db.viewSettings() == ViewSettings(arrangement: .byEnvironment))
+
+      // This Mac's own write, pushed and pulled back.
+      _ = try h.db.setViewSettings(showArchived: true)
+      _ = try await h.hub.pushNow()
+      let echo = try #require(
+        await h.fake.stored.last { $0.table == "viewSettings" && $0.deviceId == "dev-mac" })
+      try await h.waitFor("the cursor to pass the echo") { try h.db.hubLink()?.cursor ?? 0 >= echo.hubSeq }
+      #expect(try h.db.viewSettings() == ViewSettings(arrangement: .byEnvironment, showArchived: true))
+
+      let otherMac = phoneClock(ahead: 120_000, device: "dev-old-mac")
+      await h.fake.setSnapshot(
+        SnapshotResponse(
+          changes: [
+            StoredChange(
+              hubSeq: 0, deviceId: "dev-old-mac", deviceSeq: 0, wall: 0, table: "viewSettings", rowId: "view",
+              op: "insert",
+              value: [
+                "id": "view", "arrangement": "byEnvironment", "quietThreads": "tiny", "showArchived": true,
+              ],
+              hlc: otherMac)
+          ],
+          clocks: [ColumnClock(table: "viewSettings", rowId: "view", column: "quietThreads", hlc: otherMac)],
+          next: 500))
+      await h.fake.setFailNext(
+        HubError(kind: "request_error", code: "resync_required", message: "Pruned.", status: 410))
+      try await h.waitFor("the snapshot's settings and a second viewSettings.changed") {
+        let published = await recorder.viewSettingsChanges()
+        return try h.db.hubLink()?.cursor == 500 && published.count >= 2
+      }
+      #expect(
+        try h.db.viewSettings()
+          == ViewSettings(arrangement: .byEnvironment, quietThreads: .tiny, showArchived: true))
+      // One event for the feed's insert and one for the snapshot; none for the echo.
+      let published = await recorder.viewSettingsChanges()
+      #expect(published.count == 2)
+      #expect(
+        try published.last?.event.payload["settings"]?.decode(ViewSettings.self)
+          == ViewSettings(arrangement: .byEnvironment, quietThreads: .tiny, showArchived: true))
+    }
+  }
+
   @Test func snapshotRowsBecomePerColumnChangesAttributedToTheirClocks() throws {
     let phone = HLC(millis: 2_000, counter: 0, deviceId: "dev-phone").rawValue
     let mac = HLC(millis: 3_000, counter: 0, deviceId: "dev-mac").rawValue
