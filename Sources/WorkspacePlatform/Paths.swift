@@ -37,6 +37,8 @@ public struct PlatformPaths: Sendable, Equatable, Codable {
   /// The SQLite file of versions before 0.2 (imported once, then renamed `.imported`).
   public var databasePath: String
   public var logDir: String
+  /// Where the app makes a folder for a thread started with no folder.
+  public var threadFoldersDir: String
   public var postgres: PostgresEndpoint
 
   /// The per-user directory name of the running flavour: `b4app`, `b4app-beta`, `b4app-local`.
@@ -51,6 +53,7 @@ public struct PlatformPaths: Sendable, Equatable, Codable {
     self.lockPath = (runtimeDir as NSString).appendingPathComponent("coordinator.lock")
     self.databasePath = (dataDir as NSString).appendingPathComponent("workspace.sqlite")
     self.logDir = (dataDir as NSString).appendingPathComponent("logs")
+    self.threadFoldersDir = (dataDir as NSString).appendingPathComponent("projects")
     self.postgres = PostgresEndpoint(
       socketDir: runtimeDir, dataDir: (dataDir as NSString).appendingPathComponent("pg"),
       logPath: (self.logDir as NSString).appendingPathComponent("postgres.log"))
@@ -64,6 +67,7 @@ public struct PlatformPaths: Sendable, Equatable, Codable {
     var paths = PlatformPaths(
       runtimeDir: env["B4APP_RUNTIME_DIR"] ?? defaultRuntimeDir(env, flavor: flavor),
       dataDir: env["B4APP_DATA_DIR"] ?? defaultDataDir(flavor: flavor))
+    if env["B4APP_DATA_DIR"] == nil { paths.threadFoldersDir = defaultThreadFoldersDir(flavor: flavor) }
     // An external cluster (B4APP_POSTGRES_SOCKET_DIR, optionally B4APP_POSTGRES_PORT and
     // B4APP_POSTGRES_DATABASE) replaces the managed one.
     if let socketDir = env["B4APP_POSTGRES_SOCKET_DIR"], !socketDir.isEmpty {
@@ -82,6 +86,11 @@ public struct PlatformPaths: Sendable, Equatable, Codable {
   static func defaultRuntimeDir(_ env: [String: String], flavor: Flavor = .current) -> String {
     let tmp = env["TMPDIR"] ?? NSTemporaryDirectory()
     return (tmp as NSString).appendingPathComponent(directoryName(for: flavor))
+  }
+
+  /// The per-flavour root of the folders made for threads: `~/.b4app/projects`, `-beta`, `-local`.
+  public static func defaultThreadFoldersDir(flavor: Flavor, home: String = NSHomeDirectory()) -> String {
+    (home as NSString).appendingPathComponent(".b4app/projects" + flavor.dirSuffix)
   }
 
   static func defaultDataDir(flavor: Flavor = .current) -> String {
