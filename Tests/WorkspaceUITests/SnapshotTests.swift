@@ -321,7 +321,10 @@ struct SnapshotShell: View {
 
   /// The sidebar with a thread in each of the six states.
   @Test func macSidebarGroupsByEnvironment() async throws {
-    let model = try await ListFixture.model(extra: [ListFixture.approving])
+    let transport = ScriptedTransport()
+    let model = try await ListFixture.model(transport, extra: [ListFixture.approving])
+    transport.emit(try .viewSettingsChanged(ViewSettings(arrangement: .byEnvironment)))
+    try await waitUntil("by environment") { model.viewSettings.arrangement == .byEnvironment }
     try await render(
       "macSidebarGroupsByEnvironment", size: CGSize(width: LLA.Metrics.sidebarWidth, height: 800)
     ) {
@@ -347,7 +350,7 @@ struct SnapshotShell: View {
     try await render(
       "macSidebarShowsAFailedEnvironmentAction", size: CGSize(width: LLA.Metrics.sidebarWidth, height: 420)
     ) {
-      ScrollView { ThreadListView(model: model).padding(.horizontal, 10) }
+      ScrollView { ThreadListView(model: model, showsStowed: .constant(false)).padding(.horizontal, 10) }
     }
   }
 
@@ -361,7 +364,7 @@ struct SnapshotShell: View {
         }
         .padding(LLA.Space.l)
         Hairline()
-        FlatThreadList(model: model)
+        FlatThreadList(model: model, showsStowed: .constant(false))
       }
     }
   }
@@ -377,9 +380,70 @@ struct SnapshotShell: View {
         }
         .padding(LLA.Space.l)
         Hairline()
-        FlatThreadList(model: model)
+        FlatThreadList(model: model, showsStowed: .constant(false))
       }
     }
+  }
+
+  /// "Needs you first" with each way of drawing the threads that do not need you: Small, Tiny,
+  /// Collapsed (closed, then open), and Hidden (closed, then open, its row above the profile footer);
+  /// then Hidden with nothing but quiet threads, which draws an empty list. Then the phone's list with
+  /// Collapsed open and with Hidden.
+  @Test func quietThreadsInEachMode() async throws {
+    let transport = ScriptedTransport()
+    let model = try await ListFixture.model(transport, extra: [ListFixture.approving])
+    model.account = WorkspaceAccount(username: "blove", displayName: "Brian Love")
+    let size = CGSize(width: LLA.Metrics.sidebarWidth, height: 520)
+    func show(_ mode: ViewSettings.QuietThreads) async throws {
+      transport.emit(try .viewSettingsChanged(ViewSettings(quietThreads: mode)))
+      try await waitUntil("\(mode)") { model.viewSettings.quietThreads == mode }
+    }
+    for mode in ViewSettings.QuietThreads.allCases {
+      try await show(mode)
+      try await render("macQuietThreads-\(mode.rawValue)", size: size) { SidebarView(model: model) }
+    }
+    try await show(.collapsed)
+    try await render("macQuietThreads-collapsed-open", size: size) {
+      ScrollView {
+        ThreadListView(model: model, showsStowed: .constant(true))
+          .padding(.horizontal, 10).padding(.top, LLA.Space.s)
+      }
+    }
+    try await render("iosQuietThreads-collapsed-open", size: CGSize(width: 390, height: 760)) {
+      FlatThreadList(model: model, showsStowed: .constant(true))
+    }
+    try await show(.hidden)
+    guard case .needsYouFirst(_, .hidden(let working)) = model.listLayout.body else {
+      Issue.record("Hidden: \(model.listLayout.body)")
+      return
+    }
+    try await render("macQuietThreads-hidden-open", size: size) {
+      VStack(spacing: 0) {
+        ScrollView {
+          ThreadListView(model: model, showsStowed: .constant(false))
+            .padding(.horizontal, 10).padding(.top, LLA.Space.s)
+        }
+        HiddenWorkingRows(model: model, working: working, open: .constant(true))
+          .padding(.horizontal, 10).padding(.vertical, LLA.Space.xs)
+      }
+    }
+    try await render("iosQuietThreads-hidden", size: CGSize(width: 390, height: 760)) {
+      FlatThreadList(model: model, showsStowed: .constant(false))
+    }
+
+    // Under Claude Code only "busy" (working) and "copy" (quiet) remain; once "busy" ends and is read,
+    // Hidden has nothing to draw: no rows, no "0 working", no gap.
+    model.connectionFilter = "c2"
+    var ended = try #require(model.threads.first { $0.id == "busy" })
+    ended.activity?.latestTurnStatus = .terminal
+    ended.activity?.latestTurnOutcome = .completed
+    ended.readTurnId = ended.activity?.latestTurnId
+    transport.emit(try .threadUpdated(ended))
+    try await waitUntil("busy quiet") {
+      model.threads.contains { $0.id == "busy" && model.state(of: $0) == .quiet }
+    }
+    #expect(model.listLayout.body.drawsNothing)
+    try await render("macQuietThreads-hidden-onlyQuiet", size: size) { SidebarView(model: model) }
   }
 
   /// The iPhone list (new-thread composer spec, "The iPhone"; mockup screen 1): the header's avatar,
@@ -404,7 +468,7 @@ struct SnapshotShell: View {
       Text("Threads").font(LLAFont.display).foregroundStyle(LLA.Color.ink)
         .padding(.horizontal, LLA.Space.l)
         .padding(.bottom, LLA.Space.s)
-      FlatThreadList(model: model)
+      FlatThreadList(model: model, showsStowed: .constant(false))
         .safeAreaInset(edge: .bottom, spacing: 0) { NewThreadDock(model: model) }
     }
     try await render("ios-list-dock", size: CGSize(width: 390, height: 844)) { list }

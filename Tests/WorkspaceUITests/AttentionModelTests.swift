@@ -381,14 +381,13 @@ private struct AttentionDocument: Decodable {
       "t-completed-read", "t-no-turns", "t-tie-a", "t-tie-b", "t-stale-updated",
     ]
     #expect(model.orderedThreads.map(\.id) == expected)
-    #expect(model.pinnedThreads.map(\.id) == ["t-pinned-working", "t-pinned-quiet"])
     #expect(
       model.orderedThreads.prefix(5).map { model.state(of: $0) } == [
         .approve, .approve, .failed, .finished, .finished,
       ])
   }
 
-  @Test func environmentSectionsExcludePinnedAndRiseWithUrgency() async throws {
+  @Test func environmentSectionsHoldPinnedThreadsAndRiseWithUrgency() async throws {
     let transport = ScriptedTransport()
     transport.set(
       threads: [
@@ -406,12 +405,11 @@ private struct AttentionDocument: Decodable {
       ],
       environments: [environment("pa", "Alpha"), environment("pb", "Beta"), environment("pc", "Gamma")])
     let model = try await connected(transport)
-    #expect(model.pinnedThreads.map(\.id) == ["pinned-b"])
+    // There is no Pinned group: a pinned thread stays in its environment, first within its state.
     // Beta holds a thread that needs input; Gamma an unread one; No folder a working one; Alpha only quiet.
     #expect(model.environmentSections.map(\.id) == ["pb", "pc", "pa", "other"])
     #expect(model.environmentSections.map(\.title) == ["Beta", "Gamma", "Alpha", "No folder"])
-    #expect(model.environmentSections.flatMap(\.threads).map(\.id).contains("pinned-b") == false)
-    #expect(model.environmentSections[0].threads.map(\.id) == ["waiting-b"])
+    #expect(model.environmentSections[0].threads.map(\.id) == ["pinned-b", "waiting-b"])
     #expect(model.environmentSections[1].threads.map(\.id) == ["unread-c", "quiet-c"])
     #expect(model.environmentSections[2].threads.map(\.id) == ["quiet-a", "quiet-a2"])
     #expect(model.environmentSections[3].threads.map(\.id) == ["loose"])
@@ -479,7 +477,8 @@ private struct AttentionDocument: Decodable {
       environments: [environment("pa", "Alpha"), environment("pb", "Beta")])
     let model = try await connected(transport)
     #expect(model.orderedThreads.map(\.id) == ["in-a", "in-b", "loose"])
-    #expect(model.archivedThreads.map(\.id) == ["old"])
+    // The archive is drawn only while "Show archived" is on.
+    #expect(model.listLayout.archived.isEmpty)
   }
 
   @Test func openingAnUnreadThreadMarksItRead() async throws {
@@ -980,6 +979,36 @@ private struct AttentionDocument: Decodable {
     third.emit(try .viewSettingsChanged(ViewSettings(quietThreads: .hidden)))
     try await waitUntil("quiet hidden") { quiet.viewSettings.quietThreads == .hidden }
     #expect(liveArrival(quiet))
+  }
+
+  @Test func aStowedThreadThatStartsNeedingYouArrivesInTheTopList() async throws {
+    let transport = ScriptedTransport()
+    let running = thread("w", activity: activity(turn: "u1", status: .running, at: 2))
+    let quiet = thread("q", readTurnId: "u2", activity: activity(turn: "u2", status: .terminal, at: 1))
+    transport.set(threads: [running, quiet])
+    let model = try await connected(transport)
+    transport.emit(try .viewSettingsChanged(ViewSettings(quietThreads: .collapsed)))
+    try await waitUntil("collapsed") { model.viewSettings.quietThreads == .collapsed }
+    #expect(
+      model.listLayout.body
+        == .needsYouFirst(top: [], lower: .collapsed(count: 2, working: 1, threads: [running, quiet])))
+    // Opening or closing the stowed rows, or drawing them another way, moves no thread into the top list.
+    transport.emit(try .viewSettingsChanged(ViewSettings(quietThreads: .hidden)))
+    try await waitUntil("hidden") { model.viewSettings.quietThreads == .hidden }
+    #expect(model.threads.allSatisfy { model.arrival(for: $0) == nil })
+
+    // The stowed working thread asks for an approval: it is in the top list at once, and it arrived.
+    var asks = running
+    asks.activity = activity(pending: 1, approvals: 1, at: 3)
+    transport.emit(try .threadUpdated(asks))
+    try await waitUntil("asks") { model.threads.contains { $0.id == "w" && model.state(of: $0) == .approve } }
+    guard case .needsYouFirst(let top, let lower) = model.listLayout.body else {
+      Issue.record("needs you first: \(model.listLayout.body)")
+      return
+    }
+    #expect(top.map(\.id) == ["w"])
+    #expect(lower == .hidden(working: []))
+    #expect(model.arrival(for: asks)?.laps == true)
   }
 
   private func liveArrival(_ model: WorkspaceModel) -> Bool {

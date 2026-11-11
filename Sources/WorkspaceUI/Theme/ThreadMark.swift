@@ -24,18 +24,24 @@ public struct ThreadMark: View {
   let state: ThreadState
   let acknowledged: Bool
   let animated: Bool
+  let tiny: Bool
 
-  public init(state: ThreadState, acknowledged: Bool = false, animated: Bool = true) {
+  /// `tiny` draws in the 8 pt box of a tiny row (`LLA.Metrics.markTiny`); the shapes keep their
+  /// proportions.
+  public init(state: ThreadState, acknowledged: Bool = false, animated: Bool = true, tiny: Bool = false) {
     self.state = state
     self.acknowledged = acknowledged
     self.animated = animated
+    self.tiny = tiny
   }
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// The phase of the one motion this mark has: the pulse ring spread out, or the arc turned once.
   @State private var moved = false
-  /// 12 pt at the default size; every measurement below is in that 12 by 12 box.
-  @ScaledMetric(relativeTo: .body) private var size: CGFloat = LLA.Metrics.mark
+  /// 12 pt at the default size (8 when tiny); every measurement below is in a 12 by 12 box scaled to it.
+  @ScaledMetric(relativeTo: .body) private var regularSize: CGFloat = LLA.Metrics.mark
+  @ScaledMetric(relativeTo: .body) private var tinySize: CGFloat = LLA.Metrics.markTiny
+  private var size: CGFloat { tiny ? tinySize : regularSize }
 
   /// When the mark moves: the pulse and the orbit are its only motion.
   public enum Motion {

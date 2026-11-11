@@ -13,6 +13,9 @@ struct SidebarView: View {
   /// The phone's "Connect your Mac", which takes the list's place while the account has no Mac.
   @Environment(\.connectMacContent) private var connectMacContent
   @Environment(\.workspaceStatusBanner) private var statusBanner
+  /// Whether the threads Collapsed or Hidden stows are shown: per window, never stored. On the Mac it
+  /// closes when the pointer leaves the sidebar; on the phone a second tap closes it.
+  @State private var showsStowed = false
   #if os(macOS)
     @Environment(\.sidebarVisibility) private var visibility
   #endif
@@ -20,6 +23,8 @@ struct SidebarView: View {
   var body: some View {
     shown
       .background(LLA.Color.surface)
+      // Another way of drawing the lower list starts closed.
+      .onChange(of: model.shownSettings.quietThreads) { showsStowed = false }
       #if os(macOS)
         .overlay {
           // A click anywhere else in the sidebar closes the profile menu.
@@ -30,6 +35,7 @@ struct SidebarView: View {
           }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { SidebarFooter(model: model) }
+        .onHover { inside in if !inside { showsStowed = false } }
       #else
         // On "Connect your Mac" too, so the account can still be left from there.
         .toolbar {
@@ -68,11 +74,17 @@ struct SidebarView: View {
       VStack(alignment: .leading, spacing: 0) {
         listNotice
         ScrollView {
-          ThreadListView(model: model)
+          ThreadListView(model: model, showsStowed: $showsStowed)
             .padding(.horizontal, 10)
             .padding(.top, LLA.Space.s)
             .padding(.bottom, LLA.Space.l)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        // Hidden's row: pinned to the bottom of the scrolling area, just above the profile footer.
+        if case .needsYouFirst(_, .hidden(let working)) = model.listLayout.body, !working.isEmpty {
+          HiddenWorkingRows(model: model, working: working, open: $showsStowed)
+            .padding(.horizontal, 10)
+            .padding(.vertical, LLA.Space.xs)
         }
       }
       // The top bar: a flexible space after the traffic lights, then view options, search, and new
@@ -89,7 +101,7 @@ struct SidebarView: View {
     private var content: some View {
       List {
         Section {
-          ThreadListView(model: model)
+          ThreadListView(model: model, showsStowed: $showsStowed)
         } header: {
           VStack(spacing: 0) {
             statusBanner?()

@@ -29,6 +29,42 @@ import WorkspaceProtocol
     #expect(model.sidebarSections.map(\.title) == ["Marketing site"])
   }
 
+  @Test func theListIsNeedsYouFirstByDefaultWithoutAPinnedGroup() async throws {
+    let model = try await ListFixture.model()
+    guard case .needsYouFirst(let top, let lower) = model.listLayout.body else {
+      Issue.record("the default arrangement: \(model.listLayout.body)")
+      return
+    }
+    #expect(top.map(\.id) == ["asks", "failed", "unread"])
+    // The pinned working thread leads the working threads; it is not lifted above the top list.
+    guard case .rows(let rows, tiny: false) = lower else {
+      Issue.record("Small: \(lower)")
+      return
+    }
+    #expect(rows.map(\.id) == ["pinned", "busy", "quiet", "copy", "loose"])
+    #expect(model.listLayout.archived.isEmpty)
+
+    // The connection filter narrows both lists.
+    model.connectionFilter = "c2"
+    #expect(
+      model.listLayout.body
+        == .needsYouFirst(top: [], lower: .rows(rows.filter { $0.connectionId == "c2" }, tiny: false)))
+  }
+
+  @Test func theStowedRowSpeaksItsTextAndWhatItDoes() {
+    #expect(
+      StowedThreadsRow.accessibilityLabel(ListLayout.collapsedLabel(count: 9, working: 2))
+        == "9 more, 2 working, Show threads that don't need you")
+    #expect(
+      StowedThreadsRow.accessibilityLabel("2 working") == "2 working, Show threads that don't need you")
+  }
+
+  @Test func tinyRowsAreTwentyPointsWithEightPointMarks() {
+    #expect(LLA.Metrics.threadRowTiny == 20)
+    #expect(LLA.Metrics.markTiny == 8)
+    #expect(ThreadListView.gap == 24)
+  }
+
   @Test func environmentNameIsTheDisplayNameAndNilForOther() async throws {
     let model = try await ListFixture.model()
     let thread = try #require(model.threads.first { $0.id == "asks" })

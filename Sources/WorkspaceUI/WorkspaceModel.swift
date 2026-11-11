@@ -372,16 +372,18 @@ public final class WorkspaceModel {
   /// quiet, pinned first and then newest activity first inside each (`Attention.ordered`).
   public var orderedThreads: [ConversationThread] { Attention.ordered(filtered(archived: false)) }
 
-  /// Pinned threads of `orderedThreads`.
-  public var pinnedThreads: [ConversationThread] { orderedThreads.filter(\.pinned) }
-
-  /// The unpinned threads of `orderedThreads` grouped by environment (the Mac sidebar).
+  /// The threads of `orderedThreads` grouped by environment (the Mac's "By environment").
   public var environmentSections: [EnvironmentSection] {
-    EnvironmentSection.build(threads: orderedThreads.filter { !$0.pinned }, environments: environments)
+    EnvironmentSection.build(threads: orderedThreads, environments: environments)
   }
 
-  /// Archived threads under the connection filter, shown when the view settings' `showArchived` is on.
-  public var archivedThreads: [ConversationThread] { Attention.ordered(filtered(archived: true)) }
+  /// What the list draws: the threads under the connection filter, arranged by the view settings
+  /// this device shows (`shownSettings`).
+  var listLayout: ListLayout {
+    ListLayout.build(
+      threads: threads.filter { connectionFilter == nil || $0.connectionId == connectionFilter },
+      environments: environments, settings: shownSettings)
+  }
 
   public func state(of thread: ConversationThread) -> ThreadState { Attention.state(of: thread) }
 
@@ -961,6 +963,8 @@ public final class WorkspaceModel {
   }
 
   /// Feeds the tracker the states of the list as it now shows (`orderedThreads`, under the filters).
+  /// Stowed threads (Collapsed, Hidden) are in it: one that starts needing the owner arrives in the top
+  /// list, and one that only moves between the stowed set and the lower list changes no state.
   /// Called once per change to `threads`. `asBaseline` records the list without tracing anything: the
   /// owner's own action (Mark as Unread, a mark-read rollback, unarchiving) or a change to which
   /// threads the filter shows is not an arrival, and another thread's live trace goes on.

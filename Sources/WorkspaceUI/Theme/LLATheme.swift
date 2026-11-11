@@ -117,6 +117,10 @@ public enum LLA {
     public static let sidebarWidth: CGFloat = 240
     /// The box a thread's state mark is drawn in, at the default text size (`ThreadMark`).
     public static let mark: CGFloat = 12
+    /// A tiny thread row (the Mac's lower list under "Tiny"): an 11 pt line in a 20 pt row.
+    public static let threadRowTiny: CGFloat = 20
+    /// A tiny row's mark box.
+    public static let markTiny: CGFloat = 8
     /// Reading column for transcripts and long copy.
     public static let column: CGFloat = 720
     /// The smallest window the macOS app allows; the thread detail must fit inside it at any
