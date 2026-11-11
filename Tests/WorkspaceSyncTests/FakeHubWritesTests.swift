@@ -43,8 +43,8 @@ import WorkspaceProtocol
     let batch = [
       update(1, column: "title"),
       update(2, column: "status"),
-      update(3, table: "projects", column: "name"),
-      update(4, table: "projects", column: "createdAt"),
+      update(3, table: "environments", column: "name"),
+      update(4, table: "environments", column: "createdAt"),
       SyncChange(deviceSeq: 5, wall: 5, table: "threads", rowId: "r5", op: "delete"),
       SyncChange(deviceSeq: 6, wall: 6, table: "drafts", rowId: "r6", op: "insert", value: .object([:])),
       SyncChange(deviceSeq: 7, wall: 7, table: "threads", rowId: "r7", op: "insert", value: .object([:])),

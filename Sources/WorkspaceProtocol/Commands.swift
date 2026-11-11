@@ -45,11 +45,11 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case hubPairStatus = "hub.pairStatus"
   case settingsRead = "settings.read"
   case settingsUpdate = "settings.update"
-  case projectList = "project.list"
-  case projectCreate = "project.create"
-  case projectUpdate = "project.update"
-  case projectRename = "project.rename"
-  case projectDelete = "project.delete"
+  case environmentList = "environment.list"
+  case environmentCreate = "environment.create"
+  case environmentUpdate = "environment.update"
+  case environmentRename = "environment.rename"
+  case environmentDelete = "environment.delete"
   case threadMarkRead = "thread.markRead"
   case usageRead = "usage.read"
   case connectionUpdate = "connection.update"
@@ -87,15 +87,15 @@ public enum Method: String, Codable, Sendable, CaseIterable {
       .serverRestart,
       .serverStop, .serverInspect, .workspaceStopLocalWork, .workspaceReconcile, .databaseBackup,
       .databaseRestore,
-      .databaseImportSQLite, .hubJoin, .hubLeave, .projectCreate, .projectUpdate, .projectRename,
-      .projectDelete, .threadMarkRead, .threadStart, .settingsUpdate, .connectionUpdate,
+      .databaseImportSQLite, .hubJoin, .hubLeave, .environmentCreate, .environmentUpdate, .environmentRename,
+      .environmentDelete, .threadMarkRead, .threadStart, .settingsUpdate, .connectionUpdate,
       .accountPasskeyFinish, .accountAppleFinish, .accountCompleteProfile, .accountLogout,
       .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice,
       .accountAppleLinkFinish, .credentialRemove, .threadDelete:
       return true
     case .systemPing, .diagnosticsRead, .connectionList, .threadList, .draftRead, .eventsSnapshot,
       .eventsReplay, .threadRead, .serverList, .serverStatus, .serverLogs, .workspaceActiveWork,
-      .databaseStatus, .hubStatus, .projectList, .turnLookup, .hubPair, .hubPairStatus, .settingsRead,
+      .databaseStatus, .hubStatus, .environmentList, .turnLookup, .hubPair, .hubPairStatus, .settingsRead,
       .usageRead, .accountStatus, .accountPasskeyBegin, .accountAppleStart, .accountIdentities,
       .accountAddPasskeyBegin, .accountAppleLinkStart, .accountStepUpBegin, .accountStepUpAppleStart:
       return false
@@ -501,7 +501,7 @@ public enum CredentialAdd: WorkspaceCommand {
 
 // MARK: - M4 managed server methods
 
-/// Register a local B4 project. Inspection (`b4 routes --json`) runs the project's config and route
+/// Register a local B4 project. Inspection (`b4 routes --json`) runs the environment's config and route
 /// modules, so registration is the trust decision. `port` is allocated once when omitted.
 public enum ServerAdd: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
@@ -555,7 +555,7 @@ public enum ServerStatus: WorkspaceCommand {
   public static let method = Method.serverStatus
 }
 
-/// Re-run route discovery for a registered project.
+/// Re-run route discovery for a registered environment.
 public enum ServerInspect: WorkspaceCommand {
   public typealias Params = ServerRef
   public typealias Result = ServerAdd.Result

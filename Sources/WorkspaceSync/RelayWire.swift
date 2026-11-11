@@ -8,9 +8,9 @@ public enum RelayMethod: String, Codable, Sendable, CaseIterable {
   case requestRespond = "request.respond"
   case threadStart = "thread.start"
   case turnLookup = "turn.lookup"
-  case projectCreate = "project.create"
-  case projectUpdate = "project.update"
-  case projectDelete = "project.delete"
+  case environmentCreate = "environment.create"
+  case environmentUpdate = "environment.update"
+  case environmentDelete = "environment.delete"
 }
 
 /// Which end of the relay a link is. A `macos` device is a host; `ios` and `cli` are clients.

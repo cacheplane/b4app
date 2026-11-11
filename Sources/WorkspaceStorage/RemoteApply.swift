@@ -31,17 +31,17 @@ public struct RemoteChange: Sendable, Equatable {
 /// is `applied` when it wrote at least one column, otherwise `skipped`.
 public struct RemoteApplied: Sendable, Equatable {
   public var touchedThreadIds: Set<String>
-  public var touchedProjectIds: Set<String>
+  public var touchedEnvironmentIds: Set<String>
   public var touchedDraftThreadIds: Set<String>
   public var applied: Int
   public var skipped: Int
 
   public init(
-    touchedThreadIds: Set<String> = [], touchedProjectIds: Set<String> = [],
+    touchedThreadIds: Set<String> = [], touchedEnvironmentIds: Set<String> = [],
     touchedDraftThreadIds: Set<String> = [], applied: Int = 0, skipped: Int = 0
   ) {
     self.touchedThreadIds = touchedThreadIds
-    self.touchedProjectIds = touchedProjectIds
+    self.touchedEnvironmentIds = touchedEnvironmentIds
     self.touchedDraftThreadIds = touchedDraftThreadIds
     self.applied = applied
     self.skipped = skipped
@@ -55,7 +55,7 @@ extension WorkspaceDatabase {
   ///
   /// - A change from `ownDeviceId`, any of `macDeviceIds`, or `local` (this Mac before it joined), by
   ///   attribution or by its clock's device, is the Mac's own history and is skipped.
-  /// - Only updates of `SyncColumns.phoneWritable` columns of `threads` and `projects` rows that exist
+  /// - Only updates of `SyncColumns.phoneWritable` columns of `threads` and `environments` rows that exist
   ///   here apply, plus inserts and updates of `drafts` whose thread exists here. No other table is
   ///   inserted into, no other column is written, and nothing is deleted. A null for a
   ///   `SyncColumns.neverCleared` column (a thread's delete mark) is skipped.
@@ -119,7 +119,7 @@ extension WorkspaceDatabase {
           result.applied += 1
           switch change.table {
           case "threads": result.touchedThreadIds.insert(change.rowId)
-          case "environments": result.touchedProjectIds.insert(change.rowId)
+          case "environments": result.touchedEnvironmentIds.insert(change.rowId)
           default: result.touchedDraftThreadIds.insert(change.rowId)
           }
         } catch  where Self.isDataError(error) {

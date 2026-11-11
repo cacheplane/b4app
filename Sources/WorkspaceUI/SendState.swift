@@ -107,11 +107,11 @@ public enum RelayCopy {
   public static let connecting = "Connecting to the hub…"
   public static let reconnecting = "Reconnecting to your Mac…"
   public static let leftHub = "Your Mac has left the hub. Its threads come back when it joins again."
-  /// A project edit from the phone with no Mac to send it to.
-  public static let noProjects = "No projects yet. Make one with New Project in the filter menu."
-  public static let noMacForProject = "No Mac is linked to this account yet."
-  /// A project the phone made whose row has not synced back yet, so the hub cannot route to it.
-  public static let projectNotSynced = "Your Mac made this project. It hasn't reached this phone yet."
+  /// An environment edit from the phone with no Mac to send it to.
+  public static let noEnvironments = "No environments yet. Make one with New Environment in the filter menu."
+  public static let noMacForEnvironment = "No Mac is linked to this account yet."
+  /// An environment the phone made whose row has not synced back yet, so the hub cannot route to it.
+  public static let environmentNotSynced = "Your Mac made this environment. It hasn't reached this phone yet."
 }
 
 /// The send table's rules, apart from the model so they read as the spec does.
@@ -294,29 +294,29 @@ extension WorkspaceModel {
   /// `turn.lookup` on that id). Accepted at once, the thread is listed and opened. Returns the send as
   /// its reply left it (nil when nothing was sent).
   ///
-  /// Only a connection the place offers is sent: in a project, one that `startConnections(for:)`
-  /// offers, and the project's own Mac decides whether it can start, not the primary Mac; with no
-  /// project (the Mac only), a Codex or Claude connection in a chosen folder, or a remote B4. While one
+  /// Only a connection the place offers is sent: in an environment, one that `startConnections(for:)`
+  /// offers, and the environment's own Mac decides whether it can start, not the primary Mac; with no
+  /// environment (the Mac only), a Codex or Claude connection in a chosen folder, or a remote B4. While one
   /// start is out, another is refused, so a second tap never mints a second thread. A folder, model,
-  /// and permission are sent only for Codex and Claude: the folder the caller chose, or the project's
+  /// and permission are sent only for Codex and Claude: the folder the caller chose, or the environment's
   /// only folder.
   @discardableResult
   public func startThread(
-    projectId: String?, connectionId: String, folder: String?, model: String? = nil,
+    environmentId: String?, connectionId: String, folder: String?, model: String? = nil,
     permission: String? = nil, text: String
   ) async
     -> PendingSend?
   {
     let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty, client != nil, !isStartingThread, unsettledStartReason == nil else { return nil }
-    let project = projectId.flatMap { id in projects.first { $0.id == id } }
-    if projectId != nil, project == nil { return nil }
-    if let project, startBlockedReason(for: project) != nil { return nil }
-    let offered = project.map { startConnections(for: $0) } ?? startConnectionsWithoutProject
+    let environment = environmentId.flatMap { id in environments.first { $0.id == id } }
+    if environmentId != nil, environment == nil { return nil }
+    if let environment, startBlockedReason(for: environment) != nil { return nil }
+    let offered = environment.map { startConnections(for: $0) } ?? startConnectionsWithoutEnvironment
     guard let connection = offered.first(where: { $0.id == connectionId }) else { return nil }
     var chosen: String?
     if connection.kind != .b4 {
-      chosen = folder ?? (project?.folders.count == 1 ? project?.folders.first?.path : nil)
+      chosen = folder ?? (environment?.folders.count == 1 ? environment?.folders.first?.path : nil)
       guard chosen != nil else { return nil }
     }
     isStartingThread = true
@@ -332,7 +332,8 @@ extension WorkspaceModel {
     let threadId = UUID().uuidString.lowercased()
     let b4 = connection.kind == .b4
     let params = ThreadStart.Params(
-      threadId: threadId, projectId: project?.id, connectionId: connectionId, folder: chosen, text: text,
+      threadId: threadId, environmentId: environment?.id, connectionId: connectionId, folder: chosen,
+      text: text,
       model: b4 ? nil : model, permission: b4 ? nil : permission)
     let send = PendingSend(
       id: UUID().uuidString.lowercased(), threadId: threadId, text: text, tappedAt: now(), start: params)
@@ -365,9 +366,9 @@ extension WorkspaceModel {
         let started = try await client.request(
           ThreadStart.self, start, options: RequestOptions(operationId: id, timeout: timeout))
         var thread = started.thread
-        // The Mac's reply knows no owner; the thread belongs to the Mac that owns its project.
+        // The Mac's reply knows no owner; the thread belongs to the Mac that owns its environment.
         if thread.ownerDeviceId == nil {
-          thread.ownerDeviceId = projects.first { $0.id == start.projectId }?.ownerDeviceId
+          thread.ownerDeviceId = environments.first { $0.id == start.environmentId }?.ownerDeviceId
         }
         store(thread)
         result = .success(started.turn.id)
@@ -449,7 +450,7 @@ extension WorkspaceModel {
   /// Set while any thread start is open (sending, or not confirmed: the Mac may still run it). A new
   /// start would mint a second thread from the same intent, whichever sheet it comes from. Only the
   /// Mac's answer settles it: `turn.lookup` finds the turn (`found`) or says it never ran (`none`), or
-  /// the thread's turn syncs. While the project's Mac stays offline it stays open, which is the truth.
+  /// the thread's turn syncs. While the environment's Mac stays offline it stays open, which is the truth.
   var unsettledStartReason: String? {
     pendingSends.values.contains { $0.start != nil && $0.state.isUnsettled } ? RelayCopy.startPending : nil
   }
@@ -492,10 +493,10 @@ extension WorkspaceModel {
 
   private func canLookUp(_ send: PendingSend) -> Bool {
     guard hubLinkPhase == .connected else { return false }
-    // A thread's own Mac; a start not yet listed asks the Mac that owns its project.
+    // A thread's own Mac; a start not yet listed asks the Mac that owns its environment.
     let owner =
       threads.first { $0.id == send.threadId }?.ownerDeviceId
-      ?? send.start.flatMap { start in projects.first { $0.id == start.projectId }?.ownerDeviceId }
+      ?? send.start.flatMap { start in environments.first { $0.id == start.environmentId }?.ownerDeviceId }
     return hostPhase(deviceId: owner ?? primaryHostId) == .connected
   }
 

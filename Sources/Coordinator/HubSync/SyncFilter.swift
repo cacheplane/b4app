@@ -9,7 +9,7 @@ import WorkspaceSync
 ///
 /// - Only `WorkspaceDatabase.syncedTables` travel; `localServers`, `devices`, and `hubLink` never do.
 /// - A `connections` insert carries only the known columns (`connectionColumns`, the Mac schema's and
-///   the hub's; `projectId` is one, and uploads), so a column a later migration adds never uploads by
+///   the hub's; `environmentId` is one, and uploads), so a column a later migration adds never uploads by
 ///   accident; one whose value is not an object is not sent at all.
 /// - `connections.authReference`, `.localServerId`, and `.target` are machine-local (a secret
 ///   reference, a managed-server id, a path or URL): an insert carries them blanked, and an update of
@@ -30,7 +30,7 @@ enum SyncFilter {
   /// `0009_thread_runtime_choice.sql`), equal to the hub's `TableSpec`.
   static let connectionColumns: Set<String> = [
     "id", "kind", "label", "enabled", "profileRevision", "target", "routeKey", "b4Mode", "localServerId",
-    "authReference", "nativeScope", "projectId", "capabilities", "models", "status", "authStatus",
+    "authReference", "nativeScope", "environmentId", "capabilities", "models", "status", "authStatus",
     "createdAt", "updatedAt",
   ]
   private static let scopedTables: Set<String> = ["connections", "threads"]

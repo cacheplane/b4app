@@ -88,7 +88,7 @@ private func clock(_ db: WorkspaceDatabase, _ table: String, _ rowId: String, _ 
   @Test func everyPhoneWritableColumnApplies() throws {
     let db = try WorkspaceDatabase.temporary()
     try seed(db)
-    _ = try db.insertProject(Project(id: "p1", name: ""), folders: ["/tmp/p"])
+    _ = try db.insertEnvironment(WorkEnvironment(id: "p1", name: ""), folders: ["/tmp/p"])
     let at = stamp(epochMillis() + 1_000, phone)
     let applied = try db.applyRemote(
       [
@@ -99,10 +99,10 @@ private func clock(_ db: WorkspaceDatabase, _ table: String, _ rowId: String, _ 
       ], ownDeviceId: mac, macDeviceIds: [mac], cursor: 3)
     #expect(applied.applied == 4)
     #expect(applied.touchedThreadIds == ["t1"])
-    #expect(applied.touchedProjectIds == ["p1"])
+    #expect(applied.touchedEnvironmentIds == ["p1"])
     let thread = try #require(try db.thread(id: "t1"))
     #expect(thread.pinned && thread.archived && thread.readTurnId == "turn-9")
-    #expect(try db.project(id: "p1")?.name == "Renamed")
+    #expect(try db.environment(id: "p1")?.name == "Renamed")
   }
 
   @Test func aPhonePermissionChangeIsApplied() throws {

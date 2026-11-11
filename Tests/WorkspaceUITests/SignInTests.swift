@@ -112,17 +112,17 @@ private final class SilentTransport: WorkspaceTransport {
   func close() async {}
 }
 
-private func thread(_ id: String, project: String? = nil) -> ConversationThread {
+private func thread(_ id: String, environment: String? = nil) -> ConversationThread {
   ConversationThread(
     id: id, connectionId: "c1", nativeThreadId: "n-\(id)", title: id, pinned: false, archived: false,
-    createdAt: "2026-11-01T10:00:00Z", updatedAt: "2026-11-01T10:00:00Z", projectId: project)
+    createdAt: "2026-11-01T10:00:00Z", updatedAt: "2026-11-01T10:00:00Z", environmentId: environment)
 }
 
 /// A model signed in as `theAccount` with thread `t1` open and text in its composer.
 @MainActor
 private func withOpenThread(_ transport: ScriptedTransport) async throws -> WorkspaceModel {
-  let open = thread("t1", project: "p1")
-  transport.set(threads: [open], projects: [Project(id: "p1", name: "Site")])
+  let open = thread("t1", environment: "p1")
+  transport.set(threads: [open], environments: [WorkEnvironment(id: "p1", name: "Site")])
   transport.setRead(ThreadRead.Result(thread: open, turns: [], items: [], requests: []))
   let model = try await connected(signedIn, transport: transport)
   model.draftSaveDelay = .seconds(600)
@@ -247,7 +247,7 @@ extension Array where Element == ScreenElement {
     var other = signedIn
     other.account?.id = "b1b2b3b4b5b6b7b8"
     other.account?.orgName = "Other Org"
-    transport.set(threads: [], projects: [])
+    transport.set(threads: [], environments: [])
     transport.emit(try .accountChanged(other))
     try await waitUntil("B's store read") { transport.calls(.eventsSnapshot).count > snapshots }
     #expect(model.detail == nil && model.selectedThreadId == nil)
@@ -273,7 +273,7 @@ extension Array where Element == ScreenElement {
     transport.emit(try .accountChanged(signedOut))
     try await waitUntil("sign-in") { model.rootScreen == .signIn }
     // A's answers arrive after the forget: none of them is stored.
-    let old = thread("t1", project: "p1")
+    let old = thread("t1", environment: "p1")
     #expect(
       transport.release(
         .eventsSnapshot,
@@ -289,7 +289,7 @@ extension Array where Element == ScreenElement {
     await snapshot.value
     await reopen.value
     #expect(model.threads.isEmpty)
-    #expect(model.projects.isEmpty)
+    #expect(model.environments.isEmpty)
     #expect(model.detail == nil)
     #expect(model.composerText.isEmpty)
   }
@@ -297,7 +297,7 @@ extension Array where Element == ScreenElement {
   @Test func signingOutForgetsFiltersSendsAndTimers() async throws {
     let transport = ScriptedTransport()
     let model = try await withOpenThread(transport)
-    model.projectFilter = .project("p1")
+    model.environmentFilter = .environment("p1")
     model.connectionFilter = "c1"
     model.showArchived = true
     model.pendingForceStop = ("s1", false, ["t1"])
@@ -307,7 +307,7 @@ extension Array where Element == ScreenElement {
     model.sendTimer = Task {}
     transport.emit(try .accountChanged(signedOut))
     try await waitUntil("sign-in") { model.rootScreen == .signIn }
-    #expect(model.projectFilter == .all)
+    #expect(model.environmentFilter == .all)
     #expect(model.connectionFilter == nil)
     #expect(model.showArchived == false)
     #expect(model.pendingForceStop == nil)
@@ -321,8 +321,8 @@ extension Array where Element == ScreenElement {
     // moves the account.
     let transport = ScriptedTransport()
     let model = try await connected(signedIn, transport: transport)
-    transport.script(.projectCreate, [.failure(WorkspaceError(.signedOut, "Nobody is signed in."))])
-    _ = await model.createProject(name: "x", folders: [])
+    transport.script(.environmentCreate, [.failure(WorkspaceError(.signedOut, "Nobody is signed in."))])
+    _ = await model.createEnvironment(name: "x", folders: [])
     #expect(model.accountState == .signedIn)
     #expect(model.rootScreen == .workspace)
   }

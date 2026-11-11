@@ -2,9 +2,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WorkspaceProtocol
 
-/// Create a manual project: a name and the folders whose threads belong to it. The Mac's, with its
-/// folder picker; the phone has `PhoneProjectSheet`, which names folders on the Mac by path.
-struct NewProjectSheet: View {
+/// Create a manual environment: a name and the folders whose threads belong to it. The Mac's, with its
+/// folder picker; the phone has `PhoneEnvironmentSheet`, which names folders on the Mac by path.
+struct NewEnvironmentSheet: View {
   @Bindable var model: WorkspaceModel
   @Environment(\.dismiss) private var dismiss
   @State private var name = ""
@@ -14,7 +14,7 @@ struct NewProjectSheet: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: LLA.Space.l) {
-      Text("New project").llaDisplay()
+      Text("New environment").llaDisplay()
       VStack(alignment: .leading, spacing: LLA.Space.xs) {
         Text("Name").llaSmallMuted()
         LLAField("Name", text: $name)
@@ -23,7 +23,7 @@ struct NewProjectSheet: View {
       VStack(alignment: .leading, spacing: LLA.Space.xs) {
         Text("Folders").llaSmallMuted()
         if folders.isEmpty {
-          Text("Threads started in a folder you add here join this project.").llaCaption()
+          Text("Threads started in a folder you add here join this environment.").llaCaption()
         }
         ForEach(folders, id: \.self) { path in
           HStack(spacing: LLA.Space.s) {
@@ -47,7 +47,7 @@ struct NewProjectSheet: View {
         Button("Create") {
           creating = true
           Task {
-            let created = await model.createProject(
+            let created = await model.createEnvironment(
               name: name.trimmingCharacters(in: .whitespaces), folders: folders)
             creating = false
             if created != nil { dismiss() }
@@ -56,7 +56,7 @@ struct NewProjectSheet: View {
         .buttonStyle(.llaPrimary)
         .keyboardShortcut(.defaultAction)
         .disabled((name.trimmingCharacters(in: .whitespaces).isEmpty && folders.isEmpty) || creating)
-        .accessibilityIdentifier("create-project")
+        .accessibilityIdentifier("create-environment")
       }
     }
     .padding(LLA.Metrics.margin)
@@ -69,17 +69,17 @@ struct NewProjectSheet: View {
   }
 }
 
-/// Rename a project. An empty name restores the folder-name display.
-struct RenameProjectSheet: View {
+/// Rename an environment. An empty name restores the folder-name display.
+struct RenameEnvironmentSheet: View {
   @Bindable var model: WorkspaceModel
-  let project: Project
+  let environment: WorkEnvironment
   @Environment(\.dismiss) private var dismiss
   @State private var name = ""
   @State private var saving = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: LLA.Space.l) {
-      Text("Rename project").llaDisplay()
+      Text("Rename environment").llaDisplay()
       VStack(alignment: .leading, spacing: LLA.Space.xs) {
         Text("Name").llaSmallMuted()
         LLAField("Name", text: $name)
@@ -98,7 +98,7 @@ struct RenameProjectSheet: View {
         Button("Rename") {
           saving = true
           Task {
-            await model.renameProject(id: project.id, name: name.trimmingCharacters(in: .whitespaces))
+            await model.renameEnvironment(id: environment.id, name: name.trimmingCharacters(in: .whitespaces))
             saving = false
             if model.lastError == nil { dismiss() }
           }
@@ -106,14 +106,14 @@ struct RenameProjectSheet: View {
         .buttonStyle(.llaPrimary)
         .keyboardShortcut(.defaultAction)
         .disabled(saving)
-        .accessibilityIdentifier("rename-project")
+        .accessibilityIdentifier("rename-environment")
       }
     }
     .padding(LLA.Metrics.margin)
     .frame(minWidth: 420)
     .background(LLA.Color.bg)
     .onAppear {
-      name = project.name
+      name = environment.name
       model.lastError = nil
     }
   }

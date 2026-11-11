@@ -43,7 +43,7 @@ private struct RelayHarness {
     let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
     let executor = RelayExecutor(
-      sessions: coordinator.sessions, projects: coordinator.projects, database: coordinator.database,
+      sessions: coordinator.sessions, environments: coordinator.environments, database: coordinator.database,
       diagnostics: coordinator.diagnostics)
     return RelayHarness(
       coordinator: coordinator, client: client, events: EventCollector(await client.events()),
@@ -69,8 +69,9 @@ private struct RelayHarness {
     ).thread
   }
 
-  func project(_ name: String, _ folders: [String]) async throws -> Project {
-    try await coordinator.projects.create(ProjectCreate.Params(name: name, folders: folders)).project
+  func environment(_ name: String, _ folders: [String]) async throws -> WorkEnvironment {
+    try await coordinator.environments.create(EnvironmentCreate.Params(name: name, folders: folders))
+      .environment
   }
 
   func waitForFinish(_ turn: Turn) async throws {
@@ -349,17 +350,18 @@ private func failure(
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let app = try h.folder("app")
-    let project = try await h.project("App", [app])
+    let environment = try await h.environment("App", [app])
     let threadId = UUID().uuidString.lowercased()
     let id = UUID().uuidString.lowercased()
     let reply = try await run(
       h.executor, id: id, .threadStart,
       ThreadStart.Params(
-        threadId: threadId, projectId: project.id, connectionId: connection.id, folder: app, text: "hi"))
+        threadId: threadId, environmentId: environment.id, connectionId: connection.id, folder: app,
+        text: "hi"))
     let started = try result(reply, as: ThreadStart.Result.self)
     #expect(started.thread.id == threadId)
     #expect(started.thread.connectionId == connection.id)
-    #expect(started.thread.projectId == project.id)
+    #expect(started.thread.environmentId == environment.id)
     #expect(
       SessionService.canonicalDirectory(started.thread.context ?? "")
         == SessionService.canonicalDirectory(app))
@@ -382,41 +384,43 @@ private func failure(
       options: h.mutation()
     ).connection
     #expect(connection.status == .ready)
-    let projectId = try #require(connection.projectId)
+    let environmentId = try #require(connection.environmentId)
     let executor = RelayExecutor(
-      sessions: h.coordinator.sessions, projects: h.coordinator.projects, database: h.coordinator.database,
+      sessions: h.coordinator.sessions, environments: h.coordinator.environments,
+      database: h.coordinator.database,
       diagnostics: h.coordinator.diagnostics)
 
     // A folder is not part of a B4 thread.
     let withFolder = try await run(
       executor, .threadStart,
       ThreadStart.Params(
-        threadId: UUID().uuidString.lowercased(), projectId: projectId, connectionId: connection.id,
+        threadId: UUID().uuidString.lowercased(), environmentId: environmentId, connectionId: connection.id,
         folder: h.base + "/agent", text: "hi"))
     #expect(failure(withFolder)?.code == ErrorCode.protocolInvalid.rawValue)
 
     let threadId = UUID().uuidString.lowercased()
     let reply = try await run(
       executor, .threadStart,
-      ThreadStart.Params(threadId: threadId, projectId: projectId, connectionId: connection.id, text: "hello")
+      ThreadStart.Params(
+        threadId: threadId, environmentId: environmentId, connectionId: connection.id, text: "hello")
     )
     let started = try result(reply, as: ThreadStart.Result.self)
     #expect(started.thread.id == threadId)
     #expect(started.thread.context == connection.routeKey)
     #expect(started.thread.context == "/chat#agent")
-    #expect(started.thread.projectId == projectId)
+    #expect(started.thread.environmentId == environmentId)
     let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == started.turn.id }
     #expect(finished.payload["outcome"]?.stringValue == "completed")
   }
 
-  @Test func threadStartRefusesAFolderOutsideTheProject() async throws {
+  @Test func threadStartRefusesAFolderOutsideTheEnvironment() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
-    let project = try await h.project("App", [try h.folder("app")])
+    let environment = try await h.environment("App", [try h.folder("app")])
     let threadId = UUID().uuidString.lowercased()
     let elsewhere = try h.folder("elsewhere")
-    // Folders compare in canonical form: `..` and symlinks that lead out of the project are outside it.
+    // Folders compare in canonical form: `..` and symlinks that lead out of the environment are outside it.
     let fm = FileManager.default
     try fm.createSymbolicLink(atPath: h.base + "/app/escape", withDestinationPath: elsewhere)
     try fm.createSymbolicLink(atPath: h.base + "/looks-like-app", withDestinationPath: elsewhere)
@@ -428,20 +432,22 @@ private func failure(
       let reply = try await run(
         h.executor, .threadStart,
         ThreadStart.Params(
-          threadId: threadId, projectId: project.id, connectionId: connection.id, folder: folder, text: "hi"))
+          threadId: threadId, environmentId: environment.id, connectionId: connection.id, folder: folder,
+          text: "hi"))
       #expect(failure(reply)?.code == ErrorCode.protocolInvalid.rawValue, "\(folder ?? "no folder")")
     }
-    // An unknown project is refused the same way.
+    // An unknown environment is refused the same way.
     let unknown = try await run(
       h.executor, .threadStart,
       ThreadStart.Params(
-        threadId: threadId, projectId: "p-missing", connectionId: connection.id, folder: try h.folder("app"),
+        threadId: threadId, environmentId: "p-missing", connectionId: connection.id,
+        folder: try h.folder("app"),
         text: "hi"))
     #expect(failure(unknown)?.code == ErrorCode.protocolInvalid.rawValue)
     #expect(try h.db.thread(id: threadId) == nil)
   }
 
-  @Test func threadStartRefusesAB4ServerOfAnotherProject() async throws {
+  @Test func threadStartRefusesAB4ServerOfAnotherEnvironment() async throws {
     let h = try await ServerHarness.start()
     defer { Task { await h.close() } }
     let server = try await h.add(try h.project("agent"))
@@ -449,20 +455,22 @@ private func failure(
       ConnectionAdd.self, ConnectionAdd.Params(kind: .b4, route: "/chat#agent", serverId: server.id),
       options: h.mutation()
     ).connection
-    let own = try #require(connection.projectId)
+    let own = try #require(connection.environmentId)
     let otherFolder = h.base + "/other"
     try FileManager.default.createDirectory(atPath: otherFolder, withIntermediateDirectories: true)
-    let other = try await h.coordinator.projects.create(
-      ProjectCreate.Params(name: "Other", folders: [otherFolder])
-    ).project
+    let other = try await h.coordinator.environments.create(
+      EnvironmentCreate.Params(name: "Other", folders: [otherFolder])
+    ).environment
     #expect(other.id != own)
     let executor = RelayExecutor(
-      sessions: h.coordinator.sessions, projects: h.coordinator.projects, database: h.coordinator.database,
+      sessions: h.coordinator.sessions, environments: h.coordinator.environments,
+      database: h.coordinator.database,
       diagnostics: h.coordinator.diagnostics)
     let threadId = UUID().uuidString.lowercased()
     let reply = try await run(
       executor, .threadStart,
-      ThreadStart.Params(threadId: threadId, projectId: other.id, connectionId: connection.id, text: "hi"))
+      ThreadStart.Params(threadId: threadId, environmentId: other.id, connectionId: connection.id, text: "hi")
+    )
     #expect(failure(reply)?.code == ErrorCode.protocolInvalid.rawValue)
     #expect(try h.coordinator.database.thread(id: threadId) == nil)
   }
@@ -470,15 +478,16 @@ private func failure(
   @Test func threadStartRefusesRemoteB4() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
-    let project = try await h.project("App", [try h.folder("app")])
+    let environment = try await h.environment("App", [try h.folder("app")])
     let remote = try h.db.insertConnection(
       Connection(
         id: "c-remote", kind: .b4, label: "Remote", target: "https://b4.example.com", routeKey: "/chat#agent",
-        b4Mode: .remote, projectId: project.id, status: .ready))
+        b4Mode: .remote, environmentId: environment.id, status: .ready))
     let threadId = UUID().uuidString.lowercased()
     let reply = try await run(
       h.executor, .threadStart,
-      ThreadStart.Params(threadId: threadId, projectId: project.id, connectionId: remote.id, text: "hi"))
+      ThreadStart.Params(
+        threadId: threadId, environmentId: environment.id, connectionId: remote.id, text: "hi"))
     let error = try #require(failure(reply))
     #expect(error.code == ErrorCode.protocolInvalid.rawValue)
     #expect(error.details?["reason"]?.stringValue == "remote_b4")
@@ -491,7 +500,7 @@ private func failure(
     let connection = try await h.addCodex()
     let app = try h.folder("app")
     let docs = try h.folder("docs")
-    let project = try await h.project("App", [app, docs])
+    let environment = try await h.environment("App", [app, docs])
     // A start whose thread was made but whose turn never was (the send was refused after the create)
     // left the thread behind; a start naming it with the same connection and folder reuses it.
     let threadId = UUID().uuidString.lowercased()
@@ -503,7 +512,8 @@ private func failure(
       try await run(
         h.executor, .threadStart,
         ThreadStart.Params(
-          threadId: threadId, projectId: project.id, connectionId: connection.id, folder: app, text: "hi")),
+          threadId: threadId, environmentId: environment.id, connectionId: connection.id, folder: app,
+          text: "hi")),
       as: ThreadStart.Result.self)
     #expect(first.thread.id == threadId)
     #expect(first.thread.nativeThreadId == made.nativeThreadId)
@@ -512,7 +522,8 @@ private func failure(
     let reply = try await run(
       h.executor, .threadStart,
       ThreadStart.Params(
-        threadId: threadId, projectId: project.id, connectionId: connection.id, folder: docs, text: "again"))
+        threadId: threadId, environmentId: environment.id, connectionId: connection.id, folder: docs,
+        text: "again"))
     let error = try #require(failure(reply))
     #expect(error.code == ErrorCode.protocolInvalid.rawValue)
     #expect(error.details?["reason"]?.stringValue == "thread_mismatch")
@@ -521,8 +532,8 @@ private func failure(
     #expect(try h.db.listThreads(ThreadFilter(includeArchived: true)).map(\.id) == [threadId])
   }
 
-  /// The phone always names a project: a relayed start without one is refused before anything is made.
-  @Test func relayedStartStillRequiresAProject() async throws {
+  /// The phone always names an environment: a relayed start without one is refused before anything is made.
+  @Test func relayedStartStillRequiresAEnvironment() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -533,7 +544,7 @@ private func failure(
         threadId: threadId, connectionId: connection.id, folder: try h.folder("app"), text: "hi"))
     let error = try #require(failure(reply))
     #expect(error.code == ErrorCode.protocolInvalid.rawValue)
-    #expect(error.details?["reason"]?.stringValue == "project_missing")
+    #expect(error.details?["reason"]?.stringValue == "environment_missing")
     #expect(try h.db.thread(id: threadId) == nil)
   }
 
@@ -562,10 +573,10 @@ private func failure(
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let app = try h.folder("app")
-    let project = try await h.project("App", [app])
+    let environment = try await h.environment("App", [app])
     let id = UUID().uuidString.lowercased()
     let params = ThreadStart.Params(
-      threadId: UUID().uuidString.lowercased(), projectId: project.id, connectionId: connection.id,
+      threadId: UUID().uuidString.lowercased(), environmentId: environment.id, connectionId: connection.id,
       folder: app, text: "hi")
     let first = try result(
       try await run(h.executor, id: id, .threadStart, params), as: ThreadStart.Result.self)
@@ -587,10 +598,10 @@ private func failure(
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let app = try h.folder("app")
-    let project = try await h.project("App", [app])
+    let environment = try await h.environment("App", [app])
     let threadId = UUID().uuidString.lowercased()
     let params = ThreadStart.Params(
-      threadId: threadId, projectId: project.id, connectionId: connection.id, folder: app, text: "hi")
+      threadId: threadId, environmentId: environment.id, connectionId: connection.id, folder: app, text: "hi")
     async let first = run(h.executor, .threadStart, params)
     async let second = run(h.executor, .threadStart, params)
     let replies = try await [first, second]
@@ -621,7 +632,7 @@ private func failure(
     let h = try await seamHarness(seams)
     defer { Task { await h.close() } }
     let app = try h.folder("app")
-    let project = try await h.project("App", [app])
+    let environment = try await h.environment("App", [app])
 
     // A runtime that exists but cannot be executed: "Could not start <path>: …".
     let broken = h.base + "/bin/codex"
@@ -635,7 +646,8 @@ private func failure(
         try await run(
           h.executor, .threadStart,
           ThreadStart.Params(
-            threadId: UUID().uuidString.lowercased(), projectId: project.id, connectionId: unrunnable.id,
+            threadId: UUID().uuidString.lowercased(), environmentId: environment.id,
+            connectionId: unrunnable.id,
             folder: app, text: "hi"))))
     #expect(launch.code == ErrorCode.missingExecutable.rawValue)
 
@@ -655,7 +667,8 @@ private func failure(
         try await run(
           h.executor, .threadStart,
           ThreadStart.Params(
-            threadId: threadId, projectId: project.id, connectionId: connection.id, folder: app, text: "hi")))
+            threadId: threadId, environmentId: environment.id, connectionId: connection.id, folder: app,
+            text: "hi")))
     )
     _ = try await local.value
     #expect(store.code == ErrorCode.protocolInvalid.rawValue)
@@ -739,7 +752,7 @@ private func failure(
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let app = try h.folder("app")
-    let project = try await h.project("App", [app])
+    let environment = try await h.environment("App", [app])
     let thread = try await h.newThread(connection, in: try h.folder("work"))
     let threadId = UUID().uuidString.lowercased()
     let replies = [
@@ -747,7 +760,8 @@ private func failure(
       try await run(
         h.executor, .threadStart,
         ThreadStart.Params(
-          threadId: threadId, projectId: project.id, connectionId: connection.id, folder: app, text: "\u{0}")),
+          threadId: threadId, environmentId: environment.id, connectionId: connection.id, folder: app,
+          text: "\u{0}")),
     ]
     for reply in replies {
       let error = try #require(failure(reply))
@@ -771,7 +785,7 @@ private func failure(
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let work = try h.folder("work")
-    let project = try await h.project("Work", [work])
+    let environment = try await h.environment("Work", [work])
     let other = try await h.newThread(connection, in: work)
     let active = try result(
       try await run(h.executor, .turnSend, TurnSend.Params(threadId: other.id, text: "hang around")),
@@ -779,7 +793,8 @@ private func failure(
     ).turn
     let threadId = UUID().uuidString.lowercased()
     let start = ThreadStart.Params(
-      threadId: threadId, projectId: project.id, connectionId: connection.id, folder: work, text: "beside")
+      threadId: threadId, environmentId: environment.id, connectionId: connection.id, folder: work,
+      text: "beside")
     let started = try result(try await run(h.executor, .threadStart, start), as: ThreadStart.Result.self)
     #expect(started.thread.id == threadId)
     #expect(started.turn.threadId == threadId)
@@ -795,14 +810,15 @@ private func failure(
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let app = try h.folder("app")
-    let project = try await h.project("App", [app])
+    let environment = try await h.environment("App", [app])
     for threadId in ["thread-1", UUID().uuidString.uppercased(), "", UUID().uuidString.lowercased() + " "] {
       let error = try #require(
         failure(
           try await run(
             h.executor, .threadStart,
             ThreadStart.Params(
-              threadId: threadId, projectId: project.id, connectionId: connection.id, folder: app, text: "hi")
+              threadId: threadId, environmentId: environment.id, connectionId: connection.id, folder: app,
+              text: "hi")
           )))
       #expect(error.code == ErrorCode.protocolInvalid.rawValue)
       #expect(error.details?["reason"]?.stringValue == "invalid_thread_id")
@@ -812,91 +828,96 @@ private func failure(
 
   /// The boundary rule itself: code kept, `turnId` kept, the text replaced only where it may carry
   /// store, process, or foreign-error text.
-  // MARK: - Project edits
+  // MARK: - Environment edits
 
-  @Test func projectCreateValidatesFoldersOnThisMacAndRunsOnce() async throws {
+  @Test func environmentCreateValidatesFoldersOnThisMacAndRunsOnce() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let app = try h.folder("app")
-    // A thread in `app` gives it an automatic project, which the new project takes over.
+    // A thread in `app` gives it an automatic environment, which the new environment takes over.
     let thread = try await h.newThread(connection, in: app)
-    let automatic = try #require(try h.db.thread(id: thread.id)?.projectId)
-    let projectId = UUID().uuidString.lowercased()
+    let automatic = try #require(try h.db.thread(id: thread.id)?.environmentId)
+    let environmentId = UUID().uuidString.lowercased()
 
     // A folder that is not on this Mac refuses the whole create, naming it; nothing changes.
     let missing = h.base + "/not-here"
     let refused = try await run(
-      h.executor, .projectCreate,
-      ProjectCreate.Params(name: "Work", folders: [app, missing], projectId: projectId, deviceId: "mac"))
+      h.executor, .environmentCreate,
+      EnvironmentCreate.Params(
+        name: "Work", folders: [app, missing], environmentId: environmentId, deviceId: "mac"))
     let error = try #require(failure(refused))
     #expect(error.code == ErrorCode.protocolInvalid.rawValue)
     #expect(error.message == "Folder \(missing) does not exist.")
     #expect(error.details?["folder"] == .string(missing))
-    #expect(try h.db.project(id: projectId) == nil)
-    #expect(try h.db.thread(id: thread.id)?.projectId == automatic)
+    #expect(try h.db.environment(id: environmentId) == nil)
+    #expect(try h.db.thread(id: thread.id)?.environmentId == automatic)
 
-    let params = ProjectCreate.Params(name: "Work", folders: [app], projectId: projectId, deviceId: "mac")
+    let params = EnvironmentCreate.Params(
+      name: "Work", folders: [app], environmentId: environmentId, deviceId: "mac")
     let created = try result(
-      try await run(h.executor, .projectCreate, params), as: ProjectCreate.Result.self
-    ).project
-    #expect(created.id == projectId && created.manual && created.name == "Work")
+      try await run(h.executor, .environmentCreate, params), as: EnvironmentCreate.Result.self
+    ).environment
+    #expect(created.id == environmentId && created.manual && created.name == "Work")
     #expect(created.folders.map(\.path) == [SessionService.canonicalDirectory(app)])
-    #expect(try h.db.thread(id: thread.id)?.projectId == projectId)
-    #expect(try h.db.project(id: automatic) == nil)
+    #expect(try h.db.thread(id: thread.id)?.environmentId == environmentId)
+    #expect(try h.db.environment(id: automatic) == nil)
 
-    // The phone trying again after a lost reply (a new command id) gets the same project.
+    // The phone trying again after a lost reply (a new command id) gets the same environment.
     let again = try result(
-      try await run(h.executor, .projectCreate, params), as: ProjectCreate.Result.self
-    ).project
-    #expect(again.id == projectId)
-    #expect(try h.db.listProjects().filter(\.manual).count == 1)
+      try await run(h.executor, .environmentCreate, params), as: EnvironmentCreate.Result.self
+    ).environment
+    #expect(again.id == environmentId)
+    #expect(try h.db.listEnvironments().filter(\.manual).count == 1)
 
     // An id the phone did not mint as a lowercase UUID is refused before anything.
     let badId = try await run(
-      h.executor, .projectCreate,
-      ProjectCreate.Params(name: "Odd", folders: [try h.folder("odd")], projectId: "Not-A-UUID"))
-    #expect(failure(badId)?.details?["reason"] == "invalid_project_id")
+      h.executor, .environmentCreate,
+      EnvironmentCreate.Params(name: "Odd", folders: [try h.folder("odd")], environmentId: "Not-A-UUID"))
+    #expect(failure(badId)?.details?["reason"] == "invalid_environment_id")
   }
 
-  @Test func projectUpdateAndDeleteRunOnTheMac() async throws {
+  @Test func environmentUpdateAndDeleteRunOnTheMac() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let app = try h.folder("app")
     let docs = try h.folder("docs")
     let thread = try await h.newThread(connection, in: app)
-    let project = try await h.project("Work", [app])
+    let environment = try await h.environment("Work", [app])
 
     let updated = try result(
       try await run(
-        h.executor, .projectUpdate,
-        ProjectUpdate.Params(projectId: project.id, name: "Docs", addFolders: [docs], removeFolders: [app])),
-      as: ProjectUpdate.Result.self
-    ).project
+        h.executor, .environmentUpdate,
+        EnvironmentUpdate.Params(
+          environmentId: environment.id, name: "Docs", addFolders: [docs], removeFolders: [app])),
+      as: EnvironmentUpdate.Result.self
+    ).environment
     #expect(updated.name == "Docs")
     #expect(updated.folders.map(\.path) == [SessionService.canonicalDirectory(docs)])
-    // The thread's folder left the project, so it is back in an automatic one.
-    let moved = try #require(try h.db.thread(id: thread.id)?.projectId)
-    #expect(moved != project.id)
-    #expect(try h.db.project(id: moved)?.manual == false)
+    // The thread's folder left the environment, so it is back in an automatic one.
+    let moved = try #require(try h.db.thread(id: thread.id)?.environmentId)
+    #expect(moved != environment.id)
+    #expect(try h.db.environment(id: moved)?.manual == false)
 
-    // A folder that is not on this Mac is refused, and the project is left as it was.
+    // A folder that is not on this Mac is refused, and the environment is left as it was.
     let refused = try await run(
-      h.executor, .projectUpdate,
-      ProjectUpdate.Params(projectId: project.id, addFolders: [h.base + "/not-here"]))
+      h.executor, .environmentUpdate,
+      EnvironmentUpdate.Params(environmentId: environment.id, addFolders: [h.base + "/not-here"]))
     #expect(failure(refused)?.code == ErrorCode.protocolInvalid.rawValue)
-    #expect(try h.db.project(id: project.id)?.folders.count == 1)
+    #expect(try h.db.environment(id: environment.id)?.folders.count == 1)
 
     let deleted = try result(
-      try await run(h.executor, .projectDelete, ProjectDelete.Params(projectId: project.id)),
-      as: ProjectDelete.Result.self)
-    #expect(deleted.projectId == project.id)
-    #expect(try h.db.project(id: project.id) == nil)
-    let gone = try await run(h.executor, .projectDelete, ProjectDelete.Params(projectId: project.id))
+      try await run(h.executor, .environmentDelete, EnvironmentDelete.Params(environmentId: environment.id)),
+      as: EnvironmentDelete.Result.self)
+    #expect(deleted.environmentId == environment.id)
+    #expect(try h.db.environment(id: environment.id) == nil)
+    let gone = try await run(
+      h.executor, .environmentDelete, EnvironmentDelete.Params(environmentId: environment.id))
     #expect(failure(gone)?.code == ErrorCode.notFound.rawValue)
-    // An automatic project is the Mac's own: it cannot be deleted from anywhere.
-    let automatic = try await run(h.executor, .projectDelete, ProjectDelete.Params(projectId: moved))
+    // An automatic environment is the Mac's own: it cannot be deleted from anywhere.
+    let automatic = try await run(
+      h.executor, .environmentDelete, EnvironmentDelete.Params(environmentId: moved))
     #expect(failure(automatic)?.code == ErrorCode.protocolInvalid.rawValue)
   }
 
@@ -1043,11 +1064,11 @@ private func failure(
     #expect(try await lookup(id, on: "t-other").state == .none)
     // The same id as another method, while the send runs, is refused rather than handed its reply.
     let app = try h.folder("app")
-    let project = try await h.project("App", [app])
+    let environment = try await h.environment("App", [app])
     let reused = try await run(
       h.executor, id: id, .threadStart,
       ThreadStart.Params(
-        threadId: UUID().uuidString.lowercased(), projectId: project.id, connectionId: connection.id,
+        threadId: UUID().uuidString.lowercased(), environmentId: environment.id, connectionId: connection.id,
         folder: app, text: "hi"))
     let refusal = try #require(failure(reused))
     #expect(refusal.code == ErrorCode.protocolInvalid.rawValue)

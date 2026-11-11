@@ -5,7 +5,7 @@ import WorkspaceProtocol
 /// row in dependency order. Written before every migration and on demand; the same archive carries
 /// data across a major PostgreSQL version (D-041: the pinned build ships no pg_dump).
 ///
-/// Version 3 adds the project tables and the clocks (migration 0004); older archives are still read. A
+/// Version 3 adds the environment tables and the clocks (migration 0004); older archives are still read. A
 /// `jsonb` cell travels as its JSON text in a string (archive version 2), so every JSON value, a
 /// scalar `"ready"` or `true` as much as an object, comes back exactly. Version 1 archives carried
 /// the parsed value instead, which made a scalar string indistinguishable from JSON text on the way

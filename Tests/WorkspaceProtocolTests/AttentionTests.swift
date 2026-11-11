@@ -193,7 +193,7 @@ struct AttentionFixture {
       id: "t", connectionId: "c", nativeThreadId: "n", createdAt: "2026-10-31T09:00:00Z",
       updatedAt: "2026-12-01T00:00:00Z")
     #expect(thread.activity == nil && thread.ownerDeviceName == nil)
-    #expect(thread.projectId == nil && thread.readTurnId == nil)
+    #expect(thread.environmentId == nil && thread.readTurnId == nil)
     #expect(Attention.band(of: thread) == .quiet)
   }
 
@@ -225,7 +225,7 @@ struct AttentionFixture {
       #"{"id":"t","connectionId":"c","nativeThreadId":"n","nativeScope":"","title":"","pinned":false,"archived":false,"continuity":"available","createdAt":"x","updatedAt":"x"}"#
         .utf8)
     let thread = try JSONCoding.decoder.decode(ConversationThread.self, from: json)
-    #expect(thread.projectId == nil && thread.readTurnId == nil && thread.activity == nil)
+    #expect(thread.environmentId == nil && thread.readTurnId == nil && thread.activity == nil)
     let encoded = String(decoding: try JSONCoding.encoder.encode(thread), as: UTF8.self)
     #expect(!encoded.contains("activity") && !encoded.contains("ownerDeviceName"))
   }

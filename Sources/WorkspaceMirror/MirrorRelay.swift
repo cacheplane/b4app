@@ -48,7 +48,8 @@ public actor MirrorRelay {
   public static func wait(for method: RelayMethod) -> Duration {
     switch method {
     case .turnInterrupt, .requestRespond: .seconds(90)
-    case .turnSend, .threadStart, .turnLookup, .projectCreate, .projectUpdate, .projectDelete: .seconds(30)
+    case .turnSend, .threadStart, .turnLookup, .environmentCreate, .environmentUpdate, .environmentDelete:
+      .seconds(30)
     }
   }
 

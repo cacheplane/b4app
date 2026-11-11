@@ -16,9 +16,9 @@ import WorkspaceSync
 ///   awaits it and returns its reply; after it ends, `SessionService`'s durable lookup by operationId
 ///   (the command id) answers the resend with the same turn.
 /// - `thread.start`s naming the same thread id run one after another, so only one creates the thread.
-/// - `project.create`, `project.update`, and `project.delete` run through `ProjectService`, exactly as
+/// - `environment.create`, `environment.update`, and `environment.delete` run through `EnvironmentService`, exactly as
 ///   the Mac's own sheets do, so a folder the phone names is validated here, on the Mac it is on. A
-///   create is idempotent by the phone's `projectId`; an edit is not resent by the phone.
+///   create is idempotent by the phone's `environmentId`; an edit is not resent by the phone.
 public actor RelayExecutor {
   /// The message of every error whose own text must stay on this Mac.
   static let couldNotRun = "Your Mac could not run this."
@@ -32,7 +32,7 @@ public actor RelayExecutor {
   }
 
   private let sessions: SessionService
-  private let projects: ProjectService
+  private let environments: EnvironmentService
   private let db: WorkspaceDatabase
   private let diagnostics: DiagnosticsService
   private let gate: ScopeGate?
@@ -45,11 +45,11 @@ public actor RelayExecutor {
   /// `gate` is the account scope's: a command runs only while the scope is open, and the scope's
   /// close waits (bounded) for the ones running.
   public init(
-    sessions: SessionService, projects: ProjectService, database: WorkspaceDatabase,
+    sessions: SessionService, environments: EnvironmentService, database: WorkspaceDatabase,
     diagnostics: DiagnosticsService, gate: ScopeGate? = nil
   ) {
     self.sessions = sessions
-    self.projects = projects
+    self.environments = environments
     self.db = database
     self.diagnostics = diagnostics
     self.gate = gate
@@ -89,7 +89,8 @@ public actor RelayExecutor {
       inFlight[id] = nil
       if let threadId, threadStarts[threadId] == task { threadStarts[threadId] = nil }
       return reply
-    case .turnInterrupt, .requestRespond, .turnLookup, .projectCreate, .projectUpdate, .projectDelete:
+    case .turnInterrupt, .requestRespond, .turnLookup, .environmentCreate, .environmentUpdate,
+      .environmentDelete:
       return await reply(id: id, method: method, params: params)
     }
   }
@@ -179,18 +180,21 @@ public actor RelayExecutor {
       return try JSONValue(
         encoding: try await sessions.requestRespond(try decode(RequestRespond.self, params)))
     case .threadStart:
-      // The phone always names a project; only the Mac's own app may start without one.
+      // The phone always names an environment; only the Mac's own app may start without one.
       return try JSONValue(
         encoding: try await sessions.threadStart(
-          try decode(ThreadStart.self, params), operationId: id, requireProject: true))
+          try decode(ThreadStart.self, params), operationId: id, requireEnvironment: true))
     case .turnLookup:
       return try JSONValue(encoding: try turnLookup(try decode(TurnLookup.self, params)))
-    case .projectCreate:
-      return try JSONValue(encoding: try await projects.create(try decode(ProjectCreate.self, params)))
-    case .projectUpdate:
-      return try JSONValue(encoding: try await projects.update(try decode(ProjectUpdate.self, params)))
-    case .projectDelete:
-      return try JSONValue(encoding: try await projects.delete(try decode(ProjectDelete.self, params)))
+    case .environmentCreate:
+      return try JSONValue(
+        encoding: try await environments.create(try decode(EnvironmentCreate.self, params)))
+    case .environmentUpdate:
+      return try JSONValue(
+        encoding: try await environments.update(try decode(EnvironmentUpdate.self, params)))
+    case .environmentDelete:
+      return try JSONValue(
+        encoding: try await environments.delete(try decode(EnvironmentDelete.self, params)))
     }
   }
 

@@ -114,11 +114,11 @@ private func writeVersion1File(_ path: String) throws {
     #expect(try store.link() == phoneLink)
     let thread = try #require(try store.thread(id: "thread-1"))
     #expect(thread.title == "Kept")
-    #expect(thread.projectId == nil && thread.readTurnId == nil)
+    #expect(thread.environmentId == nil && thread.readTurnId == nil)
     #expect(thread.activity?.latestTurnId == "turn-1")
     #expect(try store.draft(threadId: "thread-1")?.text == "unsent")
     #expect(try store.connections().map(\.id) == ["conn-1"])
-    #expect(try store.projects().isEmpty)
+    #expect(try store.environments().isEmpty)
     #expect(store.outboxCount == 0)
 
     let raw = try RawSQLite(path: path)
@@ -138,7 +138,7 @@ private func writeVersion1File(_ path: String) throws {
   }
 
   /// Review Focus 5: a newer file holding unsent edits is reported, never replaced.
-  /// M8b's file gains `connections.projectId` in place, keeping its rows, cursor, link, and outbox.
+  /// M8b's file gains `connections.environmentId` in place, keeping its rows, cursor, link, and outbox.
   @Test func migratesV2ToV3() throws {
     let path = temporaryPath()
     defer { MirrorStoreTests.remove(path) }
@@ -162,7 +162,7 @@ private func writeVersion1File(_ path: String) throws {
     #expect(try store.link() == phoneLink)
     #expect(store.outboxCount == 1)
     let connection = try #require(try store.connections().first)
-    #expect(connection.id == "conn-1" && connection.projectId == nil)
+    #expect(connection.id == "conn-1" && connection.environmentId == nil)
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
     #expect(try raw.integer("PRAGMA user_version") == MirrorSchema.version)
@@ -213,10 +213,10 @@ private func writeVersion1File(_ path: String) throws {
     #expect(try store.thread(id: "thread-1")?.permission == "plan")
   }
 
-  /// A version 6 file holding a project with a folder and a thread in it, a connection serving it, an
-  /// unsent rename of the project, an unsent draft insert, and the per-column clocks and undecodable
+  /// A version 6 file holding an environment with a folder and a thread in it, a connection serving it, an
+  /// unsent rename of the environment, an unsent draft insert, and the per-column clocks and undecodable
   /// markers that name the old tables, becomes a version 7 file under the new names, keeping all of it.
-  @Test func mirrorUpgradeRenamesProjectsAndKeepsAnUnsentRename() throws {
+  @Test func mirrorUpgradeRenamesEnvironmentsAndKeepsAnUnsentRename() throws {
     let path = temporaryPath()
     defer { MirrorStoreTests.remove(path) }
     try writeVersion1File(path)
@@ -332,17 +332,17 @@ private func writeVersion1File(_ path: String) throws {
     #expect(try raw.integer(Self.nativeItemIndex) == 1)
   }
 
-  /// The Mac's `projectId` (a local B4 connection's project) arrives in the change log and is kept.
-  @Test func connectionProjectIdIsStored() throws {
+  /// The Mac's `environmentId` (a local B4 connection's environment) arrives in the change log and is kept.
+  @Test func connectionEnvironmentIdIsStored() throws {
     let store = try MirrorStore.inMemory()
     _ = try store.apply(Array(try fixtureAsStored().prefix(1)))
-    #expect(try store.connections().first?.projectId == "project-1")
+    #expect(try store.connections().first?.environmentId == "project-1")
     _ = try store.apply([
       change("connections", "conn-1", "update", column: "environmentId", value: "project-2")
     ])
-    #expect(try store.connections().first?.projectId == "project-2")
+    #expect(try store.connections().first?.environmentId == "project-2")
     _ = try store.apply([change("connections", "conn-1", "update", column: "environmentId", value: .null)])
-    #expect(try store.connections().first?.projectId == nil)
+    #expect(try store.connections().first?.environmentId == nil)
   }
 
   @Test func failedMigrationWithPendingEditsKeepsTheFile() throws {

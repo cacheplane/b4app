@@ -297,7 +297,7 @@ private let link = MirrorLink(
     _ = try store.apply(try fixtureAsStored())
     try store.setCursor(13)
     _ = try store.updateThread(id: "thread-1", title: "From phone", pinned: nil, archived: nil)
-    // `threads.projectId` is the Mac's: an ios device's update of it is refused and covered.
+    // `threads.environmentId` is the Mac's: an ios device's update of it is refused and covered.
     try store.queueRaw(
       deviceSeq: 2, table: "threads", rowId: "thread-1", column: "environmentId", value: "\"p9\"")
     let hub = FakeHubAPI(stored: try fixtureAsStored())

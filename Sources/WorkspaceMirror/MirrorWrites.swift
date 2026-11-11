@@ -7,7 +7,7 @@ import WorkspaceSync
 /// one `clock.next()` for the whole write, advances `columnClocks` for the columns it wrote, and appends
 /// one outbox row per changed column (a new draft is one insert row) for `MirrorSync` to push. A write
 /// that changes nothing stamps nothing and queues nothing. No write touches `threads.updatedAt` or
-/// `projects.updatedAt`, which are the Mac's.
+/// `environments.updatedAt`, which are the Mac's.
 ///
 /// Outbox `deviceSeq` values are strictly increasing and never reused, even after rows are removed or
 /// a snapshot replaces the mirror: the high-water mark is kept in `syncState.lastDeviceSeq`.
@@ -164,19 +164,19 @@ extension MirrorStore {
     return draft
   }
 
-  /// Rename a project; the empty string restores its folder-name `displayName`. Nil when the project
+  /// Rename an environment; the empty string restores its folder-name `displayName`. Nil when the environment
   /// does not exist.
-  public func renameProject(id: String, name: String) throws -> Project? {
+  public func renameEnvironment(id: String, name: String) throws -> WorkEnvironment? {
     try locked {
       try transaction {
-        guard let current = try projectLocked(id: id) else { return nil }
+        guard let current = try environmentLocked(id: id) else { return nil }
         guard current.name != name else { return current }
         let changes = [
           LocalChange(table: "environments", rowId: id, op: "update", column: "name", value: .string(name))
         ]
         try writeColumns(changes, key: "id")
         try record(changes)
-        return try projectLocked(id: id)
+        return try environmentLocked(id: id)
       }
     }
   }

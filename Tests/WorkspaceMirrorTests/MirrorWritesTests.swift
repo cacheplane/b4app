@@ -340,35 +340,35 @@ private func pulled(
   }
 
   /// Review Focus 4, mirror side.
-  @Test func renameProjectToEmptyShowsFolderName() throws {
+  @Test func renameEnvironmentToEmptyShowsFolderName() throws {
     let store = try linkedStore()
     _ = try store.apply([
-      change("environments", "p1", "insert", value: projectJSON("p1")),
+      change("environments", "p1", "insert", value: environmentJSON("p1")),
       change(
         "environmentFolders", "f2", "insert",
         value: folderJSON(
-          "f2", projectId: "p1", path: "/Users/blove/repos/later", created: "2026-10-31T06:00:00Z")),
+          "f2", environmentId: "p1", path: "/Users/blove/repos/later", created: "2026-10-31T06:00:00Z")),
       change(
         "environmentFolders", "f1", "insert",
-        value: folderJSON("f1", projectId: "p1", path: "/Users/blove/repos/b4app")),
+        value: folderJSON("f1", environmentId: "p1", path: "/Users/blove/repos/b4app")),
     ])
-    let original = try #require(try store.projects().first)
+    let original = try #require(try store.environments().first)
     #expect(original.displayName == "b4app")
     #expect(original.folders.map(\.id) == ["f1", "f2"])
 
-    let named = try #require(try store.renameProject(id: "p1", name: "Agent Workspace"))
+    let named = try #require(try store.renameEnvironment(id: "p1", name: "Agent Workspace"))
     #expect(named.displayName == "Agent Workspace")
     #expect(named.updatedAt == original.updatedAt)
-    let cleared = try #require(try store.renameProject(id: "p1", name: ""))
+    let cleared = try #require(try store.renameEnvironment(id: "p1", name: ""))
     #expect(cleared.name == "")
     #expect(cleared.displayName == "b4app")
-    #expect(try store.projects().first?.displayName == "b4app")
+    #expect(try store.environments().first?.displayName == "b4app")
     // Both renames are one queued row (nothing was sent in between), holding the last name.
     let queued = try store.outbox(limit: 10)
     #expect(queued.map(\.table) == ["environments"])
     #expect(queued.map(\.column) == ["name"])
     #expect(queued.map(\.value) == [""])
-    #expect(try store.renameProject(id: "missing", name: "x") == nil)
+    #expect(try store.renameEnvironment(id: "missing", name: "x") == nil)
   }
 
   @Test func aPulledDraftTouchesItsThread() throws {
@@ -388,7 +388,7 @@ private func pulled(
     let fixture = try fixtureAsStored()
     let turn = try store.apply([fixture[2], fixture[3]])
     #expect(turn.touchedThreadIds == ["thread-1"])
-    #expect(turn.touchedConnectionIds.isEmpty && turn.touchedProjectIds.isEmpty)
+    #expect(turn.touchedConnectionIds.isEmpty && turn.touchedEnvironmentIds.isEmpty)
     let request = try store.apply([fixture[8]])
     #expect(request.touchedThreadIds == ["thread-1"])
     let resolved = try store.apply([
@@ -398,12 +398,13 @@ private func pulled(
     let gone = try store.apply([change("turns", "turn-1", "delete")])
     #expect(gone.touchedThreadIds == ["thread-1"])
 
-    let project = try store.apply([
-      change("environments", "p1", "insert", value: projectJSON("p1")),
-      change("environmentFolders", "f1", "insert", value: folderJSON("f1", projectId: "p1", path: "/tmp/p")),
+    let environment = try store.apply([
+      change("environments", "p1", "insert", value: environmentJSON("p1")),
+      change(
+        "environmentFolders", "f1", "insert", value: folderJSON("f1", environmentId: "p1", path: "/tmp/p")),
     ])
-    #expect(project.touchedProjectIds == ["p1"])
-    #expect(try store.apply([change("environmentFolders", "f1", "delete")]).touchedProjectIds == ["p1"])
+    #expect(environment.touchedEnvironmentIds == ["p1"])
+    #expect(try store.apply([change("environmentFolders", "f1", "delete")]).touchedEnvironmentIds == ["p1"])
   }
 
   /// D-184: a Mac whose hub device changed re-announces its rows as inserts with the oldest clock.
@@ -440,10 +441,10 @@ private func pulled(
     ])
     #expect(try store.thread(id: "thread-1")?.ownerDeviceName == "Brian's MacBook Pro")
     #expect(try store.ownerDeviceId(table: "connections", rowId: "conn-1") == macId)
-    // The phone reads the owner of a connection and of a project, to send a new thread to the right Mac.
+    // The phone reads the owner of a connection and of an environment, to send a new thread to the right Mac.
     #expect(try store.connections().first { $0.id == "conn-1" }?.ownerDeviceId == macId)
-    _ = try store.apply([change("environments", "p1", "insert", value: projectJSON("p1"))])
-    #expect(try store.projects().first { $0.id == "p1" }?.ownerDeviceId == macId)
+    _ = try store.apply([change("environments", "p1", "insert", value: environmentJSON("p1"))])
+    #expect(try store.environments().first { $0.id == "p1" }?.ownerDeviceId == macId)
     // A change cannot set the owner directly.
     let refused = try store.apply([
       change("threads", "thread-1", "update", column: "ownerDeviceId", value: "other")
@@ -461,7 +462,7 @@ private func pulled(
     #expect(store.outboxCount == 1)
     let fixture = try fixtureAsStored()
 
-    // The hub's view: the connection and thread (with an older title), a project, no turns.
+    // The hub's view: the connection and thread (with an older title), an environment, no turns.
     var thread = try #require(fixture[1].value?.objectValue)
     thread["title"] = "Hub title"
     thread["pinned"] = true
@@ -474,7 +475,7 @@ private func pulled(
           value: fixture[0].value, hlc: hubClock.rawValue),
         StoredChange(
           hubSeq: 0, deviceId: macId, deviceSeq: 0, wall: 0, table: "environments", rowId: "p1", op: "insert",
-          value: projectJSON("p1", name: "Hub project"), hlc: hubClock.rawValue),
+          value: environmentJSON("p1", name: "Hub environment"), hlc: hubClock.rawValue),
         StoredChange(
           hubSeq: 0, deviceId: macId, deviceSeq: 0, wall: 0, table: "threads", rowId: "thread-1",
           op: "insert",
@@ -495,7 +496,7 @@ private func pulled(
     #expect(restored.title == "Unsent phone title")
     #expect(restored.pinned == true)
     #expect(try store.turns(threadId: "thread-1").isEmpty)
-    #expect(try store.projects().map(\.name) == ["Hub project"])
+    #expect(try store.environments().map(\.name) == ["Hub environment"])
     #expect(try store.columnClock(table: "threads", rowId: "thread-1", column: "pinned") == hubClock.rawValue)
     #expect(
       try store.columnClock(table: "threads", rowId: "thread-1", column: "title")

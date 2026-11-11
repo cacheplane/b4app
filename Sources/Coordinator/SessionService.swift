@@ -22,9 +22,9 @@ public actor SessionService {
     public var adapterFactory: AdapterFactory
     /// Managed B4 servers (M4); a managed route connection is usable only while its server is ready.
     public var servers: LocalServerService?
-    /// Decides which project a new thread joins. The router must be given the same instance: its
-    /// project edits and this service's thread inserts serialise on that one actor.
-    public var projects: ProjectService
+    /// Decides which environment a new thread joins. The router must be given the same instance: its
+    /// environment edits and this service's thread inserts serialise on that one actor.
+    public var environments: EnvironmentService
     /// The waits between tries of a check that found its runtime unreachable (settings connections).
     public var checkRetryDelays: [Duration]
     /// How often deleted threads' runtime copies are retried (deleting threads); zero runs no sweep loop.
@@ -33,7 +33,8 @@ public actor SessionService {
     public init(
       database: WorkspaceDatabase, eventLog: EventLog, diagnostics: DiagnosticsService,
       environment: [String: String], clientVersion: String, secretStore: any SecretStore,
-      projects: ProjectService, adapterFactory: AdapterFactory? = nil, servers: LocalServerService? = nil,
+      environments: EnvironmentService, adapterFactory: AdapterFactory? = nil,
+      servers: LocalServerService? = nil,
       checkRetryDelays: [Duration] = [.seconds(1), .seconds(3)], threadDeleteSweep: Duration = .zero
     ) {
       self.database = database
@@ -44,7 +45,7 @@ public actor SessionService {
       self.secretStore = secretStore
       self.adapterFactory = adapterFactory ?? SessionService.defaultAdapterFactory
       self.servers = servers
-      self.projects = projects
+      self.environments = environments
       self.checkRetryDelays = checkRetryDelays
       self.threadDeleteSweep = threadDeleteSweep
     }
@@ -90,7 +91,7 @@ public actor SessionService {
       pumps["managed-servers"] = Task { [weak self] in
         for await event in servers.events() {
           guard let self else { return }
-          await self.project(event)
+          await self.environment(event)
         }
       }
     }
@@ -135,7 +136,7 @@ public actor SessionService {
     pumps[connectionId] = Task { [weak self] in
       for await event in adapter.events() {
         guard let self else { return }
-        await self.project(event)
+        await self.environment(event)
       }
     }
     return adapter
@@ -265,8 +266,8 @@ public actor SessionService {
       id: UUID().uuidString.lowercased(), kind: .b4,
       label: params.label ?? "\(route.displayName) @ \(server.name)", target: "http://127.0.0.1:\(port)",
       routeKey: route.key, b4Mode: .managedLocal, localServerId: server.id, status: .connecting)
-    // The connection serves its server folder's project, from its first change-log entry on.
-    managed.projectId = try await context.projects.projectId(forConnection: managed)
+    // The connection serves its server folder's environment, from its first change-log entry on.
+    managed.environmentId = try await context.environments.environmentId(forConnection: managed)
     let connection = try db.insertConnection(managed)
     return try await connectionInspect(ConnectionInspect.Params(connectionId: connection.id))
   }
@@ -371,9 +372,9 @@ public actor SessionService {
           .protocolInvalid, "Working directory \(requested) does not exist.",
           details: ["workingDirectory": .string(requested)])
       }
-      // The project that owns its folder may already list other folders for the runtime to reach.
+      // The environment that owns its folder may already list other folders for the runtime to reach.
       let canonical = Self.canonicalDirectory(directory)
-      let others = try db.project(folderPath: canonical)?.folders.map(\.path).filter { $0 != canonical }
+      let others = try db.environment(folderPath: canonical)?.folders.map(\.path).filter { $0 != canonical }
       input = NewSessionInput(
         workingDirectory: directory, model: model, permission: permission,
         additionalDirectories: Self.existingDirectories(others ?? []))
@@ -390,9 +391,9 @@ public actor SessionService {
       nativeThreadId: ref.nativeSessionId,
       nativeScope: ref.nativeScope, title: (title?.isEmpty == false ? title : nil) ?? defaultTitle,
       context: threadContext, model: model, permission: permission)
-    // The thread joins the project of its folder (created on first use) in one step with its insert, so
-    // no project edit can land in between; `context` stays as given.
-    let thread = try await context.projects.insertThread(newThread, connection: connection)
+    // The thread joins the environment of its folder (created on first use) in one step with its insert, so
+    // no environment edit can land in between; `context` stays as given.
+    let thread = try await context.environments.insertThread(newThread, connection: connection)
     await publishVisibleEvent(
       AdapterEvent(
         kind: .sessionCreated, connectionId: connection.id, threadId: thread.id,
@@ -600,21 +601,21 @@ public actor SessionService {
   // MARK: - thread.start
 
   /// Create the thread (or reuse the one this id already names) and send its first turn, so a retry
-  /// lands on the same thread and the same turn. The relay calls it with `requireProject` (the phone
-  /// always names a project), the Mac's own app without.
+  /// lands on the same thread and the same turn. The relay calls it with `requireEnvironment` (the phone
+  /// always names an environment), the Mac's own app without.
   ///
   /// Refuses with `protocol_invalid` anything the Mac would not start itself: a text it cannot store
-  /// (`invalid_text`), a thread id that is not a lowercase UUID (`invalid_thread_id`), no project when
+  /// (`invalid_text`), a thread id that is not a lowercase UUID (`invalid_thread_id`), no environment when
   /// one is required or an unknown one, an unknown connection, a Codex or Claude start with no folder or
-  /// (given a project) one outside the project's folders, a B4 start with a folder, a remote B4
-  /// connection when a project is required, a local B4 connection that does not serve the given
-  /// project, a connection not ready for a conversation, a model or permission the runtime does not
+  /// (given an environment) one outside the environment's folders, a B4 start with a folder, a remote B4
+  /// connection when an environment is required, a local B4 connection that does not serve the given
+  /// environment, a connection not ready for a conversation, a model or permission the runtime does not
   /// take (`validateRuntimeChoice`), or a thread id already used with another connection or folder.
   /// What `turnSend` refuses before inserting a turn (`assertCanStart`) is refused before the thread
-  /// is made. A Codex or Claude thread with no project given joins its folder's project (made when none
+  /// is made. A Codex or Claude thread with no environment given joins its folder's environment (made when none
   /// owns it) as it is inserted (D-048).
   public func threadStart(
-    _ params: ThreadStart.Params, operationId: String, requireProject: Bool
+    _ params: ThreadStart.Params, operationId: String, requireEnvironment: Bool
   ) async throws -> ThreadStart.Result {
     try Self.requireStorableText(params.text)
     // The caller mints the id; the thread row keeps it, so only the form this Mac mints is taken.
@@ -633,39 +634,41 @@ public actor SessionService {
     guard !params.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw WorkspaceError(.protocolInvalid, "Turn text must not be empty.")
     }
-    let project: Project?
-    if let projectId = params.projectId {
-      guard let found = try db.project(id: projectId) else {
-        throw Self.refusal("This project is not on this Mac.", reason: "project_missing")
+    let environment: WorkEnvironment?
+    if let environmentId = params.environmentId {
+      guard let found = try db.environment(id: environmentId) else {
+        throw Self.refusal("This environment is not on this Mac.", reason: "environment_missing")
       }
-      project = found
-    } else if requireProject {
-      throw Self.refusal("A new thread from another device needs a project.", reason: "project_missing")
+      environment = found
+    } else if requireEnvironment {
+      throw Self.refusal(
+        "A new thread from another device needs an environment.", reason: "environment_missing")
     } else {
-      project = nil
+      environment = nil
     }
     guard let connection = try db.connection(id: params.connectionId) else {
       throw Self.refusal("This connection is not on this Mac.", reason: "connection_missing")
     }
-    let projectFolders = Set(project?.folders.map(\.path) ?? [])
+    let environmentFolders = Set(environment?.folders.map(\.path) ?? [])
     let requested = params.folder.flatMap { $0.isEmpty ? nil : $0 }
     let folder: String?
     switch connection.kind {
     case .codex, .claude:
       guard let requested else {
         throw Self.refusal(
-          "A \(connection.kind.rawValue) thread needs one of the project's folders.", reason: "folder_missing"
+          "A \(connection.kind.rawValue) thread needs one of the environment's folders.",
+          reason: "folder_missing"
         )
       }
       let canonical = Self.canonicalDirectory(requested)
-      guard project == nil || projectFolders.contains(canonical) else {
+      guard environment == nil || environmentFolders.contains(canonical) else {
         throw Self.refusal(
-          "That folder is not one of this project's folders.", reason: "folder_outside_project")
+          "That folder is not one of this environment's folders.", reason: "folder_outside_environment")
       }
       folder = canonical
     case .b4:
       let remote = connection.b4Mode == .remote
-      if remote, requireProject {
+      if remote, requireEnvironment {
         throw Self.refusal(
           "A remote B4 connection cannot start a thread from another device.", reason: "remote_b4")
       }
@@ -673,16 +676,16 @@ public actor SessionService {
         throw Self.refusal(
           "A B4 thread is bound to its route and takes no folder.", reason: "folder_not_allowed")
       }
-      // A local connection's synced project and the coordinator's own resolution (its managed
-      // server's folder) must both name the given project. A remote thread has no project (D-048).
-      if let project, !remote {
-        guard connection.localServerId != nil, connection.projectId == project.id,
-          let serverFolder = try await context.projects.serverFolder(of: connection),
-          projectFolders.contains(serverFolder)
+      // A local connection's synced environment and the coordinator's own resolution (its managed
+      // server's folder) must both name the given environment. A remote thread has no environment (D-048).
+      if let environment, !remote {
+        guard connection.localServerId != nil, connection.environmentId == environment.id,
+          let serverFolder = try await context.environments.serverFolder(of: connection),
+          environmentFolders.contains(serverFolder)
         else {
           throw Self.refusal(
-            "Connection \(connection.label) does not serve this project.",
-            reason: "connection_outside_project")
+            "Connection \(connection.label) does not serve this environment.",
+            reason: "connection_outside_environment")
         }
       }
       folder = nil
@@ -882,18 +885,19 @@ public actor SessionService {
     if let outage = await managedServerOutage(connection) { throw outage }
   }
 
-  /// The project's other folders, for the runtime to reach beside the thread's own: the canonical paths
-  /// of its project's folders, oldest first, without the thread's working directory or any folder no
-  /// longer on disk. Empty for a thread with no project or no directory (B4).
+  /// The environment's other folders, for the runtime to reach beside the thread's own: the canonical paths
+  /// of its environment's folders, oldest first, without the thread's working directory or any folder no
+  /// longer on disk. Empty for a thread with no environment or no directory (B4).
   func additionalDirectories(for thread: ConversationThread) throws -> [String] {
-    guard let projectId = thread.projectId, let context = thread.context, !context.isEmpty,
-      try db.connection(id: thread.connectionId)?.kind != .b4, let project = try db.project(id: projectId)
+    guard let environmentId = thread.environmentId, let context = thread.context, !context.isEmpty,
+      try db.connection(id: thread.connectionId)?.kind != .b4,
+      let environment = try db.environment(id: environmentId)
     else { return [] }
     let own = Self.canonicalDirectory(context)
-    return Self.existingDirectories(project.folders.map(\.path).filter { $0 != own })
+    return Self.existingDirectories(environment.folders.map(\.path).filter { $0 != own })
   }
 
-  /// The paths that are directories on disk now: a project folder deleted or unmounted since it was
+  /// The paths that are directories on disk now: an environment folder deleted or unmounted since it was
   /// added is not handed to a runtime.
   static func existingDirectories(_ paths: [String]) -> [String] {
     paths.filter { path in
@@ -1163,7 +1167,7 @@ public actor SessionService {
     }
   }
 
-  private func project(_ incoming: AdapterEvent) async {
+  private func environment(_ incoming: AdapterEvent) async {
     // D-035: the coordinator is the redaction boundary. Adapters forward what runtimes say (stderr
     // tails, error messages); nothing of that leaves here unmasked.
     let raw: AdapterEvent = {
@@ -1188,7 +1192,7 @@ public actor SessionService {
       event.turnId = turn?.id
       switch raw.kind {
       case .connectionChanged:
-        try await projectConnectionChanged(raw)
+        try await environmentConnectionChanged(raw)
       case .turnAcknowledged:
         if let turn, let thread {
           let updated = try db.updateTurn(id: turn.id) {
@@ -1209,7 +1213,7 @@ public actor SessionService {
         {
           raw.payload = Self.withStreamedText(raw.payload, text)
         }
-        if let item = try projectItem(raw, thread: thread, turn: turn) {
+        if let item = try environmentItem(raw, thread: thread, turn: turn) {
           event.payload = merge(raw.payload, ["displayItem": try JSONValue(encoding: item)])
         } else {
           return
@@ -1342,7 +1346,7 @@ public actor SessionService {
 
   /// Store a started or completed item. Live user messages echoed by the runtime attach their native
   /// id to the item the composer already stored instead of duplicating it. Returns nil to drop.
-  private func projectItem(
+  private func environmentItem(
     _ raw: AdapterEvent, thread: ConversationThread, turn: Turn?
   ) throws -> DisplayItem? {
     guard let item = raw.payload["item"], let type = raw.payload["type"]?.stringValue else { return nil }
@@ -1366,7 +1370,7 @@ public actor SessionService {
       provenance: .live)
   }
 
-  private func projectConnectionChanged(_ raw: AdapterEvent) async throws {
+  private func environmentConnectionChanged(_ raw: AdapterEvent) async throws {
     let disconnected = raw.payload["transport"]?.stringValue == TransportStatus.disconnected.rawValue
     // A per-thread runtime (Claude: one process per session) reports exits with the native thread id.
     // Only that thread is affected; the connection itself stays as it was.

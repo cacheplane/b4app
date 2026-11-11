@@ -11,16 +11,16 @@ import WorkspaceSync
 /// `WorkspaceClient`; a reconnect makes a new transport over the same store. `publish(_:)` turns an
 /// applied batch into events in this transport's epoch, numbered one after another.
 ///
-/// The phone's own edits (M8b: `thread.update`, `thread.markRead`, `draft.save`, `project.rename`) go to
+/// The phone's own edits (M8b: `thread.update`, `thread.markRead`, `draft.save`, `environment.rename`) go to
 /// the store, which applies them at once and queues them for the hub; each announces itself with an
 /// event like the Mac's coordinator does, then `onLocalWrite` is called so the host can wake the
 /// uploader. Everything else the phone cannot do answers `unsupported_capability` "… is done on the Mac."
 ///
 /// With a `MirrorRelay` (M8c), `turn.send`, `turn.interrupt`, `request.respond`, `thread.start`,
-/// `turn.lookup`, and the project edits (`project.create`, `project.update`, `project.delete`) go to the
+/// `turn.lookup`, and the environment edits (`environment.create`, `environment.update`, `environment.delete`) go to the
 /// Mac through the hub: `turn.send` and `thread.start` use the envelope's `operationId` as the relay id
-/// (the Mac's idempotency key), the others a fresh one. A project the Mac returns is given the owner
-/// the mirror knows for it, so an edit never makes a known project look ownerless; a new project has
+/// (the Mac's idempotency key), the others a fresh one. An environment the Mac returns is given the owner
+/// the mirror knows for it, so an edit never makes a known environment look ownerless; a new environment has
 /// none until its row syncs, which is also when the hub can route to it. The transport
 /// watches the thread read last, and only that one. Relayed events are re-emitted in this transport's
 /// epoch and change only the on-screen model, never the mirror:
@@ -122,26 +122,26 @@ public final class MirrorTransport: WorkspaceTransport {
   /// The phone's commands the relay carries to the Mac.
   static let relayed: [WorkspaceProtocol.Method: RelayMethod] = [
     .turnSend: .turnSend, .turnInterrupt: .turnInterrupt, .requestRespond: .requestRespond,
-    .threadStart: .threadStart, .turnLookup: .turnLookup, .projectCreate: .projectCreate,
-    .projectUpdate: .projectUpdate, .projectDelete: .projectDelete,
+    .threadStart: .threadStart, .turnLookup: .turnLookup, .environmentCreate: .environmentCreate,
+    .environmentUpdate: .environmentUpdate, .environmentDelete: .environmentDelete,
   ]
 
   /// The methods the mirror answers; every other one is refused.
   static let served: Set<WorkspaceProtocol.Method> = [
     .systemPing, .eventsSnapshot, .eventsReplay, .connectionList, .threadList, .threadRead, .draftRead,
-    .serverList, .workspaceActiveWork, .diagnosticsRead, .projectList, .projectRename, .threadUpdate,
+    .serverList, .workspaceActiveWork, .diagnosticsRead, .environmentList, .environmentRename, .threadUpdate,
     .threadMarkRead, .draftSave, .usageRead, .threadDelete,
   ]
 
   /// Why the phone does not do `method`: "… is done on the Mac."
   static func refusal(for method: WorkspaceProtocol.Method) -> String {
     switch method {
-    case .projectCreate, .projectUpdate, .projectDelete:
-      return "Until this iPhone is paired with your Mac's hub, editing projects is done on the Mac."
+    case .environmentCreate, .environmentUpdate, .environmentDelete:
+      return "Until this iPhone is paired with your Mac's hub, editing environments is done on the Mac."
     case .turnSend, .turnInterrupt, .requestRespond, .threadStart, .turnLookup:
       return "Until this iPhone is paired with your Mac's hub, chatting is done on the Mac."
     case .threadCreate:
-      return "Starting a thread outside a project is done on the Mac."
+      return "Starting a thread outside an environment is done on the Mac."
     case .turnAbandon, .threadReconcile, .workspaceReconcile, .workspaceStopLocalWork:
       return "Recovering and stopping local work is done on the Mac."
     case .connectionAdd, .connectionInspect, .connectionLogin, .credentialAdd:
@@ -257,7 +257,7 @@ public final class MirrorTransport: WorkspaceTransport {
 
   /// Emits `connection.changed` per touched connection (its status and sign-in, and the whole row, so
   /// a new owner, label, or model list reaches the model as it does from the coordinator),
-  /// `project.changed` per touched project, `thread.updated` per touched thread (with the row), and `message.completed` carrying the
+  /// `environment.changed` per touched environment, `thread.updated` per touched thread (with the row), and `message.completed` carrying the
   /// `displayItem` for each touched item of the thread last read. Does nothing once closed.
   public func publish(_ batch: AppliedBatch) {
     var events: [AdapterEvent] = []
@@ -269,7 +269,7 @@ public final class MirrorTransport: WorkspaceTransport {
         transport: .disconnected)
       events.append((try? changed.carrying(connection)) ?? changed)
     }
-    for id in batch.touchedProjectIds.sorted() { events.append(.projectChanged(projectId: id)) }
+    for id in batch.touchedEnvironmentIds.sorted() { events.append(.environmentChanged(environmentId: id)) }
     // The whole usage rides on the event, so an open Connections page updates without a read.
     if !batch.touchedUsageIds.isEmpty, let usage = try? store.connectionUsage() {
       for entry in usage where batch.touchedUsageIds.contains(entry.connectionId) {
@@ -446,17 +446,17 @@ public final class MirrorTransport: WorkspaceTransport {
       return try JSONValue(encoding: ServerList.Result(servers: []))
     case .workspaceActiveWork:
       return try JSONValue(encoding: WorkspaceActiveWork.Result(turns: [], servers: []))
-    case .projectList:
-      return try JSONValue(encoding: ProjectList.Result(projects: try store.projects()))
-    case .projectRename:
+    case .environmentList:
+      return try JSONValue(encoding: EnvironmentList.Result(environments: try store.environments()))
+    case .environmentRename:
       try refuseWhileUnavailable()
-      let params = try command.params(for: ProjectRename.self)
-      guard let project = try store.renameProject(id: params.projectId, name: params.name) else {
-        throw WorkspaceError(.notFound, "Project \(params.projectId) does not exist.")
+      let params = try command.params(for: EnvironmentRename.self)
+      guard let environment = try store.renameEnvironment(id: params.environmentId, name: params.name) else {
+        throw WorkspaceError(.notFound, "Environment \(params.environmentId) does not exist.")
       }
       state.wrote = true
-      emit([.projectChanged(projectId: project.id)], state: &state)
-      return try JSONValue(encoding: ProjectRename.Result(project: project))
+      emit([.environmentChanged(environmentId: environment.id)], state: &state)
+      return try JSONValue(encoding: EnvironmentRename.Result(environment: environment))
     case .threadDelete:
       try refuseWhileUnavailable()
       let params = try command.params(for: ThreadDelete.self)
@@ -593,11 +593,11 @@ public final class MirrorTransport: WorkspaceTransport {
       }
     }
     var result = await relay.command(id: id, method: method, params: command.params)
-    if method == .projectCreate || method == .projectUpdate, case .success(let value) = result,
-      var edited = try? value.decode(ProjectCreate.Result.self)
+    if method == .environmentCreate || method == .environmentUpdate, case .success(let value) = result,
+      var edited = try? value.decode(EnvironmentCreate.Result.self)
     {
-      edited.project.ownerDeviceId =
-        (try? store.projects())?.first { $0.id == edited.project.id }?
+      edited.environment.ownerDeviceId =
+        (try? store.environments())?.first { $0.id == edited.environment.id }?
         .ownerDeviceId
       if let patched = try? JSONValue(encoding: edited) { result = .success(patched) }
     }

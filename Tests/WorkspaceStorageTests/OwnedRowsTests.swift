@@ -15,7 +15,7 @@ import WorkspaceProtocol
 
   private func seed(_ db: WorkspaceDatabase) throws {
     _ = try db.insertConnection(Connection(id: "c1", kind: .codex, label: "Codex", target: "/bin/codex"))
-    _ = try db.insertProject(Project(id: "p1", name: "b4app"), folders: ["/tmp/owned-rows-p1"])
+    _ = try db.insertEnvironment(WorkEnvironment(id: "p1", name: "b4app"), folders: ["/tmp/owned-rows-p1"])
     _ = try db.insertThread(
       ConversationThread(
         id: "t1", connectionId: "c1", nativeThreadId: "thr_1", nativeScope: "acct", title: "First",

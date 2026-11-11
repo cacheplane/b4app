@@ -265,7 +265,7 @@ struct SnapshotShell: View {
     }
   }
 
-  /// The settings sheets: adding a B4 connection, editing one with a saved key, and attaching a project.
+  /// The settings sheets: adding a B4 connection, editing one with a saved key, and attaching an environment.
   @Test func settingsSheets() async throws {
     let model = try await ListFixture.model()
     let saved = Connection(
@@ -309,27 +309,27 @@ struct SnapshotShell: View {
     }
   }
 
-  @Test func macSidebarGroupsByProject() async throws {
+  @Test func macSidebarGroupsByEnvironment() async throws {
     let model = try await ListFixture.model()
-    try await render("macSidebarGroupsByProject", size: CGSize(width: 290, height: 800)) {
+    try await render("macSidebarGroupsByEnvironment", size: CGSize(width: 290, height: 800)) {
       SidebarView(model: model)
     }
   }
 
-  @Test func macSidebarCollapsedProject() async throws {
+  @Test func macSidebarCollapsedEnvironment() async throws {
     let model = try await ListFixture.model()
-    try await render("macSidebarCollapsedProject", size: CGSize(width: 290, height: 640)) {
+    try await render("macSidebarCollapsedEnvironment", size: CGSize(width: 290, height: 640)) {
       ScrollView {
-        ProjectSectionsView(model: model, collapsed: .constant([ListFixture.b4app]))
+        EnvironmentSectionsView(model: model, collapsed: .constant([ListFixture.b4app]))
           .padding(.horizontal, 10)
       }
     }
   }
 
-  @Test func macSidebarShowsAFailedProjectAction() async throws {
+  @Test func macSidebarShowsAFailedEnvironmentAction() async throws {
     let model = try await ListFixture.model()
-    model.lastError = "That folder already belongs to the project \u{201C}Marketing site\u{201D}."
-    try await render("macSidebarShowsAFailedProjectAction", size: CGSize(width: 290, height: 420)) {
+    model.lastError = "That folder already belongs to the environment \u{201C}Marketing site\u{201D}."
+    try await render("macSidebarShowsAFailedEnvironmentAction", size: CGSize(width: 290, height: 420)) {
       ScrollView { ThreadListView(model: model).padding(.horizontal, 10) }
     }
   }
@@ -349,10 +349,10 @@ struct SnapshotShell: View {
     }
   }
 
-  @Test func iosListFilteredToProject() async throws {
+  @Test func iosListFilteredToEnvironment() async throws {
     let model = try await ListFixture.model()
-    model.projectFilter = .project(ListFixture.marketing)
-    try await render("iosListFilteredToProject", size: CGSize(width: 390, height: 420)) {
+    model.environmentFilter = .environment(ListFixture.marketing)
+    try await render("iosListFilteredToEnvironment", size: CGSize(width: 390, height: 420)) {
       VStack(spacing: 0) {
         HStack {
           MoreMenu(model: model)
@@ -397,7 +397,7 @@ struct SnapshotShell: View {
     try await render("ios-list-dock-notice", size: CGSize(width: 390, height: 844)) { list }
   }
 
-  /// The dock while no project's Mac can take a thread: the field is off and the reason shows above
+  /// The dock while no environment's Mac can take a thread: the field is off and the reason shows above
   /// it, since a compact width cannot reach the new-thread screen that would say why.
   @Test func iosDockBlocked() async throws {
     let model = WorkspaceModel(transportProvider: { throw WorkspaceError(.endpointUnavailable, "offline") })
@@ -430,7 +430,7 @@ struct SnapshotShell: View {
   }
 }
 
-/// A fixed set of threads in every band, across two projects, "Other", and one empty manual project.
+/// A fixed set of threads in every band, across two environments, "Other", and one empty manual environment.
 @MainActor enum ListFixture {
   static let b4app = "p-b4app"
   static let marketing = "p-marketing"
@@ -442,13 +442,13 @@ struct SnapshotShell: View {
   }
 
   static func thread(
-    _ id: String, _ title: String, project: String?, pinned: Bool = false, connection: String = "c1",
+    _ id: String, _ title: String, environment: String?, pinned: Bool = false, connection: String = "c1",
     turn: String? = nil, status: TurnStatus? = nil, outcome: TurnOutcome? = nil, read: String? = nil,
     pending: Int = 0, at: Int
   ) -> ConversationThread {
     ConversationThread(
       id: id, connectionId: connection, nativeThreadId: "n-\(id)", title: title, pinned: pinned,
-      createdAt: stamp(0), updatedAt: stamp(0), projectId: project, readTurnId: read,
+      createdAt: stamp(0), updatedAt: stamp(0), environmentId: environment, readTurnId: read,
       activity: ThreadActivity(
         latestTurnId: turn, latestTurnStatus: status, latestTurnOutcome: outcome, pendingRequests: pending,
         lastActivityAt: stamp(at)))
@@ -456,35 +456,38 @@ struct SnapshotShell: View {
 
   static let threads: [ConversationThread] = [
     thread(
-      "pinned", "Release checklist", project: b4app, pinned: true, turn: "t1", status: .running, at: 58),
+      "pinned", "Release checklist", environment: b4app, pinned: true, turn: "t1", status: .running, at: 58),
     thread(
-      "asks", "Approve the migration run", project: b4app, turn: "t2", status: .waitingForUser, pending: 1,
+      "asks", "Approve the migration run", environment: b4app, turn: "t2", status: .waitingForUser,
+      pending: 1,
       at: 55),
     thread(
-      "unread", "Hub retention question", project: b4app, turn: "t3", status: .terminal, outcome: .completed,
+      "unread", "Hub retention question", environment: b4app, turn: "t3", status: .terminal,
+      outcome: .completed,
       at: 57),
     thread(
-      "failed", "Flaky test triage", project: b4app, turn: "t4", status: .terminal, outcome: .failed, at: 40),
+      "failed", "Flaky test triage", environment: b4app, turn: "t4", status: .terminal, outcome: .failed,
+      at: 40),
     thread(
-      "quiet", "Mirror outbox review", project: b4app, turn: "t5", status: .terminal, outcome: .completed,
+      "quiet", "Mirror outbox review", environment: b4app, turn: "t5", status: .terminal, outcome: .completed,
       read: "t5", at: 30),
     thread(
-      "busy", "Pricing page research", project: marketing, connection: "c2", turn: "t6", status: .running,
+      "busy", "Pricing page research", environment: marketing, connection: "c2", turn: "t6", status: .running,
       at: 50),
     thread(
-      "copy", "Landing copy pass", project: marketing, connection: "c2", turn: "t7", status: .terminal,
+      "copy", "Landing copy pass", environment: marketing, connection: "c2", turn: "t7", status: .terminal,
       outcome: .completed, read: "t7", at: 20),
     thread(
-      "loose", "Scratch: regex help", project: nil, turn: "t8", status: .terminal, outcome: .completed,
+      "loose", "Scratch: regex help", environment: nil, turn: "t8", status: .terminal, outcome: .completed,
       read: "t8", at: 10),
   ]
 
-  static let projects: [Project] = [
-    Project(
+  static let environments: [WorkEnvironment] = [
+    WorkEnvironment(
       id: b4app, name: "",
-      folders: [ProjectFolder(id: "f1", projectId: b4app, path: "/Users/brian/repos/b4app")]),
-    Project(id: marketing, name: "Marketing site", manual: true),
-    Project(id: docs, name: "Docs", manual: true),
+      folders: [EnvironmentFolder(id: "f1", environmentId: b4app, path: "/Users/brian/repos/b4app")]),
+    WorkEnvironment(id: marketing, name: "Marketing site", manual: true),
+    WorkEnvironment(id: docs, name: "Docs", manual: true),
   ]
 
   static func model(_ transport: ScriptedTransport = ScriptedTransport()) async throws -> WorkspaceModel {
@@ -492,15 +495,15 @@ struct SnapshotShell: View {
       connections: [
         Connection(id: "c1", kind: .codex, label: "Codex", target: "codex", status: .ready),
         Connection(id: "c2", kind: .claude, label: "Claude Code", target: "claude", status: .ready),
-      ], threads: threads, projects: projects)
+      ], threads: threads, environments: environments)
     let model = WorkspaceModel(transportProvider: { transport })
     let now = Date(timeIntervalSince1970: base + 60 * 60)
     model.now = { now }
     model.connect()
-    // Projects load with the snapshot, before the link turns ready.
+    // Environments load with the snapshot, before the link turns ready.
     let link = await model.settledLink()
     try #require(link == .ready, "the model did not connect: \(model.linkMessage ?? "no message")")
-    try #require(model.projects.count == 3)
+    try #require(model.environments.count == 3)
     return model
   }
 }

@@ -245,17 +245,17 @@ func waitUntil(
     await h.stop()
   }
 
-  @Test func openNewThreadWithAProjectPreselectsIt() async throws {
+  @Test func openNewThreadWithAEnvironmentPreselectsIt() async throws {
     let model = try await ListFixture.model()
-    // The newest project is the default; Marketing site is asked for.
-    #expect(model.newThreadDraft.projectId == ListFixture.b4app)
+    // The newest environment is the default; Marketing site is asked for.
+    #expect(model.newThreadDraft.environmentId == ListFixture.b4app)
     model.selectedThreadId = "asks"
-    await model.openNewThread(projectId: ListFixture.marketing)
+    await model.openNewThread(environmentId: ListFixture.marketing)
     #expect(model.selectedThreadId == nil)
-    #expect(model.newThreadDraft.projectId == ListFixture.marketing)
-    // Without a project the draft keeps its choice.
+    #expect(model.newThreadDraft.environmentId == ListFixture.marketing)
+    // Without an environment the draft keeps its choice.
     await model.openNewThread()
-    #expect(model.newThreadDraft.projectId == ListFixture.marketing)
+    #expect(model.newThreadDraft.environmentId == ListFixture.marketing)
   }
 
   /// A snapshot without the open thread (deleted while the link was down) leaves nothing selected.

@@ -135,7 +135,7 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     #expect(try clocks(db, table: "drafts", rowId: "t2")["threadId"] != nil)
   }
 
-  @Test func projectsAndFoldersAreSyncedAndLogged() throws {
+  @Test func environmentsAndFoldersAreSyncedAndLogged() throws {
     let db = try WorkspaceDatabase.temporary()
     _ = try db.write { c in
       try c.execute(
@@ -153,7 +153,7 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     let changes = try db.changes(after: 0)
     #expect(changes.map(\.table) == ["environments", "environmentFolders"])
     #expect(changes.allSatisfy { $0.op == "insert" })
-    // The path is unique, and deleting a project removes its folders and unassigns its threads.
+    // The path is unique, and deleting an environment removes its folders and unassigns its threads.
     #expect(throws: (any Error).self) {
       try db.write {
         _ = try $0.execute(
@@ -163,9 +163,9 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     }
     try seedThread(db)
     try db.write { _ = try $0.execute("UPDATE \"threads\" SET \"environmentId\" = 'p1'") }
-    #expect(try db.thread(id: "t1")?.projectId == "p1")
+    #expect(try db.thread(id: "t1")?.environmentId == "p1")
     try db.write { _ = try $0.execute("DELETE FROM \"environments\" WHERE \"id\" = 'p1'") }
-    #expect(try db.thread(id: "t1")?.projectId == nil)
+    #expect(try db.thread(id: "t1")?.environmentId == nil)
     #expect(try db.rowCount(table: "environmentFolders") == 0)
   }
 
@@ -181,11 +181,11 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
       latestTurnId: "u1", pendingRequests: 1, lastActivityAt: "2026-10-31T12:00:00Z")
     let inserted = try db.insertThread(
       ConversationThread(
-        id: "t1", connectionId: "c1", nativeThreadId: "n1", projectId: "p1", readTurnId: "u1",
+        id: "t1", connectionId: "c1", nativeThreadId: "n1", environmentId: "p1", readTurnId: "u1",
         activity: activity, ownerDeviceName: "Brian's Mac"))
     #expect(inserted.activity == activity)
     let stored = try #require(try db.thread(id: "t1"))
-    #expect(stored.projectId == "p1")
+    #expect(stored.environmentId == "p1")
     #expect(stored.readTurnId == "u1")
     // `activity` is computed on read from the thread's turns and requests (here neither): the value the
     // struct carried was never stored.
@@ -395,7 +395,7 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     #expect(definition?.contains("(\"threadId\", state)") == true)
   }
 
-  @Test func exportAndRestoreCarryProjectsAndClocks() throws {
+  @Test func exportAndRestoreCarryEnvironmentsAndClocks() throws {
     let source = try WorkspaceDatabase.temporary()
     try seedThread(source)
     _ = try source.write { c in
@@ -412,7 +412,7 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     try source.export(to: path)
     let target = try WorkspaceDatabase.temporary()
     try target.restore(from: path)
-    #expect(try target.thread(id: "t1")?.projectId == "p1")
+    #expect(try target.thread(id: "t1")?.environmentId == "p1")
     #expect(try target.rowCount(table: "environments") == 1)
     #expect(try target.rowCount(table: "environmentFolders") == 1)
     #expect(

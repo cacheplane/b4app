@@ -82,11 +82,11 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
   /// carry the scope they were created under; a different scope means another account or server
   /// and old threads are never retargeted (spec 5.1).
   public var nativeScope: String?
-  /// The project a local B4 connection serves: the project of its managed server's folder. Nil for
+  /// The environment a local B4 connection serves: the environment of its managed server's folder. Nil for
   /// every other connection, and absent in payloads older than M8c.
-  public var projectId: String?
+  public var environmentId: String?
   /// The device id of the Mac that owns the connection, from the phone's mirror; nil on the Mac. The
-  /// phone offers a project only the connections of the Mac that owns that project (M8c).
+  /// phone offers an environment only the connections of the Mac that owns that environment (M8c).
   public var ownerDeviceId: String?
   public var capabilities: Capabilities
   /// The models the runtime offers for a new thread, read when the connection is inspected; nil for
@@ -100,7 +100,7 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
   public init(
     id: String, kind: ConnectionKind, label: String, enabled: Bool = true, profileRevision: Int = 0,
     target: String, routeKey: String? = nil, b4Mode: B4Mode? = nil, localServerId: String? = nil,
-    authReference: String? = nil, nativeScope: String? = nil, projectId: String? = nil,
+    authReference: String? = nil, nativeScope: String? = nil, environmentId: String? = nil,
     ownerDeviceId: String? = nil, capabilities: Capabilities = .unverified, models: [RuntimeModel]? = nil,
     status: ConnectionStatus = .unconfigured, authStatus: AuthStatus = .unknown,
     createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now()
@@ -116,7 +116,7 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
     self.localServerId = localServerId
     self.authReference = authReference
     self.nativeScope = nativeScope
-    self.projectId = projectId
+    self.environmentId = environmentId
     self.ownerDeviceId = ownerDeviceId
     self.capabilities = capabilities
     self.models = models
@@ -135,7 +135,7 @@ public enum LocalServerHealth: String, Codable, Sendable, CaseIterable {
   case stopped, starting, ready, unhealthy, unknown
 }
 
-/// One route of an inspected project, from `b4 routes --json`. The protocol route key is `id#kind`.
+/// One route of an inspected environment, from `b4 routes --json`. The protocol route key is `id#kind`.
 public struct LocalServerRoute: Codable, Sendable, Equatable, Hashable {
   public var id: String
   public var kind: String
@@ -154,7 +154,7 @@ public struct LocalServerRoute: Codable, Sendable, Equatable, Hashable {
 /// together with the argv are the verified child identity; a pid alone never establishes ownership.
 public struct LocalServer: Codable, Sendable, Equatable, Identifiable {
   public var id: String
-  /// CLI handle; unique. Defaults to the project directory name.
+  /// CLI handle; unique. Defaults to the environment directory name.
   public var name: String
   public var projectPath: String
   public var nodePath: String
@@ -231,8 +231,8 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
   public var continuity: ThreadContinuity
   public var createdAt: String
   public var updatedAt: String
-  /// The project this thread belongs to; nil until it is assigned one.
-  public var projectId: String?
+  /// The environment this thread belongs to; nil until it is assigned one.
+  public var environmentId: String?
   /// The latest turn the owner has read; a terminal latest turn with another id is unread.
   public var readTurnId: String?
   /// Computed on read from turns and runtime requests; never a database column.
@@ -257,7 +257,7 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
     context: String? = nil, pinned: Bool = false, archived: Bool = false,
     continuity: ThreadContinuity = .available,
     createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now(),
-    projectId: String? = nil, readTurnId: String? = nil, activity: ThreadActivity? = nil,
+    environmentId: String? = nil, readTurnId: String? = nil, activity: ThreadActivity? = nil,
     ownerDeviceName: String? = nil, ownerDeviceId: String? = nil, userDeletedAt: String? = nil,
     model: String? = nil, permission: String? = nil
   ) {
@@ -273,7 +273,7 @@ public struct ConversationThread: Codable, Sendable, Equatable, Identifiable {
     self.continuity = continuity
     self.createdAt = createdAt
     self.updatedAt = updatedAt
-    self.projectId = projectId
+    self.environmentId = environmentId
     self.readTurnId = readTurnId
     self.activity = activity
     self.ownerDeviceName = ownerDeviceName

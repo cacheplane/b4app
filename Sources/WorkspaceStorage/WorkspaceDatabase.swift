@@ -7,15 +7,15 @@ public struct ThreadFilter: Sendable, Equatable {
   public var connectionId: String?
   public var includeArchived: Bool
   public var query: String?
-  public var projectId: String?
+  public var environmentId: String?
   public init(
     connectionId: String? = nil, includeArchived: Bool = false, query: String? = nil,
-    projectId: String? = nil
+    environmentId: String? = nil
   ) {
     self.connectionId = connectionId
     self.includeArchived = includeArchived
     self.query = query
-    self.projectId = projectId
+    self.environmentId = environmentId
   }
 }
 
@@ -262,7 +262,7 @@ public final class WorkspaceDatabase: Sendable {
     id: String, _ mutate: @Sendable (inout Connection) -> Void
   ) throws -> Connection? {
     try write { c in
-      // Locked, so a concurrent `setConnectionProject` is never overwritten by this row's old copy.
+      // Locked, so a concurrent `setConnectionEnvironment` is never overwritten by this row's old copy.
       guard
         var connection = try one(
           c, Connection.self, "SELECT * FROM \"connections\" WHERE \"id\" = $1 FOR UPDATE", [id])
@@ -374,8 +374,8 @@ public final class WorkspaceDatabase: Sendable {
         params.append(connectionId)
         clauses.append("t.\"connectionId\" = $\(params.count)")
       }
-      if let projectId = filter.projectId {
-        params.append(projectId)
+      if let environmentId = filter.environmentId {
+        params.append(environmentId)
         clauses.append("t.\"environmentId\" = $\(params.count)")
       }
       if !filter.includeArchived { clauses.append("t.\"archived\" = false") }
