@@ -30,14 +30,14 @@ import WorkspaceProtocol
     model.environmentFilter = .environment(ListFixture.marketing)
     #expect(model.filterTitle == "Marketing site")
     model.environmentFilter = .other
-    #expect(model.filterTitle == "Other")
+    #expect(model.filterTitle == "No folder")
     model.environmentFilter = .archived
     #expect(model.filterTitle == "Archived")
   }
 
   @Test func macSectionsKeepAnEmptyManualEnvironmentSoItCanBeRenamedOrDeleted() async throws {
     let model = try await ListFixture.model()
-    #expect(model.sidebarSections.map(\.title) == ["b4app", "Marketing site", "Docs", "Other"])
+    #expect(model.sidebarSections.map(\.title) == ["b4app", "Marketing site", "Docs", "No folder"])
     #expect(model.sidebarSections.first { $0.id == ListFixture.docs }?.threads.isEmpty == true)
     // A connection filter narrows the list; it does not pad it with empty environments.
     model.connectionFilter = "c2"

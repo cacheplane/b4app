@@ -26,7 +26,7 @@ extension AttentionBand {
 }
 
 extension WorkspaceModel {
-  /// The display name of the environment a thread belongs to; nil for "Other".
+  /// The display name of the environment a thread belongs to; nil for "No folder".
   func environmentName(for thread: ConversationThread) -> String? {
     guard let id = thread.environmentId else { return nil }
     return environments.first { $0.id == id }?.displayName
@@ -56,7 +56,7 @@ extension WorkspaceModel {
     }
   }
 
-  /// Whether any live thread has no known environment, so the menu offers "Other".
+  /// Whether any live thread has no known environment, so the menu offers "No folder".
   var hasOtherThreads: Bool {
     threads.contains { thread in
       !thread.archived && (thread.environmentId.map { id in !environments.contains { $0.id == id } } ?? true)
@@ -68,14 +68,14 @@ extension WorkspaceModel {
     switch environmentFilter {
     case .all: return "All environments"
     case .environment(let id): return environments.first { $0.id == id }?.displayName ?? "Environment"
-    case .other: return "Other"
+    case .other: return EnvironmentSection.noFolderTitle
     case .archived: return "Archived"
     }
   }
 
   /// The Mac sidebar's sections: `environmentSections`, plus manual environments that hold no listed thread
   /// (a new environment, or one whose threads are pinned or archived) so they can still be renamed,
-  /// given a folder, or deleted. A connection filter shows matches only. "Other" stays last.
+  /// given a folder, or deleted. A connection filter shows matches only. "No folder" stays last.
   var sidebarSections: [EnvironmentSection] {
     let built = environmentSections
     guard connectionFilter == nil, environmentFilter == .all else { return built }
@@ -288,7 +288,7 @@ struct ThreadRow: View {
 // MARK: - The list
 
 /// The thread list for the sidebar: on the Mac a "Pinned" group, then one collapsible section per
-/// environment, then "Other"; on the iPhone one flat list in attention order, narrowed by the filter menu.
+/// environment, then "No folder"; on the iPhone one flat list in attention order, narrowed by the filter menu.
 struct ThreadListView: View {
   @Bindable var model: WorkspaceModel
   #if os(macOS)
@@ -382,7 +382,7 @@ struct FlatThreadList: View {
 // MARK: - The Mac sections
 
 #if os(macOS)
-  /// The Mac sidebar's list: Pinned, then a collapsible section per environment, "Other" last, the
+  /// The Mac sidebar's list: Pinned, then a collapsible section per environment, "No folder" last, the
   /// archive while More's switch is on, and "New Environment…" at the end. Plain stacks, not `List`: a List drew nothing
   /// in the macOS 26 split-view sidebar (see `SidebarView`).
   struct EnvironmentSectionsView: View {

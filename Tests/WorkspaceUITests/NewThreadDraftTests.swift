@@ -236,6 +236,7 @@ private enum Phone {
     let transport = ScriptedTransport()
     let model = try await Phone.model(transport, clock: TestClock())
     let draft = model.newThreadDraft
+    draft.selectEnvironment("p1")
     #expect(draft.environmentId == "p1")
     #expect(draft.connectionId == "codex-1")
     #expect(draft.folder == "/work/atlas")
@@ -271,7 +272,7 @@ private enum Phone {
   @Test func startRefusedKeepsTheSheetAndText() async throws {
     let transport = ScriptedTransport()
     let model = try await Phone.model(transport, clock: TestClock())
-    let draft = NewThreadDraft(model: model, environmentId: nil)
+    let draft = NewThreadDraft(model: model, environmentId: "p1")
     draft.text = "Keep this"
     transport.script(
       .threadStart,
@@ -304,7 +305,7 @@ private enum Phone {
     let clock = TestClock()
     let transport = ScriptedTransport()
     let model = try await Phone.model(transport, clock: clock)
-    let draft = NewThreadDraft(model: model, environmentId: nil)
+    let draft = NewThreadDraft(model: model, environmentId: "p1")
     draft.text = "Maybe"
     transport.script(
       .threadStart,
@@ -336,6 +337,7 @@ private enum Phone {
     let transport = ScriptedTransport()
     let model = try await Phone.model(transport, clock: TestClock())
     let draft = model.newThreadDraft
+    draft.selectEnvironment("p1")
     draft.text = "Retry me"
     transport.script(
       .threadStart,
@@ -377,14 +379,14 @@ private enum Phone {
     let clock = TestClock()
     let transport = ScriptedTransport()
     let model = try await Phone.model(transport, clock: clock)
-    let first = NewThreadDraft(model: model, environmentId: nil)
+    let first = NewThreadDraft(model: model, environmentId: "p1")
     first.text = "Once only"
     transport.script(.threadStart, [Self.unconfirmed])
     await first.send()
     #expect(first.status == RelayCopy.notConfirmed)
 
     // Cancel, reopen: a fresh draft cannot start the same thing again while the first may land.
-    let second = NewThreadDraft(model: model, environmentId: nil)
+    let second = NewThreadDraft(model: model, environmentId: "p1")
     second.text = "Once only"
     #expect(second.blockedReason == "Waiting to hear whether your last new thread started.")
     #expect(!second.canSend)
@@ -420,7 +422,7 @@ private enum Phone {
     let clock = TestClock()
     let transport = ScriptedTransport()
     let model = try await Phone.model(transport, clock: clock)
-    let draft = NewThreadDraft(model: model, environmentId: nil)
+    let draft = NewThreadDraft(model: model, environmentId: "p1")
     draft.text = "Landed"
     transport.script(.threadStart, [Self.unconfirmed])
     await draft.send()
@@ -455,7 +457,7 @@ private enum Phone {
     try await waitUntil("reconnecting") { model.hostPresence["mac-1"]?.online == false }
     #expect(model.startNotice(for: Phone.p1)?.kind == .reconnecting)
     #expect(model.startBlockedReason(for: Phone.p1) == nil)
-    let draft = NewThreadDraft(model: model, environmentId: nil)
+    let draft = NewThreadDraft(model: model, environmentId: "p1")
     draft.text = "Soon"
     #expect(draft.canSend)
 
@@ -483,7 +485,7 @@ private enum Phone {
   @Test func sendSaysWhyWhenNothingWasSent() async throws {
     let transport = ScriptedTransport()
     let model = try await Phone.model(transport, clock: TestClock())
-    let draft = NewThreadDraft(model: model, environmentId: nil)
+    let draft = NewThreadDraft(model: model, environmentId: "p1")
     draft.text = "Hello"
     // Another start is out, from elsewhere: the tap says so instead of doing nothing.
     transport.script(.threadStart, [.hold])
@@ -514,8 +516,8 @@ private enum Phone {
     let reason = try #require(model.startBlockedReason(for: Phone.p1))
     #expect(reason.hasPrefix("\(PhoneFixture.macName) is offline · last seen "))
     let draft = NewThreadDraft(model: model, environmentId: nil)
-    // The sheet opens on an environment whose Mac can take it; the owner of p1 is chosen by hand.
-    #expect(draft.environmentId == "p3")
+    // With nothing remembered the sheet opens on "No folder"; p1 is chosen by hand.
+    #expect(draft.isNoFolder)
     draft.selectEnvironment("p1")
     draft.text = "Hello?"
     #expect(draft.blockedReason == reason)
@@ -615,10 +617,10 @@ private enum Phone {
   @Test func defaultsComeFromTheLastChoiceInThatEnvironment() async throws {
     let transport = ScriptedTransport()
     let model = try await Phone.macModel(transport)
-    // No history: the newest environment, its first folder, the first ready connection, its defaults.
+    // No history: "No folder", the first ready connection, its defaults.
     let first = NewThreadDraft(model: model, environmentId: nil)
-    #expect(first.environmentId == "p1")
-    #expect(first.folder == "/work/atlas")
+    #expect(first.isNoFolder)
+    #expect(first.folder == nil)
     #expect(first.connectionId == "codex-1")
     #expect(first.model == nil)
     #expect(first.permission == nil)
@@ -733,14 +735,14 @@ private enum Phone {
       ],
       lastRuntime: RuntimeChoice(connectionId: "codex-gone", model: nil, permission: nil), text: ""
     ).save(to: preferences)
-    // p2 has the newest thread, so it is the newest environment.
+    // p2 has the newest thread, yet the newest environment is no fallback: the gone one gives "No folder".
     var recent = PhoneFixture.thread("recent", owner: nil, at: -10)
     recent.environmentId = "p2"
     let model = try await Phone.macModel(ScriptedTransport(), preferences: preferences, threads: [recent])
     #expect(model.startEnvironments.first?.id == "p2")
     let draft = NewThreadDraft(model: model, environmentId: nil)
-    #expect(draft.environmentId == "p2")
-    #expect(draft.folder == "/work/borealis")
+    #expect(draft.isNoFolder)
+    #expect(draft.folder == nil)
     #expect(draft.connectionId == "codex-1")
     #expect(draft.model == nil)
     #expect(draft.permission == nil)
@@ -836,8 +838,7 @@ private enum Phone {
     try #require(await model.settledLink() == .ready)
     try await waitUntil("environments") { model.environments.count == 3 }
     draft.refreshChoices()
-    #expect(draft.environmentId == "p1")
-    #expect(draft.folder == "/work/atlas")
+    #expect(draft.isNoFolder)
     #expect(draft.connectionId == "codex-1")
     // Choices that are still offered are kept.
     draft.selectFolder("/work/borealis", in: "p2")
@@ -884,16 +885,16 @@ private enum Phone {
     }
     #expect(draft.finished)
 
-    // Back to a runtime that needs an environment: the environment comes back.
+    // Back to Codex: the default place, which with nothing remembered is "No folder".
     draft.selectRuntime(connectionId: "codex-1", model: nil)
-    #expect(draft.environmentId == "p1")
-    #expect(draft.folder == "/work/atlas")
+    #expect(draft.isNoFolder)
+    #expect(draft.folder == nil)
     await model.disconnect()
 
     // The phone has no route to a remote B4.
     let phone = try await Phone.model(ScriptedTransport(), clock: TestClock())
     #expect(phone.remoteB4Connections.isEmpty)
-    #expect(phone.startConnectionsWithoutEnvironment.isEmpty)
+    #expect(!phone.startConnectionsWithoutEnvironment.contains { $0.kind == .b4 })
     #expect(!NewThreadDraft(model: phone, environmentId: nil).connections.contains { $0.id == "b4-remote" })
     await phone.disconnect()
   }
@@ -1138,6 +1139,260 @@ private enum Phone {
     #expect(phoneSections.local.map(\.id) == ["b4-p1"])
     #expect(phoneSections.remote.isEmpty)
     await phone.disconnect()
+  }
+
+  // MARK: No folder
+
+  /// A phone whose primary Mac is `mac-1` (it owns the newest thread).
+  private static func phoneOnMac1(_ transport: ScriptedTransport) async throws -> WorkspaceModel {
+    let recent = PhoneFixture.thread("recent", owner: "mac-1", at: -10)
+    let model = try await Phone.model(transport, clock: TestClock(), threads: [recent])
+    try #require(model.primaryHostId == "mac-1")
+    return model
+  }
+
+  @Test func aFreshInstallOpensOnNoFolder() async throws {
+    let model = try await Phone.macModel(ScriptedTransport())
+    #expect(!model.startEnvironments.isEmpty)
+    let draft = NewThreadDraft(model: model, environmentId: nil)
+    #expect(draft.isNoFolder)
+    #expect(draft.environmentId == nil)
+    #expect(draft.folder == nil)
+    #expect(draft.chosenFolder == nil)
+    #expect(draft.connectionId == "codex-1")
+    draft.text = "Anything"
+    #expect(draft.blockedReason == nil)
+    #expect(draft.canSend)
+    await model.disconnect()
+  }
+
+  @Test func theRememberedEnvironmentStillWins() async throws {
+    let preferences = InMemoryPreferences()
+    NewThreadMemory(environmentId: "p2", text: "").save(to: preferences)
+    // p1 holds the newest thread; the remembered environment still wins.
+    var recent = PhoneFixture.thread("recent", owner: nil, at: -10)
+    recent.environmentId = "p1"
+    let model = try await Phone.macModel(ScriptedTransport(), preferences: preferences, threads: [recent])
+    let draft = NewThreadDraft(model: model, environmentId: nil)
+    #expect(draft.environmentId == "p2")
+    #expect(draft.folder == "/work/borealis")
+    #expect(!draft.isNoFolder)
+    await model.disconnect()
+  }
+
+  @Test func aRememberedEnvironmentThatIsGoneFallsBackToNoFolder() async throws {
+    let preferences = InMemoryPreferences()
+    NewThreadMemory(environmentId: "gone", text: "").save(to: preferences)
+    let model = try await Phone.macModel(ScriptedTransport(), preferences: preferences)
+    let draft = NewThreadDraft(model: model, environmentId: nil)
+    #expect(draft.isNoFolder)
+    #expect(draft.environmentId == nil)
+    await model.disconnect()
+  }
+
+  @Test func selectNoFolderClearsEnvironmentAndChosenFolder() async throws {
+    let model = try await Phone.macModel(ScriptedTransport())
+    let draft = NewThreadDraft(model: model, environmentId: "p1")
+    draft.selectRuntime(connectionId: "b4-p1", model: nil)
+    draft.selectNoFolder()
+    #expect(draft.isNoFolder)
+    #expect(draft.environmentId == nil)
+    #expect(draft.folder == nil)
+    // This environment's B4 agent is not offered with no folder: the default runtime takes its place.
+    #expect(draft.connectionId == "codex-1")
+
+    draft.selectRuntime(connectionId: "claude-1", model: "opus")
+    draft.chooseFolder("/elsewhere/tool")
+    #expect(!draft.isNoFolder)
+    draft.selectNoFolder()
+    #expect(draft.isNoFolder)
+    #expect(draft.chosenFolder == nil)
+    // A runtime that is offered with no folder is kept.
+    #expect(draft.connectionId == "claude-1")
+    #expect(draft.model == "opus")
+    await model.disconnect()
+  }
+
+  @Test func aChosenNoFolderSurvivesARefresh() async throws {
+    let preferences = InMemoryPreferences()
+    NewThreadMemory(environmentId: "p2", text: "").save(to: preferences)
+    // A draft made before the snapshot takes the remembered environment once it loads.
+    let transport = ScriptedTransport()
+    transport.set(connections: Phone.macConnections, threads: [], environments: Phone.macEnvironments)
+    let model = WorkspaceModel(transportProvider: { transport })
+    model.preferences = preferences
+    let early = model.newThreadDraft
+    #expect(early.isNoFolder)
+    model.connect()
+    try #require(await model.settledLink() == .ready)
+    try await waitUntil("environments") { model.environments.count == 3 }
+    early.refreshChoices()
+    #expect(early.environmentId == "p2")
+
+    // "No folder" chosen by hand stays through a refresh.
+    early.selectNoFolder()
+    early.refreshChoices()
+    #expect(early.isNoFolder)
+    #expect(early.connectionId == "codex-1")
+    await model.disconnect()
+  }
+
+  @Test func noFolderOffersCodexAndClaudeButNoLocalB4() async throws {
+    let mac = try await Phone.macModel(ScriptedTransport())
+    let draft = NewThreadDraft(model: mac, environmentId: nil)
+    #expect(draft.isNoFolder)
+    #expect(draft.connections.map(\.id) == ["codex-1", "claude-1", "claude-2", "b4-remote"])
+    await mac.disconnect()
+
+    // The phone offers the primary Mac's ready Codex and Claude connections, and nothing else.
+    let phone = try await Self.phoneOnMac1(ScriptedTransport())
+    #expect(phone.startConnectionsWithoutEnvironment.map(\.id) == ["codex-1", "claude-1"])
+    let phoneDraft = NewThreadDraft(model: phone, environmentId: nil)
+    #expect(phoneDraft.isNoFolder)
+    #expect(phoneDraft.connections.map(\.id) == ["codex-1", "claude-1"])
+    await phone.disconnect()
+  }
+
+  @Test func sendingNoFolderFromTheMacSendsNoEnvironmentFolderOrDevice() async throws {
+    let transport = ScriptedTransport()
+    let model = try await Phone.macModel(transport)
+    let draft = NewThreadDraft(model: model, environmentId: nil)
+    draft.selectRuntime(connectionId: "claude-1", model: "opus")
+    draft.text = "Somewhere new"
+    let call = try await Phone.land(
+      draft, model, transport, environmentId: nil, folder: "/Users/me/B4App/threads/abc")
+    #expect(call.params["connectionId"] == "claude-1")
+    #expect(call.params["model"] == "opus")
+    for key in ["environmentId", "folder", "deviceId"] {
+      #expect(call.params[key] == nil || call.params[key] == .null)
+    }
+    #expect(draft.finished)
+    await model.disconnect()
+  }
+
+  @Test func sendingNoFolderFromThePhoneNamesThePrimaryMac() async throws {
+    let transport = ScriptedTransport()
+    let model = try await Self.phoneOnMac1(transport)
+    let draft = NewThreadDraft(model: model, environmentId: nil)
+    #expect(draft.isNoFolder)
+    draft.text = "From the phone"
+    #expect(draft.canSend)
+    let call = try await Phone.land(draft, model, transport, environmentId: nil, folder: nil)
+    #expect(call.params["deviceId"] == "mac-1")
+    #expect(call.params["connectionId"] == "codex-1")
+    for key in ["environmentId", "folder"] {
+      #expect(call.params[key] == nil || call.params[key] == .null)
+    }
+    #expect(draft.finished)
+    // With no environment, the thread belongs to the Mac the start named.
+    let started = try #require(draft.startedThreadId)
+    #expect(model.threads.first { $0.id == started }?.ownerDeviceId == "mac-1")
+    await model.disconnect()
+  }
+
+  @Test func noFolderOnThePhoneIsBlockedWhileItsMacIsOffline() async throws {
+    let transport = ScriptedTransport()
+    let model = try await Self.phoneOnMac1(transport)
+    transport.emit(PhoneFixture.presence("mac-1", online: false, lastSeen: -120))
+    try await waitUntil("offline") { model.hostPresence["mac-1"]?.online == false }
+    #expect(model.primaryHostId == "mac-1")
+    let reason = try #require(model.startBlockedReason(forDevice: "mac-1"))
+    #expect(reason.hasPrefix("\(PhoneFixture.macName) is offline · last seen "))
+    #expect(model.startBlockedReason(forDevice: "mac-2") == nil)
+    let draft = NewThreadDraft(model: model, environmentId: nil)
+    #expect(draft.isNoFolder)
+    draft.text = "Hello?"
+    #expect(draft.blockedReason == reason)
+    #expect(!draft.canSend)
+    #expect(
+      await model.startThread(environmentId: nil, connectionId: "codex-1", folder: nil, text: "Hello?") == nil
+    )
+    #expect(transport.recorded(.threadStart).isEmpty)
+    await model.disconnect()
+  }
+
+  @Test func aNoFolderStartClearsTheRememberedEnvironment() async throws {
+    let preferences = InMemoryPreferences()
+    NewThreadMemory(environmentId: "p2", text: "").save(to: preferences)
+    let transport = ScriptedTransport()
+    let model = try await Phone.macModel(transport, preferences: preferences)
+    let draft = NewThreadDraft(model: model, environmentId: nil)
+    #expect(draft.environmentId == "p2")
+    draft.selectNoFolder()
+    draft.text = "No folder please"
+    _ = try await Phone.land(draft, model, transport, environmentId: nil, folder: "/Users/me/B4App/threads/a")
+    let memory = NewThreadMemory.load(from: preferences)
+    #expect(memory.environmentId == nil)
+    #expect(memory.lastRuntime == RuntimeChoice(connectionId: "codex-1", model: nil, permission: nil))
+    #expect(NewThreadDraft(model: model, environmentId: nil).isNoFolder)
+    await model.disconnect()
+  }
+
+  @Test func aRemoteB4StartLeavesTheRememberedEnvironment() async throws {
+    let preferences = InMemoryPreferences()
+    NewThreadMemory(environmentId: "p2", text: "").save(to: preferences)
+    let transport = ScriptedTransport()
+    let model = try await Phone.macModel(transport, preferences: preferences)
+    let draft = NewThreadDraft(model: model, environmentId: nil)
+    draft.selectRuntime(connectionId: "b4-remote", model: nil)
+    #expect(!draft.isNoFolder)
+    draft.text = "Remote"
+    _ = try await Phone.land(draft, model, transport, environmentId: nil, folder: nil)
+    #expect(NewThreadMemory.load(from: preferences).environmentId == "p2")
+    await model.disconnect()
+  }
+
+  @Test func aRefusedPhoneStartLeavesNoThread() async throws {
+    let transport = ScriptedTransport()
+    let model = try await Self.phoneOnMac1(transport)
+    let draft = NewThreadDraft(model: model, environmentId: nil)
+    draft.text = "To an old hub"
+    // A hub that cannot route a start by device answers `not_found`.
+    transport.script(.threadStart, [.failure(WorkspaceError(.notFound, "No such route."))])
+    await draft.send()
+    #expect(draft.status == "No such route.")
+    #expect(draft.statusIsFailure)
+    #expect(!draft.finished)
+    #expect(draft.text == "To an old hub")
+    #expect(draft.canSend)
+    let started = try #require(draft.startedThreadId)
+    #expect(!model.threads.contains { $0.id == started })
+    #expect(model.unsettledStartReason == nil)
+    await model.disconnect()
+  }
+
+  @Test func aThreadWithNoEnvironmentReadsNoFolder() async throws {
+    var loose = PhoneFixture.thread("loose", owner: nil)
+    loose.connectionId = "codex-1"
+    loose.context = "/Users/me/B4App/threads/loose"
+    var inP1 = PhoneFixture.thread("in-p1", owner: nil)
+    inP1.connectionId = "codex-1"
+    inP1.environmentId = "p1"
+    inP1.context = "/work/atlas-docs"
+    var inP2 = inP1
+    inP2.id = "in-p2"
+    inP2.environmentId = "p2"
+    inP2.context = "/work/borealis"
+    let model = try await Phone.macModel(ScriptedTransport(), threads: [loose, inP1, inP2])
+    let text = { (thread: ConversationThread) in
+      ComposerPickerRow(model: model, .thread(thread)).placeText(thread)
+    }
+    #expect(text(loose) == "No folder")
+    #expect(text(inP1) == "Atlas · atlas-docs")
+    #expect(text(inP2) == "Borealis")
+    await model.disconnect()
+  }
+
+  @Test func folderGoneHasItsOwnWords() {
+    let error = WorkspaceError(
+      .protocolInvalid, "This thread's folder is gone (/x). Start a new thread to continue.",
+      details: ["reason": "folder_gone", "folder": "/x"])
+    #expect(
+      SendRules.reason(error, now: Date())
+        == "This thread's folder is no longer on your Mac. Start a new thread to continue.")
+    // Another `protocol_invalid` keeps its own message.
+    let other = WorkspaceError(.protocolInvalid, "Something else.")
+    #expect(SendRules.reason(other, now: Date()) == "Something else.")
   }
 
   /// The file picker can hand back a folder through a symlink; the draft looks it up by the form the

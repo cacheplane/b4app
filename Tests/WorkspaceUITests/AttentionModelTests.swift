@@ -398,9 +398,9 @@ private struct AttentionDocument: Decodable {
       environments: [environment("pa", "Alpha"), environment("pb", "Beta"), environment("pc", "Gamma")])
     let model = try await connected(transport)
     #expect(model.pinnedThreads.map(\.id) == ["pinned-b"])
-    // Beta holds a thread that needs input; Gamma an unread one; Other a working one; Alpha only quiet.
+    // Beta holds a thread that needs input; Gamma an unread one; No folder a working one; Alpha only quiet.
     #expect(model.environmentSections.map(\.id) == ["pb", "pc", "pa", "other"])
-    #expect(model.environmentSections.map(\.title) == ["Beta", "Gamma", "Alpha", "Other"])
+    #expect(model.environmentSections.map(\.title) == ["Beta", "Gamma", "Alpha", "No folder"])
     #expect(model.environmentSections.flatMap(\.threads).map(\.id).contains("pinned-b") == false)
     #expect(model.environmentSections[0].threads.map(\.id) == ["waiting-b"])
     #expect(model.environmentSections[1].threads.map(\.id) == ["unread-c", "quiet-c"])
@@ -420,6 +420,19 @@ private struct AttentionDocument: Decodable {
     let model = try await connected(transport)
     #expect(model.environmentSections.map(\.id) == ["pb", "pa", "other"])
     #expect(model.environmentSections.last?.threads.map(\.id) == ["asks"])
+  }
+
+  @Test func aNoFolderThreadIsListedUnderNoFolder() async throws {
+    let transport = ScriptedTransport()
+    var loose = thread("loose", activity: activity(at: 10))
+    loose.context = "/Users/me/B4App/threads/loose"
+    transport.set(
+      threads: [loose, thread("a", environment: "pa", activity: activity(at: 5))],
+      environments: [environment("pa", "Alpha")])
+    let model = try await connected(transport)
+    let section = try #require(model.environmentSections.first { $0.threads.contains { $0.id == "loose" } })
+    #expect(section.title == "No folder")
+    #expect(model.environmentSections.map(\.title) == ["Alpha", "No folder"])
   }
 
   @Test func sectionsInOneBandBreakTiesByRecentActivityThenTitle() async throws {

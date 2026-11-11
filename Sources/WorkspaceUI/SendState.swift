@@ -184,8 +184,12 @@ enum SendRules {
     return .failed(reason(error, now: now))
   }
 
-  /// A refusal in words: the Mac's name and last-seen time for `device_offline`, else the message.
+  /// A refusal in words: the Mac's name and last-seen time for `device_offline`, a thread whose folder is
+  /// gone in its own words, else the message.
   static func reason(_ error: WorkspaceError, now: Date) -> String {
+    if error.code == .protocolInvalid, error.details?["reason"]?.stringValue == "folder_gone" {
+      return "This thread's folder is no longer on your Mac. Start a new thread to continue."
+    }
     if error.code == .deviceOffline, let name = error.details?["deviceName"]?.stringValue {
       if let seen = error.details?["lastSeenAt"]?.stringValue.flatMap(Timestamp.date(from:)) {
         return HostNoticeMessage.offline(name: name, lastSeen: seen, now: now)
@@ -296,10 +300,12 @@ extension WorkspaceModel {
   ///
   /// Only a connection the place offers is sent: in an environment, one that `startConnections(for:)`
   /// offers, and the environment's own Mac decides whether it can start, not the primary Mac; with no
-  /// environment (the Mac only), a Codex or Claude connection in a chosen folder, or a remote B4. While one
-  /// start is out, another is refused, so a second tap never mints a second thread. A folder, model,
-  /// and permission are sent only for Codex and Claude: the folder the caller chose, or the environment's
-  /// only folder.
+  /// environment, one of `startConnectionsWithoutEnvironment`: a Codex or Claude connection with no folder
+  /// (the Mac makes one; from the phone the start names the connection's Mac, `deviceId`, and that Mac
+  /// decides whether it can start) or, on the Mac only, in a chosen folder, or a remote B4. While one start
+  /// is out, another is refused, so a second tap never mints a second thread. A folder, model, and
+  /// permission are sent only for Codex and Claude: the folder the caller chose, or the environment's only
+  /// folder.
   @discardableResult
   public func startThread(
     environmentId: String?, connectionId: String, folder: String?, model: String? = nil,
@@ -314,10 +320,16 @@ extension WorkspaceModel {
     if let environment, startBlockedReason(for: environment) != nil { return nil }
     let offered = environment.map { startConnections(for: $0) } ?? startConnectionsWithoutEnvironment
     guard let connection = offered.first(where: { $0.id == connectionId }) else { return nil }
+    // The phone's start with no environment goes to the connection's own Mac, with no folder.
+    let device = relaysThroughHub && environment == nil ? connection.ownerDeviceId : nil
+    if environment == nil, relaysThroughHub {
+      guard folder == nil, startBlockedReason(forDevice: device) == nil else { return nil }
+    }
     var chosen: String?
     if connection.kind != .b4 {
       chosen = folder ?? (environment?.folders.count == 1 ? environment?.folders.first?.path : nil)
-      guard chosen != nil else { return nil }
+      // With no environment and no folder, the Mac makes one.
+      guard chosen != nil || environment == nil else { return nil }
     }
     isStartingThread = true
     defer { isStartingThread = false }
@@ -334,7 +346,7 @@ extension WorkspaceModel {
     let params = ThreadStart.Params(
       threadId: threadId, environmentId: environment?.id, connectionId: connectionId, folder: chosen,
       text: text,
-      model: b4 ? nil : model, permission: b4 ? nil : permission)
+      model: b4 ? nil : model, permission: b4 ? nil : permission, deviceId: device)
     let send = PendingSend(
       id: UUID().uuidString.lowercased(), threadId: threadId, text: text, tappedAt: now(), start: params)
     pendingSends[threadId] = send
@@ -366,9 +378,11 @@ extension WorkspaceModel {
         let started = try await client.request(
           ThreadStart.self, start, options: RequestOptions(operationId: id, timeout: timeout))
         var thread = started.thread
-        // The Mac's reply knows no owner; the thread belongs to the Mac that owns its environment.
+        // The Mac's reply knows no owner; the thread belongs to the Mac that owns its environment, or with
+        // none to the Mac the start named.
         if thread.ownerDeviceId == nil {
-          thread.ownerDeviceId = environments.first { $0.id == start.environmentId }?.ownerDeviceId
+          thread.ownerDeviceId =
+            environments.first { $0.id == start.environmentId }?.ownerDeviceId ?? start.deviceId
         }
         store(thread)
         result = .success(started.turn.id)
@@ -493,10 +507,12 @@ extension WorkspaceModel {
 
   private func canLookUp(_ send: PendingSend) -> Bool {
     guard hubLinkPhase == .connected else { return false }
-    // A thread's own Mac; a start not yet listed asks the Mac that owns its environment.
+    // A thread's own Mac; a start not yet listed asks the Mac that owns its environment, or the Mac it named.
     let owner =
       threads.first { $0.id == send.threadId }?.ownerDeviceId
-      ?? send.start.flatMap { start in environments.first { $0.id == start.environmentId }?.ownerDeviceId }
+      ?? send.start.flatMap { start in
+        environments.first { $0.id == start.environmentId }?.ownerDeviceId ?? start.deviceId
+      }
     return hostPhase(deviceId: owner ?? primaryHostId) == .connected
   }
 

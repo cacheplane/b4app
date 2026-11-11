@@ -251,7 +251,7 @@ struct MoreMenu: View {
             Text(environment.displayName).tag(EnvironmentFilter.environment(environment.id))
           }
           if model.hasOtherThreads || model.environmentFilter == .other {
-            Text("Other").tag(EnvironmentFilter.other)
+            Text(EnvironmentSection.noFolderTitle).tag(EnvironmentFilter.other)
           }
           Text("Archived").tag(EnvironmentFilter.archived)
         }

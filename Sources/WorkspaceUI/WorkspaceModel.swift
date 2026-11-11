@@ -378,7 +378,7 @@ public final class WorkspaceModel {
 
   public func band(of thread: ConversationThread) -> AttentionBand { Attention.band(of: thread) }
 
-  /// A thread belongs under "Other" when it has no environment or its environment is not known.
+  /// A thread belongs under "No folder" when it has no environment or its environment is not known.
   private func isOther(_ thread: ConversationThread) -> Bool {
     guard let environmentId = thread.environmentId else { return true }
     return !environments.contains { $0.id == environmentId }

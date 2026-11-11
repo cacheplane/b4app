@@ -247,8 +247,8 @@ func waitUntil(
 
   @Test func openNewThreadWithAEnvironmentPreselectsIt() async throws {
     let model = try await ListFixture.model()
-    // The newest environment is the default; Marketing site is asked for.
-    #expect(model.newThreadDraft.environmentId == ListFixture.b4app)
+    // With nothing remembered the default is "No folder"; Marketing site is asked for.
+    #expect(model.newThreadDraft.isNoFolder)
     model.selectedThreadId = "asks"
     await model.openNewThread(environmentId: ListFixture.marketing)
     #expect(model.selectedThreadId == nil)
