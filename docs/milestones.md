@@ -218,6 +218,12 @@ Exit gate status: the fixture gates pass (design exit items 4 to 6, locally: a c
 
 - [x] The set of folders threads work in is an "environment" in every store, wire contract, Swift symbol (`WorkEnvironment`), CLI output and UI string; "B4 project" keeps its name. `fixture-tested`: hub, coordinator store and phone mirror migrations carry the old rows, change-log entries and clocks across, and an upgrade run of a coordinator over a pre-rename store serves the thread under its `environmentId` (`docs/verification/2026-11-10-environments-rename.md`).
 
+## No-folder starts (D-203)
+
+- [x] A Codex or Claude thread starts with no folder from the Mac, the phone and the CLI (`thread new --no-folder`): the coordinator makes `<threadFoldersDir>/<date>-<id>` (0700), records it in the local `appFolders` table, and the thread has no environment. `fixture-tested` (`NoFolderStartTests`, `AppFolderStoreTests`, `EnvironmentServiceTests`, `ThreadNewCommandTests`, with the fake Codex and Claude runtimes). Not `live-tested`: no real runtime started a thread this way, and the hand check through a coordinator was not possible while signed out (`docs/verification/2026-11-10-no-folder-starts.md`).
+- [x] The hub routes a `thread.start` with no environment by `deviceId`. `fixture-tested` (`Hub/crates/b4hub/tests/relay.rs`, `relay.json` in both suites). Not exercised against a hosted hub or a real phone.
+- [x] The composer's "No folder" place, its default, the phone's primary-Mac rule, the `folder_gone` refusal and its words, and the "No folder" sidebar group. `fixture-tested` (`NewThreadDraftTests`, `AttentionModelTests`, `ThreadListTests`). `implemented` only on screen: not checked in the Mac app or on a phone or Simulator.
+
 ## M8c: relay (D-054 to D-059, D-075 to D-080)
 
 Design: `docs/superpowers/specs/2026-11-01-m8c-relay-design.md`. Plan: `docs/superpowers/plans/2026-11-01-m8c-relay.md`. Roadmap block: M8 in `docs/roadmaps/Personal_Agent_Workspace_Technical_Spec_and_Roadmap.md`. Every item below is `implemented` and `fixture-tested` (the test names are mapped to the live-gate items in `docs/verification/`, "M8c relay"). They are also `live-tested`: the live gate (Simulator, Compose hub, packaged Mac app) ran on 2026-11-02, items 1 to 7, recorded in `docs/verification/`.
