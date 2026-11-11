@@ -25,12 +25,26 @@ A Codex or Claude thread starting with no folder (D-203), from the Mac, the phon
 
 Not done. Setup: a scratch data directory and runtime directory under `$TMPDIR`, `B4APP_FLAVOR=local`, `codex` on `PATH` replaced by a shim to `Tests/CodexAdapterTests/Fixtures/fake-codex.py`, the debug `agent-workspace` and the coordinator it spawned. `doctor --json` answered `"ok" : true`, but `connection add --kind codex --name Codex` answered `error [signed_out]: Nobody is signed in. Sign in from the Agent Workspace app.` A coordinator started outside the app has no account, so no thread could be made, and I did not sign in or call a hub to get around that. So none of these were checked by hand: the folder under `<dataDir>/projects`, the thread reading "No folder", a restart leaving it without an environment, and Send after deleting the folder showing the folder-gone words. I stopped the coordinator I started (pid 2932) and removed the scratch directory; I did not touch the real data directories or the installed apps.
 
+### On-screen check (Local app, real Codex)
+
+Done on 2026-11-10 with the Local flavour app packaged from this branch (Developer ID, not notarized), installed in `/Applications`, against the owner's local data and the Compose hub rebuilt from this branch.
+
+- The composer opened on "No folder" (this device's composer memory was empty after the D-202 reset). Sending "Reply with exactly the word ok and do nothing else." to Codex started a thread; Codex answered "ok" and the turn ended `completed`.
+- The coordinator made `~/.b4app/projects-local/2026-11-11-ad04804c` (the date is UTC), mode 0700, empty after the turn; `db status` showed `appFolders=1` and still 4 environments; the thread's `environmentId` is null.
+- The sidebar shows the thread under a "No folder" group and the thread's composer row reads "No folder".
+- After `agent-workspace coordinator restart` the thread still had no environment and there were still 4 environments.
+- With the folder removed (`rmdir`, it was empty), the thread still opened with its transcript, and Send showed "This thread's folder is gone (/Users/…/2026-11-11-ad04804c). Start a new thread to continue." No turn was added.
+
+Seen while checking, not changed here:
+
+- On the Mac the folder-gone banner shows the coordinator's message with the path. The shorter words in `SendRules.reason` ("This thread's folder is no longer on your Mac…") are used where a send goes through the relay's pending-send state, which was not exercised.
+- After the coordinator restart the app showed "Coordinator unavailable: Coordinator connection closed." until Retry was pressed.
+
 ### Not checked
 
-- The Mac app on screen (the "No folder" toggle, the default place, the sidebar group, the folder-gone message).
+- The place menu opened on screen (the "No folder" item, its check mark, the divider), "Choose folder…", and the two no-connection reasons.
 - The phone or the Simulator (the primary-Mac rule, the blocked reasons, a start relayed through a hub).
-- A start against a real Codex or Claude runtime, or a hosted hub.
-These are left to the controller's on-screen check.
+- A start against a real Claude runtime, or a hosted hub.
 
 ### Deviations from the plan
 
