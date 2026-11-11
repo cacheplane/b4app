@@ -147,7 +147,9 @@ public final class WorkspaceModel {
   }
   /// Every environment with its folders, loaded with the threads and refreshed on `environment.changed`.
   public internal(set) var environments: [WorkEnvironment] = []
-  public var environmentFilter: EnvironmentFilter = .all
+  public var environmentFilter: EnvironmentFilter = .all {
+    didSet { if environmentFilter != oldValue { rebaseArrivals() } }
+  }
   /// The Settings page to show, and a counter the root view watches to open Settings (a window on the
   /// Mac, a sheet on the iPhone); a counter so asking twice opens it twice.
   public var settingsPage: SettingsPage = SettingsPage.allCases[0]
@@ -176,7 +178,9 @@ public final class WorkspaceModel {
   public var showSearch = false
   /// The profile menu above the sidebar's profile button.
   public var showProfileMenu = false
-  public var connectionFilter: String?
+  public var connectionFilter: String? {
+    didSet { if connectionFilter != oldValue { rebaseArrivals() } }
+  }
   public var showArchived = false
   /// The phone's environment sheet: a new environment, or one environment's name and folders.
   public var environmentSheet: EnvironmentSheetRequest?
@@ -198,6 +202,12 @@ public final class WorkspaceModel {
   /// Each thread opened on this device, with its `lastActivityAt` when it was opened: an approve mark
   /// stops pulsing until the thread has new activity. In memory only, never synced or stored.
   private var acknowledgedActivity: [String: String] = [:]
+  /// Which listed threads have just entered the top list, fed on every change to the list
+  /// (`noteThreadList`). Observed, so a row redraws when its thread arrives.
+  private var arrivals = ArrivalTracker()
+  /// Set when the account's rows are forgotten: the next snapshot is a new list, not a change to one,
+  /// so it starts the tracker afresh (decision 9: nothing traces when the list is rebuilt after sign-in).
+  @ObservationIgnored private var arrivalsAwaitSnapshot = false
   /// This device's small choices (the last model and permission a new thread used); `UserDefaults`
   /// in the apps, which pass it to `init`, and in memory otherwise, so a test never shares the test
   /// runner's defaults with another. Never synced.
@@ -709,6 +719,11 @@ public final class WorkspaceModel {
     // Progress from before the snapshot may never see its closing event.
     checks = [:]
     threads = snapshot.threads
+    if arrivalsAwaitSnapshot {
+      arrivals.reset()
+      arrivalsAwaitSnapshot = false
+    }
+    noteThreadList()
     // The open thread went while the link was down: nothing stays selected. A start still settling
     // is kept; its thread may not be in the list yet.
     if let id = selectedThreadId, !threads.contains(where: { $0.id == id }), pendingSends[id] == nil,
@@ -908,6 +923,7 @@ public final class WorkspaceModel {
     if let created {
       threads.removeAll { $0.id == created.id }
       threads.insert(created, at: 0)
+      noteThreadList()
       await openThread(id: created.id)
     }
   }
@@ -941,6 +957,26 @@ public final class WorkspaceModel {
   public func isAcknowledged(_ thread: ConversationThread) -> Bool {
     guard let at = thread.activity?.lastActivityAt else { return false }
     return acknowledgedActivity[thread.id] == at
+  }
+
+  /// The thread's arrival in the top list while it lasts: its row slides in and its edge is traced.
+  public func arrival(for thread: ConversationThread) -> Arrival? {
+    arrivals.arrival(for: thread.id, at: now())
+  }
+
+  /// Feeds the tracker the states of the list as it now shows (`orderedThreads`, under the filters).
+  /// Called once per change to `threads`.
+  private func noteThreadList() {
+    let states = Dictionary(
+      orderedThreads.map { ($0.id, state(of: $0)) }, uniquingKeysWith: { first, _ in first })
+    _ = arrivals.update(states, at: now())
+  }
+
+  /// A filter change shows another list, not a changed one: the tracker starts afresh from it, so
+  /// nothing traces now and a thread that changes under the new filter still does.
+  private func rebaseArrivals() {
+    arrivals.reset()
+    noteThreadList()
   }
 
   @discardableResult private func loadDetail(id: String) async -> Bool {
@@ -1044,6 +1080,7 @@ public final class WorkspaceModel {
     guard let read else { return }
     threads.removeAll { $0.id == read.thread.id }
     threads.insert(read.thread, at: 0)
+    noteThreadList()
     if detail?.thread.id == id {
       detail = ThreadDetail(
         thread: read.thread, turns: read.turns, items: read.items, requests: read.requests)
@@ -1181,7 +1218,10 @@ public final class WorkspaceModel {
   /// Set the read marker on the list row and the open detail at once, so the row's state changes
   /// before the coordinator has answered.
   private func setReadTurn(threadId: String, turnId: String?) {
-    if let index = threads.firstIndex(where: { $0.id == threadId }) { threads[index].readTurnId = turnId }
+    if let index = threads.firstIndex(where: { $0.id == threadId }) {
+      threads[index].readTurnId = turnId
+      noteThreadList()
+    }
     if detail?.thread.id == threadId { detail?.thread.readTurnId = turnId }
   }
 
@@ -1200,6 +1240,7 @@ public final class WorkspaceModel {
     } else {
       threads.append(fresh)
     }
+    noteThreadList()
     if detail?.thread.id == thread.id { detail?.thread = fresh }
   }
 
@@ -1209,6 +1250,7 @@ public final class WorkspaceModel {
     if pendingThreadOpen == threadId { stopThreadOpen() }
     deletedThreadIds.insert(threadId)
     threads.removeAll { $0.id == threadId }
+    noteThreadList()
     activeTurns[threadId] = nil
     stopStates[threadId] = nil
     pendingSends[threadId] = nil
@@ -1622,6 +1664,9 @@ public final class WorkspaceModel {
     deleteFailure = nil
     stepUpCodeOffer = nil
     pendingRename = nil
+    // Last, after the filters' resets above: the next account's first snapshot traces nothing.
+    arrivals.reset()
+    arrivalsAwaitSnapshot = true
   }
 
   static func describe(_ error: any Error) -> String {

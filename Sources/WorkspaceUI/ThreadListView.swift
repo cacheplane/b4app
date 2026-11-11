@@ -135,6 +135,7 @@ struct ThreadRow: View {
   @State private var deleting: ConversationThread?
   @Environment(\.showDetail) private var showDetail
   @Environment(\.dynamicTypeSize) private var typeSize
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   #if os(macOS)
     /// The fill's inset from the sidebar's edges: it spans x 8–232 of the 240 pt column.
@@ -179,6 +180,8 @@ struct ThreadRow: View {
         RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
           .fill(selected ? LLA.Color.surfaceRaised : .clear)
       )
+      // On the fill's frame, so the trace follows its rounded edge (x 8–232 on the Mac).
+      .arrivalTrace(model.arrival(for: thread), reduceMotion: reduceMotion)
       .contentShape(Rectangle())
     }
     .buttonStyle(.llaRow)

@@ -445,6 +445,37 @@ struct SnapshotShell: View {
       .padding(10)
     }
   }
+
+  /// The arrival trace frozen at moments of its 10 s, on rows of the Mac's fill geometry (x 8–232,
+  /// 28 tall): the slide part-way, the light at several points of its two laps, the hairline alone,
+  /// fading, and under Reduce Motion. Stills only; the motion itself is not judged here.
+  @Test func arrivalTraceAtItsMoments() async throws {
+    let moments: [(String, ArrivalTraceFrame)] = [
+      ("0.25 s, sliding", ArrivalTraceFrame(elapsed: 0.25, laps: true, reduceMotion: false)),
+      ("0.6 s, lap 1", ArrivalTraceFrame(elapsed: 0.6, laps: true, reduceMotion: false)),
+      ("1.2 s, lap 1", ArrivalTraceFrame(elapsed: 1.2, laps: true, reduceMotion: false)),
+      ("2.4 s, lap 2", ArrivalTraceFrame(elapsed: 2.4, laps: true, reduceMotion: false)),
+      ("1.2 s, no lap", ArrivalTraceFrame(elapsed: 1.2, laps: false, reduceMotion: false)),
+      ("5 s, hairline", ArrivalTraceFrame(elapsed: 5, laps: true, reduceMotion: false)),
+      ("9.25 s, fading", ArrivalTraceFrame(elapsed: 9.25, laps: true, reduceMotion: false)),
+      ("0.25 s, Reduce Motion", ArrivalTraceFrame(elapsed: 0.25, laps: true, reduceMotion: true)),
+      ("10 s, over", ArrivalTraceFrame(elapsed: 10, laps: true, reduceMotion: false)),
+    ]
+    try await render(
+      "arrivalTraceAtItsMoments", size: CGSize(width: LLA.Metrics.sidebarWidth, height: 9 * 36)
+    ) {
+      VStack(spacing: LLA.Space.s) {
+        ForEach(moments, id: \.0) { name, frame in
+          Text(name).font(LLAFont.row).foregroundStyle(LLA.Color.ink)
+            .padding(.horizontal, ThreadRow.contentInset)
+            .frame(maxWidth: .infinity, minHeight: LLA.Metrics.threadRow, alignment: .leading)
+            .overlay { ArrivalTraceEdge(frame: frame) }
+            .offset(y: frame.offset)
+        }
+      }
+      .padding(.horizontal, ThreadRow.fillInset)
+    }
+  }
 }
 
 /// A fixed set of threads in every state but approve (`approving`, added with `extra`), across two environments, "Other", and one empty manual environment.

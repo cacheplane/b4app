@@ -888,4 +888,74 @@ private struct AttentionDocument: Decodable {
     await model.renameEnvironment(id: "missing", name: "x")
     #expect(model.lastError?.contains("no environment missing") == true)
   }
+
+  // MARK: Arrivals
+
+  @Test func aFilterChangeTracesNothing() async throws {
+    let transport = ScriptedTransport()
+    transport.set(
+      threads: [
+        thread("a", environment: "pa", activity: activity(turn: "u1", status: .terminal, at: 2)),
+        thread("b", environment: "pb", activity: activity(pending: 1, at: 3)),
+        thread("c", environment: "pa", activity: activity(turn: "u2", status: .running, at: 1)),
+      ],
+      environments: [environment("pa", "Alpha"), environment("pb", "Beta")])
+    let model = try await connected(transport)
+    #expect(model.threads.allSatisfy { model.arrival(for: $0) == nil })
+
+    // "b" leaves the list under the filter and comes back without it: no arrival.
+    model.environmentFilter = .environment("pa")
+    model.environmentFilter = .all
+    #expect(model.threads.allSatisfy { model.arrival(for: $0) == nil })
+    model.connectionFilter = "elsewhere"
+    #expect(model.orderedThreads.isEmpty)
+    model.connectionFilter = nil
+    #expect(model.threads.allSatisfy { model.arrival(for: $0) == nil })
+
+    // The list under the new filter is the baseline: a thread finishing after it still arrives.
+    var done = model.threads.first { $0.id == "c" }!
+    done.activity = activity(turn: "u2", status: .terminal, at: 4)
+    transport.emit(try .threadUpdated(done))
+    try await waitUntil("finished") {
+      model.threads.contains { $0.id == "c" && model.state(of: $0) == .finished }
+    }
+    #expect(model.arrival(for: done)?.laps == true)
+  }
+
+  @Test func aThreadFinishingWhileTheListShowsArrives() async throws {
+    let transport = ScriptedTransport()
+    let running = thread("t1", activity: activity(turn: "u1", status: .running, at: 2))
+    transport.set(threads: [running, thread("t2", activity: activity(turn: "u0", status: .terminal, at: 1))])
+    let now = Date(timeIntervalSince1970: 1_793_000_000 + 600)
+    let model = try await connected(transport, now: now)
+    // On the first load a finished thread is already there: it did not arrive.
+    #expect(model.threads.allSatisfy { model.arrival(for: $0) == nil })
+
+    var done = running
+    done.activity = activity(turn: "u1", status: .terminal, at: 3)
+    transport.emit(try .threadUpdated(done))
+    try await waitUntil("finished") { model.state(of: model.threads.first { $0.id == "t1" }!) == .finished }
+    #expect(model.arrival(for: done) == Arrival(threadId: "t1", at: now, laps: true))
+    #expect(model.arrival(for: model.threads.first { $0.id == "t2" }!) == nil)
+
+    // Ten seconds on, it is over.
+    model.now = { now.addingTimeInterval(10) }
+    #expect(model.arrival(for: done) == nil)
+  }
+
+  @Test func theListRebuiltAfterSignInTracesNothing() async throws {
+    let transport = ScriptedTransport()
+    transport.set(threads: [thread("t1", activity: activity(turn: "u1", status: .running, at: 2))])
+    let model = try await connected(transport)
+
+    // Signed out and in again: every thread of the new list is new, and none of them arrived.
+    model.forgetWorkspace()
+    transport.set(threads: [
+      thread("t1", activity: activity(turn: "u1", status: .terminal, at: 3)),
+      thread("t2", activity: activity(pending: 1, approvals: 1, at: 3)),
+    ])
+    try await model.refreshSnapshot()
+    #expect(model.threads.count == 2)
+    #expect(model.threads.allSatisfy { model.arrival(for: $0) == nil })
+  }
 }
