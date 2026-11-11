@@ -125,7 +125,7 @@ struct SnapshotShell: View {
 
   private var shell: some View {
     HStack(spacing: 0) {
-      SidebarView(model: model).frame(width: 290)
+      SidebarView(model: model).frame(width: LLA.Metrics.sidebarWidth)
       Rectangle().fill(LLA.Color.rule).frame(width: 1)
       ThreadsView(model: model)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -312,14 +312,18 @@ struct SnapshotShell: View {
   /// The sidebar with a thread in each of the six states.
   @Test func macSidebarGroupsByEnvironment() async throws {
     let model = try await ListFixture.model(extra: [ListFixture.approving])
-    try await render("macSidebarGroupsByEnvironment", size: CGSize(width: 290, height: 800)) {
+    try await render(
+      "macSidebarGroupsByEnvironment", size: CGSize(width: LLA.Metrics.sidebarWidth, height: 800)
+    ) {
       SidebarView(model: model)
     }
   }
 
   @Test func macSidebarCollapsedEnvironment() async throws {
     let model = try await ListFixture.model()
-    try await render("macSidebarCollapsedEnvironment", size: CGSize(width: 290, height: 640)) {
+    try await render(
+      "macSidebarCollapsedEnvironment", size: CGSize(width: LLA.Metrics.sidebarWidth, height: 640)
+    ) {
       ScrollView {
         EnvironmentSectionsView(model: model, collapsed: .constant([ListFixture.b4app]))
           .padding(.horizontal, 10)
@@ -330,7 +334,9 @@ struct SnapshotShell: View {
   @Test func macSidebarShowsAFailedEnvironmentAction() async throws {
     let model = try await ListFixture.model()
     model.lastError = "That folder already belongs to the environment \u{201C}Marketing site\u{201D}."
-    try await render("macSidebarShowsAFailedEnvironmentAction", size: CGSize(width: 290, height: 420)) {
+    try await render(
+      "macSidebarShowsAFailedEnvironmentAction", size: CGSize(width: LLA.Metrics.sidebarWidth, height: 420)
+    ) {
       ScrollView { ThreadListView(model: model).padding(.horizontal, 10) }
     }
   }
@@ -409,16 +415,22 @@ struct SnapshotShell: View {
     }
   }
 
-  /// A row in each of the six states, then each mark on its own: approve acknowledged and not, and the
-  /// working mark still and orbiting (a still render shows one phase of each).
+  /// A row in each of the six states (finished selected), a long title that truncates before the mark,
+  /// then each mark on its own: approve acknowledged and not, and the working mark still and orbiting
+  /// (a still render shows one phase of each).
   @Test func rowShowsEachStateMark() async throws {
-    let model = try await ListFixture.model(extra: [ListFixture.approving])
-    let rows = ["approving", "asks", "failed", "unread", "busy", "quiet"].compactMap { id in
+    let long = ListFixture.thread(
+      "long", "Approve the hub migration and then rerun the whole retention suite",
+      environment: ListFixture.b4app,
+      turn: "t10", status: .waitingForUser, pending: 1, at: 54)
+    let model = try await ListFixture.model(extra: [ListFixture.approving, long])
+    let rows = ["approving", "asks", "failed", "unread", "busy", "quiet", "long"].compactMap { id in
       model.threads.first { $0.id == id }
     }
-    #expect(rows.map { model.state(of: $0) } == ThreadState.allCases)
-    try await render("rowShowsEachStateMark", size: CGSize(width: 290, height: 420)) {
-      VStack(alignment: .leading, spacing: 2) {
+    #expect(rows.prefix(6).map { model.state(of: $0) } == ThreadState.allCases)
+    model.selectedThreadId = "unread"
+    try await render("rowShowsEachStateMark", size: CGSize(width: LLA.Metrics.sidebarWidth, height: 420)) {
+      VStack(alignment: .leading, spacing: 0) {
         ForEach(rows) { ThreadRow(model: model, thread: $0) }
         Hairline().padding(.vertical, LLA.Space.m)
         HStack(spacing: LLA.Space.l) {

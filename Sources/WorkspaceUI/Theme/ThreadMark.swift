@@ -35,7 +35,7 @@ public struct ThreadMark: View {
   /// The phase of the one motion this mark has: the pulse ring spread out, or the arc turned once.
   @State private var moved = false
   /// 12 pt at the default size; every measurement below is in that 12 by 12 box.
-  @ScaledMetric(relativeTo: .body) private var size: CGFloat = 12
+  @ScaledMetric(relativeTo: .body) private var size: CGFloat = LLA.Metrics.mark
 
   /// When the mark moves: the pulse and the orbit are its only motion.
   public enum Motion {

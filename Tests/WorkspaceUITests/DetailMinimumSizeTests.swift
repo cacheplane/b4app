@@ -40,8 +40,8 @@ private nonisolated func edited(
 @Suite(.serialized) @MainActor struct DetailMinimumSizeTests {
   /// The title bar and toolbar above the split view in the app window.
   private static let titleBar: CGFloat = 52
-  /// The detail column at the sidebar's ideal width.
-  private static let detailWidth = LLA.Metrics.minimumWindow.width - 290
+  /// The detail column beside the fixed sidebar.
+  private static let detailWidth = LLA.Metrics.minimumWindow.width - LLA.Metrics.sidebarWidth
   private static let availableHeight = LLA.Metrics.minimumWindow.height - titleBar
 
   struct Variant: CustomStringConvertible {

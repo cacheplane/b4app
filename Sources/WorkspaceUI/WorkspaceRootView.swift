@@ -80,7 +80,12 @@ struct WorkspaceShell: View {
   var body: some View {
     NavigationSplitView(preferredCompactColumn: $compactColumn) {
       SidebarView(model: model)
-        .navigationSplitViewColumnWidth(min: 240, ideal: 290)
+        #if os(macOS)
+          // Fixed, so the thread rows' geometry (fill, title, mark) is exact.
+          .navigationSplitViewColumnWidth(LLA.Metrics.sidebarWidth)
+        #else
+          .navigationSplitViewColumnWidth(min: 240, ideal: 290)
+        #endif
     } detail: {
       ThreadsView(model: model)
         .modifier(WorkspaceWindowBackground())

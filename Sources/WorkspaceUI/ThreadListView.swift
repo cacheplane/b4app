@@ -123,10 +123,10 @@ struct SidebarErrorBanner: View {
 
 // MARK: - Rows
 
-/// One list row: the state's mark, the title, and the runtime's ghosted mark (and a pin on the iPhone,
-/// whose flat list has no Pinned group). Why it sits there and which connection runs it are spoken,
-/// not shown. The context menu holds the organization actions;
-/// archiving never stops a turn (spec 3.3).
+/// One list row on one line: the title, then the state's mark at the trailing edge. The pin, the
+/// runtime, why the thread sits where it does, and which connection runs it are spoken, not shown
+/// (decision 10). The context menu holds the organization actions; archiving never stops a turn
+/// (spec 3.3).
 struct ThreadRow: View {
   @Bindable var model: WorkspaceModel
   let thread: ConversationThread
@@ -136,10 +136,28 @@ struct ThreadRow: View {
   @Environment(\.showDetail) private var showDetail
   @Environment(\.dynamicTypeSize) private var typeSize
 
+  #if os(macOS)
+    /// The fill's inset from the sidebar's edges: it spans x 8–232 of the 240 pt column.
+    static let fillInset: CGFloat = LLA.Space.s
+    /// The title's and the mark's inset inside the fill: the title starts at x 16, the mark's box ends
+    /// at x 224.
+    static let contentInset: CGFloat = LLA.Space.s
+    /// The horizontal padding the sidebar puts around its stacks (`SidebarView`); the row reaches past
+    /// it to its own fill inset.
+    private static let sidebarPadding: CGFloat = 10
+  #else
+    /// With the list's 6 pt row inset, the title and the mark sit 16 pt in, on the phone's margin.
+    static let contentInset: CGFloat = 10
+  #endif
+
+  /// Act-level titles (approve, reply, failed) are medium; every other title is regular.
+  static func titleWeight(for state: ThreadState) -> Font.Weight {
+    state.isActLevel ? .medium : .regular
+  }
+
   var body: some View {
     let state = model.state(of: thread)
     let selected = model.selectedThreadId == thread.id
-    let loud = selected || state.isTopList
     Button {
       // Select before showing the detail, so the detail coming on screen cannot mark the thread that
       // was open before (still loaded until `openThread` replaces it) read.
@@ -148,24 +166,15 @@ struct ThreadRow: View {
       Task { await model.openThread(id: thread.id) }
     } label: {
       HStack(spacing: LLA.Space.s) {
+        title(state: state)
+          .frame(maxWidth: .infinity, alignment: .leading)
         ThreadMark(state: state, acknowledged: model.isAcknowledged(thread))
-        Text(thread.title.isEmpty ? "Untitled" : thread.title)
-          .font(loud ? LLAFont.rowStrong : LLAFont.row)
-          .foregroundStyle(LLA.Color.ink)
-          .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
-        Spacer(minLength: LLA.Space.s)
-        #if os(iOS)
-          // Trailing, beside the mark, so every title starts on the same edge.
-          if thread.pinned {
-            Image(systemName: "pin.fill").font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
-              .accessibilityHidden(true)
-          }
-        #endif
-        if let kind = model.connection(id: thread.connectionId)?.kind { RuntimeMark(kind: kind) }
       }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 6)
-      .frame(minHeight: LLA.Metrics.row)
+      .padding(.horizontal, Self.contentInset)
+      #if os(iOS)
+        .padding(.vertical, 6)
+      #endif
+      .frame(minHeight: LLA.Metrics.threadRow)
       .background(
         RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
           .fill(selected ? LLA.Color.surfaceRaised : .clear)
@@ -173,6 +182,10 @@ struct ThreadRow: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.llaRow)
+    #if os(macOS)
+      // Outside the button, so the pressed fill spans the same 8–232 as the selection.
+      .padding(.horizontal, Self.fillInset - Self.sidebarPadding)
+    #endif
     .accessibilityIdentifier("thread-row")
     .accessibilityValue(model.threadState(thread).rawValue)
     .accessibilityLabel(Self.accessibilityLabel(model: model, thread: thread))
@@ -208,12 +221,35 @@ struct ThreadRow: View {
     }
   }
 
-  /// The title plus what the row no longer prints: whether it is pinned, the reason it sits where it
-  /// does, the connection, and the connection's trouble when it is offline or errored.
+  /// The title, in the state's weight and colour: a working title shimmers, a quiet one is muted and
+  /// fades with age. The text itself never blinks.
+  private func title(state: ThreadState) -> some View {
+    Text(thread.title.isEmpty ? "Untitled" : thread.title)
+      .font(Self.titleWeight(for: state) == .medium ? LLAFont.rowMedium : LLAFont.row)
+      .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
+      .workingShimmer(active: state == .working)
+      .foregroundStyle(state == .quiet ? LLA.Color.muted : LLA.Color.ink)
+      .opacity(state == .quiet ? quietOpacity : 1)
+  }
+
+  /// A quiet title's fade, by the age of the thread's last activity (or its creation, without any).
+  private var quietOpacity: Double {
+    guard let date = Timestamp.date(from: thread.activity?.lastActivityAt ?? thread.createdAt) else {
+      return 1
+    }
+    return QuietFade.opacity(ageInDays: model.now().timeIntervalSince(date) / 86_400)
+  }
+
+  /// The title plus what the row no longer prints: whether it is pinned, the state its mark draws,
+  /// the reason it sits where it does, the connection, and the connection's trouble when it is offline
+  /// or errored. The state is left out where the reason already starts with it ("Failed 3 min. ago").
   static func accessibilityLabel(model: WorkspaceModel, thread: ConversationThread) -> String {
     var parts = thread.pinned ? ["Pinned"] : []
     parts.append(thread.title.isEmpty ? "Untitled" : thread.title)
-    parts.append(model.reasonLine(for: thread))
+    let spoken = model.state(of: thread).spokenLabel
+    let reason = model.reasonLine(for: thread)
+    if !reason.hasPrefix(spoken) { parts.append(spoken) }
+    parts.append(reason)
     parts.append(model.connection(id: thread.connectionId)?.label ?? "Unknown connection")
     let state = model.threadState(thread)
     if [.reconnecting, .error, .unknown, .stopping].contains(state) { parts.append(state.label) }
@@ -254,7 +290,7 @@ struct ThreadListView: View {
   }
 }
 
-/// The phone's rows: pinned threads first, then the rest, no band headings (the dots carry the band).
+/// The phone's rows: pinned threads first, then the rest, no state headings (the marks carry the state).
 /// Meant to sit inside a `List`; it supplies the swipe actions.
 struct FlatThreadRows: View {
   @Bindable var model: WorkspaceModel
@@ -339,7 +375,7 @@ struct FlatThreadList: View {
         }
         if !pinned.isEmpty {
           SidebarGroupLabel("Pinned")
-          ForEach(pinned) { ThreadRow(model: model, thread: $0) }
+          rows(pinned)
         }
         ForEach(sections) { section in
           sectionView(section)
@@ -384,9 +420,10 @@ struct FlatThreadList: View {
       VStack(alignment: .leading, spacing: 2) {
         header(section, isCollapsed: isCollapsed)
         if !isCollapsed {
-          ForEach(section.threads) { ThreadRow(model: model, thread: $0) }
           if section.threads.isEmpty {
             Text("No threads.").llaSmallMuted().padding(.horizontal, 10).padding(.vertical, 4)
+          } else {
+            rows(section.threads)
           }
         }
       }
@@ -435,14 +472,20 @@ struct FlatThreadList: View {
       }
     }
 
+    /// Thread rows, touching: no gap between one row's fill and the next.
+    private func rows(_ threads: [ConversationThread]) -> some View {
+      VStack(spacing: 0) { ForEach(threads) { ThreadRow(model: model, thread: $0) } }
+    }
+
     /// The archived threads, listed last while More's "Show archived" is on.
     @ViewBuilder private var archive: some View {
       if model.showArchived {
         SidebarGroupLabel("Archived")
         if model.archivedThreads.isEmpty {
           Text("No archived threads.").llaSmallMuted().padding(.horizontal, 10).padding(.vertical, 6)
+        } else {
+          rows(model.archivedThreads)
         }
-        ForEach(model.archivedThreads) { ThreadRow(model: model, thread: $0) }
       }
     }
   }
