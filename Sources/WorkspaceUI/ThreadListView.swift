@@ -13,34 +13,6 @@ enum CollapsedEnvironments {
   static func encode(_ ids: Set<String>) -> String { ids.sorted().joined(separator: ",") }
 }
 
-/// The four looks of the status dot, fed from the six thread states until the marks replace the dot:
-/// approve and reply draw the needs-input dot, failed and finished the unread one.
-enum DotStyle: Comparable {
-  case needsInput, unread, working, quiet
-
-  init(_ state: ThreadState) {
-    switch state {
-    case .approve, .reply: self = .needsInput
-    case .failed, .finished: self = .unread
-    case .working: self = .working
-    case .quiet: self = .quiet
-    }
-  }
-
-  /// What the status dot says to VoiceOver: the dot carries the state, so it needs a name.
-  var label: String {
-    switch self {
-    case .needsInput: return "Needs your input"
-    case .unread: return "Unread reply"
-    case .working: return "Working"
-    case .quiet: return "Quiet"
-    }
-  }
-
-  /// The filled dots, which also set the row's title in the strong weight.
-  var isLoud: Bool { self == .needsInput || self == .unread }
-}
-
 extension WorkspaceModel {
   /// The display name of the environment a thread belongs to; nil for "No folder".
   func environmentName(for thread: ConversationThread) -> String? {
@@ -149,67 +121,9 @@ struct SidebarErrorBanner: View {
   }
 }
 
-// MARK: - Status dot
-
-/// The thread state as an 8 pt dot (D-036, one accent), in four looks (`DotStyle`): needs input is the
-/// accent, filled; unread is ink, filled; working is an ink ring that breathes unless Reduce Motion is
-/// on; quiet is a small muted hollow ring. The look is also the accessibility label, so colour is never
-/// the only signal.
-public struct AttentionDot: View {
-  let style: DotStyle
-
-  public init(state: ThreadState) { self.style = DotStyle(state) }
-  init(style: DotStyle) { self.style = style }
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var dim = false
-  /// 8 pt at the default size; it grows with the row's text so it stays legible beside it.
-  @ScaledMetric(relativeTo: .body) private var size: CGFloat = 8
-
-  /// The lowest opacity of a working ring. A working ring (ink, 8 pt, 1.5 pt stroke) must never read
-  /// paler than a quiet ring (muted, 6 pt, 1 pt stroke), so the pulse stops well short of faint.
-  static let pulseFloor = 0.65
-
-  /// Whether the dot animates: only a working thread, and never under Reduce Motion.
-  static func pulses(style: DotStyle, reduceMotion: Bool) -> Bool {
-    style == .working && !reduceMotion
-  }
-
-  private var pulses: Bool { Self.pulses(style: style, reduceMotion: reduceMotion) }
-
-  public var body: some View {
-    ZStack {
-      switch style {
-      case .needsInput:
-        Circle().fill(LLA.Color.accent)
-      case .unread:
-        Circle().fill(LLA.Color.ink)
-      case .working:
-        Circle().strokeBorder(LLA.Color.ink, lineWidth: 1.5).opacity(pulses && dim ? Self.pulseFloor : 1)
-      case .quiet:
-        Circle().strokeBorder(LLA.Color.muted, lineWidth: 1).frame(width: size * 0.75, height: size * 0.75)
-      }
-    }
-    .frame(width: size, height: size)
-    // Keyed by whether the dot pulses, not by appearance: a row keeps its identity when its band
-    // changes in place, and Reduce Motion can change while it is on screen. Each change resets the
-    // phase first, so a ring that goes working, quiet, working starts again at full opacity.
-    .task(id: pulses) {
-      var reset = Transaction()
-      reset.disablesAnimations = true
-      withTransaction(reset) { dim = false }
-      guard pulses else { return }
-      try? await Task.sleep(for: .milliseconds(30))
-      guard !Task.isCancelled else { return }
-      withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { dim = true }
-    }
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(style.label)
-  }
-}
-
 // MARK: - Rows
 
-/// One list row: the band dot, the title, and the runtime's ghosted mark (and a pin on the iPhone,
+/// One list row: the state's mark, the title, and the runtime's ghosted mark (and a pin on the iPhone,
 /// whose flat list has no Pinned group). Why it sits there and which connection runs it are spoken,
 /// not shown. The context menu holds the organization actions;
 /// archiving never stops a turn (spec 3.3).
@@ -225,7 +139,7 @@ struct ThreadRow: View {
   var body: some View {
     let state = model.state(of: thread)
     let selected = model.selectedThreadId == thread.id
-    let loud = selected || DotStyle(state).isLoud
+    let loud = selected || state.isTopList
     Button {
       // Select before showing the detail, so the detail coming on screen cannot mark the thread that
       // was open before (still loaded until `openThread` replaces it) read.
@@ -234,7 +148,7 @@ struct ThreadRow: View {
       Task { await model.openThread(id: thread.id) }
     } label: {
       HStack(spacing: LLA.Space.s) {
-        AttentionDot(state: state)
+        ThreadMark(state: state, acknowledged: model.isAcknowledged(thread))
         Text(thread.title.isEmpty ? "Untitled" : thread.title)
           .font(loud ? LLAFont.rowStrong : LLAFont.row)
           .foregroundStyle(LLA.Color.ink)
@@ -481,9 +395,11 @@ struct FlatThreadList: View {
 
     private func header(_ section: EnvironmentSection, isCollapsed: Bool) -> some View {
       let environment = model.environments.first { $0.id == section.id }
-      // A collapsed section still shows a dot when something inside is waiting or unread.
-      let urgent = section.threads.map { DotStyle(model.state(of: $0)) }.min().flatMap {
-        $0.isLoud ? $0 : nil
+      // A collapsed section still shows the most urgent mark of a top-list thread inside; an approve
+      // mark pulses until every approve thread in it has been opened.
+      let urgent = section.threads.map { model.state(of: $0) }.min().flatMap { $0.isTopList ? $0 : nil }
+      let acknowledged = section.threads.allSatisfy {
+        model.state(of: $0) != urgent || model.isAcknowledged($0)
       }
       return Button {
         if isCollapsed { collapsed.remove(section.id) } else { collapsed.insert(section.id) }
@@ -494,7 +410,7 @@ struct FlatThreadList: View {
             .frame(width: 10)
           Text(section.title).font(LLAFont.smallStrong).foregroundStyle(LLA.Color.ink).lineLimit(1)
           Spacer(minLength: 0)
-          if isCollapsed, let urgent { AttentionDot(style: urgent) }
+          if isCollapsed, let urgent { ThreadMark(state: urgent, acknowledged: acknowledged) }
           Text("\(section.threads.count)").font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
         }
         .padding(.horizontal, 10)

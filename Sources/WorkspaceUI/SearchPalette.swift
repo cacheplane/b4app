@@ -144,7 +144,7 @@ struct SearchPalette: View {
 
   private func row(_ thread: ConversationThread, highlighted: Bool) -> some View {
     HStack(spacing: LLA.Space.s) {
-      AttentionDot(state: model.state(of: thread))
+      ThreadMark(state: model.state(of: thread), acknowledged: model.isAcknowledged(thread))
       Text(ThreadSearch.shownTitle(thread))
         .font(LLAFont.row)
         .foregroundStyle(LLA.Color.ink)

@@ -195,6 +195,9 @@ public final class WorkspaceModel {
   public static var remoteDraftIdle: TimeInterval = 2
   /// The clock for relative times ("Replied 3m ago") and the composer idle rule; tests replace it.
   public var now: @Sendable () -> Date = { Date() }
+  /// Each thread opened on this device, with its `lastActivityAt` when it was opened: an approve mark
+  /// stops pulsing until the thread has new activity. In memory only, never synced or stored.
+  private var acknowledgedActivity: [String: String] = [:]
   /// This device's small choices (the last model and permission a new thread used); `UserDefaults`
   /// in the apps, which pass it to `init`, and in memory otherwise, so a test never shares the test
   /// runner's defaults with another. Never synced.
@@ -399,7 +402,8 @@ public final class WorkspaceModel {
   /// One line under a thread's title saying why it sits where it does. Approve and reply threads name
   /// the request kind when the thread is open (the list's `activity` only counts requests).
   public func reasonLine(for thread: ConversationThread) -> String {
-    switch Attention.state(of: thread) {
+    let state = Attention.state(of: thread)
+    switch state {
     case .approve, .reply:
       let pending = detail.flatMap { $0.thread.id == thread.id ? $0.requests : nil }?
         .filter { $0.state == .pending }.min { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
@@ -410,12 +414,9 @@ public final class WorkspaceModel {
       }
     case .failed, .finished:
       let when = relative(thread.activity?.lastActivityAt)
-      let word: String
-      switch thread.activity?.latestTurnOutcome {
-      case .failed?: word = "Failed"
-      case .cancelled?: word = "Stopped"
-      case .completed?, nil: word = "Replied"
-      }
+      // Failed, read or not; a finished turn was stopped or replied.
+      let word =
+        state == .failed ? "Failed" : thread.activity?.latestTurnOutcome == .cancelled ? "Stopped" : "Replied"
       return when.isEmpty ? word : "\(word) \(when)"
     case .working:
       // The phone does not call a turn on an offline Mac working; its state stays as synced.
@@ -930,7 +931,16 @@ public final class WorkspaceModel {
     selectedThreadId = id
     unreadHold.remove(id)
     await loadDetail(id: id)
+    if let at = threads.first(where: { $0.id == id })?.activity?.lastActivityAt {
+      acknowledgedActivity[id] = at
+    }
     await markReadIfNeeded(threadId: id)
+  }
+
+  /// Whether the thread was opened on this device since its latest activity.
+  public func isAcknowledged(_ thread: ConversationThread) -> Bool {
+    guard let at = thread.activity?.lastActivityAt else { return false }
+    return acknowledgedActivity[thread.id] == at
   }
 
   @discardableResult private func loadDetail(id: String) async -> Bool {

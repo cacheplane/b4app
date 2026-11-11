@@ -309,8 +309,9 @@ struct SnapshotShell: View {
     }
   }
 
+  /// The sidebar with a thread in each of the six states.
   @Test func macSidebarGroupsByEnvironment() async throws {
-    let model = try await ListFixture.model()
+    let model = try await ListFixture.model(extra: [ListFixture.approving])
     try await render("macSidebarGroupsByEnvironment", size: CGSize(width: 290, height: 800)) {
       SidebarView(model: model)
     }
@@ -408,29 +409,33 @@ struct SnapshotShell: View {
     }
   }
 
-  @Test func rowShowsEachBandDot() async throws {
-    let model = try await ListFixture.model()
-    let rows = [
-      model.threads.first { $0.id == "asks" }, model.threads.first { $0.id == "unread" },
-      model.threads.first { $0.id == "busy" }, model.threads.first { $0.id == "quiet" },
-    ].compactMap { $0 }
-    #expect(rows.map { model.state(of: $0) } == [.reply, .finished, .working, .quiet])
-    try await render("rowShowsEachBandDot", size: CGSize(width: 290, height: 420)) {
+  /// A row in each of the six states, then each mark on its own: approve acknowledged and not, and the
+  /// working mark still and orbiting (a still render shows one phase of each).
+  @Test func rowShowsEachStateMark() async throws {
+    let model = try await ListFixture.model(extra: [ListFixture.approving])
+    let rows = ["approving", "asks", "failed", "unread", "busy", "quiet"].compactMap { id in
+      model.threads.first { $0.id == id }
+    }
+    #expect(rows.map { model.state(of: $0) } == ThreadState.allCases)
+    try await render("rowShowsEachStateMark", size: CGSize(width: 290, height: 420)) {
       VStack(alignment: .leading, spacing: 2) {
         ForEach(rows) { ThreadRow(model: model, thread: $0) }
         Hairline().padding(.vertical, LLA.Space.m)
         HStack(spacing: LLA.Space.l) {
-          ForEach([ThreadState.approve, .finished, .working, .quiet], id: \.rawValue) {
-            AttentionDot(state: $0)
-          }
+          ForEach(ThreadState.allCases, id: \.rawValue) { ThreadMark(state: $0, animated: false) }
+          ThreadMark(state: .approve, acknowledged: true)
         }
+        HStack(spacing: LLA.Space.l) {
+          ForEach(ThreadState.allCases, id: \.rawValue) { ThreadMark(state: $0) }
+        }
+        .environment(\.dynamicTypeSize, .accessibility2)
       }
       .padding(10)
     }
   }
 }
 
-/// A fixed set of threads in every band, across two environments, "Other", and one empty manual environment.
+/// A fixed set of threads in every state but approve (`approving`, added with `extra`), across two environments, "Other", and one empty manual environment.
 @MainActor enum ListFixture {
   static let b4app = "p-b4app"
   static let marketing = "p-marketing"
@@ -482,6 +487,15 @@ struct SnapshotShell: View {
       read: "t8", at: 10),
   ]
 
+  /// A thread waiting on an approval; not in `threads`, whose counts other tests rely on.
+  static let approving: ConversationThread = {
+    var approving = thread(
+      "approving", "Approve the deploy", environment: b4app, turn: "t9", status: .waitingForUser, pending: 1,
+      at: 56)
+    approving.activity?.pendingApprovals = 1
+    return approving
+  }()
+
   static let environments: [WorkEnvironment] = [
     WorkEnvironment(
       id: b4app, name: "",
@@ -490,12 +504,15 @@ struct SnapshotShell: View {
     WorkEnvironment(id: docs, name: "Docs", manual: true),
   ]
 
-  static func model(_ transport: ScriptedTransport = ScriptedTransport()) async throws -> WorkspaceModel {
+  /// The fixture's model; `extra` threads join the fixture's own.
+  static func model(
+    _ transport: ScriptedTransport = ScriptedTransport(), extra: [ConversationThread] = []
+  ) async throws -> WorkspaceModel {
     transport.set(
       connections: [
         Connection(id: "c1", kind: .codex, label: "Codex", target: "codex", status: .ready),
         Connection(id: "c2", kind: .claude, label: "Claude Code", target: "claude", status: .ready),
-      ], threads: threads, environments: environments)
+      ], threads: threads + extra, environments: environments)
     let model = WorkspaceModel(transportProvider: { transport })
     let now = Date(timeIntervalSince1970: base + 60 * 60)
     model.now = { now }

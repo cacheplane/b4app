@@ -141,17 +141,17 @@ struct AttentionWidgetView: View {
   }
 }
 
-/// One thread: its attention dot beside a one-line title, and under the title its environment, muted, when
+/// One thread: its state's mark (still) beside a one-line title, and under the title its environment, muted, when
 /// it has one.
 struct GlanceRowView: View {
   let row: GlanceRow
-  /// The dot's width (`AttentionDot` scales the same way), so the environment lines up under the title.
-  @ScaledMetric(relativeTo: .body) private var dot: CGFloat = 8
+  /// The mark's width (`ThreadMark` scales the same way), so the environment lines up under the title.
+  @ScaledMetric(relativeTo: .body) private var mark: CGFloat = 12
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack(spacing: LLA.Space.s) {
-        AttentionDot(state: row.state)
+        ThreadMark(state: row.state, animated: false)
         Text(row.title.isEmpty ? "Untitled" : row.title)
           .font(LLAFont.smallStrong)
           .foregroundStyle(LLA.Color.ink)
@@ -162,7 +162,7 @@ struct GlanceRowView: View {
           .font(LLAFont.caption)
           .foregroundStyle(LLA.Color.muted)
           .lineLimit(1)
-          .padding(.leading, dot + LLA.Space.s)
+          .padding(.leading, mark + LLA.Space.s)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
