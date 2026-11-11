@@ -151,6 +151,9 @@ public final class WorkspaceModel {
   /// The account's view settings as stored (one synced row, read with the first snapshot and followed
   /// through `viewSettings.changed`); the defaults until read, and again once the account ends.
   public private(set) var viewSettings = ViewSettings()
+  /// Counts every change to `viewSettings` (a set, an event, a read, a sign-out), so a read that was out
+  /// meanwhile knows its row is older than what is shown.
+  @ObservationIgnored private var viewSettingsChanges = 0
   /// The Settings page to show, and a counter the root view watches to open Settings (a window on the
   /// Mac, a sheet on the iPhone); a counter so asking twice opens it twice.
   public var settingsPage: SettingsPage = SettingsPage.allCases[0]
@@ -1118,8 +1121,10 @@ public final class WorkspaceModel {
   }
 
   /// One setting, written optimistically (decision 12): shown at once, then sent with only that field.
-  /// The answer is the stored row; a refusal puts the old value back, unless a change from elsewhere
-  /// replaced it meanwhile, and says why on the sidebar's error line.
+  /// The answer's row may predate a later set or a change from elsewhere, so only this field is taken
+  /// from it, and only while the field still shows this write's value; the other fields are left to
+  /// their own writes and to the events. A refusal puts the old value back on the same terms and says
+  /// why on the sidebar's error line.
   private func setViewSetting<Value: Equatable>(
     _ field: WritableKeyPath<ViewSettings, Value>, _ value: Value, _ params: ViewSettingsSet.Params
   ) async {
@@ -1131,22 +1136,20 @@ public final class WorkspaceModel {
     let stored = await perform {
       try await $0.request(ViewSettingsSet.self, params, options: Self.mutation())
     }
-    guard generation == accountGeneration else { return }
-    if let stored {
-      showViewSettings(stored)
-    } else if viewSettings[keyPath: field] == value {
-      var restored = viewSettings
-      restored[keyPath: field] = old
-      showViewSettings(restored)
-    }
+    guard generation == accountGeneration, viewSettings[keyPath: field] == value else { return }
+    var settled = viewSettings
+    settled[keyPath: field] = stored?[keyPath: field] ?? old
+    showViewSettings(settled)
   }
 
   /// Read the account's view settings, with each snapshot (connect, reconnect, sign-in, desync). A read
   /// that fails keeps what is shown (the defaults, on a first connect) and never holds the list back.
+  /// A read that a set or an event overtook is dropped: its row is older than what they showed.
   func refreshViewSettings() async {
     let generation = accountGeneration
+    let changes = viewSettingsChanges
     guard let client, let settings = try? await client.request(ViewSettingsGet.self, EmptyParams()),
-      generation == accountGeneration
+      generation == accountGeneration, changes == viewSettingsChanges
     else { return }
     showViewSettings(settings)
   }
@@ -1154,6 +1157,7 @@ public final class WorkspaceModel {
   /// A new arrangement, or archived threads shown or hidden, is another list rather than a changed one:
   /// the arrival tracker starts afresh from it, as on a filter change.
   private func showViewSettings(_ settings: ViewSettings) {
+    viewSettingsChanges += 1
     let old = viewSettings
     guard settings != old else { return }
     viewSettings = settings
@@ -1170,7 +1174,7 @@ public final class WorkspaceModel {
       generation == accountGeneration
     else { return }
     environments = list.environments
-    // A thread whose environment went is now under "No folder": shown under that filter, not arrived.
+    // A thread whose environment went is now under "No folder": regrouped, not arrived.
     noteThreadList(asBaseline: true)
   }
 

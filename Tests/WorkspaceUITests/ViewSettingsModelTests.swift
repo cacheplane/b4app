@@ -121,6 +121,58 @@ import WorkspaceProtocol
     await model.disconnect()
   }
 
+  @Test func overlappingSetsKeepEachOthersValues() async throws {
+    let transport = ScriptedTransport()
+    let model = try await Self.connected(transport)
+    transport.script(.viewSettingsSet, [.hold, .hold])
+    let first = Task { await model.setArrangement(.byEnvironment) }
+    try await waitUntil("the first set is out") { transport.heldCount(.viewSettingsSet) == 1 }
+    let second = Task { await model.setQuietThreads(.hidden) }
+    try await waitUntil("the second set is out") { transport.heldCount(.viewSettingsSet) == 2 }
+    // The first answer was made before the second set: it still carries the old quietThreads.
+    transport.release(.viewSettingsSet, with: try Self.reply(ViewSettings(arrangement: .byEnvironment)))
+    await first.value
+    #expect(model.viewSettings == ViewSettings(arrangement: .byEnvironment, quietThreads: .hidden))
+    transport.release(
+      .viewSettingsSet, with: try Self.reply(ViewSettings(arrangement: .byEnvironment, quietThreads: .hidden))
+    )
+    await second.value
+    #expect(model.viewSettings == ViewSettings(arrangement: .byEnvironment, quietThreads: .hidden))
+    await model.disconnect()
+  }
+
+  @Test func aLateAnswerDoesNotUndoAChangeFromElsewhere() async throws {
+    let transport = ScriptedTransport()
+    let model = try await Self.connected(transport)
+    transport.script(.viewSettingsSet, [.hold])
+    let write = Task { await model.setShowArchived(true) }
+    try await waitUntil("the set is out") { transport.heldCount(.viewSettingsSet) == 1 }
+    transport.emit(try .viewSettingsChanged(ViewSettings(quietThreads: .collapsed, showArchived: true)))
+    try await waitUntil("the change") { model.viewSettings.quietThreads == .collapsed }
+    // The answer was made before the other device's change.
+    transport.release(.viewSettingsSet, with: try Self.reply(ViewSettings(showArchived: true)))
+    await write.value
+    #expect(model.viewSettings == ViewSettings(quietThreads: .collapsed, showArchived: true))
+    await model.disconnect()
+  }
+
+  @Test func aSlowReadDoesNotUndoNewerValues() async throws {
+    let transport = ScriptedTransport()
+    let model = try await Self.connected(transport)
+    transport.script(.viewSettingsGet, [.hold])
+    let read = Task { await model.refreshViewSettings() }
+    try await waitUntil("the read is out") { transport.heldCount(.viewSettingsGet) == 1 }
+    transport.script(.viewSettingsSet, [try Self.reply(ViewSettings(arrangement: .byEnvironment))])
+    await model.setArrangement(.byEnvironment)
+    transport.emit(try .viewSettingsChanged(ViewSettings(arrangement: .byEnvironment, quietThreads: .tiny)))
+    try await waitUntil("the change") { model.viewSettings.quietThreads == .tiny }
+    // The read's row is from before both.
+    transport.release(.viewSettingsGet, with: try Self.reply(ViewSettings()))
+    await read.value
+    #expect(model.viewSettings == ViewSettings(arrangement: .byEnvironment, quietThreads: .tiny))
+    await model.disconnect()
+  }
+
   @Test func thePhoneShowsCollapsedForTinyAndSendsNothing() async throws {
     let tiny = ViewSettings(quietThreads: .tiny)
     let transport = ScriptedTransport()
