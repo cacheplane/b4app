@@ -190,7 +190,8 @@ public final class AccountScope: Sendable {
     let servers = LocalServerService(
       context: LocalServerService.Context(
         database: database, eventLog: eventLog, environment: context.environment, paths: context.paths))
-    let environments = EnvironmentService(database: database, eventLog: eventLog)
+    let environments = EnvironmentService(
+      database: database, eventLog: eventLog, threadFoldersDir: context.paths.threadFoldersDir)
     // Give every existing thread without an environment the environment of its folder. A failure here must not
     // keep the account from opening: the next open tries again.
     do {

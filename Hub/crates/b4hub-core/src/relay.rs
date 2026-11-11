@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn relay_fixture_round_trips() {
         let elements: Vec<serde_json::Value> = serde_json::from_str(FIXTURE).unwrap();
-        assert_eq!(elements.len(), 21);
+        assert_eq!(elements.len(), 22);
         for element in elements {
             let decoded: RelayMessage = serde_json::from_value(element.clone()).unwrap();
             assert_eq!(serde_json::to_value(decoded).unwrap(), element);

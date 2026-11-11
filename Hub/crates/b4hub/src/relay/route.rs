@@ -536,6 +536,11 @@ async fn find_owner(
                 _ => Ok(owner),
             }
         }
+        // A start that names an environment goes to the environment's owner; one that names none
+        // (a thread with no folder) names the Mac itself, like a new environment does.
+        RelayMethod::ThreadStart if params.get("environmentId").is_none_or(Value::is_null) => {
+            device_owner(db, caller, params).await
+        }
         RelayMethod::ThreadStart
         | RelayMethod::EnvironmentUpdate
         | RelayMethod::EnvironmentDelete => {
@@ -546,16 +551,20 @@ async fn find_owner(
             eligible(caller, found.ok_or_else(not_found)?)
         }
         // A new environment has no row yet: the phone names the Mac whose folders it will list.
-        RelayMethod::EnvironmentCreate => {
-            let device_id = param(params, "deviceId")?
-                .parse::<Uuid>()
-                .map_err(|_| not_found())?;
-            let found = owner_device(db, org, user, device_id)
-                .await
-                .map_err(lookup_failed)?;
-            eligible(caller, found.ok_or_else(not_found)?)
-        }
+        RelayMethod::EnvironmentCreate => device_owner(db, caller, params).await,
     }
+}
+
+/// The Mac `params.deviceId` names, if the caller may reach it; a missing or malformed id is
+/// `not_found`.
+async fn device_owner(db: &Db, caller: &LinkHandle, params: &Value) -> Result<Owner, WireError> {
+    let device_id = param(params, "deviceId")?
+        .parse::<Uuid>()
+        .map_err(|_| not_found())?;
+    let found = owner_device(db, caller.org_id, caller.user_id, device_id)
+        .await
+        .map_err(lookup_failed)?;
+    eligible(caller, found.ok_or_else(not_found)?)
 }
 
 /// The Mac that owns `thread_id`, if the caller may reach it: a thread started moments ago through

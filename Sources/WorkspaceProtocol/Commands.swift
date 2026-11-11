@@ -331,11 +331,12 @@ public enum ConnectionLogin: WorkspaceCommand {
   public static let method = Method.connectionLogin
 }
 
-/// Create a native thread. Harness threads need a `workingDirectory`; B4 threads ignore it and bind
-/// to the connection's route instead.
+/// Create a native thread. B4 threads ignore `workingDirectory` and bind to the connection's route instead.
 public enum ThreadCreate: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
     public var connectionId: String
+    /// A harness (Codex or Claude) thread's folder, an existing directory. Nil or empty: the coordinator
+    /// makes a folder for the thread, and the thread has no environment.
     public var workingDirectory: String?
     public var title: String?
     /// The new thread's id, minted by the caller of `thread.start`; nil mints one here. Only

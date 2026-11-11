@@ -2,10 +2,11 @@ import Foundation
 
 /// Create a thread and send its first turn in one step, from the phone through the relay or from the
 /// Mac's own app. The caller mints `threadId` and the command's operationId is the turn's, so a retry
-/// lands on the same thread and the same turn. `folder` is required for Codex and Claude; with a
-/// `environmentId` it must be one of the environment's folders, and without one (the Mac's app only; a relayed
-/// start always names an environment) the folder's own environment is used, made when none owns it. It is
-/// absent for a B4 connection, whose thread is bound to its route. `model` and `permission` are the
+/// lands on the same thread and the same turn. `folder` is required for Codex and Claude unless the
+/// thread has no folder; with a `environmentId` it must be one of the environment's folders, and
+/// without one the folder's own environment is used, made when none owns it. A relayed start names
+/// either an environment or, for a thread with no folder, the Mac by `deviceId`. `folder` is absent
+/// for a B4 connection, whose thread is bound to its route. `model` and `permission` are the
 /// thread's runtime choices, nil for the runtime's own; the thread is titled from the first line of
 /// `text`.
 public enum ThreadStart: WorkspaceCommand {
@@ -19,10 +20,12 @@ public enum ThreadStart: WorkspaceCommand {
     public var model: String?
     /// A `PermissionOption.id` of the connection's runtime; nil leaves the runtime's own configuration.
     public var permission: String?
+    /// The Mac to start on when no environment names one. The hub routes by it; the Mac ignores it.
+    public var deviceId: String?
     public init(
       threadId: String, environmentId: String? = nil, connectionId: String, folder: String? = nil,
       text: String,
-      model: String? = nil, permission: String? = nil
+      model: String? = nil, permission: String? = nil, deviceId: String? = nil
     ) {
       self.threadId = threadId
       self.environmentId = environmentId
@@ -31,6 +34,7 @@ public enum ThreadStart: WorkspaceCommand {
       self.text = text
       self.model = model
       self.permission = permission
+      self.deviceId = deviceId
     }
   }
   public struct Result: Codable, Sendable, Equatable {

@@ -2366,6 +2366,99 @@ async fn thread_start_auto_watches_the_new_thread(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn thread_start_without_environment_routes_by_device(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+
+    let params = json!({
+        "threadId": "bare-thread",
+        "connectionId": "conn-1",
+        "text": "no folder",
+        "deviceId": world.mac_id.to_string(),
+    });
+    phone
+        .command("start-bare", RelayMethod::ThreadStart, params.clone())
+        .await;
+    let (id, method, forwarded, deadline, from) = mac.expect_command().await;
+    assert_eq!(
+        (id.as_str(), method),
+        ("start-bare", RelayMethod::ThreadStart)
+    );
+    assert_eq!(forwarded, params);
+    assert!(deadline.is_some() && from.is_some());
+    mac.reply(&id, json!({"thread": {"id": "bare-thread"}}))
+        .await;
+    assert_eq!(phone.expect_reply().await.0, "start-bare");
+}
+
+#[sqlx::test(migrations = false)]
+async fn thread_start_with_neither_environment_nor_device_is_not_found(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+
+    for (n, params) in [
+        json!({"threadId": "t", "connectionId": "conn-1", "text": "x"}),
+        json!({"threadId": "t", "connectionId": "conn-1", "text": "x", "environmentId": null}),
+        json!({"threadId": "t", "connectionId": "conn-1", "text": "x", "deviceId": "not-a-device"}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = format!("start-{n}");
+        phone.command(&id, RelayMethod::ThreadStart, params).await;
+        let (got, error) = phone.expect_refusal().await;
+        assert_eq!((got, error.code.as_str()), (id, "not_found"));
+    }
+    mac.expect_quiet(QUIET).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn thread_start_to_another_users_device_is_not_found(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let colleague = world.hub.user("cacheplane", "colleague").await;
+    let (their_token, their_mac_id) = world.hub.enroll(&colleague, "macos", "Their Mac").await;
+    let mut their_mac = FakeDevice::ready(world.hub.addr, &their_token).await.0;
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+
+    for (n, device) in [their_mac_id, world.phone_id].into_iter().enumerate() {
+        let id = format!("start-{n}");
+        let params = json!({
+            "threadId": "t",
+            "connectionId": "conn-1",
+            "text": "x",
+            "deviceId": device.to_string(),
+        });
+        phone.command(&id, RelayMethod::ThreadStart, params).await;
+        let (got, error) = phone.expect_refusal().await;
+        assert_eq!((got, error.code.as_str()), (id, "not_found"));
+    }
+    mac.expect_quiet(QUIET).await;
+    their_mac.expect_quiet(QUIET).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn thread_start_with_an_environment_ignores_device(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let colleague = world.hub.user("cacheplane", "colleague").await;
+    let (their_token, their_mac_id) = world.hub.enroll(&colleague, "macos", "Their Mac").await;
+    let mut their_mac = FakeDevice::ready(world.hub.addr, &their_token).await.0;
+    let mut mac = world.mac().await;
+    let mut phone = world.phone().await;
+
+    // The environment's owner gets it, whatever device the start also names.
+    let mut params = params_for(RelayMethod::ThreadStart);
+    params["deviceId"] = json!(their_mac_id.to_string());
+    phone
+        .command("start-env", RelayMethod::ThreadStart, params)
+        .await;
+    assert_eq!(mac.expect_command().await.0, "start-env");
+    their_mac.expect_quiet(QUIET).await;
+}
+
+#[sqlx::test(migrations = false)]
 async fn a_refused_thread_start_gives_its_watch_back(pool: PgPool) {
     let world = World::new(spawn_hub(&pool).await).await;
     let mut mac = world.mac().await;

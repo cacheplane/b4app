@@ -148,7 +148,7 @@ struct ComposerPickerRow: View {
   }
 
   /// The environment's name, with the starting folder's name when it has several; a chosen folder (the
-  /// Mac's "Choose folder…") by its own name until Send finds its environment.
+  /// Mac's "Choose folder…") by its own name until Send finds its environment; else "No folder".
   private func placeText(_ draft: NewThreadDraft) -> String {
     if let chosen = draft.chosenFolder { return Self.folderName(chosen) }
     guard let environment = draft.environment else { return "No folder" }
@@ -158,8 +158,11 @@ struct ComposerPickerRow: View {
     return "\(environment.displayName) · \(Self.folderName(folder))"
   }
 
-  private func placeText(_ thread: ConversationThread) -> String {
-    let environment = thread.environmentId.flatMap { id in model.environments.first { $0.id == id } }
+  /// A thread's place: "No folder" when it has no environment, whatever its folder is called (a folder
+  /// the Mac made for it); an environment not loaded (or gone) by the thread's folder.
+  func placeText(_ thread: ConversationThread) -> String {
+    guard let environmentId = thread.environmentId else { return "No folder" }
+    let environment = model.environments.first { $0.id == environmentId }
     let b4 = connection?.kind == .b4
     guard let environment else {
       guard !b4, let context = thread.context, !context.isEmpty else { return "No folder" }
@@ -172,7 +175,8 @@ struct ComposerPickerRow: View {
   }
 
   /// Each environment a thread can start in: an environment with one folder is one item; one with several is a
-  /// group of its folders. Choosing a folder chooses its environment. Then "Choose folder…" on the Mac.
+  /// group of its folders. Choosing a folder chooses its environment. Then "No folder" (a folder the Mac
+  /// makes for the thread), and "Choose folder…" on the Mac.
   @ViewBuilder private func environmentItems(_ draft: NewThreadDraft) -> some View {
     ForEach(draft.environments) { environment in
       if environment.folders.count > 1 {
@@ -198,9 +202,11 @@ struct ComposerPickerRow: View {
         }
       }
     }
+    if !draft.environments.isEmpty { Divider() }
+    choice("No folder", selected: draft.isNoFolder) { draft.selectNoFolder() }
+      .accessibilityIdentifier("no-folder")
     #if os(macOS)
       if !model.relaysThroughHub {
-        Divider()
         Button("Choose folder…") { choosingFolder = true }
           .accessibilityIdentifier("choose-folder")
       }

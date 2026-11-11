@@ -779,7 +779,7 @@ actor EventCollector {
     let again = try await start(h, params, operationId: operationId)
     // Past the router's own replay: the service finds the turn this operation already made.
     let direct = try await h.coordinator.sessions.threadStart(
-      params, operationId: operationId, requireEnvironment: false)
+      params, operationId: operationId, fromAnotherDevice: false)
     for result in [again, direct] {
       #expect(result.thread.id == first.thread.id)
       #expect(result.turn.id == first.turn.id)
@@ -859,6 +859,275 @@ actor EventCollector {
     }
     await h.stop()
     await server.stop()
+  }
+}
+
+/// A Codex or Claude thread started with no folder: the coordinator makes one under `threadFoldersDir`,
+/// records it, and the thread has no environment.
+@Suite(.serialized) struct NoFolderStartTests {
+  private func start(
+    _ h: Harness, _ params: ThreadStart.Params, operationId: String = UUID().uuidString
+  ) async throws -> ThreadStart.Result {
+    try await h.client.request(
+      ThreadStart.self, params, options: RequestOptions(operationId: operationId, timeout: .seconds(30)))
+  }
+
+  private func root(_ h: Harness) -> String { h.coordinator.paths.threadFoldersDir }
+
+  /// The root's entries; none when the root was never made.
+  private func entries(_ h: Harness) -> [String] {
+    (try? FileManager.default.contentsOfDirectory(atPath: root(h))) ?? []
+  }
+
+  private static func utcDate(_ date: Date) -> String {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "UTC")!
+    let parts = calendar.dateComponents([.year, .month, .day], from: date)
+    return String(format: "%04d-%02d-%02d", parts.year!, parts.month!, parts.day!)
+  }
+
+  private static func mode(_ path: String) throws -> Int {
+    let attributes = try FileManager.default.attributesOfItem(atPath: path)
+    return (attributes[.posixPermissions] as? NSNumber)?.intValue ?? -1
+  }
+
+  /// The thread's folder is the recorded app folder, a mode-0700 directory under the root named
+  /// `<UTC date>-<first 8 characters of the thread id>`.
+  private func expectAppFolder(
+    _ h: Harness, _ thread: ConversationThread, before: Date, after: Date
+  ) throws -> String {
+    let path = try #require(thread.context)
+    let recorded = try #require(try h.coordinator.database.appFolder(threadId: thread.id))
+    #expect(recorded.path == path)
+    #expect((path as NSString).deletingLastPathComponent == SessionService.canonicalDirectory(root(h)))
+    let names = [before, after].map { "\(Self.utcDate($0))-\(thread.id.prefix(8))" }
+    #expect(names.contains((path as NSString).lastPathComponent))
+    var isDirectory: ObjCBool = false
+    #expect(FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue)
+    #expect(try Self.mode(path) == 0o700)
+    #expect(try Self.mode(root(h)) == 0o700)
+    #expect(thread.environmentId == nil)
+    return path
+  }
+
+  /// The runtimes that start a thread in a folder, so a no-folder test runs against both fakes.
+  enum Runtime: CaseIterable, Sendable {
+    case codex, claude
+
+    func add(_ h: Harness) async throws -> Connection {
+      switch self {
+      case .codex: try await h.addCodex()
+      case .claude: try await h.addClaude()
+      }
+    }
+  }
+
+  @Test(arguments: Runtime.allCases)
+  func aStartWithNoFolderMakesOneAndHasNoEnvironment(_ runtime: Runtime) async throws {
+    let h = try await Harness.start()
+    let connection = try await runtime.add(h)
+    let before = Date()
+    let started = try await start(
+      h, ThreadStart.Params(threadId: UUID().uuidString.lowercased(), connectionId: connection.id, text: "hi")
+    )
+    let path = try expectAppFolder(h, started.thread, before: before, after: Date())
+    #expect(try h.coordinator.database.listEnvironments().isEmpty)
+    #expect(try await h.coordinator.sessions.appFolder(forThread: started.thread.id) == path)
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == started.turn.id }
+    await h.stop()
+  }
+
+  @Test func aRelayedStartWithNoEnvironmentIsAccepted() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let before = Date()
+    let started = try await h.coordinator.sessions.threadStart(
+      ThreadStart.Params(threadId: UUID().uuidString.lowercased(), connectionId: codex.id, text: "hi"),
+      operationId: UUID().uuidString, fromAnotherDevice: true)
+    _ = try expectAppFolder(h, started.thread, before: before, after: Date())
+    #expect(try h.coordinator.database.listEnvironments().isEmpty)
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == started.turn.id }
+    await h.stop()
+  }
+
+  @Test func aRelayedStartWithAFolderAndNoEnvironmentIsRefused() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let threadId = UUID().uuidString.lowercased()
+    do {
+      _ = try await h.coordinator.sessions.threadStart(
+        ThreadStart.Params(threadId: threadId, connectionId: codex.id, folder: h.workDir, text: "hi"),
+        operationId: UUID().uuidString, fromAnotherDevice: true)
+      Issue.record("expected environment_missing")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .protocolInvalid)
+      #expect(error.details?["reason"]?.stringValue == "environment_missing")
+    }
+    #expect(try h.coordinator.database.thread(id: threadId) == nil)
+    #expect(entries(h).isEmpty)
+    await h.stop()
+  }
+
+  @Test func retryingANoFolderStartMakesNoSecondFolder() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let db = h.coordinator.database
+    let params = ThreadStart.Params(
+      threadId: UUID().uuidString.lowercased(), connectionId: codex.id, text: "hi")
+    // Refused while the connection is off, then started under a new command id, then that command again.
+    _ = try db.updateConnection(id: codex.id) { $0.enabled = false }
+    do {
+      _ = try await start(h, params)
+      Issue.record("expected connection_not_ready")
+    } catch let error as WorkspaceError {
+      #expect(error.details?["reason"]?.stringValue == "connection_not_ready")
+    }
+    _ = try db.updateConnection(id: codex.id) { $0.enabled = true }
+    let operationId = UUID().uuidString
+    let first = try await start(h, params, operationId: operationId)
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == first.turn.id }
+    let again = try await start(h, params, operationId: operationId)
+    let direct = try await h.coordinator.sessions.threadStart(
+      params, operationId: operationId, fromAnotherDevice: false)
+    for result in [again, direct] {
+      #expect(result.thread.id == first.thread.id)
+      #expect(result.thread.context == first.thread.context)
+      #expect(result.turn.id == first.turn.id)
+    }
+    #expect(entries(h).count == 1)
+    #expect(try db.listAppFolders().map(\.path) == [try #require(first.thread.context)])
+    await h.stop()
+  }
+
+  @Test func aStartRefusedBeforeTheThreadLeavesNoFolder() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    _ = try h.coordinator.database.updateConnection(id: codex.id) { $0.status = .offline }
+    let threadId = UUID().uuidString.lowercased()
+    do {
+      _ = try await start(h, ThreadStart.Params(threadId: threadId, connectionId: codex.id, text: "hi"))
+      Issue.record("expected connection_not_ready")
+    } catch let error as WorkspaceError {
+      #expect(error.details?["reason"]?.stringValue == "connection_not_ready")
+    }
+    #expect(try h.coordinator.database.thread(id: threadId) == nil)
+    #expect(entries(h).isEmpty)
+    #expect(try h.coordinator.database.listAppFolders().isEmpty)
+    await h.stop()
+  }
+
+  /// A start whose session cannot be created takes back the folder it made, and its record.
+  @Test func aStartWhoseSessionFailsLeavesNoFolder() async throws {
+    let h = try await Harness.start(extraEnvironment: ["FAKE_CODEX_START_FAIL": "1"])
+    let codex = try await h.addCodex()
+    let threadId = UUID().uuidString.lowercased()
+    await #expect(throws: WorkspaceError.self) {
+      _ = try await start(h, ThreadStart.Params(threadId: threadId, connectionId: codex.id, text: "hi"))
+    }
+    #expect(try h.coordinator.database.thread(id: threadId) == nil)
+    #expect(entries(h).isEmpty)
+    #expect(try h.coordinator.database.listAppFolders().isEmpty)
+    await h.stop()
+  }
+
+  /// A folder something wrote into before the session failed is never removed: the folder and the file
+  /// stay, and so does its record, so it is still known as a folder the app made.
+  @Test func aStartWhoseSessionFailsAfterAFileWasWrittenKeepsTheFolder() async throws {
+    let h = try await Harness.start(extraEnvironment: ["FAKE_CODEX_START_FAIL": "write"])
+    let codex = try await h.addCodex()
+    let threadId = UUID().uuidString.lowercased()
+    await #expect(throws: WorkspaceError.self) {
+      _ = try await start(h, ThreadStart.Params(threadId: threadId, connectionId: codex.id, text: "hi"))
+    }
+    #expect(try h.coordinator.database.thread(id: threadId) == nil)
+    let recorded = try #require(try h.coordinator.database.appFolder(threadId: threadId))
+    #expect(try FileManager.default.contentsOfDirectory(atPath: recorded.path) == ["left-behind.txt"])
+    #expect(entries(h) == [(recorded.path as NSString).lastPathComponent])
+    await h.stop()
+  }
+
+  @Test func backfillLeavesAppFolderThreadsWithoutAnEnvironment() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let started = try await start(
+      h, ThreadStart.Params(threadId: UUID().uuidString.lowercased(), connectionId: codex.id, text: "hi"))
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == started.turn.id }
+    #expect(try await h.coordinator.environments.backfill() == 0)
+    #expect(try h.coordinator.database.thread(id: started.thread.id)?.environmentId == nil)
+    #expect(try h.coordinator.database.listEnvironments().isEmpty)
+    await h.stop()
+  }
+
+  @Test func sendingToAThreadWhoseFolderIsGoneSaysSo() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let started = try await start(
+      h, ThreadStart.Params(threadId: UUID().uuidString.lowercased(), connectionId: codex.id, text: "hi"))
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == started.turn.id }
+    let path = try #require(started.thread.context)
+    try FileManager.default.removeItem(atPath: path)
+    let turnsBefore = try h.coordinator.database.turns(threadId: started.thread.id)
+    do {
+      _ = try await h.send(started.thread, "still there?")
+      Issue.record("expected folder_gone")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .protocolInvalid)
+      #expect(error.details?["reason"]?.stringValue == "folder_gone")
+      #expect(error.details?["folder"]?.stringValue == path)
+    }
+    #expect(try h.coordinator.database.turns(threadId: started.thread.id) == turnsBefore)
+    await h.stop()
+  }
+
+  @Test(arguments: Runtime.allCases)
+  func aThreadWhoseFolderIsGoneStillReads(_ runtime: Runtime) async throws {
+    let h = try await Harness.start()
+    let connection = try await runtime.add(h)
+    let started = try await start(
+      h, ThreadStart.Params(threadId: UUID().uuidString.lowercased(), connectionId: connection.id, text: "hi")
+    )
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == started.turn.id }
+    let cached = try await h.read(started.thread).items
+    #expect(!cached.isEmpty)
+    try FileManager.default.removeItem(atPath: try #require(started.thread.context))
+    let read = try await h.read(started.thread)
+    #expect(read.items == cached)
+    #expect(read.turns.map(\.id) == [started.turn.id])
+    await h.stop()
+  }
+
+  /// A folder already at the short name is never adopted: the thread gets `<date>-<whole id>`. A recorded
+  /// folder removed since is made again at the same path.
+  @Test func anExistingFolderIsNotAdoptedAndAGoneOneIsMadeAgain() async throws {
+    let h = try await Harness.start()
+    let sessions = h.coordinator.sessions
+    let threadId = UUID().uuidString.lowercased()
+    let date = Self.utcDate(Date())
+    let taken = root(h) + "/\(date)-\(threadId.prefix(8))"
+    try FileManager.default.createDirectory(atPath: taken, withIntermediateDirectories: true)
+    try Data("theirs".utf8).write(to: URL(fileURLWithPath: taken + "/file.txt"))
+    let path = try await sessions.appFolder(forThread: threadId)
+    #expect((path as NSString).lastPathComponent == "\(date)-\(threadId)")
+    #expect(try FileManager.default.contentsOfDirectory(atPath: taken) == ["file.txt"])
+    try FileManager.default.removeItem(atPath: path)
+    #expect(try await sessions.appFolder(forThread: threadId) == path)
+    var isDirectory: ObjCBool = false
+    #expect(FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue)
+    #expect(try h.coordinator.database.listAppFolders().map(\.path) == [path])
+    await h.stop()
+  }
+
+  @Test func threadCreateWithNoWorkingDirectoryMakesAnAppFolder() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let before = Date()
+    let thread = try await h.client.request(
+      ThreadCreate.self, ThreadCreate.Params(connectionId: codex.id),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30))
+    ).thread
+    _ = try expectAppFolder(h, thread, before: before, after: Date())
+    #expect(try h.coordinator.database.listEnvironments().isEmpty)
+    await h.stop()
   }
 }
 
@@ -1038,9 +1307,10 @@ actor EventCollector {
     let codex = try await h.addCodex()
     do {
       _ = try await h.client.request(
-        ThreadCreate.self, ThreadCreate.Params(connectionId: codex.id),
+        ThreadCreate.self,
+        ThreadCreate.Params(connectionId: codex.id, workingDirectory: h.workDir + "/never-made"),
         options: RequestOptions(operationId: UUID().uuidString))
-      Issue.record("a harness thread still needs a directory")
+      Issue.record("a harness thread's directory must exist")
     } catch let error as WorkspaceError {
       #expect(error.code == .protocolInvalid)
     }

@@ -2,9 +2,10 @@ import Foundation
 import Observation
 import WorkspaceProtocol
 
-/// The new-thread composer's state, the same on the Mac and the phone: where the thread starts (a
-/// environment and its starting folder, or on the Mac a folder chosen outside every environment), the runtime
-/// connection, model, and permission, and the first message.
+/// The new-thread composer's state, the same on the Mac and the phone: where the thread starts (an
+/// environment and its starting folder, "No folder" (a folder the Mac makes for the thread), or on the Mac
+/// a folder chosen outside every environment), the runtime connection, model, and permission, and the first
+/// message.
 ///
 /// The choices open on this device's last ones (`NewThreadMemory`, the spec's "Defaults"), falling
 /// back past anything that no longer exists, and the unsent text is kept in that memory as it changes.
@@ -19,6 +20,9 @@ final class NewThreadDraft {
   /// A folder from "Choose folder…" that is none of an environment's folders (the Mac only). Its environment is
   /// found or made by the coordinator on Send, never before, so an abandoned draft leaves none behind.
   private(set) var chosenFolder: String?
+  /// "No folder" was chosen by hand, so a refresh keeps it rather than taking the remembered environment
+  /// (which a draft made before the environments loaded could not yet find).
+  private var choseNoFolder = false
   private(set) var connectionId: String?
   /// A `RuntimeModel.id`; nil for the runtime's default.
   private(set) var model: String?
@@ -57,8 +61,8 @@ final class NewThreadDraft {
     environmentId.flatMap { id in workspace.environments.first { $0.id == id } }
   }
 
-  /// The runtimes offered here: an environment's connections, or with none (a chosen folder) the ones that
-  /// need no environment; on the Mac, remote B4 last.
+  /// The runtimes offered here: an environment's connections, or with none ("No folder" or a chosen folder)
+  /// the ones that need no environment; on the Mac, remote B4 last.
   var connections: [Connection] {
     guard let environment else { return workspace.startConnectionsWithoutEnvironment }
     return workspace.startConnections(for: environment) + workspace.remoteB4Connections
@@ -68,6 +72,10 @@ final class NewThreadDraft {
 
   /// A remote B4 connection is chosen: no environment, no folder, no permission.
   var isRemoteB4: Bool { connection.map { $0.kind == .b4 && $0.b4Mode == .remote } ?? false }
+
+  /// "No folder": a Codex or Claude thread in a folder the Mac makes for it. No environment and no chosen
+  /// folder, and not a remote B4 (which has no folder of its own to make).
+  var isNoFolder: Bool { environmentId == nil && chosenFolder == nil && !isRemoteB4 }
 
   var folders: [EnvironmentFolder] {
     guard let environment, let connection else { return [] }
@@ -118,6 +126,19 @@ final class NewThreadDraft {
     environmentId = nil
     folder = nil
     chosenFolder = path
+    choseNoFolder = false
+    if connection == nil || connection?.kind == .b4 {
+      apply(defaultRuntime(NewThreadMemory.load(from: workspace.preferences), allowRemote: false))
+    }
+  }
+
+  /// "No folder": no environment and no chosen folder. A runtime not offered with no folder (this
+  /// environment's B4 agent) gives way to the default one.
+  func selectNoFolder() {
+    environmentId = nil
+    folder = nil
+    chosenFolder = nil
+    choseNoFolder = true
     if connection == nil || connection?.kind == .b4 {
       apply(defaultRuntime(NewThreadMemory.load(from: workspace.preferences), allowRemote: false))
     }
@@ -128,6 +149,7 @@ final class NewThreadDraft {
   func selectRuntime(connectionId id: String, model chosen: String?) {
     guard let next = connections.first(where: { $0.id == id }) else { return }
     let previousKind = connection?.kind
+    let wasRemoteB4 = isRemoteB4
     connectionId = id
     model = next.kind == .b4 ? nil : chosen
     if next.kind == .b4 || previousKind != next.kind { permission = nil }
@@ -135,8 +157,8 @@ final class NewThreadDraft {
       environmentId = nil
       folder = nil
       chosenFolder = nil
-    } else if environmentId == nil, chosenFolder == nil {
-      // Leaving a remote B4: the thread needs a place again.
+    } else if wasRemoteB4 {
+      // Leaving a remote B4: the thread takes the default place again, which may be "No folder".
       let memory = NewThreadMemory.load(from: workspace.preferences)
       place(in: defaultEnvironment(nil, memory), memory)
     }
@@ -156,33 +178,30 @@ final class NewThreadDraft {
     if !isRemoteB4, chosenFolder == nil {
       if let environment {
         if !environment.folders.contains(where: { $0.path == folder }) { place(in: environment, memory) }
-      } else {
+      } else if !choseNoFolder {
         place(in: defaultEnvironment(nil, memory), memory)
       }
     }
-    if connection == nil { apply(defaultRuntime(memory, allowRemote: environmentId == nil)) }
+    if connection == nil {
+      apply(defaultRuntime(memory, allowRemote: environmentId == nil && !choseNoFolder))
+    }
   }
 
   // MARK: Defaults
 
-  /// The environment asked for, else the remembered one, else the newest. The phone takes the remembered
-  /// or newest only among environments whose Mac can take a start now, as its sheet always has.
+  /// The environment asked for, else the remembered one while it still exists, else none: "No folder".
   private func defaultEnvironment(_ requested: String?, _ memory: NewThreadMemory) -> WorkEnvironment? {
     let environments = workspace.startEnvironments
     if let requested, let environment = environments.first(where: { $0.id == requested }) {
       return environment
     }
-    let candidates =
-      workspace.relaysThroughHub
-      ? environments.filter {
-        workspace.startBlockedReason(for: $0) == nil && !workspace.startConnections(for: $0).isEmpty
-      } : environments
-    return candidates.first { $0.id == memory.environmentId } ?? candidates.first ?? environments.first
+    return memory.environmentId.flatMap { id in environments.first { $0.id == id } }
   }
 
   private func place(in environment: WorkEnvironment?, _ memory: NewThreadMemory) {
     environmentId = environment?.id
     chosenFolder = nil
+    choseNoFolder = false
     folder = environment.flatMap { environment in
       let paths = environment.folders.map(\.path)
       let remembered = memory.folderByEnvironment[environment.id].flatMap { paths.contains($0) ? $0 : nil }
@@ -232,20 +251,28 @@ final class NewThreadDraft {
 
   // MARK: Sending
 
-  /// Why Send is off, in words: the environment's Mac cannot be reached, an earlier start is still open, or
-  /// the choices give nothing to start. Nil when it can be sent.
+  /// Why Send is off, in words: the Mac it would go to cannot be reached (the environment's, or for "No
+  /// folder" on the phone the primary Mac), an earlier start is still open, or the choices give nothing to
+  /// start. Nil when it can be sent.
   var blockedReason: String? {
     if let environment, let reason = workspace.startBlockedReason(for: environment) { return reason }
+    if isNoFolder, let reason = workspace.startBlockedReason(forDevice: workspace.primaryHostId) {
+      return reason
+    }
     if !unsettled, let reason = workspace.unsettledStartReason { return reason }
     let phone = workspace.relaysThroughHub
     guard let connection else {
+      if isNoFolder {
+        return phone
+          ? "No ready Codex or Claude connection on your Mac can start a thread with no folder."
+          : "No ready Codex or Claude connection can start a thread with no folder."
+      }
       if environment == nil, chosenFolder == nil { return phone ? nil : "Choose a folder to start in." }
       return phone
         ? "No ready connection on your Mac can start a thread in this environment."
         : "No ready connection can start a thread in this environment."
     }
-    if connection.kind != .b4, chosenFolder == nil, folder == nil {
-      if environment == nil { return "Choose a folder to start in." }
+    if environment != nil, connection.kind != .b4, folder == nil {
       return phone
         ? "This environment has no folder yet. Add one on your Mac." : "This environment has no folder yet."
     }
@@ -345,8 +372,10 @@ extension WorkspaceModel {
   /// choices become this device's last ones and the unsent text that was sent is cleared.
   func newThreadStarted(_ start: ThreadStart.Params, text: String) {
     let thread = threads.first { $0.id == start.threadId }
+    let remoteB4 =
+      connection(id: start.connectionId).map { $0.kind == .b4 && $0.b4Mode == .remote } ?? false
     NewThreadMemory.update(preferences) { memory in
-      memory.remember(start, thread: thread)
+      memory.remember(start, thread: thread, remoteB4: remoteB4)
       if memory.text.trimmingCharacters(in: .whitespacesAndNewlines) == text { memory.text = "" }
     }
     newThreadDraftStorage?.started(text: text)

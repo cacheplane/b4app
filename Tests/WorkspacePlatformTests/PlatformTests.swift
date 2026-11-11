@@ -30,6 +30,24 @@ import Testing
     #endif
   }
 
+  @Test func threadFoldersFollowTheFlavour() {
+    #expect(
+      PlatformPaths.defaultThreadFoldersDir(flavor: .prod, home: "/Users/a") == "/Users/a/.b4app/projects")
+    #expect(
+      PlatformPaths.defaultThreadFoldersDir(flavor: .beta, home: "/Users/a")
+        == "/Users/a/.b4app/projects-beta")
+    #expect(
+      PlatformPaths.defaultThreadFoldersDir(flavor: .local, home: "/Users/a")
+        == "/Users/a/.b4app/projects-local")
+  }
+
+  @Test func aDataDirOverrideKeepsThreadFoldersInsideIt() {
+    let paths = PlatformPaths.resolve(environment: [
+      "B4APP_DATA_DIR": "/tmp/x", "B4APP_RUNTIME_DIR": "/tmp/r",
+    ])
+    #expect(paths.threadFoldersDir == "/tmp/x/projects")
+  }
+
   @Test func privateDirectoryGetsMode0700() throws {
     let dir = NSTemporaryDirectory() + "b4app-test-\(UUID().uuidString)"
     defer { try? FileManager.default.removeItem(atPath: dir) }

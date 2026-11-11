@@ -15,7 +15,7 @@ import WorkspaceProtocol
   @Test func relayFixtureRoundTrips() throws {
     let data = try Data(contentsOf: fixtureURL("relay.json"))
     let elements = try JSONCoding.decoder.decode([JSONValue].self, from: data)
-    #expect(elements.count == 21)
+    #expect(elements.count == 22)
     for element in elements {
       let elementData = try JSONCoding.encoder.encode(element)
       let message = try JSONCoding.decoder.decode(RelayMessage.self, from: elementData)
@@ -53,6 +53,24 @@ import WorkspaceProtocol
         return nil
       })
     #expect(methods == Set(RelayMethod.allCases))
+  }
+
+  @Test func aStartWithNoEnvironmentNamesTheMac() throws {
+    let data = try Data(contentsOf: fixtureURL("relay.json"))
+    let messages = try JSONCoding.decoder.decode([RelayMessage].self, from: data)
+    let starts = messages.compactMap { m -> [String: JSONValue]? in
+      guard case .command(_, .threadStart, let params, _, _) = m else { return nil }
+      return params.objectValue
+    }
+    let bare = try #require(starts.first { $0["environmentId"] == nil })
+    #expect(bare["deviceId"] == .string("0b8f6c2e-4d17-4a93-9e35-7c1a5d8b3f60"))
+    #expect(["folder", "model", "permission"].allSatisfy { bare[$0] == nil })
+    #expect(starts.contains { $0["environmentId"] == .string("project-1") && $0["deviceId"] == nil })
+
+    let encoded = try JSONCoding.encoder.encode(
+      ThreadStart.Params(threadId: "t", connectionId: "c", text: "hi"))
+    let object = try JSONCoding.decoder.decode([String: JSONValue].self, from: encoded)
+    #expect(object["deviceId"] == nil)
   }
 
   @Test func unknownErrorCodesStillDecodeAndRoundTrip() throws {

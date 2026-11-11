@@ -42,13 +42,18 @@ struct NewThreadMemory: Codable, Equatable {
   }
 
   /// A start the Mac accepted: its environment (the one the coordinator resolved, when the Mac chose a
-  /// folder outside every environment), starting folder, and runtime are now the last ones. A remote B4
-  /// start has no environment and leaves the remembered one alone.
-  mutating func remember(_ start: ThreadStart.Params, thread: ConversationThread?) {
+  /// folder outside every environment), starting folder, and runtime are now the last ones. A Codex or
+  /// Claude start with no folder ("No folder") clears the remembered environment, so the next draft opens
+  /// on "No folder" too; a remote B4 start has no environment and leaves the remembered one alone.
+  mutating func remember(_ start: ThreadStart.Params, thread: ConversationThread?, remoteB4: Bool) {
     let choice = RuntimeChoice(
       connectionId: start.connectionId, model: start.model, permission: start.permission)
     lastRuntime = choice
-    guard let environment = thread?.environmentId ?? start.environmentId else { return }
+    guard let environment = thread?.environmentId ?? start.environmentId else {
+      // A chosen folder whose thread has not been listed yet names a folder: its environment is unknown.
+      if !remoteB4, start.folder == nil { environmentId = nil }
+      return
+    }
     environmentId = environment
     runtimeByEnvironment[environment] = choice
     // A B4 thread has no folder (its context is the route). The thread's own context is the folder as

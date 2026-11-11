@@ -343,7 +343,7 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
       Int(try raw.execute("SELECT max(\"seq\") AS \"n\" FROM \"changes\"").rows.first?.text("n") ?? "0") ?? 0
 
     let db = try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
-    #expect(try db.appliedMigrations().last == "0011_environments")
+    #expect(try db.appliedMigrations().contains("0011_environments"))
     func scalar(_ sql: String) throws -> Int {
       try db.read { c in try c.execute(sql).rows.first?.text("n").flatMap(Int.init) ?? -1 }
     }

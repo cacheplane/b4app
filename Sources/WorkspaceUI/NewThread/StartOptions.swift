@@ -32,12 +32,15 @@ extension WorkspaceModel {
     return conversationReadyConnections.filter { $0.kind == .b4 && $0.b4Mode == .remote }
   }
 
-  /// The connections a start with no environment may use: on the Mac, a ready Codex or Claude connection
-  /// (in a folder chosen outside every environment, whose environment the coordinator finds or makes on Send)
-  /// and a remote B4. None on the phone, which always names an environment.
+  /// The connections a start with no environment may use. On the Mac, a ready Codex or Claude connection
+  /// (with no folder, in one the coordinator makes, or in a folder chosen outside every environment, whose
+  /// environment the coordinator finds or makes on Send) and a remote B4. On the phone, the ready Codex and
+  /// Claude connections of the primary Mac, which makes the folder; none when no Mac is known.
   public var startConnectionsWithoutEnvironment: [Connection] {
-    guard !relaysThroughHub else { return [] }
-    return conversationReadyConnections.filter { $0.kind != .b4 } + remoteB4Connections
+    let harness = conversationReadyConnections.filter { $0.kind != .b4 }
+    guard relaysThroughHub else { return harness + remoteB4Connections }
+    guard let primary = primaryHostId else { return [] }
+    return harness.filter { $0.ownerDeviceId == primary }
   }
 
   /// How a connection reads in the sheet: a B4 connection by its route's name, as the Mac titles its
@@ -64,33 +67,50 @@ extension WorkspaceModel {
   /// The notice about the Mac that owns the environment: left the hub, offline, or the quiet reconnecting
   /// line. Nil on the Mac and when the Mac is reachable or not known.
   public func startNotice(for environment: WorkEnvironment) -> HostNoticeMessage? {
-    guard relaysThroughHub else { return nil }
-    if hostDisconnected { return HostNoticeMessage(kind: .leftHub, text: RelayCopy.leftHub) }
-    if case .reconnecting = hostPhase(deviceId: environment.ownerDeviceId) {
-      return HostNoticeMessage(kind: .reconnecting, text: RelayCopy.reconnecting)
-    }
-    return offlineNotice(deviceId: environment.ownerDeviceId, fallbackName: nil)
+    startNotice(forDevice: environment.ownerDeviceId)
   }
 
-  /// Why a thread cannot be started in this environment right now, in words: its own Mac is offline or has
-  /// left the hub, or the phone's link is down. Nil while the Mac is reconnecting (the hub answers
-  /// `device_offline` for a send in that window, as for any other) and whenever presence is unknown.
-  public func startBlockedReason(for environment: WorkEnvironment) -> String? {
+  /// The notice about one Mac a start would go to (the rule above).
+  private func startNotice(forDevice deviceId: String?) -> HostNoticeMessage? {
     guard relaysThroughHub else { return nil }
-    if let notice = startNotice(for: environment), notice.kind != .reconnecting { return notice.text }
+    if hostDisconnected { return HostNoticeMessage(kind: .leftHub, text: RelayCopy.leftHub) }
+    if case .reconnecting = hostPhase(deviceId: deviceId) {
+      return HostNoticeMessage(kind: .reconnecting, text: RelayCopy.reconnecting)
+    }
+    return offlineNotice(deviceId: deviceId, fallbackName: nil)
+  }
+
+  /// Why a thread cannot be started in this environment right now: `startBlockedReason(forDevice:)` for
+  /// the Mac that owns it.
+  public func startBlockedReason(for environment: WorkEnvironment) -> String? {
+    startBlockedReason(forDevice: environment.ownerDeviceId)
+  }
+
+  /// Why a thread cannot be started on this Mac right now, in words: it is offline or has left the hub,
+  /// or the phone's link is down. Nil on the Mac, while the Mac is reconnecting (the hub answers
+  /// `device_offline` for a send in that window, as for any other), and whenever presence is unknown.
+  public func startBlockedReason(forDevice deviceId: String?) -> String? {
+    guard relaysThroughHub else { return nil }
+    if let notice = startNotice(forDevice: deviceId), notice.kind != .reconnecting { return notice.text }
     return hubLinkNotice
   }
 
-  /// Why New thread is off: no environment can be started in. The phone checks each environment's own Mac, so
-  /// one Mac being offline leaves the other's environments open. The Mac's New thread is unchanged.
+  /// Why New thread is off: nothing can be started, with no folder or in any environment. The phone checks
+  /// each Mac on its own, so one Mac being offline leaves the other's environments open. The Mac's New thread
+  /// is unchanged.
   public var newThreadEntryReason: String? {
     guard relaysThroughHub else {
       return conversationReadyConnections.isEmpty
         ? "Add a ready Codex connection first" : newThreadDisabledReason
     }
+    // "No folder" goes to the primary Mac.
+    let noFolderOffered = !startConnectionsWithoutEnvironment.isEmpty
+    let noFolder = noFolderOffered ? startBlockedReason(forDevice: primaryHostId) : nil
+    if noFolderOffered, noFolder == nil { return nil }
     let environments = startEnvironments
     let offered = environments.filter { !startConnections(for: $0).isEmpty }
     if offered.contains(where: { startBlockedReason(for: $0) == nil }) { return nil }
+    if let noFolder { return noFolder }
     if let reason = offered.lazy.compactMap({ self.startBlockedReason(for: $0) }).first { return reason }
     if let reason = newThreadDisabledReason { return reason }
     return environments.isEmpty

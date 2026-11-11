@@ -1,8 +1,8 @@
 import Foundation
 import WorkspaceProtocol
 
-/// Which threads the list shows: everything, one environment, the threads without an environment, or the
-/// archive.
+/// Which threads the list shows: everything, one environment, the threads without an environment ("No
+/// folder"), or the archive.
 public enum EnvironmentFilter: Sendable, Hashable {
   case all
   case environment(String)
@@ -10,7 +10,7 @@ public enum EnvironmentFilter: Sendable, Hashable {
   case archived
 }
 
-/// One group of the Mac sidebar: an environment's threads, or "Other" for threads without an environment.
+/// One group of the Mac sidebar: an environment's threads, or "No folder" for threads without an environment.
 public struct EnvironmentSection: Identifiable, Sendable, Equatable {
   /// The environment id, or `"other"`.
   public var id: String
@@ -18,6 +18,8 @@ public struct EnvironmentSection: Identifiable, Sendable, Equatable {
   public var threads: [ConversationThread]
 
   public static let otherId = "other"
+  /// The heading of the threads without an environment.
+  public static let noFolderTitle = "No folder"
 
   public init(id: String, title: String, threads: [ConversationThread]) {
     self.id = id
@@ -26,9 +28,9 @@ public struct EnvironmentSection: Identifiable, Sendable, Equatable {
   }
 
   /// Groups `threads` (pinned ones already removed) by environment. A thread whose environment is not in
-  /// `environments` (not loaded yet, or deleted) goes to "Other". Threads inside a section keep
+  /// `environments` (not loaded yet, or deleted) goes to "No folder". Threads inside a section keep
   /// `Attention.ordered`; environment sections are ordered by their best thread's band, then its activity
-  /// (newest first), then title, then id, so an environment with a waiting approval rises. "Other" is
+  /// (newest first), then title, then id, so an environment with a waiting approval rises. "No folder" is
   /// always last, whatever it holds.
   static func build(threads: [ConversationThread], environments: [WorkEnvironment]) -> [EnvironmentSection] {
     let names = Dictionary(
@@ -39,10 +41,10 @@ public struct EnvironmentSection: Identifiable, Sendable, Equatable {
       groups[key, default: []].append(thread)
     }
     let sections = groups.filter { $0.key != otherId }.map { key, members in
-      EnvironmentSection(id: key, title: names[key] ?? "Other", threads: Attention.ordered(members))
+      EnvironmentSection(id: key, title: names[key] ?? noFolderTitle, threads: Attention.ordered(members))
     }
     let other = groups[otherId].map {
-      EnvironmentSection(id: otherId, title: "Other", threads: Attention.ordered($0))
+      EnvironmentSection(id: otherId, title: noFolderTitle, threads: Attention.ordered($0))
     }
     func rank(_ section: EnvironmentSection) -> (band: AttentionBand, at: String) {
       guard let best = section.threads.first else { return (.quiet, "") }
