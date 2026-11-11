@@ -140,12 +140,14 @@ private func turn(
 
     _ = try db.insertRuntimeRequest(request("r-done", kind: .fileChangeApproval, state: .resolved))
     _ = try db.insertRuntimeRequest(request("r-tool", kind: .toolPermission))
+    _ = try db.insertRuntimeRequest(request("r-file", kind: .fileChangeApproval))
     activity = try #require(try db.thread(id: "t1")?.activity)
-    #expect(activity.pendingRequests == 3 && activity.pendingApprovals == 2)
+    #expect(activity.pendingRequests == 4 && activity.pendingApprovals == 3)
     #expect(try db.listThreads().first { $0.id == "t1" }?.activity == activity)
 
     #expect(try db.transitionRuntimeRequest(id: "r-cmd", to: .resolved))
     #expect(try db.transitionRuntimeRequest(id: "r-tool", to: .expired))
+    #expect(try db.transitionRuntimeRequest(id: "r-file", to: .resolved))
     let thread = try #require(try db.thread(id: "t1"))
     #expect(thread.activity?.pendingRequests == 1 && thread.activity?.pendingApprovals == 0)
     #expect(Attention.state(of: thread) == .reply)

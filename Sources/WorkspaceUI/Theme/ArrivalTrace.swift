@@ -3,7 +3,7 @@ import SwiftUI
 extension View {
   /// A thread's arrival in the top list, drawn on its row's fill shape (the rounded rectangle of radius
   /// 8): the row slides up 12 pt into place over 0.5 s, a 0.5 pt inset hairline at 30% ink appears, a
-  /// point of light laps the edge twice in 3.5 s, and the hairline has faded out by 10 s. Without
+  /// point of light laps the edge twice in 3.5 s at constant speed, and the hairline has faded out by 10 s. Without
   /// `laps` there is no lap; under Reduce Motion no slide and no lap, the hairline only. Nothing here
   /// changes the row's layout, and the text never blinks. Apply it to the view that draws the fill.
   public func arrivalTrace(_ arrival: Arrival?, reduceMotion: Bool) -> some View {
@@ -20,11 +20,16 @@ struct ArrivalTraceFrame: Equatable {
   var hairline: Double
   /// The point of light's strength, 0–1.
   var light: Double
-  /// Where the light's head points from the row's centre, clockwise from 12 o'clock.
-  var angle: Angle
+  /// How far the light's leading end has travelled along the edge, in laps (0–2): a fraction of the
+  /// perimeter, so it moves at one speed along the long edges and round the ends alike.
+  var head: Double
 
   /// No trace: what a row without an arrival draws.
-  static let rest = ArrivalTraceFrame(offset: 0, hairline: 0, light: 0, angle: .zero)
+  static let rest = ArrivalTraceFrame(offset: 0, hairline: 0, light: 0, head: 0)
+
+  /// The light's length: 12% of the perimeter, brightest at its leading end and fading to nothing at
+  /// its tail.
+  static let segment = 0.12
 
   static let slide: CGFloat = 12
   static let slideDuration: TimeInterval = 0.5
@@ -34,11 +39,11 @@ struct ArrivalTraceFrame: Equatable {
   /// The light fades in over its first 0.45 s and out over its last.
   static let lightFade: TimeInterval = 0.45
 
-  init(offset: CGFloat, hairline: Double, light: Double, angle: Angle) {
+  init(offset: CGFloat, hairline: Double, light: Double, head: Double) {
     self.offset = offset
     self.hairline = hairline
     self.light = light
-    self.angle = angle
+    self.head = head
   }
 
   init(elapsed: TimeInterval, laps: Bool, reduceMotion: Bool) {
@@ -50,13 +55,33 @@ struct ArrivalTraceFrame: Equatable {
     let slid = min(t / Self.slideDuration, 1)
     offset = reduceMotion ? 0 : Self.slide * CGFloat(pow(1 - slid, 3))  // cubic ease-out
     hairline = min(min(t / Self.hairlineIn, 1), (Arrival.lifetime - t) / Self.hairlineOut, 1)
-    if laps && !reduceMotion && t < Arrival.lapDuration {
-      light = min(t / Self.lightFade, (Arrival.lapDuration - t) / Self.lightFade, 1)
-      angle = .degrees(720 * t / Arrival.lapDuration)
+    if laps && !reduceMotion {
+      // Two laps at constant speed along the perimeter, then still (and dark).
+      head = 2 * min(t, Arrival.lapDuration) / Arrival.lapDuration
+      light =
+        t < Arrival.lapDuration ? min(t / Self.lightFade, (Arrival.lapDuration - t) / Self.lightFade, 1) : 0
     } else {
       light = 0
-      angle = .zero
+      head = 0
     }
+  }
+
+  /// A stretch of the edge, as fractions of its perimeter from the path's start (0–1).
+  struct Piece: Equatable {
+    var from: Double
+    var to: Double
+  }
+
+  /// The stretch lit by a segment of `length` (a fraction of the perimeter) whose leading end has
+  /// travelled `head` laps: one piece, or two where it crosses the path's start (its tail up to the
+  /// path's end, then the start up to the head), together `length` long. Before the light has
+  /// travelled `length` it reaches back only to the start.
+  static func pieces(head: Double, length: Double) -> [Piece] {
+    let tail = max(head - length, 0)
+    let lap = tail.rounded(.down)
+    let (from, to) = (tail - lap, head - lap)
+    guard to > 1 else { return [Piece(from: from, to: to)] }
+    return [Piece(from: from, to: 1), Piece(from: 0, to: to - 1)]
   }
 }
 
@@ -94,6 +119,8 @@ private struct ArrivalTraceModifier: ViewModifier {
 /// The hairline and the point of light on the row's fill shape.
 struct ArrivalTraceEdge: View {
   let frame: ArrivalTraceFrame
+  /// How many steps the light's fade is drawn in.
+  static let slices = 16
 
   var body: some View {
     let shape = RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
@@ -102,21 +129,21 @@ struct ArrivalTraceEdge: View {
         shape.strokeBorder(LLA.Color.ink.opacity(0.3 * frame.hairline), lineWidth: 0.5)
       }
       if frame.light > 0 {
-        // A conic highlight turning about the row's centre: clear for most of the turn, a tail rising
-        // to full ink at the head, then clear again (the design's `conic-gradient`).
-        shape.strokeBorder(
-          AngularGradient(
-            stops: [
-              .init(color: LLA.Color.ink.opacity(0), location: 0),
-              .init(color: LLA.Color.ink.opacity(0), location: 0.78),
-              .init(color: LLA.Color.ink, location: 0.96),
-              .init(color: LLA.Color.ink.opacity(0), location: 1),
-            ],
-            center: .center,
-            // SwiftUI's angles start at 3 o'clock; the design's at 12.
-            startAngle: frame.angle - .degrees(90), endAngle: frame.angle + .degrees(270)),
-          lineWidth: 1
-        )
+        // A short stroke travelling along the edge: `slices` abutting stretches (trimmed by length, so
+        // the speed is constant), from nearly clear at the tail to full ink at the head. Each stretch
+        // is split where it crosses the path's start, so the segment wraps without a jump or a gap.
+        let edge = shape.inset(by: 0.5)
+        let slice = ArrivalTraceFrame.segment / Double(Self.slices)
+        ZStack {
+          ForEach(0..<Self.slices, id: \.self) { index in
+            let end = frame.head - slice * Double(Self.slices - 1 - index)
+            let pieces = end > 0 ? ArrivalTraceFrame.pieces(head: end, length: slice) : []
+            ForEach(pieces.indices, id: \.self) { piece in
+              edge.trim(from: pieces[piece].from, to: pieces[piece].to)
+                .stroke(LLA.Color.ink.opacity(Double(index + 1) / Double(Self.slices)), lineWidth: 1)
+            }
+          }
+        }
         .opacity(frame.light)
       }
     }

@@ -50,6 +50,14 @@
     /// New thread is the bar's one ink button; the others are muted.
     var isInk: Bool { self == .newThread }
 
+    /// The symbol and its ink. While a filter is active (`WorkspaceModel.viewOptionsFiltered`), view
+    /// options is the filled symbol in ink, so the narrowed list is never a surprise; the other buttons
+    /// never change.
+    func face(filtered: Bool) -> (systemImage: String, isInk: Bool) {
+      guard self == .viewOptions, filtered else { return (systemImage, isInk) }
+      return ("line.3.horizontal.decrease.circle.fill", true)
+    }
+
     /// The shortcut, declared once, by the app's File menu (so it works with the sidebar hidden and
     /// over the palette or the composer); the buttons only name it in their help.
     public var shortcut: KeyboardShortcut? {
@@ -79,6 +87,7 @@
     let button: TopBarButton
 
     var body: some View {
+      let face = button.face(filtered: model.viewOptionsFiltered)
       Group {
         switch button {
         case .viewOptions:
@@ -101,7 +110,7 @@
       // three of those beside the traffic lights and the sidebar toggle sent new thread to the overflow.
       .buttonStyle(.borderless)
       .menuStyle(.button)
-      .tint(button.isInk ? LLA.Color.ink : LLA.Color.muted)
+      .tint(face.isInk ? LLA.Color.ink : LLA.Color.muted)
       .disabled(!button.isEnabled(entryReason: model.newThreadEntryReason))
       .help(button.help(entryReason: model.newThreadEntryReason))
       .accessibilityLabel(button.title)
@@ -109,15 +118,17 @@
     }
   }
 
-  /// A top-bar button's face: its symbol alone, in ink or muted.
+  /// A top-bar button's face: its symbol alone, in ink or muted (`TopBarButton.face`).
   struct TopBarLabel: View {
     let button: TopBarButton
+    var filtered = false
 
     var body: some View {
+      let face = button.face(filtered: filtered)
       // An image, not a `Label`: the toolbar item holding all three would take the first label's title
       // as every button's accessibility name.
-      Image(systemName: button.systemImage)
-        .foregroundStyle(button.isInk ? LLA.Color.ink : LLA.Color.muted)
+      Image(systemName: face.systemImage)
+        .foregroundStyle(face.isInk ? LLA.Color.ink : LLA.Color.muted)
         .frame(width: TopBarButton.side, height: TopBarButton.side)
         .contentShape(Rectangle())
     }
@@ -139,6 +150,14 @@
         }
         .sharedBackgroundVisibility(.hidden)
       }
+    }
+  }
+
+  extension WorkspaceModel {
+    /// Whether the view-options menu narrows the Mac's list: a connection is picked, or archived
+    /// threads show.
+    var viewOptionsFiltered: Bool {
+      showArchived || connectionFilter.flatMap { connection(id: $0) } != nil
     }
   }
 

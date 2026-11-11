@@ -958,4 +958,145 @@ private struct AttentionDocument: Decodable {
     #expect(model.threads.count == 2)
     #expect(model.threads.allSatisfy { model.arrival(for: $0) == nil })
   }
+
+  /// A connected model whose "live" thread has just arrived (running → finished), so each test can
+  /// check that the owner's own action leaves that trace alone.
+  private func modelWithALiveTrace(
+    _ transport: ScriptedTransport, others: [ConversationThread], environments: [WorkEnvironment] = []
+  ) async throws -> WorkspaceModel {
+    let running = thread("live", activity: activity(turn: "l1", status: .running, at: 2))
+    transport.set(threads: [running] + others, environments: environments)
+    let model = try await connected(transport)
+    var done = running
+    done.activity = activity(turn: "l1", status: .terminal, at: 3)
+    transport.emit(try .threadUpdated(done))
+    try await waitUntil("live arrived") { model.threads.contains { $0.id == "live" && liveArrival(model) } }
+    return model
+  }
+
+  private func liveArrival(_ model: WorkspaceModel) -> Bool {
+    model.threads.first { $0.id == "live" }.map { model.arrival(for: $0) != nil } ?? false
+  }
+
+  @Test func markAsUnreadDoesNotTrace() async throws {
+    let transport = ScriptedTransport()
+    let seen = thread("t1", readTurnId: "u1", activity: activity(turn: "u1", status: .terminal, at: 2))
+    transport.setRead(read(seen, turns: [turn("u1", in: "t1", at: 2)]))
+    let model = try await modelWithALiveTrace(transport, others: [seen])
+    await model.markUnread(id: "t1")
+    let unread = try #require(model.threads.first { $0.id == "t1" })
+    #expect(model.state(of: unread) == .finished)
+    #expect(model.arrival(for: unread) == nil)
+    #expect(liveArrival(model))
+  }
+
+  @Test func aMarkReadRollbackDoesNotTrace() async throws {
+    let transport = ScriptedTransport()
+    let unread = thread("t1", activity: activity(turn: "u1", status: .terminal, at: 2))
+    transport.setRead(read(unread, turns: [turn("u1", in: "t1", at: 2)]))
+    transport.script(.threadMarkRead, [.failure(WorkspaceError(.endpointUnavailable, "offline"))])
+    let model = try await modelWithALiveTrace(transport, others: [unread])
+    // Opening marks it read at once (quiet); the refused mark puts it back (finished).
+    await model.openThread(id: "t1")
+    #expect(transport.calls(.threadMarkRead).count == 1)
+    let back = try #require(model.threads.first { $0.id == "t1" })
+    #expect(model.state(of: back) == .finished)
+    #expect(model.arrival(for: back) == nil)
+    #expect(liveArrival(model))
+  }
+
+  @Test func unarchivingATopListThreadDoesNotTrace() async throws {
+    let transport = ScriptedTransport()
+    let archived = thread("t1", archived: true, activity: activity(pending: 1, approvals: 1, at: 2))
+    let model = try await modelWithALiveTrace(transport, others: [archived])
+    var back = archived
+    back.archived = false
+    transport.emit(try .threadUpdated(back))
+    try await waitUntil("unarchived") { model.orderedThreads.contains { $0.id == "t1" } }
+    #expect(model.arrival(for: back) == nil)
+    #expect(liveArrival(model))
+  }
+
+  @Test func aThreadMovingIntoNoFolderDoesNotTraceOnTheNextEvent() async throws {
+    let transport = ScriptedTransport()
+    let filed = thread("t1", environment: "pa", activity: activity(turn: "u1", status: .terminal, at: 2))
+    let other = thread("t2", activity: activity(turn: "u2", status: .running, at: 1))
+    let model = try await modelWithALiveTrace(
+      transport, others: [filed, other], environments: [environment("pa", "Alpha")])
+    model.environmentFilter = .other
+    #expect(!model.orderedThreads.contains { $0.id == "t1" })
+    // A trace that starts under the filter, so the refresh can be seen to leave it alone.
+    var otherDone = other
+    otherDone.activity = activity(turn: "u2", status: .terminal, at: 4)
+    transport.emit(try .threadUpdated(otherDone))
+    try await waitUntil("t2 arrived") {
+      model.threads.contains { $0.id == "t2" && model.arrival(for: $0) != nil }
+    }
+
+    // Its environment goes away elsewhere: the thread is now under "No folder".
+    transport.set(environments: [])
+    transport.emit(.environmentChanged(environmentId: "pa"))
+    try await waitUntil("environments refetched") { model.environments.isEmpty }
+    #expect(model.orderedThreads.contains { $0.id == "t1" })
+
+    // The next event about any thread does not make it an arrival.
+    var renamed = model.threads.first { $0.id == "live" }!
+    renamed.title = "renamed"
+    transport.emit(try .threadUpdated(renamed))
+    try await waitUntil("renamed") { model.threads.contains { $0.title == "renamed" } }
+    #expect(model.arrival(for: model.threads.first { $0.id == "t1" }!) == nil)
+    #expect(model.arrival(for: model.threads.first { $0.id == "t2" }!) != nil)
+  }
+
+  // MARK: The open thread's acknowledgement
+
+  private static let approving = thread("ap", activity: activity(pending: 1, approvals: 1, at: 2))
+
+  /// The approving thread with a second approval, later.
+  private static func newActivity(on thread: ConversationThread) -> ConversationThread {
+    var later = thread
+    later.activity = activity(pending: 2, approvals: 2, at: 5)
+    return later
+  }
+
+  @Test func theOpenThreadStaysAcknowledgedWhenNewActivityArrives() async throws {
+    let transport = ScriptedTransport()
+    transport.set(threads: [Self.approving, thread("other")])
+    transport.setRead(read(Self.approving))
+    let model = try await connected(transport)
+    await model.openThread(id: "ap")
+    let later = Self.newActivity(on: Self.approving)
+    // The refetch that follows the event reads the same.
+    transport.setRead(read(later))
+    transport.emit(try .threadUpdated(later))
+    try await waitUntil("new activity") {
+      model.threads.first { $0.id == "ap" }?.activity?.lastActivityAt == later.activity?.lastActivityAt
+    }
+    #expect(model.isAcknowledged(model.threads.first { $0.id == "ap" }!))
+
+    // Still acknowledged once the owner moves on to another thread.
+    transport.setRead(read(thread("other")))
+    await model.openThread(id: "other")
+    #expect(model.selectedThreadId == "other")
+    #expect(model.isAcknowledged(model.threads.first { $0.id == "ap" }!))
+  }
+
+  @Test func aSelectedThreadNotOnScreenIsNotAcknowledgedByNewActivity() async throws {
+    let transport = ScriptedTransport()
+    transport.set(threads: [Self.approving])
+    transport.setRead(read(Self.approving))
+    // The phone's list is showing, or the Mac's window is behind another app.
+    let model = try await connected(transport, onScreen: false)
+    await model.openThread(id: "ap")
+    #expect(model.isAcknowledged(model.threads[0]))
+    let later = Self.newActivity(on: Self.approving)
+    // The refetch that follows the event reads the same.
+    transport.setRead(read(later))
+    transport.emit(try .threadUpdated(later))
+    try await waitUntil("new activity") {
+      model.threads[0].activity?.lastActivityAt == later.activity?.lastActivityAt
+    }
+    #expect(model.selectedThreadId == "ap")
+    #expect(!model.isAcknowledged(model.threads[0]))
+  }
 }

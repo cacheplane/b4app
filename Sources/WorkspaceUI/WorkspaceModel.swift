@@ -142,6 +142,7 @@ public final class WorkspaceModel {
   public var isDetailOnScreen = false {
     didSet {
       guard isDetailOnScreen, !oldValue, let id = selectedThreadId else { return }
+      acknowledgeOpenThread()
       Task { await markReadIfNeeded(threadId: id) }
     }
   }
@@ -199,8 +200,9 @@ public final class WorkspaceModel {
   public static var remoteDraftIdle: TimeInterval = 2
   /// The clock for relative times ("Replied 3m ago") and the composer idle rule; tests replace it.
   public var now: @Sendable () -> Date = { Date() }
-  /// Each thread opened on this device, with its `lastActivityAt` when it was opened: an approve mark
-  /// stops pulsing until the thread has new activity. In memory only, never synced or stored.
+  /// Each thread opened on this device, with its `lastActivityAt` when it was opened or last seen open
+  /// on screen: an approve mark stops pulsing until the thread has new activity. In memory only, never
+  /// synced or stored.
   private var acknowledgedActivity: [String: String] = [:]
   /// Which listed threads have just entered the top list, fed on every change to the list
   /// (`noteThreadList`). Observed, so a row redraws when its thread arrives.
@@ -953,10 +955,23 @@ public final class WorkspaceModel {
     await markReadIfNeeded(threadId: id)
   }
 
-  /// Whether the thread was opened on this device since its latest activity.
+  /// Whether the thread was opened on this device since its latest activity. The open thread counts
+  /// while its detail is in front of the owner, so a request arriving on it does not pulse; a selected
+  /// thread behind the phone's list or in an inactive window still does.
   public func isAcknowledged(_ thread: ConversationThread) -> Bool {
+    if isDetailOnScreen, selectedThreadId == thread.id { return true }
     guard let at = thread.activity?.lastActivityAt else { return false }
     return acknowledgedActivity[thread.id] == at
+  }
+
+  /// While the open thread is on screen, records its current activity as seen, so it stays
+  /// acknowledged after the owner moves on. Called on every change to the list and when the detail
+  /// comes on screen.
+  private func acknowledgeOpenThread() {
+    guard isDetailOnScreen, let id = selectedThreadId,
+      let at = threads.first(where: { $0.id == id })?.activity?.lastActivityAt
+    else { return }
+    acknowledgedActivity[id] = at
   }
 
   /// The thread's arrival in the top list while it lasts: its row slides in and its edge is traced.
@@ -965,11 +980,18 @@ public final class WorkspaceModel {
   }
 
   /// Feeds the tracker the states of the list as it now shows (`orderedThreads`, under the filters).
-  /// Called once per change to `threads`.
-  private func noteThreadList() {
+  /// Called once per change to `threads`. `asBaseline` records the list without tracing anything: the
+  /// owner's own action (Mark as Unread, a mark-read rollback, unarchiving) or a change to which
+  /// threads the filter shows is not an arrival, and another thread's live trace goes on.
+  private func noteThreadList(asBaseline: Bool = false) {
+    acknowledgeOpenThread()
     let states = Dictionary(
       orderedThreads.map { ($0.id, state(of: $0)) }, uniquingKeysWith: { first, _ in first })
-    _ = arrivals.update(states, at: now())
+    if asBaseline {
+      arrivals.record(states, at: now())
+    } else {
+      _ = arrivals.update(states, at: now())
+    }
   }
 
   /// A filter change shows another list, not a changed one: the tracker starts afresh from it, so
@@ -1107,6 +1129,8 @@ public final class WorkspaceModel {
       generation == accountGeneration
     else { return }
     environments = list.environments
+    // A thread whose environment went is now under "No folder": shown under that filter, not arrived.
+    noteThreadList(asBaseline: true)
   }
 
   @discardableResult
@@ -1170,7 +1194,7 @@ public final class WorkspaceModel {
     let previous = threads.first { $0.id == id }?.readTurnId
     unreadHold.insert(id)
     markedRead = markedRead.filter { !$0.hasPrefix("\(id)/") }
-    setReadTurn(threadId: id, turnId: nil)
+    setReadTurn(threadId: id, turnId: nil, ownAction: true)
     let result: ConversationThread? = await perform {
       try await $0.request(
         ThreadMarkRead.self, ThreadMarkRead.Params(threadId: id, turnId: nil), options: Self.mutation()
@@ -1180,7 +1204,7 @@ public final class WorkspaceModel {
       store(result)
     } else {
       unreadHold.remove(id)
-      setReadTurn(threadId: id, turnId: previous)
+      setReadTurn(threadId: id, turnId: previous, ownAction: true)
     }
   }
 
@@ -1210,17 +1234,18 @@ public final class WorkspaceModel {
       // Not sent after all: the dot comes back and a later open may try again.
       markedRead.remove("\(threadId)/\(latest.id)")
       if threads.first(where: { $0.id == threadId })?.readTurnId == latest.id {
-        setReadTurn(threadId: threadId, turnId: readTurnId)
+        setReadTurn(threadId: threadId, turnId: readTurnId, ownAction: true)
       }
     }
   }
 
   /// Set the read marker on the list row and the open detail at once, so the row's state changes
-  /// before the coordinator has answered.
-  private func setReadTurn(threadId: String, turnId: String?) {
+  /// before the coordinator has answered. `ownAction` (Mark as Unread and the rollbacks) moves the row
+  /// without tracing it.
+  private func setReadTurn(threadId: String, turnId: String?, ownAction: Bool = false) {
     if let index = threads.firstIndex(where: { $0.id == threadId }) {
       threads[index].readTurnId = turnId
-      noteThreadList()
+      noteThreadList(asBaseline: ownAction)
     }
     if detail?.thread.id == threadId { detail?.thread.readTurnId = turnId }
   }
@@ -1232,15 +1257,18 @@ public final class WorkspaceModel {
       return forget(threadId: thread.id)
     }
     var fresh = thread
+    // Archiving or unarchiving moves a thread into or out of a list; it does not arrive.
+    var moved = false
     if let index = threads.firstIndex(where: { $0.id == thread.id }) {
       fresh.activity = fresh.activity ?? threads[index].activity
       fresh.ownerDeviceName = fresh.ownerDeviceName ?? threads[index].ownerDeviceName
       fresh.ownerDeviceId = fresh.ownerDeviceId ?? threads[index].ownerDeviceId
+      moved = threads[index].archived != fresh.archived
       threads[index] = fresh
     } else {
       threads.append(fresh)
     }
-    noteThreadList()
+    noteThreadList(asBaseline: moved)
     if detail?.thread.id == thread.id { detail?.thread = fresh }
   }
 

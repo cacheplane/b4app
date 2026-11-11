@@ -38,6 +38,36 @@ import WorkspaceProtocol
     #expect(TopBarButton.newThread.help(entryReason: nil) == "New thread (\u{2318}N)")
   }
 
+  /// An active filter (a connection, or archived threads shown) fills the view-options symbol and draws
+  /// it in ink; without one it is the plain symbol, muted. The other buttons do not change.
+  @Test func viewOptionsShowsAnActiveFilter() {
+    let plain = TopBarButton.viewOptions.face(filtered: false)
+    #expect(plain.systemImage == "line.3.horizontal.decrease")
+    #expect(!plain.isInk)
+    let filtered = TopBarButton.viewOptions.face(filtered: true)
+    #expect(filtered.systemImage == "line.3.horizontal.decrease.circle.fill")
+    #expect(filtered.isInk)
+    for button in [TopBarButton.search, .newThread] {
+      for on in [false, true] {
+        #expect(button.face(filtered: on).systemImage == button.systemImage)
+        #expect(button.face(filtered: on).isInk == button.isInk)
+      }
+    }
+    #expect(TopBarButton.side == 28)
+  }
+
+  @Test func theModelSaysWhenViewOptionsFilter() async throws {
+    let model = try await ListFixture.model()
+    #expect(!model.viewOptionsFiltered)
+    model.showArchived = true
+    #expect(model.viewOptionsFiltered)
+    model.showArchived = false
+    model.connectionFilter = try #require(model.connections.first?.id)
+    #expect(model.viewOptionsFiltered)
+    model.connectionFilter = nil
+    #expect(!model.viewOptionsFiltered)
+  }
+
   @Test func newThreadIsOffWithTheEntryReasonAsItsHelp() async throws {
     let blocked = WorkspaceModel(transportProvider: { throw WorkspaceError(.endpointUnavailable, "offline") })
     let reason = try #require(blocked.newThreadEntryReason)

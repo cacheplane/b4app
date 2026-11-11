@@ -243,7 +243,8 @@ struct MoreMenu: View {
       #endif
     } label: {
       #if os(macOS)
-        TopBarLabel(button: .viewOptions)
+        // Filled and in ink while a connection is picked or archived threads show.
+        TopBarLabel(button: .viewOptions, filtered: model.viewOptionsFiltered)
           .accessibilityValue(activeFilter ?? "None")
       #else
         // Filled while a filter narrows the list, as the iPhone's own apps show it.
@@ -257,6 +258,9 @@ struct MoreMenu: View {
     }
     .menuIndicator(.hidden)
     #if os(macOS)
+      // The menu's button sizes itself to the symbol; this gives it the other buttons' 28 pt target.
+      .frame(width: TopBarButton.side, height: TopBarButton.side)
+      .contentShape(Rectangle())
       .accessibilityIdentifier(TopBarButton.viewOptions.identifier)
     #else
       .accessibilityIdentifier("sidebar-more")

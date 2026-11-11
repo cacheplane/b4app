@@ -25,6 +25,14 @@ import WorkspaceProtocol
     }
   }
 
+  /// The Mac's hover fill is the selection's shape at 60%; selection stays full.
+  @Test func hoverFillsAtSixtyPercentAndSelectionStaysFull() {
+    #expect(ThreadRow.fillOpacity(selected: false, hovering: false) == 0)
+    #expect(ThreadRow.fillOpacity(selected: false, hovering: true) == 0.6)
+    #expect(ThreadRow.fillOpacity(selected: true, hovering: false) == 1)
+    #expect(ThreadRow.fillOpacity(selected: true, hovering: true) == 1)
+  }
+
   @Test func actLevelTitlesAreMedium() {
     for state in [ThreadState.approve, .reply, .failed] {
       #expect(ThreadRow.titleWeight(for: state) == .medium, "\(state)")

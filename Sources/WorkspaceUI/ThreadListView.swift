@@ -136,6 +136,8 @@ struct ThreadRow: View {
   @Environment(\.showDetail) private var showDetail
   @Environment(\.dynamicTypeSize) private var typeSize
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// The pointer is over the row (the Mac only).
+  @State private var hovering = false
 
   #if os(macOS)
     /// The fill's inset from the sidebar's edges: it spans x 8–232 of the 240 pt column.
@@ -150,6 +152,11 @@ struct ThreadRow: View {
     /// With the list's 6 pt row inset, the title and the mark sit 16 pt in, on the phone's margin.
     static let contentInset: CGFloat = 10
   #endif
+
+  /// The fill's strength, of `surfaceRaised`: full when selected, 60% under the pointer, else none.
+  static func fillOpacity(selected: Bool, hovering: Bool) -> Double {
+    selected ? 1 : hovering ? 0.6 : 0
+  }
 
   /// Act-level titles (approve, reply, failed) are medium; every other title is regular.
   static func titleWeight(for state: ThreadState) -> Font.Weight {
@@ -178,11 +185,14 @@ struct ThreadRow: View {
       .frame(minHeight: LLA.Metrics.threadRow)
       .background(
         RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
-          .fill(selected ? LLA.Color.surfaceRaised : .clear)
+          .fill(LLA.Color.surfaceRaised.opacity(Self.fillOpacity(selected: selected, hovering: hovering)))
       )
       // On the fill's frame, so the trace follows its rounded edge (x 8–232 on the Mac).
       .arrivalTrace(model.arrival(for: thread), reduceMotion: reduceMotion)
       .contentShape(Rectangle())
+      #if os(macOS)
+        .onHover { hovering = $0 }
+      #endif
     }
     .buttonStyle(.llaRow)
     #if os(macOS)
@@ -293,7 +303,8 @@ struct ThreadListView: View {
   }
 }
 
-/// The phone's rows: pinned threads first, then the rest, no state headings (the marks carry the state).
+/// The phone's rows in attention order: by state, pinned first inside each, no state headings (the marks
+/// carry the state).
 /// Meant to sit inside a `List`; it supplies the swipe actions.
 struct FlatThreadRows: View {
   @Bindable var model: WorkspaceModel

@@ -136,9 +136,12 @@ private func requestRow(
       change(
         "runtimeRequests", "r-tool", "insert",
         value: try requestRow("r-tool", thread: "t-working", kind: .toolPermission)),
+      change(
+        "runtimeRequests", "r-file", "insert",
+        value: try requestRow("r-file", thread: "t-working", kind: .fileChangeApproval)),
     ])
     let after = try activity()
-    #expect(after?.pendingRequests == 3 && after?.pendingApprovals == 2)
+    #expect(after?.pendingRequests == 4 && after?.pendingApprovals == 3)
     let listed = try store.threads(includeArchived: true, connectionId: nil, query: nil).first {
       $0.id == "t-working"
     }

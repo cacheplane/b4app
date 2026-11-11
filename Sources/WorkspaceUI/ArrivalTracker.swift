@@ -54,6 +54,15 @@ public struct ArrivalTracker: Equatable, Sendable {
     }
   }
 
+  /// Records the list's states as the new baseline without tracing anything: the owner's own action
+  /// (Mark as Unread, a mark-read rollback, unarchiving) or a change to which threads the filter shows
+  /// moved threads, and none of them arrived. Unlike `reset()`, another thread's live trace goes on; a
+  /// thread that left the top list, or the list, loses its arrival, as in `update`.
+  public mutating func record(_ states: [String: ThreadState], at now: Date) {
+    arrivals = arrivals.filter { id, arrival in arrival.isLive(at: now) && states[id]?.isTopList == true }
+    self.states = states
+  }
+
   /// The thread's arrival while it lasts (10 s from its `at`).
   public func arrival(for threadId: String, at now: Date) -> Arrival? {
     arrivals[threadId].flatMap { $0.isLive(at: now) ? $0 : nil }

@@ -143,11 +143,21 @@ struct SnapshotShell: View {
   let window: NSWindow
   let host: NSHostingView<Content>
 
-  init(rootView: Content, onScreen: Bool = false, size: CGSize = CGSize(width: 1200, height: 800)) {
+  /// `untitled` gives the window no title bar, so content laid out from y 0 has no top safe area for
+  /// a scroll view's edge to be drawn across.
+  init(
+    rootView: Content, onScreen: Bool = false, untitled: Bool = false,
+    size: CGSize = CGSize(width: 1200, height: 800)
+  ) {
     host = NSHostingView(rootView: rootView)
+    // Offscreen, the sidebar's `.toolbar` would be bridged into this plain window and its bottom edge
+    // drawn across the content (the first row cut by a hairline). The root render keeps it, as the
+    // app does.
+    if !onScreen { host.sceneBridgingOptions = [] }
     window = NSWindow(
       contentRect: NSRect(origin: .zero, size: size),
-      styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+      styleMask: untitled ? [.borderless] : [.titled, .closable, .resizable, .fullSizeContentView],
+      backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = host
     // AppKit populates the split view's sidebar only once the window is on screen, so the window is
@@ -209,13 +219,13 @@ struct SnapshotShell: View {
     _ name: String, size: CGSize, @ViewBuilder _ content: () -> V
   ) async throws {
     // The window is larger than the content: a ScrollView drew nothing in a window as narrow as the
-    // sidebar. The capture is cropped back to the content's size, from the window's top edge, so the
-    // content ignores the title bar's safe area (which pushed its bottom out of the crop).
+    // sidebar. The capture is cropped back to the content's size, from the window's top edge. The window
+    // has no title bar: a scroll view under one drew its top edge across content that starts at y 0.
     let window = SnapshotWindow(
       rootView: content().frame(width: size.width, height: size.height).background(LLA.Color.surface)
         .tint(LLA.Color.accent).frame(width: 1200, height: 900, alignment: .topLeading)
         .ignoresSafeArea(),
-      size: CGSize(width: 1200, height: 900))
+      untitled: true, size: CGSize(width: 1200, height: 900))
     defer { window.close() }
     for (appearance, suffix) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
       window.appearance = NSAppearance(named: appearance)
