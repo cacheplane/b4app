@@ -4,6 +4,10 @@
 -- row, a null, or a value this build does not know reads as the default, and the store keeps whatever
 -- text arrives, so a value a newer device writes survives here. Like `drafts`, any device may insert
 -- the row and write its columns, which merge by clock; nobody deletes it.
+--
+-- Two devices can each create the row before either has seen the other's, each setting a different
+-- field. So an insert of this row carries and clocks only its key and the columns it set: a null in
+-- it is "not set", never a value, and it claims no clock over another device's setting.
 CREATE TABLE "viewSettings" (
   "id" text PRIMARY KEY,
   "arrangement" text,
@@ -15,8 +19,9 @@ CREATE TABLE "viewSettings" (
 CREATE TRIGGER "viewSettingsChanges" AFTER INSERT OR UPDATE OR DELETE ON "viewSettings"
   FOR EACH ROW EXECUTE FUNCTION b4app_record_change('id');
 
--- The 0011 trigger function again, with `viewSettings` in its clocked lists. The lists must equal
--- SyncColumns.clocked in WorkspaceProtocol; a test reads them back.
+-- The 0011 trigger function again, with `viewSettings` in its clocked lists and its insert carrying
+-- and clocking only the key and the non-null columns (other tables are unchanged). The lists must
+-- equal SyncColumns.clocked in WorkspaceProtocol; a test reads them back.
 CREATE OR REPLACE FUNCTION b4app_record_change() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
   device text := coalesce(nullif(current_setting('b4app.device_id', true), ''), 'local');
@@ -42,9 +47,11 @@ BEGIN
   END IF;
   IF TG_OP = 'INSERT' THEN
     newj := to_jsonb(NEW);
+    IF TG_TABLE_NAME = 'viewSettings' THEN newj := jsonb_strip_nulls(newj); END IF;
     INSERT INTO "changes" ("deviceId", "wall", "table", "rowId", "op", "value", "hlc")
       VALUES (device, wall, TG_TABLE_NAME, newj ->> key, 'insert', newj, stamp);
     FOREACH k IN ARRAY clocked LOOP
+      CONTINUE WHEN TG_TABLE_NAME = 'viewSettings' AND NOT newj ? k;
       INSERT INTO "columnClocks" ("table", "rowId", "column", "hlc")
         VALUES (TG_TABLE_NAME, newj ->> key, k, stamp)
         ON CONFLICT ("table", "rowId", "column") DO UPDATE SET "hlc" = EXCLUDED."hlc"

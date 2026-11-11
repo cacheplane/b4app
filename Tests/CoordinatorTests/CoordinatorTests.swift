@@ -144,14 +144,22 @@ private func connect(_ coordinator: RunningCoordinator) async throws -> Workspac
       options: RequestOptions(operationId: "view-2"))
     #expect(both == ViewSettings(arrangement: .byEnvironment, quietThreads: .collapsed, showArchived: true))
     #expect(try await client.request(ViewSettingsGet.self, EmptyParams()) == both)
+    // A set that changes no setting publishes nothing.
+    let same = try await client.request(
+      ViewSettingsSet.self, ViewSettingsSet.Params(showArchived: true),
+      options: RequestOptions(operationId: "view-3"))
+    #expect(same == both)
+    let last = try await client.request(
+      ViewSettingsSet.self, ViewSettingsSet.Params(quietThreads: .small),
+      options: RequestOptions(operationId: "view-4"))
 
     var iterator = events.makeAsyncIterator()
     var published: [ViewSettings] = []
-    while published.count < 2, let envelope = await iterator.next() {
+    while published.count < 3, let envelope = await iterator.next() {
       guard envelope.event.kind == .viewSettingsChanged else { continue }
       published.append(try #require(try envelope.event.payload["settings"]?.decode(ViewSettings.self)))
     }
-    #expect(published == [set, both])
+    #expect(published == [set, both, last])
     #expect(Router.needsAccount(.viewSettingsGet) && Router.needsAccount(.viewSettingsSet))
     await client.close()
     await coordinator.close()

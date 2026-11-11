@@ -56,8 +56,16 @@ private func viewChanges(_ db: WorkspaceDatabase) throws -> [ChangeRecord] {
     let insert = try #require(inserted.first)
     #expect(insert.op == "insert" && insert.rowId == "view")
     #expect(insert.value?["arrangement"] == "byEnvironment")
-    #expect(insert.value?["quietThreads"] == .some(.null) && insert.value?["showArchived"] == .some(.null))
+    // A column it did not set is neither carried nor clocked, so it never claims another device's value.
+    #expect(insert.value?["quietThreads"] == nil && insert.value?["showArchived"] == nil)
+    #expect(insert.value?.objectValue.map { Set($0.keys) } == ["id", "arrangement", "updatedAt"])
     #expect(insert.value?["updatedAt"]?.stringValue != nil)
+    for column in ["quietThreads", "showArchived"] {
+      #expect(try db.columnClock(table: "viewSettings", rowId: "view", column: column) == nil)
+    }
+    for column in ["id", "arrangement", "updatedAt"] {
+      #expect(try db.columnClock(table: "viewSettings", rowId: "view", column: column) == insert.hlc)
+    }
 
     let second = try db.setViewSettings(showArchived: true)
     #expect(second == ViewSettings(arrangement: .byEnvironment, showArchived: true))
@@ -68,13 +76,22 @@ private func viewChanges(_ db: WorkspaceDatabase) throws -> [ChangeRecord] {
     #expect(updates.first { $0.column == "showArchived" }?.value == .bool(true))
     #expect(try db.viewSettings() == second)
     #expect(try storedRow(db)?["quietThreads"] == .some(nil))
+    // The later write clocks its own column.
+    let archived = try #require(updates.first { $0.column == "showArchived" })
+    #expect(try db.columnClock(table: "viewSettings", rowId: "view", column: "showArchived") == archived.hlc)
+    #expect(try db.columnClock(table: "viewSettings", rowId: "view", column: "quietThreads") == nil)
+
+    // Replaying the log rebuilds the row from an insert that omits keys.
+    let target = try WorkspaceDatabase.temporary()
+    #expect(try target.replay(try db.changes(after: 0)) == viewChanges(db).count)
+    #expect(try storedRow(target) == storedRow(db))
   }
 
   @Test func aRemoteChangeToOneColumnKeepsTheOthers() throws {
     let db = try joined()
     _ = try db.setViewSettings(arrangement: .byEnvironment, showArchived: true)
     let local = try #require(
-      try db.columnClock(table: "viewSettings", rowId: "view", column: "quietThreads").flatMap(
+      try db.columnClock(table: "viewSettings", rowId: "view", column: "arrangement").flatMap(
         HLC.init(rawValue:)))
     let applied = try db.applyRemote(
       [
@@ -140,5 +157,23 @@ private func viewChanges(_ db: WorkspaceDatabase) throws -> [ChangeRecord] {
         try target.columnClock(table: "viewSettings", rowId: "view", column: column)
           == source.columnClock(table: "viewSettings", rowId: "view", column: column))
     }
+  }
+
+  /// A store whose only row is its view settings counts as empty to a restore (it has no connections),
+  /// so the archive's `view` row replaces the local one instead of colliding with it.
+  @Test func aRestoreOntoAStoreWithOnlyViewSettingsTakesTheArchivedRow() throws {
+    let source = try WorkspaceDatabase.temporary()
+    _ = try source.insertConnection(Connection(id: "c1", kind: .codex, label: "Codex", target: "/bin/codex"))
+    let archived = try source.setViewSettings(arrangement: .byEnvironment, quietThreads: .collapsed)
+    let path = NSTemporaryDirectory() + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let summary = try source.export(to: path)
+
+    let target = try WorkspaceDatabase.temporary()
+    _ = try target.setViewSettings(quietThreads: .hidden, showArchived: true)
+    #expect(try target.restore(from: path).rows == summary.rows)
+    #expect(try target.viewSettings() == archived)
+    #expect(try storedRow(target) == storedRow(source))
+    #expect(try target.listConnections().map(\.id) == ["c1"])
   }
 }

@@ -70,8 +70,9 @@ extension WorkspaceDatabase {
     return ArchiveSummary(path: path, rows: count)
   }
 
-  /// Load an archive. The database must be empty unless `replace` is set, in which case every table
-  /// is cleared first; the whole restore is one transaction and records no changes.
+  /// Load an archive. The database must be empty (no connections; its view settings, if any, are
+  /// replaced) unless `replace` is set, in which case every table is cleared first; the whole restore
+  /// is one transaction and records no changes.
   @discardableResult
   public func restore(from path: String, replace: Bool = false) throws -> ArchiveSummary {
     let text = try String(contentsOfFile: path, encoding: .utf8)
@@ -97,6 +98,12 @@ extension WorkspaceDatabase {
             .protocolInvalid, "The store is not empty; pass --replace to overwrite it from the archive.")
         }
         for table in Self.archiveTables.reversed() { try c.execute("DELETE FROM \(Rows.quote(table))") }
+      } else {
+        // A store with no connections counts as empty, yet it may hold the account's view settings
+        // (set before the restore) with their changes and clocks; the archive's replace them.
+        try c.execute("DELETE FROM \"viewSettings\"")
+        try c.execute("DELETE FROM \"changes\" WHERE \"table\" = 'viewSettings'")
+        try c.execute("DELETE FROM \"columnClocks\" WHERE \"table\" = 'viewSettings'")
       }
       var count = 0
       for line in lines {

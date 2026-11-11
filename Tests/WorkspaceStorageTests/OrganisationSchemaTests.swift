@@ -98,7 +98,9 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
       )
       try c.execute(
         "INSERT INTO \"drafts\" (\"threadId\", \"text\", \"updatedAt\") VALUES ('t1', 'hello', 'now')")
-      try c.execute("INSERT INTO \"viewSettings\" (\"id\") VALUES ('view')")
+      // Every column set: a view settings insert clocks only the columns it sets (ViewSettingsStoreTests).
+      try c.execute(
+        "INSERT INTO \"viewSettings\" VALUES ('view', 'needsYouFirst', 'small', false, 'now')")
     }
     let rows = ["threads": "t1", "environments": "p1", "drafts": "t1", "viewSettings": "view"]
     // Insert records every clocked column and nothing else.

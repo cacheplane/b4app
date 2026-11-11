@@ -66,7 +66,8 @@ extension WorkspaceDatabase {
   ///   `SyncColumns.neverCleared` column (a thread's delete mark) is skipped.
   /// - Each column applies only when the change's clock is greater than the column's `columnClocks`
   ///   entry (a missing entry is older than any clock), and then the entry advances to it. A draft or
-  ///   view settings insert onto an existing row is one write per column at the insert's clock.
+  ///   view settings insert onto an existing row is one write per column at the insert's clock; a view
+  ///   settings insert writes only the columns it carries with a value (a null there is "not set").
   /// - Every received clock (clamped first when it is more than five minutes ahead of this Mac's wall
   ///   clock) is folded into `clock`, so later local edits sort after it.
   /// - A change whose value the store refuses (SQLSTATE class 22 or 23) is rolled back to its own
@@ -187,7 +188,8 @@ extension WorkspaceDatabase {
       guard change.rowId == ViewSettings.rowId, let row = change.value?.objectValue,
         row["id"].map({ $0 == .string(ViewSettings.rowId) }) ?? true
       else { return false }
-      return try mergeViewSettings(c, row.filter { $0.key != "id" }, at: hlc)
+      // A null in an insert body is "not set" (migration 0013), never a write.
+      return try mergeViewSettings(c, row.filter { $0.key != "id" && $0.value != .null }, at: hlc)
     default:
       return false
     }

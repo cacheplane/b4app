@@ -342,6 +342,49 @@ private func clock(_ db: WorkspaceDatabase, _ table: String, _ rowId: String, _ 
     #expect(try db.columnClock(table: "viewSettings", rowId: "view", column: "arrangement") == nil)
   }
 
+  /// Two devices create the view row offline with different settings: the Mac sets `arrangement`, the
+  /// phone sets `quietThreads` (its insert body naming the others as null, which is "not set"). In
+  /// either clock order, and whether the Mac writes before or after it pulls, both settings survive, and
+  /// the Mac's own insert carries only what it set, so it claims no clock for the phone's setting.
+  @Test(arguments: ["macFirstPhoneOlder", "macFirstPhoneNewer", "phoneFirst"])
+  func twoDevicesCreatingTheRowOfflineKeepEachOthersSettings(_ order: String) throws {
+    let db = try WorkspaceDatabase.temporary()
+    try seed(db)
+    func phoneInsert(at millis: UInt64) throws -> RemoteApplied {
+      try db.applyRemote(
+        [
+          remote(
+            phone, stamp(millis, phone), "viewSettings", "view", "insert",
+            value: [
+              "id": "view", "arrangement": .null, "quietThreads": "hidden", "showArchived": .null,
+              "updatedAt": "2026-11-11T12:00:00.000Z",
+            ])
+        ], ownDeviceId: mac, macDeviceIds: [mac], cursor: 1)
+    }
+    if order == "phoneFirst" {
+      #expect(try phoneInsert(at: epochMillis() - 10_000).applied == 1)
+      _ = try db.setViewSettings(arrangement: .byEnvironment)
+    } else {
+      _ = try db.setViewSettings(arrangement: .byEnvironment)
+      let local = try clock(db, "viewSettings", "view", "arrangement")
+      let phoneMillis = order == "macFirstPhoneOlder" ? local.millis - 5_000 : local.millis + 5_000
+      #expect(try phoneInsert(at: phoneMillis).applied == 1)
+      let insert = try #require(try db.changes(after: 0).first { $0.table == "viewSettings" })
+      #expect(insert.op == "insert" && insert.value?["quietThreads"] == nil)
+    }
+    #expect(try db.viewSettings() == ViewSettings(arrangement: .byEnvironment, quietThreads: .hidden))
+
+    // An update to null is still a write, unlike a null in an insert body.
+    let cleared = try db.applyRemote(
+      [
+        remote(
+          phone, stamp(epochMillis() + 60_000, phone), "viewSettings", "view", column: "quietThreads",
+          value: .null)
+      ], ownDeviceId: mac, macDeviceIds: [mac], cursor: 2)
+    #expect(cleared.applied == 1)
+    #expect(try db.viewSettings() == ViewSettings(arrangement: .byEnvironment))
+  }
+
   @Test func aBadValueIsSkippedWithoutFailingTheBatch() throws {
     let db = try WorkspaceDatabase.temporary()
     try seed(db)
