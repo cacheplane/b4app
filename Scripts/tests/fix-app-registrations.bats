@@ -1,10 +1,12 @@
 #!/usr/bin/env bats
 # Scripts/fix-app-registrations.sh against a fixture `lsregister -dump` and a stub lsregister
-# (Scripts/tests/stubs/lsregister), which logs the -u and -f calls.
+# (Scripts/tests/stubs/lsregister), which logs the -u and -f calls, and a stub plutil (CI's Linux
+# runner has none).
 
 setup() {
   SCRIPT="$BATS_TEST_DIRNAME/../fix-app-registrations.sh"
   export B4APP_LSREGISTER="$BATS_TEST_DIRNAME/stubs/lsregister"
+  export B4APP_PLUTIL="$BATS_TEST_DIRNAME/stubs/plutil"
   export STUB_LOG="$BATS_TEST_TMPDIR/lsregister.log"
   export STUB_DUMP="$BATS_TEST_TMPDIR/dump.txt"
   # Launch Services records real paths (/private/var/…), as the script resolves --dist to.

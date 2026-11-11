@@ -22,6 +22,7 @@
 set -euo pipefail
 
 LSREGISTER="${B4APP_LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}"
+PLUTIL="${B4APP_PLUTIL:-/usr/bin/plutil}"
 # The app ids of the three flavours (Flavor.swift) and their coordinator bundles.
 ID_PATTERN='^com\.cacheplane\.b4app(\.beta|\.local)?(\.coordinator)?$'
 
@@ -115,7 +116,7 @@ strays() {
 # ours <app>: the bundle is one of the three flavours' apps (by its Info.plist), so a kept directory
 # such as /Applications only has our apps registered again, not every app in it.
 ours() {
-  id=$(plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist" 2>/dev/null) || return 1
+  id=$("$PLUTIL" -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist" 2>/dev/null) || return 1
   [[ "$id" =~ $ID_PATTERN ]]
 }
 
