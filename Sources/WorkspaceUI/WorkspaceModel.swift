@@ -351,8 +351,8 @@ public final class WorkspaceModel {
     self.preferences = preferences
   }
 
-  /// The list under the connection and environment filters: pinned first, then needs input,
-  /// unread reply, working, and quiet, newest activity first inside each (`Attention.ordered`).
+  /// The list under the connection and environment filters: approve, reply, failed, finished,
+  /// working, and quiet, pinned first and then newest activity first inside each (`Attention.ordered`).
   public var orderedThreads: [ConversationThread] {
     Attention.ordered(filtered(archived: environmentFilter == .archived, environment: environmentFilter))
   }
@@ -376,7 +376,7 @@ public final class WorkspaceModel {
     Attention.ordered(filtered(archived: true, environment: .all))
   }
 
-  public func band(of thread: ConversationThread) -> AttentionBand { Attention.band(of: thread) }
+  public func state(of thread: ConversationThread) -> ThreadState { Attention.state(of: thread) }
 
   /// A thread belongs under "No folder" when it has no environment or its environment is not known.
   private func isOther(_ thread: ConversationThread) -> Bool {
@@ -396,11 +396,11 @@ public final class WorkspaceModel {
       }
   }
 
-  /// One line under a thread's title saying why it sits where it does. Needs-input threads name the
-  /// request kind when the thread is open (the list's `activity` only counts requests).
+  /// One line under a thread's title saying why it sits where it does. Approve and reply threads name
+  /// the request kind when the thread is open (the list's `activity` only counts requests).
   public func reasonLine(for thread: ConversationThread) -> String {
-    switch Attention.band(of: thread) {
-    case .needsInput:
+    switch Attention.state(of: thread) {
+    case .approve, .reply:
       let pending = detail.flatMap { $0.thread.id == thread.id ? $0.requests : nil }?
         .filter { $0.state == .pending }.min { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
       switch pending?.kind {
@@ -408,7 +408,7 @@ public final class WorkspaceModel {
       case .userQuestion?, .elicitation?: return "Has a question for you"
       case .unknown?, nil: return "Waiting for your input"
       }
-    case .unread:
+    case .failed, .finished:
       let when = relative(thread.activity?.lastActivityAt)
       let word: String
       switch thread.activity?.latestTurnOutcome {
@@ -418,7 +418,7 @@ public final class WorkspaceModel {
       }
       return when.isEmpty ? word : "\(word) \(when)"
     case .working:
-      // The phone does not call a turn on an offline Mac working; its band stays as synced.
+      // The phone does not call a turn on an offline Mac working; its state stays as synced.
       return activeTurnLabel(for: thread) ?? "Working"
     case .quiet:
       return thread.activity?.latestTurnId == nil ? "No messages yet" : "Read"
@@ -1168,7 +1168,7 @@ public final class WorkspaceModel {
     }
   }
 
-  /// Set the read marker on the list row and the open detail at once, so the row's band changes
+  /// Set the read marker on the list row and the open detail at once, so the row's state changes
   /// before the coordinator has answered.
   private func setReadTurn(threadId: String, turnId: String?) {
     if let index = threads.firstIndex(where: { $0.id == threadId }) { threads[index].readTurnId = turnId }

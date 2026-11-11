@@ -342,15 +342,17 @@ public final class WorkspaceDatabase: Sendable {
   // MARK: - Threads
 
   /// Every thread column plus `activity`, computed in the same query: the latest turn (greatest
-  /// `createdAt`, ties by greatest `id`), the count of pending runtime requests, and the newest of the
-  /// thread's `createdAt` and its latest turn's and latest request's `updatedAt`. Timestamps are ISO-8601
-  /// text, compared bytewise (`COLLATE "C"`). Callers append a WHERE clause on `t`.
+  /// `createdAt`, ties by greatest `id`), the count of pending runtime requests and of those that ask
+  /// for approval (`RuntimeRequestKind.isApproval`), and the newest of the thread's `createdAt` and
+  /// its latest turn's and latest request's `updatedAt`. Timestamps are ISO-8601 text, compared
+  /// bytewise (`COLLATE "C"`). Callers append a WHERE clause on `t`.
   static let threadWithActivity = """
     SELECT t.*, jsonb_build_object(
       'latestTurnId', lt."id",
       'latestTurnStatus', lt."status",
       'latestTurnOutcome', lt."outcome",
       'pendingRequests', pr."n",
+      'pendingApprovals', pr."approvals",
       'lastActivityAt', (
         SELECT max(v."x" COLLATE "C") FROM (VALUES (t."createdAt"), (lt."updatedAt"), (lr."updatedAt")) AS v("x"))
     ) AS "activity"
@@ -362,7 +364,10 @@ public final class WorkspaceDatabase: Sendable {
       SELECT "updatedAt" FROM "runtimeRequests" WHERE "threadId" = t."id"
       ORDER BY "updatedAt" COLLATE "C" DESC LIMIT 1) lr ON true
     CROSS JOIN LATERAL (
-      SELECT count(*) AS "n" FROM "runtimeRequests" WHERE "threadId" = t."id" AND "state" = 'pending') pr
+      SELECT count(*) AS "n",
+        count(*) FILTER (
+          WHERE "kind" IN ('command_approval', 'file_change_approval', 'tool_permission')) AS "approvals"
+      FROM "runtimeRequests" WHERE "threadId" = t."id" AND "state" = 'pending') pr
     """
 
   public func listThreads(_ filter: ThreadFilter = ThreadFilter()) throws -> [ConversationThread] {

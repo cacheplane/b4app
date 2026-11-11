@@ -31,12 +31,13 @@ extension MirrorStore {
     }
   }
 
-  /// How many threads need the owner: non-archived, non-deleted threads in the needs-input or unread
-  /// band. It reads the threads the list reads, so `activity` is populated and the band is the one
-  /// the list shows. This is the app icon's badge.
+  /// How many threads need the owner: non-archived, non-deleted threads that
+  /// `Attention.countsTowardBadge` (approve, reply on a pending request, finished, and failed while
+  /// unread). It reads the threads the list reads, so `activity` is populated and the state is the one
+  /// the list shows. This is the app icon's badge, the same count as the hub's.
   public func needsYouCount() throws -> Int {
     try threads(includeArchived: false, connectionId: nil, query: nil)
-      .filter { [.needsInput, .unread].contains(Attention.band(of: $0)) }
+      .filter(Attention.countsTowardBadge)
       .count
   }
 

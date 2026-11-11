@@ -13,9 +13,22 @@ enum CollapsedEnvironments {
   static func encode(_ ids: Set<String>) -> String { ids.sorted().joined(separator: ",") }
 }
 
-extension AttentionBand {
-  /// What the status dot says to VoiceOver: the dot carries the band, so it needs a name.
-  var dotLabel: String {
+/// The four looks of the status dot, fed from the six thread states until the marks replace the dot:
+/// approve and reply draw the needs-input dot, failed and finished the unread one.
+enum DotStyle: Comparable {
+  case needsInput, unread, working, quiet
+
+  init(_ state: ThreadState) {
+    switch state {
+    case .approve, .reply: self = .needsInput
+    case .failed, .finished: self = .unread
+    case .working: self = .working
+    case .quiet: self = .quiet
+    }
+  }
+
+  /// What the status dot says to VoiceOver: the dot carries the state, so it needs a name.
+  var label: String {
     switch self {
     case .needsInput: return "Needs your input"
     case .unread: return "Unread reply"
@@ -23,6 +36,9 @@ extension AttentionBand {
     case .quiet: return "Quiet"
     }
   }
+
+  /// The filled dots, which also set the row's title in the strong weight.
+  var isLoud: Bool { self == .needsInput || self == .unread }
 }
 
 extension WorkspaceModel {
@@ -32,9 +48,13 @@ extension WorkspaceModel {
     return environments.first { $0.id == id }?.displayName
   }
 
-  /// A read reply exists to un-read only when the thread is quiet and has a latest turn.
+  /// A read reply exists to un-read only when the thread has a latest turn, it ended, and it was read:
+  /// quiet, or failed and read (a failure stays failed once read, but un-reading it puts it back in
+  /// the badge).
   func canMarkUnread(_ thread: ConversationThread) -> Bool {
-    band(of: thread) == .quiet && thread.activity?.latestTurnId != nil
+    guard let latest = thread.activity?.latestTurnId else { return false }
+    let state = state(of: thread)
+    return state == .quiet || (state == .failed && thread.readTurnId == latest)
   }
 
   /// Environments for the filter menu: the one with the newest thread activity first, environments without
@@ -131,13 +151,15 @@ struct SidebarErrorBanner: View {
 
 // MARK: - Status dot
 
-/// The attention band as an 8 pt dot (D-036, one accent): needs input is the accent, filled; unread is
-/// ink, filled; working is an ink ring that breathes unless Reduce Motion is on; quiet is a small
-/// muted hollow ring. The band is also the accessibility label, so colour is never the only signal.
+/// The thread state as an 8 pt dot (D-036, one accent), in four looks (`DotStyle`): needs input is the
+/// accent, filled; unread is ink, filled; working is an ink ring that breathes unless Reduce Motion is
+/// on; quiet is a small muted hollow ring. The look is also the accessibility label, so colour is never
+/// the only signal.
 public struct AttentionDot: View {
-  let band: AttentionBand
+  let style: DotStyle
 
-  public init(band: AttentionBand) { self.band = band }
+  public init(state: ThreadState) { self.style = DotStyle(state) }
+  init(style: DotStyle) { self.style = style }
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var dim = false
   /// 8 pt at the default size; it grows with the row's text so it stays legible beside it.
@@ -148,15 +170,15 @@ public struct AttentionDot: View {
   static let pulseFloor = 0.65
 
   /// Whether the dot animates: only a working thread, and never under Reduce Motion.
-  static func pulses(band: AttentionBand, reduceMotion: Bool) -> Bool {
-    band == .working && !reduceMotion
+  static func pulses(style: DotStyle, reduceMotion: Bool) -> Bool {
+    style == .working && !reduceMotion
   }
 
-  private var pulses: Bool { Self.pulses(band: band, reduceMotion: reduceMotion) }
+  private var pulses: Bool { Self.pulses(style: style, reduceMotion: reduceMotion) }
 
   public var body: some View {
     ZStack {
-      switch band {
+      switch style {
       case .needsInput:
         Circle().fill(LLA.Color.accent)
       case .unread:
@@ -181,7 +203,7 @@ public struct AttentionDot: View {
       withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { dim = true }
     }
     .accessibilityElement(children: .ignore)
-    .accessibilityLabel(band.dotLabel)
+    .accessibilityLabel(style.label)
   }
 }
 
@@ -201,9 +223,9 @@ struct ThreadRow: View {
   @Environment(\.dynamicTypeSize) private var typeSize
 
   var body: some View {
-    let band = model.band(of: thread)
+    let state = model.state(of: thread)
     let selected = model.selectedThreadId == thread.id
-    let loud = selected || band == .needsInput || band == .unread
+    let loud = selected || DotStyle(state).isLoud
     Button {
       // Select before showing the detail, so the detail coming on screen cannot mark the thread that
       // was open before (still loaded until `openThread` replaces it) read.
@@ -212,7 +234,7 @@ struct ThreadRow: View {
       Task { await model.openThread(id: thread.id) }
     } label: {
       HStack(spacing: LLA.Space.s) {
-        AttentionDot(band: band)
+        AttentionDot(state: state)
         Text(thread.title.isEmpty ? "Untitled" : thread.title)
           .font(loud ? LLAFont.rowStrong : LLAFont.row)
           .foregroundStyle(LLA.Color.ink)
@@ -460,8 +482,8 @@ struct FlatThreadList: View {
     private func header(_ section: EnvironmentSection, isCollapsed: Bool) -> some View {
       let environment = model.environments.first { $0.id == section.id }
       // A collapsed section still shows a dot when something inside is waiting or unread.
-      let urgent = section.threads.map { model.band(of: $0) }.min().flatMap {
-        $0 == .needsInput || $0 == .unread ? $0 : nil
+      let urgent = section.threads.map { DotStyle(model.state(of: $0)) }.min().flatMap {
+        $0.isLoud ? $0 : nil
       }
       return Button {
         if isCollapsed { collapsed.remove(section.id) } else { collapsed.insert(section.id) }
@@ -472,7 +494,7 @@ struct FlatThreadList: View {
             .frame(width: 10)
           Text(section.title).font(LLAFont.smallStrong).foregroundStyle(LLA.Color.ink).lineLimit(1)
           Spacer(minLength: 0)
-          if isCollapsed, let urgent { AttentionDot(band: urgent) }
+          if isCollapsed, let urgent { AttentionDot(style: urgent) }
           Text("\(section.threads.count)").font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
         }
         .padding(.horizontal, 10)

@@ -50,18 +50,35 @@ struct AttentionFixture {
       runtimeRequests: document.runtimeRequests, expected: document.expected)
   }
 
-  var expectedBand: [String: AttentionBand] {
-    expected.bands.mapValues { name in
-      switch name {
-      case "needsInput": .needsInput
-      case "unread": .unread
-      case "working": .working
-      default: .quiet
-      }
+  /// The fixture's four band names, read against the six states: approve and reply were "needs
+  /// input", failed and finished "unread" (the fixture has no read failure, which was "quiet").
+  static func bandName(_ state: ThreadState) -> String {
+    switch state {
+    case .approve, .reply: "needsInput"
+    case .failed, .finished: "unread"
+    case .working: "working"
+    case .quiet: "quiet"
     }
   }
 
-  var expectedOrder: [String] { expected.order }
+  /// The fixture's `order` is pinned first, then band, then activity. Decision 5 sorts by state, then
+  /// pinned, then activity, so the expected order is the fixture's, stably re-sorted by state and pin:
+  /// inside one (state, pin) group the fixture's activity-and-id order still decides.
+  var expectedOrder: [String] {
+    let byId = Dictionary(uniqueKeysWithValues: threadsWithActivity.map { ($0.id, $0) })
+    return Self.reordered(expected.order, threads: byId)
+  }
+
+  static func reordered(_ order: [String], threads: [String: ConversationThread]) -> [String] {
+    order.enumerated().sorted { lhs, rhs in
+      let l = threads[lhs.element]!
+      let r = threads[rhs.element]!
+      let (ls, rs) = (Attention.state(of: l), Attention.state(of: r))
+      if ls != rs { return ls < rs }
+      if l.pinned != r.pinned { return l.pinned }
+      return lhs.offset < rhs.offset
+    }.map(\.element)
+  }
 
   var threadsWithActivity: [ConversationThread] { threadsWithActivity(.reference) }
 
@@ -87,39 +104,50 @@ struct AttentionFixture {
       var copy = thread
       copy.activity = ThreadActivity(
         latestTurnId: latest?.id, latestTurnStatus: latest?.status, latestTurnOutcome: latest?.outcome,
-        pendingRequests: requests.filter { $0.state == .pending }.count, lastActivityAt: stamps.max()!)
+        pendingRequests: requests.filter { $0.state == .pending }.count,
+        pendingApprovals: requests.filter { $0.state == .pending && $0.kind.isApproval }.count,
+        lastActivityAt: stamps.max()!)
       return copy
     }
   }
 }
 
 @Suite struct AttentionTests {
-  @Test func fixtureBandsAndOrder() throws {
+  @Test func fixtureStatesAndOrder() throws {
     let f = try AttentionFixture.load()
-    for t in f.threadsWithActivity { #expect(Attention.band(of: t) == f.expectedBand[t.id], "\(t.id)") }
+    for t in f.threadsWithActivity {
+      #expect(AttentionFixture.bandName(Attention.state(of: t)) == f.expected.bands[t.id], "\(t.id)")
+    }
+    let states = Dictionary(
+      uniqueKeysWithValues: f.threadsWithActivity.map { ($0.id, Attention.state(of: $0)) })
+    #expect(states["t-ask-request-late"] == .approve && states["t-ask-turn-late"] == .approve)
+    #expect(states["t-failed-unread"] == .failed && states["t-unread-a"] == .finished)
     #expect(Attention.ordered(f.threadsWithActivity).map(\.id) == f.expectedOrder)
   }
 
   @Test func fixtureCoversEveryBandAndTheHardCases() throws {
     let f = try AttentionFixture.load()
-    #expect(Set(f.expectedBand.values) == [.needsInput, .unread, .working, .quiet])
+    #expect(Set(f.expected.bands.values) == ["needsInput", "unread", "working", "quiet"])
     #expect(f.connections.map(\.id) == ["conn-attn"])
     #expect(Set(f.threads.map(\.connectionId)) == ["conn-attn"])
     // A newer thread `updatedAt` must not lift a thread whose activity is oldest.
     let stale = try #require(f.threads.first { $0.id == "t-stale-updated" })
     #expect(f.threads.allSatisfy { $0.updatedAt <= stale.updatedAt })
+    #expect(f.expected.order.last == stale.id)
     #expect(f.expectedOrder.last == stale.id)
   }
 
-  /// Each way of getting `lastActivityAt` or the latest turn wrong must change a band or the order, so a
-  /// SQL query that makes the mistake cannot pass this file.
+  /// Each way of getting `lastActivityAt` or the latest turn wrong must change a state or the order, so
+  /// a SQL query that makes the mistake cannot pass this file.
   @Test func fixtureExposesEveryActivityMistake() throws {
     let f = try AttentionFixture.load()
+    let expectedStates = Dictionary(
+      uniqueKeysWithValues: f.threadsWithActivity.map { ($0.id, Attention.state(of: $0)) })
     for variant in AttentionFixture.Variant.allCases where variant != .reference {
       let threads = f.threadsWithActivity(variant)
-      let bands = Dictionary(uniqueKeysWithValues: threads.map { ($0.id, Attention.band(of: $0)) })
+      let states = Dictionary(uniqueKeysWithValues: threads.map { ($0.id, Attention.state(of: $0)) })
       let order = Attention.ordered(threads).map(\.id)
-      #expect(bands != f.expectedBand || order != f.expectedOrder, "\(variant) goes undetected")
+      #expect(states != expectedStates || order != f.expectedOrder, "\(variant) goes undetected")
     }
   }
 
@@ -140,7 +168,7 @@ struct AttentionFixture {
     let lc1 = f.turns.first { $0.id == "u-lc1" }!
     let lc2 = f.turns.first { $0.id == "u-lc2" }!
     #expect(lc1.createdAt < lc2.createdAt && lc1.updatedAt > lc2.updatedAt)
-    #expect(f.expectedBand["t-latest-created"] == .working)
+    #expect(f.expected.bands["t-latest-created"] == "working")
     // (d) two turns with equal createdAt: the greatest id is the latest.
     let eqA = f.turns.first { $0.id == "u-eq-a" }!
     let eqB = f.turns.first { $0.id == "u-eq-b" }!
@@ -182,10 +210,12 @@ struct AttentionFixture {
     #expect(rows.first?["target"] as? String == "")
   }
 
-  @Test func bandsAreRankedByDisplayOrder() {
-    #expect(AttentionBand.needsInput < .unread)
-    #expect(AttentionBand.unread < .working)
-    #expect(AttentionBand.working < .quiet)
+  @Test func statesAreRankedByDisplayOrder() {
+    #expect(ThreadState.allCases == [.approve, .reply, .failed, .finished, .working, .quiet])
+    #expect(ThreadState.allCases.map(\.rawValue) == [0, 1, 2, 3, 4, 5])
+    #expect(ThreadState.approve < .reply && ThreadState.finished < .working && ThreadState.working < .quiet)
+    #expect(ThreadState.allCases.filter(\.isActLevel) == [.approve, .reply, .failed])
+    #expect(ThreadState.allCases.filter(\.isTopList) == [.approve, .reply, .failed, .finished])
   }
 
   @Test func aThreadWithoutActivityIsQuietAtItsCreation() {
@@ -194,30 +224,120 @@ struct AttentionFixture {
       updatedAt: "2026-12-01T00:00:00Z")
     #expect(thread.activity == nil && thread.ownerDeviceName == nil)
     #expect(thread.environmentId == nil && thread.readTurnId == nil)
-    #expect(Attention.band(of: thread) == .quiet)
+    #expect(Attention.state(of: thread) == .quiet)
   }
 
-  @Test func pinnedThreadsComeFirstThenBandsThenActivityThenId() {
-    func thread(
-      _ id: String, pinned: Bool = false, at: String, pending: Int = 0, status: TurnStatus? = nil
-    )
-      -> ConversationThread
-    {
-      var t = ConversationThread(id: id, connectionId: "c", nativeThreadId: id, pinned: pinned, createdAt: at)
-      t.activity = ThreadActivity(
-        latestTurnId: status == nil ? nil : "turn-" + id, latestTurnStatus: status, latestTurnOutcome: nil,
-        pendingRequests: pending, lastActivityAt: at)
-      return t
+  // MARK: - The six states (decision 1)
+
+  @Test func aThreadWithNoTurnsIsQuiet() {
+    #expect(Attention.state(of: thread()) == .quiet)
+  }
+
+  @Test func anyPendingApprovalIsApprove() {
+    #expect(Attention.state(of: thread(pending: 1, approvals: 1)) == .approve)
+    #expect(
+      Attention.state(of: thread(pending: 1, approvals: 1, status: .terminal, outcome: .completed))
+        == .approve)
+  }
+
+  @Test func approveWinsWhenBothKindsArePending() {
+    #expect(Attention.state(of: thread(pending: 2, approvals: 1, status: .waitingForUser)) == .approve)
+  }
+
+  @Test func aQuestionAloneIsReply() {
+    #expect(Attention.state(of: thread(pending: 1, approvals: 0, status: .waitingForUser)) == .reply)
+  }
+
+  @Test func aPendingRequestOnAThreadWithoutTurnsIsReply() {
+    #expect(Attention.state(of: thread(pending: 1)) == .reply)
+  }
+
+  @Test func aTurnWaitingForTheUserWithNoRequestIsReply() {
+    #expect(Attention.state(of: thread(status: .waitingForUser)) == .reply)
+  }
+
+  @Test func anUnfinishedTurnIsWorking() {
+    for status in [TurnStatus.submitting, .running, .stopping, .reconciling] {
+      #expect(Attention.state(of: thread(status: status)) == .working, "\(status)")
     }
+  }
+
+  @Test func aFailedTurnIsFailedWhileUnread() {
+    #expect(Attention.state(of: thread(status: .terminal, outcome: .failed)) == .failed)
+  }
+
+  @Test func aFailedTurnStaysFailedAfterItIsRead() {
+    #expect(Attention.state(of: thread(status: .terminal, outcome: .failed, read: true)) == .failed)
+  }
+
+  @Test func aCompletedTurnIsFinishedThenQuiet() {
+    #expect(Attention.state(of: thread(status: .terminal, outcome: .completed)) == .finished)
+    #expect(Attention.state(of: thread(status: .terminal, outcome: .completed, read: true)) == .quiet)
+  }
+
+  @Test func aCancelledTurnIsFinishedThenQuiet() {
+    #expect(Attention.state(of: thread(status: .terminal, outcome: .cancelled)) == .finished)
+    #expect(Attention.state(of: thread(status: .terminal, outcome: .cancelled, read: true)) == .quiet)
+  }
+
+  @Test func activityWithoutPendingApprovalsDecodesAsZero() throws {
+    let json = Data(#"{"pendingRequests":3,"lastActivityAt":"2026-10-31T09:00:00Z"}"#.utf8)
+    let activity = try JSONCoding.decoder.decode(ThreadActivity.self, from: json)
+    #expect(activity.pendingRequests == 3 && activity.pendingApprovals == 0)
+    let roundTrip = try JSONCoding.decoder.decode(
+      ThreadActivity.self,
+      from: try JSONCoding.encoder.encode(ThreadActivity(pendingApprovals: 2, lastActivityAt: "x")))
+    #expect(roundTrip.pendingApprovals == 2)
+  }
+
+  // MARK: - Order (decision 5)
+
+  @Test func orderIsStateThenPinThenRecency() {
     let ordered = Attention.ordered([
       thread("quiet-new", at: "2026-10-31T10:00:00Z"),
-      thread("pinned-quiet", pinned: true, at: "2026-10-31T01:00:00Z"),
+      thread("pinned-quiet", pinned: true, at: "2026-10-31T11:00:00Z"),
+      thread("finished", at: "2026-10-31T01:00:00Z", status: .terminal, outcome: .completed),
       thread("working", at: "2026-10-31T05:00:00Z", status: .running),
       thread("asks", at: "2026-10-31T02:00:00Z", pending: 1, status: .waitingForUser),
+      thread("approve", at: "2026-10-31T01:00:00Z", pending: 1, approvals: 1, status: .waitingForUser),
+      thread("failed", at: "2026-10-31T01:00:00Z", status: .terminal, outcome: .failed, read: true),
+      thread("pinned-working", pinned: true, at: "2026-10-31T00:00:00Z", status: .running),
       thread("b", at: "2026-10-31T09:00:00Z"),
       thread("a", at: "2026-10-31T09:00:00Z"),
     ])
-    #expect(ordered.map(\.id) == ["pinned-quiet", "asks", "working", "quiet-new", "a", "b"])
+    #expect(
+      ordered.map(\.id) == [
+        "approve", "asks", "failed", "finished", "pinned-working", "working", "pinned-quiet", "quiet-new",
+        "a",
+        "b",
+      ])
+  }
+
+  // MARK: - Badge (decision 6)
+
+  @Test func aReadFailureDoesNotCountTowardTheBadge() {
+    #expect(!Attention.countsTowardBadge(thread(status: .terminal, outcome: .failed, read: true)))
+  }
+
+  @Test func anUnreadFailureCountsTowardTheBadge() {
+    #expect(Attention.countsTowardBadge(thread(status: .terminal, outcome: .failed)))
+  }
+
+  @Test func theBadgeCountsApproveReplyAndFinishedOnly() {
+    #expect(Attention.countsTowardBadge(thread(pending: 1, approvals: 1)))
+    #expect(Attention.countsTowardBadge(thread(pending: 1, status: .waitingForUser)))
+    #expect(Attention.countsTowardBadge(thread(status: .terminal, outcome: .cancelled)))
+    #expect(!Attention.countsTowardBadge(thread(status: .running)))
+    #expect(!Attention.countsTowardBadge(thread(status: .terminal, outcome: .completed, read: true)))
+    #expect(!Attention.countsTowardBadge(thread()))
+  }
+
+  /// The hub's badge SQL counts a pending request, or a finished turn not yet read; a turn waiting for
+  /// the user without a request was "working" there, so it stays out of the badge though it reads reply.
+  @Test func aTurnWaitingWithoutARequestDoesNotCountTowardTheBadge() {
+    let waiting = thread(status: .waitingForUser)
+    #expect(Attention.state(of: waiting) == .reply)
+    #expect(!Attention.countsTowardBadge(waiting))
   }
 
   @Test func theNewFieldsAreOptionalOnTheWire() throws {
@@ -229,4 +349,18 @@ struct AttentionFixture {
     let encoded = String(decoding: try JSONCoding.encoder.encode(thread), as: UTF8.self)
     #expect(!encoded.contains("activity") && !encoded.contains("ownerDeviceName"))
   }
+}
+
+/// A thread whose `activity` is built from the arguments; `read` marks its latest turn read.
+private func thread(
+  _ id: String = "t", pinned: Bool = false, at: String = "2026-10-31T09:00:00Z", pending: Int = 0,
+  approvals: Int = 0, status: TurnStatus? = nil, outcome: TurnOutcome? = nil, read: Bool = false
+) -> ConversationThread {
+  var t = ConversationThread(id: id, connectionId: "c", nativeThreadId: id, pinned: pinned, createdAt: at)
+  let turnId = status == nil ? nil : "turn-" + id
+  t.activity = ThreadActivity(
+    latestTurnId: turnId, latestTurnStatus: status, latestTurnOutcome: outcome, pendingRequests: pending,
+    pendingApprovals: approvals, lastActivityAt: at)
+  if read { t.readTurnId = turnId }
+  return t
 }

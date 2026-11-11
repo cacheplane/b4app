@@ -41,14 +41,17 @@ private func remove(_ path: String) {
   @Test func loadsTheTopThreeInAttentionOrderWithEnvironmentNames() throws {
     let path = tempPath()
     defer { remove(path) }
-    let (store, fixture) = try seededStore(at: path, link: link)
+    let (store, _) = try seededStore(at: path, link: link)
     let glance = try MirrorGlance.load(store: store)
     #expect(glance.linked)
-    #expect(glance.rows.map(\.threadId) == Array(fixture.expected.order.prefix(3)))
-    #expect(glance.rows.map(\.pinned) == [true, true, false])
-    #expect(glance.rows.map(\.environmentName) == ["Alpha", nil, "beta"])
+    // State first (decision 5): the two approvals and the failure come before the pinned threads.
+    #expect(glance.rows.map(\.threadId) == ["t-ask-request-late", "t-ask-turn-late", "t-failed-unread"])
+    #expect(glance.rows.map(\.state) == [.approve, .approve, .failed])
+    #expect(glance.rows.map(\.pinned) == [false, false, false])
+    #expect(glance.rows.map(\.environmentName) == ["beta", nil, nil])
     let ordered = Attention.ordered(try store.threads(includeArchived: false, connectionId: nil, query: nil))
-    #expect(glance.rows.map(\.band) == ordered.prefix(3).map { Attention.band(of: $0) })
+    #expect(glance.rows.map(\.threadId) == ordered.prefix(3).map(\.id))
+    #expect(glance.rows.map(\.state) == ordered.prefix(3).map { Attention.state(of: $0) })
     #expect(glance.rows.map(\.title) == ordered.prefix(3).map(\.title))
     #expect(try MirrorGlance.load(store: store, limit: 5).rows.count == 5)
   }
@@ -56,11 +59,11 @@ private func remove(_ path: String) {
   @Test func archivedThreadsAreLeftOut() throws {
     let path = tempPath()
     defer { remove(path) }
-    let (store, fixture) = try seededStore(at: path, link: link)
-    #expect(MirrorGlance.load(path: path).rows.first?.threadId == "t-pinned-working")
-    _ = try store.apply([change("threads", "t-pinned-working", "update", column: "archived", value: true)])
+    let (store, _) = try seededStore(at: path, link: link)
+    #expect(MirrorGlance.load(path: path).rows.first?.threadId == "t-ask-request-late")
+    _ = try store.apply([change("threads", "t-ask-request-late", "update", column: "archived", value: true)])
     let glance = try MirrorGlance.load(store: store)
-    #expect(glance.rows.map(\.threadId) == Array(fixture.expected.order.dropFirst().prefix(3)))
+    #expect(glance.rows.map(\.threadId) == ["t-ask-turn-late", "t-failed-unread", "t-unread-b"])
     #expect(MirrorGlance.load(path: path) == glance)
   }
 

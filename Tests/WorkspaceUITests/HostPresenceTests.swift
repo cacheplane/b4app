@@ -137,7 +137,7 @@ import WorkspaceProtocol
     #expect(
       model.reasonLine(for: model.threads.first { $0.id == "t1" }!)
         == "Not confirmed while your Mac is offline")
-    #expect(model.band(of: model.threads.first { $0.id == "t1" }!) == .working)
+    #expect(model.state(of: model.threads.first { $0.id == "t1" }!) == .working)
     await model.send()
     await model.stop()
     #expect(transport.recorded(.turnSend).isEmpty && transport.recorded(.turnInterrupt).isEmpty)

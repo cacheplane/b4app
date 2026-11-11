@@ -273,11 +273,12 @@ private func thread(
 }
 
 private func activity(
-  turn: String? = nil, status: TurnStatus? = nil, outcome: TurnOutcome? = nil, pending: Int = 0, at: Int = 1
+  turn: String? = nil, status: TurnStatus? = nil, outcome: TurnOutcome? = nil, pending: Int = 0,
+  approvals: Int = 0, at: Int = 1
 ) -> ThreadActivity {
   ThreadActivity(
     latestTurnId: turn, latestTurnStatus: status, latestTurnOutcome: outcome, pendingRequests: pending,
-    lastActivityAt: minutes(at))
+    pendingApprovals: approvals, lastActivityAt: minutes(at))
 }
 
 private func turn(
@@ -336,12 +337,10 @@ private func connected(
 
 /// The part of `attention.json` the model needs: threads with `activity` computed the way the stores do.
 private struct AttentionDocument: Decodable {
-  struct Expected: Decodable { var order: [String] }
   var connections: [Connection]
   var threads: [ConversationThread]
   var turns: [Turn]
   var runtimeRequests: [RuntimeRequest]
-  var expected: Expected
 
   static func load(file: StaticString = #filePath) throws -> AttentionDocument {
     let url = URL(fileURLWithPath: "\(file)")
@@ -359,7 +358,9 @@ private struct AttentionDocument: Decodable {
       var copy = thread
       copy.activity = ThreadActivity(
         latestTurnId: latest?.id, latestTurnStatus: latest?.status, latestTurnOutcome: latest?.outcome,
-        pendingRequests: requests.filter { $0.state == .pending }.count, lastActivityAt: stamps.max()!)
+        pendingRequests: requests.filter { $0.state == .pending }.count,
+        pendingApprovals: requests.filter { $0.state == .pending && $0.kind.isApproval }.count,
+        lastActivityAt: stamps.max()!)
       return copy
     }
   }
@@ -368,15 +369,24 @@ private struct AttentionDocument: Decodable {
 // MARK: - Tests
 
 @Suite(.serialized) @MainActor struct AttentionModelTests {
-  @Test func ordersPinnedThenBandsThenActivity() async throws {
+  /// By state, then pinned, then activity (decision 5): a pin lifts a thread only inside its state.
+  @Test func ordersByStateThenPinThenActivity() async throws {
     let document = try AttentionDocument.load()
     let transport = ScriptedTransport()
     transport.set(connections: document.connections, threads: document.threadsWithActivity.reversed())
     let model = try await connected(transport)
-    #expect(model.orderedThreads.map(\.id) == document.expected.order)
+    let expected = [
+      "t-ask-request-late", "t-ask-turn-late", "t-failed-unread", "t-unread-b", "t-unread-a",
+      "t-pinned-working", "t-equal-created", "t-latest-created", "t-working", "t-pinned-quiet",
+      "t-completed-read", "t-no-turns", "t-tie-a", "t-tie-b", "t-stale-updated",
+    ]
+    #expect(model.orderedThreads.map(\.id) == expected)
     #expect(model.pinnedThreads.map(\.id) == ["t-pinned-working", "t-pinned-quiet"])
-    #expect(model.band(of: model.orderedThreads[2]) == .needsInput)
-    #expect(model.visibleThreads.map(\.id) == document.expected.order)
+    #expect(
+      model.orderedThreads.prefix(5).map { model.state(of: $0) } == [
+        .approve, .approve, .failed, .finished, .finished,
+      ])
+    #expect(model.visibleThreads.map(\.id) == expected)
   }
 
   @Test func environmentSectionsExcludePinnedAndRiseWithUrgency() async throws {
@@ -435,7 +445,7 @@ private struct AttentionDocument: Decodable {
     #expect(model.environmentSections.map(\.title) == ["Alpha", "No folder"])
   }
 
-  @Test func sectionsInOneBandBreakTiesByRecentActivityThenTitle() async throws {
+  @Test func sectionsInOneStateBreakTiesByRecentActivityThenTitle() async throws {
     let transport = ScriptedTransport()
     transport.set(
       threads: [
@@ -487,16 +497,16 @@ private struct AttentionDocument: Decodable {
     transport.set(threads: [unread])
     transport.setRead(read(unread, turns: [turn("u0", in: "t1", at: 1), turn("u1", in: "t1", at: 2)]))
     let model = try await connected(transport)
-    #expect(model.band(of: model.threads[0]) == .unread)
+    #expect(model.state(of: model.threads[0]) == .finished)
 
     await model.openThread(id: "t1")
     let sent = transport.calls(.threadMarkRead)
     #expect(sent.count == 1)
     #expect(sent.first?["threadId"]?.stringValue == "t1")
     #expect(sent.first?["turnId"]?.stringValue == "u1")
-    // The row changes band at once, without waiting for an event.
+    // The row changes state at once, without waiting for an event.
     #expect(model.threads[0].readTurnId == "u1")
-    #expect(model.band(of: model.threads[0]) == .quiet)
+    #expect(model.state(of: model.threads[0]) == .quiet)
 
     model.selectedThreadId = nil
     await model.openThread(id: "t1")
@@ -512,7 +522,7 @@ private struct AttentionDocument: Decodable {
     let model = try await connected(transport)
     await model.openThread(id: "t1")
     #expect(transport.calls(.threadMarkRead).isEmpty)
-    #expect(model.band(of: model.threads[0]) == .working)
+    #expect(model.state(of: model.threads[0]) == .working)
   }
 
   @Test func aReadThreadIsNotMarkedAgain() async throws {
@@ -568,7 +578,7 @@ private struct AttentionDocument: Decodable {
     transport.setRead(read(finishedThread, turns: [turn("u0", in: "t1", at: 1), done]))
     transport.emit(try finished(done))
     try await waitUntil("refetched") { transport.calls(.threadRead).count >= 2 }
-    try await waitUntil("unread") { model.band(of: model.threads[0]) == .unread }
+    try await waitUntil("unread") { model.state(of: model.threads[0]) == .finished }
     // Timed on purpose: no mark may follow while off screen; an absence has no event to await.
     try await Task.sleep(for: .milliseconds(100))
     #expect(transport.calls(.threadMarkRead).isEmpty)
@@ -578,7 +588,7 @@ private struct AttentionDocument: Decodable {
     model.isDetailOnScreen = true
     try await waitUntil("marked") { transport.calls(.threadMarkRead).count == 1 }
     #expect(transport.calls(.threadMarkRead).first?["turnId"]?.stringValue == "u1")
-    #expect(model.band(of: model.threads[0]) == .quiet)
+    #expect(model.state(of: model.threads[0]) == .quiet)
     model.isDetailOnScreen = false
     model.isDetailOnScreen = true
     // Timed on purpose: a second mark must not follow; an absence has no event to await.
@@ -594,7 +604,7 @@ private struct AttentionDocument: Decodable {
     let model = try await connected(transport, onScreen: false)
     await model.openThread(id: "t1")
     #expect(transport.calls(.threadMarkRead).isEmpty)
-    #expect(model.band(of: model.threads[0]) == .unread)
+    #expect(model.state(of: model.threads[0]) == .finished)
 
   }
 
@@ -616,7 +626,7 @@ private struct AttentionDocument: Decodable {
     try await waitUntil("t2 refetched") {
       transport.calls(.threadRead).contains { $0["threadId"]?.stringValue == "t2" }
     }
-    try await waitUntil("t2 unread") { model.band(of: model.threads.first { $0.id == "t2" }!) == .unread }
+    try await waitUntil("t2 unread") { model.state(of: model.threads.first { $0.id == "t2" }!) == .finished }
     // Timed on purpose: no mark may follow for t2; an absence has no event to await.
     try await Task.sleep(for: .milliseconds(100))
     #expect(transport.calls(.threadMarkRead).isEmpty)
@@ -634,14 +644,14 @@ private struct AttentionDocument: Decodable {
     #expect(sent.first?["threadId"]?.stringValue == "t1")
     #expect(sent.first?["turnId"] == .null || sent.first?["turnId"] == nil)
     #expect(model.threads[0].readTurnId == nil)
-    #expect(model.band(of: model.threads[0]) == .unread)
+    #expect(model.state(of: model.threads[0]) == .finished)
 
     await model.openThread(id: "t1")
     #expect(transport.calls(.threadMarkRead).count == 2)
     #expect(transport.calls(.threadMarkRead).last?["turnId"]?.stringValue == "u1")
   }
 
-  @Test func reasonLinesFollowTheBandAndTheRequestKind() async throws {
+  @Test func reasonLinesFollowTheStateAndTheRequestKind() async throws {
     let transport = ScriptedTransport()
     let waiting = thread("wait", activity: activity(turn: "u1", status: .waitingForUser, pending: 1))
     let asked = thread("ask", activity: activity(turn: "u2", status: .waitingForUser, pending: 1))
@@ -809,16 +819,16 @@ private struct AttentionDocument: Decodable {
     let t = thread("t1", readTurnId: "u0", activity: activity(turn: "u0", status: .terminal, at: 1))
     transport.set(threads: [t])
     let model = try await connected(transport)
-    #expect(model.band(of: model.threads[0]) == .quiet)
+    #expect(model.state(of: model.threads[0]) == .quiet)
 
     var waiting = t
-    waiting.activity = activity(turn: "u1", status: .waitingForUser, pending: 1, at: 3)
+    waiting.activity = activity(turn: "u1", status: .waitingForUser, pending: 1, approvals: 1, at: 3)
     transport.setRead(read(waiting, turns: [turn("u1", in: "t1", status: .waitingForUser, at: 3)]))
     transport.emit(
       AdapterEvent(
         kind: .runtimeRequestOpened, connectionId: "c1", threadId: "t1",
         payload: ["runtimeRequest": try JSONValue(encoding: request("r1", in: "t1", kind: .toolPermission))]))
-    try await waitUntil("needs input") { model.band(of: model.threads[0]) == .needsInput }
+    try await waitUntil("approve") { model.state(of: model.threads[0]) == .approve }
   }
 
   @Test func aThreadUpdatedEventKeepsTheActivityItsPayloadLacks() async throws {
@@ -832,7 +842,7 @@ private struct AttentionDocument: Decodable {
     transport.emit(try .threadUpdated(renamed))
     try await waitUntil("renamed") { model.threads.first?.title == "new" }
     #expect(model.threads.first?.activity?.pendingRequests == 1)
-    #expect(model.band(of: model.threads[0]) == .needsInput)
+    #expect(model.state(of: model.threads[0]) == .reply)
   }
 
   @Test func environmentCommandsSendTheirParamsAndTheListFollowsEnvironmentChanged() async throws {

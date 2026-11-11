@@ -29,9 +29,9 @@ public struct EnvironmentSection: Identifiable, Sendable, Equatable {
 
   /// Groups `threads` (pinned ones already removed) by environment. A thread whose environment is not in
   /// `environments` (not loaded yet, or deleted) goes to "No folder". Threads inside a section keep
-  /// `Attention.ordered`; environment sections are ordered by their best thread's band, then its activity
-  /// (newest first), then title, then id, so an environment with a waiting approval rises. "No folder" is
-  /// always last, whatever it holds.
+  /// `Attention.ordered`; environment sections are ordered by their most urgent thread's state (their
+  /// first thread's), then its activity (newest first), then title, then id, so an environment with a
+  /// waiting approval rises. "No folder" is always last, whatever it holds.
   static func build(threads: [ConversationThread], environments: [WorkEnvironment]) -> [EnvironmentSection] {
     let names = Dictionary(
       environments.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
@@ -46,14 +46,14 @@ public struct EnvironmentSection: Identifiable, Sendable, Equatable {
     let other = groups[otherId].map {
       EnvironmentSection(id: otherId, title: noFolderTitle, threads: Attention.ordered($0))
     }
-    func rank(_ section: EnvironmentSection) -> (band: AttentionBand, at: String) {
+    func rank(_ section: EnvironmentSection) -> (state: ThreadState, at: String) {
       guard let best = section.threads.first else { return (.quiet, "") }
-      return (Attention.band(of: best), best.activity?.lastActivityAt ?? best.createdAt)
+      return (Attention.state(of: best), best.activity?.lastActivityAt ?? best.createdAt)
     }
     let sorted = sections.sorted { lhs, rhs in
       let l = rank(lhs)
       let r = rank(rhs)
-      if l.band != r.band { return l.band < r.band }
+      if l.state != r.state { return l.state < r.state }
       if l.at != r.at { return l.at > r.at }
       if lhs.title != rhs.title { return lhs.title < rhs.title }
       return lhs.id < rhs.id

@@ -33,13 +33,37 @@ private struct AttentionRows: Decodable {
   }
 }
 
-private func band(_ name: String) -> AttentionBand {
-  switch name {
-  case "needsInput": .needsInput
-  case "unread": .unread
-  case "working": .working
-  default: .quiet
+/// The fixture's band name for a state (approve and reply were "needs input", failed and finished
+/// "unread"; the fixture has no read failure).
+private func bandName(_ state: ThreadState) -> String {
+  switch state {
+  case .approve, .reply: "needsInput"
+  case .failed, .finished: "unread"
+  case .working: "working"
+  case .quiet: "quiet"
   }
+}
+
+/// The fixture's pinned-first `order`, stably re-sorted by state and then pin (decision 5): inside one
+/// (state, pin) group the fixture's activity-and-id order still decides.
+private func stateOrder(_ order: [String], threads: [ConversationThread]) -> [String] {
+  let byId = Dictionary(uniqueKeysWithValues: threads.map { ($0.id, $0) })
+  return order.enumerated().sorted { lhs, rhs in
+    let (l, r) = (byId[lhs.element]!, byId[rhs.element]!)
+    let (ls, rs) = (Attention.state(of: l), Attention.state(of: r))
+    if ls != rs { return ls < rs }
+    if l.pinned != r.pinned { return l.pinned }
+    return lhs.offset < rhs.offset
+  }.map(\.element)
+}
+
+private func request(
+  _ id: String, kind: RuntimeRequestKind, state: RuntimeRequestState = .pending,
+  at: String = "2026-10-31T09:10:00Z"
+) -> RuntimeRequest {
+  RuntimeRequest(
+    id: id, nativeRequestId: "n-\(id)", threadId: "t1", adapterGeneration: 1, kind: kind, state: state,
+    payload: [:], createdAt: at, updatedAt: at)
 }
 
 private func seed(_ db: WorkspaceDatabase, turns: [Turn] = []) throws {
@@ -69,9 +93,10 @@ private func turn(
     #expect(threads.count == fixture.threads.count)
     #expect(threads.allSatisfy { $0.activity != nil })
     for thread in threads {
-      #expect(Attention.band(of: thread) == band(fixture.expected.bands[thread.id] ?? ""), "\(thread.id)")
+      #expect(bandName(Attention.state(of: thread)) == fixture.expected.bands[thread.id], "\(thread.id)")
     }
-    #expect(Attention.ordered(threads).map(\.id) == fixture.expected.order)
+    #expect(
+      Attention.ordered(threads).map(\.id) == stateOrder(fixture.expected.order, threads: threads))
     // A single thread reads the same activity as the list.
     for thread in threads { #expect(try db.thread(id: thread.id)?.activity == thread.activity) }
   }
@@ -86,7 +111,9 @@ private func turn(
       let stamps = [thread.createdAt] + [latest?.updatedAt].compactMap { $0 } + requests.map(\.updatedAt)
       let expected = ThreadActivity(
         latestTurnId: latest?.id, latestTurnStatus: latest?.status, latestTurnOutcome: latest?.outcome,
-        pendingRequests: requests.filter { $0.state == .pending }.count, lastActivityAt: stamps.max()!)
+        pendingRequests: requests.filter { $0.state == .pending }.count,
+        pendingApprovals: requests.filter { $0.state == .pending && $0.kind.isApproval }.count,
+        lastActivityAt: stamps.max()!)
       #expect(try db.thread(id: thread.id)?.activity == expected, "\(thread.id)")
     }
   }
@@ -100,6 +127,28 @@ private func turn(
         == ThreadActivity(
           latestTurnId: nil, latestTurnStatus: nil, latestTurnOutcome: nil, pendingRequests: 0,
           lastActivityAt: "2026-10-31T09:00:00Z"))
+  }
+
+  @Test func pendingApprovalsCountOnlyPendingApprovalKinds() throws {
+    let db = try WorkspaceDatabase.temporary()
+    try seed(db)
+    _ = try db.insertRuntimeRequest(request("r-cmd", kind: .commandApproval))
+    _ = try db.insertRuntimeRequest(request("r-ask", kind: .userQuestion))
+    var activity = try #require(try db.thread(id: "t1")?.activity)
+    #expect(activity.pendingRequests == 2 && activity.pendingApprovals == 1)
+    #expect(Attention.state(of: try #require(try db.thread(id: "t1"))) == .approve)
+
+    _ = try db.insertRuntimeRequest(request("r-done", kind: .fileChangeApproval, state: .resolved))
+    _ = try db.insertRuntimeRequest(request("r-tool", kind: .toolPermission))
+    activity = try #require(try db.thread(id: "t1")?.activity)
+    #expect(activity.pendingRequests == 3 && activity.pendingApprovals == 2)
+    #expect(try db.listThreads().first { $0.id == "t1" }?.activity == activity)
+
+    #expect(try db.transitionRuntimeRequest(id: "r-cmd", to: .resolved))
+    #expect(try db.transitionRuntimeRequest(id: "r-tool", to: .expired))
+    let thread = try #require(try db.thread(id: "t1"))
+    #expect(thread.activity?.pendingRequests == 1 && thread.activity?.pendingApprovals == 0)
+    #expect(Attention.state(of: thread) == .reply)
   }
 
   @Test func activityIsNeverWrittenBack() throws {
@@ -166,10 +215,10 @@ private func turn(
     let db = try WorkspaceDatabase.temporary()
     try seed(db, turns: [turn("u1", created: "2026-10-31T09:01:00Z")])
     let read = try #require(try db.markRead(threadId: "t1", turnId: "u1"))
-    #expect(Attention.band(of: read) == .quiet)
+    #expect(Attention.state(of: read) == .quiet)
     let unread = try #require(try db.markRead(threadId: "t1", turnId: nil))
     #expect(unread.readTurnId == nil)
-    #expect(Attention.band(of: unread) == .unread)
+    #expect(Attention.state(of: unread) == .finished)
     // After clearing, any terminal turn is acceptable again, including an old one.
     #expect(try db.markRead(threadId: "t1", turnId: "u1")?.readTurnId == "u1")
   }

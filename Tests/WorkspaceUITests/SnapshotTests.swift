@@ -414,14 +414,14 @@ struct SnapshotShell: View {
       model.threads.first { $0.id == "asks" }, model.threads.first { $0.id == "unread" },
       model.threads.first { $0.id == "busy" }, model.threads.first { $0.id == "quiet" },
     ].compactMap { $0 }
-    #expect(rows.map { model.band(of: $0) } == [.needsInput, .unread, .working, .quiet])
+    #expect(rows.map { model.state(of: $0) } == [.reply, .finished, .working, .quiet])
     try await render("rowShowsEachBandDot", size: CGSize(width: 290, height: 420)) {
       VStack(alignment: .leading, spacing: 2) {
         ForEach(rows) { ThreadRow(model: model, thread: $0) }
         Hairline().padding(.vertical, LLA.Space.m)
         HStack(spacing: LLA.Space.l) {
-          ForEach([AttentionBand.needsInput, .unread, .working, .quiet], id: \.rawValue) {
-            AttentionDot(band: $0)
+          ForEach([ThreadState.approve, .finished, .working, .quiet], id: \.rawValue) {
+            AttentionDot(state: $0)
           }
         }
       }

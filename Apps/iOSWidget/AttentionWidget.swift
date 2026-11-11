@@ -81,13 +81,13 @@ nonisolated struct GlanceProvider: TimelineProvider {
     rows: [
       GlanceRow(
         threadId: "sample-1", title: "Approve the schema migration", environmentName: "b4app",
-        band: .needsInput,
+        state: .approve,
         pinned: false),
       GlanceRow(
-        threadId: "sample-2", title: "Refactor the sync loop", environmentName: "b4app", band: .working,
+        threadId: "sample-2", title: "Refactor the sync loop", environmentName: "b4app", state: .working,
         pinned: false),
       GlanceRow(
-        threadId: "sample-3", title: "Release notes for 0.2", environmentName: nil, band: .unread,
+        threadId: "sample-3", title: "Release notes for 0.2", environmentName: nil, state: .finished,
         pinned: false),
     ],
     asOf: nil)
@@ -151,7 +151,7 @@ struct GlanceRowView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack(spacing: LLA.Space.s) {
-        AttentionDot(band: row.band)
+        AttentionDot(state: row.state)
         Text(row.title.isEmpty ? "Untitled" : row.title)
           .font(LLAFont.smallStrong)
           .foregroundStyle(LLA.Color.ink)

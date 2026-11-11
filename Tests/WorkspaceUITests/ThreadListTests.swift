@@ -13,11 +13,19 @@ import WorkspaceProtocol
     #expect(CollapsedEnvironments.parse(CollapsedEnvironments.encode(["x", "other"])) == ["x", "other"])
   }
 
-  @Test func dotLabelsNameTheBand() {
-    #expect(AttentionBand.needsInput.dotLabel == "Needs your input")
-    #expect(AttentionBand.unread.dotLabel == "Unread reply")
-    #expect(AttentionBand.working.dotLabel == "Working")
-    #expect(AttentionBand.quiet.dotLabel == "Quiet")
+  @Test func dotLabelsNameTheStyle() {
+    #expect(DotStyle.needsInput.label == "Needs your input")
+    #expect(DotStyle.unread.label == "Unread reply")
+    #expect(DotStyle.working.label == "Working")
+    #expect(DotStyle.quiet.label == "Quiet")
+  }
+
+  /// Until the marks replace the dot, the six states draw today's four dots.
+  @Test func eachStateDrawsTheDotItsOldBandDrew() {
+    #expect(
+      ThreadState.allCases.map(DotStyle.init) == [
+        .needsInput, .needsInput, .unread, .unread, .working, .quiet,
+      ])
   }
 
   @Test func filterMenuListsEnvironmentsByLatestActivityAndOtherOnlyWhenPresent() async throws {
@@ -59,6 +67,11 @@ import WorkspaceProtocol
     #expect(!offered("unread"))
     #expect(!offered("asks"))
     #expect(!offered("busy"))
+    #expect(!offered("failed"))
+    // A failure stays failed once read, but un-reading it is still offered (it returns to the badge).
+    var readFailure = try #require(model.threads.first { $0.id == "failed" })
+    readFailure.readTurnId = "t4"
+    #expect(model.canMarkUnread(readFailure))
   }
 
   @Test func rowSpeaksItsReasonAndConnection() async throws {
@@ -67,7 +80,7 @@ import WorkspaceProtocol
     let model = try await ListFixture.model()
     let asks = try #require(model.threads.first { $0.id == "asks" })
     let label = try #require(model.connection(id: asks.connectionId)?.label)
-    #expect(model.band(of: asks) == .needsInput)
+    #expect(model.state(of: asks) == .reply)
     #expect(
       ThreadRow.accessibilityLabel(model: model, thread: asks)
         == "\(asks.title), \(model.reasonLine(for: asks)), \(label)")
@@ -86,11 +99,11 @@ import WorkspaceProtocol
   }
 
   @Test func onlyAWorkingDotPulsesAndReduceMotionStopsIt() {
-    for band in [AttentionBand.needsInput, .unread, .quiet] {
-      #expect(!AttentionDot.pulses(band: band, reduceMotion: false))
+    for style in [DotStyle.needsInput, .unread, .quiet] {
+      #expect(!AttentionDot.pulses(style: style, reduceMotion: false))
     }
-    #expect(AttentionDot.pulses(band: .working, reduceMotion: false))
-    #expect(!AttentionDot.pulses(band: .working, reduceMotion: true))
+    #expect(AttentionDot.pulses(style: .working, reduceMotion: false))
+    #expect(!AttentionDot.pulses(style: .working, reduceMotion: true))
   }
 
   @Test func theWorkingRingStaysAsDarkAsTheQuietRingAtItsPaleSidePhase() {

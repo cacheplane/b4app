@@ -45,13 +45,37 @@ struct AttentionFixture: Decodable {
   }
 }
 
-private func band(_ name: String) -> AttentionBand {
-  switch name {
-  case "needsInput": .needsInput
-  case "unread": .unread
-  case "working": .working
-  default: .quiet
+/// The fixture's band name for a state (approve and reply were "needs input", failed and finished
+/// "unread"; the fixture has no read failure).
+private func fixtureBandName(_ state: ThreadState) -> String {
+  switch state {
+  case .approve, .reply: "needsInput"
+  case .failed, .finished: "unread"
+  case .working: "working"
+  case .quiet: "quiet"
   }
+}
+
+/// The fixture's pinned-first `order`, stably re-sorted by state and then pin (decision 5): inside one
+/// (state, pin) group the fixture's activity-and-id order still decides.
+private func fixtureStateOrder(_ order: [String], threads: [ConversationThread]) -> [String] {
+  let byId = Dictionary(uniqueKeysWithValues: threads.map { ($0.id, $0) })
+  return order.enumerated().sorted { lhs, rhs in
+    let (l, r) = (byId[lhs.element]!, byId[rhs.element]!)
+    let (ls, rs) = (Attention.state(of: l), Attention.state(of: r))
+    if ls != rs { return ls < rs }
+    if l.pinned != r.pinned { return l.pinned }
+    return lhs.offset < rhs.offset
+  }.map(\.element)
+}
+
+private func requestRow(
+  _ id: String, thread: String, kind: RuntimeRequestKind, state: RuntimeRequestState = .pending
+) throws -> JSONValue {
+  try JSONValue(
+    encoding: RuntimeRequest(
+      id: id, nativeRequestId: "n-\(id)", threadId: thread, adapterGeneration: 1, kind: kind, state: state,
+      payload: [:], createdAt: "2026-10-31T13:00:00Z", updatedAt: "2026-10-31T13:00:00Z"))
 }
 
 @Suite struct MirrorActivityTests {
@@ -62,9 +86,11 @@ private func band(_ name: String) -> AttentionBand {
     #expect(threads.count == fixture.threads.count)
     #expect(threads.allSatisfy { $0.activity != nil })
     for thread in threads {
-      #expect(Attention.band(of: thread) == band(fixture.expected.bands[thread.id] ?? ""), "\(thread.id)")
+      #expect(
+        fixtureBandName(Attention.state(of: thread)) == fixture.expected.bands[thread.id], "\(thread.id)")
     }
-    #expect(Attention.ordered(threads).map(\.id) == fixture.expected.order)
+    #expect(
+      Attention.ordered(threads).map(\.id) == fixtureStateOrder(fixture.expected.order, threads: threads))
     for thread in threads { #expect(try store.thread(id: thread.id)?.activity == thread.activity) }
   }
 
@@ -84,9 +110,40 @@ private func band(_ name: String) -> AttentionBand {
       let stamps = [thread.createdAt] + [latest?.updatedAt].compactMap { $0 } + own.map(\.updatedAt)
       let expected = ThreadActivity(
         latestTurnId: latest?.id, latestTurnStatus: latest?.status, latestTurnOutcome: latest?.outcome,
-        pendingRequests: own.filter { $0.state == .pending }.count, lastActivityAt: stamps.max()!)
+        pendingRequests: own.filter { $0.state == .pending }.count,
+        pendingApprovals: own.filter { $0.state == .pending && $0.kind.isApproval }.count,
+        lastActivityAt: stamps.max()!)
       #expect(try store.thread(id: thread.id)?.activity == expected, "\(thread.id)")
     }
+  }
+
+  @Test func pendingApprovalsCountOnlyPendingApprovalKinds() throws {
+    let store = try AttentionFixture.load().store()
+    func activity() throws -> ThreadActivity? { try store.thread(id: "t-working")?.activity }
+    _ = try store.apply([
+      change(
+        "runtimeRequests", "r-cmd", "insert",
+        value: try requestRow("r-cmd", thread: "t-working", kind: .commandApproval)),
+      change(
+        "runtimeRequests", "r-ask", "insert",
+        value: try requestRow("r-ask", thread: "t-working", kind: .userQuestion)),
+    ])
+    #expect(try activity()?.pendingRequests == 2 && activity()?.pendingApprovals == 1)
+    _ = try store.apply([
+      change(
+        "runtimeRequests", "r-done", "insert",
+        value: try requestRow("r-done", thread: "t-working", kind: .fileChangeApproval, state: .resolved)),
+      change(
+        "runtimeRequests", "r-tool", "insert",
+        value: try requestRow("r-tool", thread: "t-working", kind: .toolPermission)),
+    ])
+    let after = try activity()
+    #expect(after?.pendingRequests == 3 && after?.pendingApprovals == 2)
+    let listed = try store.threads(includeArchived: true, connectionId: nil, query: nil).first {
+      $0.id == "t-working"
+    }
+    #expect(listed?.activity == after)
+    #expect(listed.map(Attention.state(of:)) == .approve)
   }
 
   @Test func threadsFilterByEnvironment() throws {

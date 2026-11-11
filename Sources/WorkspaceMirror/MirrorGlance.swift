@@ -6,14 +6,14 @@ public struct GlanceRow: Sendable, Equatable, Codable {
   public var threadId: String
   public var title: String
   public var environmentName: String?
-  public var band: AttentionBand
+  public var state: ThreadState
   public var pinned: Bool
 
-  public init(threadId: String, title: String, environmentName: String?, band: AttentionBand, pinned: Bool) {
+  public init(threadId: String, title: String, environmentName: String?, state: ThreadState, pinned: Bool) {
     self.threadId = threadId
     self.title = title
     self.environmentName = environmentName
-    self.band = band
+    self.state = state
     self.pinned = pinned
   }
 }
@@ -60,8 +60,8 @@ public struct Glance: Sendable, Equatable {
 }
 
 public enum MirrorGlance {
-  /// The first `limit` non-archived threads in attention order (pinned first), with environment names, and
-  /// the link's state and last sync.
+  /// The first `limit` non-archived threads in attention order (by state, then pinned), with environment
+  /// names, and the link's state and last sync.
   public static func load(store: MirrorStore, limit: Int = 3) throws -> Glance {
     let threads = Attention.ordered(try store.threads(includeArchived: false, connectionId: nil, query: nil))
     let names = Dictionary(
@@ -70,7 +70,7 @@ public enum MirrorGlance {
       GlanceRow(
         threadId: thread.id, title: thread.title,
         environmentName: thread.environmentId.flatMap { names[$0] },
-        band: Attention.band(of: thread), pinned: thread.pinned)
+        state: Attention.state(of: thread), pinned: thread.pinned)
     }
     let link = try store.link()
     return Glance(

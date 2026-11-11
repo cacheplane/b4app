@@ -284,17 +284,17 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
 
     let db = try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
     #expect(try db.appliedMigrations().contains("0004_organisation"))
-    func band(_ id: String) throws -> AttentionBand {
-      Attention.band(of: try #require(try db.thread(id: id)))
+    func state(_ id: String) throws -> ThreadState {
+      Attention.state(of: try #require(try db.thread(id: id)))
     }
     #expect(try db.thread(id: "done")?.readTurnId == "d2")
-    #expect(try band("done") == .quiet)
+    #expect(try state("done") == .quiet)
     #expect(try db.thread(id: "busy")?.readTurnId == nil)
-    #expect(try band("busy") == .working)
+    #expect(try state("busy") == .working)
     #expect(try db.thread(id: "tied")?.readTurnId == "t-b")
-    #expect(try band("tied") == .quiet)
+    #expect(try state("tied") == .quiet)
     #expect(try db.thread(id: "empty")?.readTurnId == nil)
-    #expect(try band("empty") == .quiet)
+    #expect(try state("empty") == .quiet)
 
     // The log records each marker, so it syncs, and the marker's clock is that change's clock.
     let after = try db.changes(after: Int(before ?? "0") ?? 0)
