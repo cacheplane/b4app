@@ -218,6 +218,8 @@ Exit gate status: the fixture gates pass (design exit items 4 to 6, locally: a c
 
 - [x] The set of folders threads work in is an "environment" in every store, wire contract, Swift symbol (`WorkEnvironment`), CLI output and UI string; "B4 project" keeps its name. `fixture-tested`: hub, coordinator store and phone mirror migrations carry the old rows, change-log entries and clocks across, and an upgrade run of a coordinator over a pre-rename store serves the thread under its `environmentId` (`docs/verification/2026-11-10-environments-rename.md`).
 
+- [x] Pending Hub migration 18 preserves opaque sync values and byte counts while renaming structural references (D-205). `implemented` and `fixture-tested`: a public-runner regression and eleven real-PostgreSQL controls cover native values, tenant isolation, RLS flags, failures and concurrency. The verification record distinguishes the earlier native-test base from current-source build checks and required PR CI. Already upgraded data and the local workspace Store need separate work ([record](verification/2026-11-11-hub-environment-history-preservation.md)).
+
 ## No-folder starts (D-203)
 
 - [x] A Codex or Claude thread starts with no folder from the Mac, the phone and the CLI (`thread new --no-folder`): the coordinator makes `<threadFoldersDir>/<date>-<id>` (0700), records it in the local `appFolders` table, and the thread has no environment. `fixture-tested` (`NoFolderStartTests`, `AppFolderStoreTests`, `EnvironmentServiceTests`, `ThreadNewCommandTests`, with the fake Codex and Claude runtimes). Not `live-tested`: no real runtime started a thread this way, and the hand check through a coordinator was not possible while signed out (`docs/verification/2026-11-10-no-folder-starts.md`).
