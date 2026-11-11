@@ -150,7 +150,7 @@ agent-workspace db backup
 
 `db backup` writes every table to a JSON-lines archive under the data directory's `backups`; `db restore <archive>` loads one into an empty store, or over the current one with `--replace`; `db import-sqlite <file>` imports an old store by hand. The coordinator is the only process that opens the cluster; the CLI goes through it.
 
-A thread started with "No folder" works in a folder the coordinator makes for it: `~/.b4app/projects` (`projects-beta`, `projects-local` for those flavours; `<data directory>/projects` when `B4APP_DATA_DIR` is set), one directory per thread named `<date>-<first 8 characters of the thread id>`, mode 0700. The thread has no environment. Nothing deletes these folders: they are yours to keep or remove, and a thread whose folder is gone refuses a new message and says so. `agent-workspace thread new --no-folder` does the same from the CLI.
+A thread started with "No folder" works in a folder the coordinator makes for it: `~/.b4app/projects` (`projects-beta`, `projects-local` for those flavours; `<data directory>/projects` when `B4APP_DATA_DIR` is set), one directory per thread named `<date>-<first 8 characters of the thread id>`, mode 0700. The thread has no environment. Once the thread is made, nothing deletes its folder: it is yours to keep or remove, and a thread whose folder is gone refuses a new message and says so. If the thread cannot be made, the folder made for it moments earlier is removed only while it is still empty; one with anything in it stays. `agent-workspace thread new --no-folder` does the same from the CLI.
 
 ### Upgrade
 

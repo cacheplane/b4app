@@ -5,7 +5,7 @@ A Codex or Claude thread starting with no folder (D-203), from the Mac, the phon
 ### Gates
 
 - `swift build`: `Build complete!`.
-- `swift test`: `Test run with 1517 tests in 189 suites passed after 142.103 seconds.` Exit 0, no failing test and no recorded issue in the log. The two flaky symptoms the interface task saw while app builds ran at the same time (`AppleSignInTests.appleSheetSaysItHasNoWindow` once, eight `MirrorSyncTests` timeouts) did not appear on this quiet run, so there was nothing to rerun.
+- `swift test`: `Test run with 1517 tests in 189 suites passed after 142.103 seconds.` (after the review fixes below: `Test run with 1521 tests in 189 suites passed after 167.167 seconds.`, exit 0). Exit 0, no failing test and no recorded issue in the log. The two flaky symptoms the interface task saw while app builds ran at the same time (`AppleSignInTests.appleSheetSaysItHasNoWindow` once, eight `MirrorSyncTests` timeouts) did not appear on this quiet run, so there was nothing to rerun.
 - `swift format lint --strict --recursive Sources Tests Apps Package.swift`: clean, exit 0.
 - Hub, from `Hub/`: `source <(./scripts/test-db.sh) && cargo test --workspace --locked`: 29 test binaries, 515 tests passed, 0 failed; then `./scripts/test-db.sh --stop` stopped the cluster.
 - `cargo fmt --all -- --check`: clean, exit 0.
@@ -17,9 +17,9 @@ A Codex or Claude thread starting with no folder (D-203), from the Mac, the phon
 ### What the tests cover
 
 - Store: the `appFolders` table, the folder root per flavour and under `B4APP_DATA_DIR`, and the backup archive (`AppFolderStoreTests`, `PlatformTests`, `DatabaseTests`).
-- Coordinator (`NoFolderStartTests`, `EnvironmentServiceTests`, `ThreadNewCommandTests`): the folder name and mode, the whole-id fallback with an existing folder left alone, a gone folder made again at its path, no environment from the insert or `backfill()`, the start table (no environment and no folder from any device makes a folder; a folder from another device with no environment is `environment_missing`; a B4 start is unchanged), `folder_gone` on `turn.send`, and `--no-folder` / `--cwd` in the CLI.
+- Coordinator (`NoFolderStartTests`, `EnvironmentServiceTests`, `ThreadNewCommandTests`): a no-folder start and a read after its folder is gone, each with the fake Codex and the fake Claude; a start whose session creation fails leaving no folder and no `appFolders` row, and one that fails after a file was written in the folder leaving the folder, the file and the row (`FAKE_CODEX_START_FAIL` in `fake-codex.py`); the folder name and mode, the whole-id fallback with an existing folder left alone, a gone folder made again at its path, no environment from the insert or `backfill()`, the start table (no environment and no folder from any device makes a folder; a folder from another device with no environment is `environment_missing`; a B4 start is unchanged), `folder_gone` on `turn.send`, and `--no-folder` / `--cwd` in the CLI.
 - Hub and wire: `thread.start` with no `environmentId` routes by `deviceId` (`Hub/crates/b4hub/tests/relay.rs`), and `relay.json` is read by `RelayWireTests` and the hub's fixture test.
-- Interface (`NewThreadDraftTests`, `AttentionModelTests`, `ThreadListTests`, `WorkspaceModelTests`): the default place, the phone's primary-Mac rule and blocked reasons, what a start sends from each platform, the remembered environment, the "No folder" group and filter, and the `folder_gone` words. This is all fixture and unit tests; the phone path was only fixture-tested.
+- Interface (`NewThreadDraftTests`, `AttentionModelTests`, `ThreadListTests`, `WorkspaceModelTests`): the default place, the phone's primary-Mac rule and blocked reasons (including "No folder" with no ready Codex or Claude connection, on the Mac and on the phone), what a start sends from each platform, the remembered environment, the "No folder" group and filter, and the `folder_gone` words. This is all fixture and unit tests; the phone path was only fixture-tested.
 
 ### Hand check
 
@@ -34,16 +34,16 @@ These are left to the controller's on-screen check.
 
 ### Deviations from the plan
 
-- The app folder is made before the runtime's session is created (the runtime starts in it), not immediately before the thread row is inserted. Every refusing check still runs first, and a failure up to the insert removes the folder only while it is empty, with its row.
+- The app folder is made before the runtime's session is created (the runtime starts in it), not immediately before the thread row is inserted. Every refusing check still runs first, and a failure up to the insert removes the folder only while it is empty (`rmdir(2)`, which refuses a folder with anything in it), then its row; a folder that is not empty stays, with its row.
 - From another device, a start with an unknown connection and no environment answers `connection_missing` (it was `environment_missing`).
 - The composer keeps a hand-picked "No folder" through a refresh; on the phone a no-folder thread's owner, and the not-confirmed lookup, fall back to the Mac the start named (`deviceId`).
 - The sidebar group and the phone filter formerly titled "Other" are now "No folder", and also hold threads whose environment is not known.
 
 ### Follow-ups
 
-- No test covers the rollback when session creation fails after the folder is made.
 - Two concurrent starts with one new thread id can leave a thread whose empty folder was removed.
 - The new `relay.json` `thread.start` entry is checked as raw JSON in Swift rather than decoded as `ThreadStart.Params` (the existing entries lack `threadId`).
-- On the Mac, "No folder" with no ready connection still says "Choose a folder to start in."
-- A phone with no primary Mac shows "No folder" with Send off and no reason.
-- The place menu draws a leading divider when there are no environments.
+
+### Review fixes
+
+After the whole-branch review: the Claude variants of the no-folder start and the gone-folder read; the rollback now removes the folder with `rmdir(2)` and keeps the row of a folder that is not empty, with two tests; "No folder" with no ready Codex or Claude connection gives its own reason on each platform; the place menu draws its divider only when there are environments. `swift build`: `Build complete!`. `swift test --filter NoFolderStartTests`: `Test run with 12 tests in 1 suite passed`. `swift test` as above. `swift format lint --strict --recursive Sources Tests Apps Package.swift`: clean, exit 0. The hub, the app builds and the hand check were not rerun (no hub or app-target code changed).
