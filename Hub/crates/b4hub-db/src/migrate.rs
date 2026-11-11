@@ -13,6 +13,8 @@ use url::Url;
 
 use crate::{Db, Error, Result};
 
+mod environment_history;
+
 static MIGRATOR: Migrator = sqlx::migrate!();
 
 /// The unprivileged role the service connects as. It is not the table owner and has no
@@ -37,12 +39,24 @@ pub async fn run(admin_url: &str, app_url: &str) -> Result<()> {
     // neither the statement log, the bind-parameter log, nor an error's CONTEXT can leak it.
     let verifier = scram_sha256_verifier(&password)?;
     let mut conn = PgConnection::connect(admin_url).await?;
-    MIGRATOR.run(&mut conn).await?;
-    provision_role(&mut conn, &verifier).await?;
-    refuse_privileged_role(&mut conn).await?;
-    grant_table_access(&mut conn).await?;
-    conn.close().await?;
-    Ok(())
+    let outcome = async {
+        {
+            let mut guarded = environment_history::GuardedMigrate::new(&mut conn);
+            MIGRATOR.run_direct(&mut guarded).await?;
+        }
+        provision_role(&mut conn, &verifier).await?;
+        refuse_privileged_role(&mut conn).await?;
+        grant_table_access(&mut conn).await?;
+        Ok::<(), Error>(())
+    }
+    .await;
+    // run_direct skips unlock on error. Never reuse its owned connection with
+    // a session lock or a failed/queued rollback; close consumes it even on Err.
+    let closed = conn.close().await;
+    match outcome {
+        Err(error) => Err(error),
+        Ok(()) => closed.map_err(Error::from),
+    }
 }
 
 /// Reads the migration state through `db`, which only needs `SELECT` on `_sqlx_migrations`.
