@@ -59,9 +59,6 @@ import WorkspaceProtocol
   @Test func theModelSaysWhenViewOptionsFilter() async throws {
     let model = try await ListFixture.model()
     #expect(!model.viewOptionsFiltered)
-    model.showArchived = true
-    #expect(model.viewOptionsFiltered)
-    model.showArchived = false
     model.connectionFilter = try #require(model.connections.first?.id)
     #expect(model.viewOptionsFiltered)
     model.connectionFilter = nil

@@ -1,15 +1,6 @@
 import Foundation
 import WorkspaceProtocol
 
-/// Which threads the list shows: everything, one environment, the threads without an environment ("No
-/// folder"), or the archive.
-public enum EnvironmentFilter: Sendable, Hashable {
-  case all
-  case environment(String)
-  case other
-  case archived
-}
-
 /// One group of the Mac sidebar: an environment's threads, or "No folder" for threads without an environment.
 public struct EnvironmentSection: Identifiable, Sendable, Equatable {
   /// The environment id, or `"other"`.

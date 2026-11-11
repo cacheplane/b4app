@@ -154,10 +154,10 @@
   }
 
   extension WorkspaceModel {
-    /// Whether the view-options menu narrows the Mac's list: a connection is picked, or archived
-    /// threads show.
+    /// Whether the view-options menu narrows the Mac's list: a connection is picked. The arrangement and
+    /// "Show archived" are settings, not filters.
     var viewOptionsFiltered: Bool {
-      showArchived || connectionFilter.flatMap { connection(id: $0) } != nil
+      connectionFilter.flatMap { connection(id: $0) } != nil
     }
   }
 

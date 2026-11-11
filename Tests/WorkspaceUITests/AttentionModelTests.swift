@@ -386,7 +386,6 @@ private struct AttentionDocument: Decodable {
       model.orderedThreads.prefix(5).map { model.state(of: $0) } == [
         .approve, .approve, .failed, .finished, .finished,
       ])
-    #expect(model.visibleThreads.map(\.id) == expected)
   }
 
   @Test func environmentSectionsExcludePinnedAndRiseWithUrgency() async throws {
@@ -468,7 +467,7 @@ private struct AttentionDocument: Decodable {
     #expect(model.environmentSections.map(\.title) == ["b4app"])
   }
 
-  @Test func environmentFilterNarrowsTheList() async throws {
+  @Test func theListIsEveryUnarchivedThreadAndTheArchiveIsApart() async throws {
     let transport = ScriptedTransport()
     transport.set(
       threads: [
@@ -479,15 +478,7 @@ private struct AttentionDocument: Decodable {
       ],
       environments: [environment("pa", "Alpha"), environment("pb", "Beta")])
     let model = try await connected(transport)
-    #expect(model.environmentFilter == .all)
     #expect(model.orderedThreads.map(\.id) == ["in-a", "in-b", "loose"])
-    model.environmentFilter = .environment("pa")
-    #expect(model.orderedThreads.map(\.id) == ["in-a"])
-    model.environmentFilter = .other
-    #expect(model.orderedThreads.map(\.id) == ["loose"])
-    model.environmentFilter = .archived
-    #expect(model.orderedThreads.map(\.id) == ["old"])
-    model.environmentFilter = .all
     #expect(model.archivedThreads.map(\.id) == ["old"])
   }
 
@@ -869,11 +860,9 @@ private struct AttentionDocument: Decodable {
     #expect(update["environmentId"]?.stringValue == "pa")
     #expect(update["addFolders"]?.arrayValue?.compactMap(\.stringValue) == ["/Users/brian/y"])
 
-    model.environmentFilter = .environment("pa")
     await model.deleteEnvironment(id: "pa")
     #expect(transport.calls(.environmentDelete).first?["environmentId"]?.stringValue == "pa")
     #expect(model.environments.map(\.id) == ["p-new"])
-    #expect(model.environmentFilter == .all)
 
     // An event from elsewhere (the other device renamed one) refetches the list.
     transport.set(environments: [environment("p-new", "Elsewhere")])
@@ -903,10 +892,7 @@ private struct AttentionDocument: Decodable {
     let model = try await connected(transport)
     #expect(model.threads.allSatisfy { model.arrival(for: $0) == nil })
 
-    // "b" leaves the list under the filter and comes back without it: no arrival.
-    model.environmentFilter = .environment("pa")
-    model.environmentFilter = .all
-    #expect(model.threads.allSatisfy { model.arrival(for: $0) == nil })
+    // The list empties under the filter and comes back without it: no arrival.
     model.connectionFilter = "elsewhere"
     #expect(model.orderedThreads.isEmpty)
     model.connectionFilter = nil
@@ -974,6 +960,28 @@ private struct AttentionDocument: Decodable {
     return model
   }
 
+  @Test func aNewArrangementOrShowArchivedRebasesTheArrivals() async throws {
+    let transport = ScriptedTransport()
+    let model = try await modelWithALiveTrace(transport, others: [])
+    // Another list, not a changed one: the live trace ends, as on a filter change.
+    transport.emit(try .viewSettingsChanged(ViewSettings(arrangement: .byEnvironment)))
+    try await waitUntil("rearranged") { model.viewSettings.arrangement == .byEnvironment }
+    #expect(!liveArrival(model))
+
+    let other = ScriptedTransport()
+    let shown = try await modelWithALiveTrace(other, others: [])
+    other.script(.viewSettingsSet, [.result(try JSONValue(encoding: ViewSettings(showArchived: true)))])
+    await shown.setShowArchived(true)
+    #expect(!liveArrival(shown))
+
+    // How quiet threads are drawn changes no list: the trace goes on.
+    let third = ScriptedTransport()
+    let quiet = try await modelWithALiveTrace(third, others: [])
+    third.emit(try .viewSettingsChanged(ViewSettings(quietThreads: .hidden)))
+    try await waitUntil("quiet hidden") { quiet.viewSettings.quietThreads == .hidden }
+    #expect(liveArrival(quiet))
+  }
+
   private func liveArrival(_ model: WorkspaceModel) -> Bool {
     model.threads.first { $0.id == "live" }.map { model.arrival(for: $0) != nil } ?? false
   }
@@ -1023,9 +1031,7 @@ private struct AttentionDocument: Decodable {
     let other = thread("t2", activity: activity(turn: "u2", status: .running, at: 1))
     let model = try await modelWithALiveTrace(
       transport, others: [filed, other], environments: [environment("pa", "Alpha")])
-    model.environmentFilter = .other
-    #expect(!model.orderedThreads.contains { $0.id == "t1" })
-    // A trace that starts under the filter, so the refresh can be seen to leave it alone.
+    // A trace that starts before the refresh, so the refresh can be seen to leave it alone.
     var otherDone = other
     otherDone.activity = activity(turn: "u2", status: .terminal, at: 4)
     transport.emit(try .threadUpdated(otherDone))

@@ -148,9 +148,9 @@ public final class WorkspaceModel {
   }
   /// Every environment with its folders, loaded with the threads and refreshed on `environment.changed`.
   public internal(set) var environments: [WorkEnvironment] = []
-  public var environmentFilter: EnvironmentFilter = .all {
-    didSet { if environmentFilter != oldValue { rebaseArrivals() } }
-  }
+  /// The account's view settings as stored (one synced row, read with the first snapshot and followed
+  /// through `viewSettings.changed`); the defaults until read, and again once the account ends.
+  public private(set) var viewSettings = ViewSettings()
   /// The Settings page to show, and a counter the root view watches to open Settings (a window on the
   /// Mac, a sheet on the iPhone); a counter so asking twice opens it twice.
   public var settingsPage: SettingsPage = SettingsPage.allCases[0]
@@ -182,7 +182,6 @@ public final class WorkspaceModel {
   public var connectionFilter: String? {
     didSet { if connectionFilter != oldValue { rebaseArrivals() } }
   }
-  public var showArchived = false
   /// The phone's environment sheet: a new environment, or one environment's name and folders.
   public var environmentSheet: EnvironmentSheetRequest?
   /// The iPhone's "Other ways to sign in" sheet, over the signed-out screen. On the model, like the
@@ -366,11 +365,9 @@ public final class WorkspaceModel {
     self.preferences = preferences
   }
 
-  /// The list under the connection and environment filters: approve, reply, failed, finished,
-  /// working, and quiet, pinned first and then newest activity first inside each (`Attention.ordered`).
-  public var orderedThreads: [ConversationThread] {
-    Attention.ordered(filtered(archived: environmentFilter == .archived, environment: environmentFilter))
-  }
+  /// Unarchived threads under the connection filter: approve, reply, failed, finished, working, and
+  /// quiet, pinned first and then newest activity first inside each (`Attention.ordered`).
+  public var orderedThreads: [ConversationThread] { Attention.ordered(filtered(archived: false)) }
 
   /// Pinned threads of `orderedThreads`.
   public var pinnedThreads: [ConversationThread] { orderedThreads.filter(\.pinned) }
@@ -380,35 +377,14 @@ public final class WorkspaceModel {
     EnvironmentSection.build(threads: orderedThreads.filter { !$0.pinned }, environments: environments)
   }
 
-  /// Unarchived threads under the search, connection, and environment filters, in attention order.
-  public var visibleThreads: [ConversationThread] {
-    Attention.ordered(
-      filtered(archived: false, environment: environmentFilter == .archived ? .all : environmentFilter))
-  }
-
-  /// Archived threads under the search and connection filters, shown when `showArchived` is on.
-  public var archivedThreads: [ConversationThread] {
-    Attention.ordered(filtered(archived: true, environment: .all))
-  }
+  /// Archived threads under the connection filter, shown when the view settings' `showArchived` is on.
+  public var archivedThreads: [ConversationThread] { Attention.ordered(filtered(archived: true)) }
 
   public func state(of thread: ConversationThread) -> ThreadState { Attention.state(of: thread) }
 
-  /// A thread belongs under "No folder" when it has no environment or its environment is not known.
-  private func isOther(_ thread: ConversationThread) -> Bool {
-    guard let environmentId = thread.environmentId else { return true }
-    return !environments.contains { $0.id == environmentId }
-  }
-
-  private func filtered(archived: Bool, environment: EnvironmentFilter) -> [ConversationThread] {
+  private func filtered(archived: Bool) -> [ConversationThread] {
     threads.filter { $0.archived == archived }
       .filter { connectionFilter == nil || $0.connectionId == connectionFilter }
-      .filter {
-        switch environment {
-        case .all, .archived: return true
-        case .environment(let id): return $0.environmentId == id
-        case .other: return isOther($0)
-        }
-      }
   }
 
   /// One line under a thread's title saying why it sits where it does. Approve and reply threads name
@@ -740,6 +716,8 @@ public final class WorkspaceModel {
     let listed = (try? await client.request(ServerList.self, EmptyParams()).servers) ?? []
     guard generation == accountGeneration else { return }
     servers = listed
+    await refreshViewSettings()
+    guard generation == accountGeneration else { return }
     await refreshEnvironments()
     guard generation == accountGeneration else { return }
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
@@ -1121,6 +1099,69 @@ public final class WorkspaceModel {
     }
   }
 
+  // MARK: - View settings
+
+  /// What this device draws for `viewSettings`: the phone shows Tiny as Collapsed (decision 5). The
+  /// stored value is never rewritten for it.
+  public var shownSettings: ViewSettings { viewSettings.shown(on: relaysThroughHub ? .phone : .mac) }
+
+  public func setArrangement(_ arrangement: ViewSettings.Arrangement) async {
+    await setViewSetting(\.arrangement, arrangement, ViewSettingsSet.Params(arrangement: arrangement))
+  }
+
+  public func setQuietThreads(_ quietThreads: ViewSettings.QuietThreads) async {
+    await setViewSetting(\.quietThreads, quietThreads, ViewSettingsSet.Params(quietThreads: quietThreads))
+  }
+
+  public func setShowArchived(_ showArchived: Bool) async {
+    await setViewSetting(\.showArchived, showArchived, ViewSettingsSet.Params(showArchived: showArchived))
+  }
+
+  /// One setting, written optimistically (decision 12): shown at once, then sent with only that field.
+  /// The answer is the stored row; a refusal puts the old value back, unless a change from elsewhere
+  /// replaced it meanwhile, and says why on the sidebar's error line.
+  private func setViewSetting<Value: Equatable>(
+    _ field: WritableKeyPath<ViewSettings, Value>, _ value: Value, _ params: ViewSettingsSet.Params
+  ) async {
+    let generation = accountGeneration
+    let old = viewSettings[keyPath: field]
+    var shown = viewSettings
+    shown[keyPath: field] = value
+    showViewSettings(shown)
+    let stored = await perform {
+      try await $0.request(ViewSettingsSet.self, params, options: Self.mutation())
+    }
+    guard generation == accountGeneration else { return }
+    if let stored {
+      showViewSettings(stored)
+    } else if viewSettings[keyPath: field] == value {
+      var restored = viewSettings
+      restored[keyPath: field] = old
+      showViewSettings(restored)
+    }
+  }
+
+  /// Read the account's view settings, with each snapshot (connect, reconnect, sign-in, desync). A read
+  /// that fails keeps what is shown (the defaults, on a first connect) and never holds the list back.
+  func refreshViewSettings() async {
+    let generation = accountGeneration
+    guard let client, let settings = try? await client.request(ViewSettingsGet.self, EmptyParams()),
+      generation == accountGeneration
+    else { return }
+    showViewSettings(settings)
+  }
+
+  /// A new arrangement, or archived threads shown or hidden, is another list rather than a changed one:
+  /// the arrival tracker starts afresh from it, as on a filter change.
+  private func showViewSettings(_ settings: ViewSettings) {
+    let old = viewSettings
+    guard settings != old else { return }
+    viewSettings = settings
+    if settings.arrangement != old.arrangement || settings.showArchived != old.showArchived {
+      rebaseArrivals()
+    }
+  }
+
   // MARK: - Environments
 
   public func refreshEnvironments() async {
@@ -1176,7 +1217,6 @@ public final class WorkspaceModel {
     }
     guard let deleted else { return }
     environments.removeAll { $0.id == deleted }
-    if environmentFilter == .environment(deleted) { environmentFilter = .all }
   }
 
   func merge(_ environment: WorkEnvironment) {
@@ -1550,6 +1590,10 @@ public final class WorkspaceModel {
       }
     case .environmentChanged:
       Task { await refreshEnvironments() }
+    case .viewSettingsChanged:
+      if let settings = try? event.payload["settings"]?.decode(ViewSettings.self) {
+        showViewSettings(settings)
+      }
     case .serverChanged:
       if let server = try? event.payload["server"]?.decode(LocalServer.self) { merge(server) }
     case .usageChanged:
@@ -1656,9 +1700,8 @@ public final class WorkspaceModel {
     endRelayState()
     isStartingThread = false
     forgetNewThreadDraft()
-    environmentFilter = .all
     connectionFilter = nil
-    showArchived = false
+    showViewSettings(ViewSettings())
     pendingForceStop = nil
     diagnosticsError = nil
     connections = []

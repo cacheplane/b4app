@@ -366,10 +366,10 @@ struct SnapshotShell: View {
     }
   }
 
-  @Test func iosListFilteredToEnvironment() async throws {
+  @Test func iosListFilteredToConnection() async throws {
     let model = try await ListFixture.model()
-    model.environmentFilter = .environment(ListFixture.marketing)
-    try await render("iosListFilteredToEnvironment", size: CGSize(width: 390, height: 420)) {
+    model.connectionFilter = "c2"
+    try await render("iosListFilteredToConnection", size: CGSize(width: 390, height: 420)) {
       VStack(spacing: 0) {
         HStack {
           MoreMenu(model: model)

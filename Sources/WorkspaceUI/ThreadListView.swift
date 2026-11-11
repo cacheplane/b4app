@@ -29,8 +29,8 @@ extension WorkspaceModel {
     return state == .quiet || (state == .failed && thread.readTurnId == latest)
   }
 
-  /// Environments for the filter menu: the one with the newest thread activity first, environments without
-  /// threads last by name.
+  /// Environments for menus (the phone's "Edit Environment", the composer's places): the one with the
+  /// newest thread activity first, environments without threads last by name.
   var filterEnvironments: [WorkEnvironment] {
     var newest: [String: String] = [:]
     for thread in threads {
@@ -48,29 +48,12 @@ extension WorkspaceModel {
     }
   }
 
-  /// Whether any live thread has no known environment, so the menu offers "No folder".
-  var hasOtherThreads: Bool {
-    threads.contains { thread in
-      !thread.archived && (thread.environmentId.map { id in !environments.contains { $0.id == id } } ?? true)
-    }
-  }
-
-  /// The menu's title for the current environment filter.
-  var filterTitle: String {
-    switch environmentFilter {
-    case .all: return "All environments"
-    case .environment(let id): return environments.first { $0.id == id }?.displayName ?? "Environment"
-    case .other: return EnvironmentSection.noFolderTitle
-    case .archived: return "Archived"
-    }
-  }
-
   /// The Mac sidebar's sections: `environmentSections`, plus manual environments that hold no listed thread
   /// (a new environment, or one whose threads are pinned or archived) so they can still be renamed,
   /// given a folder, or deleted. A connection filter shows matches only. "No folder" stays last.
   var sidebarSections: [EnvironmentSection] {
     let built = environmentSections
-    guard connectionFilter == nil, environmentFilter == .all else { return built }
+    guard connectionFilter == nil else { return built }
     let present = Set(built.map(\.id))
     let empty =
       environments
@@ -273,7 +256,8 @@ struct ThreadRow: View {
 // MARK: - The list
 
 /// The thread list for the sidebar: on the Mac a "Pinned" group, then one collapsible section per
-/// environment, then "No folder"; on the iPhone one flat list in attention order, narrowed by the filter menu.
+/// environment, then "No folder"; on the iPhone one flat list in attention order, narrowed by the
+/// connection filter. Both end with the archived threads while "Show archived" is on.
 struct ThreadListView: View {
   @Bindable var model: WorkspaceModel
   #if os(macOS)
@@ -304,16 +288,16 @@ struct ThreadListView: View {
 }
 
 /// The phone's rows in attention order: by state, pinned first inside each, no state headings (the marks
-/// carry the state).
+/// carry the state); then the archived threads, in the same order, while "Show archived" is on.
 /// Meant to sit inside a `List`; it supplies the swipe actions.
 struct FlatThreadRows: View {
   @Bindable var model: WorkspaceModel
   @State private var deleting: ConversationThread?
 
   var body: some View {
-    let rows = model.orderedThreads
+    let rows = model.orderedThreads + (model.shownSettings.showArchived ? model.archivedThreads : [])
     if rows.isEmpty {
-      Text(model.environmentFilter == .archived ? "No archived threads." : "No threads yet.")
+      Text("No threads yet.")
         .llaSmallMuted()
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
@@ -478,7 +462,7 @@ struct FlatThreadList: View {
 
     /// The archived threads, listed last while view options' "Show archived" is on.
     @ViewBuilder private var archive: some View {
-      if model.showArchived {
+      if model.shownSettings.showArchived {
         SidebarGroupLabel("Archived")
         if model.archivedThreads.isEmpty {
           Text("No archived threads.").llaSmallMuted().padding(.horizontal, 10).padding(.vertical, 6)

@@ -13,19 +13,11 @@ import WorkspaceProtocol
     #expect(CollapsedEnvironments.parse(CollapsedEnvironments.encode(["x", "other"])) == ["x", "other"])
   }
 
-  @Test func filterMenuListsEnvironmentsByLatestActivityAndOtherOnlyWhenPresent() async throws {
+  @Test func environmentsAreListedByLatestActivity() async throws {
     let model = try await ListFixture.model()
     // b4app's newest thread is at minute 58, Marketing site's at 50, and Docs has no threads.
     #expect(
       model.filterEnvironments.map(\.id) == [ListFixture.b4app, ListFixture.marketing, ListFixture.docs])
-    #expect(model.hasOtherThreads)
-    #expect(model.filterTitle == "All environments")
-    model.environmentFilter = .environment(ListFixture.marketing)
-    #expect(model.filterTitle == "Marketing site")
-    model.environmentFilter = .other
-    #expect(model.filterTitle == "No folder")
-    model.environmentFilter = .archived
-    #expect(model.filterTitle == "Archived")
   }
 
   @Test func macSectionsKeepAnEmptyManualEnvironmentSoItCanBeRenamedOrDeleted() async throws {
