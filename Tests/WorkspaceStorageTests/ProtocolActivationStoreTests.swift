@@ -4869,7 +4869,7 @@ extension ProtocolActivationStoreTests {
     }
     let actual = try result.get()
     let exactResult =
-      actual == (input.route == .apply ? .apply(input.applied) : input.claim ? .claim(0) : .void)
+      actual == (input.route == .apply ? .apply(input.applied) : input.route.claim ? .claim(0) : .void)
     #expect(exactResult)
   }
   private static func expectRefEffectNoOpRefusal(
