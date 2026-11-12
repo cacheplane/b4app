@@ -2970,7 +2970,7 @@ extension ProtocolActivationStoreTests {
         expectedSnapshot: bound, observation: Self.observation(f.binding))
       let known = try Self.nativeRecord(f)
       try refuseBoth(inactive); try refuseBoth(bound)  // Old full records stay stale.
-      let contextless = try #require(f.database.readProtocolFact(expectedBinding: f.binding))
+      let contextless = try #require(try f.database.readProtocolFact(expectedBinding: f.binding))
       try refuseBoth(contextless)
       let other = try f.reopen()
       defer { try? other.close() }
