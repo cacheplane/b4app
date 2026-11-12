@@ -68,7 +68,7 @@ jobs:
       - name: shellcheck
         run: |
           shopt -s nullglob
-          shellcheck .github/scripts/*.sh Hub/scripts/*.sh Hub/chart/scripts/*.sh Infra/scripts/*.sh Infra/scripts/tests/stubs/* Infra/scripts/tests/helpers.bash Scripts/docs-index.sh Scripts/fix-app-registrations.sh Scripts/test-ios-layout.sh Scripts/test-macos-smoke.sh Scripts/tests/stubs/*
+          shellcheck .github/scripts/*.sh Hub/scripts/*.sh Hub/chart/scripts/*.sh Infra/scripts/*.sh Infra/scripts/tests/stubs/* Infra/scripts/tests/helpers.bash Scripts/docs-index.sh Scripts/fix-app-registrations.sh Scripts/package-dist.sh Scripts/test-ios-layout.sh Scripts/test-macos-smoke.sh Scripts/tests/stubs/*
       - name: Fetch main for the decision-number check
         run: git fetch --no-tags --depth=1 origin main
       - name: Decision and verification records
