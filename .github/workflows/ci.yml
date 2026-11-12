@@ -114,7 +114,7 @@ jobs:
       - name: Focused Agent Protocol transport regressions
         run: swift test --filter AgentProtocolTransportTests
       - name: Focused Agent Protocol foundation regressions
-        run: swift test --filter 'AgentProtocol|ProtocolProjectionStoreTests'
+        run: swift test --filter 'AgentProtocol|ProtocolProjectionStoreTests|ProtocolActivation'
       - name: Test
         run: swift test
 

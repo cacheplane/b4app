@@ -22,7 +22,7 @@ import WorkspaceProtocol
   ]
   private enum FixtureFailure: Error {
     case unsafeLog, oversizedLog, missingLogControl, unexpectedPositiveControl, unhandledPrivateFailure,
-      deliberateRollback
+      deliberateRollback, backendObservation
   }
   private struct State: Equatable, Sendable {
     let credentials: Int
@@ -103,59 +103,121 @@ import WorkspaceProtocol
       lib: LibPQ.load(binDir: endpoint.binDir!),
       connectionString:
         "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database)")
-    defer {
-      #expect(
-        (try? raw.execute(
-          "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'", [endpoint.database]
-        )
-        .rows.isEmpty) == true)
-    }
-    let supported = try raw.execute(
-      "SELECT current_setting('server_version_num')::int AS version,current_setting('is_superuser') AS privileged"
-    ).rows.first
-    try #require(supported?.int("version") == 170011 && supported?.text("privileged") == "on")
-    let log = try OwnedLog(endpoint.logPath)
-    let database = try WorkspaceDatabase(
-      endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: root + "/backups")
-    defer { try? database.close() }
-    let secrets = MemorySecretStore(), endpointReference = SecretRef.make()
-    let endpointValue = "A3_ENDPOINT_PRIVATE_\(UUID())"
-    try await secrets.put(endpointReference, value: endpointValue)
-    for suffix in ["a", "b"] {
-      _ = try database.insertConnection(
-        Connection(
-          id: "connection-" + suffix, kind: .agentProtocol, label: "Fixture " + suffix,
-          target: "https://example.invalid/" + suffix, authReference: endpointReference.rawValue,
-          nativeScope: #"["agent-protocol-v1","agentProtocol","https://example.invalid/\#(suffix)"]"#,
-          peerProfile: .agentProtocol, agentId: "fixture-agent", authMode: .bearer, createdAt: stamp,
-          updatedAt: stamp))
-      try raw.execute(
-        #"INSERT INTO "threads" ("id","connectionId","nativeThreadId","nativeScope","createdAt","updatedAt") VALUES ($1,$2,$3,'fixture-scope',$4,$4)"#,
-        ["thread-" + suffix, "connection-" + suffix, native, stamp])
-    }
-    try raw.execute(
-      #"INSERT INTO "threads" ("id","connectionId","nativeThreadId","nativeScope","createdAt","updatedAt") VALUES ('thread-a-other','connection-a','44444444-4444-4444-8444-444444444444','fixture-scope',$1,$1)"#,
-      [stamp])
-    try raw.execute(
-      #"INSERT INTO "protocolSubscriptions" ("threadId","connectionId","nativeThreadId","generation","channels","namespaces","appliedEventId","appliedSeq","coverage","updatedAt") VALUES ('thread-a','connection-a',$1,$2,'[]','[[]]','before',1,'{}',$3)"#,
-      [native, generation, stamp])
-    let material = "A3_GRANT_PRIVATE_\(UUID()) opaque 🌱 e\u{301}\r\nline \"quoted\" \\ tail\t "
-    let fixture = Fixture(
-      database: database, raw: raw, endpoint: endpoint, root: root, secrets: secrets,
-      endpointReference: endpointReference, endpointValue: endpointValue, material: material, log: log)
-    let before = try publicFacts(raw)
-    var failure: (any Error)?
-    do { try await body(fixture) } catch {
-      let text = String(describing: error)
-      if text.contains("A3_GRANT_PRIVATE_") || text.contains("A3_ENDPOINT_PRIVATE_") {
-        Issue.record("A private sentinel reached an unhandled error; refused to print its value.")
-        failure = FixtureFailure.unhandledPrivateFailure
-      } else {
-        failure = error
+    var ownedDatabase: WorkspaceDatabase?
+    defer { try? ownedDatabase?.close() }  // Idempotent fallback; explicit close below owns the proof.
+    var primary: (any Error)?
+    do {
+      let supported = try raw.execute(
+        "SELECT current_setting('server_version_num')::int AS version,current_setting('is_superuser') AS privileged"
+      ).rows.first
+      try #require(supported?.int("version") == 170011 && supported?.text("privileged") == "on")
+      let log = try OwnedLog(endpoint.logPath)
+      let database = try WorkspaceDatabase(
+        endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: root + "/backups")
+      ownedDatabase = database
+      let secrets = MemorySecretStore(), endpointReference = SecretRef.make()
+      let endpointValue = "A3_ENDPOINT_PRIVATE_\(UUID())"
+      try await secrets.put(endpointReference, value: endpointValue)
+      for suffix in ["a", "b"] {
+        _ = try database.insertConnection(
+          Connection(
+            id: "connection-" + suffix, kind: .agentProtocol, label: "Fixture " + suffix,
+            target: "https://example.invalid/" + suffix, authReference: endpointReference.rawValue,
+            nativeScope: #"["agent-protocol-v1","agentProtocol","https://example.invalid/\#(suffix)"]"#,
+            peerProfile: .agentProtocol, agentId: "fixture-agent", authMode: .bearer, createdAt: stamp,
+            updatedAt: stamp))
+        try raw.execute(
+          #"INSERT INTO "threads" ("id","connectionId","nativeThreadId","nativeScope","createdAt","updatedAt") VALUES ($1,$2,$3,'fixture-scope',$4,$4)"#,
+          ["thread-" + suffix, "connection-" + suffix, native, stamp])
       }
+      try raw.execute(
+        #"INSERT INTO "threads" ("id","connectionId","nativeThreadId","nativeScope","createdAt","updatedAt") VALUES ('thread-a-other','connection-a','44444444-4444-4444-8444-444444444444','fixture-scope',$1,$1)"#,
+        [stamp])
+      try raw.execute(
+        #"INSERT INTO "protocolSubscriptions" ("threadId","connectionId","nativeThreadId","generation","channels","namespaces","appliedEventId","appliedSeq","coverage","updatedAt") VALUES ('thread-a','connection-a',$1,$2,'[]','[[]]','before',1,'{}',$3)"#,
+        [native, generation, stamp])
+      let material = "A3_GRANT_PRIVATE_\(UUID()) opaque 🌱 e\u{301}\r\nline \"quoted\" \\ tail\t "
+      let fixture = Fixture(
+        database: database, raw: raw, endpoint: endpoint, root: root, secrets: secrets,
+        endpointReference: endpointReference, endpointValue: endpointValue, material: material, log: log)
+      let before = try publicFacts(raw)
+      let bodyResult: Result<Void, any Error>
+      do {
+        try await body(fixture)
+        bodyResult = .success(())
+      } catch { bodyResult = .failure(Self.fixtureError(error)) }
+      if case .failure(let error) = bodyResult { primary = error }
+      // Run all public/material checks even when the saved body failed; never replace its error.
+      do { try await noPublicExposure(fixture, before: before) } catch {
+        let safe = Self.fixtureError(error)
+        if primary == nil {
+          primary = safe
+        } else {
+          Issue.record("The private fixture public-exposure check also failed.")
+        }
+      }
+    } catch { if primary == nil { primary = Self.fixtureError(error) } }
+
+    var closeSucceeded = true
+    do { try ownedDatabase?.close() } catch {
+      closeSucceeded = false
+      Issue.record("The private fixture pool close failed.")
+      if primary == nil { primary = FixtureFailure.backendObservation }
     }
-    try await noPublicExposure(fixture, before: before)
-    if let failure { throw failure }
+    let noAppBackends = await Self.observedNoAppBackends(
+      raw, database: endpoint.database, hadThrownFailure: primary != nil, closeSucceeded: closeSucceeded)
+    #expect(noAppBackends)
+    if !noAppBackends, primary == nil { primary = FixtureFailure.backendObservation }
+    if let primary { throw primary }
+  }
+
+  private static func fixtureError(_ error: any Error) -> any Error {
+    let text = String(describing: error)
+    if text.contains("A3_GRANT_PRIVATE_") || text.contains("A3_ENDPOINT_PRIVATE_") {
+      Issue.record("A private sentinel reached an unhandled error; refused to print its value.")
+      return FixtureFailure.unhandledPrivateFailure
+    }
+    return error
+  }
+
+  private static func observedNoAppBackends(
+    _ raw: PostgresConnection, database: String, hadThrownFailure: Bool, closeSucceeded: Bool
+  ) async -> Bool {
+    let began = ContinuousClock.now
+    let deadline = began + .seconds(1)
+    var readFailed = false, nonzeroObserved = false, lateCompletion = false, cancelled = false
+    var zero = false, firstEmpty = false
+    var firstSampleMilliseconds: Int64?
+    repeat {
+      do {
+        // EXACT original predicate: every b4app backend for this database, not a selected PID.
+        let empty = try raw.execute(
+          "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'", [database]
+        ).rows.isEmpty
+        let completed = ContinuousClock.now
+        if firstSampleMilliseconds == nil {
+          let elapsed = began.duration(to: completed).components
+          firstSampleMilliseconds = elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000
+          firstEmpty = empty
+        }
+        nonzeroObserved = nonzeroObserved || !empty
+        if completed > deadline { lateCompletion = true; break }
+        if empty { zero = true; break }
+      } catch { readFailed = true; break }  // Sticky, never retry an unknown read error into success.
+      guard ContinuousClock.now < deadline else { break }
+      do { try await Task.sleep(for: .milliseconds(10)) } catch { cancelled = true; break }
+    } while ContinuousClock.now < deadline
+    let elapsed = began.duration(to: .now).components
+    let elapsedMilliseconds = elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000
+    // Fixed booleans/times only: never print SQL, backend/database/PID, errors or private material.
+    print(
+      "A3_GRANT_NATIVE_CLOSE_WITNESS hadThrownFailure=\(hadThrownFailure) closeSucceeded=\(closeSucceeded) "
+        + "readFailed=\(readFailed) nonzeroObserved=\(nonzeroObserved) lateCompletion=\(lateCompletion) "
+        + "cancelled=\(cancelled) zero=\(zero) firstEmpty=\(firstEmpty) "
+        + "sampleCompleted=\(firstSampleMilliseconds != nil) firstSampleMilliseconds=\(firstSampleMilliseconds ?? 0) "
+        + "elapsedMilliseconds=\(elapsedMilliseconds)"
+    )
+    return closeSucceeded && zero && !readFailed && !lateCompletion && !cancelled
   }
   private static func rows(_ c: PostgresConnection, _ table: String) throws -> [String] {
     try c.execute("SELECT to_jsonb(t)::text AS row FROM \(Rows.quote(table)) t ORDER BY 1")

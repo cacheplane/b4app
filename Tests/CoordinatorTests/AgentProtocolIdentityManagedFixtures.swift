@@ -254,7 +254,11 @@ enum AgentProtocolIdentityManagedFixture {
     let events: EventLog
     let rememberedPID: Int32 = Int32.max
     private final class CollectedEvents: Sendable {
-      let value = Mutex<[AdapterEvent]>([])
+      struct State: Sendable {
+        var events: [AdapterEvent] = []
+        var firstConnectionAppendCompleted: [String: ContinuousClock.Instant] = [:]
+      }
+      let value = Mutex(State())
     }
     private let collected: CollectedEvents
     private let reader: Task<Void, Never>
@@ -274,7 +278,20 @@ enum AgentProtocolIdentityManagedFixture {
       service = instance
       let stream = instance.events(), values = CollectedEvents()
       collected = values
-      reader = Task { for await event in stream { values.value.withLock { $0.append(event) } } }
+      reader = Task {
+        for await event in stream {
+          values.value.withLock { state in
+            state.events.append(event)
+            if event.kind == .connectionChanged,
+              state.firstConnectionAppendCompleted[event.connectionId] == nil
+            {
+              // Timestamp completion, not enqueue/stream yield, and publish it atomically with
+              // the event to observers. Unknown/missing timestamps can never satisfy the barrier.
+              state.firstConnectionAppendCompleted[event.connectionId] = ContinuousClock.now
+            }
+          }
+        }
+      }
     }
     func rememberedServer(references: [String], disabled: Bool = false) throws -> LocalServer {
       let server = try store.database.insertLocalServer(
@@ -294,17 +311,35 @@ enum AgentProtocolIdentityManagedFixture {
       return server
     }
     func observedCurrentEvent(_ id: String) async -> Bool {
-      let deadline = ContinuousClock.now + .seconds(15)
+      let began = ContinuousClock.now
+      let deadline = began + .seconds(15)
+      var foundInLoop = false
+      var lastCheck = began
       while ContinuousClock.now < deadline {
-        if collected.value.withLock({ $0.contains { $0.connectionId == id && $0.kind == .connectionChanged } }
-        ) {
-          return true
-        }
+        let completed = collected.value.withLock { $0.firstConnectionAppendCompleted[id] }
+        lastCheck = ContinuousClock.now
+        if let completed, completed <= deadline { foundInLoop = true; break }
+        guard ContinuousClock.now < deadline else { break }
         try? await Task.sleep(for: .milliseconds(5))
       }
-      return false
+      // A late observer wake may find a timely append. A late/unknown APPEND stays failure;
+      // the final read adds no wait and cannot turn post-deadline delivery into on-time success.
+      let final = collected.value.withLock { $0.firstConnectionAppendCompleted[id] }
+      let onTime = final.map { $0 <= deadline } ?? false
+      let returned = ContinuousClock.now
+      func milliseconds(_ instant: ContinuousClock.Instant) -> Int64 {
+        let elapsed = began.duration(to: instant).components
+        return elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000
+      }
+      print(
+        "A3_CURRENT_EVENT_OBSERVATION foundInLoop=\(foundInLoop) appendKnown=\(final != nil) onTime=\(onTime) "
+          + "observerReturnedLate=\(returned > deadline) lastCheckMilliseconds=\(milliseconds(lastCheck)) "
+          + "appendMilliseconds=\(final.map { milliseconds($0) } ?? 0) "
+          + "returnedMilliseconds=\(milliseconds(returned))"
+      )
+      return onTime
     }
-    func adapterEvents() -> [AdapterEvent] { collected.value.withLock { $0 } }
+    func adapterEvents() -> [AdapterEvent] { collected.value.withLock { $0.events } }
     func finish() async {
       // No live owned/adopted PID exists in these cases: no launch, monitor, health or inFlight task.
       await service.shutdown()

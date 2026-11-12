@@ -974,6 +974,22 @@ import WorkspaceProtocol
       after.sequences.contains("changes_seq_seq:\(max + 1):false")
     else { throw FixtureFailure.unexpectedSchema }
   }
+  // The retained Tasks suspend while their synchronous PostgreSQL/gate work runs off the
+  // cooperative executor. Continuation completion reports the operation, not kernel thread exit.
+  private static func onDedicatedArchiveThread<T: Sendable>(
+    _ operation: @escaping @Sendable () -> T
+  ) async -> T {
+    await withCheckedContinuation { continuation in
+      Thread { continuation.resume(returning: operation()) }.start()
+    }
+  }
+
+  private static func onDedicatedArchiveThread<T: Sendable>(
+    _ operation: @escaping @Sendable () throws -> T
+  ) async throws -> T {
+    try await onDedicatedArchiveThread { Result<T, any Error> { try operation() } }.get()
+  }
+
   private static func observed(_ body: @Sendable () -> Bool, seconds: Int = 15) async throws -> Bool {
     let deadline = ContinuousClock.now + .seconds(seconds)
     while !body(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
@@ -982,44 +998,75 @@ import WorkspaceProtocol
 
   @Test func archiveA4HeaderBarrierSnapshotIsConsistentWhileSharedWriterCommits() async throws {
     try await Self.withFixture { f in
+      let started = ContinuousClock.now
       let db = try #require(f.database)
       let header = Mutex(false), writerDone = Mutex(false)
+      let gateExpired = Mutex(false)
       let release = DispatchSemaphore(value: 0)
       let path = f.root + "/concurrent.jsonl"
       let exporter = Task.detached {
-        try db.export(to: path) { stage in
-          if stage == .headerWritten {
-            header.withLock { $0 = true }
-            guard release.wait(timeout: .now() + 25) == .success else { throw FixtureFailure.boundaryFault }
+        try await Self.onDedicatedArchiveThread {
+          try db.export(to: path) { stage in
+            if stage == .headerWritten {
+              header.withLock { $0 = true }
+              guard release.wait(timeout: .now() + 25) == .success else {
+                gateExpired.withLock { $0 = true }
+                throw FixtureFailure.boundaryFault
+              }
+            }
           }
         }
       }
       var writer: Task<Void, any Error>?
       var caught: (any Error)?
+      var headerObserved = false, writerObserved = false
       do {
         let atHeader = try await Self.observed { header.withLock { $0 } }
+        headerObserved = atHeader
         #expect(atHeader)
         guard atHeader else { throw FixtureFailure.boundaryFault }
         writer = Task.detached {
-          defer { writerDone.withLock { $0 = true } }
-          try ProtocolGrantSecretStore.transaction(
-            database: db, owner: .init(connectionId: "connection-a", threadId: "thread-a")
-          ) { c, store in
-            try store.put("A3_GRANT_PRIVATE_CONCURRENT_" + UUID().uuidString, reference: .make())
-            try c.execute(#"UPDATE "threads" SET "title"='Committed after header' WHERE "id"='thread-a'"#)
-            try c.execute(
-              #"UPDATE "protocolSubscriptions" SET "appliedSeq"=18,"appliedEventId"='after-header' WHERE "threadId"='thread-a'"#
-            )
+          try await Self.onDedicatedArchiveThread {
+            defer { writerDone.withLock { $0 = true } }
+            try ProtocolGrantSecretStore.transaction(
+              database: db, owner: .init(connectionId: "connection-a", threadId: "thread-a")
+            ) { c, store in
+              try store.put("A3_GRANT_PRIVATE_CONCURRENT_" + UUID().uuidString, reference: .make())
+              try c.execute(#"UPDATE "threads" SET "title"='Committed after header' WHERE "id"='thread-a'"#)
+              try c.execute(
+                #"UPDATE "protocolSubscriptions" SET "appliedSeq"=18,"appliedEventId"='after-header' WHERE "threadId"='thread-a'"#
+              )
+            }
           }
         }
         let committedWhilePaused = try await Self.observed { writerDone.withLock { $0 } }
+        writerObserved = committedWhilePaused
         #expect(committedWhilePaused)
         guard committedWhilePaused else { throw FixtureFailure.boundaryFault }
       } catch { caught = error }
       // ALWAYS release before actual joins, including observed/setup/oracle failure. No Bounded-as-join.
       release.signal()
-      if let writer { do { try await writer.value } catch { if caught == nil { caught = error } } }
-      do { _ = try await exporter.value } catch { if caught == nil { caught = error } }
+      var writerSucceeded = false, exporterSucceeded = false
+      if let writer {
+        do {
+          try await writer.value
+          writerSucceeded = true
+        } catch { if caught == nil { caught = error } }
+      }
+      do {
+        _ = try await exporter.value
+        exporterSucceeded = true
+      } catch { if caught == nil { caught = error } }
+      // Only fixed test-owned primitives, after release and both actual joins, before rethrow.
+      let elapsed = started.duration(to: .now).components
+      let elapsedMilliseconds = elapsed.seconds * 1_000 + elapsed.attoseconds / 1_000_000_000_000_000
+      print(
+        "A3_ARCHIVE_HEADER_WITNESS headerReached=\(header.withLock { $0 }) "
+          + "gateExpired=\(gateExpired.withLock { $0 }) headerObserved=\(headerObserved) "
+          + "writerObserved=\(writerObserved) writerStarted=\(writer != nil) "
+          + "writerSucceeded=\(writerSucceeded) exporterSucceeded=\(exporterSucceeded) "
+          + "elapsedMilliseconds=\(elapsedMilliseconds)"
+      )
       if let caught { throw caught }
       try Self.assertFraming(Self.decoded(path), expected: f.before)
       let changed = try Self.snapshot(f.raw).rows != f.before.rows

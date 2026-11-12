@@ -389,12 +389,14 @@ import WorkspaceProtocol
       throw error
     }
     let migration = Task.detached {
-      let c = try Self.connection(fixture.endpoint)
-      let pid = try c.execute("SELECT pg_backend_pid() AS pid").rows.first?.int("pid") ?? 0
-      migrationPID.withLock { $0 = pid }
-      try WorkspaceDatabase.migrateWithBackup(
-        c, endpoint: fixture.endpoint, backupDirectory: fixture.backupDirectory
-      ) { stage in if stage == .contentsWritten { captureStarted.withLock { $0 = true } } }
+      try await Self.onDedicatedBackupThread {
+        let c = try Self.connection(fixture.endpoint)
+        let pid = try c.execute("SELECT pg_backend_pid() AS pid").rows.first?.int("pid") ?? 0
+        migrationPID.withLock { $0 = pid }
+        try WorkspaceDatabase.migrateWithBackup(
+          c, endpoint: fixture.endpoint, backupDirectory: fixture.backupDirectory
+        ) { stage in if stage == .contentsWritten { captureStarted.withLock { $0 = true } } }
+      }
     }
     let waiting = await Self.observed {
       Self.waitingOnAdvisory(inspector, pid: migrationPID.withLock { $0 })
