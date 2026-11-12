@@ -480,7 +480,9 @@ private struct EnvironmentHarness {
   }
 
   @Test func localB4ThreadsUseTheServerEnvironmentAndRemoteHaveNone() async throws {
-    let h = try await ServerHarness.start()
+    let h = try await ServerHarness.start(
+      nodeProbeLabel: .localB4ThreadsUseTheServerEnvironmentAndRemoteHaveNone)
+    defer { h.emitNodeProbeObservations() }
     defer { Task { await h.close() } }
     let path = try h.project("research-agent")
     let server = try await h.add(path)

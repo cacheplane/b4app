@@ -69,6 +69,7 @@ public final class ScopeGate: Sendable {
 public final class AccountScope: Sendable {
   /// What a scope needs from the coordinator, the same for every account.
   public struct Context: Sendable {
+    var nodeVersionProbeObservation: (@Sendable (NodeVersionProbeObservation) -> Void)? = nil
     public var paths: PlatformPaths
     public var environment: [String: String]
     public var secretStore: any SecretStore
@@ -203,9 +204,10 @@ public final class AccountScope: Sendable {
     let logger = Log.logger("accounts")
     let gate = ScopeGate()
     let eventLog = context.eventLog
-    let servers = LocalServerService(
-      context: LocalServerService.Context(
-        database: database, eventLog: eventLog, environment: context.environment, paths: context.paths))
+    var serverContext = LocalServerService.Context(
+      database: database, eventLog: eventLog, environment: context.environment, paths: context.paths)
+    serverContext.nodeVersionProbeObservation = context.nodeVersionProbeObservation
+    let servers = LocalServerService(context: serverContext)
     let environments = EnvironmentService(
       database: database, eventLog: eventLog, threadFoldersDir: context.paths.threadFoldersDir)
     // Give every existing thread without an environment the environment of its folder. A failure here must not
