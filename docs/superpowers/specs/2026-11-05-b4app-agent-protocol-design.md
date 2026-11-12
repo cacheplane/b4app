@@ -302,9 +302,30 @@ proof capture. Stale, malformed or replaced state and mismatched owner identitie
 still refuse without recapture. Refusal or timeout preserves honest
 hubSessionLeftOpen bookkeeping and does not prevent existing local logout cleanup.
 An already-unjoined scope keeps the no-session branch; failed comparison does not
-prove that a session is absent. Native credential-reference freshness remains a
-separate required comparison: the current verification validator does not compare
-hubLink.tokenRef, and memory equality is not a native freshness receipt.
+prove that a session is absent. Compare the original credential reference separately:
+the current verification validator does not compare hubLink.tokenRef. Use the package
+data methods compareOriginalLinkedCredentialReference for strict linked disposal and
+compareOriginalLinkedSyncCredentialReference for ordinary sync. Each requires the
+original snapshot and raw reference, compares their current native view together,
+and returns only success or the fixed redacted failure. Existing validators retain
+their current semantics. These planned methods are unimplemented.
+
+Preserve the actual SecretRef parser's secret: prefix and nonempty suffix, without
+UUID-only narrowing, and add explicit NUL rejection. Compare original UTF-8 bytes;
+do not trim, normalize or recapture them. Newly reference-bearing state and carriers
+need explicit redacted CustomReflectable behavior, fixed descriptions where relevant
+and no encoding; private fields alone do not hide reflection. Same-membership token
+refresh preserves protocol facts: old reference A refuses after replacement with B,
+while a separately owned new B construction may pass. This establishes present
+reference equality only; ABA, same-reference secret changes, secret availability,
+bearer validity and atomic native-to-wire admission remain outside that comparison.
+
+Every later reference-aware effect must receive that exact original reference and
+compare it before and after its body inside the actual transaction, under the
+existing lock order and through actual COMMIT. A prior read-only check cannot fence
+later SQL. The current snapshot-only guarded effects are not reference-checked.
+Construction/install/start ordering, SQL wait budgets, native qualification and
+owner/transport wiring remain separate open requirements.
 
 Owned HTTP and WebSocket handoff must use retained concrete tasks and a final
 synchronous admission check at resume or the completion-handler send call.
