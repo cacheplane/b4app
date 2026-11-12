@@ -1054,31 +1054,82 @@ public final class WorkspaceDatabase: Sendable {
   @discardableResult
   public func claimOwnedRows() throws -> Int {
     try write { c in
-      guard
-        let row = try c.execute(#"SELECT "deviceId", "ownedAs" FROM "hubLink" WHERE "id" = 1"#).rows.first,
-        let device = row.text("deviceId")
-      else { return 0 }
-      if row.text("ownedAs") == device { return 0 }
-      let pushed = try !c.execute(#"SELECT 1 FROM "changes" WHERE "synced" LIMIT 1"#).rows.isEmpty
-      guard pushed else {
-        try c.execute(#"UPDATE "hubLink" SET "ownedAs" = $1 WHERE "id" = 1"#, [device])
-        return 0
-      }
-      let wall = String(Int(Date().timeIntervalSince1970 * 1000))
-      let oldest = "000000000000-0000-" + device
-      var appended = 0
-      for table in Self.ownedTables {
-        let quoted = Rows.quote(table)
-        let inserted = try c.execute(
-          """
-          INSERT INTO "changes" ("deviceId", "wall", "table", "rowId", "op", "value", "hlc")
-          SELECT $1, $2::bigint, $3, t."id", 'insert', to_jsonb(t), $4 FROM \(quoted) t
-          RETURNING "seq"
-          """, [device, wall, table, oldest])
-        appended += inserted.rows.count
-      }
+      try claimOwnedRows(c)
+    }
+  }
+
+  /// Re-announce owned rows only while the original linked compatibility snapshot still matches.
+  @discardableResult
+  public func claimOwnedRows(
+    expectedProtocolSnapshot: ProtocolVerificationSnapshot
+  ) throws -> Int {
+    try writeProtocolSyncEffect(expectedSnapshot: expectedProtocolSnapshot) { c in
+      try claimOwnedRows(c)
+    }
+  }
+
+  /// Transaction borrower only; both wrappers preserve the original local reannouncement body.
+  private func claimOwnedRows(_ c: PostgresConnection) throws -> Int {
+    guard
+      let row = try c.execute(#"SELECT "deviceId", "ownedAs" FROM "hubLink" WHERE "id" = 1"#).rows.first,
+      let device = row.text("deviceId")
+    else { return 0 }
+    if row.text("ownedAs") == device { return 0 }
+    let pushed = try !c.execute(#"SELECT 1 FROM "changes" WHERE "synced" LIMIT 1"#).rows.isEmpty
+    guard pushed else {
       try c.execute(#"UPDATE "hubLink" SET "ownedAs" = $1 WHERE "id" = 1"#, [device])
-      return appended
+      return 0
+    }
+    let wall = String(Int(Date().timeIntervalSince1970 * 1000))
+    let oldest = "000000000000-0000-" + device
+    var appended = 0
+    for table in Self.ownedTables {
+      let quoted = Rows.quote(table)
+      let inserted = try c.execute(
+        """
+        INSERT INTO "changes" ("deviceId", "wall", "table", "rowId", "op", "value", "hlc")
+        SELECT $1, $2::bigint, $3, t."id", 'insert', to_jsonb(t), $4 FROM \(quoted) t
+        RETURNING "seq"
+        """, [device, wall, table, oldest])
+      appended += inserted.rows.count
+    }
+    try c.execute(#"UPDATE "hubLink" SET "ownedAs" = $1 WHERE "id" = 1"#, [device])
+    return appended
+  }
+
+  /// Record only the push status fields while the original linked snapshot still matches.
+  public func recordHubPushResult(
+    error: String?, pushedAt: String?, expectedProtocolSnapshot: ProtocolVerificationSnapshot
+  ) throws {
+    try writeProtocolSyncEffect(expectedSnapshot: expectedProtocolSnapshot) { c -> Void in
+      if error?.utf8.contains(0) == true || pushedAt?.utf8.contains(0) == true {
+        throw ProtocolActivationControl.failure
+      }
+      try c.execute(
+        """
+        UPDATE "hubLink"
+        SET "lastError" = $1, "lastPushAt" = COALESCE($2::text, "lastPushAt")
+        WHERE "id" = 1
+        """, [error, pushedAt])
+    }
+  }
+
+  /// Clear only a current pull-prefixed error, or record the exact supplied pull error.
+  public func recordHubPullResult(
+    error: String?, expectedProtocolSnapshot: ProtocolVerificationSnapshot
+  ) throws {
+    try writeProtocolSyncEffect(expectedSnapshot: expectedProtocolSnapshot) { c -> Void in
+      if let error {
+        guard !error.utf8.contains(0) else { throw ProtocolActivationControl.failure }
+        try c.execute(
+          #"UPDATE "hubLink" SET "lastError" = $1 WHERE "id" = 1"#, ["Pull: " + error])
+      } else {
+        try c.execute(
+          """
+          UPDATE "hubLink" SET "lastError" = NULL
+          WHERE "id" = 1 AND left("lastError", 6) COLLATE "C" = 'Pull: '
+          """)
+      }
     }
   }
 

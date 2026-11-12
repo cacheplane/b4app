@@ -3237,3 +3237,828 @@ extension ProtocolActivationStoreTests {
     }
   }
 }
+
+// Final three guarded effects: dormant data compatibility only. These appended cases target
+// future overloads; source review is neither semantic RED nor compilation/native-run evidence.
+// Full local claim values include Mac-private columns. This is NOT outbound SyncFilter, owner,
+// account, credential, HTTP, actor, publication, schema-admission or runtime qualification.
+extension ProtocolActivationStoreTests {
+  private struct FinalEffectSequence {
+    let last: Int64
+    let log: Int64
+    let called: Bool
+  }
+  private static func finalEffectSequence(_ bytes: Data) throws -> FinalEffectSequence {
+    let value = try object(String(decoding: bytes, as: UTF8.self))
+    guard Set(value.keys) == Set(["last_value", "log_cnt", "is_called"]),
+      let last = integer(value["last_value"]), let log = integer(value["log_cnt"]),
+      let called = value["is_called"] as? NSNumber,
+      CFGetTypeID(called) == CFBooleanGetTypeID()
+    else { throw FixtureFailure.nativeShape }
+    return FinalEffectSequence(last: last, log: log, called: called.boolValue)
+  }
+  /// Private sequences are deliberately outside public NativeState. Read all three fields and
+  /// never reset them; initial (1,false) is distinguishable from allocated (1,true).
+  private static func finalEffectProbe(_ f: Fixture, _ name: String) throws -> Data {
+    guard
+      let text = try f.raw.execute(
+        "SELECT jsonb_build_object('last_value',last_value,'log_cnt',log_cnt,'is_called',is_called)::text AS value FROM \(name)"
+      ).rows.first?.text("value")
+    else { throw FixtureFailure.nativeShape }
+    return Data(text.utf8)
+  }
+  private static func expectFinalEffectAllocation(
+    _ f: Fixture, name: String, before: Data, after: Data, count: Int
+  ) throws {
+    if count == 0 {
+      let exact = before == after
+      #expect(exact)
+      return
+    }
+    let properties = try f.raw.execute(
+      "SELECT seqincrement::text AS step,seqcache::text AS cache FROM pg_catalog.pg_sequence WHERE seqrelid=$1::regclass",
+      [name]
+    ).rows.first
+    let unitUncached = properties?.text("step") == "1" && properties?.text("cache") == "1"
+    try #require(unitUncached)
+    let old = try finalEffectSequence(before), new = try finalEffectSequence(after)
+    let expectedLast = old.last + Int64(count) - (old.called ? 0 : 1)
+    let exactAllocation = count > 0 && new.last == expectedLast && new.called
+    // PostgreSQL's WAL preallocation log_cnt is not transactional and may refill after a
+    // checkpoint. Retain its actual value, constrain its native CACHE 1 range, never mask it.
+    let nativeLogRange = old.log >= 0 && old.log <= 32 && new.log >= 0 && new.log <= 32
+    let honestAllocation = exactAllocation && nativeLogRange
+    try #require(honestAllocation)
+  }
+  private static func installFinalEffectRowProbe(_ f: Fixture) throws {
+    try f.raw.execute(
+      """
+      CREATE SCHEMA guard_effect_probe;
+      CREATE SEQUENCE guard_effect_probe.updates;
+      CREATE FUNCTION guard_effect_probe.row_updated() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+      BEGIN PERFORM nextval('guard_effect_probe.updates'); RETURN NEW; END $$;
+      CREATE TRIGGER guard_effect_probe AFTER UPDATE ON public."hubLink" FOR EACH ROW
+        WHEN(NEW.id=1) EXECUTE FUNCTION guard_effect_probe.row_updated();
+      """)
+  }
+  private static func seedFinalEffectLinkSentinels(_ f: Fixture) throws {
+    // Identity tuple (url, deviceId, joinedAt) stays the fixture's original tuple.
+    try f.raw.execute(
+      """
+      UPDATE public."hubLink" SET cursor=701,"tokenRef"='secret:ACTIVATION_STATUS_PRIVATE',
+        "deviceName"='ACTIVATION_STATUS_LABEL',"orgSlug"='ACTIVATION_STATUS_ORG',
+        username='ACTIVATION_STATUS_USER',"ownedAs"='ACTIVATION_PREVIOUS_OWNER',
+        "lastPushAt"='ACTIVATION_PREVIOUS_TIME',"lastError"='ACTIVATION_PREVIOUS_ERROR' WHERE id=1
+      """)
+  }
+  private static func seedFinalEffectOwnedRows(_ f: Fixture) throws {
+    try seedGuardApply(f)
+    try f.raw.execute("BEGIN")
+    do {
+      try f.raw.execute("SET LOCAL b4app.replaying='on'")
+      try f.raw.execute(
+        """
+        INSERT INTO public.environments(id,name,manual,"createdAt","updatedAt")
+          VALUES('guard-second-environment','ACTIVATION_SECOND_LOCAL_ENVIRONMENT',false,
+            '2026-11-12T00:00:00.000Z','2026-11-12T00:00:00.000Z')
+        """)
+      try f.raw.execute("COMMIT")
+    } catch {
+      _ = try? f.raw.execute("ROLLBACK")
+      throw error
+    }
+  }
+  /// Modify explicit fields in the BEFORE image only. JSON normalization uses a read-only
+  /// cast, not a production effect or expected-value helper. No existing helper is modified.
+  private static func finalEffectExpectedRows(
+    _ f: Fixture, before: NativeState, link: [String: Any] = [:], markers: [String] = []
+  ) throws -> [String: [Data]] {
+    var rows = before.rows
+    if !link.isEmpty {
+      var matches = 0
+      rows["hubLink"] = try (rows["hubLink"] ?? []).map { bytes in
+        var row = try object(String(decoding: bytes, as: UTF8.self))
+        guard integer(row["id"]) == 1 else { return bytes }
+        matches += 1
+        for (field, value) in link { row[field] = value }
+        return try guardApplyJSON(f, row)
+      }.sorted { $0.lexicographicallyPrecedes($1) }
+      let exactlyOneLink = matches == 1
+      try #require(exactlyOneLink)
+    }
+    for id in markers {
+      let row: [String: Any] = [
+        "table": "connections", "rowId": id, "column": "authMode",
+        "hlc": "000000000000-0000-local",
+      ]
+      rows["columnClocks", default: []].append(try guardApplyJSON(f, row))
+    }
+    rows["columnClocks"]?.sort { $0.lexicographicallyPrecedes($1) }
+    return rows
+  }
+  private static func expectFinalEffectPositive(
+    _ f: Fixture, link: [String: Any], markers: [String] = [],
+    probes: [(name: String, count: Int)] = [], body: () throws -> Void
+  ) throws {
+    let before = try state(f)
+    let probeBefore = try probes.map { try finalEffectProbe(f, $0.name) }
+    let expected = NativeState(
+      rows: try finalEffectExpectedRows(f, before: before, link: link, markers: markers),
+      sequence: before.sequence)
+    let outcome = Result { try body() }
+    let after = try state(f)
+    let exact = after == expected
+    #expect(exact)
+    for (index, probe) in probes.enumerated() {
+      try expectFinalEffectAllocation(
+        f, name: probe.name, before: probeBefore[index], after: finalEffectProbe(f, probe.name),
+        count: probe.count)
+    }
+    try outcome.get()
+  }
+  private static func expectFinalEffectRefusal(
+    _ f: Fixture, allocations: Int = 0, probes: [(name: String, count: Int)] = [],
+    body: () throws -> Void
+  ) throws {
+    let before = try state(f)
+    let probeBefore = try probes.map { try finalEffectProbe(f, $0.name) }
+    expectSafe(body)
+    let after = try state(f)  // Observe EVERY public row and all three native sequence fields NOW.
+    if allocations == 0 {
+      let exact = after == before
+      #expect(exact)
+    } else {
+      let exactRows = after.rows == before.rows
+      #expect(exactRows)
+      try expectFinalEffectAllocation(
+        f, name: "public.changes_seq_seq", before: before.sequence, after: after.sequence,
+        count: allocations)
+    }
+    for (index, probe) in probes.enumerated() {
+      try expectFinalEffectAllocation(
+        f, name: probe.name, before: probeBefore[index], after: finalEffectProbe(f, probe.name),
+        count: probe.count)
+    }
+    // No restoration, recapture, counter reset, later call or in-memory HLC assertion precedes
+    // these observations. A known sequence allocation is never called native rollback.
+  }
+  private static func finalEffectOwnedRows(_ before: NativeState) throws -> [String: Data] {
+    var result: [String: Data] = [:]
+    // Independent fixed contract; do not consume WorkspaceDatabase.ownedTables here.
+    for table in ["connections", "environments", "threads"] {
+      for bytes in before.rows[table] ?? [] {
+        let row = try object(String(decoding: bytes, as: UTF8.self))
+        guard let id = row["id"] as? String else { throw FixtureFailure.nativeShape }
+        let identity = table + "\0" + id
+        guard result.updateValue(bytes, forKey: identity) == nil else { throw FixtureFailure.nativeShape }
+      }
+    }
+    return result
+  }
+  /// An independent append oracle: full BEFORE-owned values, each identity exactly once, a
+  /// known count of contiguous unique allocations, one wall bounded by real before/after time.
+  /// SQL INSERT SELECT has no ORDER BY: identity-to-seq mapping is deliberately unconstrained.
+  private static func expectFinalEffectClaim(
+    _ f: Fixture, snapshot: ProtocolVerificationSnapshot, count: Int, updatesOwnedAs: Bool,
+    markers: [String] = [], probes: [(name: String, count: Int)] = []
+  ) throws {
+    let before = try state(f)
+    let owned = try finalEffectOwnedRows(before)
+    let probeBefore = try probes.map { try finalEffectProbe(f, $0.name) }
+    var expectedRows = try finalEffectExpectedRows(
+      f, before: before, link: updatesOwnedAs ? ["ownedAs": f.link.deviceId] : [:], markers: markers)
+    let lowerWall = Int64(Date().timeIntervalSince1970 * 1000)
+    let outcome = Result { try f.database.claimOwnedRows(expectedProtocolSnapshot: snapshot) }
+    let upperWall = Int64(Date().timeIntervalSince1970 * 1000)
+    let after = try state(f)
+    if count == 0 {
+      let exact = after == NativeState(rows: expectedRows, sequence: before.sequence)
+      #expect(exact)
+    } else {
+      let nativeBefore = try finalEffectSequence(before.sequence)
+      // The positive append fixtures all first insert an independently synced witness.
+      let knownAppendFixture = nativeBefore.called && count == owned.count
+      try #require(knownAppendFixture)
+      let first = nativeBefore.last + 1
+      let expectedSequences = Set((0..<count).map { first + Int64($0) })
+      var additions: [(row: [String: Any], identity: String, seq: Int64, wall: Int64)] = []
+      var retained: [Data] = []
+      for bytes in after.rows["changes"] ?? [] {
+        let row = try object(String(decoding: bytes, as: UTF8.self))
+        guard let seq = integer(row["seq"]) else { throw FixtureFailure.nativeShape }
+        if seq <= nativeBefore.last { retained.append(bytes); continue }
+        guard let table = row["table"] as? String, let id = row["rowId"] as? String,
+          let wall = integer(row["wall"])
+        else { throw FixtureFailure.nativeShape }
+        additions.append((row, table + "\0" + id, seq, wall))
+      }
+      let originalLogExact =
+        retained.sorted { $0.lexicographicallyPrecedes($1) } == (before.rows["changes"] ?? [])
+      #expect(originalLogExact)
+      let identityExact =
+        additions.count == count
+        && Set(additions.map(\.identity)) == Set(owned.keys)
+        && Set(additions.map(\.seq)) == expectedSequences
+      let boundedSingleWall =
+        Set(additions.map(\.wall)).count == 1
+        && additions.allSatisfy { $0.wall >= lowerWall && $0.wall <= upperWall }
+      let independentlyValidAppend = identityExact && boundedSingleWall
+      try #require(independentlyValidAppend)
+      try expectFinalEffectAllocation(
+        f, name: "public.changes_seq_seq", before: before.sequence, after: after.sequence, count: count)
+      // Only after the independent count/identity/range/wall/native-sequence checks may the
+      // observed dynamic seq/wall enter an exact JSON projection. They cannot hide a failure.
+      for addition in additions {
+        guard let nativeValue = owned[addition.identity],
+          let table = addition.row["table"] as? String, let id = addition.row["rowId"] as? String
+        else { throw FixtureFailure.nativeShape }
+        let fullValue = try object(String(decoding: nativeValue, as: UTF8.self))
+        let expected: [String: Any] = [
+          "seq": addition.seq, "deviceId": f.link.deviceId, "wall": addition.wall,
+          "table": table, "rowId": id, "op": "insert", "column": NSNull(), "value": fullValue,
+          "synced": false, "hlc": "000000000000-0000-" + f.link.deviceId,
+        ]
+        expectedRows["changes", default: []].append(try guardApplyJSON(f, expected))
+      }
+      expectedRows["changes"]?.sort { $0.lexicographicallyPrecedes($1) }
+      let exact = after == NativeState(rows: expectedRows, sequence: after.sequence)
+      #expect(exact)
+    }
+    for (index, probe) in probes.enumerated() {
+      try expectFinalEffectAllocation(
+        f, name: probe.name, before: probeBefore[index], after: finalEffectProbe(f, probe.name),
+        count: probe.count)
+    }
+    let actual = try outcome.get()
+    let exactReturn = actual == count
+    #expect(exactReturn)
+  }
+
+  @Test func guardedClaimPreservesLegacyAndHealthyEarlyReturnsAndReannouncesEveryNativeOwnedRow()
+    async throws
+  {
+    for modern in [false, true] {
+      try await Self.withFixture { f in
+        try Self.seedFinalEffectOwnedRows(f)
+        try Self.seedFinalEffectLinkSentinels(f)
+        if modern { try Self.seedReadOnlyModernProfile(f) }
+        let snapshot = try (modern ? Self.healthyGuardMarkSnapshot(f) : Self.capture(f))
+        try Self.installFinalEffectRowProbe(f)
+        // No synced history: the early return writes ONLY ownedAs, with no log allocations.
+        let noneSynced =
+          try f.raw.execute("SELECT count(*) AS n FROM public.changes WHERE synced")
+          .rows.first?.int("n") == 0
+        try #require(noneSynced)
+        try Self.expectFinalEffectClaim(
+          f, snapshot: snapshot, count: 0, updatesOwnedAs: true,
+          probes: [("guard_effect_probe.updates", 1)])
+        // Already-owned is a true no-write return, including no row-trigger execution.
+        try Self.expectFinalEffectClaim(
+          f, snapshot: snapshot, count: 0, updatesOwnedAs: false,
+          probes: [("guard_effect_probe.updates", 0)])
+        _ = try Self.insertLogWitness(
+          f, table: "threads", op: "update", column: "title",
+          value: #""ACTIVATION_PRIOR_SYNCED_LOG""#, synced: true)
+        try f.raw.execute("UPDATE public.\"hubLink\" SET \"ownedAs\"='ACTIVATION_PREVIOUS_OWNER' WHERE id=1")
+        // Four fixed native rows, plus the modern profile's own connection when present.
+        // Counting three tables or ignoring that modern helper row is observably wrong.
+        let count = modern ? 5 : 4
+        let before = try Self.state(f)
+        let independentlyCounted = try Self.finalEffectOwnedRows(before).count == count
+        try #require(independentlyCounted)
+        try Self.expectFinalEffectClaim(
+          f, snapshot: snapshot, count: count, updatesOwnedAs: true,
+          probes: [("guard_effect_probe.updates", 1)])
+        try Self.expectFinalEffectClaim(
+          f, snapshot: snapshot, count: 0, updatesOwnedAs: false,
+          probes: [("guard_effect_probe.updates", 0)])
+      }
+    }
+  }
+
+  @Test func guardedClaimEarlyZeroRunsPostguardAndStrictOriginalRecordComparisonBeforeCommit()
+    async throws
+  {
+    try await Self.withFixture { f in
+      try Self.seedFinalEffectOwnedRows(f)
+      try Self.seedFinalEffectLinkSentinels(f)
+      let inactive = try Self.capture(f)
+      try Self.expectRequirement(f, .legacyOnly)
+      try Self.expectReadOnlyValidation(f, snapshot: inactive, sync: true)
+      try f.raw.execute(
+        """
+        CREATE SCHEMA guard_claim_zero;
+        CREATE SEQUENCE guard_claim_zero.marker_probe;
+        CREATE SEQUENCE guard_claim_zero.substitution_probe;
+        CREATE FUNCTION guard_claim_zero.add_marker() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+          INSERT INTO public."columnClocks"("table","rowId","column",hlc)
+            VALUES('connections','guard-claim-zero','authMode','000000000000-0000-local')
+            ON CONFLICT DO NOTHING;
+          PERFORM nextval('guard_claim_zero.marker_probe');
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER guard_claim_zero AFTER UPDATE OF "ownedAs" ON public."hubLink" FOR EACH ROW
+          WHEN(NEW.id=1 AND NEW."ownedAs"='ACTIVATION_DEVICE_SENTINEL') EXECUTE FUNCTION guard_claim_zero.add_marker();
+        """)
+      let noPriorSynced =
+        try f.raw.execute("SELECT count(*) AS n FROM public.changes WHERE synced")
+        .rows.first?.int("n") == 0
+      try #require(noPriorSynced)
+      try Self.expectFinalEffectRefusal(f, probes: [("guard_claim_zero.marker_probe", 1)]) {
+        _ = try f.database.claimOwnedRows(expectedProtocolSnapshot: inactive)
+      }
+      // The successful immediate trigger and its native sequence prove the UPDATE and early
+      // return were reached. Its R6 marker and every business row were rolled back by postguard.
+      let healthy = try Self.healthyGuardMarkSnapshot(f)
+      try Self.expectFinalEffectClaim(
+        f, snapshot: healthy, count: 0, updatesOwnedAs: true, markers: ["guard-claim-zero"],
+        probes: [("guard_claim_zero.marker_probe", 1)])
+      let markerTwice = try Self.finalEffectSequence(
+        Self.finalEffectProbe(f, "guard_claim_zero.marker_probe"))
+      let bothReached = markerTwice.last == 2 && markerTwice.called
+      #expect(bothReached)
+      // Separate valid SAME-revision whole-record substitution. A revision-only or merely
+      // still-eligible postcheck would incorrectly commit this healthy claim.
+      let known = try Self.nativeRecord(f)
+      let substitute = "CCCCCCCC-CCCC-4CCC-8CCC-CCCCCCCCCCCC"
+      let distinct = known["membershipIncarnation"] as? String != substitute
+      try #require(distinct)
+      try f.raw.execute("UPDATE public.\"hubLink\" SET \"ownedAs\"='ACTIVATION_PREVIOUS_OWNER' WHERE id=1")
+      try f.raw.execute(
+        """
+        CREATE FUNCTION guard_claim_zero.substitute_record() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+          UPDATE public.settings SET value=jsonb_set(value,'{membershipIncarnation}',
+            to_jsonb('CCCCCCCC-CCCC-4CCC-8CCC-CCCCCCCCCCCC'::text),false)
+            WHERE key='__b4app_agent_protocol_activation_v1';
+          PERFORM nextval('guard_claim_zero.substitution_probe');
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER guard_claim_substitution AFTER UPDATE OF "ownedAs" ON public."hubLink" FOR EACH ROW
+          WHEN(NEW.id=1 AND NEW."ownedAs"='ACTIVATION_DEVICE_SENTINEL') EXECUTE FUNCTION guard_claim_zero.substitute_record();
+        """)
+      try Self.expectFinalEffectRefusal(
+        f, probes: [("guard_claim_zero.marker_probe", 1), ("guard_claim_zero.substitution_probe", 1)]
+      ) {
+        _ = try f.database.claimOwnedRows(expectedProtocolSnapshot: healthy)
+      }
+      // Remove ONLY the substitution fault. No recapture/adoption or control-row restoration.
+      try f.raw.execute("DROP TRIGGER guard_claim_substitution ON public.\"hubLink\"")
+      try Self.expectReadOnlyValidation(f, snapshot: healthy, sync: true)
+      try Self.expectFinalEffectClaim(
+        f, snapshot: healthy, count: 0, updatesOwnedAs: true,
+        probes: [("guard_claim_zero.marker_probe", 1), ("guard_claim_zero.substitution_probe", 0)])
+      try Self.expectFinalEffectClaim(
+        f, snapshot: healthy, count: 0, updatesOwnedAs: false,
+        probes: [("guard_claim_zero.marker_probe", 0), ("guard_claim_zero.substitution_probe", 0)])
+      // Already-owned has no natural UPDATE canary; no fake body/callback is invented.
+      // Its routing through the common postguard is additionally a source-review obligation.
+    }
+  }
+
+  @Test func guardedStatusesChangeOnlyExactFieldsAndPullNilActuallyAvoidsNonmatchingRowUpdates()
+    async throws
+  {
+    for modern in [false, true] {
+      try await Self.withFixture { f in
+        try Self.seedFinalEffectOwnedRows(f)
+        try Self.seedFinalEffectLinkSentinels(f)
+        if modern { try Self.seedReadOnlyModernProfile(f) }
+        let snapshot = try (modern ? Self.healthyGuardMarkSnapshot(f) : Self.capture(f))
+        try Self.installFinalEffectRowProbe(f)
+        let errors: [String?] = [nil, "ACTIVATION_PUSH_ERROR", ""]
+        let timestamps: [String?] = [nil, "2026-11-12T01:02:03.004Z", ""]
+        for error in errors {
+          for timestamp in timestamps {
+            var expected: [String: Any] = ["lastError": error.map { $0 as Any } ?? NSNull()]
+            if let timestamp { expected["lastPushAt"] = timestamp }
+            try Self.expectFinalEffectPositive(
+              f, link: expected, probes: [("guard_effect_probe.updates", 1)]
+            ) {
+              try f.database.recordHubPushResult(
+                error: error, pushedAt: timestamp, expectedProtocolSnapshot: snapshot)
+            }
+          }
+        }
+        for error in ["ACTIVATION_PULL_ERROR", "", "Pull: nested"] {
+          try Self.expectFinalEffectPositive(
+            f, link: ["lastError": "Pull: " + error], probes: [("guard_effect_probe.updates", 1)]
+          ) {
+            try f.database.recordHubPullResult(error: error, expectedProtocolSnapshot: snapshot)
+          }
+        }
+        for previous in ["Pull: ", "Pull: nested"] {
+          try f.raw.execute("UPDATE public.\"hubLink\" SET \"lastError\"=$1 WHERE id=1", [previous])
+          try Self.expectFinalEffectPositive(
+            f, link: ["lastError": NSNull()], probes: [("guard_effect_probe.updates", 1)]
+          ) {
+            try f.database.recordHubPullResult(error: nil, expectedProtocolSnapshot: snapshot)
+          }
+        }
+        let nonmatches: [String?] = [nil, "", "pull: x", "Pull:x", "XPull: x", "Pull:"]
+        for previous in nonmatches {
+          try f.raw.execute("UPDATE public.\"hubLink\" SET \"lastError\"=$1 WHERE id=1", [previous])
+          try Self.expectFinalEffectPositive(
+            f, link: [:], probes: [("guard_effect_probe.updates", 0)]
+          ) {
+            try f.database.recordHubPullResult(error: nil, expectedProtocolSnapshot: snapshot)
+          }
+        }
+        // Same-valued nonnil pull is the positive falsifier for the STILL ENABLED row probe.
+        // Comparing rows alone cannot distinguish it from an incorrect no-row UPDATE oracle.
+        try f.raw.execute("UPDATE public.\"hubLink\" SET \"lastError\"='Pull: repeat' WHERE id=1")
+        try Self.expectFinalEffectPositive(
+          f, link: ["lastError": "Pull: repeat"], probes: [("guard_effect_probe.updates", 1)]
+        ) {
+          try f.database.recordHubPullResult(error: "repeat", expectedProtocolSnapshot: snapshot)
+        }
+      }
+    }
+  }
+
+  @Test func guardedStatusesRefuseEmbeddedNulBeforeAnyNativeParameterOrPartialStatusUpdate()
+    async throws
+  {
+    for modern in [false, true] {
+      try await Self.withFixture { f in
+        try Self.seedFinalEffectOwnedRows(f)
+        try Self.seedFinalEffectLinkSentinels(f)
+        if modern { try Self.seedReadOnlyModernProfile(f) }
+        let snapshot = try (modern ? Self.healthyGuardMarkSnapshot(f) : Self.capture(f))
+        try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: true)
+        try Self.installFinalEffectRowProbe(f)
+        try Self.expectFinalEffectRefusal(f, probes: [("guard_effect_probe.updates", 0)]) {
+          try f.database.recordHubPushResult(
+            error: "ACTIVATION_PREFIX\0SUFFIX", pushedAt: "2026-11-12T02:03:04.005Z",
+            expectedProtocolSnapshot: snapshot)
+        }
+        try Self.expectFinalEffectRefusal(f, probes: [("guard_effect_probe.updates", 0)]) {
+          try f.database.recordHubPushResult(
+            error: "ACTIVATION_DISTINCT_VALID_ERROR", pushedAt: "ACTIVATION_TIME\0SUFFIX",
+            expectedProtocolSnapshot: snapshot)
+        }
+        try Self.expectFinalEffectRefusal(f, probes: [("guard_effect_probe.updates", 0)]) {
+          try f.database.recordHubPullResult(
+            error: "ACTIVATION_PULL\0SUFFIX", expectedProtocolSnapshot: snapshot)
+        }
+        // Valid counterparts demonstrate narrow NUL refusal and a live, unreset row probe.
+        try Self.expectFinalEffectPositive(
+          f, link: ["lastError": NSNull()], probes: [("guard_effect_probe.updates", 1)]
+        ) {
+          try f.database.recordHubPushResult(error: nil, pushedAt: nil, expectedProtocolSnapshot: snapshot)
+        }
+        try Self.expectFinalEffectPositive(
+          f, link: ["lastError": "", "lastPushAt": ""], probes: [("guard_effect_probe.updates", 1)]
+        ) {
+          try f.database.recordHubPushResult(error: "", pushedAt: "", expectedProtocolSnapshot: snapshot)
+        }
+        try Self.expectFinalEffectPositive(
+          f, link: ["lastError": "Pull: "], probes: [("guard_effect_probe.updates", 1)]
+        ) {
+          try f.database.recordHubPullResult(error: "", expectedProtocolSnapshot: snapshot)
+        }
+        try Self.expectFinalEffectPositive(
+          f, link: ["lastError": NSNull()], probes: [("guard_effect_probe.updates", 1)]
+        ) {
+          try f.database.recordHubPullResult(error: nil, expectedProtocolSnapshot: snapshot)
+        }
+        // No raw NUL input is sent to PostgreSQL: text parameters currently truncate at NUL.
+        // Each refusal above has its OWN complete native/probe before/after image, before any
+        // following call. Neither sanitizing a suffix nor relying on a PG data error is valid.
+      }
+    }
+  }
+
+  @Test func guardedClaimAndBothStatusesRefuseAbsentContextlessStaleAndForeignObjectEvenAtNoOp()
+    async throws
+  {
+    try await Self.withFixture { f in
+      try Self.seedFinalEffectOwnedRows(f)
+      try Self.seedFinalEffectLinkSentinels(f)
+      try Self.installFinalEffectRowProbe(f)
+      func refuseAll(
+        _ snapshot: ProtocolVerificationSnapshot, on database: WorkspaceDatabase? = nil
+      ) throws {
+        let target = database ?? f.database
+        for alreadyOwned in [false, true] {
+          // Explicit setup occurs AFTER the preceding per-call observations. No counters are
+          // reset. The actual native device is used even in a tuple-replacement refusal.
+          try f.raw.execute(
+            """
+            UPDATE public."hubLink" SET "ownedAs"=CASE WHEN $1::boolean THEN "deviceId"
+              ELSE 'ACTIVATION_PREVIOUS_OWNER' END,"lastError"='ACTIVATION_NON_PULL_ERROR' WHERE id=1
+            """, [alreadyOwned ? "true" : "false"])
+          let noPriorSynced =
+            try f.raw.execute("SELECT count(*) AS n FROM public.changes WHERE synced")
+            .rows.first?.int("n") == 0
+          try #require(noPriorSynced)
+          try Self.expectFinalEffectRefusal(f, probes: [("guard_effect_probe.updates", 0)]) {
+            _ = try target.claimOwnedRows(expectedProtocolSnapshot: snapshot)
+          }
+        }
+        try Self.expectFinalEffectRefusal(f, probes: [("guard_effect_probe.updates", 0)]) {
+          try target.recordHubPushResult(
+            error: "ACTIVATION_REFUSED_PUSH", pushedAt: "2026-11-12T03:04:05.006Z",
+            expectedProtocolSnapshot: snapshot)
+        }
+        try Self.expectFinalEffectRefusal(f, probes: [("guard_effect_probe.updates", 0)]) {
+          try target.recordHubPullResult(error: "ACTIVATION_REFUSED_PULL", expectedProtocolSnapshot: snapshot)
+        }
+        // A nil pull with a non-Pull error would have NO visible or row-trigger effect, but
+        // it still has to refuse the stale original comparison rather than silently succeed.
+        try Self.expectFinalEffectRefusal(f, probes: [("guard_effect_probe.updates", 0)]) {
+          try target.recordHubPullResult(error: nil, expectedProtocolSnapshot: snapshot)
+        }
+      }
+      let linkedLegacy = try Self.capture(f)
+      try Self.expectRequirement(f, .legacyOnly)
+      try f.raw.execute("DELETE FROM public.\"hubLink\" WHERE id=1")
+      let capturedAbsent = try f.database.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: nil)
+      try refuseAll(linkedLegacy); try refuseAll(capturedAbsent)
+      try Self.insertReadOnlyFixtureLink(f)
+      try Self.seedFinalEffectLinkSentinels(f)
+      // Restore only the known native tuple; do not adopt an absent/replacement snapshot.
+      try Self.expectReadOnlyValidation(f, snapshot: linkedLegacy, sync: true)
+      try Self.seedReadOnlyModernProfile(f)
+      try Self.expectRequirement(f, .protocolTwo)
+      let inactive = try Self.capture(f)
+      try refuseAll(inactive)
+      let bound = try f.database.prepareProtocolVerification(
+        expectedSnapshot: inactive, expectedBinding: f.binding)
+      try refuseAll(bound)
+      let healthy = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: bound, observation: Self.observation(f.binding))
+      let known = try Self.nativeRecord(f)
+      try refuseAll(linkedLegacy); try refuseAll(inactive); try refuseAll(bound)
+      let directValue = try f.database.readProtocolFact(expectedBinding: f.binding)
+      guard let direct = directValue else { throw FixtureFailure.nativeShape }
+      try refuseAll(direct)
+      let other = try f.reopen()
+      defer { try? other.close() }
+      try refuseAll(healthy, on: other)
+      for (field, substitute) in [
+        ("storeIncarnation", "DDDDDDDD-DDDD-4DDD-8DDD-DDDDDDDDDDDD"),
+        ("membershipIncarnation", "EEEEEEEE-EEEE-4EEE-8EEE-EEEEEEEEEEEE"),
+      ] {
+        let distinct = known[field] as? String != substitute
+        try #require(distinct)
+        var replacement = known; replacement[field] = substitute
+        try Self.putRecord(f, replacement)
+        try refuseAll(healthy)
+        try Self.putRecord(f, known)
+      }
+      var substituted = known
+      guard var observation = known["observation"] as? [String: Any] else {
+        throw FixtureFailure.nativeShape
+      }
+      observation["reportedVersion"] = 3; substituted["observation"] = observation
+      try Self.putRecord(f, substituted)
+      try refuseAll(healthy)
+      try Self.putRecord(f, known)
+      try f.raw.execute(
+        "UPDATE public.\"hubLink\" SET \"deviceId\"='ACTIVATION_NATIVE_OTHER_DEVICE' WHERE id=1")
+      try refuseAll(healthy)
+      try f.raw.execute("UPDATE public.\"hubLink\" SET \"deviceId\"=$1 WHERE id=1", [f.link.deviceId])
+      let later = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: healthy, observation: Self.observation(f.binding, version: 3))
+      try refuseAll(healthy)
+      try f.database.fenceProtocolVerification(expectedSnapshot: later)
+      try refuseAll(healthy); try refuseAll(later)
+      try Self.putRecord(f, known)
+      // The SAME original candidate recovers only after exact known fixture restoration.
+      try Self.expectReadOnlyValidation(f, snapshot: healthy, sync: true)
+      // These tests cannot prove postguard execution for a body that has no SQL write; strict
+      // preguard refusal plus the common helper's source routing are the honest boundary.
+    }
+  }
+
+  @Test func guardedStatusSuccessfulRowCanariesAreRolledBackByPostguardAndSucceedWithSameHealthyTrigger()
+    async throws
+  {
+    // Push, pull write, and pull clear EACH have their own fresh, prevalidated legacy fixture.
+    for effect in 0..<3 {
+      try await Self.withFixture { f in
+        try Self.seedFinalEffectOwnedRows(f)
+        try Self.seedFinalEffectLinkSentinels(f)
+        if effect == 2 {
+          try f.raw.execute("UPDATE public.\"hubLink\" SET \"lastError\"='Pull: before clear' WHERE id=1")
+        }
+        let inactive = try Self.capture(f)
+        try Self.expectRequirement(f, .legacyOnly)
+        try Self.expectReadOnlyValidation(f, snapshot: inactive, sync: true)
+        try f.raw.execute(
+          """
+          CREATE SCHEMA guard_status_post;
+          CREATE SEQUENCE guard_status_post.probe;
+          CREATE FUNCTION guard_status_post.add_marker() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+          BEGIN
+            INSERT INTO public."columnClocks"("table","rowId","column",hlc)
+              VALUES('connections','guard-status-post','authMode','000000000000-0000-local');
+            PERFORM nextval('guard_status_post.probe');
+            RETURN NEW;
+          END $$;
+          CREATE TRIGGER guard_status_post AFTER UPDATE OF "lastError","lastPushAt" ON public."hubLink" FOR EACH ROW
+            WHEN(NEW.id=1) EXECUTE FUNCTION guard_status_post.add_marker();
+          """)
+        func perform(_ snapshot: ProtocolVerificationSnapshot) throws {
+          if effect == 0 {
+            try f.database.recordHubPushResult(
+              error: "ACTIVATION_POST_PUSH", pushedAt: "2026-11-12T04:05:06.007Z",
+              expectedProtocolSnapshot: snapshot)
+          } else {
+            try f.database.recordHubPullResult(
+              error: effect == 1 ? "ACTIVATION_POST_PULL" : nil, expectedProtocolSnapshot: snapshot)
+          }
+        }
+        try Self.expectFinalEffectRefusal(f, probes: [("guard_status_post.probe", 1)]) {
+          try perform(inactive)
+        }
+        let healthy = try Self.healthyGuardMarkSnapshot(f)
+        let edits: [String: Any]
+        if effect == 0 {
+          edits = ["lastError": "ACTIVATION_POST_PUSH", "lastPushAt": "2026-11-12T04:05:06.007Z"]
+        } else if effect == 1 {
+          edits = ["lastError": "Pull: ACTIVATION_POST_PULL"]
+        } else {
+          edits = ["lastError": NSNull()]
+        }
+        try Self.expectFinalEffectPositive(
+          f, link: edits, markers: ["guard-status-post"], probes: [("guard_status_post.probe", 1)]
+        ) {
+          try perform(healthy)
+        }
+        let probe = try Self.finalEffectSequence(Self.finalEffectProbe(f, "guard_status_post.probe"))
+        let bothReached = probe.last == 2 && probe.called
+        #expect(bothReached)
+        try Self.expectRequirement(f, .protocolTwo)
+        // No data-error skipping is permitted around these single status effects. The successful
+        // immediate trigger returns NEW; the incompatible post-state, not a trigger throw, refuses.
+        // Nil/non-Pull issues no UPDATE, so it has no natural status-row postcheck canary.
+      }
+    }
+  }
+
+  @Test func guardedClaimRealAppendRollsBackAtPostguardAndActualDeferredCommitWithHonestSequenceAdvances()
+    async throws
+  {
+    try await Self.withFixture { f in
+      try Self.seedFinalEffectOwnedRows(f)
+      try Self.seedFinalEffectLinkSentinels(f)
+      _ = try Self.insertLogWitness(
+        f, table: "threads", op: "update", column: "title",
+        value: #""ACTIVATION_PRIOR_SYNCED_LOG""#, synced: true)
+      let inactive = try Self.capture(f)
+      try Self.expectRequirement(f, .legacyOnly)
+      try Self.expectReadOnlyValidation(f, snapshot: inactive, sync: true)
+      let ownedCount = try Self.finalEffectOwnedRows(Self.state(f)).count
+      let fourExplicitOwnedRows = ownedCount == 4
+      try #require(fourExplicitOwnedRows)
+      try f.raw.execute(
+        """
+        CREATE SCHEMA guard_claim_append;
+        CREATE SEQUENCE guard_claim_append.probe;
+        CREATE FUNCTION guard_claim_append.add_marker() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+          INSERT INTO public."columnClocks"("table","rowId","column",hlc)
+            VALUES('connections','guard-claim-append','authMode','000000000000-0000-local');
+          PERFORM nextval('guard_claim_append.probe');
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER guard_claim_append AFTER UPDATE OF "ownedAs" ON public."hubLink" FOR EACH ROW
+          WHEN(NEW.id=1 AND NEW."ownedAs"='ACTIVATION_DEVICE_SENTINEL') EXECUTE FUNCTION guard_claim_append.add_marker();
+        """)
+      try Self.expectFinalEffectRefusal(
+        f, allocations: ownedCount, probes: [("guard_claim_append.probe", 1)]
+      ) {
+        _ = try f.database.claimOwnedRows(expectedProtocolSnapshot: inactive)
+      }
+      // Actual N changes.seq allocations survive; all N appended rows, ownedAs, control,
+      // existing log bits and the successful R6 marker disappear in the native rollback.
+      let healthy = try Self.healthyGuardMarkSnapshot(f)
+      try Self.expectFinalEffectClaim(
+        f, snapshot: healthy, count: ownedCount, updatesOwnedAs: true,
+        markers: ["guard-claim-append"], probes: [("guard_claim_append.probe", 1)])
+      let probe = try Self.finalEffectSequence(Self.finalEffectProbe(f, "guard_claim_append.probe"))
+      let sameEnabledProbeTwice = probe.last == 2 && probe.called
+      #expect(sameEnabledProbeTwice)
+    }
+    try await Self.withFixture { f in
+      try Self.seedFinalEffectOwnedRows(f)
+      try Self.seedFinalEffectLinkSentinels(f)
+      _ = try Self.insertLogWitness(
+        f, table: "threads", op: "update", column: "title",
+        value: #""ACTIVATION_PRIOR_SYNCED_LOG""#, synced: true)
+      let snapshot = try Self.capture(f)
+      try Self.expectRequirement(f, .legacyOnly)
+      try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: true)
+      let ownedCount = try Self.finalEffectOwnedRows(Self.state(f)).count
+      let fourExplicitOwnedRows = ownedCount == 4
+      try #require(fourExplicitOwnedRows)
+      try f.raw.execute(
+        """
+        CREATE SCHEMA guard_claim_commit;
+        CREATE SEQUENCE guard_claim_commit.probe;
+        CREATE TABLE guard_claim_commit.expected_control AS
+          SELECT value FROM public.settings WHERE key='__b4app_agent_protocol_activation_v1';
+        CREATE TABLE guard_claim_commit.expected_link AS SELECT "deviceId" FROM public."hubLink" WHERE id=1;
+        CREATE TABLE guard_claim_commit.expected_log AS SELECT seq,to_jsonb(c) AS value FROM public.changes c;
+        CREATE TABLE guard_claim_commit.expected_rows AS
+          SELECT 'connections'::text AS "table",t.id AS "rowId",to_jsonb(t) AS value FROM public.connections t
+          UNION ALL SELECT 'environments',t.id,to_jsonb(t) FROM public.environments t
+          UNION ALL SELECT 'threads',t.id,to_jsonb(t) FROM public.threads t;
+        CREATE FUNCTION guard_claim_commit.refuse_commit() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        DECLARE device text;
+        BEGIN
+          SELECT "deviceId" INTO device FROM guard_claim_commit.expected_link;
+          IF NEW."ownedAs" IS DISTINCT FROM device
+            OR (SELECT "ownedAs" FROM public."hubLink" WHERE id=1) IS DISTINCT FROM device
+            OR (SELECT value FROM public.settings WHERE key='__b4app_agent_protocol_activation_v1')
+              IS DISTINCT FROM (SELECT value FROM guard_claim_commit.expected_control)
+            OR (SELECT count(*) FROM public.changes) <>
+              (SELECT count(*) FROM guard_claim_commit.expected_log)+(SELECT count(*) FROM guard_claim_commit.expected_rows)
+            OR EXISTS(SELECT 1 FROM guard_claim_commit.expected_log e LEFT JOIN public.changes c ON c.seq=e.seq
+              WHERE c.seq IS NULL OR to_jsonb(c) IS DISTINCT FROM e.value)
+            OR EXISTS(SELECT 1 FROM public.changes c WHERE NOT EXISTS(
+                SELECT 1 FROM guard_claim_commit.expected_log e WHERE e.seq=c.seq)
+              AND (c."deviceId" IS DISTINCT FROM device OR c.op IS DISTINCT FROM 'insert' OR c."column" IS NOT NULL
+                OR c.synced IS DISTINCT FROM false OR c.hlc IS DISTINCT FROM '000000000000-0000-'||device))
+            OR (SELECT count(DISTINCT c.wall) FROM public.changes c WHERE NOT EXISTS(
+                SELECT 1 FROM guard_claim_commit.expected_log e WHERE e.seq=c.seq)) <> 1
+            OR EXISTS(
+              (SELECT c."table",c."rowId",c.value FROM public.changes c WHERE NOT EXISTS(
+                SELECT 1 FROM guard_claim_commit.expected_log e WHERE e.seq=c.seq))
+              EXCEPT (SELECT "table","rowId",value FROM guard_claim_commit.expected_rows))
+            OR EXISTS(
+              (SELECT "table","rowId",value FROM guard_claim_commit.expected_rows)
+              EXCEPT (SELECT c."table",c."rowId",c.value FROM public.changes c WHERE NOT EXISTS(
+                SELECT 1 FROM guard_claim_commit.expected_log e WHERE e.seq=c.seq)))
+          THEN RAISE EXCEPTION 'ACTIVATION_GUARDED_CLAIM_STAGE_NOT_REACHED'; END IF;
+          PERFORM nextval('guard_claim_commit.probe');
+          RAISE EXCEPTION 'ACTIVATION_GUARDED_CLAIM_PRIVATE_CANARY'
+            USING ERRCODE='23514',DETAIL='ACTIVATION_GUARDED_CLAIM_SECRET';
+        END $$;
+        CREATE CONSTRAINT TRIGGER guard_claim_commit AFTER UPDATE OF "ownedAs" ON public."hubLink"
+          DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+          WHEN(NEW.id=1 AND NEW."ownedAs"='ACTIVATION_DEVICE_SENTINEL') EXECUTE FUNCTION guard_claim_commit.refuse_commit();
+        """)
+      // Independently validate the actual fault stage FIRST, without the old or guarded claim.
+      // A raw manual append from BEFORE-owned values and an ownedAs UPDATE must return, and
+      // only the real COMMIT attempt may raise the private, known 23514.
+      let nativeBefore = try Self.state(f)
+      let nativeProbeBefore = try Self.finalEffectProbe(f, "guard_claim_commit.probe")
+      var bodyReturned = false, commitAttempted = false, knownConstraint = false
+      do {
+        try f.raw.execute("BEGIN")
+        try f.raw.execute(
+          """
+          INSERT INTO public.changes("deviceId",wall,"table","rowId",op,"column",value,synced,hlc)
+            SELECT l."deviceId",1234567890000,e."table",e."rowId",'insert',NULL,e.value,false,
+              '000000000000-0000-'||l."deviceId"
+            FROM guard_claim_commit.expected_rows e CROSS JOIN guard_claim_commit.expected_link l;
+          UPDATE public."hubLink" SET "ownedAs"=(SELECT "deviceId" FROM guard_claim_commit.expected_link) WHERE id=1;
+          """)
+        bodyReturned = true
+        commitAttempted = true
+        try f.raw.execute("COMMIT")
+      } catch {
+        knownConstraint = (error as? PostgresError)?.sqlState == "23514"
+        _ = try? f.raw.execute("ROLLBACK")
+      }
+      let nativeAfter = try Self.state(f)
+      let exactNativeRows = nativeAfter.rows == nativeBefore.rows
+      #expect(exactNativeRows)
+      try Self.expectFinalEffectAllocation(
+        f, name: "public.changes_seq_seq", before: nativeBefore.sequence, after: nativeAfter.sequence,
+        count: ownedCount)
+      try Self.expectFinalEffectAllocation(
+        f, name: "guard_claim_commit.probe", before: nativeProbeBefore,
+        after: Self.finalEffectProbe(f, "guard_claim_commit.probe"), count: 1)
+      let realKnownCommitFailure = bodyReturned && commitAttempted && knownConstraint
+      try #require(realKnownCommitFailure)
+      // SAME still-enabled constraint and complete intended append-set validation. A safe
+      // refusal must cover COMMIT, return no Int and roll rows back, while nextval advances N.
+      try Self.expectFinalEffectRefusal(
+        f, allocations: ownedCount, probes: [("guard_claim_commit.probe", 1)]
+      ) {
+        _ = try f.database.claimOwnedRows(expectedProtocolSnapshot: snapshot)
+      }
+      let commitProbe = try Self.finalEffectSequence(Self.finalEffectProbe(f, "guard_claim_commit.probe"))
+      let bothCommitAttemptsReached = commitProbe.last == 2 && commitProbe.called
+      #expect(bothCommitAttemptsReached)
+      // Remove ONLY the failing constraint trigger, with no control/row/sequence restoration.
+      try f.raw.execute("DROP TRIGGER guard_claim_commit ON public.\"hubLink\"")
+      try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: true)
+      try Self.expectFinalEffectClaim(
+        f, snapshot: snapshot, count: ownedCount, updatesOwnedAs: true,
+        probes: [("guard_claim_commit.probe", 0)])
+      try Self.expectFinalEffectClaim(
+        f, snapshot: snapshot, count: 0, updatesOwnedAs: false,
+        probes: [("guard_claim_commit.probe", 0)])
+      // This establishes only a known deferred 23514 rollback. Successful deferred postcheck
+      // mutators and unknown COMMIT outcomes are excluded. The helper orders participating
+      // writers only; raw bypass writers and nontransactional memory HLC remain outside proof.
+    }
+  }
+}
