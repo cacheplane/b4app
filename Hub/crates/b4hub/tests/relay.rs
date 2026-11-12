@@ -2082,22 +2082,31 @@ async fn a_fifth_watch_is_refused(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
-async fn watching_a_thread_again_needs_no_lookup(pool: PgPool) {
+async fn a_live_repeat_watch_is_idempotent_and_a_deleted_thread_is_not_found(pool: PgPool) {
     let world = World::new(spawn_hub(&pool).await).await;
     let mut mac = world.mac().await;
     let mut phone = world.phone().await;
     phone.watch("thread-1").await;
     assert_eq!(mac.expect_watching().await, ["thread-1"]);
 
-    // With the row gone, a lookup would answer `not_found`; a repeated watch makes none.
+    // A repeat against the same live owned row adds neither a watch nor another host frame.
+    phone.watch("thread-1").await;
+    phone.expect_no_frame(QUIET).await;
+    mac.expect_no_frame(QUIET).await;
+    assert_eq!(world.hub.state.relay.watched_by(world.mac_id), ["thread-1"]);
+
+    // A cached subscription cannot authorize a missing native parent on the next request.
     sqlx::query("DELETE FROM threads WHERE id = 'thread-1'")
         .execute(&world.hub.admin.pool)
         .await
         .unwrap();
     phone.watch("thread-1").await;
-    phone.expect_no_frame(QUIET).await;
+    assert_eq!(
+        phone.expect_error_details().await,
+        ("not_found".into(), Some(json!({"threadId":"thread-1"})))
+    );
     mac.expect_no_frame(QUIET).await;
-    assert_eq!(world.hub.state.relay.watched_by(world.mac_id), ["thread-1"]);
+    phone.ping().await;
 }
 
 #[sqlx::test(migrations = false)]
@@ -2728,6 +2737,20 @@ async fn maintenance_refuses_link_writes_and_keeps_reads(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn a_deleted_token_refuses_the_next_json_ping_without_waiting_for_a_minute(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mut phone = world.phone().await;
+    sqlx::query("DELETE FROM device_tokens WHERE device_id = $1")
+        .bind(world.phone_id)
+        .execute(&world.hub.admin.pool)
+        .await
+        .unwrap();
+    // No clock advance: this is the fresh incoming JSON boundary, not the minute fallback.
+    phone.send_text_regardless(r#"{"type":"ping"}"#).await;
+    assert_eq!(phone.expect_close_without_text().await, close_code::REVOKED);
+}
+
+#[sqlx::test(migrations = false)]
 async fn a_link_whose_token_is_deleted_behind_its_back_closes_within_a_minute(pool: PgPool) {
     // A one-minute heartbeat makes the signal listener's silence window four minutes. At the
     // default (20 s) two 10 s steps of the paused clock can pass before a heartbeat's echo comes
@@ -2742,19 +2765,24 @@ async fn a_link_whose_token_is_deleted_behind_its_back_closes_within_a_minute(po
     let world = World::new(hub).await;
     let clock = pause_clock();
     let mut phone = world.phone().await;
-    // The token goes without a request to the hub, so nothing signals: only the link's own
-    // once-a-minute check can notice.
+    // No application frame is sent after deletion. Transport control pings keep the link from
+    // going silent; they bypass JSON admission, but still exercise the minute session fallback.
+    // A server-owned checked output may also correctly close it earlier.
     sqlx::query("DELETE FROM device_tokens WHERE device_id = $1")
         .bind(world.phone_id)
         .execute(&world.hub.admin.pool)
         .await
         .unwrap();
-    clock
-        .advance_alive(Duration::from_secs(50), &mut [&mut phone])
-        .await;
-    clock.advance(Duration::from_secs(11)).await;
-    phone.send(&RelayMessage::Ping).await;
-    assert_eq!(phone.expect_close().await, close_code::REVOKED);
+    for step in 1..=6 {
+        clock.advance(Duration::from_secs(10)).await;
+        if let Some(code) = phone.transport_ping_or_close(step).await {
+            assert_eq!(code, close_code::REVOKED);
+            return;
+        }
+    }
+    // Exactly sixty paused seconds, with no JSON ping/pong or other business text. Do not
+    // require the revoked session to stay alive until this point if another check finds it.
+    assert_eq!(phone.expect_close_without_text().await, close_code::REVOKED);
 }
 
 #[sqlx::test(migrations = false)]

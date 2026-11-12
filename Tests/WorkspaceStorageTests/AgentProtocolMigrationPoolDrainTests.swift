@@ -38,6 +38,57 @@ private final class MigrationPoolWork<Value: Sendable> {
   func value() throws -> Value { try join().get() }
 }
 
+// One bounded record per case. Event payloads are fixed stages, relative time and Bool only.
+private final class MigrationPoolPhaseTrace: Sendable {
+  enum Stage: String, Sendable {
+    case borrowerEntered, borrowerWaitReturned, borrowerGuardExpired
+    case waiterEntered, waiterWaitReturned
+    case borrowerObservationEntered, borrowerObservationReturned
+    case waiterObservationEntered, waiterObservationReturned
+    case poolCloseEntered, poolCloseReturned, newAttemptEntered, newAttemptReturned
+    case drainerEntered, drainerReturned, drainObservationEntered, drainObservationReturned
+    case absenceObservationEntered, absenceObservationReturned
+    case releaseBorrower, releaseWaiter, joined
+  }
+  private struct Event: Sendable {
+    let stage: Stage
+    let milliseconds: Int64
+    let flag: Bool?
+    let controller: Stage?
+  }
+  private struct State: Sendable {
+    var events: [Event] = []
+    var controller: Stage?
+    var overflow = false
+  }
+  private let started = ContinuousClock.now
+  private let state = Mutex(State())
+
+  func record(_ stage: Stage, flag: Bool? = nil, controller: Bool = false) {
+    let elapsed = started.duration(to: .now).components
+    let milliseconds = elapsed.seconds * 1_000 + elapsed.attoseconds / 1_000_000_000_000_000
+    state.withLock { value in
+      if controller { value.controller = stage }
+      guard value.events.count < 48 else { value.overflow = true; return }
+      // A borrower expiry atomically captures this last controller stage without another lock.
+      value.events.append(
+        Event(stage: stage, milliseconds: milliseconds, flag: flag, controller: value.controller))
+    }
+  }
+
+  // Caller has released both gates and joined all three original worker handles.
+  func emitAfterJoins() {
+    record(.joined, controller: true)
+    let snapshot = state.withLock { $0 }
+    let fields = snapshot.events.map { event in
+      let flag = event.flag.map { $0 ? "true" : "false" } ?? "none"
+      let controller = event.controller?.rawValue ?? "none"
+      return "\(event.stage.rawValue):\(event.milliseconds):\(flag):\(controller)"
+    }.joined(separator: ";")
+    print("A3_POOL_PHASE overflow=\(snapshot.overflow) events=\(fields)")
+  }
+}
+
 private final class MigrationPoolObservation: Sendable {
   let borrowerEntered = Mutex(false)
   let borrowerHeld = Mutex(false)
@@ -163,6 +214,7 @@ private final class MigrationPoolObservation: Sendable {
     let fixture = try Self.fixture()
     defer { fixture.pool.close() }
     let observation = MigrationPoolObservation()
+    let trace = MigrationPoolPhaseTrace()
     let releaseBorrower = DispatchSemaphore(value: 0)
     let releaseWaiter = DispatchSemaphore(value: 0)
     let borrower = MigrationPoolWork {
@@ -170,51 +222,75 @@ private final class MigrationPoolObservation: Sendable {
         observation.borrowerHeld.withLock { $0 = true }
         observation.borrowerEntered.withLock { $0 = true }
         defer { observation.borrowerHeld.withLock { $0 = false } }
-        guard releaseBorrower.wait(timeout: .now() + .seconds(8)) == .success else {
+        trace.record(.borrowerEntered)
+        let released = releaseBorrower.wait(timeout: .now() + .seconds(8)) == .success
+        trace.record(.borrowerWaitReturned, flag: released)
+        guard released else {
+          trace.record(.borrowerGuardExpired)
           throw FixtureFailure.barrierTimeout
         }
       }
     }
+    trace.record(.borrowerObservationEntered, controller: true)
     let borrowerReady = await Self.observed { observation.borrowerEntered.withLock { $0 } }
+    trace.record(.borrowerObservationReturned, flag: borrowerReady, controller: true)
     let waiter = MigrationPoolWork {
       Result {
         try fixture.pool.withConnection(
           beforeWaiting: {
             observation.waiterEntered.withLock { $0 = true }
-            if releaseWaiter.wait(timeout: .now() + .seconds(8)) != .success {
+            trace.record(.waiterEntered)
+            let released = releaseWaiter.wait(timeout: .now() + .seconds(8)) == .success
+            trace.record(.waiterWaitReturned, flag: released)
+            if !released {
               observation.waiterTimedOut.withLock { $0 = true }
             }
           }
         ) { _ in observation.bodyCalls.withLock { $0 += 1 } }
       }
     }
+    trace.record(.waiterObservationEntered, controller: true)
     let waiterReady = await Self.observed { observation.waiterEntered.withLock { $0 } }
+    trace.record(.waiterObservationReturned, flag: waiterReady, controller: true)
     // Admission is now deterministically closed before probing new work or starting the drain.
     // Draining an already-closed pool is needed after an account scope's ordinary pool close.
+    trace.record(.poolCloseEntered, controller: true)
     fixture.pool.close()
+    trace.record(.poolCloseReturned, controller: true)
+    trace.record(.newAttemptEntered, controller: true)
     let newAttempt = Result {
       try fixture.pool.withConnection { _ in observation.bodyCalls.withLock { $0 += 1 } }
     }
+    trace.record(.newAttemptReturned, controller: true)
     let drainer = MigrationPoolWork {
       observation.drainStarted.withLock { $0 = true }
+      trace.record(.drainerEntered)
       let drained = fixture.pool.closeForMigration(timeout: .seconds(2))
+      trace.record(.drainerReturned, flag: drained)
       observation.succeededWhileBorrowerHeld.withLock {
         $0 = drained && observation.borrowerHeld.withLock { $0 }
       }
       observation.drainFinished.withLock { $0 = true }
       return drained
     }
+    trace.record(.drainObservationEntered, controller: true)
     let drainStarted = await Self.observed { observation.drainStarted.withLock { $0 } }
+    trace.record(.drainObservationReturned, flag: drainStarted, controller: true)
     // This is a bounded absence observation after explicit entry barriers, not an assumed ordering
     // based on a sleep. A successful drain cannot finish while the admitted borrower remains held.
+    trace.record(.absenceObservationEntered, controller: true)
     let finishedBeforeRelease = await Self.observed(within: .milliseconds(75)) {
       observation.drainFinished.withLock { $0 }
     }
+    trace.record(.absenceObservationReturned, flag: finishedBeforeRelease, controller: true)
+    trace.record(.releaseBorrower, controller: true)
     releaseBorrower.signal()
+    trace.record(.releaseWaiter, controller: true)
     releaseWaiter.signal()
     let borrowed = borrower.join()
     let queued = try waiter.value()
     let drained = try drainer.value()
+    trace.emitAfterJoins()
     _ = try borrowed.get()
     #expect(borrowerReady && waiterReady && drainStarted)
     #expect(!finishedBeforeRelease)

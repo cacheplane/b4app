@@ -673,6 +673,53 @@ impl FakeDevice {
         }
     }
 
+    /// An actual WebSocket control ping, never an application JSON heartbeat. A revoked session
+    /// may already have been closed by any fresh server-owned boundary; require that close frame,
+    /// rather than treating a failed write/EOF as proof. No application text is skipped.
+    pub async fn transport_ping_or_close(&mut self, nonce: u8) -> Option<u16> {
+        let payload = vec![nonce];
+        // The transport write may race the legitimate close, which must still be read below.
+        let _ = self.ws.send(Message::Ping(payload.clone().into())).await;
+        let deadline = std::time::Instant::now() + FRAME_WAIT;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "no native control outcome within FRAME_WAIT"
+            );
+            match self.next_message(remaining).await {
+                Some(Some(Ok(Message::Pong(actual)))) => {
+                    assert_eq!(actual.as_ref(), payload.as_slice());
+                    return None;
+                }
+                Some(Some(Ok(Message::Ping(_)))) => {}
+                Some(Some(Ok(Message::Close(frame)))) => {
+                    let _ = self.ws.flush().await;
+                    return Some(frame.map_or(1005, |frame| u16::from(frame.code)));
+                }
+                other => panic!("expected only a native control pong or close, got {other:?}"),
+            }
+        }
+    }
+
+    /// Requires a real close frame without accepting any application text/binary frame before it.
+    /// Tungstenite answers native control Ping automatically; this never sends a JSON Pong.
+    pub async fn expect_close_without_text(&mut self) -> u16 {
+        let deadline = std::time::Instant::now() + FRAME_WAIT;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(!remaining.is_zero(), "no close within FRAME_WAIT");
+            match self.next_message(remaining).await {
+                Some(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => {}
+                Some(Some(Ok(Message::Close(frame)))) => {
+                    let _ = self.ws.flush().await;
+                    return frame.map_or(1005, |frame| u16::from(frame.code));
+                }
+                other => panic!("expected a close without application content, got {other:?}"),
+            }
+        }
+    }
+
     /// Opens a link and reads its `hello` (returning its `hubTime`) and, for a client, the
     /// `presence` frame after it.
     /// A host's `watching` frame that follows `hello` is read too (see

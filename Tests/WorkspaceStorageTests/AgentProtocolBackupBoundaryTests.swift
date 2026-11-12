@@ -196,6 +196,22 @@ import WorkspaceProtocol
     #expect((directoryMode as? NSNumber)?.intValue == 0o700)
   }
 
+  // Suspend each retained Task while its synchronous PostgreSQL/gate work runs off the
+  // cooperative executor. The continuation reports operation completion, not thread exit.
+  private static func onDedicatedBackupThread<T: Sendable>(
+    _ operation: @escaping @Sendable () -> T
+  ) async -> T {
+    await withCheckedContinuation { continuation in
+      Thread { continuation.resume(returning: operation()) }.start()
+    }
+  }
+
+  private static func onDedicatedBackupThread<T: Sendable>(
+    _ operation: @escaping @Sendable () throws -> T
+  ) async throws -> T {
+    try await onDedicatedBackupThread { Result<T, any Error> { try operation() } }.get()
+  }
+
   private static func observed(_ body: () -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + .seconds(3)
     while !body(), ContinuousClock.now < deadline {
@@ -271,34 +287,41 @@ import WorkspaceProtocol
   }
 
   @Test func concurrentOpensSerializeCaptureAndApplyOnce() async throws {
+    let started = ContinuousClock.now
     let fixture = try Self.fixture()
     defer { try? FileManager.default.removeItem(atPath: fixture.backupDirectory) }
     let before = try Self.snapshot(fixture.raw)
     let release = DispatchSemaphore(value: 0)
     let firstPaused = Mutex(false)
+    let firstGateExpired = Mutex(false)
     let secondPID = Mutex(0)
     let secondLocked = Mutex(false)
     let first = Task.detached {
-      let c = try Self.connection(fixture.endpoint)
-      try WorkspaceDatabase.migrateWithBackup(
-        c, endpoint: fixture.endpoint, backupDirectory: fixture.backupDirectory
-      ) { stage in
-        if stage == .contentsWritten {
-          firstPaused.withLock { $0 = true }
-          guard release.wait(timeout: .now() + .seconds(8)) == .success else {
-            throw FixtureFailure.barrierTimeout
+      try await Self.onDedicatedBackupThread {
+        let c = try Self.connection(fixture.endpoint)
+        try WorkspaceDatabase.migrateWithBackup(
+          c, endpoint: fixture.endpoint, backupDirectory: fixture.backupDirectory
+        ) { stage in
+          if stage == .contentsWritten {
+            firstPaused.withLock { $0 = true }
+            guard release.wait(timeout: .now() + .seconds(8)) == .success else {
+              firstGateExpired.withLock { $0 = true }
+              throw FixtureFailure.barrierTimeout
+            }
           }
         }
       }
     }
     let paused = await Self.observed { firstPaused.withLock { $0 } }
     let second = Task.detached {
-      let c = try Self.connection(fixture.endpoint)
-      let pid = try c.execute("SELECT pg_backend_pid() AS pid").rows.first?.int("pid") ?? 0
-      secondPID.withLock { $0 = pid }
-      try WorkspaceDatabase.migrateWithBackup(
-        c, endpoint: fixture.endpoint, backupDirectory: fixture.backupDirectory
-      ) { stage in if stage == .locked { secondLocked.withLock { $0 = true } } }
+      try await Self.onDedicatedBackupThread {
+        let c = try Self.connection(fixture.endpoint)
+        let pid = try c.execute("SELECT pg_backend_pid() AS pid").rows.first?.int("pid") ?? 0
+        secondPID.withLock { $0 = pid }
+        try WorkspaceDatabase.migrateWithBackup(
+          c, endpoint: fixture.endpoint, backupDirectory: fixture.backupDirectory
+        ) { stage in if stage == .locked { secondLocked.withLock { $0 = true } } }
+      }
     }
     let waiting = await Self.observed {
       Self.waitingOnAdvisory(fixture.raw, pid: secondPID.withLock { $0 })
@@ -309,6 +332,32 @@ import WorkspaceProtocol
     release.signal()
     let firstResult = await first.result
     let secondResult = await second.result
+    // Emit only safe test-owned outcomes after release and both joins, before a wrapped error
+    // can leave the test. No SQL, native errors, paths, PIDs or captured row material are printed.
+    let snapshotSucceeded =
+      switch whileHeld {
+      case .success: true
+      case .failure: false
+      }
+    let firstSucceeded =
+      switch firstResult {
+      case .success: true
+      case .failure: false
+      }
+    let secondSucceeded =
+      switch secondResult {
+      case .success: true
+      case .failure: false
+      }
+    let elapsed = started.duration(to: .now).components
+    let elapsedMilliseconds = elapsed.seconds * 1_000 + elapsed.attoseconds / 1_000_000_000_000_000
+    print(
+      "A3_BACKUP_CONCURRENT_WITNESS contentsWritten=\(firstPaused.withLock { $0 }) "
+        + "gateExpired=\(firstGateExpired.withLock { $0 }) pausedObserved=\(paused) "
+        + "nativeWaitingObserved=\(waiting) secondLocked=\(secondLocked.withLock { $0 }) "
+        + "snapshotSucceeded=\(snapshotSucceeded) firstSucceeded=\(firstSucceeded) "
+        + "secondSucceeded=\(secondSucceeded) elapsedMilliseconds=\(elapsedMilliseconds)"
+    )
     try firstResult.get()
     try secondResult.get()
     #expect(paused)

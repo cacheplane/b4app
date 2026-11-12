@@ -102,6 +102,50 @@ final class L1Cleanup: Sendable {
   }
 }
 
+// Fixed primitive-only events; neither task entry nor call issuance claims actor entry.
+private final class L1PhaseTrace: Sendable {
+  enum Case: String, Sendable { case quiescence, gateTimeout }
+  enum Stage: String, Sendable {
+    case taskEntered, signInCallIssued, signInReturned, finished
+    case lockObservationEntered, lockObservationReturned
+    case completionObservationEntered, completionObservationReturned
+    case bodyScopeClosing, bodyRunFinished, cleanupJoined
+  }
+  private struct Event: Sendable {
+    let stage: Stage
+    let milliseconds: Int64
+    let flag: Bool?
+  }
+  private struct State: Sendable {
+    var events: [Event] = []
+    var overflow = false
+  }
+  private let started = ContinuousClock.now
+  private let state = Mutex(State())
+  private let testCase: Case
+  init(_ testCase: Case) { self.testCase = testCase }
+
+  func record(_ stage: Stage, flag: Bool? = nil) {
+    let elapsed = started.duration(to: .now).components
+    let milliseconds = elapsed.seconds * 1_000 + elapsed.attoseconds / 1_000_000_000_000_000
+    state.withLock { value in
+      guard value.events.count < 32 else { value.overflow = true; return }
+      value.events.append(Event(stage: stage, milliseconds: milliseconds, flag: flag))
+    }
+  }
+
+  // Called only after withFixture returned, including its releases and actual retained Task joins.
+  func emitAfterCleanup() {
+    record(.cleanupJoined)
+    let snapshot = state.withLock { $0 }
+    let fields = snapshot.events.map { event in
+      let flag = event.flag.map { $0 ? "true" : "false" } ?? "none"
+      return "\(event.stage.rawValue):\(event.milliseconds):\(flag)"
+    }.joined(separator: ";")
+    print("A3_ACCOUNT_PHASE case=\(testCase.rawValue) overflow=\(snapshot.overflow) events=\(fields)")
+  }
+}
+
 final class L1RunState: Sendable { let finished = Mutex(false) }
 
 final class L1FactoryCalls: Sendable {
@@ -562,23 +606,45 @@ final class L1FactoryCalls: Sendable {
   }
 
   static func begin(_ fixture: Fixture, _ cleanup: L1Cleanup, session: AuthSession? = nil) -> Run {
+    begin(fixture, cleanup, session: session, trace: nil)
+  }
+
+  private static func begin(
+    _ fixture: Fixture, _ cleanup: L1Cleanup, session: AuthSession? = nil, trace: L1PhaseTrace?
+  ) -> Run {
     let state = L1RunState()
     let answer = session ?? Self.session()
     let task = Task {
-      defer { state.finished.withLock { $0 = true } }
+      trace?.record(.taskEntered)
+      defer {
+        state.finished.withLock { $0 = true }
+        trace?.record(.finished)
+      }
       do {
-        return Result<AccountStatus.Result, any Error>.success(
-          try await fixture.manager.signIn(session: answer, hubURL: fixture.hubURL))
-      } catch { return .failure(error) }
+        trace?.record(.signInCallIssued)
+        let value = try await fixture.manager.signIn(session: answer, hubURL: fixture.hubURL)
+        trace?.record(.signInReturned, flag: true)
+        return Result<AccountStatus.Result, any Error>.success(value)
+      } catch {
+        trace?.record(.signInReturned, flag: false)
+        return .failure(error)
+      }
     }
     cleanup.join { _ = await task.value }
     return Run(task: task, state: state)
   }
 
   static func completed(_ run: Run) async throws -> Result<AccountStatus.Result, any Error> {
-    guard await observed(within: .seconds(15), { run.state.finished.withLock { $0 } }) else {
-      throw SetupFailure.observationTimeout
-    }
+    try await completed(run, trace: nil)
+  }
+
+  private static func completed(
+    _ run: Run, trace: L1PhaseTrace?
+  ) async throws -> Result<AccountStatus.Result, any Error> {
+    trace?.record(.completionObservationEntered)
+    let finished = await observed(within: .seconds(15), { run.state.finished.withLock { $0 } })
+    trace?.record(.completionObservationReturned, flag: finished)
+    guard finished else { throw SetupFailure.observationTimeout }
     return await run.task.value
   }
 
@@ -659,6 +725,8 @@ final class L1FactoryCalls: Sendable {
   }
 
   @Test func sameAccountPendingQuiescesBeforeCapture() async throws {
+    let trace = L1PhaseTrace(.quiescence)
+    defer { trace.emitAfterCleanup() }
     try await Self.withFixture { fixture, cleanup in
       let writer = try Self.connection(fixture.endpoint)
       let writerPID = try #require(writer.execute("SELECT pg_backend_pid() AS pid").rows.first?.text("pid"))
@@ -676,7 +744,13 @@ final class L1FactoryCalls: Sendable {
       try writer.execute(
         #"UPDATE "connections" SET "label" = 'Committed before migration' WHERE "id" = 'old-b4'"#)
       let expected = try Self.snapshot(writer)
-      let run = Self.begin(fixture, cleanup)
+      let run = Self.begin(fixture, cleanup, trace: trace)
+      defer {
+        trace.record(.bodyScopeClosing, flag: fixture.scope.isClosing)
+        let finished = run.state.finished.withLock { $0 }
+        trace.record(.bodyRunFinished, flag: finished)
+      }
+      trace.record(.lockObservationEntered)
       let waiting = await Self.observed {
         (try? fixture.raw.execute(
           """
@@ -687,6 +761,7 @@ final class L1FactoryCalls: Sendable {
           """, [fixture.endpoint.database, writerPID]
         ).rows.count == 1) == true
       }
+      trace.record(.lockObservationReturned, flag: waiting)
       #expect(waiting)
       #expect(fixture.scope.isClosing)
       let read = Result {
@@ -713,7 +788,7 @@ final class L1FactoryCalls: Sendable {
       if case .success = commit { active.withLock { $0 = false } }
       release.run()
       _ = try commit.get()
-      let result = try await Self.completed(run)
+      let result = try await Self.completed(run, trace: trace)
       _ = try result.get()
       try Self.assertArchive(fixture, expected: expected)
       try Self.assertHistory(expected, after: Self.snapshot(fixture.raw))
@@ -725,11 +800,18 @@ final class L1FactoryCalls: Sendable {
   }
 
   @Test func pendingGateTimeoutRestoresSameLiveScopeWithoutMutation() async throws {
+    let trace = L1PhaseTrace(.gateTimeout)
+    defer { trace.emitAfterCleanup() }
     try await Self.withFixture { fixture, cleanup in
       try fixture.scope.enter()
       let release = cleanup.release { fixture.scope.leave() }
-      let run = Self.begin(fixture, cleanup)
-      let result = try await Self.completed(run)
+      let run = Self.begin(fixture, cleanup, trace: trace)
+      defer {
+        trace.record(.bodyScopeClosing, flag: fixture.scope.isClosing)
+        let finished = run.state.finished.withLock { $0 }
+        trace.record(.bodyRunFinished, flag: finished)
+      }
+      let result = try await Self.completed(run, trace: trace)
       #expect(Self.refused(result))
       #expect(fixture.manager.current?.instance == fixture.scope.instance)
       #expect(!fixture.scope.isClosing)
