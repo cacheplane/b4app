@@ -8,7 +8,7 @@ import WorkspacePlatform
 /// Temporary causal diagnostic on genuine prefix10. No authority/profile/runtime rows are seeded.
 /// Uses only common pre-generation13 APIs so it can run on the captured old13 CI head too.
 @Suite(.serialized) struct AgentProtocolBackupStageDiagnosticTests {
-  private enum DiagnosticFailure: Error { case catalog, settings, incomplete }
+  private enum DiagnosticFailure: Error { case catalog, settings, incomplete, physicalBase }
   private enum Stage: String {
     case fixture, privacy, catalog, capture, directory, publication, writingRows, rowsWritten
     case contentsWritten, fileSynchronized, renamed, directorySynchronized, commit, readBack, complete
@@ -57,6 +57,90 @@ import WorkspacePlatform
     "0001_init", "0002_changes", "0003_hub", "0004_organisation", "0005_relay", "0006_usage",
     "0007_connection_usage", "0008_thread_delete", "0009_thread_runtime_choice", "0010_owned_rows",
   ]
+
+  /// POSIX identity of an existing base, before the new leaf is made. No Foundation normalization
+  /// participates in this arm's chosen path; malloc storage from realpath(path, NULL) is always released.
+  private static func physicalBase(_ literal: String) throws -> String {
+    let (resolved, code) = literal.withCString { input in
+      let result = Darwin.realpath(input, nil)
+      return (result, result == nil ? errno : Int32(0))
+    }
+    guard let buffer = resolved else {
+      // No raw connection or fixture root exists on this early setup refusal.
+      print("A3_BACKUP_DIAGNOSTIC arm=physical stage=fixture realpath_errno=\(code)")
+      throw DiagnosticFailure.physicalBase
+    }
+    defer { Darwin.free(buffer) }
+    return String(cString: buffer)
+  }
+
+  /// Observation only, never admission. lstat resolves parent chains but does not follow the final
+  /// component; an earlier recorded link therefore remains a link, not proof of a no-follow walk.
+  /// No component name, path, native error description or row value enters these retained facts.
+  private static func componentFacts(_ path: String, arm: String, pass: String) -> [String] {
+    var prefixes = ["/"]
+    var prefix = ""
+    for component in path.split(separator: "/") {
+      prefix += "/" + String(component)
+      prefixes.append(prefix)
+    }
+    return prefixes.enumerated().map { index, candidate in
+      var info = stat()
+      let (succeeded, code) = candidate.withCString { input in
+        let result = lstat(input, &info)
+        return (result == 0, result == 0 ? Int32(0) : errno)
+      }
+      let kind: String
+      if !succeeded {
+        kind = code == ENOENT ? "missing" : "error"
+      } else if info.st_mode & S_IFMT == S_IFDIR {
+        kind = "dir"
+      } else if info.st_mode & S_IFMT == S_IFLNK {
+        kind = "link"
+      } else {
+        kind = "other"
+      }
+      // For missing/error records these false flags are unobserved, not permission conclusions.
+      let owned = succeeded && info.st_uid == getuid()
+      let ownerRead = succeeded && info.st_mode & 0o400 != 0
+      let ownerWrite = succeeded && info.st_mode & 0o200 != 0
+      let ownerSearch = succeeded && info.st_mode & 0o100 != 0
+      let groupWrite = succeeded && info.st_mode & 0o020 != 0
+      let worldWrite = succeeded && info.st_mode & 0o002 != 0
+      return
+        "A3_BACKUP_DIAGNOSTIC arm=\(arm) pass=\(pass) component=\(index) type=\(kind) errno=\(code) statSucceeded=\(succeeded) uidMatches=\(owned) ownerRead=\(ownerRead) ownerWrite=\(ownerWrite) ownerSearch=\(ownerSearch) groupWrite=\(groupWrite) worldWrite=\(worldWrite)"
+    }
+  }
+
+  /// Fixed read-only resource observations, not an FD census, limit change or causal conclusion.
+  /// Every successfully opened descriptor is closed exactly once; close failure prevents success.
+  private static func directoryControlFacts(_ arm: String) -> (facts: [String], healthy: Bool) {
+    var facts: [String] = []
+    var limits = rlimit()
+    let limitResult = getrlimit(RLIMIT_NOFILE, &limits)
+    let limitErrno = limitResult == 0 ? Int32(0) : errno
+    if limitResult == 0 {
+      facts.append(
+        "A3_BACKUP_DIAGNOSTIC arm=\(arm) nofileSucceeded=true soft=\(limits.rlim_cur) hard=\(limits.rlim_max) errno=0"
+      )
+    } else {
+      facts.append("A3_BACKUP_DIAGNOSTIC arm=\(arm) nofileSucceeded=false errno=\(limitErrno)")
+    }
+    let (fd, openErrno) = "/".withCString { input in
+      let result = Darwin.open(input, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+      return (result, result < 0 ? errno : Int32(0))
+    }
+    var closeResult: Int32 = 0
+    var closeErrno: Int32 = 0
+    if fd >= 0 {
+      closeResult = Darwin.close(fd)
+      closeErrno = closeResult == 0 ? Int32(0) : errno
+    }
+    facts.append(
+      "A3_BACKUP_DIAGNOSTIC arm=\(arm) rootOpenSucceeded=\(fd >= 0) rootOpenErrno=\(openErrno) rootCloseAttempted=\(fd >= 0) rootCloseSucceeded=\(fd >= 0 && closeResult == 0) rootCloseErrno=\(closeErrno)"
+    )
+    return (facts, limitResult == 0 && fd >= 0 && closeResult == 0)
+  }
 
   private static func progress(_ arm: String, _ stage: Stage) {
     print("A3_BACKUP_DIAGNOSTIC arm=\(arm) stage=\(stage.rawValue)")
@@ -134,11 +218,12 @@ import WorkspacePlatform
   func genuinePrefixTenArchiveStages(physical: Bool) throws {
     let arm = physical ? "physical" : "literal"
     let literal = NSTemporaryDirectory()
-    let canonical = URL(fileURLWithPath: literal).resolvingSymlinksInPath().path
-    let base = physical ? canonical : literal
-    let root = (base as NSString).appendingPathComponent("a3-backup-stage-" + UUID().uuidString)
-    let directory = (root as NSString).appendingPathComponent("backups")
-    let path = (directory as NSString).appendingPathComponent("probe.jsonl")
+    let base: String
+    if physical { base = try Self.physicalBase(literal) } else { base = literal }
+    // Keep realpath's bytes through the new descendants; no Foundation URL/path normalization.
+    let root = base + (base.hasSuffix("/") ? "" : "/") + "a3-backup-stage-" + UUID().uuidString
+    let directory = root + "/backups"
+    let path = directory + "/probe.jsonl"
     let writeParent = URL(fileURLWithPath: path).deletingLastPathComponent().path
     let selectedHasAlias = root != URL(fileURLWithPath: root).resolvingSymlinksInPath().path
     let parentChanged = writeParent != directory
@@ -147,6 +232,8 @@ import WorkspacePlatform
     var stage = Stage.fixture
     var failed: (String, String)?
     var catalogMessages: [String] = []
+    var pathFacts: [String] = []
+    var fileControlFailed = false
     var transactionOpen = false
     var rollbackFailed = false
     var cleanupFailed = false
@@ -183,8 +270,28 @@ import WorkspacePlatform
           stage = .capture; Self.progress(arm, stage)
           let schema = try WorkspaceArchive.captureSchema(c, present: Set(Self.columns.keys))
           stage = .directory; Self.progress(arm, stage)
-          let directoryFD = try ArchivePublication.directory(directory)
-          Darwin.close(directoryFD)
+          pathFacts += Self.componentFacts(directory, arm: arm, pass: "before-directory")
+          let control = Self.directoryControlFacts(arm)
+          pathFacts += control.facts
+          fileControlFailed = !control.healthy
+          do {
+            let directoryFD = try ArchivePublication.directory(directory)
+            let result = Darwin.close(directoryFD)
+            let code = result == 0 ? Int32(0) : errno
+            if result != 0 { fileControlFailed = true }
+            pathFacts.append(
+              "A3_BACKUP_DIAGNOSTIC arm=\(arm) directoryCloseSucceeded=\(result == 0) directoryCloseErrno=\(code)"
+            )
+          } catch {
+            let observedErrno = errno
+            // directory() also has guards and closes its walk FD on throw. This is merely the
+            // first available observed errno, not a promise that it is the refusing syscall's code.
+            pathFacts.append(
+              "A3_BACKUP_DIAGNOSTIC arm=\(arm) directoryRefused=true observedErrno=\(observedErrno)")
+            pathFacts += Self.componentFacts(directory, arm: arm, pass: "after-directory-failure")
+            throw error
+          }
+          pathFacts += Self.componentFacts(directory, arm: arm, pass: "after-directory")
           stage = .publication; Self.progress(arm, stage)
           try ArchivePublication.write(
             to: path, privateDirectory: true,
@@ -224,6 +331,7 @@ import WorkspacePlatform
     if rootCreated {
       do { try FileManager.default.removeItem(atPath: root) } catch { cleanupFailed = true }
     }
+    for fact in pathFacts { print(fact) }
     for message in catalogMessages { Issue.record(Comment(rawValue: message)) }
     if let failed {
       Issue.record(
@@ -231,6 +339,7 @@ import WorkspacePlatform
       )
     }
     #expect(failed == nil, "The selected archive pipeline must complete every required stage.")
+    #expect(!fileControlFailed)
     #expect(!rollbackFailed)
     #expect(!cleanupFailed)
     #expect(!FileManager.default.fileExists(atPath: root))
