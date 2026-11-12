@@ -1,0 +1,18 @@
+#!/bin/bash
+# Stands in for plutil where there is none (CI's Linux runner): `-extract <key> raw -o - <file>`
+# prints the key's string from an XML property list, and fails when the file or key is missing.
+set -euo pipefail
+if [ $# -ne 6 ] || [ "$1" != -extract ] || [ "$3" != raw ] || [ "$4" != -o ] || [ "$5" != - ]; then
+  echo "stub plutil: unexpected arguments: $*" >&2
+  exit 1
+fi
+python3 -I - "$2" "$6" <<'PY'
+import plistlib, sys
+key, path = sys.argv[1], sys.argv[2]
+try:
+    with open(path, "rb") as f:
+        value = plistlib.load(f)[key]
+except (OSError, KeyError, plistlib.InvalidFileException):
+    sys.exit(1)
+print(value)
+PY

@@ -206,7 +206,10 @@ import WorkspaceSync
           hubSeq: 100, deviceId: "mac-1", deviceSeq: 100, wall: fixture[1].wall,
           table: "threads", rowId: "thread-2", op: "insert", column: nil, value: .object(value))
       ]))
-    try await waitUntil("second thread opens", timeout: .seconds(3)) { model.detail?.thread.id == "thread-2" }
+    // The open re-reads every 250 ms until it finds the thread or its own 15 s run out, so wait for it
+    // to end either way rather than for a fixed time a loaded machine can miss (3 s was).
+    try await waitUntil("the open finishes") { model.pendingThreadOpen == nil }
+    #expect(model.detail?.thread.id == "thread-2")
     #expect(model.lastError == nil)
     await model.disconnect()
   }

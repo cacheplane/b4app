@@ -19,9 +19,10 @@ private let localHub = "http://localhost:8080"
 private let signedOutMessage = "Nobody is signed in. Sign in from the Agent Workspace app."
 private let leftOpenNotice = "The last sign-out could not reach the hub; that session was left open there."
 /// How far past its shortened bounds a log-out may run before a test calls it unbounded: room for a
-/// loaded runner (1 s was missed by 130 ms), and still well under the 7.5 s more that `work` or
-/// `push` would take at its standard value.
-private let logoutSlack: Duration = .seconds(3)
+/// loaded runner (1 s was missed by 130 ms, then 3 s by 340 ms on CI), and still under the 7.5 s
+/// more that `work` or `push` would take at its standard value, so a step that ignored its shortened
+/// bound still fails whatever the runner's load.
+private let logoutSlack: Duration = .seconds(7)
 
 // Device ids are UUIDs, as the hub makes them: a sign-in offers only those (ruling 3).
 private let devNew = "0197dddd-0000-7000-8000-0000000000d1"
