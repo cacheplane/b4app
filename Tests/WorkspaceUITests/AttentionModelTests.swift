@@ -1077,6 +1077,47 @@ private struct AttentionDocument: Decodable {
     #expect(model.threads.allSatisfy { model.arrival(for: $0) == nil })
   }
 
+  /// The hold lasts while the selected thread's detail column shows. On a compact phone, going back to
+  /// the list releases it (the thread takes its real place, nothing traces), and showing the detail
+  /// again starts a fresh hold from the thread's state now, not the old one.
+  @Test func onACompactPhoneGoingBackToTheListReleasesTheHold() async throws {
+    let transport = ScriptedTransport()
+    let model = try await modelWithAFinishedThread(transport)
+    await model.openThread(id: "t1")
+    #expect(model.state(of: try #require(model.threads.first { $0.id == "t1" })) == .quiet)
+    #expect(topList(model) == ["a", "t1", "f"])
+
+    // Back to the list: the detail column and the detail leave the screen; "t1" stays selected.
+    model.isDetailColumnShown = false
+    model.isDetailOnScreen = false
+    #expect(model.selectedThreadId == "t1")
+    #expect(topList(model) == ["a", "f"])
+    guard case .needsYouFirst(_, .rows(let lower, _)) = model.listLayout.body else {
+      Issue.record("Small: \(model.listLayout.body)")
+      return
+    }
+    #expect(lower.map(\.id) == ["q", "t1"])
+    #expect(model.threads.allSatisfy { model.arrival(for: $0) == nil })
+
+    // Reopened: a fresh hold from its state now (quiet), not the finished one it had.
+    model.isDetailColumnShown = true
+    model.isDetailOnScreen = true
+    await model.openThread(id: "t1")
+    #expect(topList(model) == ["a", "f"])
+  }
+
+  /// On the Mac the detail column always shows: the window losing focus (the detail no longer in front
+  /// of the owner) keeps the hold.
+  @Test func anInactiveMacWindowKeepsTheHold() async throws {
+    let transport = ScriptedTransport()
+    let model = try await modelWithAFinishedThread(transport)
+    await model.openThread(id: "t1")
+    model.isDetailOnScreen = false
+    #expect(topList(model) == ["a", "t1", "f"])
+    model.isDetailOnScreen = true
+    #expect(topList(model) == ["a", "t1", "f"])
+  }
+
   @Test func everyWayTheSelectionGoesReleasesTheHold() async throws {
     let transport = ScriptedTransport()
     let model = try await modelWithAFinishedThread(transport)

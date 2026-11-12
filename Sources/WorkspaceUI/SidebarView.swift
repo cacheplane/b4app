@@ -313,7 +313,7 @@ struct MoreMenu: View {
       // The menu's button sizes itself to the symbol; this gives it the other buttons' 28 pt target.
       .frame(width: TopBarButton.side, height: TopBarButton.side)
       .contentShape(Rectangle())
-      .accessibilityLabel(TopBarButton.viewOptions.accessibilityLabel(filtered: model.viewOptionsFiltered))
+      .accessibilityLabel(TopBarButton.viewOptions.accessibilityLabel)
       .accessibilityIdentifier(TopBarButton.viewOptions.identifier)
     #else
       .accessibilityIdentifier("sidebar-more")

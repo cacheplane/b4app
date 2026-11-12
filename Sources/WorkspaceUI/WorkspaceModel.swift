@@ -148,6 +148,14 @@ public final class WorkspaceModel {
       Task { await markReadIfNeeded(threadId: id) }
     }
   }
+  /// Whether the detail column shows: false only while a compact width (the iPhone) shows the list
+  /// instead, with the open thread still selected and loaded behind it. The Mac and a regular width
+  /// always show it. Unlike `isDetailOnScreen`, it stays true while the Mac's window is not key.
+  /// The selected thread's hold lasts only while it is true: going back to the list releases it, and
+  /// showing the detail again starts a fresh one from the thread's state now.
+  var isDetailColumnShown = true {
+    didSet { if isDetailColumnShown != oldValue { holdSelectedState(restart: true) } }
+  }
   /// Every environment with its folders, loaded with the threads and refreshed on `environment.changed`.
   public internal(set) var environments: [WorkEnvironment] = []
   /// The account's view settings as stored (one synced row, read with the first snapshot and followed
@@ -186,8 +194,10 @@ public final class WorkspaceModel {
   /// the more urgent of this and its state now, so the thread being read does not move under the owner
   /// (`ListLayout.Selection`; D-206, the owner's changes). Released, and started afresh, whenever the
   /// selection changes, so every way the selection moves (a row, the composer, a delete, sign-out)
-  /// moves the hold with it; nil while the selected thread is not in the live list (unknown yet, or
-  /// archived). Only the order uses it: the mark, the badge, and the arrivals keep the real state.
+  /// moves the hold with it, and whenever the detail column comes or goes (`isDetailColumnShown`: the
+  /// iPhone going back to the list); nil while the list shows instead of the detail, and while the
+  /// selected thread is not in the live list (unknown yet, or archived). Only the order uses it: the
+  /// mark, the badge, and the arrivals keep the real state.
   private(set) var selectionHold: ThreadState?
   /// The search palette (⌘K on the Mac, the list's search button on the iPhone).
   public var showSearch = false
@@ -400,7 +410,9 @@ public final class WorkspaceModel {
   /// changes no thread's state, so the arrival tracker is not told and nothing traces.
   private func holdSelectedState(restart: Bool = false) {
     var hold = restart ? nil : selectionHold
-    if let id = selectedThreadId, let thread = threads.first(where: { $0.id == id }) {
+    if !isDetailColumnShown {
+      hold = nil
+    } else if let id = selectedThreadId, let thread = threads.first(where: { $0.id == id }) {
       // An archived thread is out of the live list: its hold ends, and starts again if it comes back.
       hold = thread.archived ? nil : min(hold ?? state(of: thread), state(of: thread))
     }

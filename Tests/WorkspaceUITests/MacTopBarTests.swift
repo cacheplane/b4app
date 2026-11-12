@@ -60,11 +60,13 @@ import WorkspaceProtocol
   /// symbol's is "filter" (both the plain and the filled one), which VoiceOver read once a thread was
   /// open; the label is now chosen here and set on the symbol itself.
   @Test func viewOptionsAlwaysSpeaksViewOptions() {
-    for filtered in [false, true] {
-      #expect(TopBarButton.viewOptions.accessibilityLabel(filtered: filtered) == "View options")
-      #expect(TopBarButton.search.accessibilityLabel(filtered: filtered) == "Search")
-      #expect(TopBarButton.newThread.accessibilityLabel(filtered: filtered) == "New thread")
-    }
+    #expect(TopBarButton.viewOptions.accessibilityLabel == "View options")
+    #expect(TopBarButton.search.accessibilityLabel == "Search")
+    #expect(TopBarButton.newThread.accessibilityLabel == "New thread")
+    // Whichever face view options shows, the label is the same; the faces' symbols differ.
+    #expect(
+      TopBarButton.viewOptions.face(filtered: true).systemImage
+        != TopBarButton.viewOptions.face(filtered: false).systemImage)
   }
 
   /// C4: the Mac's view options list every environment by name, ignoring case, then id; none, no submenu.
