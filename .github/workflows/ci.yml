@@ -115,7 +115,11 @@ jobs:
         run: swift test --filter AgentProtocolTransportTests
       - name: Focused Agent Protocol foundation regressions
         run: swift test --filter 'AgentProtocol|ProtocolProjectionStoreTests|ProtocolActivation'
+      - name: Focused Node probe observation controls
+        id: node-probe-control
+        run: swift test --filter NodeVersionProbeObservationTests
       - name: Test
+        if: ${{ !cancelled() && (success() || steps.node-probe-control.outcome == 'failure') }}
         run: swift test
 
   apps:
