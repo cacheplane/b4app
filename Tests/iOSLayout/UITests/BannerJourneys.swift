@@ -78,6 +78,7 @@ extension BannerLayoutTests {
       app, screen: "new-thread", hasBanner: false, covering: [point("testNewThreadComposerAndControlsAlign")])
     checkComposerAlignment(app)
     done(id("testNewThreadComposerAndControlsAlign"))
+    checkPlaceSheet(app)
     app.terminate()
   }
 

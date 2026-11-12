@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 import WorkspaceProtocol
 
 #if os(macOS)
@@ -10,11 +9,14 @@ import WorkspaceProtocol
 
 /// The row under a composer (the new-thread composer spec, "The Mac" and "Inside a thread"): where
 /// the thread starts on the leading side; its permission, then its runtime · model, on the trailing
-/// side. Each is a system menu drawn as small muted text with a chevron, the runtime led by its
-/// ghosted mark; no chips, icons, or colour (LLA).
+/// side. Each is plain muted words with no chevron that take the raised fill and ink on hover (the
+/// thread list and environments design, "Starting a thread"), the runtime led by its ghosted mark;
+/// no chips, icons, or colour (LLA). The permission and runtime are system menus. The place opens the
+/// place palette on the Mac (`openPlaces`, which the new-thread view hosts over the main view) and a
+/// "Start in" sheet on the phone.
 ///
 /// For a new thread every menu is live and acts on the draft. For a thread the place is shown but
-/// fixed (muted, no chevron), and the permission and model change what its next turn uses
+/// fixed (muted, no hover), and the permission and model change what its next turn uses
 /// (`setThreadRuntime`), the model limited to the thread's own connection; a B4 thread, whose route
 /// decides both, shows neither. The items each menu lists are `PickerMenus`.
 struct ComposerPickerRow: View {
@@ -25,17 +27,18 @@ struct ComposerPickerRow: View {
 
   @Bindable var model: WorkspaceModel
   let source: Source
+  /// Opens the place palette (the Mac). The phone shows its own sheet.
+  var openPlaces: () -> Void = {}
   @Environment(\.dynamicTypeSize) private var typeSize
   #if os(iOS)
     @Environment(\.horizontalSizeClass) private var sizeClass
-  #endif
-  #if os(macOS)
-    @State private var choosingFolder = false
+    @State private var showingPlaces = false
   #endif
 
-  init(model: WorkspaceModel, _ source: Source) {
+  init(model: WorkspaceModel, _ source: Source, openPlaces: @escaping () -> Void = {}) {
     self.model = model
     self.source = source
+    self.openPlaces = openPlaces
   }
 
   var body: some View {
@@ -59,19 +62,18 @@ struct ComposerPickerRow: View {
         }
       }
     }
-    .font(LLAFont.small)
     .foregroundStyle(LLA.Color.muted)
     #if os(iOS)
+      .font(LLAFont.small)
       // Row and label padding together match the field's inner text inset.
       .padding(.horizontal, ComposerField<EmptyView>.textLeading - PickerLabel.horizontalInset)
-    #else
-      .padding(.horizontal, LLA.Space.xs)
-    #endif
-    #if os(macOS)
-      .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
-        guard case .success(let url) = result, case .draft(let draft) = source else { return }
-        draft.chooseFolder(NewThreadDraft.folderPath(of: url))
+      .sheet(isPresented: $showingPlaces) {
+        if case .draft(let draft) = source { PlaceSheet(draft: draft) }
       }
+    #else
+      // 12 pt on the Mac, the design's size for these words.
+      .font(LLAFont.caption)
+      .padding(.horizontal, LLA.Space.xs)
     #endif
   }
 
@@ -123,24 +125,31 @@ struct ComposerPickerRow: View {
     case .draft(let draft):
       if draft.isRemoteB4 {
         // A remote B4 has no environment; the runtime menu is the way back to one.
-        PickerLabel(text: "No folder", chevron: false)
+        PickerLabel(text: "No folder")
           .accessibilityLabel("Environment")
           .accessibilityValue("No folder")
           .accessibilityIdentifier("picker-place")
       } else {
         let text = placeText(draft)
-        Menu {
-          environmentItems(draft)
+        Button {
+          #if os(iOS)
+            showingPlaces = true
+          #else
+            openPlaces()
+          #endif
         } label: {
-          PickerLabel(text: text)
+          // A new choice fades up into the label.
+          PickerLabel(text: text, swaps: true)
         }
-        .pickerMenu()
+        .buttonStyle(.plain)
+        .quietPicker()
+        .animation(.easeOut(duration: 0.18), value: text)
         .accessibilityLabel("Environment")
         .accessibilityValue(text)
         .accessibilityIdentifier("picker-place")
       }
     case .thread(let thread):
-      PickerLabel(text: placeText(thread), chevron: false)
+      PickerLabel(text: placeText(thread))
         .accessibilityLabel("Environment")
         .accessibilityValue(placeText(thread))
         .accessibilityIdentifier("picker-place")
@@ -174,45 +183,6 @@ struct ComposerPickerRow: View {
     return "\(environment.displayName) · \(Self.folderName(context))"
   }
 
-  /// Each environment a thread can start in: an environment with one folder is one item; one with several is a
-  /// group of its folders. Choosing a folder chooses its environment. Then "No folder" (a folder the Mac
-  /// makes for the thread), and "Choose folder…" on the Mac.
-  @ViewBuilder private func environmentItems(_ draft: NewThreadDraft) -> some View {
-    ForEach(draft.environments) { environment in
-      if environment.folders.count > 1 {
-        Section(environment.displayName) {
-          ForEach(environment.folders) { folder in
-            choice(
-              Self.folderName(folder.path),
-              selected: draft.chosenFolder == nil && draft.environmentId == environment.id
-                && draft.folder == folder.path
-            ) { draft.selectFolder(folder.path, in: environment.id) }
-          }
-        }
-      } else {
-        choice(
-          environment.displayName,
-          selected: draft.chosenFolder == nil && draft.environmentId == environment.id
-        ) {
-          if let folder = environment.folders.first {
-            draft.selectFolder(folder.path, in: environment.id)
-          } else {
-            draft.selectEnvironment(environment.id)
-          }
-        }
-      }
-    }
-    if !draft.environments.isEmpty { Divider() }
-    choice("No folder", selected: draft.isNoFolder) { draft.selectNoFolder() }
-      .accessibilityIdentifier("no-folder")
-    #if os(macOS)
-      if !model.relaysThroughHub {
-        Button("Choose folder…") { choosingFolder = true }
-          .accessibilityIdentifier("choose-folder")
-      }
-    #endif
-  }
-
   // MARK: Permissions
 
   @ViewBuilder private var permissionMenu: some View {
@@ -227,6 +197,7 @@ struct ComposerPickerRow: View {
         PickerLabel(text: text)
       }
       .pickerMenu()
+      .quietPicker()
       .accessibilityLabel("Permissions")
       .accessibilityValue(text)
       .accessibilityIdentifier("picker-permission")
@@ -255,6 +226,7 @@ struct ComposerPickerRow: View {
           PickerLabel(mark: connection?.kind, text: compact ? label.short : label.full)
         }
         .pickerMenu()
+        .quietPicker()
         .accessibilityLabel("Runtime and model")
         .accessibilityValue(label.full)
         .accessibilityIdentifier("picker-runtime")
@@ -275,6 +247,7 @@ struct ComposerPickerRow: View {
           PickerLabel(mark: connection.kind, text: compact ? label.short : label.full)
         }
         .pickerMenu()
+        .quietPicker()
         .accessibilityLabel("Model")
         .accessibilityValue(label.full)
         .accessibilityIdentifier("picker-runtime")
@@ -364,23 +337,24 @@ struct ComposerPickerRow: View {
   }
 }
 
-/// A picker's face: the runtime's mark when there is one, the choice in one line, and a small chevron
-/// when it opens a menu.
+/// A picker's face: the runtime's mark when there is one, and the choice in one line. No chevron:
+/// the hover fill says it opens.
 private struct PickerLabel: View {
   static let horizontalInset = LLA.Space.s
   var mark: ConnectionKind? = nil
   let text: String
-  var chevron = true
+  /// A changed text fades up in place of the old one (the place, after a choice).
+  var swaps = false
 
   var body: some View {
     HStack(spacing: 6) {
       if let mark { RuntimeMark(kind: mark, height: 12) }
-      Text(text).lineLimit(1).truncationMode(.middle)
-      if chevron {
-        Image(systemName: "chevron.down")
-          .font(LLAFont.caption)
-          .imageScale(.small)
-          .accessibilityHidden(true)
+      if swaps {
+        Text(text).lineLimit(1).truncationMode(.middle)
+          .id(text)
+          .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 4)), removal: .opacity))
+      } else {
+        Text(text).lineLimit(1).truncationMode(.middle)
       }
     }
     .padding(.horizontal, Self.horizontalInset)
@@ -441,10 +415,29 @@ extension View {
     menuIndicator(.hidden).buttonStyle(.plain)
   }
 
+  /// A live picker's hover: the raised fill and ink text while the pointer is over it.
+  fileprivate func quietPicker() -> some View {
+    modifier(QuietPicker())
+  }
+
   /// However narrow its container, this view keeps its ideal width up to `floor`: a stack short of
   /// room can cut it that far and no further, and a view narrower than `floor` is never widened.
   func keepsWidth(_ floor: CGFloat) -> some View {
     KeepsWidth(floor: floor) { self }
+  }
+}
+
+private struct QuietPicker: ViewModifier {
+  @State private var hovering = false
+
+  func body(content: Content) -> some View {
+    content
+      .foregroundStyle(hovering ? LLA.Color.ink : LLA.Color.muted)
+      .background(
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .fill(hovering ? LLA.Color.surfaceRaised : .clear)
+      )
+      .onHover { hovering = $0 }
   }
 }
 

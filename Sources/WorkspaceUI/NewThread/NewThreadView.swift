@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import WorkspaceProtocol
 
 /// A new thread from a blank composer (the new-thread composer spec, "The Mac" and "The iPhone"): a
@@ -6,12 +7,17 @@ import WorkspaceProtocol
 /// Send, which creates the thread, starts its first turn, and opens it. The draft is the device's one
 /// `newThreadDraft`, so its text and choices outlive this screen.
 ///
-/// The Mac (and any regular width) centres the headline and the field in the reading column; a
+/// The Mac (and any regular width) centres the headline and the field in the reading column, the
+/// headline centred over the field (the thread list and environments design, "Starting a thread"); a
 /// compact width pins the field and the row to the bottom, above the keyboard, under the "New thread"
-/// title.
+/// title. On the Mac the place picker opens the place palette over this view, which it veils.
 struct NewThreadView: View {
   @Bindable var model: WorkspaceModel
   @FocusState private var focused: Bool
+  #if os(macOS)
+    @State private var placesOpen: Bool
+    @State private var choosingFolder = false
+  #endif
   /// How far Dynamic Type has grown the draft text; the send button follows it like the field does.
   @ScaledMetric(relativeTo: .callout) private var growth: CGFloat = 1
   #if os(iOS)
@@ -19,7 +25,15 @@ struct NewThreadView: View {
   #endif
 
   /// The words over the field.
-  static let headline = "What should we work on?"
+  static let headline = "Let's get started"
+
+  /// `placesOpen` shows the place palette from the start (the Mac; for snapshots).
+  init(model: WorkspaceModel, placesOpen: Bool = false) {
+    self.model = model
+    #if os(macOS)
+      _placesOpen = State(initialValue: placesOpen)
+    #endif
+  }
 
   private var draft: NewThreadDraft { model.newThreadDraft }
 
@@ -39,6 +53,16 @@ struct NewThreadView: View {
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(LLA.Color.bg)
+    #if os(macOS)
+      .blur(radius: placesOpen ? 8 : 0)
+      .overlay { if placesOpen { places(draft) } }
+      .animation(.easeOut(duration: 0.18), value: placesOpen)
+      .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
+        guard case .success(let url) = result else { return }
+        draft.chooseFolder(NewThreadDraft.folderPath(of: url))
+        focused = true
+      }
+    #endif
     .navigationTitle("New thread")
     #if os(iOS)
       .navigationBarTitleDisplayMode(.inline)
@@ -60,6 +84,33 @@ struct NewThreadView: View {
     .accessibilityIdentifier("new-thread")
   }
 
+  #if os(macOS)
+    /// The veil (the window colour at 60% over the blurred view; a click on it closes) and the palette
+    /// centred on it, rising in and leaving faster.
+    private func places(_ draft: NewThreadDraft) -> some View {
+      ZStack {
+        LLA.Color.bg.opacity(0.6)
+          .contentShape(Rectangle())
+          .onTapGesture { closePlaces() }
+          .accessibilityHidden(true)
+          .transition(.opacity)
+        PlacePaletteView(
+          model: model, draft: draft, close: closePlaces, chooseFolder: { choosingFolder = true }
+        )
+        .transition(
+          .asymmetric(
+            insertion: .opacity.combined(with: .offset(y: 10)).combined(with: .scale(scale: 0.98))
+              .animation(.easeOut(duration: 0.2)),
+            removal: .opacity.animation(.easeIn(duration: 0.12))))
+      }
+    }
+
+    private func closePlaces() {
+      placesOpen = false
+      focused = true
+    }
+  #endif
+
   private var compact: Bool {
     #if os(iOS)
       sizeClass == .compact
@@ -78,15 +129,23 @@ struct NewThreadView: View {
     VStack(alignment: .leading, spacing: 0) {
       Text(Self.headline)
         .llaDisplay()
+        .multilineTextAlignment(compact ? .leading : .center)
+        .frame(maxWidth: .infinity, alignment: compact ? .leading : .center)
         .padding(.horizontal, LLA.Space.xs)
         .padding(.bottom, LLA.Space.l)
       ComposerField(text: Bindable(draft).text, placeholder: placeholder(draft), focused: $focused) {
         send(draft)
       }
-      ComposerPickerRow(model: model, .draft(draft))
+      ComposerPickerRow(model: model, .draft(draft), openPlaces: openPlaces)
         .padding(.top, LLA.Space.s)
       statusLine(draft)
     }
+  }
+
+  private func openPlaces() {
+    #if os(macOS)
+      placesOpen = true
+    #endif
   }
 
   /// "Message Claude Code": the chosen connection's label, or plain "Message".
