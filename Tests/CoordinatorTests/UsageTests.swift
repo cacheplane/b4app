@@ -129,6 +129,11 @@ actor RefusingRemoveStore: SecretStore {
     let h = try await Harness.start()
     let workflow = try await h.addB4(server, route: "/dispatch#workflow", label: "Workflow")
     #expect(workflow.connection.status == .incompatible)
+    // The command response can reach the client before the collector consumes its events.
+    try await h.events.waitFor {
+      $0.kind == .connectionChanged && $0.connectionId == workflow.connection.id
+        && $0.payload["attempt"]?.numberValue == 1
+    }
     let attempts = await h.events.events.map(\.event)
       .filter { $0.kind == .connectionChanged && $0.connectionId == workflow.connection.id }
       .compactMap { $0.payload["attempt"]?.numberValue }
