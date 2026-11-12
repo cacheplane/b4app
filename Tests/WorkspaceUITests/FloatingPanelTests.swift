@@ -48,17 +48,21 @@
   @Suite struct FloatingPanelGeometryTests {
     private let home = CGPoint(x: 400, y: 900)
 
-    @Test func aPanelReleasedNearHomeGoesHomeOnEachAxisByItself() {
-      // Near on both: home.
-      #expect(FloatingPanelGeometry.released(CGPoint(x: 412, y: 885), home: home) == home)
-      // Near the centre line only: centred, at the height it was left.
-      #expect(FloatingPanelGeometry.released(CGPoint(x: 381, y: 600), home: home) == CGPoint(x: 400, y: 600))
-      // Near the top only: its top, where it was left across.
-      #expect(FloatingPanelGeometry.released(CGPoint(x: 90, y: 920), home: home) == CGPoint(x: 90, y: 900))
-      // Twenty points is near; twenty-one is not.
-      #expect(FloatingPanelGeometry.released(CGPoint(x: 420, y: 880), home: home) == home)
+    @Test func eachOfHomesTwoLinesHoldsADraggedPanelByItself() {
+      // Near both lines: home.
+      #expect(FloatingPanelGeometry.snapped(CGPoint(x: 405, y: 894), home: home) == home)
+      // Near the centre line only: on it, and free along it.
+      #expect(FloatingPanelGeometry.snapped(CGPoint(x: 394, y: 600), home: home) == CGPoint(x: 400, y: 600))
+      #expect(FloatingPanelGeometry.snapped(CGPoint(x: 394, y: 431), home: home) == CGPoint(x: 400, y: 431))
+      // Near home's height only: at it, and free across.
+      #expect(FloatingPanelGeometry.snapped(CGPoint(x: 90, y: 907), home: home) == CGPoint(x: 90, y: 900))
+      #expect(FloatingPanelGeometry.snapped(CGPoint(x: 733, y: 907), home: home) == CGPoint(x: 733, y: 900))
+      // Eight points is near; nine is not, so a panel only passing by is left alone.
+      #expect(FloatingPanelGeometry.snapped(CGPoint(x: 408, y: 892), home: home) == home)
       #expect(
-        FloatingPanelGeometry.released(CGPoint(x: 421, y: 879), home: home) == CGPoint(x: 421, y: 879))
+        FloatingPanelGeometry.snapped(CGPoint(x: 409, y: 891), home: home) == CGPoint(x: 409, y: 891))
+      #expect(
+        FloatingPanelGeometry.snapped(CGPoint(x: 420, y: 880), home: home) == CGPoint(x: 420, y: 880))
     }
 
     @Test func aPanelIsKeptWhollyOnItsScreen() {
@@ -172,7 +176,7 @@
       try await settle()
     }
 
-    @Test func aPanelReleasedNearHomeIsPulledBackAndADoubleClickSendsItHome() async throws {
+    @Test func aDraggedPanelIsHeldOnEachLineByItselfAndADoubleClickSendsItHome() async throws {
       let state = PanelState()
       let host = try shortWindow(state)
       defer { host.window.close() }
@@ -180,11 +184,18 @@
       try await settle()
       let panel = try #require(host.window.childWindows?.first as? PalettePanel)
       let home = panel.frame.origin
-      panel.setFrameOrigin(CGPoint(x: home.x + 14, y: home.y - 9))
+      // What a drag asks for, and what the panel does with it.
+      #expect(panel.snap(CGPoint(x: home.x + 5, y: home.y - 6)) == home)
+      #expect(panel.snap(CGPoint(x: home.x + 5, y: home.y - 140)) == CGPoint(x: home.x, y: home.y - 140))
+      #expect(panel.snap(CGPoint(x: home.x + 210, y: home.y + 4)) == CGPoint(x: home.x + 210, y: home.y))
+      #expect(
+        panel.snap(CGPoint(x: home.x + 14, y: home.y - 12)) == CGPoint(x: home.x + 14, y: home.y - 12))
+      // Left on the centre line, lower down: it stays there.
+      panel.setFrameOrigin(panel.snap(CGPoint(x: home.x - 3, y: home.y - 150)))
       panel.dragEnded()
       try await settle()
       #expect(abs(panel.frame.origin.x - home.x) < 0.5)
-      #expect(abs(panel.frame.origin.y - home.y) < 0.5)
+      #expect(abs(panel.frame.origin.y - home.y + 150) < 0.5)
       // Far away it stays, until a double click on a drag area.
       panel.setFrameOrigin(CGPoint(x: home.x - 260, y: home.y - 150))
       panel.dragEnded()

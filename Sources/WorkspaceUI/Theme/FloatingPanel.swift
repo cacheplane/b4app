@@ -23,14 +23,17 @@
   /// The arithmetic of a panel's place: everything is the panel's top-left corner in screen points
   /// (y up), because the panel's height changes and its top is what stays put.
   nonisolated enum FloatingPanelGeometry {
-    /// How near home a released panel must be, on each axis, to be pulled onto it. VS Code's figure.
-    static let snapDistance: CGFloat = 20
+    /// How near one of home's two lines a dragged panel must be to sit on it. Small, so the line is
+    /// felt as the panel crosses it and never reaches out for a panel that is only passing nearby.
+    static let snapDistance: CGFloat = 8
     /// How far the pointer travels before a press becomes a drag, so a click is never a nudge.
     static let dragThreshold: CGFloat = 3
 
-    /// Where a panel released at `topLeft` comes to rest: on home's centre line when it is near it, on
-    /// home's top when it is near that, each on its own.
-    static func released(_ topLeft: CGPoint, home: CGPoint) -> CGPoint {
+    /// Where a panel dragged to `topLeft` is drawn. Home has two lines, and each holds the panel by
+    /// itself: within `snapDistance` of the centre line it sits on that line and still slides freely up
+    /// and down it; within `snapDistance` of home's top it sits at that height and still slides freely
+    /// across. Only where the two cross is it at home.
+    static func snapped(_ topLeft: CGPoint, home: CGPoint) -> CGPoint {
       CGPoint(
         x: abs(topLeft.x - home.x) <= snapDistance ? home.x : topLeft.x,
         y: abs(topLeft.y - home.y) <= snapDistance ? home.y : topLeft.y)
@@ -63,6 +66,9 @@
     var isDraggable = false
     /// The pointer came up after a drag.
     var dragEnded: () -> Void = {}
+    /// Where the panel is drawn when a drag would put its frame's origin at the given point: the
+    /// place itself, or a line of home's it is near enough to sit on.
+    var snap: (CGPoint) -> CGPoint = { $0 }
     /// A double click on a drag area: go home.
     var resetRequested: () -> Void = {}
 
@@ -95,7 +101,10 @@
           current.moving = true
         }
         if current.moving {
-          setFrameOrigin(CGPoint(x: current.origin.x + travel.width, y: current.origin.y + travel.height))
+          // Measured from the press each time, not from where the panel is: a panel held on a line
+          // leaves it as soon as the pointer has carried it far enough, and not before.
+          setFrameOrigin(
+            snap(CGPoint(x: current.origin.x + travel.width, y: current.origin.y + travel.height)))
         }
         press = current
         return
@@ -153,8 +162,9 @@
   ///
   /// Put it in a `background` of the view to open over. `size` is the content's width and its height
   /// at its tallest, which places it. A `draggable` panel can be moved by its `WindowDragArea`s and by
-  /// the empty part of a text field; released near where it opens it goes back there, a double click
-  /// on a drag area sends it there, and it opens there every time.
+  /// the empty part of a text field. While it is dragged, each of the two lines through where it opens
+  /// (the centre line, and that height) holds it when it is near, by itself; a double click on a drag
+  /// area sends it back, and it opens there every time.
   struct FloatingPanel<Content: View>: NSViewRepresentable {
     var isPresented: Bool
     var size: CGSize
@@ -252,6 +262,7 @@
       panel.animationBehavior = .none
       panel.isDraggable = draggable
       panel.dragEnded = { [weak self] in self?.dragEnded() }
+      panel.snap = { [weak self] origin in self?.snapped(origin: origin) ?? origin }
       panel.resetRequested = { [weak self] in self?.goHome(animated: true) }
       panel.delegate = self
 
@@ -423,14 +434,23 @@
 
     // MARK: Drag
 
-    /// Released: near home it goes home, on each axis by itself; elsewhere it stays until it closes.
+    /// A drag would put the panel's origin at `origin`: the origin it is given, on home's lines where
+    /// it is near them.
+    private func snapped(origin: CGPoint) -> CGPoint {
+      guard let panel, let home else { return origin }
+      let height = panel.frame.height
+      let rest = FloatingPanelGeometry.snapped(CGPoint(x: origin.x, y: origin.y + height), home: home)
+      return CGPoint(x: rest.x, y: rest.y - height)
+    }
+
+    /// Released: it stays where the drag left it (on a line of home's, if it was held on one) until it
+    /// closes.
     private func dragEnded() {
       guard let panel, let home else { return }
-      let topLeft = CGPoint(x: panel.frame.minX, y: panel.frame.maxY)
-      let rest = FloatingPanelGeometry.released(topLeft, home: home)
+      let rest = FloatingPanelGeometry.snapped(CGPoint(x: panel.frame.minX, y: panel.frame.maxY), home: home)
       let moved = CGSize(width: rest.x - home.x, height: rest.y - home.y)
       offset = moved == .zero ? nil : moved
-      place(height: panel.frame.height, animated: true)
+      place(height: panel.frame.height, animated: false)
     }
 
     private func goHome(animated: Bool) {

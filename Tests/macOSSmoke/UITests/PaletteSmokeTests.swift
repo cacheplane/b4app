@@ -277,15 +277,34 @@ final class PaletteSmokeTests: XCTestCase {
     try await wait("the click to leave the field focused") { field.value as? String == "q" }
     app.typeKey(XCUIKeyboardKey.delete.rawValue, modifierFlags: [])
 
-    // Released near where it opens (by the footer this time), it is pulled back onto it.
     // The footer's empty stretch, 20 pt above the card's bottom edge.
     func footerGrip() -> XCUICoordinate {
       palette.coordinate(withNormalizedOffset: .zero).withOffset(
         CGVector(dx: 300, dy: palette.frame.height - 20))
     }
     let foot = footerGrip()
-    foot.press(forDuration: 0.15, thenDragTo: foot.withOffset(CGVector(dx: -168, dy: -121)))
-    try await wait("the palette to snap home") {
+    // Twelve points short of home on each axis is not near: it is left where it was put.
+    foot.press(forDuration: 0.15, thenDragTo: foot.withOffset(CGVector(dx: -168, dy: -118)))
+    try await wait("the palette to stop short of home") { abs(palette.frame.minX - home.minX - 12) < 3 }
+    XCTAssertEqual(palette.frame.minY, home.minY + 12, accuracy: 3)
+    // Carried onto the centre line lower down, it sits on the line and keeps the height it was given.
+    let line = footerGrip()
+    line.press(forDuration: 0.15, thenDragTo: line.withOffset(CGVector(dx: -8, dy: 90)))
+    try await wait("the palette to sit on the centre line") { abs(palette.frame.minX - home.minX) < 1.5 }
+    XCTAssertEqual(palette.frame.minY, home.minY + 102, accuracy: 3)
+    // Slid up the line, it stays on it; near home's height that holds it too, and it is home.
+    let slide = footerGrip()
+    slide.press(forDuration: 0.15, thenDragTo: slide.withOffset(CGVector(dx: 3, dy: -98)))
+    try await wait("the palette to be home") {
+      abs(palette.frame.minX - home.minX) < 1.5 && abs(palette.frame.minY - home.minY) < 1.5
+    }
+    // Slid across at home's height, it keeps the height and goes where it is taken.
+    let across = footerGrip()
+    across.press(forDuration: 0.15, thenDragTo: across.withOffset(CGVector(dx: 150, dy: 5)))
+    try await wait("the palette to slide across") { abs(palette.frame.minX - home.minX - 150) < 3 }
+    XCTAssertEqual(palette.frame.minY, home.minY, accuracy: 1.5)
+    footerGrip().doubleClick()
+    try await wait("the palette to go home") {
       abs(palette.frame.minX - home.minX) < 1.5 && abs(palette.frame.minY - home.minY) < 1.5
     }
 
@@ -400,12 +419,12 @@ final class PaletteSmokeTests: XCTestCase {
     try await wait("typing to reach the palette") { field.value as? String == "arch" }
     for _ in 0..<4 { app.typeKey(XCUIKeyboardKey.delete.rawValue, modifierFlags: []) }
 
-    // Dragged away and released near the button, it goes back onto it.
+    // Dragged away and brought back onto the button's two lines, it sits on it.
     let grip = field.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.5))
     grip.press(forDuration: 0.15, thenDragTo: grip.withOffset(CGVector(dx: 160, dy: 140)))
     try await wait("the palette to move") { abs(palette.frame.minX - home.minX - 160) < 6 }
     let back = field.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.5))
-    back.press(forDuration: 0.15, thenDragTo: back.withOffset(CGVector(dx: -150, dy: -128)))
+    back.press(forDuration: 0.15, thenDragTo: back.withOffset(CGVector(dx: -156, dy: -136)))
     try await wait("the palette to snap onto the button") {
       abs(palette.frame.midX - rest.midX) < 1.5 && abs(palette.frame.minY + 24 - rest.midY) < 1.5
     }
