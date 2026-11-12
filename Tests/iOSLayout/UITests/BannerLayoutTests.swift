@@ -170,6 +170,25 @@ final class BannerLayoutTests: XCTestCase {
     XCTAssertTrue(runtime.isHittable)
   }
 
+  /// The place picker opens the "Start in" sheet (D-209): the environment, then "No folder" (checked,
+  /// the fresh default), and no "Choose folder…". Choosing the environment closes it and names it.
+  @MainActor
+  func checkPlaceSheet(_ app: XCUIApplication) {
+    let place = app.descendants(matching: .any).matching(identifier: "picker-place").firstMatch
+    XCTAssertEqual(place.value as? String, "No folder")
+    place.tap()
+    let sheet = app.descendants(matching: .any).matching(identifier: "place-sheet").firstMatch
+    XCTAssertTrue(sheet.waitForExistence(timeout: 5), "The place opens the Start in sheet")
+    XCTAssertTrue(app.navigationBars["Start in"].exists)
+    let environment = app.buttons["place-row-project-1"]
+    XCTAssertTrue(environment.exists)
+    XCTAssertTrue(app.buttons["no-folder"].isSelected)
+    XCTAssertFalse(app.buttons["choose-folder"].exists)
+    environment.tap()
+    XCTAssertTrue(sheet.waitForNonExistence(timeout: 5), "Choosing closes the sheet")
+    XCTAssertEqual(place.value as? String, "Layout environment")
+  }
+
   // Menu labels expose different accessibility bounds from plain labels. Measure rendered ink so
   // their extra hit areas cannot hide a visible alignment error. These cases use the light theme.
   @MainActor
