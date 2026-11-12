@@ -615,6 +615,38 @@ private enum Phone {
 
   // MARK: Defaults and memory
 
+  /// The place palette's rows choose what the old menu did: an environment's own row its first folder,
+  /// an indented folder row that folder; the check follows the choice, and "No folder" clears it.
+  @Test func paletteRowsChooseTheirPlace() async throws {
+    let transport = ScriptedTransport()
+    let model = try await Phone.macModel(transport)
+    let draft = NewThreadDraft(model: model, environmentId: nil)
+    func rows() -> [PlacePalette.Row] {
+      PlacePalette.rows(draft.environments, filter: "", place: draft.palettePlace)
+    }
+    #expect(rows().filter(\.indented).map(\.title) == ["atlas", "atlas-docs"])
+
+    let docs = try #require(rows().first { $0.indented && $0.folder == "/work/atlas-docs" })
+    draft.choose(docs)
+    #expect(draft.environmentId == "p1")
+    #expect(draft.folder == "/work/atlas-docs")
+    #expect(rows().filter(\.checked).map(\.id) == [docs.id])
+
+    let atlas = try #require(rows().first { $0.id == "p1" })
+    draft.choose(atlas)
+    #expect(draft.environmentId == "p1")
+    #expect(draft.folder == "/work/atlas")
+
+    let borealis = try #require(rows().first { $0.id == "p2" })
+    draft.choose(borealis)
+    #expect(draft.environmentId == "p2")
+    #expect(rows().filter(\.checked).map(\.id) == ["p2"])
+
+    draft.selectNoFolder()
+    #expect(draft.palettePlace == .noFolder)
+    #expect(rows().allSatisfy { !$0.checked })
+  }
+
   @Test func defaultsComeFromTheLastChoiceInThatEnvironment() async throws {
     let transport = ScriptedTransport()
     let model = try await Phone.macModel(transport)

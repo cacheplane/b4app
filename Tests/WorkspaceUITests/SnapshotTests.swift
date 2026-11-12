@@ -292,12 +292,17 @@ struct SnapshotShell: View {
     }
   }
 
-  /// The blank new-thread composer, and the picker row under a thread's composer: the place fixed,
-  /// its permission and model live.
+  /// The blank new-thread composer, the place palette open over it, and the picker row under a
+  /// thread's composer: the place fixed, its permission and model live.
   @Test func newThreadComposer() async throws {
     let model = try await ListFixture.model()
     try await render("newThreadComposer", size: CGSize(width: 760, height: 420)) {
       NewThreadView(model: model)
+    }
+    // The place palette open over the veiled view: each environment, its folders when it has several,
+    // the check on the current place, and the footer's two actions.
+    try await render("placePalette", size: CGSize(width: 760, height: 520)) {
+      NewThreadView(model: model, placesOpen: true)
     }
     var thread = try #require(model.threads.first { $0.id == "busy" })
     thread.model = "sonnet"
