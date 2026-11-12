@@ -28,17 +28,21 @@ enum PlacePalette {
 
   /// The rows for `environments`, in their order, that match `filter`: an environment whose name
   /// matches keeps all its folders; otherwise only the folders whose path matches, under the
-  /// environment's row. Case is ignored, and so is space around the filter.
-  static func rows(_ environments: [WorkEnvironment], filter: String, place: Place) -> [Row] {
+  /// environment's row. A path matches as written or as shown (`shownPath`, "~/repos"). Case is
+  /// ignored, and so is space around the filter.
+  static func rows(
+    _ environments: [WorkEnvironment], filter: String, place: Place, home: String = NSHomeDirectory()
+  ) -> [Row] {
     let needle = filter.trimmingCharacters(in: .whitespacesAndNewlines)
     func matches(_ text: String) -> Bool { needle.isEmpty || text.localizedCaseInsensitiveContains(needle) }
+    func matchesPath(_ path: String) -> Bool { matches(path) || matches(shownPath(path, home: home)) }
 
     var rows: [Row] = []
     for environment in environments {
       let name = environment.displayName
       let first = environment.folders.first?.path
       let several = environment.folders.count > 1
-      let folders = matches(name) ? environment.folders : environment.folders.filter { matches($0.path) }
+      let folders = matches(name) ? environment.folders : environment.folders.filter { matchesPath($0.path) }
       guard matches(name) || !folders.isEmpty else { continue }
       let current: String?? = {
         if case .environment(let id, let folder) = place, id == environment.id { return .some(folder) }
@@ -68,6 +72,14 @@ enum PlacePalette {
     if path == home { return "~" }
     if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
     return path
+  }
+
+  /// The line in the list's place when there are no rows: no environments at all (a blank filter), or
+  /// none that match. "Choose a folder below" only where the footer offers it.
+  static func emptyLine(filter: String, canChooseFolder: Bool) -> String {
+    let blank = filter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    let line = blank ? "No environments yet." : "Nothing matches."
+    return canChooseFolder ? line + " Choose a folder below." : line
   }
 
   /// The row highlighted when the palette opens or its filter changes: the checked one, else the first.

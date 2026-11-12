@@ -63,6 +63,27 @@ import WorkspaceProtocol
     #expect(PlacePalette.rows(Self.all, filter: "nothing", place: .noFolder).isEmpty)
   }
 
+  /// The filter matches the path as the row shows it, with the home folder as "~".
+  @Test func theFilterMatchesTheShownPath() {
+    #expect(
+      PlacePalette.rows(Self.all, filter: "~/repos/b4", place: .noFolder, home: "/Users/me").map(\.title)
+        == ["b4app"])
+    #expect(
+      PlacePalette.rows(Self.all, filter: "~/repos/infra-m", place: .noFolder, home: "/Users/me")
+        .map(\.title) == ["infra", "infra-modules"])
+  }
+
+  /// With nothing to list, the line says why: no environments at all, or none that match.
+  @Test func theEmptyLineSaysWhy() {
+    #expect(
+      PlacePalette.emptyLine(filter: "", canChooseFolder: true)
+        == "No environments yet. Choose a folder below.")
+    #expect(PlacePalette.emptyLine(filter: "  ", canChooseFolder: false) == "No environments yet.")
+    #expect(
+      PlacePalette.emptyLine(filter: "x", canChooseFolder: true) == "Nothing matches. Choose a folder below.")
+    #expect(PlacePalette.emptyLine(filter: "x", canChooseFolder: false) == "Nothing matches.")
+  }
+
   @Test func pathsShowTheHomeAsATilde() {
     #expect(PlacePalette.shownPath("/Users/me/repos/b4app", home: "/Users/me") == "~/repos/b4app")
     #expect(PlacePalette.shownPath("/Users/me", home: "/Users/me") == "~")

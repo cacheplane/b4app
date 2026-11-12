@@ -14,8 +14,12 @@ import WorkspaceProtocol
     let chooseFolder: () -> Void
     @State private var filter = ""
     @State private var highlighted = 0
+    /// The arrow keys moved the highlight: a row sliding under a resting pointer must not take it back.
+    @State private var keysMoved = false
+    @State private var pointer: CGPoint?
     @FocusState private var focused: Bool
     @Namespace private var highlight
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static let width: CGFloat = 420
     static let radius: CGFloat = 14
@@ -25,7 +29,9 @@ import WorkspaceProtocol
     static let listInset: CGFloat = 6
     /// The list scrolls past about five rows.
     static let listMaxHeight: CGFloat = rowHeight * 5 + listInset * 2
-    static let emptyText = "Nothing matches. Choose a folder below."
+    /// The palette at its tallest. The host gives it this much room, top-aligned, so its field stays
+    /// put while the filter shortens the list.
+    static let fullHeight: CGFloat = fieldHeight + 1 + listMaxHeight + 1 + footerHeight
 
     private var rows: [PlacePalette.Row] {
       PlacePalette.rows(draft.environments, filter: filter, place: draft.palettePlace)
@@ -54,6 +60,9 @@ import WorkspaceProtocol
       .onChange(of: filter) { highlighted = PlacePalette.initialHighlight(self.rows) }
       .onExitCommand { close() }
       .accessibilityElement(children: .contain)
+      .accessibilityAddTraits(.isModal)
+      .accessibilityLabel("Start in")
+      .accessibilityAction(.escape) { close() }
       .accessibilityIdentifier("place-palette")
     }
 
@@ -65,10 +74,12 @@ import WorkspaceProtocol
         .focused($focused)
         .onSubmit { if rows.indices.contains(highlighted) { choose(rows[highlighted]) } }
         .onKeyPress(.downArrow) {
+          keysMoved = true
           highlighted = PlacePalette.step(highlighted, by: 1, count: rows.count)
           return .handled
         }
         .onKeyPress(.upArrow) {
+          keysMoved = true
           highlighted = PlacePalette.step(highlighted, by: -1, count: rows.count)
           return .handled
         }
@@ -78,12 +89,13 @@ import WorkspaceProtocol
         }
         .padding(.horizontal, LLA.Space.l)
         .frame(height: Self.fieldHeight)
+        .accessibilityLabel("Filter")
         .accessibilityIdentifier("place-filter")
     }
 
     @ViewBuilder private func list(_ rows: [PlacePalette.Row]) -> some View {
       if rows.isEmpty {
-        Text(Self.emptyText)
+        Text(PlacePalette.emptyLine(filter: filter, canChooseFolder: !model.relaysThroughHub))
           .font(LLAFont.small)
           .foregroundStyle(LLA.Color.muted)
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -97,11 +109,19 @@ import WorkspaceProtocol
               ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                 rowView(row, highlighted: index == highlighted)
                   .id(row.id)
-                  .onHover { if $0 { highlighted = index } }
+                  .onContinuousHover(coordinateSpace: .global) { phase in
+                    guard case .active(let location) = phase else { return }
+                    // After a key move, only a pointer that itself moved takes the highlight.
+                    let moved = pointer.map { $0 != location } ?? !keysMoved
+                    pointer = location
+                    guard moved else { return }
+                    keysMoved = false
+                    highlighted = index
+                  }
               }
             }
             .padding(Self.listInset)
-            .animation(.easeOut(duration: 0.12), value: highlighted)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: highlighted)
           }
           .frame(height: min(CGFloat(rows.count) * Self.rowHeight + Self.listInset * 2, Self.listMaxHeight))
           .onChange(of: highlighted) { _, index in
@@ -174,6 +194,7 @@ import WorkspaceProtocol
           draft.selectNoFolder()
           close()
         }
+        .accessibilityAddTraits(draft.isNoFolder ? .isSelected : [])
         .accessibilityIdentifier("no-folder")
         Spacer(minLength: LLA.Space.s)
         Text("esc to close")
@@ -220,6 +241,7 @@ import WorkspaceProtocol
   struct PlaceSheet: View {
     let draft: NewThreadDraft
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
       let rows = PlacePalette.rows(draft.environments, filter: "", place: draft.palettePlace)
@@ -262,7 +284,9 @@ import WorkspaceProtocol
         dismiss()
       } label: {
         HStack(spacing: LLA.Space.s) {
-          Text(title).font(LLAFont.row).foregroundStyle(LLA.Color.ink).lineLimit(1)
+          Text(title).font(LLAFont.row).foregroundStyle(LLA.Color.ink)
+            // At the accessibility sizes a long name wraps instead of being cut to one line.
+            .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
           Spacer(minLength: LLA.Space.s)
           if checked {
             Image(systemName: "checkmark").foregroundStyle(LLA.Color.ink).accessibilityHidden(true)

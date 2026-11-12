@@ -17,6 +17,7 @@ struct NewThreadView: View {
   #if os(macOS)
     @State private var placesOpen: Bool
     @State private var choosingFolder = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
   #endif
   /// How far Dynamic Type has grown the draft text; the send button follows it like the field does.
   @ScaledMetric(relativeTo: .callout) private var growth: CGFloat = 1
@@ -55,8 +56,13 @@ struct NewThreadView: View {
     .background(LLA.Color.bg)
     #if os(macOS)
       .blur(radius: placesOpen ? 8 : 0)
+      // Under the palette the composer takes no keys (Tab cannot reach it) and is not read out.
+      .disabled(placesOpen)
+      .accessibilityHidden(placesOpen)
       .overlay { if placesOpen { places(draft) } }
-      .animation(.easeOut(duration: 0.18), value: placesOpen)
+      .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: placesOpen)
+      // Search opens over this view: the palette gives way and leaves the focus to it.
+      .onChange(of: model.showSearch) { _, shown in if shown { placesOpen = false } }
       .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
         guard case .success(let url) = result else { return }
         draft.chooseFolder(NewThreadDraft.folderPath(of: url))
@@ -75,10 +81,20 @@ struct NewThreadView: View {
     }
     .onChange(of: model.environments) { draft.refreshChoices() }
     .onChange(of: model.connections) { draft.refreshChoices() }
-    .onChange(of: model.newThreadFocusRequest) { focused = true }
+    // ⌘N, the top bar's New thread, or "New thread here": an open palette gives way to the composer.
+    .onChange(of: model.newThreadFocusRequest) {
+      #if os(macOS)
+        placesOpen = false
+      #endif
+      focused = true
+    }
     // A start accepted later (a retry, a lookup) did not open its thread; open it now.
     .onChange(of: draft.finished) { _, finished in
-      if finished { Task { await draft.openStartedThread() } }
+      guard finished else { return }
+      #if os(macOS)
+        placesOpen = false
+      #endif
+      Task { await draft.openStartedThread() }
     }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("new-thread")
@@ -93,15 +109,19 @@ struct NewThreadView: View {
           .contentShape(Rectangle())
           .onTapGesture { closePlaces() }
           .accessibilityHidden(true)
-          .transition(.opacity)
+          .transition(reduceMotion ? .identity : .opacity)
         PlacePaletteView(
           model: model, draft: draft, close: closePlaces, chooseFolder: { choosingFolder = true }
         )
+        // Its top stays put while the filter shortens the list.
+        .frame(height: PlacePaletteView.fullHeight, alignment: .top)
         .transition(
-          .asymmetric(
-            insertion: .opacity.combined(with: .offset(y: 10)).combined(with: .scale(scale: 0.98))
-              .animation(.easeOut(duration: 0.2)),
-            removal: .opacity.animation(.easeIn(duration: 0.12))))
+          reduceMotion
+            ? .identity
+            : .asymmetric(
+              insertion: .opacity.combined(with: .offset(y: 10)).combined(with: .scale(scale: 0.98))
+                .animation(.easeOut(duration: 0.2)),
+              removal: .opacity.animation(.easeIn(duration: 0.12))))
       }
     }
 
