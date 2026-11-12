@@ -8,9 +8,13 @@ struct PaletteView: View {
   @Bindable var model: WorkspaceModel
   @State private var palette: PaletteModel
 
+  /// On the Mac: the card alone, for a panel of its own (`FloatingPanel`), with no scrim around it.
+  private var floating = false
+
   /// `palette` is given only by a harness that needs to put the palette in a state before drawing it.
-  init(model: WorkspaceModel, palette: PaletteModel? = nil) {
+  init(model: WorkspaceModel, palette: PaletteModel? = nil, floating: Bool = false) {
     self.model = model
+    self.floating = floating
     _palette = State(
       initialValue: palette ?? PaletteModel(workspace: model, purpose: model.palettePurpose))
   }
@@ -18,7 +22,7 @@ struct PaletteView: View {
   var body: some View {
     Group {
       #if os(macOS)
-        MacPalette(model: model, palette: palette)
+        MacPalette(model: model, palette: palette, floating: floating)
       #else
         PhonePalette(model: model, palette: palette)
       #endif
@@ -92,6 +96,8 @@ struct PaletteLead: View {
   struct MacPalette: View {
     @Bindable var model: WorkspaceModel
     let palette: PaletteModel
+    /// In a panel of its own: the card alone, which the panel places and the owner can drag.
+    var floating = false
     @FocusState private var focused: Bool
     @State private var selection: TextSelection?
     @State private var pointer = PointerTracker()
@@ -102,8 +108,18 @@ struct PaletteLead: View {
     static let rowHeight: CGFloat = 32
     /// Eight rows and their section labels fit before the list scrolls.
     static let listMaxHeight: CGFloat = 344
+    /// The card at its tallest (the field, the list, the footer, and a notice's line), which is the
+    /// room its panel gives it.
+    static let fullHeight: CGFloat = 48 + 1 + listMaxHeight + 1 + LLA.Space.xxl + 48
+    /// Where the card's top sits under the window's top.
+    static let topOffset: CGFloat = 96
 
-    var body: some View {
+    @ViewBuilder var body: some View {
+      if floating { card.frame(width: Self.width) } else { inWindow }
+    }
+
+    /// Inside the window, over a scrim: how a view without panels (a snapshot) shows it.
+    private var inWindow: some View {
       ZStack(alignment: .top) {
         LLA.Color.ink.opacity(0.18)
           .ignoresSafeArea()
@@ -113,7 +129,7 @@ struct PaletteLead: View {
           .transition(.opacity)
         card
           .frame(maxWidth: Self.width)
-          .padding(.top, 96)
+          .padding(.top, Self.topOffset)
           .padding(.horizontal, LLA.Space.l)
           .transition(
             reduceMotion
@@ -214,6 +230,7 @@ struct PaletteLead: View {
       }
       .padding(.horizontal, LLA.Space.l)
       .frame(minHeight: 48)
+      .background { if floating { WindowDragArea() } }
     }
 
     /// Escape and ⇧Tab: one level back, then close.
@@ -363,6 +380,7 @@ struct PaletteLead: View {
       }
       .padding(.horizontal, LLA.Space.l)
       .frame(height: LLA.Space.xxl)
+      .background { if floating { WindowDragArea() } }
     }
 
     private var isFailure: Bool {

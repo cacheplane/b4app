@@ -416,7 +416,13 @@ private struct SlashCompletionsLayer: View {
     GeometryReader { proxy in
       if let shown, shown.slash.isShowing {
         let field = proxy[shown.field]
-        let above = shown.placement == .above
+        // Below the field when it was asked for and fits; a short window puts the list above instead
+        // of cutting it.
+        let rows = CGFloat(min(shown.slash.items.count, SlashCompletions.visibleRows))
+        let needed = rows * SlashCompletions.rowHeight + 96
+        let roomBelow = proxy.size.height - field.maxY - LLA.Space.s
+        let above =
+          shown.placement == .above || (roomBelow < needed && field.minY - LLA.Space.s > roomBelow)
         SlashCompletions(slash: shown.slash, choose: shown.choose)
           .frame(width: field.width)
           .transition(

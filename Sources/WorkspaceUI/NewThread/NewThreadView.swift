@@ -20,6 +20,7 @@ struct NewThreadView: View {
     @State private var placesOpen: Bool
     @State private var choosingFolder = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.floatsPalettes) private var floatsPalettes
   #endif
   /// How far Dynamic Type has grown the draft text; the send button follows it like the field does.
   @ScaledMetric(relativeTo: .callout) private var growth: CGFloat = 1
@@ -64,6 +65,17 @@ struct NewThreadView: View {
       .disabled(placesOpen)
       .accessibilityHidden(placesOpen)
       .overlay { if placesOpen { places(draft) } }
+      // In the app the palette itself is in a panel over the veil, so a short window does not cut it.
+      .background(
+        FloatingPanel(
+          isPresented: placesOpen && floatsPalettes,
+          size: CGSize(width: PlacePaletteView.width, height: PlacePaletteView.fullHeight),
+          placement: .centered, dismissesOnResign: !choosingFolder, dismiss: { closePlaces() }
+        ) {
+          PlacePaletteView(
+            model: model, draft: draft, close: closePlaces, chooseFolder: { choosingFolder = true })
+        }
+      )
       .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: placesOpen)
       // Search opens over this view: the palette gives way and leaves the focus to it.
       .onChange(of: model.showSearch) { _, shown in if shown { placesOpen = false } }
@@ -114,18 +126,20 @@ struct NewThreadView: View {
           .onTapGesture { closePlaces() }
           .accessibilityHidden(true)
           .transition(reduceMotion ? .identity : .opacity)
-        PlacePaletteView(
-          model: model, draft: draft, close: closePlaces, chooseFolder: { choosingFolder = true }
-        )
-        // Its top stays put while the filter shortens the list.
-        .frame(height: PlacePaletteView.fullHeight, alignment: .top)
-        .transition(
-          reduceMotion
-            ? .identity
-            : .asymmetric(
-              insertion: .opacity.combined(with: .offset(y: 10)).combined(with: .scale(scale: 0.98))
-                .animation(.easeOut(duration: 0.2)),
-              removal: .opacity.animation(.easeIn(duration: 0.12))))
+        if !floatsPalettes {
+          PlacePaletteView(
+            model: model, draft: draft, close: closePlaces, chooseFolder: { choosingFolder = true }
+          )
+          // Its top stays put while the filter shortens the list.
+          .frame(height: PlacePaletteView.fullHeight, alignment: .top)
+          .transition(
+            reduceMotion
+              ? .identity
+              : .asymmetric(
+                insertion: .opacity.combined(with: .offset(y: 10)).combined(with: .scale(scale: 0.98))
+                  .animation(.easeOut(duration: 0.2)),
+                removal: .opacity.animation(.easeIn(duration: 0.12))))
+        }
       }
     }
 

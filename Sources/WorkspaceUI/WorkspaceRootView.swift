@@ -139,10 +139,19 @@ struct WorkspaceShell: View {
     #if os(macOS)
       // "Add your iPhone", once after a new account's onboarding (sign-in plan, Task 12).
       .sheet(isPresented: $model.showAddPhone) { AddPhoneView(model: model) }
-      .overlay { if model.showSearch { PaletteView(model: model) } }
-      .animation(
-        reduceMotion ? .linear(duration: 0.08) : .snappy(duration: 0.16, extraBounce: 0),
-        value: model.showSearch)
+      // The palette, in a panel of its own over the window: a small window does not cut it, and it
+      // can be dragged (it opens where it was left, until the app quits).
+      .background(
+        FloatingPanel(
+          isPresented: model.showSearch,
+          size: CGSize(width: MacPalette.width, height: MacPalette.fullHeight),
+          placement: .top(MacPalette.topOffset), rememberAs: "palette",
+          dismiss: { model.dismissPalette() }
+        ) {
+          PaletteView(model: model, floating: true)
+        }
+      )
+      .environment(\.floatsPalettes, true)
     #else
       .sheet(isPresented: $model.showSearch) {
         PaletteView(model: model).environment(\.showDetail, showDetail)
