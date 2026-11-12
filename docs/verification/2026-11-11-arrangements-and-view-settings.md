@@ -73,6 +73,16 @@ Seen while checking, since changed by the owner's changes (6c0b71d):
 - The view-options button's accessibility label read "View options" on the new-thread screen and "Filter" once a thread was open (now "View options" always on the Mac).
 - With Hidden, the open thread was a working one and so was not in the sidebar until the "1 working" row was pressed (the selected thread is now never stowed).
 
+### On-screen check of the owner's changes (Local app, real Codex)
+
+Done on 2026-11-11 with the Local app repackaged from commit eb73a25, driven in the background through accessibility.
+
+- **Row gap.** Consecutive rows report frames 29 pt apart (y 112, 141, 170, 199) at 28 pt high: a 1 pt gap, no drawn line. The 24 pt gap between the top list and the lower list is unchanged (a top row at y 60, the first lower row at 112).
+- **The thread being read keeps its place.** A test thread finished while another thread was open and arrived second in the top list (y 89) with its dot and the arrival hairline. Opening it marked it read: its dot went and its title turned quiet, and it stayed at y 89 with the selection fill. Selecting another thread moved it to the head of the lower list.
+- **The label.** The view-options button's accessibility label read "View options" both on the new-thread screen and with a thread open.
+
+Not seen in this pass: the selected thread drawn above the Collapsed row, the Hidden row's opened threads scrolling into view, the "Environments" submenu and its sheets (pop-up menus cannot be opened in the background), and anything on the phone, including the hold ending when the list is shown again.
+
 ### Not checked
 
 - The six owner's changes of 2026-11-11 (6c0b71d) were not seen in the running app: the view-options button's label with VoiceOver, the scroll as Hidden's rows open (and with Reduce Motion), the "Environments" submenu and its sheets, the 1 pt gaps on a device, the selected row under Collapsed and Hidden, and a thread holding its place as it is read and then released. Menus, scrolling and the pointer cannot be rendered; the layout, the hold and the labels are tested, and the gaps and the selected row were seen in renders only.
