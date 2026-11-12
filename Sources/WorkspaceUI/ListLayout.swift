@@ -10,7 +10,7 @@ import WorkspaceProtocol
 ///
 /// The selected thread (`Selection`) is ordered by the most urgent state it has had since it was
 /// selected, so the thread being read does not move under the owner, and under Collapsed or Hidden it is
-/// never stowed (the owner's changes of 2026-11-11, D-206).
+/// never stowed (the owner's changes of 2026-11-11, D-208).
 struct ListLayout: Equatable {
   /// The selected thread and the hold the model keeps for it: the most urgent state it has had since it
   /// was selected (`WorkspaceModel.selectionHold`), nil while it is not in the live list. The list orders

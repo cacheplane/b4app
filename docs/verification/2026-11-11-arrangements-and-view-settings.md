@@ -1,6 +1,6 @@
 ## 2026-11-11: Arrangements and view settings
 
-The thread list's two arrangements, "Needs you first" and "By environment", and the three view settings stored per account and synced through the hub (D-206). Commits d1d4dcd (hub), 08569c6 and 1e8366d (coordinator), 4f92eee (phone mirror), 953ea60 and d91b9fb (model and menu), 082dd4e (Needs you first), d4c4b62 (By environment), bc1988e (merge of origin/main, which brought D-205), 1c0fb65 (a hub test relaxed, below), and the review's fix wave, f60422e (view settings from another Mac; two hub tests) and 46c6041 (the stowed rows). The gates below were rerun on the fix wave's tree (f60422e and 46c6041, before this record's update), replacing the earlier result lines; the account of the first hub failure is kept. Every gate ran on this branch (`blove/arrangements`) one at a time, with nothing else building or testing in this checkout.
+The thread list's two arrangements, "Needs you first" and "By environment", and the three view settings stored per account and synced through the hub (D-208). Commits d1d4dcd (hub), 08569c6 and 1e8366d (coordinator), 4f92eee (phone mirror), 953ea60 and d91b9fb (model and menu), 082dd4e (Needs you first), d4c4b62 (By environment), bc1988e (merge of origin/main, which brought D-205), 1c0fb65 (a hub test relaxed, below), and the review's fix wave, f60422e (view settings from another Mac; two hub tests) and 46c6041 (the stowed rows). The gates below were rerun on the fix wave's tree (f60422e and 46c6041, before this record's update), replacing the earlier result lines; the account of the first hub failure is kept. Every gate ran on this branch (`blove/arrangements`) one at a time, with nothing else building or testing in this checkout.
 
 ### Gates
 
@@ -19,11 +19,11 @@ The thread list's two arrangements, "Needs you first" and "By environment", and 
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: `Finished` with no warnings, exit 0 (on the fix wave).
 - `./Scripts/generate-project.sh`, then `xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'platform=macOS'`: `** BUILD SUCCEEDED **` (on the fix wave).
 - `xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'`: `** BUILD SUCCEEDED **` (on the fix wave; this compiles the widget). The iOS layout UI tests (`Tests/iOSLayout`) were not run here; CI runs them.
-- `Scripts/docs-index.sh --check`: `docs-index: 196 decisions and 116 verification records are well formed` (rerun after the fix wave's record updates). `--next` then printed `D-207`, since this tree holds D-206 and the highest on `origin/main` is D-205.
+- `Scripts/docs-index.sh --check`: `docs-index: 196 decisions and 116 verification records are well formed` (rerun after the fix wave's record updates). `--next` then printed `D-207`, since this tree holds D-208 and the highest on `origin/main` is D-205.
 
 ### The owner's changes (6c0b71d)
 
-Six changes the owner asked for after looking at the running app (D-206, "The owner's changes"). Run on 6c0b71d's tree, one at a time:
+Six changes the owner asked for after looking at the running app (D-208, "The owner's changes"). Run on 6c0b71d's tree, one at a time:
 
 - `swift build`: `Build complete! (13.98s)`.
 - Focused: `swift test --filter "ListLayoutTests|ThreadListTests|MacTopBarTests|AttentionModelTests"`: `Test run with 84 tests in 4 suites passed after 3.992 seconds.`
@@ -104,10 +104,10 @@ Not seen in this pass: the selected thread drawn above the Collapsed row, the Hi
 - A set's answer applies only its own field and an overtaken read is dropped.
 - The fallback (Tiny shown as Collapsed) applies to every device that relays through the hub: the phone and the iPad.
 - The phone keeps "New Environment…" and an "Edit Environment" submenu at the foot of its menu; the Mac heading keeps its Rename, Add Folder and Delete context menu, and the Mac's view options have an interim "Environments" submenu with the same actions for every environment, so they are reachable under either arrangement and for an environment without live threads. Under "Needs you first" the Mac has no environment headings.
-- The hub keeps one `view` row per org (D-206's known limit; lifting it needs a per-user key).
+- The hub keeps one `view` row per org (D-208's known limit; lifting it needs a per-user key).
 - This branch relaxed a D-205 control (1c0fb65) so later migrations can exist; D-205's decision is not amended.
 - Deploy order: the hub (migration 0019) and both apps must be on this version for the settings to sync (`docs/compatibility.md`).
 
 ### Follow-ups
 
-The fix wave (f60422e, 46c6041) closed the review's findings: view settings written by one Mac now reach another, Hidden pads nothing on the Mac and its opened rows scroll, the opened stowed rows close on an arrangement or mode change or an empty stowed set, "No threads yet." is not printed above archived rows, and the hub gained the two tests. Still open: a dropped settings read is not retried (only a set that changes nothing, made during the first-connect read, leaves the other fields on defaults until the next snapshot); settings load after threads, so the list can draw once with defaults. The remaining deferred minors are listed in D-206.
+The fix wave (f60422e, 46c6041) closed the review's findings: view settings written by one Mac now reach another, Hidden pads nothing on the Mac and its opened rows scroll, the opened stowed rows close on an arrangement or mode change or an empty stowed set, "No threads yet." is not printed above archived rows, and the hub gained the two tests. Still open: a dropped settings read is not retried (only a set that changes nothing, made during the first-connect read, leaves the other fields on defaults until the next snapshot); settings load after threads, so the list can draw once with defaults. The remaining deferred minors are listed in D-208.

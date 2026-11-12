@@ -192,7 +192,7 @@ public final class WorkspaceModel {
   }
   /// The most urgent state the selected thread has had since it was selected: the list orders it by
   /// the more urgent of this and its state now, so the thread being read does not move under the owner
-  /// (`ListLayout.Selection`; D-206, the owner's changes). Released, and started afresh, whenever the
+  /// (`ListLayout.Selection`; D-208, the owner's changes). Released, and started afresh, whenever the
   /// selection changes, so every way the selection moves (a row, the composer, a delete, sign-out)
   /// moves the hold with it, and whenever the detail column comes or goes (`isDetailColumnShown`: the
   /// iPhone going back to the list); nil while the list shows instead of the detail, and while the

@@ -39,6 +39,7 @@
 # always agree. Requires Xcode 26.6 and XcodeGen.
 set -eu
 cd "$(dirname "$0")/.."
+. ./Scripts/package-dist.sh
 
 VERSION=$(sed -n 's/.*public static let current = "\(.*\)".*/\1/p' Sources/Coordinator/Version.swift)
 IDENTITY="${B4APP_SIGN_IDENTITY:--}"
@@ -250,8 +251,8 @@ xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -configuration "$X
   MARKETING_VERSION="$VERSION" CODE_SIGN_IDENTITY=- -quiet
 
 echo "==> Assembling $APP"
-rm -rf "$DIST"
-mkdir -p "$DIST"
+# Only this flavour's outputs: the other flavours' apps in dist/ may be the ones running.
+clear_flavour_outputs "$DIST" "$NAME_SUFFIX" "$ZIP_SUFFIX"
 ditto "$DERIVED/Build/Products/$XCODE_CONFIG/Agent Workspace.app" "$APP"
 # Xcode registered the build product with Launch Services (its LSRegisterURL step, which no build
 # setting skips). The daemon that checks associated domains looks the bundle id up and can pick any
@@ -390,7 +391,7 @@ if [ "$DEVELOPER_ID" = 1 ]; then
     echo "B4APP_SKIP_NOTARIZE=1: signed with $IDENTITY, not submitted for notarization."
   else
     echo "==> Notarizing with keychain profile $NOTARY_PROFILE (waits for Apple)"
-    RESULT="$DIST/notarize-$VERSION.json"
+    RESULT="$DIST/notarize$ZIP_SUFFIX-$VERSION.json"
     xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait \
       --output-format json > "$RESULT" || true
     SUBMISSION=$(plutil -extract id raw -o - "$RESULT" 2>/dev/null || true)
