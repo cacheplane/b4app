@@ -1,4 +1,7 @@
 import Foundation
+import NIOCore
+import NIOHTTP1
+import NIOPosix
 import Testing
 import WorkspaceProtocol
 
@@ -223,29 +226,23 @@ final class TokenSequence: @unchecked Sendable {
 
   @Test(arguments: ["readyz", "v1/me"])
   func identityRedirectsAreNotFollowed(_ path: String) async throws {
-    let host = "identity-redirect-\(UUID().uuidString.lowercased()).test"
-    let destination = "identity-destination-\(UUID().uuidString.lowercased()).test"
-    let visits = Counter()
-    let session = StubProtocol.session()
-    defer {
-      session.invalidateAndCancel()
-      StubProtocol.unregister(host: host)
-      StubProtocol.unregister(host: destination)
-    }
-    StubProtocol.register(host: host) { _ in
-      var reply = StubProtocol.Reply.json(302, "{}")
-      reply.redirectURL = URL(string: "https://\(destination)/\(path)")!
-      return reply
-    }
-    StubProtocol.register(host: destination) { _ in
-      visits.increment(); return .json(200, "{}")
-    }
+    let peer = try await IdentityRedirectPeer.start(path: path)
+    let session = URLSession(configuration: .ephemeral)
     let api = HTTPHubAPI(
-      baseURL: URL(string: "https://\(host)")!, token: { "private-token" }, session: session)
+      baseURL: peer.baseURL, token: { "private-token" }, session: session)
+    var hubError: HubError?
+    var primaryError: (any Error)?
     do {
       if path == "readyz" { _ = try await api.readiness() } else { _ = try await api.me() }
-      Issue.record("The actual redirect response must be refused")
     } catch let error as HubError {
+      hubError = error
+    } catch {
+      primaryError = error
+    }
+    session.invalidateAndCancel()
+    let facts = await peer.stop()
+    if !facts.cleanupSucceeded { Issue.record("Identity redirect peer cleanup failed") }
+    if let error = hubError {
       // A transport timeout/status0 is a fixture failure, not evidence of redirect refusal.
       if error.status != 302 || error.code != "http_302" {
         let route = path == "readyz" ? "readyz" : "me"
@@ -258,12 +255,19 @@ final class TokenSequence: @unchecked Sendable {
         default: code = "other"
         }
         print(
-          "identity_redirect_diagnostic route=\(route) status=\(error.status) code=\(code) destinationVisits=\(visits.value)"
+          "identity_redirect_diagnostic route=\(route) status=\(error.status) code=\(code) destinationVisits=\(facts.destinationVisits)"
         )
       }
       #expect(error.status == 302 && error.code == "http_302")
+    } else if primaryError == nil {
+      Issue.record("The actual redirect response must be refused")
     }
-    #expect(visits.value == 0)
+    #expect(facts.destinationVisits == 0)
+    #expect(facts.sourceVisits == 1)
+    #expect(facts.sourceGETAndPathMatch)
+    #expect(facts.sourceRedirectFlushes == 1)
+    #expect(facts.closedChildren == facts.registeredChildren)
+    if let primaryError { throw primaryError }
   }
 
   @Test(arguments: ["readyz", "v1/me"])
@@ -1266,4 +1270,242 @@ private struct LegacyOnlyHubAPI: HubAPI {
   func devices() async throws -> [DeviceInfo] { throw HubError.unsupported("devices") }
   func mintPairingCode() async throws -> PairingCodeResponse { throw HubError.unsupported("mintPairingCode") }
   func revokeSelf() async throws { throw HubError.unsupported("revokeSelf") }
+}
+
+/// Owns only the finite HTTP peer resources used by the identity redirect test.
+private final class IdentityRedirectPeer {
+  private enum SetupError: Error { case missingPort, samePort }
+
+  struct Facts {
+    let sourceVisits: Int
+    let destinationVisits: Int
+    let sourceGETAndPathMatch: Bool
+    let sourceRedirectFlushes: Int
+    let registeredChildren: Int
+    let closedChildren: Int
+    let cleanupSucceeded: Bool
+  }
+
+  private let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+  private let state = State()
+  private var listeners: [Channel] = []
+  private var sourcePort = 0
+  var baseURL: URL { URL(string: "http://127.0.0.1:\(sourcePort)")! }
+
+  static func start(path: String) async throws -> IdentityRedirectPeer {
+    let peer = IdentityRedirectPeer()
+    do {
+      let destination = try await peer.bind(path: path, location: nil)
+      peer.listeners.append(destination)
+      guard let destinationPort = destination.localAddress?.port else { throw SetupError.missingPort }
+      let source = try await peer.bind(
+        path: path, location: "http://127.0.0.1:\(destinationPort)/\(path)")
+      peer.listeners.append(source)
+      guard let sourcePort = source.localAddress?.port else { throw SetupError.missingPort }
+      guard sourcePort != destinationPort else { throw SetupError.samePort }
+      peer.sourcePort = sourcePort
+      return peer
+    } catch {
+      let facts = await peer.stop()
+      if !facts.cleanupSucceeded { Issue.record("Identity redirect peer setup cleanup failed") }
+      throw error
+    }
+  }
+
+  private func bind(path: String, location: String?) async throws -> Channel {
+    let state = self.state
+    return try await ServerBootstrap(group: group)
+      .childChannelInitializer { channel in
+        let (entry, closing) = state.register(channel)
+        if closing {
+          state.requestClose(entry)
+          return channel.eventLoop.makeSucceededFuture(())
+        }
+        return channel.eventLoop.makeCompletedFuture {
+          try channel.pipeline.syncOperations.configureHTTPServerPipeline()
+          try channel.pipeline.syncOperations.addHandler(
+            ResponseHandler(state: state, entry: entry, expectedPath: "/" + path, location: location))
+        }
+      }
+      .bind(host: "127.0.0.1", port: 0).get()
+  }
+
+  func stop() async -> Facts {
+    state.beginClosing()
+    var cleanupSucceeded = true
+    for listener in listeners {
+      var requestAllowed = true
+      do { try await listener.close().get() } catch {
+        requestAllowed = Self.isAlreadyClosed(error)
+      }
+      var exactCloseSucceeded = false
+      do { try await listener.closeFuture.get(); exactCloseSucceeded = true } catch {}
+      if !requestAllowed || !exactCloseSucceeded { cleanupSucceeded = false }
+    }
+    let children = state.children
+    for entry in children { state.requestClose(entry) }
+    for entry in children {
+      do { try await entry.closeFuture.get() } catch { cleanupSucceeded = false }
+    }
+    do { try await group.shutdownGracefully() } catch { cleanupSucceeded = false }
+    // No future APIs after shutdown: include every late registration using its cached exact witness.
+    return state.finalFacts(cleanupSucceeded: cleanupSucceeded)
+  }
+
+  private static func isAlreadyClosed(_ error: any Error) -> Bool {
+    guard let channelError = error as? ChannelError else { return false }
+    if case .alreadyClosed = channelError { return true }
+    return false
+  }
+
+  /// Entries never leave the registry; all mutable entry fields are protected by State.lock.
+  private final class Child: @unchecked Sendable {
+    let channel: Channel
+    let closeFuture: EventLoopFuture<Void>
+    var closeSucceeded: Bool?
+    var pendingCloseRequests = 0
+    var invalidCloseRequest = false
+
+    init(_ channel: Channel) {
+      self.channel = channel
+      self.closeFuture = channel.closeFuture
+    }
+  }
+
+  private final class State: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [Child] = []
+    private var closing = false
+    private var sourceVisits = 0
+    private var destinationVisits = 0
+    private var sourceGETAndPathMatch = true
+    private var sourceRedirectFlushes = 0
+    private var responseFailed = false
+
+    func register(_ channel: Channel) -> (Child, Bool) {
+      let entry = Child(channel)
+      let closing = lock.withLock {
+        entries.append(entry)
+        return self.closing
+      }
+      // whenComplete may run inline; attach it outside the registry lock while the loop is alive.
+      entry.closeFuture.whenComplete { result in
+        self.lock.withLock {
+          switch result {
+          case .success: entry.closeSucceeded = true
+          case .failure: entry.closeSucceeded = false
+          }
+        }
+      }
+      return (entry, closing)
+    }
+
+    func beginClosing() { lock.withLock { closing = true } }
+    var children: [Child] { lock.withLock { entries } }
+
+    func requestClose(_ entry: Child) {
+      lock.withLock { entry.pendingCloseRequests += 1 }
+      entry.channel.close().whenComplete { result in
+        let requestAllowed: Bool
+        switch result {
+        case .success: requestAllowed = true
+        case .failure(let error): requestAllowed = IdentityRedirectPeer.isAlreadyClosed(error)
+        }
+        self.lock.withLock {
+          entry.pendingCloseRequests -= 1
+          if !requestAllowed { entry.invalidCloseRequest = true }
+        }
+      }
+    }
+
+    func recordHead(isSource: Bool, matches: Bool) {
+      lock.withLock {
+        if isSource {
+          sourceVisits += 1
+          sourceGETAndPathMatch = sourceGETAndPathMatch && matches
+        } else {
+          destinationVisits += 1
+        }
+      }
+    }
+
+    func recordFlush(isSource: Bool, succeeded: Bool) {
+      lock.withLock {
+        if isSource && succeeded { sourceRedirectFlushes += 1 }
+        if !succeeded { responseFailed = true }
+      }
+    }
+
+    func recordResponseFailure() { lock.withLock { responseFailed = true } }
+
+    func finalFacts(cleanupSucceeded: Bool) -> Facts {
+      lock.withLock {
+        let closed = entries.filter { $0.closeSucceeded == true }.count
+        let exactClosesSucceeded = entries.allSatisfy { $0.closeSucceeded == true }
+        let requestsCompleted = entries.allSatisfy {
+          $0.pendingCloseRequests == 0 && !$0.invalidCloseRequest
+        }
+        return Facts(
+          sourceVisits: sourceVisits, destinationVisits: destinationVisits,
+          sourceGETAndPathMatch: sourceGETAndPathMatch, sourceRedirectFlushes: sourceRedirectFlushes,
+          registeredChildren: entries.count, closedChildren: closed,
+          cleanupSucceeded: cleanupSucceeded && exactClosesSucceeded && requestsCompleted && !responseFailed)
+      }
+    }
+  }
+
+  private final class ResponseHandler: ChannelInboundHandler {
+    typealias InboundIn = HTTPServerRequestPart
+    typealias OutboundOut = HTTPServerResponsePart
+
+    private let state: State
+    private let entry: Child
+    private let expectedPath: String
+    private let location: String?
+    private var responded = false
+
+    init(state: State, entry: Child, expectedPath: String, location: String?) {
+      self.state = state
+      self.entry = entry
+      self.expectedPath = expectedPath
+      self.location = location
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+      switch unwrapInboundIn(data) {
+      case .head(let head):
+        state.recordHead(isSource: location != nil, matches: head.method == .GET && head.uri == expectedPath)
+      case .body: break
+      case .end:
+        guard !responded else { return }
+        responded = true
+        var headers = HTTPHeaders()
+        headers.add(name: "Content-Type", value: "application/json")
+        headers.add(name: "Content-Length", value: "2")
+        headers.add(name: "Connection", value: "close")
+        if let location { headers.add(name: "Location", value: location) }
+        let head = HTTPResponseHead(
+          version: .http1_1, status: location == nil ? .ok : .found, headers: headers)
+        var body = context.channel.allocator.buffer(capacity: 2)
+        body.writeString("{}")
+        context.write(wrapOutboundOut(.head(head)), promise: nil)
+        context.write(wrapOutboundOut(.body(.byteBuffer(body))), promise: nil)
+        let state = self.state
+        let entry = self.entry
+        let isSource = location != nil
+        context.writeAndFlush(wrapOutboundOut(.end(nil))).whenComplete { result in
+          switch result {
+          case .success: state.recordFlush(isSource: isSource, succeeded: true)
+          case .failure: state.recordFlush(isSource: isSource, succeeded: false)
+          }
+          state.requestClose(entry)
+        }
+      }
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: any Error) {
+      state.recordResponseFailure()
+      state.requestClose(entry)
+    }
+  }
 }
