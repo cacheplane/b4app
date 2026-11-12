@@ -72,10 +72,12 @@ private struct L2Lease: Sendable {
     let release = cleanup.release { semaphore.signal() }
     let entered = L1RunState()
     let task = Task.detached { [database] in
-      try database.read { _ in
-        entered.finished.withLock { $0 = true }
-        guard semaphore.wait(timeout: .now() + .seconds(seconds)) == .success else {
-          throw H.SetupFailure.leaseGuardTimeout
+      try await H.onDedicatedLeaseThread {
+        try database.read { _ in
+          entered.finished.withLock { $0 = true }
+          guard semaphore.wait(timeout: .now() + .seconds(seconds)) == .success else {
+            throw H.SetupFailure.leaseGuardTimeout
+          }
         }
       }
     }
@@ -481,10 +483,12 @@ private final class L2LifetimeOwner: Sendable {
       let before = try H.snapshot(raw)
       let semaphore = DispatchSemaphore(value: 0), entered = L1RunState()
       var borrower: Task<Void, any Error>? = Task.detached { [database] in
-        try database.read { _ in
-          entered.finished.withLock { $0 = true }
-          guard semaphore.wait(timeout: .now() + .seconds(60)) == .success else {
-            throw H.SetupFailure.leaseGuardTimeout
+        try await H.onDedicatedLeaseThread {
+          try database.read { _ in
+            entered.finished.withLock { $0 = true }
+            guard semaphore.wait(timeout: .now() + .seconds(60)) == .success else {
+              throw H.SetupFailure.leaseGuardTimeout
+            }
           }
         }
       }
@@ -807,13 +811,15 @@ private final class L2LifetimeOwner: Sendable {
       let entered = L1RunState()
       let committed = Mutex<H.Snapshot?>(nil)
       let worker = Task.detached {
-        try fixture.scope.database.write { c in
-          try c.execute(#"UPDATE "connections" SET "label"='counted-before-capture' WHERE "id"='old-b4'"#)
-          let expected = try H.snapshot(c)
-          committed.withLock { $0 = expected }
-          entered.finished.withLock { $0 = true }
-          guard semaphore.wait(timeout: .now() + .seconds(25)) == .success else {
-            throw H.SetupFailure.leaseGuardTimeout
+        try await H.onDedicatedLeaseThread {
+          try fixture.scope.database.write { c in
+            try c.execute(#"UPDATE "connections" SET "label"='counted-before-capture' WHERE "id"='old-b4'"#)
+            let expected = try H.snapshot(c)
+            committed.withLock { $0 = expected }
+            entered.finished.withLock { $0 = true }
+            guard semaphore.wait(timeout: .now() + .seconds(25)) == .success else {
+              throw H.SetupFailure.leaseGuardTimeout
+            }
           }
         }
       }

@@ -149,6 +149,18 @@ final class L1FactoryCalls: Sendable {
     let state: L1RunState
   }
 
+  /// Held synchronous leases must not occupy Swift's cooperative executor while their
+  /// async controller arranges release. The existing Task handle still awaits the result.
+  static func onDedicatedLeaseThread<T: Sendable>(
+    _ operation: @escaping @Sendable () throws -> T
+  ) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+      Thread {
+        do { continuation.resume(returning: try operation()) } catch { continuation.resume(throwing: error) }
+      }.start()
+    }
+  }
+
   static func session(other: Bool = false) -> AuthSession {
     AuthSession(
       deviceId: other ? "dev-l1-b" : "dev-l1-a", token: other ? "L1_FAKE_NEW_B" : "L1_FAKE_NEW_A",
@@ -735,10 +747,12 @@ final class L1FactoryCalls: Sendable {
       let release = cleanup.release { releaseSemaphore.signal() }
       let entered = Mutex(false)
       let borrower = Task.detached {
-        try fixture.scope.database.read { _ in
-          entered.withLock { $0 = true }
-          guard releaseSemaphore.wait(timeout: .now() + .seconds(25)) == .success else {
-            throw SetupFailure.leaseGuardTimeout
+        try await Self.onDedicatedLeaseThread {
+          try fixture.scope.database.read { _ in
+            entered.withLock { $0 = true }
+            guard releaseSemaphore.wait(timeout: .now() + .seconds(25)) == .success else {
+              throw SetupFailure.leaseGuardTimeout
+            }
           }
         }
       }
@@ -767,10 +781,12 @@ final class L1FactoryCalls: Sendable {
       let release = cleanup.release { semaphore.signal() }
       let entered = Mutex(false)
       let borrower = Task.detached {
-        try fixture.scope.database.read { _ in
-          entered.withLock { $0 = true }
-          guard semaphore.wait(timeout: .now() + .seconds(25)) == .success else {
-            throw SetupFailure.leaseGuardTimeout
+        try await Self.onDedicatedLeaseThread {
+          try fixture.scope.database.read { _ in
+            entered.withLock { $0 = true }
+            guard semaphore.wait(timeout: .now() + .seconds(25)) == .success else {
+              throw SetupFailure.leaseGuardTimeout
+            }
           }
         }
       }
