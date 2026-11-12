@@ -48,16 +48,20 @@ import WorkspaceProtocol
       SyncChange(deviceSeq: 5, wall: 5, table: "threads", rowId: "r5", op: "delete"),
       SyncChange(deviceSeq: 6, wall: 6, table: "drafts", rowId: "r6", op: "insert", value: .object([:])),
       SyncChange(deviceSeq: 7, wall: 7, table: "threads", rowId: "r7", op: "insert", value: .object([:])),
+      // The view settings row, which a phone may insert and update, as it may a draft.
+      SyncChange(
+        deviceSeq: 8, wall: 8, table: "viewSettings", rowId: "view", op: "insert", value: .object([:])),
+      update(9, table: "viewSettings", column: "quietThreads"),
     ]
 
     let response = try await phone.push(batch)
 
-    #expect(response.acceptedThrough == 7)
+    #expect(response.acceptedThrough == 9)
     #expect(
       response.rejected.map(\.deviceSeq) == [2, 4, 5, 7])
     #expect(response.rejected.allSatisfy { $0.code == "column_not_writable" })
     // A rejected change is not in the feed.
-    #expect(await phone.stored.map(\.deviceSeq) == [1, 3, 6])
+    #expect(await phone.stored.map(\.deviceSeq) == [1, 3, 6, 8, 9])
   }
 
   @Test func aMacMayWriteAnything() async throws {

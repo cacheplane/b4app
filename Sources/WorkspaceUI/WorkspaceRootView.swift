@@ -69,6 +69,16 @@ struct WorkspaceShell: View {
   /// Whether the selected thread is in front of the owner, for read marks: the scene is active and,
   /// on the Mac, its window is the active one; on a compact width (iPhone), the detail column is the
   /// one showing, since going back to the list keeps the thread loaded behind it.
+  /// Whether the detail column shows: on a compact width (iPhone) only while it is the column showing;
+  /// always on the Mac and a regular width. The selected thread's hold lasts only while it does.
+  private var detailColumnShown: Bool {
+    #if os(macOS)
+      return true
+    #else
+      return horizontalSizeClass != .compact || compactColumn == .detail
+    #endif
+  }
+
   private var detailOnScreen: Bool {
     guard scenePhase == .active, model.selectedThreadId != nil else {
       return false
@@ -106,7 +116,12 @@ struct WorkspaceShell: View {
         .safeAreaInset(edge: .top, spacing: 0) { statusBanner?() }
     }
     .environment(\.showDetail, showDetail)
-    .onChange(of: detailOnScreen, initial: true) { _, onScreen in model.isDetailOnScreen = onScreen }
+    // The column first, so a thread opened from the list holds its state before it is marked read.
+    .onChange(of: detailColumnShown, initial: true) { _, shown in model.isDetailColumnShown = shown }
+    .onChange(of: detailOnScreen, initial: true) { _, onScreen in
+      model.isDetailColumnShown = detailColumnShown
+      model.isDetailOnScreen = onScreen
+    }
     // `initial` so a request made before this view mounted (a cold launch from a notification tap)
     // still moves the iPhone to the thread column.
     .onChange(of: model.detailRequest, initial: true) { _, count in

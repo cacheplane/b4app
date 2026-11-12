@@ -55,6 +55,8 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case connectionUpdate = "connection.update"
   case credentialRemove = "credential.remove"
   case threadDelete = "thread.delete"
+  case viewSettingsGet = "viewSettings.get"
+  case viewSettingsSet = "viewSettings.set"
   /// Relayed from the hub only (`RelayExecutor`); `Router` refuses both over the local socket. Listed so
   /// `MirrorTransport` can serve `thread.start` through the relay.
   case threadStart = "thread.start"
@@ -91,13 +93,14 @@ public enum Method: String, Codable, Sendable, CaseIterable {
       .environmentDelete, .threadMarkRead, .threadStart, .settingsUpdate, .connectionUpdate,
       .accountPasskeyFinish, .accountAppleFinish, .accountCompleteProfile, .accountLogout,
       .accountAddPasskeyFinish, .accountRemoveIdentity, .accountDelete, .accountDismissNotice,
-      .accountAppleLinkFinish, .credentialRemove, .threadDelete:
+      .accountAppleLinkFinish, .credentialRemove, .threadDelete, .viewSettingsSet:
       return true
     case .systemPing, .diagnosticsRead, .connectionList, .threadList, .draftRead, .eventsSnapshot,
       .eventsReplay, .threadRead, .serverList, .serverStatus, .serverLogs, .workspaceActiveWork,
       .databaseStatus, .hubStatus, .environmentList, .turnLookup, .hubPair, .hubPairStatus, .settingsRead,
       .usageRead, .accountStatus, .accountPasskeyBegin, .accountAppleStart, .accountIdentities,
-      .accountAddPasskeyBegin, .accountAppleLinkStart, .accountStepUpBegin, .accountStepUpAppleStart:
+      .accountAddPasskeyBegin, .accountAppleLinkStart, .accountStepUpBegin, .accountStepUpAppleStart,
+      .viewSettingsGet:
       return false
     }
   }
@@ -197,6 +200,33 @@ public enum DraftSave: WorkspaceCommand {
     public init(draft: Draft) { self.draft = draft }
   }
   public static let method = Method.draftSave
+}
+
+/// The account's view settings (one synced row); the stored values, unknown ones read as defaults.
+public enum ViewSettingsGet: WorkspaceCommand {
+  public typealias Params = EmptyParams
+  public typealias Result = ViewSettings
+  public static let method = Method.viewSettingsGet
+}
+
+/// Write the given fields of the account's view settings (a field left out keeps its stored value) and
+/// answer the result.
+public enum ViewSettingsSet: WorkspaceCommand {
+  public struct Params: Codable, Sendable, Equatable {
+    public var arrangement: ViewSettings.Arrangement?
+    public var quietThreads: ViewSettings.QuietThreads?
+    public var showArchived: Bool?
+    public init(
+      arrangement: ViewSettings.Arrangement? = nil, quietThreads: ViewSettings.QuietThreads? = nil,
+      showArchived: Bool? = nil
+    ) {
+      self.arrangement = arrangement
+      self.quietThreads = quietThreads
+      self.showArchived = showArchived
+    }
+  }
+  public typealias Result = ViewSettings
+  public static let method = Method.viewSettingsSet
 }
 
 /// Everything a viewer needs to start: connections, every thread (archived included), and every

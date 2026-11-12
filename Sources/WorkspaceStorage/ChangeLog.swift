@@ -22,7 +22,7 @@ extension WorkspaceDatabase {
     ("connections", "id"), ("environments", "id"), ("environmentFolders", "id"), ("threads", "id"),
     ("turns", "id"),
     ("displayItems", "id"), ("runtimeRequests", "id"), ("drafts", "threadId"),
-    ("connectionUsage", "connectionId"),
+    ("connectionUsage", "connectionId"), ("viewSettings", "id"),
   ]
 
   /// Changes after `seq`, oldest first.

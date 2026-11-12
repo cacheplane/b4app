@@ -65,6 +65,8 @@ struct LayoutApp: App {
           table: change.table, rowId: change.rowId, op: change.op, column: change.column, value: change.value)
       }
     _ = try! store.apply(Array(rows.prefix(count)))
+    // The archived threads close the list while the account's "Show archived" is on.
+    if screen == "archived" { _ = try! store.setViewSettings(showArchived: true) }
     if screen != "connect-mac" {
       let at = Timestamp.now()
       let environment: JSONValue = [
@@ -114,7 +116,6 @@ struct LayoutApp: App {
     model.accountHost = account
     if ProcessInfo.processInfo.environment["LAYOUT_HOLD_THREAD_OPEN"] == "1" { model.clock = HeldClock() }
     model.accountHasNoMac = screen == "connect-mac"
-    if screen == "archived" { model.environmentFilter = .archived }
     if screen == "detail" || screen == "notification-cold" { model.requestOpenThread("thread-1") }
     _model = State(initialValue: model)
     _sync = State(

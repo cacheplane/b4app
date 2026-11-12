@@ -297,9 +297,7 @@ extension Array where Element == ScreenElement {
   @Test func signingOutForgetsFiltersSendsAndTimers() async throws {
     let transport = ScriptedTransport()
     let model = try await withOpenThread(transport)
-    model.environmentFilter = .environment("p1")
     model.connectionFilter = "c1"
-    model.showArchived = true
     model.pendingForceStop = ("s1", false, ["t1"])
     model.pendingSends["t1"] = PendingSend(
       id: "send-1", threadId: "t1", text: "a secret plan", tappedAt: Date())
@@ -307,9 +305,7 @@ extension Array where Element == ScreenElement {
     model.sendTimer = Task {}
     transport.emit(try .accountChanged(signedOut))
     try await waitUntil("sign-in") { model.rootScreen == .signIn }
-    #expect(model.environmentFilter == .all)
     #expect(model.connectionFilter == nil)
-    #expect(model.showArchived == false)
     #expect(model.pendingForceStop == nil)
     #expect(model.pendingSends.isEmpty && model.stopStates.isEmpty)
     #expect(model.sendTimer == nil)

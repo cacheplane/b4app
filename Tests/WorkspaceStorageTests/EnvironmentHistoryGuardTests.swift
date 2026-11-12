@@ -220,7 +220,7 @@ struct EnvironmentHistoryGuardTests {
       (name: $0.deletingPathExtension().lastPathComponent, bytes: try Data(contentsOf: $0))
     }
     let files = try Migrator.files()
-    #expect(raw.count == 12)
+    #expect(raw.count == 13)
     #expect(files.map(\.name) == raw.map(\.name))
     #expect(try files.map(\.sql) == raw.map { try #require(String(data: $0.bytes, encoding: .utf8)) })
     let eleven = try #require(raw.first { $0.name == "0011_environments" })
@@ -242,7 +242,7 @@ struct EnvironmentHistoryGuardTests {
     #expect(throws: WorkspaceError.self) {
       try StoreMigrationResource(name: eleven.name, bytes: Data([0xff])).sql()
     }
-    #expect(files.last?.name == "0012_app_folders")
+    #expect(files.last?.name == "0013_view_settings")
   }
 
   @Test func opaqueAndStructuralHistoryStayDistinct() throws {
@@ -371,7 +371,7 @@ struct EnvironmentHistoryGuardTests {
     let raw = try control.connection()
     try control.applyRaw11(raw)
     if through12 {
-      let file = try #require(try Migrator.files().last)
+      let file = try #require(try Migrator.files().first { $0.name == "0012_app_folders" })
       try raw.execute(file.sql)
       try raw.execute(
         "INSERT INTO public.\"schemaMigrations\" (name,\"appliedAt\") VALUES ('0012_app_folders','old12')")
@@ -844,7 +844,7 @@ extension EnvironmentHistoryGuardTests {
       try owner.execute(
         "ALTER TABLE public.changes NO FORCE ROW LEVEL SECURITY; ALTER TABLE public.changes DISABLE ROW LEVEL SECURITY"
       )
-      #expect(try Migrator.migrate(owner) == ["0011_environments", "0012_app_folders"])
+      #expect(try Migrator.migrate(owner) == ["0011_environments", "0012_app_folders", "0013_view_settings"])
       #expect(try historyPreserved(owner))
     }
     // All raw connections above are out of lexical scope before normal exact-owned DB/role cleanup.

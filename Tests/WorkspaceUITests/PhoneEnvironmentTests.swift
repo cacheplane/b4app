@@ -84,8 +84,6 @@ private enum Environments {
     #expect(call.params["environmentId"] == .string(draft.environmentId))
     #expect(call.params["name"] == "New")
     #expect(call.params["folders"] == ["/work/a", "~/repos/new"])
-    // The list moves to the new environment.
-    #expect(model.environmentFilter == .environment(draft.environmentId))
     #expect(model.environments.contains { $0.id == draft.environmentId })
     await model.disconnect()
   }
@@ -211,7 +209,6 @@ private enum Environments {
   @Test func deletingAManualEnvironmentAsksItsMac() async throws {
     let transport = ScriptedTransport()
     let model = try await Environments.model(transport)
-    model.environmentFilter = .environment("work")
     let draft = PhoneEnvironmentDraft(model: model, request: .edit(environmentId: "work"))
     #expect(draft.canDelete && draft.deleteBlockedReason == nil)
     transport.script(
@@ -220,7 +217,6 @@ private enum Environments {
     #expect(draft.finished)
     #expect(transport.recorded(.environmentDelete).first?.params["environmentId"] == "work")
     #expect(!model.environments.contains { $0.id == "work" })
-    #expect(model.environmentFilter == .all)
 
     // An environment the phone made whose row has not synced has no Mac to send to yet.
     let fresh = WorkEnvironment(id: "fresh", name: "Fresh", manual: true, folders: [])

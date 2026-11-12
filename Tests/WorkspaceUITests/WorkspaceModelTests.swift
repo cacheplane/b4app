@@ -178,12 +178,10 @@ func waitUntil(
 
     await model.updateThread(id: thread.id, archived: true)
     try await waitUntil("archived") { model.threads.first?.archived == true }
-    #expect(model.visibleThreads.isEmpty)
-    #expect(model.archivedThreads.map(\.id) == [thread.id])
-    model.showArchived = true
-    #expect(model.archivedThreads.count == 1)
+    #expect(model.orderedThreads.isEmpty)
+    #expect(model.threads.filter(\.archived).map(\.id) == [thread.id])
     await model.updateThread(id: thread.id, archived: false)
-    try await waitUntil("unarchived") { model.visibleThreads.map(\.id) == [thread.id] }
+    try await waitUntil("unarchived") { model.orderedThreads.map(\.id) == [thread.id] }
     await model.updateThread(id: thread.id, title: "renamed")
     try await waitUntil("renamed") { model.threads.first?.title == "renamed" }
     await h.stop()

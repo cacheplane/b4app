@@ -84,6 +84,10 @@ const PINNED: &[(&str, &str)] = &[
         "0018_environments.sql",
         "2a7090851b9ae1ff34813a75829203eb41fd1bff364cc8c8dad107ed547b3b48",
     ),
+    (
+        "0019_view_settings.sql",
+        "49767dd9b80516fe99d96a702a528a58c54243b4f9a0d4135627e1140f949fd4",
+    ),
 ];
 
 #[test]

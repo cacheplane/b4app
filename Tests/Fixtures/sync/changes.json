@@ -261,5 +261,31 @@
   "column": "permission",
   "value": "plan",
   "hlc": "019a396ca5c8-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
+ },
+ {
+  "deviceSeq": 14,
+  "wall": 1761900014000,
+  "table": "viewSettings",
+  "rowId": "view",
+  "op": "insert",
+  "column": null,
+  "value": {
+   "id": "view",
+   "arrangement": "needsYouFirst",
+   "quietThreads": "small",
+   "showArchived": false,
+   "updatedAt": "2026-10-31T12:14:00Z"
+  },
+  "hlc": "019a396ca9b0-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
+ },
+ {
+  "deviceSeq": 15,
+  "wall": 1761900015000,
+  "table": "viewSettings",
+  "rowId": "view",
+  "op": "update",
+  "column": "quietThreads",
+  "value": "collapsed",
+  "hlc": "019a396cad98-0000-01a194cf-0d12-7418-b3b5-5559dbee2441"
  }
 ]

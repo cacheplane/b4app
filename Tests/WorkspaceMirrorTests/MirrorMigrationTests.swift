@@ -97,8 +97,8 @@ private func writeVersion1File(_ path: String) throws {
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
     #expect(try raw.integer("PRAGMA user_version") == MirrorSchema.version)
-    #expect(MirrorSchema.version == 7)
-    #expect(MirrorSchema.migrations.map(\.version) == [1, 2, 3, 4, 5, 6, 7])
+    #expect(MirrorSchema.version == 8)
+    #expect(MirrorSchema.migrations.map(\.version) == [1, 2, 3, 4, 5, 6, 7, 8])
     for table in ["environments", "environmentFolders", "devices", "outbox", "columnClocks"] {
       #expect(try raw.integer("SELECT count(*) FROM sqlite_master WHERE name = '\(table)'") == 1, "\(table)")
     }
@@ -317,6 +317,48 @@ private func writeVersion1File(_ path: String) throws {
         == 2)
   }
 
+  /// A version 7 file gains the `viewSettings` table in place, keeping its rows, cursor, link, and an
+  /// unsent edit; the new table is empty, so the settings read as their defaults.
+  @Test func upgradingFromVersion7KeepsExistingRows() throws {
+    let path = temporaryPath()
+    defer { MirrorStoreTests.remove(path) }
+    try writeVersion1File(path)
+    do {
+      let raw = try RawSQLite(path: path)
+      defer { raw.close() }
+      try raw.exec("BEGIN")
+      for migration in MirrorSchema.migrations where (2...7).contains(migration.version) {
+        for statement in migration.statements { try raw.exec(statement) }
+      }
+      try raw.exec(
+        #"INSERT INTO "outbox" ("deviceSeq", "hlc", "table", "rowId", "op", "column", "value") "#
+          + #"VALUES (1, '019a396c76e8-0000-phone-1', 'threads', 'thread-1', 'update', 'title', '"Kept"')"#)
+      try raw.exec(#"UPDATE "syncState" SET "lastDeviceSeq" = 1 WHERE "id" = 1"#)
+      try raw.exec("PRAGMA user_version = 7")
+      try raw.exec("COMMIT")
+    }
+    #expect(MirrorSchema.version == 8)
+
+    let store = try MirrorStore(path: path)
+    #expect(try store.thread(id: "thread-1")?.title == "Kept")
+    #expect(try store.turns(threadId: "thread-1").map(\.id) == ["turn-1"])
+    #expect(try store.draft(threadId: "thread-1")?.text == "unsent")
+    #expect(store.cursor == 42)
+    #expect(try store.link() == phoneLink)
+    #expect(store.outboxCount == 1)
+    #expect(try store.viewSettings() == ViewSettings())
+    #expect(try store.rowCount("viewSettings") == 0)
+
+    // The table takes the settings, and the outbox keeps counting after the unsent edit.
+    _ = try store.setViewSettings(quietThreads: .tiny, showArchived: true)
+    #expect(try store.viewSettings() == ViewSettings(quietThreads: .tiny, showArchived: true))
+    #expect(try store.outbox(limit: 10).map(\.deviceSeq) == [1, 2])
+
+    let raw = try RawSQLite(path: path)
+    defer { raw.close() }
+    #expect(try raw.integer("PRAGMA user_version") == 8)
+  }
+
   /// The index the relay's per-delta lookup uses: on `displayItems`, by thread then native item id.
   static let nativeItemIndex = """
     SELECT count(*) FROM sqlite_master m WHERE m.type = 'index' AND m.tbl_name = 'displayItems'
@@ -357,7 +399,7 @@ private func writeVersion1File(_ path: String) throws {
     }
     do {
       let raw = try RawSQLite(path: path)
-      try raw.exec("PRAGMA user_version = 8")
+      try raw.exec("PRAGMA user_version = \(MirrorSchema.version + 1)")
       raw.close()
     }
     let before = bytes(path)
@@ -367,7 +409,7 @@ private func writeVersion1File(_ path: String) throws {
     #expect(bytes(path) == before)
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
-    #expect(try raw.integer("PRAGMA user_version") == 8)
+    #expect(try raw.integer("PRAGMA user_version") == MirrorSchema.version + 1)
     #expect(try raw.integer(#"SELECT count(*) FROM "outbox""#) == 1)
   }
 
@@ -398,14 +440,14 @@ private func writeVersion1File(_ path: String) throws {
     do {
       let raw = try RawSQLite(path: path)
       try raw.exec(#"CREATE TABLE "something" ("id" TEXT)"#)
-      try raw.exec("PRAGMA user_version = 9")
+      try raw.exec("PRAGMA user_version = \(MirrorSchema.version + 2)")
       raw.close()
     }
     #expect(throws: MirrorStoreError.needsRebuild(outboxEmpty: true)) { try MirrorStore(path: path) }
   }
 
-  /// A file a newer build left: a current store with the link saved, then marked version 7, with the
-  /// sequence counter and outbox as given.
+  /// A file a newer build left: a current store with the link saved, then marked one version past
+  /// this build's, with the sequence counter and outbox as given.
   private func writeNewerFile(_ path: String, lastDeviceSeq: Int, outboxSeq: Int? = nil) throws {
     do {
       let store = try MirrorStore(path: path)
@@ -420,7 +462,7 @@ private func writeVersion1File(_ path: String) throws {
           + #"VALUES (\#(outboxSeq), '019a396c76e8-0000-phone-1', 'threads', 'thread-1', 'update', 'title', '"x"')"#
       )
     }
-    try raw.exec("PRAGMA user_version = 8")
+    try raw.exec("PRAGMA user_version = \(MirrorSchema.version + 1)")
   }
 
   /// The first local write after a rebuild, on the fixture's thread.
@@ -470,7 +512,7 @@ private func writeVersion1File(_ path: String) throws {
         .replacingOccurrences(of: "'", with: "''")
       try raw.exec(#"CREATE TABLE "syncState" ("id" INTEGER PRIMARY KEY, "link" TEXT, "lastDeviceSeq")"#)
       try raw.exec(#"INSERT INTO "syncState" VALUES (1, '\#(link)', 'seven')"#)
-      try raw.exec("PRAGMA user_version = 8")
+      try raw.exec("PRAGMA user_version = \(MirrorSchema.version + 1)")
     }
     let store = try MirrorStore.rebuild(path: path)
     #expect(try store.link() == nil)
@@ -498,7 +540,7 @@ private func writeVersion1File(_ path: String) throws {
       let raw = try RawSQLite(path: path)
       try raw.exec("PRAGMA journal_mode = WAL")
       try raw.exec(#"CREATE TABLE "something" ("id" TEXT)"#)
-      try raw.exec("PRAGMA user_version = 8")
+      try raw.exec("PRAGMA user_version = \(MirrorSchema.version + 1)")
       raw.close()
     }
     #expect(throws: MirrorStoreError.needsRebuild(outboxEmpty: true)) { try MirrorStore(path: path) }

@@ -13,28 +13,101 @@ import WorkspaceProtocol
     #expect(CollapsedEnvironments.parse(CollapsedEnvironments.encode(["x", "other"])) == ["x", "other"])
   }
 
-  @Test func filterMenuListsEnvironmentsByLatestActivityAndOtherOnlyWhenPresent() async throws {
+  @Test func environmentsAreListedByLatestActivity() async throws {
     let model = try await ListFixture.model()
     // b4app's newest thread is at minute 58, Marketing site's at 50, and Docs has no threads.
     #expect(
       model.filterEnvironments.map(\.id) == [ListFixture.b4app, ListFixture.marketing, ListFixture.docs])
-    #expect(model.hasOtherThreads)
-    #expect(model.filterTitle == "All environments")
-    model.environmentFilter = .environment(ListFixture.marketing)
-    #expect(model.filterTitle == "Marketing site")
-    model.environmentFilter = .other
-    #expect(model.filterTitle == "No folder")
-    model.environmentFilter = .archived
-    #expect(model.filterTitle == "Archived")
   }
 
-  @Test func macSectionsKeepAnEmptyManualEnvironmentSoItCanBeRenamedOrDeleted() async throws {
+  @Test func newThreadFromAHeadingPreselectsItsEnvironment() async throws {
+    let transport = ScriptedTransport()
+    let model = try await ListFixture.model(transport)
+    transport.emit(try .viewSettingsChanged(ViewSettings(arrangement: .byEnvironment)))
+    try await waitUntil("by environment") { model.viewSettings.arrangement == .byEnvironment }
+    guard case .byEnvironment(let groups) = model.listLayout.body else {
+      Issue.record("By environment: \(model.listLayout.body)")
+      return
+    }
+    // Docs has no live threads, so no heading; "No folder" is last.
+    #expect(groups.map(\.title) == ["b4app", "Marketing site", "No folder"])
+    model.selectedThreadId = "asks"
+    await model.openNewThread(in: groups[1])
+    #expect(model.selectedThreadId == nil)
+    #expect(model.newThreadDraft.environmentId == ListFixture.marketing)
+    // "No folder" preselects no folder, replacing the choice before it.
+    await model.openNewThread(in: groups[2])
+    #expect(model.newThreadDraft.isNoFolder)
+    await model.openNewThread(in: groups[0])
+    #expect(model.newThreadDraft.environmentId == ListFixture.b4app)
+  }
+
+  @Test func theHeadingSpeaksExpandedOrCollapsedAndTheMostUrgentState() {
+    #expect(EnvironmentHeading.accessibilityValue(isCollapsed: false, mostUrgent: .approve) == "expanded")
+    #expect(
+      EnvironmentHeading.accessibilityValue(isCollapsed: true, mostUrgent: .approve)
+        == "collapsed, Needs your approval")
+    #expect(EnvironmentHeading.accessibilityValue(isCollapsed: true, mostUrgent: nil) == "collapsed")
+    let group = ListLayout.Group(id: "p", title: "Docs", environmentId: "p", threads: [])
+    #expect(EnvironmentHeading.newThreadTitle(group) == "New thread in Docs")
+    #expect(EnvironmentHeading.groupGap == 8)
+    #if os(macOS)
+      #expect(EnvironmentHeading.height == 28)
+    #endif
+  }
+
+  @Test func theListIsNeedsYouFirstByDefaultWithoutAPinnedGroup() async throws {
     let model = try await ListFixture.model()
-    #expect(model.sidebarSections.map(\.title) == ["b4app", "Marketing site", "Docs", "No folder"])
-    #expect(model.sidebarSections.first { $0.id == ListFixture.docs }?.threads.isEmpty == true)
-    // A connection filter narrows the list; it does not pad it with empty environments.
+    guard case .needsYouFirst(let top, let lower) = model.listLayout.body else {
+      Issue.record("the default arrangement: \(model.listLayout.body)")
+      return
+    }
+    #expect(top.map(\.id) == ["asks", "failed", "unread"])
+    // The pinned working thread leads the working threads; it is not lifted above the top list.
+    guard case .rows(let rows, tiny: false) = lower else {
+      Issue.record("Small: \(lower)")
+      return
+    }
+    #expect(rows.map(\.id) == ["pinned", "busy", "quiet", "copy", "loose"])
+    #expect(model.listLayout.archived.isEmpty)
+
+    // The connection filter narrows both lists.
     model.connectionFilter = "c2"
-    #expect(model.sidebarSections.map(\.title) == ["Marketing site"])
+    #expect(
+      model.listLayout.body
+        == .needsYouFirst(top: [], lower: .rows(rows.filter { $0.connectionId == "c2" }, tiny: false)))
+  }
+
+  @Test func theStowedRowSpeaksItsTextAndWhatItDoes() {
+    #expect(
+      StowedThreadsRow.accessibilityLabel(ListLayout.collapsedLabel(count: 9, working: 2))
+        == "9 more, 2 working, Show threads that don't need you")
+    #expect(
+      StowedThreadsRow.accessibilityLabel("2 working") == "2 working, Show threads that don't need you")
+  }
+
+  @Test func tinyRowsAreTwentyPointsWithEightPointMarks() {
+    #expect(LLA.Metrics.threadRowTiny == 20)
+    #expect(LLA.Metrics.markTiny == 8)
+    #expect(ThreadListView.gap == 24)
+  }
+
+  /// C5: 1 pt of space between consecutive rows in every list of the sidebar; a section gap (24 pt, 8 pt,
+  /// or none after a heading) replaces it above a list's first row, never adds to it.
+  @Test func rowsHaveAHairlineGapThatASectionGapReplaces() {
+    #expect(LLA.Metrics.rowGap == 1)
+    #expect(ThreadRows.spacing == LLA.Metrics.rowGap)
+    #expect(ThreadListView.gapAbove(isFirst: false, sectionGap: 0) == 1)
+    #expect(ThreadListView.gapAbove(isFirst: false, sectionGap: 24) == 1)
+    #expect(ThreadListView.gapAbove(isFirst: true, sectionGap: 24) == 24)
+    #expect(ThreadListView.gapAbove(isFirst: true, sectionGap: 0) == 0)
+    // The row heights are unchanged.
+    #if os(macOS)
+      #expect(LLA.Metrics.threadRow == 28)
+    #else
+      #expect(LLA.Metrics.threadRow == 44)
+    #endif
+    #expect(LLA.Metrics.threadRowTiny == 20)
   }
 
   @Test func environmentNameIsTheDisplayNameAndNilForOther() async throws {
