@@ -313,6 +313,32 @@ impl ApiError {
 impl From<b4hub_db::Error> for ApiError {
     fn from(error: b4hub_db::Error) -> ApiError {
         match error {
+            b4hub_db::Error::ClientTooOld { minimum } => {
+                let mut error = ApiError::request(
+                    StatusCode::CONFLICT,
+                    "client_too_old",
+                    "upgrade the client before syncing",
+                );
+                error
+                    .extra
+                    .insert("minClientProtocol".into(), serde_json::json!(minimum));
+                error
+            }
+            b4hub_db::Error::ProtocolNotActivated => {
+                let mut error = ApiError::request(
+                    StatusCode::CONFLICT,
+                    "protocol_not_activated",
+                    "protocol 2 writes are not activated on this Hub",
+                );
+                error
+                    .extra
+                    .insert("requiredProtocol".into(), serde_json::json!(2));
+                error
+            }
+            b4hub_db::Error::PrivateProtocolData => {
+                ApiError::invalid_request("private protocol data cannot enter the sync feed")
+            }
+            b4hub_db::Error::InvalidProtocolFloor => ApiError::not_ready(),
             b4hub_db::Error::InvalidCode => ApiError::invalid_code(),
             b4hub_db::Error::ResyncRequired => ApiError::resync_required(),
             b4hub_db::Error::CeremonyExpired => ApiError::ceremony_expired(),

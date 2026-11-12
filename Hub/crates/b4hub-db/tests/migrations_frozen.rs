@@ -84,6 +84,10 @@ const PINNED: &[(&str, &str)] = &[
         "0018_environments.sql",
         "2a7090851b9ae1ff34813a75829203eb41fd1bff364cc8c8dad107ed547b3b48",
     ),
+    (
+        "0019_client_protocol.sql",
+        "b2473aa8454ad3a1e5eab733032788fcf3be886111e53a2a9d23dbd0f559e526",
+    ),
 ];
 
 #[test]

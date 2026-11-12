@@ -7,6 +7,7 @@
 use b4hub_core::change::{
     table_spec, ChangeOp, Snapshot, SnapshotClock, StoredChange, SYNCED_TABLES,
 };
+use b4hub_core::protocol::{ClientProtocol, CONNECTION_COLUMNS};
 use serde_json::Value;
 use sqlx::types::Uuid;
 
@@ -29,7 +30,15 @@ const HUB_COLUMNS: &str = "{org_id,user_id,device_id,owner_device_id,deleted_at}
 /// is the highest `hubSeq` the org's feed had at that instant, or its horizon if pruning has
 /// emptied the feed, so a pull from `next` is neither stale nor missing a change.
 pub async fn take(db: &Db, auth: &AuthedDevice) -> Result<Snapshot> {
-    let mut tx = db.read_tx(auth.org_id).await?;
+    take_for_protocol(db, auth, ClientProtocol::LEGACY).await
+}
+
+pub async fn take_for_protocol(
+    db: &Db,
+    auth: &AuthedDevice,
+    client: ClientProtocol,
+) -> Result<Snapshot> {
+    let (mut tx, floor) = db.protocol_read_tx(auth.org_id, client).await?;
     let mut changes = Vec::new();
     let mut clocks = Vec::new();
 
@@ -51,7 +60,14 @@ pub async fn take(db: &Db, auth: &AuthedDevice) -> Result<Snapshot> {
         .bind(spec.name)
         .fetch_all(&mut *tx)
         .await?;
-        for (row_id, owner, value, clock) in rows {
+        for (row_id, owner, mut value, clock) in rows {
+            if spec.name == "connections" && floor.minimum() < 2 {
+                if let Some(object) = value.as_object_mut() {
+                    for column in CONNECTION_COLUMNS {
+                        object.remove(*column);
+                    }
+                }
+            }
             changes.push(StoredChange {
                 hub_seq: 0,
                 device_id: owner,

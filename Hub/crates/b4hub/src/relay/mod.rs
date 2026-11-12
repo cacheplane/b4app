@@ -30,7 +30,7 @@ pub use registry::{
 };
 
 /// The link protocol this hub speaks, sent as `protocol` in `hello`.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = b4hub_core::protocol::ClientProtocol::SUPPORTED.value();
 /// The oldest client protocol this hub serves, sent as `minClientProtocol` in `hello`.
 pub const MIN_CLIENT_PROTOCOL: u32 = 1;
 

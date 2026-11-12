@@ -34,7 +34,10 @@ fn hello_of(frame: RelayMessage) -> (Role, u32, sqlx::types::Uuid) {
             device_id,
             ..
         } => {
-            assert_eq!(protocol, 1);
+            assert_eq!(
+                protocol,
+                b4hub_core::protocol::ClientProtocol::SUPPORTED.value()
+            );
             (role, heartbeat_seconds, device_id)
         }
         other => panic!("expected hello, got {other:?}"),

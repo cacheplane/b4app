@@ -24,6 +24,20 @@ mod tenant;
 /// Everything that can go wrong in this crate. Messages never include a connection URL.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("the client protocol is below the required minimum {minimum}")]
+    ClientTooOld { minimum: u32 },
+    #[error("the stored client protocol floor is missing, malformed, or unsupported")]
+    InvalidProtocolFloor,
+    #[error("the client protocol floor cannot decrease")]
+    ProtocolFloorDecrease,
+    #[error("the requested client protocol is unsupported")]
+    UnsupportedProtocolFloor,
+    #[error("all registered Hub instances must drain before raising the protocol floor")]
+    ProtocolInstancesPresent,
+    #[error("protocol 2 writes have not been activated")]
+    ProtocolNotActivated,
+    #[error("private protocol data cannot enter the sync feed")]
+    PrivateProtocolData,
     #[error("database error: {0}")]
     Sqlx(#[from] sqlx::Error),
     #[error("migration error: {0}")]

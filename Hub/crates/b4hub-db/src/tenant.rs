@@ -6,6 +6,58 @@ use sqlx::{Postgres, Transaction};
 use crate::{Db, Result};
 
 impl Db {
+    /// Admission lock precedes the first snapshot-taking statement, including `set_tenant`.
+    /// Held through COMMIT, it makes a floor cut wait for already-admitted sync work.
+    pub async fn protocol_write_tx(
+        &self,
+        org_id: Uuid,
+        client: b4hub_core::protocol::ClientProtocol,
+    ) -> Result<(
+        Transaction<'static, Postgres>,
+        b4hub_core::protocol::ProtocolFloor,
+    )> {
+        self.protocol_tx(org_id, client, None).await
+    }
+
+    pub async fn protocol_read_tx(
+        &self,
+        org_id: Uuid,
+        client: b4hub_core::protocol::ClientProtocol,
+    ) -> Result<(
+        Transaction<'static, Postgres>,
+        b4hub_core::protocol::ProtocolFloor,
+    )> {
+        self.protocol_tx(
+            org_id,
+            client,
+            Some("BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY"),
+        )
+        .await
+    }
+
+    async fn protocol_tx(
+        &self,
+        org_id: Uuid,
+        client: b4hub_core::protocol::ClientProtocol,
+        statement: Option<&'static str>,
+    ) -> Result<(
+        Transaction<'static, Postgres>,
+        b4hub_core::protocol::ProtocolFloor,
+    )> {
+        let mut tx = self.begin(statement).await?;
+        sqlx::query("LOCK TABLE public.hub_settings IN ACCESS SHARE MODE")
+            .execute(&mut *tx)
+            .await?;
+        let floor = crate::settings::protocol_floor_in(&mut tx).await?;
+        if !floor.admits(client) {
+            return Err(crate::Error::ClientTooOld {
+                minimum: floor.minimum(),
+            });
+        }
+        set_tenant(&mut tx, org_id).await?;
+        Ok((tx, floor))
+    }
+
     /// Begins a transaction whose first statement sets `b4hub.org_id` to `org_id`, transaction-
     /// locally (`set_config(..., true)`), so the tenant policies on `users` and `devices` admit
     /// only that org's rows and the setting vanishes at commit or rollback. Every request that
