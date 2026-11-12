@@ -25,6 +25,9 @@ public actor FakeHubAPI: HubAPI {
   /// How many times `enroll` was called, redeemed or not.
   public private(set) var enrollCalls = 0
   public private(set) var meCalls = 0
+  public private(set) var readinessCalls = 0
+  private var readinessAnswer: HubReadiness?
+  private var orgIdAnswer: String?
   /// How many times `mintPairingCode` was called, refused or not.
   public private(set) var mintCalls = 0
   /// How many times `checkPairingCode` was called, answered or not.
@@ -110,6 +113,11 @@ public actor FakeHubAPI: HubAPI {
     self.stored = stored
   }
 
+  /// Explicit server facts only. Nil (the default) is unsupported, never an invented activation.
+  public func setReadiness(_ response: HubReadiness?) { readinessAnswer = response }
+  /// Stable org identity is scripted explicitly; labels never invent one.
+  public func setOrgId(_ id: String?) { orgIdAnswer = id }
+
   public func setFailNext(_ error: HubError?) { failNext = error }
   /// Fail the next `me()` only, whatever other calls run first.
   public func setFailMe(_ error: HubError?) { failMe = error }
@@ -194,6 +202,13 @@ public actor FakeHubAPI: HubAPI {
     return response
   }
 
+  public func readiness() async throws -> HubReadiness {
+    readinessCalls += 1
+    try consumeFailure()
+    guard let readinessAnswer else { throw HubError.unsupported("readiness") }
+    return readinessAnswer
+  }
+
   public func me() async throws -> MeResponse {
     meCalls += 1
     if let failure = failMe {
@@ -210,7 +225,7 @@ public actor FakeHubAPI: HubAPI {
       deviceId: device.deviceId, deviceName: deviceName, platform: platform, org: device.org,
       user: device.user, createdAt: "2026-10-31T12:00:00.000000Z", fullName: fullName,
       onboarded: onboarded, identities: identityList,
-      userId: userIdAnswer ?? "user-\(device.org.slug)-\(device.user.username)")
+      userId: userIdAnswer ?? "user-\(device.org.slug)-\(device.user.username)", orgId: orgIdAnswer)
   }
 
   public func push(_ changes: [SyncChange]) async throws -> PushResponse {

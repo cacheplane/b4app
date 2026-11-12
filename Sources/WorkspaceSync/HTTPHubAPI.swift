@@ -28,8 +28,18 @@ public final class HTTPHubAPI: HubAPI {
     try await send(.post, "v1/enroll", body: request, authenticated: false, bearer: token)
   }
 
+  public func readiness() async throws -> HubReadiness {
+    let facts: HubReadiness = try await send(.get, "readyz", authenticated: false, confinedResponse: true)
+    guard facts.hasSupportedMinimum else {
+      throw HubError(
+        kind: "request_error", code: "protocol_invalid",
+        message: "The hub's protocol minimum is not supported.", status: 200)
+    }
+    return facts
+  }
+
   public func me() async throws -> MeResponse {
-    try await send(.get, "v1/me")
+    try await send(.get, "v1/me", confinedResponse: true)
   }
 
   public func push(_ changes: [SyncChange]) async throws -> PushResponse {
@@ -210,11 +220,12 @@ public final class HTTPHubAPI: HubAPI {
 
   private func send<Response: Decodable>(
     _ method: Method, _ path: String, query: [URLQueryItem] = [], timeout: TimeInterval = 30,
-    authenticated: Bool = true, bearer: String? = nil, stepUp: String? = nil
+    authenticated: Bool = true, bearer: String? = nil, stepUp: String? = nil,
+    confinedResponse: Bool = false
   ) async throws -> Response {
     let (data, status) = try await perform(
       method, path, query: query, timeout: timeout, authenticated: authenticated, bearer: bearer,
-      stepUp: stepUp)
+      stepUp: stepUp, confinedResponse: confinedResponse)
     return try decode(data, status: status)
   }
 
@@ -267,12 +278,13 @@ public final class HTTPHubAPI: HubAPI {
   /// `stepUp` is a step-up grant, sent in `B4-Step-Up` when given.
   private func perform(
     _ method: Method, _ path: String, query: [URLQueryItem] = [], body: Data? = nil,
-    timeout: TimeInterval = 30, authenticated: Bool = true, bearer: String? = nil, stepUp: String? = nil
+    timeout: TimeInterval = 30, authenticated: Bool = true, bearer: String? = nil, stepUp: String? = nil,
+    confinedResponse: Bool = false
   ) async throws -> (Data, Int) {
     var request = URLRequest(url: try url(path, query: query), timeoutInterval: timeout)
     request.httpMethod = method.rawValue
     request.setValue("application/json", forHTTPHeaderField: "Accept")
-    request.setValue("2", forHTTPHeaderField: "B4-Protocol")
+    request.setValue(String(HubReadiness.clientProtocolVersion), forHTTPHeaderField: "B4-Protocol")
     if let body {
       request.httpBody = body
       request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -289,7 +301,11 @@ public final class HTTPHubAPI: HubAPI {
     let data: Data
     let response: URLResponse
     do {
-      (data, response) = try await session.data(for: request)
+      if confinedResponse {
+        (data, response) = try await session.data(for: request, delegate: HubIdentityRedirectRefusal.shared)
+      } else {
+        (data, response) = try await session.data(for: request)
+      }
     } catch let error as URLError where error.code == .cancelled {
       throw CancellationError()
     } catch is CancellationError {
@@ -303,6 +319,16 @@ public final class HTTPHubAPI: HubAPI {
     guard let http = response as? HTTPURLResponse else {
       throw HubError(
         kind: "execution_error", code: "transport", message: "The hub's answer was not HTTP.", status: 0)
+    }
+    if confinedResponse, http.url?.absoluteString != request.url?.absoluteString {
+      throw HubError(
+        kind: "execution_error", code: "wrong_endpoint",
+        message: "The hub identity response came from a different endpoint.", status: http.statusCode)
+    }
+    if confinedResponse, (200..<300).contains(http.statusCode), http.statusCode != 200 {
+      throw HubError(
+        kind: "execution_error", code: "unexpected_status",
+        message: "The hub identity response was not HTTP 200.", status: http.statusCode)
     }
     guard (200..<300).contains(http.statusCode) else { throw Self.error(from: data, status: http.statusCode) }
     return (data, http.statusCode)
@@ -318,5 +344,18 @@ public final class HTTPHubAPI: HubAPI {
     return HubError(
       kind: status >= 500 ? "execution_error" : "request_error", code: "http_\(status)",
       message: "The hub answered HTTP \(status).", status: status)
+  }
+}
+
+/// Identity evidence cannot follow redirects, including to another path on the configured host.
+/// Per-task delegation also applies when the caller supplies its own URLSession.
+final class HubIdentityRedirectRefusal: NSObject, URLSessionTaskDelegate, Sendable {
+  static let shared = HubIdentityRedirectRefusal()
+
+  func urlSession(
+    _ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+    newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void
+  ) {
+    completionHandler(nil)
   }
 }

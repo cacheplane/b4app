@@ -80,6 +80,7 @@ import WorkspaceProtocol
     #expect(me.user.displayName == "Brian Love" && me.fullName == "Brian Love")
     #expect(me.onboarded)
     #expect(me.userId == "01a19a2b-bbb0-7c2e-8d1f-3a4b5c6d7e8f")
+    #expect(me.orgId == "01a19a2b-bba0-7c2e-8d1f-3a4b5c6d7e8f")
     #expect(me.identities.map(\.kind) == ["passkey", "apple"])
     #expect(me.identities[0].lastUsedAt == "2026-11-01T10:00:00.000000Z")
     #expect(me.identities[1].lastUsedAt == nil && me.identities[1].name == "x7k2@privaterelay.appleid.com")
@@ -111,6 +112,7 @@ import WorkspaceProtocol
       """#.utf8)
     let me = try JSONCoding.decoder.decode(MeResponse.self, from: json)
     #expect(me.onboarded && me.fullName == nil && me.identities.isEmpty)
+    #expect(me.orgId == nil && me.userId == nil)
   }
 
   @Test func identityRoundTrips() throws {

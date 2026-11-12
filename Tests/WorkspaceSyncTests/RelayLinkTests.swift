@@ -159,12 +159,139 @@ struct LinkHarness {
 
 @Suite(.timeLimit(.minutes(1)))
 struct RelayLinkTests {
+  private func withLink(_ body: (LinkHarness) async throws -> Void) async throws {
+    let h = LinkHarness()
+    do { try await body(h) } catch { await h.link.stop(); throw error }
+    await h.link.stop()
+  }
+
+  @Test(arguments: [1, 2])
+  func modernServerHelloAcceptsStagedOrActiveMinimumWithoutActivatingAnAccount(_ minimum: Int) async throws {
+    try await withLink { h in
+      await h.link.start()
+      let socket = try await h.connection.nextSocket()
+      #expect(socket.protocolVersion == 2)
+      socket.deliver(
+        .hello(
+          protocol: 2, minClientProtocol: minimum, deviceId: "d1", role: .client, heartbeatSeconds: 10,
+          hubTime: isoString(Date())))
+      await waitUntil("validated hello") {
+        guard case .connected? = await h.recorder.last else { return false }
+        return await h.recorder.messages.count == 1
+      }
+      #expect(await h.recorder.messages.count == 1)
+    }
+  }
+
+  @Test(arguments: [
+    "zero", "negative", "future-min", "above-server", "future-server", "zero-server", "empty-device",
+    "bad-heartbeat", "bad-time",
+  ])
+  func invalidHelloStopsBeforeConnectedOrApplicationCallbacks(_ variant: String) async throws {
+    try await withLink { h in
+      await h.link.start()
+      let socket = try await h.connection.nextSocket()
+      let version =
+        variant == "future-server" ? 3 : variant == "zero-server" ? 0 : variant == "above-server" ? 1 : 2
+      let minimum =
+        variant == "zero"
+        ? 0 : variant == "negative" ? -1 : variant == "future-min" ? 3 : variant == "above-server" ? 2 : 1
+      socket.deliver(
+        .hello(
+          protocol: version, minClientProtocol: minimum, deviceId: variant == "empty-device" ? "" : "d1",
+          role: .host, heartbeatSeconds: variant == "bad-heartbeat" ? 0 : 10,
+          hubTime: variant == "bad-time" ? "invalid" : isoString(Date())))
+      socket.deliver(.streamGap(threadId: "must-not-reach-callback"))
+      await waitUntil("invalid hello stopped") {
+        await h.recorder.last == .stopped(reason: "protocol_invalid")
+      }
+      #expect(await h.recorder.messages.isEmpty)
+      #expect(await h.recorder.states.allSatisfy { if case .connected = $0 { false } else { true } })
+      #expect(socket.deviceClosedCode != nil)
+    }
+  }
+
+  @Test(arguments: ["malformed", "unknown-command"])
+  func undecodableWorkBeforeHelloIsRefused(_ variant: String) async throws {
+    try await withLink { h in
+      await h.link.start()
+      let socket = try await h.connection.nextSocket()
+      socket.deliverText(
+        variant == "malformed" ? #"{"type":"hello","minClientProtocol":null}"# : Self.unknownCommand)
+      await waitUntil("unvalidated frame refusal") {
+        await h.recorder.last == .stopped(reason: "protocol_invalid")
+      }
+      #expect(await h.recorder.messages.isEmpty)
+      #expect(socket.sentMessages.isEmpty)
+    }
+  }
+
+  @Test func malformedSecondHelloRefusesButOptionalUnknownFramesKeepTheirBehavior() async throws {
+    let malformed = Data(#"{"type":"hello","minClientProtocol":null}"#.utf8)
+    #expect(throws: HubLinkError.invalidHello) { try RelayFrame.decode(malformed) }
+    let optional = Data(#"{"type":"future-optional-frame"}"#.utf8)
+    #expect(throws: HubLinkError.undecodable) { try RelayFrame.decode(optional) }
+    try await withLink { h in
+      let socket = try await h.connect()
+      socket.deliverText(String(decoding: optional, as: UTF8.self))
+      await h.flush(socket)
+      #expect(socket.deviceClosedCode == nil)
+      let before = await h.recorder.messages.count
+      socket.deliverText(String(decoding: malformed, as: UTF8.self))
+      socket.deliver(.streamGap(threadId: "after-malformed-hello"))
+      await waitUntil("malformed repeated greeting") {
+        await h.recorder.last == .stopped(reason: "protocol_invalid")
+      }
+      #expect(await h.recorder.messages.count == before)
+    }
+  }
+
+  @Test(arguments: ["client_too_old", "link_replaced"])
+  func fixedTerminalRefusalsBeforeHelloRemainCompatible(_ code: String) async throws {
+    try await withLink { h in
+      await h.link.start()
+      let socket = try await h.connection.nextSocket()
+      let refusal = RelayMessage.error(code: code, message: "fixed refusal", details: nil)
+      socket.deliver(refusal)
+      socket.deliver(.streamGap(threadId: "never-admitted"))
+      let reason = code == "client_too_old" ? "client_too_old" : "replaced"
+      await waitUntil("fixed pre-hello refusal") { await h.recorder.last == .stopped(reason: reason) }
+      #expect(await h.recorder.messages == [refusal])
+      #expect(await h.recorder.states.allSatisfy { if case .connected = $0 { false } else { true } })
+      #expect(socket.deviceClosedCode != nil)
+    }
+  }
+
+  @Test func applicationFramesBeforeHelloAndDuplicateHelloAreRefused() async throws {
+    try await withLink { h in
+      await h.link.start()
+      let socket = try await h.connection.nextSocket()
+      socket.deliver(.streamGap(threadId: "before-hello"))
+      await waitUntil("pre-hello refusal") { await h.recorder.last == .stopped(reason: "protocol_invalid") }
+      #expect(await h.recorder.messages.isEmpty)
+    }
+    try await withLink { h in
+      let socket = try await h.connect()
+      await waitUntil("original hello callback") { await h.recorder.messages.count == 1 }
+      let before = await h.recorder.messages.count
+      socket.deliver(
+        .hello(
+          protocol: 2, minClientProtocol: 2, deviceId: "changed", role: .client, heartbeatSeconds: 10,
+          hubTime: isoString(Date())))
+      socket.deliver(.streamGap(threadId: "after-duplicate"))
+      await waitUntil("duplicate hello refusal") {
+        await h.recorder.last == .stopped(reason: "protocol_invalid")
+      }
+      #expect(await h.recorder.messages.count == before)
+    }
+  }
+
   @Test func connectsAndReportsTheRoleFromHello() async throws {
     let h = LinkHarness()
     await h.link.start()
     let socket = try await h.connection.nextSocket()
     #expect(socket.token == "tok")
-    #expect(socket.protocolVersion == 1)
+    #expect(socket.protocolVersion == 2)
     #expect(socket.url.absoluteString == "https://hub.example.com")
     #expect(await h.recorder.states == [.connecting(attempt: 1, lastError: nil)])
 

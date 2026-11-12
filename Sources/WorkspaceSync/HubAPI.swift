@@ -13,6 +13,8 @@ public protocol HubAPI: Sendable {
   /// `POST /v1/enroll`. A phone signed in to an account of its own sends that account's token, and the
   /// hub merges the account into the code's as the code is redeemed. A `nil` token is `enroll(_:)`.
   func enroll(_ request: EnrollRequest, replacingToken token: String?) async throws -> EnrollResponse
+  /// Public `GET /readyz` server facts. This is neither account activation nor upstream discovery.
+  func readiness() async throws -> HubReadiness
   func me() async throws -> MeResponse
   func push(_ changes: [SyncChange]) async throws -> PushResponse
   func pull(after: Int, limit: Int, wait: Int) async throws -> PullResponse
@@ -91,6 +93,8 @@ public protocol HubAPI: Sendable {
 }
 
 extension HubAPI {
+  public func readiness() async throws -> HubReadiness { throw HubError.unsupported("readiness") }
+
   public func enroll(_ request: EnrollRequest, replacingToken token: String?) async throws -> EnrollResponse {
     guard token == nil else { throw HubError.unsupported("Enrolling with a merge") }
     return try await enroll(request)

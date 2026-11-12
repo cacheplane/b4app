@@ -11,6 +11,8 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
     var status: Int
     var body: Data
     var error: URLError?
+    var responseURL: URL?
+    var redirectURL: URL?
 
     static func json(_ status: Int, _ json: String) -> Reply { Reply(status: status, body: Data(json.utf8)) }
   }
@@ -64,9 +66,17 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
       client?.urlProtocol(self, didFailWithError: error)
       return
     }
+    var headers = ["Content-Type": "application/json"]
+    if let url = reply.redirectURL { headers["Location"] = url.absoluteString }
     let response = HTTPURLResponse(
-      url: request.url!, statusCode: reply.status, httpVersion: "HTTP/1.1",
-      headerFields: ["Content-Type": "application/json"])!
+      url: reply.responseURL ?? request.url!, statusCode: reply.status, httpVersion: "HTTP/1.1",
+      headerFields: headers)!
+    if let url = reply.redirectURL {
+      var redirected = request
+      redirected.url = url
+      client?.urlProtocol(self, wasRedirectedTo: redirected, redirectResponse: response)
+      return
+    }
     client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
     client?.urlProtocol(self, didLoad: reply.body)
     client?.urlProtocolDidFinishLoading(self)
@@ -110,6 +120,177 @@ final class TokenSequence: @unchecked Sendable {
   private func queryItems(_ request: URLRequest) -> [String: String] {
     let components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!
     return Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+  }
+
+  @Test func readinessReportsSupportSeparatelyFromActiveMinimumAndUsesTheDeploymentBase() async throws {
+    let host = "readiness-base.test"
+    let recorder = Recorder()
+    let session = StubProtocol.session()
+    defer { session.invalidateAndCancel(); StubProtocol.unregister(host: host) }
+    StubProtocol.register(host: host) { captured in
+      recorder.add(captured)
+      return .json(
+        200,
+        #"{"ok":true,"migrations":"current","relay":"ok","instances":"ok","minClientProtocol":1,"supportedClientProtocol":2}"#
+      )
+    }
+    let api = HTTPHubAPI(
+      baseURL: URL(string: "https://\(host)/deployment")!, token: { "private-token" }, session: session)
+    let facts = try await api.readiness()
+    #expect(facts.minClientProtocol == 1 && facts.supportedClientProtocol == 2)
+    #expect(!facts.reportsActiveProtocolTwo)
+    let sent = try #require(recorder.all.first)
+    #expect(sent.request.url?.absoluteString == "https://\(host)/deployment/readyz")
+    #expect(sent.request.value(forHTTPHeaderField: "B4-Protocol") == "2")
+    #expect(sent.request.value(forHTTPHeaderField: "Authorization") == nil)
+    #expect(sent.body.isEmpty)
+  }
+
+  @Test func activeReadinessIsOnlyATypedServerFact() async throws {
+    let host = "readiness-active.test"
+    let session = StubProtocol.session()
+    defer { session.invalidateAndCancel(); StubProtocol.unregister(host: host) }
+    StubProtocol.register(host: host) { _ in
+      .json(
+        200,
+        #"{"ok":true,"migrations":"current","relay":"ok","instances":"ok","minClientProtocol":2,"supportedClientProtocol":2,"maintenance":"read_only"}"#
+      )
+    }
+    let api = HTTPHubAPI(baseURL: URL(string: "https://\(host)")!, token: { nil }, session: session)
+    let facts = try await api.readiness()
+    #expect(facts.reportsActiveProtocolTwo)
+    #expect(facts.maintenance == "read_only")
+    // No account binding, persistence or write admission is constructed by this HTTP fact.
+  }
+
+  @Test(arguments: ["0", "-1", "3", "2.5", "\"2\"", "null"])
+  func readinessRefusesInvalidOrUnsupportedMinimum(_ minimum: String) async throws {
+    let host = "readiness-invalid-\(UUID().uuidString.lowercased()).test"
+    let session = StubProtocol.session()
+    defer { session.invalidateAndCancel(); StubProtocol.unregister(host: host) }
+    StubProtocol.register(host: host) { _ in
+      .json(
+        200,
+        "{\"ok\":true,\"migrations\":\"current\",\"relay\":\"ok\",\"instances\":\"ok\",\"minClientProtocol\":\(minimum),\"supportedClientProtocol\":2}"
+      )
+    }
+    let api = HTTPHubAPI(baseURL: URL(string: "https://\(host)")!, token: { nil }, session: session)
+    await #expect(throws: HubError.self) { try await api.readiness() }
+  }
+
+  @Test func readinessDoesNotConvertHTTPFailureIntoAnActiveFact() async throws {
+    let host = "readiness-unavailable.test"
+    let session = StubProtocol.session()
+    defer { session.invalidateAndCancel(); StubProtocol.unregister(host: host) }
+    StubProtocol.register(host: host) { _ in
+      .json(
+        503,
+        #"{"ok":true,"migrations":"current","relay":"ok","instances":"ok","minClientProtocol":2,"supportedClientProtocol":2}"#
+      )
+    }
+    let api = HTTPHubAPI(baseURL: URL(string: "https://\(host)")!, token: { nil }, session: session)
+    do { _ = try await api.readiness(); Issue.record("HTTP failure is not readiness evidence") } catch let
+      error as HubError
+    { #expect(error.status == 503) }
+  }
+
+  @Test func readinessWithoutSupportedVersionCannotReportActiveTwo() throws {
+    let data = Data(
+      #"{"ok":true,"migrations":"current","relay":"ok","instances":"ok","minClientProtocol":2}"#.utf8)
+    let facts = try JSONCoding.decoder.decode(HubReadiness.self, from: data)
+    #expect(!facts.reportsActiveProtocolTwo)
+  }
+
+  @Test(arguments: ["readyz", "v1/me"], [false, true])
+  func identityResponsesFromAnotherBaseAreRefused(_ path: String, otherOrigin: Bool) async throws {
+    let host = "identity-base-\(UUID().uuidString.lowercased()).test"
+    let session = StubProtocol.session()
+    defer { session.invalidateAndCancel(); StubProtocol.unregister(host: host) }
+    StubProtocol.register(host: host) { _ in
+      var reply = StubProtocol.Reply.json(200, "{}")
+      reply.responseURL = URL(
+        string: otherOrigin
+          ? "https://another-identity.test/deployment/\(path)" : "https://\(host)/another/\(path)")!
+      return reply
+    }
+    let api = HTTPHubAPI(
+      baseURL: URL(string: "https://\(host)/deployment")!, token: { "private-token" }, session: session)
+    do {
+      if path == "readyz" { _ = try await api.readiness() } else { _ = try await api.me() }
+      Issue.record("A different response base must not supply identity evidence")
+    } catch let error as HubError { #expect(error.code == "wrong_endpoint") }
+  }
+
+  @Test(arguments: ["readyz", "v1/me"])
+  func identityRedirectsAreNotFollowed(_ path: String) async throws {
+    let host = "identity-redirect-\(UUID().uuidString.lowercased()).test"
+    let destination = "identity-destination-\(UUID().uuidString.lowercased()).test"
+    let visits = Counter()
+    let session = StubProtocol.session()
+    defer {
+      session.invalidateAndCancel()
+      StubProtocol.unregister(host: host)
+      StubProtocol.unregister(host: destination)
+    }
+    StubProtocol.register(host: host) { _ in
+      var reply = StubProtocol.Reply.json(302, "{}")
+      reply.redirectURL = URL(string: "https://\(destination)/\(path)")!
+      return reply
+    }
+    StubProtocol.register(host: destination) { _ in
+      visits.increment(); return .json(200, "{}")
+    }
+    let api = HTTPHubAPI(
+      baseURL: URL(string: "https://\(host)")!, token: { "private-token" }, session: session)
+    do {
+      if path == "readyz" { _ = try await api.readiness() } else { _ = try await api.me() }
+      Issue.record("The actual redirect response must be refused")
+    } catch let error as HubError {
+      // A transport timeout/status0 is a fixture failure, not evidence of redirect refusal.
+      #expect(error.status == 302 && error.code == "http_302")
+    }
+    #expect(visits.value == 0)
+  }
+
+  @Test(arguments: ["readyz", "v1/me"])
+  func identityEvidenceRequiresTheActualOKStatus(_ path: String) async throws {
+    let host = "identity-status-\(UUID().uuidString.lowercased()).test"
+    let session = StubProtocol.session()
+    defer { session.invalidateAndCancel(); StubProtocol.unregister(host: host) }
+    StubProtocol.register(host: host) { _ in .json(201, "{}") }
+    let api = HTTPHubAPI(
+      baseURL: URL(string: "https://\(host)")!, token: { "private-token" }, session: session)
+    do {
+      if path == "readyz" { _ = try await api.readiness() } else { _ = try await api.me() }
+      Issue.record("A non-200 response must not supply identity evidence")
+    } catch let error as HubError { #expect(error.code == "unexpected_status") }
+  }
+
+  @Test(arguments: ["ok", "migrations", "relay", "instances", "maintenance"])
+  func unhealthyReadinessDoesNotReportActiveTwo(_ field: String) throws {
+    var object: [String: JSONValue] = [
+      "ok": true, "migrations": "current", "relay": "ok", "instances": "ok", "minClientProtocol": 2,
+      "supportedClientProtocol": 2,
+    ]
+    object[field] = field == "ok" ? false : "unexpected"
+    let facts = try JSONCoding.decoder.decode(HubReadiness.self, from: JSONCoding.encoder.encode(object))
+    #expect(!facts.reportsActiveProtocolTwo)
+  }
+
+  @Test func readinessMustBeExplicitlyScriptedByFakesAndProtocolDefaults() async throws {
+    let fake = FakeHubAPI()
+    await #expect(throws: HubError.self) { try await fake.readiness() }
+    let legacy = LegacyOnlyHubAPI()
+    await #expect(throws: HubError.self) { try await legacy.readiness() }
+    let staged = HubReadiness(
+      ok: true, migrations: "current", minClientProtocol: 1, supportedClientProtocol: 2, relay: "ok",
+      instances: "ok")
+    await fake.setReadiness(staged)
+    #expect(try await fake.readiness() == staged)
+    #expect(!(try await fake.readiness()).reportsActiveProtocolTwo)
+    #expect(try await fake.me().orgId == nil)
+    await fake.setOrgId("fixture-org")
+    #expect(try await fake.me().orgId == "fixture-org")
   }
 
   @Test func authenticatedSyncRequestsCarryClientProtocolTwo() async throws {
@@ -1055,4 +1236,20 @@ final class TokenSequence: @unchecked Sendable {
     }
     #expect(try await fake.passkeyBegin().ceremonyId.isEmpty == false)
   }
+}
+
+/// A pre-readiness conformer keeps working through the fail-closed protocol extension.
+private struct LegacyOnlyHubAPI: HubAPI {
+  func enroll(_ request: EnrollRequest) async throws -> EnrollResponse {
+    throw HubError.unsupported("enroll")
+  }
+  func me() async throws -> MeResponse { throw HubError.unsupported("me") }
+  func push(_ changes: [SyncChange]) async throws -> PushResponse { throw HubError.unsupported("push") }
+  func pull(after: Int, limit: Int, wait: Int) async throws -> PullResponse {
+    throw HubError.unsupported("pull")
+  }
+  func snapshot() async throws -> SnapshotResponse { throw HubError.unsupported("snapshot") }
+  func devices() async throws -> [DeviceInfo] { throw HubError.unsupported("devices") }
+  func mintPairingCode() async throws -> PairingCodeResponse { throw HubError.unsupported("mintPairingCode") }
+  func revokeSelf() async throws { throw HubError.unsupported("revokeSelf") }
 }

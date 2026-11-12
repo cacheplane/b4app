@@ -394,6 +394,7 @@ async fn describe(state: &AppState, device: &AuthedDevice) -> Result<Value, ApiE
     Ok(json!({
         "deviceId": info.device_id.to_string(),
         "userId": principal.user_id.to_string(),
+        "orgId": principal.org_id.to_string(),
         "deviceName": info.device_name,
         "platform": info.platform,
         "org": { "slug": info.org_slug, "name": info.org_name },
