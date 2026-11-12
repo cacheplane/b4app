@@ -109,6 +109,10 @@ jobs:
         run: ./Scripts/fetch-postgres.sh
       - name: Build
         run: swift build
+      - name: Focused socket ownership and shutdown regressions
+        run: swift test --filter 'SocketResponseOwnershipTests|SocketLifecycleTests|SocketClosePreservationTests|OwnedCloseConcurrencyTests|SocketServerShutdownTests'
+      - name: Focused Agent Protocol transport regressions
+        run: swift test --filter AgentProtocolTransportTests
       - name: Test
         run: swift test
 
