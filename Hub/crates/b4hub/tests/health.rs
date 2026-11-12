@@ -112,6 +112,7 @@ async fn readyz_reports_current_after_migrate(pool: PgPool) {
             "ok": true,
             "migrations": "current",
             "minClientProtocol": 1,
+            "supportedClientProtocol": 2,
             "relay": "ok",
             "instances": "ok",
         })
