@@ -120,6 +120,7 @@ public final class SocketServer: Sendable {
                 await lifecycleObserver?(.connectionFinished(connectionID))
               }
             }
+            acceptanceObserver?(.sourceFinished)
           }
         }
       } catch {
@@ -192,8 +193,9 @@ public final class SocketServer: Sendable {
       // Pinned topology only: one shared event loop; empty child options/default nil earlier child
       // initializer; our initializer returns a completed future. Bootstrap still queues one child
       // transform hop. First M lets current-IO transforms enqueue; nested C follows all of them on
-      // the same loop, with no intervening IO phase. Do not replace this with direct close, cancel
-      // the accept Task, or add async initialization without a fresh ownership review.
+      // the same loop. SelectableEventLoop drains immediate task batches to empty before another
+      // selector IO phase, including across its 4096-task batch boundary. Do not replace this with
+      // direct close, cancel the accept Task, or add async initialization without a fresh review.
       let closing: EventLoopFuture<Void> = loop.flatSubmit {
         acceptanceObserver?(.firstCloseTurnExecuting)
         return loop.flatSubmit {
@@ -237,6 +239,7 @@ enum SocketAcceptanceEvent: Sendable, Equatable {
   case initialized(ObjectIdentifier)
   case active(ObjectIdentifier)
   case dequeued(child: ObjectIdentifier, connectionID: UUID)
+  case sourceFinished
   case firstCloseTurnQueued, firstCloseTurnExecuting, listenerCloseInvoked, listenerClosed
 }
 typealias SocketAcceptanceObserver = @Sendable (SocketAcceptanceEvent) -> Void
