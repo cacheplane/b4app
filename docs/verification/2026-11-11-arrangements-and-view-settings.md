@@ -21,6 +21,18 @@ The thread list's two arrangements, "Needs you first" and "By environment", and 
 - `xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'`: `** BUILD SUCCEEDED **` (on the fix wave; this compiles the widget). The iOS layout UI tests (`Tests/iOSLayout`) were not run here; CI runs them.
 - `Scripts/docs-index.sh --check`: `docs-index: 196 decisions and 116 verification records are well formed` (rerun after the fix wave's record updates). `--next` then printed `D-207`, since this tree holds D-206 and the highest on `origin/main` is D-205.
 
+### The owner's changes (6c0b71d)
+
+Six changes the owner asked for after looking at the running app (D-206, "The owner's changes"). Run on 6c0b71d's tree, one at a time:
+
+- `swift build`: `Build complete! (13.98s)`.
+- Focused: `swift test --filter "ListLayoutTests|ThreadListTests|MacTopBarTests|AttentionModelTests"`: `Test run with 84 tests in 4 suites passed after 3.992 seconds.`
+- `swift test`: `Test run with 1660 tests in 199 suites failed after 208.578 seconds with 1 issue.` The one issue is `PostgresServerTests.locatorFindsTheFetchedTreeAndRejectsIncompleteDirectories` (it finds the Postgres in `/Applications/Agent Workspace.app`, as above); rerun alone: `Test run with 5 tests in 1 suite failed after 11.794 seconds with 1 issue.` `MirrorSyncTests` passed in the full run.
+- `swift format lint --strict --recursive Sources Tests Apps Package.swift`: clean, exit 0.
+- `xcodebuild build ... -scheme B4App-macOS -destination 'platform=macOS'`: `** BUILD SUCCEEDED **`; `-scheme B4App-iOS -destination 'generic/platform=iOS Simulator'`: `** BUILD SUCCEEDED **`.
+- Snapshots: `B4APP_SNAPSHOT_DIR=<new dir under $TMPDIR> swift test --filter "SnapshotTests/quietThreadsInEachMode|SnapshotTests/macSidebarGroupsByEnvironment"`: `Test run with 2 tests in 1 suite passed after 67.832 seconds.` Looked at: `macQuietThreads-collapsed-selected-light.png` (the top list, the 24 pt gap, the selected quiet thread "Mirror outbox review" with its fill as an ordinary row, then "4 more, 2 working"), `macQuietThreads-collapsed-selected-open-light.png` (the same, opened: the four stowed rows beneath "4 more", the selected one not repeated), `iosQuietThreads-collapsed-selected-light.png` (the phone's list, the same order), `macQuietThreads-hidden-open-light.png` and `macSidebarGroupsByEnvironment-archived-light.png`. Rows are 29 pt apart (58 px at 2x: 28 pt rows and the 1 pt gap); a heading's first row follows it with no gap, and the 24 pt and 8 pt section gaps are unchanged. The gap is space; no line is drawn. The phone renders are drawn on the Mac, so they use the Mac's row heights.
+- Tests added: the selected thread never stowed (counts, once, no Collapsed row when alone, Small and Tiny unchanged) and the hold in the layout (`ListLayoutTests`); the hold in the model: a finished thread opened and read keeps its slot, selecting another releases it with no arrival traced, the composer, a new selection, archiving and sign-out release it, under Collapsed it is not stowed until released, a new approval moves it up, and under By environment it keeps its place in its group, with `Attention.state(of:)` and the badge count on the real state (`AttentionModelTests`); the view-options label and the Environments order (`MacTopBarTests`); the row gap (`ThreadListTests`).
+
 ### What the tests cover
 
 - Hub: a phone may insert and update the four `viewSettings` columns, deletes are refused, unknown values are stored untouched, two partial inserts with disjoint columns (the later one older) keep both, a phone update of `id` is recorded but never renames the row, `ORG_TABLES` includes the table, migration 0019 is pinned, and `changes.json` decodes with the two new entries (`b4hub-db/tests/changes.rs`, `b4hub-core` unit tests).
@@ -56,12 +68,14 @@ Done on 2026-11-11 with the Local flavour app packaged from this branch (Develop
 - **By environment.** Headings "b4app" and "No folder", 28 pt, 8 pt between groups, threads in state order. Collapsing "b4app" left its heading with the red cross of its failed thread at the trailing edge; pressing it again expanded it.
 - **Sync.** The local hub's `viewSettings` table holds one row (`view`) with the last values set, and `column_clocks` has one clock each for `arrangement`, `quietThreads`, `showArchived` and `updatedAt`.
 
-Seen while checking, not changed here:
+Seen while checking, since changed by the owner's changes (6c0b71d):
 
-- The view-options button's accessibility label read "View options" on the new-thread screen and "Filter" once a thread was open.
-- With Hidden, the open thread was a working one and so was not in the sidebar until the "1 working" row was pressed.
+- The view-options button's accessibility label read "View options" on the new-thread screen and "Filter" once a thread was open (now "View options" always on the Mac).
+- With Hidden, the open thread was a working one and so was not in the sidebar until the "1 working" row was pressed (the selected thread is now never stowed).
 
 ### Not checked
+
+- The six owner's changes of 2026-11-11 (6c0b71d) were not seen in the running app: the view-options button's label with VoiceOver, the scroll as Hidden's rows open (and with Reduce Motion), the "Environments" submenu and its sheets, the 1 pt gaps on a device, the selected row under Collapsed and Hidden, and a thread holding its place as it is read and then released. Menus, scrolling and the pointer cannot be rendered; the layout, the hold and the labels are tested, and the gaps and the selected row were seen in renders only.
 
 - The view-options menu itself (its items, the disabled quiet-thread items under By environment), since pop-up menus could not be opened; the archived block (the local data has no archived thread); the phone following a change made on the Mac.
 
@@ -79,7 +93,7 @@ Seen while checking, not changed here:
 - A first insert of the settings row carries and clocks only the columns it sets, on the Mac (migration 0013's trigger, for `viewSettings` only) and on the phone, and a pulled insert never applies a null. This is what lets two devices' different offline choices both survive.
 - A set's answer applies only its own field and an overtaken read is dropped.
 - The fallback (Tiny shown as Collapsed) applies to every device that relays through the hub: the phone and the iPad.
-- The phone keeps "New Environment…" and an "Edit Environment" submenu at the foot of its menu; the Mac heading keeps its Rename, Add Folder and Delete context menu. An empty hand-made environment has no heading, so it cannot be renamed or deleted on the Mac until the environment-form plan. Under "Needs you first" the Mac has no environment headings.
+- The phone keeps "New Environment…" and an "Edit Environment" submenu at the foot of its menu; the Mac heading keeps its Rename, Add Folder and Delete context menu, and the Mac's view options have an interim "Environments" submenu with the same actions for every environment, so they are reachable under either arrangement and for an environment without live threads. Under "Needs you first" the Mac has no environment headings.
 - The hub keeps one `view` row per org (D-206's known limit; lifting it needs a per-user key).
 - This branch relaxed a D-205 control (1c0fb65) so later migrations can exist; D-205's decision is not amended.
 - Deploy order: the hub (migration 0019) and both apps must be on this version for the settings to sync (`docs/compatibility.md`).
