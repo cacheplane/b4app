@@ -107,6 +107,7 @@ public actor SessionService {
       logger.error("startup reconciliation failed: \(String(describing: error), privacy: .public)")
     }
     startThreadDeleteSweep()
+    readMissingCommands()
   }
 
   /// Dispose every adapter. `closing` is set before the first suspension, so no adapter (and no

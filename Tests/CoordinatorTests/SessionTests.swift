@@ -559,6 +559,41 @@ actor EventCollector {
     await h.stop()
   }
 
+  /// A connection added before the list existed (an upgrade) has none; the coordinator reads it as it
+  /// starts, with no check asked for and no session started.
+  @Test func aConnectionWithNoCommandsIsCheckedWhenTheCoordinatorStarts() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let claude = try await h.addClaude()
+    for id in [codex.id, claude.id] {
+      _ = try h.coordinator.database.updateConnection(id: id) { $0.commands = nil }
+    }
+    let paths = h.coordinator.paths
+    await h.stop()
+    var env = ProcessInfo.processInfo.environment
+    env["B4APP_NODE_PATH"] = "/nonexistent/node"
+    env["ANTHROPIC_API_KEY"] = nil
+    guard
+      case .running(let restarted) = try await Coordinator.startSignedIn(
+        options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
+    else { throw WorkspaceError(.internalError, "expected running") }
+    let client = try await UnixSocketTransport.client(path: paths.socketPath)
+    var names: [String: [String]] = [:]
+    let deadline = ContinuousClock.now + .seconds(60)
+    while names.count < 2, ContinuousClock.now < deadline {
+      let listed = try await client.request(ConnectionList.self, ConnectionList.Params())
+      names = Dictionary(
+        uniqueKeysWithValues: listed.connections.compactMap { connection in
+          connection.commands.map { (connection.id, $0.map(\.name)) }
+        })
+      if names.count < 2 { try await Task.sleep(for: .milliseconds(100)) }
+    }
+    #expect(names[codex.id] == ["review", "compact"])
+    #expect(names[claude.id] == ["context", "compact", "superpowers:brainstorming"])
+    await client.close()
+    await restarted.close()
+  }
+
   @Test func codexCommandsRunAsTurns() async throws {
     let h = try await Harness.start()
     let codex = try await h.addCodex()

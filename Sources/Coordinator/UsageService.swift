@@ -110,6 +110,16 @@ extension SessionService {
     return try? await lister.readCommands()
   }
 
+  /// Coordinator start: a Codex or Claude Code connection with no command list (one added before the
+  /// list existed, so after an upgrade) is checked in the background, which reads it. One that has a
+  /// list is left alone; its checks and sessions keep it.
+  func readMissingCommands() {
+    let missing =
+      (try? db.listConnections(includeDisabled: false))?.filter { $0.kind != .b4 && $0.commands == nil }
+      ?? []
+    for connection in missing { _ = inspectInBackground(connection) }
+  }
+
   /// A session reported what it can run (`commands.changed`). Stored when it names a command the
   /// connection's list does not have (`RuntimeCommand.replacement`), and announced with the connection.
   func storeCommands(_ event: AdapterEvent) async throws {
