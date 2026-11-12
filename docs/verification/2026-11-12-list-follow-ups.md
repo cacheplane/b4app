@@ -14,3 +14,7 @@ D-211, on `blove/list-followups` from `main` c442426.
 ### Not seen
 
 Nothing here was run in an app. The Local app on this Mac holds a store with migration 0014 from another session's build, which a build of this branch (through 0013) refuses, so it was not installed. The highlight following its row, the hints under VoiceOver, the phone's sheet closing, and the settings reads against a real coordinator and hub are covered by tests only. `./Scripts/test-ios-layout.sh` was not run; CI runs it.
+
+### CI's first run
+
+On 2d9df8c the "macOS recovery smoke tests" job failed in one of its four journeys, `testCompactDarkRecovery`, at `RecoverySmokeTests.swift:66`: `XCTAssertTrue(app.staticTexts["Cached transcript remains readable."].exists)`, checked the instant the composer appeared. The other three journeys passed the same line, and `main` passes it. The line now waits for the text with `requireElement`, as the checks around it do. The smoke suite was not run locally; CI's rerun is the check.
