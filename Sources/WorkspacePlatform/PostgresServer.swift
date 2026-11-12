@@ -50,10 +50,14 @@ public struct PostgresCluster: Sendable, Equatable {
 public enum PostgresLocator {
   public static let environmentVariable = "B4APP_POSTGRES_BIN"
   static let required = ["postgres", "initdb", "pg_ctl"]
+  /// Where the binaries are inside an installed app, relative to its Applications folder.
+  static let installedBin = "Agent Workspace.app/Contents/SharedSupport/postgres/bin"
 
+  /// The installed app's binaries are looked for in each of `applications` (default `/Applications`, then
+  /// `~/Applications`); a test passes its own folders so what is installed on the Mac cannot answer.
   public static func binDir(
     environment env: [String: String] = ProcessInfo.processInfo.environment,
-    executableURL: URL? = Bundle.main.executableURL, anchors: [URL] = []
+    executableURL: URL? = Bundle.main.executableURL, anchors: [URL] = [], applications: [String]? = nil
   ) -> String? {
     var candidates: [String] = []
     if let explicit = env[environmentVariable], !explicit.isEmpty { candidates.append(explicit) }
@@ -71,8 +75,9 @@ public enum PostgresLocator {
       }
     }
     let home = env["HOME"] ?? NSHomeDirectory()
-    candidates.append("/Applications/Agent Workspace.app/Contents/SharedSupport/postgres/bin")
-    candidates.append("\(home)/Applications/Agent Workspace.app/Contents/SharedSupport/postgres/bin")
+    for folder in applications ?? ["/Applications", "\(home)/Applications"] {
+      candidates.append("\(folder)/\(installedBin)")
+    }
     return candidates.first(where: complete)
   }
 
