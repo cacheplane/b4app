@@ -213,3 +213,19 @@
     }
   }
 #endif
+
+#if os(macOS)
+  /// The title bar's resting control is the palette's top row, as wide as the palette where the
+  /// window has the room.
+  @Suite @MainActor struct CommandCenterTests {
+    @Test func theRestingControlIsThePalettesWidthWhereTheWindowHasRoom() {
+      #expect(CommandCenterButton.height == MacPalette.fieldHeight)
+      #expect(CommandCenterButton.width(inWindow: 1200) == MacPalette.width)
+      #expect(CommandCenterButton.width(inWindow: 1140) == MacPalette.width)
+      // Narrower windows keep the title bar's own buttons clear.
+      #expect(CommandCenterButton.width(inWindow: 1000) == 460)
+      #expect(CommandCenterButton.width(inWindow: 900) == 360)
+      #expect(CommandCenterButton.width(inWindow: 700) == CommandCenterButton.minWidth)
+    }
+  }
+#endif

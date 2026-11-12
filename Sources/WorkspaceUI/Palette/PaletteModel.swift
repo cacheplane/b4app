@@ -569,9 +569,12 @@ final class PaletteModel {
     }
   }
 
+  /// Find's prompt, which the title bar's resting control shows too.
+  static let findPrompt = "Search threads, environments, and commands"
+
   var placeholder: String {
     switch page {
-    case .root(.find): return "Search threads, environments, and commands"
+    case .root(.find): return Self.findPrompt
     case .root(.commands): return "Run a command"
     case .actions: return "Filter actions"
     case .choices: return "Filter"

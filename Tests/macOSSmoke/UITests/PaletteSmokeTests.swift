@@ -329,7 +329,7 @@ final class PaletteSmokeTests: XCTestCase {
       if app.state == .runningForeground || app.state == .runningBackground { app.terminate() }
     }
     app.launchEnvironment = [
-      "SMOKE_SOCKET": fixture.socket, "SMOKE_WIDTH": "1100", "SMOKE_DARK": "0", "SMOKE_HEIGHT": "600",
+      "SMOKE_SOCKET": fixture.socket, "SMOKE_WIDTH": "1200", "SMOKE_DARK": "0", "SMOKE_HEIGHT": "600",
       "SWIFTNIO_STRICT": "1",
     ]
     app.launch()
@@ -345,9 +345,14 @@ final class PaletteSmokeTests: XCTestCase {
     try requireElement(composer, in: app)
     let window = app.windows.containing(.textView, identifier: "composer").firstMatch
 
-    snap(app, XCUIScreen.main.screenshot(), "center-rest")
     let button = app.descendants(matching: .any)["command-center"]
     try requireElement(button, in: app)
+    try await Task.sleep(for: .milliseconds(300))
+    let atRest = XCUIScreen.main.screenshot()
+    snap(app, atRest, "center-rest")
+    // The palette's own top row: its width (the window has the room) and its field row's height.
+    XCTAssertEqual(button.frame.width, 600, accuracy: 1)
+    XCTAssertEqual(button.frame.height, 48, accuracy: 1)
     // In the middle of the window, sidebar open.
     XCTAssertEqual(
       button.frame.midX, window.frame.midX, accuracy: 2,
@@ -365,9 +370,28 @@ final class PaletteSmokeTests: XCTestCase {
     button.click()
     try requireElement(field, in: app)
     try await Task.sleep(for: .milliseconds(400))
-    snap(app, XCUIScreen.main.screenshot(), "center-open")
+    let opened = XCUIScreen.main.screenshot()
+    snap(app, opened, "center-open")
     let rest = button.frame
     let home = palette.frame
+    // Edge on edge: the palette's field row is exactly where the resting control was.
+    XCTAssertEqual(home.minX, rest.minX, accuracy: 1)
+    XCTAssertEqual(home.minY, rest.minY, accuracy: 1)
+    XCTAssertEqual(home.width, rest.width, accuracy: 1)
+    // And it looks the same: along three lines through the row (the glyph, the prompt, the fill, the
+    // edges), the screen at rest and the screen with the palette open agree, but for the cursor and
+    // the key named at the trailing end.
+    var differing: [CGPoint] = []
+    for y in [rest.minY + 14, rest.midY, rest.maxY - 14] {
+      for x in stride(from: rest.minX + 6, through: rest.maxX - 70, by: 3) {
+        let point = CGPoint(x: x, y: y)
+        if abs(try luminance(atRest, at: point) - luminance(opened, at: point)) > 0.03 {
+          differing.append(point)
+        }
+      }
+    }
+    XCTAssertLessThanOrEqual(
+      differing.count, 4, "the resting control and the open palette differ at \(differing.prefix(12))")
     // Over the button: the same centre line, and the field's 48 pt row centred on the button.
     XCTAssertEqual(home.midX, rest.midX, accuracy: 1.5)
     XCTAssertEqual(home.minY + 24, rest.midY, accuracy: 1.5)
