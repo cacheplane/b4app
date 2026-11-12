@@ -773,7 +773,7 @@ final class L1FactoryCalls: Sendable {
       try writer.execute(
         #"UPDATE "connections" SET "label" = 'Committed before migration' WHERE "id" = 'old-b4'"#)
       let expected = try Self.snapshot(writer)
-      let run = Self.begin(fixture, cleanup, trace: trace)
+      let run = Self.beginQuiescenceSubject(fixture, cleanup, trace: trace)
       defer {
         trace.record(.bodyScopeClosing, flag: fixture.scope.isClosing)
         let finished = run.state.finished.withLock { $0 }
@@ -960,5 +960,57 @@ final class L1FactoryCalls: Sendable {
       let futureDirectory = fixture.paths.dataDir + "/backups/" + futureComponent
       #expect(!FileManager.default.fileExists(atPath: futureDirectory))
     }
+  }
+}
+
+extension AgentProtocolAccountMigrationTests {
+  // One test subject only: a private queue supplies execution resources; AccountManager remains
+  // actor-isolated. This is not a dedicated OS thread or a scheduling-deadline guarantee.
+  private final class QuiescenceSubjectExecutor: TaskExecutor {
+    private let queue = DispatchQueue(label: "b4app.test.account-quiescence-subject")
+
+    func enqueue(_ job: consuming ExecutorJob) {
+      let job = UnownedJob(job)
+      queue.async { [self] in
+        job.runSynchronously(on: self.asUnownedTaskExecutor())
+      }
+    }
+
+    func drainSubmittedJobs() async {
+      await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        queue.async { continuation.resume(returning: ()) }
+      }
+    }
+  }
+
+  private static func beginQuiescenceSubject(
+    _ fixture: Fixture, _ cleanup: L1Cleanup, trace: L1PhaseTrace?
+  ) -> Run {
+    let executor = QuiescenceSubjectExecutor()
+    let state = L1RunState()
+    let answer = Self.session()
+    let task = Task(executorPreference: executor) {
+      trace?.record(.taskEntered)
+      defer {
+        state.finished.withLock { $0 = true }
+        trace?.record(.finished)
+      }
+      do {
+        trace?.record(.signInCallIssued)
+        let value = try await fixture.manager.signIn(session: answer, hubURL: fixture.hubURL)
+        trace?.record(.signInReturned, flag: true)
+        return Result<AccountStatus.Result, any Error>.success(value)
+      } catch {
+        trace?.record(.signInReturned, flag: false)
+        return .failure(error)
+      }
+    }
+    // L1Cleanup releases the fixture's native writer before this actual retained Task join.
+    // The FIFO sentinel acknowledges prior queue blocks, not Thread exit or future-job absence.
+    cleanup.join {
+      _ = await task.value
+      await executor.drainSubmittedJobs()
+    }
+    return Run(task: task, state: state)
   }
 }
