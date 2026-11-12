@@ -184,21 +184,24 @@ pub async fn reclaim(db: &Db, relay: &Relay, instances: &InstancesState, user: U
             tracing::info!(%owner, "another instance took the user; closing their links here");
             relay.close_user(user, Close::relocated());
         }
-        Err(error) => tracing::warn!(%error, "could not confirm a user's claim"),
+        Err(error) => {
+            tracing::warn!(%error,"could not confirm a user's claim");
+            relay.close_user(user, Close::protocol_unavailable());
+        }
     }
 }
 
-/// Registers the instance, recording the write when it succeeds; a failure is logged and the
-/// heartbeat loop keeps trying.
-pub async fn register(db: &Db, instances: &InstancesState, public_url: Option<&str>) {
+/// Startup is a required admission: failure must not turn into a log-and-listen path.
+pub async fn register(
+    db: &Db,
+    instances: &InstancesState,
+    public_url: Option<&str>,
+) -> b4hub_db::Result<b4hub_core::protocol::ProtocolFloor> {
     let sent = Instant::now();
-    match b4hub_db::instances::register(db, instances.id(), public_url).await {
-        Ok(()) => {
-            instances.record_ok(sent);
-            tracing::info!(instance = %instances.id(), "instance registered");
-        }
-        Err(error) => tracing::warn!(%error, "could not register the instance"),
-    }
+    let floor = b4hub_db::instances::register_with_floor(db, instances.id(), public_url).await?;
+    instances.record_ok(sent);
+    tracing::info!(instance = %instances.id(), "instance registered");
+    Ok(floor)
 }
 
 /// Writes the heartbeat every `instances.heartbeat()` until `shutdown`. A row the prune removed is
@@ -242,13 +245,38 @@ pub async fn heartbeat_loop(
                     tracing::warn!(%error, "could not send the heartbeat echo");
                 }
             }
-            Ok(false) => register(&db, &instances, public_url.as_deref()).await,
+            Ok(false) => {
+                if register(&db, &instances, public_url.as_deref())
+                    .await
+                    .is_err()
+                {
+                    refuse_protocol_links(&relay);
+                    tracing::warn!("could not re-admit the instance");
+                    continue;
+                }
+            }
             Err(error) => {
                 tracing::warn!(%error, "could not write the instance heartbeat");
                 continue;
             }
         }
         drop(beat);
+        // This is an idle-close hint, not action or emission authority. Those boundaries must
+        // acquire their own fresh DB admissions in the dependent relay conversion.
+        let floor = b4hub_db::settings::protocol_floor(&db).await;
+        if floor
+            .and_then(|floor| {
+                relay
+                    .observe_floor(floor)
+                    .map(|_| ())
+                    .map_err(|_| b4hub_db::Error::InvalidProtocolFloor)
+            })
+            .is_err()
+        {
+            refuse_protocol_links(&relay);
+            tracing::warn!("the protocol floor is unavailable; closing links");
+            continue;
+        }
         let users = relay.users();
         match b4hub_db::instances::lost_claims(&db, instances.id(), &users).await {
             Ok(lost) => {
@@ -263,6 +291,12 @@ pub async fn heartbeat_loop(
             }
             Err(error) => tracing::warn!(%error, "could not check this instance's claims"),
         }
+    }
+}
+
+fn refuse_protocol_links(relay: &Relay) {
+    for user in relay.users() {
+        relay.close_user(user, Close::protocol_unavailable());
     }
 }
 

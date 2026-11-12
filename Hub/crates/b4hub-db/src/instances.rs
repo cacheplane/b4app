@@ -28,6 +28,23 @@ pub enum Claim {
 
 /// Registers (or re-registers) `instance_id`, alive as of now.
 pub async fn register(db: &Db, instance_id: Uuid, public_url: Option<&str>) -> Result<()> {
+    register_with_floor(db, instance_id, public_url)
+        .await
+        .map(|_| ())
+}
+
+/// Startup admission and instance publication are one transaction. Settings is locked before
+/// reading a floor or writing instances, matching the operator's settings->instances lock order.
+pub async fn register_with_floor(
+    db: &Db,
+    instance_id: Uuid,
+    public_url: Option<&str>,
+) -> Result<b4hub_core::protocol::ProtocolFloor> {
+    let mut tx = db.untenanted_tx().await?;
+    sqlx::query("LOCK TABLE public.hub_settings IN ACCESS SHARE MODE")
+        .execute(&mut *tx)
+        .await?;
+    let floor = crate::settings::protocol_floor_in(&mut tx).await?;
     sqlx::query(
         "INSERT INTO hub_instances (instance_id, started_at, heartbeat_at, public_url) \
          VALUES ($1, now(), now(), $2) \
@@ -36,9 +53,10 @@ pub async fn register(db: &Db, instance_id: Uuid, public_url: Option<&str>) -> R
     )
     .bind(instance_id)
     .bind(public_url)
-    .execute(&db.pool)
+    .execute(&mut *tx)
     .await?;
-    Ok(())
+    tx.commit().await?;
+    Ok(floor)
 }
 
 /// Refreshes `instance_id`'s heartbeat. False when it has no row (the prune removed it while its

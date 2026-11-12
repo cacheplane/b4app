@@ -187,6 +187,10 @@ pub async fn raise_protocol_floor(
     debug_assert!(minimum <= ClientProtocol::SUPPORTED.value());
     sqlx::query("UPDATE public.hub_settings SET value = jsonb_build_object('minClientProtocol', $1::bigint), updated_at = now() WHERE key = $2")
         .bind(i64::from(minimum)).bind(PROTOCOL_KEY).execute(&mut *tx).await?;
+    sqlx::query("SELECT pg_notify($1, '')")
+        .bind(crate::signals::PROTOCOL)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(requested)
 }

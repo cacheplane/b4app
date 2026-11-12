@@ -101,8 +101,8 @@ async fn push_materialises_and_is_idempotent(pool: PgPool) {
     let batch = common::filtered_fixture();
 
     let accepted = push_through(&app, &device, &batch).await.unwrap();
-    assert_eq!(accepted, 13);
-    assert_eq!(count(&app, &device, "changes").await, 13);
+    assert_eq!(accepted, 15);
+    assert_eq!(count(&app, &device, "changes").await, 15);
     // Every fixture change carries its clock, and the hub stores it as sent.
     let stored = changes::pull(&app, &device, 0, 1000).await.unwrap();
     for (sent, kept) in batch.iter().zip(&stored.changes) {
@@ -127,6 +127,13 @@ async fn push_materialises_and_is_idempotent(pool: PgPool) {
         .expect("a deleted row is kept");
     assert!(draft["deleted_at"].is_string(), "{draft}");
     assert!(thread["deleted_at"].is_null());
+    // The view settings row, inserted then given a new quietThreads.
+    let view = row(&app, &device, "viewSettings", "id", "view")
+        .await
+        .expect("the view row is mirrored");
+    assert_eq!(view["arrangement"], "needsYouFirst");
+    assert_eq!(view["quietThreads"], "collapsed");
+    assert_eq!(view["showArchived"], false);
     assert_eq!(count(&app, &device, "turns").await, 2);
     assert_eq!(count(&app, &device, "displayItems").await, 4);
     assert_eq!(count(&app, &device, "runtimeRequests").await, 1);
@@ -158,8 +165,8 @@ async fn push_materialises_and_is_idempotent(pool: PgPool) {
         .unwrap();
     tx.commit().await.unwrap();
     let again = push_through(&app, &device, &batch).await.unwrap();
-    assert_eq!(again, 13);
-    assert_eq!(count(&app, &device, "changes").await, 13);
+    assert_eq!(again, 15);
+    assert_eq!(count(&app, &device, "changes").await, 15);
     assert!(row(&app, &device, "turns", "id", "turn-1").await.is_none());
     assert_eq!(count(&app, &device, "turns").await, 1);
 
@@ -168,7 +175,7 @@ async fn push_materialises_and_is_idempotent(pool: PgPool) {
     let mut shuffled = batch[..3].to_vec();
     shuffled.reverse();
     assert_eq!(push_through(&app, &device, &shuffled).await.unwrap(), 3);
-    assert_eq!(push_through(&app, &device, &[]).await.unwrap(), 13);
+    assert_eq!(push_through(&app, &device, &[]).await.unwrap(), 15);
 }
 
 #[sqlx::test(migrations = false)]
@@ -447,14 +454,19 @@ async fn pull_pages_and_is_scoped_to_the_user(pool: PgPool) {
     let rest = changes::pull(&app, &device, first.next, 1000)
         .await
         .unwrap();
-    assert_eq!(rest.changes.len(), 8);
+    assert_eq!(rest.changes.len(), 10);
     assert!(!rest.more);
-    assert_eq!(rest.next, 13);
+    assert_eq!(rest.next, 15);
     assert_eq!(rest.changes[4].op, ChangeOp::Update);
     assert_eq!(rest.changes[4].column.as_deref(), Some("title"));
     assert_eq!(rest.changes[6].op, ChangeOp::Delete);
     assert_eq!(rest.changes[6].value, None);
     assert_eq!(rest.changes[7].column.as_deref(), Some("permission"));
+    assert_eq!(
+        (rest.changes[8].table.as_str(), rest.changes[8].op),
+        ("viewSettings", ChangeOp::Insert)
+    );
+    assert_eq!(rest.changes[9].column.as_deref(), Some("quietThreads"));
     let truncated = rest
         .changes
         .iter()
@@ -464,15 +476,15 @@ async fn pull_pages_and_is_scoped_to_the_user(pool: PgPool) {
     assert_eq!(truncated["payload"]["truncated"], true);
 
     // A page that ends exactly at the last change is not "more".
-    let exact = changes::pull(&app, &device, 5, 8).await.unwrap();
+    let exact = changes::pull(&app, &device, 5, 10).await.unwrap();
     assert_eq!(
         (exact.changes.len(), exact.more, exact.next),
-        (8, false, 13)
+        (10, false, 15)
     );
     // Nothing after the end: an empty page keeps the cursor.
-    let empty = changes::pull(&app, &device, 13, 1000).await.unwrap();
+    let empty = changes::pull(&app, &device, 15, 1000).await.unwrap();
     assert!(empty.changes.is_empty());
-    assert_eq!((empty.next, empty.more), (13, false));
+    assert_eq!((empty.next, empty.more), (15, false));
     // A limit of zero is clamped, not an error.
     assert_eq!(
         changes::pull(&app, &device, 0, 0)
@@ -488,7 +500,7 @@ async fn pull_pages_and_is_scoped_to_the_user(pool: PgPool) {
     assert!(theirs.changes.is_empty());
     // Their feed is empty, but the cursor still moves to the org's newest change: nothing of
     // theirs lies before it.
-    assert_eq!(theirs.next, 13);
+    assert_eq!(theirs.next, 15);
 
     // The same device id's rows are the device's own: the feed is scoped by user, so a second
     // device of the same user would see this device's changes.
@@ -516,7 +528,7 @@ async fn pull_pages_and_is_scoped_to_the_user(pool: PgPool) {
         }
     };
     let phone = changes::pull(&app, &second, 0, 1000).await.unwrap();
-    assert_eq!(phone.changes.len(), 13);
+    assert_eq!(phone.changes.len(), 15);
     assert!(phone
         .changes
         .iter()
@@ -557,9 +569,9 @@ async fn another_org_sees_nothing_of_the_feed_or_the_mirror(pool: PgPool) {
     let accepted = push_through(&app, &outsider, &common::filtered_fixture())
         .await
         .unwrap();
-    assert_eq!(accepted, 13);
+    assert_eq!(accepted, 15);
     assert_eq!(count(&app, &outsider, "threads").await, 1);
-    assert_eq!(count(&app, &device, "changes").await, 13);
+    assert_eq!(count(&app, &device, "changes").await, 15);
 }
 
 /// A connection's usage (plan windows, B4 token totals) is mirrored like any synced row, so a phone
@@ -1756,6 +1768,8 @@ fn expected_clocks(batch: &[Change]) -> Vec<(String, String, String, String)> {
                 .as_object()
                 .unwrap()
                 .keys()
+                // The key is the row's id, never a column the hub claims a clock for.
+                .filter(|c| *c != table_spec(&change.table).unwrap().key)
                 .filter(|c| b4hub_core::writable::is_clocked(&change.table, c))
                 .cloned()
                 .collect(),
@@ -1796,37 +1810,37 @@ fn fixture_with_environments(device: &AuthedDevice) -> Vec<Change> {
     let clock = |ms_hex: &str| Some(format!("{ms_hex}-0000-{}", device.device_id));
     let mut batch = common::filtered_fixture();
     let mut environment = insert(
-        14,
+        16,
         "environments",
         "proj-1",
         json!({"id": "proj-1", "name": "b4app", "manual": false,
                "createdAt": "2026-10-31T12:00:00Z", "updatedAt": "2026-10-31T12:00:00Z"}),
     );
-    environment.hlc = clock("019a396ca9b0");
+    environment.hlc = clock("019a396cb180");
     let mut folder = insert(
-        15,
+        17,
         "environmentFolders",
         "folder-1",
         json!({"id": "folder-1", "environmentId": "proj-1", "path": "/Users/brian/repos/b4app",
                "createdAt": "2026-10-31T12:00:00Z"}),
     );
-    folder.hlc = clock("019a396cad98");
+    folder.hlc = clock("019a396cb568");
     let mut moved = update(
-        16,
+        18,
         "threads",
         "thread-1",
         "environmentId",
         Some(json!("proj-1")),
     );
-    moved.hlc = clock("019a396cb180");
+    moved.hlc = clock("019a396cb950");
     let mut renamed = update(
-        17,
+        19,
         "environments",
         "proj-1",
         "name",
         Some(json!("Personal Agent")),
     );
-    renamed.hlc = clock("019a396cb568");
+    renamed.hlc = clock("019a396cbd38");
     batch.extend([environment, folder, moved, renamed]);
     batch
 }
@@ -1838,7 +1852,7 @@ async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
     let batch = fixture_with_environments(&device);
     push_through(&app, &device, &batch).await.unwrap();
     let last = batch.len() as i64;
-    assert_eq!(last, 17);
+    assert_eq!(last, 19);
 
     // Nothing is older than a day, so nothing is pruned and the horizon stays put.
     let kept = b4hub_db::prune::prune(&app, device.org_id, Duration::from_secs(86_400))
@@ -1851,7 +1865,7 @@ async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
             .unwrap()
             .changes
             .len(),
-        17
+        19
     );
 
     // Everything is older than "now".
@@ -1859,7 +1873,7 @@ async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(horizon, last);
-    for after in [0, 3, 16] {
+    for after in [0, 3, 18] {
         let error = changes::pull(&app, &device, after, 1000).await.unwrap_err();
         assert!(
             matches!(error, b4hub_db::Error::ResyncRequired),
@@ -1884,6 +1898,7 @@ async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
         "environmentFolders",
         "threads",
         "turns",
+        "viewSettings",
     ] {
         assert!(tables.contains(&table), "{table}");
     }
@@ -1898,6 +1913,7 @@ async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
     assert_eq!(find("threads", "thread-1")["title"], "Renamed");
     assert_eq!(find("threads", "thread-1")["permission"], "plan");
     assert_eq!(find("environments", "proj-1")["name"], "Personal Agent");
+    assert_eq!(find("viewSettings", "view")["quietThreads"], "collapsed");
     assert_eq!(
         find("environmentFolders", "folder-1")["path"],
         "/Users/brian/repos/b4app"
@@ -1959,7 +1975,7 @@ async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
         &app,
         &device,
         &[update(
-            18,
+            20,
             "threads",
             "thread-1",
             "title",
@@ -1999,7 +2015,7 @@ async fn prune_deletes_only_older_changes_and_never_lowers_the_horizon(pool: PgP
     );
     assert!(changes::pull(&app, &device, 4, 1000).await.is_err());
     let rest = changes::pull(&app, &device, 5, 1000).await.unwrap();
-    assert_eq!(rest.changes.len(), 8);
+    assert_eq!(rest.changes.len(), 10);
     assert_eq!(rest.changes[0].hub_seq, 6);
 
     // A longer retention afterwards changes nothing and does not lower the horizon.
@@ -2016,7 +2032,7 @@ async fn prune_deletes_only_older_changes_and_never_lowers_the_horizon(pool: PgP
             .unwrap()
             .changes
             .len(),
-        8
+        10
     );
     // Another org's horizon is its own.
     let other = common::enrolled_in(&admin, &app, "other", "alice").await;
@@ -2058,12 +2074,12 @@ async fn snapshot_is_user_scoped(pool: PgPool) {
     assert!(theirs.clocks.iter().all(|c| c.row_id == "bob-thread"));
     assert!(!theirs.clocks.is_empty());
     // `next` is the org's highest hubSeq, not the user's.
-    assert_eq!(theirs.next, 15);
+    assert_eq!(theirs.next, 17);
 
     let mine = b4hub_db::snapshot::take(&app, &alice).await.unwrap();
     assert!(mine.changes.iter().all(|c| !c.row_id.starts_with("bob-")));
     assert!(mine.clocks.iter().all(|c| !c.row_id.starts_with("bob-")));
-    assert_eq!(mine.next, 15);
+    assert_eq!(mine.next, 17);
 
     // Another org sees nothing at all.
     let outsider = common::enrolled_in(&admin, &app, "other", "carol").await;
@@ -2148,7 +2164,7 @@ async fn push_stores_each_values_size(pool: PgPool) {
     let device = common::enrolled(&admin, &app, "blove").await;
     let mut batch = common::filtered_fixture();
     batch.push(insert(
-        14,
+        16,
         "connections",
         "multibyte",
         json!({"id": "multibyte", "label": "é\u{1F600}"}),
@@ -2171,11 +2187,11 @@ async fn push_stores_each_values_size(pool: PgPool) {
     // The delete carries no value; the multibyte value counts bytes, not characters.
     assert_eq!(sizes[11], 0);
     assert_eq!(
-        sizes[13],
+        sizes[15],
         r#"{"id": "multibyte", "label": "é😀"}"#.len() as i32
     );
     assert!(sizes[..11].iter().all(|bytes| *bytes > 0));
-    assert!(sizes[12] > 0);
+    assert!(sizes[12..15].iter().all(|bytes| *bytes > 0));
 }
 
 /// Where a page ends is decided from the stored sizes, not from the values: with the stored size
@@ -2570,4 +2586,512 @@ async fn a_deleted_row_stays_with_its_user_and_its_org(pool: PgPool) {
         .await
         .unwrap()["deleted_at"]
         .is_string());
+}
+
+// ---- View settings: one row per account, id `view`, any device may write it ----
+
+/// The view settings row as `who`'s org holds it.
+async fn view(app: &Db, who: &AuthedDevice) -> Value {
+    row(app, who, "viewSettings", "id", "view")
+        .await
+        .expect("the view row is mirrored")
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_phone_may_insert_and_update_view_settings(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let (mac, phone) = mac_and_phone(&admin, &app).await;
+    let batch = vec![
+        at(
+            insert(
+                1,
+                "viewSettings",
+                "view",
+                json!({"id": "view", "arrangement": "byEnvironment", "quietThreads": "tiny",
+                       "showArchived": false, "updatedAt": "2026-11-11T09:00:00.000Z"}),
+            ),
+            200,
+            PHONE_CLOCK,
+        ),
+        at(
+            update(
+                2,
+                "viewSettings",
+                "view",
+                "quietThreads",
+                Some(json!("hidden")),
+            ),
+            210,
+            PHONE_CLOCK,
+        ),
+        at(
+            update(3, "viewSettings", "view", "showArchived", Some(json!(true))),
+            220,
+            PHONE_CLOCK,
+        ),
+        at(
+            update(
+                4,
+                "viewSettings",
+                "view",
+                "arrangement",
+                Some(json!("needsYouFirst")),
+            ),
+            230,
+            PHONE_CLOCK,
+        ),
+        at(
+            update(
+                5,
+                "viewSettings",
+                "view",
+                "updatedAt",
+                Some(json!("2026-11-11T09:00:04.000Z")),
+            ),
+            240,
+            PHONE_CLOCK,
+        ),
+    ];
+    let outcome = changes::push(&app, &phone, &batch).await.unwrap();
+    assert_eq!(outcome.accepted_through, 5);
+    assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+    let stored = view(&app, &mac).await;
+    assert_eq!(stored["arrangement"], "needsYouFirst");
+    assert_eq!(stored["quietThreads"], "hidden");
+    assert_eq!(stored["showArchived"], true);
+    assert_eq!(stored["updatedAt"], "2026-11-11T09:00:04.000Z");
+    assert_eq!(stored["owner_device_id"], phone.device_id.to_string());
+    assert_eq!(stored["user_id"], phone.user_id.to_string());
+    // A value this build does not know is stored as sent; the hub never validates it.
+    let outcome = changes::push(
+        &app,
+        &phone,
+        &[at(
+            update(
+                6,
+                "viewSettings",
+                "view",
+                "quietThreads",
+                Some(json!("someday")),
+            ),
+            250,
+            PHONE_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    assert!(outcome.rejected.is_empty());
+    assert_eq!(view(&app, &mac).await["quietThreads"], "someday");
+}
+
+#[sqlx::test(migrations = false)]
+async fn view_settings_columns_merge_by_clock(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let (mac, phone) = mac_and_phone(&admin, &app).await;
+    push_through(
+        &app,
+        &mac,
+        &[at(
+            insert(
+                3,
+                "viewSettings",
+                "view",
+                json!({"id": "view", "arrangement": "needsYouFirst", "quietThreads": "small",
+                       "showArchived": false}),
+            ),
+            300,
+            MAC_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    // The phone's quietThreads edit was made before the Mac's insert: it loses. Its arrangement
+    // edit is newer: it wins. Both edits are recorded in the feed either way.
+    let outcome = changes::push(
+        &app,
+        &phone,
+        &[
+            at(
+                update(
+                    1,
+                    "viewSettings",
+                    "view",
+                    "quietThreads",
+                    Some(json!("collapsed")),
+                ),
+                250,
+                PHONE_CLOCK,
+            ),
+            at(
+                update(
+                    2,
+                    "viewSettings",
+                    "view",
+                    "arrangement",
+                    Some(json!("byEnvironment")),
+                ),
+                400,
+                PHONE_CLOCK,
+            ),
+        ],
+    )
+    .await
+    .unwrap();
+    assert!(outcome.rejected.is_empty());
+    let stored = view(&app, &mac).await;
+    assert_eq!(stored["quietThreads"], "small", "the older clock loses");
+    assert_eq!(
+        stored["arrangement"], "byEnvironment",
+        "the newer clock wins"
+    );
+    assert_eq!(stored["showArchived"], false);
+    // A later Mac edit of quietThreads wins and leaves the phone's arrangement alone.
+    push_through(
+        &app,
+        &mac,
+        &[at(
+            update(
+                4,
+                "viewSettings",
+                "view",
+                "quietThreads",
+                Some(json!("tiny")),
+            ),
+            500,
+            MAC_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    let stored = view(&app, &mac).await;
+    assert_eq!(
+        (&stored["arrangement"], &stored["quietThreads"]),
+        (&json!("byEnvironment"), &json!("tiny"))
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_mac_and_a_phone_both_inserting_view_end_with_one_row(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let (mac, phone) = mac_and_phone(&admin, &app).await;
+    push_through(
+        &app,
+        &mac,
+        &[at(
+            insert(
+                3,
+                "viewSettings",
+                "view",
+                json!({"id": "view", "arrangement": "needsYouFirst", "quietThreads": "small",
+                       "showArchived": false}),
+            ),
+            300,
+            MAC_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    // The phone inserted its own row before it saw the Mac's, at an older clock: every column loses.
+    let outcome = changes::push(
+        &app,
+        &phone,
+        &[at(
+            insert(
+                1,
+                "viewSettings",
+                "view",
+                json!({"id": "view", "arrangement": "byEnvironment", "quietThreads": "hidden",
+                       "showArchived": true}),
+            ),
+            200,
+            PHONE_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    assert!(outcome.rejected.is_empty());
+    assert_eq!(count(&app, &mac, "viewSettings").await, 1);
+    let stored = view(&app, &mac).await;
+    assert_eq!(stored["arrangement"], "needsYouFirst");
+    assert_eq!(stored["quietThreads"], "small");
+    assert_eq!(stored["showArchived"], false);
+    // A newer insert from the phone carrying one column wins that column only.
+    push_through(
+        &app,
+        &phone,
+        &[at(
+            insert(
+                2,
+                "viewSettings",
+                "view",
+                json!({"id": "view", "quietThreads": "collapsed"}),
+            ),
+            400,
+            PHONE_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    assert_eq!(count(&app, &mac, "viewSettings").await, 1);
+    let stored = view(&app, &mac).await;
+    assert_eq!(stored["arrangement"], "needsYouFirst");
+    assert_eq!(stored["quietThreads"], "collapsed");
+    assert_eq!(stored["showArchived"], false);
+}
+
+/// Two first inserts that each carry only the column their device set (the Mac's trigger and the
+/// phone's `partialInsertTables` leave the others out): the later-arriving one has the older clock,
+/// yet its column has no clock on the hub, so it still lands, and the row keeps both.
+#[sqlx::test(migrations = false)]
+async fn two_partial_view_inserts_keep_both_columns_whatever_their_order(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let (mac, phone) = mac_and_phone(&admin, &app).await;
+    push_through(
+        &app,
+        &phone,
+        &[at(
+            insert(
+                1,
+                "viewSettings",
+                "view",
+                json!({"id": "view", "arrangement": "byEnvironment"}),
+            ),
+            400,
+            PHONE_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    let outcome = changes::push(
+        &app,
+        &mac,
+        &[at(
+            insert(
+                3,
+                "viewSettings",
+                "view",
+                json!({"id": "view", "quietThreads": "hidden"}),
+            ),
+            300,
+            MAC_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    assert!(outcome.rejected.is_empty());
+    assert_eq!(count(&app, &mac, "viewSettings").await, 1);
+    let stored = view(&app, &mac).await;
+    assert_eq!(stored["arrangement"], "byEnvironment");
+    assert_eq!(stored["quietThreads"], "hidden");
+    assert!(stored["showArchived"].is_null());
+}
+
+#[sqlx::test(migrations = false)]
+async fn view_settings_are_pulled_by_the_users_other_devices(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let (mac, phone) = mac_and_phone(&admin, &app).await;
+    let after = changes::pull(&app, &phone, 0, 1000).await.unwrap().next;
+    push_through(
+        &app,
+        &mac,
+        &[at(
+            insert(
+                3,
+                "viewSettings",
+                "view",
+                json!({"id": "view", "arrangement": "byEnvironment", "quietThreads": "small",
+                       "showArchived": true}),
+            ),
+            300,
+            MAC_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    let page = changes::pull(&app, &phone, after, 1000).await.unwrap();
+    assert_eq!(page.changes.len(), 1);
+    let pulled = &page.changes[0];
+    assert_eq!(
+        (pulled.table.as_str(), pulled.row_id.as_str(), pulled.op),
+        ("viewSettings", "view", ChangeOp::Insert)
+    );
+    assert_eq!(pulled.device_id, mac.device_id);
+    assert_eq!(
+        pulled.value.as_ref().unwrap()["arrangement"],
+        "byEnvironment"
+    );
+
+    push_through(
+        &app,
+        &phone,
+        &[at(
+            update(
+                1,
+                "viewSettings",
+                "view",
+                "quietThreads",
+                Some(json!("hidden")),
+            ),
+            400,
+            PHONE_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    let page = changes::pull(&app, &mac, page.next, 1000).await.unwrap();
+    assert_eq!(page.changes.len(), 1);
+    let pulled = &page.changes[0];
+    assert_eq!(pulled.device_id, phone.device_id);
+    assert_eq!(
+        (pulled.table.as_str(), pulled.column.as_deref()),
+        ("viewSettings", Some("quietThreads"))
+    );
+    assert_eq!(pulled.value, Some(json!("hidden")));
+
+    // A device restoring from the snapshot gets the row and its column clocks.
+    let snapshot = b4hub_db::snapshot::take(&app, &phone).await.unwrap();
+    let restored = snapshot
+        .changes
+        .iter()
+        .find(|c| c.table == "viewSettings")
+        .expect("the snapshot carries the view row");
+    assert_eq!(restored.row_id, "view");
+    assert_eq!(restored.value.as_ref().unwrap()["quietThreads"], "hidden");
+    let clocked: Vec<&str> = snapshot
+        .clocks
+        .iter()
+        .filter(|c| c.table == "viewSettings")
+        .map(|c| c.column.as_str())
+        .collect();
+    assert_eq!(
+        clocked,
+        vec!["arrangement", "quietThreads", "showArchived"],
+        "the insert's columns and the update, each at its clock"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_phone_may_not_delete_view_settings(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let (mac, phone) = mac_and_phone(&admin, &app).await;
+    push_through(
+        &app,
+        &mac,
+        &[at(
+            insert(
+                3,
+                "viewSettings",
+                "view",
+                json!({"id": "view", "arrangement": "needsYouFirst"}),
+            ),
+            300,
+            MAC_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    let before = count(&app, &mac, "changes").await;
+    let outcome = changes::push(
+        &app,
+        &phone,
+        &[
+            at(delete(1, "viewSettings", "view"), 400, PHONE_CLOCK),
+            // Nor write a column outside the phone-writable list (the hub's own `user_id`).
+            at(
+                update(2, "viewSettings", "view", "user_id", Some(json!("x"))),
+                410,
+                PHONE_CLOCK,
+            ),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        outcome.rejected,
+        vec![
+            Rejected {
+                device_seq: 1,
+                code: "column_not_writable"
+            },
+            Rejected {
+                device_seq: 2,
+                code: "column_not_writable"
+            },
+        ]
+    );
+    assert_eq!(count(&app, &mac, "changes").await, before);
+    let stored = view(&app, &mac).await;
+    assert!(stored["deleted_at"].is_null());
+    assert_eq!(stored["arrangement"], "needsYouFirst");
+}
+
+/// `id` is phone-writable (a phone's insert carries it), so a phone update of it is accepted and
+/// recorded like any other, but it never renames the row: the row is still `view`.
+#[sqlx::test(migrations = false)]
+async fn a_phone_update_of_the_view_id_is_recorded_and_leaves_the_row_alone(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let (mac, phone) = mac_and_phone(&admin, &app).await;
+    push_through(
+        &app,
+        &mac,
+        &[at(
+            insert(
+                3,
+                "viewSettings",
+                "view",
+                json!({"id": "view", "arrangement": "needsYouFirst"}),
+            ),
+            300,
+            MAC_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    let before = count(&app, &mac, "changes").await;
+    let outcome = changes::push(
+        &app,
+        &phone,
+        &[at(
+            update(1, "viewSettings", "view", "id", Some(json!("renamed"))),
+            400,
+            PHONE_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    assert!(outcome.rejected.is_empty());
+    assert_eq!(count(&app, &mac, "changes").await, before + 1);
+    assert_eq!(count(&app, &mac, "viewSettings").await, 1);
+    let stored = view(&app, &mac).await;
+    assert_eq!(stored["id"], "view");
+    assert_eq!(stored["arrangement"], "needsYouFirst");
+}
+
+/// Decision 4's known limit: rows are keyed per org, and an upsert applies only for the row's own
+/// user, so a second user of the org cannot store a `view` row of their own.
+#[sqlx::test(migrations = false)]
+async fn a_second_user_of_the_org_shares_the_first_users_view_key(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let alice = common::enrolled(&admin, &app, "alice").await;
+    let bob = common::enrolled(&admin, &app, "bob").await;
+    assert_eq!(alice.org_id, bob.org_id);
+    let view_insert = |arrangement: &str| {
+        insert(
+            1,
+            "viewSettings",
+            "view",
+            json!({"id": "view", "arrangement": arrangement}),
+        )
+    };
+    push_through(&app, &alice, &[view_insert("needsYouFirst")])
+        .await
+        .unwrap();
+    let outcome = changes::push(&app, &bob, &[view_insert("byEnvironment")])
+        .await
+        .unwrap();
+    assert!(outcome.rejected.is_empty(), "recorded, then skipped");
+    assert_eq!(count(&app, &alice, "viewSettings").await, 1);
+    let stored = view(&app, &alice).await;
+    assert_eq!(stored["user_id"], alice.user_id.to_string());
+    assert_eq!(stored["arrangement"], "needsYouFirst");
 }

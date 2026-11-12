@@ -100,7 +100,7 @@ public enum LLA {
       public static let control: CGFloat = 30
       /// The least height of a tappable row. The Mac draws rows at their content height.
       public static let row: CGFloat = 0
-      /// A thread row: one 16 pt line in a 28 pt row, rows touching.
+      /// A thread row: one 16 pt line in a 28 pt row, `rowGap` between rows.
       public static let threadRow: CGFloat = 28
       /// Side margin of a page, the transcript, and the composer.
       public static let margin: CGFloat = Space.xl
@@ -117,6 +117,13 @@ public enum LLA {
     public static let sidebarWidth: CGFloat = 240
     /// The box a thread's state mark is drawn in, at the default text size (`ThreadMark`).
     public static let mark: CGFloat = 12
+    /// A tiny thread row (the Mac's lower list under "Tiny"): an 11 pt line in a 20 pt row.
+    public static let threadRowTiny: CGFloat = 20
+    /// The space between consecutive rows in the sidebar's lists: a hairline of space, not a drawn
+    /// line. A section gap above a list's first row replaces it (D-208, the owner's changes).
+    public static let rowGap: CGFloat = 1
+    /// A tiny row's mark box.
+    public static let markTiny: CGFloat = 8
     /// Reading column for transcripts and long copy.
     public static let column: CGFloat = 720
     /// The smallest window the macOS app allows; the thread detail must fit inside it at any

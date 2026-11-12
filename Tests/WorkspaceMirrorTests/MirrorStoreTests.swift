@@ -228,9 +228,11 @@ func change(
     #expect(try store.draft(threadId: "thread-1") == nil)
     let stored = [
       "connections": 1, "threads": 1, "turns": 2, "displayItems": 4, "runtimeRequests": 1, "drafts": 0,
+      "viewSettings": 1,
     ]
     for (table, count) in stored { #expect(try store.rowCount(table) == count, "\(table)") }
     #expect(try store.undecodableRowCount() == 0)
+    #expect(try store.viewSettings() == ViewSettings(quietThreads: .collapsed))
   }
 
   @Test func aRowANewerMacWroteIsKeptLeftOutOfReadsAndCounted() throws {

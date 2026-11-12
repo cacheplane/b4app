@@ -13,7 +13,7 @@ enum AgentProtocolFoundationFixture {
   static let migrations = [
     "0001_init", "0002_changes", "0003_hub", "0004_organisation", "0005_relay",
     "0006_usage", "0007_connection_usage", "0008_thread_delete", "0009_thread_runtime_choice",
-    "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_agent_protocol",
+    "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_view_settings", "0014_agent_protocol",
   ]
   static let protocolTables = [
     "protocolSubscriptions", "protocolRunSegments", "protocolOperations",
@@ -27,7 +27,8 @@ enum AgentProtocolFoundationFixture {
   static let appFolderDataTables = legacyDataTables.flatMap { table in
     table == "threads" ? ["threads", "appFolders"] : [currentTable(old: table)]
   }
-  static let dataTables = appFolderDataTables + protocolTables
+  static let viewSettingsDataTables = appFolderDataTables + ["viewSettings"]
+  static let dataTables = viewSettingsDataTables + protocolTables
 
   static func currentTable(old table: String) -> String {
     switch table {
@@ -174,22 +175,24 @@ enum AgentProtocolFoundationFixture {
     }
     let header = try object(try #require(lines.first)), footer = try object(try #require(lines.last))
     let expectedContext = [Migrator.table, "hubLink"]
-    // Through10 project names;11 environments;12 adds appFolders;13 adds AP tables.
+    // Through10 project names;11 environments;12 appFolders;13 viewSettings;14 AP tables.
     // Never infer a smaller schema from missing tables; unknown or absent tables are failures.
     let baseTables =
-      canonicalPrefixCount >= 12
-      ? appFolderDataTables
-      : (canonicalPrefixCount >= 11 ? legacyDataTables.map { currentTable(old: $0) } : legacyDataTables)
-    let expectedData = baseTables + (canonicalPrefixCount == 13 ? protocolTables : [])
+      canonicalPrefixCount >= 13
+      ? viewSettingsDataTables
+      : canonicalPrefixCount >= 12
+        ? appFolderDataTables
+        : (canonicalPrefixCount >= 11 ? legacyDataTables.map { currentTable(old: $0) } : legacyDataTables)
+    let expectedData = baseTables + (canonicalPrefixCount == 14 ? protocolTables : [])
     var headerFields: Set<String> = [
       "format", "version", "at", "purpose", "migrations", "requiredTables", "sourceContextTables",
     ]
-    if canonicalPrefixCount == 13 { headerFields.insert("protocolSchema") }
-    guard (8...13).contains(canonicalPrefixCount),
+    if canonicalPrefixCount == 14 { headerFields.insert("protocolSchema") }
+    guard (8...14).contains(canonicalPrefixCount),
       expectedMigrations == Array(migrations.prefix(canonicalPrefixCount)),
       Set(expectedRows.keys) == Set(expectedData + expectedContext),
       Set(header.keys) == headerFields,
-      canonicalPrefixCount != 13 || header["protocolSchema"] as? String == "generation_epochs_v1",
+      canonicalPrefixCount != 14 || header["protocolSchema"] as? String == "generation_epochs_v1",
       header["format"] as? String == "b4app-export", header["version"] as? Int == 4,
       header["purpose"] as? String == "preMigration", !(header["at"] as? String ?? "").isEmpty,
       header["migrations"] as? [String] == expectedMigrations,
@@ -285,6 +288,7 @@ enum AgentProtocolFoundationFixture {
     #expect(Set(currentRows.keys) == Set(dataTables + [Migrator.table, "hubLink"]))
     for table in protocolTables { #expect(currentRows[table]?.isEmpty == true) }
     if oldRows["appFolders"] == nil { #expect(currentRows["appFolders"]?.isEmpty == true) }
+    if oldRows["viewSettings"] == nil { #expect(currentRows["viewSettings"]?.isEmpty == true) }
     let oldLedger = try #require(oldRows[Migrator.table])
     let currentLedger = try #require(currentRows[Migrator.table])
     func names(_ rows: [String]) throws -> [String] {
@@ -294,7 +298,7 @@ enum AgentProtocolFoundationFixture {
       }.sorted()
     }
     let oldNames = try names(oldLedger)
-    guard (8...13).contains(oldNames.count),
+    guard (8...14).contains(oldNames.count),
       oldNames == Array(migrations.prefix(oldNames.count))
     else {
       throw Failure.canonicalSet

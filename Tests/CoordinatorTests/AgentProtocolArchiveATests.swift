@@ -14,13 +14,15 @@ import WorkspaceProtocol
     "localServers", "environments", "environmentFolders", "connections", "threads", "appFolders", "turns",
     "displayItems",
     "runtimeRequests", "drafts", "devices", "changes", "columnClocks", "settings", "usageReadings",
-    "tokenUsage", "connectionUsage", "threadDeletes", "protocolSubscriptions", "protocolRunSegments",
+    "tokenUsage", "connectionUsage", "threadDeletes", "viewSettings", "protocolSubscriptions",
+    "protocolRunSegments",
     "protocolOperations", "protocolGrantSecrets", "protocolGrants", "protocolPromptAnswers",
     "protocolHistoryAnchors",
   ]
-  private static let historicalDataTables = dataTables.filter { $0 != "appFolders" }.map {
-    $0 == "environments" ? "projects" : ($0 == "environmentFolders" ? "projectFolders" : $0)
-  }
+  private static let historicalDataTables = dataTables.filter { $0 != "appFolders" && $0 != "viewSettings" }
+    .map {
+      $0 == "environments" ? "projects" : ($0 == "environmentFolders" ? "projectFolders" : $0)
+    }
   private static func sourceDataTables(_ present: Set<String>) -> [String] {
     (present.contains("projects") ? historicalDataTables : dataTables).filter(present.contains)
   }
@@ -117,6 +119,9 @@ import WorkspaceProtocol
     }
     try seedOldTables(raw, endpointReference: reference, protocolProfiles: current)
     if let database {
+      try raw.execute(
+        #"SET b4app.replaying='on'; INSERT INTO "viewSettings" ("id","arrangement","quietThreads","showArchived","updatedAt") VALUES ('view','future-arrangement','future-quiet',true,'source-view'); RESET b4app.replaying"#
+      )
       for suffix in ["a", "b"] {
         try seedPrivate(database, suffix: suffix, material: material + " owner-" + suffix)
       }
@@ -409,7 +414,7 @@ import WorkspaceProtocol
         "format": "b4app-export", "version": 4, "at": stamp, "purpose": purpose,
         "migrations": try Migrator.recorded(raw), "requiredTables": data, "sourceContextTables": context,
       ], records: records, footer: [:])
-    if let names = result.header["migrations"] as? [String], names.count == 13 {
+    if let names = result.header["migrations"] as? [String], names.count == 14 {
       result.header["protocolSchema"] = "generation_epochs_v1"
     }
     result.recount()
@@ -505,7 +510,7 @@ import WorkspaceProtocol
       return name
     }.sorted()
     let migrationNamesMatch = document.header["migrations"] as? [String] == sourceNames
-    if sourceNames.count == 13 {
+    if sourceNames.count == 14 {
       #expect(document.header["protocolSchema"] as? String == "generation_epochs_v1")
     } else {
       #expect(document.header["protocolSchema"] == nil)
@@ -760,7 +765,8 @@ import WorkspaceProtocol
           case 8:
             doc.header["migrations"] =
               Self.canonicalNine + [
-                "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_agent_protocol",
+                "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_view_settings",
+                "0014_agent_protocol",
                 "9999_future",
               ]
             doc.records.append([
@@ -774,7 +780,7 @@ import WorkspaceProtocol
             // The prefix is the ACTUAL valid owner/reference/material. libpq truncation would
             // otherwise target a valid prefix and could falsely pass via an unrelated FK refusal.
             try Self.editRow(&doc, table: "protocolGrantSecrets", key: key, value: prefix + "\0suffix")
-          case 15: doc.header["migrations"] = Self.canonicalNine  // Context ledger still claims0013.
+          case 15: doc.header["migrations"] = Self.canonicalNine  // Context ledger still claims protocol14.
           case 16: doc.header["requiredTables"] = Self.dataTables + ["connections"]; doc.recount()
           default: break
           }
@@ -945,7 +951,7 @@ import WorkspaceProtocol
         else { throw FixtureFailure.invalidRecord }
         if table == "connections" {
           row = legacyConnection(row)
-          for key in protocolConnectionFields { row[key] = NSNull() }  // target's nullable0013 defaults
+          for key in protocolConnectionFields { row[key] = NSNull() }  // target's nullable0014 defaults
         }
         if table == "changes" {
           row["synced"] = false

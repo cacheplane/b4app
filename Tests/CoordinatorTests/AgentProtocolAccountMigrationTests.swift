@@ -301,7 +301,9 @@ final class L1FactoryCalls: Sendable {
     guard allApplied.keys.sorted() == AgentProtocolFoundationFixture.migrations else {
       throw SetupFailure.malformedLedger
     }
-    for table in ["environments", "environmentFolders", "connections", "threads", "appFolders"] {
+    for table in [
+      "environments", "environmentFolders", "connections", "threads", "appFolders", "viewSettings",
+    ] {
       guard try c.execute("SELECT 1 FROM \(Rows.quote(table)) LIMIT 1").rows.isEmpty
       else { throw SetupFailure.canonicalMismatch }
     }
@@ -343,7 +345,10 @@ final class L1FactoryCalls: Sendable {
       try c.execute(
         #"ALTER TABLE "connections" ADD CONSTRAINT "connections_kind_check" CHECK ("kind" IN ('codex', 'claude', 'b4'))"#
       )
-      guard try c.execute(#"DELETE FROM "schemaMigrations" WHERE "name"='0013_agent_protocol'"#).affected == 1
+      guard try c.execute(#"DELETE FROM "schemaMigrations" WHERE "name"='0014_agent_protocol'"#).affected == 1
+      else { throw SetupFailure.malformedLedger }
+      try c.execute(#"DROP TABLE "viewSettings""#)
+      guard try c.execute(#"DELETE FROM "schemaMigrations" WHERE "name"='0013_view_settings'"#).affected == 1
       else { throw SetupFailure.malformedLedger }
       try c.execute(#"DROP TABLE "appFolders""#)
       guard try c.execute(#"DELETE FROM "schemaMigrations" WHERE "name"='0012_app_folders'"#).affected == 1

@@ -3,7 +3,9 @@
 
 mod common;
 
+use b4hub_core::change::{Change, ChangeOp};
 use b4hub_db::accounts::{self, DeviceSpec, Identity, Principal};
+use b4hub_db::changes;
 use b4hub_db::devices::{self, Platform};
 use b4hub_db::orgs;
 use serde_json::json;
@@ -346,4 +348,65 @@ async fn push_tables_isolate_by_org(pool: PgPool) {
             .unwrap();
         assert_eq!(n, 0, "{table}");
     }
+}
+
+/// The `view` row of `who`'s org, read under its tenant context.
+async fn view_row(
+    app: &b4hub_db::Db,
+    who: &b4hub_db::devices::AuthedDevice,
+) -> Option<serde_json::Value> {
+    let mut tx = app.tenant_tx(who.org_id).await.unwrap();
+    let found =
+        sqlx::query_scalar("SELECT to_jsonb(v) FROM \"viewSettings\" v WHERE \"id\" = 'view'")
+            .fetch_optional(&mut *tx)
+            .await
+            .unwrap();
+    tx.rollback().await.unwrap();
+    found
+}
+
+#[sqlx::test(migrations = false)]
+async fn another_org_never_sees_view_settings(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let mine = common::enrolled(&admin, &app, "blove").await;
+    let theirs = common::enrolled_in(&admin, &app, "elsewhere", "eve").await;
+    let view = |arrangement: &str| Change {
+        device_seq: 1,
+        wall: 1_761_900_000_000,
+        table: "viewSettings".into(),
+        row_id: "view".into(),
+        op: ChangeOp::Insert,
+        column: None,
+        value: Some(json!({"id": "view", "arrangement": arrangement, "quietThreads": "small"})),
+        hlc: None,
+    };
+    changes::push(&app, &mine, &[view("needsYouFirst")])
+        .await
+        .unwrap();
+
+    assert!(view_row(&app, &theirs).await.is_none());
+    // Without a tenant context, nothing.
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM \"viewSettings\"")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+    // Nor through the feed or a snapshot.
+    let page = changes::pull(&app, &theirs, 0, 1000).await.unwrap();
+    assert!(page.changes.is_empty());
+    let snapshot = b4hub_db::snapshot::take(&app, &theirs).await.unwrap();
+    assert!(snapshot.changes.is_empty() && snapshot.clocks.is_empty());
+
+    // The other org's own `view` row is its own: each org keeps its value.
+    changes::push(&app, &theirs, &[view("byEnvironment")])
+        .await
+        .unwrap();
+    assert_eq!(
+        view_row(&app, &mine).await.unwrap()["arrangement"],
+        "needsYouFirst"
+    );
+    assert_eq!(
+        view_row(&app, &theirs).await.unwrap()["arrangement"],
+        "byEnvironment"
+    );
 }

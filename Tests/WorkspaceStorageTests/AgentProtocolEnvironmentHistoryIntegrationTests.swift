@@ -85,7 +85,7 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
   }
 
   @Test(arguments: ["read committed", "repeatable read"])
-  func publicPrefixTenBackupAndHistorySurviveThroughThirteen(isolation: String) throws {
+  func publicPrefixTenBackupAndHistorySurviveThroughFourteen(isolation: String) throws {
     let f = try fixture()
     defer { try? FileManager.default.removeItem(atPath: (f.backup as NSString).deletingLastPathComponent) }
     try f.raw.execute(
@@ -165,40 +165,42 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
     #expect(try archives(f).isEmpty)
   }
 
-  @Test func laterThirteenCommitFaultKeepsElevenTwelveAndTheirBackup() throws {
+  @Test func laterFourteenCommitFaultKeepsElevenTwelveThirteenAndTheirBackup() throws {
     let f = try fixture()
     defer { try? FileManager.default.removeItem(atPath: (f.backup as NSString).deletingLastPathComponent) }
     try f.raw.execute(
       """
       CREATE SCHEMA history_integration;
       CREATE SEQUENCE history_integration.probe;
-      CREATE FUNCTION history_integration.refuse_thirteen() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+      CREATE FUNCTION history_integration.refuse_fourteen() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
       BEGIN
         IF to_regclass('public."appFolders"') IS NULL OR to_regclass('public."protocolSubscriptions"') IS NULL
           OR NOT EXISTS (SELECT 1 FROM public."schemaMigrations" WHERE name='0011_environments')
           OR NOT EXISTS (SELECT 1 FROM public."schemaMigrations" WHERE name='0012_app_folders')
+          OR NOT EXISTS (SELECT 1 FROM public."schemaMigrations" WHERE name='0013_view_settings')
+          OR to_regclass('public."viewSettings"') IS NULL
           OR NOT EXISTS (SELECT 1 FROM public."schemaMigrations" WHERE name=NEW.name AND "appliedAt"=NEW."appliedAt")
           OR NOT EXISTS (SELECT 1 FROM public.changes WHERE "rowId"='opaque'
             AND value='{"projectId":"external","environmentId":"keep","nested":{"projectId":"inside"}}'::jsonb)
-        THEN RAISE EXCEPTION 'Thirteen COMMIT stage was not reached'; END IF;
+        THEN RAISE EXCEPTION 'Fourteen COMMIT stage was not reached'; END IF;
         PERFORM nextval('history_integration.probe');
-        RAISE EXCEPTION 'Deliberate thirteen COMMIT refusal';
+        RAISE EXCEPTION 'Deliberate fourteen COMMIT refusal';
       END $$;
-      CREATE CONSTRAINT TRIGGER history_integration_thirteen AFTER INSERT ON public."schemaMigrations"
-        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.name='0013_agent_protocol')
-        EXECUTE FUNCTION history_integration.refuse_thirteen();
+      CREATE CONSTRAINT TRIGGER history_integration_fourteen AFTER INSERT ON public."schemaMigrations"
+        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.name='0014_agent_protocol')
+        EXECUTE FUNCTION history_integration.refuse_fourteen();
       """
     )
     let failed = Result {
       try WorkspaceDatabase(
         endpoint: f.endpoint, binDir: f.endpoint.binDir!, createIfMissing: false, backupDirectory: f.backup)
     }
-    if case .success(let db) = failed { try db.close(); Issue.record("Actual thirteen COMMIT must fail") }
+    if case .success(let db) = failed { try db.close(); Issue.record("Actual fourteen COMMIT must fail") }
     #expect(throws: WorkspaceError.self) { try failed.get() }
     #expect(
       try f.raw.execute("SELECT last_value::text AS n FROM history_integration.probe WHERE is_called").rows
         .first?.text("n") == "1")
-    #expect(try Migrator.recorded(f.raw) == Array(Migrator.files().map(\.name).prefix(12)))
+    #expect(try Migrator.recorded(f.raw) == Array(Migrator.files().map(\.name).prefix(13)))
     #expect(
       try f.raw.execute("SELECT to_regclass('public.\"protocolSubscriptions\"')::text AS name").rows.first?
         .text("name") == nil)
@@ -219,14 +221,14 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
       try f.raw.execute(
         "SELECT jsonb_agg(to_jsonb(m) ORDER BY name)::text AS value FROM public.\"schemaMigrations\" m"
       ).rows.first?.text("value"))
-    try f.raw.execute("DROP TRIGGER history_integration_thirteen ON public.\"schemaMigrations\"")
+    try f.raw.execute("DROP TRIGGER history_integration_fourteen ON public.\"schemaMigrations\"")
     let db = try WorkspaceDatabase(
       endpoint: f.endpoint, binDir: f.endpoint.binDir!, createIfMissing: false, backupDirectory: f.backup)
     try db.close()
     #expect(try Migrator.recorded(f.raw) == Migrator.files().map(\.name))
     #expect(
       try f.raw.execute(
-        "SELECT jsonb_agg(to_jsonb(m) ORDER BY name)::text AS value FROM public.\"schemaMigrations\" m WHERE name<'0013'"
+        "SELECT jsonb_agg(to_jsonb(m) ORDER BY name)::text AS value FROM public.\"schemaMigrations\" m WHERE name<'0014'"
       ).rows.first?.text("value") == priorLedger)
     #expect(try Data(contentsOf: oldFile) == oldBytes)
     #expect(try archives(f).count == 2)
@@ -317,7 +319,7 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
     #expect(try Migrator.recorded(observer) == Migrator.files().map(\.name))
   }
 
-  @Test(arguments: ["0012_agent_protocol", "0000_unknown"])
+  @Test(arguments: ["0012_agent_protocol", "0013_agent_protocol", "0000_unknown"])
   func currentStoreWithUnknownLedgerRefusesWithoutBackupOrMutation(extra: String) throws {
     let f = try fixture()
     defer { try? FileManager.default.removeItem(atPath: (f.backup as NSString).deletingLastPathComponent) }

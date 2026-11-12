@@ -117,7 +117,6 @@ extension WorkspaceModel {
       return WorkspaceError.from(error)
     }
     environments.removeAll { $0.id == id }
-    if environmentFilter == .environment(id) { environmentFilter = .all }
     return nil
   }
 
@@ -276,8 +275,7 @@ final class PhoneEnvironmentDraft {
       return
     }
     switch result {
-    case .success(let saved):
-      if isNew { model.environmentFilter = .environment(saved.id) }
+    case .success:
       finished = true
     case .failure(let error):
       failure = SendRules.reason(error, now: model.now())

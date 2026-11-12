@@ -381,15 +381,13 @@ private struct AttentionDocument: Decodable {
       "t-completed-read", "t-no-turns", "t-tie-a", "t-tie-b", "t-stale-updated",
     ]
     #expect(model.orderedThreads.map(\.id) == expected)
-    #expect(model.pinnedThreads.map(\.id) == ["t-pinned-working", "t-pinned-quiet"])
     #expect(
       model.orderedThreads.prefix(5).map { model.state(of: $0) } == [
         .approve, .approve, .failed, .finished, .finished,
       ])
-    #expect(model.visibleThreads.map(\.id) == expected)
   }
 
-  @Test func environmentSectionsExcludePinnedAndRiseWithUrgency() async throws {
+  @Test func groupsHoldPinnedThreadsInStateOrderAndSortByName() async throws {
     let transport = ScriptedTransport()
     transport.set(
       threads: [
@@ -406,16 +404,15 @@ private struct AttentionDocument: Decodable {
           activity: activity(turn: "u4", status: .terminal, at: 99)),
       ],
       environments: [environment("pa", "Alpha"), environment("pb", "Beta"), environment("pc", "Gamma")])
-    let model = try await connected(transport)
-    #expect(model.pinnedThreads.map(\.id) == ["pinned-b"])
-    // Beta holds a thread that needs input; Gamma an unread one; No folder a working one; Alpha only quiet.
-    #expect(model.environmentSections.map(\.id) == ["pb", "pc", "pa", "other"])
-    #expect(model.environmentSections.map(\.title) == ["Beta", "Gamma", "Alpha", "No folder"])
-    #expect(model.environmentSections.flatMap(\.threads).map(\.id).contains("pinned-b") == false)
-    #expect(model.environmentSections[0].threads.map(\.id) == ["waiting-b"])
-    #expect(model.environmentSections[1].threads.map(\.id) == ["unread-c", "quiet-c"])
-    #expect(model.environmentSections[2].threads.map(\.id) == ["quiet-a", "quiet-a2"])
-    #expect(model.environmentSections[3].threads.map(\.id) == ["loose"])
+    let groups = try await byEnvironment(transport)
+    // There is no Pinned group: a pinned thread stays in its environment, first within its state.
+    // Groups are by name whatever their threads need; No folder is last.
+    #expect(groups.map(\.id) == ["pa", "pb", "pc", "other"])
+    #expect(groups.map(\.title) == ["Alpha", "Beta", "Gamma", "No folder"])
+    #expect(groups[0].threads.map(\.id) == ["quiet-a", "quiet-a2"])
+    #expect(groups[1].threads.map(\.id) == ["pinned-b", "waiting-b"])
+    #expect(groups[2].threads.map(\.id) == ["unread-c", "quiet-c"])
+    #expect(groups[3].threads.map(\.id) == ["loose"])
   }
 
   @Test func otherComesLastEvenWhenItHoldsTheOnlyThreadThatNeedsInput() async throws {
@@ -427,9 +424,9 @@ private struct AttentionDocument: Decodable {
         thread("b", environment: "pb", activity: activity(at: 2)),
       ],
       environments: [environment("pa", "Alpha"), environment("pb", "Beta")])
-    let model = try await connected(transport)
-    #expect(model.environmentSections.map(\.id) == ["pb", "pa", "other"])
-    #expect(model.environmentSections.last?.threads.map(\.id) == ["asks"])
+    let groups = try await byEnvironment(transport)
+    #expect(groups.map(\.id) == ["pa", "pb", "other"])
+    #expect(groups.last?.threads.map(\.id) == ["asks"])
   }
 
   @Test func aNoFolderThreadIsListedUnderNoFolder() async throws {
@@ -439,13 +436,13 @@ private struct AttentionDocument: Decodable {
     transport.set(
       threads: [loose, thread("a", environment: "pa", activity: activity(at: 5))],
       environments: [environment("pa", "Alpha")])
-    let model = try await connected(transport)
-    let section = try #require(model.environmentSections.first { $0.threads.contains { $0.id == "loose" } })
-    #expect(section.title == "No folder")
-    #expect(model.environmentSections.map(\.title) == ["Alpha", "No folder"])
+    let groups = try await byEnvironment(transport)
+    let group = try #require(groups.first { $0.threads.contains { $0.id == "loose" } })
+    #expect(group.title == "No folder")
+    #expect(groups.map(\.title) == ["Alpha", "No folder"])
   }
 
-  @Test func sectionsInOneStateBreakTiesByRecentActivityThenTitle() async throws {
+  @Test func groupsSortByNameNotByRecentActivity() async throws {
     let transport = ScriptedTransport()
     transport.set(
       threads: [
@@ -454,8 +451,7 @@ private struct AttentionDocument: Decodable {
         thread("c", environment: "pc", activity: activity(at: 20)),
       ],
       environments: [environment("pa", "Alpha"), environment("pb", "Zulu"), environment("pc", "Bravo")])
-    let model = try await connected(transport)
-    #expect(model.environmentSections.map(\.title) == ["Bravo", "Zulu", "Alpha"])
+    #expect(try await byEnvironment(transport).map(\.title) == ["Alpha", "Bravo", "Zulu"])
   }
 
   @Test func aEnvironmentWithoutAnExplicitNameShowsItsFolder() async throws {
@@ -464,11 +460,19 @@ private struct AttentionDocument: Decodable {
       id: "pa", name: "",
       folders: [EnvironmentFolder(id: "f1", environmentId: "pa", path: "/Users/brian/repos/b4app")])
     transport.set(threads: [thread("a", environment: "pa")], environments: [auto])
-    let model = try await connected(transport)
-    #expect(model.environmentSections.map(\.title) == ["b4app"])
+    #expect(try await byEnvironment(transport).map(\.title) == ["b4app"])
   }
 
-  @Test func environmentFilterNarrowsTheList() async throws {
+  /// The connected model's groups under "By environment".
+  private func byEnvironment(_ transport: ScriptedTransport) async throws -> [ListLayout.Group] {
+    let model = try await connected(transport)
+    transport.emit(try .viewSettingsChanged(ViewSettings(arrangement: .byEnvironment)))
+    try await waitUntil("by environment") { model.viewSettings.arrangement == .byEnvironment }
+    guard case .byEnvironment(let groups) = model.listLayout.body else { return [] }
+    return groups
+  }
+
+  @Test func theListIsEveryUnarchivedThreadAndTheArchiveIsApart() async throws {
     let transport = ScriptedTransport()
     transport.set(
       threads: [
@@ -479,16 +483,9 @@ private struct AttentionDocument: Decodable {
       ],
       environments: [environment("pa", "Alpha"), environment("pb", "Beta")])
     let model = try await connected(transport)
-    #expect(model.environmentFilter == .all)
     #expect(model.orderedThreads.map(\.id) == ["in-a", "in-b", "loose"])
-    model.environmentFilter = .environment("pa")
-    #expect(model.orderedThreads.map(\.id) == ["in-a"])
-    model.environmentFilter = .other
-    #expect(model.orderedThreads.map(\.id) == ["loose"])
-    model.environmentFilter = .archived
-    #expect(model.orderedThreads.map(\.id) == ["old"])
-    model.environmentFilter = .all
-    #expect(model.archivedThreads.map(\.id) == ["old"])
+    // The archive is drawn only while "Show archived" is on.
+    #expect(model.listLayout.archived.isEmpty)
   }
 
   @Test func openingAnUnreadThreadMarksItRead() async throws {
@@ -869,11 +866,9 @@ private struct AttentionDocument: Decodable {
     #expect(update["environmentId"]?.stringValue == "pa")
     #expect(update["addFolders"]?.arrayValue?.compactMap(\.stringValue) == ["/Users/brian/y"])
 
-    model.environmentFilter = .environment("pa")
     await model.deleteEnvironment(id: "pa")
     #expect(transport.calls(.environmentDelete).first?["environmentId"]?.stringValue == "pa")
     #expect(model.environments.map(\.id) == ["p-new"])
-    #expect(model.environmentFilter == .all)
 
     // An event from elsewhere (the other device renamed one) refetches the list.
     transport.set(environments: [environment("p-new", "Elsewhere")])
@@ -903,10 +898,7 @@ private struct AttentionDocument: Decodable {
     let model = try await connected(transport)
     #expect(model.threads.allSatisfy { model.arrival(for: $0) == nil })
 
-    // "b" leaves the list under the filter and comes back without it: no arrival.
-    model.environmentFilter = .environment("pa")
-    model.environmentFilter = .all
-    #expect(model.threads.allSatisfy { model.arrival(for: $0) == nil })
+    // The list empties under the filter and comes back without it: no arrival.
     model.connectionFilter = "elsewhere"
     #expect(model.orderedThreads.isEmpty)
     model.connectionFilter = nil
@@ -974,6 +966,263 @@ private struct AttentionDocument: Decodable {
     return model
   }
 
+  @Test func aNewArrangementOrShowArchivedRebasesTheArrivals() async throws {
+    let transport = ScriptedTransport()
+    let model = try await modelWithALiveTrace(transport, others: [])
+    // Another list, not a changed one: the live trace ends, as on a filter change.
+    transport.emit(try .viewSettingsChanged(ViewSettings(arrangement: .byEnvironment)))
+    try await waitUntil("rearranged") { model.viewSettings.arrangement == .byEnvironment }
+    #expect(!liveArrival(model))
+
+    let other = ScriptedTransport()
+    let shown = try await modelWithALiveTrace(other, others: [])
+    other.script(.viewSettingsSet, [.result(try JSONValue(encoding: ViewSettings(showArchived: true)))])
+    await shown.setShowArchived(true)
+    #expect(!liveArrival(shown))
+
+    // How quiet threads are drawn changes no list: the trace goes on.
+    let third = ScriptedTransport()
+    let quiet = try await modelWithALiveTrace(third, others: [])
+    third.emit(try .viewSettingsChanged(ViewSettings(quietThreads: .hidden)))
+    try await waitUntil("quiet hidden") { quiet.viewSettings.quietThreads == .hidden }
+    #expect(liveArrival(quiet))
+  }
+
+  @Test func aStowedThreadThatStartsNeedingYouArrivesInTheTopList() async throws {
+    let transport = ScriptedTransport()
+    let running = thread("w", activity: activity(turn: "u1", status: .running, at: 2))
+    let quiet = thread("q", readTurnId: "u2", activity: activity(turn: "u2", status: .terminal, at: 1))
+    transport.set(threads: [running, quiet])
+    let model = try await connected(transport)
+    transport.emit(try .viewSettingsChanged(ViewSettings(quietThreads: .collapsed)))
+    try await waitUntil("collapsed") { model.viewSettings.quietThreads == .collapsed }
+    #expect(
+      model.listLayout.body
+        == .needsYouFirst(top: [], lower: .collapsed(count: 2, working: 1, threads: [running, quiet])))
+    // Opening or closing the stowed rows, or drawing them another way, moves no thread into the top list.
+    transport.emit(try .viewSettingsChanged(ViewSettings(quietThreads: .hidden)))
+    try await waitUntil("hidden") { model.viewSettings.quietThreads == .hidden }
+    #expect(model.threads.allSatisfy { model.arrival(for: $0) == nil })
+
+    // The stowed working thread asks for an approval: it is in the top list at once, and it arrived.
+    var asks = running
+    asks.activity = activity(pending: 1, approvals: 1, at: 3)
+    transport.emit(try .threadUpdated(asks))
+    try await waitUntil("asks") { model.threads.contains { $0.id == "w" && model.state(of: $0) == .approve } }
+    guard case .needsYouFirst(let top, let lower) = model.listLayout.body else {
+      Issue.record("needs you first: \(model.listLayout.body)")
+      return
+    }
+    #expect(top.map(\.id) == ["w"])
+    #expect(lower == .hidden(working: []))
+    #expect(model.arrival(for: asks)?.laps == true)
+  }
+
+  // MARK: The selected thread holds its place (C6)
+
+  /// "a" asks for an approval, "t1" and "f" are finished and unread, "q" is quiet; "t1" opens with its
+  /// reply on screen, so opening it marks it read.
+  private func modelWithAFinishedThread(
+    _ transport: ScriptedTransport, environment: String? = nil, environments: [WorkEnvironment] = []
+  ) async throws -> WorkspaceModel {
+    let finishedThread = thread(
+      "t1", environment: environment, activity: activity(turn: "u1", status: .terminal, at: 4))
+    transport.set(
+      threads: [
+        thread("a", environment: environment, activity: activity(pending: 1, approvals: 1, at: 5)),
+        finishedThread,
+        thread("f", environment: environment, activity: activity(turn: "uf", status: .terminal, at: 3)),
+        thread(
+          "q", environment: environment, readTurnId: "uq",
+          activity: activity(turn: "uq", status: .terminal, at: 9)),
+      ],
+      environments: environments)
+    transport.setRead(read(finishedThread, turns: [turn("u1", in: "t1", at: 4)]))
+    transport.setRead(read(thread("f"), turns: [turn("uf", in: "f", at: 3)]))
+    transport.setRead(read(thread("q", readTurnId: "uq"), turns: [turn("uq", in: "q", at: 9)]))
+    return try await connected(transport)
+  }
+
+  private func topList(_ model: WorkspaceModel) -> [String] {
+    guard case .needsYouFirst(let top, _) = model.listLayout.body else { return [] }
+    return top.map(\.id)
+  }
+
+  @Test func aFinishedThreadOpenedAndReadKeepsItsSlotUntilTheSelectionMoves() async throws {
+    let transport = ScriptedTransport()
+    let model = try await modelWithAFinishedThread(transport)
+    #expect(topList(model) == ["a", "t1", "f"])
+    let badge = model.threads.filter(Attention.countsTowardBadge).map(\.id)
+    #expect(badge == ["a", "t1", "f"])
+
+    await model.openThread(id: "t1")
+    let t1 = try #require(model.threads.first { $0.id == "t1" })
+    #expect(t1.readTurnId == "u1")
+    // Its state is the real one (quiet, so no mark and a quiet title) and the badge no longer counts it,
+    // but it keeps its slot in the top list.
+    #expect(model.state(of: t1) == .quiet)
+    #expect(Attention.state(of: t1) == .quiet)
+    #expect(model.threads.filter(Attention.countsTowardBadge).map(\.id) == ["a", "f"])
+    #expect(topList(model) == ["a", "t1", "f"])
+
+    // Another thread selected: the hold is released and "t1" takes its real place, without tracing
+    // itself or any row that shifted.
+    await model.openThread(id: "q")
+    #expect(topList(model) == ["a", "f"])
+    guard case .needsYouFirst(_, .rows(let lower, _)) = model.listLayout.body else {
+      Issue.record("Small: \(model.listLayout.body)")
+      return
+    }
+    #expect(lower.map(\.id) == ["q", "t1"])
+    #expect(model.threads.allSatisfy { model.arrival(for: $0) == nil })
+  }
+
+  /// The hold lasts while the selected thread's detail column shows. On a compact phone, going back to
+  /// the list releases it (the thread takes its real place, nothing traces), and showing the detail
+  /// again starts a fresh hold from the thread's state now, not the old one.
+  @Test func onACompactPhoneGoingBackToTheListReleasesTheHold() async throws {
+    let transport = ScriptedTransport()
+    let model = try await modelWithAFinishedThread(transport)
+    await model.openThread(id: "t1")
+    #expect(model.state(of: try #require(model.threads.first { $0.id == "t1" })) == .quiet)
+    #expect(topList(model) == ["a", "t1", "f"])
+
+    // Back to the list: the detail column and the detail leave the screen; "t1" stays selected.
+    model.isDetailColumnShown = false
+    model.isDetailOnScreen = false
+    #expect(model.selectedThreadId == "t1")
+    #expect(topList(model) == ["a", "f"])
+    guard case .needsYouFirst(_, .rows(let lower, _)) = model.listLayout.body else {
+      Issue.record("Small: \(model.listLayout.body)")
+      return
+    }
+    #expect(lower.map(\.id) == ["q", "t1"])
+    #expect(model.threads.allSatisfy { model.arrival(for: $0) == nil })
+
+    // Reopened: a fresh hold from its state now (quiet), not the finished one it had.
+    model.isDetailColumnShown = true
+    model.isDetailOnScreen = true
+    await model.openThread(id: "t1")
+    #expect(topList(model) == ["a", "f"])
+  }
+
+  /// On the Mac the detail column always shows: the window losing focus (the detail no longer in front
+  /// of the owner) keeps the hold.
+  @Test func anInactiveMacWindowKeepsTheHold() async throws {
+    let transport = ScriptedTransport()
+    let model = try await modelWithAFinishedThread(transport)
+    await model.openThread(id: "t1")
+    model.isDetailOnScreen = false
+    #expect(topList(model) == ["a", "t1", "f"])
+    model.isDetailOnScreen = true
+    #expect(topList(model) == ["a", "t1", "f"])
+  }
+
+  @Test func everyWayTheSelectionGoesReleasesTheHold() async throws {
+    let transport = ScriptedTransport()
+    let model = try await modelWithAFinishedThread(transport)
+    await model.openThread(id: "t1")
+    #expect(topList(model) == ["a", "t1", "f"])
+    // The new-thread composer selects nothing.
+    await model.openNewThread()
+    #expect(topList(model) == ["a", "f"])
+
+    // Selecting it again starts a new hold from its state now (quiet): nothing to hold.
+    model.selectedThreadId = "t1"
+    #expect(topList(model) == ["a", "f"])
+
+    // A row selects before it opens (`ThreadRow`); the open that follows keeps the same hold.
+    model.selectedThreadId = "f"
+    await model.openThread(id: "f")
+    #expect(model.state(of: try #require(model.threads.first { $0.id == "f" })) == .quiet)
+    #expect(topList(model) == ["a", "f"])
+    // Archiving the selected thread drops its hold: it is no longer in the live list.
+    var archived = try #require(model.threads.first { $0.id == "f" })
+    archived.archived = true
+    transport.emit(try .threadUpdated(archived))
+    try await waitUntil("archived") { model.threads.contains { $0.id == "f" && $0.archived } }
+    #expect(topList(model) == ["a"])
+    archived.archived = false
+    transport.emit(try .threadUpdated(archived))
+    try await waitUntil("unarchived") { model.threads.contains { $0.id == "f" && !$0.archived } }
+    // Back in the live list while still selected, it starts a new hold from its state now: quiet.
+    #expect(topList(model) == ["a"])
+    // Signing out drops it with everything else.
+    model.forgetWorkspace()
+    #expect(model.selectedThreadId == nil)
+    #expect(model.threads.isEmpty)
+  }
+
+  @Test func aHeldThreadUnderCollapsedIsNotStowedUntilReleased() async throws {
+    let transport = ScriptedTransport()
+    let model = try await modelWithAFinishedThread(transport)
+    transport.emit(try .viewSettingsChanged(ViewSettings(quietThreads: .collapsed)))
+    try await waitUntil("collapsed") { model.viewSettings.quietThreads == .collapsed }
+    await model.openThread(id: "t1")
+    guard
+      case .needsYouFirst(let top, .collapsed(let count, _, let stowed, let selected)) = model.listLayout.body
+    else {
+      Issue.record("Collapsed: \(model.listLayout.body)")
+      return
+    }
+    #expect(top.map(\.id) == ["a", "t1", "f"])
+    #expect(count == 1)
+    #expect(stowed.map(\.id) == ["q"])
+    #expect(selected == nil)
+
+    model.selectedThreadId = nil
+    guard case .needsYouFirst(let after, .collapsed(let count, _, let stowed, nil)) = model.listLayout.body
+    else {
+      Issue.record("Collapsed, released: \(model.listLayout.body)")
+      return
+    }
+    #expect(after.map(\.id) == ["a", "f"])
+    #expect(count == 2)
+    #expect(stowed.map(\.id) == ["q", "t1"])
+  }
+
+  @Test func aHeldThreadThatAsksAgainMovesUpWithinTheTopList() async throws {
+    let transport = ScriptedTransport()
+    let model = try await modelWithAFinishedThread(transport)
+    await model.openThread(id: "t1")
+    #expect(topList(model) == ["a", "t1", "f"])
+
+    // A new approval on the held (now read) thread: approve, newer than "a", so it leads.
+    var asks = try #require(model.threads.first { $0.id == "t1" })
+    asks.activity = activity(turn: "u1", status: .terminal, pending: 1, approvals: 1, at: 6)
+    transport.emit(try .threadUpdated(asks))
+    try await waitUntil("asks") {
+      model.threads.contains { $0.id == "t1" && model.state(of: $0) == .approve }
+    }
+    #expect(topList(model) == ["t1", "a", "f"])
+
+    // The approval answered, it is quiet again; the hold is now approve, so it stays first.
+    var answered = asks
+    answered.activity = activity(turn: "u1", status: .terminal, at: 7)
+    transport.emit(try .threadUpdated(answered))
+    try await waitUntil("answered") {
+      model.threads.contains { $0.id == "t1" && model.state(of: $0) == .quiet }
+    }
+    #expect(topList(model) == ["t1", "a", "f"])
+  }
+
+  @Test func underByEnvironmentAHeldThreadKeepsItsPlaceInItsGroup() async throws {
+    let transport = ScriptedTransport()
+    let model = try await modelWithAFinishedThread(
+      transport, environment: "pa", environments: [environment("pa", "Alpha")])
+    transport.emit(try .viewSettingsChanged(ViewSettings(arrangement: .byEnvironment)))
+    try await waitUntil("by environment") { model.viewSettings.arrangement == .byEnvironment }
+    func order() -> [String] {
+      guard case .byEnvironment(let groups) = model.listLayout.body else { return [] }
+      return groups.flatMap(\.threads).map(\.id)
+    }
+    #expect(order() == ["a", "t1", "f", "q"])
+    await model.openThread(id: "t1")
+    #expect(order() == ["a", "t1", "f", "q"])
+    model.selectedThreadId = nil
+    #expect(order() == ["a", "f", "q", "t1"])
+  }
+
   private func liveArrival(_ model: WorkspaceModel) -> Bool {
     model.threads.first { $0.id == "live" }.map { model.arrival(for: $0) != nil } ?? false
   }
@@ -1023,9 +1272,7 @@ private struct AttentionDocument: Decodable {
     let other = thread("t2", activity: activity(turn: "u2", status: .running, at: 1))
     let model = try await modelWithALiveTrace(
       transport, others: [filed, other], environments: [environment("pa", "Alpha")])
-    model.environmentFilter = .other
-    #expect(!model.orderedThreads.contains { $0.id == "t1" })
-    // A trace that starts under the filter, so the refresh can be seen to leave it alone.
+    // A trace that starts before the refresh, so the refresh can be seen to leave it alone.
     var otherDone = other
     otherDone.activity = activity(turn: "u2", status: .terminal, at: 4)
     transport.emit(try .threadUpdated(otherDone))
@@ -1040,6 +1287,44 @@ private struct AttentionDocument: Decodable {
     #expect(model.orderedThreads.contains { $0.id == "t1" })
 
     // The next event about any thread does not make it an arrival.
+    var renamed = model.threads.first { $0.id == "live" }!
+    renamed.title = "renamed"
+    transport.emit(try .threadUpdated(renamed))
+    try await waitUntil("renamed") { model.threads.contains { $0.title == "renamed" } }
+    #expect(model.arrival(for: model.threads.first { $0.id == "t1" }!) == nil)
+    #expect(model.arrival(for: model.threads.first { $0.id == "t2" }!) != nil)
+  }
+
+  @Test func aThreadMovingIntoNoFolderUnderByEnvironmentDoesNotTrace() async throws {
+    let transport = ScriptedTransport()
+    let filed = thread("t1", environment: "pa", activity: activity(turn: "u1", status: .terminal, at: 2))
+    let other = thread("t2", activity: activity(turn: "u2", status: .running, at: 1))
+    let model = try await modelWithALiveTrace(
+      transport, others: [filed, other], environments: [environment("pa", "Alpha")])
+    transport.emit(try .viewSettingsChanged(ViewSettings(arrangement: .byEnvironment)))
+    try await waitUntil("by environment") { model.viewSettings.arrangement == .byEnvironment }
+    func groups() -> [String: [String]] {
+      guard case .byEnvironment(let groups) = model.listLayout.body else { return [:] }
+      return Dictionary(uniqueKeysWithValues: groups.map { ($0.title, $0.threads.map(\.id)) })
+    }
+    #expect(groups()["Alpha"] == ["t1"])
+    // A trace that starts under this arrangement, so the regrouping can be seen to leave it alone.
+    var otherDone = other
+    otherDone.activity = activity(turn: "u2", status: .terminal, at: 4)
+    transport.emit(try .threadUpdated(otherDone))
+    try await waitUntil("t2 arrived") {
+      model.threads.contains { $0.id == "t2" && model.arrival(for: $0) != nil }
+    }
+
+    // Its environment is deleted elsewhere: t1 moves from Alpha's group to "No folder".
+    transport.set(environments: [])
+    transport.emit(.environmentChanged(environmentId: "pa"))
+    try await waitUntil("environments refetched") { model.environments.isEmpty }
+    #expect(groups()["Alpha"] == nil)
+    #expect(groups()["No folder"]?.contains("t1") == true)
+    #expect(model.arrival(for: model.threads.first { $0.id == "t1" }!) == nil)
+
+    // Nor on the next event about any thread.
     var renamed = model.threads.first { $0.id == "live" }!
     renamed.title = "renamed"
     transport.emit(try .threadUpdated(renamed))

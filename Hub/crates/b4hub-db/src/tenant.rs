@@ -44,6 +44,35 @@ impl Db {
         Transaction<'static, Postgres>,
         b4hub_core::protocol::ProtocolFloor,
     )> {
+        let (mut tx, floor) = self.begin_protocol_tx(client, statement).await?;
+        set_tenant(&mut tx, org_id).await?;
+        Ok((tx, floor))
+    }
+
+    /// The relay resolves its native session only after locking and reading the floor. Its
+    /// authenticated token supplies the tenant, so no caller-provided org is installed here.
+    pub(crate) async fn protocol_untenanted_read_tx(
+        &self,
+        client: b4hub_core::protocol::ClientProtocol,
+    ) -> Result<(
+        Transaction<'static, Postgres>,
+        b4hub_core::protocol::ProtocolFloor,
+    )> {
+        self.begin_protocol_tx(
+            client,
+            Some("BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY"),
+        )
+        .await
+    }
+
+    async fn begin_protocol_tx(
+        &self,
+        client: b4hub_core::protocol::ClientProtocol,
+        statement: Option<&'static str>,
+    ) -> Result<(
+        Transaction<'static, Postgres>,
+        b4hub_core::protocol::ProtocolFloor,
+    )> {
         let mut tx = self.begin(statement).await?;
         sqlx::query("LOCK TABLE public.hub_settings IN ACCESS SHARE MODE")
             .execute(&mut *tx)
@@ -54,7 +83,6 @@ impl Db {
                 minimum: floor.minimum(),
             });
         }
-        set_tenant(&mut tx, org_id).await?;
         Ok((tx, floor))
     }
 

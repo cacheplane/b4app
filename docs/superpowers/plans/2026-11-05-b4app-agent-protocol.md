@@ -36,29 +36,27 @@ P0 selected source `a7e1ef743cebaf3704a3fa37ede72db8018df12d` already contains
 and phone mirror version 7. Current main also owns local `0012_app_folders.sql`
 (D-203), D-204 thread state and D-205/D-206 guarded environment history. Preserve
 their published migrations, current runtime behavior and hashes.
-Allocate the unpublished local AP schema as
-`Sources/WorkspaceStorage/SQL/0013_agent_protocol.sql`. The ordinal-only move
-initially retained original draft bytes; the still-unpublished13 is now amended
-for generation-qualified identity and optional owner-private auth below. The
-original DDL remains a negative fixture, not a current schema or adopted ledger.
-A4's allocated Hub file is
-`Hub/crates/b4hub-db/migrations/0019_client_protocol.sql`, and its proposed phone
-migration is version 8. Recheck allocation against main before creating them.
-P0 and the earlier unpublished AP0011 worktree/receipts remain historical
-execution evidence, with no qualification transferred to this integration.
-Do not edit published migrations or ship a changed published migration hash.
+D-208 main `7e11980` publishes local `0013_view_settings.sql`, Hub
+`0019_view_settings.sql` and phone mirror version 8. Preserve those resources
+and the list arrangements/unknown stored values. The unpublished protocol
+allocations are now `Sources/WorkspaceStorage/SQL/0014_agent_protocol.sql`,
+`Hub/crates/b4hub-db/migrations/0020_client_protocol.sql` and future phone
+version 9. The protocol DDL bytes are unchanged by this ordinal move; the
+reviewed generation/auth refinements remain part of that unpublished DDL.
+Original AP13 source and native receipts remain historical evidence, with no
+qualification transferred. Do not edit or reuse a published migration number.
 
 Current relational APIs use `WorkEnvironment`, `EnvironmentFolder`,
 `EnvironmentService` and `environmentId`, following D-202. Preserve genuine
 pre-rename archive/schema facts through explicit relational-name translation;
 keep arbitrary payload JSON and the B4 project/CLI filesystem concept intact.
 Archive validation distinguishes exact closed published prefixes through environments11,
-appFolders12 and the new AP13. Unpublished AP11/AP12 ledgers are not aliases for
+appFolders12, viewSettings13 and the new AP14. Unpublished AP11/AP12 ledgers are not aliases for
 published schemas. The Store guard is merged and qualified independently; the
-combined backup/guard/AP13 integration requires fresh source qualification.
+combined backup/guard/AP14 integration requires fresh source qualification.
 
 `Sources/WorkspaceMirror/MirrorSchema.swift` applies the existing ordered
-`PRAGMA user_version` migrations. Preserve versions 1–7 and append 8 for A4.
+`PRAGMA user_version` migrations. Preserve published versions 1–8 and append 9 for A4.
 This internal SQLite schema number is separate from negotiated client protocol v2.
 
 Tests run from b4app root. Rust commands use its Cargo workspace/private test DB.
@@ -124,20 +122,20 @@ The merged Store guard and protocol backup runner share one migration-session
 lock on the same connection. Noncreating ledger admission precedes backup;
 backup commits before the per-file guard transaction. Migration 11 acquires its
 six table locks before its first protected read. Preserve immutable SQL11/12
-and failed-constructor pool disposal. Amend only unpublished13: subscriptions
+and failed-constructor pool disposal. Allocate only unpublished14: subscriptions
 require native generation XOR separate generic localObservationEpoch; segment
 PK is `(connectionId,threadId,identityEpochKind,identityEpochId,namespace,nativeRunId)`.
 Kinds are `b4`/`local`; native IDs and namespace arrays remain unchanged, and old
 segments do not FK to the current subscription epoch.
 
-Current13 catalog admission checks the two epoch tables' public identity, ALL
+Current14 catalog admission checks the two epoch tables' public identity, ALL
 live columns/order/types/typmod/nullability and valid ordered PK, including on
 no-pending reopens. It does not validate CHECK expressions; SQL XOR/kind
-invariants have separate insert controls. Original13 schemas with the old epoch-table shape refuse without
-backfill or adoption. Archive v4 prefix13 requires exact
-`protocolSchema: "generation_epochs_v1"`; through12 headers remain unchanged
-and reject that marker. Exact inventories include appFolders12 and private13
-tables; fixture witnesses must not widen them. Empty old13 archives must refuse.
+invariants have separate insert controls. Old development protocol ledger aliases and incompatible epoch-table shapes refuse without
+backfill or adoption. Archive v4 prefix14 requires exact
+`protocolSchema: "generation_epochs_v1"`; published prefixes through13 retain explicit closed inventories
+and reject that marker. Exact inventories include appFolders12, viewSettings13 and private14
+tables; fixture witnesses must not widen them. Empty old development protocol archives must refuse.
 
 Complete public peerProfile/agentId/nativeScope stays mandatory. A private
 mode/header bundle may be entirely NULL (unconfigured here) or explicitly follow
@@ -193,7 +191,7 @@ activation held until the coordinated acceptance matrix passes.
 - [ ] Build a copy-only old fixture with connections/turns/items/drafts/projects/read markers and unknown outcomes. Test exact field retention, legacy b4 local read-only interpretation, no old nativeScope rewrite and fresh profile identity.
 - [ ] Run `swift test --filter AgentProtocolMigrationTests`; expect missing new-kind/storage support.
 - [ ] Add agentProtocol kind and approved fields. Make schema backup from a quiesced scope before mutation, extend archive coverage for new owner-private obligations and keep endpoint secret values excluded. Add ordinary compatibility defaults without turning legacy data into live protocol identities.
-- [ ] Test current13 generation/local-epoch XOR, repeated native Run IDs across epochs/namespaces, exact catalog typmod/PK refusal, and old13 same-ledger/empty-archive refusal. Preserve published11/12 and genuine pre13 upgrade controls.
+- [ ] Test current14 generation/local-epoch XOR, repeated native Run IDs across epochs/namespaces, exact catalog typmod/PK refusal, and historical AP13 aliases, incompatible current14 shapes and empty old-protocol archive refusal. Preserve published11/12 and genuine pre13 upgrade controls.
 - [ ] Test readable public-only profiles with absent device auth, malformed partial bundles, and archive nil versus explicit-none/bearer/header round trips; no nil auth may authorize execution.
 - [ ] Persist retirement fields only after A4's verified v2 boundary for joined scopes; local legacy read-only behavior derives from kind immediately. No old pending-answer/send/delete-retry path can create an adapter or target the new server.
 - [ ] Run migration/restore tests and existing conversation/remote-apply/thread-delete tests. Assert no credential reset, historical outcome fabrication or Codex/Claude row changes.
@@ -201,7 +199,7 @@ activation held until the coordinated acceptance matrix passes.
 
 ### A4: Gate hub/mirror activation without consuming deferred changes
 
-**Files:** Create ProtocolActivation.swift and hub `Hub/crates/b4hub-db/migrations/0019_client_protocol.sql`; modify `Hub/crates/b4hub-core/src/change.rs`, `writable.rs`, `Hub/crates/b4hub-db/src/{settings,changes,snapshot}.rs`, `Hub/crates/b4hub/src/{routes,serve}.rs`, `routes/{changes,snapshot}.rs`, `relay/link.rs`, `Sources/Coordinator/HubSync/{SyncFilter,HubSync,HubPull,HubLink}.swift`, `Sources/WorkspaceMirror/{MirrorSchema,MirrorMigrations,MirrorSync,MirrorTransport}.swift`, `Sources/WorkspaceSync/HubLinkConnection.swift`, `Sources/WorkspaceSync/HTTPHubAPI.swift`, `HubAPI.swift`, `Wire.swift` and `Tests/Fixtures/sync/changes.json`/relay fixtures.
+**Files:** Create ProtocolActivation.swift and hub `Hub/crates/b4hub-db/migrations/0020_client_protocol.sql`; modify `Hub/crates/b4hub-core/src/change.rs`, `writable.rs`, `Hub/crates/b4hub-db/src/{settings,changes,snapshot}.rs`, `Hub/crates/b4hub/src/{routes,serve}.rs`, `routes/{changes,snapshot}.rs`, `relay/link.rs`, `Sources/Coordinator/HubSync/{SyncFilter,HubSync,HubPull,HubLink}.swift`, `Sources/WorkspaceMirror/{MirrorSchema,MirrorMigrations,MirrorSync,MirrorTransport}.swift`, `Sources/WorkspaceSync/HubLinkConnection.swift`, `Sources/WorkspaceSync/HTTPHubAPI.swift`, `HubAPI.swift`, `Wire.swift` and `Tests/Fixtures/sync/changes.json`/relay fixtures.
 
 - [ ] Test joined-v1 creation/admission refusal, immediate local legacy retirement without mirrored writes, unrelated Codex/Claude sync through restart, v2 activation then one normal retirement transaction, never-joined local data refusing v1 join and already-open pull/link fencing.
 - [ ] Run `swift test --filter ProtocolActivationTests` after creating `Tests/CoordinatorTests/ProtocolActivationTests.swift`; run Rust fixtures/private-DB suite with the command above. Expect missing HTTP protocol gates and unknown-kind fixture failures.

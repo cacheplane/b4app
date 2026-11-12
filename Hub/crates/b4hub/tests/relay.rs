@@ -862,6 +862,7 @@ impl World {
         let blove = hub.user("cacheplane", "blove").await;
         let (mac_token, mac_id) = hub.enroll(&blove, "macos", "Brian's Mac").await;
         let (phone_token, phone_id) = hub.enroll(&blove, "ios", "iPhone").await;
+        hub.seed_connection(&blove, mac_id, "conn-1").await;
         hub.seed_thread(&blove, mac_id, "thread-1").await;
         hub.seed_request(&blove, mac_id, "request-1", "thread-1", "pending")
             .await;
@@ -1887,7 +1888,7 @@ async fn a_reply_waits_for_room_in_the_callers_full_queue(pool: PgPool) {
     mac.expect_command().await;
 
     // The phone stops reading until its queue is full, and the Mac answers meanwhile.
-    fill_queue(&world.hub.state.relay, world.phone_id).await;
+    fill_queue(&world.hub.state.relay, &world.hub.state.db, world.phone_id).await;
     mac.reply("send-1", json!({"turn": {"id": "turn-1"}})).await;
     real_sleep(Duration::from_millis(500)).await;
 
@@ -1905,7 +1906,7 @@ async fn a_mac_whose_queue_stays_full_is_relay_timeout_not_offline(pool: PgPool)
     let clock = pause_clock();
     let _mac = world.mac().await; // links, then never reads
     let mut phone = world.phone().await;
-    fill_queue(&world.hub.state.relay, world.mac_id).await;
+    fill_queue(&world.hub.state.relay, &world.hub.state.db, world.mac_id).await;
 
     phone
         .command(
@@ -2167,7 +2168,7 @@ async fn a_slow_phone_gets_a_stream_gap(pool: PgPool) {
     mac.expect_watching().await;
 
     // The phone stops reading until its queue is full; the Mac streams meanwhile.
-    fill_queue(&world.hub.state.relay, world.phone_id).await;
+    fill_queue(&world.hub.state.relay, &world.hub.state.db, world.phone_id).await;
     mac.event("thread-1", "message.delta", "lost one").await;
     mac.event("thread-1", "message.delta", "lost two").await;
     settle().await;
@@ -2205,7 +2206,7 @@ async fn presence_is_sent_when_the_queue_has_room_again(pool: PgPool) {
 
     // The phone stops reading until its queue is full. The Mac drops and comes back meanwhile:
     // two changes, neither of which fits.
-    let backlog = fill_queue(&world.hub.state.relay, world.phone_id).await;
+    let backlog = fill_queue(&world.hub.state.relay, &world.hub.state.db, world.phone_id).await;
     mac.close().await;
     let mac_id = world.mac_id;
     eventually("the Mac to go offline", || async {
@@ -2224,7 +2225,7 @@ async fn presence_is_sent_when_the_queue_has_room_again(pool: PgPool) {
     assert!(presences[0][0].online, "{presences:?}");
 
     // The same when the last change is the Mac going away.
-    let backlog = fill_queue(&world.hub.state.relay, world.phone_id).await;
+    let backlog = fill_queue(&world.hub.state.relay, &world.hub.state.db, world.phone_id).await;
     mac.close().await;
     eventually("the Mac to go offline again", || async {
         (!world.hub.state.relay.online(mac_id)).then_some(())

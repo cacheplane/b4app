@@ -108,7 +108,7 @@ import WorkspaceProtocol
     let db = try WorkspaceDatabase(
       endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: backupDirectory(endpoint))
     defer { try? db.close() }
-    #expect(try db.appliedMigrations().last == "0013_agent_protocol")
+    #expect(try db.appliedMigrations().last == "0014_agent_protocol")
     #expect(try db.read { try snapshot($0) } == before)
     let legacy = try #require(try db.connection(id: "legacy-b4"))
     #expect(legacy.kind == .b4)

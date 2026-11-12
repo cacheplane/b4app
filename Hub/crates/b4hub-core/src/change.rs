@@ -25,7 +25,7 @@ pub const MAX_PULL_LIMIT: usize = 1000;
 pub const MAX_PAGE_BYTES: usize = 8 * 1024 * 1024;
 
 /// The tables whose rows sync, in dependency order.
-pub const SYNCED_TABLES: [&str; 9] = [
+pub const SYNCED_TABLES: [&str; 10] = [
     "connections",
     "environments",
     "environmentFolders",
@@ -35,6 +35,7 @@ pub const SYNCED_TABLES: [&str; 9] = [
     "runtimeRequests",
     "drafts",
     "connectionUsage",
+    "viewSettings",
 ];
 
 /// A synced table as the hub mirrors it: the Mac's column names (quoted camelCase), its key, and
@@ -52,7 +53,7 @@ pub struct TableSpec {
     pub parent: Option<(&'static str, &'static str)>,
 }
 
-const TABLES: [TableSpec; 9] = [
+const TABLES: [TableSpec; 10] = [
     TableSpec {
         name: "connections",
         key: "id",
@@ -181,6 +182,20 @@ const TABLES: [TableSpec; 9] = [
         key: "connectionId",
         columns: &["connectionId", "reading", "tokens", "updatedAt"],
         parent: Some(("connectionId", "connections")),
+    },
+    // How the account's thread list is arranged: one row, whose id is always `view`, that any
+    // device may insert and write (the values are listed in `Hub/API.md`; the hub never checks them).
+    TableSpec {
+        name: "viewSettings",
+        key: "id",
+        columns: &[
+            "id",
+            "arrangement",
+            "quietThreads",
+            "showArchived",
+            "updatedAt",
+        ],
+        parent: None,
     },
 ];
 
@@ -415,9 +430,9 @@ mod tests {
     #[test]
     fn fixture_decodes() {
         let changes: Vec<Change> = serde_json::from_str(FIXTURE).unwrap();
-        assert_eq!(changes.len(), 13);
+        assert_eq!(changes.len(), 15);
         let seqs: Vec<i64> = changes.iter().map(|c| c.device_seq).collect();
-        assert_eq!(seqs, (1..=13).collect::<Vec<_>>());
+        assert_eq!(seqs, (1..=15).collect::<Vec<_>>());
         // Every change names a synced table, and the one big payload is over the limit.
         assert!(changes.iter().all(|c| table_spec(&c.table).is_some()));
         let oversize: Vec<&str> = changes
@@ -444,6 +459,19 @@ mod tests {
             .columns
             .contains(&"environmentId"));
         assert!(!is_scrubbed("connections", "environmentId"));
+        // The account's view settings: the `view` row inserted, then one column changed.
+        let view: Vec<(&str, ChangeOp, Option<&str>)> = changes
+            .iter()
+            .filter(|c| c.table == "viewSettings")
+            .map(|c| (c.row_id.as_str(), c.op, c.column.as_deref()))
+            .collect();
+        assert_eq!(
+            view,
+            vec![
+                ("view", ChangeOp::Insert, None),
+                ("view", ChangeOp::Update, Some("quietThreads"))
+            ]
+        );
     }
 
     #[test]
@@ -487,7 +515,24 @@ mod tests {
             spec.columns,
             &["connectionId", "reading", "tokens", "updatedAt"]
         );
-        assert_eq!(SYNCED_TABLES.last(), Some(&"connectionUsage"));
+    }
+
+    #[test]
+    fn view_settings_sync_as_one_parentless_row() {
+        let spec = table_spec("viewSettings").unwrap();
+        assert_eq!(spec.key, "id");
+        assert_eq!(spec.parent, None);
+        assert_eq!(
+            spec.columns,
+            &[
+                "id",
+                "arrangement",
+                "quietThreads",
+                "showArchived",
+                "updatedAt"
+            ]
+        );
+        assert_eq!(SYNCED_TABLES.last(), Some(&"viewSettings"));
     }
 
     #[test]

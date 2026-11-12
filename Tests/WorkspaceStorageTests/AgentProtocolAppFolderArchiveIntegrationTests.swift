@@ -11,7 +11,8 @@ import WorkspaceProtocol
     "0006_usage", "0007_connection_usage", "0008_thread_delete", "0009_thread_runtime_choice",
     "0010_owned_rows", "0011_environments", "0012_app_folders",
   ]
-  private static let thirteen = twelve + ["0013_agent_protocol"]
+  private static let thirteen = twelve + ["0013_view_settings"]
+  private static let fourteen = thirteen + ["0014_agent_protocol"]
   private static let publishedTables = [
     "localServers", "environments", "environmentFolders", "connections", "threads", "appFolders",
     "turns", "displayItems", "runtimeRequests", "drafts", "devices", "changes", "columnClocks",
@@ -22,21 +23,32 @@ import WorkspaceProtocol
     "protocolGrants", "protocolPromptAnswers", "protocolHistoryAnchors",
   ]
 
-  @Test func publishedTwelveAndProtocolThirteenHaveDistinctClosedManifests() throws {
+  @Test func publishedTwelveAndProtocolFourteenHaveDistinctClosedManifests() throws {
     let published = try WorkspaceArchive.schema(Self.twelve)
-    let successor = try WorkspaceArchive.schema(Self.thirteen)
+    let successor = try WorkspaceArchive.schema(Self.fourteen)
     #expect(published.data == Self.publishedTables)
-    #expect(successor.data == Self.publishedTables + Self.protocolTables)
-    #expect(successor.data.count == 25)
+    #expect(successor.data == Self.publishedTables + ["viewSettings"] + Self.protocolTables)
+    #expect(successor.data.count == 26)
     #expect(published.context == ["schemaMigrations", "hubLink"])
+    let viewSettings = try WorkspaceArchive.schema(Self.thirteen)
+    #expect(viewSettings.data == Self.publishedTables + ["viewSettings"])
+    #expect(viewSettings.context == published.context)
+    #expect(try WorkspaceArchive.columns("viewSettings", at: 12).isEmpty)
+    #expect(
+      try WorkspaceArchive.columns("viewSettings", at: 13)
+        == Set(["id", "arrangement", "quietThreads", "showArchived", "updatedAt"]))
+    for table in Self.protocolTables { #expect(try WorkspaceArchive.columns(table, at: 13).isEmpty) }
+    #expect(throws: WorkspaceArchive.Rejection.self) {
+      try WorkspaceArchive.schema(Self.twelve + ["0013_agent_protocol"])
+    }
     #expect(try WorkspaceArchive.columns("appFolders", at: 11).isEmpty)
     #expect(try WorkspaceArchive.columns("appFolders", at: 12) == Set(["path", "threadId", "createdAt"]))
     for table in Self.protocolTables {
       #expect(try WorkspaceArchive.columns(table, at: 12).isEmpty)
-      #expect(try !WorkspaceArchive.columns(table, at: 13).isEmpty)
+      #expect(try !WorkspaceArchive.columns(table, at: 14).isEmpty)
     }
     #expect(try !WorkspaceArchive.columns("connections", at: 12).contains("authMode"))
-    #expect(try WorkspaceArchive.columns("connections", at: 13).contains("authMode"))
+    #expect(try WorkspaceArchive.columns("connections", at: 14).contains("authMode"))
     for (prefixCount, draft) in [(10, "0011_agent_protocol"), (11, "0012_agent_protocol")] {
       let names = Array(Self.twelve.prefix(prefixCount)) + [draft]
       #expect(throws: WorkspaceArchive.Rejection.self) { try WorkspaceArchive.schema(names) }
@@ -69,7 +81,35 @@ import WorkspaceProtocol
     #expect(throws: WorkspaceArchive.Rejection.self) { try WorkspaceArchive.read(mixed) }
   }
 
-  @Test func genuineTwelveFoldersAndArchivesSurviveThirteenAndReopen() throws {
+  @Test func publishedThirteenViewSettingsStayOpaqueAndRejectUnknownColumns() throws {
+    let row: [String: Any] = [
+      "id": "view", "arrangement": "future-arrangement", "quietThreads": "future-quiet", "showArchived": true,
+      "updatedAt": NSNull(),
+    ]
+    func archive(_ value: [String: Any]) throws -> Data {
+      try Self.lines([
+        ["format": "b4app-export", "version": 3, "migrations": Self.thirteen],
+        ["table": "viewSettings", "row": value],
+      ])
+    }
+    let input = try WorkspaceArchive.read(archive(row))
+    let stored = try #require(input.records["viewSettings"]?.first?.row)
+    #expect(stored as NSDictionary == row as NSDictionary)
+    var unknown = row; unknown["unknownColumn"] = "must-refuse"
+    #expect(throws: WorkspaceArchive.Rejection.self) { try WorkspaceArchive.read(archive(unknown)) }
+    for version in [1, 2] {
+      #expect(throws: WorkspaceArchive.Rejection.self) {
+        try WorkspaceArchive.read(
+          Self.lines([
+            ["format": "b4app-export", "version": version], ["table": "viewSettings", "row": row],
+          ]))
+      }
+    }
+  }
+
+  @Test(arguments: [12, 13])
+  func genuinePublishedFoldersAndViewArchivesSurviveFourteenAndReopen(prefix: Int) throws {
+    let sourceNames = prefix == 12 ? Self.twelve : Self.thirteen
     let root = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "ap-app-folders-\(UUID())"
     try FileManager.default.createDirectory(
       atPath: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -84,12 +124,12 @@ import WorkspaceProtocol
         connectionString:
           "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database)")
       try Migrator.ensureLedger(raw, table: Migrator.table)
-      for file in try Migrator.files() where file.name < "0013" {
+      for file in try Migrator.files().prefix(prefix) {
         try raw.execute(file.sql)
         try raw.execute(
           "INSERT INTO \"schemaMigrations\" (name,\"appliedAt\") VALUES ($1,'published12')", [file.name])
       }
-      try #require(try Migrator.recorded(raw) == Self.twelve)
+      try #require(try Migrator.recorded(raw) == sourceNames)
       try raw.execute(
         """
         SET b4app.replaying='on';
@@ -106,13 +146,20 @@ import WorkspaceProtocol
           VALUES ('fixture',1,'displayItems','i','update','payload','{"projectId":"external","n":1e-400}','000000001000-0000-fixture');
         RESET b4app.replaying;
         """)
-      before = try Self.snapshot(raw)
+      if prefix == 13 {
+        try raw.execute(
+          #"SET b4app.replaying='on'; INSERT INTO "viewSettings" (id,arrangement,"quietThreads","showArchived","updatedAt") VALUES ('view','future-arrangement','future-quiet',true,NULL); RESET b4app.replaying"#
+        )
+      }
+      before = try Self.snapshot(raw, includeViewSettings: prefix == 13)
       // This is the fixed published v3 writer order, independent of the current v4 manifest.
-      let legacyTables = [
-        "localServers", "connections", "environments", "environmentFolders", "threads", "appFolders", "turns",
-        "displayItems", "runtimeRequests", "drafts", "devices", "changes", "columnClocks",
-      ]
-      var records: [[String: Any]] = [["format": "b4app-export", "version": 3, "migrations": Self.twelve]]
+      let legacyTables =
+        [
+          "localServers", "connections", "environments", "environmentFolders", "threads", "appFolders",
+          "turns",
+          "displayItems", "runtimeRequests", "drafts", "devices", "changes", "columnClocks",
+        ] + (prefix == 13 ? ["viewSettings"] : [])
+      var records: [[String: Any]] = [["format": "b4app-export", "version": 3, "migrations": sourceNames]]
       for table in legacyTables {
         for row in try raw.execute("SELECT * FROM \(Rows.quote(table)) ORDER BY 1").rows {
           var values: [String: Any] = [:]
@@ -132,7 +179,7 @@ import WorkspaceProtocol
             $0.text("tablename")
           })
         let schema = try WorkspaceArchive.captureSchema(raw, present: present)
-        try #require(schema.migrations == Self.twelve)
+        try #require(schema.migrations == sourceNames)
         try ArchivePublication.write(to: v4) { handle in
           _ = try WorkspaceArchive.write(raw, schema: schema, purpose: "preMigration", handle: handle)
         }
@@ -143,8 +190,8 @@ import WorkspaceProtocol
       let target = try AgentProtocolResourceFixture.database()
       let outcome = Result<Void, any Error> { () throws -> Void in
         try target.restore(from: path)
-        #expect(try target.read { try Self.snapshot($0) } == before)
-        #expect(try target.appliedMigrations() == Self.thirteen)
+        #expect(try target.read { try Self.snapshot($0, includeViewSettings: prefix == 13) } == before)
+        #expect(try target.appliedMigrations() == Self.fourteen)
         try target.read { try AgentProtocolFoundationFixture.assertAdditionsNullAndPrivateEmpty($0) }
         #expect(
           try target.read {
@@ -157,25 +204,25 @@ import WorkspaceProtocol
     }
     let source = try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: backups)
     let outcome = Result<Void, any Error> { () throws -> Void in
-      #expect(try source.appliedMigrations() == Self.thirteen)
+      #expect(try source.appliedMigrations() == Self.fourteen)
       try source.read { try AgentProtocolFoundationFixture.assertAdditionsNullAndPrivateEmpty($0) }
-      #expect(try source.read { try Self.snapshot($0) } == before)
+      #expect(try source.read { try Self.snapshot($0, includeViewSettings: prefix == 13) } == before)
       #expect(try source.appFolder(threadId: "t")?.path == "/fixture/app")
       #expect(try source.thread(id: "t")?.environmentId == nil)
       let backupNames = try FileManager.default.contentsOfDirectory(atPath: backups)
       try #require(backupNames.count == 1 && backupNames[0].hasSuffix(".jsonl"))
       let backup = try WorkspaceArchive.read(
         Data(contentsOf: URL(fileURLWithPath: backups + "/" + backupNames[0])))
-      #expect(backup.records["schemaMigrations"]?.compactMap { $0.row["name"] as? String } == Self.twelve)
+      #expect(backup.records["schemaMigrations"]?.compactMap { $0.row["name"] as? String } == sourceNames)
       #expect(backup.records["appFolders"]?.first?.row["threadId"] as? String == "t")
       let nativePayload = try source.read {
         try $0.execute(#"SELECT payload::text AS payload FROM "displayItems" WHERE id='i'"#).rows.first?.text(
           "payload")
       }
       #expect(backup.records["displayItems"]?.first?.row["payload"] as? String == nativePayload)
-      try source.export(to: root + "/current13.jsonl")
+      try source.export(to: root + "/current14.jsonl")
       let exported = try WorkspaceArchive.read(
-        Data(contentsOf: URL(fileURLWithPath: root + "/current13.jsonl")))
+        Data(contentsOf: URL(fileURLWithPath: root + "/current14.jsonl")))
       #expect(exported.records["appFolders"]?.first?.row["threadId"] as? String == "t")
     }
     try source.close()
@@ -184,17 +231,61 @@ import WorkspaceProtocol
     let reopened = try WorkspaceDatabase(
       endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: backups)
     let reopenedOutcome = Result<Void, any Error> { () throws -> Void in
-      #expect(try reopened.read { try Self.snapshot($0) } == before)
-      #expect(try reopened.appliedMigrations() == Self.thirteen)
+      #expect(try reopened.read { try Self.snapshot($0, includeViewSettings: prefix == 13) } == before)
+      #expect(try reopened.appliedMigrations() == Self.fourteen)
       #expect(try FileManager.default.contentsOfDirectory(atPath: backups).sorted() == published)
     }
     try reopened.close()
     try reopenedOutcome.get()
   }
 
-  private static func snapshot(_ raw: PostgresConnection) throws -> [String: [String]] {
+  @Test func viewSettingsRestoreExceptionDoesNotAdmitUnrelatedSettings() throws {
+    let root = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "ap-view-empty-\(UUID())"
+    try FileManager.default.createDirectory(
+      atPath: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    defer { try? FileManager.default.removeItem(atPath: root) }
+    let source = try AgentProtocolResourceFixture.database()
+    defer { try? source.close() }
+    let target = try AgentProtocolResourceFixture.database()
+    defer { try? target.close() }
+    try source.export(to: root + "/empty.jsonl")
+    _ = try target.setViewSettings(quietThreads: .hidden, showArchived: true)
+    try target.setSetting(key: "unrelated-owner-setting", value: .string("keep-exact"))
+    let before = try target.read { try Self.snapshot($0, includeViewSettings: true) }
+    let ledger = try target.appliedMigrations()
+    let sequence = try #require(
+      try target.read {
+        try $0.execute(
+          #"SELECT last_value::text||':'||log_cnt::text||':'||is_called::text AS value FROM "changes_seq_seq""#
+        ).rows.first?.text("value")
+      })
+    let outcome = Result<Void, any Error> { () throws -> Void in
+      var failure: (any Error)?
+      do { try target.restore(from: root + "/empty.jsonl") } catch { failure = error }
+      let refusal = try #require(failure as? WorkspaceError)
+      #expect(refusal.code == .protocolInvalid)
+      #expect(refusal.message == "The store is not empty; pass --replace to overwrite it from the archive.")
+      #expect(refusal.details == nil)
+      #expect(try target.read { try Self.snapshot($0, includeViewSettings: true) } == before)
+      #expect(try target.appliedMigrations() == ledger)
+      #expect(
+        try target.read {
+          try $0.execute(
+            #"SELECT last_value::text||':'||log_cnt::text||':'||is_called::text AS value FROM "changes_seq_seq""#
+          ).rows.first?.text("value")
+        } == sequence)
+      #expect(try target.settings(key: "unrelated-owner-setting") == .string("keep-exact"))
+    }
+    try target.close()
+    try source.close()
+    try outcome.get()
+  }
+
+  private static func snapshot(
+    _ raw: PostgresConnection, includeViewSettings: Bool = false
+  ) throws -> [String: [String]] {
     var result: [String: [String]] = [:]
-    for table in publishedTables {
+    for table in publishedTables + (includeViewSettings ? ["viewSettings"] : []) {
       let projection =
         table == "connections"
         ? "to_jsonb(t) - ARRAY['peerProfile','agentId','authMode','authHeaderName','protocolRetiredAt','protocolRetiredReason']"

@@ -72,6 +72,8 @@ extension WorkspaceDatabase {
     }
   }
 
+  /// A view-settings-only destination is empty for restore; its settings/change/clock rows are
+  /// replaced by the archive. Every other business/private row still requires explicit replace.
   @discardableResult
   public func restore(from path: String, replace: Bool = false) throws -> ArchiveSummary {
     do {
@@ -90,8 +92,13 @@ extension WorkspaceDatabase {
           throw WorkspaceArchive.Rejection.future
         }
         var populated = false
-        for table in Self.archiveTables {
-          if try !c.execute("SELECT 1 FROM \(Rows.quote(table)) LIMIT 1").rows.isEmpty { populated = true }
+        for table in Self.archiveTables where table != "viewSettings" {
+          let condition =
+            (table == "changes" || table == "columnClocks")
+            ? " WHERE \"table\" IS DISTINCT FROM 'viewSettings'" : ""
+          if try !c.execute("SELECT 1 FROM \(Rows.quote(table))\(condition) LIMIT 1").rows.isEmpty {
+            populated = true
+          }
         }
         guard replace || !populated else { throw WorkspaceArchive.Rejection.notEmpty }
 
@@ -154,6 +161,12 @@ extension WorkspaceDatabase {
             try ProtocolGrantProtection.verify(c)
             try c.execute("DELETE FROM \(Rows.quote(table))")
           }
+        }
+        if !replace {
+          // Only these admitted view-setting rows are replaced; no unrelated row is cleared.
+          try c.execute("DELETE FROM \"viewSettings\"")
+          try c.execute("DELETE FROM \"changes\" WHERE \"table\" = 'viewSettings'")
+          try c.execute("DELETE FROM \"columnClocks\" WHERE \"table\" = 'viewSettings'")
         }
         for table in Self.archiveTables {
           try ProtocolGrantProtection.verify(c)

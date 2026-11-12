@@ -33,16 +33,20 @@ public struct RemoteApplied: Sendable, Equatable {
   public var touchedThreadIds: Set<String>
   public var touchedEnvironmentIds: Set<String>
   public var touchedDraftThreadIds: Set<String>
+  /// The view settings row (`viewSettings`, id `view`) changed.
+  public var touchedViewSettings: Bool
   public var applied: Int
   public var skipped: Int
 
   public init(
     touchedThreadIds: Set<String> = [], touchedEnvironmentIds: Set<String> = [],
-    touchedDraftThreadIds: Set<String> = [], applied: Int = 0, skipped: Int = 0
+    touchedDraftThreadIds: Set<String> = [], touchedViewSettings: Bool = false, applied: Int = 0,
+    skipped: Int = 0
   ) {
     self.touchedThreadIds = touchedThreadIds
     self.touchedEnvironmentIds = touchedEnvironmentIds
     self.touchedDraftThreadIds = touchedDraftThreadIds
+    self.touchedViewSettings = touchedViewSettings
     self.applied = applied
     self.skipped = skipped
   }
@@ -54,14 +58,18 @@ extension WorkspaceDatabase {
   /// targets and secrets, hashed scopes), so nothing it sends may overwrite a Mac-only value:
   ///
   /// - A change from `ownDeviceId`, any of `macDeviceIds`, or `local` (this Mac before it joined), by
-  ///   attribution or by its clock's device, is the Mac's own history and is skipped.
+  ///   attribution or by its clock's device, is the Mac's own history and is skipped, except a change
+  ///   to `viewSettings`: that row's source of truth is the hub, so another Mac's settings must reach
+  ///   this one, and its per-column clocks make this Mac's own echo a no-op.
   /// - Only updates of `SyncColumns.phoneWritable` columns of `threads` and `environments` rows that exist
-  ///   here apply, plus inserts and updates of `drafts` whose thread exists here. No other table is
-  ///   inserted into, no other column is written, and nothing is deleted. A null for a
+  ///   here apply, plus inserts and updates of `drafts` whose thread exists here, and inserts and updates
+  ///   of the `viewSettings` row whose id is `view` (either creates the row when it is missing). No other
+  ///   table is inserted into, no other column is written, and nothing is deleted. A null for a
   ///   `SyncColumns.neverCleared` column (a thread's delete mark) is skipped.
   /// - Each column applies only when the change's clock is greater than the column's `columnClocks`
-  ///   entry (a missing entry is older than any clock), and then the entry advances to it. A draft
-  ///   insert onto an existing draft is one write per column at the insert's clock.
+  ///   entry (a missing entry is older than any clock), and then the entry advances to it. A draft or
+  ///   view settings insert onto an existing row is one write per column at the insert's clock; a view
+  ///   settings insert writes only the columns it carries with a value (a null there is "not set").
   /// - Every received clock (clamped first when it is more than five minutes ahead of this Mac's wall
   ///   clock) is folded into `clock`, so later local edits sort after it.
   /// - A change whose value the store refuses (SQLSTATE class 22 or 23) is rolled back to its own
@@ -104,7 +112,10 @@ extension WorkspaceDatabase {
         }
         let hlc = parsed.clamped(toWall: wall)
         clock.observe(hlc)
-        if macs.contains(change.deviceId) || macs.contains(hlc.deviceId) {
+        // The view settings row's source of truth is the hub, not a Mac, so it is the one table a Mac
+        // accepts from a Mac (its own echo included): its merge is by column clock, so an echo is a
+        // no-op and an older write loses.
+        if change.table != "viewSettings", macs.contains(change.deviceId) || macs.contains(hlc.deviceId) {
           result.skipped += 1
           continue
         }
@@ -120,6 +131,7 @@ extension WorkspaceDatabase {
           switch change.table {
           case "threads": result.touchedThreadIds.insert(change.rowId)
           case "environments": result.touchedEnvironmentIds.insert(change.rowId)
+          case "viewSettings": result.touchedViewSettings = true
           default: result.touchedDraftThreadIds.insert(change.rowId)
           }
         } catch  where Self.isDataError(error) {
@@ -171,6 +183,18 @@ extension WorkspaceDatabase {
       return try mergeColumn(c, table: "drafts", key: "threadId", rowId: change.rowId, column, value, at: hlc)
     case ("drafts", "insert"):
       return try mergeDraft(c, change, at: hlc)
+    case ("viewSettings", "update"):
+      // The key never changes.
+      guard change.rowId == ViewSettings.rowId, let column = change.column, column != "id",
+        SyncColumns.isPhoneWritable(table: "viewSettings", column: column), let value = change.value
+      else { return false }
+      return try mergeViewSettings(c, [column: value], at: hlc)
+    case ("viewSettings", "insert"):
+      guard change.rowId == ViewSettings.rowId, let row = change.value?.objectValue,
+        row["id"].map({ $0 == .string(ViewSettings.rowId) }) ?? true
+      else { return false }
+      // A null in an insert body is "not set" (migration 0013), never a write.
+      return try mergeViewSettings(c, row.filter { $0.key != "id" && $0.value != .null }, at: hlc)
     default:
       return false
     }
@@ -201,6 +225,29 @@ extension WorkspaceDatabase {
     for column in columns {
       guard let value = row[column] else { continue }
       if try mergeColumn(c, table: "drafts", key: "threadId", rowId: change.rowId, column, value, at: hlc) {
+        wrote = true
+      }
+    }
+    return wrote
+  }
+
+  /// Columns of the view settings row from another device, each merged at `hlc`; the row is created
+  /// first (its id alone, every other column null) when this Mac has none, so a change to one column
+  /// never needs the others. True when the row was created or any column written.
+  private func mergeViewSettings(
+    _ c: PostgresConnection, _ columns: [String: JSONValue], at hlc: String
+  ) throws -> Bool {
+    var wrote = false
+    if !(try lock(c, "viewSettings", key: "id", ViewSettings.rowId)) {
+      try c.execute("INSERT INTO \"viewSettings\" (\"id\") VALUES ($1)", [ViewSettings.rowId])
+      try advanceClock(c, table: "viewSettings", rowId: ViewSettings.rowId, column: "id", to: hlc)
+      wrote = true
+    }
+    for (column, value) in columns.sorted(by: { $0.key < $1.key })
+    where SyncColumns.isPhoneWritable(table: "viewSettings", column: column) {
+      if try mergeColumn(
+        c, table: "viewSettings", key: "id", rowId: ViewSettings.rowId, column, value, at: hlc)
+      {
         wrote = true
       }
     }

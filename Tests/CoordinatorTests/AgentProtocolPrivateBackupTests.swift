@@ -15,10 +15,12 @@ import WorkspaceProtocol
     "protocolOperations", "protocolGrantSecrets", "protocolGrants", "protocolPromptAnswers",
     "protocolHistoryAnchors",
   ]
-  private static let dataTables = legacyDataTables.flatMap { table in
-    table == "threads"
-      ? ["threads", "appFolders"] : [AgentProtocolFoundationFixture.currentTable(old: table)]
-  }
+  private static let dataTables =
+    ["viewSettings"]
+    + legacyDataTables.flatMap { table in
+      table == "threads"
+        ? ["threads", "appFolders"] : [AgentProtocolFoundationFixture.currentTable(old: table)]
+    }
   private static let contextTables = [Migrator.table, "hubLink"]
   private static let canonicalNine = [
     "0001_init", "0002_changes", "0003_hub", "0004_organisation", "0005_relay", "0006_usage",
@@ -110,6 +112,9 @@ import WorkspaceProtocol
     }
     try seedOldTables(raw, endpointReference: reference, protocolProfiles: current)
     if let database {
+      try raw.execute(
+        #"SET b4app.replaying='on'; INSERT INTO "viewSettings" ("id","arrangement","quietThreads","showArchived","updatedAt") VALUES ('view','future-arrangement','future-quiet',true,'source-view'); RESET b4app.replaying"#
+      )
       for suffix in ["a", "b"] {
         try seedPrivate(database, suffix: suffix, material: material + " owner-" + suffix)
       }
@@ -332,7 +337,7 @@ import WorkspaceProtocol
     let purpose = header["purpose"] as? String == "preMigration"
     #expect(purpose)
     let migrations = try Migrator.recorded(f.raw)
-    if migrations.count == 13 {
+    if migrations.count == 14 {
       #expect(header["protocolSchema"] as? String == "generation_epochs_v1")
     } else {
       #expect(header["protocolSchema"] == nil)
@@ -472,7 +477,8 @@ import WorkspaceProtocol
       let recorded = try Migrator.recorded(f.raw)
       #expect(
         recorded == Self.canonicalNine + [
-          "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_agent_protocol",
+          "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_view_settings",
+          "0014_agent_protocol",
         ])
       let after = try Self.snapshot(f.raw)
       for (table, expected) in f.before.rows {
@@ -500,7 +506,7 @@ import WorkspaceProtocol
         }.sorted()
         let valuesRetained =
           table == Migrator.table
-          ? Set(expected).isSubset(of: Set(rows)) && rows.count == expected.count + 4 : rows == expectedRows
+          ? Set(expected).isSubset(of: Set(rows)) && rows.count == expected.count + 5 : rows == expectedRows
         if table == Migrator.table {
           let addedNames = try Set(rows).subtracting(expected).map { text in
             let row = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
@@ -509,7 +515,8 @@ import WorkspaceProtocol
           #expect(
             Set(addedNames)
               == Set([
-                "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_agent_protocol",
+                "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_view_settings",
+                "0014_agent_protocol",
               ]))
         }
         #expect(valuesRetained, "Original values changed for \(table)")

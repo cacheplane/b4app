@@ -42,7 +42,7 @@ final class BannerLayoutTests: XCTestCase {
     let title =
       screen == "detail"
       ? "Fix the login bug"
-      : screen == "new-thread" ? "New thread" : screen == "archived" ? "Archived" : "Threads"
+      : screen == "new-thread" ? "New thread" : "Threads"
     let heading =
       screen == "connect-mac"
       ? app.staticTexts["Connect your Mac"] : app.navigationBars.staticTexts[title].firstMatch

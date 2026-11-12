@@ -29,6 +29,9 @@ public enum EventKind: String, Codable, Sendable, CaseIterable {
   /// The Mac's signed-in account changed (sign-in plan, Task 9). The payload is the new
   /// `AccountStatus.Result`; only the coordinator emits it.
   case accountChanged = "account.changed"
+  /// The account's view settings changed, by a local `viewSettings.set` or a pulled edit. The payload's
+  /// `settings` is the stored `ViewSettings`.
+  case viewSettingsChanged = "viewSettings.changed"
 }
 
 /// One normalized adapter event. Identity fields are always present; the payload shape depends on `kind`.
@@ -84,6 +87,12 @@ public struct AdapterEvent: Codable, Sendable, Equatable {
   public static func environmentChanged(environmentId: String) -> AdapterEvent {
     AdapterEvent(
       kind: .environmentChanged, connectionId: "", payload: ["environmentId": .string(environmentId)])
+  }
+
+  /// The account's view settings changed. Not tied to a connection.
+  public static func viewSettingsChanged(_ settings: ViewSettings) throws -> AdapterEvent {
+    AdapterEvent(
+      kind: .viewSettingsChanged, connectionId: "", payload: ["settings": try JSONValue(encoding: settings)])
   }
 
   public static func threadUpdated(_ thread: ConversationThread) throws -> AdapterEvent {

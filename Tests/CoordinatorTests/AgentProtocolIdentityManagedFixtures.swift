@@ -107,7 +107,7 @@ enum AgentProtocolIdentityManagedFixture {
     let knownMigrations = [
       "0001_init", "0002_changes", "0003_hub", "0004_organisation", "0005_relay",
       "0006_usage", "0007_connection_usage", "0008_thread_delete", "0009_thread_runtime_choice",
-      "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_agent_protocol",
+      "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_view_settings", "0014_agent_protocol",
     ]
     var failure: (any Error)?
     do {

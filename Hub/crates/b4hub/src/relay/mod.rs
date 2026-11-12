@@ -20,6 +20,7 @@ use tokio::time::Instant;
 
 use crate::error::relay_code;
 
+pub mod admission;
 pub mod limits;
 pub mod link;
 pub mod registry;

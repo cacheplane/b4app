@@ -129,7 +129,7 @@ import WorkspaceProtocol
       let restored = try #require(after.rows[currentTable])
       if table == Migrator.table {
         #expect(Set(original).isSubset(of: Set(restored)))  // Preserve each original appliedAt exactly.
-        #expect(restored.count == original.count + 5)
+        #expect(restored.count == original.count + 6)
         let addedNames = try Set(restored).subtracting(original).map { text in
           let row = try #require(
             try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
@@ -139,7 +139,7 @@ import WorkspaceProtocol
           Set(addedNames)
             == Set([
               "0009_thread_runtime_choice", "0010_owned_rows", "0011_environments", "0012_app_folders",
-              "0013_agent_protocol",
+              "0013_view_settings", "0014_agent_protocol",
             ]))
         continue
       }

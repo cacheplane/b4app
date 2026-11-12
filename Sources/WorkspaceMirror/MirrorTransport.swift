@@ -11,9 +11,9 @@ import WorkspaceSync
 /// `WorkspaceClient`; a reconnect makes a new transport over the same store. `publish(_:)` turns an
 /// applied batch into events in this transport's epoch, numbered one after another.
 ///
-/// The phone's own edits (M8b: `thread.update`, `thread.markRead`, `draft.save`, `environment.rename`) go to
-/// the store, which applies them at once and queues them for the hub; each announces itself with an
-/// event like the Mac's coordinator does, then `onLocalWrite` is called so the host can wake the
+/// The phone's own edits (M8b: `thread.update`, `thread.markRead`, `draft.save`, `environment.rename`;
+/// and `viewSettings.set`) go to the store, which applies them at once and queues them for the hub;
+/// each announces itself with an event like the Mac's coordinator does, then `onLocalWrite` is called so the host can wake the
 /// uploader. Everything else the phone cannot do answers `unsupported_capability` "… is done on the Mac."
 ///
 /// With a `MirrorRelay` (M8c), `turn.send`, `turn.interrupt`, `request.respond`, `thread.start`,
@@ -130,7 +130,7 @@ public final class MirrorTransport: WorkspaceTransport {
   static let served: Set<WorkspaceProtocol.Method> = [
     .systemPing, .eventsSnapshot, .eventsReplay, .connectionList, .threadList, .threadRead, .draftRead,
     .serverList, .workspaceActiveWork, .diagnosticsRead, .environmentList, .environmentRename, .threadUpdate,
-    .threadMarkRead, .draftSave, .usageRead, .threadDelete,
+    .threadMarkRead, .draftSave, .usageRead, .threadDelete, .viewSettingsGet, .viewSettingsSet,
   ]
 
   /// Why the phone does not do `method`: "… is done on the Mac."
@@ -257,8 +257,10 @@ public final class MirrorTransport: WorkspaceTransport {
 
   /// Emits `connection.changed` per touched connection (its status and sign-in, and the whole row, so
   /// a new owner, label, or model list reaches the model as it does from the coordinator),
-  /// `environment.changed` per touched environment, `thread.updated` per touched thread (with the row), and `message.completed` carrying the
-  /// `displayItem` for each touched item of the thread last read. Does nothing once closed.
+  /// `environment.changed` per touched environment, `thread.updated` per touched thread (with the row),
+  /// `viewSettings.changed` (with the stored settings) when the view settings row was written, and
+  /// `message.completed` carrying the `displayItem` for each touched item of the thread last read. Does
+  /// nothing once closed.
   public func publish(_ batch: AppliedBatch) {
     var events: [AdapterEvent] = []
     let connections = (try? store.connections()) ?? []
@@ -283,6 +285,11 @@ public final class MirrorTransport: WorkspaceTransport {
       if let thread = try? store.thread(id: id), let event = try? AdapterEvent.threadUpdated(thread) {
         events.append(event)
       }
+    }
+    if batch.touchedViewSettings, let settings = try? store.viewSettings(),
+      let event = try? AdapterEvent.viewSettingsChanged(settings)
+    {
+      events.append(event)
     }
     var owners: [String: String] = [:]
     for item in batch.touchedItems where owners[item.threadId] == nil {
@@ -501,6 +508,18 @@ public final class MirrorTransport: WorkspaceTransport {
       let draft = try store.saveDraft(threadId: params.threadId, text: params.text)
       state.wrote = true
       return try JSONValue(encoding: DraftSave.Result(draft: draft))
+    case .viewSettingsGet:
+      return try JSONValue(encoding: try store.viewSettings())
+    case .viewSettingsSet:
+      try refuseWhileUnavailable()
+      let params = try command.params(for: ViewSettingsSet.self)
+      let before = try store.viewSettings()
+      let settings = try store.setViewSettings(
+        arrangement: params.arrangement, quietThreads: params.quietThreads, showArchived: params.showArchived)
+      state.wrote = true
+      // Viewers hear about a change only, as they do from the Mac.
+      if settings != before { emit([try AdapterEvent.viewSettingsChanged(settings)], state: &state) }
+      return try JSONValue(encoding: settings)
     default:
       // `diagnostics.read` is answered in `send`, outside the lock.
       throw Self.refused(command.method)

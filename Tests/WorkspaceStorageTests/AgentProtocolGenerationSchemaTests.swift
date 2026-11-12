@@ -5,7 +5,7 @@ import WorkspaceProtocol
 
 @testable import WorkspaceStorage
 
-/// Unpublished13 correction controls. Old13 is literal frozen DDL, not the amended resource.
+/// Protocol14 correction controls. Old protocol13 is frozen DDL, distinct from published viewSettings13.
 /// No provider, account, socket or protocol observation is started by these storage tests.
 @Suite(.serialized) struct AgentProtocolGenerationSchemaTests {
   private struct Fixture {
@@ -42,7 +42,7 @@ import WorkspaceProtocol
     try Migrator.ensureLedger(f.raw, table: Migrator.table)
     for file in try Migrator.files().prefix(count) {
       try f.raw.execute(
-        oldThirteen && file.name == "0013_agent_protocol" ? oldThirteenSQL : file.sql)
+        oldThirteen && file.name == "0014_agent_protocol" ? oldThirteenSQL : file.sql)
       try f.raw.execute(
         "INSERT INTO public.\"schemaMigrations\" (name,\"appliedAt\") VALUES ($1,'fixed-source')",
         [file.name])
@@ -97,7 +97,7 @@ import WorkspaceProtocol
     return try FileManager.default.subpathsOfDirectory(atPath: f.backups).sorted()
   }
 
-  private static func assertRefusal(_ f: Fixture) throws {
+  private static func assertRefusal(_ f: Fixture, oldAlias: Bool = false) throws {
     let before = try snapshot(f), beforeFiles = try files(f)
     let preflight = Result {
       try WorkspaceDatabase.preflightMigration(endpoint: f.endpoint, binDir: f.endpoint.binDir!)
@@ -114,14 +114,18 @@ import WorkspaceProtocol
     #expect(try files(f) == beforeFiles)
     #expect(!FileManager.default.fileExists(atPath: f.backups))
     let failure = try #require(openError as? WorkspaceError)
-    #expect(failure.code == .incompatibleVersion)
-    #expect(failure.message == "The private protocol schema is incompatible with this build.")
+    #expect(failure.code == (oldAlias ? .internalError : .incompatibleVersion))
+    #expect(
+      failure.message
+        == (oldAlias
+          ? EnvironmentHistoryMigrationGuard.message
+          : "The private protocol schema is incompatible with this build."))
     #expect(failure.details == nil)
   }
 
   @Test func segmentKeysSeparateGenerationLocalEpochAndNamespace() throws {
     try Self.withFixture { f in
-      try Self.seed(f, count: 13)
+      try Self.seed(f, count: 14)
       try Self.seedOwner(f)
       let identities = [
         ("b4", "generation-a", #"["a/b"]"#),
@@ -158,7 +162,7 @@ import WorkspaceProtocol
 
   @Test func subscriptionsRequireExactlyOneNativeOrLocalEpoch() throws {
     try Self.withFixture { f in
-      try Self.seed(f, count: 13)
+      try Self.seed(f, count: 14)
       try Self.seedOwner(f)
       let insert =
         #"INSERT INTO public."protocolSubscriptions" ("threadId","connectionId","nativeThreadId","generation","localObservationEpoch","channels","namespaces","coverage","updatedAt") VALUES ('t','c','raw-native-thread',$1,$2,'[]','[[]]','{}','then')"#
@@ -182,7 +186,23 @@ import WorkspaceProtocol
 
   @Test func oldThirteenRefusesBeforeBackupOnEveryPublicAdmission() throws {
     try Self.withFixture { f in
-      try Self.seed(f, count: 13, oldThirteen: true)
+      try Self.seed(f, count: 12)
+      try f.raw.execute(Self.oldThirteenSQL)
+      try f.raw.execute(
+        "INSERT INTO public.\"schemaMigrations\" (name,\"appliedAt\") VALUES ('0013_agent_protocol','old-draft')"
+      )
+      try Self.seedOwner(f)
+      #expect(
+        try Migrator.recorded(f.raw) == Array(AgentProtocolFoundationFixture.migrations.prefix(12)) + [
+          "0013_agent_protocol"
+        ])
+      try Self.assertRefusal(f, oldAlias: true)
+    }
+  }
+
+  @Test func oldGenerationShapeUnderCanonicalFourteenRefusesWithoutMutation() throws {
+    try Self.withFixture { f in
+      try Self.seed(f, count: 14, oldThirteen: true)
       try Self.seedOwner(f)
       #expect(try Migrator.recorded(f.raw) == AgentProtocolFoundationFixture.migrations)
       try Self.assertRefusal(f)
@@ -193,9 +213,9 @@ import WorkspaceProtocol
     "old-primary", "segment-type", "extra-typmod-column", "segment-null", "subscription-missing",
     "subscription-type", "subscription-null",
   ])
-  func currentThirteenShapeDamageRefusesWithoutMutation(damage: String) throws {
+  func currentFourteenShapeDamageRefusesWithoutMutation(damage: String) throws {
     try Self.withFixture { f in
-      try Self.seed(f, count: 13)
+      try Self.seed(f, count: 14)
       switch damage {
       case "old-primary":
         try f.raw.execute(
@@ -223,8 +243,8 @@ import WorkspaceProtocol
     }
   }
 
-  @Test(arguments: [0, 12, 13])
-  func freshTwelveAndCurrentReopensRemainValid(prefix: Int) throws {
+  @Test(arguments: [0, 12, 13, 14])
+  func freshPublishedTwelveThirteenAndCurrentReopensRemainValid(prefix: Int) throws {
     try Self.withFixture { f in
       if prefix > 0 { try Self.seed(f, count: prefix) }
       for _ in 0..<2 {
@@ -244,21 +264,31 @@ import WorkspaceProtocol
         try db.close()
         try outcome.get()
       }
-      #expect(try Self.files(f).count == (prefix == 12 ? 1 : 0))
+      #expect(try Self.files(f).count == ((prefix == 12 || prefix == 13) ? 1 : 0))
     }
   }
 
-  private static func archive(prefix: Int, marker: Any? = nil) throws -> Data {
+  private static func archive(
+    prefix: Int, marker: Any? = nil, oldProtocolThirteen: Bool = false
+  ) throws -> Data {
     let schema = try WorkspaceArchive.schema(Array(AgentProtocolFoundationFixture.migrations.prefix(prefix)))
+    let names =
+      oldProtocolThirteen
+      ? Array(AgentProtocolFoundationFixture.migrations.prefix(12)) + ["0013_agent_protocol"]
+      : schema.migrations
+    let dataTables =
+      oldProtocolThirteen
+      ? AgentProtocolFoundationFixture.dataTables.filter { $0 != "viewSettings" } : schema.data
+    let context = schema.context
     var header: [String: Any] = [
       "format": "b4app-export", "version": 4, "at": "then", "purpose": "preMigration",
-      "migrations": schema.migrations, "requiredTables": schema.data, "sourceContextTables": schema.context,
+      "migrations": names, "requiredTables": dataTables, "sourceContextTables": context,
     ]
     if let marker { header["protocolSchema"] = marker }
-    let rows: [[String: Any]] = schema.migrations.map {
+    let rows: [[String: Any]] = names.map {
       ["table": "schemaMigrations", "row": ["name": $0, "appliedAt": "then"]]
     }
-    var counts = Dictionary(uniqueKeysWithValues: schema.tables.map { ($0, 0) })
+    var counts = Dictionary(uniqueKeysWithValues: (dataTables + context).map { ($0, 0) })
     counts["schemaMigrations"] = rows.count
     let footer: [String: Any] = [
       "format": "b4app-export-end", "version": 4, "rows": rows.count, "tableRows": counts,
@@ -271,23 +301,26 @@ import WorkspaceProtocol
   @Test func emptyOldThirteenArchiveWithoutMarkerRefuses() throws {
     // No protocol rows exist: column-only row validation cannot distinguish this old archive.
     #expect(throws: WorkspaceArchive.Rejection.self) {
-      try WorkspaceArchive.read(Self.archive(prefix: 13))
+      try WorkspaceArchive.read(Self.archive(prefix: 13, oldProtocolThirteen: true))
     }
   }
 
   @Test func v4ProtocolSchemaMarkerHasExactValue() throws {
+    #expect(throws: WorkspaceArchive.Rejection.self) {
+      try WorkspaceArchive.read(Self.archive(prefix: 14))
+    }
     for wrong in ["", "unknown", 1, NSNull()] as [Any] {
       #expect(throws: WorkspaceArchive.Rejection.self) {
-        try WorkspaceArchive.read(Self.archive(prefix: 13, marker: wrong))
+        try WorkspaceArchive.read(Self.archive(prefix: 14, marker: wrong))
       }
     }
-    let input = try WorkspaceArchive.read(Self.archive(prefix: 13, marker: "generation_epochs_v1"))
+    let input = try WorkspaceArchive.read(Self.archive(prefix: 14, marker: "generation_epochs_v1"))
     #expect(input.version == 4)
     #expect(input.dataCount == 0)
   }
 
-  @Test func preThirteenArchivesKeepTheirClosedHeader() throws {
-    for prefix in [8, 9, 10, 11, 12] {
+  @Test func publishedThroughThirteenArchivesKeepTheirClosedHeader() throws {
+    for prefix in [8, 9, 10, 11, 12, 13] {
       #expect(try WorkspaceArchive.read(Self.archive(prefix: prefix)).dataCount == 0)
       #expect(throws: WorkspaceArchive.Rejection.self) {
         try WorkspaceArchive.read(Self.archive(prefix: prefix, marker: "generation_epochs_v1"))

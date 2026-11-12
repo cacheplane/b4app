@@ -536,3 +536,139 @@ async fn rr_owner_sees_a_registration_committed_before_its_instances_lock(pool: 
     .unwrap();
     assert!(present, "refusal must not remove the registered instance");
 }
+
+/// D-208 remains ordinary public sync data at either protocol floor. Unknown values are kept,
+/// while the independent AP/private preallocation barriers remain in force.
+#[sqlx::test(migrations = false)]
+async fn published_view_settings_remain_public_at_both_protocol_floors(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let phone = common::enrolled_as(&admin, &app, "view-owner", "ios").await;
+    let mac = common::enrolled_as(&admin, &app, "view-owner", "macos").await;
+    let bob = common::enrolled_as(&admin, &app, "view-other", "ios").await;
+    assert_eq!(phone.user_id, mac.user_id);
+    assert_eq!(phone.org_id, bob.org_id);
+    for (floor, base) in [(1, 0), (2, 2)] {
+        if floor == 2 {
+            settings::raise_protocol_floor(&admin, 2).await.unwrap();
+        }
+        let client = if floor == 1 {
+            ClientProtocol::LEGACY
+        } else {
+            ClientProtocol::SUPPORTED
+        };
+        let initial = json!({"id":"view","arrangement":"future-layout","quietThreads":"tiny","showArchived":true,"updatedAt":"fixture-view-time"});
+        let first = Change {
+            device_seq: base + 1,
+            wall: base + 1,
+            table: "viewSettings".into(),
+            row_id: "view".into(),
+            op: ChangeOp::Insert,
+            column: None,
+            value: Some(initial),
+            hlc: None,
+        };
+        let second = Change {
+            device_seq: base + 2,
+            wall: base + 2,
+            table: "viewSettings".into(),
+            row_id: "view".into(),
+            op: ChangeOp::Update,
+            column: Some("quietThreads".into()),
+            value: Some(json!("someday")),
+            hlc: None,
+        };
+        let accepted = changes::push_for_protocol(&app, &phone, &[first.clone(), second], client)
+            .await
+            .unwrap();
+        assert!(accepted.rejected.is_empty());
+        assert_eq!(accepted.accepted_through, base + 2);
+        let expected = json!({"id":"view","arrangement":"future-layout","quietThreads":"someday","showArchived":true,"updatedAt":"fixture-view-time"});
+        let snapshot = snapshot::take_for_protocol(&app, &phone, client)
+            .await
+            .unwrap();
+        let rows: Vec<_> = snapshot
+            .changes
+            .iter()
+            .filter(|change| change.table == "viewSettings")
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].value, Some(expected.clone()));
+        let feed = changes::pull_for_protocol(&app, &phone, 0, 100, client)
+            .await
+            .unwrap();
+        assert_eq!(
+            feed.changes
+                .iter()
+                .filter(|change| change.table == "viewSettings")
+                .count(),
+            (base + 2) as usize
+        );
+        assert_eq!(feed.changes.last().unwrap().value, Some(json!("someday")));
+        // A different user cannot adopt/overwrite the existing per-org `view` key.
+        let mut foreign = first;
+        foreign.device_seq = base + 1;
+        foreign.value = Some(json!({"id":"view","arrangement":"not-owned"}));
+        let attempted = changes::push_for_protocol(&app, &bob, &[foreign], client)
+            .await
+            .unwrap();
+        assert!(
+            attempted.rejected.is_empty(),
+            "the published policy records then skips this collision"
+        );
+        let physical:(serde_json::Value,sqlx::types::Uuid,sqlx::types::Uuid)=sqlx::query_as("SELECT to_jsonb(t)-ARRAY['org_id','user_id','device_id','owner_device_id','deleted_at'],user_id,owner_device_id FROM public.\"viewSettings\" t WHERE org_id=$1 AND id='view'")
+            .bind(phone.org_id).fetch_one(&admin.pool).await.unwrap();
+        assert_eq!(physical, (expected, phone.user_id, phone.device_id));
+        let other = snapshot::take_for_protocol(&app, &bob, client)
+            .await
+            .unwrap();
+        assert!(!other
+            .changes
+            .iter()
+            .any(|change| change.table == "viewSettings"));
+        let before: (i64, bool) =
+            sqlx::query_as("SELECT last_value,is_called FROM changes_hub_seq_seq")
+                .fetch_one(&admin.pool)
+                .await
+                .unwrap();
+        let mut private = insert(100, "codex");
+        private.table = "protocolSubscriptions".into();
+        assert!(matches!(
+            changes::push_for_protocol(&app, &mac, &[private], client).await,
+            Err(Error::PrivateProtocolData)
+        ));
+        if floor == 1 {
+            let mut view = insert(101, "codex");
+            view.table = "viewSettings".into();
+            view.row_id = "view".into();
+            view.value = Some(json!({"id":"view","quietThreads":"must-not-commit"}));
+            assert!(matches!(
+                changes::push_for_protocol(
+                    &app,
+                    &mac,
+                    &[view, insert(102, "agentProtocol")],
+                    ClientProtocol::SUPPORTED
+                )
+                .await,
+                Err(Error::ProtocolNotActivated)
+            ));
+            let still = snapshot::take_for_protocol(&app, &phone, client)
+                .await
+                .unwrap();
+            assert_eq!(
+                still
+                    .changes
+                    .iter()
+                    .find(|change| change.table == "viewSettings")
+                    .unwrap()
+                    .value,
+                rows[0].value
+            );
+        }
+        let after: (i64, bool) =
+            sqlx::query_as("SELECT last_value,is_called FROM changes_hub_seq_seq")
+                .fetch_one(&admin.pool)
+                .await
+                .unwrap();
+        assert_eq!(before, after);
+    }
+}

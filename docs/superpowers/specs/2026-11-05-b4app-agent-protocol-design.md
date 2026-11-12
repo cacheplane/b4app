@@ -172,8 +172,8 @@ runtimeRequests remain the synced presentation. Canonical initial Run UUID is
 the native user-turn ID; each continuation is a segment associated with that
 root. Local row IDs remain stable across acknowledgement/reconciliation.
 
-The unpublished local schema is migration 13 after immutable published Store
-11/12. `protocolSubscriptions` requires exactly one of native `generation` or
+The unpublished local schema is migration 14 after immutable published Store
+11/12 and D-208 viewSettings13. `protocolSubscriptions` requires exactly one of native `generation` or
 `localObservationEpoch`. Generic observation uses the latter as a durable local
 incarnation, never a claimed server generation. `protocolRunSegments` stores
 nonempty `identityEpochKind` (`b4` or `local`) and `identityEpochId`; its PK is
@@ -183,19 +183,19 @@ projection binds its separate local epoch. Preserve native IDs and namespace
 component arrays. Retained older segments have no FK to the subscription's
 current epoch, so changing that subscription does not erase old associations.
 
-Every current13 reopen, including no-pending admission, verifies the two epoch
+Every current14 reopen, including no-pending admission, verifies the two epoch
 tables' canonical public identity, all live columns in order, builtin types,
 typmod, nullability and valid ordered PK. An unexpected typmod column cannot be
 filtered out of this inventory. This catalog check does not inspect CHECK
 expressions: the native/local XOR and allowed epoch-kind predicates are SQL
-invariants with separate insert controls. Original draft13 databases with the
-same ledger name but the old shape refuse unchanged; do not invent an epoch or
+invariants with separate insert controls. Original development protocol13 ledger aliases and incompatible epoch-table
+shapes refuse unchanged; do not invent an epoch or
 adopt an old draft as the new canonical schema.
 
 Protected archive v4 requires the exact header discriminator
-`protocolSchema: "generation_epochs_v1"` for prefix13, even with no protocol rows.
-Prefixes through12 retain their previous closed header and reject that marker.
-Missing/unknown markers or old13 rows refuse; no implicit generation backfill is
+`protocolSchema: "generation_epochs_v1"` for prefix14, even with no protocol rows.
+Prefixes through published viewSettings13 have explicit closed inventories and reject that marker.
+Missing/unknown markers or old development protocol archives refuse; no implicit generation backfill is
 performed. This is an unpublished v4 refinement, not a shipped compatibility
 claim. Preserve the original13 DDL as a negative fixture and every published
 11/12 byte. Current source review is not native qualification of these changes.

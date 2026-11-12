@@ -8,7 +8,7 @@ import WorkspaceProtocol
 
 /// Only real private PostgreSQL storage; no account, service, provider, listener or adapter starts.
 @Suite(.serialized) struct AgentProtocolProfileSchemaTests {
-  private static let migration = "0013_agent_protocol"
+  private static let migration = "0014_agent_protocol"
   private static let profileColumns = [
     "peerProfile", "agentId", "authMode", "authHeaderName", "protocolRetiredAt", "protocolRetiredReason",
   ]
@@ -223,7 +223,7 @@ import WorkspaceProtocol
       }
       if table == Migrator.table {
         #expect(Set(normalizedBefore).isSubset(of: Set(normalizedAfter)))
-        #expect(normalizedAfter.count == before.count + 4)
+        #expect(normalizedAfter.count == before.count + 5)
         let addedNames = try Set(normalizedAfter).subtracting(normalizedBefore).map { text in
           let row = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
           return try #require(row["name"] as? String)
@@ -231,7 +231,8 @@ import WorkspaceProtocol
         #expect(
           Set(addedNames)
             == Set([
-              "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_agent_protocol",
+              "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_view_settings",
+              "0014_agent_protocol",
             ]))
       } else if allowNewRows {
         #expect(Set(normalizedBefore).isSubset(of: Set(normalizedAfter)))

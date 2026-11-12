@@ -1,19 +1,21 @@
 //! The live links, by device. [`Relay`] is cheap to clone and lives in `AppState`; the link tasks,
 //! the revoke route, and (later) the command router all go through it.
 //!
-//! One link per device: [`Relay::register`] replaces an older link of the same device and tells it
+//! One link per device: [`Relay::register_admitted`] replaces an older link of the same device and tells it
 //! to close. A link is addressed by device id; its `generation` tells the task that registered it
 //! whether it is still the current one when it comes to clean up.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 
+use b4hub_core::protocol::{ClientProtocol, ProtocolFloor};
 use b4hub_core::relay::{HostPresence, RelayMessage, Role, LINK_QUEUE, WATCH_MAX};
 use b4hub_db::devices::SessionKey;
-use b4hub_db::relay::host_devices;
+use b4hub_db::relay::{host_devices, Admission};
 use b4hub_db::Db;
+use std::ops::{Deref, DerefMut};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 use uuid::Uuid;
@@ -26,16 +28,25 @@ use crate::error::relay_code;
 /// Why a link is being closed and what it is told first.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Close {
+    pub(super) disposition: CloseDisposition,
     pub code: u16,
     pub reason: &'static str,
     /// An `error` frame written before the close, if any.
     pub error: Option<RelayMessage>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CloseDisposition {
+    Drain,
+    Terminal,
+    Fence,
+}
+
 impl Close {
     /// A newer link from the same device took over.
     pub fn replaced() -> Close {
         Close {
+            disposition: CloseDisposition::Fence,
             code: close_code::REPLACED,
             reason: "replaced by a newer link",
             error: Some(link_replaced()),
@@ -45,6 +56,7 @@ impl Close {
     /// The device was revoked.
     pub fn revoked() -> Close {
         Close {
+            disposition: CloseDisposition::Terminal,
             code: close_code::REVOKED,
             reason: "device revoked",
             error: None,
@@ -56,6 +68,7 @@ impl Close {
     /// token cannot help.
     pub fn session_ended() -> Close {
         Close {
+            disposition: CloseDisposition::Terminal,
             code: close_code::REVOKED,
             reason: "session ended",
             error: None,
@@ -65,6 +78,7 @@ impl Close {
     /// The hub is shutting down.
     pub fn shutdown() -> Close {
         Close {
+            disposition: CloseDisposition::Drain,
             code: close_code::SHUTDOWN,
             reason: "hub shutting down",
             error: None,
@@ -75,6 +89,7 @@ impl Close {
     /// device reconnects and reaches the owner. Code 1001, like shutdown: reconnect with backoff.
     pub fn relocated() -> Close {
         Close {
+            disposition: CloseDisposition::Terminal,
             code: close_code::SHUTDOWN,
             reason: "served by another hub instance",
             error: None,
@@ -84,15 +99,39 @@ impl Close {
     /// The link sent nothing for `DEAD_LINK`.
     pub fn silent() -> Close {
         Close {
+            disposition: CloseDisposition::Terminal,
             code: close_code::SILENT,
             reason: "no frame for 30 seconds",
             error: None,
         }
     }
 
+    pub(crate) fn protocol_unavailable() -> Close {
+        Close {
+            disposition: CloseDisposition::Fence,
+            code: close_code::SHUTDOWN,
+            reason: "relay admission unavailable",
+            error: Some(super::error_frame(
+                "internal_error",
+                "the relay is unavailable",
+            )),
+        }
+    }
+    pub(super) fn protocol_not_activated() -> Close {
+        Close {
+            disposition: CloseDisposition::Fence,
+            code: close_code::SHUTDOWN,
+            reason: "protocol not activated",
+            error: Some(super::error_frame(
+                "protocol_not_activated",
+                "protocol 2 is not activated on this Hub",
+            )),
+        }
+    }
     /// The device's protocol is older than `min_client_protocol`.
     pub fn client_too_old(min_client_protocol: u32) -> Close {
         Close {
+            disposition: CloseDisposition::Fence,
             code: close_code::CLIENT_TOO_OLD,
             reason: "client too old",
             error: Some(RelayMessage::Error {
@@ -122,6 +161,82 @@ pub enum Outbound {
     /// A live `event`, encoded once by [`Relay::fan_out`] for every link watching its thread. Its
     /// bytes count toward the link's [`EVENT_BYTES_MAX`] until the link task has written it.
     Event(Arc<str>),
+    /// Production frames retain compatibility facts only, never a DB lease or wire extension.
+    Protected(Envelope),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Stamp {
+    pub generation: u64,
+    pub required: u32,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum Payload {
+    Message(RelayMessage),
+    Event(Arc<str>),
+}
+#[derive(Debug)]
+pub struct Envelope {
+    stamp: Stamp,
+    payload: Payload,
+    event_bytes: Option<Arc<AtomicUsize>>,
+}
+impl Envelope {
+    fn message(message: RelayMessage, stamp: Stamp) -> Self {
+        Self {
+            stamp,
+            payload: Payload::Message(message),
+            event_bytes: None,
+        }
+    }
+    fn event(text: Arc<str>, stamp: Stamp, bytes: Arc<AtomicUsize>) -> Self {
+        Self {
+            stamp,
+            payload: Payload::Event(text),
+            event_bytes: Some(bytes),
+        }
+    }
+    pub(super) fn parts(&self) -> (Stamp, &Payload) {
+        (self.stamp, &self.payload)
+    }
+    pub(super) fn compatible(&self, generation: u64, floor: u32) -> bool {
+        self.stamp.generation == generation && self.stamp.required >= floor
+    }
+    pub(super) fn check_for_write(
+        &self,
+        generation: u64,
+        floor: u32,
+    ) -> Result<(), super::admission::Failure> {
+        if self.compatible(generation, floor) {
+            Ok(())
+        } else {
+            Err(super::admission::Failure::Unavailable)
+        }
+    }
+}
+impl Clone for Envelope {
+    fn clone(&self) -> Self {
+        if let (Some(bytes), Payload::Event(text)) = (&self.event_bytes, &self.payload) {
+            bytes.fetch_add(text.len(), Ordering::SeqCst);
+        }
+        Self {
+            stamp: self.stamp,
+            payload: self.payload.clone(),
+            event_bytes: self.event_bytes.clone(),
+        }
+    }
+}
+impl PartialEq for Envelope {
+    fn eq(&self, other: &Self) -> bool {
+        self.stamp == other.stamp && self.payload == other.payload
+    }
+}
+impl Drop for Envelope {
+    fn drop(&mut self) {
+        if let (Some(bytes), Payload::Event(text)) = (&self.event_bytes, &self.payload) {
+            bytes.fetch_sub(text.len(), Ordering::SeqCst);
+        }
+    }
 }
 
 impl Outbound {
@@ -131,6 +246,10 @@ impl Outbound {
         match self {
             Outbound::Message(message) => Some(message.clone()),
             Outbound::Event(text) => serde_json::from_str(text).ok(),
+            Outbound::Protected(frame) => match &frame.payload {
+                Payload::Message(message) => Some(message.clone()),
+                Payload::Event(text) => serde_json::from_str(text).ok(),
+            },
         }
     }
 }
@@ -160,6 +279,13 @@ pub struct LinkHandle {
     /// The session the link was opened with, looked up again to find out whether it still holds;
     /// `None` for the readiness probe.
     pub session: Option<SessionKey>,
+    pub client_protocol: ClientProtocol,
+    /// The local floor observation epoch under which registration was inserted.
+    pub cut_generation: u64,
+    admitted: bool,
+    probe: bool,
+    #[cfg(test)]
+    synthetic_model: bool,
     tx: mpsc::Sender<Outbound>,
     /// What a full queue made the link miss; see [`Missed`].
     missed: Arc<Mutex<Missed>>,
@@ -168,8 +294,29 @@ pub struct LinkHandle {
 }
 
 impl LinkHandle {
+    /// This registration was admitted. This historical fact alone is never fresh action/write
+    /// authority; the dependent producer conversion must acquire its own native admission.
+    pub fn is_admitted(&self) -> bool {
+        self.admitted
+    }
+    pub(super) fn is_probe(&self) -> bool {
+        self.probe
+    }
+    fn synthetic_model(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.synthetic_model
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
     /// Queues `message` for the link without waiting.
     pub fn try_send(&self, message: RelayMessage) -> Result<(), SendError> {
+        if !self.synthetic_model() {
+            return Err(SendError::Offline);
+        }
         self.tx
             .try_send(Outbound::Message(message))
             .map_err(|error| match error {
@@ -184,27 +331,51 @@ impl LinkHandle {
     /// `stream_gap` is queued, later events for the thread are dropped too, so it always reaches
     /// the phone after the hole it reports and before anything newer.
     pub fn deliver_event(&self, thread_id: &str, event: Arc<str>) {
+        if self.synthetic_model() {
+            self.deliver_event_inner(thread_id, event, None);
+        }
+    }
+    pub(super) fn deliver_event_checked(
+        &self,
+        thread_id: &str,
+        event: Arc<str>,
+        proof: &super::admission::Proof<'_>,
+    ) {
+        if let Some(stamp) = proof.stamp_for(self) {
+            self.deliver_event_inner(thread_id, event, Some(stamp));
+        }
+    }
+    fn deliver_event_inner(&self, thread_id: &str, event: Arc<str>, stamp: Option<Stamp>) {
         let mut missed = self.missed();
         missed.flush(&self.tx);
-        if missed.gaps.contains(thread_id) {
+        if missed.gaps.contains_key(thread_id) {
             return;
         }
         let len = event.len();
-        // Counted before the send, so the link task's subtraction can never come first.
         let queued = self.event_bytes.fetch_add(len, Ordering::SeqCst);
+        let frame = match stamp {
+            Some(stamp) => {
+                Outbound::Protected(Envelope::event(event, stamp, Arc::clone(&self.event_bytes)))
+            }
+            None => Outbound::Event(event),
+        };
         let dropped = if queued + len > EVENT_BYTES_MAX {
+            drop(frame);
             Some("bytes")
         } else {
-            match self.tx.try_send(Outbound::Event(event)) {
+            match self.tx.try_send(frame) {
                 Ok(()) => None,
                 Err(mpsc::error::TrySendError::Full(_)) => Some("frames"),
                 Err(mpsc::error::TrySendError::Closed(_)) => Some("closed"),
             }
         };
         if let Some(full) = dropped {
-            self.event_bytes.fetch_sub(len, Ordering::SeqCst);
-            if full != "closed" && missed.gaps.insert(thread_id.to_string()) {
-                tracing::info!(device = %self.device_id, full, "dropping live events: queue full");
+            // Protected events release their own bytes on every drop, including a closed receiver.
+            if stamp.is_none() {
+                self.event_bytes.fetch_sub(len, Ordering::SeqCst);
+            }
+            if full != "closed" && missed.gaps.insert(thread_id.to_string(), stamp).is_none() {
+                tracing::info!(device=%self.device_id,full,"dropping live events: queue full");
             }
         }
     }
@@ -218,14 +389,49 @@ impl LinkHandle {
     /// keeping) to send once the queue has room. A phone therefore always ends up with the latest
     /// presence, once, and never a stale one after a newer.
     pub fn deliver_presence(&self, presence: RelayMessage) {
+        if !self.synthetic_model() {
+            return;
+        }
         let mut missed = self.missed();
-        missed.presence = Some(presence);
+        missed.presence = Some(Outbound::Message(presence));
         missed.flush(&self.tx);
+    }
+    pub(super) fn deliver_presence_checked(
+        &self,
+        presence: RelayMessage,
+        proof: &super::admission::Proof<'_>,
+    ) {
+        if let Some(stamp) = proof.stamp_for(self) {
+            let mut missed = self.missed();
+            missed.presence = Some(Outbound::Protected(Envelope::message(presence, stamp)));
+            missed.flush(&self.tx);
+        }
+    }
+    fn queue_stamped(&self, message: RelayMessage, stamp: Stamp) -> Result<(), SendError> {
+        self.tx
+            .try_send(Outbound::Protected(Envelope::message(message, stamp)))
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => SendError::Full,
+                mpsc::error::TrySendError::Closed(_) => SendError::Offline,
+            })
+    }
+    pub(super) fn clear_missed(&self) {
+        let mut missed = self.missed();
+        missed.presence = None;
+        missed.gaps.clear();
+    }
+    pub(super) fn discard_pending(&self, outbound: &mut mpsc::Receiver<Outbound>) {
+        outbound.close();
+        while outbound.try_recv().is_ok() {}
+        self.clear_missed();
     }
 
     /// Sends what a full queue made the link miss, as far as the queue has room. The link task
     /// calls it each time it takes a frame off the queue.
     pub fn flush_missed(&self) {
+        if !self.admitted {
+            return;
+        }
         self.missed().flush(&self.tx);
     }
 
@@ -249,28 +455,34 @@ impl LinkHandle {
 /// always followed by a flush.
 #[derive(Debug, Default)]
 struct Missed {
-    presence: Option<RelayMessage>,
-    gaps: BTreeSet<String>,
+    presence: Option<Outbound>,
+    gaps: BTreeMap<String, Option<Stamp>>,
 }
 
 impl Missed {
     fn flush(&mut self, tx: &mpsc::Sender<Outbound>) {
         if let Some(presence) = self.presence.take() {
-            if let Err(mpsc::error::TrySendError::Full(Outbound::Message(presence))) =
-                tx.try_send(Outbound::Message(presence))
-            {
-                self.presence = Some(presence);
+            if let Err(mpsc::error::TrySendError::Full(frame)) = tx.try_send(presence) {
+                self.presence = Some(frame);
                 return;
             }
         }
-        while let Some(thread_id) = self.gaps.first().cloned() {
+        while let Some((thread, stamp)) = self
+            .gaps
+            .first_key_value()
+            .map(|(thread, stamp)| (thread.clone(), *stamp))
+        {
             let gap = RelayMessage::StreamGap {
-                thread_id: thread_id.clone(),
+                thread_id: thread.clone(),
             };
-            if tx.try_send(Outbound::Message(gap)).is_err() {
+            let frame = match stamp {
+                Some(stamp) => Outbound::Protected(Envelope::message(gap, stamp)),
+                None => Outbound::Message(gap),
+            };
+            if tx.try_send(frame).is_err() {
                 return;
             }
-            self.gaps.remove(&thread_id);
+            self.gaps.remove(&thread);
         }
     }
 }
@@ -352,9 +564,9 @@ pub struct Identity {
     pub org_id: Uuid,
     /// The session the link was opened with; `None` for the readiness probe.
     pub session: Option<SessionKey>,
-    /// The readiness probe's in-process link (`link::probe`): [`Relay::register`] hands it a
-    /// handle and queues but never enters it in the registry, so it is never online, never in
-    /// presence, and never watches.
+    /// The readiness probe's in-process identity. The unconverted registration path refuses it
+    /// too; the dependent link conversion must provide a separate native-floor probe admission.
+    /// A probe never becomes online, enters presence or watches.
     pub probe: bool,
 }
 
@@ -411,12 +623,70 @@ pub struct RegistrationGate {
 struct Entry {
     handle: LinkHandle,
     closing: Option<oneshot::Sender<Close>>,
+    blocked: bool,
+}
+
+struct RegistrationState {
+    links: HashMap<Uuid, Entry>,
+    minimum: u32,
+    local_denial: u32,
+    initialized: bool,
+    cut_generation: u64,
+}
+impl Default for RegistrationState {
+    fn default() -> Self {
+        Self {
+            links: HashMap::new(),
+            minimum: MIN_CLIENT_PROTOCOL,
+            local_denial: 0,
+            initialized: false,
+            cut_generation: 0,
+        }
+    }
+}
+
+/// Keep existing map operations under the same mutex as floor comparison and insertion.
+struct LinksGuard<'a>(MutexGuard<'a, RegistrationState>);
+impl Deref for LinksGuard<'_> {
+    type Target = HashMap<Uuid, Entry>;
+    fn deref(&self) -> &Self::Target {
+        &self.0.links
+    }
+}
+impl DerefMut for LinksGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0.links
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloorObservationError {
+    Unsupported,
+    Decreased,
+    Exhausted,
+}
+
+/// Compact fixed refusal facts; produce the wire close only at the socket boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistrationRefusal {
+    SessionEnded,
+    StaleFloor,
+    TooOld(u32),
+    AdmissionUsed,
+}
+impl RegistrationRefusal {
+    pub fn close(self) -> Close {
+        match self {
+            Self::SessionEnded => Close::session_ended(),
+            Self::TooOld(minimum) => Close::client_too_old(minimum),
+            Self::StaleFloor | Self::AdmissionUsed => Close::protocol_unavailable(),
+        }
+    }
 }
 
 struct Inner {
-    links: Mutex<HashMap<Uuid, Entry>>,
+    registration: Mutex<RegistrationState>,
     next_generation: AtomicU64,
-    min_client_protocol: AtomicU32,
     /// How many commands a link opened from now on may have running at once.
     commands_in_flight_max: AtomicUsize,
     clock: WallClock,
@@ -466,9 +736,8 @@ impl Relay {
     /// A relay that reads wall time from `clock`. Tests use it to date frames on a paused clock.
     pub fn with_clock(clock: WallClock) -> Relay {
         Relay(Arc::new(Inner {
-            links: Mutex::default(),
+            registration: Mutex::default(),
             next_generation: AtomicU64::new(0),
-            min_client_protocol: AtomicU32::new(MIN_CLIENT_PROTOCOL),
             commands_in_flight_max: AtomicUsize::new(COMMANDS_IN_FLIGHT),
             clock,
             gate: Mutex::new(None),
@@ -485,61 +754,249 @@ impl Relay {
         }))
     }
 
-    /// Registers a new link for `who`, replacing and closing any older link of the same device.
-    /// The readiness probe ([`Identity::probe`]) gets its handle and queues but is not registered.
+    /// Compatibility entrypoint for callers not yet converted to DB-backed admission. It is
+    /// deliberately refused: no entry, watch, generation, registration notification or presence
+    /// side effect. The link boundary must reject its handle before emitting any frame.
     pub fn register(&self, who: Identity) -> Registration {
         let (tx, outbound) = mpsc::channel(LINK_QUEUE);
         let (closing_tx, closing) = oneshot::channel();
         let handle = LinkHandle {
             device_id: who.device_id,
             name: who.name,
-            generation: self.0.next_generation.fetch_add(1, Ordering::Relaxed) + 1,
+            generation: 0,
             role: who.role,
             user_id: who.user_id,
             org_id: who.org_id,
             session: who.session,
+            client_protocol: ClientProtocol::LEGACY,
+            cut_generation: 0,
+            admitted: false,
+            probe: who.probe,
+            #[cfg(test)]
+            synthetic_model: false,
             tx,
             missed: Arc::default(),
             event_bytes: Arc::default(),
         };
-        if who.probe {
-            return Registration {
-                handle,
-                outbound,
-                closing,
-                replaced: false,
-                probe_closer: Some(closing_tx),
-            };
-        }
-        let (previous, dropped_watches) = {
-            let mut links = self.links();
-            let previous = links.insert(
-                who.device_id,
-                Entry {
-                    handle: handle.clone(),
-                    closing: Some(closing_tx),
-                },
-            );
-            // The older link's watches end with it; the new link starts with none.
-            let dropped = previous.is_some() && self.forget_watches(who.device_id);
-            (previous, dropped)
-        };
-        if dropped_watches {
-            self.bump_watches();
-        }
-        let replaced = previous.is_some();
-        self.0.registered.send_modify(|count| *count += 1);
-        if let Some(older) = previous.and_then(|entry| entry.closing) {
-            // The older task may already be gone; then there is nobody to tell.
-            let _ = older.send(Close::replaced());
-        }
+        let _ = closing_tx.send(Close::protocol_unavailable());
         Registration {
             handle,
             outbound,
             closing,
-            replaced,
+            replaced: false,
             probe_closer: None,
         }
+    }
+
+    /// Compare and insert against the observed floor under one mutex, while the caller retains
+    /// the live admission's DB AS barrier. No pool or command wait occurs in this operation.
+    pub fn register_admitted(
+        &self,
+        mut who: Identity,
+        admission: &mut Admission,
+    ) -> Result<Registration, RegistrationRefusal> {
+        let native = admission.identity();
+        let role = if native.platform == b4hub_db::devices::Platform::Macos {
+            Role::Host
+        } else {
+            Role::Client
+        };
+        if who.probe
+            || who.device_id != native.device_id
+            || who.org_id != native.org_id
+            || who.user_id != native.user_id
+            || who.role != role
+            || who.session != Some(admission.session())
+        {
+            return Err(RegistrationRefusal::SessionEnded);
+        }
+        who.name = admission.device_name().to_string();
+        self.register_core(who, admission.client(), admission.floor(), false, || {
+            admission.claim_registration()
+        })
+    }
+    pub(super) fn register_probe(
+        &self,
+        admission: &mut b4hub_db::relay::ProbeAdmission,
+    ) -> Result<Registration, RegistrationRefusal> {
+        self.register_core(
+            Identity::probe(),
+            admission.client(),
+            admission.floor(),
+            false,
+            || admission.claim_registration(),
+        )
+    }
+    fn register_core(
+        &self,
+        who: Identity,
+        client: ClientProtocol,
+        floor: ProtocolFloor,
+        synthetic: bool,
+        claim: impl FnOnce() -> bool,
+    ) -> Result<Registration, RegistrationRefusal> {
+        #[cfg(not(test))]
+        {
+            debug_assert!(!synthetic);
+        }
+        let (registration, previous, dropped_watches) = {
+            let mut state = self.registration();
+            Self::advance_floor(&mut state, floor).map_err(|_| RegistrationRefusal::StaleFloor)?;
+            let effective = state.minimum.max(state.local_denial);
+            if client.value() < effective {
+                return Err(RegistrationRefusal::TooOld(effective));
+            }
+            if !claim() {
+                return Err(RegistrationRefusal::AdmissionUsed);
+            }
+            let (tx, outbound) = mpsc::channel(LINK_QUEUE);
+            let (closing_tx, closing) = oneshot::channel();
+            let handle = LinkHandle {
+                device_id: who.device_id,
+                name: who.name,
+                generation: self.0.next_generation.fetch_add(1, Ordering::Relaxed) + 1,
+                role: who.role,
+                user_id: who.user_id,
+                org_id: who.org_id,
+                session: who.session,
+                client_protocol: client,
+                cut_generation: state.cut_generation,
+                admitted: true,
+                probe: who.probe,
+                #[cfg(test)]
+                synthetic_model: synthetic,
+                tx,
+                missed: Arc::default(),
+                event_bytes: Arc::default(),
+            };
+            if who.probe {
+                return Ok(Registration {
+                    handle,
+                    outbound,
+                    closing,
+                    replaced: false,
+                    probe_closer: Some(closing_tx),
+                });
+            }
+            let previous = state.links.insert(
+                who.device_id,
+                Entry {
+                    handle: handle.clone(),
+                    closing: Some(closing_tx),
+                    blocked: false,
+                },
+            );
+            let dropped = previous.is_some() && self.forget_watches(who.device_id);
+            (
+                Registration {
+                    handle,
+                    outbound,
+                    closing,
+                    replaced: previous.is_some(),
+                    probe_closer: None,
+                },
+                previous,
+                dropped,
+            )
+        };
+        if dropped_watches {
+            self.bump_watches();
+        }
+        self.0.registered.send_modify(|count| *count += 1);
+        if let Some(older) = previous.and_then(|entry| entry.closing) {
+            let _ = older.send(Close::replaced());
+        }
+        Ok(registration)
+    }
+    /// Pure queue/watch/replacement MODEL fixture only. No native admission is asserted and this
+    /// constructor is absent from the production library and native integration builds.
+    #[cfg(test)]
+    fn register_synthetic_model(&self, who: Identity) -> Registration {
+        self.register_core(
+            who,
+            ClientProtocol::LEGACY,
+            ProtocolFloor::new(1).unwrap(),
+            true,
+            || true,
+        )
+        .unwrap()
+    }
+
+    fn advance_floor(
+        state: &mut RegistrationState,
+        floor: ProtocolFloor,
+    ) -> Result<u64, FloorObservationError> {
+        if !floor.supported() {
+            return Err(FloorObservationError::Unsupported);
+        }
+        if floor.minimum() < state.minimum {
+            return Err(FloorObservationError::Decreased);
+        }
+        if !state.initialized || floor.minimum() > state.minimum {
+            state.cut_generation = state
+                .cut_generation
+                .checked_add(1)
+                .ok_or(FloorObservationError::Exhausted)?;
+        }
+        state.minimum = floor.minimum();
+        state.initialized = true;
+        for entry in state.links.values_mut() {
+            if entry.handle.client_protocol.value() < state.minimum.max(state.local_denial) {
+                entry.blocked = true;
+                if let Some(close) = entry.closing.take() {
+                    let _ =
+                        close.send(Close::client_too_old(state.minimum.max(state.local_denial)));
+                }
+            }
+        }
+        Ok(state.cut_generation)
+    }
+
+    /// A fresh native floor observation can only advance the denial state, never manufacture an
+    /// admission. It closes incompatible current registrations under the insertion mutex.
+    pub fn observe_floor(&self, floor: ProtocolFloor) -> Result<u64, FloorObservationError> {
+        Self::advance_floor(&mut self.registration(), floor)
+    }
+
+    pub fn cut_generation(&self) -> u64 {
+        self.registration().cut_generation
+    }
+
+    pub(super) fn current(&self, handle: &LinkHandle) -> bool {
+        if handle.probe {
+            return handle.admitted;
+        }
+        self.registration()
+            .links
+            .get(&handle.device_id)
+            .is_some_and(|entry| {
+                !entry.blocked
+                    && entry.handle.generation == handle.generation
+                    && entry.handle.org_id == handle.org_id
+                    && entry.handle.user_id == handle.user_id
+                    && entry.handle.session == handle.session
+                    && entry.handle.client_protocol == handle.client_protocol
+            })
+    }
+    pub(crate) fn queue_native(
+        &self,
+        handle: &LinkHandle,
+        message: RelayMessage,
+        required: u32,
+    ) -> Result<(), SendError> {
+        if !self.current(handle)
+            || required < self.min_client_protocol()
+            || handle.client_protocol.value() < required
+        {
+            return Err(SendError::Offline);
+        }
+        handle.queue_stamped(
+            message,
+            Stamp {
+                generation: handle.generation,
+                required,
+            },
+        )
     }
 
     /// How many links are live now (the readiness probe's included while it runs).
@@ -623,6 +1080,9 @@ impl Relay {
         let Some(entry) = links.get_mut(&device_id) else {
             return false;
         };
+        if close.disposition != CloseDisposition::Drain {
+            entry.blocked = true;
+        }
         if let Some(closing) = entry.closing.take() {
             let _ = closing.send(close);
         }
@@ -638,6 +1098,9 @@ impl Relay {
         };
         if entry.handle.generation != generation {
             return false;
+        }
+        if close.disposition != CloseDisposition::Drain {
+            entry.blocked = true;
         }
         if let Some(closing) = entry.closing.take() {
             let _ = closing.send(close);
@@ -663,6 +1126,9 @@ impl Relay {
                 continue;
             }
             closed += 1;
+            if close.disposition != CloseDisposition::Drain {
+                entry.blocked = true;
+            }
             if let Some(closing) = entry.closing.take() {
                 let _ = closing.send(close.clone());
             }
@@ -714,6 +1180,9 @@ impl Relay {
         let mut tried = None;
         loop {
             let handle = self.handle(device_id).ok_or(SendError::Offline)?;
+            if !handle.synthetic_model() {
+                return Err(SendError::Offline);
+            }
             if tried == Some(handle.generation) {
                 return Err(SendError::Offline);
             }
@@ -722,6 +1191,33 @@ impl Relay {
                 Ok(Ok(())) => return Ok(()),
                 // That link is gone; try the device's current one, if it has a newer one.
                 Ok(Err(mpsc::error::SendError(back))) => frame = back,
+                Err(_) => return Err(SendError::Full),
+            }
+        }
+    }
+
+    pub(super) async fn reserve(
+        &self,
+        device: Uuid,
+        until: Instant,
+    ) -> Result<Reserved, SendError> {
+        let mut tried = None;
+        loop {
+            let handle = self.handle(device).ok_or(SendError::Offline)?;
+            if !handle.admitted || tried == Some(handle.generation) {
+                return Err(SendError::Offline);
+            }
+            tried = Some(handle.generation);
+            match tokio::time::timeout_at(until, handle.tx.clone().reserve_owned()).await {
+                Ok(Ok(permit)) => {
+                    return Ok(Reserved {
+                        handle,
+                        relay: self.clone(),
+                        permit,
+                        until,
+                    })
+                }
+                Ok(Err(_)) => continue,
                 Err(_) => return Err(SendError::Full),
             }
         }
@@ -753,7 +1249,7 @@ impl Relay {
     /// The `presence` frame for `hosts` as read from the database, online as of now: with a link,
     /// or within the grace of one that dropped. The lingering set is read after the links, and a
     /// Mac is put in it before its link is removed, so a Mac in its grace is never missed.
-    fn presence_of(&self, hosts: Vec<(Uuid, String, Option<String>)>) -> RelayMessage {
+    pub(super) fn presence_of(&self, hosts: Vec<(Uuid, String, Option<String>)>) -> RelayMessage {
         RelayMessage::Presence {
             hosts: hosts
                 .into_iter()
@@ -774,21 +1270,49 @@ impl Relay {
     /// threads (a Mac leaving while another links) reach every phone in the order their snapshots
     /// were taken, and a phone is never left with the older one.
     pub async fn broadcast_presence(&self, db: &Db, org_id: Uuid, user_id: Uuid) {
-        let hosts = match host_devices(db, org_id, user_id).await {
-            Ok(hosts) => hosts,
-            Err(error) => {
-                tracing::warn!(%error, "could not read presence");
-                return;
-            }
-        };
-        let _ordered = self
-            .0
-            .presence_order
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let message = self.presence_of(hosts);
         for client in self.presence_subscribers(user_id) {
-            client.deliver_presence(message.clone());
+            if client.org_id != org_id {
+                continue;
+            }
+            let mut checked = match super::admission::Checked::open(db, self, &client).await {
+                Ok(checked) => checked,
+                Err(error) => {
+                    if let Some(close) = error.close() {
+                        self.close_generation(client.device_id, client.generation, close);
+                    }
+                    continue;
+                }
+            };
+            let hosts = match checked.native() {
+                Ok(native) => native.host_devices().await,
+                Err(_) => continue,
+            };
+            let Ok(hosts) = hosts else {
+                self.close_generation(
+                    client.device_id,
+                    client.generation,
+                    Close::protocol_unavailable(),
+                );
+                continue;
+            };
+            {
+                let _ordered = self
+                    .0
+                    .presence_order
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                let message = self.presence_of(hosts);
+                if let Ok(proof) = checked.proof(1) {
+                    client.deliver_presence_checked(message, &proof);
+                }
+            }
+            if checked.commit().await.is_err() {
+                self.close_generation(
+                    client.device_id,
+                    client.generation,
+                    Close::protocol_unavailable(),
+                );
+            }
         }
     }
 
@@ -914,6 +1438,32 @@ impl Relay {
         watching.len()
     }
 
+    pub(super) fn fan_out_checked(
+        &self,
+        host: Uuid,
+        thread_id: &str,
+        event: &RelayMessage,
+        proof: &super::admission::Proof<'_>,
+    ) -> usize {
+        let watching: Vec<Uuid> = self
+            .watchers()
+            .by_host
+            .get(&host)
+            .and_then(|threads| threads.get(thread_id))
+            .map(|clients| clients.iter().copied().collect())
+            .unwrap_or_default();
+        let Ok(text) = serde_json::to_string(event) else {
+            return 0;
+        };
+        let text: Arc<str> = text.into();
+        for client in &watching {
+            if let Some(handle) = self.handle(*client) {
+                handle.deliver_event_checked(thread_id, Arc::clone(&text), proof);
+            }
+        }
+        watching.len()
+    }
+
     /// A receiver that changes whenever a watch is added or removed (from the moment of this call
     /// on); the host's link recomputes [`Relay::watched_by`] when it does.
     pub(super) fn watch_changes(&self) -> watch::Receiver<u64> {
@@ -974,17 +1524,17 @@ impl Relay {
         }
     }
 
-    /// The oldest client protocol the hub serves.
+    /// A local denial hint, never an admission capability.
     pub fn min_client_protocol(&self) -> u32 {
-        self.0.min_client_protocol.load(Ordering::Relaxed)
+        let state = self.registration();
+        state.minimum.max(state.local_denial)
     }
 
-    /// Raises or lowers the oldest client protocol served. A test seam: the hub has one protocol,
-    /// so nothing else changes it.
+    /// Test denial control, separate from the monotonic observed DB floor. Clearing this extra
+    /// denial never lowers the native floor, creates admission or activates protocol 2.
     pub fn set_min_client_protocol(&self, protocol: u32) {
-        self.0
-            .min_client_protocol
-            .store(protocol, Ordering::Relaxed);
+        let mut state = self.registration();
+        state.local_denial = protocol;
     }
 
     /// How many commands a link may have running at once ([`COMMANDS_IN_FLIGHT`]).
@@ -1036,11 +1586,14 @@ impl Relay {
         &self.0.commands
     }
 
-    fn links(&self) -> MutexGuard<'_, HashMap<Uuid, Entry>> {
+    fn registration(&self) -> MutexGuard<'_, RegistrationState> {
         self.0
-            .links
+            .registration
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+    fn links(&self) -> LinksGuard<'_> {
+        LinksGuard(self.registration())
     }
 }
 
@@ -1061,10 +1614,143 @@ mod tests {
     }
 
     #[test]
+    fn queued_frames_keep_their_generation_and_pre_cut_requirement() {
+        let frame = Envelope::message(
+            RelayMessage::Ping,
+            Stamp {
+                generation: 7,
+                required: 1,
+            },
+        );
+        assert!(frame.compatible(7, 1));
+        assert!(
+            !frame.compatible(8, 1),
+            "a replacement cannot inherit the old queue"
+        );
+        assert!(
+            !frame.compatible(7, 2),
+            "support2 does not retag pre-cut content"
+        );
+        assert_eq!(
+            frame.stamp,
+            Stamp {
+                generation: 7,
+                required: 1
+            }
+        );
+        let modern = Envelope::message(
+            RelayMessage::Ping,
+            Stamp {
+                generation: 7,
+                required: 2,
+            },
+        );
+        assert!(modern.compatible(7, 2));
+    }
+
+    #[test]
+    fn dropped_or_cloned_protected_events_release_the_exact_byte_budget() {
+        let bytes = Arc::new(AtomicUsize::new(4));
+        let frame = Envelope::event(
+            Arc::from("data"),
+            Stamp {
+                generation: 1,
+                required: 1,
+            },
+            Arc::clone(&bytes),
+        );
+        let duplicate = frame.clone();
+        assert_eq!(bytes.load(Ordering::SeqCst), 8);
+        drop(frame);
+        assert_eq!(bytes.load(Ordering::SeqCst), 4);
+        drop(duplicate);
+        assert_eq!(bytes.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn stale_gap_fences_the_following_event_and_releases_its_bytes_without_flush() {
+        let relay = Relay::new();
+        let mut link = relay.register_synthetic_model(identity(17, Role::Client));
+        let generation = link.handle.generation;
+        let gap = Envelope::message(
+            RelayMessage::StreamGap {
+                thread_id: "thread".into(),
+            },
+            Stamp {
+                generation,
+                required: 1,
+            },
+        );
+        let text: Arc<str> = Arc::from(
+            "{\"type\":\"event\",\"event\":{\"threadId\":\"thread\",\"text\":\"after-gap\"}}",
+        );
+        link.handle
+            .event_bytes
+            .fetch_add(text.len(), Ordering::SeqCst);
+        let event = Envelope::event(
+            Arc::clone(&text),
+            Stamp {
+                generation,
+                required: 2,
+            },
+            Arc::clone(&link.handle.event_bytes),
+        );
+        link.handle.tx.try_send(Outbound::Protected(gap)).unwrap();
+        link.handle.tx.try_send(Outbound::Protected(event)).unwrap();
+        let Outbound::Protected(first) = link.outbound.try_recv().unwrap() else {
+            panic!("missing gap");
+        };
+        let failure = first.check_for_write(generation, 2).unwrap_err();
+        let close = failure.close().unwrap();
+        assert_eq!(close.code, close_code::SHUTDOWN);
+        assert_eq!(close.disposition, CloseDisposition::Fence);
+        // The writer checks the original first envelope before any socket send. Its Fence
+        // return uses this same production drain, never a shutdown-flush loop.
+        drop(first);
+        link.handle.discard_pending(&mut link.outbound);
+        assert!(link.outbound.try_recv().is_err());
+        assert_eq!(link.handle.event_bytes.load(Ordering::SeqCst), 0);
+        link.handle.discard_pending(&mut link.outbound);
+        assert_eq!(
+            link.handle.event_bytes.load(Ordering::SeqCst),
+            0,
+            "cleanup cannot double release"
+        );
+        assert!(link.handle.missed().gaps.is_empty());
+    }
+
+    #[test]
+    fn test_denial_never_lowers_the_observed_native_floor() {
+        let relay = Relay::new();
+        relay.observe_floor(ProtocolFloor::new(1).unwrap()).unwrap();
+        relay.set_min_client_protocol(3);
+        assert_eq!(relay.min_client_protocol(), 3);
+        relay.set_min_client_protocol(1);
+        assert_eq!(relay.min_client_protocol(), 1);
+        relay.observe_floor(ProtocolFloor::new(2).unwrap()).unwrap();
+        relay.set_min_client_protocol(1);
+        assert_eq!(relay.min_client_protocol(), 2);
+        assert!(relay.observe_floor(ProtocolFloor::new(1).unwrap()).is_err());
+        assert!(relay.links_of(Uuid::nil()).is_empty());
+    }
+
+    #[test]
+    fn protocol_refusals_are_never_ordinary_shutdown_drains() {
+        assert_eq!(Close::shutdown().disposition, CloseDisposition::Drain);
+        for close in [
+            Close::client_too_old(2),
+            Close::protocol_unavailable(),
+            Close::protocol_not_activated(),
+        ] {
+            assert_eq!(close.disposition, CloseDisposition::Fence);
+        }
+    }
+
+    #[test]
     fn the_probe_is_never_registered() {
         let relay = Relay::new();
-        let _mac = relay.register(identity(1, Role::Host));
-        let probe = relay.register(Identity::probe());
+        let _mac = relay.register_synthetic_model(identity(1, Role::Host));
+        let probe = relay.register_synthetic_model(Identity::probe());
         assert!(!probe.replaced);
         assert!(!relay.online(Uuid::nil()));
         assert_eq!(relay.users(), [Uuid::from_u128(1000)]);
@@ -1080,11 +1766,11 @@ mod tests {
     #[test]
     fn close_user_closes_every_link_of_that_user_only() {
         let relay = Relay::new();
-        let mut mac = relay.register(identity(1, Role::Host));
-        let mut phone = relay.register(identity(2, Role::Client));
+        let mut mac = relay.register_synthetic_model(identity(1, Role::Host));
+        let mut phone = relay.register_synthetic_model(identity(2, Role::Client));
         let mut stranger = identity(3, Role::Client);
         stranger.user_id = Uuid::from_u128(1001);
-        let mut other = relay.register(stranger);
+        let mut other = relay.register_synthetic_model(stranger);
         assert_eq!(
             relay.users(),
             [Uuid::from_u128(1000), Uuid::from_u128(1001)]
@@ -1101,9 +1787,9 @@ mod tests {
     #[test]
     fn a_new_link_replaces_and_closes_the_old_one() {
         let relay = Relay::new();
-        let mut first = relay.register(identity(1, Role::Host));
+        let mut first = relay.register_synthetic_model(identity(1, Role::Host));
         assert!(!first.replaced);
-        let second = relay.register(identity(1, Role::Host));
+        let second = relay.register_synthetic_model(identity(1, Role::Host));
         assert!(second.replaced);
         assert!(second.handle.generation > first.handle.generation);
         assert_eq!(first.closing.try_recv().unwrap(), Close::replaced());
@@ -1123,7 +1809,7 @@ mod tests {
             relay.send(device, RelayMessage::Ping),
             Err(SendError::Offline)
         );
-        let mut link = relay.register(identity(1, Role::Client));
+        let mut link = relay.register_synthetic_model(identity(1, Role::Client));
         for _ in 0..LINK_QUEUE {
             relay.send(device, RelayMessage::Ping).unwrap();
         }
@@ -1144,7 +1830,7 @@ mod tests {
             relay.send_wait(device, RelayMessage::Ping, bound).await,
             Err(SendError::Offline)
         );
-        let mut link = relay.register(identity(1, Role::Client));
+        let mut link = relay.register_synthetic_model(identity(1, Role::Client));
         for _ in 0..LINK_QUEUE {
             relay.send(device, RelayMessage::Ping).unwrap();
         }
@@ -1168,7 +1854,7 @@ mod tests {
     #[test]
     fn close_signals_once_and_keeps_the_link_registered() {
         let relay = Relay::new();
-        let mut link = relay.register(identity(1, Role::Host));
+        let mut link = relay.register_synthetic_model(identity(1, Role::Host));
         assert!(relay.close(Uuid::from_u128(1), Close::revoked()));
         assert_eq!(link.closing.try_recv().unwrap(), Close::revoked());
         assert!(relay.online(Uuid::from_u128(1)));
@@ -1178,11 +1864,11 @@ mod tests {
     #[test]
     fn presence_subscribers_are_the_users_client_links_only() {
         let relay = Relay::new();
-        let _mac = relay.register(identity(1, Role::Host));
-        let _phone = relay.register(identity(2, Role::Client));
+        let _mac = relay.register_synthetic_model(identity(1, Role::Host));
+        let _phone = relay.register_synthetic_model(identity(2, Role::Client));
         let mut stranger = identity(3, Role::Client);
         stranger.user_id = Uuid::from_u128(1001);
-        let _other = relay.register(stranger);
+        let _other = relay.register_synthetic_model(stranger);
         let subscribers = relay.presence_subscribers(Uuid::from_u128(1000));
         assert_eq!(subscribers.len(), 1);
         assert_eq!(subscribers[0].device_id, Uuid::from_u128(2));
@@ -1202,7 +1888,7 @@ mod tests {
     #[test]
     fn events_past_the_byte_budget_are_a_gap_and_written_ones_give_room_back() {
         let relay = Relay::new();
-        let mut link = relay.register(identity(2, Role::Client));
+        let mut link = relay.register_synthetic_model(identity(2, Role::Client));
         // 1 MiB events: four fit in the budget, the fifth would pass it.
         let big = |n: usize| -> Arc<str> {
             serde_json::to_string(&RelayMessage::Event {
@@ -1243,7 +1929,7 @@ mod tests {
     #[test]
     fn a_full_queue_drops_events_and_reports_one_gap_when_there_is_room() {
         let relay = Relay::new();
-        let mut link = relay.register(identity(2, Role::Client));
+        let mut link = relay.register_synthetic_model(identity(2, Role::Client));
         for _ in 0..LINK_QUEUE {
             link.handle.deliver_event("t1", encoded("t1"));
         }
@@ -1295,7 +1981,7 @@ mod tests {
     #[test]
     fn presence_that_does_not_fit_is_kept_latest_only() {
         let relay = Relay::new();
-        let mut link = relay.register(identity(2, Role::Client));
+        let mut link = relay.register_synthetic_model(identity(2, Role::Client));
         for _ in 0..LINK_QUEUE {
             link.handle.try_send(RelayMessage::Ping).unwrap();
         }
@@ -1329,7 +2015,9 @@ mod tests {
     fn watches_are_limited_per_link_and_end_with_the_link() {
         let relay = Relay::new();
         let host = Uuid::from_u128(1);
-        let old = relay.register(identity(2, Role::Client)).handle;
+        let old = relay
+            .register_synthetic_model(identity(2, Role::Client))
+            .handle;
         for n in 0..WATCH_MAX {
             relay.watch(&old, host, &format!("t{n}")).unwrap();
         }
@@ -1339,7 +2027,9 @@ mod tests {
         assert_eq!(relay.watched_by(host), ["t0", "t1", "t2", "t3"]);
 
         // A newer link of the device starts with none, and the old link can no longer add.
-        let new = relay.register(identity(2, Role::Client)).handle;
+        let new = relay
+            .register_synthetic_model(identity(2, Role::Client))
+            .handle;
         assert!(relay.watched_by(host).is_empty());
         assert_eq!(relay.watch(&old, host, "t0"), Err(WatchError::Gone));
         relay.watch(&new, host, "t0").unwrap();
@@ -1365,5 +2055,30 @@ mod tests {
             .await
             .expect("drained resolves once the link is dropped")
             .unwrap();
+    }
+}
+
+pub(super) struct Reserved {
+    pub handle: LinkHandle,
+    relay: Relay,
+    permit: mpsc::OwnedPermit<Outbound>,
+    until: Instant,
+}
+impl Reserved {
+    pub fn send(
+        self,
+        message: RelayMessage,
+        proof: &super::admission::Proof<'_>,
+    ) -> Result<(), SendError> {
+        if Instant::now() >= self.until {
+            return Err(SendError::Full);
+        }
+        if !self.relay.current(&self.handle) {
+            return Err(SendError::Offline);
+        }
+        let stamp = proof.stamp_for(&self.handle).ok_or(SendError::Offline)?;
+        self.permit
+            .send(Outbound::Protected(Envelope::message(message, stamp)));
+        Ok(())
     }
 }

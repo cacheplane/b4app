@@ -49,10 +49,10 @@ public struct MirrorLink: Codable, Sendable, Equatable {
 
 /// What one `apply` changed, for the transport to turn into events: threads (their own rows, and the
 /// thread of every turn and runtime request written), environments (their rows and their folders'),
-/// connections, the display items written (as they now read), how many changes were not applied, and
-/// how many rows the batch wrote that this build cannot decode (stored, but left out of reads). A
-/// change whose clocked columns all lost to newer clocks wrote nothing: it touches nothing and is not
-/// counted as skipped.
+/// connections, the display items written (as they now read), whether the view settings row changed,
+/// how many changes were not applied, and how many rows the batch wrote that this build cannot decode
+/// (stored, but left out of reads). A change whose clocked columns all lost to newer clocks wrote
+/// nothing: it touches nothing and is not counted as skipped.
 public struct AppliedBatch: Sendable, Equatable {
   public var touchedThreadIds: Set<String>
   public var touchedItems: [DisplayItem]
@@ -60,19 +60,23 @@ public struct AppliedBatch: Sendable, Equatable {
   public var touchedEnvironmentIds: Set<String>
   /// Connections whose `connectionUsage` row changed.
   public var touchedUsageIds: Set<String>
+  /// The view settings row (`viewSettings`, id `view`) was written.
+  public var touchedViewSettings: Bool
   public var skipped: Int
   public var undecodableRows: Int
 
   public init(
     touchedThreadIds: Set<String> = [], touchedItems: [DisplayItem] = [],
     touchedConnectionIds: Set<String> = [], touchedEnvironmentIds: Set<String> = [],
-    touchedUsageIds: Set<String> = [], skipped: Int = 0, undecodableRows: Int = 0
+    touchedUsageIds: Set<String> = [], touchedViewSettings: Bool = false, skipped: Int = 0,
+    undecodableRows: Int = 0
   ) {
     self.touchedThreadIds = touchedThreadIds
     self.touchedItems = touchedItems
     self.touchedConnectionIds = touchedConnectionIds
     self.touchedEnvironmentIds = touchedEnvironmentIds
     self.touchedUsageIds = touchedUsageIds
+    self.touchedViewSettings = touchedViewSettings
     self.skipped = skipped
     self.undecodableRows = undecodableRows
   }
@@ -337,6 +341,18 @@ public final class MirrorStore: @unchecked Sendable {
     try locked {
       try one(Draft.self, "drafts", #"SELECT * FROM "drafts" WHERE "threadId" = ?"#, [.text(threadId)])
     }
+  }
+
+  /// The account's view settings, read leniently: no row, a null, or a value this build does not know
+  /// is the field's default. Writes nothing.
+  public func viewSettings() throws -> ViewSettings {
+    try locked { try viewSettingsLocked() }
+  }
+
+  func viewSettingsLocked() throws -> ViewSettings {
+    try one(
+      ViewSettings.self, "viewSettings", #"SELECT * FROM "viewSettings" WHERE "id" = ?"#,
+      [.text(ViewSettings.rowId)]) ?? ViewSettings()
   }
 
   /// Every environment, oldest first (ties by id), each with its folders oldest first, as the Mac lists
