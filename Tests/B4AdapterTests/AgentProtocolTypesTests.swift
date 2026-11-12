@@ -57,6 +57,50 @@ import Testing
     }
   }
 
+  @Test func outgoingBuildersKeepThreadTokenAndCommandIdentitiesSeparate() throws {
+    let thread = try #require(UUID(uuidString: "871e7ea2-7a46-4678-bcac-3a912de1b008"))
+    let tokenUUID = try #require(UUID(uuidString: "018f2c16-5edb-7c3b-8c80-35f79a173d42"))
+    let targetUUID = try #require(UUID(uuidString: "00000000-0000-4000-8000-000000000003"))
+    let token = AgentProtocol.CanonicalID(tokenUUID)
+    let create = AgentProtocol.ThreadCreateRequest(threadID: thread, metadata: ["label": .string("original")])
+    #expect(
+      create.body
+        == .object([
+          "thread_id": .string(thread.uuidString.lowercased()), "if_exists": .string("do_nothing"),
+          "metadata": .object(["label": .string("original")]),
+        ]))
+    let lookup = AgentProtocol.OperationLookupRequest(
+      submissionID: token, operationThreadID: .init(thread), targetRunID: .init(targetUUID))
+    #expect(
+      lookup.body
+        == .object([
+          "metadata": .object([
+            "b4.submissionId": .string(tokenUUID.uuidString.lowercased()), "b4.submissionKind": .string("b4"),
+            "b4.operationThreadId": .string(thread.uuidString.lowercased()),
+            "b4.targetRunId": .string(targetUUID.uuidString.lowercased()),
+          ]), "limit": .integer(1), "offset": .integer(0),
+        ]))
+    let initial = AgentProtocol.OperationLookupRequest(submissionID: token, operationThreadID: .init(thread))
+    #expect(initial.body["metadata"]?["b4.targetRunId"] == nil)
+    #expect(initial.body["thread_id"] == nil)  // a fork's destination can differ from its original target
+    let id = try JSONDecoder().decode(AgentProtocol.JSUInt.self, from: Data("42".utf8))
+    let request = AgentProtocol.RunStartRequest(
+      assistantID: "route/child#agent", input: .object(["text": .string("hello")]),
+      config: ["model": .string("selected")],
+      metadata: [
+        "b4": .object(["v": .integer(1), "submissionId": .string(tokenUUID.uuidString.lowercased())])
+      ])
+    let command = AgentProtocol.Command(id: id, start: request)
+    #expect(command.method == .runStart && command.id.rawValue == 42)
+    #expect(command.params == request.params)
+    #expect(command.params["metadata"]?["b4"]?["submissionId"] == .string(tokenUUID.uuidString.lowercased()))
+    #expect(command.params["assistantId"] == .string("route/child#agent"))
+    #expect(command.params["config"] == .object(["model": .string("selected")]))
+    #expect(command.raw["b4"] == nil)
+    #expect(AgentProtocol.CommandMethod(rawValue: "run.stop") == nil)
+    #expect(AgentProtocol.CommandMethod(rawValue: "run.resume") == nil)
+  }
+
   @Test func decodesStandardRunAndPreservesWireDateSpelling() throws {
     let run = try decode(AgentProtocol.Run.self, fixture: "complete Run response")
     #expect(run.runID.uuidString.lowercased() == "018f2c16-5edb-7c3b-8c80-35f79a173d42")

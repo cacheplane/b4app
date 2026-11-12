@@ -204,12 +204,19 @@ public struct AgentProtocolClient: Sendable {
         throw AgentProtocolTransportError.invalidResponse
       }
       guard (200..<300).contains(response.statusCode) else {
+        if decodingPolicy == .negotiatedB4V1,
+          let failure = AgentProtocolRESTFailure.decode(status: response.statusCode, data: data)
+        {
+          throw failure
+        }
         throw AgentProtocolTransportError.http(status: response.statusCode)
       }
       if data.isEmpty { return .null }
       do { return try JSONDecoder().decode(AgentProtocol.Value.self, from: data) } catch {
         throw AgentProtocolTransportError.invalidResponse
       }
+    } catch let failure as AgentProtocolRESTFailure {
+      throw failure
     } catch { throw AgentProtocolTransportError.sanitized(error) }
   }
 
@@ -223,6 +230,36 @@ public struct AgentProtocolClient: Sendable {
 
   public func schemas(agentID: String) async throws -> AgentProtocol.Value {
     try await request(.get, .agentSchemas(agentID))
+  }
+
+  public func createThread(_ request: AgentProtocol.ThreadCreateRequest) async throws -> AgentProtocol.Thread
+  {
+    try decode(AgentProtocol.Thread.self, value: await self.request(.post, .threads, body: request.body))
+  }
+
+  public func thread(id: UUID) async throws -> AgentProtocol.Thread {
+    try decode(AgentProtocol.Thread.self, value: await request(.get, .thread(id.uuidString.lowercased())))
+  }
+
+  public func run(id: UUID) async throws -> AgentProtocol.Run {
+    try decode(AgentProtocol.Run.self, value: await request(.get, .run(id.uuidString.lowercased())))
+  }
+
+  public func lookupOperation(
+    _ query: AgentProtocol.OperationLookupRequest
+  ) async throws -> [AgentProtocol.B4Run] {
+    guard decodingPolicy == .negotiatedB4V1 else { throw AgentProtocolTransportError.b4NotNegotiated }
+    return try decode([AgentProtocol.B4Run].self, value: await request(.post, .runsSearch, body: query.body))
+  }
+
+  /// Acceptance of exact-Run cancellation is not a receipt or proof of cooperative settlement.
+  public func cancelRun(id: UUID, wait: Bool = false) async throws {
+    _ = try await request(
+      .post, .runCancel(id.uuidString.lowercased()),
+      query: [
+        URLQueryItem(name: "action", value: "interrupt"),
+        URLQueryItem(name: "wait", value: wait ? "true" : "false"),
+      ])
   }
 
   private func decode<T: Decodable>(_ type: T.Type, value: AgentProtocol.Value) throws -> T {

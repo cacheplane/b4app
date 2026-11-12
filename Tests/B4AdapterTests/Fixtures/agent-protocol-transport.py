@@ -67,6 +67,41 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(307, {"code": "redirect"}, {"Location": "/other/agents/search"})
         elif "/http-error/" in self.path:
             self.respond(401, {"code": "auth_required", "message": "synthetic-only"})
+        elif "/rest-failure/" in self.path:
+            code = self.path.split("/rest-failure/", 1)[1].split("/", 1)[0]
+            response = {"code": code, "message": "synthetic-only", "metadata": {"b4": {"v": 1, "code": "synthetic-only"}}}
+            if code == "unknown":
+                response["code"] = "synthetic-only"
+            elif code == "no-extension":
+                response["code"] = "submission_conflict"
+                del response["metadata"]
+            elif code == "nested-only":
+                del response["code"]
+                response["metadata"] = {"b4": {"v": 1, "code": "submission_conflict"}}
+            elif code == "invalid-code":
+                response["code"] = 17
+            elif code == "missing-message":
+                del response["message"]
+            elif code == "bad-extension":
+                response["code"] = "submission_conflict"
+                response["metadata"]["b4"]["v"] = 9
+            self.respond(409, response)
+        elif self.path == "/typed/threads" and self.command == "POST":
+            with self.lock:
+                threads = getattr(self.server, "typed_threads", {})
+                thread_id = body["thread_id"]
+                threads.setdefault(thread_id, {"thread_id": thread_id, "created_at": "2026-11-05T00:00:00Z", "updated_at": "2026-11-05T00:00:00Z", "status": "idle", "metadata": body["metadata"]})
+                self.server.typed_threads = threads
+                self.respond(200, threads[thread_id])
+        elif self.path.startswith("/typed/threads/") and self.command == "GET":
+            self.respond(200, self.server.typed_threads[self.path.rsplit("/", 1)[1]])
+        elif self.path == "/typed/runs/search":
+            self.respond(200, [copy.deepcopy(fixtures["Run authorized lookup accepted"])])
+        elif self.path.startswith("/typed/runs/"):
+            if "/cancel?" in self.path:
+                self.respond(200, None)
+            else:
+                self.respond(200, copy.deepcopy(fixtures["complete Run response"]))
         elif self.path.endswith("/agents/search"):
             self.respond(200, [{"agent_id": "route/child#agent", "name": "Test", "capabilities": {}}], {"Set-Cookie": "session=synthetic-only; Path=/"})
         elif "/agents/" in self.path:

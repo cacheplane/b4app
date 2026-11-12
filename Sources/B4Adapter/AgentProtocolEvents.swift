@@ -12,6 +12,7 @@ public enum AgentProtocolTransportError: Error, Sendable, Equatable, CustomStrin
   case credentialUnavailable
   case invalidResponse
   case correlationMismatch
+  case b4NotNegotiated
   case http(status: Int)
   case unavailable(code: Int?)
 
@@ -24,6 +25,7 @@ public enum AgentProtocolTransportError: Error, Sendable, Equatable, CustomStrin
     case .credentialUnavailable: "agent_protocol.credential_unavailable"
     case .invalidResponse: "agent_protocol.invalid_response"
     case .correlationMismatch: "agent_protocol.correlation_mismatch"
+    case .b4NotNegotiated: "agent_protocol.b4_not_negotiated"
     case .http(let status): "agent_protocol.http_\(status)"
     case .unavailable(let code): "agent_protocol.unavailable\(code.map { "_\($0)" } ?? "")"
     }
@@ -44,6 +46,7 @@ public enum AgentProtocolDiagnostic: String, Codable, Sendable, CaseIterable {
   case malformedJSON = "malformed_json"
   case invalidArgument = "invalid_argument"
   case authRequired = "auth_required"
+  case permissionDenied = "permission_denied"
   case notFound = "not_found"
   case threadExists = "thread_exists"
   case threadBusy = "thread_busy"
@@ -58,11 +61,39 @@ public enum AgentProtocolDiagnostic: String, Codable, Sendable, CaseIterable {
   case historyExpired = "history_expired"
   case resultExpired = "result_expired"
   case submissionConflict = "submission_conflict"
+  case submissionAmbiguous = "submission_ambiguous"
+  case submissionTargetGone = "submission_target_gone"
+  case submissionAlreadyAccepted = "submission_already_accepted"
   case receiptExpired = "receipt_expired"
   case capacityExceeded = "capacity_exceeded"
   case storageUnavailable = "storage_unavailable"
   case itemChanged = "item_changed"
   case unrecognized
+}
+
+/// Negotiated REST errors use a top-level code, unlike ASP meta.b4.code. Only validated
+/// machine classification and numeric HTTP status survive; peer text and causes do not.
+public struct AgentProtocolRESTFailure: Error, Sendable, Equatable, CustomStringConvertible,
+  CustomDebugStringConvertible, LocalizedError
+{
+  public let status: Int
+  public let diagnostic: AgentProtocolDiagnostic
+
+  private struct Carrier: Decodable {
+    let code: String
+    let message: String
+    // Reuse the negotiated v1 carrier validation without retaining any raw extensions.
+    let metadata: AgentProtocol.ResponseMeta?
+  }
+
+  static func decode(status: Int, data: Data) -> Self? {
+    guard let carrier = try? JSONDecoder().decode(Carrier.self, from: data) else { return nil }
+    return Self(status: status, diagnostic: AgentProtocolDiagnostic(rawValue: carrier.code) ?? .unrecognized)
+  }
+
+  public var description: String { "agent_protocol.rest_\(status)_\(diagnostic.rawValue)" }
+  public var debugDescription: String { description }
+  public var errorDescription: String? { description }
 }
 
 /// A receipt associated with a public diagnostic error, containing only validated machine facts.

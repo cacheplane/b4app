@@ -279,6 +279,75 @@ public enum AgentProtocol {
     }
   }
 
+  /// A persisted caller UUID and original metadata are replayed with no merge semantics.
+  public struct ThreadCreateRequest: Sendable {
+    public let threadID: UUID
+    public let metadata: Object
+
+    public init(threadID: UUID, metadata: Object = [:]) {
+      self.threadID = threadID
+      self.metadata = metadata
+    }
+
+    public var body: Value {
+      .object([
+        "thread_id": .string(threadID.uuidString.lowercased()),
+        "metadata": .object(metadata), "if_exists": .string("do_nothing"),
+      ])
+    }
+  }
+
+  /// Literal reserved selectors identify the original operation, including a fork's source Thread.
+  /// They are not nested annotation filters or the standard destination thread_id filter.
+  public struct OperationLookupRequest: Sendable {
+    public let submissionID: CanonicalID
+    public let operationThreadID: CanonicalID
+    public let targetRunID: CanonicalID?
+
+    public init(
+      submissionID: CanonicalID, operationThreadID: CanonicalID, targetRunID: CanonicalID? = nil
+    ) {
+      self.submissionID = submissionID
+      self.operationThreadID = operationThreadID
+      self.targetRunID = targetRunID
+    }
+
+    public var body: Value {
+      var metadata: Object = [
+        "b4.submissionId": .string(submissionID.rawValue.uuidString.lowercased()),
+        "b4.submissionKind": .string("b4"),
+        "b4.operationThreadId": .string(operationThreadID.rawValue.uuidString.lowercased()),
+      ]
+      if let targetRunID {
+        metadata["b4.targetRunId"] = .string(targetRunID.rawValue.uuidString.lowercased())
+      }
+      return .object(["metadata": .object(metadata), "limit": .integer(1), "offset": .integer(0)])
+    }
+  }
+
+  /// Standard run.start parameters. Submission metadata is supplied by durable intent ownership;
+  /// constructing a transport request never mints a token or changes its expectations.
+  public struct RunStartRequest: Sendable {
+    public let assistantID: String
+    public let input: Value
+    public let config: Object?
+    public let metadata: Object?
+
+    public init(assistantID: String, input: Value, config: Object? = nil, metadata: Object? = nil) {
+      self.assistantID = assistantID
+      self.input = input
+      self.config = config
+      self.metadata = metadata
+    }
+
+    public var params: Object {
+      var result: Object = ["assistantId": .string(assistantID), "input": input]
+      if let config { result["config"] = .object(config) }
+      if let metadata { result["metadata"] = .object(metadata) }
+      return result
+    }
+  }
+
   public struct Thread: Record {
     public let raw: Object
     public let threadID: UUID
@@ -858,6 +927,17 @@ public enum AgentProtocol {
     public let id: JSUInt
     public let method: CommandMethod
     public let params: Object
+
+    public init(id: JSUInt, start: RunStartRequest) {
+      let parameters = start.params
+      self.id = id
+      method = .runStart
+      params = parameters
+      raw = [
+        "id": .unsignedInteger(id.rawValue), "method": .string(CommandMethod.runStart.rawValue),
+        "params": .object(parameters),
+      ]
+    }
 
     public init(from decoder: Decoder) throws {
       let object = try APObject(decoder)

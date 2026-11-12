@@ -6,6 +6,102 @@ import WorkspacePlatform
 @testable import B4Adapter
 
 @Suite struct AgentProtocolTransportTests {
+  @Test func typedOutgoingResourcesPreserveExactTargetsAndNeverRetry() async throws {
+    try await withProtocolPeer { peer in
+      let client = try AgentProtocolClient(
+        baseURL: peer.baseURL + "/typed", authentication: .none, decodingPolicy: .negotiatedB4V1)
+      let threadID = try #require(UUID(uuidString: "871e7ea2-7a46-4678-bcac-3a912de1b008"))
+      let runID = try #require(UUID(uuidString: "018f2c16-5edb-7c3b-8c80-35f79a173d42"))
+      let original = AgentProtocol.ThreadCreateRequest(
+        threadID: threadID, metadata: ["label": .string("original")])
+      let created = try await client.createThread(original)
+      let repeated = try await client.createThread(
+        .init(threadID: threadID, metadata: ["label": .string("changed")]))
+      #expect(created.threadID == threadID && repeated.threadID == threadID)
+      #expect(repeated.metadata["label"] == .string("original"))
+      #expect(try await client.thread(id: threadID).threadID == threadID)
+      #expect(try await client.run(id: runID).runID == runID)
+      let commandID = try JSONDecoder().decode(AgentProtocol.JSUInt.self, from: Data("72".utf8))
+      let start = AgentProtocol.RunStartRequest(assistantID: "route/child#agent", input: .string("hello"))
+      _ = try await client.command(
+        threadID: threadID.uuidString.lowercased(), command: .init(id: commandID, start: start))
+      let lookup = AgentProtocol.OperationLookupRequest(
+        submissionID: .init(threadID), operationThreadID: .init(threadID), targetRunID: .init(runID))
+      let matches = try await client.lookupOperation(lookup)
+      #expect(matches.count == 1 && matches.first?.metadata.lookup?.state == .accepted)
+      try await client.cancelRun(id: runID)
+      let records = try await peer.records()
+      #expect(records.count == 7)
+      #expect(records[0]["method"] == .string("POST") && records[0]["body"] == original.body)
+      #expect(records[1]["body"]?["if_exists"] == .string("do_nothing"))
+      #expect(records[2]["path"] == .string("/typed/threads/" + threadID.uuidString.lowercased()))
+      #expect(records[3]["path"] == .string("/typed/runs/" + runID.uuidString.lowercased()))
+      #expect(records[4]["body"]?["params"] == .object(start.params))
+      #expect(records[5]["path"] == .string("/typed/runs/search") && records[5]["body"] == lookup.body)
+      #expect(
+        records[5]["body"]?["metadata"]?["b4.operationThreadId"] == .string(threadID.uuidString.lowercased()))
+      #expect(records[5]["body"]?["metadata"]?["b4.targetRunId"] == .string(runID.uuidString.lowercased()))
+      #expect(
+        records[6]["path"]
+          == .string("/typed/runs/" + runID.uuidString.lowercased() + "/cancel?action=interrupt&wait=false"))
+      #expect(records[6]["body"] == .null)  // Stop has no invented submission receipt/token
+    }
+  }
+
+  @Test func operationLookupRequiresExplicitNegotiatedPolicyBeforeCredentials() async throws {
+    try await withProtocolPeer { peer in
+      let client = try AgentProtocolClient(
+        baseURL: peer.baseURL, authentication: .bearer(.make()), decodingPolicy: .generic,
+        resolveSecret: { _ in
+          Issue.record("Unnegotiated lookup resolved credentials"); return "synthetic-only"
+        })
+      let id = AgentProtocol.CanonicalID(UUID())
+      await #expect(throws: AgentProtocolTransportError.b4NotNegotiated) {
+        _ = try await client.lookupOperation(.init(submissionID: id, operationThreadID: id))
+      }
+      #expect(try await peer.records().isEmpty)
+    }
+  }
+
+  @Test func restFailuresUseOnlyNegotiatedTopLevelMachineCodes() async throws {
+    try await withProtocolPeer { peer in
+      let cases: [(String, AgentProtocolDiagnostic)] = [
+        ("submission_conflict", .submissionConflict), ("receipt_expired", .receiptExpired),
+        ("submission_target_gone", .submissionTargetGone), ("submission_ambiguous", .submissionAmbiguous),
+        ("submission_already_accepted", .submissionAlreadyAccepted), ("unknown", .unrecognized),
+        ("no-extension", .submissionConflict),
+      ]
+      for (code, expected) in cases {
+        for policy in [AgentProtocolDecodingPolicy.generic, .negotiatedB4V1] {
+          let client = try AgentProtocolClient(
+            baseURL: peer.baseURL + "/rest-failure/" + code, authentication: .none, decodingPolicy: policy)
+          do { _ = try await client.request(.post, .runsSearch); Issue.record("Expected REST failure") } catch
+          {
+            if policy == .generic {
+              #expect(error as? AgentProtocolTransportError == .http(status: 409))
+            } else {
+              let failure = try #require(error as? AgentProtocolRESTFailure)
+              #expect(failure.status == 409 && failure.diagnostic == expected)
+            }
+            expectRedacted(error)
+            #expect(!storedStrings(error).contains(where: { $0.contains("synthetic-only") }))
+          }
+        }
+      }
+      for malformed in ["nested-only", "invalid-code", "missing-message", "bad-extension"] {
+        for policy in [AgentProtocolDecodingPolicy.generic, .negotiatedB4V1] {
+          let client = try AgentProtocolClient(
+            baseURL: peer.baseURL + "/rest-failure/" + malformed, authentication: .none,
+            decodingPolicy: policy)
+          await #expect(throws: AgentProtocolTransportError.http(status: 409)) {
+            _ = try await client.request(.post, .runsSearch)
+          }
+        }
+      }
+      #expect(try await peer.records().count == 22)
+    }
+  }
+
   @Test func deploymentNormalizationPreservesCaseAndEncodedComponents() throws {
     let client = try AgentProtocolClient(
       baseURL: "https://EXAMPLE.com:443/Deploy/%61/", authentication: .none, decodingPolicy: .generic)
