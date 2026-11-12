@@ -321,6 +321,44 @@ extension WorkspaceDatabase {
   }
 }
 
+extension WorkspaceDatabase {
+  /// Compare the original captured state for fetching verification, including a prospective
+  /// absent link. This read-only result is neither authentication nor an admission lease.
+  public func validateProtocolVerification(expectedSnapshot: ProtocolVerificationSnapshot) throws {
+    do {
+      guard expectedSnapshot.database === self, expectedSnapshot.capturedContext != nil else {
+        throw ProtocolActivationControl.failure
+      }
+      try read { c -> Void in
+        let state = try ProtocolActivationControl.state(c, locking: false)
+        _ = try ProtocolActivationControl.capturedRecord(
+          self, state: state, snapshot: expectedSnapshot, allowingLaterRevision: false)
+      }
+    } catch { throw ProtocolActivationControl.failure }
+  }
+
+  /// Compare ordinary-sync compatibility in one native view. Success grants no authority for
+  /// a later effect; owner admission and same-transaction effect checks remain separate work.
+  public func validateProtocolSync(expectedSnapshot: ProtocolVerificationSnapshot) throws {
+    do {
+      guard expectedSnapshot.database === self,
+        let context = expectedSnapshot.capturedContext, context.membership != nil
+      else { throw ProtocolActivationControl.failure }
+      try read { c -> Void in
+        let current = try ProtocolActivationControl.syncState(c)
+        let record = try ProtocolActivationControl.capturedRecord(
+          self, state: current.state, snapshot: expectedSnapshot, allowingLaterRevision: false)
+        if current.requirement == .protocolTwo {
+          guard let binding = record.binding, let observation = record.observation,
+            observation.binding == binding, observation.reportedMinimum == 2,
+            observation.reportedVersion >= 2, observation.healthy
+          else { throw ProtocolActivationControl.failure }
+        }
+      }
+    } catch { throw ProtocolActivationControl.failure }
+  }
+}
+
 /// Internal transaction-borrowing seams. No helper begins/commits a transaction, awaits work,
 /// or exposes the private record. Public wrappers cover the actual outer COMMIT with safe errors.
 enum ProtocolActivationControl {
@@ -576,6 +614,36 @@ enum ProtocolActivationControl {
       database: database, control: row.text("control"), linkPresent: row.text("native_link_id") == "1",
       url: row.text("url"),
       device: row.text("device"), joined: row.text("joined"))
+  }
+  /// The scalar classifier is the unchanged literal R6 query, evaluated in the SAME statement
+  /// snapshot as the record and actual optional link. No lock, write or second state read occurs.
+  fileprivate static func syncState(
+    _ c: PostgresConnection
+  ) throws -> (state: State, requirement: ProtocolSyncRequirement) {
+    let rows = try c.execute(
+      """
+      SELECT current_database() AS database,
+        (SELECT value::text FROM public.settings WHERE key=$1) AS control,
+        l.id AS native_link_id, l.url, l."deviceId" AS device, l."joinedAt" AS joined,
+        (\(syncRequirementSQL)) AS requires_two
+      FROM (SELECT 1) singleton LEFT JOIN public."hubLink" l ON l.id=1
+      """, [key]
+    ).rows
+    guard rows.count == 1, let row = rows.first, let database = row.text("database"),
+      let value = row.text("requires_two")
+    else { throw failure }
+    let requirement: ProtocolSyncRequirement
+    switch value {
+    case "true": requirement = .protocolTwo
+    case "false": requirement = .legacyOnly
+    default: throw failure
+    }
+    return (
+      State(
+        database: database, control: row.text("control"), linkPresent: row.text("native_link_id") == "1",
+        url: row.text("url"), device: row.text("device"), joined: row.text("joined")),
+      requirement
+    )
   }
   fileprivate static func requireDatabase(
     _ state: State, binding: ProtocolMembershipBinding, endpoint: String

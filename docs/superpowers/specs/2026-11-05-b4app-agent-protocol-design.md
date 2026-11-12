@@ -225,6 +225,17 @@ opaque payloads, ordinary legacy tombstones/partial history, installed schema
 and the control setting alone are not markers. Use one native snapshot; this
 comparison neither filters/consumes changes nor adds an ownership/replay validator.
 
+Keep read-only verification comparison separate from sync eligibility. The
+verification comparison checks the original captured object/context, full record
+and actual optional membership in one native view; actual absence is valid for
+a prospective proof. It must remain possible to fetch a fresh proof while a
+modern workspace has an inactive record. Ordinary sync additionally requires a
+current linked membership and the same-view whole-store classification; modern
+material requires that exact record's healthy minimum2/version>=2 observation.
+Both comparisons return no authority or lease, perform no writes and never
+recapture or adopt a newer state. The owner explicitly authorizes the proof
+purpose; a denied sync cannot fall back to comparison-only verification.
+
 These storage primitives remain dormant until the owner handles admission.
 Cold reuse must match the closed binding to independently known account/stable
 nonplaceholder user identity and actual native membership. New positive evidence

@@ -2021,3 +2021,286 @@ extension ProtocolActivationStoreTests {
   }
 
 }
+
+// Read-only comparison surfaces only. Success returns Void, never authority, a lease or a new stamp.
+extension ProtocolActivationStoreTests {
+  private static func expectReadOnlyValidation(
+    _ f: Fixture, snapshot: ProtocolVerificationSnapshot, sync: Bool, refuses: Bool = false,
+    database: WorkspaceDatabase? = nil
+  ) throws {
+    let database = database ?? f.database
+    let before = try state(f)
+    let operation: () throws -> Void = {
+      if sync {
+        try database.validateProtocolSync(expectedSnapshot: snapshot)
+      } else {
+        try database.validateProtocolVerification(expectedSnapshot: snapshot)
+      }
+    }
+    if refuses {
+      expectSafe(operation)
+      try expectUnchanged(f, before)
+    } else {
+      let outcome = Result { try operation() }
+      // A wrongly thrown positive still gets a native after-check before propagating its failure.
+      try expectUnchanged(f, before)
+      try outcome.get()
+    }
+  }
+  /// Independent native fixture interposition, deliberately WITHOUT rotating the control row.
+  private static func insertReadOnlyFixtureLink(_ f: Fixture) throws {
+    try f.raw.execute(
+      """
+      INSERT INTO public."hubLink"(id,url,"deviceId","deviceName","tokenRef","orgSlug",username,cursor,"joinedAt")
+      VALUES(1,$1,$2,$3,$4,$5,$6,0,$7)
+      """,
+      [
+        f.link.url, f.link.deviceId, f.link.deviceName, f.link.tokenRef, f.link.orgSlug, f.link.username,
+        f.link.joinedAt,
+      ])
+  }
+  private static func seedReadOnlyModernProfile(_ f: Fixture) throws {
+    _ = try f.database.insertConnection(
+      Connection(
+        id: "readonly-modern", kind: .agentProtocol, label: "Stored modern profile",
+        target: "https://example.invalid/agent", nativeScope: "native-readonly",
+        peerProfile: .agentProtocol, agentId: "agent", authMode: ConnectionAuthMode.none))
+  }
+
+  @Test func readOnlyValidationSeparatesLinkedLegacyAndAbsentProspectiveProof() async throws {
+    try await Self.withFixture { f in
+      let linked = try Self.capture(f)
+      try Self.expectReadOnlyValidation(f, snapshot: linked, sync: false)
+      try Self.expectReadOnlyValidation(f, snapshot: linked, sync: true)
+      _ = try Self.expectRecord(f, revision: "0", binding: nil)
+      try f.database.clearHubLink()
+      let absent = try f.database.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: nil)
+      try Self.expectReadOnlyValidation(f, snapshot: absent, sync: false)
+      try Self.expectReadOnlyValidation(f, snapshot: absent, sync: true, refuses: true)
+      _ = try Self.expectRecord(f, revision: "1", binding: nil)
+      try Self.insertReadOnlyFixtureLink(f)
+      try Self.expectReadOnlyValidation(f, snapshot: absent, sync: false, refuses: true)
+      try Self.expectReadOnlyValidation(f, snapshot: absent, sync: true, refuses: true)
+      try f.raw.execute("DELETE FROM public.\"hubLink\" WHERE id=1")
+      try Self.expectReadOnlyValidation(f, snapshot: absent, sync: false)
+      let ownTransition = try f.database.saveHubLink(
+        f.link, membershipChange: .replace, expectedProtocolSnapshot: absent)
+      try Self.expectReadOnlyValidation(f, snapshot: ownTransition, sync: false)
+      try Self.expectReadOnlyValidation(f, snapshot: ownTransition, sync: true)
+      _ = try Self.expectRecord(f, revision: "2", binding: nil)
+    }
+  }
+
+  @Test func modernInactiveCanFetchVerificationButCannotValidateOrdinarySync() async throws {
+    try await Self.withFixture { f in
+      try Self.seedReadOnlyModernProfile(f)
+      let inactive = try Self.capture(f)
+      try Self.expectReadOnlyValidation(f, snapshot: inactive, sync: false)
+      try Self.expectReadOnlyValidation(f, snapshot: inactive, sync: true, refuses: true)
+      let bound = try f.database.prepareProtocolVerification(
+        expectedSnapshot: inactive, expectedBinding: f.binding)
+      try Self.expectReadOnlyValidation(f, snapshot: bound, sync: false)
+      try Self.expectReadOnlyValidation(f, snapshot: bound, sync: true, refuses: true)
+      _ = try Self.expectRecord(f, revision: "1", binding: f.binding)
+      let observed = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: bound, observation: Self.observation(f.binding, version: 3))
+      try Self.expectReadOnlyValidation(f, snapshot: observed, sync: false)
+      try Self.expectReadOnlyValidation(f, snapshot: observed, sync: true)
+      _ = try Self.expectRecord(f, revision: "2", binding: f.binding, observedVersion: 3)
+    }
+  }
+
+  @Test func readOnlyValidatorsAllowInt64MaxAndSameTupleMetadataRefreshWithoutRewriting() async throws {
+    try await Self.withFixture { f in
+      try Self.seedReadOnlyModernProfile(f)
+      let bound = try Self.capturedBinding(f)
+      _ = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: bound, observation: Self.observation(f.binding))
+      var record = try Self.nativeRecord(f)
+      record["revision"] = "9223372036854775807"
+      try Self.putRecord(f, record)
+      let maximum = try Self.capture(f)
+      try Self.expectReadOnlyValidation(f, snapshot: maximum, sync: false)
+      try Self.expectReadOnlyValidation(f, snapshot: maximum, sync: true)
+      var refresh = f.link
+      refresh.url += "/"; refresh.tokenRef = "secret:readonly-token-refresh"
+      refresh.deviceName = "new label"; refresh.orgSlug = "not-principal-proof-new"
+      refresh.username = "not-principal-proof-new"; refresh.lastError = "new status"; refresh.cursor = 999
+      try f.database.saveHubLink(refresh)
+      // Native comparison ignores token/label/status refresh. Actual owner/credential checks are
+      // REQUIRED future work; these Void data checks cannot authenticate that changed token.
+      try Self.expectReadOnlyValidation(f, snapshot: maximum, sync: false)
+      try Self.expectReadOnlyValidation(f, snapshot: maximum, sync: true)
+      _ = try Self.expectRecord(f, revision: "9223372036854775807", binding: f.binding, observedVersion: 2)
+    }
+  }
+
+  @Test func readOnlyValidatorsRejectEveryStalePositiveAndNegativeRevisionWithoutAdoption() async throws {
+    try await Self.withFixture { f in
+      try Self.seedReadOnlyModernProfile(f)
+      let zero = try Self.capture(f)
+      let one = try f.database.prepareProtocolVerification(expectedSnapshot: zero, expectedBinding: f.binding)
+      try Self.expectReadOnlyValidation(f, snapshot: zero, sync: false, refuses: true)
+      try Self.expectReadOnlyValidation(f, snapshot: zero, sync: true, refuses: true)
+      let two = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: one, observation: Self.observation(f.binding))
+      try Self.expectReadOnlyValidation(f, snapshot: one, sync: false, refuses: true)
+      try Self.expectReadOnlyValidation(f, snapshot: one, sync: true, refuses: true)
+      try Self.expectReadOnlyValidation(f, snapshot: two, sync: false)
+      try Self.expectReadOnlyValidation(f, snapshot: two, sync: true)
+      // Each replacement is valid closed data at the SAME revision: decoding, native
+      // membership and a revision-only comparison cannot detect these stale snapshots.
+      let validTwo = try Self.nativeRecord(f)
+      for field in ["storeIncarnation", "membershipIncarnation"] {
+        let replacement = UUID().uuidString
+        let original = try #require(validTwo[field] as? String)
+        let differs = Data(replacement.utf8) != Data(original.utf8)
+        try #require(differs)
+        var changed = validTwo
+        changed[field] = replacement
+        try Self.putRecord(f, changed)
+        try Self.expectReadOnlyValidation(f, snapshot: two, sync: false, refuses: true)
+        try Self.expectReadOnlyValidation(f, snapshot: two, sync: true, refuses: true)
+        try Self.putRecord(f, validTwo)
+        try Self.expectReadOnlyValidation(f, snapshot: two, sync: false)
+        try Self.expectReadOnlyValidation(f, snapshot: two, sync: true)
+      }
+      var changedObservation = validTwo
+      var observation = try #require(validTwo["observation"] as? [String: Any])
+      observation["reportedVersion"] = 3
+      changedObservation["observation"] = observation
+      try Self.putRecord(f, changedObservation)
+      try Self.expectReadOnlyValidation(f, snapshot: two, sync: false, refuses: true)
+      try Self.expectReadOnlyValidation(f, snapshot: two, sync: true, refuses: true)
+      try Self.putRecord(f, validTwo)
+      try Self.expectReadOnlyValidation(f, snapshot: two, sync: false)
+      try Self.expectReadOnlyValidation(f, snapshot: two, sync: true)
+      let three = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: two, observation: Self.observation(f.binding, version: 3))
+      // Even another healthy observation makes the old full-record comparison stale.
+      try Self.expectReadOnlyValidation(f, snapshot: two, sync: false, refuses: true)
+      try Self.expectReadOnlyValidation(f, snapshot: two, sync: true, refuses: true)
+      try Self.expectReadOnlyValidation(f, snapshot: three, sync: false)
+      try Self.expectReadOnlyValidation(f, snapshot: three, sync: true)
+      try f.database.fenceProtocolVerification(expectedSnapshot: three)
+      try Self.expectReadOnlyValidation(f, snapshot: three, sync: false, refuses: true)
+      try Self.expectReadOnlyValidation(f, snapshot: three, sync: true, refuses: true)
+      let withdrawn = try Self.capture(f)
+      try Self.expectReadOnlyValidation(f, snapshot: withdrawn, sync: false)
+      try Self.expectReadOnlyValidation(f, snapshot: withdrawn, sync: true, refuses: true)
+      _ = try Self.expectRecord(f, revision: "4", binding: f.binding)
+    }
+  }
+
+  @Test func readOnlyValidatorsDoNotAdoptSameLookingReplaceClearOrSuccessfulRestore() async throws {
+    try await Self.withFixture { f in
+      let original = try Self.capture(f)
+      try f.database.saveHubLink(f.link, membershipChange: .replace)
+      try Self.expectReadOnlyValidation(f, snapshot: original, sync: false, refuses: true)
+      try Self.expectReadOnlyValidation(f, snapshot: original, sync: true, refuses: true)
+      let replacement = try Self.capture(f)
+      try Self.expectReadOnlyValidation(f, snapshot: replacement, sync: false)
+      try Self.expectReadOnlyValidation(f, snapshot: replacement, sync: true)
+      try f.database.clearHubLink()
+      try Self.expectReadOnlyValidation(f, snapshot: replacement, sync: false, refuses: true)
+      try Self.expectReadOnlyValidation(f, snapshot: replacement, sync: true, refuses: true)
+      let absent = try f.database.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: nil)
+      let path = f.root + "/readonly-before-restore.jsonl"
+      try f.database.export(to: path)
+      try f.database.restore(from: path, replace: true)
+      try Self.expectReadOnlyValidation(f, snapshot: absent, sync: false, refuses: true)
+      try Self.expectReadOnlyValidation(f, snapshot: absent, sync: true, refuses: true)
+      let restored = try f.database.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: nil)
+      try Self.expectReadOnlyValidation(f, snapshot: restored, sync: false)
+      try Self.expectReadOnlyValidation(f, snapshot: restored, sync: true, refuses: true)
+    }
+  }
+
+  @Test func readOnlyValidatorsRefuseContextlessDirectSnapshotsEvenWithMatchingHealthyRecord() async throws {
+    try await Self.withFixture { f in
+      let direct = try f.database.prepareProtocolVerification(expectedBinding: f.binding)
+      let directCommitted = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: direct, observation: Self.observation(f.binding))
+      guard let directRead = try f.database.readProtocolFact(expectedBinding: f.binding) else {
+        throw FixtureFailure.nativeShape
+      }
+      for snapshot in [direct, directCommitted, directRead] {
+        try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: false, refuses: true)
+        try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: true, refuses: true)
+      }
+      let genuinelyCaptured = try Self.capture(f)
+      try Self.expectReadOnlyValidation(f, snapshot: genuinelyCaptured, sync: false)
+      try Self.expectReadOnlyValidation(f, snapshot: genuinelyCaptured, sync: true)
+    }
+  }
+
+  @Test func readOnlyValidatorsRequireTheirActualLiveDatabaseObjectNotItsName() async throws {
+    try await Self.withFixture { f in
+      let snapshot = try Self.capture(f)
+      let other = try f.reopen()
+      defer { try? other.close() }
+      try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: false, refuses: true, database: other)
+      try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: true, refuses: true, database: other)
+      let otherSnapshot = try other.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: Self.nativeMembership(f.link))
+      try Self.expectReadOnlyValidation(f, snapshot: otherSnapshot, sync: false, database: other)
+      try Self.expectReadOnlyValidation(f, snapshot: otherSnapshot, sync: true, database: other)
+      try other.close()
+      try Self.expectReadOnlyValidation(
+        f, snapshot: otherSnapshot, sync: false, refuses: true, database: other)
+      try Self.expectReadOnlyValidation(
+        f, snapshot: otherSnapshot, sync: true, refuses: true, database: other)
+      try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: false)
+      try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: true)
+    }
+  }
+
+  @Test func readOnlyValidatorsRefuseMalformedControlAndNativeMismatchWithReadOnlyRecovery() async throws {
+    try await Self.withFixture { f in
+      let snapshot = try Self.capture(f)
+      let valid = try Self.nativeRecord(f)
+      var variants: [[String: Any]] = []
+      var invalid = valid; invalid["unknown"] = true; variants.append(invalid)
+      invalid = valid; invalid["binding"] = NSNull(); variants.append(invalid)
+      invalid = valid; invalid["revision"] = 0; variants.append(invalid)
+      invalid = valid; invalid["membershipIncarnation"] = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      variants.append(invalid)
+      for record in variants {
+        try Self.putRecord(f, record)
+        try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: false, refuses: true)
+        try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: true, refuses: true)
+        try Self.putRecord(f, valid)
+        try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: false)
+        try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: true)
+      }
+      try f.raw.execute("DELETE FROM public.settings WHERE key=$1", [Self.key])
+      try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: false, refuses: true)
+      try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: true, refuses: true)
+      try Self.putRecord(f, valid)
+      try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: false)
+      try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: true)
+      for (column, value) in [
+        ("url", "https://user@example.invalid/Deployment"), ("url", "https://example.invalid/Other"),
+        ("deviceId", "ACTIVATION_NATIVE_MISMATCH"), ("joinedAt", "ACTIVATION_OTHER_STAMP"),
+      ] {
+        try f.raw.execute("UPDATE public.\"hubLink\" SET \(Rows.quote(column))=$1 WHERE id=1", [value])
+        try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: false, refuses: true)
+        try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: true, refuses: true)
+        let original =
+          column == "url" ? f.link.url : (column == "deviceId" ? f.link.deviceId : f.link.joinedAt)
+        try f.raw.execute("UPDATE public.\"hubLink\" SET \(Rows.quote(column))=$1 WHERE id=1", [original])
+        try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: false)
+        try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: true)
+      }
+      try f.raw.execute("DELETE FROM public.\"hubLink\" WHERE id=1")
+      try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: false, refuses: true)
+      try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: true, refuses: true)
+      try Self.insertReadOnlyFixtureLink(f)
+      try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: false)
+      try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: true)
+    }
+  }
+}
