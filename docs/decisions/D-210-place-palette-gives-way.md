@@ -1,0 +1,13 @@
+## 2026-11-12 (place palette, focus and reading)
+
+- **D-210 The place palette gives way to New thread and search, and the composer under it takes no keys (extends D-209).** D-209's palette was built without being run in the Mac app. A second build of the same step, made in parallel and reviewed as a whole, found ways to leave the palette open with the keys going elsewhere; the owner chose to port those fixes onto D-209's palette instead of replacing it.
+  - **Giving way.** ⌘N, the top bar's New thread and a heading's "New thread here" all bump `newThreadFocusRequest`; with the palette open they now close it and put the cursor in the composer. Before, the cursor went to the blurred composer and the palette stayed. Opening search (`showSearch`) closes the palette and leaves the focus to search. A draft that finishes (a start accepted later) closes it too.
+  - **The composer underneath.** While the palette is open the new-thread view is disabled and hidden from accessibility, so Tab cannot reach its field and Send's Return cannot fire. The overlay and the folder panel sit outside that.
+  - **Nothing to list.** With a blank filter and no rows the line is "No environments yet. Choose a folder below."; with a filter, "Nothing matches. Choose a folder below."; each without its second sentence on a Mac that relays through the hub, where the footer cannot choose a folder (`PlacePalette.emptyLine`).
+  - **The filter** also matches a path as its row shows it, so "~/repos" finds what the row reads.
+  - **Position.** The palette's top stays put: its slot is as tall as the palette at five rows (`PlacePaletteView.fullHeight`) and the card is top-aligned in it. Centred on its own height, the field moved down as the filter shortened the list.
+  - **Hover and keys.** After Up, Down or typing, a row that slides under a resting pointer does not take the highlight; the pointer takes it once it moves.
+  - **Reduce Motion.** The veil, the palette's rise, and the sliding highlight do not animate.
+  - **VoiceOver.** The palette is a labelled container ("Start in") with the modal trait and an escape action; its field is "Filter"; the footer's "No folder" is selected when it is the place. macOS largely ignores the modal trait, so the sidebar stays reachable: accepted.
+  - **The phone.** A row's name wraps at the accessibility text sizes instead of being cut to one line.
+  - **Not ported.** Keeping the highlight on the same row by id when the environments change under an open palette; closing the phone's sheet when a draft finishes; a selected-environment hint on folder rows. The parallel build's branch (`blove/composer-palette`, never pushed) is superseded by D-209 and this.
