@@ -269,7 +269,7 @@ struct EnvironmentHistoryGuardTests {
       "SELECT jsonb_agg(jsonb_build_array(c.oid,c.relrowsecurity,c.relforcerowsecurity) ORDER BY c.oid)::text AS value FROM pg_catalog.pg_class c JOIN public.guard_test_flags f ON f.oid=c.oid"
     let beforeFlags = try #require(try raw.execute(flagsSQL).rows.first?.text("value"))
     let db = try control.open()
-    let outcome = Result<Void, any Error> {
+    let outcome = Result<Void, any Error> { () throws -> Void in
       #expect(try historyPreserved(raw))
       #expect(try raw.execute(flagsSQL).rows.first?.text("value") == beforeFlags)
       #expect(
