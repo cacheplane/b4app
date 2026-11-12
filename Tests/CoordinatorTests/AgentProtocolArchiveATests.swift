@@ -85,12 +85,16 @@ import WorkspaceProtocol
       #expect(!FileManager.default.fileExists(atPath: root))
     }
     let raw = try connection(endpoint)
+    var normalSourceAbsenceHandled = false
     defer {
-      let noBackends =
-        (try? raw.execute(
-          "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'", [endpoint.database]
-        ).rows.isEmpty) == true
-      #expect(noBackends)
+      if !normalSourceAbsenceHandled {
+        let noBackends =
+          (try? raw.execute(
+            "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'",
+            [endpoint.database]
+          ).rows.isEmpty) == true
+        #expect(noBackends)
+      }
     }
     let supported = try raw.execute(
       "SELECT current_setting('server_version_num') AS version,current_setting('is_superuser') AS privileged"
@@ -155,7 +159,32 @@ import WorkspaceProtocol
     }
     let endpointUnchanged = try await secrets.read(reference) == endpointValue
     #expect(endpointUnchanged)
-    try database?.close()
+    if let database {
+      let closeEntered = ContinuousClock.now
+      try database.close()
+      let closeReturned = ContinuousClock.now
+      let deadline = closeReturned + .seconds(1)
+      let result = Result {
+        try raw.execute(
+          "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'", [endpoint.database]
+        ).rows.isEmpty
+      }
+      let immediateEnded = ContinuousClock.now
+      let noBackends: Bool, initialReadFailed: Bool
+      switch result {
+      case .success(let empty):
+        noBackends = empty; initialReadFailed = false
+      case .failure:
+        noBackends = false; initialReadFailed = true
+      }
+      await targetCloseDiagnostic(
+        raw, database: endpoint.database, phase: nil, closeEntered: closeEntered,
+        closeReturned: closeReturned, deadline: deadline, immediateEnded: immediateEnded,
+        bodyFailed: failure != nil, noBackends: noBackends,
+        initialReadFailed: initialReadFailed, owner: .source)
+      // Handled includes a failed observation; never open a second window in the old defer.
+      normalSourceAbsenceHandled = true
+    }
     if let failure { throw failure }
   }
   private static func seedOldTables(
@@ -440,6 +469,27 @@ import WorkspaceProtocol
     case malformed = "malformed-populated", joined = "joined-legacy3", auxiliary = "auxiliary-settings"
     case legacy1 = "smuggled-legacy1", legacy2 = "smuggled-legacy2", legacy3 = "smuggled-legacy3"
   }
+  private enum TargetCloseOwner {
+    case target, source
+    var label: String {
+      switch self {
+      case .target: "A_TARGET_CLOSE_EVENTUAL"
+      case .source: "A_SOURCE_CLOSE_EVENTUAL"
+      }
+    }
+    func phase(_ phase: TargetClosePhase?) -> String {
+      switch self {
+      case .target: phase?.rawValue ?? "untagged-target"
+      case .source: "source-fixture"
+      }
+    }
+    var assertionMessage: String {
+      switch self {
+      case .target: "Target backend absence did not meet the test-owned close observation criterion."
+      case .source: "Source backend absence did not meet the test-owned close observation criterion."
+      }
+    }
+  }
   private struct TargetCloseFacts: Sendable {
     var readFailed = false, nonzeroObserved = false, lateStart = false, lateCompletion = false
     var cancelled = false, zero = false, firstEmpty = false
@@ -454,34 +504,49 @@ import WorkspaceProtocol
     let elapsed = began.duration(to: completed).components
     return elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000
   }
+  private static func initialTargetCloseObservation(
+    noBackends: Bool, initialReadFailed: Bool = false, cancelled: Bool,
+    closeReturned: ContinuousClock.Instant, immediateEnded: ContinuousClock.Instant,
+    deadline: ContinuousClock.Instant
+  ) -> (facts: TargetCloseFacts, followupEligible: Bool) {
+    let immediateMilliseconds = Self.targetCloseMilliseconds(since: closeReturned, at: immediateEnded)
+    var initial = TargetCloseFacts()
+    initial.readFailed = initialReadFailed
+    initial.nonzeroObserved = !initialReadFailed && !noBackends
+    initial.lateCompletion = immediateEnded > deadline
+    initial.cancelled = cancelled
+    initial.firstEmpty = !initialReadFailed && noBackends
+    initial.firstSampleMilliseconds = immediateMilliseconds
+    initial.lastSampleMilliseconds = immediateMilliseconds
+    initial.zero = initial.firstEmpty && !initial.lateCompletion && !initial.cancelled
+    if initial.zero { initial.emptyMilliseconds = immediateMilliseconds }
+    let followupEligible =
+      !initialReadFailed && !noBackends && !initial.lateCompletion && !initial.cancelled
+    return (initial, followupEligible)
+  }
   private static func targetCloseDiagnostic(
     _ raw: PostgresConnection, database: String, phase: TargetClosePhase?,
     closeEntered: ContinuousClock.Instant, closeReturned: ContinuousClock.Instant,
     deadline: ContinuousClock.Instant, immediateEnded: ContinuousClock.Instant,
-    bodyFailed: Bool, noBackends: Bool
+    bodyFailed: Bool, noBackends: Bool, initialReadFailed: Bool = false,
+    owner: TargetCloseOwner = .target
   ) async {
     // NEW test-owned acceptance: an exact-predicate empty read must complete within one second
     // of successful client close return. This is not a PostgreSQL timing guarantee or the old
     // instantaneous assertion. It replaces the former query-end-anchored forensic-only window.
     let cancellation = Mutex(Task.isCancelled)
-    let immediateMilliseconds = Self.targetCloseMilliseconds(since: closeReturned, at: immediateEnded)
-    var initial = TargetCloseFacts()
-    initial.nonzeroObserved = !noBackends
-    initial.lateCompletion = immediateEnded > deadline
-    initial.cancelled = cancellation.withLock { $0 }
-    initial.firstEmpty = noBackends
-    initial.firstSampleMilliseconds = immediateMilliseconds
-    initial.lastSampleMilliseconds = immediateMilliseconds
-    initial.zero = noBackends && !initial.lateCompletion && !initial.cancelled
-    if initial.zero { initial.emptyMilliseconds = immediateMilliseconds }
-    var observation = initial
+    let initial = Self.initialTargetCloseObservation(
+      noBackends: noBackends, initialReadFailed: initialReadFailed,
+      cancelled: cancellation.withLock { $0 }, closeReturned: closeReturned,
+      immediateEnded: immediateEnded, deadline: deadline)
+    var observation = initial.facts
     var followupAttempted = false
-    if !noBackends && !initial.lateCompletion && !initial.cancelled {
+    if initial.followupEligible {
       if ContinuousClock.now >= deadline {
         observation.lateStart = true
       } else {
         followupAttempted = true
-        let firstSample = initial
+        let firstSample = initial.facts
         let retained = Mutex<Thread?>(nil)
         observation = await withTaskCancellationHandler {
           await withCheckedContinuation { continuation in
@@ -539,7 +604,7 @@ import WorkspaceProtocol
     // Emit and assert only after actual inspector accesses finish, on the original test Task,
     // before target defers or the captured body error rethrow. Only fixed labels/primitives leave.
     print(
-      "A_TARGET_CLOSE_EVENTUAL phase=\(phase?.rawValue ?? "untagged-target") bodyFailed=\(bodyFailed) closeEntered=true closeReturned=true "
+      "\(owner.label) phase=\(owner.phase(phase)) bodyFailed=\(bodyFailed) closeEntered=true closeReturned=true "
         + "closeEntryMilliseconds=0 closeReturnMilliseconds=\(Self.targetCloseMilliseconds(since: closeEntered, at: closeReturned)) "
         + "immediateQueryEndMilliseconds=\(Self.targetCloseMilliseconds(since: closeEntered, at: immediateEnded)) "
         + "immediateReadCompleted=true noBackends=\(noBackends) followupAttempted=\(followupAttempted) "
@@ -553,7 +618,7 @@ import WorkspaceProtocol
     let accepted =
       observation.zero && !observation.readFailed && !cancelled && !Task.isCancelled
       && !observation.lateStart && !observation.lateCompletion
-    #expect(accepted, "Target backend absence did not meet the test-owned close observation criterion.")
+    #expect(accepted, "\(owner.assertionMessage)")
   }
   private static func withTarget(
     _ f: Fixture, populated: Bool = false, forensicPhase: TargetClosePhase? = nil,
@@ -1546,5 +1611,73 @@ import WorkspaceProtocol
       let unchanged = try Self.snapshot(f.raw) == f.before
       #expect(unchanged)
     }
+  }
+
+  // PURE arithmetic/routing checks only: supplied cancellation/late facts do not exercise native work.
+  @Test func archiveCloseInitialReadFailureNeverAdmitsEmptyOrFollowup() {
+    let closeReturned = ContinuousClock.now
+    let deadline = closeReturned + .seconds(1)
+    for noBackends in [false, true] {
+      for cancelled in [false, true] {
+        for milliseconds in [2, 1000, 1001] {
+          let initial = Self.initialTargetCloseObservation(
+            noBackends: noBackends, initialReadFailed: true, cancelled: cancelled,
+            closeReturned: closeReturned, immediateEnded: closeReturned + .milliseconds(milliseconds),
+            deadline: deadline)
+          let facts = initial.facts
+          #expect(facts.sampleCount == 1)
+          #expect(facts.readFailed)
+          #expect(!facts.zero); #expect(!facts.firstEmpty); #expect(!facts.nonzeroObserved)
+          #expect(facts.emptyMilliseconds == nil); #expect(!initial.followupEligible)
+          #expect(facts.cancelled == cancelled)
+          #expect(facts.lateCompletion == (milliseconds > 1000)); #expect(!facts.lateStart)
+          #expect(facts.firstSampleMilliseconds == Int64(milliseconds))
+          #expect(facts.lastSampleMilliseconds == Int64(milliseconds))
+          #expect(facts.workerStartedMilliseconds == 0)
+        }
+      }
+    }
+  }
+
+  @Test func archiveCloseInitialSuccessAndFixedOwnersPreserveFacts() {
+    let closeReturned = ContinuousClock.now
+    let deadline = closeReturned + .seconds(1)
+    for noBackends in [false, true] {
+      for cancelled in [false, true] {
+        for milliseconds in [2, 1000, 1001] {
+          // Omit initialReadFailed to exercise this pure helper's default, not native execution.
+          let initial = Self.initialTargetCloseObservation(
+            noBackends: noBackends, cancelled: cancelled, closeReturned: closeReturned,
+            immediateEnded: closeReturned + .milliseconds(milliseconds), deadline: deadline)
+          let facts = initial.facts
+          let timely = milliseconds <= 1000
+          let zero = noBackends && timely && !cancelled
+          #expect(facts.sampleCount == 1); #expect(!facts.readFailed)
+          #expect(facts.nonzeroObserved == !noBackends); #expect(facts.firstEmpty == noBackends)
+          #expect(facts.zero == zero)
+          #expect(facts.emptyMilliseconds == (zero ? Int64(milliseconds) : nil))
+          #expect(initial.followupEligible == (!noBackends && timely && !cancelled))
+          #expect(facts.cancelled == cancelled); #expect(facts.lateCompletion == !timely)
+          #expect(!facts.lateStart); #expect(facts.workerStartedMilliseconds == 0)
+          #expect(facts.firstSampleMilliseconds == Int64(milliseconds))
+          #expect(facts.lastSampleMilliseconds == Int64(milliseconds))
+        }
+      }
+    }
+    let target = TargetCloseOwner.target, source = TargetCloseOwner.source
+    #expect(target.label == "A_TARGET_CLOSE_EVENTUAL")
+    #expect(target.phase(nil) == "untagged-target")
+    for phase in [TargetClosePhase.malformed, .joined, .auxiliary, .legacy1, .legacy2, .legacy3] {
+      #expect(target.phase(phase) == phase.rawValue)
+      #expect(source.phase(phase) == "source-fixture")
+    }
+    #expect(
+      target.assertionMessage
+        == "Target backend absence did not meet the test-owned close observation criterion.")
+    #expect(source.label == "A_SOURCE_CLOSE_EVENTUAL")
+    #expect(source.phase(nil) == "source-fixture")
+    #expect(
+      source.assertionMessage
+        == "Source backend absence did not meet the test-owned close observation criterion.")
   }
 }
