@@ -17,7 +17,7 @@ Results and attachments are in `.build/macOSSmoke/Results-*.xcresult`. CI retain
   -only-testing:WorkspaceSmokeTests/RecoverySmokeTests/testCompactLightRecovery
 ```
 
-`PaletteSmokeTests` drives the command palette and the composer's `/` list with real keys over the same fixture (the fake Codex): Find, Commands, thread actions, Rename, the completions and their picks, and where the cursor is afterwards. It sends no turn; the fake runtime's request log rejects any `turn/start`.
+`PaletteSmokeTests` drives the command palette and the composer's `/` list with real keys over the same fixture (the fake Codex): Find, Commands, thread actions, Rename, the completions and their picks, and where the cursor is afterwards. It sends no turn; the fake runtime's request log rejects any `turn/start`. Two more of its tests cover the palette's panel and the title bar's command centre: that the button is centred in the window and the palette opens over it, that the panel drags by its header and footer and snaps home, and, from screen pixels, that its shadow follows the card with nothing left behind.
 
 This is fixture UI/coordinator integration coverage. Signed installation, embedded helper discovery, LaunchAgent registration and real-provider compatibility remain separate opt-in gates.
 

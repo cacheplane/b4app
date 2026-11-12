@@ -59,6 +59,10 @@ struct WorkspaceShell: View {
   /// Whether the Mac's sidebar is showing: while it is hidden, search and new thread move from its top
   /// bar to the main view's toolbar.
   @State private var columnVisibility = NavigationSplitViewVisibility.automatic
+  #if os(macOS)
+    /// Where the title bar's command centre is, for the palette that opens over it.
+    @State private var commandCenter = CommandCenterAnchor()
+  #endif
   @Environment(\.scenePhase) private var scenePhase
   #if os(macOS)
     @Environment(\.appearsActive) private var appearsActive
@@ -112,6 +116,9 @@ struct WorkspaceShell: View {
             TopBarItems(
               model: model, buttons: TopBarButton.mainView(columnVisibility), placement: .navigation)
           }
+          // The title bar's middle is the command centre's; the thread's title is the heading under
+          // it (and still the window's name in Mission Control and the Window menu).
+          .toolbar(removing: .title)
         #endif
         .safeAreaInset(edge: .top, spacing: 0) { statusBanner?() }
     }
@@ -146,10 +153,16 @@ struct WorkspaceShell: View {
           isPresented: model.showSearch,
           size: CGSize(width: MacPalette.width, height: MacPalette.fullHeight),
           placement: .top(MacPalette.topOffset), draggable: true,
+          // Over the title bar's button, the palette's field where the button was.
+          over: { [commandCenter] in commandCenter.frameOnScreen }, overInset: MacPalette.fieldHeight / 2,
           dismiss: { model.dismissPalette() }
         ) {
           PaletteView(model: model, floating: true)
         }
+      )
+      // The palette at rest: a button over the middle of the title bar.
+      .background(
+        CommandCenterPresenter(model: model, anchor: commandCenter, isActive: model.rootScreen == .workspace)
       )
       .environment(\.floatsPalettes, true)
     #else

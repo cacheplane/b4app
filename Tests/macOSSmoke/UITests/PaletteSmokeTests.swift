@@ -318,6 +318,97 @@ final class PaletteSmokeTests: XCTestCase {
     app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
   }
 
+  /// The palette rests in the title bar as a button in the middle of the window. A click lifts the
+  /// palette out of it: the palette's field is where the button was, and that is where it snaps back.
+  @MainActor func testCommandCenterButtonOpensThePaletteOverItself() async throws {
+    continueAfterFailure = false
+    let fixture = try await SmokeFixture.start(in: self)
+    addTeardownBlock { @MainActor in try await fixture.stop(in: self) }
+    let app = XCUIApplication()
+    addTeardownBlock { @MainActor in
+      if app.state == .runningForeground || app.state == .runningBackground { app.terminate() }
+    }
+    app.launchEnvironment = [
+      "SMOKE_SOCKET": fixture.socket, "SMOKE_WIDTH": "1100", "SMOKE_DARK": "0", "SMOKE_HEIGHT": "600",
+      "SWIFTNIO_STRICT": "1",
+    ]
+    app.launch()
+    app.activate()
+    if !app.windows.firstMatch.exists {
+      app.menuBars.menuBarItems["File"].click()
+      app.menuItems["New Window"].click()
+    }
+    let row = app.buttons.matching(identifier: "thread-row").firstMatch
+    try requireElement(row, in: app, timeout: 30)
+    row.click()
+    let composer = app.textViews["composer"]
+    try requireElement(composer, in: app)
+    let window = app.windows.containing(.textView, identifier: "composer").firstMatch
+
+    snap(app, XCUIScreen.main.screenshot(), "center-rest")
+    let button = app.descendants(matching: .any)["command-center"]
+    try requireElement(button, in: app)
+    // In the middle of the window, sidebar open.
+    XCTAssertEqual(
+      button.frame.midX, window.frame.midX, accuracy: 2,
+      "not centred with the sidebar open: button \(button.frame) window \(window.frame)")
+
+    // The thread's own buttons keep the trailing edge, clear of it.
+    let rename = app.buttons["rename"]
+    try requireElement(rename, in: app)
+    XCTAssertGreaterThan(
+      rename.frame.minX, button.frame.maxX + 8, "the thread's buttons are under the command centre")
+    XCTAssertTrue(app.buttons["delete"].isHittable)
+
+    let palette = app.descendants(matching: .any)["search-palette"]
+    let field = app.textFields["palette-field"]
+    button.click()
+    try requireElement(field, in: app)
+    try await Task.sleep(for: .milliseconds(400))
+    snap(app, XCUIScreen.main.screenshot(), "center-open")
+    let rest = button.frame
+    let home = palette.frame
+    // Over the button: the same centre line, and the field's 48 pt row centred on the button.
+    XCTAssertEqual(home.midX, rest.midX, accuracy: 1.5)
+    XCTAssertEqual(home.minY + 24, rest.midY, accuracy: 1.5)
+    // The click put the cursor in the palette.
+    app.typeText("arch")
+    try await wait("typing to reach the palette") { field.value as? String == "arch" }
+    for _ in 0..<4 { app.typeKey(XCUIKeyboardKey.delete.rawValue, modifierFlags: []) }
+
+    // Dragged away and released near the button, it goes back onto it.
+    let grip = field.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.5))
+    grip.press(forDuration: 0.15, thenDragTo: grip.withOffset(CGVector(dx: 160, dy: 140)))
+    try await wait("the palette to move") { abs(palette.frame.minX - home.minX - 160) < 6 }
+    let back = field.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.5))
+    back.press(forDuration: 0.15, thenDragTo: back.withOffset(CGVector(dx: -150, dy: -128)))
+    try await wait("the palette to snap onto the button") {
+      abs(palette.frame.midX - rest.midX) < 1.5 && abs(palette.frame.minY + 24 - rest.midY) < 1.5
+    }
+
+    // The window is resized with the palette up: it stays over the button.
+    app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
+    XCTAssertTrue(palette.waitForNonExistence(timeout: 5))
+    // The cursor is back in the composer.
+    app.typeText(" ok")
+    try await wait("typing to land in the composer") {
+      (composer.value as? String)?.hasSuffix(" ok") == true
+    }
+    for _ in 0..<3 { app.typeKey(XCUIKeyboardKey.delete.rawValue, modifierFlags: []) }
+
+    // The sidebar hidden: the button is still in the middle of the window, and ⌘K opens over it.
+    app.typeKey("s", modifierFlags: [.command, .control])
+    try await Task.sleep(for: .milliseconds(900))
+    snap(app, XCUIScreen.main.screenshot(), "center-no-sidebar")
+    XCTAssertEqual(button.frame.midX, window.frame.midX, accuracy: 2, "not centred with the sidebar hidden")
+    app.typeKey("k", modifierFlags: .command)
+    try requireElement(field, in: app)
+    try await Task.sleep(for: .milliseconds(400))
+    XCTAssertEqual(palette.frame.midX, button.frame.midX, accuracy: 1.5)
+    XCTAssertEqual(palette.frame.minY + 24, button.frame.midY, accuracy: 1.5)
+    app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
+  }
+
   /// The brightness (0 to 1) of the screen at `point` (screen points, from the top left), averaged
   /// over a few pixels.
   @MainActor private func luminance(_ screenshot: XCUIScreenshot, at point: CGPoint) throws -> Double {

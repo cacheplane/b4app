@@ -161,6 +161,11 @@
     var placement: FloatingPanelPlacement
     var cornerRadius: CGFloat = LLA.Radius.card
     var draggable = false
+    /// A rectangle on screen to open over instead (a button in the title bar): the panel is centred on
+    /// it, with its middle `overInset` under the panel's top, so the panel's first row covers it.
+    /// Without one (full screen, a window too narrow for the button), `placement` stands.
+    var over: (@MainActor () -> CGRect?)?
+    var overInset: CGFloat = 0
     /// False while something the content opened (a folder panel) has the keyboard: the panel stays.
     var dismissesOnResign = true
     var dismiss: () -> Void
@@ -183,7 +188,8 @@
             guard build.isPresented else { return }
             coordinator.present(
               AnyView(build.content()), size: build.size, placement: build.placement,
-              cornerRadius: build.cornerRadius, draggable: build.draggable, over: anchor)
+              cornerRadius: build.cornerRadius, draggable: build.draggable, target: build.over,
+              targetInset: build.overInset, over: anchor)
           }
         } else if wasHolding, dismissesOnResign {
           // What held the keyboard has gone: the panel takes it back.
@@ -207,6 +213,8 @@
     private weak var anchor: NSView?
     private var size = CGSize.zero
     private var placement = FloatingPanelPlacement.centered
+    private var target: (@MainActor () -> CGRect?)?
+    private var targetInset: CGFloat = 0
     /// How far the owner dragged it from where it opens; nil at home. Kept through the window's
     /// resizes, gone when the panel closes.
     private var offset: CGSize?
@@ -216,13 +224,16 @@
 
     func present(
       _ content: AnyView, size: CGSize, placement: FloatingPanelPlacement, cornerRadius: CGFloat,
-      draggable: Bool, over anchor: NSView
+      draggable: Bool, target: (@MainActor () -> CGRect?)? = nil, targetInset: CGFloat = 0,
+      over anchor: NSView
     ) {
       guard panel == nil, let parent = anchor.window else { return }
       self.anchor = anchor
       anchor.postsFrameChangedNotifications = true
       self.size = size
       self.placement = placement
+      self.target = target
+      self.targetInset = targetInset
       offset = nil
       shown = false
 
@@ -284,6 +295,11 @@
         center.addObserver(forName: NSView.frameDidChangeNotification, object: anchor, queue: .main) {
           [weak self] _ in MainActor.assumeIsolated { self?.reposition() }
         },
+        // The title bar lays its items out again without the window changing size (the sidebar
+        // opening): home is asked for again whenever the window has drawn. Nothing moves when home has not.
+        center.addObserver(forName: NSWindow.didUpdateNotification, object: parent, queue: .main) {
+          [weak self] _ in MainActor.assumeIsolated { self?.reposition() }
+        },
         // Full screen moves the window's title bar into another window: the panel gives way.
         center.addObserver(forName: NSWindow.willEnterFullScreenNotification, object: parent, queue: .main) {
           [weak self] _ in MainActor.assumeIsolated { self?.dismiss() }
@@ -320,6 +336,10 @@
     /// Where the panel opens: centred across the presenting view, its top where the placement says.
     var home: CGPoint? {
       guard let anchor, let parent = anchor.window else { return nil }
+      // Over its target while that is on screen (in full screen the title bar's button is hidden).
+      if let rect = target?(), rect.width > 0 {
+        return CGPoint(x: rect.midX - size.width / 2, y: rect.midY + targetInset)
+      }
       let onScreen = parent.convertToScreen(anchor.convert(anchor.bounds, to: nil))
       let top: CGFloat
       switch placement {

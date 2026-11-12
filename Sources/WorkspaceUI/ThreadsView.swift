@@ -90,6 +90,9 @@ struct ThreadDetailView: View {
     }
     .toolbar {
       #if os(macOS)
+        // At the trailing edge: the bar has no title to push them there, and its middle is the
+        // command centre's.
+        ToolbarSpacer(.flexible)
         ToolbarItemGroup { threadActions }
       #else
         // One overflow menu on the phone, so the inline title keeps the bar's width (HIG, Toolbars:

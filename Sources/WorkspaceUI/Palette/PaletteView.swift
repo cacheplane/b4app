@@ -111,6 +111,8 @@ struct PaletteLead: View {
     /// The card at its tallest (the field, the list, the footer, and a notice's line), which is the
     /// room its panel gives it.
     static let fullHeight: CGFloat = 48 + 1 + listMaxHeight + 1 + LLA.Space.xxl + 48
+    /// The field's row, which sits over the title bar's button when the palette opens there.
+    static let fieldHeight: CGFloat = 48
     /// Where the card's top sits under the window's top.
     static let topOffset: CGFloat = 96
 
