@@ -522,7 +522,18 @@ import WorkspaceProtocol
       _ = try f.database.prepareProtocolVerification(expectedBinding: f.binding)
       let before = try Self.state(f)
       let privateBefore = try Self.recordText(f)
-      #expect(throws: EncodingError.self) { _ = try JSONCoding.encoder.encode(JSONValue.number(.nan)) }
+      // Keep the actual positive encoding control outside a nested throwing assertion macro.
+      // Only a typed, Sendable Boolean reaches #expect in this async fixture closure.
+      let rejectsNaN: Bool
+      do {
+        _ = try JSONCoding.encoder.encode(JSONValue.number(.nan))
+        rejectsNaN = false
+      } catch is EncodingError {
+        rejectsNaN = true
+      } catch {
+        rejectsNaN = false
+      }
+      #expect(rejectsNaN)
       for key in [Self.key, Self.key + "\0suffix", "other\0" + Self.key] {
         Self.expectSafe { _ = try f.database.settings(key: key) }
         Self.expectSafe { try f.database.setSetting(key: key, value: .number(.nan)) }

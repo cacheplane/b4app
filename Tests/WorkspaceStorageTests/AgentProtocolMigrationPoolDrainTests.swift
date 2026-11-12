@@ -234,91 +234,92 @@ private final class MigrationPoolObservation: Sendable {
   ) async -> DrainControllerFacts {
     let retained = Mutex<Thread?>(nil)
     let facts: DrainControllerFacts = await withCheckedContinuation { continuation in
-      let controller = Thread {
-        let releaseBorrower = DispatchSemaphore(value: 0)
-        let releaseWaiter = DispatchSemaphore(value: 0)
-        let borrower = MigrationPoolWork<Void> {
-          try fixture.pool.withConnection { _ in
-            observation.borrowerHeld.withLock { $0 = true }
-            observation.borrowerEntered.withLock { $0 = true }
-            defer { observation.borrowerHeld.withLock { $0 = false } }
-            trace.record(.borrowerEntered)
-            let released = releaseBorrower.wait(timeout: .now() + .seconds(8)) == .success
-            trace.record(.borrowerWaitReturned, flag: released)
-            guard released else {
-              trace.record(.borrowerGuardExpired)
-              throw FixtureFailure.barrierTimeout
+      retained.withLock { thread in
+        thread = Thread {
+          let releaseBorrower = DispatchSemaphore(value: 0)
+          let releaseWaiter = DispatchSemaphore(value: 0)
+          let borrower = MigrationPoolWork<Void> {
+            try fixture.pool.withConnection { _ in
+              observation.borrowerHeld.withLock { $0 = true }
+              observation.borrowerEntered.withLock { $0 = true }
+              defer { observation.borrowerHeld.withLock { $0 = false } }
+              trace.record(.borrowerEntered)
+              let released = releaseBorrower.wait(timeout: .now() + .seconds(8)) == .success
+              trace.record(.borrowerWaitReturned, flag: released)
+              guard released else {
+                trace.record(.borrowerGuardExpired)
+                throw FixtureFailure.barrierTimeout
+              }
             }
           }
-        }
-        trace.record(.borrowerObservationEntered, controller: true)
-        let borrowerReady = Self.observedOnDrainController { observation.borrowerEntered.withLock { $0 } }
-        trace.record(.borrowerObservationReturned, flag: borrowerReady, controller: true)
-        let waiter = MigrationPoolWork<Result<Void, any Error>> {
-          Result {
-            try fixture.pool.withConnection(
-              beforeWaiting: {
-                observation.waiterEntered.withLock { $0 = true }
-                trace.record(.waiterEntered)
-                let released = releaseWaiter.wait(timeout: .now() + .seconds(8)) == .success
-                trace.record(.waiterWaitReturned, flag: released)
-                if !released {
-                  observation.waiterTimedOut.withLock { $0 = true }
+          trace.record(.borrowerObservationEntered, controller: true)
+          let borrowerReady = Self.observedOnDrainController { observation.borrowerEntered.withLock { $0 } }
+          trace.record(.borrowerObservationReturned, flag: borrowerReady, controller: true)
+          let waiter = MigrationPoolWork<Result<Void, any Error>> {
+            Result {
+              try fixture.pool.withConnection(
+                beforeWaiting: {
+                  observation.waiterEntered.withLock { $0 = true }
+                  trace.record(.waiterEntered)
+                  let released = releaseWaiter.wait(timeout: .now() + .seconds(8)) == .success
+                  trace.record(.waiterWaitReturned, flag: released)
+                  if !released {
+                    observation.waiterTimedOut.withLock { $0 = true }
+                  }
                 }
-              }
-            ) { _ in observation.bodyCalls.withLock { $0 += 1 } }
+              ) { _ in observation.bodyCalls.withLock { $0 += 1 } }
+            }
           }
-        }
-        trace.record(.waiterObservationEntered, controller: true)
-        let waiterReady = Self.observedOnDrainController { observation.waiterEntered.withLock { $0 } }
-        trace.record(.waiterObservationReturned, flag: waiterReady, controller: true)
-        // Admission is now deterministically closed before probing new work or starting the drain.
-        // Draining an already-closed pool is needed after an account scope's ordinary pool close.
-        trace.record(.poolCloseEntered, controller: true)
-        fixture.pool.close()
-        trace.record(.poolCloseReturned, controller: true)
-        trace.record(.newAttemptEntered, controller: true)
-        let newAttempt = Result {
-          try fixture.pool.withConnection { _ in observation.bodyCalls.withLock { $0 += 1 } }
-        }
-        trace.record(.newAttemptReturned, controller: true)
-        let drainer = MigrationPoolWork<Bool> {
-          observation.drainStarted.withLock { $0 = true }
-          trace.record(.drainerEntered)
-          let drained = fixture.pool.closeForMigration(timeout: .seconds(2))
-          trace.record(.drainerReturned, flag: drained)
-          observation.succeededWhileBorrowerHeld.withLock {
-            $0 = drained && observation.borrowerHeld.withLock { $0 }
+          trace.record(.waiterObservationEntered, controller: true)
+          let waiterReady = Self.observedOnDrainController { observation.waiterEntered.withLock { $0 } }
+          trace.record(.waiterObservationReturned, flag: waiterReady, controller: true)
+          // Admission is now deterministically closed before probing new work or starting the drain.
+          // Draining an already-closed pool is needed after an account scope's ordinary pool close.
+          trace.record(.poolCloseEntered, controller: true)
+          fixture.pool.close()
+          trace.record(.poolCloseReturned, controller: true)
+          trace.record(.newAttemptEntered, controller: true)
+          let newAttempt = Result {
+            try fixture.pool.withConnection { _ in observation.bodyCalls.withLock { $0 += 1 } }
           }
-          observation.drainFinished.withLock { $0 = true }
-          return drained
+          trace.record(.newAttemptReturned, controller: true)
+          let drainer = MigrationPoolWork<Bool> {
+            observation.drainStarted.withLock { $0 = true }
+            trace.record(.drainerEntered)
+            let drained = fixture.pool.closeForMigration(timeout: .seconds(2))
+            trace.record(.drainerReturned, flag: drained)
+            observation.succeededWhileBorrowerHeld.withLock {
+              $0 = drained && observation.borrowerHeld.withLock { $0 }
+            }
+            observation.drainFinished.withLock { $0 = true }
+            return drained
+          }
+          trace.record(.drainObservationEntered, controller: true)
+          let drainStarted = Self.observedOnDrainController { observation.drainStarted.withLock { $0 } }
+          trace.record(.drainObservationReturned, flag: drainStarted, controller: true)
+          // This is a bounded absence observation after explicit entry barriers, not an assumed ordering
+          // based on a sleep. A successful drain cannot finish while the admitted borrower remains held.
+          trace.record(.absenceObservationEntered, controller: true)
+          let finishedBeforeRelease = Self.observedOnDrainController(within: .milliseconds(75)) {
+            observation.drainFinished.withLock { $0 }
+          }
+          trace.record(.absenceObservationReturned, flag: finishedBeforeRelease, controller: true)
+          trace.record(.releaseBorrower, controller: true)
+          releaseBorrower.signal()
+          trace.record(.releaseWaiter, controller: true)
+          releaseWaiter.signal()
+          let borrowed = borrower.join()
+          let queued = waiter.join()
+          let drained = drainer.join()
+          trace.record(.joined, controller: true)
+          continuation.resume(
+            returning: DrainControllerFacts(
+              borrowerReady: borrowerReady, waiterReady: waiterReady, drainStarted: drainStarted,
+              finishedBeforeRelease: finishedBeforeRelease, newAttempt: newAttempt,
+              borrowed: borrowed, queued: queued, drained: drained))
         }
-        trace.record(.drainObservationEntered, controller: true)
-        let drainStarted = Self.observedOnDrainController { observation.drainStarted.withLock { $0 } }
-        trace.record(.drainObservationReturned, flag: drainStarted, controller: true)
-        // This is a bounded absence observation after explicit entry barriers, not an assumed ordering
-        // based on a sleep. A successful drain cannot finish while the admitted borrower remains held.
-        trace.record(.absenceObservationEntered, controller: true)
-        let finishedBeforeRelease = Self.observedOnDrainController(within: .milliseconds(75)) {
-          observation.drainFinished.withLock { $0 }
-        }
-        trace.record(.absenceObservationReturned, flag: finishedBeforeRelease, controller: true)
-        trace.record(.releaseBorrower, controller: true)
-        releaseBorrower.signal()
-        trace.record(.releaseWaiter, controller: true)
-        releaseWaiter.signal()
-        let borrowed = borrower.join()
-        let queued = waiter.join()
-        let drained = drainer.join()
-        trace.record(.joined, controller: true)
-        continuation.resume(
-          returning: DrainControllerFacts(
-            borrowerReady: borrowerReady, waiterReady: waiterReady, drainStarted: drainStarted,
-            finishedBeforeRelease: finishedBeforeRelease, newAttempt: newAttempt,
-            borrowed: borrowed, queued: queued, drained: drained))
+        thread?.start()
       }
-      retained.withLock { $0 = controller }
-      controller.start()
     }
     // Retain the actual controller through all releases/joins, without claiming Thread exit.
     retained.withLock { $0 = nil }

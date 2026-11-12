@@ -646,20 +646,21 @@ final class L1FactoryCalls: Sendable {
   ) async -> Bool {
     let retained = Mutex<Thread?>(nil)
     let observed: Bool = await withCheckedContinuation { continuation in
-      let observer = Thread {
-        var onTime = false
-        while ContinuousClock.now < deadline {
-          let matched = body()
-          let completed = ContinuousClock.now
-          if matched, completed <= deadline { onTime = true; break }
-          guard completed < deadline else { break }
-          Thread.sleep(forTimeInterval: 0.010)
+      retained.withLock { thread in
+        thread = Thread {
+          var onTime = false
+          while ContinuousClock.now < deadline {
+            let matched = body()
+            let completed = ContinuousClock.now
+            if matched, completed <= deadline { onTime = true; break }
+            guard completed < deadline else { break }
+            Thread.sleep(forTimeInterval: 0.010)
+          }
+          trace.record(.nativeObservationCompleted, flag: onTime)
+          continuation.resume(returning: onTime)
         }
-        trace.record(.nativeObservationCompleted, flag: onTime)
-        continuation.resume(returning: onTime)
+        thread?.start()
       }
-      retained.withLock { $0 = observer }
-      observer.start()
     }
     // Actual observer operation completed; this does not assert kernel-thread exit.
     retained.withLock { $0 = nil }
