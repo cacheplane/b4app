@@ -1,12 +1,32 @@
 import SwiftUI
 import WorkspaceProtocol
 
-/// The detail column: the selected thread, or with nothing selected the new-thread composer. Until a
-/// connection is ready there is nothing to start a thread on, so the pane asks for one.
+/// The detail column: the Mac's environment form while it is open (D-212), else the selected thread, or with
+/// nothing selected the new-thread composer. Until a connection is ready there is nothing to start a
+/// thread on, so the pane asks for one.
 struct ThreadsView: View {
   @Bindable var model: WorkspaceModel
 
   var body: some View {
+    #if os(macOS)
+      if let environment = editedEnvironment {
+        EnvironmentForm(model: model, environment: environment)
+      } else {
+        threadOrComposer
+      }
+    #else
+      threadOrComposer
+    #endif
+  }
+
+  #if os(macOS)
+    private var editedEnvironment: WorkEnvironment? {
+      guard let id = model.editingEnvironmentId else { return nil }
+      return model.environments.first { $0.id == id }
+    }
+  #endif
+
+  @ViewBuilder private var threadOrComposer: some View {
     if let thread = model.threads.first(where: { $0.id == model.selectedThreadId }) {
       ThreadDetailView(model: model, thread: thread)
     } else if model.selectedThreadId != nil, openingSelection {

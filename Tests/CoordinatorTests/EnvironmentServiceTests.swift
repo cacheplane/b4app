@@ -304,14 +304,14 @@ private struct EnvironmentHarness {
     }
     #expect(notThere?.code == .protocolInvalid)
     #expect(notThere?.message.contains(missing) == true)
-    // Another manual environment's folder is refused too.
-    let owned = await h.failure {
+    // A good folder beside a bad one does not move either.
+    let mixed = await h.failure {
       try await h.client.request(
-        EnvironmentUpdate.self, EnvironmentUpdate.Params(environmentId: environment.id, addFolders: [b]),
+        EnvironmentUpdate.self,
+        EnvironmentUpdate.Params(environmentId: environment.id, addFolders: [b, missing]),
         options: h.mutation())
     }
-    #expect(owned?.code == .protocolInvalid)
-    #expect(owned?.message.contains(b) == true)
+    #expect(mixed?.code == .protocolInvalid)
     // Removing a folder the environment does not have names it.
     let notInEnvironment = await h.failure {
       try await h.client.request(
@@ -392,51 +392,76 @@ private struct EnvironmentHarness {
         && $0.payload["thread"]?["environmentId"]?.stringValue == moved
     }
 
-    // An automatic environment has nothing to remove without first adding.
+    // An environment keeps at least one folder: removing its last is refused (delete it instead).
     let refused = await h.failure {
       try await h.client.request(
         EnvironmentUpdate.self, EnvironmentUpdate.Params(environmentId: replacement.id, removeFolders: [a]),
         options: h.mutation())
     }
     #expect(refused?.code == .protocolInvalid)
+    #expect(try h.db.environment(id: replacement.id)?.folders.count == 1)
   }
 
-  @Test func deletingAManualEnvironmentReturnsItsFoldersToAutomaticEnvironments() async throws {
+  @Test func addingAnotherEnvironmentsFolderMovesItAndDeletesTheEmptyOne() async throws {
     let h = try await EnvironmentHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let a = try h.folder("a")
     let b = try h.folder("b")
-    let thread = try await h.newThread(connection, in: a)
-    let manual = try await h.create("Site", [a, b])
+    let mine = try await h.create("Mine", [a])
+    let theirs = try await h.create("Theirs", [b])
+    let inB = try await h.newThread(connection, in: b)
+    #expect(inB.environmentId == theirs.id)
 
-    let deleted = try await h.client.request(
-      EnvironmentDelete.self, EnvironmentDelete.Params(environmentId: manual.id), options: h.mutation())
-    #expect(deleted.environmentId == manual.id)
-    let environments = try await h.environments()
-    #expect(environments.count == 1)
-    #expect(environments[0].displayName == "a" && !environments[0].manual)
-    #expect(try h.db.thread(id: thread.id)?.environmentId == environments[0].id)
-    _ = await h.environmentEvents(until: { $0.filter { $0 == manual.id }.count >= 2 })
+    let result = try await h.client.request(
+      EnvironmentUpdate.self, EnvironmentUpdate.Params(environmentId: mine.id, addFolders: [b]),
+      options: h.mutation()
+    ).environment
+    #expect(
+      result.folders.map(\.path) == [
+        SessionService.canonicalDirectory(a), SessionService.canonicalDirectory(b),
+      ])
+    #expect(try h.db.thread(id: inB.id)?.environmentId == mine.id)
+    // A manual environment left with no folders goes too.
+    #expect(try await h.environments().map(\.id) == [mine.id])
+    _ = await h.environmentEvents(until: { $0.contains(theirs.id) })
+  }
+
+  @Test func deletingAnEnvironmentMovesItsThreadsToNoFolderForGood() async throws {
+    let h = try await EnvironmentHarness.start()
+    let connection = try await h.addCodex()
+    let a = try h.folder("a")
+    let b = try h.folder("b")
+    let thread = try await h.newThread(connection, in: a)
+    let automatic = try #require(thread.environmentId)
+    let manual = try await h.create("Site", [b])
+
+    // An automatic environment can be deleted, as a manual one can.
+    for id in [automatic, manual.id] {
+      let deleted = try await h.client.request(
+        EnvironmentDelete.self, EnvironmentDelete.Params(environmentId: id), options: h.mutation())
+      #expect(deleted.environmentId == id)
+    }
+    #expect(try await h.environments().isEmpty)
+    #expect(try h.db.thread(id: thread.id)?.environmentId == nil)
+    _ = await h.environmentEvents(until: { $0.contains(automatic) && $0.contains(manual.id) })
+    try await h.events.waitFor {
+      $0.kind == .threadUpdated && $0.threadId == thread.id && $0.payload["thread"] != nil
+        && $0.payload["thread"]?["environmentId"]?.stringValue == nil
+    }
     #expect(
       await h.failure {
         try await h.client.request(
           EnvironmentDelete.self, EnvironmentDelete.Params(environmentId: "nope"), options: h.mutation())
       }?.code == .notFound)
-  }
 
-  @Test func anAutomaticEnvironmentCannotBeDeleted() async throws {
-    let h = try await EnvironmentHarness.start()
-    defer { Task { await h.close() } }
-    let connection = try await h.addCodex()
-    let thread = try await h.newThread(connection, in: try h.folder("a"))
-    let environmentId = try #require(thread.environmentId)
-    let error = await h.failure {
-      try await h.client.request(
-        EnvironmentDelete.self, EnvironmentDelete.Params(environmentId: environmentId), options: h.mutation())
-    }
-    #expect(error?.code == .protocolInvalid)
-    #expect(try h.db.environment(id: environmentId) != nil)
+    // The next start's backfill leaves the thread under "No folder"; nothing came back.
+    let paths = h.coordinator.paths
+    await h.close()
+    let again = try await EnvironmentHarness.start(paths: paths)
+    defer { Task { await again.close() } }
+    #expect(try again.db.thread(id: thread.id)?.environmentId == nil)
+    #expect(try await again.environments().isEmpty)
   }
 
   @Test func createRefusesNoFoldersAndMissingFolders() async throws {
@@ -656,14 +681,16 @@ private struct EnvironmentHarness {
     let automatic = try #require(try stored(h, connection).environmentId)
 
     // A manual environment takes the folder: the connection follows.
+    let notes = try h.project("notes")
     let manual = try await h.client.request(
-      EnvironmentCreate.self, EnvironmentCreate.Params(name: "Research", folders: [path]),
+      EnvironmentCreate.self, EnvironmentCreate.Params(name: "Research", folders: [path, notes]),
       options: h.mutation()
     ).environment
     #expect(try stored(h, connection).environmentId == manual.id)
     #expect(try h.coordinator.database.environment(id: automatic) == nil)
 
-    // The folder leaves it (the manual environment is kept, empty): the connection gets an automatic environment.
+    // The folder leaves it (the manual environment keeps its other folder): the connection gets an automatic
+    // environment.
     _ = try await h.client.request(
       EnvironmentUpdate.self, EnvironmentUpdate.Params(environmentId: manual.id, removeFolders: [path]),
       options: h.mutation())
