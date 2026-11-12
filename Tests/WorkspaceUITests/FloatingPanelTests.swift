@@ -13,6 +13,9 @@
     var mounted = true
     /// How tall the panel's content is now.
     var height: CGFloat = 500
+    /// Where the panel was left, as the app keeps it between openings; nil while `remembers` is false.
+    var offset: CGSize?
+    var remembers = false
   }
 
   /// The panel's content, a view of its own so it follows the state as a palette follows its model.
@@ -34,6 +37,8 @@
         .background(
           FloatingPanel(
             isPresented: state.shown, size: Self.size, placement: .top(96), draggable: true,
+            offset: state.remembers ? state.offset : nil,
+            remember: state.remembers ? { state.offset = $0 } : nil,
             dismiss: {
               state.dismissed += 1
               state.shown = false
@@ -51,21 +56,24 @@
     @Test func aLineDrawsAPanelLightlyAndOnlyWhenItIsNear() {
       let line: CGFloat = 400
       // Out of reach: exactly where it was taken.
-      #expect(FloatingPanelGeometry.drawn(424, toward: line) == 424)
+      #expect(FloatingPanelGeometry.drawn(428, toward: line) == 428)
       #expect(FloatingPanelGeometry.drawn(460, toward: line) == 460)
       #expect(FloatingPanelGeometry.drawn(340, toward: line) == 340)
       // In reach: nearer the line than it was taken, and not on it.
       let half = FloatingPanelGeometry.drawn(412, toward: line)
-      #expect(half > 406 && half < 410)
+      #expect(half > 401 && half < 405)
       #expect(FloatingPanelGeometry.drawn(388, toward: line) == 800 - half)
-      // Light: most of the way out, the pull is a point or two.
-      #expect(FloatingPanelGeometry.drawn(420, toward: line) > 417)
-      // Close: on the line.
+      // Felt well before the line: at 20 pt it has been drawn 8 pt in.
+      let far = FloatingPanelGeometry.drawn(420, toward: line)
+      #expect(far > 410 && far < 414)
+      // Close: on the line, and held there over a few points of the pointer's travel.
+      #expect(FloatingPanelGeometry.drawn(405, toward: line) == line)
+      #expect(FloatingPanelGeometry.drawn(395, toward: line) == line)
       #expect(FloatingPanelGeometry.drawn(403, toward: line) == line)
       #expect(FloatingPanelGeometry.drawn(399, toward: line) == line)
-      // Nothing jumps and nothing holds: as the pointer moves away, so does the panel, all the way.
+      // Nothing jumps: past the hold, as the pointer moves away so does the panel, all the way.
       var last = line
-      for step in 4...60 {
+      for step in 10...60 {
         let drawn = FloatingPanelGeometry.drawn(line + CGFloat(step) / 2, toward: line)
         #expect(drawn >= last && drawn - last < 1.5)
         last = drawn
@@ -222,7 +230,7 @@
       #expect(
         panel.snap(CGPoint(x: home.x + 40, y: home.y - 60)) == CGPoint(x: home.x + 40, y: home.y - 60))
       let near = panel.snap(CGPoint(x: home.x + 12, y: home.y - 60))
-      #expect(near.x > home.x + 6 && near.x < home.x + 10 && near.y == home.y - 60)
+      #expect(near.x > home.x + 1 && near.x < home.x + 5 && near.y == home.y - 60)
       // Left on the line down the middle, lower: it stays there.
       panel.setFrameOrigin(panel.snap(CGPoint(x: home.x - 2, y: home.y - 150)))
       panel.dragEnded()
@@ -236,6 +244,42 @@
       #expect(abs(panel.frame.origin.x - home.x + 260) < 0.5)
       panel.resetRequested()
       try await settle()
+      #expect(abs(panel.frame.origin.x - home.x) < 0.5)
+      #expect(abs(panel.frame.origin.y - home.y) < 0.5)
+      state.shown = false
+      try await settle()
+    }
+
+    /// Left somewhere, the panel opens there the next time, and a double click forgets the place.
+    @Test func aPanelOpensWhereItWasLastLeft() async throws {
+      let state = PanelState()
+      state.remembers = true
+      let host = try shortWindow(state)
+      defer { host.window.close() }
+      state.shown = true
+      try await settle()
+      var panel = try #require(host.window.childWindows?.first as? PalettePanel)
+      let home = panel.frame.origin
+      panel.setFrameOrigin(CGPoint(x: home.x - 180, y: home.y - 90))
+      panel.dragEnded()
+      try await settle()
+      #expect(state.offset == CGSize(width: -180, height: -90))
+      state.shown = false
+      try await settle()
+      state.shown = true
+      try await settle()
+      panel = try #require(host.window.childWindows?.first as? PalettePanel)
+      #expect(abs(panel.frame.origin.x - home.x + 180) < 0.5)
+      #expect(abs(panel.frame.origin.y - home.y + 90) < 0.5)
+      // A double click on a drag area: home, now and next time.
+      panel.resetRequested()
+      try await settle()
+      #expect(state.offset == nil)
+      state.shown = false
+      try await settle()
+      state.shown = true
+      try await settle()
+      panel = try #require(host.window.childWindows?.first as? PalettePanel)
       #expect(abs(panel.frame.origin.x - home.x) < 0.5)
       #expect(abs(panel.frame.origin.y - home.y) < 0.5)
       state.shown = false

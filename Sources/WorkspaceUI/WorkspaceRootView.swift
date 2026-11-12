@@ -147,13 +147,16 @@ struct WorkspaceShell: View {
       // "Add your iPhone", once after a new account's onboarding (sign-in plan, Task 12).
       .sheet(isPresented: $model.showAddPhone) { AddPhoneView(model: model) }
       // The palette, in a panel of its own over the window: a small window does not cut it, and it
-      // can be dragged (released near where it opens, it goes back there).
+      // can be dragged, and opens where it was last left.
       .background(
         FloatingPanel(
           isPresented: model.showSearch,
           size: CGSize(width: MacPalette.width, height: MacPalette.fullHeight),
           placement: .top(MacPalette.topOffset), cornerRadius: MacPalette.radius, continuousCorners: false,
           draggable: true,
+          // Where it was last left on this Mac, from where it would open otherwise.
+          offset: PalettePlace.offset(in: model.preferences),
+          remember: { PalettePlace.remember($0, in: model.preferences) },
           // Over the title bar's button, the palette's field where the button was.
           over: { [commandCenter] in commandCenter.frameOnScreen }, overInset: MacPalette.fieldHeight / 2,
           dismiss: { model.dismissPalette() }

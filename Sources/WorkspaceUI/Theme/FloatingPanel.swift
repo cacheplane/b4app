@@ -24,21 +24,25 @@
   /// (y up), because the panel's height changes and its top is what stays put.
   nonisolated enum FloatingPanelGeometry {
     /// How far a line's pull reaches. Beyond it a dragged panel goes exactly where the pointer takes it.
-    static let reach: CGFloat = 24
-    /// How the pull grows towards the line: 1 would be no pull at all, larger is stronger. Light, so
-    /// the line is felt as a drift towards it and never as a catch.
-    static let pull: CGFloat = 1.6
+    static let reach: CGFloat = 28
+    /// How near a line the panel sits on it: a short stretch of the pointer's travel that does not
+    /// move it, which is what says "it is on the line".
+    static let hold: CGFloat = 5
+    /// How the pull grows from the edge of the reach to the hold: 1 would be no pull at all, larger
+    /// is stronger.
+    static let pull: CGFloat = 2
     /// How far the pointer travels before a press becomes a drag, so a click is never a nudge.
     static let dragThreshold: CGFloat = 3
 
-    /// `value` drawn towards `line`. Outside `reach` it is itself. Inside, its distance from the line
-    /// shrinks, more the nearer it is (`reach` × (distance ÷ `reach`) ^ `pull`), so the panel drifts
-    /// onto the line as it comes close and leaves it as smoothly: nothing jumps at the edge of the
-    /// reach, and nothing holds. Under a point from the line it is on it.
+    /// `value` drawn towards `line`. Outside `reach` it is itself. Within `hold` it is on the line.
+    /// Between, its distance from the line shrinks, more the nearer it is (`reach` × t ^ `pull`, t
+    /// running from 0 at the hold to 1 at the edge of the reach), so the panel is drawn onto the line
+    /// as it comes close and leaves it as smoothly: nothing jumps, at the hold or at the edge.
     static func drawn(_ value: CGFloat, toward line: CGFloat) -> CGFloat {
       let distance = abs(value - line)
       guard distance < reach else { return value }
-      let eased = reach * pow(distance / reach, pull)
+      guard distance > hold else { return line }
+      let eased = reach * pow((distance - hold) / (reach - hold), pull)
       guard eased >= 1 else { return line }
       return line + (value < line ? -eased : eased)
     }
@@ -184,8 +188,9 @@
   /// Put it in a `background` of the view to open over. `size` is the content's width and its height
   /// at its tallest, which places it. A `draggable` panel can be moved by its `WindowDragArea`s and by
   /// the empty part of a text field. While it is dragged, the line down the middle of the window and
-  /// the lines across it (its middle, and where the panel opens) each draw it lightly when it is near;
-  /// a double click on a drag area sends it back, and it opens there every time.
+  /// the lines across it (its middle, and where the panel opens) each draw it when it is near; a
+  /// double click on a drag area sends it back. With `remember`, it opens where it was last left
+  /// (`offset`, from where it would open otherwise); without, it opens at home every time.
   struct FloatingPanel<Content: View>: NSViewRepresentable {
     var isPresented: Bool
     var size: CGSize
@@ -194,6 +199,10 @@
     /// Continuous corners, as the app's cards have; false for a capsule's circular ones.
     var continuousCorners = true
     var draggable = false
+    /// How far from home the owner left it last time, to open there again; nil for home.
+    var offset: CGSize?
+    /// The owner left it somewhere else (nil: at home), to be kept for the next time it opens.
+    var remember: ((CGSize?) -> Void)?
     /// A rectangle on screen to open over instead (a button in the title bar): the panel is centred on
     /// it, with its middle `overInset` under the panel's top, so the panel's first row covers it.
     /// Without one (full screen, a window too narrow for the button), `placement` stands.
@@ -213,6 +222,7 @@
       coordinator.dismiss = dismiss
       let wasHolding = !coordinator.dismissesOnResign
       coordinator.dismissesOnResign = dismissesOnResign
+      coordinator.remember = remember
       if isPresented {
         if coordinator.panel == nil {
           // The anchor has no window while its view is being inserted.
@@ -222,7 +232,7 @@
             coordinator.present(
               AnyView(build.content()), size: build.size, placement: build.placement,
               cornerRadius: build.cornerRadius, continuousCorners: build.continuousCorners,
-              draggable: build.draggable, target: build.over,
+              draggable: build.draggable, offset: build.offset, target: build.over,
               targetInset: build.overInset, over: anchor)
           }
         } else if wasHolding, dismissesOnResign {
@@ -243,6 +253,7 @@
     private(set) var panel: PalettePanel?
     var dismiss: () -> Void = {}
     var dismissesOnResign = true
+    var remember: ((CGSize?) -> Void)?
 
     private weak var anchor: NSView?
     private var size = CGSize.zero
@@ -250,7 +261,7 @@
     private var target: (@MainActor () -> CGRect?)?
     private var targetInset: CGFloat = 0
     /// How far the owner dragged it from where it opens; nil at home. Kept through the window's
-    /// resizes, gone when the panel closes.
+    /// resizes, and handed to `remember` for the next time it opens.
     private var offset: CGSize?
     /// The content has been measured, so the panel is the right size to be seen.
     private var shown = false
@@ -259,7 +270,8 @@
     func present(
       _ content: AnyView, size: CGSize, placement: FloatingPanelPlacement, cornerRadius: CGFloat,
       continuousCorners: Bool = true,
-      draggable: Bool, target: (@MainActor () -> CGRect?)? = nil, targetInset: CGFloat = 0,
+      draggable: Bool, offset: CGSize? = nil, target: (@MainActor () -> CGRect?)? = nil,
+      targetInset: CGFloat = 0,
       over anchor: NSView
     ) {
       guard panel == nil, let parent = anchor.window else { return }
@@ -269,7 +281,7 @@
       self.placement = placement
       self.target = target
       self.targetInset = targetInset
-      offset = nil
+      self.offset = draggable ? offset : nil
       shown = false
 
       let panel = PalettePanel(
@@ -485,15 +497,17 @@
       return CGPoint(x: rest.x, y: rest.y - height)
     }
 
-    /// Released: it stays where the drag left it until it closes.
+    /// Released: it stays where the drag left it, and opens there next time.
     private func dragEnded() {
       guard let panel, let home else { return }
       let moved = CGSize(width: panel.frame.minX - home.x, height: panel.frame.maxY - home.y)
       offset = abs(moved.width) < 0.5 && abs(moved.height) < 0.5 ? nil : moved
+      remember?(offset)
     }
 
     private func goHome(animated: Bool) {
       offset = nil
+      remember?(nil)
       place(height: panel?.frame.height ?? size.height, animated: animated)
     }
   }
