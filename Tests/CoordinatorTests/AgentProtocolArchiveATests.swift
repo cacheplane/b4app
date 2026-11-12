@@ -443,8 +443,9 @@ import WorkspaceProtocol
   private struct TargetCloseFacts: Sendable {
     var readFailed = false, nonzeroObserved = false, lateStart = false, lateCompletion = false
     var cancelled = false, zero = false, firstEmpty = false
-    var sampleCount: UInt32 = 0
-    var firstSampleMilliseconds: Int64?, lastSampleMilliseconds: Int64?, emptyMilliseconds: Int64?
+    var sampleCount: UInt32 = 1
+    var firstSampleMilliseconds: Int64 = 0, lastSampleMilliseconds: Int64 = 0
+    var emptyMilliseconds: Int64?
     var workerStartedMilliseconds: Int64 = 0
   }
   private static func targetCloseMilliseconds(
@@ -454,76 +455,105 @@ import WorkspaceProtocol
     return elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000
   }
   private static func targetCloseDiagnostic(
-    _ raw: PostgresConnection, database: String, phase: TargetClosePhase,
+    _ raw: PostgresConnection, database: String, phase: TargetClosePhase?,
     closeEntered: ContinuousClock.Instant, closeReturned: ContinuousClock.Instant,
-    immediateEnded: ContinuousClock.Instant, bodyFailed: Bool, noBackends: Bool
+    deadline: ContinuousClock.Instant, immediateEnded: ContinuousClock.Instant,
+    bodyFailed: Bool, noBackends: Bool
   ) async {
-    var observation = TargetCloseFacts()
+    // NEW test-owned acceptance: an exact-predicate empty read must complete within one second
+    // of successful client close return. This is not a PostgreSQL timing guarantee or the old
+    // instantaneous assertion. It replaces the former query-end-anchored forensic-only window.
     let cancellation = Mutex(Task.isCancelled)
-    if !noBackends {
-      // NEW forensic-only window, anchored BEFORE the original assertion and dispatch. This
-      // cannot change the already-recorded immediate failure and is never cleanup acceptance.
-      let deadline = immediateEnded + .seconds(1)
-      let retained = Mutex<Thread?>(nil)
-      observation = await withTaskCancellationHandler {
-        await withCheckedContinuation { continuation in
-          retained.withLock { thread in
-            thread = Thread {
-              let started = ContinuousClock.now
-              var facts = TargetCloseFacts()
-              facts.workerStartedMilliseconds = Self.targetCloseMilliseconds(
-                since: immediateEnded, at: started)
-              facts.lateStart = started >= deadline
-              while ContinuousClock.now < deadline && facts.sampleCount < 101 {
-                if cancellation.withLock({ $0 }) { facts.cancelled = true; break }
-                do {
+    let immediateMilliseconds = Self.targetCloseMilliseconds(since: closeReturned, at: immediateEnded)
+    var initial = TargetCloseFacts()
+    initial.nonzeroObserved = !noBackends
+    initial.lateCompletion = immediateEnded > deadline
+    initial.cancelled = cancellation.withLock { $0 }
+    initial.firstEmpty = noBackends
+    initial.firstSampleMilliseconds = immediateMilliseconds
+    initial.lastSampleMilliseconds = immediateMilliseconds
+    initial.zero = noBackends && !initial.lateCompletion && !initial.cancelled
+    if initial.zero { initial.emptyMilliseconds = immediateMilliseconds }
+    var observation = initial
+    var followupAttempted = false
+    if !noBackends && !initial.lateCompletion && !initial.cancelled {
+      if ContinuousClock.now >= deadline {
+        observation.lateStart = true
+      } else {
+        followupAttempted = true
+        let firstSample = initial
+        let retained = Mutex<Thread?>(nil)
+        observation = await withTaskCancellationHandler {
+          await withCheckedContinuation { continuation in
+            retained.withLock { thread in
+              thread = Thread {
+                let started = ContinuousClock.now
+                var facts = firstSample
+                facts.workerStartedMilliseconds = Self.targetCloseMilliseconds(
+                  since: closeReturned, at: started)
+                facts.lateStart = started >= deadline
+                while !facts.lateStart && facts.sampleCount < 101 {
+                  if cancellation.withLock({ $0 }) { facts.cancelled = true; break }
+                  guard ContinuousClock.now < deadline else { break }
                   // EXACT original all-b4app/datname predicate. No forced cleanup or second close.
-                  let empty = try raw.execute(
-                    "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'", [database]
-                  ).rows.isEmpty
+                  let result = Result {
+                    try raw.execute(
+                      "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'",
+                      [database]
+                    ).rows.isEmpty
+                  }
                   let completed = ContinuousClock.now
                   facts.sampleCount += 1
-                  let milliseconds = Self.targetCloseMilliseconds(since: immediateEnded, at: completed)
-                  if facts.firstSampleMilliseconds == nil {
-                    facts.firstSampleMilliseconds = milliseconds
-                    facts.firstEmpty = empty
-                  }
+                  let milliseconds = Self.targetCloseMilliseconds(since: closeReturned, at: completed)
                   facts.lastSampleMilliseconds = milliseconds
-                  facts.nonzeroObserved = facts.nonzeroObserved || !empty
-                  if completed > deadline { facts.lateCompletion = true; break }
-                  if cancellation.withLock({ $0 }) { facts.cancelled = true; break }
-                  if empty { facts.zero = true; facts.emptyMilliseconds = milliseconds; break }
-                } catch { facts.readFailed = true; break }
-                guard ContinuousClock.now < deadline else { break }
-                Thread.sleep(forTimeInterval: 0.010)
+                  facts.lateCompletion = facts.lateCompletion || completed > deadline
+                  facts.cancelled = facts.cancelled || cancellation.withLock({ $0 })
+                  switch result {
+                  case .success(let empty):
+                    facts.nonzeroObserved = facts.nonzeroObserved || !empty
+                    if !facts.lateCompletion && !facts.cancelled && empty {
+                      facts.zero = true; facts.emptyMilliseconds = milliseconds
+                    }
+                  case .failure:
+                    facts.readFailed = true
+                  }
+                  if facts.zero || facts.readFailed || facts.cancelled || facts.lateCompletion { break }
+                  guard ContinuousClock.now < deadline else { break }
+                  Thread.sleep(forTimeInterval: 0.010)
+                }
+                facts.cancelled = facts.cancelled || cancellation.withLock({ $0 })
+                // All native inspector accesses are finished; no claim of kernel Thread exit.
+                // A blocked read is awaited even beyond the observation deadline, then fails late.
+                continuation.resume(returning: facts)
               }
-              facts.cancelled = facts.cancelled || cancellation.withLock({ $0 })
-              // All native inspector accesses are finished; no claim of kernel Thread exit.
-              continuation.resume(returning: facts)
+              thread?.start()
             }
-            thread?.start()
           }
+        } onCancel: {
+          cancellation.withLock { $0 = true }
         }
-      } onCancel: {
-        cancellation.withLock { $0 = true }
+        retained.withLock { $0 = nil }
       }
-      retained.withLock { $0 = nil }
     }
     let cancelled = observation.cancelled || cancellation.withLock({ $0 }) || Task.isCancelled
-    // Emit only after actual inspector accesses finish, on the original test Task, before
-    // target defers or the primary body error rethrow. All fields are fixed labels/primitives.
+    // Emit and assert only after actual inspector accesses finish, on the original test Task,
+    // before target defers or the captured body error rethrow. Only fixed labels/primitives leave.
     print(
-      "A3_TARGET_CLOSE_FORENSIC phase=\(phase.rawValue) bodyFailed=\(bodyFailed) closeEntered=true closeReturned=true "
+      "A_TARGET_CLOSE_EVENTUAL phase=\(phase?.rawValue ?? "untagged-target") bodyFailed=\(bodyFailed) closeEntered=true closeReturned=true "
         + "closeEntryMilliseconds=0 closeReturnMilliseconds=\(Self.targetCloseMilliseconds(since: closeEntered, at: closeReturned)) "
         + "immediateQueryEndMilliseconds=\(Self.targetCloseMilliseconds(since: closeEntered, at: immediateEnded)) "
-        + "immediateReadCompleted=true noBackends=\(noBackends) followupAttempted=\(!noBackends) "
+        + "immediateReadCompleted=true noBackends=\(noBackends) followupAttempted=\(followupAttempted) "
         + "readFailed=\(observation.readFailed) nonzeroObserved=\(observation.nonzeroObserved) lateStart=\(observation.lateStart) "
         + "lateCompletion=\(observation.lateCompletion) cancelled=\(cancelled) zero=\(observation.zero) firstEmpty=\(observation.firstEmpty) "
-        + "sampleCount=\(observation.sampleCount) sampleCompleted=\(observation.firstSampleMilliseconds != nil) "
-        + "firstSampleMilliseconds=\(observation.firstSampleMilliseconds ?? 0) lastSampleMilliseconds=\(observation.lastSampleMilliseconds ?? 0) "
+        + "sampleCount=\(observation.sampleCount) sampleCompleted=true "
+        + "firstSampleMilliseconds=\(observation.firstSampleMilliseconds) lastSampleMilliseconds=\(observation.lastSampleMilliseconds) "
         + "emptyRecorded=\(observation.emptyMilliseconds != nil) emptyMilliseconds=\(observation.emptyMilliseconds ?? 0) "
-        + "workerStartedMilliseconds=\(observation.workerStartedMilliseconds) elapsedMilliseconds=\(Self.targetCloseMilliseconds(since: immediateEnded, at: .now))"
+        + "workerStartedMilliseconds=\(observation.workerStartedMilliseconds) elapsedMilliseconds=\(Self.targetCloseMilliseconds(since: closeReturned, at: .now))"
     )
+    let accepted =
+      observation.zero && !observation.readFailed && !cancelled && !Task.isCancelled
+      && !observation.lateStart && !observation.lateCompletion
+    #expect(accepted, "Target backend absence did not meet the test-owned close observation criterion.")
   }
   private static func withTarget(
     _ f: Fixture, populated: Bool = false, forensicPhase: TargetClosePhase? = nil,
@@ -555,20 +585,18 @@ import WorkspaceProtocol
         failure = error
       }
     }
-    let closeEntered = forensicPhase.map { _ in ContinuousClock.now }
+    let closeEntered = ContinuousClock.now
     try db.close()
-    let closeReturned = forensicPhase.map { _ in ContinuousClock.now }
+    let closeReturned = ContinuousClock.now
+    let deadline = closeReturned + .seconds(1)
     let noBackends = try raw.execute(
       "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'", [endpoint.database]
     ).rows.isEmpty
-    let immediateEnded = forensicPhase.map { _ in ContinuousClock.now }
-    #expect(noBackends)
-    if let phase = forensicPhase, let closeEntered, let closeReturned, let immediateEnded {
-      await targetCloseDiagnostic(
-        raw, database: endpoint.database, phase: phase, closeEntered: closeEntered,
-        closeReturned: closeReturned, immediateEnded: immediateEnded,
-        bodyFailed: failure != nil, noBackends: noBackends)
-    }
+    let immediateEnded = ContinuousClock.now
+    await targetCloseDiagnostic(
+      raw, database: endpoint.database, phase: forensicPhase, closeEntered: closeEntered,
+      closeReturned: closeReturned, deadline: deadline, immediateEnded: immediateEnded,
+      bodyFailed: failure != nil, noBackends: noBackends)
     if let failure { throw failure }
   }
   private static let activationControlKey = "__b4app_agent_protocol_activation_v1"

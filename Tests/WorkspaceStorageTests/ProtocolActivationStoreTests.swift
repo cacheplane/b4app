@@ -2735,3 +2735,505 @@ extension ProtocolActivationStoreTests {
     }
   }
 }
+
+// Source-first guarded-apply contract. These tests require the mandatory-snapshot overload;
+// source review alone is neither a semantic RED nor compilation/native-execution evidence.
+extension ProtocolActivationStoreTests {
+  private static let applyStamp = "000000000100-0000-guard-phone"
+  private static let applyOldStamp = "000000000010-0000-guard-phone"
+  private static let applyTitle = "ACTIVATION_GUARDED_APPLY_TITLE"
+
+  /// Explicit replay setup avoids wall-derived defaults, local log allocations and inferred clocks.
+  /// Existing fixture/migration allocations, if any, remain visible in every complete native snapshot.
+  private static func seedGuardApply(_ f: Fixture) throws {
+    try f.raw.execute("BEGIN")
+    do {
+      try f.raw.execute("SET LOCAL b4app.replaying='on'")
+      try f.raw.execute(
+        """
+        INSERT INTO public.connections(id,kind,label,enabled,"profileRevision",target,"routeKey","b4Mode",
+          "localServerId","authReference","nativeScope",capabilities,status,"authStatus","createdAt","updatedAt",
+          "environmentId",models,"peerProfile","agentId","authMode","authHeaderName","protocolRetiredAt","protocolRetiredReason")
+          VALUES('guard-connection','codex','Private local profile',true,7,'/private/guard-executable',NULL,NULL,
+            NULL,'secret:guard-private','/private/native-scope','{}'::jsonb,'ready','ready',
+            '2026-11-12T00:00:00.000Z','2026-11-12T00:00:00.000Z',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL);
+        INSERT INTO public.environments(id,name,manual,"createdAt","updatedAt")
+          VALUES('guard-environment','Before environment',true,'2026-11-12T00:00:00.000Z','2026-11-12T00:00:00.000Z');
+        INSERT INTO public.threads(id,"connectionId","nativeThreadId","nativeScope",title,context,pinned,archived,
+          continuity,"createdAt","updatedAt","environmentId","readTurnId","userDeletedAt",model,permission)
+          VALUES('guard-thread','guard-connection','private-native-thread','/private/thread-scope','Before title',
+            '/private/context',false,false,'available','2026-11-12T00:00:00.000Z','2026-11-12T00:00:00.000Z',
+            'guard-environment',NULL,NULL,'private-model','private-permission');
+        INSERT INTO public.drafts("threadId",text,"updatedAt")
+          VALUES('guard-thread','Before draft','2026-11-12T00:00:00.000Z');
+        INSERT INTO public."viewSettings"(id,arrangement,"quietThreads","showArchived","updatedAt")
+          VALUES('view','needsYouFirst','small',false,'2026-11-12T00:00:00.000Z');
+        INSERT INTO public."columnClocks"("table","rowId","column",hlc) VALUES
+          ('threads','guard-thread','title','000000000010-0000-guard-phone'),
+          ('threads','guard-thread','pinned','000000000010-0000-guard-phone'),
+          ('threads','guard-thread','archived','000000000010-0000-guard-phone'),
+          ('environments','guard-environment','name','000000000010-0000-guard-phone'),
+          ('drafts','guard-thread','text','000000000010-0000-guard-phone'),
+          ('viewSettings','view','quietThreads','000000000010-0000-guard-phone');
+        """)
+      try f.raw.execute("COMMIT")
+    } catch {
+      _ = try? f.raw.execute("ROLLBACK")
+      throw error
+    }
+  }
+  private static func guardApplyChange(
+    _ table: String, _ row: String, _ column: String, _ value: JSONValue,
+    at: String = applyStamp, device: String = "guard-phone"
+  ) -> RemoteChange {
+    RemoteChange(
+      deviceId: device, hlc: at, table: table, rowId: row, op: "update", column: column, value: value)
+  }
+  /// The oracle edits explicit fixture fields in a BEFORE image. It never calls merge, old apply,
+  /// production clock advancement or a production expected-value helper. PostgreSQL only normalizes
+  /// the JSON text representation used by state(); it does not execute the proposed business edits.
+  private static func guardApplyJSON(_ f: Fixture, _ value: [String: Any]) throws -> Data {
+    let encoded = String(
+      decoding: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), as: UTF8.self)
+    let text = try #require(
+      f.raw.execute("SELECT $1::jsonb::text AS value", [encoded]).rows.first?.text("value"))
+    return Data(text.utf8)
+  }
+  private static func expectedGuardApply(
+    _ f: Fixture, before: NativeState, cursor: Int,
+    edits: [(table: String, key: String, id: String, values: [String: Any])] = [],
+    clocks: [(table: String, row: String, column: String, stamp: String)] = [],
+    extraClocks: [[String: Any]] = []
+  ) throws -> NativeState {
+    var rows = before.rows
+    for edit in edits + [(table: "hubLink", key: "id", id: "1", values: ["cursor": cursor])] {
+      var matches = 0
+      rows[edit.table] = try (rows[edit.table] ?? []).map { bytes in
+        var row = try object(String(decoding: bytes, as: UTF8.self))
+        let identity = (row[edit.key] as? String) ?? (row[edit.key] as? NSNumber)?.stringValue
+        guard identity == edit.id else { return bytes }
+        matches += 1
+        for (column, value) in edit.values { row[column] = value }
+        return try guardApplyJSON(f, row)
+      }.sorted { $0.lexicographicallyPrecedes($1) }
+      try #require(matches == 1)
+    }
+    for clock in clocks {
+      var matches = 0
+      rows["columnClocks"] = try (rows["columnClocks"] ?? []).map { bytes in
+        var row = try object(String(decoding: bytes, as: UTF8.self))
+        guard row["table"] as? String == clock.table, row["rowId"] as? String == clock.row,
+          row["column"] as? String == clock.column
+        else { return bytes }
+        matches += 1; row["hlc"] = clock.stamp
+        return try guardApplyJSON(f, row)
+      }
+      try #require(matches == 1)
+    }
+    for clock in extraClocks { rows["columnClocks", default: []].append(try guardApplyJSON(f, clock)) }
+    rows["columnClocks"]?.sort { $0.lexicographicallyPrecedes($1) }
+    // All three fields of changes_seq_seq must remain exactly equal. Probe sequences are separate.
+    return NativeState(rows: rows, sequence: before.sequence)
+  }
+  private static func expectGuardApply(
+    _ f: Fixture, changes: [RemoteChange], cursor: Int, snapshot: ProtocolVerificationSnapshot,
+    expected: NativeState, result: RemoteApplied
+  ) throws {
+    let outcome = Result {
+      try f.database.applyRemote(
+        changes, ownDeviceId: f.link.deviceId, macDeviceIds: ["guard-other-mac"],
+        cursor: cursor, expectedProtocolSnapshot: snapshot)
+    }
+    let exact = try state(f) == expected
+    #expect(exact)  // Includes every public table, native/private/control/link/log rows and sequence.
+    let actual = try outcome.get()
+    #expect(actual == result)
+  }
+  private static func expectGuardApplyRefusal(
+    _ f: Fixture, changes: [RemoteChange], cursor: Int, snapshot: ProtocolVerificationSnapshot,
+    database: WorkspaceDatabase? = nil
+  ) throws {
+    let before = try state(f)
+    expectSafe {
+      _ = try (database ?? f.database).applyRemote(
+        changes, ownDeviceId: f.link.deviceId,
+        macDeviceIds: ["guard-other-mac"], cursor: cursor, expectedProtocolSnapshot: snapshot)
+    }
+    try expectUnchanged(f, before)  // Before ANY subsequent restoration, probe query or mutation.
+  }
+  private static func expectGuardApplyProbe(_ f: Fixture, _ name: String, _ expected: Int) throws {
+    let row = try f.raw.execute("SELECT last_value::text AS n,is_called::text AS called FROM \(name)").rows
+      .first
+    #expect(row?.text("n") == String(expected) && row?.text("called") == "true")
+  }
+
+  @Test func guardedApplyPreservesLegacyAndHealthyModernMergeEmptyAndSkippedSemantics() async throws {
+    for modern in [false, true] {
+      try await Self.withFixture { f in
+        try Self.seedGuardApply(f)
+        if modern { try Self.seedReadOnlyModernProfile(f) }
+        let snapshot = try (modern ? Self.healthyGuardMarkSnapshot(f) : Self.capture(f))
+        try Self.expectRequirement(f, modern ? .protocolTwo : .legacyOnly)
+        try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: true)
+        let batch: [RemoteChange] = [
+          Self.guardApplyChange("threads", "guard-thread", "title", .string(Self.applyTitle)),
+          Self.guardApplyChange("environments", "guard-environment", "name", "After environment"),
+          Self.guardApplyChange("drafts", "guard-thread", "text", "After draft"),
+          // Another Mac may write view settings, while its thread edits remain skipped.
+          Self.guardApplyChange("viewSettings", "view", "quietThreads", "tiny", device: "guard-other-mac"),
+          Self.guardApplyChange("threads", "guard-thread", "title", "Own echo", device: f.link.deviceId),
+          Self.guardApplyChange("threads", "guard-thread", "title", "Invalid clock", at: "invalid"),
+          Self.guardApplyChange("threads", "guard-thread", "context", "/hub/filtered/context"),
+          Self.guardApplyChange("threads", "guard-missing", "title", "Missing row"),
+          Self.guardApplyChange("threads", "guard-thread", "title", "Older title", at: Self.applyOldStamp),
+          // Ordinary boolean input syntax error (22P02) must skip only this change.
+          Self.guardApplyChange("threads", "guard-thread", "archived", "not-a-boolean"),
+          Self.guardApplyChange("threads", "guard-thread", "title", "Other Mac", device: "guard-other-mac"),
+        ]
+        let before = try Self.state(f)
+        let expected = try Self.expectedGuardApply(
+          f, before: before, cursor: 301,
+          edits: [
+            ("threads", "id", "guard-thread", ["title": Self.applyTitle]),
+            ("environments", "id", "guard-environment", ["name": "After environment"]),
+            ("drafts", "threadId", "guard-thread", ["text": "After draft"]),
+            ("viewSettings", "id", "view", ["quietThreads": "tiny"]),
+          ],
+          clocks: [
+            ("threads", "guard-thread", "title", Self.applyStamp),
+            ("environments", "guard-environment", "name", Self.applyStamp),
+            ("drafts", "guard-thread", "text", Self.applyStamp),
+            ("viewSettings", "view", "quietThreads", Self.applyStamp),
+          ])
+        try Self.expectGuardApply(
+          f, changes: batch, cursor: 301, snapshot: snapshot, expected: expected,
+          result: RemoteApplied(
+            touchedThreadIds: ["guard-thread"], touchedEnvironmentIds: ["guard-environment"],
+            touchedDraftThreadIds: ["guard-thread"], touchedViewSettings: true, applied: 4, skipped: 7))
+        let repeatedBefore = try Self.state(f)
+        try Self.expectGuardApply(
+          f, changes: batch, cursor: 302, snapshot: snapshot,
+          expected: Self.expectedGuardApply(f, before: repeatedBefore, cursor: 302),
+          result: RemoteApplied(skipped: 11))
+        let emptyBefore = try Self.state(f)
+        try Self.expectGuardApply(
+          f, changes: [], cursor: 303, snapshot: snapshot,
+          expected: Self.expectedGuardApply(f, before: emptyBefore, cursor: 303), result: RemoteApplied())
+      }
+    }
+  }
+
+  @Test func guardedApplyRefusesStaleOrAbsentSnapshotsBeforeReceivedClockObservation() async throws {
+    try await Self.withFixture { original in
+      // This fresh actual object has a controlled wall, through the EXISTING initializer only.
+      let controlled = try WorkspaceDatabase(
+        endpoint: original.endpoint, binDir: original.endpoint.binDir!,
+        createIfMissing: false, backupDirectory: original.root + "/backups", wall: { 42 })
+      defer { try? controlled.close() }
+      let f = Fixture(
+        database: controlled, raw: original.raw, endpoint: original.endpoint,
+        root: original.root, link: original.link, binding: original.binding)
+      try Self.seedGuardApply(f)
+      try Self.seedReadOnlyModernProfile(f)
+      func refuseBoth(_ candidate: ProtocolVerificationSnapshot, on database: WorkspaceDatabase? = nil) throws
+      {
+        for mutating in [false, true] {
+          let capturedWall = epochMillis()
+          let received = HLC(millis: capturedWall + 120_000, counter: 19, deviceId: "guard-phone")
+          let changes =
+            mutating
+            ? [
+              Self.guardApplyChange(
+                "threads", "guard-thread", "title", "Refused future title", at: received.rawValue)
+            ] : []
+          let wallBefore = epochMillis()
+          try #require(received.millis > wallBefore && received.millis - wallBefore < HLC.maxAheadMillis)
+          try #require(received.clamped(toWall: wallBefore) == received)
+          let clockDatabase = database ?? controlled
+          let clockBefore = clockDatabase.clock.next()
+          try Self.expectGuardApplyRefusal(
+            f, changes: changes, cursor: 399, snapshot: candidate, database: database)
+          let clockAfter = clockDatabase.clock.next()
+          let wallAfter = epochMillis()
+          try #require(wallAfter < received.millis)
+          // A received observation would jump to received.millis. write.next() may advance the
+          // enclosing transaction's counter, which is deliberately NOT claimed to roll back.
+          #expect(clockAfter.millis < received.millis && clockAfter > clockBefore)
+        }
+      }
+      let inactive = try Self.capture(f)
+      try refuseBoth(inactive)  // Modern graph, inactive/unbound control.
+      let bound = try f.database.prepareProtocolVerification(
+        expectedSnapshot: inactive, expectedBinding: f.binding)
+      try refuseBoth(bound)  // Bound without an observation.
+      let healthy = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: bound, observation: Self.observation(f.binding))
+      let known = try Self.nativeRecord(f)
+      try refuseBoth(inactive); try refuseBoth(bound)  // Old full records stay stale.
+      let contextless = try #require(f.database.readProtocolFact(expectedBinding: f.binding))
+      try refuseBoth(contextless)
+      let other = try f.reopen()
+      defer { try? other.close() }
+      try refuseBoth(healthy, on: other)  // Same database name, DIFFERENT actual object.
+      for field in ["storeIncarnation", "membershipIncarnation"] {
+        var replacement = known
+        replacement[field] =
+          field == "storeIncarnation"
+          ? "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA" : "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB"
+        try #require(replacement[field] as? String != known[field] as? String)
+        try Self.putRecord(f, replacement)
+        try refuseBoth(healthy)
+        try Self.putRecord(f, known)  // Restore exact known record; NEVER adopt a replacement capture.
+      }
+      var substituted = known
+      var observed = try #require(known["observation"] as? [String: Any])
+      observed["reportedVersion"] = 3; substituted["observation"] = observed
+      try Self.putRecord(f, substituted)
+      try refuseBoth(healthy)
+      try Self.putRecord(f, known)
+      try f.raw.execute(
+        "UPDATE public.\"hubLink\" SET \"deviceId\"='ACTIVATION_NATIVE_REPLACEMENT' WHERE id=1")
+      try refuseBoth(healthy)
+      try f.raw.execute("UPDATE public.\"hubLink\" SET \"deviceId\"=$1 WHERE id=1", [f.link.deviceId])
+      let later = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: healthy, observation: Self.observation(f.binding, version: 3))
+      try refuseBoth(healthy)
+      try Self.putRecord(f, known)
+      // Recreate the later fact with its original expected healthy snapshot; keep the returned
+      // candidate only to perform a real fence transition, never to rescue an old apply call.
+      let laterAgain = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: healthy, observation: Self.observation(f.binding, version: 3))
+      try f.database.fenceProtocolVerification(expectedSnapshot: laterAgain)
+      try refuseBoth(healthy); try refuseBoth(later)
+      try Self.putRecord(f, known)
+      // Removing the native link defeats even a matching observed record.
+      try f.raw.execute("DELETE FROM public.\"hubLink\" WHERE id=1")
+      try refuseBoth(healthy)
+      try Self.insertReadOnlyFixtureLink(f)
+      // Restoration leaves the SAME candidate healthy; a refusal must not rewrite/adopt it.
+      try Self.expectReadOnlyValidation(f, snapshot: healthy, sync: true)
+    }
+    for legacyRows in [false, true] {
+      try await Self.withFixture { f in
+        if legacyRows { try Self.seedGuardApply(f) }
+        let linked = try Self.capture(f)
+        try f.raw.execute("DELETE FROM public.\"hubLink\" WHERE id=1")
+        let absent = try f.database.captureProtocolVerification(
+          accountID: f.binding.accountID, expectedMembership: nil)
+        let batch = [Self.guardApplyChange("threads", "guard-thread", "title", "Absent link")]
+        for candidate in [linked, absent] {
+          for changes in [[], batch] {
+            try Self.expectGuardApplyRefusal(f, changes: changes, cursor: 399, snapshot: candidate)
+          }
+        }
+      }
+    }
+  }
+
+  @Test func guardedApplyPostguardRollsBackWholeBatchAndCursorWhileSameEnabledCanarySucceedsHealthy()
+    async throws
+  {
+    try await Self.withFixture { f in
+      try Self.seedGuardApply(f)
+      let inactive = try Self.capture(f)
+      try Self.expectRequirement(f, .legacyOnly)
+      try Self.expectReadOnlyValidation(f, snapshot: inactive, sync: true)
+      try f.raw.execute(
+        """
+        CREATE SCHEMA guard_apply_post;
+        CREATE SEQUENCE guard_apply_post.title_probe;
+        CREATE SEQUENCE guard_apply_post.cursor_probe;
+        CREATE FUNCTION guard_apply_post.add_marker() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+          INSERT INTO public."columnClocks"("table","rowId","column",hlc)
+            VALUES('connections','guard-apply-post','authMode','000000000000-0000-local');
+          PERFORM nextval('guard_apply_post.title_probe');
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER guard_apply_post AFTER UPDATE OF title ON public.threads FOR EACH ROW
+          WHEN(NEW.id='guard-thread' AND NEW.title='ACTIVATION_GUARDED_APPLY_TITLE')
+          EXECUTE FUNCTION guard_apply_post.add_marker();
+        CREATE FUNCTION guard_apply_post.cursor_reached() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN PERFORM nextval('guard_apply_post.cursor_probe'); RETURN NEW; END $$;
+        CREATE TRIGGER guard_apply_cursor AFTER UPDATE OF cursor ON public."hubLink" FOR EACH ROW
+          WHEN(NEW.id=1 AND NEW.cursor=411) EXECUTE FUNCTION guard_apply_post.cursor_reached();
+        """)
+      let batch = [
+        Self.guardApplyChange("threads", "guard-thread", "pinned", true),
+        Self.guardApplyChange("threads", "guard-thread", "archived", "not-a-boolean"),
+        Self.guardApplyChange("threads", "guard-thread", "title", .string(Self.applyTitle)),
+        Self.guardApplyChange("environments", "guard-environment", "name", "After environment"),
+      ]
+      let clockBeforeRefusal = f.database.clock.next()
+      try Self.expectGuardApplyRefusal(f, changes: batch, cursor: 411, snapshot: inactive)
+      let clockAfterRefusal = f.database.clock.next()
+      #expect(clockAfterRefusal > clockBeforeRefusal)
+      try Self.expectGuardApplyProbe(f, "guard_apply_post.title_probe", 1)
+      try Self.expectGuardApplyProbe(f, "guard_apply_post.cursor_probe", 1)
+      try Self.expectRequirement(f, .legacyOnly)
+      let healthy = try Self.healthyGuardMarkSnapshot(f)
+      let before = try Self.state(f)
+      let expected = try Self.expectedGuardApply(
+        f, before: before, cursor: 411,
+        edits: [
+          ("threads", "id", "guard-thread", ["pinned": true, "title": Self.applyTitle]),
+          ("environments", "id", "guard-environment", ["name": "After environment"]),
+        ],
+        clocks: [
+          ("threads", "guard-thread", "pinned", Self.applyStamp),
+          ("threads", "guard-thread", "title", Self.applyStamp),
+          ("environments", "guard-environment", "name", Self.applyStamp),
+        ],
+        extraClocks: [
+          [
+            "table": "connections", "rowId": "guard-apply-post", "column": "authMode",
+            "hlc": "000000000000-0000-local",
+          ]
+        ])
+      // Both immediate triggers and the exact same batch/cursor remain enabled for this control.
+      try Self.expectGuardApply(
+        f, changes: batch, cursor: 411, snapshot: healthy, expected: expected,
+        result: RemoteApplied(
+          touchedThreadIds: ["guard-thread"], touchedEnvironmentIds: ["guard-environment"], applied: 3,
+          skipped: 1))
+      try Self.expectGuardApplyProbe(f, "guard_apply_post.title_probe", 2)
+      try Self.expectGuardApplyProbe(f, "guard_apply_post.cursor_probe", 2)
+      try Self.expectRequirement(f, .protocolTwo)
+      // These native rollback assertions intentionally say nothing about rollback of memory HLC.
+    }
+  }
+
+  @Test func guardedApplySelectsReadCommittedWhileOrdinaryApplyRetainsInheritedRepeatableRead() async throws {
+    try await Self.withFixture { original in
+      try Self.seedGuardApply(original)
+      try original.raw.execute(
+        """
+        CREATE SCHEMA guard_apply_isolation;
+        CREATE TABLE guard_apply_isolation.observed(cursor bigint NOT NULL,value text NOT NULL);
+        CREATE FUNCTION guard_apply_isolation.record_isolation() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+          INSERT INTO guard_apply_isolation.observed VALUES(NEW.cursor,current_setting('transaction_isolation'));
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER guard_apply_isolation AFTER UPDATE OF cursor ON public."hubLink" FOR EACH ROW
+          WHEN(NEW.id=1 AND NEW.cursor IN (501,502)) EXECUTE FUNCTION guard_apply_isolation.record_isolation();
+        """)
+      try await Self.withGuardMarkRepeatableRead(original) { f in
+        // Belongs to the actual fresh object/pool opened AFTER DB default RR.
+        let snapshot = try Self.capture(f)
+        let beforeOrdinary = try Self.state(f)
+        let expectedOrdinary = try Self.expectedGuardApply(f, before: beforeOrdinary, cursor: 501)
+        let outcome = Result {
+          try f.database.applyRemote([], ownDeviceId: f.link.deviceId, macDeviceIds: [], cursor: 501)
+        }
+        let exactOrdinary = try Self.state(f) == expectedOrdinary
+        #expect(exactOrdinary)
+        #expect(try outcome.get() == RemoteApplied())
+        let first = try f.raw.execute(
+          "SELECT cursor::text AS cursor,value FROM guard_apply_isolation.observed ORDER BY cursor"
+        ).rows
+        #expect(
+          first.count == 1 && first.first?.text("cursor") == "501"
+            && first.first?.text("value") == "repeatable read")
+        let beforeGuarded = try Self.state(f)
+        try Self.expectGuardApply(
+          f, changes: [], cursor: 502, snapshot: snapshot,
+          expected: Self.expectedGuardApply(f, before: beforeGuarded, cursor: 502), result: RemoteApplied())
+        let both = try f.raw.execute(
+          "SELECT cursor::text AS cursor,value FROM guard_apply_isolation.observed ORDER BY cursor"
+        ).rows
+        #expect(both.count == 2)
+        #expect(both.first?.text("cursor") == "501" && both.first?.text("value") == "repeatable read")
+        #expect(both.last?.text("cursor") == "502" && both.last?.text("value") == "read committed")
+      }
+    }
+  }
+
+  @Test func guardedApplyActualDeferredCommitFailureRollsBackBatchCursorAndDurableClocksThenRecovers()
+    async throws
+  {
+    try await Self.withFixture { f in
+      try Self.seedGuardApply(f)
+      let snapshot = try Self.capture(f)
+      try Self.expectRequirement(f, .legacyOnly)
+      try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: true)
+      try f.raw.execute(
+        """
+        CREATE SCHEMA guard_apply_commit;
+        CREATE SEQUENCE guard_apply_commit.probe;
+        CREATE TABLE guard_apply_commit.expected AS SELECT value FROM public.settings WHERE key='__b4app_agent_protocol_activation_v1';
+        CREATE FUNCTION guard_apply_commit.refuse_commit() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+          IF NEW.cursor <> 611 OR NOT EXISTS(SELECT 1 FROM public."hubLink" WHERE id=1 AND cursor=611)
+            OR NOT EXISTS(SELECT 1 FROM public.threads WHERE id='guard-thread' AND title='ACTIVATION_GUARDED_APPLY_TITLE')
+            OR NOT EXISTS(SELECT 1 FROM public.environments WHERE id='guard-environment' AND name='After environment')
+            OR NOT EXISTS(SELECT 1 FROM public."columnClocks" WHERE "table"='threads' AND "rowId"='guard-thread'
+              AND "column"='title' AND hlc='000000000100-0000-guard-phone')
+            OR NOT EXISTS(SELECT 1 FROM public."columnClocks" WHERE "table"='environments' AND "rowId"='guard-environment'
+              AND "column"='name' AND hlc='000000000100-0000-guard-phone')
+            OR (SELECT value FROM public.settings WHERE key='__b4app_agent_protocol_activation_v1')
+              IS DISTINCT FROM (SELECT value FROM guard_apply_commit.expected)
+          THEN RAISE EXCEPTION 'ACTIVATION_GUARDED_APPLY_STAGE_NOT_REACHED'; END IF;
+          PERFORM nextval('guard_apply_commit.probe');
+          RAISE EXCEPTION 'ACTIVATION_GUARDED_APPLY_PRIVATE_CANARY'
+            USING ERRCODE='23514',DETAIL='ACTIVATION_GUARDED_APPLY_SECRET';
+        END $$;
+        CREATE CONSTRAINT TRIGGER guard_apply_commit AFTER UPDATE ON public."hubLink" DEFERRABLE INITIALLY DEFERRED
+          FOR EACH ROW WHEN(NEW.id=1 AND NEW.cursor=611) EXECUTE FUNCTION guard_apply_commit.refuse_commit();
+        """)
+      let beforeNative = try Self.state(f)
+      var bodyReturned = false, commitAttempted = false, knownConstraint = false
+      do {
+        try f.raw.execute("BEGIN")
+        try f.raw.execute("SET LOCAL b4app.replaying='on'")
+        try f.raw.execute(
+          """
+          UPDATE public.threads SET title='ACTIVATION_GUARDED_APPLY_TITLE' WHERE id='guard-thread';
+          UPDATE public.environments SET name='After environment' WHERE id='guard-environment';
+          UPDATE public."columnClocks" SET hlc='000000000100-0000-guard-phone'
+            WHERE ("table"='threads' AND "rowId"='guard-thread' AND "column"='title')
+               OR ("table"='environments' AND "rowId"='guard-environment' AND "column"='name');
+          UPDATE public."hubLink" SET cursor=611 WHERE id=1;
+          """)
+        bodyReturned = true
+        commitAttempted = true
+        try f.raw.execute("COMMIT")
+      } catch {
+        knownConstraint = (error as? PostgresError)?.sqlState == "23514"
+        _ = try? f.raw.execute("ROLLBACK")
+      }
+      try Self.expectUnchanged(f, beforeNative)
+      try #require(bodyReturned && commitAttempted && knownConstraint)
+      try Self.expectGuardApplyProbe(f, "guard_apply_commit.probe", 1)
+      let batch = [
+        Self.guardApplyChange("threads", "guard-thread", "title", .string(Self.applyTitle)),
+        Self.guardApplyChange("threads", "guard-thread", "archived", "not-a-boolean"),
+        Self.guardApplyChange("environments", "guard-environment", "name", "After environment"),
+      ]
+      // Reaching this SAME deferred probe requires returning through both guards and attempting
+      // actual COMMIT. No SET CONSTRAINTS, synthetic throw or savepoint-only fault is used.
+      try Self.expectGuardApplyRefusal(f, changes: batch, cursor: 611, snapshot: snapshot)
+      try Self.expectGuardApplyProbe(f, "guard_apply_commit.probe", 2)
+      try Self.expectRequirement(f, .legacyOnly)
+      try f.raw.execute("DROP TRIGGER guard_apply_commit ON public.\"hubLink\"")
+      let beforeRecovery = try Self.state(f)
+      let expected = try Self.expectedGuardApply(
+        f, before: beforeRecovery, cursor: 611,
+        edits: [
+          ("threads", "id", "guard-thread", ["title": Self.applyTitle]),
+          ("environments", "id", "guard-environment", ["name": "After environment"]),
+        ],
+        clocks: [
+          ("threads", "guard-thread", "title", Self.applyStamp),
+          ("environments", "guard-environment", "name", Self.applyStamp),
+        ])
+      try Self.expectGuardApply(
+        f, changes: batch, cursor: 611, snapshot: snapshot, expected: expected,
+        result: RemoteApplied(
+          touchedThreadIds: ["guard-thread"], touchedEnvironmentIds: ["guard-environment"], applied: 2,
+          skipped: 1))
+      try Self.expectGuardApplyProbe(f, "guard_apply_commit.probe", 2)
+      // Known 23514 rollback is established here; unknown COMMIT outcomes are not classified.
+    }
+  }
+}

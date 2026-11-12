@@ -247,6 +247,17 @@ in-memory clock need not roll back. This orders participating framework writers,
 not arbitrary raw SQL or successful deferred mutations after the final check.
 Unknown COMMIT outcomes remain unknown, and this data guard authenticates nobody.
 
+Guard all five effects: remote apply with cursor, accepted-prefix marking,
+owned-row claim, push result and pull result. Push result changes only lastError
+and an explicitly supplied lastPushAt, preserving the current timestamp on nil.
+Pull result stores the exact Pull: prefix for an error; nil clears only a current
+matching prefix and performs no row UPDATE for a nonmatching or null value.
+Both push strings and a nonnil pull error reject embedded NUL inside the guarded
+body before SQL parameter construction, using the fixed safe refusal. Nil and
+empty inputs retain their specified meanings; no truncation or normalization is
+accepted. Full local claim reannouncement is separate from outbound privacy
+filtering and supplies no public-allowlist qualification.
+
 These storage primitives remain dormant until the owner handles admission.
 Cold reuse must match the closed binding to independently known account/stable
 nonplaceholder user identity and actual native membership. New positive evidence
@@ -258,6 +269,60 @@ transaction. Install the exact scope before proof-dependent network handoff,
 while preserving normal local services and unrelated work. Atomic retirement
 publication, public allowlists, phone support and execution/private-auth admission
 remain required parts of A4–A10.
+
+
+### Owner lifecycle and cleanup admission
+
+Use one internal concrete carrier with the original snapshot and actual database
+strongly retained, and weak owner/scope/Slot handles. Register exact producer UUIDs
+before launch; invalidate the committed owner's revision and UUIDs before awaited
+stop, close or replacement. Old cleanup cannot invalidate a replacement. Child
+checks cannot acquire the account transition lock while the owner awaits those
+children. ScopeGate admission must be released before owner drain. A tentative
+logout or migration decision closes the runtime work gate without revoking
+ordinary sync tickets; a refused decision reopens that gate. Commit producer
+revocation only when the transition is accepted. ScopeGate's temporary closing
+flag alone is not permanent sync revocation.
+
+Owner-directed cleanup uses a short-lived transition UUID and exact operation
+phase bound to the original linked scope, actual database, account, configured
+client/base and credential reference/token object. Final push retains full sync
+compatibility for every batch, filtered-only acknowledgement and result write.
+An existing in-flight push keeps its original ordinary stamp, and background name
+refresh cannot inherit cleanup admission. Revoke a timed-out push phase before
+session disposal; revoke disposal before credential removal, pool close or
+transition completion. Late completion refuses, while already committed data and
+unknown remote outcomes retain their actual meaning.
+
+Only the named session-disposal operation may use strict same-original linked
+verification without the healthy2 sync requirement. It deletes the original hub
+session and carries no sync payload; it permits no push, readiness/name lookup,
+profile work or new producer. Its constructor cannot accept a prospective absent
+proof capture. Stale, malformed or replaced state and mismatched owner identities
+still refuse without recapture. Refusal or timeout preserves honest
+hubSessionLeftOpen bookkeeping and does not prevent existing local logout cleanup.
+An already-unjoined scope keeps the no-session branch; failed comparison does not
+prove that a session is absent. Native credential-reference freshness remains a
+separate required comparison: the current verification validator does not compare
+hubLink.tokenRef, and memory equality is not a native freshness receipt.
+
+Owned HTTP and WebSocket handoff must use retained concrete tasks and a final
+synchronous admission check at resume or the completion-handler send call.
+Preserve cancellation-before-install handling, once-only completion, primary
+admission errors, and task-specific identity redirect refusal. Every owned
+application-frame path, including ping, unknown replies and queued entries,
+retains its original stamp. Arbitrary delayed transports must support that actual
+boundary or refuse owned use. The ticket check linearizes local admission;
+invalidation after it cannot recall admitted work or all Foundation protocol,
+retry, redirect or TLS traffic. Cancellation is not completion. Never hold mutexes
+over SQL, callbacks, transport completion or awaits to imply a stronger guarantee.
+
+Publish only after actual native commit, with a final current-owner/ticket check
+and the existing withVisibleThread fence inside the isolated EventLog turn before
+append. The callback's ticket check is memory-only and cannot reenter the database;
+no native lease crosses an actor await. Environment and view events also need the
+original-owner comparison. Dormant carrier comparisons alone qualify no transport,
+producer, cleanup or publication consumer; these integration gates remain open.
 
 ## 4. Durable owner-local projection
 
