@@ -113,7 +113,7 @@ It archives Release with the team from the Developer ID certificate (or `B4APP_T
 | Data directory and URL scheme | `b4app` | `b4app-beta` | `b4app-local` |
 | Badge | none | "Test hub" | "Local hub" |
 
-`B4APP_FLAVOR=beta ./Scripts/package.sh` (or `local`; the default is `prod`) builds `Agent Workspace (Beta).app` or `Agent Workspace (Local).app`. Each flavour has its own LaunchAgent label (`com.cacheplane.b4app.beta.coordinator`, …), keychain group, and data, so they live side by side on one Mac. The `B4App-macOS` and `B4App-iOS` schemes build local in Debug and prod in Release; the `-Beta` schemes build beta. The CLI takes the flavour of the app it sits in; outside an app it is local unless `B4APP_FLAVOR` says otherwise. The iPhone's prod and beta builds share the bundle id `com.cacheplane.b4app.ios`, so only one is installed at a time.
+`B4APP_FLAVOR=beta ./Scripts/package.sh` (or `local`; the default is `prod`) builds `Agent Workspace (Beta).app` or `Agent Workspace (Local).app`. Each flavour has its own LaunchAgent label (`com.cacheplane.b4app.beta.coordinator`, …), keychain group, and data, so they live side by side on one Mac. Packaging one flavour replaces only that flavour's app, zip, and notarization result in `dist/`; the other flavours' apps there are left alone. The `B4App-macOS` and `B4App-iOS` schemes build local in Debug and prod in Release; the `-Beta` schemes build beta. The CLI takes the flavour of the app it sits in; outside an app it is local unless `B4APP_FLAVOR` says otherwise. The iPhone's prod and beta builds share the bundle id `com.cacheplane.b4app.ios`, so only one is installed at a time.
 
 ### Signing in
 
