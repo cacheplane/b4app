@@ -14,6 +14,21 @@ private final class PoolObservation: Sendable {
 }
 
 @Suite(.serialized) struct AgentProtocolPoolTests {
+  // Suspend the retained Task while its synchronous gate runs outside the cooperative executor.
+  private static func onDedicatedPoolThread<T: Sendable>(
+    _ operation: @escaping @Sendable () -> T
+  ) async -> T {
+    await withCheckedContinuation { continuation in
+      Thread { continuation.resume(returning: operation()) }.start()
+    }
+  }
+
+  private static func onDedicatedPoolThread<T: Sendable>(
+    _ operation: @escaping @Sendable () throws -> T
+  ) async throws -> T {
+    try await onDedicatedPoolThread { Result<T, any Error> { try operation() } }.get()
+  }
+
   private func observed(_ signal: @Sendable () -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + .seconds(2)
     while !signal(), ContinuousClock.now < deadline {
@@ -34,26 +49,30 @@ private final class PoolObservation: Sendable {
     let releaseWaiter = DispatchSemaphore(value: 0)
     let observation = PoolObservation()
     let borrower = Task.detached {
-      try pool.withConnection { _ in
-        observation.borrowerEntered.withLock { $0 = true }
-        releaseBorrower.wait()
+      try await Self.onDedicatedPoolThread {
+        try pool.withConnection { _ in
+          observation.borrowerEntered.withLock { $0 = true }
+          releaseBorrower.wait()
+        }
       }
     }
     let borrowerReady = await observed { observation.borrowerEntered.withLock { $0 } }
     #expect(borrowerReady)
     let waiter = Task.detached { () -> Bool in
-      defer { observation.waiterFinished.withLock { $0 = true } }
-      do {
-        try pool.withConnection(
-          beforeWaiting: {
-            observation.waiterEntered.withLock { $0 = true }
-            releaseWaiter.wait()
-          }
-        ) { _ in observation.bodyCalls.withLock { $0 += 1 } }
-        return false
-      } catch let error as WorkspaceError {
-        return error.code == .endpointUnavailable
-      } catch { return false }
+      await Self.onDedicatedPoolThread {
+        defer { observation.waiterFinished.withLock { $0 = true } }
+        do {
+          try pool.withConnection(
+            beforeWaiting: {
+              observation.waiterEntered.withLock { $0 = true }
+              releaseWaiter.wait()
+            }
+          ) { _ in observation.bodyCalls.withLock { $0 += 1 } }
+          return false
+        } catch let error as WorkspaceError {
+          return error.code == .endpointUnavailable
+        } catch { return false }
+      }
     }
     let waiterReady = await observed { observation.waiterEntered.withLock { $0 } }
     #expect(waiterReady)
