@@ -84,6 +84,7 @@ mod tests {
             ("connections", "label"),
             ("connections", "environmentId"),
             ("connections", "models"),
+            ("connections", "commands"),
         ] {
             assert!(!is_phone_writable(table, column), "{table}.{column}");
         }

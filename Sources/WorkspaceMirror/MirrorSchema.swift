@@ -56,7 +56,8 @@ enum MirrorSchema {
 
   /// Columns whose `TEXT` holds a JSON document; they read back inline.
   static let jsonColumns: [String: Set<String>] = [
-    "connections": ["capabilities", "models"], "displayItems": ["payload"], "runtimeRequests": ["payload"],
+    "connections": ["capabilities", "models", "commands"], "displayItems": ["payload"],
+    "runtimeRequests": ["payload"],
     "connectionUsage": ["reading", "tokens"],
   ]
 
@@ -67,7 +68,7 @@ enum MirrorSchema {
   /// every migration after `n`, all in one transaction.
   static let migrations: [(version: Int, statements: [String])] = [
     (1, version1), (2, version2), (3, version3), (4, version4), (5, version5), (6, version6),
-    (7, version7),
+    (7, version7), (8, version8),
   ]
 
   /// M8a's schema.
@@ -304,4 +305,9 @@ enum MirrorSchema {
           AND CASE WHEN json_valid("value") THEN json_type("value", '$.projectId') END IS NOT NULL
       """,
     ]
+
+  /// Runtime commands: the commands a connection's runtime runs from a message (a JSON list).
+  static let version8 = [
+    #"ALTER TABLE "connections" ADD COLUMN "commands" TEXT"#
+  ]
 }

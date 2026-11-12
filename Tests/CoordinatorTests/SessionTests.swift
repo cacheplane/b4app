@@ -524,6 +524,62 @@ actor EventCollector {
     await h.stop()
   }
 
+  /// The first check reads the commands (no session has run yet); a session that names one the
+  /// list lacks replaces it, and clients hear of it as a change to the connection.
+  @Test func commandsReachTheConnectionAndFollowItsSessions() async throws {
+    let h = try await Harness.start()
+    let claude = try await h.addClaude()
+    #expect(claude.commands?.map(\.name) == ["context", "compact", "superpowers:brainstorming"])
+    // A folder with a command of its own, as Claude Code reads `.claude/commands`.
+    try FileManager.default.createDirectory(
+      atPath: h.workDir + "/.claude/commands", withIntermediateDirectories: true)
+    try Data("Ship it.".utf8).write(to: URL(fileURLWithPath: h.workDir + "/.claude/commands/ship.md"))
+    let thread = try await h.newThread(claude)
+    let changed = try await h.events.waitFor {
+      $0.kind == .connectionChanged
+        && (try? $0.payload["connection"]?.decode(Connection.self))?.commands?.count == 4
+    }
+    #expect(changed.connectionId == claude.id)
+    let listed = try await h.client.request(ConnectionList.self, ConnectionList.Params())
+    #expect(
+      listed.connections.first { $0.id == claude.id }?.commands?.map(\.name) == [
+        "context", "compact", "superpowers:brainstorming", "ship",
+      ])
+    // The adapter's own event stays inside the coordinator.
+    #expect(await h.events.events.allSatisfy { $0.event.kind != .commandsChanged })
+
+    // A command is a message: the runtime answers it as a turn.
+    let turn = try await h.send(thread, "/context")
+    let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    #expect(finished.payload["outcome"]?.stringValue == "completed")
+    let read = try await h.read(thread)
+    #expect(read.items.map(\.role) == [.user, .assistant])
+    #expect(read.items[0].payload["text"]?.stringValue == "/context")
+    #expect(read.items[1].payload["text"]?.stringValue?.hasPrefix("## Context Usage") == true)
+    await h.stop()
+  }
+
+  @Test func codexCommandsRunAsTurns() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    #expect(codex.commands?.map(\.name) == ["review", "compact"])
+    let thread = try await h.newThread(codex)
+    let review = try await h.send(thread, "/review")
+    let reviewed = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == review.id }
+    #expect(reviewed.payload["outcome"]?.stringValue == "completed")
+    // `thread/compact/start` names no turn; the runtime's `turn/started` does.
+    let compact = try await h.send(thread, "/compact")
+    #expect(compact.submission == .acknowledged)
+    let compacted = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == compact.id }
+    #expect(compacted.payload["outcome"]?.stringValue == "completed")
+    let read = try await h.read(thread)
+    #expect(read.turns.map(\.id) == [review.id, compact.id])
+    #expect(read.turns.allSatisfy { $0.nativeTurnId != nil })
+    #expect(
+      read.items.contains { $0.payload["text"]?.stringValue == "Reviewed uncommittedChanges." })
+    await h.stop()
+  }
+
   @Test func runsAClaudeConversationBesideACodexThread() async throws {
     let h = try await Harness.start()
     let codex = try await h.addCodex()

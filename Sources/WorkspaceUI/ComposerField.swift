@@ -17,6 +17,9 @@ struct ComposerField<Trailing: View>: View {
   /// trailing control sends, as in the thread composer. The Mac's `TextEditor` has no submit, so
   /// there the caller's control owns the shortcut either way.
   let onSubmit: (() -> Void)?
+  /// Opt-in: arrow keys and Escape offered to the caller before the editor takes them (the `/`
+  /// completions). Returning `.ignored` leaves the key to the editor.
+  let onKeyPress: ((KeyPress) -> KeyPress.Result)?
   let trailing: Trailing
   @Environment(\.dynamicTypeSize) private var typeSize
   #if os(iOS)
@@ -36,12 +39,14 @@ struct ComposerField<Trailing: View>: View {
 
   init(
     text: Binding<String>, placeholder: String, focused: FocusState<Bool>.Binding,
-    onSubmit: (() -> Void)? = nil, @ViewBuilder trailing: () -> Trailing
+    onSubmit: (() -> Void)? = nil, onKeyPress: ((KeyPress) -> KeyPress.Result)? = nil,
+    @ViewBuilder trailing: () -> Trailing
   ) {
     _text = text
     self.placeholder = placeholder
     self.focused = focused
     self.onSubmit = onSubmit
+    self.onKeyPress = onKeyPress
     self.trailing = trailing()
   }
 
@@ -156,6 +161,7 @@ struct ComposerField<Trailing: View>: View {
       .foregroundStyle(LLA.Color.ink)
       .lineLimit(1...3)
       .focused(focused)
+      .onKeyPress(keys: [.upArrow, .downArrow, .escape, .return]) { onKeyPress?($0) ?? .ignored }
       .submitting(onSubmit)
       .frame(maxWidth: .infinity, alignment: .leading)
       .accessibilityLabel(placeholder)
@@ -189,6 +195,7 @@ struct ComposerField<Trailing: View>: View {
           .scrollContentBackground(.hidden)
           .scrollIndicators(.never)
           .focused(focused)
+          .onKeyPress(keys: [.upArrow, .downArrow, .escape, .return]) { onKeyPress?($0) ?? .ignored }
           .accessibilityLabel(placeholder)
           .accessibilityIdentifier("composer")
       }

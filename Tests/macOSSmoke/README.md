@@ -17,6 +17,8 @@ Results and attachments are in `.build/macOSSmoke/Results-*.xcresult`. CI retain
   -only-testing:WorkspaceSmokeTests/RecoverySmokeTests/testCompactLightRecovery
 ```
 
+`PaletteSmokeTests` drives the command palette and the composer's `/` list with real keys over the same fixture (the fake Codex): Find, Commands, thread actions, Rename, the completions and their picks, and where the cursor is afterwards. It sends no turn; the fake runtime's request log rejects any `turn/start`.
+
 This is fixture UI/coordinator integration coverage. Signed installation, embedded helper discovery, LaunchAgent registration and real-provider compatibility remain separate opt-in gates.
 
 Both default widths use the supported minimum 600-point content height to exercise compression. CI sets `B4APP_SMOKE_DESKTOP_WIDTH=1000`; the local default remains 1200. The suite never changes display settings. On a larger desktop, also run the 800-point variant with:

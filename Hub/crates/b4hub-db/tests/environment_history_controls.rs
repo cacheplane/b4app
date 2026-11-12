@@ -433,13 +433,13 @@ async fn complete_ledger(conn: &mut PgConnection) -> Result {
     .fetch_all(&mut *conn)
     .await?;
     require(
-        versions == (1..=18).collect::<Vec<i64>>(),
-        "one complete legitimate ledger through eighteen",
+        versions == (1..=19).collect::<Vec<i64>>(),
+        "one complete legitimate ledger through nineteen",
     )?;
     let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM public._sqlx_migrations")
         .fetch_one(&mut *conn)
         .await?;
-    require(rows == 18, "no extra or failed ledger rows")?;
+    require(rows == 19, "no extra or failed ledger rows")?;
     let checksum: bool = sqlx::query_scalar("SELECT checksum=decode($1,'hex') AND execution_time>=0 FROM public._sqlx_migrations WHERE version=18")
         .bind(checksum18()).fetch_one(&mut *conn).await?;
     require(

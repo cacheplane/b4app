@@ -71,6 +71,7 @@ const TABLES: [TableSpec; 9] = [
             "environmentId",
             "capabilities",
             "models",
+            "commands",
             "status",
             "authStatus",
             "createdAt",

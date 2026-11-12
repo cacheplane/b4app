@@ -23,6 +23,10 @@ public enum EventKind: String, Codable, Sendable, CaseIterable {
   case environmentChanged = "environment.changed"
   /// A runtime reported its plan allowance. `payload["reading"]` is a `UsageReading`.
   case usageChanged = "usage.changed"
+  /// A runtime reported its commands. `payload["commands"]` is a `[RuntimeCommand]`. Adapters emit
+  /// it; the coordinator stores the list on the connection and tells clients with
+  /// `connection.changed`, so no client sees this kind.
+  case commandsChanged = "commands.changed"
   /// The phone's view of its hub link and of one Mac's presence (M8c). Only the phone's
   /// `MirrorTransport` emits it; the Mac never does. The payload is described on `HostPresence`.
   case hostPresence = "host.presence"

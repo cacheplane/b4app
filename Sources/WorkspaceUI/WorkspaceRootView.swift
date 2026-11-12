@@ -2,7 +2,7 @@ import SwiftUI
 import WorkspaceProtocol
 
 /// The app's root on both platforms: the sign-in screen, onboarding, or the workspace, by the account
-/// state (`WorkspaceModel.rootScreen`). Nothing of the workspace (Settings, New Thread, ⌘K) is
+/// state (`WorkspaceModel.rootScreen`). Nothing of the workspace (Settings, New Thread, the palette) is
 /// reachable until someone is signed in. Styling comes from `Theme/` (LLA visual system).
 public struct WorkspaceRootView: View {
   @Bindable var model: WorkspaceModel
@@ -124,10 +124,13 @@ struct WorkspaceShell: View {
     #if os(macOS)
       // "Add your iPhone", once after a new account's onboarding (sign-in plan, Task 12).
       .sheet(isPresented: $model.showAddPhone) { AddPhoneView(model: model) }
-      .overlay { if model.showSearch { SearchPalette(model: model) } }
+      .overlay { if model.showSearch { PaletteView(model: model) } }
+      .animation(
+        reduceMotion ? .linear(duration: 0.08) : .snappy(duration: 0.16, extraBounce: 0),
+        value: model.showSearch)
     #else
       .sheet(isPresented: $model.showSearch) {
-        SearchPalette(model: model).environment(\.showDetail, showDetail)
+        PaletteView(model: model).environment(\.showDetail, showDetail)
       }
     #endif
     #if os(macOS)
@@ -150,6 +153,7 @@ struct WorkspaceShell: View {
   private var showDetail: @MainActor @Sendable () -> Void { { compactColumn = .detail } }
 
   @Environment(\.openURL) private var openURL
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   #if os(macOS)
     @Environment(\.openSettings) private var openSettings
   #endif

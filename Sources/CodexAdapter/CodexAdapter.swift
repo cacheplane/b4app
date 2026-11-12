@@ -219,6 +219,7 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
         ?? "Codex is signed out. Sign in with ChatGPT to start a conversation."
       inspection.capabilities = Self.capabilities
       inspection.models = await listModels()
+      inspection.commands = CodexProtocol.commands
     } catch {
       let failure = WorkspaceError.from(error)
       inspection.status = failure.code == .missingExecutable ? .error : .incompatible
@@ -328,13 +329,19 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
   public func sendTurn(_ ref: NativeSessionRef, input: TurnInput) async throws -> SubmissionReceipt {
     let server = try await ensureStarted()
     _ = try await ensureLoaded(ref, cwd: input.workingDirectory, server: server)
+    // A message that is one of the adapter's commands runs that command instead of a turn.
+    let command = CodexProtocol.commandRequest(threadId: ref.nativeSessionId, text: input.text)
     let result: JSONValue
     do {
-      result = try await server.request(
-        "turn/start",
-        CodexProtocol.turnStartParams(
-          threadId: ref.nativeSessionId, text: input.text, cwd: input.workingDirectory, model: input.model,
-          permission: input.permission, writableRoots: input.additionalDirectories))
+      if let command {
+        result = try await server.request(command.method, command.params)
+      } else {
+        result = try await server.request(
+          "turn/start",
+          CodexProtocol.turnStartParams(
+            threadId: ref.nativeSessionId, text: input.text, cwd: input.workingDirectory,
+            model: input.model, permission: input.permission, writableRoots: input.additionalDirectories))
+      }
     } catch {
       let failure = WorkspaceError.from(error)
       if failure.details?["reason"]?.stringValue == "timeout" {
@@ -344,8 +351,13 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
       }
       throw failure
     }
+    // `thread/compact/start` answers `{}`; its turn is named by the `turn/started` that follows.
+    if command?.method == "thread/compact/start" {
+      return SubmissionReceipt(nativeTurnId: nil, acknowledged: true)
+    }
     guard let turnId = result["turn"]?["id"]?.stringValue else {
-      throw WorkspaceError(.submissionUnknown, "turn/start returned no turn id.", details: result)
+      throw WorkspaceError(
+        .submissionUnknown, "\(command?.method ?? "turn/start") returned no turn id.", details: result)
     }
     return SubmissionReceipt(nativeTurnId: turnId, acknowledged: true)
   }

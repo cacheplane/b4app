@@ -12,6 +12,9 @@ import WorkspaceProtocol
 struct NewThreadView: View {
   @Bindable var model: WorkspaceModel
   @FocusState private var focused: Bool
+  /// The `/` completions for the draft.
+  @State private var slash: SlashController
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// How far Dynamic Type has grown the draft text; the send button follows it like the field does.
   @ScaledMetric(relativeTo: .callout) private var growth: CGFloat = 1
   #if os(iOS)
@@ -22,6 +25,11 @@ struct NewThreadView: View {
   static let headline = "What should we work on?"
 
   private var draft: NewThreadDraft { model.newThreadDraft }
+
+  init(model: WorkspaceModel) {
+    self.model = model
+    _slash = State(initialValue: SlashController(workspace: model, target: .draft))
+  }
 
   var body: some View {
     let draft = self.draft
@@ -39,6 +47,7 @@ struct NewThreadView: View {
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(LLA.Color.bg)
+    .slashCompletionsHost()
     .navigationTitle("New thread")
     #if os(iOS)
       .navigationBarTitleDisplayMode(.inline)
@@ -80,9 +89,15 @@ struct NewThreadView: View {
         .llaDisplay()
         .padding(.horizontal, LLA.Space.xs)
         .padding(.bottom, LLA.Space.l)
-      ComposerField(text: Bindable(draft).text, placeholder: placeholder(draft), focused: $focused) {
+      ComposerField(
+        text: Bindable(draft).text, placeholder: placeholder(draft), focused: $focused,
+        onKeyPress: { slash.handle($0, text: Bindable(draft).text) { chooseSlash(draft) } }
+      ) {
         send(draft)
       }
+      // Below the field, over the picker row, so the headline above never moves.
+      .slashCompletions(slash, placement: .below) { chooseSlash(draft) }
+      .onChange(of: draft.text) { old, new in slash.textChanged(from: old, to: new) }
       ComposerPickerRow(model: model, .draft(draft))
         .padding(.top, LLA.Space.s)
       statusLine(draft)
@@ -94,15 +109,37 @@ struct NewThreadView: View {
     draft.connection.map { "Message \($0.label)" } ?? "Message"
   }
 
-  private func send(_ draft: NewThreadDraft) -> some View {
+  private func chooseSlash(_ draft: NewThreadDraft) {
+    Task {
+      switch await slash.choose() {
+      case .text(let text): draft.text = text
+      case .send(let text):
+        // A runtime command is the new thread's first message, when the draft can start one.
+        draft.text = text
+        if draft.canSend { await draft.send() } else { draft.text = text + " " }
+      case nil: break
+      }
+    }
+  }
+
+  @ViewBuilder private func send(_ draft: NewThreadDraft) -> some View {
     let scale = ComposerField<EmptyView>.scale(growth)
-    return Button("Send", systemImage: "arrow.up") { Task { await draft.send() } }
-      .keyboardShortcut(.return, modifiers: [])
-      .buttonStyle(
-        ComposerCircleStyle(diameter: ComposerField<EmptyView>.control * scale, glyph: 15 * scale)
-      )
-      .disabled(!draft.canSend)
-      .accessibilityIdentifier("send")
+    let style = ComposerCircleStyle(
+      diameter: ComposerField<EmptyView>.control * scale, glyph: (slash.isShowing ? 13 : 15) * scale)
+    if slash.isShowing {
+      // While completions show, Return picks one: a typed slash never starts a thread.
+      Button(slash.selected?.primary ?? "Choose", systemImage: "return") { chooseSlash(draft) }
+        .keyboardShortcut(.return, modifiers: [])
+        .buttonStyle(style)
+        .disabled(slash.selected?.isAvailable != true)
+        .accessibilityIdentifier("slash-choose")
+    } else {
+      Button("Send", systemImage: "arrow.up") { Task { await draft.send() } }
+        .keyboardShortcut(.return, modifiers: [])
+        .buttonStyle(style)
+        .disabled(!draft.canSend)
+        .accessibilityIdentifier("send")
+    }
   }
 
   /// "Starting…" or why the start did not go through; otherwise why Send is off, unless the notice

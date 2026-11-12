@@ -77,6 +77,8 @@ struct ThreadDetailView: View {
         Spacer(minLength: 0)
       }
     }
+    // The composer's `/` list, over the transcript.
+    .slashCompletionsHost()
     .navigationTitle(thread.title.isEmpty ? "Untitled" : thread.title)
     #if os(iOS)
       // A pushed detail takes the inline title (HIG, Navigation bars); the header below drops its own

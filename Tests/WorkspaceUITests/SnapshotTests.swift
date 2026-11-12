@@ -58,7 +58,8 @@ private let fakeClaude =
     await model.refreshDiagnostics()
     model.composerText = "Ship it once the tests are green."
 
-    let window = SnapshotWindow(rootView: SnapshotShell(model: model))
+    let paletteHolder = PaletteHolder()
+    let window = SnapshotWindow(rootView: SnapshotShell(model: model, paletteHolder: paletteHolder))
     // B4APP_SNAPSHOT_ROOT=1 renders the real NavigationSplitView root on screen instead (debugging aid).
     if ProcessInfo.processInfo.environment["B4APP_SNAPSHOT_ROOT"] == "1" {
       let real = SnapshotWindow(rootView: SnapshotShell(model: model, useRoot: true), onScreen: true)
@@ -83,6 +84,45 @@ private let fakeClaude =
       model.showSearch = true
       try await window.capture(to: "\(dir)/search-\(suffix).png")
       model.showSearch = false
+      // The palette's pages, each put in its state before it is drawn.
+      func palette(
+        _ name: String, _ purpose: PalettePurpose, _ prepare: (PaletteModel) async -> Void
+      )
+        async throws
+      {
+        let state = PaletteModel(workspace: model, purpose: purpose)
+        await prepare(state)
+        paletteHolder.palette = state
+        model.showSearch = true
+        try await window.capture(to: "\(dir)/palette-\(name)-\(suffix).png")
+        model.showSearch = false
+        paletteHolder.palette = nil
+        try await window.capture(to: "\(dir)/palette-closed-\(suffix).png")
+      }
+      try await palette("typed", .find) { $0.setQuery("re") }
+      try await palette("no-matches", .find) { $0.setQuery("why is the badge stale") }
+      try await palette("commands", .commands) { _ in }
+      try await palette("actions", .find) {
+        $0.setQuery("pricing")
+        $0.showActions()
+      }
+      try await palette("model", .commands) {
+        $0.setQuery("model")
+        await $0.activate()
+      }
+      try await palette("rename", .commands) {
+        $0.setQuery("rename")
+        await $0.activate()
+      }
+      // The composer's completions: a slash typed into an empty draft.
+      let draft = model.composerText
+      model.composerText = ""
+      try await window.capture(to: "\(dir)/palette-closed-\(suffix).png")
+      model.composerText = "/"
+      try await window.capture(to: "\(dir)/slash-\(suffix).png")
+      model.composerText = "/pe"
+      try await window.capture(to: "\(dir)/slash-filtered-\(suffix).png")
+      model.composerText = draft
       model.hostNote = "The background agent is not running. Open Login Items to allow it."
       model.hostActionTitle = "Open Login Items"
       model.hostAction = {}
@@ -111,8 +151,14 @@ private let fakeClaude =
 
 /// The sidebar and the detail side by side without `NavigationSplitView`, whose sidebar column only
 /// draws for a window the user can see. Every piece is the app's own view.
+/// A palette put in a state by the test, for the shell's overlay to draw.
+@MainActor final class PaletteHolder {
+  var palette: PaletteModel?
+}
+
 struct SnapshotShell: View {
   @Bindable var model: WorkspaceModel
+  var paletteHolder = PaletteHolder()
   var useRoot = false
 
   var body: some View {
@@ -131,7 +177,7 @@ struct SnapshotShell: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(LLA.Color.bg)
     }
-    .overlay { if model.showSearch { SearchPalette(model: model) } }
+    .overlay { if model.showSearch { PaletteView(model: model, palette: paletteHolder.palette) } }
     .tint(LLA.Color.accent)
     .frame(width: 1200, height: 800)
   }

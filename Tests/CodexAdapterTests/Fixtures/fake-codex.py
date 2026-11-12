@@ -308,6 +308,29 @@ while True:
             continue
         stream_message(thread_id, turn_id, reply)
         finish_turn(thread_id, turn_id, "completed")
+    elif method == "review/start":
+        # As 0.166.0 answers: like turn/start, then the review as items and a final message.
+        thread_id = params["threadId"]
+        target = params["target"]
+        turn_counter += 1
+        turn_id = "turn_%s%d" % (ID_PREFIX, turn_counter)
+        turn = {"id": turn_id, "status": "inProgress", "items": [], "error": None}
+        send({"id": req_id, "result": {"turn": turn, "reviewThreadId": thread_id}})
+        notify("turn/started", {"threadId": thread_id, "turn": turn})
+        notify("item/completed", {"threadId": thread_id, "turnId": turn_id, "completedAtMs": 1,
+                                  "item": {"id": "item_%s_enter" % turn_id, "type": "enteredReviewMode", "review": "current changes"}})
+        stream_message(thread_id, turn_id, "Reviewed %s." % (target.get("instructions") or target["type"]))
+        finish_turn(thread_id, turn_id, "completed")
+    elif method == "thread/compact/start":
+        # Answers {} at once; the compaction runs as a turn of its own.
+        thread_id = params["threadId"]
+        turn_counter += 1
+        turn_id = "turn_%s%d" % (ID_PREFIX, turn_counter)
+        send({"id": req_id, "result": {}})
+        notify("turn/started", {"threadId": thread_id, "turn": {"id": turn_id, "status": "inProgress", "items": [], "error": None}})
+        notify("item/completed", {"threadId": thread_id, "turnId": turn_id, "completedAtMs": 1,
+                                  "item": {"id": "item_%s_compact" % turn_id, "type": "contextCompaction"}})
+        finish_turn(thread_id, turn_id, "completed")
     elif method == "turn/interrupt":
         send({"id": req_id, "result": {}})
         if hanging and hanging[1] == params.get("turnId"):
