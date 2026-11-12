@@ -14,6 +14,8 @@ import WorkspaceProtocol
     let chooseFolder: () -> Void
     @State private var filter = ""
     @State private var highlighted = 0
+    /// The highlighted row, so the highlight stays on it when the rows change under the palette.
+    @State private var highlightedId: String?
     /// The arrow keys moved the highlight: a row sliding under a resting pointer must not take it back.
     @State private var keysMoved = false
     @State private var pointer: CGPoint?
@@ -55,12 +57,23 @@ import WorkspaceProtocol
       .llaPopoverShadow()
       .onAppear {
         highlighted = PlacePalette.initialHighlight(rows)
+        highlightedId = rows.indices.contains(highlighted) ? rows[highlighted].id : nil
         focused = true
       }
       .onChange(of: filter) {
         // Typing counts as a key move: a row sliding under a resting pointer does not take the highlight.
         keysMoved = true
-        highlighted = PlacePalette.initialHighlight(self.rows)
+        let rows = self.rows
+        highlighted = PlacePalette.initialHighlight(rows)
+        highlightedId = rows.indices.contains(highlighted) ? rows[highlighted].id : nil
+      }
+      // An environment came, went or changed while the palette is open: the highlight keeps its row.
+      .onChange(of: rows.map(\.id)) {
+        let rows = self.rows
+        highlighted = PlacePalette.highlight(highlighted, keeping: highlightedId, in: rows)
+        // When its row is gone the highlight is on another now; remember that one. An empty list
+        // keeps the old id, for when the rows come back.
+        if rows.indices.contains(highlighted) { highlightedId = rows[highlighted].id }
       }
       .onExitCommand { close() }
       .accessibilityElement(children: .contain)
@@ -130,6 +143,7 @@ import WorkspaceProtocol
           .frame(height: min(CGFloat(rows.count) * Self.rowHeight + Self.listInset * 2, Self.listMaxHeight))
           .onChange(of: highlighted) { _, index in
             guard rows.indices.contains(index) else { return }
+            highlightedId = rows[index].id
             proxy.scrollTo(rows[index].id)
           }
         }
@@ -175,6 +189,7 @@ import WorkspaceProtocol
       .buttonStyle(.plain)
       .accessibilityLabel(row.title)
       .accessibilityValue(row.path.map { PlacePalette.shownPath($0) } ?? "")
+      .accessibilityHint(row.indented ? "In \(row.environmentName)" : "")
       .accessibilityAddTraits(row.checked ? .isSelected : [])
       .accessibilityIdentifier("place-row-\(row.id)")
     }
@@ -257,6 +272,7 @@ import WorkspaceProtocol
                 choice(row.title, checked: row.checked, indented: row.indented) {
                   draft.choose(row)
                 }
+                .accessibilityHint(row.indented ? "In \(row.environmentName)" : "")
                 .accessibilityIdentifier("place-row-\(row.id)")
               }
             }

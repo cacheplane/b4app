@@ -70,11 +70,19 @@ struct ComposerPickerRow: View {
       .sheet(isPresented: $showingPlaces) {
         if case .draft(let draft) = source { PlaceSheet(draft: draft) }
       }
+      // A start accepted while the sheet is up (a retry, a lookup) opens the thread: the sheet goes.
+      .onChange(of: draftFinished) { _, finished in if finished { showingPlaces = false } }
     #else
       // 12 pt on the Mac, the design's size for these words.
       .font(LLAFont.caption)
       .padding(.horizontal, LLA.Space.xs)
     #endif
+  }
+
+  /// Whether the draft this row speaks for has been accepted; false for a thread.
+  private var draftFinished: Bool {
+    if case .draft(let draft) = source { return draft.finished }
+    return false
   }
 
   /// The least the place keeps when the row is short of room (a shorter name keeps its own width).
