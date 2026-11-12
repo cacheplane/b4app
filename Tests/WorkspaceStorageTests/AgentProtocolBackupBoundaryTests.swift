@@ -130,7 +130,7 @@ import WorkspaceProtocol
       let restored = try #require(after.rows[currentTable])
       if table == Migrator.table {
         #expect(Set(original).isSubset(of: Set(restored)))  // Preserve each original appliedAt exactly.
-        #expect(restored.count == original.count + 4)
+        #expect(restored.count == original.count + 5)
         let addedNames = try Set(restored).subtracting(original).map { text in
           let row = try #require(
             try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])

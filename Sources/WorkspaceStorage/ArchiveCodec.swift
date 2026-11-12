@@ -6,6 +6,7 @@ import WorkspaceProtocol
 enum WorkspaceArchive {
   static let format = "b4app-export"
   static let version = 4
+  static let protocolSchema = "generation_epochs_v1"
   static let dataTables = [
     "localServers", "environments", "environmentFolders", "connections", "threads", "appFolders", "turns",
     "displayItems",
@@ -59,9 +60,9 @@ enum WorkspaceArchive {
     "protocolPromptAnswers":
       "threadId pausedGeneration namespace interruptId proposalHash connectionId answer status updatedAt",
     "protocolRunSegments":
-      "connectionId threadId namespace nativeRunId rootRunId predecessorRunId localTurnId submissionId facts updatedAt",
+      "connectionId threadId identityEpochKind identityEpochId namespace nativeRunId rootRunId predecessorRunId localTurnId submissionId facts updatedAt",
     "protocolSubscriptions":
-      "threadId connectionId nativeThreadId generation channels namespaces appliedEventId appliedSeq coverage updatedAt",
+      "threadId connectionId nativeThreadId generation localObservationEpoch channels namespaces appliedEventId appliedSeq coverage updatedAt",
     "runtimeRequests":
       "id nativeRequestId threadId turnId adapterGeneration kind state payload createdAt updatedAt",
     "schemaMigrations": "name appliedAt",
@@ -210,6 +211,7 @@ enum WorkspaceArchive {
     guard try Migrator.files().map(\.name) == migrations else { throw Rejection.future }
     let schema = try schema(Migrator.recorded(c))
     guard present == Set(schema.tables) else { throw Rejection.invalid }
+    if schema.migrations.count == 13 { try Migrator.validateProtocolGenerationSchema(c) }
     for table in schema.tables {
       let actual = Set(
         try c.execute(
@@ -230,10 +232,12 @@ enum WorkspaceArchive {
         contentsOf: JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) + Data("\n".utf8))
     }
     try ProtocolGrantProtection.verify(c)
-    try line([
+    var header: [String: Any] = [
       "format": format, "version": version, "at": Timestamp.now(), "purpose": purpose,
       "migrations": schema.migrations, "requiredTables": schema.data, "sourceContextTables": schema.context,
-    ])
+    ]
+    if schema.migrations.count == 13 { header["protocolSchema"] = protocolSchema }
+    try line(header)
     try headerWritten?()
     var counts = Dictionary(uniqueKeysWithValues: schema.tables.map { ($0, 0) })
     var total = 0, dataCount = 0
@@ -281,10 +285,6 @@ enum WorkspaceArchive {
       guard data.last == 0x0a, lines.last?.isEmpty == true else { throw Rejection.invalid }
       lines.removeLast()
       guard let final = lines.popLast(), !final.isEmpty, lines.allSatisfy({ !$0.isEmpty }),
-        Set(header.object.keys)
-          == Set([
-            "format", "version", "at", "purpose", "migrations", "requiredTables", "sourceContextTables",
-          ]),
         let at = header.object["at"] as? String, !at.isEmpty,
         let purpose = header.object["purpose"] as? String, ["onDemand", "preMigration"].contains(purpose),
         let names = header.object["migrations"] as? [String],
@@ -292,6 +292,14 @@ enum WorkspaceArchive {
         let contextNames = header.object["sourceContextTables"] as? [String]
       else { throw Rejection.invalid }
       let schema = try schema(names)
+      var headerFields: Set<String> = [
+        "format", "version", "at", "purpose", "migrations", "requiredTables", "sourceContextTables",
+      ]
+      if schema.migrations.count == 13 {
+        headerFields.insert("protocolSchema")
+        guard header.object["protocolSchema"] as? String == protocolSchema else { throw Rejection.invalid }
+      }
+      guard Set(header.object.keys) == headerFields else { throw Rejection.invalid }
       guard dataNames.count == Set(dataNames).count, contextNames.count == Set(contextNames).count,
         Set(dataNames).isDisjoint(with: Set(contextNames)), Set(dataNames) == Set(schema.data),
         Set(contextNames) == Set(schema.context)

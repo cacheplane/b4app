@@ -181,11 +181,15 @@ enum AgentProtocolFoundationFixture {
       ? appFolderDataTables
       : (canonicalPrefixCount >= 11 ? legacyDataTables.map { currentTable(old: $0) } : legacyDataTables)
     let expectedData = baseTables + (canonicalPrefixCount == 13 ? protocolTables : [])
+    var headerFields: Set<String> = [
+      "format", "version", "at", "purpose", "migrations", "requiredTables", "sourceContextTables",
+    ]
+    if canonicalPrefixCount == 13 { headerFields.insert("protocolSchema") }
     guard (8...13).contains(canonicalPrefixCount),
       expectedMigrations == Array(migrations.prefix(canonicalPrefixCount)),
       Set(expectedRows.keys) == Set(expectedData + expectedContext),
-      Set(header.keys)
-        == Set(["format", "version", "at", "purpose", "migrations", "requiredTables", "sourceContextTables"]),
+      Set(header.keys) == headerFields,
+      canonicalPrefixCount != 13 || header["protocolSchema"] as? String == "generation_epochs_v1",
       header["format"] as? String == "b4app-export", header["version"] as? Int == 4,
       header["purpose"] as? String == "preMigration", !(header["at"] as? String ?? "").isEmpty,
       header["migrations"] as? [String] == expectedMigrations,

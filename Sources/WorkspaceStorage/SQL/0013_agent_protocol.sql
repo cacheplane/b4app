@@ -14,17 +14,23 @@ ALTER TABLE "connections" DROP CONSTRAINT "connections_kind_check";
 ALTER TABLE "connections" ADD CONSTRAINT "connections_kind_check"
   CHECK ("kind" IN ('codex', 'claude', 'b4', 'agentProtocol'));
 
--- CHECK accepts SQL NULL unless rejected explicitly. Historical kinds remain valid with all
--- new fields absent; only a fresh agentProtocol profile requires an explicit complete selection.
+-- Public AP identity stays complete even when this device has no private authentication bundle.
+-- Both auth fields NULL means unconfigured here, never an implicit explicit-none selection.
+-- Historical kinds remain valid with all new fields absent.
 ALTER TABLE "connections" ADD CONSTRAINT "connections_protocol_profile_check" CHECK (
   "kind" <> 'agentProtocol' OR (
     "peerProfile" IS NOT NULL AND "peerProfile" IN ('b4', 'agentProtocol') AND
     "agentId" IS NOT NULL AND "agentId" <> '' AND
     "nativeScope" IS NOT NULL AND "nativeScope" <> '' AND
-    "authMode" IS NOT NULL AND "authMode" IN ('none', 'bearer', 'header') AND
     (
-      ("authMode" = 'header' AND "authHeaderName" IS NOT NULL AND "authHeaderName" <> '') OR
-      ("authMode" IN ('none', 'bearer') AND "authHeaderName" IS NULL)
+      ("authMode" IS NULL AND "authHeaderName" IS NULL) OR
+      (
+        "authMode" IS NOT NULL AND "authMode" IN ('none', 'bearer', 'header') AND
+        (
+          ("authMode" = 'header' AND "authHeaderName" IS NOT NULL AND "authHeaderName" <> '') OR
+          ("authMode" IN ('none', 'bearer') AND "authHeaderName" IS NULL)
+        )
+      )
     )
   )
 );
@@ -86,18 +92,25 @@ CREATE TABLE "protocolSubscriptions" (
   "connectionId" text NOT NULL CHECK ("connectionId" <> ''),
   "nativeThreadId" text NOT NULL CHECK ("nativeThreadId" <> ''),
   "generation" text CHECK ("generation" IS NULL OR "generation" <> ''),
+  -- Generic observation identity is local; it is never an upstream generation or replay promise.
+  "localObservationEpoch" text CHECK ("localObservationEpoch" IS NULL OR "localObservationEpoch" <> ''),
   "channels" jsonb NOT NULL CHECK (b4app_protocol_string_array("channels")),
   "namespaces" jsonb NOT NULL CHECK (b4app_protocol_namespace_array("namespaces")),
   "appliedEventId" text CHECK ("appliedEventId" IS NULL OR "appliedEventId" <> ''),
   "appliedSeq" bigint CHECK ("appliedSeq" >= 0),
   "coverage" jsonb NOT NULL CHECK (jsonb_typeof("coverage") = 'object'),
   "updatedAt" text NOT NULL CHECK ("updatedAt" <> ''),
+  CHECK (("generation" IS NULL) <> ("localObservationEpoch" IS NULL)),
   FOREIGN KEY ("threadId", "connectionId") REFERENCES "threads" ("id", "connectionId") ON DELETE RESTRICT
 );
 
 CREATE TABLE "protocolRunSegments" (
   "connectionId" text NOT NULL CHECK ("connectionId" <> ''),
   "threadId" text NOT NULL CHECK ("threadId" <> ''),
+  -- b4 uses the native Thread generation; local uses a distinct generic observation epoch.
+  -- Old segments outlive subscription changes, so this is not a foreign key to the current epoch.
+  "identityEpochKind" text NOT NULL CHECK ("identityEpochKind" IN ('b4', 'local')),
+  "identityEpochId" text NOT NULL CHECK ("identityEpochId" <> ''),
   "namespace" jsonb NOT NULL CHECK (b4app_protocol_string_array("namespace")),
   "nativeRunId" text NOT NULL CHECK ("nativeRunId" <> ''),
   "rootRunId" text CHECK ("rootRunId" IS NULL OR "rootRunId" <> ''),
@@ -106,7 +119,7 @@ CREATE TABLE "protocolRunSegments" (
   "submissionId" text CHECK ("submissionId" IS NULL OR "submissionId" <> ''),
   "facts" jsonb NOT NULL CHECK (jsonb_typeof("facts") = 'object'),
   "updatedAt" text NOT NULL CHECK ("updatedAt" <> ''),
-  PRIMARY KEY ("connectionId", "threadId", "namespace", "nativeRunId"),
+  PRIMARY KEY ("connectionId", "threadId", "identityEpochKind", "identityEpochId", "namespace", "nativeRunId"),
   FOREIGN KEY ("threadId", "connectionId") REFERENCES "threads" ("id", "connectionId") ON DELETE RESTRICT,
   FOREIGN KEY ("localTurnId", "threadId") REFERENCES "turns" ("id", "threadId") ON DELETE RESTRICT
 );

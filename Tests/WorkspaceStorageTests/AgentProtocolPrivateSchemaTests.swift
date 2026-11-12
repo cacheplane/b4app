@@ -25,20 +25,25 @@ import WorkspaceProtocol
     Table(
       name: subscriptions,
       columns: [
-        "threadId", "connectionId", "nativeThreadId", "generation", "channels", "namespaces",
+        "threadId", "connectionId", "nativeThreadId", "generation", "localObservationEpoch", "channels",
+        "namespaces",
         "appliedEventId", "appliedSeq", "coverage", "updatedAt",
       ],
       json: ["channels", "namespaces", "coverage"],
-      nullable: ["generation", "appliedEventId", "appliedSeq"], primary: ["threadId"]),
+      nullable: ["generation", "localObservationEpoch", "appliedEventId", "appliedSeq"], primary: ["threadId"]
+    ),
     Table(
       name: segments,
       columns: [
-        "connectionId", "threadId", "namespace", "nativeRunId", "rootRunId", "predecessorRunId",
+        "connectionId", "threadId", "identityEpochKind", "identityEpochId", "namespace", "nativeRunId",
+        "rootRunId", "predecessorRunId",
         "localTurnId", "submissionId", "facts", "updatedAt",
       ],
       json: ["namespace", "facts"],
       nullable: ["rootRunId", "predecessorRunId", "localTurnId", "submissionId"],
-      primary: ["connectionId", "threadId", "namespace", "nativeRunId"]),
+      primary: [
+        "connectionId", "threadId", "identityEpochKind", "identityEpochId", "namespace", "nativeRunId",
+      ]),
     Table(
       name: operations,
       columns: [
@@ -209,13 +214,16 @@ import WorkspaceProtocol
     case subscriptions:
       return [
         "threadId": "thread-a", "connectionId": "connection-a", "nativeThreadId": nativeThread,
-        "generation": nil, "channels": #"["messages"]"#, "namespaces": #"[[],["branch"]]"#,
+        "generation": nil, "localObservationEpoch": "fixture-local-epoch", "channels": #"["messages"]"#,
+        "namespaces": #"[[],["branch"]]"#,
         "appliedEventId": nil,
         "appliedSeq": "7", "coverage": #"{"opaque":{"retained":true}}"#, "updatedAt": stamp,
       ]
     case segments:
       return [
-        "connectionId": "connection-a", "threadId": "thread-a", "namespace": "[]", "nativeRunId": nativeRun,
+        "connectionId": "connection-a", "threadId": "thread-a",
+        "identityEpochKind": "local", "identityEpochId": "fixture-local-epoch",
+        "namespace": "[]", "nativeRunId": nativeRun,
         "rootRunId": nil, "predecessorRunId": nil, "localTurnId": nil, "submissionId": nil,
         "facts": #"{"opaque":[1,true,null]}"#, "updatedAt": stamp,
       ]
@@ -376,7 +384,7 @@ import WorkspaceProtocol
     try Self.withFixture { fixture in
       let c = fixture.raw
       try Self.seedMetadata(c)
-      // 37 required text fields: each SQL NULL (23502) and empty string (23514), 74 negatives.
+      // Every required text field rejects SQL NULL (23502) and empty string (23514).
       for spec in Self.metadata {
         for column in spec.columns
         where !spec.json.contains(column) && !spec.nullable.contains(column) && column != "appliedSeq" {
@@ -384,7 +392,7 @@ import WorkspaceProtocol
           try Self.change(c, table: spec.name, column: column, value: "", expectedState: "23514")
         }
       }
-      // Nine optional identity/reference texts permit NULL, but not a present empty identity.
+      // Optional identity/reference texts reject a present empty identity.
       for spec in Self.metadata {
         for column in spec.nullable
         where !spec.json.contains(column) && column != "appliedSeq" && column != "nextBefore" {

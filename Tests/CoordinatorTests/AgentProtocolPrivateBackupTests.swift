@@ -15,8 +15,9 @@ import WorkspaceProtocol
     "protocolOperations", "protocolGrantSecrets", "protocolGrants", "protocolPromptAnswers",
     "protocolHistoryAnchors",
   ]
-  private static let dataTables = legacyDataTables.map {
-    AgentProtocolFoundationFixture.currentTable(old: $0)
+  private static let dataTables = legacyDataTables.flatMap { table in
+    table == "threads"
+      ? ["threads", "appFolders"] : [AgentProtocolFoundationFixture.currentTable(old: table)]
   }
   private static let contextTables = [Migrator.table, "hubLink"]
   private static let canonicalNine = [
@@ -116,7 +117,10 @@ import WorkspaceProtocol
       // raw snapshot capture; no account/service/network quiescence is claimed by this fixture.
       try database.close()
     }
-    let expectedTables = Set((dataTables + contextTables).filter { current || !$0.hasPrefix("protocol") })
+    let expectedTables = Set(
+      ((current ? dataTables : legacyDataTables) + contextTables).filter {
+        current || !$0.hasPrefix("protocol")
+      })
     let actualTables = Set(
       try raw.execute("SELECT tablename FROM pg_tables WHERE schemaname='public'")
         .rows.compactMap { $0.text("tablename") })
@@ -199,6 +203,19 @@ import WorkspaceProtocol
       INSERT INTO "threadDeletes" ("threadId","state","attempts","nextAttemptAt","lastError","updatedAt")
         VALUES ('thread-a','waiting',3,'later','Historical unknown','updated');
       """)
+    if protocolProfiles {
+      // A D203 app-folder thread has no environment. Keep every current table populated without
+      // changing the genuine pre13 source rows or assigning the folder to an environment thread.
+      try c.execute(
+        """
+        INSERT INTO "threads" ("id","connectionId","nativeThreadId","nativeScope","title","context",
+          "environmentId","createdAt","updatedAt") VALUES
+          ('app-folder-thread','connection-codex','app-folder-native','fixture-app-folder','App folder',
+           '/fixture/private-app-folder',NULL,'created','updated');
+        INSERT INTO "appFolders" ("path","threadId","createdAt") VALUES
+          ('/fixture/private-app-folder','app-folder-thread','created');
+        """)
+    }
   }
   private static func seedPrivate(_ db: WorkspaceDatabase, suffix: String, material: String) throws {
     let owner = ProtocolGrantSecretStore.Owner(
@@ -210,8 +227,8 @@ import WorkspaceProtocol
         #"INSERT INTO "protocolSubscriptions" ("threadId","connectionId","nativeThreadId","generation","channels","namespaces","appliedEventId","appliedSeq","coverage","updatedAt") VALUES ($1,$2,$3,$4,'["messages"]','[[],["branch"]]','event',17,'{"opaque":true}',$5)"#,
         [owner.threadId, owner.connectionId, native, generation, stamp])
       try c.execute(
-        #"INSERT INTO "protocolRunSegments" ("connectionId","threadId","namespace","nativeRunId","rootRunId","localTurnId","facts","updatedAt") VALUES ($1,$2,'[]',$3,$3,$4,'{"opaque":[1,true,null]}',$5)"#,
-        [owner.connectionId, owner.threadId, native, "turn-" + suffix, stamp])
+        #"INSERT INTO "protocolRunSegments" ("connectionId","threadId","identityEpochKind","identityEpochId","namespace","nativeRunId","rootRunId","localTurnId","facts","updatedAt") VALUES ($1,$2,'b4',$6,'[]',$3,$3,$4,'{"opaque":[1,true,null]}',$5)"#,
+        [owner.connectionId, owner.threadId, native, "turn-" + suffix, stamp, generation])
       try c.execute(
         #"INSERT INTO "protocolOperations" ("operationId","connectionId","threadId","kind","operationThreadId","payload","grantReferences","expectations","fingerprint","status","createdAt","updatedAt") VALUES ($1,$2,$3,'fixture-kind',$4,'{"opaque":[true,null,"text"]}',$5::jsonb,'{"opaque":true}','fixture-fingerprint','fixture-status',$6,$6)"#,
         [
@@ -315,6 +332,11 @@ import WorkspaceProtocol
     let purpose = header["purpose"] as? String == "preMigration"
     #expect(purpose)
     let migrations = try Migrator.recorded(f.raw)
+    if migrations.count == 13 {
+      #expect(header["protocolSchema"] as? String == "generation_epochs_v1")
+    } else {
+      #expect(header["protocolSchema"] == nil)
+    }
     let sourceNamesMatch = header["migrations"] as? [String] == migrations
     #expect(sourceNamesMatch)
     let sourceDataTables = migrations.count >= 11 ? dataTables : legacyDataTables
@@ -478,7 +500,18 @@ import WorkspaceProtocol
         }.sorted()
         let valuesRetained =
           table == Migrator.table
-          ? Set(expected).isSubset(of: Set(rows)) && rows.count == expected.count + 3 : rows == expectedRows
+          ? Set(expected).isSubset(of: Set(rows)) && rows.count == expected.count + 4 : rows == expectedRows
+        if table == Migrator.table {
+          let addedNames = try Set(rows).subtracting(expected).map { text in
+            let row = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+            return try #require(row["name"] as? String)
+          }
+          #expect(
+            Set(addedNames)
+              == Set([
+                "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_agent_protocol",
+              ]))
+        }
         #expect(valuesRetained, "Original values changed for \(table)")
       }
       let sequenceRetained = after.sequences == f.before.sequences

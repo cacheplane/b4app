@@ -51,11 +51,27 @@ records only for historical read-only data. New fields:
 | peerProfile | b4 or agentProtocol; immutable; mirrored |
 | agentId | exact canonical Agent ID selected from catalog; immutable; mirrored |
 | target | normalized deployment base URL; immutable and owner-local as today |
-| authMode | none, bearer or header; owner-local |
-| authHeaderName | required for header mode; owner-local |
+| authMode | explicit none, bearer or header; owner-local; SQL NULL means unconfigured on this device |
+| authHeaderName | required for header mode; NULL with absent authMode or explicit none/bearer; owner-local |
 | authReference | opaque existing SecretRef; owner-local |
 | protocolRetiredAt | optional timestamp on old B4 profiles; mirrored |
 | protocolRetiredReason | optional fixed code agent_protocol_cutover; mirrored |
+
+Every stored protocol profile requires complete public `peerProfile`, `agentId`
+and `nativeScope`. Its owner-local auth bundle is either both `authMode` and
+`authHeaderName` SQL NULL, or an explicit mode satisfying the existing header
+rules. An absent bundle permits a public/imported profile to remain readable;
+it is never `.none`, a credential fallback or evidence that this device owns
+execution. Public updates must preserve stored private settings, references and
+targets rather than replace them with scrubbed values. This does not broaden the
+Mac's existing other-device RemoteApply policy.
+
+Before any future cached adapter lookup/creation, secret resolution, discovery
+or upstream request, SessionService must verify trusted current account/device
+ownership and an explicit valid owner-local auth selection. Caller-supplied
+owner metadata or a nil owner/auth field cannot establish that authority. This
+complete execution-admission guard remains required and unimplemented by the
+foundation; staged protocol execution stays unavailable.
 
 Connection label/auth settings may change in place; endpoint/profile/agent
 changes create a new connection. Managed local B4 profile retains localServerId,
@@ -155,6 +171,34 @@ prompt answers and snapshot/history anchors. Existing turns/displayItems/
 runtimeRequests remain the synced presentation. Canonical initial Run UUID is
 the native user-turn ID; each continuation is a segment associated with that
 root. Local row IDs remain stable across acknowledgement/reconciliation.
+
+The unpublished local schema is migration 13 after immutable published Store
+11/12. `protocolSubscriptions` requires exactly one of native `generation` or
+`localObservationEpoch`. Generic observation uses the latter as a durable local
+incarnation, never a claimed server generation. `protocolRunSegments` stores
+nonempty `identityEpochKind` (`b4` or `local`) and `identityEpochId`; its PK is
+`(connectionId,threadId,identityEpochKind,identityEpochId,namespace,nativeRunId)`.
+B4 projection must bind the epoch to the validated native generation; generic
+projection binds its separate local epoch. Preserve native IDs and namespace
+component arrays. Retained older segments have no FK to the subscription's
+current epoch, so changing that subscription does not erase old associations.
+
+Every current13 reopen, including no-pending admission, verifies the two epoch
+tables' canonical public identity, all live columns in order, builtin types,
+typmod, nullability and valid ordered PK. An unexpected typmod column cannot be
+filtered out of this inventory. This catalog check does not inspect CHECK
+expressions: the native/local XOR and allowed epoch-kind predicates are SQL
+invariants with separate insert controls. Original draft13 databases with the
+same ledger name but the old shape refuse unchanged; do not invent an epoch or
+adopt an old draft as the new canonical schema.
+
+Protected archive v4 requires the exact header discriminator
+`protocolSchema: "generation_epochs_v1"` for prefix13, even with no protocol rows.
+Prefixes through12 retain their previous closed header and reject that marker.
+Missing/unknown markers or old13 rows refuse; no implicit generation backfill is
+performed. This is an unpublished v4 refinement, not a shipped compatibility
+claim. Preserve the original13 DDL as a negative fixture and every published
+11/12 byte. Current source review is not native qualification of these changes.
 
 Persist an applied upstream batch in one local Postgres transaction: partial
 text/blocks, activity/dispositions, Run/root links, sanitized pending presentation,

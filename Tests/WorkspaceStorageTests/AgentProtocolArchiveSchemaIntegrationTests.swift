@@ -197,10 +197,11 @@ import Testing
       var counts = Dictionary(
         uniqueKeysWithValues: (dataTables + ["schemaMigrations", "hubLink"]).map { ($0, 0) })
       counts["schemaMigrations"] = names.count; counts[table] = 1
-      let header: [String: Any] = [
+      var header: [String: Any] = [
         "format": "b4app-export", "version": 4, "at": "then", "purpose": "preMigration", "migrations": names,
         "requiredTables": dataTables, "sourceContextTables": ["schemaMigrations", "hubLink"],
       ]
+      if names.count == 13 { header["protocolSchema"] = "generation_epochs_v1" }
       let footer: [String: Any] = [
         "format": "b4app-export-end", "version": 4, "rows": records.count, "tableRows": counts,
       ]
@@ -400,10 +401,11 @@ private enum ArchiveSchemaIntegrationFixture {
     let body = ledger + records
     var counts = Dictionary(uniqueKeysWithValues: (dataTables + context).map { ($0, 0) })
     for record in body { counts[try #require(record["table"] as? String), default: 0] += 1 }
-    let header: [String: Any] = [
+    var header: [String: Any] = [
       "format": "b4app-export", "version": 4, "at": "then", "purpose": "preMigration", "migrations": names,
       "requiredTables": dataTables, "sourceContextTables": context,
     ]
+    if names.count == 13 { header["protocolSchema"] = "generation_epochs_v1" }
     let footer: [String: Any] = [
       "format": "b4app-export-end", "version": 4, "rows": body.count, "tableRows": counts,
     ]

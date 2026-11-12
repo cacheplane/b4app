@@ -207,8 +207,8 @@ enum AgentProtocolIdentityManagedFixture {
     try db.write { c in
       try c.execute(
         """
-        INSERT INTO "protocolSubscriptions" VALUES ('thread-profile','profile','same-native','generation','["messages"]','[[]]','event',7,'{"opaque":true}','updated');
-        INSERT INTO "protocolRunSegments" ("connectionId","threadId","namespace","nativeRunId","localTurnId","facts","updatedAt") VALUES ('profile','thread-profile','[]','run','turn-profile','{"unknown":true}','updated');
+        INSERT INTO "protocolSubscriptions" VALUES ('thread-profile','profile','same-native','generation',NULL,'["messages"]','[[]]','event',7,'{"opaque":true}','updated');
+        INSERT INTO "protocolRunSegments" ("connectionId","threadId","identityEpochKind","identityEpochId","namespace","nativeRunId","localTurnId","facts","updatedAt") VALUES ('profile','thread-profile','b4','generation','[]','run','turn-profile','{"unknown":true}','updated');
         INSERT INTO "protocolOperations" ("operationId","connectionId","threadId","kind","operationThreadId","payload","grantReferences","expectations","fingerprint","status","createdAt","updatedAt") VALUES ('protocol-op','profile','thread-profile','opaque-kind','same-native','{"opaque":[true,null]}','[]','{}','opaque-fingerprint','opaque-status','created','updated');
         INSERT INTO "protocolGrants" ("threadId","pausedGeneration","namespace","interruptId","proposalHash","connectionId","grantReference","disposition","updatedAt") VALUES ('thread-profile','generation','[]','interrupt','proposal','profile',NULL,'opaque-disposition','updated');
         INSERT INTO "protocolPromptAnswers" VALUES ('thread-profile','generation','[]','interrupt','proposal','profile','null','opaque-status','updated');

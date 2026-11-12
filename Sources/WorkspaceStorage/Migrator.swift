@@ -88,7 +88,96 @@ public enum Migrator {
     guard names == Array(files.prefix(names.count).map(\.name)) else {
       throw EnvironmentHistoryMigrationGuard.failure()
     }
+    // Unpublished13 changed shape before release. Its name alone cannot admit an older draft,
+    // even on a no-pending reopen. This is catalog-only and never reads protocol row material.
+    if done.contains("0013_agent_protocol") { try validateProtocolGenerationSchema(connection) }
     return Plan(files: files, done: done)
+  }
+
+  /// The authoritative changed13 tables only; pre13 preparation does not touch these catalogs.
+  /// Kept independent of archive capture to avoid prepare/capture recursion or row traversal.
+  static func validateProtocolGenerationSchema(_ connection: PostgresConnection) throws {
+    struct Column {
+      let name: String
+      let kind: String
+      var nullable = false
+    }
+    let tables: [(name: String, columns: [Column], primary: [String])] = [
+      (
+        "protocolSubscriptions",
+        [
+          Column(name: "threadId", kind: "text"), Column(name: "connectionId", kind: "text"),
+          Column(name: "nativeThreadId", kind: "text"),
+          Column(name: "generation", kind: "text", nullable: true),
+          Column(name: "localObservationEpoch", kind: "text", nullable: true),
+          Column(name: "channels", kind: "jsonb"), Column(name: "namespaces", kind: "jsonb"),
+          Column(name: "appliedEventId", kind: "text", nullable: true),
+          Column(name: "appliedSeq", kind: "int8", nullable: true),
+          Column(name: "coverage", kind: "jsonb"), Column(name: "updatedAt", kind: "text"),
+        ], ["threadId"]
+      ),
+      (
+        "protocolRunSegments",
+        [
+          Column(name: "connectionId", kind: "text"), Column(name: "threadId", kind: "text"),
+          Column(name: "identityEpochKind", kind: "text"), Column(name: "identityEpochId", kind: "text"),
+          Column(name: "namespace", kind: "jsonb"), Column(name: "nativeRunId", kind: "text"),
+          Column(name: "rootRunId", kind: "text", nullable: true),
+          Column(name: "predecessorRunId", kind: "text", nullable: true),
+          Column(name: "localTurnId", kind: "text", nullable: true),
+          Column(name: "submissionId", kind: "text", nullable: true),
+          Column(name: "facts", kind: "jsonb"), Column(name: "updatedAt", kind: "text"),
+        ], ["connectionId", "threadId", "identityEpochKind", "identityEpochId", "namespace", "nativeRunId"]
+      ),
+    ]
+    do {
+      for table in tables {
+        let qualified = "public." + Rows.quote(table.name)
+        let identity = try connection.execute(
+          """
+          SELECT c.oid::text AS oid FROM pg_catalog.pg_class c
+          WHERE c.oid=pg_catalog.to_regclass($1) AND c.oid=pg_catalog.to_regclass($2)
+            AND c.relnamespace='public'::regnamespace AND c.relkind='r' AND c.relpersistence='p'
+            AND NOT pg_catalog.row_security_active(c.oid)
+          """, [qualified, Rows.quote(table.name)]
+        ).rows
+        guard identity.count == 1, let oid = identity[0].text("oid") else {
+          throw protocolGenerationSchemaFailure()
+        }
+        let columns = try connection.execute(
+          """
+          SELECT a.attname AS name,a.attnotnull AS required,a.atttypmod::text AS typmod,
+            CASE a.atttypid WHEN 'pg_catalog.text'::regtype THEN 'text'
+              WHEN 'pg_catalog.jsonb'::regtype THEN 'jsonb'
+              WHEN 'pg_catalog.int8'::regtype THEN 'int8' ELSE '' END AS kind
+          FROM pg_catalog.pg_attribute a WHERE a.attrelid=$1::oid
+            AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum
+          """, [oid]
+        ).rows
+        guard columns.count == table.columns.count else { throw protocolGenerationSchemaFailure() }
+        for (actual, expected) in zip(columns, table.columns) {
+          guard actual.text("name") == expected.name, actual.text("kind") == expected.kind,
+            actual.text("typmod") == "-1", actual.text("required") == (expected.nullable ? "f" : "t")
+          else { throw protocolGenerationSchemaFailure() }
+        }
+        let primary = try connection.execute(
+          """
+          SELECT a.attname AS name FROM pg_catalog.pg_constraint k
+          JOIN pg_catalog.pg_index i ON i.indexrelid=k.conindid
+          CROSS JOIN LATERAL unnest(k.conkey) WITH ORDINALITY AS key(attnum,position)
+          JOIN pg_catalog.pg_attribute a ON a.attrelid=k.conrelid AND a.attnum=key.attnum
+          WHERE k.conrelid=$1::oid AND k.contype='p' AND k.convalidated
+            AND i.indisprimary AND i.indisunique AND i.indisvalid AND i.indisready
+            AND i.indnkeyatts=$2::integer ORDER BY key.position
+          """, [oid, String(table.primary.count)]
+        ).rows.compactMap { $0.text("name") }
+        guard primary == table.primary else { throw protocolGenerationSchemaFailure() }
+      }
+    } catch { throw protocolGenerationSchemaFailure() }
+  }
+
+  private static func protocolGenerationSchemaFailure() -> WorkspaceError {
+    WorkspaceError(.incompatibleVersion, "The private protocol schema is incompatible with this build.")
   }
 
   static func pending(_ connection: PostgresConnection) throws -> Bool {
@@ -210,6 +299,7 @@ public enum Migrator {
         try connection.execute("BEGIN")
         do {
           try connection.execute(file.sql())
+          if file.name == "0013_agent_protocol" { try validateProtocolGenerationSchema(connection) }
           try connection.execute(
             "INSERT INTO public.\"schemaMigrations\" (\"name\", \"appliedAt\") VALUES ($1, $2)",
             [file.name, Timestamp.now()])

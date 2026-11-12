@@ -223,7 +223,16 @@ import WorkspaceProtocol
       }
       if table == Migrator.table {
         #expect(Set(normalizedBefore).isSubset(of: Set(normalizedAfter)))
-        #expect(normalizedAfter.count == before.count + 3)
+        #expect(normalizedAfter.count == before.count + 4)
+        let addedNames = try Set(normalizedAfter).subtracting(normalizedBefore).map { text in
+          let row = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+          return try #require(row["name"] as? String)
+        }
+        #expect(
+          Set(addedNames)
+            == Set([
+              "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_agent_protocol",
+            ]))
       } else if allowNewRows {
         #expect(Set(normalizedBefore).isSubset(of: Set(normalizedAfter)))
       } else {
@@ -251,6 +260,83 @@ import WorkspaceProtocol
       nativeScope: #"["agent-protocol-v1","\#(peer.rawValue)","https://example.invalid/base"]"#,
       peerProfile: peer, agentId: "canonical-agent", authMode: mode,
       authHeaderName: mode == .header ? "x-api-key" : nil, createdAt: "created", updatedAt: "updated")
+  }
+
+  @Test func publicOnlyProtocolProfileHasNoDeviceAuthSelection() throws {
+    let db = try AgentProtocolResourceFixture.database()
+    defer { try? db.close() }
+    for peer in [ProtocolPeerProfile.b4, .agentProtocol] {
+      var profile = Self.profile("public-only-" + peer.rawValue, peer: peer, mode: ConnectionAuthMode.none)
+      profile.target = ""
+      profile.authMode = nil
+      profile.authReference = nil
+      #expect(try db.insertConnection(profile) == profile)
+      let stored = try #require(try db.connection(id: profile.id))
+      #expect(stored.peerProfile == peer)
+      #expect(stored.agentId == "canonical-agent")
+      #expect(stored.nativeScope == profile.nativeScope)
+      #expect(stored.target.isEmpty)
+      #expect(stored.authMode == nil)
+      #expect(stored.authMode != ConnectionAuthMode.none)
+      #expect(stored.authHeaderName == nil)
+      #expect(stored.authReference == nil)
+    }
+    let privateColumnsAreSQLNull = try db.read { c in
+      try c.execute(
+        #"SELECT 1 FROM public.connections WHERE id LIKE 'public-only-%' AND ("authMode" IS NOT NULL OR "authHeaderName" IS NOT NULL OR "authReference" IS NOT NULL)"#
+      ).rows.isEmpty
+    }
+    #expect(privateColumnsAreSQLNull)
+  }
+
+  @Test func optionalPrivateAuthNeverAdmitsPartialBundlesOrIncompletePublicIdentity() throws {
+    let db = try AgentProtocolResourceFixture.database()
+    defer { try? db.close() }
+    var base = Self.profile("valid-public", peer: .agentProtocol, mode: ConnectionAuthMode.none)
+    base.target = ""
+    base.authMode = nil
+    base.authReference = nil
+    _ = try db.insertConnection(base)
+    let before = try db.read { try Self.snapshot($0) }
+    let bundles: [(String?, String?)] = [
+      (nil, "x-api-key"), ("header", nil), ("header", ""), ("none", "x-api-key"),
+      ("bearer", "x-api-key"), ("", nil), ("implicit", nil),
+    ]
+    var invalid: [[(column: String, param: String?)]] = []
+    for (mode, header) in bundles {
+      var values = try Rows.encode(base)
+      values.removeAll { ["authMode", "authHeaderName"].contains($0.column) }
+      values += [("authMode", mode), ("authHeaderName", header)]
+      invalid.append(values)
+    }
+    let publicFields: [(String, String?)] = [
+      ("peerProfile", nil), ("peerProfile", "unknown"), ("agentId", nil), ("agentId", ""),
+      ("nativeScope", nil), ("nativeScope", ""),
+    ]
+    for (field, value) in publicFields {
+      var values = try Rows.encode(base)
+      values.removeAll { $0.column == field }
+      values.append((field, value))
+      invalid.append(values)
+    }
+    for (index, row) in invalid.enumerated() {
+      var values = row
+      values.removeAll { $0.column == "id" }; values.append(("id", "invalid-public-\(index)"))
+      let state = try db.read { c -> String? in
+        try c.execute("BEGIN")
+        var state: String?
+        var unexpected: (any Error)?
+        do {
+          let q = Rows.insert("connections", values)
+          try c.execute(q.sql, q.params)
+        } catch let error as PostgresError { state = error.sqlState } catch { unexpected = error }
+        do { try c.execute("ROLLBACK") } catch { if unexpected == nil { unexpected = error } }
+        if let unexpected { throw unexpected }
+        return state
+      }
+      #expect(state == "23514", "Malformed public/private shape must be a native CHECK refusal.")
+      #expect(try db.read { try Self.snapshot($0) } == before)
+    }
   }
 
   @Test func protocolProfileRequiresCompleteExplicitIdentityAndAuth() throws {

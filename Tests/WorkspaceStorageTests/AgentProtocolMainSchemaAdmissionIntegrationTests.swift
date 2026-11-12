@@ -235,7 +235,7 @@ private enum MainSchemaAdmissionFixture {
         #"INSERT INTO "protocolSubscriptions" ("threadId","connectionId","nativeThreadId","generation","channels","namespaces","appliedEventId","appliedSeq","coverage","updatedAt") VALUES ('thread','connection','native-thread','generation','["messages"]','[[]]','event',17,'{"opaque":true}','updated')"#
       )
       try c.execute(
-        #"INSERT INTO "protocolRunSegments" ("connectionId","threadId","namespace","nativeRunId","rootRunId","localTurnId","facts","updatedAt") VALUES ('connection','thread','[]','run','run','turn','{"opaque":[true,null]}','updated')"#
+        #"INSERT INTO "protocolRunSegments" ("connectionId","threadId","identityEpochKind","identityEpochId","namespace","nativeRunId","rootRunId","localTurnId","facts","updatedAt") VALUES ('connection','thread','b4','generation','[]','run','run','turn','{"opaque":[true,null]}','updated')"#
       )
       try c.execute(
         #"INSERT INTO "protocolOperations" ("operationId","connectionId","threadId","kind","operationThreadId","payload","grantReferences","expectations","fingerprint","status","createdAt","updatedAt") VALUES ('private-operation','connection','thread','fixture','native-thread','{"opaque":true}','["secret:main4723-grant"]','{"opaque":true}','fingerprint','prepared','created','updated')"#
@@ -377,9 +377,14 @@ private enum MainSchemaAdmissionFixture {
       return value
     }
     let header = try object(lines.removeFirst()), footer = try object(lines.removeLast())
-    #expect(
-      Set(header.keys)
-        == Set(["format", "version", "at", "purpose", "migrations", "requiredTables", "sourceContextTables"]))
+    var headerFields: Set<String> = [
+      "format", "version", "at", "purpose", "migrations", "requiredTables", "sourceContextTables",
+    ]
+    if migrations.count == 13 {
+      headerFields.insert("protocolSchema")
+      #expect(header["protocolSchema"] as? String == "generation_epochs_v1")
+    }
+    #expect(Set(header.keys) == headerFields)
     #expect(Set(footer.keys) == Set(["format", "version", "rows", "tableRows"]))
     #expect(header["format"] as? String == "b4app-export")
     #expect(header["version"] as? Int == 4)

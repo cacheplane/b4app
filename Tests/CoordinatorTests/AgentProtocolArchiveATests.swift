@@ -11,13 +11,14 @@ import WorkspaceProtocol
 /// Existing storage admission/capture APIs only. No service, runtime, listener, hub or owner data.
 @Suite(.serialized) struct AgentProtocolArchiveATests {
   private static let dataTables = [
-    "localServers", "environments", "environmentFolders", "connections", "threads", "turns", "displayItems",
+    "localServers", "environments", "environmentFolders", "connections", "threads", "appFolders", "turns",
+    "displayItems",
     "runtimeRequests", "drafts", "devices", "changes", "columnClocks", "settings", "usageReadings",
     "tokenUsage", "connectionUsage", "threadDeletes", "protocolSubscriptions", "protocolRunSegments",
     "protocolOperations", "protocolGrantSecrets", "protocolGrants", "protocolPromptAnswers",
     "protocolHistoryAnchors",
   ]
-  private static let historicalDataTables = dataTables.map {
+  private static let historicalDataTables = dataTables.filter { $0 != "appFolders" }.map {
     $0 == "environments" ? "projects" : ($0 == "environmentFolders" ? "projectFolders" : $0)
   }
   private static func sourceDataTables(_ present: Set<String>) -> [String] {
@@ -209,6 +210,19 @@ import WorkspaceProtocol
       INSERT INTO "threadDeletes" ("threadId","state","attempts","nextAttemptAt","lastError","updatedAt")
         VALUES ('thread-a','waiting',3,'later','Historical unknown','updated');
       """)
+    if protocolProfiles {
+      // A D203 app-folder thread has no environment. Keep every current table populated without
+      // changing the genuine pre13 source rows or assigning the folder to an environment thread.
+      try c.execute(
+        """
+        INSERT INTO "threads" ("id","connectionId","nativeThreadId","nativeScope","title","context",
+          "environmentId","createdAt","updatedAt") VALUES
+          ('app-folder-thread','connection-codex','app-folder-native','fixture-app-folder','App folder',
+           '/fixture/private-app-folder',NULL,'created','updated');
+        INSERT INTO "appFolders" ("path","threadId","createdAt") VALUES
+          ('/fixture/private-app-folder','app-folder-thread','created');
+        """)
+    }
   }
   private static func seedPrivate(_ db: WorkspaceDatabase, suffix: String, material: String) throws {
     let owner = ProtocolGrantSecretStore.Owner(
@@ -220,8 +234,8 @@ import WorkspaceProtocol
         #"INSERT INTO "protocolSubscriptions" ("threadId","connectionId","nativeThreadId","generation","channels","namespaces","appliedEventId","appliedSeq","coverage","updatedAt") VALUES ($1,$2,$3,$4,'["messages"]','[[],["branch"]]','event',17,'{"opaque":true}',$5)"#,
         [owner.threadId, owner.connectionId, native, generation, stamp])
       try c.execute(
-        #"INSERT INTO "protocolRunSegments" ("connectionId","threadId","namespace","nativeRunId","rootRunId","localTurnId","facts","updatedAt") VALUES ($1,$2,'[]',$3,$3,$4,'{"opaque":[1,true,null]}',$5)"#,
-        [owner.connectionId, owner.threadId, native, "turn-" + suffix, stamp])
+        #"INSERT INTO "protocolRunSegments" ("connectionId","threadId","identityEpochKind","identityEpochId","namespace","nativeRunId","rootRunId","localTurnId","facts","updatedAt") VALUES ($1,$2,'b4',$6,'[]',$3,$3,$4,'{"opaque":[1,true,null]}',$5)"#,
+        [owner.connectionId, owner.threadId, native, "turn-" + suffix, stamp, generation])
       try c.execute(
         #"INSERT INTO "protocolOperations" ("operationId","connectionId","threadId","kind","operationThreadId","payload","grantReferences","expectations","fingerprint","status","createdAt","updatedAt") VALUES ($1,$2,$3,'fixture-kind',$4,'{"opaque":[true,null,"text"]}',$5::jsonb,'{"opaque":true}','fixture-fingerprint','fixture-status',$6,$6)"#,
         [
@@ -395,6 +409,9 @@ import WorkspaceProtocol
         "format": "b4app-export", "version": 4, "at": stamp, "purpose": purpose,
         "migrations": try Migrator.recorded(raw), "requiredTables": data, "sourceContextTables": context,
       ], records: records, footer: [:])
+    if let names = result.header["migrations"] as? [String], names.count == 13 {
+      result.header["protocolSchema"] = "generation_epochs_v1"
+    }
     result.recount()
     return result
   }
@@ -488,6 +505,11 @@ import WorkspaceProtocol
       return name
     }.sorted()
     let migrationNamesMatch = document.header["migrations"] as? [String] == sourceNames
+    if sourceNames.count == 13 {
+      #expect(document.header["protocolSchema"] as? String == "generation_epochs_v1")
+    } else {
+      #expect(document.header["protocolSchema"] == nil)
+    }
     let dataNames = document.header["requiredTables"] as? [String] ?? []
     let contextNames = document.header["sourceContextTables"] as? [String] ?? []
     let uniqueDisjoint =
