@@ -23,20 +23,36 @@
   /// The arithmetic of a panel's place: everything is the panel's top-left corner in screen points
   /// (y up), because the panel's height changes and its top is what stays put.
   nonisolated enum FloatingPanelGeometry {
-    /// How near one of home's two lines a dragged panel must be to sit on it. Small, so the line is
-    /// felt as the panel crosses it and never reaches out for a panel that is only passing nearby.
-    static let snapDistance: CGFloat = 8
+    /// How far a line's pull reaches. Beyond it a dragged panel goes exactly where the pointer takes it.
+    static let reach: CGFloat = 24
+    /// How the pull grows towards the line: 1 would be no pull at all, larger is stronger. Light, so
+    /// the line is felt as a drift towards it and never as a catch.
+    static let pull: CGFloat = 1.6
     /// How far the pointer travels before a press becomes a drag, so a click is never a nudge.
     static let dragThreshold: CGFloat = 3
 
-    /// Where a panel dragged to `topLeft` is drawn. Home has two lines, and each holds the panel by
-    /// itself: within `snapDistance` of the centre line it sits on that line and still slides freely up
-    /// and down it; within `snapDistance` of home's top it sits at that height and still slides freely
-    /// across. Only where the two cross is it at home.
-    static func snapped(_ topLeft: CGPoint, home: CGPoint) -> CGPoint {
-      CGPoint(
-        x: abs(topLeft.x - home.x) <= snapDistance ? home.x : topLeft.x,
-        y: abs(topLeft.y - home.y) <= snapDistance ? home.y : topLeft.y)
+    /// `value` drawn towards `line`. Outside `reach` it is itself. Inside, its distance from the line
+    /// shrinks, more the nearer it is (`reach` × (distance ÷ `reach`) ^ `pull`), so the panel drifts
+    /// onto the line as it comes close and leaves it as smoothly: nothing jumps at the edge of the
+    /// reach, and nothing holds. Under a point from the line it is on it.
+    static func drawn(_ value: CGFloat, toward line: CGFloat) -> CGFloat {
+      let distance = abs(value - line)
+      guard distance < reach else { return value }
+      let eased = reach * pow(distance / reach, pull)
+      guard eased >= 1 else { return line }
+      return line + (value < line ? -eased : eased)
+    }
+
+    /// Where a panel dragged to `topLeft` is drawn. Two lines cross the window, one down its middle
+    /// and one across it, and each draws the panel by itself: near the line down the middle the panel
+    /// drifts onto it and still moves freely up and down; near a line across (`heights`: the middle
+    /// of the window, and where the panel opens) it drifts to that height and still moves freely from
+    /// side to side. Where two cross, both draw it.
+    static func snapped(_ topLeft: CGPoint, centre: CGFloat, heights: [CGFloat]) -> CGPoint {
+      let nearest = heights.min { abs($0 - topLeft.y) < abs($1 - topLeft.y) }
+      return CGPoint(
+        x: drawn(topLeft.x, toward: centre),
+        y: nearest.map { drawn(topLeft.y, toward: $0) } ?? topLeft.y)
     }
 
     /// `topLeft` moved so a panel of `size` is wholly on `visible`.
@@ -162,9 +178,9 @@
   ///
   /// Put it in a `background` of the view to open over. `size` is the content's width and its height
   /// at its tallest, which places it. A `draggable` panel can be moved by its `WindowDragArea`s and by
-  /// the empty part of a text field. While it is dragged, each of the two lines through where it opens
-  /// (the centre line, and that height) holds it when it is near, by itself; a double click on a drag
-  /// area sends it back, and it opens there every time.
+  /// the empty part of a text field. While it is dragged, the line down the middle of the window and
+  /// the lines across it (its middle, and where the panel opens) each draw it lightly when it is near;
+  /// a double click on a drag area sends it back, and it opens there every time.
   struct FloatingPanel<Content: View>: NSViewRepresentable {
     var isPresented: Bool
     var size: CGSize
@@ -434,23 +450,29 @@
 
     // MARK: Drag
 
-    /// A drag would put the panel's origin at `origin`: the origin it is given, on home's lines where
-    /// it is near them.
+    /// The lines that draw a dragged panel, as places for its top-left corner: the line down the
+    /// middle of the window, and two heights, where it opens and where it would sit (at its tallest)
+    /// in the middle of the window.
+    private var lines: (centre: CGFloat, heights: [CGFloat])? {
+      guard let home, let parent = panel?.parent else { return nil }
+      return (parent.frame.midX - size.width / 2, [home.y, parent.frame.midY + size.height / 2])
+    }
+
+    /// A drag would put the panel's origin at `origin`: the origin it is given, drawn towards the lines
+    /// it is near.
     private func snapped(origin: CGPoint) -> CGPoint {
-      guard let panel, let home else { return origin }
+      guard let panel, let lines else { return origin }
       let height = panel.frame.height
-      let rest = FloatingPanelGeometry.snapped(CGPoint(x: origin.x, y: origin.y + height), home: home)
+      let rest = FloatingPanelGeometry.snapped(
+        CGPoint(x: origin.x, y: origin.y + height), centre: lines.centre, heights: lines.heights)
       return CGPoint(x: rest.x, y: rest.y - height)
     }
 
-    /// Released: it stays where the drag left it (on a line of home's, if it was held on one) until it
-    /// closes.
+    /// Released: it stays where the drag left it until it closes.
     private func dragEnded() {
       guard let panel, let home else { return }
-      let rest = FloatingPanelGeometry.snapped(CGPoint(x: panel.frame.minX, y: panel.frame.maxY), home: home)
-      let moved = CGSize(width: rest.x - home.x, height: rest.y - home.y)
-      offset = moved == .zero ? nil : moved
-      place(height: panel.frame.height, animated: false)
+      let moved = CGSize(width: panel.frame.minX - home.x, height: panel.frame.maxY - home.y)
+      offset = abs(moved.width) < 0.5 && abs(moved.height) < 0.5 ? nil : moved
     }
 
     private func goHome(animated: Bool) {

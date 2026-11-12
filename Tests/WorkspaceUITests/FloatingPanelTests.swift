@@ -48,21 +48,48 @@
   @Suite struct FloatingPanelGeometryTests {
     private let home = CGPoint(x: 400, y: 900)
 
-    @Test func eachOfHomesTwoLinesHoldsADraggedPanelByItself() {
-      // Near both lines: home.
-      #expect(FloatingPanelGeometry.snapped(CGPoint(x: 405, y: 894), home: home) == home)
-      // Near the centre line only: on it, and free along it.
-      #expect(FloatingPanelGeometry.snapped(CGPoint(x: 394, y: 600), home: home) == CGPoint(x: 400, y: 600))
-      #expect(FloatingPanelGeometry.snapped(CGPoint(x: 394, y: 431), home: home) == CGPoint(x: 400, y: 431))
-      // Near home's height only: at it, and free across.
-      #expect(FloatingPanelGeometry.snapped(CGPoint(x: 90, y: 907), home: home) == CGPoint(x: 90, y: 900))
-      #expect(FloatingPanelGeometry.snapped(CGPoint(x: 733, y: 907), home: home) == CGPoint(x: 733, y: 900))
-      // Eight points is near; nine is not, so a panel only passing by is left alone.
-      #expect(FloatingPanelGeometry.snapped(CGPoint(x: 408, y: 892), home: home) == home)
-      #expect(
-        FloatingPanelGeometry.snapped(CGPoint(x: 409, y: 891), home: home) == CGPoint(x: 409, y: 891))
-      #expect(
-        FloatingPanelGeometry.snapped(CGPoint(x: 420, y: 880), home: home) == CGPoint(x: 420, y: 880))
+    @Test func aLineDrawsAPanelLightlyAndOnlyWhenItIsNear() {
+      let line: CGFloat = 400
+      // Out of reach: exactly where it was taken.
+      #expect(FloatingPanelGeometry.drawn(424, toward: line) == 424)
+      #expect(FloatingPanelGeometry.drawn(460, toward: line) == 460)
+      #expect(FloatingPanelGeometry.drawn(340, toward: line) == 340)
+      // In reach: nearer the line than it was taken, and not on it.
+      let half = FloatingPanelGeometry.drawn(412, toward: line)
+      #expect(half > 406 && half < 410)
+      #expect(FloatingPanelGeometry.drawn(388, toward: line) == 800 - half)
+      // Light: most of the way out, the pull is a point or two.
+      #expect(FloatingPanelGeometry.drawn(420, toward: line) > 417)
+      // Close: on the line.
+      #expect(FloatingPanelGeometry.drawn(403, toward: line) == line)
+      #expect(FloatingPanelGeometry.drawn(399, toward: line) == line)
+      // Nothing jumps and nothing holds: as the pointer moves away, so does the panel, all the way.
+      var last = line
+      for step in 4...60 {
+        let drawn = FloatingPanelGeometry.drawn(line + CGFloat(step) / 2, toward: line)
+        #expect(drawn >= last && drawn - last < 1.5)
+        last = drawn
+      }
+    }
+
+    @Test func theLineDownTheMiddleAndTheLinesAcrossDrawByThemselves() {
+      // The line down the middle is at 400; the lines across are where the panel opens (900) and the
+      // middle of the window (600).
+      func snapped(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+        FloatingPanelGeometry.snapped(CGPoint(x: x, y: y), centre: 400, heights: [900, 600])
+      }
+      // On the line down the middle, free along it.
+      #expect(snapped(402, 760) == CGPoint(x: 400, y: 760))
+      #expect(snapped(402, 700) == CGPoint(x: 400, y: 700))
+      // On the line across the middle, free across it.
+      #expect(snapped(120, 601) == CGPoint(x: 120, y: 600))
+      #expect(snapped(733, 601) == CGPoint(x: 733, y: 600))
+      // Where they cross, both.
+      #expect(snapped(401, 598) == CGPoint(x: 400, y: 600))
+      // Where it opens is a height too, so it can be put back.
+      #expect(snapped(398, 902) == CGPoint(x: 400, y: 900))
+      // Away from all of them, nothing.
+      #expect(snapped(520, 760) == CGPoint(x: 520, y: 760))
     }
 
     @Test func aPanelIsKeptWhollyOnItsScreen() {
@@ -176,7 +203,7 @@
       try await settle()
     }
 
-    @Test func aDraggedPanelIsHeldOnEachLineByItselfAndADoubleClickSendsItHome() async throws {
+    @Test func aDraggedPanelIsDrawnToEachLineByItselfAndADoubleClickSendsItHome() async throws {
       let state = PanelState()
       let host = try shortWindow(state)
       defer { host.window.close() }
@@ -184,14 +211,20 @@
       try await settle()
       let panel = try #require(host.window.childWindows?.first as? PalettePanel)
       let home = panel.frame.origin
-      // What a drag asks for, and what the panel does with it.
-      #expect(panel.snap(CGPoint(x: home.x + 5, y: home.y - 6)) == home)
-      #expect(panel.snap(CGPoint(x: home.x + 5, y: home.y - 140)) == CGPoint(x: home.x, y: home.y - 140))
-      #expect(panel.snap(CGPoint(x: home.x + 210, y: home.y + 4)) == CGPoint(x: home.x + 210, y: home.y))
+      // What a drag asks for, and what the panel does with it. The window is 300 tall and the panel
+      // 500, so the middle line's height is 196 pt above where the panel opens.
+      #expect(panel.snap(CGPoint(x: home.x + 2, y: home.y - 2)) == home)
+      #expect(panel.snap(CGPoint(x: home.x + 2, y: home.y - 140)) == CGPoint(x: home.x, y: home.y - 140))
+      #expect(panel.snap(CGPoint(x: home.x + 210, y: home.y + 2)) == CGPoint(x: home.x + 210, y: home.y))
       #expect(
-        panel.snap(CGPoint(x: home.x + 14, y: home.y - 12)) == CGPoint(x: home.x + 14, y: home.y - 12))
-      // Left on the centre line, lower down: it stays there.
-      panel.setFrameOrigin(panel.snap(CGPoint(x: home.x - 3, y: home.y - 150)))
+        panel.snap(CGPoint(x: home.x + 210, y: home.y + 197)) == CGPoint(x: home.x + 210, y: home.y + 196))
+      #expect(panel.snap(CGPoint(x: home.x - 1, y: home.y + 195)) == CGPoint(x: home.x, y: home.y + 196))
+      #expect(
+        panel.snap(CGPoint(x: home.x + 40, y: home.y - 60)) == CGPoint(x: home.x + 40, y: home.y - 60))
+      let near = panel.snap(CGPoint(x: home.x + 12, y: home.y - 60))
+      #expect(near.x > home.x + 6 && near.x < home.x + 10 && near.y == home.y - 60)
+      // Left on the line down the middle, lower: it stays there.
+      panel.setFrameOrigin(panel.snap(CGPoint(x: home.x - 2, y: home.y - 150)))
       panel.dragEnded()
       try await settle()
       #expect(abs(panel.frame.origin.x - home.x) < 0.5)

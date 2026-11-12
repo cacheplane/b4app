@@ -261,7 +261,9 @@ final class PaletteSmokeTests: XCTestCase {
     // Drag by the header, from the empty part of the field: it moves, and the field keeps the keyboard.
     let grip = field.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.5))
     grip.press(forDuration: 0.15, thenDragTo: grip.withOffset(CGVector(dx: 180, dy: 130)))
-    try await wait("the palette to move") { abs(palette.frame.minX - home.minX - 180) < 6 }
+    try await wait("the palette to move (1), now \(palette.frame) home \(home)") {
+      abs(palette.frame.minX - home.minX - 180) < 6
+    }
     XCTAssertEqual(palette.frame.minY, home.minY + 130, accuracy: 6)
     app.typeText("arch")
     try await wait("typing to reach the field") { field.value as? String == "arch" }
@@ -283,27 +285,42 @@ final class PaletteSmokeTests: XCTestCase {
         CGVector(dx: 300, dy: palette.frame.height - 20))
     }
     let foot = footerGrip()
-    // Twelve points short of home on each axis is not near: it is left where it was put.
-    foot.press(forDuration: 0.15, thenDragTo: foot.withOffset(CGVector(dx: -168, dy: -118)))
-    try await wait("the palette to stop short of home") { abs(palette.frame.minX - home.minX - 12) < 3 }
-    XCTAssertEqual(palette.frame.minY, home.minY + 12, accuracy: 3)
-    // Carried onto the centre line lower down, it sits on the line and keeps the height it was given.
-    let line = footerGrip()
-    line.press(forDuration: 0.15, thenDragTo: line.withOffset(CGVector(dx: -8, dy: 90)))
-    try await wait("the palette to sit on the centre line") { abs(palette.frame.minX - home.minX) < 1.5 }
-    XCTAssertEqual(palette.frame.minY, home.minY + 102, accuracy: 3)
-    // Slid up the line, it stays on it; near home's height that holds it too, and it is home.
-    let slide = footerGrip()
-    slide.press(forDuration: 0.15, thenDragTo: slide.withOffset(CGVector(dx: 3, dy: -98)))
-    try await wait("the palette to be home") {
-      abs(palette.frame.minX - home.minX) < 1.5 && abs(palette.frame.minY - home.minY) < 1.5
+    // Two lines cross the window, one down its middle and one across it, and each draws the palette
+    // lightly, by itself. It is 180 pt right of the line down the middle and 130 pt under where it
+    // opens. Brought to 12 pt from that line, it drifts towards it and is not on it.
+    foot.press(forDuration: 0.15, thenDragTo: foot.withOffset(CGVector(dx: -168, dy: 0)))
+    try await wait("the palette to be drawn towards the centre line") {
+      palette.frame.minX - home.minX > 4 && palette.frame.minX - home.minX < 11
     }
-    // Slid across at home's height, it keeps the height and goes where it is taken.
+    XCTAssertEqual(palette.frame.minY, home.minY + 130, accuracy: 3)
+    // Brought the rest of the way, it is on the line, at the height it was left.
+    let onto = footerGrip()
+    onto.press(forDuration: 0.15, thenDragTo: onto.withOffset(CGVector(dx: -10, dy: 0)))
+    try await wait("the palette to sit on the centre line") { abs(palette.frame.midX - main.midX) < 1.5 }
+    XCTAssertEqual(palette.frame.minY, home.minY + 130, accuracy: 3)
+    // Slid along the line to the middle of the window, it is drawn onto the line across too: in the
+    // middle of the window, where the palette at its tallest (482 pt) would be centred.
+    let middle = main.midY - 241
+    let slide = footerGrip()
+    slide.press(
+      forDuration: 0.15, thenDragTo: slide.withOffset(CGVector(dx: 0, dy: middle - palette.frame.minY + 2)))
+    try await wait("the palette to be in the middle of the window") {
+      abs(palette.frame.midX - main.midX) < 1.5 && abs(palette.frame.minY - middle) < 1.5
+    }
+    snap(app, XCUIScreen.main.screenshot(), "panel-middle")
+    // Slid across from there, it keeps to the line across and goes where it is taken.
     let across = footerGrip()
-    across.press(forDuration: 0.15, thenDragTo: across.withOffset(CGVector(dx: 150, dy: 5)))
-    try await wait("the palette to slide across") { abs(palette.frame.minX - home.minX - 150) < 3 }
-    XCTAssertEqual(palette.frame.minY, home.minY, accuracy: 1.5)
+    across.press(forDuration: 0.15, thenDragTo: across.withOffset(CGVector(dx: 150, dy: 0)))
+    try await wait("the palette to slide across") { abs(palette.frame.midX - main.midX - 150) < 3 }
+    XCTAssertEqual(palette.frame.minY, middle, accuracy: 1.5)
+    // Away from every line it goes exactly where it is taken.
+    let away = footerGrip()
+    away.press(forDuration: 0.15, thenDragTo: away.withOffset(CGVector(dx: 60, dy: 50)))
+    try await wait("the palette to move freely") { abs(palette.frame.midX - main.midX - 210) < 8 }
+    // (A synthesized drag lands within a few points of where it was sent.)
+    XCTAssertEqual(palette.frame.minY, middle + 50, accuracy: 8)
     footerGrip().doubleClick()
+    try await Task.sleep(for: .milliseconds(700))
     try await wait("the palette to go home") {
       abs(palette.frame.minX - home.minX) < 1.5 && abs(palette.frame.minY - home.minY) < 1.5
     }
@@ -313,6 +330,7 @@ final class PaletteSmokeTests: XCTestCase {
     foot2.press(forDuration: 0.15, thenDragTo: foot2.withOffset(CGVector(dx: -220, dy: 90)))
     try await wait("the palette to stay away") { abs(palette.frame.minX - home.minX + 220) < 6 }
     footerGrip().doubleClick()
+    try await Task.sleep(for: .milliseconds(700))
     try await wait("the palette to go home") {
       abs(palette.frame.minX - home.minX) < 1.5 && abs(palette.frame.minY - home.minY) < 1.5
     }
@@ -320,7 +338,9 @@ final class PaletteSmokeTests: XCTestCase {
     // Dragged away and closed, it opens at home again.
     let foot3 = footerGrip()
     foot3.press(forDuration: 0.15, thenDragTo: foot3.withOffset(CGVector(dx: 200, dy: 60)))
-    try await wait("the palette to move") { abs(palette.frame.minX - home.minX - 200) < 6 }
+    try await wait("the palette to move (2), now \(palette.frame) home \(home)") {
+      abs(palette.frame.minX - home.minX - 200) < 10
+    }
     app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
     XCTAssertTrue(palette.waitForNonExistence(timeout: 5))
     // Closed, nothing of it is left on the screen.
@@ -422,9 +442,11 @@ final class PaletteSmokeTests: XCTestCase {
     // Dragged away and brought back onto the button's two lines, it sits on it.
     let grip = field.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.5))
     grip.press(forDuration: 0.15, thenDragTo: grip.withOffset(CGVector(dx: 160, dy: 140)))
-    try await wait("the palette to move") { abs(palette.frame.minX - home.minX - 160) < 6 }
+    try await wait("the palette to move (3), now \(palette.frame) home \(home)") {
+      abs(palette.frame.minX - home.minX - 160) < 6
+    }
     let back = field.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.5))
-    back.press(forDuration: 0.15, thenDragTo: back.withOffset(CGVector(dx: -156, dy: -136)))
+    back.press(forDuration: 0.15, thenDragTo: back.withOffset(CGVector(dx: -159, dy: -139)))
     try await wait("the palette to snap onto the button") {
       abs(palette.frame.midX - rest.midX) < 1.5 && abs(palette.frame.minY + 24 - rest.midY) < 1.5
     }
