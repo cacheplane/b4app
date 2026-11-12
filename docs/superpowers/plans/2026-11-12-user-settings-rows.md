@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Never edit an applied migration (D-178). The new one is `Hub/crates/b4hub-db/migrations/0020_user_settings_rows.sql`. Before Task 3, `git fetch` and check `origin/main` and open pull requests for another `0020_*`; if one exists, take the next free number and use it everywhere this plan says 0020.
+- Never edit an applied migration (D-178). The new one is `Hub/crates/b4hub-db/migrations/0021_user_settings_rows.sql`. The number is 0021 because draft pull request 180 (another session) holds `0020_client_protocol.sql`. Before Task 3, `git fetch` and check `origin/main` for a `0021_*`; if one exists, stop and report.
 - Devices are not changed: no coordinator migration, no mirror schema change, no change to `Tests/Fixtures/sync/changes.json`. A device sends and receives the row id `view`, always.
 - The wire id is the literal `view`. The stored id is `view:` followed by the user's id in the lowercase hyphenated form (`Uuid`'s `Display`), which is also what PostgreSQL's `user_id::text` gives.
 - The table keeps its name, `viewSettings`. New code and comments call it the user's settings.
@@ -210,7 +210,7 @@ async fn a_settings_change_with_another_row_id_is_refused(pool: PgPool) {
 ### Task 3: the migration
 
 **Files:**
-- Create: `Hub/crates/b4hub-db/migrations/0020_user_settings_rows.sql`
+- Create: `Hub/crates/b4hub-db/migrations/0021_user_settings_rows.sql`
 - Modify: `Hub/crates/b4hub-db/tests/migrations_frozen.rs` (pin the new file's SHA-256, computed with `shasum -a 256`)
 - Test: `Hub/crates/b4hub-db/tests/migrate.rs`
 
@@ -228,7 +228,7 @@ What the migration does, in this order, with a header comment in the style of `0
 - [ ] **Step 1: Write the failing test** in `tests/migrate.rs`. Generalise `migrate_to_0017` into `migrate_before(pool: &PgPool, first_excluded: &str)` (the body is the same with `name.as_str() < first_excluded`), keep `migrate_to_0017` as a one-line caller, and add:
 
 ```rust
-/// `0020_user_settings_rows.sql` moves each settings row, with its clocks, to the id that names
+/// `0021_user_settings_rows.sql` moves each settings row, with its clocks, to the id that names
 /// its user, drops rows no device can reach, and leaves the log alone; a change pushed afterwards
 /// lands on the moved row and still merges against the clock that came with it.
 #[sqlx::test(migrations = false)]
@@ -236,17 +236,17 @@ async fn settings_rows_move_to_their_users(pool: PgPool)
 ```
 
 The test, following `environments_rename_carries_rows_changes_and_clocks` for seeding:
-  - `migrate_before(&pool, "0020")`; seed an org, a user and a `macos` device with SQL as that test does.
+  - `migrate_before(&pool, "0021")`; seed an org, a user and a `macos` device with SQL as that test does.
   - Insert by SQL: a `"viewSettings"` row `id = 'view'`, `arrangement = 'byEnvironment'`, `"quietThreads" = 'tiny'`; a stray row `id = 'stray'`; `column_clocks` rows for (`viewSettings`, `view`, `quietThreads`, hlc `000001000000-0000-<device>`) and (`viewSettings`, `stray`, `arrangement`, any clock); and one `changes` row for `viewSettings` / `view` / insert.
   - Run the full migrator the way the file's other upgrade tests do.
   - Assert: exactly one `"viewSettings"` row, its `"id"` is `view:<user>`, `arrangement` and `"quietThreads"` unchanged; exactly one `column_clocks` row for the table, `row_id = view:<user>`, same hlc; the `changes` row still has `row_id = 'view'`; `relforcerowsecurity` is true for both tables.
-  - Then, through `changes::push` as that device (build the `AuthedDevice` as the file's other tests do, or enrol one for the same user): an update of `quietThreads` to `hidden` with an hlc lower than the seeded clock (`000000000001-0000-<device>`) leaves `tiny`; one with a higher clock (`000002000000-0000-<device>`) stores `hidden`; the table still holds one row. A pull from 0 returns the seeded insert and both updates with `row_id == "view"`.
+  - Then, through `changes::push` as that device (build the `AuthedDevice` as the file's other tests do, or enrol one for the same user): an update of `quietThreads` to `hidden` with an hlc lower than the seeded clock (`000000000001-0000-<device>`) leaves `tiny`; one with a higher clock (`000002100000-0000-<device>`) stores `hidden`; the table still holds one row. A pull from 0 returns the seeded insert and both updates with `row_id == "view"`.
 
 - [ ] **Step 2: Run** `cargo test -p b4hub-db --locked --test migrate settings_rows` — expected: fails (row id still `view`, stray row present).
-- [ ] **Step 3: Write** `0020_user_settings_rows.sql`.
+- [ ] **Step 3: Write** `0021_user_settings_rows.sql`.
 - [ ] **Step 4: Pin it** in `migrations_frozen.rs` after `0019`.
 - [ ] **Step 5: Run** the three hub gates — expected: all pass, including `applied_migrations_are_unchanged_and_every_migration_is_pinned` and `sqlx_applies_a_lower_numbered_migration_added_later`.
-- [ ] **Step 6: Commit** `feat(hub): migration 0020 moves settings rows to their users`.
+- [ ] **Step 6: Commit** `feat(hub): migration 0021 moves settings rows to their users`.
 
 ---
 
@@ -256,9 +256,9 @@ The test, following `environments_rename_carries_rows_changes_and_clocks` for se
 - Modify: `Sources/WorkspaceSync/FakeHubAPI.swift` (`refusal(for:)`), `Sources/WorkspaceSync/Wire.swift:301` (the comment listing codes)
 - Test: `Tests/WorkspaceSyncTests/FakeHubWritesTests.swift`
 - Modify: `Hub/API.md` (the rejection codes after `cannot_clear` near line 1080; the phone-writable paragraph near 1130; the *View settings* section near 1279; the `table` row near 1267)
-- Modify: `AGENTS.md` line on `viewSettings` (add "hub migration `0020` keeps one row per user, stored as `view:<userId>`; devices see `view`").
+- Modify: `AGENTS.md` line on `viewSettings` (add "hub migration `0021` keeps one row per user, stored as `view:<userId>`; devices see `view`").
 - Create: `docs/decisions/D-NNN-settings-belong-to-a-user.md`, `docs/verification/2026-11-12-user-settings-rows.md` (use the day the gates ran)
-- Modify: `docs/milestones.md`, `docs/compatibility.md` (hub migration 0020; no device build needed)
+- Modify: `docs/milestones.md`, `docs/compatibility.md` (hub migration 0021; no device build needed)
 
 **Interfaces:**
 - Consumes: the code `invalid_row_id`.
@@ -275,7 +275,7 @@ Push, as a `macos` fake and again as an `ios` one, a `viewSettings` insert with 
 - [ ] **Step 3: Implement** in `refusal(for:)`, after the platform check: `if change.table == "viewSettings" && change.rowId != "view" { return "invalid_row_id" }`. Add the code to the comment in `Wire.swift`.
 - [ ] **Step 4: Run** `swift test --filter WorkspaceSyncTests` and `swift format lint --strict --recursive Sources Tests Apps Package.swift` — expected: pass.
 - [ ] **Step 5: Update `Hub/API.md`:** add `invalid_row_id` to the per-change codes ("a `viewSettings` change whose `rowId` is not `view`; for any device"); rewrite the *View settings* opening to say the row is one per user, always `view` on the wire, stored by the hub under the user, and that two users of one organisation never see each other's.
-- [ ] **Step 6: Write the decision.** Take the number with `Scripts/docs-index.sh --next` when the pull request is opened, not before (`blove/b4-command-palette-spec-ba5790` uses D-213 to D-215 and may merge first). First line `## 2026-11-12 (settings belong to a user)`, then one bullet `- **D-NNN Settings belong to a user.** ...` covering: the owner's rule (settings per user, separate per organisation; organisation settings are for billing and the like); the stored id `view:<userId>` on the hub only and the five reasons devices keep `view` (spec, Part 1); the refusal `invalid_row_id`; migration 0020 and what it drops; that the log keeps `view`; "amends D-208" for its known limit and its deferred minor.
+- [ ] **Step 6: Write the decision.** Take the number with `Scripts/docs-index.sh --next` when the pull request is opened, not before (`blove/b4-command-palette-spec-ba5790` uses D-213 to D-215 and may merge first). First line `## 2026-11-12 (settings belong to a user)`, then one bullet `- **D-NNN Settings belong to a user.** ...` covering: the owner's rule (settings per user, separate per organisation; organisation settings are for billing and the like); the stored id `view:<userId>` on the hub only and the five reasons devices keep `view` (spec, Part 1); the refusal `invalid_row_id`; migration 0021 and what it drops; that the log keeps `view`; "amends D-208" for its known limit and its deferred minor.
 - [ ] **Step 7: Write the verification record** (`## 2026-11-12: per-user settings rows`): the gate commands and their results as run, the test names from Review Focus, and what was not checked (no hosted hub was touched; nothing was run in an app, because no device code changed). Add the `docs/milestones.md` line and the `docs/compatibility.md` note.
 - [ ] **Step 8: Run** `Scripts/docs-index.sh --check` — expected: passes.
 - [ ] **Step 9: Commit** `docs: settings belong to a user (D-NNN); the fake hub refuses other settings ids`.
