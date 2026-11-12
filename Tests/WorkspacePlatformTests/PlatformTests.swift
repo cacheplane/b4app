@@ -74,7 +74,11 @@ import Testing
   }
 
   @Test func runsCommandWithArgumentArrayAndCapturesOutput() async throws {
-    let result = try await CommandRunner.run("/bin/sh", ["-c", "printf hi; printf err 1>&2; exit 3"])
+    // This checks argument passing, capture and exit status. Allow full-suite startup contention;
+    // timesOutHungCommand separately checks the short command deadline.
+    let result = try await CommandRunner.run(
+      "/bin/sh", ["-c", "printf hi; printf err 1>&2; exit 3"],
+      options: CommandOptions(timeout: .seconds(120)))
     #expect(result.stdout == "hi")
     #expect(result.stderr == "err")
     #expect(result.exitCode == 3)

@@ -256,6 +256,34 @@ pub async fn connected_role_is_privileged(db: &Db) -> Result<bool> {
 /// from the ledger; `serve` polls the maintenance switch, and only an operator flips it). Default
 /// privileges cover the tables later migrations create as this owner.
 async fn grant_table_access(conn: &mut PgConnection) -> Result<()> {
+    // SQLx releases its migration lock before role provisioning and these grants. Two public
+    // runners may therefore update the same catalog ACL concurrently. Retry the whole atomic
+    // grant/revoke unit, never leave the restricted ledger/settings writable between commits.
+    const ATTEMPTS: usize = 10;
+    for attempt in 0..ATTEMPTS {
+        match grant_table_access_once(conn).await {
+            Ok(()) => return Ok(()),
+            Err(error) if is_grant_catalog_race(&error) && attempt + 1 < ATTEMPTS => {
+                tokio::time::sleep(Duration::from_millis(25 * (attempt as u64 + 1))).await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    unreachable!("the final failed attempt returns its original error")
+}
+
+fn is_grant_catalog_race(error: &sqlx::Error) -> bool {
+    match error {
+        sqlx::Error::Database(db) => match db.code().as_deref() {
+            Some("40001" | "40P01") => true,
+            Some("XX000") => db.message() == "tuple concurrently updated",
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+async fn grant_table_access_once(conn: &mut PgConnection) -> sqlx::Result<()> {
     const STATEMENTS: [&str; 7] = [
         "GRANT USAGE ON SCHEMA public TO b4hub_app",
         "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO b4hub_app",
@@ -265,10 +293,11 @@ async fn grant_table_access(conn: &mut PgConnection) -> Result<()> {
         "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO b4hub_app",
         "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO b4hub_app",
     ];
+    let mut tx = conn.begin().await?;
     for statement in STATEMENTS {
-        sqlx::query(statement).execute(&mut *conn).await?;
+        sqlx::query(statement).execute(&mut *tx).await?;
     }
-    Ok(())
+    tx.commit().await
 }
 
 #[cfg(test)]

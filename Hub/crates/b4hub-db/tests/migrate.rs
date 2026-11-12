@@ -18,7 +18,7 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(status.pending, 0);
-    assert_eq!(status.applied, (1..=19).collect::<Vec<i64>>());
+    assert_eq!(status.applied, (1..=20).collect::<Vec<i64>>());
 
     let app = Db::connect(&app_url).await.unwrap();
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM orgs")
@@ -30,7 +30,7 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
         .fetch_one(&app.pool)
         .await
         .unwrap();
-    assert_eq!(migrations, 19);
+    assert_eq!(migrations, 20);
     app.pool.close().await;
 
     let row =
@@ -49,6 +49,91 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
             .unwrap();
     assert!(stored.starts_with("SCRAM-SHA-256$4096:"), "{stored}");
     assert!(!stored.contains("pw-test"));
+}
+
+// The event-trigger fault is local to this disposable database. The real concurrent-runner
+// regression lives in environment_history_controls; these controls make the grant retry and
+// rollback boundaries deterministic without sleeping or weakening that public-runner test.
+#[sqlx::test(migrations = false)]
+async fn migration_grants_retry_catalog_collision_and_keep_restricted_tables_read_only(
+    pool: PgPool,
+) {
+    let admin = admin_url(&pool);
+    let app = app_url(&pool, common::APP_PASSWORD);
+    b4hub_db::migrate::run(&admin, &app).await.unwrap();
+    sqlx::raw_sql(
+        "CREATE SEQUENCE grant_attempt_probe; \
+         CREATE FUNCTION fail_first_default_grant() RETURNS event_trigger LANGUAGE plpgsql AS $$ \
+         BEGIN IF nextval('grant_attempt_probe')=1 THEN \
+           RAISE EXCEPTION USING ERRCODE='XX000', MESSAGE='tuple concurrently updated'; \
+         END IF; END $$; \
+         CREATE EVENT TRIGGER retry_default_grant ON ddl_command_start \
+           WHEN TAG IN ('ALTER DEFAULT PRIVILEGES') EXECUTE FUNCTION fail_first_default_grant();",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    b4hub_db::migrate::run(&admin, &app).await.unwrap();
+    let attempts: i64 = sqlx::query_scalar("SELECT last_value FROM grant_attempt_probe")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(attempts, 3); // failed transaction's first DDL, then both DDLs after retry
+    let permissions: (bool, bool, bool, bool, bool) = sqlx::query_as(
+        "SELECT has_table_privilege('b4hub_app','orgs','INSERT'), \
+         has_table_privilege('b4hub_app','_sqlx_migrations','SELECT'), \
+         has_table_privilege('b4hub_app','_sqlx_migrations','INSERT'), \
+         has_table_privilege('b4hub_app','hub_settings','SELECT'), \
+         has_table_privilege('b4hub_app','hub_settings','UPDATE')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(permissions, (true, true, false, true, false));
+    pool.close().await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn migration_grants_rollback_as_one_unit_on_nonretryable_failure(pool: PgPool) {
+    let admin = admin_url(&pool);
+    let app = app_url(&pool, common::APP_PASSWORD);
+    b4hub_db::migrate::run(&admin, &app).await.unwrap();
+    sqlx::raw_sql(
+        "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM b4hub_app; \
+         CREATE SEQUENCE grant_refusal_probe; \
+         CREATE FUNCTION refuse_default_grant() RETURNS event_trigger LANGUAGE plpgsql AS $$ \
+         BEGIN PERFORM nextval('grant_refusal_probe'); \
+           RAISE EXCEPTION 'deliberate default-grant refusal'; END $$; \
+         CREATE EVENT TRIGGER refuse_default_grant ON ddl_command_start \
+           WHEN TAG IN ('ALTER DEFAULT PRIVILEGES') EXECUTE FUNCTION refuse_default_grant();",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let outcome = b4hub_db::migrate::run(&admin, &app).await;
+    let probe: (i64, bool) =
+        sqlx::query_as("SELECT last_value, is_called FROM grant_refusal_probe")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let permissions: (bool, bool, bool) = sqlx::query_as(
+        "SELECT has_table_privilege('b4hub_app','orgs','INSERT'), \
+         has_table_privilege('b4hub_app','_sqlx_migrations','SELECT'), \
+         has_table_privilege('b4hub_app','hub_settings','SELECT')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+    assert_eq!(probe, (1, true));
+    match outcome {
+        Err(b4hub_db::Error::Sqlx(sqlx::Error::Database(error))) => {
+            assert_eq!(error.code().as_deref(), Some("P0001"));
+            assert_eq!(error.message(), "deliberate default-grant refusal");
+        }
+        _ => panic!("the intended nonretryable default-grant fault must be returned"),
+    }
+    assert_eq!(permissions, (false, false, false));
 }
 
 #[sqlx::test(migrations = false)]
@@ -154,6 +239,7 @@ async fn tenant_tables_force_row_level_security(pool: PgPool) {
         ("user_identities", false, false),
         ("user_links", false, false),
         ("users", true, true),
+        ("viewSettings", true, true),
     ];
     assert_eq!(flags.len(), expected.len(), "{flags:?}");
     for (relname, secured, forced) in expected {

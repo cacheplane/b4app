@@ -258,7 +258,8 @@ extension WorkspaceModel {
       return state == .approve || state == .reply ? "Review request" : "Open thread"
     case (.threadPin, _): return thread?.pinned == true ? "Unpin" : "Pin"
     case (.threadArchive, _): return thread?.archived == true ? "Unarchive" : "Archive"
-    case (.showArchived, _): return showArchived ? "Hide archived threads" : "Show archived threads"
+    case (.showArchived, _):
+      return viewSettings.showArchived ? "Hide archived threads" : "Show archived threads"
     case (.openSettings, .settings(let page)): return page.title
     case (.environmentNewThread, .environment(let environmentId)):
       return environments.first { $0.id == environmentId }?.displayName ?? "Environment"
@@ -543,8 +544,9 @@ extension WorkspaceModel {
       await openNewThread()
       return .completed("New thread")
     case (.showArchived, _):
-      showArchived.toggle()
-      return .completed(showArchived ? "Archived threads shown" : "Archived threads hidden")
+      // The account's view setting (D-208), as the view options' own toggle sets it.
+      await setShowArchived(!viewSettings.showArchived)
+      return settled(viewSettings.showArchived ? "Archived threads shown" : "Archived threads hidden")
     case (.openSettings, .settings(let page)):
       openSettings(page)
       return .completed("\(page.title) settings")

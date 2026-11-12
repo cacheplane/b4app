@@ -13,7 +13,8 @@
 //! clock of the change that last set it, recorded in `column_clocks`. A change that loses is
 //! still recorded: the log is the history. Two kinds of change are refused outright, reported
 //! per change and not recorded, so no other device ever sees them: one a phone may not make
-//! (anything but its writable columns and draft inserts) and a value over the size limit.
+//! (anything but its writable columns and inserts of drafts and view settings) and a value over
+//! the size limit.
 //!
 //! Every statement runs in a tenant transaction. Mirrored rows are also keyed to the pushing
 //! user: ids are client-chosen and unique only per org, so a second user of the org pushing the
@@ -83,10 +84,13 @@ pub struct PushOutcome {
     pub refreshes: Vec<Refresh>,
 }
 
+/// The tables a phone may insert rows into: a draft, and the account's view settings row.
+const PHONE_INSERTABLE: &[&str] = &["drafts", "viewSettings"];
+
 /// Why `auth` may not make `change`, if it may not.
 fn refusal(auth: &AuthedDevice, change: &Change) -> Option<&'static str> {
     let phone_allowed = match change.op {
-        ChangeOp::Insert => change.table == "drafts",
+        ChangeOp::Insert => PHONE_INSERTABLE.contains(&change.table.as_str()),
         ChangeOp::Update => change
             .column
             .as_deref()

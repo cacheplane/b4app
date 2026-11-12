@@ -10,6 +10,9 @@ extension BannerLayoutTests {
   @MainActor private func done(_ identifiers: String...) { coverage.complete(identifiers, in: self) }
   @MainActor private func back(_ app: XCUIApplication) {
     app.navigationBars.buttons.element(boundBy: 0).tap()
+    // All callers return to the list. Wait for that state before the next navigation action,
+    // as checkLayout does on other journeys; a tap alone does not prove the pop has settled.
+    XCTAssertTrue(app.buttons["new-thread-dock"].waitForExistence(timeout: 60), app.debugDescription)
   }
 
   @MainActor func testWorkspaceNavigationJourney() {

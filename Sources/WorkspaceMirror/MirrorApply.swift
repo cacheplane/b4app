@@ -117,6 +117,7 @@ extension MirrorStore {
       case "drafts": state.batch.touchedThreadIds.insert(change.rowId)
       case "environments": state.batch.touchedEnvironmentIds.insert(change.rowId)
       case "connectionUsage": state.batch.touchedUsageIds.insert(change.rowId)
+      case "viewSettings": state.batch.touchedViewSettings = true
       case "turns", "runtimeRequests": state.batch.touchedThreadIds.formUnion(parents)
       case "environmentFolders": state.batch.touchedEnvironmentIds.formUnion(parents)
       case "displayItems" where change.op != "delete":
@@ -190,23 +191,38 @@ extension MirrorStore {
   }
 
   /// Applies one change at `hlc` inside the open transaction.
+  ///
+  /// A row of a `MirrorSchema.partialInsertTables` table is merged column by column, as the Mac's
+  /// `RemoteApply` merges it: an insert writes and clocks only the columns it carries with a value (a
+  /// null or absent one is "not set"), and an update of a row the mirror does not hold creates the row
+  /// (its key alone) first, since a snapshot may deliver the row as updates. The view settings row is
+  /// only ever `view`; it is never deleted and its key never changes.
   func applyOne(_ change: StoredChange, at hlc: String) throws -> Outcome {
     guard let key = MirrorSchema.syncedTables.first(where: { $0.table == change.table })?.key,
       let declared = columns[change.table]
     else { return .skipped }
     let table = change.table
+    let partial = MirrorSchema.partialInsertTables.contains(table)
+    if table == "viewSettings",
+      change.rowId != ViewSettings.rowId || change.op == "delete" || change.column == key
+    {
+      return .skipped
+    }
     let clocked = (SyncColumns.clocked[table] ?? []).filter { declared[$0] != nil }
     do {
       switch change.op {
       case "insert":
         guard var object = change.value?.objectValue else { return .skipped }
+        if partial { object = object.filter { $0.value != .null } }
         if object[key] == nil { object[key] = .string(change.rowId) }
+        guard object[key] == .string(change.rowId) || !partial else { return .skipped }
         for column in MirrorSchema.localColumns { object[column] = nil }
         if table == "connections" { Self.blankConnection(&object) }
         if MirrorSchema.ownedTables.contains(table) { object["ownerDeviceId"] = .string(change.deviceId) }
         // On an existing row, a clocked column whose stored clock is not older keeps its value.
         var losing: Set<String> = []
-        if try exists(table, key: key, change.rowId) {
+        let existed = try exists(table, key: key, change.rowId)
+        if existed {
           for column in clocked where column != key {
             if let stored = try columnClockLocked(table, change.rowId, column),
               !Self.isOlder(stored, than: hlc)
@@ -216,8 +232,9 @@ extension MirrorStore {
           }
         }
         let provided = object.keys.filter { declared[$0] != nil }.sorted()
-        let assigned = declared.keys.filter { $0 != key && !losing.contains($0) }.sorted()
-        if assigned.isEmpty, !losing.isEmpty { return .unchanged }
+        let assigned = (partial ? provided : Array(declared.keys))
+          .filter { $0 != key && !losing.contains($0) }.sorted()
+        if assigned.isEmpty, !losing.isEmpty || (partial && existed) { return .unchanged }
         let assignments = assigned.map {
           provided.contains($0)
             ? "\(Self.quote($0)) = excluded.\(Self.quote($0))" : "\(Self.quote($0)) = NULL"
@@ -228,7 +245,7 @@ extension MirrorStore {
           + Self.quote(key) + ") DO "
           + (assignments.isEmpty ? "NOTHING" : "UPDATE SET " + assignments.joined(separator: ", "))
         try run(sql, provided.map { bindable(object[$0]!, table: table, column: $0) })
-        for column in clocked where !losing.contains(column) {
+        for column in clocked where !losing.contains(column) && (!partial || provided.contains(column)) {
           try advanceClock(table, change.rowId, column, to: hlc)
         }
       case "update":
@@ -236,10 +253,17 @@ extension MirrorStore {
           !MirrorSchema.localColumns.contains(column),
           var value = change.value
         else { return .skipped }
+        var created = false
+        if partial, !(try exists(table, key: key, change.rowId)) {
+          try run(
+            "INSERT INTO \(Self.quote(table)) (\(Self.quote(key))) VALUES (?)", [.text(change.rowId)])
+          if clocked.contains(key) { try advanceClock(table, change.rowId, key, to: hlc) }
+          created = true
+        }
         if clocked.contains(column), let stored = try columnClockLocked(table, change.rowId, column),
           !Self.isOlder(stored, than: hlc)
         {
-          return .unchanged
+          return created ? .applied : .unchanged
         }
         if table == "connections", let blank = Self.connectionBlanks[column] { value = blank }
         try run(

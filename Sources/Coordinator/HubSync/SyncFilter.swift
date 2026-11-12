@@ -27,7 +27,7 @@ enum SyncFilter {
   static let payloadLimit = 1_048_576
   static let blankedConnectionColumns: Set<String> = ["authReference", "localServerId", "target"]
   /// The 19 columns of `connections` (`0001_init.sql`, `0005_relay.sql`,
-  /// `0009_thread_runtime_choice.sql`, and `0013_connection_commands.sql`), equal to the hub's
+  /// `0009_thread_runtime_choice.sql`, and `0014_connection_commands.sql`), equal to the hub's
   /// `TableSpec`.
   static let connectionColumns: Set<String> = [
     "id", "kind", "label", "enabled", "profileRevision", "target", "routeKey", "b4Mode", "localServerId",
