@@ -317,8 +317,8 @@ extension Array where Element == ScreenElement {
     // moves the account.
     let transport = ScriptedTransport()
     let model = try await connected(signedIn, transport: transport)
-    transport.script(.environmentCreate, [.failure(WorkspaceError(.signedOut, "Nobody is signed in."))])
-    _ = await model.createEnvironment(name: "x", folders: [])
+    transport.script(.environmentRename, [.failure(WorkspaceError(.signedOut, "Nobody is signed in."))])
+    _ = await model.editEnvironment(WorkEnvironment(id: "x"), name: "x")
     #expect(model.accountState == .signedIn)
     #expect(model.rootScreen == .workspace)
   }

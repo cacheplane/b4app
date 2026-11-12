@@ -848,27 +848,26 @@ private struct AttentionDocument: Decodable {
     let model = try await connected(transport)
     #expect(model.environments.map(\.id) == ["pa"])
 
-    await model.renameEnvironment(id: "pa", name: "Renamed")
+    let alpha = try #require(model.environments.first)
+    _ = await model.editEnvironment(alpha, name: "Renamed")
     #expect(transport.calls(.environmentRename).first?["environmentId"]?.stringValue == "pa")
     #expect(transport.calls(.environmentRename).first?["name"]?.stringValue == "Renamed")
     #expect(model.environments.first?.name == "Renamed")
 
-    let created = await model.createEnvironment(name: "New", folders: ["/Users/brian/x"])
-    #expect(created?.id == "p-new")
-    #expect(
-      transport.calls(.environmentCreate).first?["folders"]?.arrayValue?.compactMap(\.stringValue) == [
-        "/Users/brian/x"
-      ])
-    #expect(model.environments.map(\.id).contains("p-new"))
-
-    await model.addFolder(environmentId: "pa", path: "/Users/brian/y")
+    // A folder change is one update, the name left alone when it did not change.
+    let renamed = try #require(model.environments.first)
+    _ = await model.editEnvironment(renamed, name: renamed.name, addFolders: ["/Users/brian/y"])
     let update = try #require(transport.calls(.environmentUpdate).first)
     #expect(update["environmentId"]?.stringValue == "pa")
     #expect(update["addFolders"]?.arrayValue?.compactMap(\.stringValue) == ["/Users/brian/y"])
+    #expect(update["name"] == nil || update["name"] == .null)
 
-    await model.deleteEnvironment(id: "pa")
+    // The form open on it closes when it is deleted.
+    model.openEnvironmentForm(id: "pa")
+    #expect(await model.deleteEnvironment(id: "pa") == nil)
     #expect(transport.calls(.environmentDelete).first?["environmentId"]?.stringValue == "pa")
-    #expect(model.environments.map(\.id) == ["p-new"])
+    #expect(model.environments.isEmpty)
+    #expect(model.editingEnvironmentId == nil)
 
     // An event from elsewhere (the other device renamed one) refetches the list.
     transport.set(environments: [environment("p-new", "Elsewhere")])
@@ -876,12 +875,44 @@ private struct AttentionDocument: Decodable {
     try await waitUntil("refetched") { model.environments.first?.name == "Elsewhere" }
   }
 
+  @Test func theEnvironmentFormClosesForAThreadTheComposerOrItsEnvironmentGoing() async throws {
+    let transport = ScriptedTransport()
+    transport.set(threads: [thread("t1", environment: "pa")], environments: [environment("pa", "Alpha")])
+    let model = try await connected(transport)
+    model.openEnvironmentForm(id: "pa")
+    #expect(model.editingEnvironmentId == "pa")
+    await model.openThread(id: "t1")
+    #expect(model.editingEnvironmentId == nil)
+
+    // Done shows what was under it: the selection is untouched.
+    let selected = model.selectedThreadId
+    model.openEnvironmentForm(id: "pa")
+    model.closeEnvironmentForm()
+    #expect(model.editingEnvironmentId == nil && model.selectedThreadId == selected)
+
+    model.openEnvironmentForm(id: "pa")
+    await model.openNewThread()
+    #expect(model.editingEnvironmentId == nil)
+
+    // Deleted elsewhere (the phone, or emptied by a move): the list's refetch closes it.
+    model.openEnvironmentForm(id: "pa")
+    transport.set(environments: [])
+    transport.emit(.environmentChanged(environmentId: "pa"))
+    try await waitUntil("closed") { model.editingEnvironmentId == nil }
+  }
+
   @Test func aRefusedEnvironmentCommandSurfacesTheReason() async throws {
     let transport = ScriptedTransport()
     transport.set(threads: [], environments: [])
     let model = try await connected(transport)
-    await model.renameEnvironment(id: "missing", name: "x")
-    #expect(model.lastError?.contains("no environment missing") == true)
+    let result = await model.editEnvironment(environment("missing", "Old"), name: "x")
+    guard case .failure(let error) = result else {
+      Issue.record("expected a failure")
+      return
+    }
+    #expect(error.message.contains("no environment missing"))
+    // The caller shows it; the model's banner is left alone.
+    #expect(model.lastError == nil)
   }
 
   // MARK: Arrivals

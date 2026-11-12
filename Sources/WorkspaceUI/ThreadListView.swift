@@ -598,6 +598,7 @@ struct EnvironmentHeading: View {
   #endif
 
   static func newThreadTitle(_ group: ListLayout.Group) -> String { "New thread in \(group.title)" }
+  static func editTitle(_ group: ListLayout.Group) -> String { "Edit \(group.title)" }
 
   /// "expanded", or "collapsed" and the spoken label of the group's most urgent state.
   static func accessibilityValue(isCollapsed: Bool, mostUrgent: ThreadState?) -> String {
@@ -626,7 +627,7 @@ struct EnvironmentHeading: View {
     }
     .buttonStyle(.plain)
     #if os(macOS)
-      .overlay(alignment: .trailing) { if hovering { newThreadButton } }
+      .overlay(alignment: .trailing) { if hovering { hoverButtons } }
       .onHover { hovering = $0 }
       .padding(.horizontal, ThreadRow.fillInset - ThreadRow.sidebarPadding)
     #endif
@@ -634,8 +635,13 @@ struct EnvironmentHeading: View {
     .accessibilityValue(Self.accessibilityValue(isCollapsed: isCollapsed, mostUrgent: group.mostUrgent))
     .accessibilityIdentifier("environment-header")
     #if os(macOS)
-      // The hover button is out of reach of VoiceOver and the keyboard; the heading offers the same.
+      // The hover buttons are out of reach of VoiceOver and the keyboard; the heading offers the same.
       .accessibilityAction(named: Self.newThreadTitle(group)) { openNewThread() }
+      .accessibilityActions {
+        if let id = group.environmentId {
+          Button(Self.editTitle(group)) { model.openEnvironmentForm(id: id) }
+        }
+      }
     #else
       .contextMenu {
         Button("New thread here", systemImage: "square.and.pencil") { openNewThread() }
@@ -666,39 +672,45 @@ struct EnvironmentHeading: View {
   }
 
   #if os(macOS)
-    /// 28 by 28, centred on the marks' column (the mark's 12 pt box ends 8 pt inside the heading).
-    private var newThreadButton: some View {
-      Button(action: openNewThread) {
-        Image(systemName: "square.and.pencil")
+    /// New thread here, then (for an environment, not "No folder") edit, as in the design's mockup; each 28
+    /// by 28, the last centred on the marks' column (the mark's 12 pt box ends 8 pt inside the heading).
+    private var hoverButtons: some View {
+      HStack(spacing: 0) {
+        hoverButton(
+          "square.and.pencil", label: Self.newThreadTitle(group), id: "environment-new-thread",
+          disabledReason: model.newThreadEntryReason, action: openNewThread)
+        if let id = group.environmentId {
+          hoverButton("slider.horizontal.3", label: Self.editTitle(group), id: "environment-edit") {
+            model.openEnvironmentForm(id: id)
+          }
+        }
+      }
+      .padding(.trailing, ThreadRow.contentInset + LLA.Metrics.mark / 2 - TopBarButton.side / 2)
+    }
+
+    private func hoverButton(
+      _ symbol: String, label: String, id: String, disabledReason: String? = nil,
+      action: @escaping () -> Void
+    ) -> some View {
+      Button(action: action) {
+        Image(systemName: symbol)
           .foregroundStyle(LLA.Color.ink)
           .frame(width: TopBarButton.side, height: TopBarButton.side)
           .contentShape(Rectangle())
       }
       .buttonStyle(.borderless)
-      .disabled(model.newThreadEntryReason != nil)
-      .help(model.newThreadEntryReason ?? Self.newThreadTitle(group))
-      .accessibilityLabel(Self.newThreadTitle(group))
-      .accessibilityIdentifier("environment-new-thread")
-      .padding(.trailing, ThreadRow.contentInset + LLA.Metrics.mark / 2 - TopBarButton.side / 2)
+      .disabled(disabledReason != nil)
+      .help(disabledReason ?? label)
+      .accessibilityLabel(label)
+      .accessibilityIdentifier(id)
     }
   #endif
-}
-
-/// An environment action the Mac asked for, from a heading's context menu or the view-options menu's
-/// "Environments" submenu (`EnvironmentActionItems`); the sidebar shows its sheet, folder picker, or
-/// confirmation.
-enum EnvironmentAction: Equatable {
-  case rename(WorkEnvironment)
-  case addFolder(WorkEnvironment)
-  case delete(WorkEnvironment)
 }
 
 #if os(macOS)
   /// The Mac's "By environment": each group's heading, then its threads unless it is collapsed, 8 pt
   /// between groups. Plain stacks, not `List`: a List drew nothing in the macOS 26 split-view sidebar
-  /// (see `SidebarView`). A heading's context menu keeps Rename, Add Folder, and (for a manual one)
-  /// Delete until the environment form gives them a home; the view-options menu's "Environments"
-  /// submenu offers the same (`EnvironmentActionItems`).
+  /// (see `SidebarView`). A heading's hover buttons and context menu open the environment form (D-212).
   struct EnvironmentGroupsView: View {
     @Bindable var model: WorkspaceModel
     let groups: [ListLayout.Group]
@@ -713,8 +725,14 @@ enum EnvironmentAction: Equatable {
               if isCollapsed { collapsed.remove(group.id) } else { collapsed.insert(group.id) }
             }
             .contextMenu {
-              if let environment = model.environments.first(where: { $0.id == group.environmentId }) {
-                EnvironmentActionItems(model: model, environment: environment)
+              if let id = group.environmentId {
+                Button("New Thread Here", systemImage: "square.and.pencil") {
+                  Task { await model.openNewThread(in: group) }
+                }
+                .disabled(model.newThreadEntryReason != nil)
+                Button("Edit Environment\u{2026}", systemImage: "slider.horizontal.3") {
+                  model.openEnvironmentForm(id: id)
+                }
               }
             }
             if !isCollapsed { ThreadRows(model: model, threads: group.threads) }
@@ -725,68 +743,4 @@ enum EnvironmentAction: Equatable {
     }
   }
 
-  /// One environment's actions on the Mac: Rename, Add Folder, and for a manual environment Delete. A
-  /// heading's context menu and the view-options menu's "Environments" submenu both offer them; each
-  /// asks the model (`environmentAction`), and the sidebar's `EnvironmentActionPresenter` shows the
-  /// sheet, the folder picker, or the confirmation.
-  struct EnvironmentActionItems: View {
-    @Bindable var model: WorkspaceModel
-    let environment: WorkEnvironment
-
-    var body: some View {
-      Button("Rename\u{2026}", systemImage: "pencil") { model.environmentAction = .rename(environment) }
-      Button("Add Folder\u{2026}", systemImage: "folder.badge.plus") {
-        model.environmentAction = .addFolder(environment)
-      }
-      if environment.manual {
-        Divider()
-        Button("Delete Environment\u{2026}", systemImage: "trash", role: .destructive) {
-          model.environmentAction = .delete(environment)
-        }
-      }
-    }
-  }
-
-  /// Shows what `EnvironmentActionItems` asked for: the rename sheet, the folder picker (its folder is
-  /// added to the environment), or the delete confirmation. On the sidebar, so it is there under either
-  /// arrangement and for the toolbar's menu.
-  struct EnvironmentActionPresenter: ViewModifier {
-    @Bindable var model: WorkspaceModel
-    @State private var renaming: WorkEnvironment?
-    @State private var deleting: WorkEnvironment?
-    @State private var folderTarget: WorkEnvironment?
-    @State private var choosingFolder = false
-
-    func body(content: Content) -> some View {
-      content
-        .onChange(of: model.environmentAction) { _, action in
-          guard let action else { return }
-          model.environmentAction = nil
-          switch action {
-          case .rename(let environment): renaming = environment
-          case .addFolder(let environment):
-            folderTarget = environment
-            choosingFolder = true
-          case .delete(let environment): deleting = environment
-          }
-        }
-        .sheet(item: $renaming) { RenameEnvironmentSheet(model: model, environment: $0) }
-        .confirmationDialog(
-          deleting.map { "Delete \u{201C}\($0.displayName)\u{201D}?" } ?? "Delete environment?",
-          isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
-          titleVisibility: .visible, presenting: deleting
-        ) { environment in
-          Button("Delete Environment", role: .destructive) {
-            Task { await model.deleteEnvironment(id: environment.id) }
-          }
-          Button("Cancel", role: .cancel) {}
-        } message: { _ in
-          Text("Its folders return to automatic environments. No threads are deleted.")
-        }
-        .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
-          guard case .success(let url) = result, let environment = folderTarget else { return }
-          Task { await model.addFolder(environmentId: environment.id, path: url.path) }
-        }
-    }
-  }
 #endif

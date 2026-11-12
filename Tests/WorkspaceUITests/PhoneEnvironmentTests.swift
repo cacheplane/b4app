@@ -8,7 +8,7 @@ import WorkspaceProtocol
 // MARK: - Fixture
 
 /// Two Macs. `mac-1` owns the automatic environments `auto-a` and `auto-b` and the manual `work`; `mac-2`
-/// owns the automatic `studio`.
+/// owns the automatic `studio`. The phone only edits and deletes them (D-212).
 private enum Environments {
   static func folder(_ id: String, _ environmentId: String, _ path: String) -> EnvironmentFolder {
     EnvironmentFolder(id: id, environmentId: environmentId, path: path, createdAt: PhoneFixture.at(-1000))
@@ -53,66 +53,16 @@ private enum Environments {
 // MARK: - Tests
 
 @Suite(.serialized) @MainActor struct PhoneEnvironmentTests {
-  @Test func aNewEnvironmentGoesToTheChosenMacWithItsOwnId() async throws {
-    let transport = ScriptedTransport()
-    let model = try await Environments.model(transport)
-    let draft = PhoneEnvironmentDraft(model: model, request: .create)
-    #expect(draft.isNew && draft.macs.count == 2)
-    let mac = try #require(draft.deviceId)
-    // Only the chosen Mac's automatic environments' folders are offered: a manual environment's folder would be
-    // refused, and the other Mac's are not on this one.
-    let expected = mac == "mac-1" ? ["/work/a", "/work/b"] : ["/studio/s"]
-    #expect(Set(draft.suggestions) == Set(expected))
-    draft.selectMac("mac-1")
-    #expect(draft.blockedReason == "Add a folder on \(PhoneFixture.macName).")
-    #expect(!draft.canSave)
-
-    draft.add("/work/a")
-    draft.typed = "  ~/repos/new  "
-    draft.addTyped()
-    #expect(draft.folders == ["/work/a", "~/repos/new"] && draft.typed.isEmpty)
-    #expect(draft.suggestions == ["/work/b"])
-    draft.name = " New "
-    #expect(draft.canSave)
-
-    let created = WorkEnvironment(id: draft.environmentId, name: "New", manual: true, folders: [])
-    transport.script(.environmentCreate, [Environments.reply(created)])
-    await draft.submit()
-    #expect(draft.finished && draft.failure == nil)
-    let call = try #require(transport.recorded(.environmentCreate).first)
-    #expect(call.params["deviceId"] == "mac-1")
-    #expect(call.params["environmentId"] == .string(draft.environmentId))
-    #expect(call.params["name"] == "New")
-    #expect(call.params["folders"] == ["/work/a", "~/repos/new"])
-    #expect(model.environments.contains { $0.id == draft.environmentId })
-    await model.disconnect()
-  }
-
-  @Test func switchingMacsDropsTheOtherMacsFolders() async throws {
-    let transport = ScriptedTransport()
-    let model = try await Environments.model(transport)
-    let draft = PhoneEnvironmentDraft(model: model, request: .create)
-    draft.selectMac("mac-1")
-    draft.add("/work/a")
-    draft.typed = "/typed"
-    draft.addTyped()
-    draft.selectMac("mac-2")
-    #expect(draft.folders == ["/typed"])
-    #expect(draft.suggestions == ["/studio/s"])
-    await model.disconnect()
-  }
-
   @Test func theMacsRefusalAndAnOfflineMacShowInTheSheet() async throws {
     let transport = ScriptedTransport()
     let model = try await Environments.model(transport)
-    let draft = PhoneEnvironmentDraft(model: model, request: .create)
-    draft.selectMac("mac-1")
+    let draft = PhoneEnvironmentDraft(model: model, request: .edit(environmentId: "work"))
     draft.typed = "/not/here"
     draft.addTyped()
 
     // The Mac checks the folder and says why it refused; the sheet stays open with the text.
     transport.script(
-      .environmentCreate,
+      .environmentUpdate,
       [.failure(WorkspaceError(.protocolInvalid, "Folder /not/here does not exist."))])
     await draft.submit()
     #expect(!draft.finished)
@@ -120,7 +70,7 @@ private enum Environments {
 
     // The hub says the Mac went offline: worded with its name and when it was last seen.
     transport.script(
-      .environmentCreate,
+      .environmentUpdate,
       [
         .failure(
           WorkspaceError(
@@ -130,18 +80,32 @@ private enum Environments {
     await draft.submit()
     #expect(draft.failure?.hasPrefix("Brian's Mac is offline · last seen ") == true)
 
-    // Once the phone knows the Mac is offline, nothing is sent: Create is off with the notice.
+    // Once the phone knows the Mac is offline, nothing is sent: Save is off with the notice.
     transport.emit(PhoneFixture.presence("mac-1", online: false, lastSeen: -120))
     try await waitUntil("offline") { model.hostPresence["mac-1"]?.online == false }
     let reason = try #require(draft.blockedReason)
     #expect(reason.hasPrefix("\(PhoneFixture.macName) is offline · last seen "))
     #expect(!draft.canSave)
-    #expect(transport.recorded(.environmentCreate).count == 2)
-    // The other Mac can still take a new environment.
-    draft.selectMac("mac-2")
-    #expect(draft.blockedReason == nil)
-    // A new sheet opens on the Mac that can take it.
-    #expect(PhoneEnvironmentDraft(model: model, request: .create).deviceId == "mac-2")
+    #expect(transport.recorded(.environmentUpdate).count == 2)
+    await model.disconnect()
+  }
+
+  @Test func theNameStartsAsShownAndAnUntouchedNameSavesNothing() async throws {
+    let transport = ScriptedTransport()
+    let model = try await Environments.model(transport)
+    let draft = PhoneEnvironmentDraft(model: model, request: .edit(environmentId: "auto-a"))
+    // An automatic environment's generated name is in the field, and leaving it is no rename.
+    #expect(draft.name == "a" && !draft.canSave)
+    draft.name = " a "
+    #expect(!draft.canSave)
+    // Its stored name is already empty, so clearing the field changes nothing either.
+    draft.name = ""
+    #expect(!draft.canSave)
+    draft.name = "App"
+    #expect(draft.canSave)
+    transport.script(.environmentRename, [Environments.reply(Environments.autoA)])
+    await draft.submit()
+    #expect(transport.recorded(.environmentRename).first?.params["name"] == "App")
     await model.disconnect()
   }
 
@@ -152,7 +116,7 @@ private enum Environments {
     try await waitUntil("offline") { model.hostPresence["mac-1"]?.online == false }
 
     let draft = PhoneEnvironmentDraft(model: model, request: .edit(environmentId: "work"))
-    #expect(!draft.isNew && draft.folders == ["/work/w"])
+    #expect(draft.folders == ["/work/w"])
     #expect(!draft.canSave)
     draft.name = "Renamed"
     // The Mac is offline, and still a rename saves: it goes through the change log.
@@ -193,20 +157,25 @@ private enum Environments {
     await model.disconnect()
   }
 
-  @Test func anAutomaticEnvironmentKeepsItsFolderAndCannotBeDeleted() async throws {
+  @Test func anEnvironmentKeepsItsLastFolderAndAnyCanBeDeleted() async throws {
     let transport = ScriptedTransport()
     let model = try await Environments.model(transport)
     let draft = PhoneEnvironmentDraft(model: model, request: .edit(environmentId: "auto-a"))
-    #expect(!draft.canRemove("/work/a") && !draft.canDelete)
+    #expect(!draft.canRemove("/work/a") && draft.canDelete)
     draft.remove("/work/a")
     #expect(draft.folders == ["/work/a"])
-    // A folder it gains can be taken back out before saving.
+    // With a second folder either can go, the first too.
     draft.add("/work/b")
-    #expect(draft.canRemove("/work/b"))
+    #expect(draft.canRemove("/work/a") && draft.canRemove("/work/b"))
+    // Every other environment's folder on this Mac is offered, a manual one's too: adding moves it.
+    #expect(
+      Set(PhoneEnvironmentDraft(model: model, request: .edit(environmentId: "auto-b")).suggestions) == [
+        "/work/a", "/work/w",
+      ])
     await model.disconnect()
   }
 
-  @Test func deletingAManualEnvironmentAsksItsMac() async throws {
+  @Test func deletingAnEnvironmentAsksItsMac() async throws {
     let transport = ScriptedTransport()
     let model = try await Environments.model(transport)
     let draft = PhoneEnvironmentDraft(model: model, request: .edit(environmentId: "work"))

@@ -40,8 +40,6 @@ struct SidebarView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { SidebarFooter(model: model) }
         .onHover { inside in if !inside { showsStowed = false } }
-        // Rename, Add Folder, and Delete, from a heading or from view options' "Environments".
-        .modifier(EnvironmentActionPresenter(model: model))
       #else
         // On "Connect your Mac" too, so the account can still be left from there.
         .toolbar {
@@ -264,10 +262,10 @@ enum ViewOptions {
 
 /// The list's view options, a menu behind a toolbar button on both platforms (decision 11): Arrange,
 /// "Threads that don't need you", "Show archived", and the connection filter. On the Mac it is the top
-/// bar's view-options button (`TopBarButton.viewOptions`), with an "Environments" submenu last (each
-/// environment's Rename, Add Folder, and Delete); on the iPhone the navigation bar's button, which keeps
-/// New Environment and Edit Environment at its foot. Both are interim, until the environment form gives
-/// them a home of their own. The items check the stored values; choosing one writes it for every device.
+/// bar's view-options button (`TopBarButton.viewOptions`), with an "Edit Environment" submenu last that
+/// opens an environment's form (D-212), the way to one under "Needs you first"; on the iPhone the
+/// navigation bar's button, which keeps Edit Environment at its foot. The items check the stored values;
+/// choosing one writes it for every device.
 struct MoreMenu: View {
   @Bindable var model: WorkspaceModel
 
@@ -352,27 +350,27 @@ struct MoreMenu: View {
   }
 
   #if os(macOS)
-    /// Every environment, each a submenu of Rename, Add Folder, and (manual ones) Delete, as its
-    /// heading's context menu offers them; the only way to them under "Needs you first", and for an
-    /// environment without live threads, until the environment form.
+    /// Every environment, each opening its form in the main view (D-212): the way to one under "Needs you
+    /// first", and to an environment without live threads.
     @ViewBuilder private var environmentActions: some View {
       let environments = ViewOptions.environments(model.environments)
       if !environments.isEmpty {
         Divider()
-        Menu("Environments") {
+        Menu("Edit Environment") {
           ForEach(environments) { environment in
-            Menu(environment.displayName) { EnvironmentActionItems(model: model, environment: environment) }
+            Button("\(environment.displayName)\u{2026}") { model.openEnvironmentForm(id: environment.id) }
           }
         }
         .accessibilityIdentifier("view-options-environments")
       }
     }
   #else
-    /// New Environment and Edit Environment, which have no other home on the phone yet. A name alone
-    /// saves through the change log; folders and Delete go to the environment's Mac.
+    /// Edit Environment, which has no other home on the phone. A name alone saves through the change log;
+    /// folders and Delete go to the environment's Mac. There is no New Environment: starting a thread in
+    /// a folder makes one (D-212).
     @ViewBuilder private var environmentActions: some View {
-      Divider()
       if !model.filterEnvironments.isEmpty {
+        Divider()
         Menu("Edit Environment", systemImage: "pencil") {
           ForEach(model.filterEnvironments) { environment in
             Button("\(environment.displayName)\u{2026}") {
@@ -382,10 +380,6 @@ struct MoreMenu: View {
         }
         .accessibilityIdentifier("edit-environment")
       }
-      Button("New Environment\u{2026}", systemImage: "folder.badge.plus") {
-        model.environmentSheet = .create
-      }
-      .accessibilityIdentifier("new-environment")
     }
   #endif
 

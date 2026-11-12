@@ -78,9 +78,8 @@ public enum EnvironmentList: WorkspaceCommand {
   public static let method = Method.environmentList
 }
 
-/// Create a manual environment over one or more existing folders. A folder that belongs to an automatic
-/// environment moves out of it (its threads follow, and an automatic environment left empty is deleted); a
-/// folder of another manual environment is refused.
+/// Create a manual environment over one or more existing folders. A folder that belongs to another
+/// environment moves out of it (its threads follow, and an environment left empty is deleted; D-212).
 ///
 /// The phone sends it over the relay: `deviceId` names the Mac the folders are on (the hub routes by
 /// it; the Mac ignores it), and `environmentId` is a lowercase UUID the phone mints, so a resend of the
@@ -106,8 +105,10 @@ public enum EnvironmentCreate: WorkspaceCommand {
   public static let method = Method.environmentCreate
 }
 
-/// Rename an environment and add or remove folders in one call. Adding a folder to an automatic environment
-/// makes it manual. Every folder is validated before anything changes.
+/// Rename an environment and add or remove folders in one call. A folder another environment owns moves here
+/// with its threads, and an environment that leaves empty is deleted; a removed folder's threads get an
+/// automatic environment of their own; the environment keeps at least one folder. Adding a folder makes the
+/// environment manual. Every folder is validated before anything changes (D-212).
 public enum EnvironmentUpdate: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
     public var environmentId: String
@@ -141,7 +142,8 @@ public enum EnvironmentRename: WorkspaceCommand {
   public static let method = Method.environmentRename
 }
 
-/// Delete a manual environment; its folders return to automatic environments where threads use them.
+/// Delete an environment, automatic or manual. Its threads move to "No folder" and stay there; nothing on
+/// disk is touched (D-212).
 public enum EnvironmentDelete: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
     public var environmentId: String

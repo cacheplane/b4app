@@ -324,6 +324,18 @@ struct SnapshotShell: View {
     }
   }
 
+  /// The Mac's environment form (D-212): the fixture's b4app with a second folder, so the first carries
+  /// "Threads start here" and the second Remove; then the delete confirmation in place.
+  @Test func environmentForm() async throws {
+    let model = try await ListFixture.model()
+    var environment = try #require(model.environments.first { $0.id == ListFixture.b4app })
+    environment.folders.append(
+      EnvironmentFolder(id: "f2", environmentId: environment.id, path: NSHomeDirectory() + "/repos/b4"))
+    try await render("environmentForm", size: CGSize(width: 760, height: 640)) {
+      EnvironmentForm(model: model, environment: environment)
+    }
+  }
+
   /// "By environment" with a thread in each of the six states: b4app, Marketing site, and No folder by
   /// name (Docs has no live thread, so no heading); then b4app collapsed over its approval; then with
   /// "Show archived" on, the archived block after the last group; then the phone's list.
