@@ -215,25 +215,41 @@ private func seedThread(_ db: WorkspaceDatabase, _ id: String) throws {
     #expect(try db.thread(id: "t1")?.environmentId == "r")
   }
 
-  @Test func deletingAManualEnvironmentKeepsFoldersThreadsUseAsAutomaticEnvironments() throws {
+  @Test func deletingAnyEnvironmentLeavesItsThreadsWithNoEnvironment() throws {
     let db = try WorkspaceDatabase.temporary()
     try seedThread(db, "t1")
+    try seedThread(db, "t2")
     _ = try db.insertEnvironment(
       WorkEnvironment(id: "m", name: "M", manual: true), folders: ["/x/a", "/x/b"])
     _ = try db.insertEnvironment(WorkEnvironment(id: "auto"), folders: ["/x/c"])
     try db.setThreadEnvironment(threadIds: ["t1"], environmentId: "m")
+    try db.setThreadEnvironment(threadIds: ["t2"], environmentId: "auto")
 
-    #expect(throws: WorkspaceError.self) { _ = try db.deleteManualEnvironment(id: "auto", releasing: []) }
-    #expect(try db.environment(id: "auto") != nil)
-
-    let result = try db.deleteManualEnvironment(
-      id: "m",
-      releasing: [FolderRelease(path: "/x/a", threadIds: ["t1"], replacement: WorkEnvironment(id: "r"))])
-    #expect(result.deletedEnvironmentIds == ["m"])
-    #expect(Set(result.changedEnvironmentIds) == ["m", "r"])
+    let result = try db.deleteEnvironment(id: "m")
+    #expect(result.deletedEnvironmentIds == ["m"] && result.changedEnvironmentIds == ["m"])
     #expect(try db.environment(id: "m") == nil)
+    #expect(try db.environment(folderPath: "/x/a") == nil)
     #expect(try db.environment(folderPath: "/x/b") == nil)
-    #expect(try db.environment(folderPath: "/x/a")?.id == "r")
-    #expect(try db.thread(id: "t1")?.environmentId == "r")
+    #expect(try db.thread(id: "t1")?.environmentId == nil)
+    // An automatic environment can be deleted too.
+    try db.deleteEnvironment(id: "auto")
+    #expect(try db.thread(id: "t2")?.environmentId == nil)
+    #expect(try db.listEnvironments().isEmpty)
+    #expect(throws: WorkspaceError.self) { try db.deleteEnvironment(id: "auto") }
+  }
+
+  @Test func takingAManualEnvironmentsLastFolderDeletesIt() throws {
+    let db = try WorkspaceDatabase.temporary()
+    try seedThread(db, "t1")
+    _ = try db.insertEnvironment(WorkEnvironment(id: "a", name: "A", manual: true), folders: ["/x/a"])
+    _ = try db.insertEnvironment(WorkEnvironment(id: "b", name: "B", manual: true), folders: ["/x/b"])
+    try db.setThreadEnvironment(threadIds: ["t1"], environmentId: "b")
+
+    let result = try db.updateEnvironment(
+      id: "a", name: nil, placing: [FolderPlacement(path: "/x/b", threadIds: ["t1"])], releasing: [])
+    #expect(result.deletedEnvironmentIds == ["b"])
+    #expect(try db.environment(id: "b") == nil)
+    #expect(try db.environment(id: "a")?.folders.map(\.path) == ["/x/a", "/x/b"])
+    #expect(try db.thread(id: "t1")?.environmentId == "a")
   }
 }
