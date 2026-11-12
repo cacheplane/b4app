@@ -71,7 +71,10 @@ import WorkspaceProtocol
     let endpointReference = SecretRef.make()
     let endpointValue = "MAIN4723_SYNTHETIC_ENDPOINT_VALUE_NOT_IN_ARCHIVE"
     try await secrets.put(endpointReference, value: endpointValue)
-    try source.write { try F.seed($0, protocolProfile: true, endpointReference: endpointReference.rawValue) }
+    try source.write {
+      try F.seed(
+        $0, schema: .currentFourteen, protocolProfile: true, endpointReference: endpointReference.rawValue)
+    }
     try F.seedPrivate(source)
     let before = try source.read { try F.snapshot($0) }
     for table in F.protocolTables { #expect(before.rows[table]?.count == 1) }
@@ -181,7 +184,9 @@ private enum MainSchemaAdmissionFixture {
         try raw.execute(
           #"INSERT INTO "schemaMigrations" ("name","appliedAt") VALUES ($1,'main10-fixed')"#, [name])
       }
-      try seed(raw, protocolProfile: false, endpointReference: "secret:retained-endpoint-reference")
+      try seed(
+        raw, schema: .mainTen, protocolProfile: false, endpointReference: "secret:retained-endpoint-reference"
+      )
       guard try Migrator.recorded(raw) == ten,
         Set(
           try raw.execute("SELECT tablename FROM pg_tables WHERE schemaname='public'").rows.compactMap {
@@ -196,10 +201,24 @@ private enum MainSchemaAdmissionFixture {
       throw error
     }
   }
-  static func seed(_ c: PostgresConnection, protocolProfile: Bool, endpointReference: String) throws {
-    try c.execute(
-      #"INSERT INTO "projects" ("id","name","manual","createdAt","updatedAt") VALUES ('project','Retained',true,'created','updated'); INSERT INTO "projectFolders" ("id","projectId","path","createdAt") VALUES ('folder','project','/fixture/project','created')"#
-    )
+  enum SeedSchema { case mainTen, currentFourteen }
+
+  static func seed(
+    _ c: PostgresConnection, schema: SeedSchema, protocolProfile: Bool, endpointReference: String
+  ) throws {
+    let associationColumn: String
+    switch schema {
+    case .mainTen:
+      try c.execute(
+        #"INSERT INTO "projects" ("id","name","manual","createdAt","updatedAt") VALUES ('project','Retained',true,'created','updated'); INSERT INTO "projectFolders" ("id","projectId","path","createdAt") VALUES ('folder','project','/fixture/project','created')"#
+      )
+      associationColumn = "projectId"
+    case .currentFourteen:
+      try c.execute(
+        #"INSERT INTO "environments" ("id","name","manual","createdAt","updatedAt") VALUES ('project','Retained',true,'created','updated'); INSERT INTO "environmentFolders" ("id","environmentId","path","createdAt") VALUES ('folder','project','/fixture/project','created')"#
+      )
+      associationColumn = "environmentId"
+    }
     if protocolProfile {
       try c.execute(
         #"INSERT INTO "connections" ("id","kind","label","target","authReference","nativeScope","capabilities","status","authStatus","peerProfile","agentId","authMode","createdAt","updatedAt") VALUES ('connection','agentProtocol','Profile','https://example.invalid/source',$1,'native-scope','{}','ready','authenticated','b4','fixture-agent','bearer','created','updated')"#,
@@ -214,7 +233,7 @@ private enum MainSchemaAdmissionFixture {
       INSERT INTO "connections" ("id","kind","label","target","nativeScope","capabilities","status","authStatus","createdAt","updatedAt") VALUES
         ('codex','codex','Codex','/fixture/codex','codex-scope','{}','ready','authenticated','created','updated'),
         ('claude','claude','Claude','/fixture/claude','claude-scope','{}','ready','authenticated','created','updated');
-      INSERT INTO "threads" ("id","connectionId","nativeThreadId","nativeScope","projectId","readTurnId","createdAt","updatedAt")
+      INSERT INTO "threads" ("id","connectionId","nativeThreadId","nativeScope","\(associationColumn)","readTurnId","createdAt","updatedAt")
         VALUES ('thread','connection','native-thread','native-scope','project','turn','created','updated');
       INSERT INTO "turns" ("id","threadId","operationId","nativeTurnId","status","submission","outcome","createdAt","updatedAt")
         VALUES ('turn','thread','operation','native-turn','reconciling','unknown',NULL,'created','updated');

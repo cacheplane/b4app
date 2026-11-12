@@ -107,6 +107,22 @@ import WorkspaceProtocol
       ).sorted()
   }
 
+  // Dedicated test work suspends its retained Task instead of blocking a cooperative worker.
+  // The nonthrowing overload keeps the drainer's original Task<Bool, Never> result contract.
+  private static func onDedicatedMigrationThread<T: Sendable>(
+    _ operation: @escaping @Sendable () -> T
+  ) async -> T {
+    await withCheckedContinuation { continuation in
+      Thread { continuation.resume(returning: operation()) }.start()
+    }
+  }
+
+  private static func onDedicatedMigrationThread<T: Sendable>(
+    _ operation: @escaping @Sendable () throws -> T
+  ) async throws -> T {
+    try await onDedicatedMigrationThread { Result<T, any Error> { try operation() } }.get()
+  }
+
   private static func observed(
     within budget: Duration = .seconds(2), _ signal: () -> Bool
   ) async -> Bool {
@@ -198,10 +214,12 @@ import WorkspaceProtocol
       let entered = Mutex(false), drainStarted = Mutex(false), finished = Mutex(false)
       let release = DispatchSemaphore(value: 0)
       let borrower = Task.detached {
-        try db.read { _ in
-          entered.withLock { $0 = true }
-          guard release.wait(timeout: .now() + .seconds(8)) == .success else {
-            throw FixtureFailure.barrierTimeout
+        try await Self.onDedicatedMigrationThread {
+          try db.read { _ in
+            entered.withLock { $0 = true }
+            guard release.wait(timeout: .now() + .seconds(8)) == .success else {
+              throw FixtureFailure.barrierTimeout
+            }
           }
         }
       }
@@ -209,10 +227,12 @@ import WorkspaceProtocol
       // Save a close failure, rather than throwing before release/join.
       let closed = Result { try db.close() }
       let drainer = Task.detached {
-        drainStarted.withLock { $0 = true }
-        let result = db.closeForMigration(timeout: .seconds(2))
-        finished.withLock { $0 = true }
-        return result
+        await Self.onDedicatedMigrationThread {
+          drainStarted.withLock { $0 = true }
+          let result = db.closeForMigration(timeout: .seconds(2))
+          finished.withLock { $0 = true }
+          return result
+        }
       }
       let started = await Self.observed { drainStarted.withLock { $0 } }
       let finishedWhileHeld = await Self.observed(within: .milliseconds(75)) { finished.withLock { $0 } }
@@ -244,25 +264,29 @@ import WorkspaceProtocol
       let entered = Mutex(false), stageCalls = Mutex(0)
       let release = DispatchSemaphore(value: 0)
       let borrower = Task.detached {
-        try db.read { _ in
-          entered.withLock { $0 = true }
-          guard release.wait(timeout: .now() + .seconds(8)) == .success else {
-            throw FixtureFailure.barrierTimeout
+        try await Self.onDedicatedMigrationThread {
+          try db.read { _ in
+            entered.withLock { $0 = true }
+            guard release.wait(timeout: .now() + .seconds(8)) == .success else {
+              throw FixtureFailure.barrierTimeout
+            }
           }
         }
       }
       let ready = await Self.observed { entered.withLock { $0 } }
       let guardCaller = Task.detached {
-        let start = ContinuousClock.now
-        let drained = db.closeForMigration(timeout: .milliseconds(100))
-        let elapsed = start.duration(to: .now)
-        if drained {
-          let c = try Self.connection(fixture.endpoint)
-          try WorkspaceDatabase.migrateWithBackup(c, endpoint: fixture.endpoint, backupDirectory: nil) {
-            _ in stageCalls.withLock { $0 += 1 }
+        try await Self.onDedicatedMigrationThread {
+          let start = ContinuousClock.now
+          let drained = db.closeForMigration(timeout: .milliseconds(100))
+          let elapsed = start.duration(to: .now)
+          if drained {
+            let c = try Self.connection(fixture.endpoint)
+            try WorkspaceDatabase.migrateWithBackup(c, endpoint: fixture.endpoint, backupDirectory: nil) {
+              _ in stageCalls.withLock { $0 += 1 }
+            }
           }
+          return (drained, elapsed)
         }
-        return (drained, elapsed)
       }
       let guarded = await guardCaller.result
       let after = Result { try Self.snapshot(fixture.raw) }

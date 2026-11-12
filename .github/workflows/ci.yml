@@ -113,6 +113,8 @@ jobs:
         run: swift test --filter 'SocketResponseOwnershipTests|SocketLifecycleTests|SocketClosePreservationTests|OwnedCloseConcurrencyTests|SocketServerShutdownTests'
       - name: Focused Agent Protocol transport regressions
         run: swift test --filter AgentProtocolTransportTests
+      - name: Focused Agent Protocol foundation regressions
+        run: swift test --filter 'AgentProtocol|ProtocolProjectionStoreTests'
       - name: Test
         run: swift test
 
