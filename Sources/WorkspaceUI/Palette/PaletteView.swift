@@ -157,8 +157,13 @@ struct PaletteLead: View {
         RoundedRectangle(cornerRadius: LLA.Radius.card, style: .continuous).strokeBorder(LLA.Color.rule)
       )
       .clipShape(RoundedRectangle(cornerRadius: LLA.Radius.card, style: .continuous))
-      .llaPopoverShadow()
-      .animation(pageAnimation, value: palette.page)
+      // In a panel the window draws the shadow, and the panel takes each new height at once: an
+      // animated height would leave the window, and its shadow, a step behind the card.
+      .shadow(
+        color: LLA.Color.ink.opacity(floating ? 0 : 0.12), radius: floating ? 0 : 18, x: 0,
+        y: floating ? 0 : 8
+      )
+      .animation(floating ? nil : pageAnimation, value: palette.page)
       .accessibilityElement(children: .contain)
       .accessibilityLabel(palette.purpose.title)
       .onAppear { focused = true }

@@ -84,14 +84,13 @@ private let fakeClaude =
       model.showSearch = true
       try await window.capture(to: "\(dir)/search-\(suffix).png")
       model.showSearch = false
-      // The card as the app shows it, alone in a panel of its own (`FloatingPanel`), with the margin
-      // the panel leaves for its shadow.
+      // The card as the app shows it, alone in a panel that is exactly its size (`FloatingPanel`).
       do {
         let card = SnapshotWindow(
           rootView: PaletteView(model: model, floating: true)
             .frame(width: MacPalette.width, height: MacPalette.fullHeight, alignment: .top)
-            .padding(48).environment(\.floatsPalettes, true),
-          untitled: true, size: CGSize(width: MacPalette.width + 96, height: MacPalette.fullHeight + 96))
+            .environment(\.isInFloatingPanel, true),
+          untitled: true, size: CGSize(width: MacPalette.width, height: MacPalette.fullHeight))
         card.appearance = window.appearance
         try await card.capture(to: "\(dir)/palette-panel-\(suffix).png")
         card.close()

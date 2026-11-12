@@ -7,44 +7,166 @@
     /// a small window. The app's root sets it; a view drawn without it (a snapshot, a preview) keeps
     /// its palette inside itself.
     @Entry var floatsPalettes = false
-  }
-
-  /// A borderless panel that takes the keyboard without taking the app's main window away from the
-  /// window under it.
-  final class PalettePanel: NSPanel {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { false }
+    /// The view is the content of a `FloatingPanel`: the window draws its shadow and its corners, so
+    /// the view draws neither.
+    @Entry var isInFloatingPanel = false
   }
 
   /// Where a panel opens over the view that presents it.
   nonisolated enum FloatingPanelPlacement: Sendable, Equatable {
     /// Centred across, its top this far under the view's top.
     case top(CGFloat)
-    /// Centred both ways.
+    /// Centred both ways, as if it were at its tallest.
     case centered
   }
 
-  /// Presents `content` in a panel over the window, attached to it (it moves with the window and
-  /// follows it to full screen) but not clipped by it. The panel is transparent and `size` large, with
-  /// the content top-aligned inside a margin for its shadow, so a list that grows and shrinks never
-  /// moves the panel. Losing the keyboard (a click on the window, another app) calls `dismiss`.
+  /// The arithmetic of a panel's place: everything is the panel's top-left corner in screen points
+  /// (y up), because the panel's height changes and its top is what stays put.
+  nonisolated enum FloatingPanelGeometry {
+    /// How near home a released panel must be, on each axis, to be pulled onto it. VS Code's figure.
+    static let snapDistance: CGFloat = 20
+    /// How far the pointer travels before a press becomes a drag, so a click is never a nudge.
+    static let dragThreshold: CGFloat = 3
+
+    /// Where a panel released at `topLeft` comes to rest: on home's centre line when it is near it, on
+    /// home's top when it is near that, each on its own.
+    static func released(_ topLeft: CGPoint, home: CGPoint) -> CGPoint {
+      CGPoint(
+        x: abs(topLeft.x - home.x) <= snapDistance ? home.x : topLeft.x,
+        y: abs(topLeft.y - home.y) <= snapDistance ? home.y : topLeft.y)
+    }
+
+    /// `topLeft` moved so a panel of `size` is wholly on `visible`.
+    static func clamped(_ topLeft: CGPoint, size: CGSize, visible: CGRect) -> CGPoint {
+      CGPoint(
+        x: min(max(topLeft.x, visible.minX), max(visible.maxX - size.width, visible.minX)),
+        y: max(min(topLeft.y, visible.maxY), min(visible.minY + size.height, visible.maxY)))
+    }
+
+    /// The frame of a panel of `size` whose top-left corner is `topLeft`.
+    static func frame(topLeft: CGPoint, size: CGSize) -> CGRect {
+      CGRect(x: topLeft.x, y: topLeft.y - size.height, width: size.width, height: size.height)
+    }
+  }
+
+  /// A borderless panel that takes the keyboard without taking the app's main window away from the
+  /// window under it, and that the owner can drag by its own content.
   ///
-  /// Put it in a `background` of the view to open over. With `rememberAs`, the place it was dragged to
-  /// is kept, relative to the window, until the app quits.
+  /// A drag starts on a `WindowDragArea`, or on the empty part of a text field (past the end of its
+  /// text), once the pointer has travelled `FloatingPanelGeometry.dragThreshold`. The panel moves
+  /// itself, which is what lets it know when the drag ends (`NSWindow.performDrag` does not say). A
+  /// press on a field that never becomes a drag is given to the field afterwards, as the click it was.
+  final class PalettePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+
+    var isDraggable = false
+    /// The pointer came up after a drag.
+    var dragEnded: () -> Void = {}
+    /// A double click on a drag area: go home.
+    var resetRequested: () -> Void = {}
+
+    private struct Press {
+      var down: NSEvent
+      var pointer: CGPoint
+      var origin: CGPoint
+      /// The press landed on a field, which gets it back if it does not become a drag.
+      var onField: Bool
+      var moving = false
+    }
+    private var press: Press?
+
+    override func sendEvent(_ event: NSEvent) {
+      guard isDraggable else { return super.sendEvent(event) }
+      switch event.type {
+      case .leftMouseDown:
+        guard let onField = dragStart(event) else { break }
+        if !onField, event.clickCount == 2 {
+          resetRequested()
+          return
+        }
+        press = Press(down: event, pointer: NSEvent.mouseLocation, origin: frame.origin, onField: onField)
+        return
+      case .leftMouseDragged:
+        guard var current = press else { break }
+        let pointer = NSEvent.mouseLocation
+        let travel = CGSize(width: pointer.x - current.pointer.x, height: pointer.y - current.pointer.y)
+        if !current.moving, hypot(travel.width, travel.height) > FloatingPanelGeometry.dragThreshold {
+          current.moving = true
+        }
+        if current.moving {
+          setFrameOrigin(CGPoint(x: current.origin.x + travel.width, y: current.origin.y + travel.height))
+        }
+        press = current
+        return
+      case .leftMouseUp:
+        guard let current = press else { break }
+        press = nil
+        if current.moving {
+          dragEnded()
+        } else if current.onField {
+          // It was a click on the field's empty part: the cursor goes to the end of its text. (Giving
+          // the field the press itself now would start its own tracking loop, with no release to end it.)
+          clickPastText(current.down)
+        }
+        return
+      default:
+        break
+      }
+      super.sendEvent(event)
+    }
+
+    private func clickPastText(_ down: NSEvent) {
+      guard let hit = contentView?.hitTest(down.locationInWindow) else { return }
+      if let field = hit as? NSTextField, firstResponder !== field.currentEditor() {
+        makeFirstResponder(field)
+      }
+      if let editor = (hit as? NSTextView) ?? (hit as? NSTextField)?.currentEditor() as? NSTextView {
+        editor.setSelectedRange(NSRange(location: editor.string.utf16.count, length: 0))
+      }
+    }
+
+    /// Whether a press here can start a drag, and if so whether it is on a field: nil for a press on
+    /// anything else (a row, a button, text in a field).
+    private func dragStart(_ event: NSEvent) -> Bool? {
+      guard let hit = contentView?.hitTest(event.locationInWindow) else { return nil }
+      if hit is WindowDragArea.Handle { return false }
+      let point = hit.convert(event.locationInWindow, from: nil)
+      if let editor = hit as? NSTextView, let layout = editor.layoutManager,
+        let container = editor.textContainer
+      {
+        layout.ensureLayout(for: container)
+        let end = layout.usedRect(for: container).maxX + editor.textContainerOrigin.x
+        return point.x > end + 6 ? true : nil
+      }
+      if let field = hit as? NSTextField {
+        return point.x > field.attributedStringValue.size().width + 6 ? true : nil
+      }
+      return nil
+    }
+  }
+
+  /// Presents `content` in a panel over the window: attached to it (it moves with the window) but not
+  /// clipped by it. The panel is exactly the size of its content, which it follows with its top edge
+  /// held, and the window server draws its shadow, so nothing trails when a list grows or shrinks.
+  /// Losing the keyboard (a click on the window, another app) calls `dismiss`.
+  ///
+  /// Put it in a `background` of the view to open over. `size` is the content's width and its height
+  /// at its tallest, which places it. A `draggable` panel can be moved by its `WindowDragArea`s and by
+  /// the empty part of a text field; released near where it opens it goes back there, a double click
+  /// on a drag area sends it there, and it opens there every time.
   struct FloatingPanel<Content: View>: NSViewRepresentable {
     var isPresented: Bool
     var size: CGSize
     var placement: FloatingPanelPlacement
-    var rememberAs: String?
+    var cornerRadius: CGFloat = LLA.Radius.card
+    var draggable = false
     /// False while something the content opened (a folder panel) has the keyboard: the panel stays.
     var dismissesOnResign = true
     var dismiss: () -> Void
     @ViewBuilder var content: () -> Content
 
-    /// Room around the content for its shadow.
-    static var margin: CGFloat { 48 }
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> FloatingPanelCoordinator { FloatingPanelCoordinator() }
 
     func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
 
@@ -57,7 +179,12 @@
         if coordinator.panel == nil {
           // The anchor has no window while its view is being inserted.
           let build = self
-          DispatchQueue.main.async { coordinator.present(build, over: anchor) }
+          DispatchQueue.main.async {
+            guard build.isPresented else { return }
+            coordinator.present(
+              AnyView(build.content()), size: build.size, placement: build.placement,
+              cornerRadius: build.cornerRadius, draggable: build.draggable, over: anchor)
+          }
         } else if wasHolding, dismissesOnResign {
           // What held the keyboard has gone: the panel takes it back.
           coordinator.panel?.makeKey()
@@ -67,118 +194,242 @@
       }
     }
 
-    static func dismantleNSView(_ anchor: NSView, coordinator: Coordinator) { coordinator.close() }
-
-    @MainActor final class Coordinator: NSObject, NSWindowDelegate {
-      var panel: PalettePanel?
-      var dismiss: () -> Void = {}
-      var dismissesOnResign = true
-      private var rememberAs: String?
-      /// Where the panel opens, from the window's origin: the window may move while it is up.
-      private var home = CGSize.zero
-      private var placing = false
-
-      func present(_ build: FloatingPanel, over anchor: NSView) {
-        guard panel == nil, build.isPresented, let parent = anchor.window else { return }
-        let margin = FloatingPanel.margin
-        let frame = CGSize(width: build.size.width + margin * 2, height: build.size.height + margin * 2)
-        let panel = PalettePanel(
-          contentRect: CGRect(origin: .zero, size: frame),
-          styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = false
-        panel.isReleasedWhenClosed = false
-        panel.hidesOnDeactivate = false
-        panel.collectionBehavior = [.fullScreenAuxiliary, .transient]
-        panel.appearance = parent.effectiveAppearance
-        panel.animationBehavior = .none
-        panel.delegate = self
-        panel.contentView = NSHostingView(
-          rootView: build.content()
-            .frame(width: build.size.width, height: build.size.height, alignment: .top)
-            .padding(margin)
-            .environment(\.floatsPalettes, true))
-
-        // The view's rectangle on screen; the content's top-left goes where the placement says.
-        let onScreen = parent.convertToScreen(anchor.convert(anchor.bounds, to: nil))
-        let top: CGFloat
-        switch build.placement {
-        case .top(let offset): top = onScreen.maxY - offset
-        case .centered: top = onScreen.midY + build.size.height / 2
-        }
-        var origin = CGPoint(x: onScreen.midX - frame.width / 2, y: top + margin - frame.height)
-        home = CGSize(width: origin.x - parent.frame.origin.x, height: origin.y - parent.frame.origin.y)
-        rememberAs = build.rememberAs
-        if let key = build.rememberAs, let offset = FloatingPanelMemory.offsets[key] {
-          origin.x += offset.width
-          origin.y += offset.height
-        }
-        // Never off the screen it is on: the content stays wholly visible.
-        if let visible = (parent.screen ?? NSScreen.main)?.visibleFrame {
-          origin.x = min(max(origin.x, visible.minX - margin), visible.maxX - frame.width + margin)
-          origin.y = min(max(origin.y, visible.minY - margin), visible.maxY - frame.height + margin)
-        }
-        placing = true
-        panel.setFrameOrigin(origin)
-        placing = false
-
-        self.panel = panel
-        parent.addChildWindow(panel, ordered: .above)
-        panel.alphaValue = 0
-        panel.makeKeyAndOrderFront(nil)
-        NSAnimationContext.runAnimationGroup { context in
-          context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.06 : 0.12
-          panel.animator().alphaValue = 1
-        }
-      }
-
-      func close() {
-        guard let panel else { return }
-        self.panel = nil
-        panel.delegate = nil
-        let parent = panel.parent
-        parent?.removeChildWindow(panel)
-        panel.orderOut(nil)
-        panel.contentView = nil
-        // The window under it has the keyboard again, wherever the click or the key went.
-        if let parent, parent.isVisible, NSApp.keyWindow == nil || NSApp.keyWindow === panel {
-          parent.makeKey()
-        }
-      }
-
-      func windowDidResignKey(_ notification: Notification) {
-        guard dismissesOnResign, panel != nil else { return }
-        dismiss()
-      }
-
-      /// A drag by the owner, or the window carrying its child along: the offset from where the panel
-      /// opens is the same either way, measured against the window's current place.
-      func windowDidMove(_ notification: Notification) {
-        guard !placing, let key = rememberAs, let panel, let parent = panel.parent,
-          NSEvent.pressedMouseButtons != 0, panel.isKeyWindow
-        else { return }
-        FloatingPanelMemory.offsets[key] = CGSize(
-          width: panel.frame.origin.x - parent.frame.origin.x - home.width,
-          height: panel.frame.origin.y - parent.frame.origin.y - home.height)
-      }
+    static func dismantleNSView(_ anchor: NSView, coordinator: FloatingPanelCoordinator) {
+      coordinator.close()
     }
   }
 
-  /// Where each remembered panel was dragged to, as an offset from where it opens. Kept until the app
-  /// quits.
-  @MainActor enum FloatingPanelMemory {
-    static var offsets: [String: CGSize] = [:]
+  @MainActor final class FloatingPanelCoordinator: NSObject, NSWindowDelegate {
+    private(set) var panel: PalettePanel?
+    var dismiss: () -> Void = {}
+    var dismissesOnResign = true
+
+    private weak var anchor: NSView?
+    private var size = CGSize.zero
+    private var placement = FloatingPanelPlacement.centered
+    /// How far the owner dragged it from where it opens; nil at home. Kept through the window's
+    /// resizes, gone when the panel closes.
+    private var offset: CGSize?
+    /// The content has been measured, so the panel is the right size to be seen.
+    private var shown = false
+    private var observers: [NSObjectProtocol] = []
+
+    func present(
+      _ content: AnyView, size: CGSize, placement: FloatingPanelPlacement, cornerRadius: CGFloat,
+      draggable: Bool, over anchor: NSView
+    ) {
+      guard panel == nil, let parent = anchor.window else { return }
+      self.anchor = anchor
+      anchor.postsFrameChangedNotifications = true
+      self.size = size
+      self.placement = placement
+      offset = nil
+      shown = false
+
+      let panel = PalettePanel(
+        contentRect: CGRect(origin: .zero, size: size),
+        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+      panel.isOpaque = false
+      panel.backgroundColor = .clear
+      // The window server's shadow, taken from the content's own (rounded) shape.
+      panel.hasShadow = true
+      panel.isReleasedWhenClosed = false
+      panel.hidesOnDeactivate = false
+      panel.isMovable = false
+      panel.collectionBehavior = [.fullScreenAuxiliary, .transient]
+      panel.appearance = parent.effectiveAppearance
+      panel.animationBehavior = .none
+      panel.isDraggable = draggable
+      panel.dragEnded = { [weak self] in self?.dragEnded() }
+      panel.resetRequested = { [weak self] in self?.goHome(animated: true) }
+      panel.delegate = self
+
+      let host = NSHostingView(
+        rootView:
+          content
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(width: size.width)
+          .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { [weak self] height in
+            self?.contentHeight(height)
+          }
+          .frame(maxHeight: .infinity, alignment: .top)
+          .environment(\.floatsPalettes, true)
+          .environment(\.isInFloatingPanel, true))
+      // The panel follows the content; the content must not size the panel behind its back.
+      host.sizingOptions = []
+      host.wantsLayer = true
+      host.layer?.cornerRadius = cornerRadius
+      host.layer?.cornerCurve = .continuous
+      host.layer?.masksToBounds = true
+      panel.contentView = host
+
+      self.panel = panel
+      place(height: size.height, animated: false)
+      parent.addChildWindow(panel, ordered: .above)
+      // Unseen until the content has been measured, but it has the keyboard from the start.
+      panel.alphaValue = 0
+      panel.makeKeyAndOrderFront(nil)
+
+      let center = NotificationCenter.default
+      observers = [
+        // A child follows its window's moves, not its resizes: the presenting view's new frame (laid
+        // out a moment after the window's) is where home is now.
+        center.addObserver(forName: NSWindow.didResizeNotification, object: parent, queue: .main) {
+          [weak self] _ in
+          MainActor.assumeIsolated {
+            self?.reposition()
+            DispatchQueue.main.async { self?.reposition() }
+          }
+        },
+        center.addObserver(forName: NSView.frameDidChangeNotification, object: anchor, queue: .main) {
+          [weak self] _ in MainActor.assumeIsolated { self?.reposition() }
+        },
+        // Full screen moves the window's title bar into another window: the panel gives way.
+        center.addObserver(forName: NSWindow.willEnterFullScreenNotification, object: parent, queue: .main) {
+          [weak self] _ in MainActor.assumeIsolated { self?.dismiss() }
+        },
+        center.addObserver(forName: NSWindow.willExitFullScreenNotification, object: parent, queue: .main) {
+          [weak self] _ in MainActor.assumeIsolated { self?.dismiss() }
+        },
+      ]
+    }
+
+    func close() {
+      guard let panel else { return }
+      self.panel = nil
+      for observer in observers { NotificationCenter.default.removeObserver(observer) }
+      observers = []
+      panel.delegate = nil
+      let parent = panel.parent
+      parent?.removeChildWindow(panel)
+      panel.orderOut(nil)
+      panel.contentView = nil
+      // The window under it has the keyboard again, wherever the click or the key went.
+      if let parent, parent.isVisible, NSApp.keyWindow == nil || NSApp.keyWindow === panel {
+        parent.makeKey()
+      }
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+      guard dismissesOnResign, panel != nil else { return }
+      dismiss()
+    }
+
+    // MARK: Place
+
+    /// Where the panel opens: centred across the presenting view, its top where the placement says.
+    var home: CGPoint? {
+      guard let anchor, let parent = anchor.window else { return nil }
+      let onScreen = parent.convertToScreen(anchor.convert(anchor.bounds, to: nil))
+      let top: CGFloat
+      switch placement {
+      case .top(let below): top = onScreen.maxY - below
+      case .centered: top = onScreen.midY + size.height / 2
+      }
+      return CGPoint(x: onScreen.midX - size.width / 2, y: top)
+    }
+
+    private var visible: CGRect? { (panel?.parent?.screen ?? panel?.screen ?? NSScreen.main)?.visibleFrame }
+
+    /// Put the panel at home plus the owner's offset, `height` tall, with its top held.
+    private func place(height: CGFloat, animated: Bool) {
+      guard let panel, let home else { return }
+      let panelSize = CGSize(width: size.width, height: height)
+      var topLeft = CGPoint(x: home.x + (offset?.width ?? 0), y: home.y + (offset?.height ?? 0))
+      if let visible { topLeft = FloatingPanelGeometry.clamped(topLeft, size: panelSize, visible: visible) }
+      let frame = FloatingPanelGeometry.frame(topLeft: topLeft, size: panelSize)
+      guard frame != panel.frame else { return }
+      if animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        NSAnimationContext.runAnimationGroup { context in
+          context.duration = 0.16
+          context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+          panel.animator().setFrame(frame, display: true)
+        } completionHandler: { [weak panel] in
+          MainActor.assumeIsolated { panel?.invalidateShadow() }
+        }
+      } else {
+        panel.setFrame(frame, display: true)
+        refreshShadow()
+      }
+    }
+
+    private func reposition() { place(height: panel?.frame.height ?? size.height, animated: false) }
+
+    /// The shadow is the shape of what was last drawn: ask for it again once the new size has been.
+    private func refreshShadow() {
+      DispatchQueue.main.async { [weak panel] in
+        panel?.displayIfNeeded()
+        panel?.invalidateShadow()
+      }
+    }
+
+    /// The content was laid out `height` tall: the panel becomes that, top held, at once (an animated
+    /// frame would trail the content, and its shadow with it).
+    private func contentHeight(_ height: CGFloat) {
+      guard let panel, height > 0 else { return }
+      place(height: height.rounded(.up), animated: false)
+      guard !shown else { return }
+      shown = true
+      focusField()
+      NSAnimationContext.runAnimationGroup { context in
+        context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.05 : 0.1
+        panel.animator().alphaValue = 1
+      }
+    }
+
+    /// The cursor goes to the content's field. SwiftUI's own focus request can come before the panel
+    /// has the keyboard and be lost, so the panel puts it there itself, and once more a moment later
+    /// in case the field was not in the window yet.
+    private func focusField() {
+      func attempt() {
+        guard let panel, panel.firstResponder === panel || panel.firstResponder == nil,
+          let field = Self.firstField(in: panel.contentView)
+        else { return }
+        if !panel.isKeyWindow { panel.makeKey() }
+        panel.makeFirstResponder(field)
+      }
+      attempt()
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { attempt() }
+    }
+
+    private static func firstField(in view: NSView?) -> NSTextField? {
+      guard let view else { return nil }
+      if let field = view as? NSTextField, field.isEditable, !field.isHidden { return field }
+      for child in view.subviews {
+        if let found = firstField(in: child) { return found }
+      }
+      return nil
+    }
+
+    // MARK: Drag
+
+    /// Released: near home it goes home, on each axis by itself; elsewhere it stays until it closes.
+    private func dragEnded() {
+      guard let panel, let home else { return }
+      let topLeft = CGPoint(x: panel.frame.minX, y: panel.frame.maxY)
+      let rest = FloatingPanelGeometry.released(topLeft, home: home)
+      let moved = CGSize(width: rest.x - home.x, height: rest.y - home.y)
+      offset = moved == .zero ? nil : moved
+      place(height: panel.frame.height, animated: true)
+    }
+
+    private func goHome(animated: Bool) {
+      offset = nil
+      place(height: panel?.frame.height ?? size.height, animated: animated)
+    }
   }
 
   /// A stretch of a panel that drags it: behind a header or a footer, under whatever is drawn there.
-  /// Controls on top of it keep their own clicks.
+  /// Controls on top of it keep their own clicks. `PalettePanel` does the dragging; a double click
+  /// sends the panel back to where it opens.
   struct WindowDragArea: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView { Handle() }
     func updateNSView(_ view: NSView, context: Context) {}
 
     final class Handle: NSView {
-      override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
+      override func accessibilityRole() -> NSAccessibility.Role? { .handle }
+      override func accessibilityLabel() -> String? { "Move" }
+      override func isAccessibilityElement() -> Bool { true }
     }
   }
 #endif
