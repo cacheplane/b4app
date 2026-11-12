@@ -620,6 +620,50 @@ pub struct RegistrationGate {
     pub release: tokio::sync::Notify,
 }
 
+/// The only writer boundary exposed by the one-hit queued-write test seam.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteStage {
+    Queued,
+}
+
+/// Primitive identity facts, not an admission capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueuedWriteFacts {
+    pub device_id: Uuid,
+    pub generation: u64,
+    pub stage: WriteStage,
+}
+
+/// An inert-by-default test seam. Only its exact queued writer can take it, once.
+#[derive(Debug)]
+pub struct QueuedWriteGate {
+    target: QueuedWriteFacts,
+    reached: watch::Sender<Option<QueuedWriteFacts>>,
+    release: tokio::sync::Notify,
+}
+
+impl QueuedWriteGate {
+    /// Returns the actual matching writer facts, including when it reached before this wait.
+    pub async fn reached(&self) -> QueuedWriteFacts {
+        let mut reached = self.reached.subscribe();
+        let _ = reached.wait_for(|facts| facts.is_some()).await;
+        let facts = *reached.borrow();
+        facts.expect("the live gate retains its reached sender")
+    }
+
+    /// Releases the one writer; a permit also covers release before that writer begins waiting.
+    pub fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+/// A read-only observation of existing registration state, never a proof or close cause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegistrationSnapshot {
+    pub generation: u64,
+    pub blocked: bool,
+}
+
 struct Entry {
     handle: LinkHandle,
     closing: Option<oneshot::Sender<Close>>,
@@ -691,6 +735,7 @@ struct Inner {
     commands_in_flight_max: AtomicUsize,
     clock: WallClock,
     gate: Mutex<Option<Arc<RegistrationGate>>>,
+    queued_write_gate: Mutex<Option<Arc<QueuedWriteGate>>>,
     /// [`Relay::offline_grace`], in milliseconds.
     offline_grace_ms: AtomicU64,
     /// Macs whose link dropped within the grace, by the generation of that link: `presence` still
@@ -741,6 +786,7 @@ impl Relay {
             commands_in_flight_max: AtomicUsize::new(COMMANDS_IN_FLIGHT),
             clock,
             gate: Mutex::new(None),
+            queued_write_gate: Mutex::new(None),
             offline_grace_ms: AtomicU64::new(OFFLINE_GRACE.as_millis() as u64),
             lingering: Mutex::default(),
             panic_next_frame: AtomicBool::new(false),
@@ -1497,6 +1543,63 @@ impl Relay {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&gate));
         gate
+    }
+
+    /// Holds one exact queued writer after Checked opens and before envelope/proof/send.
+    /// A test seam; nothing in the hub installs one. Other devices/generations cannot take it.
+    pub fn gate_queued_write(&self, device_id: Uuid, generation: u64) -> Arc<QueuedWriteGate> {
+        let gate = Arc::new(QueuedWriteGate {
+            target: QueuedWriteFacts {
+                device_id,
+                generation,
+                stage: WriteStage::Queued,
+            },
+            reached: watch::channel(None).0,
+            release: tokio::sync::Notify::new(),
+        });
+        *self
+            .0
+            .queued_write_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&gate));
+        gate
+    }
+
+    /// Reads generation and the existing blocked bit together under the registration mutex.
+    pub fn registration_snapshot(&self, device_id: Uuid) -> Option<RegistrationSnapshot> {
+        self.registration()
+            .links
+            .get(&device_id)
+            .map(|entry| RegistrationSnapshot {
+                generation: entry.handle.generation,
+                blocked: entry.blocked,
+            })
+    }
+
+    pub(super) async fn pass_queued_write_gate(&self, handle: &LinkHandle, until: Instant) {
+        let facts = QueuedWriteFacts {
+            device_id: handle.device_id,
+            generation: handle.generation,
+            stage: WriteStage::Queued,
+        };
+        // Match AND take under one mutex. A nonmatching writer leaves the installed gate intact.
+        let gate = {
+            let mut slot = self
+                .0
+                .queued_write_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if slot.as_ref().is_some_and(|gate| gate.target == facts) {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        if let Some(gate) = gate {
+            let _ = gate.reached.send_replace(Some(facts));
+            // Never extend the writer's existing deadline, including when a test drops its wait.
+            let _ = tokio::time::timeout_at(until, gate.release.notified()).await;
+        }
     }
 
     /// Makes the link task that reads the next text frame panic, as a bug in the link path would.

@@ -999,6 +999,10 @@ impl Link {
         };
         let until = Instant::now() + patience;
         let checked = self.checked_until(until).await?;
+        self.state
+            .relay
+            .pass_queued_write_gate(&self.handle, until)
+            .await;
         let (stamp, payload) = envelope.parts();
         // A pre-cut gap/content envelope fences this queue even for a capable peer: reconnect
         // and replay, rather than crossing a dropped gap. This is retriable 1001, never 4002

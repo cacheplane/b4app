@@ -1,10 +1,17 @@
 //! Actual native floor races on the unchanged loopback relay fixture.
 mod relay_support;
 use b4hub::relay::close_code;
+use b4hub::relay::registry::{QueuedWriteFacts, QueuedWriteGate, RegistrationSnapshot, WriteStage};
 use b4hub_core::relay::{RelayMessage, RelayMethod};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use relay_support::{spawn_hub, FakeDevice};
 use serde_json::json;
 use sqlx::PgPool;
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio_tungstenite::tungstenite::{self, Message};
 
 async fn owned_cut(pool: &PgPool, minimum: i64) {
     // Test-only direct native update: a live-link fault race deliberately bypasses the owner
@@ -535,4 +542,352 @@ async fn typed_reply_preserves_harmless_legacy_fields_and_refuses_private_target
     assert_eq!(code, "link_replaced");
     assert_eq!(mac.expect_close().await, close_code::REPLACED);
     phone.close().await;
+}
+
+// These companions deliberately hold the phone's host-online presence after native Checked
+// admission. They do not drain that payload or gate logout's independent session recheck.
+struct ReleaseQueuedWrite(Arc<QueuedWriteGate>);
+
+impl Drop for ReleaseQueuedWrite {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum QueuedCloseCase {
+    Logout,
+    Replacement,
+}
+
+#[derive(Debug)]
+struct QueuedClosePrepared {
+    old_generation: u64,
+    reached: QueuedWriteFacts,
+    status: Option<axum::http::StatusCode>,
+    transition: Option<RegistrationSnapshot>,
+    phone_id: sqlx::types::Uuid,
+}
+
+// No arbitrary application payload is retained or printed, including on a failing RED run.
+#[derive(Debug, PartialEq, Eq)]
+enum CloseEnd {
+    Close,
+    Timeout,
+    Eof,
+    ReadError,
+    FrameBound,
+}
+
+#[derive(Debug)]
+struct CloseFacts {
+    end: CloseEnd,
+    code: Option<u16>,
+    application: bool,
+    link_replaced: bool,
+    flushed: bool,
+}
+
+async fn capture_close(peer: &mut FakeDevice) -> CloseFacts {
+    let mut facts = CloseFacts {
+        end: CloseEnd::FrameBound,
+        code: None,
+        application: false,
+        link_replaced: false,
+        flushed: false,
+    };
+    let deadline = Instant::now() + relay_support::FRAME_WAIT;
+    for _ in 0..16 {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            facts.end = CloseEnd::Timeout;
+            break;
+        }
+        let message = tokio::time::timeout(remaining, peer.ws.next()).await;
+        match message {
+            Err(_) => {
+                facts.end = CloseEnd::Timeout;
+                break;
+            }
+            Ok(None) => {
+                facts.end = CloseEnd::Eof;
+                break;
+            }
+            Ok(Some(Err(_))) => {
+                facts.end = CloseEnd::ReadError;
+                break;
+            }
+            Ok(Some(Ok(Message::Close(frame)))) => {
+                facts.end = CloseEnd::Close;
+                facts.code = frame.map(|frame| u16::from(frame.code));
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                facts.flushed = matches!(
+                    tokio::time::timeout(remaining, peer.ws.flush()).await,
+                    Ok(Ok(()))
+                );
+                break;
+            }
+            Ok(Some(Ok(Message::Text(text)))) => {
+                facts.application = true;
+                if let Ok(RelayMessage::Error { code, .. }) =
+                    serde_json::from_str::<RelayMessage>(text.as_str())
+                {
+                    facts.link_replaced |= code == "link_replaced";
+                }
+            }
+            Ok(Some(Ok(Message::Binary(_)))) => facts.application = true,
+            Ok(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => {}
+            Ok(Some(Ok(_))) => {
+                facts.end = CloseEnd::ReadError;
+                break;
+            }
+        }
+    }
+    facts
+}
+
+// A panic in an existing fixture helper is a failed scenario, but cannot skip outer cleanup.
+async fn bounded_scenario<T>(
+    future: impl Future<Output = Result<T, &'static str>>,
+) -> Result<T, &'static str> {
+    match AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(10), future))
+        .catch_unwind()
+        .await
+    {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("scenario deadline"),
+        Err(_) => Err("scenario panicked"),
+    }
+}
+
+async fn read_ready(peer: &mut FakeDevice, host: bool) -> Result<(), &'static str> {
+    if !matches!(peer.next().await, RelayMessage::Hello { .. }) {
+        return Err("missing ready hello");
+    }
+    match peer.next().await {
+        RelayMessage::Watching { .. } if host => Ok(()),
+        RelayMessage::Presence { .. } if !host => Ok(()),
+        _ => Err("missing ready watching/presence"),
+    }
+}
+
+#[derive(Debug)]
+struct QueuedCloseCleanup {
+    peers: Vec<Result<(), &'static str>>,
+    drained: bool,
+    drained_after_cancel: Option<bool>,
+    server: Result<(), &'static str>,
+    cancelled_server: Option<Result<(), &'static str>>,
+}
+
+async fn join_server(
+    server: &mut tokio::task::JoinHandle<std::io::Result<()>>,
+) -> Result<(), &'static str> {
+    match tokio::time::timeout(Duration::from_secs(8), server).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(_))) => Err("server IO failure"),
+        Ok(Err(error)) if error.is_cancelled() => Err("server cancelled"),
+        Ok(Err(_)) => Err("server panicked"),
+        Err(_) => Err("server join deadline"),
+    }
+}
+
+async fn cleanup_queued_close(
+    hub: &mut relay_support::Hub,
+    peers: &mut [Option<FakeDevice>],
+) -> QueuedCloseCleanup {
+    let mut outcomes = Vec::new();
+    for peer in peers {
+        if let Some(mut peer) = peer.take() {
+            let closed = bounded_scenario(async {
+                match peer.ws.close(None).await {
+                    Ok(())
+                    | Err(
+                        tungstenite::Error::AlreadyClosed | tungstenite::Error::ConnectionClosed,
+                    ) => Ok(()),
+                    Err(_) => Err("peer close failed"),
+                }
+            })
+            .await;
+            outcomes.push(closed);
+            // Even on timeout, dropping this owned socket ends the fixture transport.
+        }
+    }
+    hub.signal();
+    let drained = tokio::time::timeout(Duration::from_secs(8), hub.state.relay.drained())
+        .await
+        .is_ok();
+    let mut cancelled_server = None;
+    let mut drained_after_cancel = None;
+    let server = if drained {
+        join_server(&mut hub.server).await
+    } else {
+        Err("live-link drain deadline")
+    };
+    if !drained || server == Err("server join deadline") {
+        hub.server.abort();
+        // Observe the existing owned handle after cancellation; Drop's abort is not a join.
+        cancelled_server = Some(join_server(&mut hub.server).await);
+        drained_after_cancel = Some(
+            tokio::time::timeout(Duration::from_secs(2), hub.state.relay.drained())
+                .await
+                .is_ok(),
+        );
+    }
+    QueuedCloseCleanup {
+        peers: outcomes,
+        drained,
+        drained_after_cancel,
+        server,
+        cancelled_server,
+    }
+}
+
+async fn queued_close_companion(pool: PgPool, case: QueuedCloseCase) {
+    let mut hub = spawn_hub(&pool).await;
+    let mut peers: [Option<FakeDevice>; 3] = [None, None, None];
+    let mut gate: Option<ReleaseQueuedWrite> = None;
+    let prepared = bounded_scenario(async {
+        let user = hub.user("queued-close", "owner").await;
+        let (phone_token, phone_id) = hub.enroll(&user, "ios", "Phone").await;
+        let (mac_token, _) = hub.enroll(&user, "macos", "Mac").await;
+        peers[0] = Some(FakeDevice::connect(hub.addr, &phone_token).await);
+        read_ready(peers[0].as_mut().ok_or("missing phone")?, false).await?;
+        let old_generation = hub
+            .state
+            .relay
+            .registration_snapshot(phone_id)
+            .ok_or("ready phone missing registration")?
+            .generation;
+        gate = Some(ReleaseQueuedWrite(
+            hub.state.relay.gate_queued_write(phone_id, old_generation),
+        ));
+        // The Mac becoming ready queues the presence held by the PHONE writer. Do not read it.
+        peers[1] = Some(FakeDevice::connect(hub.addr, &mac_token).await);
+        read_ready(peers[1].as_mut().ok_or("missing Mac")?, true).await?;
+        let reached = tokio::time::timeout(
+            relay_support::FRAME_WAIT,
+            gate.as_ref().ok_or("missing gate")?.0.reached(),
+        )
+        .await
+        .map_err(|_| "queued writer never reached gate")?;
+        let status = match case {
+            QueuedCloseCase::Logout => {
+                let (status, _) = hub
+                    .http("DELETE", "/v1/sessions/self", Some(&phone_token))
+                    .await;
+                Some(status)
+            }
+            QueuedCloseCase::Replacement => {
+                peers[2] = Some(FakeDevice::connect(hub.addr, &phone_token).await);
+                read_ready(peers[2].as_mut().ok_or("missing new phone")?, false).await?;
+                None
+            }
+        };
+        // Existing Entry.blocked and generation are read together under the registration mutex.
+        let transition = hub.state.relay.registration_snapshot(phone_id);
+        Ok(QueuedClosePrepared {
+            old_generation,
+            reached,
+            status,
+            transition,
+            phone_id,
+        })
+    })
+    .await;
+
+    // Explicit on EVERY result/timeout/panic path, before any socket oracle or final assertion.
+    if let Some(gate) = &gate {
+        gate.0.release();
+    }
+    let close = bounded_scenario(async {
+        let phone = peers[0].as_mut().ok_or("missing same phone socket")?;
+        Ok(capture_close(phone).await)
+    })
+    .await;
+    let mac_alive = bounded_scenario(async {
+        peers[1].as_mut().ok_or("missing Mac")?.ping().await;
+        Ok(())
+    })
+    .await;
+    let new_phone_alive = if matches!(case, QueuedCloseCase::Replacement) {
+        Some(
+            bounded_scenario(async {
+                peers[2].as_mut().ok_or("missing new phone")?.ping().await;
+                Ok(())
+            })
+            .await,
+        )
+    } else {
+        None
+    };
+    // The old finalizer unregisters before sending Close. Observe the new entry after that Close
+    // and the new socket's real JSON Ping/Pong, before closing fixture peers for the drain.
+    let surviving = prepared
+        .as_ref()
+        .ok()
+        .and_then(|facts| hub.state.relay.registration_snapshot(facts.phone_id));
+    let cleanup = cleanup_queued_close(&mut hub, &mut peers).await;
+    drop(gate); // release-on-drop remains a backstop, never the only release/completion evidence.
+
+    // All protected work and cleanup outcomes are available before assertions can unwind.
+    assert!(cleanup.peers.iter().all(Result::is_ok), "{cleanup:?}");
+    assert!(cleanup.drained, "{cleanup:?}");
+    assert_eq!(cleanup.server, Ok(()), "{cleanup:?}");
+    assert!(cleanup.cancelled_server.is_none(), "{cleanup:?}");
+    assert!(cleanup.drained_after_cancel.is_none(), "{cleanup:?}");
+    let prepared = prepared.expect("queued close scenario failed after cleanup");
+    assert_eq!(prepared.reached.device_id, prepared.phone_id);
+    assert_eq!(prepared.reached.generation, prepared.old_generation);
+    assert_eq!(prepared.reached.stage, WriteStage::Queued);
+    assert_eq!(mac_alive, Ok(()), "distinct Mac must answer JSON Ping/Pong");
+    let close = close.expect("same phone socket outcome failed after cleanup");
+    assert_eq!(close.end, CloseEnd::Close, "{close:?}");
+    assert!(close.flushed, "same-socket close handshake: {close:?}");
+    match case {
+        QueuedCloseCase::Logout => {
+            assert_eq!(prepared.status, Some(axum::http::StatusCode::NO_CONTENT));
+            assert_eq!(
+                prepared.transition,
+                Some(RegistrationSnapshot {
+                    generation: prepared.old_generation,
+                    blocked: true,
+                }),
+                "real logout must block the SAME still-present generation before release"
+            );
+            // Managed baseline must demonstrate actual4000 here before any correction.
+            assert_eq!(close.code, Some(close_code::REVOKED), "{close:?}");
+            assert!(
+                !close.application,
+                "post-logout application payload: {close:?}"
+            );
+            assert!(!close.link_replaced, "logout became replacement: {close:?}");
+        }
+        QueuedCloseCase::Replacement => {
+            let new = prepared.transition.expect("replacement must have an entry");
+            assert_ne!(new.generation, prepared.old_generation);
+            assert!(!new.blocked);
+            assert_eq!(close.code, Some(close_code::REPLACED), "{close:?}");
+            assert!(
+                close.link_replaced,
+                "replacement error frame missing: {close:?}"
+            );
+            assert_eq!(new_phone_alive, Some(Ok(())), "new phone JSON Ping/Pong");
+            assert_eq!(
+                surviving,
+                Some(new),
+                "old finalizer must leave new entry intact"
+            );
+        }
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn logout_after_queued_checked_keeps_session_close_on_the_same_socket(pool: PgPool) {
+    queued_close_companion(pool, QueuedCloseCase::Logout).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn replacement_after_queued_checked_keeps_new_generation_live(pool: PgPool) {
+    queued_close_companion(pool, QueuedCloseCase::Replacement).await;
 }

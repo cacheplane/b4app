@@ -516,7 +516,7 @@ impl Refused {
 /// A fake Mac or phone: a WebSocket client of the link. Its methods fail the test on anything
 /// unexpected, so a test reads as the conversation it checks.
 pub struct FakeDevice {
-    ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    pub(super) ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
 }
 
 impl FakeDevice {
