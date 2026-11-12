@@ -57,7 +57,11 @@ import WorkspaceProtocol
         highlighted = PlacePalette.initialHighlight(rows)
         focused = true
       }
-      .onChange(of: filter) { highlighted = PlacePalette.initialHighlight(self.rows) }
+      .onChange(of: filter) {
+        // Typing counts as a key move: a row sliding under a resting pointer does not take the highlight.
+        keysMoved = true
+        highlighted = PlacePalette.initialHighlight(self.rows)
+      }
       .onExitCommand { close() }
       .accessibilityElement(children: .contain)
       .accessibilityAddTraits(.isModal)
