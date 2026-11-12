@@ -443,6 +443,12 @@ async fn serve_link<S: LinkSocket>(
         link.run(&mut socket, &mut outbound, &mut closing).await
     };
 
+    if let Some(close) = close
+        .as_ref()
+        .filter(|close| close.disposition != CloseDisposition::Drain)
+    {
+        relay.publish_close(&link.handle, close);
+    }
     link.handle.discard_pending(&mut outbound);
     // The link is over. The device was last heard from when its last frame arrived, not when the
     // drop was noticed. That goes in the database before the device reads as offline, so anyone who
@@ -450,12 +456,7 @@ async fn serve_link<S: LinkSocket>(
     link.write_last_seen(link.last_frame).await;
     // A Mac that went away on its own reads online for a grace, in case it is back at once; one
     // the hub closed for good (revoked, its session ended) is offline now.
-    let linger = role == Role::Host
-        && !relay.offline_grace().is_zero()
-        && close.as_ref().is_none_or(|close| {
-            close.code != close_code::REVOKED && close.disposition != CloseDisposition::Fence
-        });
-    let was_current = registered.unregister(linger);
+    let (close, was_current, linger) = registered.finish_close(close);
     // Once the user has no link left here, their claim goes now, before this link's close is even
     // written, so the instance they reconnect to takes them at once (D-165, D-172): whether this
     // instance is draining, or its links were cut while it lives on.
@@ -514,7 +515,7 @@ async fn commit_device_registration(
 }
 
 /// A link's place in the registry, taken back when the link task ends however it ends. The
-/// ordinary end calls [`Registered::unregister`] in its place in the cleanup (after the last-seen
+/// ordinary end calls [`Registered::finish_close`] in its place in the cleanup (after the last-seen
 /// write, before the claim and presence); a link task that panics, or is dropped before it gets
 /// there, is unregistered on drop instead, and its claim and presence follow on a task of their
 /// own. Without it, the device would stay online with its watches until it linked again.
@@ -526,6 +527,12 @@ struct Registered {
 }
 
 impl Registered {
+    /// Completes an ordinary end after last-seen using one cause/removal cutoff.
+    fn finish_close(&mut self, candidate: Option<Close>) -> (Option<Close>, bool, bool) {
+        self.done = true;
+        self.state.relay.finish_close(&self.handle, candidate)
+    }
+
     /// Complete an early failed registration without hello, grace or a shutdown flush. If a
     /// newer generation replaced it, neither that entry nor its still-live claim is touched.
     async fn abandon(&mut self) {

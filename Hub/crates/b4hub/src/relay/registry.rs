@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use b4hub_core::protocol::{ClientProtocol, ProtocolFloor};
@@ -291,6 +291,8 @@ pub struct LinkHandle {
     missed: Arc<Mutex<Missed>>,
     /// Bytes of encoded events queued and not yet written ([`EVENT_BYTES_MAX`]).
     event_bytes: Arc<AtomicUsize>,
+    /// The first accepted non-Drain close for this generation, never authorization.
+    retained_close: Arc<OnceLock<Close>>,
 }
 
 impl LinkHandle {
@@ -670,6 +672,16 @@ struct Entry {
     blocked: bool,
 }
 
+impl Entry {
+    /// Called only under the registration mutex, before any close notification or replacement.
+    fn retain_close(&mut self, close: &Close) {
+        if close.disposition != CloseDisposition::Drain {
+            let _ = self.handle.retained_close.set(close.clone());
+            self.blocked = true;
+        }
+    }
+}
+
 struct RegistrationState {
     links: HashMap<Uuid, Entry>,
     minimum: u32,
@@ -823,6 +835,7 @@ impl Relay {
             tx,
             missed: Arc::default(),
             event_bytes: Arc::default(),
+            retained_close: Arc::default(),
         };
         let _ = closing_tx.send(Close::protocol_unavailable());
         Registration {
@@ -914,6 +927,7 @@ impl Relay {
                 tx,
                 missed: Arc::default(),
                 event_bytes: Arc::default(),
+                retained_close: Arc::default(),
             };
             if who.probe {
                 return Ok(Registration {
@@ -923,6 +937,9 @@ impl Relay {
                     replaced: false,
                     probe_closer: Some(closing_tx),
                 });
+            }
+            if let Some(older) = state.links.get_mut(&who.device_id) {
+                older.retain_close(&Close::replaced());
             }
             let previous = state.links.insert(
                 who.device_id,
@@ -988,10 +1005,10 @@ impl Relay {
         state.initialized = true;
         for entry in state.links.values_mut() {
             if entry.handle.client_protocol.value() < state.minimum.max(state.local_denial) {
-                entry.blocked = true;
-                if let Some(close) = entry.closing.take() {
-                    let _ =
-                        close.send(Close::client_too_old(state.minimum.max(state.local_denial)));
+                let close = Close::client_too_old(state.minimum.max(state.local_denial));
+                entry.retain_close(&close);
+                if let Some(closing) = entry.closing.take() {
+                    let _ = closing.send(close);
                 }
             }
         }
@@ -1087,6 +1104,56 @@ impl Relay {
         current
     }
 
+    /// Publishes an ordinary link's selected close before pending discard and last-seen await.
+    /// True means only that the exact generation still has an entry, not authority or that
+    /// this candidate became the retained cause. A Drain is provisional and does not block.
+    pub(super) fn publish_close(&self, handle: &LinkHandle, close: &Close) -> bool {
+        let mut links = self.links();
+        let Some(entry) = links.get_mut(&handle.device_id) else {
+            return false;
+        };
+        if entry.handle.generation != handle.generation {
+            return false;
+        }
+        entry.retain_close(close);
+        true
+    }
+
+    /// The ordinary end's cutoff after last-seen: choose the cause and remove only this
+    /// generation under one registration lock. A superseded task uses its own record or local
+    /// fallback and never changes the replacement's entry, watches, lingering or ownership.
+    pub(super) fn finish_close(
+        &self,
+        handle: &LinkHandle,
+        candidate: Option<Close>,
+    ) -> (Option<Close>, bool, bool) {
+        let (close, current, linger, dropped_watches) = {
+            let mut links = self.links();
+            let close = handle.retained_close.get().cloned().or(candidate);
+            match links.get(&handle.device_id) {
+                Some(entry) if entry.handle.generation == handle.generation => {
+                    let linger = handle.role == Role::Host
+                        && !self.offline_grace().is_zero()
+                        && close.as_ref().is_none_or(|close| {
+                            close.code != close_code::REVOKED
+                                && close.disposition != CloseDisposition::Fence
+                        });
+                    if linger {
+                        self.lingering().insert(handle.device_id, handle.generation);
+                    }
+                    links.remove(&handle.device_id);
+                    let dropped_watches = self.forget_watches(handle.device_id);
+                    (close, true, linger, dropped_watches)
+                }
+                _ => (close, false, false, false),
+            }
+        };
+        if dropped_watches {
+            self.bump_watches();
+        }
+        (close, current, linger)
+    }
+
     /// Ends the grace of `device_id`'s link `generation`. True when that link was still the one
     /// lingering (no later link of the device has dropped since, which has a grace of its own).
     pub fn linger_ended(&self, device_id: Uuid, generation: u64) -> bool {
@@ -1126,9 +1193,7 @@ impl Relay {
         let Some(entry) = links.get_mut(&device_id) else {
             return false;
         };
-        if close.disposition != CloseDisposition::Drain {
-            entry.blocked = true;
-        }
+        entry.retain_close(&close);
         if let Some(closing) = entry.closing.take() {
             let _ = closing.send(close);
         }
@@ -1145,9 +1210,7 @@ impl Relay {
         if entry.handle.generation != generation {
             return false;
         }
-        if close.disposition != CloseDisposition::Drain {
-            entry.blocked = true;
-        }
+        entry.retain_close(&close);
         if let Some(closing) = entry.closing.take() {
             let _ = closing.send(close);
         }
@@ -1172,9 +1235,7 @@ impl Relay {
                 continue;
             }
             closed += 1;
-            if close.disposition != CloseDisposition::Drain {
-                entry.blocked = true;
-            }
+            entry.retain_close(&close);
             if let Some(closing) = entry.closing.take() {
                 let _ = closing.send(close.clone());
             }
@@ -1739,6 +1800,370 @@ mod tests {
             session: None,
             probe: false,
         }
+    }
+
+    // Retained-close unit policy controls use synthetic registrations only. The ordered calls
+    // below model the publication/last-seen/cutoff phases; they do not exercise a DB await,
+    // socket, native admission, instance-claim release or a transport quiescence guarantee.
+    #[test]
+    fn every_blocking_setter_retains_the_cause_even_after_a_drain_notification() {
+        for setter in 0..4 {
+            for drain_first in [false, true] {
+                let relay = Relay::new();
+                let mut link = relay.register_synthetic_model(identity(1, Role::Host));
+                if drain_first {
+                    assert!(relay.close(link.handle.device_id, Close::shutdown()));
+                    assert_eq!(link.closing.try_recv().unwrap(), Close::shutdown());
+                    assert!(link.handle.retained_close.get().is_none());
+                    assert!(relay.current(&link.handle));
+                }
+                let expected = if setter == 0 {
+                    Close::client_too_old(2)
+                } else {
+                    Close::session_ended()
+                };
+                match setter {
+                    0 => {
+                        relay.observe_floor(ProtocolFloor::new(2).unwrap()).unwrap();
+                    }
+                    1 => assert!(relay.close(link.handle.device_id, expected.clone())),
+                    2 => assert!(relay.close_generation(
+                        link.handle.device_id,
+                        link.handle.generation,
+                        expected.clone(),
+                    )),
+                    3 => assert_eq!(relay.close_user(link.handle.user_id, expected.clone()), 1),
+                    _ => unreachable!(),
+                }
+                assert_eq!(link.handle.retained_close.get(), Some(&expected));
+                assert!(!relay.current(&link.handle));
+                assert!(relay.links()[&link.handle.device_id].blocked);
+                if !drain_first {
+                    assert_eq!(link.closing.try_recv().unwrap(), expected);
+                }
+                assert_eq!(
+                    relay.finish_close(&link.handle, Some(Close::replaced())),
+                    (Some(expected), true, false)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn session_and_floor_keep_whichever_full_cause_was_accepted_first() {
+        for session_first in [true, false] {
+            let relay = Relay::new();
+            let link = relay.register_synthetic_model(identity(1, Role::Host));
+            if session_first {
+                assert!(relay.close_generation(
+                    link.handle.device_id,
+                    link.handle.generation,
+                    Close::session_ended(),
+                ));
+            }
+            relay.observe_floor(ProtocolFloor::new(2).unwrap()).unwrap();
+            assert!(relay.close_generation(
+                link.handle.device_id,
+                link.handle.generation,
+                Close::session_ended(),
+            ));
+            let expected = if session_first {
+                Close::session_ended()
+            } else {
+                Close::client_too_old(2)
+            };
+            assert_eq!(link.handle.retained_close.get(), Some(&expected));
+            assert_eq!(relay.min_client_protocol(), 2);
+            assert!(!relay.current(&link.handle));
+            assert_eq!(
+                relay.finish_close(&link.handle, Some(Close::replaced())),
+                (Some(expected), true, false)
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_blocking_requests_preserve_the_first_full_close_without_priority() {
+        for (first, later) in [
+            (Close::session_ended(), Close::revoked()),
+            (Close::revoked(), Close::session_ended()),
+            (Close::client_too_old(2), Close::client_too_old(3)),
+            (Close::client_too_old(3), Close::client_too_old(2)),
+            (Close::replaced(), Close::session_ended()),
+            (Close::session_ended(), Close::replaced()),
+        ] {
+            let relay = Relay::new();
+            let link = relay.register_synthetic_model(identity(1, Role::Client));
+            for close in [first.clone(), first.clone(), later] {
+                assert!(relay.close_generation(
+                    link.handle.device_id,
+                    link.handle.generation,
+                    close,
+                ));
+            }
+            assert_eq!(link.handle.retained_close.get(), Some(&first));
+            assert_eq!(
+                relay.finish_close(&link.handle, None),
+                (Some(first), true, false)
+            );
+        }
+    }
+
+    #[test]
+    fn a_later_drain_cannot_replace_a_retained_blocking_cause() {
+        let relay = Relay::new();
+        let mut link = relay.register_synthetic_model(identity(1, Role::Host));
+        assert!(relay.close(link.handle.device_id, Close::session_ended()));
+        assert!(relay.close(link.handle.device_id, Close::shutdown()));
+        assert_eq!(link.closing.try_recv().unwrap(), Close::session_ended());
+        assert_eq!(
+            relay.finish_close(&link.handle, Some(Close::shutdown())),
+            (Some(Close::session_ended()), true, false)
+        );
+    }
+
+    #[test]
+    fn replacement_retains_the_old_cause_and_gives_the_new_generation_a_fresh_cell() {
+        for already_blocked in [false, true] {
+            let relay = Relay::new();
+            let mut old = relay.register_synthetic_model(identity(1, Role::Host));
+            if already_blocked {
+                assert!(relay.close(old.handle.device_id, Close::session_ended()));
+            }
+            let new = relay.register_synthetic_model(identity(1, Role::Host));
+            let expected = if already_blocked {
+                Close::session_ended()
+            } else {
+                Close::replaced()
+            };
+            assert_eq!(old.handle.retained_close.get(), Some(&expected));
+            assert_eq!(old.closing.try_recv().unwrap(), expected);
+            assert!(!Arc::ptr_eq(
+                &old.handle.retained_close,
+                &new.handle.retained_close
+            ));
+            assert!(Arc::ptr_eq(
+                &new.handle.retained_close,
+                &new.handle.clone().retained_close,
+            ));
+            assert!(new.handle.retained_close.get().is_none());
+            assert!(relay.current(&new.handle));
+            assert!(!relay.close_generation(
+                old.handle.device_id,
+                old.handle.generation,
+                Close::client_too_old(2),
+            ));
+            assert!(!relay.publish_close(&old.handle, &Close::revoked()));
+            assert_eq!(old.handle.retained_close.get(), Some(&expected));
+            assert!(new.handle.retained_close.get().is_none());
+            assert_eq!(
+                relay.finish_close(&old.handle, Some(Close::silent())),
+                (Some(expected), false, false)
+            );
+            assert!(relay.current(&new.handle));
+        }
+    }
+
+    #[test]
+    fn local_publication_blocks_before_pending_frames_are_discarded() {
+        let relay = Relay::new();
+        let mut link = relay.register_synthetic_model(identity(1, Role::Host));
+        link.handle.try_send(RelayMessage::Ping).unwrap();
+        assert!(relay.publish_close(&link.handle, &Close::session_ended()));
+        assert!(!relay.current(&link.handle));
+        assert!(relay.links()[&link.handle.device_id].blocked);
+        assert_eq!(
+            link.outbound.len(),
+            1,
+            "publication does not change discard order"
+        );
+        assert_eq!(
+            link.handle.retained_close.get(),
+            Some(&Close::session_ended())
+        );
+        assert!(relay.publish_close(&link.handle, &Close::replaced()));
+        link.handle.discard_pending(&mut link.outbound);
+        assert!(link.outbound.try_recv().is_err());
+        assert_eq!(
+            relay.finish_close(&link.handle, Some(Close::replaced())),
+            (Some(Close::session_ended()), true, false)
+        );
+    }
+
+    #[test]
+    fn a_provisional_local_drain_does_not_record_or_block() {
+        let relay = Relay::new();
+        let link = relay.register_synthetic_model(identity(1, Role::Host));
+        assert!(relay.publish_close(&link.handle, &Close::shutdown()));
+        assert!(relay.current(&link.handle));
+        assert!(link.handle.retained_close.get().is_none());
+        assert!(relay.close(link.handle.device_id, Close::session_ended()));
+        assert_eq!(
+            relay.finish_close(&link.handle, Some(Close::shutdown())),
+            (Some(Close::session_ended()), true, false)
+        );
+    }
+
+    #[test]
+    fn publication_requires_both_device_and_generation_without_mutating_the_handle_cell() {
+        let relay = Relay::new();
+        let link = relay.register_synthetic_model(identity(1, Role::Host));
+        let mut wrong_generation = link.handle.clone();
+        wrong_generation.generation += 1;
+        let mut wrong_device = link.handle.clone();
+        wrong_device.device_id = Uuid::from_u128(2);
+        for stale in [wrong_generation, wrong_device] {
+            assert!(!relay.publish_close(&stale, &Close::session_ended()));
+            assert!(!relay.close_generation(
+                stale.device_id,
+                stale.generation,
+                Close::session_ended(),
+            ));
+            assert_eq!(
+                relay.finish_close(&stale, Some(Close::silent())),
+                (Some(Close::silent()), false, false)
+            );
+            assert!(link.handle.retained_close.get().is_none());
+            assert!(relay.current(&link.handle));
+            assert!(!relay.lingering().contains_key(&link.handle.device_id));
+        }
+    }
+
+    #[test]
+    fn removed_generation_uses_its_local_fallback_without_retaining_it() {
+        let relay = Relay::new();
+        let link = relay.register_synthetic_model(identity(1, Role::Host));
+        assert!(relay.unregister(link.handle.device_id, link.handle.generation));
+        assert!(!relay.publish_close(&link.handle, &Close::session_ended()));
+        assert_eq!(
+            relay.finish_close(&link.handle, Some(Close::session_ended())),
+            (Some(Close::session_ended()), false, false)
+        );
+        assert!(link.handle.retained_close.get().is_none());
+    }
+
+    #[test]
+    fn cutoff_observes_a_close_accepted_after_selection_including_no_local_candidate() {
+        for candidate in [None, Some(Close::shutdown())] {
+            let relay = Relay::new();
+            let link = relay.register_synthetic_model(identity(1, Role::Host));
+            if let Some(close) = &candidate {
+                assert!(relay.publish_close(&link.handle, close));
+            }
+            // Unit sequencing of the production cutoff, not a simulated database completion:
+            // this setter is accepted after local selection and before the final removal.
+            assert!(relay.close_generation(
+                link.handle.device_id,
+                link.handle.generation,
+                Close::session_ended(),
+            ));
+            assert_eq!(
+                relay.finish_close(&link.handle, candidate),
+                (Some(Close::session_ended()), true, false)
+            );
+            assert!(!relay.online(link.handle.device_id));
+            assert!(!relay.lingering().contains_key(&link.handle.device_id));
+        }
+    }
+
+    #[test]
+    fn requests_after_cutoff_cannot_publish_into_the_removed_generation() {
+        let relay = Relay::new();
+        let link = relay.register_synthetic_model(identity(1, Role::Host));
+        assert_eq!(relay.finish_close(&link.handle, None), (None, true, true));
+        assert!(!relay.close(link.handle.device_id, Close::session_ended()));
+        assert!(!relay.close_generation(
+            link.handle.device_id,
+            link.handle.generation,
+            Close::session_ended(),
+        ));
+        assert_eq!(
+            relay.close_user(link.handle.user_id, Close::session_ended()),
+            0
+        );
+        relay.observe_floor(ProtocolFloor::new(2).unwrap()).unwrap();
+        assert!(!relay.publish_close(&link.handle, &Close::session_ended()));
+        assert!(link.handle.retained_close.get().is_none());
+        assert_eq!(
+            relay.lingering().get(&link.handle.device_id),
+            Some(&link.handle.generation)
+        );
+    }
+
+    #[test]
+    fn cutoff_preserves_the_exact_existing_linger_policy() {
+        for (candidate, allows_grace) in [
+            (None, true),
+            (Some(Close::shutdown()), true),
+            (Some(Close::relocated()), true),
+            (Some(Close::silent()), true),
+            (Some(Close::session_ended()), false),
+            (Some(Close::revoked()), false),
+            (Some(Close::replaced()), false),
+            (Some(Close::client_too_old(2)), false),
+            (Some(Close::protocol_unavailable()), false),
+        ] {
+            for role in [Role::Host, Role::Client] {
+                for grace in [Duration::ZERO, Duration::from_secs(1)] {
+                    let relay = Relay::new();
+                    relay.set_offline_grace(grace);
+                    let link = relay.register_synthetic_model(identity(1, role));
+                    if let Some(close) = &candidate {
+                        assert!(relay.publish_close(&link.handle, close));
+                    }
+                    let expected = role == Role::Host && !grace.is_zero() && allows_grace;
+                    assert_eq!(
+                        relay.finish_close(&link.handle, candidate.clone()),
+                        (candidate.clone(), true, expected)
+                    );
+                    assert!(!relay.online(link.handle.device_id));
+                    assert_eq!(
+                        relay.lingering().contains_key(&link.handle.device_id),
+                        expected
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn old_cutoff_leaves_new_watches_and_cleanup_ownership_alone() {
+        let relay = Relay::new();
+        let host = Uuid::from_u128(9);
+        let old = relay.register_synthetic_model(identity(1, Role::Client));
+        relay.watch(&old.handle, host, "old").unwrap();
+        let new = relay.register_synthetic_model(identity(1, Role::Client));
+        relay.watch(&new.handle, host, "new").unwrap();
+        let epoch = *relay.watch_changes().borrow();
+        let (close, was_current, linger) = relay.finish_close(&old.handle, None);
+        assert_eq!(close, Some(Close::replaced()));
+        // This is only the boolean used by ordinary claim/presence cleanup, not a DB claim test.
+        assert!(!was_current);
+        assert!(!linger);
+        assert!(relay.current(&new.handle));
+        assert_eq!(relay.watched_by(host), ["new"]);
+        assert_eq!(*relay.watch_changes().borrow(), epoch);
+        assert_eq!(relay.finish_close(&new.handle, None), (None, true, false));
+        assert!(relay.watched_by(host).is_empty());
+        assert_eq!(*relay.watch_changes().borrow(), epoch + 1);
+    }
+
+    #[test]
+    fn old_cutoff_cannot_replace_or_end_a_new_generations_linger() {
+        let relay = Relay::new();
+        let old = relay.register_synthetic_model(identity(1, Role::Host));
+        let new = relay.register_synthetic_model(identity(1, Role::Host));
+        assert_eq!(relay.finish_close(&new.handle, None), (None, true, true));
+        assert_eq!(
+            relay.finish_close(&old.handle, None),
+            (Some(Close::replaced()), false, false)
+        );
+        assert_eq!(
+            relay.lingering().get(&new.handle.device_id),
+            Some(&new.handle.generation)
+        );
+        assert!(!relay.linger_ended(old.handle.device_id, old.handle.generation));
+        assert!(relay.linger_ended(new.handle.device_id, new.handle.generation));
     }
 
     #[test]
