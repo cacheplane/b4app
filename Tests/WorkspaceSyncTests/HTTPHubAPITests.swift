@@ -247,6 +247,20 @@ final class TokenSequence: @unchecked Sendable {
       Issue.record("The actual redirect response must be refused")
     } catch let error as HubError {
       // A transport timeout/status0 is a fixture failure, not evidence of redirect refusal.
+      if error.status != 302 || error.code != "http_302" {
+        let route = path == "readyz" ? "readyz" : "me"
+        let code: String
+        switch error.code {
+        case "http_302": code = "http_302"
+        case "transport": code = "transport"
+        case "wrong_endpoint": code = "wrong_endpoint"
+        case "unexpected_status": code = "unexpected_status"
+        default: code = "other"
+        }
+        print(
+          "identity_redirect_diagnostic route=\(route) status=\(error.status) code=\(code) destinationVisits=\(visits.value)"
+        )
+      }
       #expect(error.status == 302 && error.code == "http_302")
     }
     #expect(visits.value == 0)

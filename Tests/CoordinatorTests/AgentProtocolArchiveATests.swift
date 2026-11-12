@@ -436,8 +436,97 @@ import WorkspaceProtocol
   private static func containsPrivate(_ text: String) -> Bool {
     text.contains("A3_GRANT_PRIVATE_") || text.contains("A3_ENDPOINT_PRIVATE_")
   }
+  private enum TargetClosePhase: String, Sendable {
+    case malformed = "malformed-populated", joined = "joined-legacy3", auxiliary = "auxiliary-settings"
+    case legacy1 = "smuggled-legacy1", legacy2 = "smuggled-legacy2", legacy3 = "smuggled-legacy3"
+  }
+  private struct TargetCloseFacts: Sendable {
+    var readFailed = false, nonzeroObserved = false, lateStart = false, lateCompletion = false
+    var cancelled = false, zero = false, firstEmpty = false
+    var sampleCount: UInt32 = 0
+    var firstSampleMilliseconds: Int64?, lastSampleMilliseconds: Int64?, emptyMilliseconds: Int64?
+    var workerStartedMilliseconds: Int64 = 0
+  }
+  private static func targetCloseMilliseconds(
+    since began: ContinuousClock.Instant, at completed: ContinuousClock.Instant
+  ) -> Int64 {
+    let elapsed = began.duration(to: completed).components
+    return elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000
+  }
+  private static func targetCloseDiagnostic(
+    _ raw: PostgresConnection, database: String, phase: TargetClosePhase,
+    closeEntered: ContinuousClock.Instant, closeReturned: ContinuousClock.Instant,
+    immediateEnded: ContinuousClock.Instant, bodyFailed: Bool, noBackends: Bool
+  ) async {
+    var observation = TargetCloseFacts()
+    let cancellation = Mutex(Task.isCancelled)
+    if !noBackends {
+      // NEW forensic-only window, anchored BEFORE the original assertion and dispatch. This
+      // cannot change the already-recorded immediate failure and is never cleanup acceptance.
+      let deadline = immediateEnded + .seconds(1)
+      let retained = Mutex<Thread?>(nil)
+      observation = await withTaskCancellationHandler {
+        await withCheckedContinuation { continuation in
+          retained.withLock { thread in
+            thread = Thread {
+              let started = ContinuousClock.now
+              var facts = TargetCloseFacts()
+              facts.workerStartedMilliseconds = Self.targetCloseMilliseconds(
+                since: immediateEnded, at: started)
+              facts.lateStart = started >= deadline
+              while ContinuousClock.now < deadline && facts.sampleCount < 101 {
+                if cancellation.withLock({ $0 }) { facts.cancelled = true; break }
+                do {
+                  // EXACT original all-b4app/datname predicate. No forced cleanup or second close.
+                  let empty = try raw.execute(
+                    "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'", [database]
+                  ).rows.isEmpty
+                  let completed = ContinuousClock.now
+                  facts.sampleCount += 1
+                  let milliseconds = Self.targetCloseMilliseconds(since: immediateEnded, at: completed)
+                  if facts.firstSampleMilliseconds == nil {
+                    facts.firstSampleMilliseconds = milliseconds
+                    facts.firstEmpty = empty
+                  }
+                  facts.lastSampleMilliseconds = milliseconds
+                  facts.nonzeroObserved = facts.nonzeroObserved || !empty
+                  if completed > deadline { facts.lateCompletion = true; break }
+                  if cancellation.withLock({ $0 }) { facts.cancelled = true; break }
+                  if empty { facts.zero = true; facts.emptyMilliseconds = milliseconds; break }
+                } catch { facts.readFailed = true; break }
+                guard ContinuousClock.now < deadline else { break }
+                Thread.sleep(forTimeInterval: 0.010)
+              }
+              facts.cancelled = facts.cancelled || cancellation.withLock({ $0 })
+              // All native inspector accesses are finished; no claim of kernel Thread exit.
+              continuation.resume(returning: facts)
+            }
+            thread?.start()
+          }
+        }
+      } onCancel: {
+        cancellation.withLock { $0 = true }
+      }
+      retained.withLock { $0 = nil }
+    }
+    let cancelled = observation.cancelled || cancellation.withLock({ $0 }) || Task.isCancelled
+    // Emit only after actual inspector accesses finish, on the original test Task, before
+    // target defers or the primary body error rethrow. All fields are fixed labels/primitives.
+    print(
+      "A3_TARGET_CLOSE_FORENSIC phase=\(phase.rawValue) bodyFailed=\(bodyFailed) closeEntered=true closeReturned=true "
+        + "closeEntryMilliseconds=0 closeReturnMilliseconds=\(Self.targetCloseMilliseconds(since: closeEntered, at: closeReturned)) "
+        + "immediateQueryEndMilliseconds=\(Self.targetCloseMilliseconds(since: closeEntered, at: immediateEnded)) "
+        + "immediateReadCompleted=true noBackends=\(noBackends) followupAttempted=\(!noBackends) "
+        + "readFailed=\(observation.readFailed) nonzeroObserved=\(observation.nonzeroObserved) lateStart=\(observation.lateStart) "
+        + "lateCompletion=\(observation.lateCompletion) cancelled=\(cancelled) zero=\(observation.zero) firstEmpty=\(observation.firstEmpty) "
+        + "sampleCount=\(observation.sampleCount) sampleCompleted=\(observation.firstSampleMilliseconds != nil) "
+        + "firstSampleMilliseconds=\(observation.firstSampleMilliseconds ?? 0) lastSampleMilliseconds=\(observation.lastSampleMilliseconds ?? 0) "
+        + "emptyRecorded=\(observation.emptyMilliseconds != nil) emptyMilliseconds=\(observation.emptyMilliseconds ?? 0) "
+        + "workerStartedMilliseconds=\(observation.workerStartedMilliseconds) elapsedMilliseconds=\(Self.targetCloseMilliseconds(since: immediateEnded, at: .now))"
+    )
+  }
   private static func withTarget(
-    _ f: Fixture, populated: Bool = false,
+    _ f: Fixture, populated: Bool = false, forensicPhase: TargetClosePhase? = nil,
     _ body: @Sendable (Target) async throws -> Void
   ) async throws {
     var endpoint = try AgentProtocolResourceFixture.endpoint()
@@ -466,11 +555,20 @@ import WorkspaceProtocol
         failure = error
       }
     }
+    let closeEntered = forensicPhase.map { _ in ContinuousClock.now }
     try db.close()
+    let closeReturned = forensicPhase.map { _ in ContinuousClock.now }
     let noBackends = try raw.execute(
       "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'", [endpoint.database]
     ).rows.isEmpty
+    let immediateEnded = forensicPhase.map { _ in ContinuousClock.now }
     #expect(noBackends)
+    if let phase = forensicPhase, let closeEntered, let closeReturned, let immediateEnded {
+      await targetCloseDiagnostic(
+        raw, database: endpoint.database, phase: phase, closeEntered: closeEntered,
+        closeReturned: closeReturned, immediateEnded: immediateEnded,
+        bodyFailed: failure != nil, noBackends: noBackends)
+    }
     if let failure { throw failure }
   }
   private static let activationControlKey = "__b4app_agent_protocol_activation_v1"
@@ -811,7 +909,7 @@ import WorkspaceProtocol
   @Test func archiveA3MalformedFutureAndJoinedTargetsRefuseBeforeMutation() async throws {
     try await Self.withFixture { f in
       let original = try Self.document(f.raw)
-      try await Self.withTarget(f, populated: true) { target in
+      try await Self.withTarget(f, populated: true, forensicPhase: .malformed) { target in
         for variant in 0..<17 {
           var doc = original
           switch variant {
@@ -882,7 +980,7 @@ import WorkspaceProtocol
       let legacy = f.root + "/joined-legacy3.jsonl"
       try Self.legacyBytes(original, version: 3, jsonColumns: f.before.jsonColumns).write(
         to: URL(fileURLWithPath: legacy))
-      try await Self.withTarget(f) { target in
+      try await Self.withTarget(f, forensicPhase: .joined) { target in
         // A real accepted restore is a SETUP PRECONDITION, not a targeted guard feature assertion.
         try Self.acceptLegacy(path: legacy, source: f.before, target: target)
         try target.database.write { c in
@@ -899,7 +997,7 @@ import WorkspaceProtocol
         }
       }
       // Emptiness covers auxiliary facts even with zero connections; no unrelated data is overwritten.
-      try await Self.withTarget(f) { target in
+      try await Self.withTarget(f, forensicPhase: .auxiliary) { target in
         try target.raw.execute(#"INSERT INTO "settings" ("key","value") VALUES ('target-only','true')"#)
         let before = try Self.snapshot(target.raw)
         let error = Self.failure { try target.database.restore(from: legacy) }
@@ -907,7 +1005,9 @@ import WorkspaceProtocol
       }
       // Protocol material hidden under a legacy header is rejected, never silently skipped.
       for version in [1, 2, 3] {
-        try await Self.withTarget(f) { target in
+        try await Self.withTarget(
+          f, forensicPhase: version == 1 ? .legacy1 : (version == 2 ? .legacy2 : .legacy3)
+        ) { target in
           let path = f.root + "/private-under-v\(version).jsonl"
           var bytes = try Self.legacyBytes(original, version: version, jsonColumns: f.before.jsonColumns)
           let record = try #require(
