@@ -672,8 +672,23 @@ async fn read_ready(peer: &mut FakeDevice, host: bool) -> Result<(), &'static st
 }
 
 #[derive(Debug)]
+enum QueuedPeerCleanup {
+    ObservedCompletedClose,
+    FreshClose(Result<(), &'static str>),
+}
+
+impl QueuedPeerCleanup {
+    fn succeeded(&self) -> bool {
+        matches!(
+            self,
+            Self::ObservedCompletedClose | Self::FreshClose(Ok(()))
+        )
+    }
+}
+
+#[derive(Debug)]
 struct QueuedCloseCleanup {
-    peers: Vec<Result<(), &'static str>>,
+    peers: Vec<QueuedPeerCleanup>,
     drained: bool,
     drained_after_cancel: Option<bool>,
     server: Result<(), &'static str>,
@@ -695,10 +710,27 @@ async fn join_server(
 async fn cleanup_queued_close(
     hub: &mut relay_support::Hub,
     peers: &mut [Option<FakeDevice>],
+    old_phone_close: &Result<CloseFacts, &'static str>,
 ) -> QueuedCloseCleanup {
     let mut outcomes = Vec::new();
-    for peer in peers {
+    for (index, peer) in peers.iter_mut().enumerate() {
         if let Some(mut peer) = peer.take() {
+            if index == 0
+                && matches!(
+                    old_phone_close,
+                    Ok(CloseFacts {
+                        end: CloseEnd::Close,
+                        flushed: true,
+                        ..
+                    })
+                )
+            {
+                // capture_close already completed this socket's close response. Its owned
+                // transport is dropped once here, without attempting a second Close.
+                outcomes.push(QueuedPeerCleanup::ObservedCompletedClose);
+                drop(peer);
+                continue;
+            }
             let closed = bounded_scenario(async {
                 match peer.ws.close(None).await {
                     Ok(())
@@ -709,7 +741,7 @@ async fn cleanup_queued_close(
                 }
             })
             .await;
-            outcomes.push(closed);
+            outcomes.push(QueuedPeerCleanup::FreshClose(closed));
             // Even on timeout, dropping this owned socket ends the fixture transport.
         }
     }
@@ -827,11 +859,14 @@ async fn queued_close_companion(pool: PgPool, case: QueuedCloseCase) {
         .as_ref()
         .ok()
         .and_then(|facts| hub.state.relay.registration_snapshot(facts.phone_id));
-    let cleanup = cleanup_queued_close(&mut hub, &mut peers).await;
+    let cleanup = cleanup_queued_close(&mut hub, &mut peers, &close).await;
     drop(gate); // release-on-drop remains a backstop, never the only release/completion evidence.
 
     // All protected work and cleanup outcomes are available before assertions can unwind.
-    assert!(cleanup.peers.iter().all(Result::is_ok), "{cleanup:?}");
+    assert!(
+        cleanup.peers.iter().all(QueuedPeerCleanup::succeeded),
+        "{cleanup:?}"
+    );
     assert!(cleanup.drained, "{cleanup:?}");
     assert_eq!(cleanup.server, Ok(()), "{cleanup:?}");
     assert!(cleanup.cancelled_server.is_none(), "{cleanup:?}");
