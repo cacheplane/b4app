@@ -36,7 +36,7 @@ use super::admission::{Checked, Failure};
 use super::limits::IN_FLIGHT_RETRY;
 use super::registry::{Close, Identity, LinkHandle, LiveLink, Outbound, Registration};
 use super::registry::{CloseDisposition, Payload};
-use super::{close_code, invalid_frame, route, PROTOCOL};
+use super::{invalid_frame, route, PROTOCOL};
 use crate::auth::{bearer_token, AuthedDevice};
 use crate::error::ApiError;
 use crate::instances;
