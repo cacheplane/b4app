@@ -109,10 +109,12 @@ private func parseAll(_ text: String, chunkSize: Int = Int.max) -> [B4StreamEven
     #expect(events[2] == .detached(reason: "capacity"))
   }
 
-  @Test func flushesTrailingEventWithoutBlankLine() {
+  // WHATWG HTML §9.2.6: EOF discards pending data; only a blank line dispatches.
+  // https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation
+  @Test func discardsTrailingEventWithoutBlankLine() {
     var parser = SSEParser()
     #expect(parser.push("event: chunk\ndata: \"tail\"").isEmpty)
-    #expect(parser.flush() == SSEEvent(event: "chunk", data: "\"tail\""))
+    #expect(parser.flush() == nil)
   }
 
   @Test func reportsUnknownEventsInsteadOfDroppingThem() {

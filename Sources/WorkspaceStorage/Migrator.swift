@@ -57,9 +57,49 @@ public enum Migrator {
       .compactMap { $0.text("name") }
   }
 
-  /// Migration-only public admission. This runs under the session lock but outside a transaction;
-  /// none of these queries can pin the later pending11 Repeatable Read snapshot.
-  private static func migrationLedger(_ connection: PostgresConnection) throws -> [String] {
+  /// Canonical inspection only. It never creates a missing ledger and may run in a preflight or
+  /// backup read-only transaction. Such an inspection is not permission to migrate without a lock.
+  static func recorded(_ connection: PostgresConnection) throws -> [String] {
+    try migrationLedger(connection)
+  }
+
+  struct Plan {
+    let files: [StoreMigrationResource]
+    let done: Set<String>
+    var hasPending: Bool { files.contains { !done.contains($0.name) } }
+  }
+
+  /// Load once for actual application, so the guarded migration hashes/decodes its same Data.
+  /// Call under withMigrationLock for migration; preflight is only a noncreating advisory read.
+  static func prepare(_ connection: PostgresConnection) throws -> Plan {
+    let names = try recorded(connection)
+    let done = Set(names)
+    let files: [StoreMigrationResource]
+    do { files = try resources() } catch { throw EnvironmentHistoryMigrationGuard.failure() }
+    if let newest = files.last?.name, let future = done.filter({ $0 > newest }).min() {
+      throw WorkspaceError(
+        .incompatibleVersion,
+        "The database was migrated by a newer version of Agent Workspace (\(future)); this version knows migrations up to \(newest). Update Agent Workspace."
+      )
+    }
+    // Admission applies to current reopens too: an extra old draft name cannot turn a
+    // noncanonical ledger into a no-pending path that bypasses closed archive admission.
+    // Keep the higher-future-version error above, before this fixed privacy-safe refusal.
+    guard names == Array(files.prefix(names.count).map(\.name)) else {
+      throw EnvironmentHistoryMigrationGuard.failure()
+    }
+    return Plan(files: files, done: done)
+  }
+
+  static func pending(_ connection: PostgresConnection) throws -> Bool {
+    try prepare(connection).hasPending
+  }
+
+  /// Canonical admission never writes unless creation is explicitly requested after backup.
+  /// Migration preparation is autocommit; a read-only preflight/capture may inspect without creating.
+  private static func migrationLedger(
+    _ connection: PostgresConnection, createIfMissing: Bool = false
+  ) throws -> [String] {
     do {
       guard try connection.execute("SELECT current_schema() AS name").rows.first?.text("name") == "public"
       else {
@@ -73,6 +113,7 @@ public enum Migrator {
       ).rows.first?.text("oid")
       guard publicOID == resolvedOID else { throw EnvironmentHistoryMigrationGuard.failure() }
       if publicOID == nil {
+        guard createIfMissing else { return [] }
         try connection.execute(
           "CREATE TABLE public.\"schemaMigrations\" (\"name\" text PRIMARY KEY, \"appliedAt\" text NOT NULL)")
       }
@@ -118,60 +159,68 @@ public enum Migrator {
     }
   }
 
-  /// The constructor supplies a fresh autocommit connection. Errors close its private pool; this
-  /// does not support migration inside a caller-owned transaction or reuse after failed cleanup.
-  @discardableResult
-  static func migrate(_ connection: PostgresConnection) throws -> [String] {
+  /// One session scope shared by direct migration and constructor backup admission. The caller
+  /// supplies an autocommit connection. It must not wrap this scope in an outer transaction.
+  static func withMigrationLock<T>(
+    _ connection: PostgresConnection, _ body: () throws -> T
+  ) throws -> T {
     var locked = false
     var unlockAttempted = false
     do {
       do {
         try connection.execute("SELECT pg_catalog.pg_advisory_lock($1::bigint)", [String(migrationLockKey)])
         locked = true
-      } catch {
-        throw EnvironmentHistoryMigrationGuard.failure()
-      }
-      let done = Set(try migrationLedger(connection))
-      let files: [StoreMigrationResource]
-      do { files = try resources() } catch { throw EnvironmentHistoryMigrationGuard.failure() }
-      if let newest = files.last?.name, let future = done.filter({ $0 > newest }).min() {
-        throw WorkspaceError(
-          .incompatibleVersion,
-          "The database was migrated by a newer version of Agent Workspace (\(future)); this version knows migrations up to \(newest). Update Agent Workspace."
-        )
-      }
-      var appliedNow: [String] = []
-      for file in files where !done.contains(file.name) {
-        if file.name == EnvironmentHistoryMigrationGuard.name {
-          try EnvironmentHistoryMigrationGuard.apply(connection, file: file)
-        } else {
-          // Preserve ordinary per-file boundaries and error behavior for all other migrations.
-          try connection.execute("BEGIN")
-          do {
-            try connection.execute(file.sql())
-            try connection.execute(
-              "INSERT INTO public.\"schemaMigrations\" (\"name\", \"appliedAt\") VALUES ($1, $2)",
-              [file.name, Timestamp.now()])
-            try connection.execute("COMMIT")
-          } catch {
-            try? connection.execute("ROLLBACK")
-            throw WorkspaceError(.internalError, "Migration \(file.name) failed: \(error)")
-          }
-        }
-        appliedNow.append(file.name)
-      }
+      } catch { throw EnvironmentHistoryMigrationGuard.failure() }
+      let value = try body()
       unlockAttempted = true
       try unlock(connection)
-      return appliedNow
+      return value
     } catch {
       let primary = error
       if locked && !unlockAttempted {
         unlockAttempted = true
-        // Never replace the primary with an unlock/aborted-transaction error. The initializer's
-        // existing catch closes this unreturned private pool, even if the connection is healthy.
         try? unlock(connection)
       }
+      // The constructor disposes its failed unreturned private pool. A direct raw caller owns
+      // its connection and has no automatic backup/disposal guarantee after failed cleanup.
       throw primary
     }
+  }
+
+  @discardableResult
+  static func migrate(_ connection: PostgresConnection) throws -> [String] {
+    try withMigrationLock(connection) {
+      try applyPrepared(connection, plan: prepare(connection))
+    }
+  }
+
+  /// Only the two same-connection entrypoints above and migrateWithBackup call this while holding
+  /// the migration session lock. Backup has COMMITTED before this function may create a ledger.
+  @discardableResult
+  static func applyPrepared(_ connection: PostgresConnection, plan: Plan) throws -> [String] {
+    guard Set(try migrationLedger(connection, createIfMissing: true)) == plan.done else {
+      throw EnvironmentHistoryMigrationGuard.failure()
+    }
+    var appliedNow: [String] = []
+    for file in plan.files where !plan.done.contains(file.name) {
+      if file.name == EnvironmentHistoryMigrationGuard.name {
+        try EnvironmentHistoryMigrationGuard.apply(connection, file: file)
+      } else {
+        // Preserve ordinary per-file boundaries and error behavior for all other migrations.
+        try connection.execute("BEGIN")
+        do {
+          try connection.execute(file.sql())
+          try connection.execute(
+            "INSERT INTO public.\"schemaMigrations\" (\"name\", \"appliedAt\") VALUES ($1, $2)",
+            [file.name, Timestamp.now()])
+          try connection.execute("COMMIT")
+        } catch {
+          try? connection.execute("ROLLBACK")
+          throw WorkspaceError(.internalError, "Migration \(file.name) failed: \(error)")
+        }
+      }
+      appliedNow.append(file.name)
+    }
+    return appliedNow
   }
 }

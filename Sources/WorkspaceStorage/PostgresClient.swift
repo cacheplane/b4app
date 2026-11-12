@@ -102,6 +102,7 @@ final class ConnectionPool: @unchecked Sendable {
   private let idle = Mutex<[PostgresConnection]>([])
   private let slots: DispatchSemaphore
   private let closed = Mutex(false)
+  private let leases = DispatchGroup()
 
   init(lib: LibPQ, connectionString: String, size: Int) throws {
     self.lib = lib
@@ -112,23 +113,56 @@ final class ConnectionPool: @unchecked Sendable {
     idle.withLock { $0.append(probe) }
   }
 
-  func withConnection<T>(_ body: (PostgresConnection) throws -> T) throws -> T {
+  func withConnection<T>(
+    beforeWaiting: () -> Void = {}, _ body: (PostgresConnection) throws -> T
+  ) throws -> T {
     if closed.withLock({ $0 }) { throw WorkspaceError(.endpointUnavailable, "The store is closed.") }
+    // An internal observation seam for deterministic checkout/close boundary tests.
+    beforeWaiting()
     slots.wait()
     defer { slots.signal() }
-    var connection = idle.withLock { $0.popLast() }
+    // Close may have run while this caller waited for a slot. Admission and idle access share the
+    // closed -> idle lock order with close and with returning a borrowed connection.
+    var connection = try closed.withLock { isClosed in
+      guard !isClosed else { throw WorkspaceError(.endpointUnavailable, "The store is closed.") }
+      // Register admission while close is excluded. A pre-slot waiter has no lease to drain.
+      leases.enter()
+      return idle.withLock { $0.popLast() }
+    }
+    // Install before lazy creation or the body can throw. Every admitted path leaves exactly once.
+    defer { leases.leave() }
     if connection == nil || connection?.isHealthy == false {
       connection = try PostgresConnection(lib: lib, connectionString: connectionString)
     }
     let live = connection!
     defer {
-      if live.isHealthy { idle.withLock { $0.append(live) } }
+      if live.isHealthy {
+        closed.withLock { isClosed in
+          if !isClosed { idle.withLock { $0.append(live) } }
+        }
+      }
     }
     return try body(live)
   }
 
   func close() {
-    closed.withLock { $0 = true }
-    idle.withLock { $0.removeAll() }
+    closed.withLock {
+      $0 = true
+      idle.withLock { $0.removeAll() }
+    }
+  }
+
+  /// Close admission, then wait only for admitted leases. Ordinary close remains nonwaiting.
+  /// False leaves the pool closed and never authorizes migration capture or DDL.
+  func closeForMigration(timeout: Duration) -> Bool {
+    // Truncate sub-nanosecond fractions, saturate overflow, and start the deadline before close so
+    // time spent closing does not extend the caller's budget. Nonpositive durations check now.
+    let parts = max(timeout, .zero).components
+    let (whole, wholeOverflow) = parts.seconds.multipliedReportingOverflow(by: 1_000_000_000)
+    let (nanos, fractionOverflow) = whole.addingReportingOverflow(parts.attoseconds / 1_000_000_000)
+    let interval = wholeOverflow || fractionOverflow ? Int.max : Int(max(0, nanos))
+    let deadline = DispatchTime.now() + .nanoseconds(interval)
+    close()
+    return leases.wait(timeout: deadline) == .success
   }
 }

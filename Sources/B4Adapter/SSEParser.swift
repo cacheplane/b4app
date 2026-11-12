@@ -20,11 +20,12 @@ public struct SSEEvent: Sendable, Equatable {
 /// because it drops the blank lines that delimit events.
 public struct SSEParser: Sendable {
   private var buffer: [UInt8] = []
+  private var skipLF = false
+  private var firstLine = true
   private var event: String?
   private var dataLines: [String] = []
   private var id: String?
   private var retry: Int?
-  private var hasFields = false
 
   public init() {}
 
@@ -32,41 +33,33 @@ public struct SSEParser: Sendable {
   public mutating func push(_ chunk: Data) -> [SSEEvent] { push([UInt8](chunk)) }
 
   public mutating func push(_ bytes: [UInt8]) -> [SSEEvent] {
-    buffer.append(contentsOf: bytes)
     var events: [SSEEvent] = []
-    while true {
-      guard let (end, skip) = nextLineBreak() else { break }
-      let line = Array(buffer[buffer.startIndex..<end])
-      buffer.removeSubrange(buffer.startIndex..<(end + skip))
-      if let dispatched = handle(line: line) { events.append(dispatched) }
+    for byte in bytes {
+      if skipLF {
+        skipLF = false
+        if byte == 0x0A { continue }
+      }
+      if byte == 0x0D || byte == 0x0A {
+        var line = buffer
+        buffer.removeAll(keepingCapacity: true)
+        if firstLine {
+          firstLine = false
+          if line.starts(with: [0xEF, 0xBB, 0xBF]) { line.removeFirst(3) }
+        }
+        if let dispatched = handle(line: line) { events.append(dispatched) }
+        skipLF = byte == 0x0D
+      } else {
+        buffer.append(byte)
+      }
     }
     return events
   }
 
-  /// Dispatch a trailing event that was not terminated by a blank line.
+  /// EOF never dispatches incomplete data (WHATWG HTML §9.2.6). CR is processed immediately by push.
   public mutating func flush() -> SSEEvent? {
-    if !buffer.isEmpty {
-      var line = buffer
-      buffer = []
-      if line.last == 0x0D { line.removeLast() }
-      _ = handle(line: line)
-    }
-    return dispatch()
-  }
-
-  /// Index of the next line terminator and how many bytes it spans. A trailing lone CR waits for
-  /// the next chunk, since it may be the first half of CRLF.
-  private func nextLineBreak() -> (Int, Int)? {
-    var index = buffer.startIndex
-    while index < buffer.endIndex {
-      let byte = buffer[index]
-      if byte == 0x0A { return (index, 1) }
-      if byte == 0x0D {
-        if index == buffer.endIndex - 1 { return nil }
-        return (index, buffer[index + 1] == 0x0A ? 2 : 1)
-      }
-      index += 1
-    }
+    buffer = []
+    event = nil
+    dataLines = []
     return nil
   }
 
@@ -87,15 +80,14 @@ public struct SSEParser: Sendable {
     switch field {
     case "event":
       event = String(value)
-      hasFields = true
     case "data":
       dataLines.append(String(value))
-      hasFields = true
     case "id":
       if !value.contains("\u{0}") { id = String(value) }
-      hasFields = true
     case "retry":
-      if let parsed = Int(value) { retry = parsed }
+      if !value.isEmpty, value.utf8.allSatisfy({ (0x30...0x39).contains($0) }), let parsed = Int(value) {
+        retry = parsed
+      }
     default:
       break
     }
@@ -103,13 +95,12 @@ public struct SSEParser: Sendable {
   }
 
   private mutating func dispatch() -> SSEEvent? {
-    guard hasFields else { return nil }
+    defer {
+      event = nil
+      dataLines = []
+    }
+    guard !dataLines.isEmpty else { return nil }
     let out = SSEEvent(event: event, data: dataLines.joined(separator: "\n"), id: id, retry: retry)
-    event = nil
-    dataLines = []
-    id = nil
-    retry = nil
-    hasFields = false
     return out
   }
 }

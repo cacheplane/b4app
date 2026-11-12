@@ -51,15 +51,23 @@ public actor SessionService {
     }
   }
 
-  /// One adapter per connection kind. B4 reads its endpoint secret from the credential store.
+  /// Harness adapters; historical B4 and the staged protocol runtime cannot execute here.
   public static let defaultAdapterFactory: AdapterFactory = { connection, environment, version, secrets in
     switch connection.kind {
     case .codex: return CodexAdapter(connection: connection, environment: environment, clientVersion: version)
     case .claude:
       return ClaudeAdapter(connection: connection, environment: environment, clientVersion: version)
-    case .b4: return B4Adapter(connection: connection, secretStore: secrets, clientVersion: version)
+    case .b4: throw SessionService.legacyProtocolReadOnlyError
+    case .agentProtocol: throw SessionService.protocolUnavailableError
     }
   }
+
+  static let legacyProtocolReadOnlyError = WorkspaceError(
+    .unsupportedCapability,
+    "This B4 connection is historical and read-only. Use an upgraded Agent Protocol connection for new conversations.",
+    details: ["reason": "agent_protocol_cutover"])
+  private static let protocolUnavailableError = WorkspaceError(
+    .unsupportedCapability, "Agent Protocol execution is not available in this build.")
 
   let context: Context
   var adapters: [String: any AgentAdapter] = [:]
@@ -84,8 +92,8 @@ public actor SessionService {
     self.context = context
   }
 
-  /// Coordinator start: no runtime process survived, so pending requests expire and non-terminal
-  /// turns become `reconciling` with an unknown outcome until a viewer reconciles them.
+  /// Coordinator start: process-bound harness requests expire and non-terminal harness turns become
+  /// reconciling. Historical B4 facts stay unchanged; protocol recovery owns its own revalidation.
   public func start() {
     if let servers = context.servers {
       pumps["managed-servers"] = Task { [weak self] in
@@ -96,8 +104,17 @@ public actor SessionService {
       }
     }
     do {
-      _ = try db.expireAllRuntimeRequests()
+      let processConnections = try db.listConnections(includeDisabled: true).filter {
+        $0.kind == .codex || $0.kind == .claude
+      }
+      let processConnectionIds = Set(processConnections.map(\.id))
+      for connection in processConnections {
+        _ = try db.expireRuntimeRequests(connectionId: connection.id)
+      }
       for turn in try db.unresolvedTurns() where turn.status != .reconciling {
+        guard let thread = try db.thread(id: turn.threadId),
+          processConnectionIds.contains(thread.connectionId)
+        else { continue }
         _ = try db.updateTurn(id: turn.id) {
           $0.status = .reconciling
           if $0.submission == .acknowledged || $0.nativeTurnId != nil { $0.submission = .unknown }
@@ -128,6 +145,9 @@ public actor SessionService {
 
   func adapter(for connection: Connection) throws -> any AgentAdapter {
     if closing { throw WorkspaceError(.signedOut, AccountManager.signedOutMessage) }
+    // Check before a cached or injected factory can create/reuse any upstream adapter.
+    if connection.isProtocolReadOnly { throw Self.legacyProtocolReadOnlyError }
+    if connection.kind == .agentProtocol { throw Self.protocolUnavailableError }
     if let existing = adapters[connection.id] { return existing }
     let adapter = try context.adapterFactory(
       connection, context.environment, context.clientVersion, context.secretStore)
@@ -170,7 +190,9 @@ public actor SessionService {
       executableName = "claude"
       defaultLabel = "Claude Code"
     case .b4:
-      return try await addB4Connection(params)
+      throw Self.legacyProtocolReadOnlyError
+    case .agentProtocol:
+      throw Self.protocolUnavailableError
     }
     let located = ExecutableLocator.find(
       executableName, explicitPath: params.executablePath, environment: context.environment)
@@ -503,6 +525,9 @@ public actor SessionService {
     guard var thread = try db.thread(id: params.threadId), thread.userDeletedAt == nil else {
       throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.")
     }
+    if try db.connection(id: thread.connectionId)?.isProtocolReadOnly == true {
+      return try readResult(thread)
+    }
     if let reconciling = try db.activeTurn(threadId: thread.id), reconciling.status == .reconciling {
       await reconcile(reconciling, thread: thread)
     }
@@ -521,6 +546,7 @@ public actor SessionService {
     guard let connection = try db.connection(id: thread.connectionId) else {
       throw WorkspaceError(.notFound, "Connection \(thread.connectionId) does not exist.")
     }
+    if connection.isProtocolReadOnly { return try readResult(thread) }
     if Self.identityChanged(thread: thread, connection: connection) {
       thread = await setContinuity(thread, .identityChanged)
       return try readResult(thread)
@@ -733,6 +759,9 @@ public actor SessionService {
     guard let connection = try db.connection(id: params.connectionId) else {
       throw Self.refusal("This connection is not on this Mac.", reason: "connection_missing")
     }
+    // Refuse unavailable runtimes before D203 folder/environment routing can admit a start.
+    if connection.isProtocolReadOnly { throw Self.legacyProtocolReadOnlyError }
+    if connection.kind == .agentProtocol { throw Self.protocolUnavailableError }
     let environmentFolders = Set(environment?.folders.map(\.path) ?? [])
     let requested = params.folder.flatMap { $0.isEmpty ? nil : $0 }
     let folder: String?
@@ -780,6 +809,8 @@ public actor SessionService {
         }
       }
       folder = nil
+    case .agentProtocol:
+      throw Self.protocolUnavailableError
     }
     guard connection.enabled, connection.status == .ready else {
       throw Self.refusal(
@@ -1022,6 +1053,9 @@ public actor SessionService {
   public func turnAbandon(_ params: TurnAbandon.Params) async throws -> TurnSend.Result {
     guard let thread = try db.thread(id: params.threadId) else {
       throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.")
+    }
+    if try db.connection(id: thread.connectionId)?.isProtocolReadOnly == true {
+      throw Self.legacyProtocolReadOnlyError
     }
     guard let active = try db.activeTurn(threadId: thread.id) else {
       throw WorkspaceError(.notFound, "No turn is active on this thread.")
@@ -1270,7 +1304,8 @@ public actor SessionService {
     }
   }
 
-  private func environment(_ incoming: AdapterEvent) async {
+  // Internal so storage-backed boundary tests can inject an event without starting a runtime.
+  func environment(_ incoming: AdapterEvent) async {
     // D-035: the coordinator is the redaction boundary. Adapters forward what runtimes say (stderr
     // tails, error messages); nothing of that leaves here unmasked.
     let raw: AdapterEvent = {
@@ -1282,6 +1317,9 @@ public actor SessionService {
     var thread: ConversationThread?
     var turn: Turn?
     do {
+      // A retired adapter may still have an event queued. Its stored profile kind is authoritative:
+      // do not let that event rewrite retained history or publish a fabricated runtime outcome.
+      if try db.connection(id: raw.connectionId)?.isProtocolReadOnly == true { return }
       if let nativeThreadId = raw.nativeIds["threadId"] {
         thread = try db.thread(connectionId: raw.connectionId, nativeThreadId: nativeThreadId)
       }

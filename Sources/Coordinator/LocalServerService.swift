@@ -371,6 +371,9 @@ public actor LocalServerService {
   /// alone and the row is marked stopped (spec 10.3).
   public func startAll() async {
     for server in (try? db.listLocalServers()) ?? [] where server.pid != nil {
+      // Cached legacy-only history cannot authorize ownership checks, health probes or adoption.
+      guard let references = try? db.connections(localServerId: server.id) else { continue }
+      if !references.isEmpty, references.allSatisfy(\.isProtocolReadOnly) { continue }
       let pid = server.pid!
       if verifyOwnership(server), let identity = ProcessInspector.identity(pid: pid) {
         let healthy = await isHealthy(server)
@@ -511,7 +514,7 @@ public actor LocalServerService {
     await notifyConnections(serverId: id, ready: health == .ready)
   }
 
-  private func markStopped(_ server: LocalServer, message: String) throws -> LocalServer {
+  func markStopped(_ server: LocalServer, message: String) throws -> LocalServer {
     try db.updateLocalServer(id: server.id) {
       $0.pid = nil
       $0.processStartedAt = nil
@@ -544,7 +547,8 @@ public actor LocalServerService {
   /// goes through the session service's projection (`events()`), which also marks running turns
   /// `reconciling` and expires prompts when the transport is gone, exactly as for a harness exit.
   private func notifyConnections(serverId: String, ready: Bool) async {
-    for connection in (try? db.connections(localServerId: serverId)) ?? [] {
+    for connection in (try? db.connections(localServerId: serverId)) ?? []
+    where !connection.isProtocolReadOnly {
       let status: ConnectionStatus = ready ? .ready : .offline
       guard connection.status != status || !ready else { continue }
       _ = try? db.updateConnection(id: connection.id) { $0.status = status }

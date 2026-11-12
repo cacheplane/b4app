@@ -135,6 +135,9 @@ public final class AccountScope: Sendable {
   /// Whether `close()` has begun.
   public var isClosing: Bool { gate.isClosing }
 
+  /// Read-only view of the existing admission counter; does not enter or leave the scope.
+  var admittedWorkCount: Int { gate.inside }
+
   /// Admit one piece of work to the scope; throws `signed_out` once it is closing. Pair with `leave()`.
   public func enter() throws { try gate.enter() }
   public func leave() { gate.leave() }
@@ -161,7 +164,8 @@ public final class AccountScope: Sendable {
     row: AccountRow, cluster: StoreCluster, context: Context, instance: UUID = UUID(),
     onUnauthorized: @escaping @Sendable () async -> Void = {}
   ) async throws -> AccountScope {
-    let database = try openDatabase(row: row, cluster: cluster, createIfMissing: true)
+    let database = try openDatabase(
+      row: row, cluster: cluster, paths: context.paths, createIfMissing: true)
     return await open(
       row: row, database: database, context: context, instance: instance, onUnauthorized: onUnauthorized)
   }
@@ -170,11 +174,23 @@ public final class AccountScope: Sendable {
   /// cannot be opened or migrated is found before anything else changes. `createIfMissing` is false
   /// for a registered account, whose database must already exist.
   static func openDatabase(
-    row: AccountRow, cluster: StoreCluster, createIfMissing: Bool
+    row: AccountRow, cluster: StoreCluster, paths: PlatformPaths, createIfMissing: Bool
   ) throws -> WorkspaceDatabase {
     try WorkspaceDatabase(
       endpoint: cluster.endpoint(database: row.database), binDir: cluster.binDir,
-      createIfMissing: createIfMissing)
+      createIfMissing: createIfMissing,
+      backupDirectory: backupDirectory(paths: paths, database: row.database))
+  }
+
+  /// Pure owner-path construction shared by account and legacy-adoption opens in this module.
+  /// The storage admission code creates protected directories only when a backup is required.
+  static func backupDirectory(paths: PlatformPaths, database: String) throws -> String {
+    guard !database.isEmpty,
+      let component = database.addingPercentEncoding(
+        withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "_-")))
+    else { throw WorkspaceError(.protocolInvalid, "A database name is required for its backup path.") }
+    return URL(fileURLWithPath: paths.dataDir).appendingPathComponent("backups")
+      .appendingPathComponent(component).path
   }
 
   /// Start the account's services on its opened database: the environment backfill, sessions, the managed

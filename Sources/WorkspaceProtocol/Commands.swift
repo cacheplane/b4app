@@ -261,9 +261,9 @@ public enum EventsReplay: WorkspaceCommand {
 // MARK: - M1 conversation methods
 
 /// Register a connection. For Codex and Claude the executable is located on PATH unless
-/// `executablePath` is given. For B4, `url` is the endpoint base URL (HTTPS, or HTTP on loopback),
-/// `route` the exact route key such as `/chat#agent`, and `authReference` an optional `secret:` id
-/// from `credential.add`. The connection is inspected before it is returned.
+/// `executablePath` is given. Agent Protocol profiles select `peerProfile` and the exact catalog
+/// `agentId`, with explicit authentication settings and a `secret:` reference from `credential.add`.
+/// The historical `route` field is not an alias for a new protocol Agent ID.
 public enum ConnectionAdd: WorkspaceCommand {
   public struct Params: Codable, Sendable, Equatable {
     public var kind: ConnectionKind
@@ -271,18 +271,28 @@ public enum ConnectionAdd: WorkspaceCommand {
     public var executablePath: String?
     public var url: String?
     public var route: String?
+    public var peerProfile: ProtocolPeerProfile?
+    public var agentId: String?
+    public var authMode: ConnectionAuthMode?
+    public var authHeaderName: String?
     public var authReference: String?
     /// A managed server id: the connection targets that server's loopback origin (M4).
     public var serverId: String?
     public init(
       kind: ConnectionKind, label: String? = nil, executablePath: String? = nil, url: String? = nil,
-      route: String? = nil, authReference: String? = nil, serverId: String? = nil
+      route: String? = nil, authReference: String? = nil, serverId: String? = nil,
+      peerProfile: ProtocolPeerProfile? = nil, agentId: String? = nil,
+      authMode: ConnectionAuthMode? = nil, authHeaderName: String? = nil
     ) {
       self.kind = kind
       self.label = label
       self.executablePath = executablePath
       self.url = url
       self.route = route
+      self.peerProfile = peerProfile
+      self.agentId = agentId
+      self.authMode = authMode
+      self.authHeaderName = authHeaderName
       self.authReference = authReference
       self.serverId = serverId
     }

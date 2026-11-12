@@ -26,7 +26,7 @@ extension SessionService {
     switch connection.kind {
     case .codex, .claude:
       return ConnectionUsage(connectionId: connection.id, reading: readings[connection.id])
-    case .b4:
+    case .b4, .agentProtocol:
       // A server that has never reported tokens has no figure, rather than zero (D-082).
       guard try db.hasTokenUsage(connectionId: connection.id) else {
         return ConnectionUsage(connectionId: connection.id)
@@ -149,56 +149,27 @@ extension SessionService {
 
   // MARK: - Editing
 
-  /// Change what keeps a connection's identity: the label and, for B4, the credential. Another endpoint
-  /// or route is another connection (spec 5.2, D-032). A replaced credential's secret is removed once no
-  /// connection uses it, and the cached adapter is dropped so the next turn uses the new one.
+  /// Rename a connection without changing its identity or credentials. Retired B4 credential
+  /// requests refuse before any secret access or saved edit.
   public func connectionUpdate(_ params: ConnectionUpdate.Params) async throws -> ConnectionAdd.Result {
     guard let connection = try db.connection(id: params.connectionId) else {
       throw WorkspaceError(.notFound, "Connection \(params.connectionId) does not exist.")
     }
+    if params.authReference != nil || params.clearAuth == true {
+      if connection.kind == .b4 { throw Self.legacyProtocolReadOnlyError }
+      throw WorkspaceError(.protocolInvalid, "Credential changes are not available for this connection.")
+    }
     let label = params.label?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let changesAuth = params.authReference != nil || params.clearAuth == true
-    if changesAuth, connection.kind != .b4 {
-      throw WorkspaceError(.protocolInvalid, "Only a B4 connection takes a credential reference.")
-    }
-    // A new key means a new adapter, and dropping the old one would cut off a turn in flight.
-    if changesAuth, let running = try db.unresolvedTurns(connectionId: connection.id).first {
-      throw WorkspaceError(
-        .protocolInvalid, "A turn is running on this connection. Change the key when it finishes.",
-        details: ["reason": "turn_active", "turnId": .string(running.id)])
-    }
-    if let reference = params.authReference {
-      guard let ref = SecretRef(rawValue: reference) else {
-        throw WorkspaceError(
-          .protocolInvalid, "authReference must be a secret: reference returned by `credential add`.")
-      }
-      guard try await context.secretStore.read(ref) != nil else {
-        throw WorkspaceError(.notFound, "Credential \(reference) is not in the credential store.")
-      }
-    }
-    let newReference = params.clearAuth == true ? nil : (params.authReference ?? connection.authReference)
     let newLabel = (label?.isEmpty == false) ? label! : connection.label
-    guard newLabel != connection.label || newReference != connection.authReference else {
+    guard newLabel != connection.label else {
       return ConnectionAdd.Result(
         connection: connection, inspection: ConnectionInspection(status: connection.status))
     }
     let updated =
       try db.updateConnection(id: connection.id) {
         $0.label = newLabel
-        $0.authReference = newReference
         $0.profileRevision += 1
       } ?? connection
-    if newReference != connection.authReference {
-      await evictAdapter(connectionId: connection.id)
-      // The edit is saved; deleting the old key is best effort, so a Keychain that refuses it never
-      // turns a saved edit into an error. `credential.remove` can take it later.
-      if let old = connection.authReference.flatMap(SecretRef.init(rawValue:)),
-        try !db.listConnections(includeDisabled: true).contains(where: { $0.authReference == old.rawValue })
-      {
-        _ = try? await context.secretStore.remove(old)
-      }
-      return try await connectionInspect(ConnectionInspect.Params(connectionId: connection.id))
-    }
     await context.eventLog.publish(
       try AdapterEvent.connectionChanged(
         connectionId: updated.id, status: updated.status, authStatus: updated.authStatus,

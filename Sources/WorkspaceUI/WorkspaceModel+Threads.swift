@@ -25,13 +25,14 @@ extension WorkspaceModel {
   public func deleteConfirmation(for thread: ConversationThread) -> (title: String, message: String) {
     let connection = connections.first { $0.id == thread.connectionId }
     var message: String
-    if let connection, connection.enabled, !thread.identityChanged(on: connection) {
+    let canReachRuntime = connection.map { $0.kind == .codex || $0.kind == .claude } ?? false
+    if let connection, canReachRuntime, connection.enabled, !thread.identityChanged(on: connection) {
       message =
         "It's removed from this app and from \(Self.runtimeName(connection.kind)). You can't undo this."
     } else {
       message = "It's removed from this app. You can't undo this."
     }
-    if activeTurns[thread.id] != nil { message += " Its running turn will be stopped." }
+    if canReachRuntime, activeTurns[thread.id] != nil { message += " Its running turn will be stopped." }
     return ("Delete \"\(thread.title.isEmpty ? "Untitled" : thread.title)\"?", message)
   }
 
@@ -40,6 +41,7 @@ extension WorkspaceModel {
     case .codex: return "Codex"
     case .claude: return "Claude Code"
     case .b4: return "the B4 server"
+    case .agentProtocol: return "the Agent Protocol server"
     }
   }
 }

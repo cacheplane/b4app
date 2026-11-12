@@ -272,6 +272,7 @@ public final class HTTPHubAPI: HubAPI {
     var request = URLRequest(url: try url(path, query: query), timeoutInterval: timeout)
     request.httpMethod = method.rawValue
     request.setValue("application/json", forHTTPHeaderField: "Accept")
+    request.setValue("2", forHTTPHeaderField: "B4-Protocol")
     if let body {
       request.httpBody = body
       request.setValue("application/json", forHTTPHeaderField: "Content-Type")

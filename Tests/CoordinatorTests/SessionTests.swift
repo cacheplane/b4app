@@ -74,7 +74,7 @@ final class FakeB4: Sendable {
 }
 
 private func temporaryPaths() throws -> PlatformPaths {
-  let base = NSTemporaryDirectory() + "b4s-\(UUID().uuidString.prefix(8))"
+  let base = AgentProtocolResourceFixture.temporaryDirectory + "b4s-\(UUID().uuidString.prefix(8))"
   try FileManager.default.createDirectory(atPath: base + "/work", withIntermediateDirectories: true)
   return try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
 }
@@ -610,7 +610,7 @@ actor EventCollector {
     let folderB: String
 
     static func start() async throws -> Rig {
-      let base = NSTemporaryDirectory() + "b4t-\(UUID().uuidString.prefix(8))"
+      let base = AgentProtocolResourceFixture.temporaryDirectory + "b4t-\(UUID().uuidString.prefix(8))"
       try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
       let log = base + "/fake-claude.log"
       let h = try await Harness.start(extraEnvironment: ["FAKE_CLAUDE_LOG": log])
@@ -729,7 +729,7 @@ actor EventCollector {
   }
 
   @Test func localThreadStartCreatesThreadAndTurn() async throws {
-    let base = NSTemporaryDirectory() + "b4t-\(UUID().uuidString.prefix(8))"
+    let base = AgentProtocolResourceFixture.temporaryDirectory + "b4t-\(UUID().uuidString.prefix(8))"
     try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
     let log = base + "/fake-claude.log"
     let h = try await Harness.start(extraEnvironment: ["FAKE_CLAUDE_LOG": log])

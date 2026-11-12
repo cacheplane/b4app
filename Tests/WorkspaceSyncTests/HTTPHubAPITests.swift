@@ -27,6 +27,10 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
     lock.withLock { handlers[host] = handler }
   }
 
+  static func unregister(host: String) {
+    _ = lock.withLock { handlers.removeValue(forKey: host) }
+  }
+
   static func session() -> URLSession {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [StubProtocol.self]
@@ -106,6 +110,46 @@ final class TokenSequence: @unchecked Sendable {
   private func queryItems(_ request: URLRequest) -> [String: String] {
     let components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!
     return Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+  }
+
+  @Test func authenticatedSyncRequestsCarryClientProtocolTwo() async throws {
+    let host = "client-protocol-two.test"
+    let recorder = Recorder()
+    let session = StubProtocol.session()
+    defer {
+      session.invalidateAndCancel()
+      StubProtocol.unregister(host: host)
+    }
+    StubProtocol.register(host: host) { captured in
+      recorder.add(captured)
+      switch (captured.request.httpMethod, captured.request.url?.path) {
+      case ("POST", "/v1/changes"):
+        return .json(200, #"{"acceptedThrough":0}"#)
+      case ("GET", "/v1/changes"):
+        return .json(200, #"{"changes":[],"next":0,"more":false}"#)
+      case ("GET", "/v1/snapshot"):
+        return .json(200, #"{"changes":[],"clocks":[],"next":0}"#)
+      default:
+        return .json(
+          404,
+          #"{"error":{"kind":"request_error","message":"Unknown test path.","details":{"code":"not_found"}}}"#
+        )
+      }
+    }
+    let api = HTTPHubAPI(
+      baseURL: URL(string: "https://\(host)")!, token: { "fixture-protocol-token" }, session: session)
+    #expect(try await api.push([]).acceptedThrough == 0)
+    #expect(try await api.pull(after: 0, limit: 1, wait: 0).changes.isEmpty)
+    #expect(try await api.snapshot().changes.isEmpty)
+    let requests = recorder.all.map(\.request)
+    try #require(requests.count == 3)
+    #expect(requests.map { $0.url?.path } == ["/v1/changes", "/v1/changes", "/v1/snapshot"])
+    #expect(
+      requests.allSatisfy { $0.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-protocol-token" }
+    )
+    for request in requests {
+      #expect(request.value(forHTTPHeaderField: "B4-Protocol") == "2")
+    }
   }
 
   @Test func mapsHubErrorsAndSendsTheBearer() async throws {

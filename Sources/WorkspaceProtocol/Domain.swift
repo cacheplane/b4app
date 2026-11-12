@@ -31,7 +31,21 @@ public enum SubmissionState: String, Codable, Sendable, CaseIterable {
 }
 
 public enum ConnectionKind: String, Codable, Sendable, CaseIterable {
-  case codex, claude, b4
+  case codex, claude, b4, agentProtocol
+}
+
+/// The immutable protocol selected for a new Agent Protocol connection.
+public enum ProtocolPeerProfile: String, Codable, Sendable, CaseIterable {
+  case b4, agentProtocol
+}
+
+/// Explicit endpoint authentication. Values remain in the credential store.
+public enum ConnectionAuthMode: String, Codable, Sendable, CaseIterable {
+  case none, bearer, header
+}
+
+public enum ProtocolRetiredReason: String, Codable, Sendable {
+  case agentProtocolCutover = "agent_protocol_cutover"
 }
 
 /// B4 connections are managed (coordinator owns the process) or attached (local or remote).
@@ -71,13 +85,22 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
   public var label: String
   public var enabled: Bool
   public var profileRevision: Int
-  /// Executable path for codex and claude; API base URL for b4.
+  /// Executable path for codex and claude; deployment base URL for protocol connections.
   public var target: String
-  /// Exact B4 route key such as "/research#agent"; nil for harness connections.
+  /// Historical B4 route key such as "/research#agent"; never a new protocol admission alias.
   public var routeKey: String?
+  /// The selected protocol and exact canonical catalog Agent ID. Absent on historical profiles.
+  public var peerProfile: ProtocolPeerProfile?
+  public var agentId: String?
   public var b4Mode: B4Mode?
   public var localServerId: String?
   public var authReference: String?
+  /// Owner-local endpoint authentication settings; no credential value is stored here.
+  public var authMode: ConnectionAuthMode?
+  public var authHeaderName: String?
+  /// Mirrored retirement facts, written only after verified sync protocol activation.
+  public var protocolRetiredAt: String?
+  public var protocolRetiredReason: ProtocolRetiredReason?
   /// The native identity the connection last presented (account email, endpoint origin). Threads
   /// carry the scope they were created under; a different scope means another account or server
   /// and old threads are never retargeted (spec 5.1).
@@ -97,10 +120,16 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
   public var createdAt: String
   public var updatedAt: String
 
+  /// Historical B4 profiles are read-only immediately, independently of delayed mirrored facts.
+  public var isProtocolReadOnly: Bool { kind == .b4 }
+
   public init(
     id: String, kind: ConnectionKind, label: String, enabled: Bool = true, profileRevision: Int = 0,
     target: String, routeKey: String? = nil, b4Mode: B4Mode? = nil, localServerId: String? = nil,
     authReference: String? = nil, nativeScope: String? = nil, environmentId: String? = nil,
+    peerProfile: ProtocolPeerProfile? = nil, agentId: String? = nil,
+    authMode: ConnectionAuthMode? = nil, authHeaderName: String? = nil,
+    protocolRetiredAt: String? = nil, protocolRetiredReason: ProtocolRetiredReason? = nil,
     ownerDeviceId: String? = nil, capabilities: Capabilities = .unverified, models: [RuntimeModel]? = nil,
     status: ConnectionStatus = .unconfigured, authStatus: AuthStatus = .unknown,
     createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now()
@@ -112,9 +141,15 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
     self.profileRevision = profileRevision
     self.target = target
     self.routeKey = routeKey
+    self.peerProfile = peerProfile
+    self.agentId = agentId
     self.b4Mode = b4Mode
     self.localServerId = localServerId
     self.authReference = authReference
+    self.authMode = authMode
+    self.authHeaderName = authHeaderName
+    self.protocolRetiredAt = protocolRetiredAt
+    self.protocolRetiredReason = protocolRetiredReason
     self.nativeScope = nativeScope
     self.environmentId = environmentId
     self.ownerDeviceId = ownerDeviceId

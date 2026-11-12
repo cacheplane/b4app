@@ -1,0 +1,26 @@
+{
+  "status": "UNPUBLISHED_SOURCE_STAGING_PACK_ONLY",
+  "package": "@b4run/sdk",
+  "version": "0.15.8",
+  "tarballSha256": "c01d03b78c91e29ace2ae0af0fe5eaf974b318e4e512c3b5fda188ca53ca44ce",
+  "tarballBytes": 242697,
+  "files": [
+    {
+      "path": "package/dist/agent-protocol.schema.json",
+      "bytes": 212880,
+      "sha256": "bcea770e7338cf3dbc3c47c5fa2078e802d3042d82e6173225ad6cbb6230c5fb"
+    },
+    {
+      "path": "package/dist/agent-protocol.fixtures.json",
+      "bytes": 224889,
+      "sha256": "37fb22423bcfd5eeee951f99f5365f4374d8ae85cc25950f8f308a70c3647248"
+    }
+  ],
+  "packSourceCommit": "dbf3d0ac0f913586c1ab980ede41134a026c3817",
+  "mergedCommit": "521c8bae61d202db4104f22724e8e84e8795386f",
+  "commonTree": "6e977f7862e7ae7a5ba3107b58aa05a14f77fad6",
+  "sourceTreeEvidence": "Root git rev-parse dbf tree and GitHub git/commits/521 tree equality; immutable qualified worktree clean",
+  "buildEvidence": "Preserved Node build29 and SDK777 qualification from execution checkpoint; pack used existing built dist, no rebuild or tests in this operation",
+  "command": "npm pack exact SDK directory --ignore-scripts --json --pack-destination private staging --cache private staging/npm-cache",
+  "limits": "Not final coordinated version/release artifact. No publication, source checkout mutation, runtime execution or new native coverage. SDK corpus/schema bytes match client frozen fixture hashes."
+}

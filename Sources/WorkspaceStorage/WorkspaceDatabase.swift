@@ -49,6 +49,7 @@ public final class WorkspaceDatabase: Sendable {
   /// throws. `wall` is the clock's time source (tests pin it to replay recorded clocks).
   public init(
     endpoint: PostgresEndpoint, binDir: String, createIfMissing: Bool = true,
+    backupDirectory: String? = nil,
     wall: @escaping @Sendable () -> UInt64 = epochMillis
   ) throws {
     self.endpoint = endpoint
@@ -66,7 +67,9 @@ public final class WorkspaceDatabase: Sendable {
     }
     pool = try ConnectionPool(lib: lib, connectionString: base + " dbname=\(endpoint.database)", size: 4)
     do {
-      try pool.withConnection { try Migrator.migrate($0) }
+      try pool.withConnection { c in
+        try Self.migrateWithBackup(c, endpoint: endpoint, backupDirectory: backupDirectory)
+      }
     } catch {
       pool.close()
       throw error
@@ -88,6 +91,36 @@ public final class WorkspaceDatabase: Sendable {
   }
 
   public func close() throws { pool.close() }
+
+  /// Storage-module admission facts for the account lifecycle, not a protocol/UI state.
+  public enum MigrationState: Sendable, Equatable {
+    case missing, current, pending
+  }
+
+  /// Inspect migration state without creating a database/ledger or opening a migrating pool. The
+  /// normal initializer must still recheck under its exclusive advisory lock before applying SQL.
+  public static func preflightMigration(
+    endpoint: PostgresEndpoint, binDir: String
+  ) throws
+    -> MigrationState
+  {
+    let lib = try LibPQ.load(binDir: binDir)
+    let base = "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) application_name=b4app"
+    let admin = try PostgresConnection(lib: lib, connectionString: base + " dbname=postgres")
+    guard try !admin.execute("SELECT 1 FROM pg_database WHERE datname = $1", [endpoint.database]).rows.isEmpty
+    else { return .missing }
+    let connection = try PostgresConnection(
+      lib: lib, connectionString: base + " dbname=\(endpoint.database)")
+    try connection.execute("BEGIN READ ONLY")
+    defer { _ = try? connection.execute("ROLLBACK") }
+    return try Migrator.pending(connection) ? .pending : .current
+  }
+
+  /// Close admission and bound the wait for this database's admitted pool leases. False never
+  /// authorizes migration; the account lifecycle must quiesce its scope before requesting capture.
+  public func closeForMigration(timeout: Duration) -> Bool {
+    pool.closeForMigration(timeout: timeout)
+  }
 
   // MARK: - Plumbing
 
@@ -267,7 +300,25 @@ public final class WorkspaceDatabase: Sendable {
         var connection = try one(
           c, Connection.self, "SELECT * FROM \"connections\" WHERE \"id\" = $1 FOR UPDATE", [id])
       else { return nil }
+      let original = connection
       mutate(&connection)
+      if original.kind == .agentProtocol || connection.kind == .agentProtocol {
+        func sameBytes(_ lhs: String?, _ rhs: String?) -> Bool {
+          switch (lhs, rhs) {
+          case (nil, nil): return true
+          case (.some(let left), .some(let right)): return left.utf8.elementsEqual(right.utf8)
+          default: return false
+          }
+        }
+        guard sameBytes(connection.id, original.id), connection.kind == original.kind,
+          sameBytes(connection.target, original.target), connection.peerProfile == original.peerProfile,
+          sameBytes(connection.agentId, original.agentId),
+          sameBytes(connection.nativeScope, original.nativeScope)
+        else {
+          throw WorkspaceError(
+            .protocolInvalid, "Agent Protocol identity cannot change. Create a new connection.")
+        }
+      }
       connection.updatedAt = Timestamp.now()
       try update(c, "connections", connection)
       return connection

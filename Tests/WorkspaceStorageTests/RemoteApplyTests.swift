@@ -43,7 +43,7 @@ private func clock(_ db: WorkspaceDatabase, _ table: String, _ rowId: String, _ 
   try #require(try db.columnClock(table: table, rowId: rowId, column: column).flatMap(HLC.init(rawValue:)))
 }
 
-@Suite struct RemoteApplyTests {
+@Suite(.serialized) struct RemoteApplyTests {
   @Test func remoteTitleAppliesAndOlderLoses() throws {
     let db = try WorkspaceDatabase.temporary()
     try seed(db)

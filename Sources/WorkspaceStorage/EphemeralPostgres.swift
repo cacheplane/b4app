@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Synchronization
 import WorkspacePlatform
@@ -23,6 +24,7 @@ public enum EphemeralPostgres {
 
   /// A fresh database on the shared cluster.
   public static func endpoint() throws -> PostgresEndpoint {
+    try OwnedEphemeralTestResources.prepare()
     let shared = try ensureStarted()
     let name = "t_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "").prefix(20)
     let lib = try LibPQ.load(binDir: shared.cluster.binDir)
@@ -32,9 +34,11 @@ public enum EphemeralPostgres {
         "host=\(shared.cluster.socketDir) port=\(shared.cluster.port) dbname=postgres user=\(shared.cluster.user)"
     )
     try admin.execute("CREATE DATABASE \(Rows.quote(String(name)))")
-    return PostgresEndpoint(
+    let endpoint = PostgresEndpoint(
       socketDir: shared.cluster.socketDir, port: shared.cluster.port, database: String(name), dataDir: nil,
       logPath: shared.cluster.logPath, binDir: shared.cluster.binDir)
+    try OwnedEphemeralTestResources.acknowledge(endpoint)
+    return endpoint
   }
 
   private static func ensureStarted() throws -> Shared {
@@ -50,11 +54,12 @@ public enum EphemeralPostgres {
     let ownPid = ProcessInfo.processInfo.processIdentifier
     let short = String(ownPid)
     let tmp = ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory()
-    sweepStale(in: [NSTemporaryDirectory(), tmp], ownPid: ownPid)
+    sweepStale(in: [tmp], ownPid: ownPid)
     let cluster = PostgresCluster(
-      binDir: binDir, dataDir: NSTemporaryDirectory() + "b4pg-shared-\(short)/data",
+      binDir: binDir, dataDir: (tmp as NSString).appendingPathComponent("b4pg-shared-\(short)/data"),
       socketDir: (tmp as NSString).appendingPathComponent("b4pgs-\(short)"),
-      logPath: NSTemporaryDirectory() + "b4pg-shared-\(short)/postgres.log", maxConnections: 300)
+      logPath: (tmp as NSString).appendingPathComponent("b4pg-shared-\(short)/postgres.log"),
+      maxConnections: 300)
     try run(
       cluster, "initdb",
       [
@@ -194,5 +199,111 @@ public enum EphemeralPostgres {
         "\(tool) failed (\(process.terminationStatus)): \(String(decoding: output, as: UTF8.self).suffix(400))"
       )
     }
+  }
+}
+
+/// Opt-in resource ownership for the existing ephemeral TEST utility. No ordinary caller behavior
+/// changes without the task-local nonce. No production store, credential API or provider is added.
+private enum OwnedEphemeralTestResources {
+  private static var temporaryDirectory: String {
+    let env = ProcessInfo.processInfo.environment
+    if env["B4APP_A3_NONCE"] != nil, let root = env["B4APP_A3_PRIVATE_ROOT"] {
+      return (root as NSString).appendingPathComponent("tmp") + "/"
+    }
+    return NSTemporaryDirectory()
+  }
+  private static func canonical(_ path: String) -> String {
+    URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+  }
+
+  private static func contained(_ path: String, in root: String) -> Bool {
+    let path = canonical(path), root = canonical(root)
+    return path == root || path.hasPrefix(root + "/")
+  }
+
+  private static func write(_ object: [String: Any], to path: URL) throws {
+    try FileManager.default.createDirectory(
+      at: path.deletingLastPathComponent(), withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700])
+    try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]).write(
+      to: path, options: .atomic)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+  }
+
+  static func prepare() throws {
+    let env = ProcessInfo.processInfo.environment
+    guard let nonce = env["B4APP_A3_NONCE"] else { return }
+    guard let root = env["B4APP_A3_PRIVATE_ROOT"], let recordDir = env["B4APP_A3_RECORD_DIR"],
+      let expectedTemporary = env["TMPDIR"], let binDir = env["B4APP_POSTGRES_BIN"],
+      nonce.count == 12, nonce.allSatisfy({ $0.isHexDigit }), root.hasSuffix("b4a3-" + nonce)
+    else { throw WorkspaceError(.internalError, "A3 private resource configuration is incomplete.") }
+    let testPID = ProcessInfo.processInfo.processIdentifier
+    let foundationTemporary = NSTemporaryDirectory()
+    let preflight: [String: Any] = [
+      "nonce": nonce, "testPID": testPID, "foundationTemporary": foundationTemporary,
+      "environmentTemporary": expectedTemporary, "privateRoot": root,
+    ]
+    let directory = URL(fileURLWithPath: recordDir)
+    try write(preflight, to: directory.appendingPathComponent("preflight-\(testPID).json"))
+    // BEFORE EphemeralPostgres's stale sweep/start: the utility now uses ONLY its configured TMPDIR
+    // for data/log/socket/sweep. Foundation's global temp is recorded truthfully but never selected.
+    guard contained(expectedTemporary, in: root),
+      canonical(temporaryDirectory) == canonical(expectedTemporary)
+    else { throw WorkspaceError(.internalError, "Configured temporary storage escaped the A3 private root.") }
+
+    // Register exact startup locations before the helper can start anything, including setup-failure
+    // paths. These are derived from the audited helper, not a scan of another test's temp root.
+    try write(
+      [
+        "nonce": nonce, "testPID": testPID, "binDir": binDir,
+        "dataDir": (expectedTemporary as NSString).appendingPathComponent("b4pg-shared-\(testPID)/data"),
+        "socketDir": (expectedTemporary as NSString).appendingPathComponent("b4pgs-\(testPID)"),
+      ], to: directory.appendingPathComponent("intent-\(testPID).json"))
+
+  }
+
+  static func acknowledge(_ endpoint: PostgresEndpoint) throws {
+    let env = ProcessInfo.processInfo.environment
+    guard let nonce = env["B4APP_A3_NONCE"] else { return }
+    guard let root = env["B4APP_A3_PRIVATE_ROOT"], let recordDir = env["B4APP_A3_RECORD_DIR"],
+      let expectedTemporary = env["TMPDIR"], let binDir = env["B4APP_POSTGRES_BIN"]
+    else { throw WorkspaceError(.internalError, "A3 private resource configuration is incomplete.") }
+    let testPID = ProcessInfo.processInfo.processIdentifier
+    let foundationTemporary = NSTemporaryDirectory()
+    let directory = URL(fileURLWithPath: recordDir)
+    let dataDir = URL(fileURLWithPath: endpoint.logPath).deletingLastPathComponent()
+      .appendingPathComponent("data").path
+    guard contained(dataDir, in: root), contained(endpoint.socketDir, in: root),
+      let line = try String(contentsOfFile: dataDir + "/postmaster.pid", encoding: .utf8)
+        .split(separator: "\n").first,
+      let pid = Int32(line), let identity = ProcessInspector.identity(pid: pid),
+      let executable = ProcessInspector.executablePath(pid: pid),
+      canonical(executable) == canonical(binDir + "/postgres"),
+      let dataIndex = identity.arguments.firstIndex(of: "-D"),
+      identity.arguments.indices.contains(dataIndex + 1),
+      canonical(identity.arguments[dataIndex + 1]) == canonical(dataDir), getpgid(pid) > 0
+    else { throw WorkspaceError(.internalError, "A3 postmaster ownership could not be established.") }
+    let name = "postmaster-\(testPID)-\(pid)"
+    let record: [String: Any] = [
+      "nonce": nonce, "testPID": testPID, "postmasterPID": pid, "postmasterPGID": getpgid(pid),
+      "executable": executable, "arguments": identity.arguments, "startedAt": identity.startedAt,
+      "dataDir": dataDir, "socketDir": endpoint.socketDir, "port": endpoint.port,
+      "foundationTemporary": foundationTemporary, "environmentTemporary": expectedTemporary,
+    ]
+    try write(record, to: directory.appendingPathComponent(name + ".json"))
+    let acknowledgement = directory.appendingPathComponent(name + ".ack.json")
+    let deadline = Date().addingTimeInterval(10)
+    while Date() < deadline {
+      if let data = try? Data(contentsOf: acknowledgement),
+        let ack = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+        ack["nonce"] as? String == nonce, (ack["postmasterPID"] as? NSNumber)?.int32Value == pid,
+        ack["dataDir"] as? String == dataDir,
+        let current = ProcessInspector.identity(pid: pid), current == identity
+      {
+        return
+      }
+      Thread.sleep(forTimeInterval: 0.01)
+    }
+    throw WorkspaceError(.internalError, "A3 postmaster registration was not acknowledged before test work.")
   }
 }

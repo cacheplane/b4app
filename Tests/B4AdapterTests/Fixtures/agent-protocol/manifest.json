@@ -1,0 +1,90 @@
+{
+  "package": {
+    "name": "@b4run/sdk",
+    "version": "0.15.8",
+    "status": "unpublished staging candidate",
+    "sha256": "c01d03b78c91e29ace2ae0af0fe5eaf974b318e4e512c3b5fda188ca53ca44ce",
+    "sourceRevision": "dbf3d0ac0f913586c1ab980ede41134a026c3817",
+    "sourceRevisionNote": "Unpublished source-staging pack from the preserved qualified checkout. The merged commit 521c8bae61d202db4104f22724e8e84e8795386f has the same tree 6e977f7862e7ae7a5ba3107b58aa05a14f77fad6. This is not the final coordinated version or a publication. Existing built dist was packed without scripts or a rebuild; native client qualification is separate."
+  },
+  "artifactManifest": {
+    "filename": "sdk-agent-protocol-artifact-manifest.json",
+    "sha256": "3c2ce413edee75ff1da59d79fa3d592e3ea32ba2e78bd2ac9aee4f55dd35dcb2"
+  },
+  "source": {
+    "repository": "https://github.com/langchain-ai/agent-protocol",
+    "commit": "455acf2eb2c55c634350f4c6a8da117d0ecfa7b1",
+    "versions": {
+      "openapi": "0.1.6",
+      "cddl": "0.0.20"
+    },
+    "license": "MIT",
+    "files": [
+      {
+        "url": "https://raw.githubusercontent.com/langchain-ai/agent-protocol/455acf2eb2c55c634350f4c6a8da117d0ecfa7b1/LICENSE",
+        "sha256": "d9bb52f2e3540d60ff50d8f0f5b6ba649b7fd346948c4c3d086c8afb120763c7",
+        "gitBlobSha1": "fc0602feecdd6748623c852ab534e1ca612673c7",
+        "bytes": 1072,
+        "path": "LICENSE"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/langchain-ai/agent-protocol/455acf2eb2c55c634350f4c6a8da117d0ecfa7b1/openapi.json",
+        "sha256": "7d069e43ca105e8127ce07ba7bd8bd7a78a2fadd6420009f2634a24cfb153f32",
+        "gitBlobSha1": "ca9738953a0960e4e2918ccab6e3c6efe124a9ca",
+        "bytes": 77595,
+        "path": "openapi.json"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/langchain-ai/agent-protocol/455acf2eb2c55c634350f4c6a8da117d0ecfa7b1/streaming/protocol.cddl",
+        "sha256": "9cebafc02e523f509f880aa8ebaa2af077f8a7f0589d8063a50d610c3af78fb1",
+        "gitBlobSha1": "d3342a16628030987056bc6840abb0f11b3f1dc5",
+        "bytes": 39078,
+        "path": "protocol.cddl"
+      }
+    ]
+  },
+  "nativeSource": {
+    "repository": "https://github.com/ag-ui-protocol/ag-ui",
+    "commit": "08eae9dc13546e91272efb2d0ef863e21acc6ee3",
+    "version": "1.0",
+    "path": "spec/1.0/schema.json",
+    "sha256": "4b5c93226838a0e72d88e6c5df20633c686c49fcb75d9be2815c6cbf9e48e71a",
+    "gitBlobSha1": "c2ce3c18036b6bb2afe583a9b916959e7dcd9b78"
+  },
+  "corrections": {
+    "sourceSha256": "7d069e43ca105e8127ce07ba7bd8bd7a78a2fadd6420009f2634a24cfb153f32",
+    "operations": [
+      {
+        "op": "remove",
+        "path": "/components/schemas/RunStream/allOf/1/required",
+        "expected": [
+          "run_id",
+          "created_at",
+          "updated_at",
+          "status",
+          "metadata"
+        ]
+      }
+    ],
+    "reason": "RunStream is a request; these response-only fields remain required by Run.allOf[1]. No Message correction is applied."
+  },
+  "files": [
+    {
+      "path": "agent-protocol.schema.json",
+      "packageMember": "package/dist/agent-protocol.schema.json",
+      "sha256": "bcea770e7338cf3dbc3c47c5fa2078e802d3042d82e6173225ad6cbb6230c5fb",
+      "bytes": 212880
+    },
+    {
+      "path": "agent-protocol.fixtures.json",
+      "packageMember": "package/dist/agent-protocol.fixtures.json",
+      "sha256": "37fb22423bcfd5eeee951f99f5365f4374d8ae85cc25950f8f308a70c3647248",
+      "bytes": 224889
+    }
+  ],
+  "refreshCommand": "python3 - \"$SDK_TARBALL\" \"$SDK_ARTIFACT_MANIFEST\" Tests/B4AdapterTests/Fixtures/agent-protocol <<'B4APP_REFRESH'\nfrom pathlib import Path\nimport hashlib, json, sys, tarfile\npackage, provenance, destination = map(Path, sys.argv[1:])\nexpected_package = \"c01d03b78c91e29ace2ae0af0fe5eaf974b318e4e512c3b5fda188ca53ca44ce\"\nexpected_manifest = \"3c2ce413edee75ff1da59d79fa3d592e3ea32ba2e78bd2ac9aee4f55dd35dcb2\"\nassert hashlib.sha256(package.read_bytes()).hexdigest() == expected_package\nassert hashlib.sha256(provenance.read_bytes()).hexdigest() == expected_manifest\nrecord = json.loads(provenance.read_bytes())\nassert record[\"tarballSha256\"] == expected_package\nentries = {entry[\"path\"]: entry for entry in record[\"files\"]}\nexpected_files = {\n    \"agent-protocol.schema.json\": \"bcea770e7338cf3dbc3c47c5fa2078e802d3042d82e6173225ad6cbb6230c5fb\",\n    \"agent-protocol.fixtures.json\": \"37fb22423bcfd5eeee951f99f5365f4374d8ae85cc25950f8f308a70c3647248\",\n}\ndestination.mkdir(parents=True, exist_ok=True)\nwith tarfile.open(package, \"r:gz\") as archive:\n    for name, expected in expected_files.items():\n        member = \"package/dist/\" + name\n        content = archive.extractfile(member).read()\n        assert hashlib.sha256(content).hexdigest() == entries[member][\"sha256\"] == expected\n        assert len(content) == entries[member][\"bytes\"]\n        (destination / name).write_bytes(content)\nB4APP_REFRESH",
+  "refreshEnvironment": {
+    "SDK_TARBALL": "Path to the exact package tarball identified by package.sha256",
+    "SDK_ARTIFACT_MANIFEST": "Path to the exact pack artifact manifest identified by artifactManifest.sha256"
+  }
+}

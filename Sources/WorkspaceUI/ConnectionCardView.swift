@@ -76,6 +76,7 @@ enum ConnectionSummary {
     case .codex: return "Usage unavailable"
     case .claude: return "Usage appears after the first turn"
     case .b4: return "Token use appears after the first turn"
+    case .agentProtocol: return "Usage is not available"
     }
   }
 

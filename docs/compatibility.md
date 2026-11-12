@@ -340,3 +340,7 @@ This prevention applies while Hub migration 18 is pending. Repairing an already 
 ## Pending Store migration 11 preservation (D-206)
 
 The migration runner protects opaque native JSON values while pending `0011_environments.sql` renames structural references. Published SQL, including `0012_app_folders.sql`, stays unchanged. It requires the canonical public schema, authentic ledger and native types; active row filtering and conflicting shadow objects refuse atomically, while allowed inactive RLS flags are preserved. The original regression and 24 new cases passed in real PostgreSQL CI. Already upgraded history requires trusted preimages for repair. Final PR acceptance requires all seven CI jobs; coordinated protocol-client qualification and activation remain separate. See [the Store verification record](verification/2026-11-11-store-environment-history-preservation.md).
+
+### Agent Protocol client staging
+
+The staged client schema appends `0013_agent_protocol.sql` after immutable published `0012_app_folders.sql`. Historical B4 rows retain their identities and cached data and are locally read-only. DTO/transport and protected archive source are present, but protocol execution, current native qualification and coordinated release remain incomplete. Existing Codex/Claude no-folder behavior remains required. Do not treat `B4-Protocol: 2` advertisement or an unpublished SDK source-staging pack as account activation or a released compatibility guarantee. See [the current foundation record](verification/2026-11-11-agent-protocol-current-main-foundation.md).

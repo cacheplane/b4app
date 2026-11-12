@@ -128,6 +128,7 @@ struct DiagnosticsView: View {
       case .codex: runtime = "Codex"
       case .claude: runtime = "Claude Code"
       case .b4: runtime = "B4"
+      case .agentProtocol: runtime = "Agent Protocol"
       }
       return ThreadDeleteLine(runtime: runtime, value: parts.joined(separator: ", "))
     }

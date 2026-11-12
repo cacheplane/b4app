@@ -17,8 +17,11 @@ import WorkspaceSync
 ///   says "signed out" for an account that comes back.
 /// - **Sign-in** finds or creates the registry row by `(hub URL, hub user id)`, claiming a placeholder
 ///   row whose device is the one the hub answered with, opens and migrates its
-///   database before anything else changes (a database that cannot be opened refuses the sign-in and
-///   leaves the previous account active and open), stores the token, writes the database's hub link,
+///   database before auth changes. A pending migration of the active store first quiesces its scope:
+///   a refusal before close leaves the same scope open; a failure after close leaves it temporarily
+///   unavailable with its registry and credentials intact. Other failed opens leave the previous
+///   account active and open.
+///   It then stores the token, writes the database's hub link,
 ///   activates the row, then closes the previous account and starts the new one. The first account
 ///   gets `workspace` unless it has joined a hub of its own; later ones get `workspace_<id>`.
 /// - **Sign-out** closes the scope, forgets the token (secret store and registry), and publishes
@@ -80,6 +83,16 @@ public actor AccountManager {
   let legacySecretStore: (any SecretStore)?
   let slot = Slot()
   let logger = Log.logger("accounts")
+
+  /// The manager's cluster is fixed; the registry uniquely owns each exact database name.
+  private struct RetainedDatabaseIdentity: Hashable {
+    let accountId: String
+    let database: String
+  }
+
+  /// Closed pools only, never scopes/services/tasks or extra credential references. A failed
+  /// migration admission keeps its exact pool for the NEXT explicit open, including current schema.
+  private var migrationDatabases: [RetainedDatabaseIdentity: WorkspaceDatabase] = [:]
 
   /// The active account, set before its scope is open so the status during a restore is that account.
   var active: AccountRow?
@@ -188,7 +201,8 @@ public actor AccountManager {
     // The last word on onboarding until `/v1/me` answers (the refresh below asks).
     needsOnboarding = row.needsOnboarding
     do {
-      let database = try AccountScope.openDatabase(row: row, cluster: cluster, createIfMissing: false)
+      let database = try AccountScope.openDatabase(
+        row: row, cluster: cluster, paths: scopeContext.paths, createIfMissing: false)
       await copyLegacySecrets(row: row, database: database)
       await install(row: row, database: database)
     } catch {
@@ -205,7 +219,9 @@ public actor AccountManager {
     guard try WorkspaceDatabase.linkedHubURL(endpoint: cluster.endpoint, binDir: cluster.binDir) != nil
     else { return }
     let database = try WorkspaceDatabase(
-      endpoint: cluster.endpoint, binDir: cluster.binDir, createIfMissing: false)
+      endpoint: cluster.endpoint, binDir: cluster.binDir, createIfMissing: false,
+      backupDirectory: AccountScope.backupDirectory(
+        paths: scopeContext.paths, database: cluster.endpoint.database))
     let row: AccountRow
     do {
       guard let link = try database.hubLink() else {
@@ -283,16 +299,64 @@ public actor AccountManager {
         database: try newDatabaseName(id: id), displayName: session.user.displayName,
         orgName: session.org.name)
     }
-    // The database first: one that cannot be opened or migrated refuses the sign-in before anything
-    // else changes. A registered account's database must already exist.
+    let identity = RetainedDatabaseIdentity(accountId: row.id, database: row.database)
+    let previous = slot.get()
+    let reopening = previous?.account.id == row.id
+    let migration = try WorkspaceDatabase.preflightMigration(
+      endpoint: cluster.endpoint(database: row.database), binDir: cluster.binDir)
+    // A slot-nil retry (or an external upgrade to current schema) still owes this exact old drain.
+    // Refuse before touching any currently live B/C scope, refresh, token, registry or target open.
+    if let retained = migrationDatabases[identity],
+      !retained.closeForMigration(timeout: AccountScope.drainTimeout)
+    {
+      throw WorkspaceError(
+        .endpointUnavailable,
+        "Account migration could not drain its retained store. The existing account state is unchanged.")
+    }
+    var migrationQuiesced = false
+    if migration == .pending, reopening, let previous,
+      previous.account.database == row.database
+    {
+      // Only a genuinely pending open of this active physical store needs early quiescence.
+      // Refuse/drain before changing the live scope, its refresh, registry or credential refs.
+      previous.refuseNewWork()
+      guard await previous.drain(timeout: AccountScope.drainTimeout) else {
+        previous.admitWorkAgain()
+        throw WorkspaceError(
+          .endpointUnavailable, "Account migration could not drain active work. The account remains open.")
+      }
+      guard slot.get()?.instance == previous.instance else {
+        previous.admitWorkAgain()
+        throw WorkspaceError(.endpointUnavailable, "The account changed before migration could begin.")
+      }
+      refresh?.cancel()
+      refresh = nil
+      slot.set(nil)
+      // Adapter disposal can stall. Reuse the existing close bound without claiming its canceled
+      // tasks joined; the already-drained gate needs no second wait. Preserve managed servers.
+      await Self.close(
+        previous, stoppingServers: false, drainTimeout: .zero, within: Self.switchCloseBudget)
+      // Closing admission and draining ALL old leases is the local database write fence, even if
+      // service close is still finishing. This synchronous bridge returns with admission closed.
+      let drained = previous.database.closeForMigration(timeout: AccountScope.drainTimeout)
+      // The local previous owns the DB throughout the nonthrowing call. Retain ONLY that closed
+      // DB before a refusal can release the scope, with no suspension or ownership gap between.
+      migrationDatabases[identity] = previous.database
+      guard drained else {
+        throw WorkspaceError(
+          .endpointUnavailable,
+          "Account migration could not drain its store. The account is temporarily unavailable.")
+      }
+      migrationQuiesced = true
+    }
+    // Storage admission precedes new auth writes. Registered accounts must already exist. A failed
+    // pending open stays unavailable without restore/retry; it is outside the auth rollback below.
     let database = try AccountScope.openDatabase(
-      row: row, cluster: cluster, createIfMissing: existing == nil)
+      row: row, cluster: cluster, paths: scopeContext.paths, createIfMissing: existing == nil)
 
     // Signing in again as the active account replaces its scope: it is closed now, so its `HubSync`
     // cannot write the link below, and its servers stay running for the new scope to adopt.
-    let previous = slot.get()
-    let reopening = previous?.account.id == row.id
-    if reopening, let previous {
+    if reopening, let previous, !migrationQuiesced {
       refresh?.cancel()
       slot.set(nil)
       await previous.close(stoppingServers: false)
@@ -364,6 +428,9 @@ public actor AccountManager {
     await copyLegacySecrets(row: row, database: database)
     // A hub that did not say who the user is gets asked, so the placeholder is replaced.
     let scope = await install(row: row, database: database, refreshNames: Self.isPlaceholder(hubUserId))
+    // Auth/registry committed and this exact target's fresh scope installed. Other retained
+    // identities remain untouched; releasing old work alone never schedules an open.
+    migrationDatabases.removeValue(forKey: identity)
     logger.info("signed in as account \(row.id, privacy: .public)")
     // Upload whatever the database holds now (a backlog from before sign-in, or from the last session).
     Task { await scope.hub.backgroundPush(reason: "sign-in") }
