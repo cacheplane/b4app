@@ -92,7 +92,7 @@ enum AgentProtocolIdentityManagedFixture {
     // Infrastructure CREATE DATABASE precedes ACK; helper+PG LIVE ACK precedes fixture SQL.
     var endpoint = try AgentProtocolResourceFixture.endpoint()
     endpoint.dataDir = nil
-    let root = AgentProtocolResourceFixture.temporaryDirectory + "a3-identity-managed-\(UUID())"
+    let root = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-identity-managed-\(UUID())"
     try FileManager.default.createDirectory(
       atPath: root, withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700])

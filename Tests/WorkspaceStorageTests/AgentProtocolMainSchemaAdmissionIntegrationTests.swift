@@ -156,7 +156,7 @@ private enum MainSchemaAdmissionFixture {
     var sequences: [String]
   }
   static func directory() throws -> String {
-    let path = AgentProtocolResourceFixture.temporaryDirectory + "main4723-" + UUID().uuidString
+    let path = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "main4723-" + UUID().uuidString
     try PrivateFiles.ensurePrivateDirectory(path)
     return path
   }

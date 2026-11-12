@@ -431,7 +431,7 @@ final class L1FactoryCalls: Sendable {
   ) async throws -> Fixture {
     let files = try AgentProtocolFoundationFixture.knownFiles()
     let endpoint = try AgentProtocolResourceFixture.endpoint()
-    let root = AgentProtocolResourceFixture.temporaryDirectory + "a3-l1-\(UUID())"
+    let root = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-l1-\(UUID())"
     cleanup.own(root: root)
     var paths = PlatformPaths(runtimeDir: root + "/rt", dataDir: root + "/flavor-local")
     paths.postgres = endpoint
@@ -568,8 +568,7 @@ final class L1FactoryCalls: Sendable {
   static func directory(_ fixture: Fixture) -> String {
     let component = fixture.endpoint.database.addingPercentEncoding(
       withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "_-")))!
-    return URL(fileURLWithPath: fixture.paths.dataDir).appendingPathComponent("backups")
-      .appendingPathComponent(component).path
+    return fixture.paths.dataDir + "/backups/" + component
   }
 
   static func refused<T>(_ result: Result<T, any Error>, code: ErrorCode? = nil) -> Bool {
@@ -824,8 +823,7 @@ final class L1FactoryCalls: Sendable {
       let futureComponent = try #require(
         endpoint.database.addingPercentEncoding(
           withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "_-"))))
-      let futureDirectory = URL(fileURLWithPath: fixture.paths.dataDir).appendingPathComponent("backups")
-        .appendingPathComponent(futureComponent).path
+      let futureDirectory = fixture.paths.dataDir + "/backups/" + futureComponent
       #expect(!FileManager.default.fileExists(atPath: futureDirectory))
     }
   }

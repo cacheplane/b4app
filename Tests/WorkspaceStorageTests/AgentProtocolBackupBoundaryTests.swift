@@ -39,8 +39,8 @@ import WorkspaceProtocol
   private static func fixture() throws -> Fixture {
     var endpoint = try AgentProtocolResourceFixture.endpoint()
     endpoint.dataDir =
-      URL(fileURLWithPath: endpoint.logPath).deletingLastPathComponent()
-      .appendingPathComponent("data").path
+      try AgentProtocolResourceFixture.physicalExistingDirectory(
+        (endpoint.logPath as NSString).deletingLastPathComponent) + "/data"
     let raw = try connection(endpoint)
     try Migrator.ensureLedger(raw, table: Migrator.table)
     for file in try Migrator.files() where file.name <= "0008_thread_delete" {
@@ -75,8 +75,7 @@ import WorkspaceProtocol
       INSERT INTO "drafts" ("threadId", "text", "updatedAt")
         VALUES ('old-thread', 'Unsent retained draft', 'updated');
       """)
-    let backup = URL(fileURLWithPath: endpoint.dataDir!).deletingLastPathComponent()
-      .appendingPathComponent("backups").appendingPathComponent(endpoint.database).path
+    let backup = (endpoint.dataDir! as NSString).deletingLastPathComponent + "/backups/" + endpoint.database
     return Fixture(endpoint: endpoint, raw: raw, backupDirectory: backup)
   }
 

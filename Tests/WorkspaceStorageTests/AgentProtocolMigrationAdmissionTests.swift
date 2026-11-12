@@ -26,8 +26,8 @@ import WorkspaceProtocol
   private static func fixture(pending: Bool = true) throws -> Fixture {
     var endpoint = try AgentProtocolResourceFixture.endpoint()
     endpoint.dataDir =
-      URL(fileURLWithPath: endpoint.logPath).deletingLastPathComponent()
-      .appendingPathComponent("data").path
+      try AgentProtocolResourceFixture.physicalExistingDirectory(
+        (endpoint.logPath as NSString).deletingLastPathComponent) + "/data"
     let raw = try connection(endpoint)
     if pending {
       try Migrator.ensureLedger(raw, table: Migrator.table)
@@ -98,12 +98,13 @@ import WorkspaceProtocol
   }
 
   private static func backupFiles(_ endpoint: PostgresEndpoint) -> [String] {
-    let root = URL(fileURLWithPath: endpoint.dataDir!).deletingLastPathComponent()
-      .appendingPathComponent("backups")
-    guard FileManager.default.fileExists(atPath: root.path) else { return [] }
-    return [root.path]
+    let root = (endpoint.dataDir! as NSString).deletingLastPathComponent + "/backups"
+    guard FileManager.default.fileExists(atPath: root) else { return [] }
+    return [root]
       + ((FileManager.default.enumerator(
-        at: root, includingPropertiesForKeys: nil)?.allObjects as? [URL]) ?? []).map(\.path).sorted()
+        at: URL(fileURLWithPath: root), includingPropertiesForKeys: nil)?.allObjects as? [URL]) ?? []).map(
+        \.path
+      ).sorted()
   }
 
   private static func observed(

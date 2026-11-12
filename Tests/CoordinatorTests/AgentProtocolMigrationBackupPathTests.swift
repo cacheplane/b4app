@@ -77,7 +77,7 @@ import WorkspaceSync
     try await secrets.put(authRef, value: fakeCredential)
     try raw.execute(
       #"UPDATE "connections" SET "authReference" = $1 WHERE "id" = 'old-b4'"#, [authRef.rawValue])
-    let root = AgentProtocolResourceFixture.temporaryDirectory + "a3-flavor-path-\(UUID())"
+    let root = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-flavor-path-\(UUID())"
     var complete = false
     defer { if !complete { try? FileManager.default.removeItem(atPath: root) } }
     var paths = PlatformPaths(runtimeDir: root + "/rt", dataDir: root + "/flavor-beta")
@@ -88,8 +88,7 @@ import WorkspaceSync
       database.addingPercentEncoding(
         withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "_-"))))
     #expect(encoded.contains("%2E"))
-    let directory = URL(fileURLWithPath: paths.dataDir).appendingPathComponent("backups")
-      .appendingPathComponent(encoded).path
+    let directory = paths.dataDir + "/backups/" + encoded
     let before = try snapshot(raw)
     complete = true
     return Fixture(

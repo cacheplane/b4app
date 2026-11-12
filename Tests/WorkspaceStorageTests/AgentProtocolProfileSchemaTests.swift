@@ -38,7 +38,7 @@ import WorkspaceProtocol
     // endpoint() completes strict startup-intent/live identity/runner ACK BEFORE any fixture SQL.
     var endpoint = try AgentProtocolResourceFixture.endpoint()
     endpoint.dataDir = nil  // An external socket is not a protected backup location.
-    let root = AgentProtocolResourceFixture.temporaryDirectory + "a3-profile-schema-\(UUID())"
+    let root = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-profile-schema-\(UUID())"
     try FileManager.default.createDirectory(
       atPath: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     defer {

@@ -74,7 +74,7 @@ import WorkspaceProtocol
     // Existing EphemeralPostgres infrastructure CREATE DATABASE precedes that ACK.
     var endpoint = try AgentProtocolResourceFixture.endpoint()
     endpoint.dataDir = nil
-    let root = AgentProtocolResourceFixture.temporaryDirectory + "a3-archive-private-\(UUID())"
+    let root = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-archive-private-\(UUID())"
     try FileManager.default.createDirectory(
       atPath: root, withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700])

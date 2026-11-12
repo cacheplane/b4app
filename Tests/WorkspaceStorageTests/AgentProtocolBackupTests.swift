@@ -19,8 +19,8 @@ import WorkspaceProtocol
     // Describe this actual owned cluster, rather than inventing a data directory. Direct database
     // opening does not start/adopt a server. Production account backup paths are database-bound.
     endpoint.dataDir =
-      URL(fileURLWithPath: endpoint.logPath).deletingLastPathComponent()
-      .appendingPathComponent("data").path
+      try AgentProtocolResourceFixture.physicalExistingDirectory(
+        (endpoint.logPath as NSString).deletingLastPathComponent) + "/data"
     let raw = try PostgresConnection(
       lib: LibPQ.load(binDir: endpoint.binDir!),
       connectionString:
@@ -39,8 +39,8 @@ import WorkspaceProtocol
       VALUES ('preserve', 'codex', 'Before upgrade', '/fixture/codex', '{}', 'ready',
         'authenticated', 'created', 'updated')
       """)
-    let backupDirectory = URL(fileURLWithPath: endpoint.dataDir!).deletingLastPathComponent()
-      .appendingPathComponent("backups").appendingPathComponent(endpoint.database).path
+    let backupDirectory =
+      (endpoint.dataDir! as NSString).deletingLastPathComponent + "/backups/" + endpoint.database
     return Fixture(endpoint: endpoint, raw: raw, backupDirectory: backupDirectory)
   }
 

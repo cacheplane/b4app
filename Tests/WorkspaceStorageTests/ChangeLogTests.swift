@@ -130,7 +130,8 @@ private func seed(_ db: WorkspaceDatabase) throws -> (thread: ConversationThread
     #expect(updates.contains { $0.column == "context" && $0.value == nil })
 
     let path =
-      AgentProtocolResourceFixture.temporaryDirectory + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory()
+      + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
     let summary = try source.export(to: path)
     let target = try WorkspaceDatabase.temporary()
     #expect(try target.restore(from: path).rows == summary.rows)
@@ -158,7 +159,8 @@ private func seed(_ db: WorkspaceDatabase) throws -> (thread: ConversationThread
     }
     _ = try source.updateTurn(id: turn.id) { $0.status = .terminal }
     let path =
-      AgentProtocolResourceFixture.temporaryDirectory + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory()
+      + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
     let archivedRows = try HistoricalWorkspaceArchiveFixture.write(source, version: 1, path: path)
 
     let target = try WorkspaceDatabase.temporary()
@@ -172,7 +174,8 @@ private func seed(_ db: WorkspaceDatabase) throws -> (thread: ConversationThread
     let source = try WorkspaceDatabase.temporary()
     let (thread, _) = try seed(source)
     let path =
-      AgentProtocolResourceFixture.temporaryDirectory + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory()
+      + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
     let summary = try source.export(to: path)
     #expect(summary.rows > 6)
     let mode = try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int
@@ -199,7 +202,8 @@ private func seed(_ db: WorkspaceDatabase) throws -> (thread: ConversationThread
     try source.markSynced(through: Int.max)
     #expect(try source.unsyncedChangeCount() == 0)
     let path =
-      AgentProtocolResourceFixture.temporaryDirectory + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory()
+      + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
     try source.export(to: path)
 
     let target = try WorkspaceDatabase.temporary()

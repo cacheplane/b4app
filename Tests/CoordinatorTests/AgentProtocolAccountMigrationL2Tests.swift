@@ -408,7 +408,7 @@ private final class L2LifetimeOwner: Sendable {
 
   func prepare() async throws -> Prepared {
     let endpoint = try AgentProtocolResourceFixture.endpoint()
-    let root = AgentProtocolResourceFixture.temporaryDirectory + "a3-l2-lifetime-\(UUID())"
+    let root = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-l2-lifetime-\(UUID())"
     state.withLock {
       $0.root = root; $0.endpoint = endpoint
     }
@@ -523,8 +523,7 @@ private final class L2LifetimeOwner: Sendable {
       let component = try #require(
         endpoint.database.addingPercentEncoding(
           withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "_-"))))
-      let directory = URL(fileURLWithPath: paths.dataDir).appendingPathComponent("backups")
-        .appendingPathComponent(component).path
+      let directory = paths.dataDir + "/backups/" + component
       // After this function RETURNS, ALL lexical strong old scope/DB/service refs have disappeared.
       return Prepared(
         manager: manager, endpoint: endpoint, raw: raw, before: before, directory: directory, weak: weak)

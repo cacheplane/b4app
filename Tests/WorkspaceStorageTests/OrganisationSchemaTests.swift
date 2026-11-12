@@ -232,7 +232,8 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     try raw.execute("UPDATE \"changes\" SET \"wall\" = 4096 WHERE \"seq\" = 1")
 
     let backups =
-      AgentProtocolResourceFixture.temporaryDirectory + "a3-organisation-upgrade-backups-" + endpoint.database
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-organisation-upgrade-backups-"
+      + endpoint.database
     defer { try? FileManager.default.removeItem(atPath: backups) }
     let db = try WorkspaceDatabase(
       endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: backups)
@@ -288,7 +289,8 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     let before = try raw.execute("SELECT max(\"seq\") AS \"m\" FROM \"changes\"").rows.first?.text("m")
 
     let backups =
-      AgentProtocolResourceFixture.temporaryDirectory + "a3-organisation-upgrade-backups-" + endpoint.database
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-organisation-upgrade-backups-"
+      + endpoint.database
     defer { try? FileManager.default.removeItem(atPath: backups) }
     let db = try WorkspaceDatabase(
       endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: backups)
@@ -353,7 +355,8 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
       Int(try raw.execute("SELECT max(\"seq\") AS \"n\" FROM \"changes\"").rows.first?.text("n") ?? "0") ?? 0
 
     let backups =
-      AgentProtocolResourceFixture.temporaryDirectory + "a4-environment-upgrade-backups-" + endpoint.database
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a4-environment-upgrade-backups-"
+      + endpoint.database
     defer { try? FileManager.default.removeItem(atPath: backups) }
     let db = try WorkspaceDatabase(
       endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: backups)
@@ -427,7 +430,8 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
         "UPDATE \"threads\" SET \"environmentId\" = 'p1', \"readTurnId\" = 'u1' WHERE \"id\" = 't1'")
     }
     let path =
-      AgentProtocolResourceFixture.temporaryDirectory + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory()
+      + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
     try source.export(to: path)
     let target = try WorkspaceDatabase.temporary()
     try target.restore(from: path)
@@ -444,7 +448,8 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     let source = try WorkspaceDatabase.temporary()
     try seedThread(source)
     let path =
-      AgentProtocolResourceFixture.temporaryDirectory + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory()
+      + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
     _ = try HistoricalWorkspaceArchiveFixture.write(source, version: 2, path: path, omitChangeClocks: true)
 
     let target = try WorkspaceDatabase.temporary()

@@ -19,8 +19,8 @@ private final class HistoryControl: Sendable {
     endpoint = selected
     binDir = try #require(selected.binDir)
     backupDirectory =
-      URL(fileURLWithPath: AgentProtocolResourceFixture.temporaryDirectory)
-      .appendingPathComponent("history-guard-" + UUID().uuidString).appendingPathComponent("backups").path
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "history-guard-" + UUID().uuidString
+      + "/backups"
     let raw = try connection()
     try raw.execute("CREATE SCHEMA guard_test")
     if let asRole {

@@ -92,7 +92,7 @@ import WorkspaceProtocol
   private static func withFixture(_ body: @Sendable (Fixture) async throws -> Void) async throws {
     var endpoint = try AgentProtocolResourceFixture.endpoint()
     endpoint.dataDir = nil
-    let root = AgentProtocolResourceFixture.temporaryDirectory + "a3-grant-private-\(UUID())"
+    let root = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-grant-private-\(UUID())"
     try FileManager.default.createDirectory(
       atPath: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     defer {

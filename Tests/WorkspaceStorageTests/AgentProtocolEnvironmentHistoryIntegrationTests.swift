@@ -54,8 +54,9 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
         "SELECT to_jsonb(r)::text AS row FROM public.\(Rows.quote(table)) r ORDER BY 1"
       ).rows.compactMap { $0.text("row") }
     }
-    let backup = URL(fileURLWithPath: AgentProtocolResourceFixture.temporaryDirectory)
-      .appendingPathComponent("a3-history-" + UUID().uuidString).appendingPathComponent("backups").path
+    let backup =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-history-" + UUID().uuidString
+      + "/backups"
     return Fixture(
       endpoint: endpoint, raw: raw, backup: backup, rows: rows,
       facts: try AgentProtocolFoundationFixture.archiveFacts(raw), migrations: prefix.map(\.name),

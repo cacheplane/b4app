@@ -70,8 +70,7 @@ import WorkspaceProtocol
   }
 
   @Test func genuineTwelveFoldersAndArchivesSurviveThirteenAndReopen() throws {
-    let root = URL(fileURLWithPath: AgentProtocolResourceFixture.temporaryDirectory)
-      .resolvingSymlinksInPath().appendingPathComponent("ap-app-folders-\(UUID())").path
+    let root = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "ap-app-folders-\(UUID())"
     try FileManager.default.createDirectory(
       atPath: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
     defer { try? FileManager.default.removeItem(atPath: root) }

@@ -105,7 +105,7 @@ import WorkspaceProtocol
     // Strict owned startup intent, actual helper/kernel identity and independent ACK before fixture rows.
     var endpoint = try AgentProtocolResourceFixture.endpoint()
     endpoint.dataDir = nil
-    let root = AgentProtocolResourceFixture.temporaryDirectory + "a3-private-schema-\(UUID())"
+    let root = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-private-schema-\(UUID())"
     try FileManager.default.createDirectory(
       atPath: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     defer {

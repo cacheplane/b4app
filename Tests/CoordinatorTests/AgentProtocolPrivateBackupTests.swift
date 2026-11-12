@@ -67,7 +67,7 @@ import WorkspaceProtocol
     // Strict source intent/live helper+postmaster identity/independent ACK happens before fixture SQL.
     var endpoint = try AgentProtocolResourceFixture.endpoint()
     endpoint.dataDir = nil
-    let root = AgentProtocolResourceFixture.temporaryDirectory + "a3-private-backup-\(UUID())"
+    let root = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-private-backup-\(UUID())"
     try FileManager.default.createDirectory(
       atPath: root, withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700])

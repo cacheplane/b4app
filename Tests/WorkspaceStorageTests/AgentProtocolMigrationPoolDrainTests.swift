@@ -70,8 +70,8 @@ private final class MigrationPoolObservation: Sendable {
   private static func fixture(pending: Bool = false) throws -> Fixture {
     var endpoint = try AgentProtocolResourceFixture.endpoint()
     endpoint.dataDir =
-      URL(fileURLWithPath: endpoint.logPath).deletingLastPathComponent()
-      .appendingPathComponent("data").path
+      try AgentProtocolResourceFixture.physicalExistingDirectory(
+        (endpoint.logPath as NSString).deletingLastPathComponent) + "/data"
     let inspector = try connection(endpoint)
     if pending {
       try Migrator.ensureLedger(inspector, table: Migrator.table)
@@ -104,8 +104,7 @@ private final class MigrationPoolObservation: Sendable {
       connectionString:
         "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database) application_name=\(application)",
       size: 1)
-    let backup = URL(fileURLWithPath: endpoint.dataDir!).deletingLastPathComponent()
-      .appendingPathComponent("backups").appendingPathComponent(endpoint.database).path
+    let backup = (endpoint.dataDir! as NSString).deletingLastPathComponent + "/backups/" + endpoint.database
     return Fixture(
       endpoint: endpoint, inspector: inspector, pool: pool, applicationName: application,
       backupDirectory: backup)

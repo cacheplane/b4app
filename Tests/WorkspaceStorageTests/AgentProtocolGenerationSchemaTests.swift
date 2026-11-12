@@ -18,8 +18,8 @@ import WorkspaceProtocol
   private static func withFixture(_ body: (Fixture) throws -> Void) throws {
     var endpoint = try AgentProtocolResourceFixture.endpoint()
     endpoint.dataDir = nil
-    let root = URL(fileURLWithPath: AgentProtocolResourceFixture.temporaryDirectory)
-      .resolvingSymlinksInPath().appendingPathComponent("ap-generation-" + UUID().uuidString).path
+    let root =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "ap-generation-" + UUID().uuidString
     try FileManager.default.createDirectory(
       atPath: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
     defer {

@@ -8,8 +8,8 @@ import WorkspaceProtocol
 /// The old store is built only from the frozen pre-cutover migrations. It never opens an owner's
 /// database, and no new-profile identity is written into its historical rows.
 @Suite(.serialized) struct AgentProtocolMigrationTests {
-  private func backupDirectory(_ endpoint: PostgresEndpoint) -> String {
-    AgentProtocolResourceFixture.temporaryDirectory + "a3-history-backups-" + endpoint.database
+  private func backupDirectory(_ endpoint: PostgresEndpoint) throws -> String {
+    try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-history-backups-" + endpoint.database
   }
 
   private func oldFixture() throws -> (PostgresEndpoint, [String: [String]]) {
@@ -124,7 +124,7 @@ import WorkspaceProtocol
     let source = try WorkspaceDatabase(
       endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: backupDirectory(endpoint))
     defer { try? source.close() }
-    let path = AgentProtocolResourceFixture.temporaryDirectory + "a3-history-\(UUID()).jsonl"
+    let path = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-history-\(UUID()).jsonl"
     defer { try? FileManager.default.removeItem(atPath: path) }
     try source.export(to: path)
     let target = try AgentProtocolResourceFixture.database()
@@ -176,7 +176,8 @@ import WorkspaceProtocol
     let expectedChangeCount = try #require(expected["changes"]?.count)
     #expect(expectedChangeCount > 0)
     #expect(try source.unsyncedChangeCount() == 0)
-    let path = AgentProtocolResourceFixture.temporaryDirectory + "a3-archive-v\(version)-\(UUID()).jsonl"
+    let path =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-archive-v\(version)-\(UUID()).jsonl"
     defer { try? FileManager.default.removeItem(atPath: path) }
     if environmentNames {
       _ = try HistoricalWorkspaceArchiveFixture.write(
@@ -223,7 +224,8 @@ import WorkspaceProtocol
       endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: backupDirectory(endpoint))
     defer { try? target.close() }
     let before = try target.read { try snapshot($0) }
-    let path = AgentProtocolResourceFixture.temporaryDirectory + "a3-archive-invalid-\(UUID()).jsonl"
+    let path =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-archive-invalid-\(UUID()).jsonl"
     defer { try? FileManager.default.removeItem(atPath: path) }
     for version in [3, 999] {
       let header = try JSONSerialization.data(withJSONObject: [

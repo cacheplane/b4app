@@ -20,8 +20,8 @@ import WorkspaceProtocol
   }
 
   @Test func archiveRetainsUnconfiguredAndExplicitDeviceAuthAsDifferentFacts() throws {
-    let root = URL(fileURLWithPath: AgentProtocolResourceFixture.temporaryDirectory)
-      .resolvingSymlinksInPath().appendingPathComponent("ap-auth-archive-" + UUID().uuidString).path
+    let root =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "ap-auth-archive-" + UUID().uuidString
     try FileManager.default.createDirectory(
       atPath: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
     defer {
@@ -41,7 +41,7 @@ import WorkspaceProtocol
     for profile in profiles { _ = try source.insertConnection(profile) }
     let before = try source.listConnections(includeDisabled: true).sorted { $0.id < $1.id }
     #expect(before == profiles.sorted { $0.id < $1.id })
-    let path = (root as NSString).appendingPathComponent("profiles.jsonl")
+    let path = root + "/profiles.jsonl"
     _ = try source.export(to: path)
     // An independent raw-file oracle distinguishes SQL NULL from the explicit enum string "none".
     var archived: [String: [String: Any]] = [:]
