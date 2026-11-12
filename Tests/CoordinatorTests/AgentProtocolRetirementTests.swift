@@ -290,7 +290,7 @@ private final class RetirementFactoryCalls: Sendable {
       let environments = try db.listEnvironments()
       let folders = try db.listAppFolders()
       let environmentService = await service.context.environments
-      let root = environmentService.threadFoldersDir
+      let root = await environmentService.threadFoldersDir
       try #require(!FileManager.default.fileExists(atPath: root))
 
       func refused(_ body: () async throws -> Void) async throws {
