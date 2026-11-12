@@ -72,8 +72,9 @@ extension WorkspaceDatabase {
     }
   }
 
-  /// A view-settings-only destination is empty for restore; its settings/change/clock rows are
-  /// replaced by the archive. Every other business/private row still requires explicit replace.
+  /// View settings and the local protocol comparison record do not make a destination nonempty.
+  /// Restore replaces the view rows and invalidates comparison facts in the same transaction.
+  /// Every other business/private row still requires explicit replace.
   @discardableResult
   public func restore(from path: String, replace: Bool = false) throws -> ArchiveSummary {
     do {
@@ -91,12 +92,17 @@ extension WorkspaceDatabase {
         guard target.migrations == WorkspaceArchive.migrations else {
           throw WorkspaceArchive.Rejection.future
         }
+        let activation = try ProtocolActivationControl.captureRestore(c)
         var populated = false
         for table in Self.archiveTables where table != "viewSettings" {
           let condition =
-            (table == "changes" || table == "columnClocks")
-            ? " WHERE \"table\" IS DISTINCT FROM 'viewSettings'" : ""
-          if try !c.execute("SELECT 1 FROM \(Rows.quote(table))\(condition) LIMIT 1").rows.isEmpty {
+            table == "settings"
+            ? " WHERE \"key\" IS DISTINCT FROM $1"
+            : (table == "changes" || table == "columnClocks")
+              ? " WHERE \"table\" IS DISTINCT FROM 'viewSettings'" : ""
+          let parameters: [String?] = table == "settings" ? [ProtocolActivationControl.key] : []
+          if try !c.execute("SELECT 1 FROM \(Rows.quote(table))\(condition) LIMIT 1", parameters).rows.isEmpty
+          {
             populated = true
           }
         }
@@ -167,6 +173,8 @@ extension WorkspaceDatabase {
           try c.execute("DELETE FROM \"viewSettings\"")
           try c.execute("DELETE FROM \"changes\" WHERE \"table\" = 'viewSettings'")
           try c.execute("DELETE FROM \"columnClocks\" WHERE \"table\" = 'viewSettings'")
+          // Retain the captured destination chronology while replaying every source row normally.
+          try c.execute("DELETE FROM \"settings\" WHERE \"key\" = $1", [ProtocolActivationControl.key])
         }
         for table in Self.archiveTables {
           try ProtocolGrantProtection.verify(c)
@@ -176,6 +184,7 @@ extension WorkspaceDatabase {
         // This is a checked integer literal, never authority or user SQL. RESTART is transactional;
         // every restored seq was explicit, so no default nextval can escape a failed transaction.
         try c.execute("ALTER SEQUENCE \"changes_seq_seq\" RESTART WITH \(input.nextSequence)")
+        try ProtocolActivationControl.invalidateAfterRestore(c, capture: activation)
         try ProtocolGrantProtection.verify(c)
         return ArchiveSummary(path: path, rows: input.dataCount)
       }

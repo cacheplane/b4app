@@ -190,7 +190,16 @@ import WorkspaceProtocol
       let target = try AgentProtocolResourceFixture.database()
       let outcome = Result<Void, any Error> { () throws -> Void in
         try target.restore(from: path)
-        #expect(try target.read { try Self.snapshot($0, includeViewSettings: prefix == 13) } == before)
+        let restored = try target.read { c -> [String: [String]] in
+          _ = try ProtocolActivationRestoreOracle.inactive(c, revision: 0)
+          var rows = try Self.snapshot(c, includeViewSettings: prefix == 13)
+          rows["settings"] = try c.execute(
+            "SELECT to_jsonb(t)::text AS row FROM settings t WHERE key IS DISTINCT FROM $1 ORDER BY 1",
+            [ProtocolActivationRestoreOracle.key]
+          ).rows.compactMap { $0.text("row") }
+          return rows
+        }
+        #expect(restored == before)
         #expect(try target.appliedMigrations() == Self.fourteen)
         try target.read { try AgentProtocolFoundationFixture.assertAdditionsNullAndPrivateEmpty($0) }
         #expect(

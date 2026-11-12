@@ -107,7 +107,7 @@ private final class L1PhaseTrace: Sendable {
   enum Case: String, Sendable { case quiescence, gateTimeout }
   enum Stage: String, Sendable {
     case taskEntered, signInCallIssued, signInReturned, finished
-    case lockObservationEntered, lockObservationReturned
+    case lockObservationEntered, nativeObservationCompleted, lockObservationReturned
     case completionObservationEntered, completionObservationReturned
     case bodyScopeClosing, bodyRunFinished, cleanupJoined
   }
@@ -638,6 +638,34 @@ final class L1FactoryCalls: Sendable {
     try await completed(run, trace: nil)
   }
 
+  // This moves only the fixed native query observer, never the actor-isolated signIn SQL.
+  // The deadline is fixed by its caller BEFORE dispatch; late Thread startup gets no new window.
+  private static func observedNativeQuery(
+    until deadline: ContinuousClock.Instant, trace: L1PhaseTrace,
+    _ body: @escaping @Sendable () -> Bool
+  ) async -> Bool {
+    let retained = Mutex<Thread?>(nil)
+    let observed: Bool = await withCheckedContinuation { continuation in
+      let observer = Thread {
+        var onTime = false
+        while ContinuousClock.now < deadline {
+          let matched = body()
+          let completed = ContinuousClock.now
+          if matched, completed <= deadline { onTime = true; break }
+          guard completed < deadline else { break }
+          Thread.sleep(forTimeInterval: 0.010)
+        }
+        trace.record(.nativeObservationCompleted, flag: onTime)
+        continuation.resume(returning: onTime)
+      }
+      retained.withLock { $0 = observer }
+      observer.start()
+    }
+    // Actual observer operation completed; this does not assert kernel-thread exit.
+    retained.withLock { $0 = nil }
+    return observed
+  }
+
   private static func completed(
     _ run: Run, trace: L1PhaseTrace?
   ) async throws -> Result<AccountStatus.Result, any Error> {
@@ -751,7 +779,8 @@ final class L1FactoryCalls: Sendable {
         trace.record(.bodyRunFinished, flag: finished)
       }
       trace.record(.lockObservationEntered)
-      let waiting = await Self.observed {
+      let nativeDeadline = ContinuousClock.now + .seconds(3)
+      let waiting = await Self.observedNativeQuery(until: nativeDeadline, trace: trace) {
         (try? fixture.raw.execute(
           """
           SELECT a.pid FROM pg_stat_activity a JOIN pg_locks l ON l.pid = a.pid
@@ -762,7 +791,8 @@ final class L1FactoryCalls: Sendable {
         ).rows.count == 1) == true
       }
       trace.record(.lockObservationReturned, flag: waiting)
-      #expect(waiting)
+      // A missed native prerequisite remains failed; a closing gate alone is not a closed pool.
+      try #require(waiting)
       #expect(fixture.scope.isClosing)
       let read = Result {
         try fixture.scope.database.read { try $0.execute(#"SELECT "id" FROM "connections""#) }

@@ -98,8 +98,17 @@ import WorkspaceProtocol
     #expect(targetBefore.rows["hubLink"]?.isEmpty == true)
     try target.restore(from: path)
     let after = try target.read { try F.snapshot($0) }
+    let restoredSettings = try target.read { c -> [String] in
+      _ = try ProtocolActivationRestoreOracle.inactive(c, revision: 0)
+      return try c.execute(
+        "SELECT (to_jsonb(t)||jsonb_build_object('value',to_jsonb(t.value::text)))::text AS row FROM settings t WHERE key IS DISTINCT FROM $1 ORDER BY 1",
+        [ProtocolActivationRestoreOracle.key]
+      ).rows.map {
+        try F.canonical(JSONSerialization.jsonObject(with: Data(try #require($0.text("row")).utf8)))
+      }.sorted()
+    }
     for table in F.allTables {
-      let retained = after.rows[table] == before.rows[table]
+      let retained = (table == "settings" ? restoredSettings : after.rows[table]) == before.rows[table]
       #expect(retained, "Restored data differs for table \(table).")
     }
     // Source ledger timestamps, hub account, token reference and ownedAs are context, never replay.

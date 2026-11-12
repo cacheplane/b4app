@@ -473,8 +473,53 @@ import WorkspaceProtocol
     #expect(noBackends)
     if let failure { throw failure }
   }
+  private static let activationControlKey = "__b4app_agent_protocol_activation_v1"
+
+  // Independent native success oracle; failure snapshots and archived source rows stay complete.
+  private static func inactiveActivation(
+    _ c: PostgresConnection, revision: Int64, previous: (String, String)? = nil
+  ) throws -> (String, String) {
+    let rows = try c.execute(
+      #"SELECT value::text AS value,jsonb_typeof(value->'version') AS version_type,value->>'version' AS version FROM settings WHERE key=$1"#,
+      [activationControlKey]
+    ).rows
+    guard rows.count == 1, let row = rows.first, row.text("version_type") == "number",
+      row.text("version") == "1", let text = row.text("value"),
+      let object = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
+      Set(object.keys) == Set(["version", "storeIncarnation", "membershipIncarnation", "revision"]),
+      let store = object["storeIncarnation"] as? String,
+      let member = object["membershipIncarnation"] as? String,
+      UUID(uuidString: store)?.uuidString == store, UUID(uuidString: member)?.uuidString == member,
+      store != member, let value = object["revision"] as? String, value == String(revision)
+    else { throw FixtureFailure.unexpectedSchema }
+    if let previous {
+      let fresh = store != previous.0 && member != previous.1
+      #expect(fresh)
+    }
+    return (store, member)
+  }
+
+  private static func priorActivation(_ c: PostgresConnection) throws -> (Int64, (String, String))? {
+    let rows = try c.execute(
+      "SELECT value->>'revision' AS revision FROM settings WHERE key=$1", [activationControlKey]
+    ).rows
+    guard let row = rows.first else { return nil }
+    guard rows.count == 1, let text = row.text("revision"), let revision = Int64(text),
+      revision >= 0, String(revision) == text
+    else { throw FixtureFailure.unexpectedSchema }
+    guard revision < Int64.max else { throw FixtureFailure.unexpectedSchema }
+    return (revision, try inactiveActivation(c, revision: revision))
+  }
+
   private static func assertRestored(_ source: Snapshot, target: Target) throws {
     let after = try snapshot(target.raw)
+    _ = try inactiveActivation(target.raw, revision: 0)
+    // This fixture's source has never been restored/prepared: preserve the original source facts.
+    let sourceHasNoControl = try (source.rows["settings"] ?? []).allSatisfy { text in
+      let row = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
+      return row?["key"] as? String != activationControlKey
+    }
+    #expect(sourceHasNoControl)
     for table in dataTables {
       var expected = source.rows[table] ?? []
       if table == "changes" {
@@ -485,9 +530,24 @@ import WorkspaceProtocol
           return try canonical(row)
         }.sorted()
       }
-      let equal = after.rows[table] == expected
+      var restoredRows = after.rows[table]
+      var restoredCells = after.encodedJsonCells[table]
+      if table == "settings" {
+        // Success-only exact-key comparison. The full after snapshot above still carries the row.
+        restoredRows = try target.raw.execute(
+          "SELECT to_jsonb(t)::text AS row FROM settings t WHERE key IS DISTINCT FROM $1 ORDER BY 1",
+          [activationControlKey]
+        ).rows.map {
+          try canonical(JSONSerialization.jsonObject(with: Data(try #require($0.text("row")).utf8)))
+        }.sorted()
+        restoredCells = try target.raw.execute(
+          "SELECT value::text AS value FROM settings WHERE key IS DISTINCT FROM $1 ORDER BY 1",
+          [activationControlKey]
+        ).rows.map { try canonical(["value": try #require($0.text("value"))]) }.sorted()
+      }
+      let equal = restoredRows == expected
       #expect(equal, "Exact restored values differ for \(table)")
-      let representationEqual = after.encodedJsonCells[table] == source.encodedJsonCells[table]
+      let representationEqual = restoredCells == source.encodedJsonCells[table]
       #expect(representationEqual, "SQL NULL/JSON text representation differs for \(table)")
     }
     let targetLedger = after.rows[Migrator.table] == target.before.rows[Migrator.table]
@@ -731,7 +791,9 @@ import WorkspaceProtocol
         empty.records.removeAll { $0["table"] as? String == "changes" }; empty.recount()
         let emptyPath = f.root + "/empty-changes.jsonl"
         try empty.bytes().write(to: URL(fileURLWithPath: emptyPath))
+        let previousActivation = try Self.inactiveActivation(target.raw, revision: 0)
         try target.database.restore(from: emptyPath, replace: true)
+        _ = try Self.inactiveActivation(target.raw, revision: 1, previous: previousActivation)
         let noChanges = try target.raw.execute(#"SELECT 1 FROM "changes""#).rows.isEmpty
         #expect(noChanges)
         try target.database.write { c in
@@ -938,10 +1000,17 @@ import WorkspaceProtocol
   /// Any mismatch is a SETUP failure; never let an early legacy rejection count as a guard RED/GREEN.
   private static func acceptLegacy(path: String, source: Snapshot, target: Target) throws {
     let before = try snapshot(target.raw)
+    let previousActivation = try Self.priorActivation(target.raw)
     do { try target.database.restore(from: path, replace: true) } catch {
       throw FixtureFailure.unexpectedSchema
     }
     let after = try snapshot(target.raw)
+    _ = try inactiveActivation(
+      target.raw, revision: previousActivation.map { $0.0 + 1 } ?? 0, previous: previousActivation?.1)
+    let noUnrelatedSettings = try target.raw.execute(
+      "SELECT 1 FROM settings WHERE key IS DISTINCT FROM $1", [activationControlKey]
+    ).rows.isEmpty
+    #expect(noUnrelatedSettings)
     for table in [
       "localServers", "connections", "environments", "environmentFolders", "threads", "turns", "displayItems",
       "runtimeRequests", "drafts", "devices", "changes", "columnClocks",

@@ -985,23 +985,34 @@ public final class WorkspaceDatabase: Sendable {
   /// (`applyRemote`, `setHubCursor`), so a push recording its outcome never rewinds a pull that committed
   /// meanwhile.
   public func saveHubLink(_ link: HubLink) throws {
-    try write { c in
-      try c.execute(
-        """
-        INSERT INTO "hubLink" ("id", "url", "deviceId", "deviceName", "tokenRef", "orgSlug", "username",
-          "cursor", "lastPushAt", "lastError", "joinedAt")
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7::bigint, $8, $9, $10)
-        ON CONFLICT ("id") DO UPDATE SET "url" = EXCLUDED."url", "deviceId" = EXCLUDED."deviceId",
-          "deviceName" = EXCLUDED."deviceName", "tokenRef" = EXCLUDED."tokenRef",
-          "orgSlug" = EXCLUDED."orgSlug", "username" = EXCLUDED."username",
-          "lastPushAt" = EXCLUDED."lastPushAt", "lastError" = EXCLUDED."lastError",
-          "joinedAt" = EXCLUDED."joinedAt"
-        """,
-        [
-          link.url, link.deviceId, link.deviceName, link.tokenRef, link.orgSlug, link.username,
-          String(link.cursor), link.lastPushAt, link.lastError, link.joinedAt,
-        ])
-    }
+    try saveHubLink(link, membershipChange: .preserveIfUnchanged)
+  }
+
+  /// Invalidate local comparison facts when the membership changes. Labels, token refreshes and
+  /// cursor/status updates for the same native membership preserve those facts byte for byte.
+  public func saveHubLink(_ link: HubLink, membershipChange: ProtocolMembershipChange) throws {
+    do {
+      try write(exclusive: true) { c -> Void in
+        let previous = try one(c, HubLink.self, "SELECT * FROM \"hubLink\" WHERE \"id\" = 1 FOR UPDATE")
+        try ProtocolActivationControl.mutateMembership(
+          c, oldLink: previous, newLink: link, change: membershipChange)
+        try c.execute(
+          """
+          INSERT INTO "hubLink" ("id", "url", "deviceId", "deviceName", "tokenRef", "orgSlug", "username",
+            "cursor", "lastPushAt", "lastError", "joinedAt")
+          VALUES (1, $1, $2, $3, $4, $5, $6, $7::bigint, $8, $9, $10)
+          ON CONFLICT ("id") DO UPDATE SET "url" = EXCLUDED."url", "deviceId" = EXCLUDED."deviceId",
+            "deviceName" = EXCLUDED."deviceName", "tokenRef" = EXCLUDED."tokenRef",
+            "orgSlug" = EXCLUDED."orgSlug", "username" = EXCLUDED."username",
+            "lastPushAt" = EXCLUDED."lastPushAt", "lastError" = EXCLUDED."lastError",
+            "joinedAt" = EXCLUDED."joinedAt"
+          """,
+          [
+            link.url, link.deviceId, link.deviceName, link.tokenRef, link.orgSlug, link.username,
+            String(link.cursor), link.lastPushAt, link.lastError, link.joinedAt,
+          ])
+      }
+    } catch { throw ProtocolActivationControl.failure }
   }
 
   /// The tables whose rows carry an owner: the device of a row's latest insert, on the hub
@@ -1051,10 +1062,15 @@ public final class WorkspaceDatabase: Sendable {
   /// Forget the hub: remove the link and mark the whole change log unsynced, so a later join (to this
   /// or another hub) uploads everything again.
   public func clearHubLink() throws {
-    try write { c in
-      try c.execute("DELETE FROM \"hubLink\"")
-      try c.execute("UPDATE \"changes\" SET \"synced\" = false WHERE \"synced\"")
-    }
+    do {
+      try write(exclusive: true) { c -> Void in
+        let previous = try one(c, HubLink.self, "SELECT * FROM \"hubLink\" WHERE \"id\" = 1 FOR UPDATE")
+        try ProtocolActivationControl.mutateMembership(
+          c, oldLink: previous, newLink: nil, change: .replace)
+        try c.execute("DELETE FROM \"hubLink\"")
+        try c.execute("UPDATE \"changes\" SET \"synced\" = false WHERE \"synced\"")
+      }
+    } catch { throw ProtocolActivationControl.failure }
   }
 
   /// Record this device in `devices` (the hub's id and name), keeping an existing row's creation time.
