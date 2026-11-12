@@ -230,41 +230,45 @@ private final class WriteCounter: Sendable {
     let store = try MirrorStore.inMemory()
     let transport = MirrorTransport(store: store, version: "0.2.0")
     let client = WorkspaceClient(transport: transport)
-    let hello = try await client.ready()
-    let events = await client.events()
-    let fixture = try fixtureAsStored()
+    var failure: (any Error)?
+    do {
+      let hello = try await client.ready()
+      let events = await client.events()
+      let fixture = try fixtureAsStored()
 
-    transport.publish(try store.apply(Array(fixture.prefix(2))))
-    _ = try await client.request(ThreadRead.self, .init(threadId: "thread-1"))
-    transport.publish(try store.apply(Array(fixture[2..<8])))
+      transport.publish(try store.apply(Array(fixture.prefix(2))))
+      _ = try await client.request(ThreadRead.self, .init(threadId: "thread-1"))
+      transport.publish(try store.apply(Array(fixture[2..<8])))
 
-    var received: [EventEnvelope] = []
-    for await envelope in events {
-      received.append(envelope)
-      if received.count == 7 { break }
-    }
-    #expect(received.map(\.sequence) == [1, 2, 3, 4, 5, 6, 7])
-    #expect(received.allSatisfy { $0.epoch == hello.epoch })
-    let kinds = received.map(\.event.kind)
-    #expect(Set(kinds.prefix(2)) == [.threadUpdated, .connectionChanged])
-    // The second batch's turns touch their thread (M8b), so it is published again before its items.
-    #expect(kinds[2] == .threadUpdated)
-    #expect(Array(kinds.suffix(4)) == Array(repeating: .messageCompleted, count: 4))
+      var received: [EventEnvelope] = []
+      for await envelope in events {
+        received.append(envelope)
+        if received.count == 7 { break }
+      }
+      try #require(received.map(\.sequence) == [1, 2, 3, 4, 5, 6, 7])
+      #expect(received.allSatisfy { $0.epoch == hello.epoch })
+      let kinds = received.map(\.event.kind)
+      #expect(Set(kinds.prefix(2)) == [.threadUpdated, .connectionChanged])
+      // The second batch's turns touch their thread (M8b), so it is published again before its items.
+      #expect(kinds[2] == .threadUpdated)
+      #expect(Array(kinds.suffix(4)) == Array(repeating: .messageCompleted, count: 4))
 
-    let connection = try #require(received.first { $0.event.kind == .connectionChanged }?.event)
-    #expect(connection.connectionId == "conn-1")
-    #expect(connection.payload["status"] == "ready" && connection.payload["authStatus"] == "authenticated")
-    let thread = try #require(received.first { $0.event.kind == .threadUpdated }?.event)
-    #expect(try thread.payload["thread"]?.decode(ConversationThread.self).title == "Fix the login bug")
-    let items = try received.suffix(4).map {
-      try #require($0.event.payload["displayItem"]).decode(DisplayItem.self)
-    }
-    #expect(items.map(\.id) == ["item-1", "item-2", "item-3", "item-4"])
-    #expect(received.suffix(4).allSatisfy { $0.event.threadId == "thread-1" })
+      let connection = try #require(received.first { $0.event.kind == .connectionChanged }?.event)
+      #expect(connection.connectionId == "conn-1")
+      #expect(connection.payload["status"] == "ready" && connection.payload["authStatus"] == "authenticated")
+      let thread = try #require(received.first { $0.event.kind == .threadUpdated }?.event)
+      #expect(try thread.payload["thread"]?.decode(ConversationThread.self).title == "Fix the login bug")
+      let items = try received.suffix(4).map {
+        try #require($0.event.payload["displayItem"]).decode(DisplayItem.self)
+      }
+      #expect(items.map(\.id) == ["item-1", "item-2", "item-3", "item-4"])
+      #expect(received.suffix(4).allSatisfy { $0.event.threadId == "thread-1" })
 
-    let ping = try await client.request(SystemPing.self, EmptyParams())
-    #expect(ping.sequence == 7)
+      let ping = try await client.request(SystemPing.self, EmptyParams())
+      #expect(ping.sequence == 7)
+    } catch { failure = error }
     await client.close()
+    if let failure { throw failure }
   }
 
   /// A connection's change carries the whole row, so a client sees its new owner (a Mac that
