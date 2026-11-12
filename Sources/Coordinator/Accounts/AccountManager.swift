@@ -5,6 +5,15 @@ import WorkspaceProtocol
 import WorkspaceStorage
 import WorkspaceSync
 
+// Internal, nil-default, passive test observation. No identity, SQL, errors or scheduling control.
+enum AccountMigrationPhase: Sendable {
+  case actorSignInEntered, transitionAcquired, preflightEntered, preflightReturned
+  case scopeDrainEntered, scopeDrainReturned, scopeCloseAwaitEntered
+  case scopeCloseWorkEntered, scopeCloseWorkReturned, scopeCloseAwaitReturned
+  case poolDrainEntered, poolDrainReturned, targetOpenEntered, targetOpenReturned
+}
+typealias AccountMigrationObserver = @Sendable (AccountMigrationPhase, Bool?) -> Void
+
 /// Which account this Mac is signed in as, and the only owner of its `AccountScope` (sign-in plan,
 /// Task 9). One account is signed in at a time; nobody may be.
 ///
@@ -54,6 +63,7 @@ public actor AccountManager {
     /// (D-094; `LegacyAdoption.Plan.legacySecretStore`). Nil, the default and every other flavour's,
     /// reads nothing.
     public var legacySecretStore: (any SecretStore)?
+    var migrationObserver: AccountMigrationObserver? = nil
 
     public init(
       cluster: StoreCluster, registry: AccountRegistry, scope: AccountScope.Context,
@@ -81,6 +91,7 @@ public actor AccountManager {
   let scopeContext: AccountScope.Context
   let flavor: Flavor
   let legacySecretStore: (any SecretStore)?
+  let migrationObserver: AccountMigrationObserver?
   let slot = Slot()
   let logger = Log.logger("accounts")
 
@@ -122,6 +133,7 @@ public actor AccountManager {
     scopeContext = scope
     flavor = context.flavor
     legacySecretStore = context.legacySecretStore
+    migrationObserver = context.migrationObserver
   }
 
   /// The registry's database on the cluster whose default database is `endpoint.database`: `registry`
@@ -278,8 +290,10 @@ public actor AccountManager {
   public func signIn(
     session: AuthSession, hubURL: String, deviceName: String? = nil
   ) async throws -> AccountStatus.Result {
+    migrationObserver?(.actorSignInEntered, nil)
     await acquire()
     defer { release() }
+    migrationObserver?(.transitionAcquired, nil)
     let base = try HubURL.canonical(hubURL)
     let placeholder = Self.placeholderUserId(deviceId: session.deviceId)
     let hubUserId = session.userId ?? placeholder
@@ -302,8 +316,10 @@ public actor AccountManager {
     let identity = RetainedDatabaseIdentity(accountId: row.id, database: row.database)
     let previous = slot.get()
     let reopening = previous?.account.id == row.id
+    migrationObserver?(.preflightEntered, nil)
     let migration = try WorkspaceDatabase.preflightMigration(
       endpoint: cluster.endpoint(database: row.database), binDir: cluster.binDir)
+    migrationObserver?(.preflightReturned, migration == .pending)
     // A slot-nil retry (or an external upgrade to current schema) still owes this exact old drain.
     // Refuse before touching any currently live B/C scope, refresh, token, registry or target open.
     if let retained = migrationDatabases[identity],
@@ -320,7 +336,10 @@ public actor AccountManager {
       // Only a genuinely pending open of this active physical store needs early quiescence.
       // Refuse/drain before changing the live scope, its refresh, registry or credential refs.
       previous.refuseNewWork()
-      guard await previous.drain(timeout: AccountScope.drainTimeout) else {
+      migrationObserver?(.scopeDrainEntered, nil)
+      let scopeDrained = await previous.drain(timeout: AccountScope.drainTimeout)
+      migrationObserver?(.scopeDrainReturned, scopeDrained)
+      guard scopeDrained else {
         previous.admitWorkAgain()
         throw WorkspaceError(
           .endpointUnavailable, "Account migration could not drain active work. The account remains open.")
@@ -334,11 +353,15 @@ public actor AccountManager {
       slot.set(nil)
       // Adapter disposal can stall. Reuse the existing close bound without claiming its canceled
       // tasks joined; the already-drained gate needs no second wait. Preserve managed servers.
+      migrationObserver?(.scopeCloseAwaitEntered, nil)
       await Self.close(
-        previous, stoppingServers: false, drainTimeout: .zero, within: Self.switchCloseBudget)
+        previous, stoppingServers: false, drainTimeout: .zero, within: Self.switchCloseBudget,
+        migrationObserver: migrationObserver)
       // Closing admission and draining ALL old leases is the local database write fence, even if
       // service close is still finishing. This synchronous bridge returns with admission closed.
+      migrationObserver?(.poolDrainEntered, nil)
       let drained = previous.database.closeForMigration(timeout: AccountScope.drainTimeout)
+      migrationObserver?(.poolDrainReturned, drained)
       // The local previous owns the DB throughout the nonthrowing call. Retain ONLY that closed
       // DB before a refusal can release the scope, with no suspension or ownership gap between.
       migrationDatabases[identity] = previous.database
@@ -351,8 +374,10 @@ public actor AccountManager {
     }
     // Storage admission precedes new auth writes. Registered accounts must already exist. A failed
     // pending open stays unavailable without restore/retry; it is outside the auth rollback below.
+    migrationObserver?(.targetOpenEntered, nil)
     let database = try AccountScope.openDatabase(
       row: row, cluster: cluster, paths: scopeContext.paths, createIfMissing: existing == nil)
+    migrationObserver?(.targetOpenReturned, nil)
 
     // Signing in again as the active account replaces its scope: it is closed now, so its `HubSync`
     // cannot write the link below, and its servers stay running for the new scope to adopt.
@@ -570,14 +595,19 @@ public actor AccountManager {
   /// in the background.
   static func close(
     _ scope: AccountScope, stoppingServers: Bool = true, drainTimeout: Duration = AccountScope.drainTimeout,
-    serverBudget: Duration = .seconds(10), within budget: Duration?
+    serverBudget: Duration = .seconds(10), within budget: Duration?,
+    migrationObserver: AccountMigrationObserver? = nil
   ) async {
     let close: @Sendable () async -> Void = {
+      migrationObserver?(.scopeCloseWorkEntered, nil)
       await scope.close(
         stoppingServers: stoppingServers, drainTimeout: drainTimeout, serverBudget: serverBudget)
+      migrationObserver?(.scopeCloseWorkReturned, nil)
     }
     guard let budget else { return await close() }
-    if await !Bounded.run(within: budget, close) {
+    let completed = await Bounded.run(within: budget, close)
+    migrationObserver?(.scopeCloseAwaitReturned, completed)
+    if !completed {
       Log.logger("accounts").warning(
         "account \(scope.account.id, privacy: .public)'s scope was still closing when its time ran out")
     }

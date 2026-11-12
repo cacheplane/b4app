@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 import Testing
 import WorkspacePlatform
 import WorkspaceProtocol
@@ -180,44 +181,85 @@ import WorkspaceProtocol
     return error
   }
 
+  private struct NativeCloseObservation: Sendable {
+    var readFailed = false, nonzeroObserved = false, lateCompletion = false, cancelled = false
+    var zero = false, firstEmpty = false
+    var sampleCount: UInt32 = 0
+    var firstSampleMilliseconds: Int64?
+    var lastSampleMilliseconds: Int64?
+    let workerStartedMilliseconds: Int64
+  }
+
+  private static func nativeCloseMilliseconds(
+    since began: ContinuousClock.Instant, at completed: ContinuousClock.Instant
+  ) -> Int64 {
+    let elapsed = began.duration(to: completed).components
+    return elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000
+  }
+
   private static func observedNoAppBackends(
     _ raw: PostgresConnection, database: String, hadThrownFailure: Bool, closeSucceeded: Bool
   ) async -> Bool {
+    // Dispatch and worker startup consume the ORIGINAL observation window; no readiness reset.
     let began = ContinuousClock.now
     let deadline = began + .seconds(1)
-    var readFailed = false, nonzeroObserved = false, lateCompletion = false, cancelled = false
-    var zero = false, firstEmpty = false
-    var firstSampleMilliseconds: Int64?
-    repeat {
-      do {
-        // EXACT original predicate: every b4app backend for this database, not a selected PID.
-        let empty = try raw.execute(
-          "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'", [database]
-        ).rows.isEmpty
-        let completed = ContinuousClock.now
-        if firstSampleMilliseconds == nil {
-          let elapsed = began.duration(to: completed).components
-          firstSampleMilliseconds = elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000
-          firstEmpty = empty
+    let retained = Mutex<Thread?>(nil)
+    let cancellation = Mutex(Task.isCancelled)
+    let observation: NativeCloseObservation = await withTaskCancellationHandler {
+      await withCheckedContinuation { continuation in
+        retained.withLock { thread in
+          thread = Thread {
+            var facts = NativeCloseObservation(
+              workerStartedMilliseconds: Self.nativeCloseMilliseconds(since: began, at: .now))
+            while ContinuousClock.now < deadline {
+              if cancellation.withLock({ $0 }) { facts.cancelled = true; break }
+              do {
+                // EXACT original predicate: every b4app backend for this database, not a selected PID.
+                let empty = try raw.execute(
+                  "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'", [database]
+                ).rows.isEmpty
+                let completed = ContinuousClock.now
+                // Saturation bounds telemetry only; it never controls polling or acceptance.
+                if facts.sampleCount < UInt32.max { facts.sampleCount += 1 }
+                let milliseconds = Self.nativeCloseMilliseconds(since: began, at: completed)
+                if facts.firstSampleMilliseconds == nil {
+                  facts.firstSampleMilliseconds = milliseconds
+                  facts.firstEmpty = empty
+                }
+                facts.lastSampleMilliseconds = milliseconds
+                facts.nonzeroObserved = facts.nonzeroObserved || !empty
+                if completed > deadline { facts.lateCompletion = true; break }
+                if cancellation.withLock({ $0 }) { facts.cancelled = true; break }
+                if empty { facts.zero = true; break }
+              } catch { facts.readFailed = true; break }
+              guard ContinuousClock.now < deadline else { break }
+              Thread.sleep(forTimeInterval: 0.010)
+            }
+            facts.cancelled = facts.cancelled || cancellation.withLock({ $0 })
+            // All inspector accesses have ended. This joins the native operation, not kernel Thread exit.
+            continuation.resume(returning: facts)
+          }
+          thread?.start()
         }
-        nonzeroObserved = nonzeroObserved || !empty
-        if completed > deadline { lateCompletion = true; break }
-        if empty { zero = true; break }
-      } catch { readFailed = true; break }  // Sticky, never retry an unknown read error into success.
-      guard ContinuousClock.now < deadline else { break }
-      do { try await Task.sleep(for: .milliseconds(10)) } catch { cancelled = true; break }
-    } while ContinuousClock.now < deadline
-    let elapsed = began.duration(to: .now).components
-    let elapsedMilliseconds = elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000
-    // Fixed booleans/times only: never print SQL, backend/database/PID, errors or private material.
+      }
+    } onCancel: {
+      // Carry parent cancellation into the worker; never abandon or force-interrupt a native query.
+      cancellation.withLock { $0 = true }
+    }
+    retained.withLock { $0 = nil }
+    let cancelled = observation.cancelled || cancellation.withLock({ $0 }) || Task.isCancelled
+    let elapsedMilliseconds = Self.nativeCloseMilliseconds(since: began, at: .now)
+    // Fixed booleans/count/times only; emit on the original Test Task after native-operation completion.
     print(
       "A3_GRANT_NATIVE_CLOSE_WITNESS hadThrownFailure=\(hadThrownFailure) closeSucceeded=\(closeSucceeded) "
-        + "readFailed=\(readFailed) nonzeroObserved=\(nonzeroObserved) lateCompletion=\(lateCompletion) "
-        + "cancelled=\(cancelled) zero=\(zero) firstEmpty=\(firstEmpty) "
-        + "sampleCompleted=\(firstSampleMilliseconds != nil) firstSampleMilliseconds=\(firstSampleMilliseconds ?? 0) "
-        + "elapsedMilliseconds=\(elapsedMilliseconds)"
+        + "readFailed=\(observation.readFailed) nonzeroObserved=\(observation.nonzeroObserved) lateCompletion=\(observation.lateCompletion) "
+        + "cancelled=\(cancelled) zero=\(observation.zero) firstEmpty=\(observation.firstEmpty) "
+        + "sampleCompleted=\(observation.firstSampleMilliseconds != nil) firstSampleMilliseconds=\(observation.firstSampleMilliseconds ?? 0) "
+        + "lastSampleMilliseconds=\(observation.lastSampleMilliseconds ?? 0) sampleCount=\(observation.sampleCount) "
+        + "workerStartedMilliseconds=\(observation.workerStartedMilliseconds) elapsedMilliseconds=\(elapsedMilliseconds)"
     )
-    return closeSucceeded && zero && !readFailed && !lateCompletion && !cancelled
+    return closeSucceeded && observation.zero && !observation.readFailed && !observation.lateCompletion
+      && !cancelled
   }
   private static func rows(_ c: PostgresConnection, _ table: String) throws -> [String] {
     try c.execute("SELECT to_jsonb(t)::text AS row FROM \(Rows.quote(table)) t ORDER BY 1")

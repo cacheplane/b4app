@@ -110,6 +110,10 @@ private final class L1PhaseTrace: Sendable {
     case lockObservationEntered, nativeObservationCompleted, lockObservationReturned
     case completionObservationEntered, completionObservationReturned
     case bodyScopeClosing, bodyRunFinished, cleanupJoined
+    case actorSignInEntered, transitionAcquired, preflightEntered, preflightReturned
+    case scopeDrainEntered, scopeDrainReturned, scopeCloseAwaitEntered
+    case scopeCloseWorkEntered, scopeCloseWorkReturned, scopeCloseAwaitReturned
+    case poolDrainEntered, poolDrainReturned, targetOpenEntered, targetOpenReturned
   }
   private struct Event: Sendable {
     let stage: Stage
@@ -134,6 +138,26 @@ private final class L1PhaseTrace: Sendable {
     }
   }
 
+  func recordMigration(_ stage: AccountMigrationPhase, outcome: Bool?) {
+    switch stage {
+    case .actorSignInEntered: record(.actorSignInEntered, flag: outcome)
+    case .transitionAcquired: record(.transitionAcquired, flag: outcome)
+    case .preflightEntered: record(.preflightEntered, flag: outcome)
+    case .preflightReturned: record(.preflightReturned, flag: outcome)
+    case .scopeDrainEntered: record(.scopeDrainEntered, flag: outcome)
+    case .scopeDrainReturned: record(.scopeDrainReturned, flag: outcome)
+    case .scopeCloseAwaitEntered: record(.scopeCloseAwaitEntered, flag: outcome)
+    case .scopeCloseWorkEntered: record(.scopeCloseWorkEntered, flag: outcome)
+    case .scopeCloseWorkReturned: record(.scopeCloseWorkReturned, flag: outcome)
+    case .scopeCloseAwaitReturned: record(.scopeCloseAwaitReturned, flag: outcome)
+    case .poolDrainEntered: record(.poolDrainEntered, flag: outcome)
+    case .poolDrainReturned: record(.poolDrainReturned, flag: outcome)
+    case .targetOpenEntered: record(.targetOpenEntered, flag: outcome)
+    case .targetOpenReturned: record(.targetOpenReturned, flag: outcome)
+    }
+  }
+
+  // Bounded close work may outlive this partial snapshot; missing work markers do not prove a join.
   // Called only after withFixture returned, including its releases and actual retained Task joins.
   func emitAfterCleanup() {
     record(.cleanupJoined)
@@ -142,7 +166,9 @@ private final class L1PhaseTrace: Sendable {
       let flag = event.flag.map { $0 ? "true" : "false" } ?? "none"
       return "\(event.stage.rawValue):\(event.milliseconds):\(flag)"
     }.joined(separator: ";")
-    print("A3_ACCOUNT_PHASE case=\(testCase.rawValue) overflow=\(snapshot.overflow) events=\(fields)")
+    print(
+      "A3_ACCOUNT_PHASE case=\(testCase.rawValue) partialSnapshot=true overflow=\(snapshot.overflow) events=\(fields)"
+    )
   }
 }
 
@@ -488,7 +514,8 @@ final class L1FactoryCalls: Sendable {
   static func fixture(
     _ cleanup: L1Cleanup, pending: Bool = true, hubURL: String = AgentProtocolAccountMigrationTests.hubURL,
     apiFactory: HubSync.APIFactory? = nil, isolatedDiagnostics: Bool = false,
-    adapterFactory: SessionService.AdapterFactory? = nil
+    adapterFactory: SessionService.AdapterFactory? = nil,
+    migrationObserver: AccountMigrationObserver? = nil
   ) async throws -> Fixture {
     let files = try AgentProtocolFoundationFixture.knownFiles()
     let endpoint = try AgentProtocolResourceFixture.endpoint()
@@ -541,10 +568,11 @@ final class L1FactoryCalls: Sendable {
         throw WorkspaceError(.internalError, "L1 fixture reached a native runtime factory.")
       }, hubAPIFactory: apiFactory ?? { _, _ in fake }, hubLinkConnection: FakeHubLinkConnection(),
       powerAssertions: FakePowerAssertions(), checkRetryDelays: [], threadDeleteSweep: .zero)
-    let manager = AccountManager(
-      context: .init(
-        cluster: StoreCluster(endpoint: endpoint, binDir: endpoint.binDir!), registry: registry,
-        scope: scopeContext, flavor: .local))
+    var managerContext = AccountManager.Context(
+      cluster: StoreCluster(endpoint: endpoint, binDir: endpoint.binDir!), registry: registry,
+      scope: scopeContext, flavor: .local)
+    managerContext.migrationObserver = migrationObserver
+    let manager = AccountManager(context: managerContext)
     cleanup.own(manager)
     await manager.start()
     guard let scope = manager.current else { throw SetupFailure.missingScope }
@@ -577,7 +605,7 @@ final class L1FactoryCalls: Sendable {
     pending: Bool = true, hubURL: String = AgentProtocolAccountMigrationTests.hubURL,
     apiFactory: HubSync.APIFactory? = nil,
     isolatedDiagnostics: Bool = false, adapterFactory: SessionService.AdapterFactory? = nil,
-    expectedAdapterFactoryCalls: Int = 0,
+    expectedAdapterFactoryCalls: Int = 0, migrationObserver: AccountMigrationObserver? = nil,
     _ body: @Sendable (Fixture, L1Cleanup) async throws -> Void
   ) async throws {
     let cleanup = L1Cleanup()
@@ -586,7 +614,8 @@ final class L1FactoryCalls: Sendable {
     do {
       let fixture = try await fixture(
         cleanup, pending: pending, hubURL: hubURL, apiFactory: apiFactory,
-        isolatedDiagnostics: isolatedDiagnostics, adapterFactory: adapterFactory)
+        isolatedDiagnostics: isolatedDiagnostics, adapterFactory: adapterFactory,
+        migrationObserver: migrationObserver)
       created = fixture
       try await body(fixture, cleanup)
     } catch { failure = error }
@@ -756,7 +785,8 @@ final class L1FactoryCalls: Sendable {
   @Test func sameAccountPendingQuiescesBeforeCapture() async throws {
     let trace = L1PhaseTrace(.quiescence)
     defer { trace.emitAfterCleanup() }
-    try await Self.withFixture { fixture, cleanup in
+    try await Self.withFixture(migrationObserver: { trace.recordMigration($0, outcome: $1) }) {
+      fixture, cleanup in
       let writer = try Self.connection(fixture.endpoint)
       let writerPID = try #require(writer.execute("SELECT pg_backend_pid() AS pid").rows.first?.text("pid"))
       try writer.execute("BEGIN")
@@ -833,7 +863,8 @@ final class L1FactoryCalls: Sendable {
   @Test func pendingGateTimeoutRestoresSameLiveScopeWithoutMutation() async throws {
     let trace = L1PhaseTrace(.gateTimeout)
     defer { trace.emitAfterCleanup() }
-    try await Self.withFixture { fixture, cleanup in
+    try await Self.withFixture(migrationObserver: { trace.recordMigration($0, outcome: $1) }) {
+      fixture, cleanup in
       try fixture.scope.enter()
       let release = cleanup.release { fixture.scope.leave() }
       let run = Self.begin(fixture, cleanup, trace: trace)
