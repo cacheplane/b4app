@@ -236,6 +236,17 @@ Both comparisons return no authority or lease, perform no writes and never
 recapture or adopt a newer state. The owner explicitly authorizes the proof
 purpose; a denied sync cannot fall back to comparison-only verification.
 
+Compatibility-dependent native writes use the original linked snapshot before
+and after the concrete effect in one transaction, including zero-row outcomes.
+The guarded transaction explicitly selects READ COMMITTED before the existing
+exclusive advisory lock and holds it through actual COMMIT; ordinary callers
+retain their defaults. Compare the native record/membership and literal marker
+classification in composed views on that same borrowed connection. A failed
+postcheck rolls back transactional rows; business sequence counters and the
+in-memory clock need not roll back. This orders participating framework writers,
+not arbitrary raw SQL or successful deferred mutations after the final check.
+Unknown COMMIT outcomes remain unknown, and this data guard authenticates nobody.
+
 These storage primitives remain dormant until the owner handles admission.
 Cold reuse must match the closed binding to independently known account/stable
 nonplaceholder user identity and actual native membership. New positive evidence

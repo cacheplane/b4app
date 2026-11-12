@@ -346,14 +346,28 @@ extension WorkspaceDatabase {
       else { throw ProtocolActivationControl.failure }
       try read { c -> Void in
         let current = try ProtocolActivationControl.syncState(c)
-        let record = try ProtocolActivationControl.capturedRecord(
-          self, state: current.state, snapshot: expectedSnapshot, allowingLaterRevision: false)
-        if current.requirement == .protocolTwo {
-          guard let binding = record.binding, let observation = record.observation,
-            observation.binding == binding, observation.reportedMinimum == 2,
-            observation.reportedVersion >= 2, observation.healthy
-          else { throw ProtocolActivationControl.failure }
-        }
+        try ProtocolActivationControl.requireSyncEligibility(
+          self, current: current, snapshot: expectedSnapshot)
+      }
+    } catch { throw ProtocolActivationControl.failure }
+  }
+
+  /// One synchronous effect, checked against the original snapshot before and after its body.
+  /// The exclusive advisory lock and link/control row locks remain held through the actual COMMIT.
+  func writeProtocolSyncEffect<T>(
+    expectedSnapshot: ProtocolVerificationSnapshot, body: (PostgresConnection) throws -> T
+  ) throws -> T {
+    do {
+      return try write(exclusive: true, readCommitted: true) { c in
+        _ = try ProtocolActivationControl.state(c, locking: true)
+        let before = try ProtocolActivationControl.syncState(c)
+        try ProtocolActivationControl.requireSyncEligibility(
+          self, current: before, snapshot: expectedSnapshot)
+        let value = try body(c)
+        let after = try ProtocolActivationControl.syncState(c)
+        try ProtocolActivationControl.requireSyncEligibility(
+          self, current: after, snapshot: expectedSnapshot)
+        return value
       }
     } catch { throw ProtocolActivationControl.failure }
   }
@@ -509,6 +523,25 @@ enum ProtocolActivationControl {
       guard record == snapshot.record else { throw failure }
     }
     return record
+  }
+
+  /// Pure comparison of one composed view; even a legacy/no-op effect requires a linked capture.
+  fileprivate static func requireSyncEligibility(
+    _ database: WorkspaceDatabase,
+    current: (state: State, requirement: ProtocolSyncRequirement),
+    snapshot: ProtocolVerificationSnapshot
+  ) throws {
+    guard snapshot.database === database,
+      let context = snapshot.capturedContext, context.membership != nil
+    else { throw failure }
+    let record = try capturedRecord(
+      database, state: current.state, snapshot: snapshot, allowingLaterRevision: false)
+    if current.requirement == .protocolTwo {
+      guard let binding = record.binding, let observation = record.observation,
+        observation.binding == binding, observation.reportedMinimum == 2,
+        observation.reportedVersion >= 2, observation.healthy
+      else { throw failure }
+    }
   }
 
   fileprivate static func requireSavedLink(

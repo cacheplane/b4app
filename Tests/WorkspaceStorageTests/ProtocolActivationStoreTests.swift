@@ -2304,3 +2304,434 @@ extension ProtocolActivationStoreTests {
     }
   }
 }
+
+extension ProtocolActivationStoreTests {
+  private static func guardMarkPrefix(_ f: Fixture) throws -> (through: Int, later: Int) {
+    try seedLegacyWitnesses(f)
+    let rows = try f.raw.execute("SELECT seq FROM public.changes ORDER BY seq DESC LIMIT 2").rows
+    guard rows.count == 2, let later = rows[0].int("seq"), let through = rows[1].int("seq"),
+      later > through
+    else { throw FixtureFailure.nativeShape }
+    return (through, later)
+  }
+  /// Independent expected projection: only the synced bit of the accepted prefix changes.
+  private static func expectedGuardMark(_ f: Fixture, through: Int) throws -> NativeState {
+    let before = try state(f)
+    var rows = before.rows
+    rows["changes"] = try f.raw.execute(
+      """
+      SELECT (to_jsonb(c) || jsonb_build_object('synced',CASE WHEN seq <= $1::bigint THEN true ELSE synced END))::text AS value
+      FROM public.changes c
+      """, [String(through)]
+    ).rows.map {
+      guard let text = $0.text("value") else { throw FixtureFailure.nativeShape }
+      return Data(text.utf8)
+    }.sorted { $0.lexicographicallyPrecedes($1) }
+    return NativeState(rows: rows, sequence: before.sequence)
+  }
+  private static func expectGuardMark(
+    _ f: Fixture, through: Int, snapshot: ProtocolVerificationSnapshot, refuses: Bool = false
+  ) throws {
+    let before = try state(f)
+    if refuses {
+      expectSafe { try f.database.markSynced(through: through, expectedProtocolSnapshot: snapshot) }
+      try expectUnchanged(f, before)
+    } else {
+      let expected = try expectedGuardMark(f, through: through)
+      let outcome = Result { try f.database.markSynced(through: through, expectedProtocolSnapshot: snapshot) }
+      let exact = try state(f) == expected
+      #expect(exact)
+      try outcome.get()
+    }
+  }
+  private static func healthyGuardMarkSnapshot(_ f: Fixture) throws -> ProtocolVerificationSnapshot {
+    let prepared = try capturedBinding(f)
+    return try f.database.commitObservedProtocolFact(
+      expectedSnapshot: prepared, observation: observation(f.binding))
+  }
+
+  @Test func guardedMarkChangesOnlyAcceptedPrefixForLegacyAndHealthyModernStores() async throws {
+    try await Self.withFixture { f in
+      let prefix = try Self.guardMarkPrefix(f)
+      let inactive = try Self.capture(f)
+      try Self.expectRequirement(f, .legacyOnly)
+      try Self.expectGuardMark(f, through: prefix.through, snapshot: inactive)
+      let retained = try f.raw.execute(
+        "SELECT synced::text AS synced FROM public.changes WHERE seq=$1::bigint", [String(prefix.later)]
+      ).rows
+      #expect(retained.count == 1 && retained.first?.text("synced") == "false")
+      // Already synced still validates.
+      try Self.expectGuardMark(f, through: prefix.through, snapshot: inactive)
+      try Self.seedReadOnlyModernProfile(f)
+      let healthy = try Self.healthyGuardMarkSnapshot(f)
+      try Self.expectRequirement(f, .protocolTwo)
+      try Self.expectGuardMark(f, through: prefix.later, snapshot: healthy)
+      try Self.expectGuardMark(f, through: Int.max, snapshot: healthy)
+      try Self.expectGuardMark(f, through: Int.max, snapshot: healthy)
+      try f.raw.execute("DELETE FROM public.changes")
+      try Self.expectGuardMark(f, through: Int.max, snapshot: healthy)  // Empty UPDATE still validates.
+    }
+  }
+
+  @Test func guardedMarkNoOpStillRefusesModernInactiveAndSameRevisionStaleFacts() async throws {
+    try await Self.withFixture { f in
+      _ = try Self.guardMarkPrefix(f)
+      try f.raw.execute("DELETE FROM public.changes")
+      var inactive = try Self.capture(f)
+      try Self.expectGuardMark(f, through: Int.max, snapshot: inactive)
+      try f.database.clearHubLink()
+      let absent = try f.database.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: nil)
+      try Self.expectRequirement(f, .legacyOnly)
+      let stillEmpty = try f.raw.execute("SELECT count(*) AS n FROM public.changes").rows.first?.int("n") == 0
+      try #require(stillEmpty)
+      try Self.expectGuardMark(f, through: Int.max, snapshot: absent, refuses: true)
+      inactive = try f.database.saveHubLink(
+        f.link, membershipChange: .replace, expectedProtocolSnapshot: absent)
+      try Self.seedReadOnlyModernProfile(f)
+      try f.raw.execute("DELETE FROM public.changes")
+      try Self.expectRequirement(f, .protocolTwo)
+      try Self.expectGuardMark(f, through: Int.max, snapshot: inactive, refuses: true)
+      let bound = try f.database.prepareProtocolVerification(
+        expectedSnapshot: inactive, expectedBinding: f.binding)
+      try Self.expectGuardMark(f, through: Int.max, snapshot: bound, refuses: true)
+      let healthy = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: bound, observation: Self.observation(f.binding))
+      let valid = try Self.nativeRecord(f)
+      var stale = valid
+      var observed = try #require(valid["observation"] as? [String: Any])
+      observed["reportedVersion"] = 3  // Valid healthy closed record, SAME revision and member.
+      stale["observation"] = observed
+      try Self.putRecord(f, stale)
+      try Self.expectGuardMark(f, through: Int.max, snapshot: healthy, refuses: true)
+      try Self.putRecord(f, valid)
+      try Self.expectGuardMark(f, through: Int.max, snapshot: healthy)
+      try f.database.fenceProtocolVerification(expectedSnapshot: healthy)
+      try Self.expectGuardMark(f, through: Int.max, snapshot: healthy, refuses: true)
+    }
+  }
+
+  private struct GuardMarkWriterFacts: Sendable {
+    let ready: Bool, exclusiveBlocked: Bool, released: Bool, writerJoined: Bool, markJoined: Bool
+    let expectedRows: [String: [Data]]?, expectedSequence: Data?
+    let controller: Result<Void, any Error>, writer: Result<Void, any Error>, mark: Result<Void, any Error>
+  }
+  private static func guardMarkWriterRace(
+    _ f: Fixture, through: Int, snapshot: ProtocolVerificationSnapshot
+  ) async -> GuardMarkWriterFacts {
+    let controllerThread = Mutex<Thread?>(nil)
+    let facts: GuardMarkWriterFacts = await withCheckedContinuation { continuation in
+      controllerThread.withLock { retained in
+        retained = Thread {
+          let writerThread = Mutex<Thread?>(nil), markThread = Mutex<Thread?>(nil)
+          let writerResult = Mutex<Result<Void, any Error>?>(nil),
+            markResult = Mutex<Result<Void, any Error>?>(nil)
+          let writerPID = Mutex<Int?>(nil)
+          let expectedRows = Mutex<[String: [Data]]?>(nil), expectedSequence = Mutex<Data?>(nil)
+          let release = DispatchSemaphore(value: 0), writerDone = DispatchSemaphore(value: 0),
+            markDone = DispatchSemaphore(value: 0)
+          var ready = false, exclusiveBlocked = false, markStarted = false
+          var failure: (any Error)?
+          writerThread.withLock { thread in
+            thread = Thread {
+              let outcome = Result<Void, any Error> {
+                // REAL normal framework writer, shared remoteApply key, marker consumes NO business sequence.
+                try f.database.write { c in
+                  guard let pid = try c.execute("SELECT pg_backend_pid() AS pid").rows.first?.int("pid"),
+                    pid > 0
+                  else { throw FixtureFailure.nativeShape }
+                  writerPID.withLock { $0 = pid }
+                  try c.execute(
+                    "INSERT INTO public.\"columnClocks\"(\"table\",\"rowId\",\"column\",hlc) VALUES('connections','guard-mark-writer','authMode','000000000000-0000-local')"
+                  )
+                  let own = Fixture(
+                    database: f.database, raw: c, endpoint: f.endpoint, root: f.root, link: f.link,
+                    binding: f.binding)
+                  // Own transaction sees its committed-intent marker BEFORE candidate can act.
+                  let expected = try Self.state(own)
+                  expectedRows.withLock { $0 = expected.rows }
+                  expectedSequence.withLock { $0 = expected.sequence }
+                  guard release.wait(timeout: .now() + .seconds(8)) == .success else {
+                    throw FixtureFailure.barrierTimeout
+                  }
+                }
+              }
+              writerResult.withLock { $0 = outcome }; writerDone.signal()
+            }
+            thread?.start()
+          }
+          do {
+            let c = try Self.membershipConnection(f.endpoint)
+            let readyDeadline = ContinuousClock.now + .seconds(3)
+            while ContinuousClock.now < readyDeadline {
+              if expectedRows.withLock({ $0 != nil }) { ready = ContinuousClock.now <= readyDeadline; break }
+              if writerResult.withLock({ $0 != nil }) { break }
+              Thread.sleep(forTimeInterval: 0.005)
+            }
+            guard ready, let pid = writerPID.withLock({ $0 }) else { throw FixtureFailure.barrierTimeout }
+            markThread.withLock { thread in
+              thread = Thread {
+                let outcome = Result<Void, any Error> {
+                  try f.database.markSynced(through: through, expectedProtocolSnapshot: snapshot)
+                }
+                markResult.withLock { $0 = outcome }; markDone.signal()
+              }
+              thread?.start()
+            }
+            markStarted = true
+            let waitDeadline = ContinuousClock.now + .seconds(3)
+            while ContinuousClock.now < waitDeadline {
+              let rows = try c.execute(
+                """
+                SELECT a.pid FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid
+                WHERE a.datname=$1 AND a.application_name='b4app' AND l.locktype='advisory'
+                  AND l.mode='ExclusiveLock' AND NOT l.granted AND l.classid=0::oid
+                  AND l.objid=$3::oid AND l.objsubid=1 AND $2::int=ANY(pg_blocking_pids(a.pid))
+                """, [f.endpoint.database, String(pid), String(0x6234_6170)]
+              ).rows
+              let completed = ContinuousClock.now
+              if completed <= waitDeadline, rows.count == 1 { exclusiveBlocked = true; break }
+              guard completed < waitDeadline, !markResult.withLock({ $0 != nil }) else { break }
+              Thread.sleep(forTimeInterval: 0.005)
+            }
+          } catch { failure = error }
+          // Observer/controller handles close lexically before releases/joins. Always release writer,
+          // then join BOTH actual operations even if stage observation failed; no Thread exit claim.
+          release.signal()
+          writerDone.wait()
+          if markStarted { markDone.wait() }
+          writerThread.withLock { $0 = nil }; markThread.withLock { $0 = nil }
+          continuation.resume(
+            returning: GuardMarkWriterFacts(
+              ready: ready, exclusiveBlocked: exclusiveBlocked, released: true, writerJoined: true,
+              markJoined: markStarted,
+              expectedRows: expectedRows.withLock { $0 }, expectedSequence: expectedSequence.withLock { $0 },
+              controller: failure.map { .failure($0) } ?? .success(()),
+              writer: writerResult.withLock { $0 } ?? .failure(FixtureFailure.nativeShape),
+              mark: markResult.withLock { $0 } ?? .failure(FixtureFailure.nativeShape)))
+        }
+        retained?.start()
+      }
+    }
+    controllerThread.withLock { $0 = nil }
+    return facts
+  }
+  private static func expectGuardMarkWriterRace(
+    _ f: Fixture, through: Int, snapshot: ProtocolVerificationSnapshot
+  ) async throws {
+    try expectRequirement(f, .legacyOnly)
+    try expectReadOnlyValidation(f, snapshot: snapshot, sync: true)
+    let facts = await guardMarkWriterRace(f, through: through, snapshot: snapshot)
+    #expect(facts.ready && facts.exclusiveBlocked && facts.released && facts.writerJoined && facts.markJoined)
+    try facts.controller.get(); try facts.writer.get()
+    expectSafe { try facts.mark.get() }
+    guard let rows = facts.expectedRows, let sequence = facts.expectedSequence else {
+      throw FixtureFailure.nativeShape
+    }
+    let onlyCommittedWriter = try state(f) == NativeState(rows: rows, sequence: sequence)
+    #expect(onlyCommittedWriter)
+    try expectRequirement(f, .protocolTwo)
+  }
+  @Test func guardedMarkWaitsForParticipatingSharedWriterThenRefusesItsModernMarker() async throws {
+    try await Self.withFixture { f in
+      let prefix = try Self.guardMarkPrefix(f)
+      try await Self.expectGuardMarkWriterRace(f, through: prefix.through, snapshot: Self.capture(f))
+    }
+  }
+
+  private static func withGuardMarkRepeatableRead(
+    _ f: Fixture, _ body: @Sendable (Fixture) async throws -> Void
+  ) async throws {
+    let overrides = try f.raw.execute(
+      "SELECT 1 FROM pg_db_role_setting s,unnest(s.setconfig) AS k(value) WHERE s.setdatabase=(SELECT oid FROM pg_database WHERE datname=$1) AND s.setrole=0 AND k.value LIKE 'default_transaction_isolation=%'",
+      [f.endpoint.database]
+    ).rows
+    guard overrides.isEmpty else { throw FixtureFailure.nativeShape }
+    try f.database.close()
+    try f.raw.execute(
+      "ALTER DATABASE \(Rows.quote(f.endpoint.database)) SET default_transaction_isolation='repeatable read'")
+    var current: WorkspaceDatabase?, failure: (any Error)?
+    do {
+      let fresh = try f.reopen(); current = fresh
+      let owned = Fixture(
+        database: fresh, raw: f.raw, endpoint: f.endpoint, root: f.root, link: f.link, binding: f.binding)
+      try await body(owned)
+    } catch { failure = Self.unexpectedError(error) }
+    do { try current?.close() } catch {
+      if failure == nil {
+        failure = Self.unexpectedError(error)
+      } else {
+        Issue.record("The owned isolation fixture close also failed; private details suppressed.")
+      }
+    }
+    do {
+      try f.raw.execute(
+        "ALTER DATABASE \(Rows.quote(f.endpoint.database)) RESET default_transaction_isolation")
+    } catch {
+      if failure == nil {
+        failure = Self.unexpectedError(error)
+      } else {
+        Issue.record("The owned isolation fixture reset also failed; private details suppressed.")
+      }
+    }
+    if let failure { throw failure }
+  }
+  @Test func guardedMarkSelectsReadCommittedWhileOldMarkRetainsInheritedRepeatableRead() async throws {
+    try await Self.withFixture { original in
+      let prefix = try Self.guardMarkPrefix(original)
+      try original.raw.execute(
+        """
+        CREATE SCHEMA guard_mark_isolation;
+        CREATE TABLE guard_mark_isolation.observed(value text NOT NULL);
+        CREATE FUNCTION guard_mark_isolation.record_isolation() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+          INSERT INTO guard_mark_isolation.observed VALUES(current_setting('transaction_isolation'));
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER guard_mark_isolation AFTER UPDATE ON public.changes FOR EACH ROW
+          WHEN(NOT OLD.synced AND NEW.synced) EXECUTE FUNCTION guard_mark_isolation.record_isolation();
+        """)
+      try await Self.withGuardMarkRepeatableRead(original) { f in
+        let inactive = try Self.capture(f)  // Snapshot belongs to this actual FRESH object.
+        let oldCount = try #require(
+          f.raw.execute(
+            "SELECT count(*) AS n FROM public.changes WHERE seq <= $1::bigint AND NOT synced",
+            [String(prefix.through)]
+          ).rows.first?.int("n"))
+        try #require(oldCount > 0)
+        let expectedOld = try Self.expectedGuardMark(f, through: prefix.through)
+        let oldOutcome = Result { try f.database.markSynced(through: prefix.through) }
+        let oldExact = try Self.state(f) == expectedOld
+        #expect(oldExact); try oldOutcome.get()
+        let oldIsolation = try f.raw.execute(
+          "SELECT count(*) AS n,bool_and(value='repeatable read')::text AS correct FROM guard_mark_isolation.observed"
+        ).rows.first
+        #expect(oldIsolation?.int("n") == oldCount && oldIsolation?.text("correct") == "true")
+        try f.raw.execute("DELETE FROM guard_mark_isolation.observed")
+        let guardedCount = try #require(
+          f.raw.execute(
+            "SELECT count(*) AS n FROM public.changes WHERE seq <= $1::bigint AND NOT synced",
+            [String(prefix.later)]
+          ).rows.first?.int("n"))
+        try #require(guardedCount > 0)
+        try Self.expectGuardMark(f, through: prefix.later, snapshot: inactive)
+        let guardedIsolation = try f.raw.execute(
+          "SELECT count(*) AS n,bool_and(value='read committed')::text AS correct FROM guard_mark_isolation.observed"
+        ).rows.first
+        #expect(guardedIsolation?.int("n") == guardedCount && guardedIsolation?.text("correct") == "true")
+      }
+    }
+  }
+  @Test func guardedMarkSeesPrecedingWriterUnderInheritedRepeatableReadWithoutRowConflict() async throws {
+    try await Self.withFixture { original in
+      let prefix = try Self.guardMarkPrefix(original)
+      try await Self.withGuardMarkRepeatableRead(original) { f in
+        try await Self.expectGuardMarkWriterRace(f, through: prefix.through, snapshot: Self.capture(f))
+      }
+    }
+  }
+
+  @Test func guardedMarkPostcheckRollsBackBodyMarkerAndSameTriggerHealthyControlSucceeds() async throws {
+    try await Self.withFixture { f in
+      let prefix = try Self.guardMarkPrefix(f)
+      let inactive = try Self.capture(f)
+      try Self.expectRequirement(f, .legacyOnly)
+      try Self.expectReadOnlyValidation(f, snapshot: inactive, sync: true)
+      try f.raw.execute(
+        """
+        CREATE SCHEMA guard_mark_post;
+        CREATE SEQUENCE guard_mark_post.probe;
+        CREATE FUNCTION guard_mark_post.add_marker() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+          INSERT INTO public."columnClocks"("table","rowId","column",hlc)
+            VALUES('connections','guard-mark-post','authMode','000000000000-0000-local');
+          PERFORM nextval('guard_mark_post.probe');
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER guard_mark_post AFTER UPDATE ON public.changes FOR EACH ROW
+          WHEN(NOT OLD.synced AND NEW.synced AND NEW.seq=\(prefix.through)) EXECUTE FUNCTION guard_mark_post.add_marker();
+        """)
+      try Self.expectGuardMark(f, through: prefix.through, snapshot: inactive, refuses: true)
+      let failedProbe = try f.raw.execute(
+        "SELECT last_value::text AS n,is_called::text AS called FROM guard_mark_post.probe"
+      ).rows.first
+      #expect(failedProbe?.text("n") == "1" && failedProbe?.text("called") == "true")
+      try Self.expectRequirement(f, .legacyOnly)
+      let healthy = try Self.healthyGuardMarkSnapshot(f)
+      let expectedPrefix = try Self.expectedGuardMark(f, through: prefix.through)
+      var rows = expectedPrefix.rows
+      let clock = try #require(
+        f.raw.execute(
+          "SELECT jsonb_build_object('table','connections','rowId','guard-mark-post','column','authMode','hlc','000000000000-0000-local')::text AS value"
+        ).rows.first?.text("value"))
+      rows["columnClocks", default: []].append(Data(clock.utf8))
+      rows["columnClocks"]?.sort { $0.lexicographicallyPrecedes($1) }
+      let outcome = Result {
+        try f.database.markSynced(through: prefix.through, expectedProtocolSnapshot: healthy)
+      }
+      let exact = try Self.state(f) == NativeState(rows: rows, sequence: expectedPrefix.sequence)
+      #expect(exact); try outcome.get()
+      let positiveProbe = try f.raw.execute(
+        "SELECT last_value::text AS n,is_called::text AS called FROM guard_mark_post.probe"
+      ).rows.first
+      #expect(positiveProbe?.text("n") == "2" && positiveProbe?.text("called") == "true")
+      try Self.expectRequirement(f, .protocolTwo)
+    }
+  }
+
+  @Test func guardedMarkActualDeferredCommitFailureIsSafeRollsBackAndRecovers() async throws {
+    try await Self.withFixture { f in
+      let prefix = try Self.guardMarkPrefix(f)
+      let inactive = try Self.capture(f)
+      try f.raw.execute(
+        """
+        CREATE SCHEMA guard_mark_commit;
+        CREATE SEQUENCE guard_mark_commit.probe;
+        CREATE TABLE guard_mark_commit.expected AS SELECT value FROM public.settings WHERE key='__b4app_agent_protocol_activation_v1';
+        CREATE FUNCTION guard_mark_commit.refuse_commit() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+          IF NOT NEW.synced OR NOT EXISTS(SELECT 1 FROM public.changes WHERE seq=NEW.seq AND synced)
+            OR (SELECT value FROM public.settings WHERE key='__b4app_agent_protocol_activation_v1')
+              IS DISTINCT FROM (SELECT value FROM guard_mark_commit.expected)
+          THEN RAISE EXCEPTION 'ACTIVATION_GUARDED_MARK_STAGE_NOT_REACHED'; END IF;
+          PERFORM nextval('guard_mark_commit.probe');
+          RAISE EXCEPTION 'ACTIVATION_GUARDED_MARK_PRIVATE_CANARY' USING ERRCODE='23514',DETAIL='ACTIVATION_GUARDED_MARK_SECRET';
+        END $$;
+        CREATE CONSTRAINT TRIGGER guard_mark_commit AFTER UPDATE ON public.changes DEFERRABLE INITIALLY DEFERRED
+          FOR EACH ROW WHEN(NOT OLD.synced AND NEW.synced AND NEW.seq=\(prefix.through)) EXECUTE FUNCTION guard_mark_commit.refuse_commit();
+        """)
+      let beforeNative = try Self.state(f)
+      var knownNativeConstraint = false, nativeUpdateReturned = false, nativeCommitAttempted = false
+      do {
+        try f.raw.execute("BEGIN")
+        try f.raw.execute(
+          "UPDATE public.changes SET synced=true WHERE seq <= $1::bigint AND NOT synced",
+          [String(prefix.through)])
+        nativeUpdateReturned = true
+        nativeCommitAttempted = true
+        try f.raw.execute("COMMIT")
+      } catch {
+        knownNativeConstraint = (error as? PostgresError)?.sqlState == "23514"
+        _ = try? f.raw.execute("ROLLBACK")
+      }
+      try Self.expectUnchanged(f, beforeNative)
+      try #require(knownNativeConstraint && nativeUpdateReturned && nativeCommitAttempted)
+      let nativeProbe = try f.raw.execute(
+        "SELECT last_value::text AS n,is_called::text AS called FROM guard_mark_commit.probe"
+      ).rows.first
+      #expect(nativeProbe?.text("n") == "1" && nativeProbe?.text("called") == "true")
+      try Self.expectGuardMark(f, through: prefix.through, snapshot: inactive, refuses: true)
+      let guardedProbe = try f.raw.execute(
+        "SELECT last_value::text AS n,is_called::text AS called FROM guard_mark_commit.probe"
+      ).rows.first
+      #expect(guardedProbe?.text("n") == "2" && guardedProbe?.text("called") == "true")
+      // The SAME deferred fault was enabled throughout the targeted call; remove only for recovery.
+      try f.raw.execute("DROP TRIGGER guard_mark_commit ON public.changes")
+      try Self.expectGuardMark(f, through: prefix.through, snapshot: inactive)
+      let recoveredProbe = try f.raw.execute(
+        "SELECT last_value::text AS n,is_called::text AS called FROM guard_mark_commit.probe"
+      ).rows.first
+      #expect(recoveredProbe?.text("n") == "2" && recoveredProbe?.text("called") == "true")
+    }
+  }
+}

@@ -143,11 +143,13 @@ public final class WorkspaceDatabase: Sendable {
   /// local edit is stamped after them and wins, on this Mac and at the hub alike. And because a pull
   /// takes the lock before any row lock and a local write takes it before any row lock, a pull never
   /// holds a row lock that a local write waits on, or the reverse, so the two cannot deadlock.
-  func write<T>(exclusive: Bool = false, _ body: (PostgresConnection) throws -> T) throws -> T {
+  func write<T>(
+    exclusive: Bool = false, readCommitted: Bool = false, _ body: (PostgresConnection) throws -> T
+  ) throws -> T {
     let device = deviceId
     do {
       return try pool.withConnection { c in
-        try c.execute("BEGIN")
+        try c.execute(readCommitted ? "BEGIN ISOLATION LEVEL READ COMMITTED" : "BEGIN")
         do {
           try c.execute(
             exclusive
