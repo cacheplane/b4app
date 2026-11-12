@@ -16,7 +16,7 @@ Two things have to be put right for that to work:
 - A density setting with two levels, normal and dense, on a new "Display" page in Settings. It applies to the sidebar, the thread and the composer, and syncs to the user's other devices.
 - A sidebar setting, "Threads that don't need you": Shown, Collapsed or Hidden. It no longer mentions row size.
 - A dense thread shows, for each turn, the user's message, one line counting the agent's steps, and the final answer. The line opens to show the steps.
-- A dense composer shows the field and Send, without the row of pickers.
+- A dense composer shows the field and Send, and one line of text where the row of pickers was.
 - Settings are stored per user within an organisation. A user in two organisations has separate settings in each. One user's settings are never visible to or changed by another.
 - The owner's current settings survive the change.
 
@@ -134,6 +134,17 @@ The owner's decisions:
 - In dense, the row of pickers under the composer is not shown, in a thread and on the new-thread screen.
 - Choosing where a thread starts, and changing a model or permission, is done with a keyboard shortcut or the command palette.
 
+- In place of the pickers, the dense composer shows one muted line saying where and with what the next message will run, such as "b4app · Claude Code · Opus". It is text, not a control: it opens nothing, and the command palette and shortcuts do the changing. (Owner, 2026-11-12, answering the builder check: without it a new thread could start in a folder the user never saw.)
+
+The line in detail, as the builder's calls:
+
+- It names what the hidden pickers would show, in their order: the place, the runtime and model, and the permission. On the new-thread screen the place is the folder or environment the thread will start in ("No folder" when there is none). In a thread, where the place cannot change, it is left out.
+- The permission is named only when it is not the default, so the usual line stays short and an unusual permission stands out.
+- It is one line. When it does not fit it truncates in the middle of the place, never the runtime or permission.
+- It changes as soon as a command changes a choice, so the palette's effect is visible without sending.
+- VoiceOver reads it as one static text, "Runs in b4app with Claude Code, Opus".
+- It shares its row with the status line: while there is a "Starting…" or a failed send to explain, that takes the row, and the line returns after.
+
 What stays at either density: the field, Send, and the line under the field that says "Starting…" or why a send did not go through. That line is the only place a failed send explains itself. (Builder's call.)
 
 This part depends on work that is not on main. The command palette is being built on `blove/b4-command-palette-spec-ba5790`. The composer has three pickers: the place, the permission, and the runtime with its model. The dense composer needs a command for each: one that opens the place picker for a new thread, one that changes the permission, and one that changes the runtime and model (for a thread, the model only, as today). Until those exist, hiding the pickers would strand the user, which is an anti-goal.
@@ -162,7 +173,8 @@ These are the designer's decisions, not the owner's. Change them if the code arg
 - Steps counted are tool calls, command runs and file changes.
 - Open and closed turns are remembered only while the thread is on screen.
 - The status line under the composer stays at either density.
-- The phone keeps its pickers at either density.
+- The phone keeps its pickers at either density, and so has no summary line.
+- The dense composer's summary line: what it names, that the permission shows only when it is not the default, how it truncates, and that it gives its row to the status line. That the line exists is the owner's decision.
 - The user's id is carried in the row id on the hub only; devices keep `view`.
 - "Show working" for a turn with reasoning but no counted step; failed and stopped notes drawn with their turn in dense.
 - The storage shape of the two new fields, and whether `quietThreads` is reused for the three-way value or replaced.
